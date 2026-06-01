@@ -1,0 +1,27 @@
+// A taste of witchy: pure functions, pattern matching, pipelines, and
+// capability-gated effects. `print` requires a Console capability, which only
+// `main` is granted — pure helpers like `double` and `classify` need none.
+
+fn double(n: Int) -> Int {
+  n * 2
+}
+
+fn classify(n: Int) -> String {
+  match n {
+    0 -> "zero"
+    _ -> if n > 0 { "positive" } else { "negative" }
+  }
+}
+
+fn greet(console: Console, name: String) -> Nil {
+  print(console, "hello, " <> name)
+}
+
+fn main(console: Console) {
+  greet(console, "witchy")
+
+  let n = 8 |> double()
+  print(console, "8 doubled is " <> int_to_string(n))
+
+  print(console, classify(-3))
+}

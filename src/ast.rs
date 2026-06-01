@@ -1,0 +1,167 @@
+//! Abstract syntax tree for witchy.
+//!
+//! Convention (Gleam-style): identifiers beginning with an uppercase letter are
+//! constructors/variants (`Click`, `Closed`); lowercase identifiers are
+//! variables and functions (`greet`, `count`).
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Module {
+    pub items: Vec<Item>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Item {
+    Function(Function),
+    Actor(ActorDef),
+    Type(TypeDef),
+}
+
+/// A sum type: `type Event { Click(Int, Int) Closed }`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TypeDef {
+    pub name: String,
+    pub variants: Vec<Variant>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Variant {
+    pub name: String,
+    pub fields: Vec<Type>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ActorDef {
+    pub name: String,
+    pub fields: Vec<Field>,
+    pub handlers: Vec<Handler>,
+}
+
+/// Actor state. A field with an initializer (`var count: Int = 0`) defaults at
+/// spawn; a field without one (`console: Console`) must be supplied at spawn —
+/// this is how capabilities are granted to an actor.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Field {
+    pub name: String,
+    pub ty: Type,
+    pub mutable: bool,
+    pub init: Option<Expr>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Handler {
+    pub message: String,
+    pub params: Vec<Param>,
+    pub body: Block,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Function {
+    pub public: bool,
+    pub name: String,
+    pub params: Vec<Param>,
+    pub ret: Option<Type>,
+    pub body: Block,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Param {
+    pub name: String,
+    pub ty: Option<Type>,
+}
+
+/// Types are parsed but not yet checked. `Named("Result", [Int, Error])`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Type {
+    Named(String, Vec<Type>),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Block {
+    pub stmts: Vec<Stmt>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Stmt {
+    /// `let x = e` or `var x = e`.
+    Let {
+        name: String,
+        mutable: bool,
+        value: Expr,
+    },
+    /// `x = e` — reassign an existing binding (e.g. actor state).
+    Assign {
+        name: String,
+        value: Expr,
+    },
+    Expr(Expr),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Expr {
+    Int(i64),
+    Float(f64),
+    Str(String),
+    Bool(bool),
+    List(Vec<Expr>),
+    /// A bare lowercase identifier — a variable or function reference.
+    Var(String),
+    /// A call to a named function: `f(a, b)`.
+    Call { name: String, args: Vec<Expr> },
+    /// A constructor application: `Click(x, y)` or nullary `Closed`.
+    Ctor { name: String, args: Vec<Expr> },
+    Unary { op: UnOp, expr: Box<Expr> },
+    Binary { op: BinOp, lhs: Box<Expr>, rhs: Box<Expr> },
+    If {
+        cond: Box<Expr>,
+        then_block: Block,
+        else_block: Option<Block>,
+    },
+    Match {
+        scrutinee: Box<Expr>,
+        arms: Vec<MatchArm>,
+    },
+    Block(Block),
+    /// `spawn ActorName(args)` — create an actor, granting it the args as its
+    /// initial (non-defaulted) fields. Evaluates to a `Subject`.
+    Spawn {
+        actor: String,
+        args: Vec<Expr>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnOp {
+    Neg,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BinOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Concat,
+    Eq,
+    NotEq,
+    Lt,
+    LtEq,
+    Gt,
+    GtEq,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct MatchArm {
+    pub pattern: Pattern,
+    pub guard: Option<Expr>,
+    pub body: Expr,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Pattern {
+    Wildcard,
+    Var(String),
+    Int(i64),
+    Str(String),
+    Bool(bool),
+    Ctor { name: String, args: Vec<Pattern> },
+}
