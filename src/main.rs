@@ -141,9 +141,70 @@ fn main() -> wasmtime::Result<()> {
     run_witchy("witchy actors", include_str!("../examples/actors.witchy"));
     run_compiled(&mut rt, "witchy compiled to WASM (ints)", include_str!("../examples/compute.witchy"));
     run_compiled(&mut rt, "witchy compiled to WASM (strings)", include_str!("../examples/strings.witchy"));
+    run_compiled_actor(&mut rt, "witchy actor compiled to its own WASM VM", include_str!("../examples/counter.witchy"));
 
     println!("\nspike OK");
     Ok(())
+}
+
+/// Compile an actor to its own WASM module and run it on the runtime: each
+/// `Tick` is delivered by invoking the actor's exported handler, state persists
+/// in a WASM global across messages, and without the capability the compiled
+/// module cannot instantiate.
+fn run_compiled_actor(rt: &mut Runtime, title: &str, src: &str) {
+    println!("\n== {title} ==");
+    if let Err(e) = typeck::check_str(src) {
+        println!("{e}");
+        return;
+    }
+    let module = match parser::parse_module(src) {
+        Ok(m) => m,
+        Err(e) => {
+            println!("{e}");
+            return;
+        }
+    };
+    let actor = module.items.iter().find_map(|i| match i {
+        ast::Item::Actor(a) => Some(a),
+        _ => None,
+    });
+    let Some(actor) = actor else {
+        println!("no actor to compile");
+        return;
+    };
+    let wat = match codegen::compile_actor_module(actor) {
+        Ok(w) => w,
+        Err(e) => {
+            println!("{e}");
+            return;
+        }
+    };
+
+    // Granted the Console capability (host `print`): deliver three Ticks.
+    match rt.spawn(
+        wat.as_bytes(),
+        Capabilities {
+            print: true,
+            ..Default::default()
+        },
+        4,
+    ) {
+        Ok(mut counter) => {
+            for _ in 0..3 {
+                if let Err(e) = counter.invoke("Tick") {
+                    println!("error: {e}");
+                    break;
+                }
+            }
+        }
+        Err(e) => println!("spawn failed: {e}"),
+    }
+
+    // Denied: the compiled actor cannot even instantiate.
+    match rt.spawn(wat.as_bytes(), Capabilities::none(), 4) {
+        Ok(_) => println!("!! SECURITY FAILURE: actor ran without the capability"),
+        Err(e) => println!("DENIED without capability (as designed): {e}"),
+    }
 }
 
 /// Compile a witchy program to WASM and run it on the runtime, demonstrating

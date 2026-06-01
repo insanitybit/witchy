@@ -93,6 +93,15 @@ impl Actor {
         run.call(&mut self.store, ())?;
         Ok(())
     }
+
+    /// Invoke a no-argument exported message handler (used by compiled actors).
+    pub fn invoke(&mut self, handler: &str) -> Result<()> {
+        let func = self
+            .instance
+            .get_typed_func::<(), ()>(&mut self.store, handler)?;
+        func.call(&mut self.store, ())?;
+        Ok(())
+    }
 }
 
 /// The runtime owns the wasm engine and the shared mailbox registry, and hands
