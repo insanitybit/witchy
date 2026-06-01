@@ -6,6 +6,7 @@
 //! language surface yet.
 
 mod ast;
+mod codegen;
 mod interpreter;
 mod lexer;
 mod parser;
@@ -91,7 +92,7 @@ fn main() -> wasmtime::Result<()> {
     println!("== M2: capability gating ==");
 
     // Granted the `print` capability — works.
-    let mut greeter = rt.spawn(GREETER, Capabilities { print: true, send: false }, 4)?;
+    let mut greeter = rt.spawn(GREETER, Capabilities { print: true, send: false, print_int: false }, 4)?;
     greeter.run()?;
 
     // Granted nothing — must fail to instantiate because `witchy.print` is not
@@ -104,11 +105,11 @@ fn main() -> wasmtime::Result<()> {
     println!("\n== M3: message passing across isolated VMs ==");
 
     // Logger can print + recv, but cannot send.
-    let mut logger = rt.spawn(LOGGER, Capabilities { print: true, send: false }, 4)?;
+    let mut logger = rt.spawn(LOGGER, Capabilities { print: true, send: false, print_int: false }, 4)?;
     // Sender can only send.
     let mut sender = rt.spawn(
         sender_src(logger.id),
-        Capabilities { print: false, send: true },
+        Capabilities { print: false, send: true, print_int: false },
         4,
     )?;
 
@@ -138,9 +139,58 @@ fn main() -> wasmtime::Result<()> {
 
     run_witchy("witchy language (interpreter)", include_str!("../examples/hello.witchy"));
     run_witchy("witchy actors", include_str!("../examples/actors.witchy"));
+    run_compiled(&mut rt, include_str!("../examples/compute.witchy"));
 
     println!("\nspike OK");
     Ok(())
+}
+
+/// Compile a witchy program to WASM and run it on the runtime, demonstrating
+/// that the capability gate now applies to *compiled* witchy: granted, it runs;
+/// ungranted, the module cannot instantiate.
+fn run_compiled(rt: &mut Runtime, program: &str) {
+    println!("\n== witchy compiled to WASM ==");
+    if let Err(e) = typeck::check_str(program) {
+        println!("{e}");
+        return;
+    }
+    let module = match parser::parse_module(program) {
+        Ok(m) => m,
+        Err(e) => {
+            println!("{e}");
+            return;
+        }
+    };
+    let wat = match codegen::compile_module(&module) {
+        Ok(w) => w,
+        Err(e) => {
+            println!("{e}");
+            return;
+        }
+    };
+
+    // Granted print_int: the compiled module runs and prints its result.
+    match rt.spawn(
+        wat.as_bytes(),
+        Capabilities {
+            print_int: true,
+            ..Default::default()
+        },
+        4,
+    ) {
+        Ok(mut actor) => {
+            if let Err(e) = actor.run() {
+                println!("error: {e}");
+            }
+        }
+        Err(e) => println!("spawn failed: {e}"),
+    }
+
+    // Denied: the same compiled module cannot even instantiate.
+    match rt.spawn(wat.as_bytes(), Capabilities::none(), 4) {
+        Ok(_) => println!("!! SECURITY FAILURE: compiled module ran without the capability"),
+        Err(e) => println!("DENIED without capability (as designed): {e}"),
+    }
 }
 
 fn run_witchy(title: &str, program: &str) {

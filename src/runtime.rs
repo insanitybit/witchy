@@ -27,6 +27,8 @@ pub struct Capabilities {
     pub print: bool,
     /// May deliver a message to another actor's mailbox via `witchy.send`.
     pub send: bool,
+    /// May print an integer via `witchy.print_int` (used by compiled witchy).
+    pub print_int: bool,
 }
 
 impl Capabilities {
@@ -157,6 +159,9 @@ impl Runtime {
         if caps.send {
             linker.func_wrap("witchy", "send", host_send)?;
         }
+        if caps.print_int {
+            linker.func_wrap("witchy", "print_int", host_print_int)?;
+        }
         // `recv` is intrinsic: reading your *own* mailbox is not authority over
         // anyone else, so every actor may do it.
         linker.func_wrap("witchy", "recv", host_recv)?;
@@ -197,6 +202,11 @@ fn host_print(mut caller: Caller<'_, ActorState>, ptr: i32, len: i32) -> Result<
     let text = String::from_utf8_lossy(bytes);
     let id = caller.data().id;
     print!("[actor {id}] {text}");
+    Ok(())
+}
+
+fn host_print_int(caller: Caller<'_, ActorState>, n: i32) -> Result<()> {
+    println!("[actor {}] {n}", caller.data().id);
     Ok(())
 }
 
@@ -306,7 +316,7 @@ mod tests {
     fn granted_capability_instantiates() {
         let mut rt = Runtime::new().unwrap();
         let mut actor = rt
-            .spawn(IMPORTS_PRINT, Capabilities { print: true, send: false }, 4)
+            .spawn(IMPORTS_PRINT, Capabilities { print: true, send: false, print_int: false }, 4)
             .unwrap();
         actor.run().unwrap();
     }
@@ -317,10 +327,10 @@ mod tests {
     fn message_passing_delivers_across_isolated_vms() {
         let mut rt = Runtime::new().unwrap();
         let mut receiver = rt
-            .spawn(RECEIVER, Capabilities { print: false, send: false }, 4)
+            .spawn(RECEIVER, Capabilities { print: false, send: false, print_int: false }, 4)
             .unwrap();
         let mut sender = rt
-            .spawn(sender(receiver.id, 5), Capabilities { print: false, send: true }, 4)
+            .spawn(sender(receiver.id, 5), Capabilities { print: false, send: true, print_int: false }, 4)
             .unwrap();
 
         sender.run().unwrap();
@@ -340,7 +350,7 @@ mod tests {
     fn send_to_unknown_actor_traps() {
         let mut rt = Runtime::new().unwrap();
         let mut sender = rt
-            .spawn(sender(9999, 5), Capabilities { print: false, send: true }, 4)
+            .spawn(sender(9999, 5), Capabilities { print: false, send: true, print_int: false }, 4)
             .unwrap();
         assert!(sender.run().is_err(), "sending to a nonexistent actor must fail");
     }
