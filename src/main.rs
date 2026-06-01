@@ -139,7 +139,8 @@ fn main() -> wasmtime::Result<()> {
 
     run_witchy("witchy language (interpreter)", include_str!("../examples/hello.witchy"));
     run_witchy("witchy actors", include_str!("../examples/actors.witchy"));
-    run_compiled(&mut rt, include_str!("../examples/compute.witchy"));
+    run_compiled(&mut rt, "witchy compiled to WASM (ints)", include_str!("../examples/compute.witchy"));
+    run_compiled(&mut rt, "witchy compiled to WASM (strings)", include_str!("../examples/strings.witchy"));
 
     println!("\nspike OK");
     Ok(())
@@ -148,8 +149,8 @@ fn main() -> wasmtime::Result<()> {
 /// Compile a witchy program to WASM and run it on the runtime, demonstrating
 /// that the capability gate now applies to *compiled* witchy: granted, it runs;
 /// ungranted, the module cannot instantiate.
-fn run_compiled(rt: &mut Runtime, program: &str) {
-    println!("\n== witchy compiled to WASM ==");
+fn run_compiled(rt: &mut Runtime, title: &str, program: &str) {
+    println!("\n== {title} ==");
     if let Err(e) = typeck::check_str(program) {
         println!("{e}");
         return;
@@ -169,10 +170,11 @@ fn run_compiled(rt: &mut Runtime, program: &str) {
         }
     };
 
-    // Granted print_int: the compiled module runs and prints its result.
+    // Granted the output capabilities: the compiled module runs and prints.
     match rt.spawn(
         wat.as_bytes(),
         Capabilities {
+            print: true,
             print_int: true,
             ..Default::default()
         },
