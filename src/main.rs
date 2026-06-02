@@ -169,6 +169,7 @@ fn main() -> wasmtime::Result<()> {
     run_witchy("witchy records (named fields)", include_str!("../examples/records.witchy"));
     run_witchy("witchy expression evaluator (recursive ADT)", include_str!("../examples/eval.witchy"));
     run_witchy("witchy bank (records + lists + Result)", include_str!("../examples/bank.witchy"));
+    run_witchy("witchy higher-order functions (closures)", include_str!("../examples/higher_order.witchy"));
     run_witchy("witchy actors", include_str!("../examples/actors.witchy"));
     run_witchy("witchy filesystem capability", include_str!("../examples/files.witchy"));
     run_compiled(&mut rt, "witchy compiled to WASM (ints)", include_str!("../examples/compute.witchy"));
@@ -739,6 +740,14 @@ mod example_tests {
                 "remaining: 90",
                 "error: insufficient funds for bob"
             ]
+        );
+    }
+
+    #[test]
+    fn higher_order_example() {
+        assert_eq!(
+            interp(include_str!("../examples/higher_order.witchy")),
+            vec!["15", "81", "15", "120"]
         );
     }
 

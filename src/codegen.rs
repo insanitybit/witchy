@@ -477,6 +477,7 @@ impl Codegen {
             Expr::Try(_) => cerr("the `?` operator is not compiled to WASM yet"),
             Expr::For { .. } => cerr("`for` loops are not compiled to WASM yet"),
             Expr::Field { .. } => cerr("record field access is not compiled to WASM yet"),
+            Expr::Lambda { .. } => cerr("lambdas are not compiled to WASM yet"),
             Expr::List(items) => {
                 // A list is a record [len][elem0..]; reuse the $mk{N} helper with
                 // the length as the header slot.
@@ -842,6 +843,12 @@ fn compile_actor_with_tags(
             Type::Tuple(_) => {
                 return cerr(format!(
                     "actor field `{}`: tuple-typed fields are not compiled yet",
+                    field.name
+                ))
+            }
+            Type::Fn(..) => {
+                return cerr(format!(
+                    "actor field `{}`: function-typed fields are not compiled yet",
                     field.name
                 ))
             }

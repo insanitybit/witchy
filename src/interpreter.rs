@@ -34,6 +34,13 @@ pub enum Value {
     Net(Vec<String>),
     /// A connected socket — a handle into the interpreter's socket table.
     Socket(usize),
+    /// A first-class function (closure): its parameters, body, and the
+    /// environment captured where it was defined.
+    Closure {
+        params: Vec<Param>,
+        body: Block,
+        env: Box<Env>,
+    },
     Nil,
 }
 
@@ -94,6 +101,7 @@ impl fmt::Display for Value {
             Value::Dir(_) => write!(f, "<dir>"),
             Value::Net(_) => write!(f, "<net>"),
             Value::Socket(id) => write!(f, "<socket #{id}>"),
+            Value::Closure { params, .. } => write!(f, "<function/{}>", params.len()),
         }
     }
 }
@@ -152,7 +160,8 @@ enum Assign {
 }
 
 #[derive(Default)]
-struct Env {
+#[derive(Debug, Clone, PartialEq)]
+pub struct Env {
     /// Each binding carries whether it is mutable (`var`/`inout`/`sink`) or not
     /// (`let`). Mutable value semantics: bindings hold independent values.
     scopes: Vec<HashMap<String, (Value, bool)>>,
@@ -293,6 +302,31 @@ impl Interpreter {
         finish(self.eval_block(&func.body, &mut env))
     }
 
+    /// Apply a closure to already-evaluated arguments. The closure runs in its
+    /// captured environment (plus a fresh scope for the parameters), and its body
+    /// is a function boundary, so a `?` inside it returns from the closure.
+    fn apply_closure(&mut self, clo: Value, argvals: Vec<Value>) -> Result<Value, Flow> {
+        let Value::Closure { params, body, env } = clo else {
+            return err("attempted to call a non-function value");
+        };
+        if params.len() != argvals.len() {
+            return err(format!(
+                "function expects {} argument(s) but got {}",
+                params.len(),
+                argvals.len()
+            ));
+        }
+        let mut cenv = *env;
+        cenv.push();
+        for (p, v) in params.iter().zip(argvals) {
+            cenv.define(p.name.clone(), v, !matches!(p.convention, Convention::Let));
+        }
+        match self.eval_block(&body, &mut cenv) {
+            Ok(v) | Err(Flow::Return(v)) => Ok(v),
+            Err(e @ Flow::Err(_)) => Err(e),
+        }
+    }
+
     /// Evaluate a function call expression, honoring parameter conventions:
     /// `inout` arguments must be mutable variables and are written back after
     /// the call returns (Hylo-style move-in / move-out).
@@ -301,6 +335,11 @@ impl Interpreter {
             .iter()
             .map(|a| self.eval(a, env))
             .collect::<Result<Vec<_>, _>>()?;
+        // A local variable holding a function value (a closure): apply it.
+        if let Some(Value::Closure { .. }) = env.get(name) {
+            let clo = env.get(name).unwrap().clone();
+            return self.apply_closure(clo, argvals);
+        }
         if let Some(v) = self.call_builtin(name, &argvals)? {
             return Ok(v);
         }
@@ -704,6 +743,11 @@ impl Interpreter {
                     (UnOp::Not, other) => err(format!("cannot apply `!` to `{other}`")),
                 }
             }
+            Expr::Lambda { params, body } => Ok(Value::Closure {
+                params: params.clone(),
+                body: body.clone(),
+                env: Box::new(env.clone()),
+            }),
             Expr::Field { base, field } => {
                 let v = self.eval(base, env)?;
                 match v {
@@ -1386,6 +1430,39 @@ mod tests {
             }
         "#;
         assert_eq!(run(src).unwrap(), vec!["ok 7", "err boom"]);
+    }
+
+    #[test]
+    fn closure_captures_environment() {
+        let src = r#"
+            fn adder(n: Int) -> fn(Int) -> Int { fn(x: Int) { x + n } }
+            fn apply(f: fn(Int) -> Int, x: Int) -> Int { f(x) }
+            fn main(console: Console) {
+              let inc = adder(1)
+              let plus100 = adder(100)
+              print(console, int_to_string(apply(inc, 5)))
+              print(console, int_to_string(apply(plus100, 5)))
+            }
+        "#;
+        assert_eq!(run(src).unwrap(), vec!["6", "105"]);
+    }
+
+    #[test]
+    fn try_inside_lambda_returns_from_lambda() {
+        // `?` inside a lambda short-circuits the lambda, not the outer function.
+        let src = r#"
+            type Option { Some(a) None }
+            fn run(f: fn(Option(Int)) -> Option(Int), o: Option(Int)) -> Option(Int) { f(o) }
+            fn render(o: Option(Int)) -> String {
+              match o { Some(n) -> int_to_string(n)  None -> "none" }
+            }
+            fn main(console: Console) {
+              let g = fn(o: Option(Int)) { let n = o?  Some(n + 1) }
+              print(console, render(run(g, Some(7))))
+              print(console, render(run(g, None)))
+            }
+        "#;
+        assert_eq!(run(src).unwrap(), vec!["8", "none"]);
     }
 
     #[test]

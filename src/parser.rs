@@ -292,6 +292,21 @@ impl Parser {
     }
 
     fn ty(&mut self) -> Result<Type, ParseError> {
+        if self.eat(&Tok::Fn) {
+            // Function type: `fn(T1, T2) -> R`.
+            self.expect(&Tok::LParen)?;
+            let mut params = Vec::new();
+            while !self.at(&Tok::RParen) {
+                params.push(self.ty()?);
+                if !self.eat(&Tok::Comma) {
+                    break;
+                }
+            }
+            self.expect(&Tok::RParen)?;
+            self.expect(&Tok::RArrow)?;
+            let ret = self.ty()?;
+            return Ok(Type::Fn(params, Box::new(ret)));
+        }
         if self.eat(&Tok::LParen) {
             let mut types = Vec::new();
             while !self.at(&Tok::RParen) {
@@ -508,6 +523,15 @@ impl Parser {
                     iter: Box::new(iter),
                     body,
                 })
+            }
+            Tok::Fn => {
+                // Anonymous function: `fn(params) { body }`.
+                self.advance();
+                self.expect(&Tok::LParen)?;
+                let params = self.params()?;
+                self.expect(&Tok::RParen)?;
+                let body = self.block()?;
+                Ok(Expr::Lambda { params, body })
             }
             Tok::Match => self.match_expr(),
             Tok::Spawn => {

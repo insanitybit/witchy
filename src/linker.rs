@@ -166,6 +166,7 @@ fn rewrite_expr(e: &mut Expr, m: &str, imps: &[String], fns: &FnTable) -> Result
                 rewrite_block(b, m, imps, fns)?;
             }
         }
+        Expr::Lambda { body, .. } => rewrite_block(body, m, imps, fns)?,
         Expr::Block(b) => rewrite_block(b, m, imps, fns)?,
         Expr::While { cond, body } => {
             rewrite_expr(cond, m, imps, fns)?;
@@ -206,7 +207,10 @@ fn resolve_call(name: &str, m: &str, imps: &[String], fns: &FnTable) -> Result<S
     } else {
         match fns.get(m) {
             Some(s) if s.contains(name) => Ok(format!("{m}.{name}")),
-            _ => lerr(format!("unknown function `{name}` in module `{m}`")),
+            // Not a function defined here: it's a local binding being applied
+            // (e.g. a lambda passed as a parameter). Leave it unqualified; the
+            // type checker is the authority on whether the name is bound.
+            _ => Ok(name.to_string()),
         }
     }
 }

@@ -93,6 +93,8 @@ pub enum Convention {
 pub enum Type {
     Named(String, Vec<Type>),
     Tuple(Vec<Type>),
+    /// A function type: `fn(Int, String) -> Bool`.
+    Fn(Vec<Type>, Box<Type>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -139,6 +141,9 @@ pub enum Expr {
     /// Record field access: `point.x`. (Module-qualified calls `mod.func(...)`
     /// are parsed as `Call`, not `Field`.)
     Field { base: Box<Expr>, field: String },
+    /// An anonymous function (closure): `fn(x: Int) { x + 1 }`. Captures the
+    /// environment it is created in.
+    Lambda { params: Vec<Param>, body: Block },
     /// `e?` — propagate a `Result`/`Option`: unwrap `Ok`/`Some` to its payload,
     /// or short-circuit, returning the `Err`/`None` from the enclosing function.
     Try(Box<Expr>),

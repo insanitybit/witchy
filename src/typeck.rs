@@ -36,6 +36,8 @@ pub enum Ty {
     /// A user-declared type, possibly with type arguments: `Option(Int)`,
     /// `Result(String, Error)`. Non-generic types carry an empty argument list.
     Named(String, Vec<Ty>),
+    /// A function type: parameter types and a return type.
+    Fn(Vec<Ty>, Box<Ty>),
     Var(u32),
 }
 
@@ -77,6 +79,16 @@ impl fmt::Display for Ty {
                 }
                 Ok(())
             }
+            Ty::Fn(params, ret) => {
+                write!(f, "fn(")?;
+                for (i, t) in params.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{t}")?;
+                }
+                write!(f, ") -> {ret}")
+            }
             Ty::Var(_) => write!(f, "?"),
         }
     }
@@ -110,6 +122,12 @@ fn collect_type_params(t: &ast::Type, acc: &mut Vec<String>) {
             for x in ts {
                 collect_type_params(x, acc);
             }
+        }
+        ast::Type::Fn(params, ret) => {
+            for p in params {
+                collect_type_params(p, acc);
+            }
+            collect_type_params(ret, acc);
         }
         ast::Type::Named(name, args) => {
             if args.is_empty() && name.chars().next().is_some_and(|c| c.is_lowercase()) {
@@ -166,6 +184,12 @@ impl Checker {
             ast::Type::Tuple(ts) => {
                 return Ty::Tuple(ts.iter().map(|t| self.to_ty(t)).collect());
             }
+            ast::Type::Fn(params, ret) => {
+                return Ty::Fn(
+                    params.iter().map(|t| self.to_ty(t)).collect(),
+                    Box::new(self.to_ty(ret)),
+                );
+            }
         };
         match name.as_str() {
             "Int" => Ty::Int,
@@ -196,6 +220,10 @@ impl Checker {
             ast::Type::Tuple(ts) => {
                 Ty::Tuple(ts.iter().map(|t| self.to_ty_generic(t, vars)).collect())
             }
+            ast::Type::Fn(params, ret) => Ty::Fn(
+                params.iter().map(|t| self.to_ty_generic(t, vars)).collect(),
+                Box::new(self.to_ty_generic(ret, vars)),
+            ),
             ast::Type::Named(name, args) => match name.as_str() {
                 "Int" => Ty::Int,
                 "Float" => Ty::Float,
@@ -256,6 +284,10 @@ impl Checker {
             Ty::Named(n, args) => {
                 Ty::Named(n, args.iter().map(|x| self.subst_vars(x, map)).collect())
             }
+            Ty::Fn(params, ret) => Ty::Fn(
+                params.iter().map(|x| self.subst_vars(x, map)).collect(),
+                Box::new(self.subst_vars(&ret, map)),
+            ),
             other => other,
         }
     }
@@ -269,6 +301,10 @@ impl Checker {
             Ty::List(e) => Ty::List(Box::new(self.resolve(e))),
             Ty::Tuple(ts) => Ty::Tuple(ts.iter().map(|t| self.resolve(t)).collect()),
             Ty::Named(n, args) => Ty::Named(n.clone(), args.iter().map(|t| self.resolve(t)).collect()),
+            Ty::Fn(params, ret) => Ty::Fn(
+                params.iter().map(|t| self.resolve(t)).collect(),
+                Box::new(self.resolve(ret)),
+            ),
             _ => t.clone(),
         }
     }
@@ -294,6 +330,12 @@ impl Checker {
                     self.unify(p, q)?;
                 }
                 Ok(())
+            }
+            (Ty::Fn(xp, xr), Ty::Fn(yp, yr)) if xp.len() == yp.len() => {
+                for (p, q) in xp.iter().zip(yp) {
+                    self.unify(p, q)?;
+                }
+                self.unify(xr, yr)
             }
             _ if a == b => Ok(()),
             _ => terr(format!("expected `{a}`, found `{b}`")),
@@ -452,7 +494,56 @@ impl Checker {
                 self.lookup(name)
                     .ok_or_else(|| TypeError { message: format!("unbound variable `{name}`") })
             }
+            Expr::Lambda { params, body } => {
+                self.push();
+                let param_tys: Vec<Ty> = params
+                    .iter()
+                    .map(|p| match &p.ty {
+                        Some(t) => self.to_ty(t),
+                        None => self.fresh(),
+                    })
+                    .collect();
+                for (p, ty) in params.iter().zip(&param_tys) {
+                    self.define(p.name.clone(), ty.clone(), p.convention != Convention::Let);
+                }
+                let ret = self.infer_block(body)?;
+                self.pop();
+                Ok(Ty::Fn(param_tys, Box::new(ret)))
+            }
             Expr::Call { name, args } => {
+                // A local binding (parameter or `let`) holding a function value:
+                // apply it. Handles both an explicit `fn(..)->..` type and an as
+                // yet unconstrained variable (which we pin to a function type).
+                if let Some(vty) = self.lookup(name) {
+                    match self.resolve(&vty) {
+                        Ty::Fn(param_tys, ret) => {
+                            if param_tys.len() != args.len() {
+                                return terr(format!(
+                                    "`{name}` expects {} argument(s) but got {}",
+                                    param_tys.len(),
+                                    args.len()
+                                ));
+                            }
+                            for (arg, pty) in args.iter().zip(&param_tys) {
+                                let at = self.infer(arg)?;
+                                self.unify(pty, &at).map_err(|e| TypeError {
+                                    message: format!("in call to `{name}`: {}", e.message),
+                                })?;
+                            }
+                            return Ok(*ret);
+                        }
+                        Ty::Var(_) => {
+                            let mut argtys = Vec::new();
+                            for arg in args {
+                                argtys.push(self.infer(arg)?);
+                            }
+                            let ret = self.fresh();
+                            self.unify(&vty, &Ty::Fn(argtys, Box::new(ret.clone())))?;
+                            return Ok(ret);
+                        }
+                        _ => {} // a non-function local with this name: fall through
+                    }
+                }
                 let Some((params, ret)) = self.call_sig(name) else {
                     return terr(format!("call to unknown function `{name}`"));
                 };
@@ -1073,6 +1164,43 @@ mod tests {
             }
         "#;
         assert!(check_str(src).is_ok(), "{:?}", check_str(src));
+    }
+
+    #[test]
+    fn higher_order_and_lambda_type() {
+        let src = r#"
+            fn apply(f: fn(Int) -> Int, x: Int) -> Int { f(x) }
+            fn main(console: Console) {
+              print(console, int_to_string(apply(fn(n: Int) { n + 1 }, 10)))
+            }
+        "#;
+        assert!(check_str(src).is_ok(), "{:?}", check_str(src));
+    }
+
+    #[test]
+    fn generic_higher_order_function() {
+        // `apply` is generic over the value type `a`; the explicit fn-type
+        // parameter keeps the type parameters free.
+        let src = r#"
+            fn apply(f: fn(a) -> a, x: a) -> a { f(x) }
+            fn main(console: Console) {
+              print(console, apply(fn(s: String) { s }, "hi"))
+              print(console, int_to_string(apply(fn(n: Int) { n }, 5)))
+            }
+        "#;
+        assert!(check_str(src).is_ok(), "{:?}", check_str(src));
+    }
+
+    #[test]
+    fn rejects_lambda_argument_type_mismatch() {
+        // Passing a `fn(Int)->Int` where a `fn(String)->String` is required fails.
+        let src = r#"
+            fn run(f: fn(String) -> String, s: String) -> String { f(s) }
+            fn main(console: Console) {
+              print(console, run(fn(n: Int) { n + 1 }, "x"))
+            }
+        "#;
+        assert!(check_str(src).is_err());
     }
 
     #[test]
