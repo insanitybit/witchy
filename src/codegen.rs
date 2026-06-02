@@ -370,19 +370,37 @@ impl Codegen {
                     Ok(format!("    local.get ${name}\n"))
                 }
             }
-            Expr::Unary { op: UnOp::Neg, expr } => {
-                if self.kind_of(expr) == Kind::F64 {
-                    Ok(format!("{}    f64.neg\n", self.compile_expr(expr)?))
-                } else {
-                    Ok(format!("    i32.const 0\n{}    i32.sub\n", self.compile_expr(expr)?))
+            Expr::Unary { op, expr } => match op {
+                UnOp::Not => Ok(format!("{}    i32.eqz\n", self.compile_expr(expr)?)),
+                UnOp::Neg => {
+                    if self.kind_of(expr) == Kind::F64 {
+                        Ok(format!("{}    f64.neg\n", self.compile_expr(expr)?))
+                    } else {
+                        Ok(format!("    i32.const 0\n{}    i32.sub\n", self.compile_expr(expr)?))
+                    }
                 }
-            }
+            },
             Expr::Binary { op, lhs, rhs } => {
                 if *op == BinOp::Concat {
                     self.uses_concat = true;
                     let l = self.compile_expr(lhs)?;
                     let r = self.compile_expr(rhs)?;
                     return Ok(format!("{l}{r}    call $concat\n"));
+                }
+                // Short-circuit: `a && b` -> if a then b else 0; `a || b` -> if a then 1 else b.
+                if *op == BinOp::And {
+                    return Ok(format!(
+                        "{}    if (result i32)\n{}    else\n    i32.const 0\n    end\n",
+                        self.compile_expr(lhs)?,
+                        self.compile_expr(rhs)?
+                    ));
+                }
+                if *op == BinOp::Or {
+                    return Ok(format!(
+                        "{}    if (result i32)\n    i32.const 1\n    else\n{}    end\n",
+                        self.compile_expr(lhs)?,
+                        self.compile_expr(rhs)?
+                    ));
                 }
                 let float = self.kind_of(lhs) == Kind::F64;
                 let l = self.compile_expr(lhs)?;
@@ -408,7 +426,7 @@ impl Codegen {
                     (BinOp::Gt, true) => "f64.gt",
                     (BinOp::GtEq, false) => "i32.ge_s",
                     (BinOp::GtEq, true) => "f64.ge",
-                    (BinOp::Concat, _) => unreachable!(),
+                    (BinOp::Concat | BinOp::And | BinOp::Or, _) => unreachable!("handled above"),
                 };
                 Ok(format!("{l}{r}    {opcode}\n"))
             }
@@ -1158,6 +1176,20 @@ mod tests {
             fn main() -> Int { let a = double(21) let b = fib(10) a + b }
         "#;
         assert_eq!(run_int(src), 97);
+    }
+
+    #[test]
+    fn compiles_boolean_ops() {
+        let src = r#"
+            fn in_range(n: Int) -> Int { if n > 0 && n < 10 { 1 } else { 0 } }
+            fn main() -> Int { in_range(5) + in_range(50) + in_range(-3) }
+        "#;
+        assert_eq!(run_int(src), 1); // 1 + 0 + 0
+    }
+
+    #[test]
+    fn compiles_boolean_not() {
+        assert_eq!(run_int("fn main() -> Int { if !(1 == 2) { 7 } else { 0 } }"), 7);
     }
 
     #[test]

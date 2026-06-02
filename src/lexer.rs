@@ -60,6 +60,9 @@ pub enum Tok {
     Pipe,   // |>
     LArrow, // <-
     RArrow, // ->
+    AndAnd, // &&
+    OrOr,   // ||
+    Bang,   // !
 
     Eof,
 }
@@ -114,6 +117,9 @@ impl fmt::Display for Tok {
             Pipe => write!(f, "|>"),
             LArrow => write!(f, "<-"),
             RArrow => write!(f, "->"),
+            AndAnd => write!(f, "&&"),
+            OrOr => write!(f, "||"),
+            Bang => write!(f, "!"),
             Eof => write!(f, "end of input"),
         }
     }
@@ -357,6 +363,15 @@ impl Lexer {
                 self.bump();
                 Tok::Pipe
             }
+            ('&', Some('&')) => {
+                self.bump();
+                Tok::AndAnd
+            }
+            ('|', Some('|')) => {
+                self.bump();
+                Tok::OrOr
+            }
+            ('!', _) => Tok::Bang,
             ('=', _) => Tok::Eq,
             ('<', _) => Tok::Lt,
             ('>', _) => Tok::Gt,

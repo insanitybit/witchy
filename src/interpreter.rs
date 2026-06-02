@@ -584,8 +584,27 @@ impl Interpreter {
                     (UnOp::Neg, Value::Int(n)) => Ok(Value::Int(-n)),
                     (UnOp::Neg, Value::Float(x)) => Ok(Value::Float(-x)),
                     (UnOp::Neg, other) => err(format!("cannot negate `{other}`")),
+                    (UnOp::Not, Value::Bool(b)) => Ok(Value::Bool(!b)),
+                    (UnOp::Not, other) => err(format!("cannot apply `!` to `{other}`")),
                 }
             }
+            // `&&`/`||` short-circuit, so the right side isn't always evaluated.
+            Expr::Binary { op: BinOp::And, lhs, rhs } => match self.eval(lhs, env)? {
+                Value::Bool(false) => Ok(Value::Bool(false)),
+                Value::Bool(true) => match self.eval(rhs, env)? {
+                    Value::Bool(b) => Ok(Value::Bool(b)),
+                    other => err(format!("`&&` expects Bool operands, got `{other}`")),
+                },
+                other => err(format!("`&&` expects Bool operands, got `{other}`")),
+            },
+            Expr::Binary { op: BinOp::Or, lhs, rhs } => match self.eval(lhs, env)? {
+                Value::Bool(true) => Ok(Value::Bool(true)),
+                Value::Bool(false) => match self.eval(rhs, env)? {
+                    Value::Bool(b) => Ok(Value::Bool(b)),
+                    other => err(format!("`||` expects Bool operands, got `{other}`")),
+                },
+                other => err(format!("`||` expects Bool operands, got `{other}`")),
+            },
             Expr::Binary { op, lhs, rhs } => {
                 let l = self.eval(lhs, env)?;
                 let r = self.eval(rhs, env)?;
@@ -689,6 +708,7 @@ fn eval_binary(op: BinOp, l: Value, r: Value) -> Result<Value, RuntimeError> {
             };
             Ok(Value::Bool(result))
         }
+        And | Or => unreachable!("&&/|| are short-circuited in eval"),
     }
 }
 
@@ -1082,6 +1102,37 @@ mod tests {
             fn main(console: Console) { print(console, to_string(half(7.0))) }
         "#;
         assert_eq!(run(src).unwrap(), vec!["3.5"]);
+    }
+
+    #[test]
+    fn boolean_operators() {
+        let src = r#"
+            fn classify(n: Int) -> String {
+              if n > 0 && n < 10 { "small positive" }
+              else if n <= 0 || n >= 100 { "out of range" }
+              else { "other" }
+            }
+            fn main(console: Console) {
+              print(console, classify(5))
+              print(console, classify(-1))
+              print(console, classify(50))
+            }
+        "#;
+        assert_eq!(
+            run(src).unwrap(),
+            vec!["small positive", "out of range", "other"]
+        );
+    }
+
+    #[test]
+    fn boolean_not_and_short_circuit() {
+        let src = r#"
+            fn is_zero(n: Int) -> Bool { n == 0 }
+            fn main(console: Console) {
+              if !is_zero(5) { print(console, "nonzero") } else { print(console, "zero") }
+            }
+        "#;
+        assert_eq!(run(src).unwrap(), vec!["nonzero"]);
     }
 
     #[test]

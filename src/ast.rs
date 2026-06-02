@@ -147,6 +147,7 @@ pub enum Expr {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnOp {
     Neg,
+    Not,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -162,6 +163,8 @@ pub enum BinOp {
     LtEq,
     Gt,
     GtEq,
+    And,
+    Or,
 }
 
 #[derive(Debug, Clone, PartialEq)]

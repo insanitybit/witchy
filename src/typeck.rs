@@ -16,7 +16,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 use crate::ast::{
-    self, ActorDef, Block, Convention, Expr, Function, Item, MatchArm, Module, Pattern, Stmt,
+    self, ActorDef, Block, Convention, Expr, Function, Item, MatchArm, Module, Pattern, Stmt, UnOp,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -333,17 +333,23 @@ impl Checker {
                     Ok(self.fresh())
                 }
             }
-            Expr::Unary { expr, .. } => {
+            Expr::Unary { op, expr } => {
                 let t = self.infer(expr)?;
-                match self.resolve(&t) {
-                    Ty::Float => {
-                        self.unify(&t, &Ty::Float)?;
-                        Ok(Ty::Float)
+                match op {
+                    UnOp::Not => {
+                        self.unify(&Ty::Bool, &t)?;
+                        Ok(Ty::Bool)
                     }
-                    _ => {
-                        self.unify(&t, &Ty::Int)?;
-                        Ok(Ty::Int)
-                    }
+                    UnOp::Neg => match self.resolve(&t) {
+                        Ty::Float => {
+                            self.unify(&t, &Ty::Float)?;
+                            Ok(Ty::Float)
+                        }
+                        _ => {
+                            self.unify(&t, &Ty::Int)?;
+                            Ok(Ty::Int)
+                        }
+                    },
                 }
             }
             Expr::Binary { op, lhs, rhs } => self.infer_binary(*op, lhs, rhs),
@@ -421,6 +427,11 @@ impl Checker {
             }
             Lt | LtEq | Gt | GtEq => {
                 self.unify(&lt, &rt)?;
+                Ok(Ty::Bool)
+            }
+            And | Or => {
+                self.unify(&Ty::Bool, &lt)?;
+                self.unify(&Ty::Bool, &rt)?;
                 Ok(Ty::Bool)
             }
         }
@@ -656,6 +667,11 @@ mod tests {
         "#;
         let e = check_str(src).unwrap_err();
         assert!(e.contains("argument"));
+    }
+
+    #[test]
+    fn rejects_and_on_non_bool() {
+        assert!(check_str("fn f() -> Bool { 1 && true }").is_err());
     }
 
     #[test]

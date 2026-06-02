@@ -341,6 +341,13 @@ impl Parser {
                 expr: Box::new(expr),
             });
         }
+        if self.eat(&Tok::Bang) {
+            let expr = self.prefix()?;
+            return Ok(Expr::Unary {
+                op: UnOp::Not,
+                expr: Box::new(expr),
+            });
+        }
         self.atom()
     }
 
@@ -545,9 +552,11 @@ fn infix_bp(t: &Tok) -> Option<(u8, u8)> {
     use Tok::*;
     Some(match t {
         Pipe => (1, 2),
-        EqEq | NotEq | Lt | LtEq | Gt | GtEq => (3, 4),
-        Plus | Minus | Concat => (5, 6),
-        Star | Slash => (7, 8),
+        OrOr => (3, 4),
+        AndAnd => (5, 6),
+        EqEq | NotEq | Lt | LtEq | Gt | GtEq => (7, 8),
+        Plus | Minus | Concat => (9, 10),
+        Star | Slash => (11, 12),
         _ => return None,
     })
 }
@@ -565,6 +574,8 @@ fn bin_op(t: &Tok) -> BinOp {
         Tok::LtEq => BinOp::LtEq,
         Tok::Gt => BinOp::Gt,
         Tok::GtEq => BinOp::GtEq,
+        Tok::AndAnd => BinOp::And,
+        Tok::OrOr => BinOp::Or,
         other => unreachable!("not a binary operator: {other:?}"),
     }
 }
