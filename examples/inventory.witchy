@@ -1,0 +1,25 @@
+// Iterating a Dict. `values` walks the values and `pairs` walks `(key, value)`
+// entries (destructured with `let (k, v) = ...`), so you can aggregate over a
+// map's contents — not just look keys up.
+
+fn main(console: Console) {
+  var prices = dict_new()
+  prices = insert(prices, "apple", 3)
+  prices = insert(prices, "bread", 2)
+  prices = insert(prices, "milk", 4)
+
+  var total = 0
+  for v in values(prices) {
+    total = total + v
+  }
+  print(console, "total = " <> int_to_string(total))
+
+  var pricey = 0
+  for entry in pairs(prices) {
+    let (name, price) = entry
+    if price > 2 {
+      pricey = pricey + 1
+    }
+  }
+  print(console, "over 2: " <> int_to_string(pricey))
+}

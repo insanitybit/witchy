@@ -600,6 +600,22 @@ impl Interpreter {
                 }
                 _ => err("keys expects a Dict"),
             },
+            "values" => match args {
+                [Value::Dict(entries)] => {
+                    Ok(Some(Value::List(entries.iter().map(|(_, v)| v.clone()).collect())))
+                }
+                _ => err("values expects a Dict"),
+            },
+            // Each entry as a `(key, value)` tuple, in insertion order.
+            "pairs" => match args {
+                [Value::Dict(entries)] => Ok(Some(Value::List(
+                    entries
+                        .iter()
+                        .map(|(k, v)| Value::Tuple(vec![k.clone(), v.clone()]))
+                        .collect(),
+                ))),
+                _ => err("pairs expects a Dict"),
+            },
             "size" => match args {
                 [Value::Dict(entries)] => Ok(Some(Value::Int(entries.len() as i64))),
                 _ => err("size expects a Dict"),
@@ -1618,6 +1634,29 @@ mod tests {
             }
         "#;
         assert!(run_capped(src, 100_000).is_ok());
+    }
+
+    #[test]
+    fn dict_values_and_pairs_iterate() {
+        let src = r#"
+            fn main(console: Console) {
+              var d = dict_new()
+              d = insert(d, "a", 10)
+              d = insert(d, "b", 20)
+              var sum = 0
+              for v in values(d) {
+                sum = sum + v
+              }
+              print(console, int_to_string(sum))           // 30
+              var report = ""
+              for e in pairs(d) {
+                let (k, v) = e
+                report = report <> k <> "=" <> int_to_string(v) <> ";"
+              }
+              print(console, report)                        // a=10;b=20;
+            }
+        "#;
+        assert_eq!(run(src).unwrap(), vec!["30", "a=10;b=20;"]);
     }
 
     #[test]

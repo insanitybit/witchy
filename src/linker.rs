@@ -61,6 +61,8 @@ const BUILTINS: &[&str] = &[
     "get_or",
     "has",
     "keys",
+    "values",
+    "pairs",
     "size",
     "send",
     "read",

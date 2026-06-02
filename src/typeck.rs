@@ -456,6 +456,18 @@ impl Checker {
                 let d = Ty::Named("Dict".into(), vec![k.clone(), v]);
                 Some((vec![d], Ty::List(Box::new(k))))
             }
+            "values" => {
+                let k = self.fresh();
+                let v = self.fresh();
+                let d = Ty::Named("Dict".into(), vec![k, v.clone()]);
+                Some((vec![d], Ty::List(Box::new(v))))
+            }
+            "pairs" => {
+                let k = self.fresh();
+                let v = self.fresh();
+                let d = Ty::Named("Dict".into(), vec![k.clone(), v.clone()]);
+                Some((vec![d], Ty::List(Box::new(Ty::Tuple(vec![k, v])))))
+            }
             "size" => {
                 let k = self.fresh();
                 let v = self.fresh();
