@@ -144,6 +144,7 @@ impl Codegen {
                 arms.first().map(|a| self.kind_of(&a.body)).unwrap_or(Kind::I32)
             }
             Expr::Call { name, .. } => match name.as_str() {
+                "int_to_float" => Kind::F64,
                 "to_string" | "int_to_string" | "length" | "at" | "print" => Kind::I32,
                 other => self.fn_ret.get(other).copied().unwrap_or(Kind::I32),
             },
@@ -611,6 +612,15 @@ impl Codegen {
             ("string_length", 1) => {
                 let arg = self.compile_expr(&args[0])?;
                 Ok(format!("{arg}    i32.load\n"))
+            }
+            ("int_to_float", 1) => {
+                Ok(format!("{}    f64.convert_i32_s\n", self.compile_expr(&args[0])?))
+            }
+            ("float_to_int", 1) => {
+                Ok(format!("{}    i32.trunc_f64_s\n", self.compile_expr(&args[0])?))
+            }
+            ("string_to_int", _) => {
+                cerr("string_to_int runs in the interpreter (WASM string parsing is future)")
             }
             ("to_upper", _) | ("to_lower", _) | ("trim", _) | ("starts_with", _) => cerr(
                 "string stdlib functions run in the interpreter; WASM string ops are future",
@@ -1203,6 +1213,15 @@ mod tests {
             fn main() -> Int { let a = double(21) let b = fib(10) a + b }
         "#;
         assert_eq!(run_int(src), 97);
+    }
+
+    #[test]
+    fn compiles_int_float_conversions() {
+        // int_to_float(7) / 2.0 = 3.5; float_to_int(3.5) = 3
+        assert_eq!(
+            run_int("fn main() -> Int { float_to_int(int_to_float(7) / 2.0) }"),
+            3
+        );
     }
 
     #[test]

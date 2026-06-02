@@ -360,6 +360,22 @@ impl Interpreter {
                 }
                 _ => err("starts_with expects two Strings"),
             },
+            // Conversions.
+            "int_to_float" => match one(args)? {
+                Value::Int(n) => Ok(Some(Value::Float(n as f64))),
+                other => err(format!("int_to_float expects an Int, got `{other}`")),
+            },
+            "float_to_int" => match one(args)? {
+                Value::Float(x) => Ok(Some(Value::Int(x as i64))),
+                other => err(format!("float_to_int expects a Float, got `{other}`")),
+            },
+            "string_to_int" => match one(args)? {
+                Value::Str(s) => match s.trim().parse::<i64>() {
+                    Ok(n) => Ok(Some(Value::Int(n))),
+                    Err(_) => err(format!("cannot parse `{s}` as an Int")),
+                },
+                other => err(format!("string_to_int expects a String, got `{other}`")),
+            },
             "length" => match args {
                 [Value::List(items)] => Ok(Some(Value::Int(items.len() as i64))),
                 _ => err("length expects a list"),
@@ -1165,6 +1181,18 @@ mod tests {
             run(src).unwrap(),
             vec!["small positive", "out of range", "other"]
         );
+    }
+
+    #[test]
+    fn conversions() {
+        let src = r#"
+            fn main(console: Console) {
+              print(console, to_string(int_to_float(7)))
+              print(console, int_to_string(float_to_int(3.9)))
+              print(console, int_to_string(string_to_int("42")))
+            }
+        "#;
+        assert_eq!(run(src).unwrap(), vec!["7", "3", "42"]);
     }
 
     #[test]

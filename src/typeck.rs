@@ -180,6 +180,9 @@ impl Checker {
             "string_length" => Some((vec![Ty::String], Ty::Int)),
             "to_upper" | "to_lower" | "trim" => Some((vec![Ty::String], Ty::String)),
             "starts_with" => Some((vec![Ty::String, Ty::String], Ty::Bool)),
+            "int_to_float" => Some((vec![Ty::Int], Ty::Float)),
+            "float_to_int" => Some((vec![Ty::Float], Ty::Int)),
+            "string_to_int" => Some((vec![Ty::String], Ty::Int)),
             "to_string" => {
                 let a = self.fresh();
                 Some((vec![a], Ty::String))
