@@ -388,12 +388,16 @@ impl Checker {
             "int_to_string" => Some((vec![Ty::Int], Ty::String)),
             "string_length" => Some((vec![Ty::String], Ty::Int)),
             "to_upper" | "to_lower" | "trim" => Some((vec![Ty::String], Ty::String)),
-            "starts_with" | "contains" => Some((vec![Ty::String, Ty::String], Ty::Bool)),
+            "starts_with" | "contains" | "ends_with" => {
+                Some((vec![Ty::String, Ty::String], Ty::Bool))
+            }
+            "index_of" => Some((vec![Ty::String, Ty::String], Ty::Int)),
             "split" => Some((
                 vec![Ty::String, Ty::String],
                 Ty::List(Box::new(Ty::String)),
             )),
             "replace" => Some((vec![Ty::String, Ty::String, Ty::String], Ty::String)),
+            "substring" => Some((vec![Ty::String, Ty::Int, Ty::Int], Ty::String)),
             "int_to_float" => Some((vec![Ty::Int], Ty::Float)),
             "float_to_int" => Some((vec![Ty::Float], Ty::Int)),
             "string_to_int" => Some((vec![Ty::String], Ty::Int)),

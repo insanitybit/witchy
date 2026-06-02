@@ -517,6 +517,41 @@ impl Interpreter {
                 }
                 _ => err("replace expects three Strings"),
             },
+            "ends_with" => match args {
+                [Value::Str(s), Value::Str(suffix)] => {
+                    Ok(Some(Value::Bool(s.ends_with(suffix.as_str()))))
+                }
+                _ => err("ends_with expects two Strings"),
+            },
+            // Char index of the first occurrence of `sub`, or -1 if absent.
+            "index_of" => match args {
+                [Value::Str(s), Value::Str(sub)] => {
+                    let idx = s
+                        .find(sub.as_str())
+                        .map(|byte| s[..byte].chars().count() as i64)
+                        .unwrap_or(-1);
+                    Ok(Some(Value::Int(idx)))
+                }
+                _ => err("index_of expects two Strings"),
+            },
+            // Characters in the half-open range [start, end), clamped to bounds
+            // (counted by Unicode scalar, so slicing never splits a character).
+            "substring" => match args {
+                [Value::Str(s), Value::Int(start), Value::Int(end)] => {
+                    let chars: Vec<char> = s.chars().collect();
+                    let lo = (*start).max(0) as usize;
+                    let hi = (*end).max(0) as usize;
+                    let lo = lo.min(chars.len());
+                    let hi = hi.min(chars.len());
+                    let out: String = if lo < hi {
+                        chars[lo..hi].iter().collect()
+                    } else {
+                        String::new()
+                    };
+                    Ok(Some(Value::Str(out)))
+                }
+                _ => err("substring expects a String and two Int indices"),
+            },
             // Conversions.
             "int_to_float" => match one(args)? {
                 Value::Int(n) => Ok(Some(Value::Float(n as f64))),
@@ -1708,6 +1743,37 @@ mod tests {
             run(src).unwrap(),
             vec!["9", "2", "0", "2", "1", "true", "2"]
         );
+    }
+
+    #[test]
+    fn string_slicing_and_search() {
+        let src = r#"
+            fn main(console: Console) {
+              let s = "abcdef"
+              print(console, substring(s, 1, 4))       // bcd
+              print(console, substring(s, 4, 100))     // ef (clamped)
+              print(console, substring(s, 3, 1))       // "" (empty)
+              print(console, int_to_string(index_of(s, "cd")))  // 2
+              print(console, int_to_string(index_of(s, "z")))   // -1
+              print(console, to_string(ends_with(s, "ef")))     // true
+            }
+        "#;
+        assert_eq!(
+            run(src).unwrap(),
+            vec!["bcd", "ef", "", "2", "-1", "true"]
+        );
+    }
+
+    #[test]
+    fn substring_is_char_based_not_byte_based() {
+        // A multi-byte char must count as one position, not its byte length.
+        let src = r#"
+            fn main(console: Console) {
+              let s = "héllo"
+              print(console, substring(s, 0, 2))   // hé
+            }
+        "#;
+        assert_eq!(run(src).unwrap(), vec!["hé"]);
     }
 
     #[test]

@@ -1,0 +1,15 @@
+// String slicing and search: split a `key=value` setting using `index_of` to
+// find the separator and `substring` to take each side. `substring` is char-
+// based and clamps to bounds, so it never panics on a bad index.
+
+fn main(console: Console) {
+  let setting = "timeout=30"
+  let eq = index_of(setting, "=")
+
+  let key = substring(setting, 0, eq)
+  let value = substring(setting, eq + 1, string_length(setting))
+
+  print(console, key)
+  print(console, value)
+  print(console, to_string(ends_with(setting, "30")))
+}
