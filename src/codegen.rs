@@ -67,6 +67,8 @@ struct Codegen {
     mk_arities: HashSet<usize>,
     /// Counter for unique `match` block labels.
     next_label: u32,
+    /// Whether the string-equality helper `$str_eq` is needed (string patterns).
+    uses_str_eq: bool,
 }
 
 impl Codegen {
@@ -84,6 +86,7 @@ impl Codegen {
             ctors: HashMap::new(),
             mk_arities: HashSet::new(),
             next_label: 0,
+            uses_str_eq: false,
         }
     }
 
@@ -138,6 +141,9 @@ impl Codegen {
         }
         if self.uses_int_to_string {
             s.push_str(INT_TO_STRING_WAT);
+        }
+        if self.uses_str_eq {
+            s.push_str(STR_EQ_WAT);
         }
         let mut arities: Vec<usize> = self.mk_arities.iter().copied().collect();
         arities.sort_unstable();
@@ -327,7 +333,7 @@ impl Codegen {
         // guard (skip on failure), run the body and branch out with its value.
         let mut s = format!("    block $d{id} (result i32)\n");
         for (i, arm) in arms.iter().enumerate() {
-            let (cond, binds) = self.arm_cond_binds(&scrut, &arm.pattern)?;
+            let (cond, binds) = self.pattern_match(&scrut, &arm.pattern)?;
             s.push_str(&format!("    block $a{id}_{i}\n"));
             s.push_str(&cond);
             s.push_str(&format!("    i32.eqz\n    br_if $a{id}_{i}\n"));
@@ -343,26 +349,35 @@ impl Codegen {
         Ok(s)
     }
 
-    /// For one pattern: the condition instructions (leaving an i32 on the stack)
-    /// and the binding instructions to run when it matches.
-    fn arm_cond_binds(
-        &self,
-        scrut: &str,
+    /// Test a pattern against the value produced by `value` (an i32-producing
+    /// instruction sequence). Returns the condition instructions (leaving an
+    /// i32 on the stack) and the binding instructions to run once it matches.
+    /// Conditions short-circuit so a mismatched constructor's fields are never
+    /// dereferenced. Recursive, so constructor patterns may nest.
+    fn pattern_match(
+        &mut self,
+        value: &str,
         pat: &Pattern,
     ) -> Result<(String, String), CodegenError> {
+        const TRUE: &str = "    i32.const 1\n";
         Ok(match pat {
-            Pattern::Wildcard => ("    i32.const 1\n".to_string(), String::new()),
-            Pattern::Int(k) => (format!("{scrut}    i32.const {k}\n    i32.eq\n"), String::new()),
+            Pattern::Wildcard => (TRUE.to_string(), String::new()),
+            Pattern::Int(k) => (format!("{value}    i32.const {k}\n    i32.eq\n"), String::new()),
             Pattern::Bool(b) => (
-                format!("{scrut}    i32.const {}\n    i32.eq\n", if *b { 1 } else { 0 }),
+                format!("{value}    i32.const {}\n    i32.eq\n", if *b { 1 } else { 0 }),
                 String::new(),
             ),
             Pattern::Var(name) => (
-                "    i32.const 1\n".to_string(),
-                format!("{scrut}    local.set ${name}\n"),
+                TRUE.to_string(),
+                format!("{value}    local.set ${name}\n"),
             ),
-            Pattern::Str(_) => {
-                return cerr("string patterns in `match` are not compiled to WASM yet")
+            Pattern::Str(s) => {
+                self.uses_str_eq = true;
+                let off = self.intern(s);
+                (
+                    format!("{value}    i32.const {off}\n    call $str_eq\n"),
+                    String::new(),
+                )
             }
             Pattern::Ctor { name, args } => {
                 let Some(&(tag, nfields)) = self.ctors.get(name) else {
@@ -374,22 +389,22 @@ impl Codegen {
                         args.len()
                     ));
                 }
-                let cond = format!("{scrut}    i32.load\n    i32.const {tag}\n    i32.eq\n");
+                let mut field_conds = Vec::new();
                 let mut binds = String::new();
                 for (i, sub) in args.iter().enumerate() {
-                    match sub {
-                        Pattern::Wildcard => {}
-                        Pattern::Var(subname) => binds.push_str(&format!(
-                            "{scrut}    i32.const {}\n    i32.add\n    i32.load\n    local.set ${subname}\n",
-                            4 + 4 * i
-                        )),
-                        _ => {
-                            return cerr(
-                                "only variable/wildcard fields in constructor patterns are compiled yet",
-                            )
-                        }
+                    let field_value =
+                        format!("{value}    i32.const {}\n    i32.add\n    i32.load\n", 4 + 4 * i);
+                    let (sub_cond, sub_binds) = self.pattern_match(&field_value, sub)?;
+                    if sub_cond != TRUE {
+                        field_conds.push(sub_cond);
                     }
+                    binds.push_str(&sub_binds);
                 }
+                // Only inspect fields once the tag has matched (short-circuit).
+                let inner = and_chain(&field_conds);
+                let cond = format!(
+                    "{value}    i32.load\n    i32.const {tag}\n    i32.eq\n    if (result i32)\n{inner}    else\n    i32.const 0\n    end\n"
+                );
                 (cond, binds)
             }
         })
@@ -607,6 +622,36 @@ fn data_segment(off: u32, s: &str) -> String {
     let escaped: String = bytes.iter().map(|b| format!("\\{b:02x}")).collect();
     format!("  (data (i32.const {off}) \"{escaped}\")\n")
 }
+
+/// Short-circuiting AND of a list of i32-producing condition sequences.
+fn and_chain(conds: &[String]) -> String {
+    match conds.split_first() {
+        None => "    i32.const 1\n".to_string(),
+        Some((first, rest)) => {
+            let rest = and_chain(rest);
+            format!("{first}    if (result i32)\n{rest}    else\n    i32.const 0\n    end\n")
+        }
+    }
+}
+
+/// String equality over two length-prefixed records `[len][bytes]`.
+const STR_EQ_WAT: &str = r#"  (func $str_eq (param $a i32) (param $b i32) (result i32)
+    (local $len i32) (local $i i32)
+    (if (i32.ne (i32.load (local.get $a)) (i32.load (local.get $b)))
+      (then (return (i32.const 0))))
+    (local.set $len (i32.load (local.get $a)))
+    (local.set $i (i32.const 0))
+    (block $done
+      (loop $l
+        (br_if $done (i32.ge_s (local.get $i) (local.get $len)))
+        (if (i32.ne
+              (i32.load8_u (i32.add (i32.add (local.get $a) (i32.const 4)) (local.get $i)))
+              (i32.load8_u (i32.add (i32.add (local.get $b) (i32.const 4)) (local.get $i))))
+          (then (return (i32.const 0))))
+        (local.set $i (i32.add (local.get $i) (i32.const 1)))
+        (br $l)))
+    (i32.const 1))
+"#;
 
 /// Allocation helper for an N-field constructor record `[tag][f0..f{N-1}]`.
 fn mk_helper(n: usize) -> String {
@@ -866,6 +911,41 @@ mod tests {
             fn main() -> Int { area(Circle(10)) + area(Square(5)) }
         "#;
         assert_eq!(run_int(src), 325);
+    }
+
+    #[test]
+    fn compiles_nested_constructor_patterns() {
+        let src = r#"
+            type Point { Point(Int, Int) }
+            type Shape { Dot(Point) Pair(Point, Point) }
+            fn x_of(s: Shape) -> Int {
+              match s {
+                Dot(Point(x, _)) -> x
+                Pair(Point(x, _), _) -> x
+              }
+            }
+            fn main() -> Int {
+              x_of(Dot(Point(7, 9))) + x_of(Pair(Point(3, 0), Point(0, 0)))
+            }
+        "#;
+        assert_eq!(run_int(src), 10); // 7 + 3
+    }
+
+    #[test]
+    fn compiles_string_patterns() {
+        let src = r#"
+            fn classify(s: String) -> Int {
+              match s {
+                "yes" -> 1
+                "no" -> 0
+                _ -> 0 - 1
+              }
+            }
+            fn main() -> Int {
+              classify("yes") + classify("no") + classify("maybe")
+            }
+        "#;
+        assert_eq!(run_int(src), 0); // 1 + 0 + (-1)
     }
 
     #[test]
