@@ -783,6 +783,7 @@ pub fn run(src: &str) -> Result<Vec<String>, RuntimeError> {
 }
 
 /// Run with a chosen root directory for the root `Dir` capability.
+#[allow(dead_code)]
 pub fn run_in(src: &str, root: impl AsRef<Path>) -> Result<Vec<String>, RuntimeError> {
     run_with(src, root, Vec::new())
 }

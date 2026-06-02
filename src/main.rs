@@ -89,6 +89,22 @@ fn sender_src(target: u32) -> String {
 }
 
 fn main() -> wasmtime::Result<()> {
+    // `witchy <file.witchy>` runs a program; with no argument, run the demos.
+    if let Some(path) = std::env::args().nth(1) {
+        match execute_file(&path) {
+            Ok(output) => {
+                for line in output {
+                    println!("{line}");
+                }
+            }
+            Err(e) => {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
+        }
+        return Ok(());
+    }
+
     let mut rt = Runtime::new()?;
 
     println!("== M2: capability gating ==");
@@ -163,6 +179,50 @@ fn main() -> wasmtime::Result<()> {
 
     println!("\nspike OK");
     Ok(())
+}
+
+/// Run a `.witchy` file: resolve `import X` to sibling `X.witchy` files
+/// (transitively), link, type-check, then run with root capabilities (Console
+/// and a Dir rooted at the file's directory). Returns the program's output or a
+/// diagnostic.
+fn execute_file(path: &str) -> Result<Vec<String>, String> {
+    use std::collections::{HashSet, VecDeque};
+    use std::path::{Path, PathBuf};
+
+    let entry_path = Path::new(path);
+    let dir: &Path = entry_path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let entry_stem = entry_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .ok_or_else(|| format!("invalid file name: {path}"))?
+        .to_string();
+
+    let mut modules: Vec<(String, ast::Module)> = Vec::new();
+    let mut loaded: HashSet<String> = HashSet::new();
+    let mut queue: VecDeque<(String, PathBuf)> = VecDeque::new();
+    queue.push_back((entry_stem.clone(), entry_path.to_path_buf()));
+
+    while let Some((name, p)) = queue.pop_front() {
+        if !loaded.insert(name.clone()) {
+            continue; // already loaded (cycle-safe)
+        }
+        let src = std::fs::read_to_string(&p)
+            .map_err(|e| format!("cannot read `{}`: {e}", p.display()))?;
+        let module = parser::parse_module(&src).map_err(|e| format!("{name}: {e}"))?;
+        for imp in &module.imports {
+            if !loaded.contains(imp) {
+                queue.push_back((imp.clone(), dir.join(format!("{imp}.witchy"))));
+            }
+        }
+        modules.push((name, module));
+    }
+
+    let linked = linker::link(modules, &entry_stem).map_err(|e| e.to_string())?;
+    typeck::check(&linked).map_err(|e| e.to_string())?;
+    interpreter::run_module(linked, dir, Vec::new()).map_err(|e| e.to_string())
 }
 
 /// Parse, link, and run a multi-module program through the interpreter.
@@ -427,6 +487,27 @@ mod example_tests {
             interp(include_str!("../examples/files.witchy")),
             vec!["hello from a sandboxed Dir capability"]
         );
+    }
+
+    #[test]
+    fn runs_a_file_with_file_based_imports() {
+        let dir = std::env::temp_dir().join(format!("witchy_cli_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("strutil.witchy"),
+            r#"fn shout(s: String) -> String { "HI " <> s }"#,
+        )
+        .unwrap();
+        let app = dir.join("app.witchy");
+        std::fs::write(
+            &app,
+            "import strutil\nfn main(console: Console) { print(console, strutil.shout(\"x\")) }",
+        )
+        .unwrap();
+
+        let out = crate::execute_file(app.to_str().unwrap()).unwrap();
+        assert_eq!(out, vec!["HI x"]);
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
