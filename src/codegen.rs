@@ -169,6 +169,12 @@ impl Codegen {
                     self.infer_locals_expr(value);
                 }
                 Stmt::Assign { value, .. } => self.infer_locals_expr(value),
+                Stmt::LetTuple { names, value } => {
+                    for n in names {
+                        self.locals.insert(n.clone(), Kind::I32);
+                    }
+                    self.infer_locals_expr(value);
+                }
                 Stmt::Expr(e) => self.infer_locals_expr(e),
             }
         }
@@ -342,6 +348,9 @@ impl Codegen {
                     }
                     tail_is_value = false;
                 }
+                Stmt::LetTuple { .. } => {
+                    return cerr("tuple destructure is not compiled to WASM yet");
+                }
                 Stmt::Expr(e) => {
                     out.push_str(&self.compile_expr(e)?);
                     if i == last {
@@ -464,6 +473,7 @@ impl Codegen {
             }
             Expr::Call { name, args } => self.compile_call(name, args),
             Expr::Float(x) => Ok(format!("    f64.const {x}\n")),
+            Expr::Tuple(_) => cerr("tuples are not compiled to WASM yet"),
             Expr::List(items) => {
                 // A list is a record [len][elem0..]; reuse the $mk{N} helper with
                 // the length as the header slot.
@@ -557,6 +567,7 @@ impl Codegen {
                 TRUE.to_string(),
                 format!("{value}    local.set ${name}\n"),
             ),
+            Pattern::Tuple(_) => return cerr("tuple patterns are not compiled to WASM yet"),
             Pattern::Str(s) => {
                 self.uses_str_eq = true;
                 let off = self.intern(s);
@@ -822,7 +833,15 @@ fn compile_actor_with_tags(
 
     let mut state_globals = String::new();
     for field in &actor.fields {
-        let Type::Named(tname, _) = &field.ty;
+        let tname = match &field.ty {
+            Type::Named(n, _) => n.as_str(),
+            Type::Tuple(_) => {
+                return cerr(format!(
+                    "actor field `{}`: tuple-typed fields are not compiled yet",
+                    field.name
+                ))
+            }
+        };
         // Console is erased (its authority is the linked `print` import).
         if tname == "Console" {
             cg.cap_fields.insert(field.name.clone());
@@ -1046,6 +1065,12 @@ fn collect_let_names(block: &Block, out: &mut Vec<String>) {
                 collect_let_names_expr(value, out);
             }
             Stmt::Assign { value, .. } => collect_let_names_expr(value, out),
+            Stmt::LetTuple { names, value } => {
+                for n in names {
+                    out.push(n.clone());
+                }
+                collect_let_names_expr(value, out);
+            }
             Stmt::Expr(e) => collect_let_names_expr(e, out),
         }
     }

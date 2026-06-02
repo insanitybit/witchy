@@ -32,6 +32,7 @@ pub enum Ty {
     Net,
     Socket,
     List(Box<Ty>),
+    Tuple(Vec<Ty>),
     Named(String),
     Var(u32),
 }
@@ -50,6 +51,16 @@ impl fmt::Display for Ty {
             Ty::Net => write!(f, "Net"),
             Ty::Socket => write!(f, "Socket"),
             Ty::List(e) => write!(f, "List({e})"),
+            Ty::Tuple(ts) => {
+                write!(f, "(")?;
+                for (i, t) in ts.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{t}")?;
+                }
+                write!(f, ")")
+            }
             Ty::Named(n) => write!(f, "{n}"),
             Ty::Var(_) => write!(f, "?"),
         }
@@ -98,7 +109,12 @@ impl Checker {
     }
 
     fn to_ty(&mut self, t: &ast::Type) -> Ty {
-        let ast::Type::Named(name, args) = t;
+        let (name, args) = match t {
+            ast::Type::Named(name, args) => (name, args),
+            ast::Type::Tuple(ts) => {
+                return Ty::Tuple(ts.iter().map(|t| self.to_ty(t)).collect());
+            }
+        };
         match name.as_str() {
             "Int" => Ty::Int,
             "Float" => Ty::Float,
@@ -128,6 +144,7 @@ impl Checker {
                 None => t.clone(),
             },
             Ty::List(e) => Ty::List(Box::new(self.resolve(e))),
+            Ty::Tuple(ts) => Ty::Tuple(ts.iter().map(|t| self.resolve(t)).collect()),
             _ => t.clone(),
         }
     }
@@ -142,6 +159,12 @@ impl Checker {
                 Ok(())
             }
             (Ty::List(x), Ty::List(y)) => self.unify(x, y),
+            (Ty::Tuple(xs), Ty::Tuple(ys)) if xs.len() == ys.len() => {
+                for (x, y) in xs.iter().zip(ys) {
+                    self.unify(x, y)?;
+                }
+                Ok(())
+            }
             (Ty::Named(x), Ty::Named(y)) if x == y => Ok(()),
             _ if a == b => Ok(()),
             _ => terr(format!("expected `{a}`, found `{b}`")),
@@ -237,6 +260,17 @@ impl Checker {
                     self.consumed.remove(name); // reassignment re-initializes
                     ty = Ty::Nil;
                 }
+                Stmt::LetTuple { names, value } => {
+                    let vt = self.infer(value)?;
+                    let elem_tys: Vec<Ty> = (0..names.len()).map(|_| self.fresh()).collect();
+                    self.unify(&Ty::Tuple(elem_tys.clone()), &vt).map_err(|e| TypeError {
+                        message: format!("tuple destructure: {}", e.message),
+                    })?;
+                    for (n, t) in names.iter().zip(elem_tys) {
+                        self.define(n.clone(), t, false);
+                    }
+                    ty = Ty::Nil;
+                }
                 Stmt::Expr(e) => {
                     ty = self.infer(e)?;
                 }
@@ -259,6 +293,13 @@ impl Checker {
                     self.unify(&elem, &t)?;
                 }
                 Ok(Ty::List(Box::new(elem)))
+            }
+            Expr::Tuple(items) => {
+                let tys = items
+                    .iter()
+                    .map(|e| self.infer(e))
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(Ty::Tuple(tys))
             }
             Expr::Var(name) => {
                 if self.consumed.contains(name) {
@@ -492,6 +533,14 @@ impl Checker {
             Pattern::Int(_) => self.unify(expected, &Ty::Int),
             Pattern::Str(_) => self.unify(expected, &Ty::String),
             Pattern::Bool(_) => self.unify(expected, &Ty::Bool),
+            Pattern::Tuple(pats) => {
+                let elem_tys: Vec<Ty> = (0..pats.len()).map(|_| self.fresh()).collect();
+                self.unify(expected, &Ty::Tuple(elem_tys.clone()))?;
+                for (p, t) in pats.iter().zip(elem_tys) {
+                    self.check_pattern(p, &t)?;
+                }
+                Ok(())
+            }
             Pattern::Ctor { name, args } => {
                 if let Some((fields, result)) = self.ctor_sigs.get(name).cloned() {
                     self.unify(expected, &result)?;
@@ -686,6 +735,16 @@ mod tests {
         "#;
         let e = check_str(src).unwrap_err();
         assert!(e.contains("argument"));
+    }
+
+    #[test]
+    fn rejects_tuple_arity_mismatch() {
+        assert!(check_str("fn main() { let (a, b, c) = (1, 2) }").is_err());
+    }
+
+    #[test]
+    fn accepts_tuple_destructure() {
+        assert!(check_str("fn main() { let (a, b) = (1, 2) }").is_ok());
     }
 
     #[test]

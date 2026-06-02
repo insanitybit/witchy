@@ -160,6 +160,7 @@ fn main() -> wasmtime::Result<()> {
     run_witchy("witchy ownership (sink)", include_str!("../examples/ownership.witchy"));
     run_witchy("witchy features combined", include_str!("../examples/commands.witchy"));
     run_witchy("witchy fizzbuzz (while, %, if/else)", include_str!("../examples/fizzbuzz.witchy"));
+    run_witchy("witchy tuples (multiple return values)", include_str!("../examples/tuples.witchy"));
     run_witchy("witchy actors", include_str!("../examples/actors.witchy"));
     run_witchy("witchy filesystem capability", include_str!("../examples/files.witchy"));
     run_compiled(&mut rt, "witchy compiled to WASM (ints)", include_str!("../examples/compute.witchy"));
@@ -508,6 +509,14 @@ mod example_tests {
         let out = crate::execute_file(app.to_str().unwrap()).unwrap();
         assert_eq!(out, vec!["HI x"]);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn tuples_example() {
+        assert_eq!(
+            interp(include_str!("../examples/tuples.witchy")),
+            vec!["3 remainder 2"]
+        );
     }
 
     #[test]

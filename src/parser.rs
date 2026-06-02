@@ -263,6 +263,17 @@ impl Parser {
     }
 
     fn ty(&mut self) -> Result<Type, ParseError> {
+        if self.eat(&Tok::LParen) {
+            let mut types = Vec::new();
+            while !self.at(&Tok::RParen) {
+                types.push(self.ty()?);
+                if !self.eat(&Tok::Comma) {
+                    break;
+                }
+            }
+            self.expect(&Tok::RParen)?;
+            return Ok(Type::Tuple(types));
+        }
         let name = self.ident()?;
         let mut args = Vec::new();
         if self.eat(&Tok::LParen) {
@@ -292,6 +303,21 @@ impl Parser {
     fn stmt(&mut self) -> Result<Stmt, ParseError> {
         if self.at(&Tok::Let) || self.at(&Tok::Var) {
             let mutable = self.advance() == Tok::Var;
+            if self.at(&Tok::LParen) {
+                // Tuple destructure: `let (a, b) = e` (bindings are immutable).
+                self.advance();
+                let mut names = Vec::new();
+                while !self.at(&Tok::RParen) {
+                    names.push(self.ident()?);
+                    if !self.eat(&Tok::Comma) {
+                        break;
+                    }
+                }
+                self.expect(&Tok::RParen)?;
+                self.expect(&Tok::Eq)?;
+                let value = self.expr(0)?;
+                return Ok(Stmt::LetTuple { names, value });
+            }
             let name = self.ident()?;
             self.expect(&Tok::Eq)?;
             let value = self.expr(0)?;
@@ -375,9 +401,21 @@ impl Parser {
             }
             Tok::LParen => {
                 self.advance();
-                let inner = self.expr(0)?;
-                self.expect(&Tok::RParen)?;
-                Ok(inner)
+                let first = self.expr(0)?;
+                if self.at(&Tok::Comma) {
+                    let mut elems = vec![first];
+                    while self.eat(&Tok::Comma) {
+                        if self.at(&Tok::RParen) {
+                            break; // trailing comma
+                        }
+                        elems.push(self.expr(0)?);
+                    }
+                    self.expect(&Tok::RParen)?;
+                    Ok(Expr::Tuple(elems))
+                } else {
+                    self.expect(&Tok::RParen)?;
+                    Ok(first) // parenthesized grouping
+                }
             }
             Tok::LBracket => self.list(),
             Tok::LBrace => Ok(Expr::Block(self.block()?)),
@@ -513,6 +551,18 @@ impl Parser {
 
     fn pattern(&mut self) -> Result<Pattern, ParseError> {
         match self.kind().clone() {
+            Tok::LParen => {
+                self.advance();
+                let mut pats = Vec::new();
+                while !self.at(&Tok::RParen) {
+                    pats.push(self.pattern()?);
+                    if !self.eat(&Tok::Comma) {
+                        break;
+                    }
+                }
+                self.expect(&Tok::RParen)?;
+                Ok(Pattern::Tuple(pats))
+            }
             Tok::Underscore => {
                 self.advance();
                 Ok(Pattern::Wildcard)

@@ -88,6 +88,7 @@ pub enum Convention {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Type {
     Named(String, Vec<Type>),
+    Tuple(Vec<Type>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -108,6 +109,11 @@ pub enum Stmt {
         name: String,
         value: Expr,
     },
+    /// `let (a, b) = e` — destructure a tuple into immutable bindings.
+    LetTuple {
+        names: Vec<String>,
+        value: Expr,
+    },
     Expr(Expr),
 }
 
@@ -118,6 +124,7 @@ pub enum Expr {
     Str(String),
     Bool(bool),
     List(Vec<Expr>),
+    Tuple(Vec<Expr>),
     /// A bare lowercase identifier — a variable or function reference.
     Var(String),
     /// A call to a named function: `f(a, b)`.
@@ -188,4 +195,5 @@ pub enum Pattern {
     Str(String),
     Bool(bool),
     Ctor { name: String, args: Vec<Pattern> },
+    Tuple(Vec<Pattern>),
 }

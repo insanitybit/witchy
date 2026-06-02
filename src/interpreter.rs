@@ -20,6 +20,7 @@ pub enum Value {
     Str(String),
     Bool(bool),
     List(Vec<Value>),
+    Tuple(Vec<Value>),
     Ctor { name: String, fields: Vec<Value> },
     Cap(Capability),
     /// A handle to an actor — the authority to send it messages.
@@ -63,6 +64,16 @@ impl fmt::Display for Value {
                     write!(f, "{v}")?;
                 }
                 write!(f, "]")
+            }
+            Value::Tuple(items) => {
+                write!(f, "(")?;
+                for (i, v) in items.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{v}")?;
+                }
+                write!(f, ")")
             }
             Value::Ctor { name, fields } => {
                 write!(f, "{name}")?;
@@ -580,6 +591,24 @@ impl Interpreter {
                     }
                     result = Value::Nil;
                 }
+                Stmt::LetTuple { names, value } => {
+                    let v = self.eval(value, env)?;
+                    match v {
+                        Value::Tuple(items) if items.len() == names.len() => {
+                            for (n, item) in names.iter().zip(items) {
+                                env.define(n.clone(), item, false);
+                            }
+                        }
+                        other => {
+                            env.pop();
+                            return err(format!(
+                                "tuple destructure expected a {}-tuple, got `{other}`",
+                                names.len()
+                            ));
+                        }
+                    }
+                    result = Value::Nil;
+                }
                 Stmt::Expr(e) => {
                     result = self.eval(e, env)?;
                 }
@@ -601,6 +630,13 @@ impl Interpreter {
                     .map(|e| self.eval(e, env))
                     .collect::<Result<_, _>>()?;
                 Ok(Value::List(vals))
+            }
+            Expr::Tuple(items) => {
+                let vals = items
+                    .iter()
+                    .map(|e| self.eval(e, env))
+                    .collect::<Result<_, _>>()?;
+                Ok(Value::Tuple(vals))
             }
             Expr::Var(name) => match env.get(name) {
                 Some(v) => Ok(v.clone()),
@@ -722,6 +758,13 @@ fn match_pattern(pat: &Pattern, value: &Value, env: &mut Env) -> bool {
                 && args
                     .iter()
                     .zip(fields)
+                    .all(|(p, v)| match_pattern(p, v, env))
+        }
+        (Pattern::Tuple(pats), Value::Tuple(items)) => {
+            pats.len() == items.len()
+                && pats
+                    .iter()
+                    .zip(items)
                     .all(|(p, v)| match_pattern(p, v, env))
         }
         _ => false,
@@ -1181,6 +1224,23 @@ mod tests {
             run(src).unwrap(),
             vec!["small positive", "out of range", "other"]
         );
+    }
+
+    #[test]
+    fn tuples_destructure_and_match() {
+        let src = r#"
+            fn divmod(a: Int, b: Int) -> (Int, Int) { (a / b, a % b) }
+            fn main(console: Console) {
+              let (q, r) = divmod(17, 5)
+              print(console, int_to_string(q))
+              print(console, int_to_string(r))
+              let pair = (1, "one")
+              match pair {
+                (n, name) -> print(console, int_to_string(n) <> "=" <> name)
+              }
+            }
+        "#;
+        assert_eq!(run(src).unwrap(), vec!["3", "2", "1=one"]);
     }
 
     #[test]
