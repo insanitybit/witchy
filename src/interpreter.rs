@@ -300,6 +300,17 @@ impl Interpreter {
                 Value::Int(n) => Ok(Some(Value::Str(n.to_string()))),
                 other => err(format!("int_to_string expects an Int, got `{other}`")),
             },
+            "length" => match args {
+                [Value::List(items)] => Ok(Some(Value::Int(items.len() as i64))),
+                _ => err("length expects a list"),
+            },
+            "at" => match args {
+                [Value::List(items), Value::Int(i)] => match items.get(*i as usize) {
+                    Some(v) => Ok(Some(v.clone())),
+                    None => err(format!("list index {i} out of bounds (length {})", items.len())),
+                },
+                _ => err("at expects a list and an Int index"),
+            },
             _ => Ok(None),
         }
     }
@@ -721,6 +732,18 @@ mod tests {
             fn main(console: Console) { announce(console, "witchy") }
         "#;
         assert_eq!(run(src).unwrap(), vec!["hello, witchy"]);
+    }
+
+    #[test]
+    fn lists_length_and_index() {
+        let src = r#"
+            fn main(console: Console) {
+              let xs = [10, 20, 30]
+              print(console, int_to_string(length(xs)))
+              print(console, int_to_string(at(xs, 1)))
+            }
+        "#;
+        assert_eq!(run(src).unwrap(), vec!["3", "20"]);
     }
 
     /// An actor with mutable state and a granted capability handles messages in

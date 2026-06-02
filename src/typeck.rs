@@ -176,6 +176,14 @@ impl Checker {
                 let msg = self.fresh();
                 Some((vec![Ty::Subject, msg], Ty::Nil))
             }
+            "length" => {
+                let elem = self.fresh();
+                Some((vec![Ty::List(Box::new(elem))], Ty::Int))
+            }
+            "at" => {
+                let elem = self.fresh();
+                Some((vec![Ty::List(Box::new(elem.clone())), Ty::Int], elem))
+            }
             _ => self.fn_sigs.get(name).cloned(),
         }
     }

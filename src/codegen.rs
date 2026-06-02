@@ -289,7 +289,18 @@ impl Codegen {
             Expr::Block(b) => self.compile_block(b),
             Expr::Call { name, args } => self.compile_call(name, args),
             Expr::Float(_) => cerr("float values are not compiled to WASM yet"),
-            Expr::List(_) => cerr("list values are not compiled to WASM yet"),
+            Expr::List(items) => {
+                // A list is a record [len][elem0..]; reuse the $mk{N} helper with
+                // the length as the header slot.
+                let n = items.len();
+                self.mk_arities.insert(n);
+                let mut out = format!("    i32.const {n}\n");
+                for item in items {
+                    out.push_str(&self.compile_expr(item)?);
+                }
+                out.push_str(&format!("    call $mk{n}\n"));
+                Ok(out)
+            }
             Expr::Ctor { name, args } => {
                 let Some(&(tag, nfields)) = self.ctors.get(name) else {
                     return cerr(format!(
@@ -421,6 +432,19 @@ impl Codegen {
                 self.uses_int_to_string = true;
                 let arg = self.compile_expr(&args[0])?;
                 Ok(format!("{arg}    call $int_to_string\n"))
+            }
+            // length(list): the record header is the length.
+            ("length", 1) => {
+                let arg = self.compile_expr(&args[0])?;
+                Ok(format!("{arg}    i32.load\n"))
+            }
+            // at(list, i): load element at ptr + 4 + i*4.
+            ("at", 2) => {
+                let list = self.compile_expr(&args[0])?;
+                let idx = self.compile_expr(&args[1])?;
+                Ok(format!(
+                    "{list}    i32.const 4\n    i32.add\n{idx}    i32.const 4\n    i32.mul\n    i32.add\n    i32.load\n"
+                ))
             }
             ("send", _) | ("spawn", _) => {
                 cerr(format!("`{name}` is not compiled to WASM yet"))
@@ -911,6 +935,17 @@ mod tests {
             fn main() -> Int { area(Circle(10)) + area(Square(5)) }
         "#;
         assert_eq!(run_int(src), 325);
+    }
+
+    #[test]
+    fn compiles_lists() {
+        let src = r#"
+            fn main() -> Int {
+              let xs = [10, 20, 30]
+              length(xs) + at(xs, 0) + at(xs, 2)
+            }
+        "#;
+        assert_eq!(run_int(src), 43); // 3 + 10 + 30
     }
 
     #[test]
