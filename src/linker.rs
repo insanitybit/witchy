@@ -54,6 +54,7 @@ const BUILTINS: &[&str] = &[
     "substring",
     "int_to_float",
     "float_to_int",
+    "sqrt",
     "string_to_int",
     "length",
     "at",

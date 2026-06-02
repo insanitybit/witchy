@@ -52,3 +52,21 @@ pub fn gcd(a: Int, b: Int) -> Int {
   }
   x
 }
+
+// --- Float versions (Int comparison can't be reused for Float) ---
+
+pub fn fmin(a: Float, b: Float) -> Float {
+  if a < b { a } else { b }
+}
+
+pub fn fmax(a: Float, b: Float) -> Float {
+  if a > b { a } else { b }
+}
+
+pub fn fabs(x: Float) -> Float {
+  if x < 0.0 { -x } else { x }
+}
+
+pub fn fclamp(x: Float, lo: Float, hi: Float) -> Float {
+  fmax(lo, fmin(x, hi))
+}

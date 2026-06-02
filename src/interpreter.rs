@@ -561,6 +561,10 @@ impl Interpreter {
                 Value::Float(x) => Ok(Some(Value::Int(x as i64))),
                 other => err(format!("float_to_int expects a Float, got `{other}`")),
             },
+            "sqrt" => match one(args)? {
+                Value::Float(x) => Ok(Some(Value::Float(x.sqrt()))),
+                other => err(format!("sqrt expects a Float, got `{other}`")),
+            },
             "string_to_int" => match one(args)? {
                 Value::Str(s) => match s.trim().parse::<i64>() {
                     Ok(n) => Ok(Some(Value::Int(n))),
@@ -1742,6 +1746,20 @@ mod tests {
         assert_eq!(
             run(src).unwrap(),
             vec!["9", "2", "0", "2", "1", "true", "2"]
+        );
+    }
+
+    #[test]
+    fn sqrt_builtin_computes() {
+        let src = r#"
+            fn main(console: Console) {
+              print(console, to_string(sqrt(2.0)))
+              print(console, to_string(float_to_int(sqrt(144.0))))
+            }
+        "#;
+        assert_eq!(
+            run(src).unwrap(),
+            vec!["1.4142135623730951", "12"]
         );
     }
 

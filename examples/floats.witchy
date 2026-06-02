@@ -1,0 +1,12 @@
+// Float math: `sqrt` is a builtin (it can't be written in witchy); `fabs`,
+// `fmin`, `fmax`, and `fclamp` are the Float counterparts of the Int helpers in
+// the bundled `math` module.
+
+import math
+
+fn main(console: Console) {
+  print(console, to_string(sqrt(16.0)))
+  print(console, to_string(math.fabs(-3.5)))
+  print(console, to_string(math.fmax(2.0, 5.0)))
+  print(console, to_string(math.fclamp(9.5, 0.0, 1.0)))
+}

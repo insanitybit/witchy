@@ -225,6 +225,14 @@ fn main() -> wasmtime::Result<()> {
         ],
         "math_demo",
     );
+    run_program_demo(
+        "witchy float math (sqrt + fabs/fmin/fmax)",
+        &[
+            ("math", include_str!("../std/math.witchy")),
+            ("floats", include_str!("../examples/floats.witchy")),
+        ],
+        "floats",
+    );
 
     println!("\nspike OK");
     Ok(())
@@ -680,6 +688,15 @@ mod example_tests {
         assert_eq!(
             crate::execute_file("examples/math_demo.witchy").unwrap(),
             vec!["7", "5", "10", "1024", "12"]
+        );
+    }
+
+    /// Float math: the `sqrt` builtin and the `math` module's Float helpers.
+    #[test]
+    fn floats_run_via_cli() {
+        assert_eq!(
+            crate::execute_file("examples/floats.witchy").unwrap(),
+            vec!["4", "3.5", "5", "1"]
         );
     }
 

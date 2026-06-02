@@ -400,6 +400,7 @@ impl Checker {
             "substring" => Some((vec![Ty::String, Ty::Int, Ty::Int], Ty::String)),
             "int_to_float" => Some((vec![Ty::Int], Ty::Float)),
             "float_to_int" => Some((vec![Ty::Float], Ty::Int)),
+            "sqrt" => Some((vec![Ty::Float], Ty::Float)),
             "string_to_int" => Some((vec![Ty::String], Ty::Int)),
             "to_string" => {
                 let a = self.fresh();
