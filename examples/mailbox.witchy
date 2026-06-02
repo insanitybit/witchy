@@ -1,0 +1,17 @@
+// Compiled actors messaging each other, each in its own WASM VM. The Forwarder
+// holds a Subject to the Printer (set at spawn); its `send` is compiled to a host
+// call that routes the message to the Printer's handler. Run-to-completion, no GC.
+
+actor Printer {
+  console: Console
+  on Show(n: Int) {
+    print(console, "printer got " <> int_to_string(n))
+  }
+}
+
+actor Forwarder {
+  target: Subject
+  on Relay(n: Int) {
+    send(target, Show(n))
+  }
+}

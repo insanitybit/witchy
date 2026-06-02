@@ -5,6 +5,7 @@
 //! witchy code; the point of the spike is the security substrate, not the
 //! language surface yet.
 
+mod actor_system;
 mod ast;
 mod codegen;
 mod interpreter;
@@ -146,9 +147,63 @@ fn main() -> wasmtime::Result<()> {
     run_compiled(&mut rt, "witchy compiled to WASM (ADTs)", include_str!("../examples/shapes.witchy"));
     run_compiled(&mut rt, "witchy compiled to WASM (strings)", include_str!("../examples/strings.witchy"));
     run_compiled_actor(&mut rt, "witchy actor compiled to its own WASM VM", include_str!("../examples/counter.witchy"));
+    run_actor_system("witchy compiled actors messaging", include_str!("../examples/mailbox.witchy"));
 
     println!("\nspike OK");
     Ok(())
+}
+
+/// Compile a program's actors and run them on the actor system, wiring a
+/// Forwarder's Subject to a Printer and relaying a few messages — compiled
+/// actors sending to each other across their WASM VMs.
+fn run_actor_system(title: &str, src: &str) {
+    println!("\n== {title} ==");
+    if let Err(e) = typeck::check_str(src) {
+        println!("{e}");
+        return;
+    }
+    let module = match parser::parse_module(src) {
+        Ok(m) => m,
+        Err(e) => {
+            println!("{e}");
+            return;
+        }
+    };
+    let (actors, tags) = match codegen::compile_program(&module) {
+        Ok(v) => v,
+        Err(e) => {
+            println!("{e}");
+            return;
+        }
+    };
+    let mut sys = actor_system::System::new(tags);
+    let (mut printer, mut fwd) = (None, None);
+    for (name, wat) in &actors {
+        match sys.spawn(wat) {
+            Ok(id) => {
+                if name == "Printer" {
+                    printer = Some(id);
+                } else if name == "Forwarder" {
+                    fwd = Some(id);
+                }
+            }
+            Err(e) => {
+                println!("spawn failed: {e}");
+                return;
+            }
+        }
+    }
+    let (Some(printer), Some(fwd)) = (printer, fwd) else {
+        println!("expected Printer and Forwarder actors");
+        return;
+    };
+    let _ = sys.set_subject(fwd, "target", printer);
+    for n in 1..=3 {
+        let _ = sys.send(fwd, "Relay", n);
+    }
+    for line in sys.output() {
+        println!("{line}");
+    }
 }
 
 /// Compile an actor to its own WASM module and run it on the runtime: each

@@ -97,6 +97,11 @@ struct Codegen {
     locals: HashMap<String, Kind>,
     /// Declared return kind per function, for resolving call-result kinds.
     fn_ret: HashMap<String, Kind>,
+    /// Message name -> tag, shared across a program's actors so the host can
+    /// route a compiled `send` to the target actor's handler.
+    message_tags: HashMap<String, u32>,
+    /// Whether the inter-actor `send` import is needed.
+    uses_send: bool,
 }
 
 impl Codegen {
@@ -118,6 +123,8 @@ impl Codegen {
             uses_print_float: false,
             locals: HashMap::new(),
             fn_ret: HashMap::new(),
+            message_tags: HashMap::new(),
+            uses_send: false,
         }
     }
 
@@ -221,6 +228,10 @@ impl Codegen {
         }
         if self.uses_print_float {
             s.push_str("  (import \"witchy\" \"print_float\" (func $print_float (param f64)))\n");
+        }
+        if self.uses_send {
+            // send(target_id, message_tag, arg)
+            s.push_str("  (import \"witchy\" \"send\" (func $send (param i32 i32 i32)))\n");
         }
         s
     }
@@ -576,9 +587,29 @@ impl Codegen {
                     "{list}    i32.const 4\n    i32.add\n{idx}    i32.const 4\n    i32.mul\n    i32.add\n    i32.load\n"
                 ))
             }
-            ("send", _) | ("spawn", _) => {
-                cerr(format!("`{name}` is not compiled to WASM yet"))
+            // send(subject, Message(arg)): route to the target actor's handler.
+            ("send", 2) => {
+                let Expr::Ctor { name: msg, args: fields } = &args[1] else {
+                    return cerr("send expects a message constructor as its second argument");
+                };
+                let Some(&tag) = self.message_tags.get(msg) else {
+                    return cerr(format!("send to unknown message `{msg}` (no handler declares it)"));
+                };
+                if fields.len() > 1 {
+                    return cerr("only messages with 0 or 1 fields are compiled yet");
+                }
+                self.uses_send = true;
+                let target = self.compile_expr(&args[0])?;
+                let arg = if fields.len() == 1 {
+                    self.compile_expr(&fields[0])?
+                } else {
+                    "    i32.const 0\n".to_string()
+                };
+                Ok(format!(
+                    "{target}    i32.const {tag}\n{arg}    call $send\n    i32.const 0\n"
+                ))
             }
+            ("spawn", _) => cerr("`spawn` is not compiled to WASM yet (host-driven)"),
             _ => {
                 let mut out = String::new();
                 for arg in args {
@@ -695,13 +726,59 @@ pub fn compile_module(module: &Module) -> Result<String, CodegenError> {
 /// initializers become mutable globals (state); capability fields are erased;
 /// each handler becomes an exported function.
 pub fn compile_actor_module(actor: &ActorDef) -> Result<String, CodegenError> {
+    compile_actor_with_tags(actor, &HashMap::new())
+}
+
+/// Compile every actor in a module, assigning each distinct handler message a
+/// shared tag so the host can route inter-actor sends. Returns (actor name,
+/// WAT) pairs and the tag -> message-name table.
+pub fn compile_program(
+    module: &Module,
+) -> Result<(Vec<(String, String)>, Vec<String>), CodegenError> {
+    let mut tag_of: HashMap<String, u32> = HashMap::new();
+    let mut names: Vec<String> = Vec::new();
+    for item in &module.items {
+        if let Item::Actor(a) = item {
+            for h in &a.handlers {
+                if !tag_of.contains_key(&h.message) {
+                    tag_of.insert(h.message.clone(), names.len() as u32);
+                    names.push(h.message.clone());
+                }
+            }
+        }
+    }
+    let mut actors = Vec::new();
+    for item in &module.items {
+        if let Item::Actor(a) = item {
+            actors.push((a.name.clone(), compile_actor_with_tags(a, &tag_of)?));
+        }
+    }
+    Ok((actors, names))
+}
+
+fn compile_actor_with_tags(
+    actor: &ActorDef,
+    tags: &HashMap<String, u32>,
+) -> Result<String, CodegenError> {
     let mut cg = Codegen::new();
+    cg.message_tags = tags.clone();
 
     let mut state_globals = String::new();
     for field in &actor.fields {
         let Type::Named(tname, _) = &field.ty;
-        if tname == "Console" || tname == "Subject" {
+        // Console is erased (its authority is the linked `print` import).
+        if tname == "Console" {
             cg.cap_fields.insert(field.name.clone());
+            continue;
+        }
+        // A Subject is a real i32 (the target's id), exported so the host can
+        // set it at spawn.
+        if tname == "Subject" {
+            cg.globals.insert(field.name.clone());
+            state_globals.push_str(&format!(
+                "  (global ${0} (export \"{0}\") (mut i32) (i32.const 0))\n",
+                field.name
+            ));
             continue;
         }
         if tname != "Int" {
