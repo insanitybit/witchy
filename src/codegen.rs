@@ -60,6 +60,11 @@ struct Codegen {
     /// Parameter conventions per function, so call sites can write back `inout`
     /// results (move-in / move-out).
     fn_conventions: HashMap<String, Vec<Convention>>,
+    /// Constructor name -> (variant tag, field count). A constructor value is a
+    /// heap record `[tag: i32][field: i32]...`.
+    ctors: HashMap<String, (u32, usize)>,
+    /// Constructor arities for which an allocation helper `$mk{N}` is needed.
+    mk_arities: HashSet<usize>,
 }
 
 impl Codegen {
@@ -74,6 +79,8 @@ impl Codegen {
             globals: HashSet::new(),
             cap_fields: HashSet::new(),
             fn_conventions: HashMap::new(),
+            ctors: HashMap::new(),
+            mk_arities: HashSet::new(),
         }
     }
 
@@ -88,7 +95,10 @@ impl Codegen {
     }
 
     fn need_heap(&self) -> bool {
-        self.uses_concat || self.uses_int_to_string || !self.strings.is_empty()
+        self.uses_concat
+            || self.uses_int_to_string
+            || !self.strings.is_empty()
+            || !self.mk_arities.is_empty()
     }
 
     fn emit_imports(&self) -> String {
@@ -126,6 +136,11 @@ impl Codegen {
         if self.uses_int_to_string {
             s.push_str(INT_TO_STRING_WAT);
         }
+        let mut arities: Vec<usize> = self.mk_arities.iter().copied().collect();
+        arities.sort_unstable();
+        for n in arities {
+            s.push_str(&mk_helper(n));
+        }
         s
     }
 
@@ -149,6 +164,8 @@ impl Codegen {
 
         let mut lets = Vec::new();
         collect_let_names(&f.body, &mut lets);
+        lets.sort();
+        lets.dedup();
         for name in &lets {
             header.push_str(&format!("    (local ${name} i32)\n"));
         }
@@ -264,8 +281,25 @@ impl Codegen {
             Expr::Call { name, args } => self.compile_call(name, args),
             Expr::Float(_) => cerr("float values are not compiled to WASM yet"),
             Expr::List(_) => cerr("list values are not compiled to WASM yet"),
-            Expr::Ctor { name, .. } => {
-                cerr(format!("constructor `{name}` is not compiled to WASM yet"))
+            Expr::Ctor { name, args } => {
+                let Some(&(tag, nfields)) = self.ctors.get(name) else {
+                    return cerr(format!(
+                        "unknown constructor `{name}` (declare it with `type`)"
+                    ));
+                };
+                if nfields != args.len() {
+                    return cerr(format!(
+                        "constructor `{name}` takes {nfields} field(s) but got {}",
+                        args.len()
+                    ));
+                }
+                self.mk_arities.insert(nfields);
+                let mut out = format!("    i32.const {tag}\n");
+                for arg in args {
+                    out.push_str(&self.compile_expr(arg)?);
+                }
+                out.push_str(&format!("    call $mk{nfields}\n"));
+                Ok(out)
             }
             Expr::Match { scrutinee, arms } => self.compile_match(scrutinee, arms),
             Expr::Spawn { .. } => cerr("`spawn` is not compiled to WASM yet"),
@@ -293,25 +327,64 @@ impl Codegen {
         if arm.guard.is_some() {
             return cerr("guards in `match` are not compiled to WASM yet");
         }
-        let cond = match &arm.pattern {
-            Pattern::Wildcard => "    i32.const 1\n".to_string(),
-            Pattern::Int(k) => format!("{scrut}    i32.const {k}\n    i32.eq\n"),
-            Pattern::Bool(b) => {
-                format!("{scrut}    i32.const {}\n    i32.eq\n", if *b { 1 } else { 0 })
-            }
-            Pattern::Var(_) => {
-                return cerr("variable patterns in `match` are not compiled to WASM yet")
-            }
+        let (cond, binds) = self.arm_cond_binds(scrut, &arm.pattern)?;
+        let body = self.compile_expr(&arm.body)?;
+        let rest = self.compile_arms(scrut, rest)?;
+        Ok(format!(
+            "{cond}    if (result i32)\n{binds}{body}    else\n{rest}    end\n"
+        ))
+    }
+
+    /// For one pattern: the condition instructions (leaving an i32 on the stack)
+    /// and the binding instructions to run when it matches.
+    fn arm_cond_binds(
+        &self,
+        scrut: &str,
+        pat: &Pattern,
+    ) -> Result<(String, String), CodegenError> {
+        Ok(match pat {
+            Pattern::Wildcard => ("    i32.const 1\n".to_string(), String::new()),
+            Pattern::Int(k) => (format!("{scrut}    i32.const {k}\n    i32.eq\n"), String::new()),
+            Pattern::Bool(b) => (
+                format!("{scrut}    i32.const {}\n    i32.eq\n", if *b { 1 } else { 0 }),
+                String::new(),
+            ),
+            Pattern::Var(name) => (
+                "    i32.const 1\n".to_string(),
+                format!("{scrut}    local.set ${name}\n"),
+            ),
             Pattern::Str(_) => {
                 return cerr("string patterns in `match` are not compiled to WASM yet")
             }
-            Pattern::Ctor { .. } => {
-                return cerr("constructor patterns in `match` are not compiled to WASM yet")
+            Pattern::Ctor { name, args } => {
+                let Some(&(tag, nfields)) = self.ctors.get(name) else {
+                    return cerr(format!("unknown constructor `{name}` in pattern"));
+                };
+                if nfields != args.len() {
+                    return cerr(format!(
+                        "pattern `{name}` takes {nfields} field(s) but matched {}",
+                        args.len()
+                    ));
+                }
+                let cond = format!("{scrut}    i32.load\n    i32.const {tag}\n    i32.eq\n");
+                let mut binds = String::new();
+                for (i, sub) in args.iter().enumerate() {
+                    match sub {
+                        Pattern::Wildcard => {}
+                        Pattern::Var(subname) => binds.push_str(&format!(
+                            "{scrut}    i32.const {}\n    i32.add\n    i32.load\n    local.set ${subname}\n",
+                            4 + 4 * i
+                        )),
+                        _ => {
+                            return cerr(
+                                "only variable/wildcard fields in constructor patterns are compiled yet",
+                            )
+                        }
+                    }
+                }
+                (cond, binds)
             }
-        };
-        let body = self.compile_expr(&arm.body)?;
-        let rest = self.compile_arms(scrut, rest)?;
-        Ok(format!("{cond}    if (result i32)\n{body}    else\n{rest}    end\n"))
+        })
     }
 
     fn compile_call(&mut self, name: &str, args: &[Expr]) -> Result<String, CodegenError> {
@@ -369,9 +442,18 @@ pub fn compile_module(module: &Module) -> Result<String, CodegenError> {
     // Collect parameter conventions up front so call sites can resolve `inout`
     // write-back even for forward references.
     for item in &module.items {
-        if let Item::Function(f) = item {
-            cg.fn_conventions
-                .insert(f.name.clone(), f.params.iter().map(|p| p.convention).collect());
+        match item {
+            Item::Function(f) => {
+                cg.fn_conventions
+                    .insert(f.name.clone(), f.params.iter().map(|p| p.convention).collect());
+            }
+            Item::Type(t) => {
+                for (tag, variant) in t.variants.iter().enumerate() {
+                    cg.ctors
+                        .insert(variant.name.clone(), (tag as u32, variant.fields.len()));
+                }
+            }
+            Item::Actor(_) => {}
         }
     }
     let mut func_wat = String::new();
@@ -476,6 +558,8 @@ pub fn compile_actor_module(actor: &ActorDef) -> Result<String, CodegenError> {
         header.push('\n');
         let mut lets = Vec::new();
         collect_let_names(&h.body, &mut lets);
+        lets.sort();
+        lets.dedup();
         for name in &lets {
             header.push_str(&format!("    (local ${name} i32)\n"));
         }
@@ -498,6 +582,27 @@ fn data_segment(off: u32, s: &str) -> String {
     bytes.extend_from_slice(s.as_bytes());
     let escaped: String = bytes.iter().map(|b| format!("\\{b:02x}")).collect();
     format!("  (data (i32.const {off}) \"{escaped}\")\n")
+}
+
+/// Allocation helper for an N-field constructor record `[tag][f0..f{N-1}]`.
+fn mk_helper(n: usize) -> String {
+    let mut params = String::from("(param $tag i32)");
+    for i in 0..n {
+        params.push_str(&format!(" (param $f{i} i32)"));
+    }
+    let size = 4 + 4 * n;
+    let mut s = format!("  (func $mk{n} {params} (result i32)\n    (local $p i32)\n");
+    s.push_str("    global.get $heap local.set $p\n");
+    s.push_str("    local.get $p local.get $tag i32.store\n");
+    for i in 0..n {
+        s.push_str(&format!(
+            "    local.get $p i32.const {} i32.add local.get $f{i} i32.store\n",
+            4 + 4 * i
+        ));
+    }
+    s.push_str(&format!("    local.get $p i32.const {size} i32.add global.set $heap\n"));
+    s.push_str("    local.get $p)\n");
+    s
 }
 
 const CONCAT_WAT: &str = r#"  (func $concat (param $a i32) (param $b i32) (result i32)
@@ -596,7 +701,21 @@ fn collect_let_names_expr(expr: &Expr, out: &mut Vec<String>) {
         Expr::Match { scrutinee, arms } => {
             collect_let_names_expr(scrutinee, out);
             for arm in arms {
+                collect_pattern_vars(&arm.pattern, out);
                 collect_let_names_expr(&arm.body, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Variables bound by a pattern (these become function locals).
+fn collect_pattern_vars(pat: &Pattern, out: &mut Vec<String>) {
+    match pat {
+        Pattern::Var(name) => out.push(name.clone()),
+        Pattern::Ctor { args, .. } => {
+            for sub in args {
+                collect_pattern_vars(sub, out);
             }
         }
         _ => {}
@@ -688,6 +807,23 @@ mod tests {
             fn main() -> Int { let a = double(21) let b = fib(10) a + b }
         "#;
         assert_eq!(run_int(src), 97);
+    }
+
+    #[test]
+    fn compiles_adts_and_constructor_patterns() {
+        // Constructors become heap records [tag][fields...]; ctor patterns load
+        // the tag and bind fields.
+        let src = r#"
+            type Shape { Circle(Int) Square(Int) }
+            fn area(s: Shape) -> Int {
+              match s {
+                Circle(r) -> 3 * r * r
+                Square(w) -> w * w
+              }
+            }
+            fn main() -> Int { area(Circle(10)) + area(Square(5)) }
+        "#;
+        assert_eq!(run_int(src), 325);
     }
 
     #[test]

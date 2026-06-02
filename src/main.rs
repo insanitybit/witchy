@@ -142,6 +142,7 @@ fn main() -> wasmtime::Result<()> {
     run_witchy("witchy ownership (sink)", include_str!("../examples/ownership.witchy"));
     run_witchy("witchy actors", include_str!("../examples/actors.witchy"));
     run_compiled(&mut rt, "witchy compiled to WASM (ints)", include_str!("../examples/compute.witchy"));
+    run_compiled(&mut rt, "witchy compiled to WASM (ADTs)", include_str!("../examples/shapes.witchy"));
     run_compiled(&mut rt, "witchy compiled to WASM (strings)", include_str!("../examples/strings.witchy"));
     run_compiled_actor(&mut rt, "witchy actor compiled to its own WASM VM", include_str!("../examples/counter.witchy"));
 
@@ -287,6 +288,11 @@ mod example_tests {
     #[test]
     fn strings_example_compiles() {
         assert_fn_compiles(include_str!("../examples/strings.witchy"));
+    }
+
+    #[test]
+    fn shapes_example_compiles() {
+        assert_fn_compiles(include_str!("../examples/shapes.witchy"));
     }
 
     #[test]

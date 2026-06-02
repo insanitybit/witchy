@@ -1,0 +1,19 @@
+// Algebraic data types compiled to WebAssembly: each constructor becomes a heap
+// record [tag][fields...], and `match` loads the tag and binds the fields. This
+// compiles and runs on the witchy runtime, capability-gated like everything else.
+
+type Shape {
+  Circle(Int)
+  Square(Int)
+}
+
+fn area(s: Shape) -> Int {
+  match s {
+    Circle(r) -> 3 * r * r
+    Square(w) -> w * w
+  }
+}
+
+fn main() -> Int {
+  area(Circle(10)) + area(Square(5))
+}
