@@ -30,6 +30,7 @@ pub enum Tok {
     Type,
     Inout,
     Sink,
+    Import,
 
     // Grouping / punctuation
     LParen,
@@ -87,6 +88,7 @@ impl fmt::Display for Tok {
             Type => write!(f, "type"),
             Inout => write!(f, "inout"),
             Sink => write!(f, "sink"),
+            Import => write!(f, "import"),
             LParen => write!(f, "("),
             RParen => write!(f, ")"),
             LBrace => write!(f, "{{"),
@@ -285,6 +287,7 @@ impl Lexer {
             "type" => Tok::Type,
             "inout" => Tok::Inout,
             "sink" => Tok::Sink,
+            "import" => Tok::Import,
             "_" => Tok::Underscore,
             _ => Tok::Ident(text),
         }

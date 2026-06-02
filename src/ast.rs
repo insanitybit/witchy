@@ -6,6 +6,9 @@
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Module {
+    /// Names of modules imported (side-effect-free: brings declarations into
+    /// scope, runs no code, grants no authority).
+    pub imports: Vec<String>,
     pub items: Vec<Item>,
 }
 

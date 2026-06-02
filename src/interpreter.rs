@@ -758,6 +758,15 @@ pub fn run_with(
     net_allow: Vec<String>,
 ) -> Result<Vec<String>, RuntimeError> {
     let module = parse_module(src).map_err(|e| RuntimeError { message: e.to_string() })?;
+    run_module(module, root, net_allow)
+}
+
+/// Run an already-built (e.g. linked) module.
+pub fn run_module(
+    module: Module,
+    root: impl AsRef<Path>,
+    net_allow: Vec<String>,
+) -> Result<Vec<String>, RuntimeError> {
     let mut interp = Interpreter::new(module);
     interp.root = root.as_ref().to_path_buf();
     interp.net_allow = net_allow;
@@ -772,6 +781,22 @@ pub fn run_with(
     interp.call("main", root_args)?;
     interp.run_to_completion()?;
     Ok(interp.output)
+}
+
+/// Parse and link a multi-module program, then run it. `entry` is the module
+/// holding `main`. Importing a module grants no authority — only `main`'s root
+/// capabilities (and what it passes on) flow in.
+pub fn run_program(sources: &[(&str, &str)], entry: &str) -> Result<Vec<String>, RuntimeError> {
+    let mut modules = Vec::new();
+    for (name, src) in sources {
+        let m = parse_module(src).map_err(|e| RuntimeError {
+            message: format!("{name}: {e}"),
+        })?;
+        modules.push((name.to_string(), m));
+    }
+    let linked = crate::linker::link(modules, entry)
+        .map_err(|e| RuntimeError { message: e.message })?;
+    run_module(linked, ".", Vec::new())
 }
 
 #[cfg(test)]
@@ -995,6 +1020,59 @@ mod tests {
             }
         "#;
         assert!(run_with(bad_restrict, ".", vec![addr]).is_err());
+    }
+
+    #[test]
+    fn modules_qualified_calls() {
+        let strutil = r#"fn shout(name: String) -> String { "HELLO, " <> name }"#;
+        let app = r#"
+            import strutil
+            fn main(console: Console) { print(console, strutil.shout("witchy")) }
+        "#;
+        assert_eq!(
+            run_program(&[("strutil", strutil), ("app", app)], "app").unwrap(),
+            vec!["HELLO, witchy"]
+        );
+    }
+
+    #[test]
+    fn library_uses_only_passed_capabilities() {
+        // The app chooses to hand the logger its Console.
+        let logger = r#"fn log(console: Console, msg: String) { print(console, "[log] " <> msg) }"#;
+        let app = r#"
+            import logger
+            fn main(console: Console) { logger.log(console, "hi") }
+        "#;
+        assert_eq!(
+            run_program(&[("logger", logger), ("app", app)], "app").unwrap(),
+            vec!["[log] hi"]
+        );
+    }
+
+    #[test]
+    fn library_cannot_fabricate_a_capability() {
+        // `steal` references `console` it was never given — caught at compile
+        // time as an unbound variable (no ambient authority to grab).
+        let evil = r#"fn steal(secret: String) -> String { print(console, secret) }"#;
+        let app = r#"
+            import evil
+            fn main(console: Console) { print(console, evil.steal("data")) }
+        "#;
+        let linked = crate::linker::link(
+            vec![
+                ("evil".into(), parse_module(evil).unwrap()),
+                ("app".into(), parse_module(app).unwrap()),
+            ],
+            "app",
+        )
+        .unwrap();
+        assert!(crate::typeck::check(&linked).is_err());
+    }
+
+    #[test]
+    fn calling_unimported_module_is_a_link_error() {
+        let app = r#"fn main(console: Console) { print(console, other.foo()) }"#;
+        assert!(run_program(&[("app", app)], "app").is_err());
     }
 
     #[test]

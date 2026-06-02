@@ -102,11 +102,17 @@ impl Parser {
     // --- top level ---
 
     fn module(&mut self) -> Result<Module, ParseError> {
+        // Imports come first: `import name` — declarations only, no code runs.
+        let mut imports = Vec::new();
+        while self.at(&Tok::Import) {
+            self.advance();
+            imports.push(self.ident()?);
+        }
         let mut items = Vec::new();
         while !self.at(&Tok::Eof) {
             items.push(self.item()?);
         }
-        Ok(Module { items })
+        Ok(Module { imports, items })
     }
 
     fn item(&mut self) -> Result<Item, ParseError> {
@@ -388,8 +394,19 @@ impl Parser {
         }
     }
 
-    /// Resolve a bare name into a variable, call, or constructor.
+    /// Resolve a bare name into a variable, call, constructor, or a qualified
+    /// call `module.func(args)`.
     fn name_application(&mut self, name: String) -> Result<Expr, ParseError> {
+        // Qualified call into an imported module: `math.add(...)`.
+        if self.at(&Tok::Dot) {
+            self.advance();
+            let member = self.ident()?;
+            let args = self.call_args()?;
+            return Ok(Expr::Call {
+                name: format!("{name}.{member}"),
+                args,
+            });
+        }
         let is_ctor = name.chars().next().is_some_and(|c| c.is_uppercase());
         if self.at(&Tok::LParen) {
             let args = self.call_args()?;

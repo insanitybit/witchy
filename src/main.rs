@@ -10,6 +10,7 @@ mod ast;
 mod codegen;
 mod interpreter;
 mod lexer;
+mod linker;
 mod parser;
 mod runtime;
 mod typeck;
@@ -150,9 +151,30 @@ fn main() -> wasmtime::Result<()> {
     run_compiled_actor(&mut rt, "witchy actor compiled to its own WASM VM", include_str!("../examples/counter.witchy"));
     run_actor_system("witchy compiled actors messaging", include_str!("../examples/mailbox.witchy"));
     run_net_demo("witchy network capability");
+    run_program_demo(
+        "witchy modules (import)",
+        &[
+            ("strutil", include_str!("../examples/strutil.witchy")),
+            ("app", include_str!("../examples/app.witchy")),
+        ],
+        "app",
+    );
 
     println!("\nspike OK");
     Ok(())
+}
+
+/// Parse, link, and run a multi-module program through the interpreter.
+fn run_program_demo(title: &str, sources: &[(&str, &str)], entry: &str) {
+    println!("\n== {title} ==");
+    match interpreter::run_program(sources, entry) {
+        Ok(out) => {
+            for line in out {
+                println!("{line}");
+            }
+        }
+        Err(e) => println!("error: {e}"),
+    }
 }
 
 /// Demonstrate the Net capability against a loopback echo server: a granted
