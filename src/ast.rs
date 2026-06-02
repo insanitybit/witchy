@@ -206,4 +206,13 @@ pub enum Pattern {
     Bool(bool),
     Ctor { name: String, args: Vec<Pattern> },
     Tuple(Vec<Pattern>),
+    /// A list pattern. `elems` are matched positionally against the front of the
+    /// list. `rest` controls the tail: `None` requires an exact-length match
+    /// (`[a, b]`); `Some(None)` matches any remaining tail and ignores it
+    /// (`[a, ..]`); `Some(Some(name))` binds the remaining tail as a list
+    /// (`[a, ..rest]`).
+    List {
+        elems: Vec<Pattern>,
+        rest: Option<Option<String>>,
+    },
 }

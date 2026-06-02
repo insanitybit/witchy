@@ -570,6 +570,7 @@ impl Codegen {
                 format!("{value}    local.set ${name}\n"),
             ),
             Pattern::Tuple(_) => return cerr("tuple patterns are not compiled to WASM yet"),
+            Pattern::List { .. } => return cerr("list patterns are not compiled to WASM yet"),
             Pattern::Str(s) => {
                 self.uses_str_eq = true;
                 let off = self.intern(s);

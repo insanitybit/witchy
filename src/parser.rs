@@ -585,6 +585,32 @@ impl Parser {
                 self.expect(&Tok::RParen)?;
                 Ok(Pattern::Tuple(pats))
             }
+            Tok::LBracket => {
+                self.advance();
+                let mut elems = Vec::new();
+                let mut rest = None;
+                while !self.at(&Tok::RBracket) {
+                    if self.eat(&Tok::DotDot) {
+                        // `..` or `..name` — captures the remaining tail; must be last.
+                        let name = match self.kind() {
+                            Tok::Ident(n) => {
+                                let n = n.clone();
+                                self.advance();
+                                Some(n)
+                            }
+                            _ => None,
+                        };
+                        rest = Some(name);
+                        break;
+                    }
+                    elems.push(self.pattern()?);
+                    if !self.eat(&Tok::Comma) {
+                        break;
+                    }
+                }
+                self.expect(&Tok::RBracket)?;
+                Ok(Pattern::List { elems, rest })
+            }
             Tok::Underscore => {
                 self.advance();
                 Ok(Pattern::Wildcard)

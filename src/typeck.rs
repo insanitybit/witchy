@@ -725,6 +725,17 @@ impl Checker {
                 }
                 Ok(())
             }
+            Pattern::List { elems, rest } => {
+                let elem = self.fresh();
+                self.unify(expected, &Ty::List(Box::new(elem.clone())))?;
+                for p in elems {
+                    self.check_pattern(p, &elem)?;
+                }
+                if let Some(Some(name)) = rest {
+                    self.define(name.clone(), Ty::List(Box::new(elem)), false);
+                }
+                Ok(())
+            }
             Pattern::Ctor { name, args } => {
                 if let Some((fields, result)) = self.ctor_sigs.get(name).cloned() {
                     let typarams = self.ctor_typarams.get(name).cloned().unwrap_or_default();
@@ -1024,6 +1035,34 @@ mod tests {
             }
         "#;
         assert!(check_str(src).is_ok(), "{:?}", check_str(src));
+    }
+
+    #[test]
+    fn list_pattern_binds_element_and_tail() {
+        // `head` is the element type, `tail` is a list of the same element type.
+        let src = r#"
+            fn f(xs: List(Int)) -> Int {
+              match xs {
+                [] -> 0
+                [head, ..tail] -> head + f(tail)
+              }
+            }
+        "#;
+        assert!(check_str(src).is_ok(), "{:?}", check_str(src));
+    }
+
+    #[test]
+    fn rejects_list_pattern_element_misuse() {
+        // Binding a list element as Int then concatenating it as a String fails.
+        let src = r#"
+            fn f(xs: List(Int)) -> String {
+              match xs {
+                [] -> ""
+                [head, ..] -> head <> "!"
+              }
+            }
+        "#;
+        assert!(check_str(src).is_err());
     }
 
     #[test]

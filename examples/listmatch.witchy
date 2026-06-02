@@ -1,0 +1,26 @@
+// List patterns destructure a list by shape: `[]` is empty, `[only]` is exactly
+// one element, and `[head, ..tail]` splits off the front (binding the rest as a
+// list). This makes recursive list processing natural — no indexing.
+
+fn sum(xs: List(Int)) -> Int {
+  match xs {
+    [] -> 0
+    [head, ..tail] -> head + sum(tail)
+  }
+}
+
+fn describe(xs: List(Int)) -> String {
+  match xs {
+    [] -> "empty"
+    [only] -> "one: " <> int_to_string(only)
+    [first, ..] -> "starts with " <> int_to_string(first)
+  }
+}
+
+fn main(console: Console) {
+  let nums = [3, 7, 11]
+  print(console, "sum = " <> int_to_string(sum(nums)))
+  print(console, describe(nums))
+  print(console, describe([42]))
+  print(console, describe([]))
+}

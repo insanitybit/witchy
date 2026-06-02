@@ -45,6 +45,7 @@ pub enum Tok {
     Comma,
     Colon,
     Dot,
+    DotDot,
     Underscore,
 
     // Operators
@@ -109,6 +110,7 @@ impl fmt::Display for Tok {
             Comma => write!(f, ","),
             Colon => write!(f, ":"),
             Dot => write!(f, "."),
+            DotDot => write!(f, ".."),
             Underscore => write!(f, "_"),
             Eq => write!(f, "="),
             EqEq => write!(f, "=="),
@@ -402,6 +404,10 @@ impl Lexer {
             (']', _) => Tok::RBracket,
             (',', _) => Tok::Comma,
             (':', _) => Tok::Colon,
+            ('.', Some('.')) => {
+                self.bump();
+                Tok::DotDot
+            }
             ('.', _) => Tok::Dot,
             (other, _) => return Err(self.err(format!("unexpected character `{other}`"))),
         };

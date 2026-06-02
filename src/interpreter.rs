@@ -827,6 +827,27 @@ fn match_pattern(pat: &Pattern, value: &Value, env: &mut Env) -> bool {
                     .zip(items)
                     .all(|(p, v)| match_pattern(p, v, env))
         }
+        (Pattern::List { elems, rest }, Value::List(items)) => {
+            let len_ok = match rest {
+                None => items.len() == elems.len(),
+                Some(_) => items.len() >= elems.len(),
+            };
+            if !len_ok {
+                return false;
+            }
+            if !elems
+                .iter()
+                .zip(items)
+                .all(|(p, v)| match_pattern(p, v, env))
+            {
+                return false;
+            }
+            if let Some(Some(name)) = rest {
+                let tail = items[elems.len()..].to_vec();
+                env.define(name.clone(), Value::List(tail), false);
+            }
+            true
+        }
         _ => false,
     }
 }
@@ -1339,6 +1360,22 @@ mod tests {
             }
         "#;
         assert_eq!(run(src).unwrap(), vec!["ok 7", "err boom"]);
+    }
+
+    #[test]
+    fn list_pattern_head_tail() {
+        let src = r#"
+            fn len(xs: List(Int)) -> Int {
+              match xs {
+                [] -> 0
+                [_, ..tail] -> 1 + len(tail)
+              }
+            }
+            fn main(console: Console) {
+              print(console, int_to_string(len([5, 6, 7, 8])))
+            }
+        "#;
+        assert_eq!(run(src).unwrap(), vec!["4"]);
     }
 
     #[test]
