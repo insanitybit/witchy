@@ -46,6 +46,28 @@ fn cerr<T>(message: impl Into<String>) -> Result<T, CodegenError> {
 
 const DATA_BASE: u32 = 8;
 
+/// The WASM representation of a value: f64 for floats, i32 for everything else
+/// (ints, bools, and pointers to strings/lists/records).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    I32,
+    F64,
+}
+
+fn wasm_ty(k: Kind) -> &'static str {
+    match k {
+        Kind::I32 => "i32",
+        Kind::F64 => "f64",
+    }
+}
+
+fn ty_kind(t: &Type) -> Kind {
+    match t {
+        Type::Named(n, _) if n == "Float" => Kind::F64,
+        _ => Kind::I32,
+    }
+}
+
 struct Codegen {
     strings: Vec<(String, u32)>,
     next_offset: u32,
@@ -69,6 +91,12 @@ struct Codegen {
     next_label: u32,
     /// Whether the string-equality helper `$str_eq` is needed (string patterns).
     uses_str_eq: bool,
+    /// Whether the `print_float` import is needed (a float-returning `main`).
+    uses_print_float: bool,
+    /// Kinds (i32/f64) of the current function's parameters and locals.
+    locals: HashMap<String, Kind>,
+    /// Declared return kind per function, for resolving call-result kinds.
+    fn_ret: HashMap<String, Kind>,
 }
 
 impl Codegen {
@@ -87,6 +115,82 @@ impl Codegen {
             mk_arities: HashSet::new(),
             next_label: 0,
             uses_str_eq: false,
+            uses_print_float: false,
+            locals: HashMap::new(),
+            fn_ret: HashMap::new(),
+        }
+    }
+
+    /// The WASM kind a compiled expression evaluates to.
+    fn kind_of(&self, e: &Expr) -> Kind {
+        match e {
+            Expr::Float(_) => Kind::F64,
+            Expr::Var(n) => self.locals.get(n).copied().unwrap_or(Kind::I32),
+            Expr::Unary { expr, .. } => self.kind_of(expr),
+            Expr::Binary { op, lhs, .. } => match op {
+                BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div => self.kind_of(lhs),
+                _ => Kind::I32, // concat (ptr) and comparisons (bool) are i32
+            },
+            Expr::If { then_block, .. } => self.block_kind(then_block),
+            Expr::Block(b) => self.block_kind(b),
+            Expr::Match { arms, .. } => {
+                arms.first().map(|a| self.kind_of(&a.body)).unwrap_or(Kind::I32)
+            }
+            Expr::Call { name, .. } => match name.as_str() {
+                "to_string" | "int_to_string" | "length" | "at" | "print" => Kind::I32,
+                other => self.fn_ret.get(other).copied().unwrap_or(Kind::I32),
+            },
+            _ => Kind::I32, // Int, Bool, Str, List, Ctor, Spawn
+        }
+    }
+
+    fn block_kind(&self, b: &Block) -> Kind {
+        match b.stmts.last() {
+            Some(Stmt::Expr(e)) => self.kind_of(e),
+            _ => Kind::I32,
+        }
+    }
+
+    /// Record the kinds of all `let`/pattern-bound locals in a body.
+    fn infer_locals(&mut self, block: &Block) {
+        for stmt in &block.stmts {
+            match stmt {
+                Stmt::Let { name, value, .. } => {
+                    let k = self.kind_of(value);
+                    self.locals.insert(name.clone(), k);
+                    self.infer_locals_expr(value);
+                }
+                Stmt::Assign { value, .. } => self.infer_locals_expr(value),
+                Stmt::Expr(e) => self.infer_locals_expr(e),
+            }
+        }
+    }
+
+    fn infer_locals_expr(&mut self, e: &Expr) {
+        match e {
+            Expr::If {
+                then_block,
+                else_block,
+                ..
+            } => {
+                self.infer_locals(then_block);
+                if let Some(b) = else_block {
+                    self.infer_locals(b);
+                }
+            }
+            Expr::Block(b) => self.infer_locals(b),
+            Expr::Match { arms, .. } => {
+                for arm in arms {
+                    // Pattern-bound vars are i32 (floats aren't stored in records).
+                    let mut pvars = Vec::new();
+                    collect_pattern_vars(&arm.pattern, &mut pvars);
+                    for v in pvars {
+                        self.locals.insert(v, Kind::I32);
+                    }
+                    self.infer_locals_expr(&arm.body);
+                }
+            }
+            _ => {}
         }
     }
 
@@ -114,6 +218,9 @@ impl Codegen {
         }
         if self.uses_print_int {
             s.push_str("  (import \"witchy\" \"print_int\" (func $print_int (param i32)))\n");
+        }
+        if self.uses_print_float {
+            s.push_str("  (import \"witchy\" \"print_float\" (func $print_float (param f64)))\n");
         }
         s
     }
@@ -154,20 +261,28 @@ impl Codegen {
     }
 
     fn compile_function(&mut self, f: &Function) -> Result<String, CodegenError> {
+        self.locals.clear();
+        for p in &f.params {
+            let k = p.ty.as_ref().map(ty_kind).unwrap_or(Kind::I32);
+            self.locals.insert(p.name.clone(), k);
+        }
+        self.infer_locals(&f.body);
+
         let mut header = format!("  (func ${} ", f.name);
         for p in &f.params {
-            header.push_str(&format!("(param ${} i32) ", p.name));
+            header.push_str(&format!("(param ${} {}) ", p.name, wasm_ty(self.locals[&p.name])));
         }
-        // Result = the normal return value, then one i32 per `inout` parameter
+        // Result = the normal return value, then one slot per `inout` parameter
         // (moved back out to the caller).
-        let n_inout = f
-            .params
-            .iter()
-            .filter(|p| p.convention == Convention::Inout)
-            .count();
-        header.push_str("(result");
-        for _ in 0..=n_inout {
-            header.push_str(" i32");
+        let ret_kind = match &f.ret {
+            Some(t) => ty_kind(t),
+            None => self.block_kind(&f.body),
+        };
+        header.push_str(&format!("(result {}", wasm_ty(ret_kind)));
+        for p in &f.params {
+            if p.convention == Convention::Inout {
+                header.push_str(&format!(" {}", wasm_ty(self.locals[&p.name])));
+            }
         }
         header.push_str(")\n");
 
@@ -176,7 +291,8 @@ impl Codegen {
         lets.sort();
         lets.dedup();
         for name in &lets {
-            header.push_str(&format!("    (local ${name} i32)\n"));
+            let k = self.locals.get(name).copied().unwrap_or(Kind::I32);
+            header.push_str(&format!("    (local ${name} {})\n", wasm_ty(k)));
         }
 
         let body = self.compile_block(&f.body)?;
@@ -243,10 +359,13 @@ impl Codegen {
                     Ok(format!("    local.get ${name}\n"))
                 }
             }
-            Expr::Unary { op: UnOp::Neg, expr } => Ok(format!(
-                "    i32.const 0\n{}    i32.sub\n",
-                self.compile_expr(expr)?
-            )),
+            Expr::Unary { op: UnOp::Neg, expr } => {
+                if self.kind_of(expr) == Kind::F64 {
+                    Ok(format!("{}    f64.neg\n", self.compile_expr(expr)?))
+                } else {
+                    Ok(format!("    i32.const 0\n{}    i32.sub\n", self.compile_expr(expr)?))
+                }
+            }
             Expr::Binary { op, lhs, rhs } => {
                 if *op == BinOp::Concat {
                     self.uses_concat = true;
@@ -254,20 +373,31 @@ impl Codegen {
                     let r = self.compile_expr(rhs)?;
                     return Ok(format!("{l}{r}    call $concat\n"));
                 }
+                let float = self.kind_of(lhs) == Kind::F64;
                 let l = self.compile_expr(lhs)?;
                 let r = self.compile_expr(rhs)?;
-                let opcode = match op {
-                    BinOp::Add => "i32.add",
-                    BinOp::Sub => "i32.sub",
-                    BinOp::Mul => "i32.mul",
-                    BinOp::Div => "i32.div_s",
-                    BinOp::Eq => "i32.eq",
-                    BinOp::NotEq => "i32.ne",
-                    BinOp::Lt => "i32.lt_s",
-                    BinOp::LtEq => "i32.le_s",
-                    BinOp::Gt => "i32.gt_s",
-                    BinOp::GtEq => "i32.ge_s",
-                    BinOp::Concat => unreachable!(),
+                let opcode = match (op, float) {
+                    (BinOp::Add, false) => "i32.add",
+                    (BinOp::Add, true) => "f64.add",
+                    (BinOp::Sub, false) => "i32.sub",
+                    (BinOp::Sub, true) => "f64.sub",
+                    (BinOp::Mul, false) => "i32.mul",
+                    (BinOp::Mul, true) => "f64.mul",
+                    (BinOp::Div, false) => "i32.div_s",
+                    (BinOp::Div, true) => "f64.div",
+                    (BinOp::Eq, false) => "i32.eq",
+                    (BinOp::Eq, true) => "f64.eq",
+                    (BinOp::NotEq, false) => "i32.ne",
+                    (BinOp::NotEq, true) => "f64.ne",
+                    (BinOp::Lt, false) => "i32.lt_s",
+                    (BinOp::Lt, true) => "f64.lt",
+                    (BinOp::LtEq, false) => "i32.le_s",
+                    (BinOp::LtEq, true) => "f64.le",
+                    (BinOp::Gt, false) => "i32.gt_s",
+                    (BinOp::Gt, true) => "f64.gt",
+                    (BinOp::GtEq, false) => "i32.ge_s",
+                    (BinOp::GtEq, true) => "f64.ge",
+                    (BinOp::Concat, _) => unreachable!(),
                 };
                 Ok(format!("{l}{r}    {opcode}\n"))
             }
@@ -288,7 +418,7 @@ impl Codegen {
             }
             Expr::Block(b) => self.compile_block(b),
             Expr::Call { name, args } => self.compile_call(name, args),
-            Expr::Float(_) => cerr("float values are not compiled to WASM yet"),
+            Expr::Float(x) => Ok(format!("    f64.const {x}\n")),
             Expr::List(items) => {
                 // A list is a record [len][elem0..]; reuse the $mk{N} helper with
                 // the length as the header slot.
@@ -493,6 +623,8 @@ pub fn compile_module(module: &Module) -> Result<String, CodegenError> {
             Item::Function(f) => {
                 cg.fn_conventions
                     .insert(f.name.clone(), f.params.iter().map(|p| p.convention).collect());
+                let ret = f.ret.as_ref().map(ty_kind).unwrap_or(Kind::I32);
+                cg.fn_ret.insert(f.name.clone(), ret);
             }
             Item::Type(t) => {
                 for (tag, variant) in t.variants.iter().enumerate() {
@@ -506,6 +638,7 @@ pub fn compile_module(module: &Module) -> Result<String, CodegenError> {
     let mut func_wat = String::new();
     let mut main_params = 0usize;
     let mut main_returns_int = false;
+    let mut main_returns_float = false;
     let mut has_main = false;
 
     for item in &module.items {
@@ -515,6 +648,7 @@ pub fn compile_module(module: &Module) -> Result<String, CodegenError> {
                     has_main = true;
                     main_params = f.params.len();
                     main_returns_int = matches!(&f.ret, Some(Type::Named(n, _)) if n == "Int");
+                    main_returns_float = matches!(&f.ret, Some(Type::Named(n, _)) if n == "Float");
                     if main_params > 1 {
                         return cerr("codegen `main` may take at most one (capability) argument");
                     }
@@ -531,6 +665,9 @@ pub fn compile_module(module: &Module) -> Result<String, CodegenError> {
     if main_returns_int {
         cg.uses_print_int = true;
     }
+    if main_returns_float {
+        cg.uses_print_float = true;
+    }
 
     let mut wat = String::from("(module\n");
     wat.push_str(&cg.emit_imports());
@@ -545,6 +682,8 @@ pub fn compile_module(module: &Module) -> Result<String, CodegenError> {
     wat.push_str("    call $main\n");
     if main_returns_int {
         wat.push_str("    call $print_int)\n");
+    } else if main_returns_float {
+        wat.push_str("    call $print_float)\n");
     } else {
         wat.push_str("    drop)\n");
     }
@@ -847,6 +986,39 @@ mod tests {
             .call(&mut store, ())
             .unwrap();
         captured.lock().unwrap().take().expect("printed a value")
+    }
+
+    /// Run a float program with a capturing `print_float`.
+    fn run_float(src: &str) -> f64 {
+        let module = parse_module(src).expect("parse");
+        let wat = compile_module(&module).expect("compile");
+        let engine = Engine::default();
+        let wt = WtModule::new(&engine, &wat).expect("valid wat");
+        let captured = Arc::new(Mutex::new(None));
+        let mut linker = Linker::new(&engine);
+        let sink = Arc::clone(&captured);
+        linker
+            .func_wrap("witchy", "print_float", move |x: f64| {
+                *sink.lock().unwrap() = Some(x);
+            })
+            .unwrap();
+        let mut store = Store::new(&engine, ());
+        let instance = linker.instantiate(&mut store, &wt).unwrap();
+        instance
+            .get_typed_func::<(), ()>(&mut store, "run")
+            .unwrap()
+            .call(&mut store, ())
+            .unwrap();
+        captured.lock().unwrap().take().expect("printed a float")
+    }
+
+    #[test]
+    fn compiles_floats() {
+        let src = r#"
+            fn half(x: Float) -> Float { x / 2.0 }
+            fn main() -> Float { half(7.0) + 1.5 }
+        "#;
+        assert_eq!(run_float(src), 5.0); // 3.5 + 1.5
     }
 
     /// Build a wasmtime instance whose `print` captures strings from memory.

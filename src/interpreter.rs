@@ -735,6 +735,15 @@ mod tests {
     }
 
     #[test]
+    fn float_arithmetic() {
+        let src = r#"
+            fn half(x: Float) -> Float { x / 2.0 }
+            fn main(console: Console) { print(console, to_string(half(7.0))) }
+        "#;
+        assert_eq!(run(src).unwrap(), vec!["3.5"]);
+    }
+
+    #[test]
     fn lists_length_and_index() {
         let src = r#"
             fn main(console: Console) {
