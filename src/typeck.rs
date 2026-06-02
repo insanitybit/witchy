@@ -92,6 +92,9 @@ struct Checker {
     adt_variants: HashMap<String, Vec<String>>,
     actor_field_sigs: HashMap<String, Vec<Ty>>,
     fn_conventions: HashMap<String, Vec<Convention>>,
+    /// Per-function type parameters (name, var id), from lowercase type names in
+    /// signatures. Generalized: instantiated fresh at each call site.
+    fn_typarams: HashMap<String, Vec<(String, u32)>>,
     subst: HashMap<u32, Ty>,
     next_var: u32,
     /// Each binding carries its type and whether it is mutable.
@@ -134,6 +137,71 @@ impl Checker {
                 Ty::List(Box::new(elem))
             }
             _ => Ty::Named(name.clone()),
+        }
+    }
+
+    /// Like `to_ty`, but a lowercase, argument-less type name becomes a type
+    /// *variable* (a parameter), shared within one signature via `vars`.
+    fn to_ty_generic(&mut self, t: &ast::Type, vars: &mut HashMap<String, Ty>) -> Ty {
+        match t {
+            ast::Type::Tuple(ts) => {
+                Ty::Tuple(ts.iter().map(|t| self.to_ty_generic(t, vars)).collect())
+            }
+            ast::Type::Named(name, args) => match name.as_str() {
+                "Int" => Ty::Int,
+                "Float" => Ty::Float,
+                "String" => Ty::String,
+                "Bool" => Ty::Bool,
+                "Nil" => Ty::Nil,
+                "Console" => Ty::Console,
+                "Subject" => Ty::Subject,
+                "Dir" => Ty::Dir,
+                "Net" => Ty::Net,
+                "Socket" => Ty::Socket,
+                "List" => {
+                    let elem = match args.first() {
+                        Some(a) => self.to_ty_generic(a, vars),
+                        None => self.fresh(),
+                    };
+                    Ty::List(Box::new(elem))
+                }
+                other
+                    if args.is_empty()
+                        && other.chars().next().is_some_and(|c| c.is_lowercase()) =>
+                {
+                    if let Some(v) = vars.get(other) {
+                        v.clone()
+                    } else {
+                        let v = self.fresh();
+                        vars.insert(other.to_string(), v.clone());
+                        v
+                    }
+                }
+                other => Ty::Named(other.to_string()),
+            },
+        }
+    }
+
+    /// Instantiate a polymorphic signature: replace its generalized type
+    /// parameters with fresh vars, so each call site is independent. Other
+    /// (inference) vars stay shared, keeping un-annotated functions monomorphic.
+    fn instantiate(&mut self, params: &[Ty], ret: &Ty, typarams: &HashSet<u32>) -> (Vec<Ty>, Ty) {
+        let mut fresh_map: HashMap<u32, Ty> = HashMap::new();
+        for &v in typarams {
+            let f = self.fresh();
+            fresh_map.insert(v, f);
+        }
+        let p = params.iter().map(|t| self.subst_vars(t, &fresh_map)).collect();
+        let r = self.subst_vars(ret, &fresh_map);
+        (p, r)
+    }
+
+    fn subst_vars(&self, t: &Ty, map: &HashMap<u32, Ty>) -> Ty {
+        match self.resolve(t) {
+            Ty::Var(v) => map.get(&v).cloned().unwrap_or(Ty::Var(v)),
+            Ty::List(e) => Ty::List(Box::new(self.subst_vars(&e, map))),
+            Ty::Tuple(ts) => Ty::Tuple(ts.iter().map(|x| self.subst_vars(x, map)).collect()),
+            other => other,
         }
     }
 
@@ -228,7 +296,20 @@ impl Checker {
             "restrict" => Some((vec![Ty::Net, Ty::String], Ty::Net)),
             "send_line" => Some((vec![Ty::Socket, Ty::String], Ty::Nil)),
             "recv_line" => Some((vec![Ty::Socket], Ty::String)),
-            _ => self.fn_sigs.get(name).cloned(),
+            // User functions: instantiate generic type parameters fresh per call.
+            _ => match self.fn_sigs.get(name).cloned() {
+                Some((params, ret)) => {
+                    let typarams: HashSet<u32> = self
+                        .fn_typarams
+                        .get(name)
+                        .into_iter()
+                        .flatten()
+                        .map(|(_, id)| *id)
+                        .collect();
+                    Some(self.instantiate(&params, &ret, &typarams))
+                }
+                None => None,
+            },
         }
     }
 
@@ -610,6 +691,19 @@ impl Checker {
         self.unify(&ret, &body).map_err(|e| TypeError {
             message: format!("function `{}` body: {}", func.name, e.message),
         })?;
+        // Soundness: a declared type parameter must stay free (truly generic).
+        // If the body pinned it to a concrete type, the signature is misleading.
+        if let Some(typarams) = self.fn_typarams.get(&func.name).cloned() {
+            for (pname, v) in typarams {
+                let resolved = self.resolve(&Ty::Var(v));
+                if !matches!(resolved, Ty::Var(_)) {
+                    return terr(format!(
+                        "function `{}`: type parameter `{pname}` is used as `{resolved}`, so it isn't generic",
+                        func.name
+                    ));
+                }
+            }
+        }
         Ok(())
     }
 
@@ -646,6 +740,7 @@ pub fn check(module: &Module) -> Result<(), TypeError> {
         ctor_sigs: HashMap::new(),
         adt_variants: HashMap::new(),
         actor_field_sigs: HashMap::new(),
+        fn_typarams: HashMap::new(),
         subst: HashMap::new(),
         next_var: 0,
         scopes: vec![HashMap::new()],
@@ -656,13 +751,28 @@ pub fn check(module: &Module) -> Result<(), TypeError> {
     for item in &module.items {
         match item {
             Item::Function(f) => {
-                let params = f
+                let mut vars: HashMap<String, Ty> = HashMap::new();
+                let params: Vec<Ty> = f
                     .params
                     .iter()
-                    .map(|p| p.ty.as_ref().map(|t| c.to_ty(t)).unwrap_or_else(|| c.fresh()))
+                    .map(|p| match &p.ty {
+                        Some(t) => c.to_ty_generic(t, &mut vars),
+                        None => c.fresh(),
+                    })
                     .collect();
-                let ret = f.ret.as_ref().map(|t| c.to_ty(t)).unwrap_or_else(|| c.fresh());
+                let ret = match &f.ret {
+                    Some(t) => c.to_ty_generic(t, &mut vars),
+                    None => c.fresh(),
+                };
                 c.fn_sigs.insert(f.name.clone(), (params, ret));
+                let typarams: Vec<(String, u32)> = vars
+                    .into_iter()
+                    .filter_map(|(name, ty)| match ty {
+                        Ty::Var(v) => Some((name, v)),
+                        _ => None,
+                    })
+                    .collect();
+                c.fn_typarams.insert(f.name.clone(), typarams);
                 c.fn_conventions
                     .insert(f.name.clone(), f.params.iter().map(|p| p.convention).collect());
             }
@@ -745,6 +855,24 @@ mod tests {
     #[test]
     fn accepts_tuple_destructure() {
         assert!(check_str("fn main() { let (a, b) = (1, 2) }").is_ok());
+    }
+
+    #[test]
+    fn generic_function_used_at_multiple_types() {
+        let src = r#"
+            fn id(x: a) -> a { x }
+            fn main(console: Console) {
+              print(console, id("hi"))
+              print(console, int_to_string(id(5)))
+            }
+        "#;
+        assert!(check_str(src).is_ok(), "{:?}", check_str(src));
+    }
+
+    #[test]
+    fn rejects_over_constrained_type_param() {
+        // `a` can't be generic if the body forces it to Int.
+        assert!(check_str("fn bad(x: a) -> a { x + 1 }").is_err());
     }
 
     #[test]

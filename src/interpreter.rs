@@ -1244,6 +1244,18 @@ mod tests {
     }
 
     #[test]
+    fn generic_identity_runs() {
+        let src = r#"
+            fn id(x: a) -> a { x }
+            fn main(console: Console) {
+              print(console, id("hi"))
+              print(console, int_to_string(id(5)))
+            }
+        "#;
+        assert_eq!(run(src).unwrap(), vec!["hi", "5"]);
+    }
+
+    #[test]
     fn conversions() {
         let src = r#"
             fn main(console: Console) {
