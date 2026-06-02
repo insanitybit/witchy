@@ -802,7 +802,15 @@ impl Checker {
             }
             Lt | LtEq | Gt | GtEq => {
                 self.unify(&lt, &rt)?;
-                Ok(Ty::Bool)
+                // Ordering is defined only for the totally-ordered primitives.
+                // Without a type-class mechanism, allowing it on arbitrary types
+                // would type-check but crash at runtime, so reject it here.
+                match self.resolve(&lt) {
+                    Ty::Int | Ty::Float | Ty::String => Ok(Ty::Bool),
+                    other => terr(format!(
+                        "ordering comparison requires Int, Float, or String, found `{other}`"
+                    )),
+                }
             }
             And | Or => {
                 self.unify(&Ty::Bool, &lt)?;
@@ -1181,6 +1189,28 @@ mod tests {
             }
         "#;
         assert!(check_str(src).is_ok(), "{:?}", check_str(src));
+    }
+
+    #[test]
+    fn ordering_allows_comparable_primitives() {
+        assert!(check_str("fn f(a: Int, b: Int) -> Bool { a < b }").is_ok());
+        assert!(check_str("fn f(a: Float, b: Float) -> Bool { a >= b }").is_ok());
+        assert!(check_str("fn f(a: String, b: String) -> Bool { a < b }").is_ok());
+    }
+
+    #[test]
+    fn rejects_ordering_on_non_primitives() {
+        // These would type-check under bare unification but crash at runtime, so
+        // the checker rejects them up front.
+        assert!(check_str("fn f(a: Bool, b: Bool) -> Bool { a < b }").is_err());
+        assert!(check_str("fn f(a: List(Int), b: List(Int)) -> Bool { a < b }").is_err());
+        assert!(check_str("fn f(a: (Int, Int), b: (Int, Int)) -> Bool { a < b }").is_err());
+    }
+
+    #[test]
+    fn equality_still_works_on_any_matching_type() {
+        // `==` is unaffected — structural equality is defined for every value.
+        assert!(check_str("fn f(a: (Int, Int), b: (Int, Int)) -> Bool { a == b }").is_ok());
     }
 
     #[test]
