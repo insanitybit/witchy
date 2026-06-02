@@ -28,6 +28,7 @@ pub enum Ty {
     Nil,
     Console,
     Subject,
+    Dir,
     List(Box<Ty>),
     Named(String),
     Var(u32),
@@ -43,6 +44,7 @@ impl fmt::Display for Ty {
             Ty::Nil => write!(f, "Nil"),
             Ty::Console => write!(f, "Console"),
             Ty::Subject => write!(f, "Subject"),
+            Ty::Dir => write!(f, "Dir"),
             Ty::List(e) => write!(f, "List({e})"),
             Ty::Named(n) => write!(f, "{n}"),
             Ty::Var(_) => write!(f, "?"),
@@ -101,6 +103,7 @@ impl Checker {
             "Nil" => Ty::Nil,
             "Console" => Ty::Console,
             "Subject" => Ty::Subject,
+            "Dir" => Ty::Dir,
             "List" => {
                 let elem = match args.first() {
                     Some(a) => self.to_ty(a),
@@ -184,6 +187,8 @@ impl Checker {
                 let elem = self.fresh();
                 Some((vec![Ty::List(Box::new(elem.clone())), Ty::Int], elem))
             }
+            "read" => Some((vec![Ty::Dir, Ty::String], Ty::String)),
+            "subdir" => Some((vec![Ty::Dir, Ty::String], Ty::Dir)),
             _ => self.fn_sigs.get(name).cloned(),
         }
     }

@@ -6,6 +6,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::fmt;
+use std::path::{Component, Path, PathBuf};
 
 use crate::ast::*;
 use crate::parser::parse_module;
@@ -21,6 +22,10 @@ pub enum Value {
     Cap(Capability),
     /// A handle to an actor — the authority to send it messages.
     Subject(usize),
+    /// An unforgeable capability to a directory subtree (cap-std `Dir` style).
+    /// Carries the host path it is rooted at; can only be obtained from the root
+    /// grant or by attenuation (`subdir`).
+    Dir(PathBuf),
     Nil,
 }
 
@@ -68,6 +73,7 @@ impl fmt::Display for Value {
             }
             Value::Cap(c) => write!(f, "<capability {c:?}>"),
             Value::Subject(id) => write!(f, "<actor #{id}>"),
+            Value::Dir(_) => write!(f, "<dir>"),
         }
     }
 }
@@ -155,6 +161,8 @@ pub struct Interpreter {
     actor_defs: HashMap<String, ActorDef>,
     actors: Vec<ActorInstance>,
     queue: VecDeque<(usize, Value)>,
+    /// Host directory the root `Dir` capability is rooted at.
+    root: PathBuf,
     pub output: Vec<String>,
 }
 
@@ -180,7 +188,20 @@ impl Interpreter {
             actor_defs,
             actors: Vec::new(),
             queue: VecDeque::new(),
+            root: PathBuf::from("."),
             output: Vec::new(),
+        }
+    }
+
+    /// Mint the root capability for a `main` parameter of the given type. This
+    /// is where authority enters the program — `main` is the root actor.
+    fn root_cap_for(&self, ty: &Option<Type>) -> Result<Value, RuntimeError> {
+        match ty {
+            Some(Type::Named(n, _)) if n == "Console" => Ok(Value::Cap(Capability::Console)),
+            Some(Type::Named(n, _)) if n == "Dir" => Ok(Value::Dir(self.root.clone())),
+            other => err(format!(
+                "`main` may only declare capability parameters (Console, Dir); got `{other:?}`"
+            )),
         }
     }
 
@@ -310,6 +331,24 @@ impl Interpreter {
                     None => err(format!("list index {i} out of bounds (length {})", items.len())),
                 },
                 _ => err("at expects a list and an Int index"),
+            },
+            // Filesystem capability (cap-std style): attenuate to a subdirectory.
+            "subdir" => match args {
+                [Value::Dir(base), Value::Str(name)] => {
+                    Ok(Some(Value::Dir(resolve(base, name)?)))
+                }
+                _ => err("subdir expects a Dir and a name"),
+            },
+            // Read a file relative to a Dir capability (confined to its subtree).
+            "read" => match args {
+                [Value::Dir(base), Value::Str(rel)] => {
+                    let path = resolve(base, rel)?;
+                    match std::fs::read_to_string(&path) {
+                        Ok(contents) => Ok(Some(Value::Str(contents))),
+                        Err(e) => err(format!("read failed for `{}`: {e}", path.display())),
+                    }
+                }
+                _ => err("read expects a Dir and a relative path"),
             },
             _ => Ok(None),
         }
@@ -597,18 +636,44 @@ fn compare(l: &Value, r: &Value) -> Result<std::cmp::Ordering, RuntimeError> {
 
 /// Parse and run a witchy program, returning everything it `print`ed. Expects a
 /// `main` function with no parameters.
+/// Resolve a path relative to a `Dir` capability, rejecting escapes — the value
+/// can only ever reach files within its subtree (cap-std style).
+fn resolve(base: &Path, rel: &str) -> Result<PathBuf, RuntimeError> {
+    let p = Path::new(rel);
+    if p.is_absolute() {
+        return err("absolute paths are not allowed (a Dir capability is a subtree)");
+    }
+    for comp in p.components() {
+        match comp {
+            Component::Normal(_) | Component::CurDir => {}
+            Component::ParentDir => return err("`..` escapes the Dir capability"),
+            _ => return err("invalid path component in a Dir-relative path"),
+        }
+    }
+    Ok(base.join(rel))
+}
+
 pub fn run(src: &str) -> Result<Vec<String>, RuntimeError> {
+    run_in(src, ".")
+}
+
+/// Run a program with `root` as the host directory backing the root `Dir`
+/// capability. `main` is the root actor: it receives the capabilities it
+/// declares (this is the only place authority is minted), and hands attenuated
+/// ones to the actors it spawns.
+pub fn run_in(src: &str, root: impl AsRef<Path>) -> Result<Vec<String>, RuntimeError> {
     let module = parse_module(src).map_err(|e| RuntimeError { message: e.to_string() })?;
     let mut interp = Interpreter::new(module);
-    // Grant the root capabilities at the entry point. If `main` declares a
-    // parameter, it receives the Console capability; this is the only place a
-    // capability is ever minted.
-    let root_args = match interp.functions.get("main") {
-        Some(f) if f.params.len() == 1 => vec![Value::Cap(Capability::Console)],
-        _ => vec![],
+    interp.root = root.as_ref().to_path_buf();
+    let root_args = match interp.functions.get("main").cloned() {
+        Some(f) => f
+            .params
+            .iter()
+            .map(|p| interp.root_cap_for(&p.ty))
+            .collect::<Result<Vec<_>, _>>()?,
+        None => vec![],
     };
     interp.call("main", root_args)?;
-    // Drain the actor mailboxes that `main` populated.
     interp.run_to_completion()?;
     Ok(interp.output)
 }
@@ -732,6 +797,39 @@ mod tests {
             fn main(console: Console) { announce(console, "witchy") }
         "#;
         assert_eq!(run(src).unwrap(), vec!["hello, witchy"]);
+    }
+
+    #[test]
+    fn dir_capability_reads_attenuates_and_confines() {
+        let root = std::env::temp_dir().join(format!("witchy_fs_{}", std::process::id()));
+        std::fs::create_dir_all(root.join("sub")).unwrap();
+        std::fs::write(root.join("sub/hi.txt"), "hi!").unwrap();
+
+        // Attenuate to a subdir and read a file within it.
+        let ok = r#"
+            fn main(console: Console, root: Dir) {
+              let d = subdir(root, "sub")
+              print(console, read(d, "hi.txt"))
+            }
+        "#;
+        assert_eq!(run_in(ok, &root).unwrap(), vec!["hi!"]);
+
+        // Confinement: `..` cannot escape the granted subtree.
+        let escape = r#"
+            fn main(console: Console, root: Dir) {
+              print(console, read(root, "../secret"))
+            }
+        "#;
+        assert!(run_in(escape, &root).is_err());
+
+        // A function with no Dir cannot read (no way to obtain the capability).
+        let no_cap = r#"
+            fn sneaky() -> String { read(root, "sub/hi.txt") }
+            fn main(console: Console, root: Dir) { print(console, sneaky()) }
+        "#;
+        assert!(run_in(no_cap, &root).is_err());
+
+        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]

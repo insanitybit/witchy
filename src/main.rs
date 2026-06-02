@@ -143,6 +143,7 @@ fn main() -> wasmtime::Result<()> {
     run_witchy("witchy ownership (sink)", include_str!("../examples/ownership.witchy"));
     run_witchy("witchy features combined", include_str!("../examples/commands.witchy"));
     run_witchy("witchy actors", include_str!("../examples/actors.witchy"));
+    run_witchy("witchy filesystem capability", include_str!("../examples/files.witchy"));
     run_compiled(&mut rt, "witchy compiled to WASM (ints)", include_str!("../examples/compute.witchy"));
     run_compiled(&mut rt, "witchy compiled to WASM (ADTs)", include_str!("../examples/shapes.witchy"));
     run_compiled(&mut rt, "witchy compiled to WASM (strings)", include_str!("../examples/strings.witchy"));
@@ -341,6 +342,15 @@ mod example_tests {
         let src = include_str!("../examples/commands.witchy");
         assert_eq!(interp(src), vec!["total is 1"]);
         assert_fn_compiles(src);
+    }
+
+    #[test]
+    fn files_example_reads_through_capability() {
+        // Run from the crate root so examples/data/greeting.txt resolves.
+        assert_eq!(
+            interp(include_str!("../examples/files.witchy")),
+            vec!["hello from a sandboxed Dir capability"]
+        );
     }
 
     #[test]

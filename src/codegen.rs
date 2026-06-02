@@ -610,6 +610,9 @@ impl Codegen {
                 ))
             }
             ("spawn", _) => cerr("`spawn` is not compiled to WASM yet (host-driven)"),
+            ("read", _) | ("subdir", _) => cerr(
+                "filesystem capabilities are not compiled to WASM yet (interpreter only; maps to WASI preopens)",
+            ),
             _ => {
                 let mut out = String::new();
                 for arg in args {
