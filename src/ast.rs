@@ -132,6 +132,9 @@ pub enum Expr {
     /// A constructor application: `Click(x, y)` or nullary `Closed`.
     Ctor { name: String, args: Vec<Expr> },
     Unary { op: UnOp, expr: Box<Expr> },
+    /// `e?` — propagate a `Result`/`Option`: unwrap `Ok`/`Some` to its payload,
+    /// or short-circuit, returning the `Err`/`None` from the enclosing function.
+    Try(Box<Expr>),
     Binary { op: BinOp, lhs: Box<Expr>, rhs: Box<Expr> },
     If {
         cond: Box<Expr>,

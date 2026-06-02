@@ -374,7 +374,17 @@ impl Parser {
                 expr: Box::new(expr),
             });
         }
-        self.atom()
+        self.postfix()
+    }
+
+    /// Postfix `?` binds tighter than any prefix or infix operator, so `f(x)?`
+    /// is `(f(x))?` and `-x?` is `-(x?)`.
+    fn postfix(&mut self) -> Result<Expr, ParseError> {
+        let mut e = self.atom()?;
+        while self.eat(&Tok::Question) {
+            e = Expr::Try(Box::new(e));
+        }
+        Ok(e)
     }
 
     fn atom(&mut self) -> Result<Expr, ParseError> {

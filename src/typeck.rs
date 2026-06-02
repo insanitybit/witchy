@@ -144,6 +144,9 @@ struct Checker {
     /// Bindings that have been consumed (moved out via a `sink` parameter) and
     /// may not be used again until reassigned. Flow-sensitive within a body.
     consumed: HashSet<String>,
+    /// The declared return type of the function currently being checked, so `?`
+    /// can require the enclosing function to return a matching Result/Option.
+    current_ret: Option<Ty>,
 }
 
 impl Checker {
@@ -536,6 +539,38 @@ impl Checker {
                     },
                 }
             }
+            Expr::Try(inner) => {
+                let it = self.infer(inner)?;
+                let resolved = self.resolve(&it);
+                let (value_ty, expected_ret) = match &resolved {
+                    Ty::Named(n, args) if n == "Result" && args.len() == 2 => {
+                        let r = self.fresh();
+                        (
+                            args[0].clone(),
+                            Ty::Named("Result".into(), vec![r, args[1].clone()]),
+                        )
+                    }
+                    Ty::Named(n, args) if n == "Option" && args.len() == 1 => {
+                        let r = self.fresh();
+                        (args[0].clone(), Ty::Named("Option".into(), vec![r]))
+                    }
+                    other => {
+                        return terr(format!(
+                            "`?` expects a Result or Option, found `{other}`"
+                        ))
+                    }
+                };
+                let Some(ret) = self.current_ret.clone() else {
+                    return terr("`?` can only be used inside a function returning Result or Option");
+                };
+                self.unify(&ret, &expected_ret).map_err(|e| TypeError {
+                    message: format!(
+                        "`?` propagates from a `{resolved}`, but the enclosing function returns a different type: {}",
+                        e.message
+                    ),
+                })?;
+                Ok(value_ty)
+            }
             Expr::Binary { op, lhs, rhs } => self.infer_binary(*op, lhs, rhs),
             Expr::If {
                 cond,
@@ -742,6 +777,7 @@ impl Checker {
         let (params, ret) = self.fn_sigs.get(&func.name).cloned().unwrap();
         self.scopes = vec![HashMap::new()];
         self.consumed.clear();
+        self.current_ret = Some(ret.clone());
         for (param, ty) in func.params.iter().zip(&params) {
             self.define(param.name.clone(), ty.clone(), param.convention != Convention::Let);
         }
@@ -769,6 +805,7 @@ impl Checker {
         for handler in &actor.handlers {
             self.scopes = vec![HashMap::new()];
             self.consumed.clear();
+            self.current_ret = None;
             for field in &actor.fields {
                 let ty = self.to_ty(&field.ty);
                 self.define(field.name.clone(), ty, field.mutable);
@@ -804,6 +841,7 @@ pub fn check(module: &Module) -> Result<(), TypeError> {
         next_var: 0,
         scopes: vec![HashMap::new()],
         consumed: HashSet::new(),
+        current_ret: None,
     };
 
     // Pass 1: collect all signatures so definitions can refer to each other.
@@ -974,6 +1012,42 @@ mod tests {
             }
         "#;
         assert!(check_str(src).is_ok(), "{:?}", check_str(src));
+    }
+
+    #[test]
+    fn try_operator_propagates_result() {
+        let src = r#"
+            type Result { Ok(a) Err(e) }
+            fn parse(s: String) -> Result(Int, String) { Ok(string_to_int(s)) }
+            fn add(a: String, b: String) -> Result(Int, String) {
+              let x = parse(a)?
+              let y = parse(b)?
+              Ok(x + y)
+            }
+        "#;
+        assert!(check_str(src).is_ok(), "{:?}", check_str(src));
+    }
+
+    #[test]
+    fn rejects_try_when_error_types_differ() {
+        // `?` yields `Err(String)`, but the function returns `Result(Int, Int)`,
+        // so the error types can't match.
+        let src = r#"
+            type Result { Ok(a) Err(e) }
+            fn src_fn() -> Result(Int, String) { Err("x") }
+            fn bad() -> Result(Int, Int) { let v = src_fn()?  Ok(v) }
+        "#;
+        assert!(check_str(src).is_err());
+    }
+
+    #[test]
+    fn rejects_try_on_non_result() {
+        // `?` on a plain Int is meaningless.
+        let src = r#"
+            type Result { Ok(a) Err(e) }
+            fn bad(n: Int) -> Result(Int, String) { Ok(n?) }
+        "#;
+        assert!(check_str(src).is_err());
     }
 
     #[test]

@@ -65,6 +65,7 @@ pub enum Tok {
     AndAnd, // &&
     OrOr,   // ||
     Bang,   // !
+    Question, // ?
 
     Eof,
 }
@@ -124,6 +125,7 @@ impl fmt::Display for Tok {
             AndAnd => write!(f, "&&"),
             OrOr => write!(f, "||"),
             Bang => write!(f, "!"),
+            Question => write!(f, "?"),
             Eof => write!(f, "end of input"),
         }
     }
@@ -385,6 +387,7 @@ impl Lexer {
             ('*', _) => Tok::Star,
             ('/', _) => Tok::Slash,
             ('%', _) => Tok::Percent,
+            ('?', _) => Tok::Question,
             ('(', _) => Tok::LParen,
             (')', _) => Tok::RParen,
             ('{', _) => Tok::LBrace,

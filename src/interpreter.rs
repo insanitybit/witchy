@@ -111,10 +111,35 @@ impl fmt::Display for RuntimeError {
 
 impl std::error::Error for RuntimeError {}
 
-fn err<T>(message: impl Into<String>) -> Result<T, RuntimeError> {
-    Err(RuntimeError {
+/// The control-flow channel threaded through expression evaluation: either a
+/// real error, or an early `return` carrying a value (produced by `?` when it
+/// short-circuits on `Err`/`None`). `Return` is caught at the function boundary
+/// and turned back into that function's result.
+enum Flow {
+    Err(RuntimeError),
+    Return(Value),
+}
+
+impl From<RuntimeError> for Flow {
+    fn from(e: RuntimeError) -> Self {
+        Flow::Err(e)
+    }
+}
+
+fn err<T, E: From<RuntimeError>>(message: impl Into<String>) -> Result<T, E> {
+    Err(E::from(RuntimeError {
         message: message.into(),
-    })
+    }))
+}
+
+/// Collapse a function body's `Flow` result into a plain value: a `?`-driven
+/// early `return` becomes the body's value; a real error propagates.
+fn finish(r: Result<Value, Flow>) -> Result<Value, RuntimeError> {
+    match r {
+        Ok(v) => Ok(v),
+        Err(Flow::Return(v)) => Ok(v),
+        Err(Flow::Err(e)) => Err(e),
+    }
 }
 
 /// Lexically scoped variable bindings. Functions are not closures: a call
@@ -255,13 +280,13 @@ impl Interpreter {
                 !matches!(param.convention, Convention::Let),
             );
         }
-        self.eval_block(&func.body, &mut env)
+        finish(self.eval_block(&func.body, &mut env))
     }
 
     /// Evaluate a function call expression, honoring parameter conventions:
     /// `inout` arguments must be mutable variables and are written back after
     /// the call returns (Hylo-style move-in / move-out).
-    fn eval_call(&mut self, name: &str, args: &[Expr], env: &mut Env) -> Result<Value, RuntimeError> {
+    fn eval_call(&mut self, name: &str, args: &[Expr], env: &mut Env) -> Result<Value, Flow> {
         let argvals = args
             .iter()
             .map(|a| self.eval(a, env))
@@ -298,7 +323,13 @@ impl Interpreter {
                 }
             }
         }
-        let result = self.eval_block(&func.body, &mut fenv)?;
+        // The callee's own `?` early-return stops here; it becomes the call's
+        // value rather than propagating into the caller.
+        let result = match self.eval_block(&func.body, &mut fenv) {
+            Ok(v) => v,
+            Err(Flow::Return(v)) => v,
+            Err(e @ Flow::Err(_)) => return Err(e),
+        };
         for (caller, param_name) in writebacks {
             let final_v = fenv.get(&param_name).cloned().unwrap();
             match env.assign(&caller, final_v) {
@@ -485,7 +516,7 @@ impl Interpreter {
         let mut supplied = args.into_iter();
         for field in &def.fields {
             let value = match &field.init {
-                Some(init) => self.eval(init, &mut Env::new())?,
+                Some(init) => finish(self.eval(init, &mut Env::new()))?,
                 None => match supplied.next() {
                     Some(v) => v,
                     None => {
@@ -555,7 +586,7 @@ impl Interpreter {
                 !matches!(param.convention, Convention::Let),
             );
         }
-        self.eval_block(&handler.body, &mut env)?;
+        finish(self.eval_block(&handler.body, &mut env))?;
         // Persist any state the handler mutated.
         let field_names: Vec<String> = self.actors[id].state.keys().cloned().collect();
         for k in field_names {
@@ -566,7 +597,7 @@ impl Interpreter {
         Ok(())
     }
 
-    fn eval_block(&mut self, block: &Block, env: &mut Env) -> Result<Value, RuntimeError> {
+    fn eval_block(&mut self, block: &Block, env: &mut Env) -> Result<Value, Flow> {
         env.push();
         let mut result = Value::Nil;
         for stmt in &block.stmts {
@@ -618,7 +649,7 @@ impl Interpreter {
         Ok(result)
     }
 
-    fn eval(&mut self, expr: &Expr, env: &mut Env) -> Result<Value, RuntimeError> {
+    fn eval(&mut self, expr: &Expr, env: &mut Env) -> Result<Value, Flow> {
         match expr {
             Expr::Int(n) => Ok(Value::Int(*n)),
             Expr::Float(x) => Ok(Value::Float(*x)),
@@ -663,6 +694,21 @@ impl Interpreter {
                     (UnOp::Not, other) => err(format!("cannot apply `!` to `{other}`")),
                 }
             }
+            Expr::Try(inner) => {
+                let v = self.eval(inner, env)?;
+                match v {
+                    Value::Ctor { name, mut fields }
+                        if (name == "Ok" || name == "Some") && fields.len() == 1 =>
+                    {
+                        Ok(fields.remove(0))
+                    }
+                    Value::Ctor { name, fields } if name == "Err" || name == "None" => {
+                        // Short-circuit: return the Err/None from the enclosing function.
+                        Err(Flow::Return(Value::Ctor { name, fields }))
+                    }
+                    other => err(format!("`?` expects a Result/Option value, got `{other}`")),
+                }
+            }
             // `&&`/`||` short-circuit, so the right side isn't always evaluated.
             Expr::Binary { op: BinOp::And, lhs, rhs } => match self.eval(lhs, env)? {
                 Value::Bool(false) => Ok(Value::Bool(false)),
@@ -683,7 +729,7 @@ impl Interpreter {
             Expr::Binary { op, lhs, rhs } => {
                 let l = self.eval(lhs, env)?;
                 let r = self.eval(rhs, env)?;
-                eval_binary(*op, l, r)
+                Ok(eval_binary(*op, l, r)?)
             }
             Expr::If {
                 cond,
@@ -736,7 +782,7 @@ impl Interpreter {
                     .iter()
                     .map(|a| self.eval(a, env))
                     .collect::<Result<Vec<_>, _>>()?;
-                self.spawn_actor(actor, argvals)
+                Ok(self.spawn_actor(actor, argvals)?)
             }
         }
     }
@@ -1274,6 +1320,29 @@ mod tests {
             }
         "#;
         assert_eq!(run(src).unwrap(), vec!["ok 7", "err boom"]);
+    }
+
+    #[test]
+    fn try_option_short_circuits() {
+        // `?` on `None` returns `None` from `first_word`; on `Some` it unwraps.
+        let src = r#"
+            type Option { Some(a) None }
+            fn head(o: Option(Int)) -> Option(Int) {
+              let n = o?
+              Some(n + 100)
+            }
+            fn render(o: Option(Int)) -> String {
+              match o {
+                Some(n) -> int_to_string(n)
+                None -> "none"
+              }
+            }
+            fn main(console: Console) {
+              print(console, render(head(Some(1))))
+              print(console, render(head(None)))
+            }
+        "#;
+        assert_eq!(run(src).unwrap(), vec!["101", "none"]);
     }
 
     #[test]

@@ -474,6 +474,7 @@ impl Codegen {
             Expr::Call { name, args } => self.compile_call(name, args),
             Expr::Float(x) => Ok(format!("    f64.const {x}\n")),
             Expr::Tuple(_) => cerr("tuples are not compiled to WASM yet"),
+            Expr::Try(_) => cerr("the `?` operator is not compiled to WASM yet"),
             Expr::List(items) => {
                 // A list is a record [len][elem0..]; reuse the $mk{N} helper with
                 // the length as the header slot.

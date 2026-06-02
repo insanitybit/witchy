@@ -1,0 +1,36 @@
+// The `?` operator propagates errors. `e?` unwraps an `Ok`/`Some` to its value,
+// or short-circuits — returning the `Err`/`None` straight out of the enclosing
+// function. The function must itself return a matching Result/Option, so the
+// error type is checked end to end. Result is an ordinary generic type here,
+// not a built-in.
+
+type Result {
+  Ok(a)
+  Err(e)
+}
+
+fn checked_div(a: Int, b: Int) -> Result(Int, String) {
+  match b {
+    0 -> Err("divide by zero")
+    _ -> Ok(a / b)
+  }
+}
+
+fn compute(x: Int, y: Int, z: Int) -> Result(Int, String) {
+  let p = checked_div(x, y)?
+  let q = checked_div(p, z)?
+  Ok(q + 1)
+}
+
+fn show(r: Result(Int, String)) -> String {
+  match r {
+    Ok(n) -> "= " <> int_to_string(n)
+    Err(e) -> "error: " <> e
+  }
+}
+
+fn main(console: Console) {
+  print(console, show(compute(100, 5, 2)))
+  print(console, show(compute(100, 0, 2)))
+  print(console, show(compute(100, 5, 0)))
+}
