@@ -17,10 +17,12 @@
 //! Not yet compiled: floats, lists, ADT constructors, `match`, string/Subject
 //! message parameters, and `send` between compiled actors — each errors clearly.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 
-use crate::ast::{ActorDef, BinOp, Block, Expr, Function, Item, Module, Stmt, Type, UnOp};
+use crate::ast::{
+    ActorDef, BinOp, Block, Convention, Expr, Function, Item, Module, Stmt, Type, UnOp,
+};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct CodegenError {
@@ -54,6 +56,9 @@ struct Codegen {
     globals: HashSet<String>,
     /// Capability field names (erased; referencing one yields a placeholder 0).
     cap_fields: HashSet<String>,
+    /// Parameter conventions per function, so call sites can write back `inout`
+    /// results (move-in / move-out).
+    fn_conventions: HashMap<String, Vec<Convention>>,
 }
 
 impl Codegen {
@@ -67,6 +72,7 @@ impl Codegen {
             uses_int_to_string: false,
             globals: HashSet::new(),
             cap_fields: HashSet::new(),
+            fn_conventions: HashMap::new(),
         }
     }
 
@@ -127,7 +133,18 @@ impl Codegen {
         for p in &f.params {
             header.push_str(&format!("(param ${} i32) ", p.name));
         }
-        header.push_str("(result i32)\n");
+        // Result = the normal return value, then one i32 per `inout` parameter
+        // (moved back out to the caller).
+        let n_inout = f
+            .params
+            .iter()
+            .filter(|p| p.convention == Convention::Inout)
+            .count();
+        header.push_str("(result");
+        for _ in 0..=n_inout {
+            header.push_str(" i32");
+        }
+        header.push_str(")\n");
 
         let mut lets = Vec::new();
         collect_let_names(&f.body, &mut lets);
@@ -136,7 +153,14 @@ impl Codegen {
         }
 
         let body = self.compile_block(&f.body)?;
-        Ok(format!("{header}{body}  )\n"))
+        // Move-out: append each `inout` parameter's final value (declaration order).
+        let mut epilogue = String::new();
+        for p in &f.params {
+            if p.convention == Convention::Inout {
+                epilogue.push_str(&format!("    local.get ${}\n", p.name));
+            }
+        }
+        Ok(format!("{header}{body}{epilogue}  )\n"))
     }
 
     fn compile_block(&mut self, block: &Block) -> Result<String, CodegenError> {
@@ -268,6 +292,27 @@ impl Codegen {
                     out.push_str(&self.compile_expr(arg)?);
                 }
                 out.push_str(&format!("    call ${name}\n"));
+                // Write back `inout` outputs, which sit on top of the stack in
+                // reverse declaration order above the normal return value.
+                if let Some(convs) = self.fn_conventions.get(name).cloned() {
+                    for (i, conv) in convs.iter().enumerate().rev() {
+                        if *conv == Convention::Inout {
+                            match &args[i] {
+                                Expr::Var(v) if self.globals.contains(v) => {
+                                    out.push_str(&format!("    global.set ${v}\n"));
+                                }
+                                Expr::Var(v) => {
+                                    out.push_str(&format!("    local.set ${v}\n"));
+                                }
+                                _ => {
+                                    return cerr(format!(
+                                        "`inout` argument to `{name}` must be a variable"
+                                    ))
+                                }
+                            }
+                        }
+                    }
+                }
                 Ok(out)
             }
         }
@@ -278,6 +323,14 @@ impl Codegen {
 /// `main` may take a single capability parameter.
 pub fn compile_module(module: &Module) -> Result<String, CodegenError> {
     let mut cg = Codegen::new();
+    // Collect parameter conventions up front so call sites can resolve `inout`
+    // write-back even for forward references.
+    for item in &module.items {
+        if let Item::Function(f) = item {
+            cg.fn_conventions
+                .insert(f.name.clone(), f.params.iter().map(|p| p.convention).collect());
+        }
+    }
     let mut func_wat = String::new();
     let mut main_params = 0usize;
     let mut main_returns_int = false;
@@ -586,6 +639,22 @@ mod tests {
             fn main() -> Int { let a = double(21) let b = fib(10) a + b }
         "#;
         assert_eq!(run_int(src), 97);
+    }
+
+    #[test]
+    fn compiles_inout_writeback() {
+        // `inout` compiles to move-in / move-out: bump returns the updated n,
+        // and the caller writes it back into x.
+        let src = r#"
+            fn bump(inout n: Int) { n = n + 1 }
+            fn main() -> Int {
+              var x = 41
+              bump(x)
+              bump(x)
+              x
+            }
+        "#;
+        assert_eq!(run_int(src), 43);
     }
 
     #[test]
