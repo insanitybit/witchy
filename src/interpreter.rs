@@ -153,15 +153,20 @@ fn err<T, E: From<RuntimeError>>(message: impl Into<String>) -> Result<T, E> {
     }))
 }
 
-/// Prefix a runtime error with the source line it occurred on (when known).
-/// `line == 0` means no location is available.
-fn rt_at_line(e: RuntimeError, line: u32) -> RuntimeError {
-    if line > 0 {
-        RuntimeError {
-            message: format!("line {line}: {}", e.message),
-        }
+/// Prefix a runtime error with where it occurred — the executing function (after
+/// linking, `module.func`, which also names the file) and source line. `line ==
+/// 0` means no line is available; an empty `func` omits the name.
+fn rt_at_line(e: RuntimeError, line: u32, func: &str) -> RuntimeError {
+    if line == 0 {
+        return e;
+    }
+    let where_ = if func.is_empty() {
+        format!("line {line}")
     } else {
-        e
+        format!("`{func}`, line {line}")
+    };
+    RuntimeError {
+        message: format!("{where_}: {}", e.message),
     }
 }
 
@@ -256,6 +261,9 @@ pub struct Interpreter {
     /// Source line of the statement currently executing, attached to runtime
     /// errors for diagnostics. 0 means "no line known".
     cur_line: u32,
+    /// The function currently executing (after linking, `module.func`), attached
+    /// to runtime errors. Empty means "unknown".
+    cur_fn: String,
     pub output: Vec<String>,
 }
 
@@ -300,6 +308,7 @@ impl Interpreter {
             steps: 0,
             step_limit: DEFAULT_STEP_LIMIT,
             cur_line: 0,
+            cur_fn: String::new(),
             output: Vec::new(),
         }
     }
@@ -340,7 +349,14 @@ impl Interpreter {
                 !matches!(param.convention, Convention::Let),
             );
         }
-        finish(self.eval_block(&func.body, &mut env))
+        let prev = std::mem::replace(&mut self.cur_fn, name.to_string());
+        let result = finish(self.eval_block(&func.body, &mut env));
+        // On success, restore the caller's name; on error, keep this one so the
+        // innermost failing function is reported.
+        if result.is_ok() {
+            self.cur_fn = prev;
+        }
+        result
     }
 
     /// Apply a closure to already-evaluated arguments. The closure runs in its
@@ -415,9 +431,11 @@ impl Interpreter {
         }
         // The callee's own `?` early-return stops here; it becomes the call's
         // value rather than propagating into the caller.
+        let prev = std::mem::replace(&mut self.cur_fn, name.to_string());
         let result = match self.eval_block(&func.body, &mut fenv) {
             Ok(v) => v,
             Err(Flow::Return(v)) => v,
+            // On error keep `cur_fn = name` so the innermost frame is reported.
             Err(e @ Flow::Err(_)) => return Err(e),
         };
         for (caller, param_name) in writebacks {
@@ -434,6 +452,7 @@ impl Interpreter {
                 }
             }
         }
+        self.cur_fn = prev;
         Ok(result)
     }
 
@@ -1251,10 +1270,10 @@ pub fn run_module(
     };
     let ret = interp
         .call("main", root_args)
-        .map_err(|e| rt_at_line(e, interp.cur_line))?;
+        .map_err(|e| rt_at_line(e, interp.cur_line, &interp.cur_fn))?;
     interp
         .run_to_completion()
-        .map_err(|e| rt_at_line(e, interp.cur_line))?;
+        .map_err(|e| rt_at_line(e, interp.cur_line, &interp.cur_fn))?;
     // A program that computes a value but prints nothing (e.g. `main` returns an
     // Int) still has something to show: surface its result.
     if interp.output.is_empty() && !matches!(ret, Value::Nil) {
@@ -1670,6 +1689,19 @@ mod tests {
         let src = "fn main(console: Console) {\n  let a = 1\n  print(console, int_to_string(a / 0))\n}";
         let e = run(src).unwrap_err();
         assert!(e.message.contains("line 3"), "got: {}", e.message);
+    }
+
+    #[test]
+    fn runtime_errors_name_the_innermost_function() {
+        // The error must be attributed to `risky`, not the caller `main`.
+        let src = r#"
+            fn risky(n: Int) -> Int { n / 0 }
+            fn main(console: Console) {
+              print(console, int_to_string(risky(5)))
+            }
+        "#;
+        let e = run(src).unwrap_err();
+        assert!(e.message.contains("risky"), "got: {}", e.message);
     }
 
     #[test]

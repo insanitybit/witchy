@@ -113,15 +113,20 @@ fn terr<T>(message: impl Into<String>) -> Result<T, TypeError> {
     })
 }
 
-/// Prefix a type error with the source line it occurred on (when known), so the
-/// user gets a location. `line == 0` means no location is available.
-fn at_line(e: TypeError, line: u32) -> TypeError {
-    if line > 0 {
-        TypeError {
-            message: format!("line {line}: {}", e.message),
-        }
+/// Prefix a type error with where it occurred — the enclosing function (after
+/// linking this is `module.func`, which also names the file) and source line.
+/// `line == 0` means no line is available; an empty `func` omits the name.
+fn at_loc(e: TypeError, line: u32, func: &str) -> TypeError {
+    if line == 0 {
+        return e;
+    }
+    let where_ = if func.is_empty() {
+        format!("line {line}")
     } else {
-        e
+        format!("`{func}`, line {line}")
+    };
+    TypeError {
+        message: format!("{where_}: {}", e.message),
     }
 }
 
@@ -1191,8 +1196,11 @@ pub fn check(module: &Module) -> Result<(), TypeError> {
     // Pass 2: check bodies.
     for item in &module.items {
         match item {
-            Item::Function(f) => c.check_function(f).map_err(|e| at_line(e, c.cur_line))?,
-            Item::Actor(a) => c.check_actor(a).map_err(|e| at_line(e, c.cur_line))?,
+            Item::Function(f) => {
+                c.check_function(f).map_err(|e| at_loc(e, c.cur_line, &f.name))?
+            }
+            // Actor handler errors already carry actor/handler context.
+            Item::Actor(a) => c.check_actor(a).map_err(|e| at_loc(e, c.cur_line, ""))?,
             Item::Type(_) => {}
         }
     }
@@ -1299,11 +1307,12 @@ mod tests {
     }
 
     #[test]
-    fn type_errors_report_their_source_line() {
-        // The mismatch is on the third line.
+    fn type_errors_report_function_and_source_line() {
+        // The mismatch is on the third line, inside function `f`.
         let src = "fn f() -> Int {\n  let a = 1\n  a + \"x\"\n}";
         let e = check_str(src).unwrap_err();
         assert!(e.contains("line 3"), "expected a line number, got: {e}");
+        assert!(e.contains("`f`"), "expected the function name, got: {e}");
     }
 
     #[test]
