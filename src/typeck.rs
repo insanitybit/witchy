@@ -15,7 +15,9 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 
-use crate::ast::{self, ActorDef, Block, Expr, Function, Item, MatchArm, Module, Pattern, Stmt};
+use crate::ast::{
+    self, ActorDef, Block, Convention, Expr, Function, Item, MatchArm, Module, Pattern, Stmt,
+};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Ty {
@@ -72,9 +74,11 @@ struct Checker {
     ctor_sigs: HashMap<String, (Vec<Ty>, Ty)>,
     adt_variants: HashMap<String, Vec<String>>,
     actor_field_sigs: HashMap<String, Vec<Ty>>,
+    fn_conventions: HashMap<String, Vec<Convention>>,
     subst: HashMap<u32, Ty>,
     next_var: u32,
-    scopes: Vec<HashMap<String, Ty>>,
+    /// Each binding carries its type and whether it is mutable.
+    scopes: Vec<HashMap<String, (Ty, bool)>>,
 }
 
 impl Checker {
@@ -139,11 +143,22 @@ impl Checker {
     fn pop(&mut self) {
         self.scopes.pop();
     }
-    fn define(&mut self, name: String, ty: Ty) {
-        self.scopes.last_mut().unwrap().insert(name, ty);
+    fn define(&mut self, name: String, ty: Ty, mutable: bool) {
+        self.scopes.last_mut().unwrap().insert(name, (ty, mutable));
     }
     fn lookup(&self, name: &str) -> Option<Ty> {
-        self.scopes.iter().rev().find_map(|s| s.get(name).cloned())
+        self.scopes
+            .iter()
+            .rev()
+            .find_map(|s| s.get(name))
+            .map(|(t, _)| t.clone())
+    }
+    fn is_mutable(&self, name: &str) -> Option<bool> {
+        self.scopes
+            .iter()
+            .rev()
+            .find_map(|s| s.get(name))
+            .map(|(_, m)| *m)
     }
 
     fn call_sig(&mut self, name: &str) -> Option<(Vec<Ty>, Ty)> {
@@ -169,9 +184,9 @@ impl Checker {
         let mut ty = Ty::Nil;
         for stmt in &block.stmts {
             match stmt {
-                Stmt::Let { name, value, .. } => {
+                Stmt::Let { name, mutable, value } => {
                     let vt = self.infer(value)?;
-                    self.define(name.clone(), vt);
+                    self.define(name.clone(), vt, *mutable);
                     ty = Ty::Nil;
                 }
                 Stmt::Assign { name, value } => {
@@ -180,6 +195,12 @@ impl Checker {
                         self.pop();
                         return terr(format!("assignment to unbound variable `{name}`"));
                     };
+                    if self.is_mutable(name) == Some(false) {
+                        self.pop();
+                        return terr(format!(
+                            "cannot assign to `{name}`: it is immutable (declared with `let`)"
+                        ));
+                    }
                     self.unify(&existing, &vt)?;
                     ty = Ty::Nil;
                 }
@@ -224,6 +245,26 @@ impl Checker {
                     let at = self.infer(arg)?;
                     self.unify(param_ty, &at)
                         .map_err(|e| TypeError { message: format!("in call to `{name}`: {}", e.message) })?;
+                }
+                // `inout` arguments must be mutable variables.
+                if let Some(convs) = self.fn_conventions.get(name).cloned() {
+                    for (arg, conv) in args.iter().zip(&convs) {
+                        if *conv == Convention::Inout {
+                            match arg {
+                                Expr::Var(v) if self.is_mutable(v) == Some(true) => {}
+                                Expr::Var(v) => {
+                                    return terr(format!(
+                                        "`inout` argument `{v}` to `{name}` must be a mutable `var`"
+                                    ))
+                                }
+                                _ => {
+                                    return terr(format!(
+                                        "`inout` argument to `{name}` must be a mutable variable"
+                                    ))
+                                }
+                            }
+                        }
+                    }
                 }
                 Ok(ret)
             }
@@ -366,7 +407,7 @@ impl Checker {
         match pat {
             Pattern::Wildcard => Ok(()),
             Pattern::Var(name) => {
-                self.define(name.clone(), expected.clone());
+                self.define(name.clone(), expected.clone(), false);
                 Ok(())
             }
             Pattern::Int(_) => self.unify(expected, &Ty::Int),
@@ -434,7 +475,7 @@ impl Checker {
         let (params, ret) = self.fn_sigs.get(&func.name).cloned().unwrap();
         self.scopes = vec![HashMap::new()];
         for (param, ty) in func.params.iter().zip(&params) {
-            self.define(param.name.clone(), ty.clone());
+            self.define(param.name.clone(), ty.clone(), param.convention != Convention::Let);
         }
         let body = self.infer_block(&func.body)?;
         self.unify(&ret, &body).map_err(|e| TypeError {
@@ -448,7 +489,7 @@ impl Checker {
             self.scopes = vec![HashMap::new()];
             for field in &actor.fields {
                 let ty = self.to_ty(&field.ty);
-                self.define(field.name.clone(), ty);
+                self.define(field.name.clone(), ty, field.mutable);
             }
             self.push();
             for param in &handler.params {
@@ -457,7 +498,7 @@ impl Checker {
                     .as_ref()
                     .map(|t| self.to_ty(t))
                     .unwrap_or_else(|| self.fresh());
-                self.define(param.name.clone(), ty);
+                self.define(param.name.clone(), ty, param.convention != Convention::Let);
             }
             self.infer_block(&handler.body).map_err(|e| TypeError {
                 message: format!("actor `{}` handler `{}`: {}", actor.name, handler.message, e.message),
@@ -471,6 +512,7 @@ impl Checker {
 pub fn check(module: &Module) -> Result<(), TypeError> {
     let mut c = Checker {
         fn_sigs: HashMap::new(),
+        fn_conventions: HashMap::new(),
         ctor_sigs: HashMap::new(),
         adt_variants: HashMap::new(),
         actor_field_sigs: HashMap::new(),
@@ -490,6 +532,8 @@ pub fn check(module: &Module) -> Result<(), TypeError> {
                     .collect();
                 let ret = f.ret.as_ref().map(|t| c.to_ty(t)).unwrap_or_else(|| c.fresh());
                 c.fn_sigs.insert(f.name.clone(), (params, ret));
+                c.fn_conventions
+                    .insert(f.name.clone(), f.params.iter().map(|p| p.convention).collect());
             }
             Item::Type(t) => {
                 let mut names = Vec::new();
@@ -643,6 +687,38 @@ mod tests {
               let logger = spawn Logger(console)
               send(logger, Log("hello"))
             }
+        "#;
+        assert!(check_str(src).is_ok(), "{:?}", check_str(src));
+    }
+
+    #[test]
+    fn rejects_assignment_to_let() {
+        let src = r#"fn main() { let x = 1  x = 2 }"#;
+        let e = check_str(src).unwrap_err();
+        assert!(e.contains("immutable"), "got: {e}");
+    }
+
+    #[test]
+    fn accepts_assignment_to_var() {
+        let src = r#"fn main() { var x = 1  x = 2 }"#;
+        assert!(check_str(src).is_ok(), "{:?}", check_str(src));
+    }
+
+    #[test]
+    fn rejects_inout_argument_that_is_immutable() {
+        let src = r#"
+            fn bump(inout n: Int) { n = n + 1 }
+            fn main() { let x = 1  bump(x) }
+        "#;
+        let e = check_str(src).unwrap_err();
+        assert!(e.contains("inout"), "got: {e}");
+    }
+
+    #[test]
+    fn accepts_inout_argument_that_is_var() {
+        let src = r#"
+            fn bump(inout n: Int) { n = n + 1 }
+            fn main() { var x = 1  bump(x) }
         "#;
         assert!(check_str(src).is_ok(), "{:?}", check_str(src));
     }
