@@ -223,8 +223,18 @@ pub struct Interpreter {
     sockets: Vec<BufReader<TcpStream>>,
     /// Record constructor name -> ordered field names, for `value.field` access.
     record_fields: HashMap<String, Vec<String>>,
+    /// Evaluation-step counter and ceiling. Unlike the runtime's epoch
+    /// preemption, the tree-walker can't be interrupted, so a `while true {}`
+    /// would hang the host — this bounds total work and errors out instead.
+    steps: u64,
+    step_limit: u64,
     pub output: Vec<String>,
 }
+
+/// Default ceiling on evaluation steps for one program run. High enough that no
+/// realistic program reaches it, low enough that an infinite loop fails in
+/// seconds rather than hanging forever.
+const DEFAULT_STEP_LIMIT: u64 = 100_000_000;
 
 impl Interpreter {
     pub fn new(module: Module) -> Self {
@@ -259,6 +269,8 @@ impl Interpreter {
             net_allow: Vec::new(),
             sockets: Vec::new(),
             record_fields,
+            steps: 0,
+            step_limit: DEFAULT_STEP_LIMIT,
             output: Vec::new(),
         }
     }
@@ -743,6 +755,10 @@ impl Interpreter {
     }
 
     fn eval(&mut self, expr: &Expr, env: &mut Env) -> Result<Value, Flow> {
+        self.steps += 1;
+        if self.steps > self.step_limit {
+            return err("evaluation step budget exceeded (possible infinite loop)");
+        }
         match expr {
             Expr::Int(n) => Ok(Value::Int(*n)),
             Expr::Float(x) => Ok(Value::Float(*x)),
@@ -1474,6 +1490,49 @@ mod tests {
             }
         "#;
         assert_eq!(run(src).unwrap(), vec!["ok 7", "err boom"]);
+    }
+
+    /// Run a no-parameter `main` with a small step ceiling, so an infinite loop
+    /// is caught quickly instead of hanging the test.
+    fn run_capped(src: &str, limit: u64) -> Result<Vec<String>, RuntimeError> {
+        let module = parse_module(src).map_err(|e| RuntimeError { message: e.to_string() })?;
+        let mut interp = Interpreter::new(module);
+        interp.step_limit = limit;
+        interp.call("main", vec![])?;
+        interp.run_to_completion()?;
+        Ok(interp.output)
+    }
+
+    #[test]
+    fn runaway_loop_is_bounded_not_hung() {
+        let src = r#"
+            fn main() -> Int {
+              var i = 0
+              while true {
+                i = i + 1
+              }
+              i
+            }
+        "#;
+        let e = run_capped(src, 100_000).unwrap_err();
+        assert!(e.message.contains("step budget"), "got: {}", e.message);
+    }
+
+    #[test]
+    fn normal_program_runs_within_budget() {
+        // A finite loop well under the ceiling completes normally.
+        let src = r#"
+            fn main() -> Int {
+              var sum = 0
+              var i = 0
+              while i < 1000 {
+                sum = sum + i
+                i = i + 1
+              }
+              sum
+            }
+        "#;
+        assert!(run_capped(src, 100_000).is_ok());
     }
 
     #[test]
