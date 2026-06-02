@@ -75,6 +75,9 @@ pub struct ActorState {
     mailbox: Mailbox,
     mailboxes: Arc<Mailboxes>,
     limits: StoreLimits,
+    /// Everything the actor has printed (via the `print`/`print_int`
+    /// capabilities), so the host can observe a compiled program's output.
+    output: Arc<Mutex<Vec<String>>>,
 }
 
 /// A spawned actor: an isolated VM plus the entrypoint we can drive.
@@ -101,6 +104,13 @@ impl Actor {
             .get_typed_func::<(), ()>(&mut self.store, handler)?;
         func.call(&mut self.store, ())?;
         Ok(())
+    }
+
+    /// Everything this actor has printed so far, in order. (Used by tests to
+    /// assert a compiled program's behavior end to end.)
+    #[allow(dead_code)]
+    pub fn output(&self) -> Vec<String> {
+        self.store.data().output.lock().unwrap().clone()
     }
 }
 
@@ -152,6 +162,7 @@ impl Runtime {
             mailbox,
             mailboxes: Arc::clone(&self.mailboxes),
             limits,
+            output: Arc::new(Mutex::new(Vec::new())),
         };
 
         let mut store = Store::new(&self.engine, state);
@@ -211,11 +222,18 @@ fn host_print(mut caller: Caller<'_, ActorState>, ptr: i32, len: i32) -> Result<
     let text = String::from_utf8_lossy(bytes);
     let id = caller.data().id;
     print!("[actor {id}] {text}");
+    caller
+        .data()
+        .output
+        .lock()
+        .unwrap()
+        .push(text.trim_end_matches('\n').to_string());
     Ok(())
 }
 
 fn host_print_int(caller: Caller<'_, ActorState>, n: i32) -> Result<()> {
     println!("[actor {}] {n}", caller.data().id);
+    caller.data().output.lock().unwrap().push(n.to_string());
     Ok(())
 }
 

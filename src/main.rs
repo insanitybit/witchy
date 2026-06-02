@@ -167,6 +167,8 @@ fn main() -> wasmtime::Result<()> {
     run_witchy("witchy for-in loops over lists", include_str!("../examples/loops.witchy"));
     run_witchy("witchy list patterns (head/tail)", include_str!("../examples/listmatch.witchy"));
     run_witchy("witchy records (named fields)", include_str!("../examples/records.witchy"));
+    run_witchy("witchy expression evaluator (recursive ADT)", include_str!("../examples/eval.witchy"));
+    run_witchy("witchy bank (records + lists + Result)", include_str!("../examples/bank.witchy"));
     run_witchy("witchy actors", include_str!("../examples/actors.witchy"));
     run_witchy("witchy filesystem capability", include_str!("../examples/files.witchy"));
     run_compiled(&mut rt, "witchy compiled to WASM (ints)", include_str!("../examples/compute.witchy"));
@@ -462,6 +464,80 @@ mod example_tests {
         Module::new(&Engine::default(), &wat).expect("valid wasm");
     }
 
+    /// End-to-end through the *compiled* path: type-check, compile to WASM, run
+    /// on the wasmtime runtime with the output capabilities granted, and return
+    /// what the program printed.
+    fn run_on_wasm(src: &str) -> Vec<String> {
+        use crate::runtime::{Capabilities, Runtime};
+        assert!(typeck::check_str(src).is_ok(), "{:?}", typeck::check_str(src));
+        let module = parser::parse_module(src).expect("parse");
+        let wat = codegen::compile_module(&module).expect("compile");
+        let mut rt = Runtime::new().expect("runtime");
+        let mut actor = rt
+            .spawn(
+                wat.as_bytes(),
+                Capabilities {
+                    print: true,
+                    print_int: true,
+                    ..Default::default()
+                },
+                4,
+            )
+            .expect("spawn");
+        actor.run().expect("run");
+        actor.output()
+    }
+
+    #[test]
+    fn compute_runs_on_wasm() {
+        assert_eq!(
+            run_on_wasm(include_str!("../examples/compute.witchy")),
+            vec!["217"]
+        );
+    }
+
+    #[test]
+    fn shapes_runs_on_wasm() {
+        assert_eq!(
+            run_on_wasm(include_str!("../examples/shapes.witchy")),
+            vec!["325"]
+        );
+    }
+
+    /// The capability thesis at the WASM boundary: without the `print_int` host
+    /// function granted, the compiled module imports something that isn't there
+    /// and cannot even instantiate.
+    #[test]
+    fn compiled_program_without_capability_cannot_instantiate() {
+        use crate::runtime::{Capabilities, Runtime};
+        let module = parser::parse_module(include_str!("../examples/compute.witchy")).expect("parse");
+        let wat = codegen::compile_module(&module).expect("compile");
+        let mut rt = Runtime::new().expect("runtime");
+        let result = rt.spawn(wat.as_bytes(), Capabilities::none(), 4);
+        assert!(result.is_err(), "ungranted module must fail to instantiate");
+    }
+
+    /// A library imported into a program brings its functions into scope but no
+    /// authority: `lib` has no capability parameters, so it can only compute.
+    #[test]
+    fn imported_library_is_pure_and_confined() {
+        let lib = r#"
+            fn label(n: Int) -> String {
+              if n < 0 { "neg" } else { "nonneg" }
+            }
+        "#;
+        let main = r#"
+            import lib
+            fn main(console: Console) {
+              print(console, lib.label(-2))
+              print(console, lib.label(7))
+            }
+        "#;
+        let out = interpreter::run_program(&[("lib", lib), ("main", main)], "main")
+            .expect("multi-module program runs");
+        assert_eq!(out, vec!["neg", "nonneg"]);
+    }
+
     fn assert_actor_compiles(src: &str) {
         assert!(typeck::check_str(src).is_ok(), "{:?}", typeck::check_str(src));
         let module = parser::parse_module(src).expect("parse");
@@ -645,6 +721,23 @@ mod example_tests {
                 "origin.x = 2",
                 "moved = (12, 3)",
                 "manhattan(moved) = 15"
+            ]
+        );
+    }
+
+    #[test]
+    fn eval_example() {
+        assert_eq!(interp(include_str!("../examples/eval.witchy")), vec!["20"]);
+    }
+
+    #[test]
+    fn bank_example() {
+        assert_eq!(
+            interp(include_str!("../examples/bank.witchy")),
+            vec![
+                "total = 150",
+                "remaining: 90",
+                "error: insufficient funds for bob"
             ]
         );
     }
