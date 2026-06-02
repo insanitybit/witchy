@@ -1,0 +1,12 @@
+// Uses the bundled `math` standard library. Like every std module it is pure —
+// importing it grants no authority, only computation.
+
+import math
+
+fn main(console: Console) {
+  print(console, int_to_string(math.max(3, 7)))
+  print(console, int_to_string(math.abs(-5)))
+  print(console, int_to_string(math.clamp(12, 0, 10)))
+  print(console, int_to_string(math.pow(2, 10)))
+  print(console, int_to_string(math.gcd(24, 36)))
+}

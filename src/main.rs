@@ -215,6 +215,14 @@ fn main() -> wasmtime::Result<()> {
         ],
         "sort",
     );
+    run_program_demo(
+        "witchy standard library (import math)",
+        &[
+            ("math", include_str!("../std/math.witchy")),
+            ("math_demo", include_str!("../examples/math_demo.witchy")),
+        ],
+        "math_demo",
+    );
 
     println!("\nspike OK");
     Ok(())
@@ -231,6 +239,7 @@ fn bundled_module(name: &str) -> Option<&'static str> {
     match name {
         "list" => Some(include_str!("../std/list.witchy")),
         "string" => Some(include_str!("../std/string.witchy")),
+        "math" => Some(include_str!("../std/math.witchy")),
         _ => None,
     }
 }
@@ -660,6 +669,15 @@ mod example_tests {
         assert_eq!(
             crate::execute_file("examples/sort.witchy").unwrap(),
             vec!["1,1,3,4,5", "5,4,3,1,1"]
+        );
+    }
+
+    /// The bundled `math` module resolves and computes via the CLI.
+    #[test]
+    fn math_runs_via_cli() {
+        assert_eq!(
+            crate::execute_file("examples/math_demo.witchy").unwrap(),
+            vec!["7", "5", "10", "1024", "12"]
         );
     }
 
