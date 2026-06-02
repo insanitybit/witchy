@@ -373,7 +373,12 @@ impl Checker {
             "int_to_string" => Some((vec![Ty::Int], Ty::String)),
             "string_length" => Some((vec![Ty::String], Ty::Int)),
             "to_upper" | "to_lower" | "trim" => Some((vec![Ty::String], Ty::String)),
-            "starts_with" => Some((vec![Ty::String, Ty::String], Ty::Bool)),
+            "starts_with" | "contains" => Some((vec![Ty::String, Ty::String], Ty::Bool)),
+            "split" => Some((
+                vec![Ty::String, Ty::String],
+                Ty::List(Box::new(Ty::String)),
+            )),
+            "replace" => Some((vec![Ty::String, Ty::String, Ty::String], Ty::String)),
             "int_to_float" => Some((vec![Ty::Int], Ty::Float)),
             "float_to_int" => Some((vec![Ty::Float], Ty::Int)),
             "string_to_int" => Some((vec![Ty::String], Ty::Int)),
@@ -1176,6 +1181,21 @@ mod tests {
             }
         "#;
         assert!(check_str(src).is_ok(), "{:?}", check_str(src));
+    }
+
+    #[test]
+    fn string_builtins_type() {
+        let src = r#"
+            fn first_field(row: String) -> String { at(split(row, ","), 0) }
+            fn has(s: String, sub: String) -> Bool { contains(s, sub) }
+            fn fix(s: String) -> String { replace(s, "a", "b") }
+        "#;
+        assert!(check_str(src).is_ok(), "{:?}", check_str(src));
+    }
+
+    #[test]
+    fn rejects_split_on_non_string() {
+        assert!(check_str("fn f() -> List(String) { split(5, \",\") }").is_err());
     }
 
     #[test]

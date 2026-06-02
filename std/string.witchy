@@ -1,0 +1,35 @@
+// The witchy standard string library. Like `list`, it is pure: it declares no
+// capability parameters, so importing it grants no authority. The primitive
+// string operations (`split`, `replace`, `contains`, `to_upper`, ...) are
+// builtins; these are the conveniences built on top of them.
+
+// Join a list of strings with a separator between each.
+pub fn join(parts: List(String), sep: String) -> String {
+  var s = ""
+  var first = true
+  for p in parts {
+    if first {
+      s = p
+      first = false
+    } else {
+      s = s <> sep <> p
+    }
+  }
+  s
+}
+
+// Repeat a string `n` times.
+pub fn repeat(s: String, n: Int) -> String {
+  var out = ""
+  var i = 0
+  while i < n {
+    out = out <> s
+    i = i + 1
+  }
+  out
+}
+
+// Split text into its newline-separated lines.
+pub fn lines(text: String) -> List(String) {
+  split(text, "\n")
+}

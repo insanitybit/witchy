@@ -451,6 +451,31 @@ impl Interpreter {
                 }
                 _ => err("starts_with expects two Strings"),
             },
+            "contains" => match args {
+                [Value::Str(s), Value::Str(sub)] => {
+                    Ok(Some(Value::Bool(s.contains(sub.as_str()))))
+                }
+                _ => err("contains expects two Strings"),
+            },
+            // Split on a separator into a list of pieces (the separator itself is
+            // dropped); the empty separator yields the whole string unchanged.
+            "split" => match args {
+                [Value::Str(s), Value::Str(sep)] => {
+                    let parts: Vec<Value> = if sep.is_empty() {
+                        vec![Value::Str(s.clone())]
+                    } else {
+                        s.split(sep.as_str()).map(|p| Value::Str(p.to_string())).collect()
+                    };
+                    Ok(Some(Value::List(parts)))
+                }
+                _ => err("split expects two Strings"),
+            },
+            "replace" => match args {
+                [Value::Str(s), Value::Str(from), Value::Str(to)] => {
+                    Ok(Some(Value::Str(s.replace(from.as_str(), to.as_str()))))
+                }
+                _ => err("replace expects three Strings"),
+            },
             // Conversions.
             "int_to_float" => match one(args)? {
                 Value::Int(n) => Ok(Some(Value::Float(n as f64))),
@@ -1449,6 +1474,20 @@ mod tests {
             }
         "#;
         assert_eq!(run(src).unwrap(), vec!["ok 7", "err boom"]);
+    }
+
+    #[test]
+    fn string_split_contains_replace() {
+        let src = r#"
+            fn main(console: Console) {
+              let parts = split("a,b,c", ",")
+              print(console, int_to_string(length(parts)))
+              print(console, at(parts, 1))
+              print(console, replace("a,b,c", ",", "-"))
+              print(console, to_string(contains("hello", "ell")))
+            }
+        "#;
+        assert_eq!(run(src).unwrap(), vec!["3", "b", "a-b-c", "true"]);
     }
 
     #[test]

@@ -195,6 +195,15 @@ fn main() -> wasmtime::Result<()> {
         ],
         "std_demo",
     );
+    run_program_demo(
+        "witchy text processing (split/map/join)",
+        &[
+            ("list", include_str!("../std/list.witchy")),
+            ("string", include_str!("../std/string.witchy")),
+            ("text", include_str!("../examples/text.witchy")),
+        ],
+        "text",
+    );
 
     println!("\nspike OK");
     Ok(())
@@ -210,6 +219,7 @@ fn main() -> wasmtime::Result<()> {
 fn bundled_module(name: &str) -> Option<&'static str> {
     match name {
         "list" => Some(include_str!("../std/list.witchy")),
+        "string" => Some(include_str!("../std/string.witchy")),
         _ => None,
     }
 }
@@ -630,6 +640,15 @@ mod example_tests {
         assert_eq!(
             crate::execute_file("examples/std_demo.witchy").unwrap(),
             vec!["30", "3"]
+        );
+    }
+
+    /// String builtins + the bundled `list`/`string` modules end to end.
+    #[test]
+    fn text_processing_runs_via_cli() {
+        assert_eq!(
+            crate::execute_file("examples/text.witchy").unwrap(),
+            vec!["ALICE | BOB | CAROL", "===", "alice,***,carol"]
         );
     }
 
