@@ -623,6 +623,20 @@ impl Interpreter {
                 other => err(format!("`if` condition must be a Bool, got `{other}`")),
             },
             Expr::Block(block) => self.eval_block(block, env),
+            Expr::While { cond, body } => {
+                loop {
+                    match self.eval(cond, env)? {
+                        Value::Bool(true) => {
+                            self.eval_block(body, env)?;
+                        }
+                        Value::Bool(false) => break,
+                        other => {
+                            return err(format!("`while` condition must be Bool, got `{other}`"))
+                        }
+                    }
+                }
+                Ok(Value::Nil)
+            }
             Expr::Match { scrutinee, arms } => {
                 let value = self.eval(scrutinee, env)?;
                 for arm in arms {
@@ -690,6 +704,11 @@ fn eval_binary(op: BinOp, l: Value, r: Value) -> Result<Value, RuntimeError> {
             (Mul, Float(a), Float(b)) => Ok(Float(a * b)),
             (Div, Float(a), Float(b)) => Ok(Float(a / b)),
             (_, a, b) => err(format!("cannot apply arithmetic to `{a}` and `{b}`")),
+        },
+        Mod => match (l, r) {
+            (Int(_), Int(0)) => err("modulo by zero"),
+            (Int(a), Int(b)) => Ok(Int(a % b)),
+            (a, b) => err(format!("`%` expects two Ints, got `{a}` and `{b}`")),
         },
         Concat => match (l, r) {
             (Str(a), Str(b)) => Ok(Str(a + &b)),
@@ -1122,6 +1141,23 @@ mod tests {
             run(src).unwrap(),
             vec!["small positive", "out of range", "other"]
         );
+    }
+
+    #[test]
+    fn while_loop_and_modulo() {
+        let src = r#"
+            fn main(console: Console) {
+              var i = 1
+              var total = 0
+              while i <= 5 {
+                total = total + i
+                i = i + 1
+              }
+              print(console, int_to_string(total))
+              print(console, int_to_string(10 % 3))
+            }
+        "#;
+        assert_eq!(run(src).unwrap(), vec!["15", "1"]);
     }
 
     #[test]

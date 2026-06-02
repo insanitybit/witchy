@@ -136,6 +136,11 @@ pub enum Expr {
         arms: Vec<MatchArm>,
     },
     Block(Block),
+    /// `while cond { body }` — iterate while `cond` holds; evaluates to Nil.
+    While {
+        cond: Box<Expr>,
+        body: Block,
+    },
     /// `spawn ActorName(args)` — create an actor, granting it the args as its
     /// initial (non-defaulted) fields. Evaluates to a `Subject`.
     Spawn {
@@ -156,6 +161,7 @@ pub enum BinOp {
     Sub,
     Mul,
     Div,
+    Mod,
     Concat,
     Eq,
     NotEq,

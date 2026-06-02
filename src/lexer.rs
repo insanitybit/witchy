@@ -31,6 +31,7 @@ pub enum Tok {
     Inout,
     Sink,
     Import,
+    While,
 
     // Grouping / punctuation
     LParen,
@@ -52,10 +53,11 @@ pub enum Tok {
     Gt,     // >
     LtEq,   // <=
     GtEq,   // >=
-    Plus,   // +
-    Minus,  // -
-    Star,   // *
-    Slash,  // /
+    Plus,    // +
+    Minus,   // -
+    Star,    // *
+    Slash,   // /
+    Percent, // %
     Concat, // <>
     Pipe,   // |>
     LArrow, // <-
@@ -92,6 +94,7 @@ impl fmt::Display for Tok {
             Inout => write!(f, "inout"),
             Sink => write!(f, "sink"),
             Import => write!(f, "import"),
+            While => write!(f, "while"),
             LParen => write!(f, "("),
             RParen => write!(f, ")"),
             LBrace => write!(f, "{{"),
@@ -113,6 +116,7 @@ impl fmt::Display for Tok {
             Minus => write!(f, "-"),
             Star => write!(f, "*"),
             Slash => write!(f, "/"),
+            Percent => write!(f, "%"),
             Concat => write!(f, "<>"),
             Pipe => write!(f, "|>"),
             LArrow => write!(f, "<-"),
@@ -294,6 +298,7 @@ impl Lexer {
             "inout" => Tok::Inout,
             "sink" => Tok::Sink,
             "import" => Tok::Import,
+            "while" => Tok::While,
             "_" => Tok::Underscore,
             _ => Tok::Ident(text),
         }
@@ -379,6 +384,7 @@ impl Lexer {
             ('-', _) => Tok::Minus,
             ('*', _) => Tok::Star,
             ('/', _) => Tok::Slash,
+            ('%', _) => Tok::Percent,
             ('(', _) => Tok::LParen,
             (')', _) => Tok::RParen,
             ('{', _) => Tok::LBrace,

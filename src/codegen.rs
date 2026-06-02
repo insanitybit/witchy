@@ -186,6 +186,10 @@ impl Codegen {
                 }
             }
             Expr::Block(b) => self.infer_locals(b),
+            Expr::While { cond, body } => {
+                self.infer_locals_expr(cond);
+                self.infer_locals(body);
+            }
             Expr::Match { arms, .. } => {
                 for arm in arms {
                     // Pattern-bound vars are i32 (floats aren't stored in records).
@@ -414,6 +418,7 @@ impl Codegen {
                     (BinOp::Mul, true) => "f64.mul",
                     (BinOp::Div, false) => "i32.div_s",
                     (BinOp::Div, true) => "f64.div",
+                    (BinOp::Mod, _) => "i32.rem_s",
                     (BinOp::Eq, false) => "i32.eq",
                     (BinOp::Eq, true) => "f64.eq",
                     (BinOp::NotEq, false) => "i32.ne",
@@ -435,17 +440,27 @@ impl Codegen {
                 then_block,
                 else_block,
             } => {
-                let Some(else_block) = else_block else {
-                    return cerr("an `if` used as a value needs an `else` branch");
+                // No `else` means the `if` is used for effect (Nil); yield 0.
+                let else_wat = match else_block {
+                    Some(eb) => self.compile_block(eb)?,
+                    None => "    i32.const 0\n".to_string(),
                 };
                 Ok(format!(
-                    "{}    if (result i32)\n{}    else\n{}    end\n",
+                    "{}    if (result i32)\n{}    else\n{else_wat}    end\n",
                     self.compile_expr(cond)?,
                     self.compile_block(then_block)?,
-                    self.compile_block(else_block)?
                 ))
             }
             Expr::Block(b) => self.compile_block(b),
+            Expr::While { cond, body } => {
+                let id = self.next_label;
+                self.next_label += 1;
+                let c = self.compile_expr(cond)?;
+                let b = self.compile_block(body)?;
+                Ok(format!(
+                    "    block $we{id}\n    loop $wl{id}\n{c}    i32.eqz\n    br_if $we{id}\n{b}    drop\n    br $wl{id}\n    end\n    end\n    i32.const 0\n"
+                ))
+            }
             Expr::Call { name, args } => self.compile_call(name, args),
             Expr::Float(x) => Ok(format!("    f64.const {x}\n")),
             Expr::List(items) => {
@@ -1031,6 +1046,10 @@ fn collect_let_names_expr(expr: &Expr, out: &mut Vec<String>) {
             }
         }
         Expr::Block(b) => collect_let_names(b, out),
+        Expr::While { cond, body } => {
+            collect_let_names_expr(cond, out);
+            collect_let_names(body, out);
+        }
         Expr::Match { scrutinee, arms } => {
             collect_let_names_expr(scrutinee, out);
             for arm in arms {
@@ -1176,6 +1195,23 @@ mod tests {
             fn main() -> Int { let a = double(21) let b = fib(10) a + b }
         "#;
         assert_eq!(run_int(src), 97);
+    }
+
+    #[test]
+    fn compiles_while_and_mod() {
+        // sum of multiples of 3 below 10: 0 + 3 + 6 + 9
+        let src = r#"
+            fn main() -> Int {
+              var i = 0
+              var total = 0
+              while i < 10 {
+                if i % 3 == 0 { total = total + i }
+                i = i + 1
+              }
+              total
+            }
+        "#;
+        assert_eq!(run_int(src), 18);
     }
 
     #[test]

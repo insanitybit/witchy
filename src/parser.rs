@@ -382,6 +382,15 @@ impl Parser {
             Tok::LBracket => self.list(),
             Tok::LBrace => Ok(Expr::Block(self.block()?)),
             Tok::If => self.if_expr(),
+            Tok::While => {
+                self.advance();
+                let cond = self.expr(0)?;
+                let body = self.block()?;
+                Ok(Expr::While {
+                    cond: Box::new(cond),
+                    body,
+                })
+            }
             Tok::Match => self.match_expr(),
             Tok::Spawn => {
                 self.advance();
@@ -556,7 +565,7 @@ fn infix_bp(t: &Tok) -> Option<(u8, u8)> {
         AndAnd => (5, 6),
         EqEq | NotEq | Lt | LtEq | Gt | GtEq => (7, 8),
         Plus | Minus | Concat => (9, 10),
-        Star | Slash => (11, 12),
+        Star | Slash | Percent => (11, 12),
         _ => return None,
     })
 }
@@ -567,6 +576,7 @@ fn bin_op(t: &Tok) -> BinOp {
         Tok::Minus => BinOp::Sub,
         Tok::Star => BinOp::Mul,
         Tok::Slash => BinOp::Div,
+        Tok::Percent => BinOp::Mod,
         Tok::Concat => BinOp::Concat,
         Tok::EqEq => BinOp::Eq,
         Tok::NotEq => BinOp::NotEq,

@@ -157,6 +157,10 @@ fn rewrite_expr(e: &mut Expr, m: &str, imps: &[String], fns: &FnTable) -> Result
             }
         }
         Expr::Block(b) => rewrite_block(b, m, imps, fns)?,
+        Expr::While { cond, body } => {
+            rewrite_expr(cond, m, imps, fns)?;
+            rewrite_block(body, m, imps, fns)?;
+        }
         Expr::Match { scrutinee, arms } => {
             rewrite_expr(scrutinee, m, imps, fns)?;
             for arm in arms {

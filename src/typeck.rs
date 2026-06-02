@@ -380,6 +380,14 @@ impl Checker {
                 Ok(tt)
             }
             Expr::Block(b) => self.infer_block(b),
+            Expr::While { cond, body } => {
+                let ct = self.infer(cond)?;
+                self.unify(&Ty::Bool, &ct).map_err(|e| TypeError {
+                    message: format!("`while` condition: {}", e.message),
+                })?;
+                self.infer_block(body)?;
+                Ok(Ty::Nil)
+            }
             Expr::Match { scrutinee, arms } => self.infer_match(scrutinee, arms),
             Expr::Spawn { actor, args } => {
                 let Some(field_tys) = self.actor_field_sigs.get(actor).cloned() else {
@@ -415,6 +423,11 @@ impl Checker {
                 self.unify(&lt, &num)?;
                 self.unify(&rt, &num)?;
                 Ok(num)
+            }
+            Mod => {
+                self.unify(&Ty::Int, &lt)?;
+                self.unify(&Ty::Int, &rt)?;
+                Ok(Ty::Int)
             }
             Concat => {
                 self.unify(&Ty::String, &lt)?;
