@@ -153,6 +153,18 @@ fn err<T, E: From<RuntimeError>>(message: impl Into<String>) -> Result<T, E> {
     }))
 }
 
+/// Prefix a runtime error with the source line it occurred on (when known).
+/// `line == 0` means no location is available.
+fn rt_at_line(e: RuntimeError, line: u32) -> RuntimeError {
+    if line > 0 {
+        RuntimeError {
+            message: format!("line {line}: {}", e.message),
+        }
+    } else {
+        e
+    }
+}
+
 /// Collapse a function body's `Flow` result into a plain value: a `?`-driven
 /// early `return` becomes the body's value; a real error propagates.
 fn finish(r: Result<Value, Flow>) -> Result<Value, RuntimeError> {
@@ -241,6 +253,9 @@ pub struct Interpreter {
     /// would hang the host — this bounds total work and errors out instead.
     steps: u64,
     step_limit: u64,
+    /// Source line of the statement currently executing, attached to runtime
+    /// errors for diagnostics. 0 means "no line known".
+    cur_line: u32,
     pub output: Vec<String>,
 }
 
@@ -284,6 +299,7 @@ impl Interpreter {
             record_fields,
             steps: 0,
             step_limit: DEFAULT_STEP_LIMIT,
+            cur_line: 0,
             output: Vec::new(),
         }
     }
@@ -759,7 +775,10 @@ impl Interpreter {
     fn eval_block(&mut self, block: &Block, env: &mut Env) -> Result<Value, Flow> {
         env.push();
         let mut result = Value::Nil;
-        for stmt in &block.stmts {
+        for (i, stmt) in block.stmts.iter().enumerate() {
+            if let Some(line) = block.lines.get(i) {
+                self.cur_line = *line;
+            }
             match stmt {
                 Stmt::Let { name, mutable, value } => {
                     let v = self.eval(value, env)?;
@@ -1165,8 +1184,12 @@ pub fn run_module(
             .collect::<Result<Vec<_>, _>>()?,
         None => vec![],
     };
-    let ret = interp.call("main", root_args)?;
-    interp.run_to_completion()?;
+    let ret = interp
+        .call("main", root_args)
+        .map_err(|e| rt_at_line(e, interp.cur_line))?;
+    interp
+        .run_to_completion()
+        .map_err(|e| rt_at_line(e, interp.cur_line))?;
     // A program that computes a value but prints nothing (e.g. `main` returns an
     // Int) still has something to show: surface its result.
     if interp.output.is_empty() && !matches!(ret, Value::Nil) {
@@ -1555,6 +1578,14 @@ mod tests {
         interp.call("main", vec![])?;
         interp.run_to_completion()?;
         Ok(interp.output)
+    }
+
+    #[test]
+    fn runtime_errors_report_their_source_line() {
+        // Division by zero happens on the third line.
+        let src = "fn main(console: Console) {\n  let a = 1\n  print(console, int_to_string(a / 0))\n}";
+        let e = run(src).unwrap_err();
+        assert!(e.message.contains("line 3"), "got: {}", e.message);
     }
 
     #[test]
