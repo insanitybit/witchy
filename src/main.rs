@@ -209,6 +209,92 @@ fn run_compiled_actor(rt: &mut Runtime, title: &str, src: &str) {
     }
 }
 
+/// End-to-end coverage: every shipped example must type-check and produce the
+/// expected result (interpreted), or type-check and compile to valid WASM.
+#[cfg(test)]
+mod example_tests {
+    use crate::{ast, codegen, interpreter, parser, typeck};
+    use wasmtime::{Engine, Module};
+
+    fn interp(src: &str) -> Vec<String> {
+        assert!(
+            typeck::check_str(src).is_ok(),
+            "type error: {:?}",
+            typeck::check_str(src)
+        );
+        interpreter::run(src).expect("should run")
+    }
+
+    fn assert_fn_compiles(src: &str) {
+        assert!(typeck::check_str(src).is_ok(), "{:?}", typeck::check_str(src));
+        let module = parser::parse_module(src).expect("parse");
+        let wat = codegen::compile_module(&module).expect("compile");
+        Module::new(&Engine::default(), &wat).expect("valid wasm");
+    }
+
+    fn assert_actor_compiles(src: &str) {
+        assert!(typeck::check_str(src).is_ok(), "{:?}", typeck::check_str(src));
+        let module = parser::parse_module(src).expect("parse");
+        let actor = module
+            .items
+            .iter()
+            .find_map(|i| match i {
+                ast::Item::Actor(a) => Some(a),
+                _ => None,
+            })
+            .expect("an actor");
+        let wat = codegen::compile_actor_module(actor).expect("compile");
+        Module::new(&Engine::default(), &wat).expect("valid wasm");
+    }
+
+    #[test]
+    fn hello_example() {
+        assert_eq!(
+            interp(include_str!("../examples/hello.witchy")),
+            vec!["hello, witchy", "8 doubled is 16", "negative"]
+        );
+    }
+
+    #[test]
+    fn mutate_example() {
+        assert_eq!(
+            interp(include_str!("../examples/mutate.witchy")),
+            vec!["bumped to 3"]
+        );
+    }
+
+    #[test]
+    fn ownership_example() {
+        assert_eq!(
+            interp(include_str!("../examples/ownership.witchy")),
+            vec!["[witchy]"]
+        );
+    }
+
+    #[test]
+    fn actors_example() {
+        assert_eq!(
+            interp(include_str!("../examples/actors.witchy")),
+            vec!["[1] direct message", "[2] another direct", "[3] relayed message"]
+        );
+    }
+
+    #[test]
+    fn compute_example_compiles() {
+        assert_fn_compiles(include_str!("../examples/compute.witchy"));
+    }
+
+    #[test]
+    fn strings_example_compiles() {
+        assert_fn_compiles(include_str!("../examples/strings.witchy"));
+    }
+
+    #[test]
+    fn counter_example_compiles() {
+        assert_actor_compiles(include_str!("../examples/counter.witchy"));
+    }
+}
+
 /// Compile a witchy program to WASM and run it on the runtime, demonstrating
 /// that the capability gate now applies to *compiled* witchy: granted, it runs;
 /// ungranted, the module cannot instantiate.
