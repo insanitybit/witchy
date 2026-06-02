@@ -187,6 +187,14 @@ fn main() -> wasmtime::Result<()> {
         ],
         "app",
     );
+    run_program_demo(
+        "witchy standard library (import list)",
+        &[
+            ("list", include_str!("../std/list.witchy")),
+            ("std_demo", include_str!("../examples/std_demo.witchy")),
+        ],
+        "std_demo",
+    );
 
     println!("\nspike OK");
     Ok(())
@@ -196,6 +204,16 @@ fn main() -> wasmtime::Result<()> {
 /// (transitively), link, type-check, then run with root capabilities (Console
 /// and a Dir rooted at the file's directory). Returns the program's output or a
 /// diagnostic.
+/// Source for a bundled standard-library module, shipped with the compiler so
+/// `import list` works without a local file. A local file of the same name
+/// takes precedence (see `execute_file`).
+fn bundled_module(name: &str) -> Option<&'static str> {
+    match name {
+        "list" => Some(include_str!("../std/list.witchy")),
+        _ => None,
+    }
+}
+
 fn execute_file(path: &str) -> Result<Vec<String>, String> {
     use std::collections::{HashSet, VecDeque};
     use std::path::{Path, PathBuf};
@@ -220,8 +238,15 @@ fn execute_file(path: &str) -> Result<Vec<String>, String> {
         if !loaded.insert(name.clone()) {
             continue; // already loaded (cycle-safe)
         }
-        let src = std::fs::read_to_string(&p)
-            .map_err(|e| format!("cannot read `{}`: {e}", p.display()))?;
+        // A local `<name>.witchy` wins; otherwise fall back to a bundled
+        // standard-library module (e.g. `import list`).
+        let src = match std::fs::read_to_string(&p) {
+            Ok(s) => s,
+            Err(e) => match bundled_module(&name) {
+                Some(s) => s.to_string(),
+                None => return Err(format!("cannot read `{}`: {e}", p.display())),
+            },
+        };
         let module = parser::parse_module(&src).map_err(|e| format!("{name}: {e}"))?;
         for imp in &module.imports {
             if !loaded.contains(imp) {
@@ -596,6 +621,34 @@ mod example_tests {
             crate::execute_file("examples/files.witchy").unwrap(),
             vec!["hello from a sandboxed Dir capability"]
         );
+    }
+
+    /// `import list` resolves to the bundled standard library (no local file),
+    /// links, type-checks, and runs end to end through the CLI.
+    #[test]
+    fn std_library_resolves_and_runs_via_cli() {
+        assert_eq!(
+            crate::execute_file("examples/std_demo.witchy").unwrap(),
+            vec!["30", "3"]
+        );
+    }
+
+    /// The bundled `list` module type-checks and links against a client program.
+    #[test]
+    fn bundled_list_module_links() {
+        let client = r#"
+            import list
+            fn main(console: Console) {
+              let xs = list.map(list.range(4), fn(n: Int) { n + 1 })
+              print(console, int_to_string(list.fold(xs, 0, fn(a: Int, b: Int) { a + b })))
+            }
+        "#;
+        let out = interpreter::run_program(
+            &[("list", crate::bundled_module("list").unwrap()), ("main", client)],
+            "main",
+        )
+        .expect("std list program runs");
+        assert_eq!(out, vec!["10"]); // (1+2+3+4)
     }
 
     #[test]

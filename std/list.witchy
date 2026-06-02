@@ -1,0 +1,53 @@
+// The witchy standard list library. Every function here is pure: the module
+// declares no capability parameters, so importing it grants no authority — it
+// can only transform data. This is the capability model in miniature: a library
+// you didn't hand a Console/Dir/Net to literally cannot reach them.
+
+// [0, 1, ..., n-1].
+pub fn range(n: Int) -> List(Int) {
+  var out = []
+  var i = 0
+  while i < n {
+    out = push(out, i)
+    i = i + 1
+  }
+  out
+}
+
+// Apply `f` to every element, collecting the results.
+pub fn map(xs: List(a), f: fn(a) -> b) -> List(b) {
+  var out = []
+  for x in xs {
+    out = push(out, f(x))
+  }
+  out
+}
+
+// Keep only the elements for which `keep` returns true.
+pub fn filter(xs: List(a), keep: fn(a) -> Bool) -> List(a) {
+  var out = []
+  for x in xs {
+    if keep(x) {
+      out = push(out, x)
+    }
+  }
+  out
+}
+
+// Reduce the list to a single value, left to right.
+pub fn fold(xs: List(a), init: b, f: fn(b, a) -> b) -> b {
+  var acc = init
+  for x in xs {
+    acc = f(acc, x)
+  }
+  acc
+}
+
+// The list, reversed.
+pub fn reverse(xs: List(a)) -> List(a) {
+  var out = []
+  for x in xs {
+    out = concat([x], out)
+  }
+  out
+}
