@@ -142,7 +142,8 @@ fn rewrite_block(b: &mut Block, m: &str, imps: &[String], fns: &FnTable) -> Resu
             Stmt::Let { value, .. }
             | Stmt::Assign { value, .. }
             | Stmt::LetTuple { value, .. } => rewrite_expr(value, m, imps, fns)?,
-            Stmt::Expr(e) => rewrite_expr(e, m, imps, fns)?,
+            Stmt::Return(Some(e)) | Stmt::Expr(e) => rewrite_expr(e, m, imps, fns)?,
+            Stmt::Return(None) => {}
         }
     }
     Ok(())

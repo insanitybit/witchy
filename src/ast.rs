@@ -122,6 +122,9 @@ pub enum Stmt {
         names: Vec<String>,
         value: Expr,
     },
+    /// `return e` (or bare `return`) — exit the enclosing function early with a
+    /// value (or Nil).
+    Return(Option<Expr>),
     Expr(Expr),
 }
 

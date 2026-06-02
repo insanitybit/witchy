@@ -834,6 +834,16 @@ impl Interpreter {
                     }
                     result = Value::Nil;
                 }
+                Stmt::Return(opt) => {
+                    let v = match opt {
+                        Some(e) => self.eval(e, env)?,
+                        None => Value::Nil,
+                    };
+                    env.pop();
+                    // Unwind to the enclosing function boundary, which turns this
+                    // into the function's result (same channel `?` uses).
+                    return Err(Flow::Return(v));
+                }
                 Stmt::Expr(e) => {
                     result = self.eval(e, env)?;
                 }
@@ -1594,6 +1604,25 @@ mod tests {
         interp.call("main", vec![])?;
         interp.run_to_completion()?;
         Ok(interp.output)
+    }
+
+    #[test]
+    fn early_return_exits_function_and_loop() {
+        let src = r#"
+            fn first_even(xs: List(Int)) -> Int {
+              for x in xs {
+                if x % 2 == 0 {
+                  return x
+                }
+              }
+              0 - 1
+            }
+            fn main(console: Console) {
+              print(console, int_to_string(first_even([1, 3, 8, 5])))
+              print(console, int_to_string(first_even([1, 3, 5])))
+            }
+        "#;
+        assert_eq!(run(src).unwrap(), vec!["8", "-1"]);
     }
 
     #[test]

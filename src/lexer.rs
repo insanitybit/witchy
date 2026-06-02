@@ -34,6 +34,7 @@ pub enum Tok {
     While,
     For,
     In,
+    Return,
 
     // Grouping / punctuation
     LParen,
@@ -101,6 +102,7 @@ impl fmt::Display for Tok {
             While => write!(f, "while"),
             For => write!(f, "for"),
             In => write!(f, "in"),
+            Return => write!(f, "return"),
             LParen => write!(f, "("),
             RParen => write!(f, ")"),
             LBrace => write!(f, "{{"),
@@ -309,6 +311,7 @@ impl Lexer {
             "while" => Tok::While,
             "for" => Tok::For,
             "in" => Tok::In,
+            "return" => Tok::Return,
             "_" => Tok::Underscore,
             _ => Tok::Ident(text),
         }

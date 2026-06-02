@@ -175,7 +175,8 @@ impl Codegen {
                     }
                     self.infer_locals_expr(value);
                 }
-                Stmt::Expr(e) => self.infer_locals_expr(e),
+                Stmt::Return(Some(e)) | Stmt::Expr(e) => self.infer_locals_expr(e),
+                Stmt::Return(None) => {}
             }
         }
     }
@@ -350,6 +351,9 @@ impl Codegen {
                 }
                 Stmt::LetTuple { .. } => {
                     return cerr("tuple destructure is not compiled to WASM yet");
+                }
+                Stmt::Return(_) => {
+                    return cerr("`return` is not compiled to WASM yet");
                 }
                 Stmt::Expr(e) => {
                     out.push_str(&self.compile_expr(e)?);
@@ -1082,7 +1086,8 @@ fn collect_let_names(block: &Block, out: &mut Vec<String>) {
                 }
                 collect_let_names_expr(value, out);
             }
-            Stmt::Expr(e) => collect_let_names_expr(e, out),
+            Stmt::Return(Some(e)) | Stmt::Expr(e) => collect_let_names_expr(e, out),
+            Stmt::Return(None) => {}
         }
     }
 }

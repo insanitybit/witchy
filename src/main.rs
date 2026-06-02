@@ -173,6 +173,7 @@ fn main() -> wasmtime::Result<()> {
     run_witchy("witchy list combinators (map/filter via push)", include_str!("../examples/list_ops.witchy"));
     run_witchy("witchy dictionaries (word count)", include_str!("../examples/wordcount.witchy"));
     run_witchy("witchy dict iteration (values/pairs)", include_str!("../examples/inventory.witchy"));
+    run_witchy("witchy early return (guard clauses)", include_str!("../examples/guard.witchy"));
     run_witchy("witchy actors", include_str!("../examples/actors.witchy"));
     run_witchy("witchy filesystem capability", include_str!("../examples/files.witchy"));
     run_compiled(&mut rt, "witchy compiled to WASM (ints)", include_str!("../examples/compute.witchy"));
@@ -883,6 +884,14 @@ mod example_tests {
         assert_eq!(
             interp(include_str!("../examples/inventory.witchy")),
             vec!["total = 9", "over 2: 2"]
+        );
+    }
+
+    #[test]
+    fn guard_example() {
+        assert_eq!(
+            interp(include_str!("../examples/guard.witchy")),
+            vec!["negative", "zero", "positive", "8", "-1"]
         );
     }
 

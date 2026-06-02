@@ -538,6 +538,20 @@ impl Checker {
                     }
                     ty = Ty::Nil;
                 }
+                Stmt::Return(opt) => {
+                    let t = match opt {
+                        Some(e) => self.infer(e)?,
+                        None => Ty::Nil,
+                    };
+                    if let Some(ret) = self.current_ret.clone() {
+                        self.unify(&ret, &t).map_err(|e| TypeError {
+                            message: format!("`return` value: {}", e.message),
+                        })?;
+                    }
+                    // A return diverges: its position can satisfy any expected
+                    // type, so contribute a fresh var (which unifies with anything).
+                    ty = self.fresh();
+                }
                 Stmt::Expr(e) => {
                     ty = self.infer(e)?;
                 }
@@ -1258,6 +1272,25 @@ mod tests {
             }
         "#;
         assert!(check_str(src).is_ok(), "{:?}", check_str(src));
+    }
+
+    #[test]
+    fn early_return_type_checks_including_divergence() {
+        // A guard `return` in an if-branch (no else) must not force the branch to
+        // the function's return type — divergence is handled.
+        let src = r#"
+            fn classify(n: Int) -> String {
+              if n < 0 { return "neg" }
+              "nonneg"
+            }
+            fn only_return() -> Int { return 5 }
+        "#;
+        assert!(check_str(src).is_ok(), "{:?}", check_str(src));
+    }
+
+    #[test]
+    fn rejects_return_of_wrong_type() {
+        assert!(check_str("fn f() -> Int { return \"x\" }").is_err());
     }
 
     #[test]

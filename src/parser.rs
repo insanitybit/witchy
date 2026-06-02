@@ -347,6 +347,15 @@ impl Parser {
     }
 
     fn stmt(&mut self) -> Result<Stmt, ParseError> {
+        if self.eat(&Tok::Return) {
+            // `return` alone (at a block's end) yields Nil; otherwise a value.
+            let value = if self.at(&Tok::RBrace) {
+                None
+            } else {
+                Some(self.expr(0)?)
+            };
+            return Ok(Stmt::Return(value));
+        }
         if self.at(&Tok::Let) || self.at(&Tok::Var) {
             let mutable = self.advance() == Tok::Var;
             if self.at(&Tok::LParen) {
