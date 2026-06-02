@@ -65,6 +65,8 @@ struct Codegen {
     ctors: HashMap<String, (u32, usize)>,
     /// Constructor arities for which an allocation helper `$mk{N}` is needed.
     mk_arities: HashSet<usize>,
+    /// Counter for unique `match` block labels.
+    next_label: u32,
 }
 
 impl Codegen {
@@ -81,6 +83,7 @@ impl Codegen {
             fn_conventions: HashMap::new(),
             ctors: HashMap::new(),
             mk_arities: HashSet::new(),
+            next_label: 0,
         }
     }
 
@@ -311,28 +314,33 @@ impl Codegen {
     /// re-evaluated per arm without a temporary. Variable/string/constructor
     /// patterns and guards are not compiled yet.
     fn compile_match(&mut self, scrutinee: &Expr, arms: &[MatchArm]) -> Result<String, CodegenError> {
+        // The scrutinee must be re-evaluatable per arm without side effects.
         let scrut = match scrutinee {
             Expr::Var(_) | Expr::Int(_) | Expr::Bool(_) => self.compile_expr(scrutinee)?,
             _ => {
                 return cerr("`match` scrutinee must be a variable or literal in WASM codegen (yet)")
             }
         };
-        self.compile_arms(&scrut, arms)
-    }
-
-    fn compile_arms(&mut self, scrut: &str, arms: &[MatchArm]) -> Result<String, CodegenError> {
-        let Some((arm, rest)) = arms.split_first() else {
-            return Ok("    unreachable\n".to_string()); // no arm matched
-        };
-        if arm.guard.is_some() {
-            return cerr("guards in `match` are not compiled to WASM yet");
+        let id = self.next_label;
+        self.next_label += 1;
+        // Each arm is a block: test the pattern (skip on failure), bind, test the
+        // guard (skip on failure), run the body and branch out with its value.
+        let mut s = format!("    block $d{id} (result i32)\n");
+        for (i, arm) in arms.iter().enumerate() {
+            let (cond, binds) = self.arm_cond_binds(&scrut, &arm.pattern)?;
+            s.push_str(&format!("    block $a{id}_{i}\n"));
+            s.push_str(&cond);
+            s.push_str(&format!("    i32.eqz\n    br_if $a{id}_{i}\n"));
+            s.push_str(&binds);
+            if let Some(guard) = &arm.guard {
+                s.push_str(&self.compile_expr(guard)?);
+                s.push_str(&format!("    i32.eqz\n    br_if $a{id}_{i}\n"));
+            }
+            s.push_str(&self.compile_expr(&arm.body)?);
+            s.push_str(&format!("    br $d{id}\n    end\n"));
         }
-        let (cond, binds) = self.arm_cond_binds(scrut, &arm.pattern)?;
-        let body = self.compile_expr(&arm.body)?;
-        let rest = self.compile_arms(scrut, rest)?;
-        Ok(format!(
-            "{cond}    if (result i32)\n{binds}{body}    else\n{rest}    end\n"
-        ))
+        s.push_str("    unreachable\n    end\n");
+        Ok(s)
     }
 
     /// For one pattern: the condition instructions (leaving an i32 on the stack)
@@ -702,6 +710,9 @@ fn collect_let_names_expr(expr: &Expr, out: &mut Vec<String>) {
             collect_let_names_expr(scrutinee, out);
             for arm in arms {
                 collect_pattern_vars(&arm.pattern, out);
+                if let Some(g) = &arm.guard {
+                    collect_let_names_expr(g, out);
+                }
                 collect_let_names_expr(&arm.body, out);
             }
         }
@@ -807,6 +818,21 @@ mod tests {
             fn main() -> Int { let a = double(21) let b = fib(10) a + b }
         "#;
         assert_eq!(run_int(src), 97);
+    }
+
+    #[test]
+    fn compiles_match_with_guards() {
+        let src = r#"
+            fn sign(n: Int) -> Int {
+              match n {
+                0 -> 0
+                m if m > 0 -> 1
+                _ -> 0 - 1
+              }
+            }
+            fn main() -> Int { sign(5) + sign(-3) + sign(0) }
+        "#;
+        assert_eq!(run_int(src), 0); // 1 + (-1) + 0
     }
 
     #[test]
