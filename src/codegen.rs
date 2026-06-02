@@ -21,7 +21,8 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 use crate::ast::{
-    ActorDef, BinOp, Block, Convention, Expr, Function, Item, Module, Stmt, Type, UnOp,
+    ActorDef, BinOp, Block, Convention, Expr, Function, Item, MatchArm, Module, Pattern, Stmt, Type,
+    UnOp,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -266,9 +267,51 @@ impl Codegen {
             Expr::Ctor { name, .. } => {
                 cerr(format!("constructor `{name}` is not compiled to WASM yet"))
             }
-            Expr::Match { .. } => cerr("`match` is not compiled to WASM yet"),
+            Expr::Match { scrutinee, arms } => self.compile_match(scrutinee, arms),
             Expr::Spawn { .. } => cerr("`spawn` is not compiled to WASM yet"),
         }
+    }
+
+    /// Compile a `match` on a scalar (`Int`/`Bool`) scrutinee into a chain of
+    /// `if`s. The scrutinee must be a variable or literal so it can be safely
+    /// re-evaluated per arm without a temporary. Variable/string/constructor
+    /// patterns and guards are not compiled yet.
+    fn compile_match(&mut self, scrutinee: &Expr, arms: &[MatchArm]) -> Result<String, CodegenError> {
+        let scrut = match scrutinee {
+            Expr::Var(_) | Expr::Int(_) | Expr::Bool(_) => self.compile_expr(scrutinee)?,
+            _ => {
+                return cerr("`match` scrutinee must be a variable or literal in WASM codegen (yet)")
+            }
+        };
+        self.compile_arms(&scrut, arms)
+    }
+
+    fn compile_arms(&mut self, scrut: &str, arms: &[MatchArm]) -> Result<String, CodegenError> {
+        let Some((arm, rest)) = arms.split_first() else {
+            return Ok("    unreachable\n".to_string()); // no arm matched
+        };
+        if arm.guard.is_some() {
+            return cerr("guards in `match` are not compiled to WASM yet");
+        }
+        let cond = match &arm.pattern {
+            Pattern::Wildcard => "    i32.const 1\n".to_string(),
+            Pattern::Int(k) => format!("{scrut}    i32.const {k}\n    i32.eq\n"),
+            Pattern::Bool(b) => {
+                format!("{scrut}    i32.const {}\n    i32.eq\n", if *b { 1 } else { 0 })
+            }
+            Pattern::Var(_) => {
+                return cerr("variable patterns in `match` are not compiled to WASM yet")
+            }
+            Pattern::Str(_) => {
+                return cerr("string patterns in `match` are not compiled to WASM yet")
+            }
+            Pattern::Ctor { .. } => {
+                return cerr("constructor patterns in `match` are not compiled to WASM yet")
+            }
+        };
+        let body = self.compile_expr(&arm.body)?;
+        let rest = self.compile_arms(scrut, rest)?;
+        Ok(format!("{cond}    if (result i32)\n{body}    else\n{rest}    end\n"))
     }
 
     fn compile_call(&mut self, name: &str, args: &[Expr]) -> Result<String, CodegenError> {
@@ -550,6 +593,12 @@ fn collect_let_names_expr(expr: &Expr, out: &mut Vec<String>) {
             }
         }
         Expr::Block(b) => collect_let_names(b, out),
+        Expr::Match { scrutinee, arms } => {
+            collect_let_names_expr(scrutinee, out);
+            for arm in arms {
+                collect_let_names_expr(&arm.body, out);
+            }
+        }
         _ => {}
     }
 }
@@ -639,6 +688,20 @@ mod tests {
             fn main() -> Int { let a = double(21) let b = fib(10) a + b }
         "#;
         assert_eq!(run_int(src), 97);
+    }
+
+    #[test]
+    fn compiles_match_and_recursion() {
+        let src = r#"
+            fn fact(n: Int) -> Int {
+              match n {
+                0 -> 1
+                _ -> n * fact(n - 1)
+              }
+            }
+            fn main() -> Int { fact(5) }
+        "#;
+        assert_eq!(run_int(src), 120);
     }
 
     #[test]
