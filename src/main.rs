@@ -149,9 +149,62 @@ fn main() -> wasmtime::Result<()> {
     run_compiled(&mut rt, "witchy compiled to WASM (strings)", include_str!("../examples/strings.witchy"));
     run_compiled_actor(&mut rt, "witchy actor compiled to its own WASM VM", include_str!("../examples/counter.witchy"));
     run_actor_system("witchy compiled actors messaging", include_str!("../examples/mailbox.witchy"));
+    run_net_demo("witchy network capability");
 
     println!("\nspike OK");
     Ok(())
+}
+
+/// Demonstrate the Net capability against a loopback echo server: a granted
+/// address can be reached; an address outside the allow-list is denied.
+fn run_net_demo(title: &str) {
+    use std::io::{BufRead, BufReader, Write};
+    println!("\n== {title} ==");
+    let listener = match std::net::TcpListener::bind("127.0.0.1:0") {
+        Ok(l) => l,
+        Err(e) => {
+            println!("could not bind loopback: {e}");
+            return;
+        }
+    };
+    let addr = listener.local_addr().unwrap().to_string();
+    let server = std::thread::spawn(move || {
+        if let Ok((stream, _)) = listener.accept() {
+            let mut r = BufReader::new(stream);
+            let mut line = String::new();
+            let _ = r.read_line(&mut line);
+            let _ = r.get_mut().write_all(format!("echo: {line}").as_bytes());
+        }
+    });
+
+    let program = format!(
+        r#"
+        fn main(console: Console, net: Net) {{
+          let s = connect(net, "{addr}")
+          send_line(s, "hello over the wire")
+          print(console, recv_line(s))
+        }}
+    "#
+    );
+    match interpreter::run_with(&program, ".", vec![addr.clone()]) {
+        Ok(out) => {
+            for line in out {
+                println!("{line}");
+            }
+        }
+        Err(e) => println!("error: {e}"),
+    }
+    server.join().ok();
+
+    let denied = r#"
+        fn main(console: Console, net: Net) {
+          let s = connect(net, "10.255.255.1:80")
+          send_line(s, "x")
+        }
+    "#;
+    if let Err(e) = interpreter::run_with(denied, ".", vec![addr]) {
+        println!("DENIED outside the allow-list (as designed): {e}");
+    }
 }
 
 /// Compile a program's actors and run them on the actor system, wiring a

@@ -29,6 +29,8 @@ pub enum Ty {
     Console,
     Subject,
     Dir,
+    Net,
+    Socket,
     List(Box<Ty>),
     Named(String),
     Var(u32),
@@ -45,6 +47,8 @@ impl fmt::Display for Ty {
             Ty::Console => write!(f, "Console"),
             Ty::Subject => write!(f, "Subject"),
             Ty::Dir => write!(f, "Dir"),
+            Ty::Net => write!(f, "Net"),
+            Ty::Socket => write!(f, "Socket"),
             Ty::List(e) => write!(f, "List({e})"),
             Ty::Named(n) => write!(f, "{n}"),
             Ty::Var(_) => write!(f, "?"),
@@ -104,6 +108,8 @@ impl Checker {
             "Console" => Ty::Console,
             "Subject" => Ty::Subject,
             "Dir" => Ty::Dir,
+            "Net" => Ty::Net,
+            "Socket" => Ty::Socket,
             "List" => {
                 let elem = match args.first() {
                     Some(a) => self.to_ty(a),
@@ -189,6 +195,10 @@ impl Checker {
             }
             "read" => Some((vec![Ty::Dir, Ty::String], Ty::String)),
             "subdir" => Some((vec![Ty::Dir, Ty::String], Ty::Dir)),
+            "connect" => Some((vec![Ty::Net, Ty::String], Ty::Socket)),
+            "restrict" => Some((vec![Ty::Net, Ty::String], Ty::Net)),
+            "send_line" => Some((vec![Ty::Socket, Ty::String], Ty::Nil)),
+            "recv_line" => Some((vec![Ty::Socket], Ty::String)),
             _ => self.fn_sigs.get(name).cloned(),
         }
     }

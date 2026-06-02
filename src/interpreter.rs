@@ -6,6 +6,8 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::fmt;
+use std::io::{BufRead, BufReader, Write};
+use std::net::TcpStream;
 use std::path::{Component, Path, PathBuf};
 
 use crate::ast::*;
@@ -26,6 +28,11 @@ pub enum Value {
     /// Carries the host path it is rooted at; can only be obtained from the root
     /// grant or by attenuation (`subdir`).
     Dir(PathBuf),
+    /// A network capability: an allow-list of permitted `host:port` destinations
+    /// (wasi:sockets / cap-std-net style). Attenuable via `restrict`.
+    Net(Vec<String>),
+    /// A connected socket — a handle into the interpreter's socket table.
+    Socket(usize),
     Nil,
 }
 
@@ -74,6 +81,8 @@ impl fmt::Display for Value {
             Value::Cap(c) => write!(f, "<capability {c:?}>"),
             Value::Subject(id) => write!(f, "<actor #{id}>"),
             Value::Dir(_) => write!(f, "<dir>"),
+            Value::Net(_) => write!(f, "<net>"),
+            Value::Socket(id) => write!(f, "<socket #{id}>"),
         }
     }
 }
@@ -163,6 +172,10 @@ pub struct Interpreter {
     queue: VecDeque<(usize, Value)>,
     /// Host directory the root `Dir` capability is rooted at.
     root: PathBuf,
+    /// Allow-list backing the root `Net` capability.
+    net_allow: Vec<String>,
+    /// Open sockets, indexed by `Value::Socket` handle.
+    sockets: Vec<BufReader<TcpStream>>,
     pub output: Vec<String>,
 }
 
@@ -189,6 +202,8 @@ impl Interpreter {
             actors: Vec::new(),
             queue: VecDeque::new(),
             root: PathBuf::from("."),
+            net_allow: Vec::new(),
+            sockets: Vec::new(),
             output: Vec::new(),
         }
     }
@@ -199,8 +214,9 @@ impl Interpreter {
         match ty {
             Some(Type::Named(n, _)) if n == "Console" => Ok(Value::Cap(Capability::Console)),
             Some(Type::Named(n, _)) if n == "Dir" => Ok(Value::Dir(self.root.clone())),
+            Some(Type::Named(n, _)) if n == "Net" => Ok(Value::Net(self.net_allow.clone())),
             other => err(format!(
-                "`main` may only declare capability parameters (Console, Dir); got `{other:?}`"
+                "`main` may only declare capability parameters (Console, Dir, Net); got `{other:?}`"
             )),
         }
     }
@@ -349,6 +365,60 @@ impl Interpreter {
                     }
                 }
                 _ => err("read expects a Dir and a relative path"),
+            },
+            // Network capability: attenuate a Net to a held address.
+            "restrict" => match args {
+                [Value::Net(allow), Value::Str(addr)] => {
+                    if !allow.iter().any(|a| a == addr) {
+                        return err(format!("restrict: `{addr}` is not in this Net capability"));
+                    }
+                    Ok(Some(Value::Net(vec![addr.clone()])))
+                }
+                _ => err("restrict expects a Net and an address"),
+            },
+            // Connect only to an address the Net capability permits.
+            "connect" => match args {
+                [Value::Net(allow), Value::Str(addr)] => {
+                    if !allow.iter().any(|a| a == addr) {
+                        return err(format!("connect: `{addr}` is not permitted by this Net capability"));
+                    }
+                    match TcpStream::connect(addr) {
+                        Ok(stream) => {
+                            let id = self.sockets.len();
+                            self.sockets.push(BufReader::new(stream));
+                            Ok(Some(Value::Socket(id)))
+                        }
+                        Err(e) => err(format!("connect to `{addr}` failed: {e}")),
+                    }
+                }
+                _ => err("connect expects a Net and an address"),
+            },
+            "send_line" => match args {
+                [Value::Socket(id), Value::Str(line)] => {
+                    let sock = self
+                        .sockets
+                        .get_mut(*id)
+                        .ok_or_else(|| RuntimeError { message: "invalid socket".into() })?;
+                    sock.get_mut()
+                        .write_all(line.as_bytes())
+                        .and_then(|_| sock.get_mut().write_all(b"\n"))
+                        .map_err(|e| RuntimeError { message: format!("send failed: {e}") })?;
+                    Ok(Some(Value::Nil))
+                }
+                _ => err("send_line expects a Socket and a String"),
+            },
+            "recv_line" => match args {
+                [Value::Socket(id)] => {
+                    let sock = self
+                        .sockets
+                        .get_mut(*id)
+                        .ok_or_else(|| RuntimeError { message: "invalid socket".into() })?;
+                    let mut line = String::new();
+                    sock.read_line(&mut line)
+                        .map_err(|e| RuntimeError { message: format!("recv failed: {e}") })?;
+                    Ok(Some(Value::Str(line.trim_end_matches('\n').to_string())))
+                }
+                _ => err("recv_line expects a Socket"),
             },
             _ => Ok(None),
         }
@@ -670,17 +740,27 @@ fn resolve(base: &Path, rel: &str) -> Result<PathBuf, RuntimeError> {
 }
 
 pub fn run(src: &str) -> Result<Vec<String>, RuntimeError> {
-    run_in(src, ".")
+    run_with(src, ".", Vec::new())
 }
 
-/// Run a program with `root` as the host directory backing the root `Dir`
-/// capability. `main` is the root actor: it receives the capabilities it
-/// declares (this is the only place authority is minted), and hands attenuated
-/// ones to the actors it spawns.
+/// Run with a chosen root directory for the root `Dir` capability.
 pub fn run_in(src: &str, root: impl AsRef<Path>) -> Result<Vec<String>, RuntimeError> {
+    run_with(src, root, Vec::new())
+}
+
+/// Run with the host-provided root capabilities: `root` backs the root `Dir`,
+/// and `net_allow` backs the root `Net` (the permitted `host:port` list).
+/// `main` is the root actor: it receives the capabilities it declares (the only
+/// place authority is minted) and hands attenuated ones to the actors it spawns.
+pub fn run_with(
+    src: &str,
+    root: impl AsRef<Path>,
+    net_allow: Vec<String>,
+) -> Result<Vec<String>, RuntimeError> {
     let module = parse_module(src).map_err(|e| RuntimeError { message: e.to_string() })?;
     let mut interp = Interpreter::new(module);
     interp.root = root.as_ref().to_path_buf();
+    interp.net_allow = net_allow;
     let root_args = match interp.functions.get("main").cloned() {
         Some(f) => f
             .params
@@ -863,6 +943,58 @@ mod tests {
         }
 
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn net_capability_connects_attenuates_and_denies() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        // One-shot loopback echo server.
+        let server = std::thread::spawn(move || {
+            if let Ok((stream, _)) = listener.accept() {
+                let mut r = BufReader::new(stream);
+                let mut line = String::new();
+                let _ = r.read_line(&mut line);
+                let _ = r.get_mut().write_all(line.as_bytes());
+            }
+        });
+
+        // Attenuate to the one held address, connect, send, receive the echo.
+        let ok = format!(
+            r#"
+            fn main(console: Console, net: Net) {{
+              let only = restrict(net, "{addr}")
+              let s = connect(only, "{addr}")
+              send_line(s, "ping")
+              print(console, recv_line(s))
+            }}
+        "#
+        );
+        assert_eq!(run_with(&ok, ".", vec![addr.clone()]).unwrap(), vec!["ping"]);
+        server.join().ok();
+
+        // Denied: connecting to an address not in the allow-list.
+        let denied = format!(
+            r#"
+            fn main(console: Console, net: Net) {{
+              let s = connect(net, "10.255.255.1:80")
+              send_line(s, "x")
+            }}
+        "#
+        );
+        assert!(run_with(&denied, ".", vec![addr.clone()]).is_err());
+
+        // Denied: cannot attenuate to an address not already held.
+        let bad_restrict = r#"
+            fn main(console: Console, net: Net) {
+              let bad = restrict(net, "10.255.255.1:80")
+              print(console, "unreachable")
+            }
+        "#;
+        assert!(run_with(bad_restrict, ".", vec![addr]).is_err());
     }
 
     #[test]
