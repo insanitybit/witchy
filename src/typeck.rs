@@ -607,6 +607,18 @@ impl Checker {
                 self.infer_block(body)?;
                 Ok(Ty::Nil)
             }
+            Expr::For { var, iter, body } => {
+                let it = self.infer(iter)?;
+                let elem = self.fresh();
+                self.unify(&Ty::List(Box::new(elem.clone())), &it).map_err(|e| TypeError {
+                    message: format!("`for` expects a List to iterate: {}", e.message),
+                })?;
+                self.push();
+                self.define(var.clone(), elem, false);
+                self.infer_block(body)?;
+                self.pop();
+                Ok(Ty::Nil)
+            }
             Expr::Match { scrutinee, arms } => self.infer_match(scrutinee, arms),
             Expr::Spawn { actor, args } => {
                 let Some(field_tys) = self.actor_field_sigs.get(actor).cloned() else {
@@ -1012,6 +1024,24 @@ mod tests {
             }
         "#;
         assert!(check_str(src).is_ok(), "{:?}", check_str(src));
+    }
+
+    #[test]
+    fn for_in_binds_element_type() {
+        let src = r#"
+            fn main(console: Console) {
+              for n in [1, 2, 3] {
+                print(console, int_to_string(n))
+              }
+            }
+        "#;
+        assert!(check_str(src).is_ok(), "{:?}", check_str(src));
+    }
+
+    #[test]
+    fn rejects_for_over_non_list() {
+        let src = r#"fn main(console: Console) { for x in 5 { print(console, "x") } }"#;
+        assert!(check_str(src).is_err());
     }
 
     #[test]

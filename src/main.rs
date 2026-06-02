@@ -164,6 +164,7 @@ fn main() -> wasmtime::Result<()> {
     run_witchy("witchy generics (swap any pair)", include_str!("../examples/generics.witchy"));
     run_witchy("witchy generic ADTs (Result)", include_str!("../examples/result.witchy"));
     run_witchy("witchy ? error propagation", include_str!("../examples/try.witchy"));
+    run_witchy("witchy for-in loops over lists", include_str!("../examples/loops.witchy"));
     run_witchy("witchy actors", include_str!("../examples/actors.witchy"));
     run_witchy("witchy filesystem capability", include_str!("../examples/files.witchy"));
     run_compiled(&mut rt, "witchy compiled to WASM (ints)", include_str!("../examples/compute.witchy"));
@@ -226,7 +227,36 @@ fn execute_file(path: &str) -> Result<Vec<String>, String> {
 
     let linked = linker::link(modules, &entry_stem).map_err(|e| e.to_string())?;
     typeck::check(&linked).map_err(|e| e.to_string())?;
-    interpreter::run_module(linked, dir, Vec::new()).map_err(|e| e.to_string())
+
+    // No `main` means there's nothing to run directly — but the file still
+    // compiled. Explain rather than failing with "unknown function `main`".
+    let has_main = linked
+        .items
+        .iter()
+        .any(|it| matches!(it, ast::Item::Function(f) if f.name == "main"));
+    if !has_main {
+        let actors: Vec<&str> = linked
+            .items
+            .iter()
+            .filter_map(|it| match it {
+                ast::Item::Actor(a) => Some(a.name.as_str()),
+                _ => None,
+            })
+            .collect();
+        let msg = if actors.is_empty() {
+            format!("`{entry_stem}` compiled OK — it's a library (no `main`); import it from another module.")
+        } else {
+            format!(
+                "`{entry_stem}` compiled OK — it defines actor(s) {} but no `main`; drive them from a `main` or the compiled runtime.",
+                actors.join(", ")
+            )
+        };
+        return Ok(vec![msg]);
+    }
+
+    // The root `Dir` capability is anchored at the current directory (the same
+    // root the demos use), independent of where the source file lives.
+    interpreter::run_module(linked, Path::new("."), Vec::new()).map_err(|e| e.to_string())
 }
 
 /// Parse, link, and run a multi-module program through the interpreter.
@@ -445,6 +475,49 @@ mod example_tests {
         Module::new(&Engine::default(), &wat).expect("valid wasm");
     }
 
+    /// Every example must at least compile (parse + link + type-check) and run
+    /// to completion through the CLI without an error — whether it prints, just
+    /// returns a value, or is a library/actor file with no `main`.
+    #[test]
+    fn all_examples_run_via_cli() {
+        let mut files: Vec<std::path::PathBuf> = std::fs::read_dir("examples")
+            .expect("examples directory")
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("witchy"))
+            .collect();
+        files.sort();
+        assert!(!files.is_empty(), "no examples found");
+        for path in files {
+            let p = path.to_str().unwrap();
+            let result = crate::execute_file(p);
+            assert!(result.is_ok(), "example `{p}` failed: {result:?}");
+        }
+    }
+
+    #[test]
+    fn compute_example_returns_value() {
+        assert_eq!(
+            crate::execute_file("examples/compute.witchy").unwrap(),
+            vec!["217"]
+        );
+    }
+
+    #[test]
+    fn shapes_example_returns_value() {
+        assert_eq!(
+            crate::execute_file("examples/shapes.witchy").unwrap(),
+            vec!["325"]
+        );
+    }
+
+    #[test]
+    fn files_example_reads_sandboxed_file() {
+        assert_eq!(
+            crate::execute_file("examples/files.witchy").unwrap(),
+            vec!["hello from a sandboxed Dir capability"]
+        );
+    }
+
     #[test]
     fn hello_example() {
         assert_eq!(
@@ -543,6 +616,14 @@ mod example_tests {
         assert_eq!(
             interp(include_str!("../examples/try.witchy")),
             vec!["= 11", "error: divide by zero", "error: divide by zero"]
+        );
+    }
+
+    #[test]
+    fn loops_example() {
+        assert_eq!(
+            interp(include_str!("../examples/loops.witchy")),
+            vec!["sum = 108", "witchy loops work"]
         );
     }
 

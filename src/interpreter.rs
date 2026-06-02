@@ -743,6 +743,20 @@ impl Interpreter {
                 },
                 other => err(format!("`if` condition must be a Bool, got `{other}`")),
             },
+            Expr::For { var, iter, body } => {
+                let items = match self.eval(iter, env)? {
+                    Value::List(items) => items,
+                    other => return err(format!("`for` expects a List, got `{other}`")),
+                };
+                for item in items {
+                    env.push();
+                    env.define(var.clone(), item, false);
+                    let r = self.eval_block(body, env);
+                    env.pop();
+                    r?;
+                }
+                Ok(Value::Nil)
+            }
             Expr::Block(block) => self.eval_block(block, env),
             Expr::While { cond, body } => {
                 loop {
@@ -946,8 +960,13 @@ pub fn run_module(
             .collect::<Result<Vec<_>, _>>()?,
         None => vec![],
     };
-    interp.call("main", root_args)?;
+    let ret = interp.call("main", root_args)?;
     interp.run_to_completion()?;
+    // A program that computes a value but prints nothing (e.g. `main` returns an
+    // Int) still has something to show: surface its result.
+    if interp.output.is_empty() && !matches!(ret, Value::Nil) {
+        interp.output.push(format!("{ret}"));
+    }
     Ok(interp.output)
 }
 
@@ -1320,6 +1339,20 @@ mod tests {
             }
         "#;
         assert_eq!(run(src).unwrap(), vec!["ok 7", "err boom"]);
+    }
+
+    #[test]
+    fn for_in_accumulates() {
+        let src = r#"
+            fn main(console: Console) {
+              var total = 0
+              for n in [10, 20, 30] {
+                total = total + n
+              }
+              print(console, int_to_string(total))
+            }
+        "#;
+        assert_eq!(run(src).unwrap(), vec!["60"]);
     }
 
     #[test]

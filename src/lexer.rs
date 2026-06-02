@@ -32,6 +32,8 @@ pub enum Tok {
     Sink,
     Import,
     While,
+    For,
+    In,
 
     // Grouping / punctuation
     LParen,
@@ -96,6 +98,8 @@ impl fmt::Display for Tok {
             Sink => write!(f, "sink"),
             Import => write!(f, "import"),
             While => write!(f, "while"),
+            For => write!(f, "for"),
+            In => write!(f, "in"),
             LParen => write!(f, "("),
             RParen => write!(f, ")"),
             LBrace => write!(f, "{{"),
@@ -301,6 +305,8 @@ impl Lexer {
             "sink" => Tok::Sink,
             "import" => Tok::Import,
             "while" => Tok::While,
+            "for" => Tok::For,
+            "in" => Tok::In,
             "_" => Tok::Underscore,
             _ => Tok::Ident(text),
         }

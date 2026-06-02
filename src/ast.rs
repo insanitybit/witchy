@@ -151,6 +151,13 @@ pub enum Expr {
         cond: Box<Expr>,
         body: Block,
     },
+    /// `for x in list { body }` — bind each element of `list` to `x` in turn;
+    /// evaluates to Nil.
+    For {
+        var: String,
+        iter: Box<Expr>,
+        body: Block,
+    },
     /// `spawn ActorName(args)` — create an actor, granting it the args as its
     /// initial (non-defaulted) fields. Evaluates to a `Subject`.
     Spawn {

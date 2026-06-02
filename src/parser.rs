@@ -439,6 +439,18 @@ impl Parser {
                     body,
                 })
             }
+            Tok::For => {
+                self.advance();
+                let var = self.ident()?;
+                self.expect(&Tok::In)?;
+                let iter = self.expr(0)?;
+                let body = self.block()?;
+                Ok(Expr::For {
+                    var,
+                    iter: Box::new(iter),
+                    body,
+                })
+            }
             Tok::Match => self.match_expr(),
             Tok::Spawn => {
                 self.advance();
