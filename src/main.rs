@@ -140,6 +140,7 @@ fn main() -> wasmtime::Result<()> {
     run_witchy("witchy language (interpreter)", include_str!("../examples/hello.witchy"));
     run_witchy("witchy mutable value semantics", include_str!("../examples/mutate.witchy"));
     run_witchy("witchy ownership (sink)", include_str!("../examples/ownership.witchy"));
+    run_witchy("witchy features combined", include_str!("../examples/commands.witchy"));
     run_witchy("witchy actors", include_str!("../examples/actors.witchy"));
     run_compiled(&mut rt, "witchy compiled to WASM (ints)", include_str!("../examples/compute.witchy"));
     run_compiled(&mut rt, "witchy compiled to WASM (ADTs)", include_str!("../examples/shapes.witchy"));
@@ -278,6 +279,13 @@ mod example_tests {
             interp(include_str!("../examples/actors.witchy")),
             vec!["[1] direct message", "[2] another direct", "[3] relayed message"]
         );
+    }
+
+    #[test]
+    fn commands_example_runs_and_compiles() {
+        let src = include_str!("../examples/commands.witchy");
+        assert_eq!(interp(src), vec!["total is 1"]);
+        assert_fn_compiles(src);
     }
 
     #[test]
