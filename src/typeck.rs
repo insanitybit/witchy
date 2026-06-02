@@ -177,6 +177,9 @@ impl Checker {
         match name {
             "print" => Some((vec![Ty::Console, Ty::String], Ty::Nil)),
             "int_to_string" => Some((vec![Ty::Int], Ty::String)),
+            "string_length" => Some((vec![Ty::String], Ty::Int)),
+            "to_upper" | "to_lower" | "trim" => Some((vec![Ty::String], Ty::String)),
+            "starts_with" => Some((vec![Ty::String, Ty::String], Ty::Bool)),
             "to_string" => {
                 let a = self.fresh();
                 Some((vec![a], Ty::String))

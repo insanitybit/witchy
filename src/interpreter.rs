@@ -337,6 +337,29 @@ impl Interpreter {
                 Value::Int(n) => Ok(Some(Value::Str(n.to_string()))),
                 other => err(format!("int_to_string expects an Int, got `{other}`")),
             },
+            // String stdlib.
+            "string_length" => match one(args)? {
+                Value::Str(s) => Ok(Some(Value::Int(s.len() as i64))),
+                other => err(format!("string_length expects a String, got `{other}`")),
+            },
+            "to_upper" => match one(args)? {
+                Value::Str(s) => Ok(Some(Value::Str(s.to_uppercase()))),
+                other => err(format!("to_upper expects a String, got `{other}`")),
+            },
+            "to_lower" => match one(args)? {
+                Value::Str(s) => Ok(Some(Value::Str(s.to_lowercase()))),
+                other => err(format!("to_lower expects a String, got `{other}`")),
+            },
+            "trim" => match one(args)? {
+                Value::Str(s) => Ok(Some(Value::Str(s.trim().to_string()))),
+                other => err(format!("trim expects a String, got `{other}`")),
+            },
+            "starts_with" => match args {
+                [Value::Str(s), Value::Str(prefix)] => {
+                    Ok(Some(Value::Bool(s.starts_with(prefix.as_str()))))
+                }
+                _ => err("starts_with expects two Strings"),
+            },
             "length" => match args {
                 [Value::List(items)] => Ok(Some(Value::Int(items.len() as i64))),
                 _ => err("length expects a list"),
@@ -1142,6 +1165,19 @@ mod tests {
             run(src).unwrap(),
             vec!["small positive", "out of range", "other"]
         );
+    }
+
+    #[test]
+    fn string_stdlib() {
+        let src = r#"
+            fn main(console: Console) {
+              print(console, to_upper("witchy"))
+              print(console, int_to_string(string_length("hello")))
+              print(console, trim("  hi  "))
+              if starts_with("witchy", "wit") { print(console, "yes") } else { print(console, "no") }
+            }
+        "#;
+        assert_eq!(run(src).unwrap(), vec!["WITCHY", "5", "hi", "yes"]);
     }
 
     #[test]

@@ -607,6 +607,14 @@ impl Codegen {
                 let arg = self.compile_expr(&args[0])?;
                 Ok(format!("{arg}    call $int_to_string\n"))
             }
+            // The string record's header is its byte length.
+            ("string_length", 1) => {
+                let arg = self.compile_expr(&args[0])?;
+                Ok(format!("{arg}    i32.load\n"))
+            }
+            ("to_upper", _) | ("to_lower", _) | ("trim", _) | ("starts_with", _) => cerr(
+                "string stdlib functions run in the interpreter; WASM string ops are future",
+            ),
             // length(list): the record header is the length.
             ("length", 1) => {
                 let arg = self.compile_expr(&args[0])?;
@@ -1195,6 +1203,11 @@ mod tests {
             fn main() -> Int { let a = double(21) let b = fib(10) a + b }
         "#;
         assert_eq!(run_int(src), 97);
+    }
+
+    #[test]
+    fn compiles_string_length() {
+        assert_eq!(run_int(r#"fn main() -> Int { string_length("hello") }"#), 5);
     }
 
     #[test]
