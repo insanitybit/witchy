@@ -478,6 +478,25 @@ impl Interpreter {
                 },
                 _ => err("at expects a list and an Int index"),
             },
+            // Return a new list with `x` appended (lists are values, so this does
+            // not mutate the original).
+            "push" => match args {
+                [Value::List(items), x] => {
+                    let mut out = items.clone();
+                    out.push(x.clone());
+                    Ok(Some(Value::List(out)))
+                }
+                _ => err("push expects a list and a value"),
+            },
+            // Return a new list that is the two given lists joined.
+            "concat" => match args {
+                [Value::List(a), Value::List(b)] => {
+                    let mut out = a.clone();
+                    out.extend(b.clone());
+                    Ok(Some(Value::List(out)))
+                }
+                _ => err("concat expects two lists"),
+            },
             // Filesystem capability (cap-std style): attenuate to a subdirectory.
             "subdir" => match args {
                 [Value::Dir(base), Value::Str(name)] => {
@@ -1430,6 +1449,21 @@ mod tests {
             }
         "#;
         assert_eq!(run(src).unwrap(), vec!["ok 7", "err boom"]);
+    }
+
+    #[test]
+    fn push_is_immutable_and_concat_joins() {
+        let src = r#"
+            fn main(console: Console) {
+              let a = [1, 2]
+              let b = push(a, 3)
+              print(console, int_to_string(length(a)))   // a is unchanged
+              print(console, int_to_string(length(b)))
+              let c = concat(a, [9, 9])
+              print(console, int_to_string(at(c, 3)))
+            }
+        "#;
+        assert_eq!(run(src).unwrap(), vec!["2", "3", "9"]);
     }
 
     #[test]

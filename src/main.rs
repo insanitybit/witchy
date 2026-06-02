@@ -170,6 +170,7 @@ fn main() -> wasmtime::Result<()> {
     run_witchy("witchy expression evaluator (recursive ADT)", include_str!("../examples/eval.witchy"));
     run_witchy("witchy bank (records + lists + Result)", include_str!("../examples/bank.witchy"));
     run_witchy("witchy higher-order functions (closures)", include_str!("../examples/higher_order.witchy"));
+    run_witchy("witchy list combinators (map/filter via push)", include_str!("../examples/list_ops.witchy"));
     run_witchy("witchy actors", include_str!("../examples/actors.witchy"));
     run_witchy("witchy filesystem capability", include_str!("../examples/files.witchy"));
     run_compiled(&mut rt, "witchy compiled to WASM (ints)", include_str!("../examples/compute.witchy"));
@@ -748,6 +749,14 @@ mod example_tests {
         assert_eq!(
             interp(include_str!("../examples/higher_order.witchy")),
             vec!["15", "81", "15", "120"]
+        );
+    }
+
+    #[test]
+    fn list_ops_example() {
+        assert_eq!(
+            interp(include_str!("../examples/list_ops.witchy")),
+            vec!["55", "6", "0-2-4"]
         );
     }
 

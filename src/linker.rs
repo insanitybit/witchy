@@ -51,6 +51,8 @@ const BUILTINS: &[&str] = &[
     "string_to_int",
     "length",
     "at",
+    "push",
+    "concat",
     "send",
     "read",
     "subdir",

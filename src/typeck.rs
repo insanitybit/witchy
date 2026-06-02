@@ -393,6 +393,18 @@ impl Checker {
                 let elem = self.fresh();
                 Some((vec![Ty::List(Box::new(elem.clone())), Ty::Int], elem))
             }
+            "push" => {
+                let elem = self.fresh();
+                Some((
+                    vec![Ty::List(Box::new(elem.clone())), elem.clone()],
+                    Ty::List(Box::new(elem)),
+                ))
+            }
+            "concat" => {
+                let elem = self.fresh();
+                let list = Ty::List(Box::new(elem));
+                Some((vec![list.clone(), list.clone()], list))
+            }
             "read" => Some((vec![Ty::Dir, Ty::String], Ty::String)),
             "subdir" => Some((vec![Ty::Dir, Ty::String], Ty::Dir)),
             "connect" => Some((vec![Ty::Net, Ty::String], Ty::Socket)),
@@ -1164,6 +1176,21 @@ mod tests {
             }
         "#;
         assert!(check_str(src).is_ok(), "{:?}", check_str(src));
+    }
+
+    #[test]
+    fn push_and_concat_are_generic() {
+        let src = r#"
+            fn ints() -> List(Int) { push([1, 2], 3) }
+            fn strs() -> List(String) { concat(["a"], ["b", "c"]) }
+        "#;
+        assert!(check_str(src).is_ok(), "{:?}", check_str(src));
+    }
+
+    #[test]
+    fn rejects_push_element_type_mismatch() {
+        // Pushing a String onto a List(Int) must fail.
+        assert!(check_str("fn f() -> List(Int) { push([1, 2], \"x\") }").is_err());
     }
 
     #[test]
