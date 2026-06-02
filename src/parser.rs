@@ -231,13 +231,24 @@ impl Parser {
     fn params(&mut self) -> Result<Vec<Param>, ParseError> {
         let mut params = Vec::new();
         while !self.at(&Tok::RParen) {
+            let convention = if self.eat(&Tok::Inout) {
+                Convention::Inout
+            } else if self.eat(&Tok::Sink) {
+                Convention::Sink
+            } else {
+                Convention::Let
+            };
             let name = self.ident()?;
             let ty = if self.eat(&Tok::Colon) {
                 Some(self.ty()?)
             } else {
                 None
             };
-            params.push(Param { name, ty });
+            params.push(Param {
+                name,
+                ty,
+                convention,
+            });
             if !self.eat(&Tok::Comma) {
                 break;
             }
@@ -684,6 +695,17 @@ mod tests {
         assert_eq!(a.handlers.len(), 1);
         assert_eq!(a.handlers[0].message, "Inc");
         assert!(matches!(a.handlers[0].body.stmts[0], Stmt::Assign { .. }));
+    }
+
+    #[test]
+    fn parses_parameter_conventions() {
+        let m = parse_module("fn f(inout a: Int, sink b: Int, c: Int) -> Int { c }").unwrap();
+        let Item::Function(func) = &m.items[0] else {
+            panic!("expected a function");
+        };
+        assert_eq!(func.params[0].convention, Convention::Inout);
+        assert_eq!(func.params[1].convention, Convention::Sink);
+        assert_eq!(func.params[2].convention, Convention::Let);
     }
 
     #[test]

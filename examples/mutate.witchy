@@ -1,0 +1,16 @@
+// Mutable value semantics (Hylo-style): `var` is freely mutable, and an `inout`
+// parameter lets a function mutate the caller's variable in place — no pointers.
+// Because values are independent (value semantics), there's no aliasing to
+// reason about; `let` bindings stay immutable.
+
+fn bump(inout n: Int) {
+  n = n + 1
+}
+
+fn main(console: Console) {
+  var total = 0
+  bump(total)
+  bump(total)
+  bump(total)
+  print(console, "bumped to " <> int_to_string(total))
+}

@@ -94,9 +94,17 @@ fn err<T>(message: impl Into<String>) -> Result<T, RuntimeError> {
 /// Lexically scoped variable bindings. Functions are not closures: a call
 /// starts a fresh `Env` so a function body sees only its parameters and the
 /// global function table.
+enum Assign {
+    Done,
+    Immutable,
+    Unbound,
+}
+
 #[derive(Default)]
 struct Env {
-    scopes: Vec<HashMap<String, Value>>,
+    /// Each binding carries whether it is mutable (`var`/`inout`/`sink`) or not
+    /// (`let`). Mutable value semantics: bindings hold independent values.
+    scopes: Vec<HashMap<String, (Value, bool)>>,
 }
 
 impl Env {
@@ -111,22 +119,28 @@ impl Env {
     fn pop(&mut self) {
         self.scopes.pop();
     }
-    fn define(&mut self, name: String, value: Value) {
-        self.scopes.last_mut().unwrap().insert(name, value);
+    fn define(&mut self, name: String, value: Value, mutable: bool) {
+        self.scopes.last_mut().unwrap().insert(name, (value, mutable));
     }
     fn get(&self, name: &str) -> Option<&Value> {
-        self.scopes.iter().rev().find_map(|s| s.get(name))
+        self.scopes
+            .iter()
+            .rev()
+            .find_map(|s| s.get(name))
+            .map(|(v, _)| v)
     }
-    /// Update an existing binding in place (innermost scope that holds it).
-    /// Returns false if the name is not bound anywhere.
-    fn assign(&mut self, name: &str, value: Value) -> bool {
+    /// Reassign an existing binding in place; rejects immutable (`let`) bindings.
+    fn assign(&mut self, name: &str, value: Value) -> Assign {
         for scope in self.scopes.iter_mut().rev() {
-            if let Some(slot) = scope.get_mut(name) {
-                *slot = value;
-                return true;
+            if let Some((slot, mutable)) = scope.get_mut(name) {
+                if *mutable {
+                    *slot = value;
+                    return Assign::Done;
+                }
+                return Assign::Immutable;
             }
         }
-        false
+        Assign::Unbound
     }
 }
 
@@ -187,9 +201,71 @@ impl Interpreter {
         }
         let mut env = Env::new();
         for (param, value) in func.params.iter().zip(args) {
-            env.define(param.name.clone(), value);
+            env.define(
+                param.name.clone(),
+                value,
+                !matches!(param.convention, Convention::Let),
+            );
         }
         self.eval_block(&func.body, &mut env)
+    }
+
+    /// Evaluate a function call expression, honoring parameter conventions:
+    /// `inout` arguments must be mutable variables and are written back after
+    /// the call returns (Hylo-style move-in / move-out).
+    fn eval_call(&mut self, name: &str, args: &[Expr], env: &mut Env) -> Result<Value, RuntimeError> {
+        let argvals = args
+            .iter()
+            .map(|a| self.eval(a, env))
+            .collect::<Result<Vec<_>, _>>()?;
+        if let Some(v) = self.call_builtin(name, &argvals)? {
+            return Ok(v);
+        }
+        let Some(func) = self.functions.get(name).cloned() else {
+            return err(format!("call to unknown function `{name}`"));
+        };
+        if func.params.len() != argvals.len() {
+            return err(format!(
+                "`{name}` expects {} argument(s) but got {}",
+                func.params.len(),
+                argvals.len()
+            ));
+        }
+        let mut fenv = Env::new();
+        let mut writebacks: Vec<(String, String)> = Vec::new();
+        for (i, param) in func.params.iter().enumerate() {
+            fenv.define(
+                param.name.clone(),
+                argvals[i].clone(),
+                !matches!(param.convention, Convention::Let),
+            );
+            if matches!(param.convention, Convention::Inout) {
+                match &args[i] {
+                    Expr::Var(caller) => writebacks.push((caller.clone(), param.name.clone())),
+                    _ => {
+                        return err(format!(
+                            "`inout` argument to `{name}` must be a mutable variable"
+                        ))
+                    }
+                }
+            }
+        }
+        let result = self.eval_block(&func.body, &mut fenv)?;
+        for (caller, param_name) in writebacks {
+            let final_v = fenv.get(&param_name).cloned().unwrap();
+            match env.assign(&caller, final_v) {
+                Assign::Done => {}
+                Assign::Immutable => {
+                    return err(format!(
+                        "`inout` argument `{caller}` must be a `var` (it is immutable)"
+                    ))
+                }
+                Assign::Unbound => {
+                    return err(format!("`inout` argument `{caller}` must be a local variable"))
+                }
+            }
+        }
+        Ok(result)
     }
 
     fn call_builtin(&mut self, name: &str, args: &[Value]) -> Result<Option<Value>, RuntimeError> {
@@ -292,14 +368,22 @@ impl Interpreter {
                 handler.params.len()
             ));
         }
-        // State is the base scope; handler parameters layer on top.
+        // State is the base scope; handler parameters layer on top. `var` fields
+        // are mutable; capability/immutable fields are not.
+        let field_mut: HashMap<&str, bool> =
+            def.fields.iter().map(|f| (f.name.as_str(), f.mutable)).collect();
         let mut env = Env::new();
         for (k, v) in &self.actors[id].state {
-            env.define(k.clone(), v.clone());
+            let mutable = field_mut.get(k.as_str()).copied().unwrap_or(false);
+            env.define(k.clone(), v.clone(), mutable);
         }
         env.push();
         for (param, value) in handler.params.iter().zip(fields) {
-            env.define(param.name.clone(), value);
+            env.define(
+                param.name.clone(),
+                value,
+                !matches!(param.convention, Convention::Let),
+            );
         }
         self.eval_block(&handler.body, &mut env)?;
         // Persist any state the handler mutated.
@@ -317,15 +401,23 @@ impl Interpreter {
         let mut result = Value::Nil;
         for stmt in &block.stmts {
             match stmt {
-                Stmt::Let { name, value, .. } => {
+                Stmt::Let { name, mutable, value } => {
                     let v = self.eval(value, env)?;
-                    env.define(name.clone(), v);
+                    env.define(name.clone(), v, *mutable);
                     result = Value::Nil;
                 }
                 Stmt::Assign { name, value } => {
                     let v = self.eval(value, env)?;
-                    if !env.assign(name, v) {
-                        return err(format!("cannot assign to unbound variable `{name}`"));
+                    match env.assign(name, v) {
+                        Assign::Done => {}
+                        Assign::Immutable => {
+                            return err(format!(
+                                "cannot assign to `{name}`: it is immutable (declared with `let`)"
+                            ))
+                        }
+                        Assign::Unbound => {
+                            return err(format!("cannot assign to unbound variable `{name}`"))
+                        }
                     }
                     result = Value::Nil;
                 }
@@ -355,13 +447,7 @@ impl Interpreter {
                 Some(v) => Ok(v.clone()),
                 None => err(format!("unbound variable `{name}`")),
             },
-            Expr::Call { name, args } => {
-                let argvals = args
-                    .iter()
-                    .map(|a| self.eval(a, env))
-                    .collect::<Result<Vec<_>, _>>()?;
-                self.call(name, argvals)
-            }
+            Expr::Call { name, args } => self.eval_call(name, args, env),
             Expr::Ctor { name, args } => {
                 let fields = args
                     .iter()
@@ -432,7 +518,7 @@ fn match_pattern(pat: &Pattern, value: &Value, env: &mut Env) -> bool {
     match (pat, value) {
         (Pattern::Wildcard, _) => true,
         (Pattern::Var(name), v) => {
-            env.define(name.clone(), v.clone());
+            env.define(name.clone(), v.clone(), false);
             true
         }
         (Pattern::Int(a), Value::Int(b)) => a == b,
@@ -700,5 +786,61 @@ mod tests {
             }
         "#;
         assert_eq!(run(src).unwrap(), vec!["relayed hello"]);
+    }
+
+    #[test]
+    fn let_bindings_are_immutable() {
+        let src = r#"
+            fn main(console: Console) {
+              let x = 1
+              x = 2
+            }
+        "#;
+        let e = run(src).unwrap_err();
+        assert!(e.message.contains("immutable"), "got: {}", e.message);
+    }
+
+    #[test]
+    fn var_bindings_are_mutable() {
+        let src = r#"
+            fn main(console: Console) {
+              var x = 1
+              x = x + 41
+              print(console, int_to_string(x))
+            }
+        "#;
+        assert_eq!(run(src).unwrap(), vec!["42"]);
+    }
+
+    /// Hylo-style mutable value semantics: an `inout` parameter mutates the
+    /// caller's variable in place — easy mutability, no pointers.
+    #[test]
+    fn inout_parameter_writes_back_to_caller() {
+        let src = r#"
+            fn bump(inout n: Int) { n = n + 1 }
+            fn main(console: Console) {
+              var x = 41
+              bump(x)
+              print(console, int_to_string(x))
+            }
+        "#;
+        assert_eq!(run(src).unwrap(), vec!["42"]);
+    }
+
+    #[test]
+    fn inout_requires_a_mutable_variable() {
+        let src = r#"
+            fn bump(inout n: Int) { n = n + 1 }
+            fn main(console: Console) {
+              let x = 41
+              bump(x)
+            }
+        "#;
+        let e = run(src).unwrap_err();
+        assert!(
+            e.message.contains("var") || e.message.contains("immutable"),
+            "got: {}",
+            e.message
+        );
     }
 }

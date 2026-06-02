@@ -138,6 +138,7 @@ fn main() -> wasmtime::Result<()> {
     }
 
     run_witchy("witchy language (interpreter)", include_str!("../examples/hello.witchy"));
+    run_witchy("witchy mutable value semantics", include_str!("../examples/mutate.witchy"));
     run_witchy("witchy actors", include_str!("../examples/actors.witchy"));
     run_compiled(&mut rt, "witchy compiled to WASM (ints)", include_str!("../examples/compute.witchy"));
     run_compiled(&mut rt, "witchy compiled to WASM (strings)", include_str!("../examples/strings.witchy"));

@@ -67,6 +67,18 @@ pub struct Function {
 pub struct Param {
     pub name: String,
     pub ty: Option<Type>,
+    pub convention: Convention,
+}
+
+/// Hylo-style parameter passing conventions (mutable value semantics).
+/// `let` borrows immutably (default), `inout` mutates in place and writes back,
+/// `sink` consumes (takes ownership / moves the value in).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Convention {
+    #[default]
+    Let,
+    Inout,
+    Sink,
 }
 
 /// Types are parsed but not yet checked. `Named("Result", [Int, Error])`.

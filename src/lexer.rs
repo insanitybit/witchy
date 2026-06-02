@@ -28,6 +28,8 @@ pub enum Tok {
     False,
     Spawn,
     Type,
+    Inout,
+    Sink,
 
     // Grouping / punctuation
     LParen,
@@ -83,6 +85,8 @@ impl fmt::Display for Tok {
             False => write!(f, "false"),
             Spawn => write!(f, "spawn"),
             Type => write!(f, "type"),
+            Inout => write!(f, "inout"),
+            Sink => write!(f, "sink"),
             LParen => write!(f, "("),
             RParen => write!(f, ")"),
             LBrace => write!(f, "{{"),
@@ -279,6 +283,8 @@ impl Lexer {
             "false" => Tok::False,
             "spawn" => Tok::Spawn,
             "type" => Tok::Type,
+            "inout" => Tok::Inout,
+            "sink" => Tok::Sink,
             "_" => Tok::Underscore,
             _ => Tok::Ident(text),
         }
