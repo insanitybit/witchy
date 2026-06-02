@@ -636,8 +636,14 @@ fn compare(l: &Value, r: &Value) -> Result<std::cmp::Ordering, RuntimeError> {
 
 /// Parse and run a witchy program, returning everything it `print`ed. Expects a
 /// `main` function with no parameters.
-/// Resolve a path relative to a `Dir` capability, rejecting escapes — the value
-/// can only ever reach files within its subtree (cap-std style).
+/// Resolve a path relative to a `Dir` capability, confining it to the subtree.
+/// Beyond the lexical `..`/absolute checks, we canonicalize (resolving symlinks)
+/// and verify the real target stays under the real base, so a symlink *inside*
+/// the subtree can't point out of it.
+///
+/// Note: canonicalize-then-use is mildly TOCTOU; the race-free fix is
+/// syscall-level confinement (openat2/O_NOFOLLOW, i.e. the cap-std crate), which
+/// is what the planned WASI-preopen substrate gives us.
 fn resolve(base: &Path, rel: &str) -> Result<PathBuf, RuntimeError> {
     let p = Path::new(rel);
     if p.is_absolute() {
@@ -650,7 +656,17 @@ fn resolve(base: &Path, rel: &str) -> Result<PathBuf, RuntimeError> {
             _ => return err("invalid path component in a Dir-relative path"),
         }
     }
-    Ok(base.join(rel))
+    let joined = base.join(rel);
+    let real = std::fs::canonicalize(&joined).map_err(|e| RuntimeError {
+        message: format!("cannot access `{}`: {e}", joined.display()),
+    })?;
+    let real_base = std::fs::canonicalize(base).map_err(|e| RuntimeError {
+        message: format!("invalid Dir base `{}`: {e}", base.display()),
+    })?;
+    if !real.starts_with(&real_base) {
+        return err("path escapes the Dir capability (via symlink)");
+    }
+    Ok(real)
 }
 
 pub fn run(src: &str) -> Result<Vec<String>, RuntimeError> {
@@ -828,6 +844,23 @@ mod tests {
             fn main(console: Console, root: Dir) { print(console, sneaky()) }
         "#;
         assert!(run_in(no_cap, &root).is_err());
+
+        // Confinement holds against symlinks: a link inside the subtree pointing
+        // outside it must not be followable.
+        #[cfg(unix)]
+        {
+            let outside = std::env::temp_dir().join(format!("witchy_outside_{}", std::process::id()));
+            std::fs::write(&outside, "secret").unwrap();
+            std::os::unix::fs::symlink(&outside, root.join("sub/escape")).ok();
+            let via_symlink = r#"
+                fn main(console: Console, root: Dir) {
+                  let d = subdir(root, "sub")
+                  print(console, read(d, "escape"))
+                }
+            "#;
+            assert!(run_in(via_symlink, &root).is_err());
+            std::fs::remove_file(&outside).ok();
+        }
 
         std::fs::remove_dir_all(&root).ok();
     }
