@@ -337,11 +337,13 @@ impl Parser {
     fn block(&mut self) -> Result<Block, ParseError> {
         self.expect(&Tok::LBrace)?;
         let mut stmts = Vec::new();
+        let mut lines = Vec::new();
         while !self.at(&Tok::RBrace) && !self.at(&Tok::Eof) {
+            lines.push(self.cur().line);
             stmts.push(self.stmt()?);
         }
         self.expect(&Tok::RBrace)?;
-        Ok(Block { stmts })
+        Ok(Block { stmts, lines })
     }
 
     fn stmt(&mut self) -> Result<Stmt, ParseError> {
@@ -605,8 +607,10 @@ impl Parser {
         let else_block = if self.eat(&Tok::Else) {
             if self.at(&Tok::If) {
                 // `else if` chains nest as a block containing one if-expression.
+                let line = self.cur().line;
                 Some(Block {
                     stmts: vec![Stmt::Expr(self.if_expr()?)],
+                    lines: vec![line],
                 })
             } else {
                 Some(self.block()?)

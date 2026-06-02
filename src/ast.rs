@@ -100,6 +100,8 @@ pub enum Type {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Block {
     pub stmts: Vec<Stmt>,
+    /// Source line of each statement (parallel to `stmts`), for diagnostics.
+    pub lines: Vec<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

@@ -113,6 +113,18 @@ fn terr<T>(message: impl Into<String>) -> Result<T, TypeError> {
     })
 }
 
+/// Prefix a type error with the source line it occurred on (when known), so the
+/// user gets a location. `line == 0` means no location is available.
+fn at_line(e: TypeError, line: u32) -> TypeError {
+    if line > 0 {
+        TypeError {
+            message: format!("line {line}: {}", e.message),
+        }
+    } else {
+        e
+    }
+}
+
 /// Collect the type-parameter names (lowercase, argument-less) appearing in a
 /// type expression, in order of first appearance. Used to infer the parameters
 /// of a generic ADT from its variant field types.
@@ -169,6 +181,9 @@ struct Checker {
     /// The declared return type of the function currently being checked, so `?`
     /// can require the enclosing function to return a matching Result/Option.
     current_ret: Option<Ty>,
+    /// Source line of the statement currently being checked, attached to errors
+    /// so diagnostics point at a location. 0 means "no line known".
+    cur_line: u32,
 }
 
 impl Checker {
@@ -474,7 +489,10 @@ impl Checker {
     fn infer_block(&mut self, block: &Block) -> Result<Ty, TypeError> {
         self.push();
         let mut ty = Ty::Nil;
-        for stmt in &block.stmts {
+        for (i, stmt) in block.stmts.iter().enumerate() {
+            if let Some(line) = block.lines.get(i) {
+                self.cur_line = *line;
+            }
             match stmt {
                 Stmt::Let { name, mutable, value } => {
                     let vt = self.infer(value)?;
@@ -976,6 +994,7 @@ impl Checker {
         self.scopes = vec![HashMap::new()];
         self.consumed.clear();
         self.current_ret = Some(ret.clone());
+        self.cur_line = 0;
         for (param, ty) in func.params.iter().zip(&params) {
             self.define(param.name.clone(), ty.clone(), param.convention != Convention::Let);
         }
@@ -1004,6 +1023,7 @@ impl Checker {
             self.scopes = vec![HashMap::new()];
             self.consumed.clear();
             self.current_ret = None;
+            self.cur_line = 0;
             for field in &actor.fields {
                 let ty = self.to_ty(&field.ty);
                 self.define(field.name.clone(), ty, field.mutable);
@@ -1041,6 +1061,7 @@ pub fn check(module: &Module) -> Result<(), TypeError> {
         scopes: vec![HashMap::new()],
         consumed: HashSet::new(),
         current_ret: None,
+        cur_line: 0,
     };
 
     // Pass 1: collect all signatures so definitions can refer to each other.
@@ -1139,8 +1160,8 @@ pub fn check(module: &Module) -> Result<(), TypeError> {
     // Pass 2: check bodies.
     for item in &module.items {
         match item {
-            Item::Function(f) => c.check_function(f)?,
-            Item::Actor(a) => c.check_actor(a)?,
+            Item::Function(f) => c.check_function(f).map_err(|e| at_line(e, c.cur_line))?,
+            Item::Actor(a) => c.check_actor(a).map_err(|e| at_line(e, c.cur_line))?,
             Item::Type(_) => {}
         }
     }
@@ -1225,6 +1246,14 @@ mod tests {
             }
         "#;
         assert!(check_str(src).is_ok(), "{:?}", check_str(src));
+    }
+
+    #[test]
+    fn type_errors_report_their_source_line() {
+        // The mismatch is on the third line.
+        let src = "fn f() -> Int {\n  let a = 1\n  a + \"x\"\n}";
+        let e = check_str(src).unwrap_err();
+        assert!(e.contains("line 3"), "expected a line number, got: {e}");
     }
 
     #[test]
