@@ -205,6 +205,15 @@ fn main() -> wasmtime::Result<()> {
         ],
         "text",
     );
+    run_program_demo(
+        "witchy sorting (sort_by with a comparator)",
+        &[
+            ("list", include_str!("../std/list.witchy")),
+            ("string", include_str!("../std/string.witchy")),
+            ("sort", include_str!("../examples/sort.witchy")),
+        ],
+        "sort",
+    );
 
     println!("\nspike OK");
     Ok(())
@@ -641,6 +650,15 @@ mod example_tests {
         assert_eq!(
             crate::execute_file("examples/std_demo.witchy").unwrap(),
             vec!["30", "3"]
+        );
+    }
+
+    /// Sorting with a comparator closure, end to end through the bundled std.
+    #[test]
+    fn sort_runs_via_cli() {
+        assert_eq!(
+            crate::execute_file("examples/sort.witchy").unwrap(),
+            vec!["1,1,3,4,5", "5,4,3,1,1"]
         );
     }
 

@@ -51,3 +51,37 @@ pub fn reverse(xs: List(a)) -> List(a) {
   }
   out
 }
+
+// Insert `x` into an already-sorted list, keeping it ordered by `less`.
+fn insert_sorted(xs: List(a), x: a, less: fn(a, a) -> Bool) -> List(a) {
+  var out = []
+  var placed = false
+  for y in xs {
+    if placed {
+      out = push(out, y)
+    } else {
+      if less(x, y) {
+        out = push(out, x)
+        out = push(out, y)
+        placed = true
+      } else {
+        out = push(out, y)
+      }
+    }
+  }
+  if placed {
+    out
+  } else {
+    push(out, x)
+  }
+}
+
+// Sort using a caller-supplied "is-less-than" comparator (insertion sort, so
+// the order of equal elements is preserved). Generic over the element type.
+pub fn sort_by(xs: List(a), less: fn(a, a) -> Bool) -> List(a) {
+  var out = []
+  for x in xs {
+    out = insert_sorted(out, x, less)
+  }
+  out
+}

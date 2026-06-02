@@ -1,0 +1,18 @@
+// Sorting with a comparator closure. `list.sort_by` is generic over the element
+// type and takes an "is-less-than" function, so the same sort produces ascending
+// or descending order depending on the closure passed in.
+
+import list
+import string
+
+fn show(xs: List(Int)) -> String {
+  string.join(list.map(xs, fn(n: Int) { int_to_string(n) }), ",")
+}
+
+fn main(console: Console) {
+  let nums = [3, 1, 4, 1, 5]
+  let asc = list.sort_by(nums, fn(a: Int, b: Int) { a < b })
+  let desc = list.sort_by(nums, fn(a: Int, b: Int) { a > b })
+  print(console, show(asc))
+  print(console, show(desc))
+}
