@@ -165,6 +165,8 @@ fn main() -> wasmtime::Result<()> {
     run_witchy("witchy generic ADTs (Result)", include_str!("../examples/result.witchy"));
     run_witchy("witchy ? error propagation", include_str!("../examples/try.witchy"));
     run_witchy("witchy for-in loops over lists", include_str!("../examples/loops.witchy"));
+    run_witchy("witchy list patterns (head/tail)", include_str!("../examples/listmatch.witchy"));
+    run_witchy("witchy records (named fields)", include_str!("../examples/records.witchy"));
     run_witchy("witchy actors", include_str!("../examples/actors.witchy"));
     run_witchy("witchy filesystem capability", include_str!("../examples/files.witchy"));
     run_compiled(&mut rt, "witchy compiled to WASM (ints)", include_str!("../examples/compute.witchy"));
@@ -624,6 +626,26 @@ mod example_tests {
         assert_eq!(
             interp(include_str!("../examples/loops.witchy")),
             vec!["sum = 108", "witchy loops work"]
+        );
+    }
+
+    #[test]
+    fn listmatch_example() {
+        assert_eq!(
+            interp(include_str!("../examples/listmatch.witchy")),
+            vec!["sum = 21", "starts with 3", "one: 42", "empty"]
+        );
+    }
+
+    #[test]
+    fn records_example() {
+        assert_eq!(
+            interp(include_str!("../examples/records.witchy")),
+            vec![
+                "origin.x = 2",
+                "moved = (12, 3)",
+                "manhattan(moved) = 15"
+            ]
         );
     }
 

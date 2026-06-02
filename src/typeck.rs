@@ -131,6 +131,10 @@ struct Checker {
     /// Type-parameter var ids per constructor, so a generic ADT's constructors
     /// are instantiated fresh at each use (e.g. `Some(1)` vs `Some("x")`).
     ctor_typarams: HashMap<String, HashSet<u32>>,
+    /// Record types: name -> (type-parameter var ids in order, fields). A field
+    /// type may mention the parameters, which are instantiated with the value's
+    /// actual type arguments on access.
+    record_fields: HashMap<String, (Vec<u32>, Vec<(String, Ty)>)>,
     adt_variants: HashMap<String, Vec<String>>,
     actor_field_sigs: HashMap<String, Vec<Ty>>,
     fn_conventions: HashMap<String, Vec<Convention>>,
@@ -539,6 +543,25 @@ impl Checker {
                     },
                 }
             }
+            Expr::Field { base, field } => {
+                let bt = self.infer(base)?;
+                let resolved = self.resolve(&bt);
+                let Ty::Named(tyname, args) = &resolved else {
+                    return terr(format!(
+                        "field access `.{field}` requires a record, found `{resolved}`"
+                    ));
+                };
+                let Some((params, fields)) = self.record_fields.get(tyname).cloned() else {
+                    return terr(format!("type `{tyname}` is not a record, so it has no field `{field}`"));
+                };
+                let Some((_, fty)) = fields.iter().find(|(n, _)| n == field) else {
+                    return terr(format!("record `{tyname}` has no field `{field}`"));
+                };
+                // Instantiate the field type with the value's actual type args.
+                let map: HashMap<u32, Ty> =
+                    params.iter().cloned().zip(args.iter().cloned()).collect();
+                Ok(self.subst_vars(fty, &map))
+            }
             Expr::Try(inner) => {
                 let it = self.infer(inner)?;
                 let resolved = self.resolve(&it);
@@ -857,6 +880,7 @@ pub fn check(module: &Module) -> Result<(), TypeError> {
         fn_conventions: HashMap::new(),
         ctor_sigs: HashMap::new(),
         ctor_typarams: HashMap::new(),
+        record_fields: HashMap::new(),
         adt_variants: HashMap::new(),
         actor_field_sigs: HashMap::new(),
         fn_typarams: HashMap::new(),
@@ -908,11 +932,13 @@ pub fn check(module: &Module) -> Result<(), TypeError> {
                 }
                 let mut vars: HashMap<String, Ty> = HashMap::new();
                 let mut typaram_ids: HashSet<u32> = HashSet::new();
+                let mut params_in_order: Vec<u32> = Vec::new();
                 let mut result_args: Vec<Ty> = Vec::new();
                 for pn in &param_names {
                     let v = c.fresh();
                     if let Ty::Var(id) = v {
                         typaram_ids.insert(id);
+                        params_in_order.push(id);
                     }
                     vars.insert(pn.clone(), v.clone());
                     result_args.push(v);
@@ -920,11 +946,23 @@ pub fn check(module: &Module) -> Result<(), TypeError> {
                 let result = Ty::Named(t.name.clone(), result_args);
                 let mut names = Vec::new();
                 for variant in &t.variants {
-                    let fields = variant
+                    let fields: Vec<Ty> = variant
                         .fields
                         .iter()
                         .map(|ft| c.to_ty_generic(ft, &mut vars))
                         .collect();
+                    // A record variant carries field names: remember them (with
+                    // the type's parameters) so `value.field` can be typed.
+                    if !variant.field_names.is_empty() {
+                        let rec: Vec<(String, Ty)> = variant
+                            .field_names
+                            .iter()
+                            .cloned()
+                            .zip(fields.iter().cloned())
+                            .collect();
+                        c.record_fields
+                            .insert(t.name.clone(), (params_in_order.clone(), rec));
+                    }
                     c.ctor_sigs
                         .insert(variant.name.clone(), (fields, result.clone()));
                     c.ctor_typarams
@@ -1035,6 +1073,45 @@ mod tests {
             }
         "#;
         assert!(check_str(src).is_ok(), "{:?}", check_str(src));
+    }
+
+    #[test]
+    fn record_field_access_types() {
+        let src = r#"
+            type Point { x: Int, y: Int }
+            fn sum(p: Point) -> Int { p.x + p.y }
+        "#;
+        assert!(check_str(src).is_ok(), "{:?}", check_str(src));
+    }
+
+    #[test]
+    fn rejects_unknown_record_field() {
+        let src = r#"
+            type Point { x: Int, y: Int }
+            fn f(p: Point) -> Int { p.z }
+        "#;
+        assert!(check_str(src).is_err());
+    }
+
+    #[test]
+    fn rejects_field_access_on_non_record() {
+        assert!(check_str("fn f(n: Int) -> Int { n.x }").is_err());
+    }
+
+    #[test]
+    fn generic_record_field_instantiates() {
+        // `value`'s type is the parameter `a`; reading `.value` on a `Box(Int)`
+        // must yield Int (and concatenating it as a string must fail).
+        let ok = r#"
+            type Box { value: a }
+            fn unwrap(b: Box(Int)) -> Int { b.value }
+        "#;
+        assert!(check_str(ok).is_ok(), "{:?}", check_str(ok));
+        let bad = r#"
+            type Box { value: a }
+            fn unwrap(b: Box(Int)) -> String { b.value }
+        "#;
+        assert!(check_str(bad).is_err());
     }
 
     #[test]

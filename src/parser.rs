@@ -136,23 +136,52 @@ impl Parser {
         let name = self.ident()?;
         self.expect(&Tok::LBrace)?;
         let mut variants = Vec::new();
+        let mut rec_names: Vec<String> = Vec::new();
+        let mut rec_types: Vec<crate::ast::Type> = Vec::new();
+        let mut is_record = false;
         while !self.at(&Tok::RBrace) && !self.at(&Tok::Eof) {
-            let vname = self.ident()?;
-            let mut fields = Vec::new();
-            if self.eat(&Tok::LParen) {
-                while !self.at(&Tok::RParen) {
-                    fields.push(self.ty()?);
-                    if !self.eat(&Tok::Comma) {
-                        break;
+            let ident = self.ident()?;
+            if is_record || self.at(&Tok::Colon) {
+                // Record field: `name: Type`. The whole type is one constructor.
+                is_record = true;
+                self.expect(&Tok::Colon)?;
+                rec_names.push(ident);
+                rec_types.push(self.ty()?);
+            } else {
+                // Sum-type variant: `Name` or `Name(Type, ...)`.
+                let mut fields = Vec::new();
+                if self.eat(&Tok::LParen) {
+                    while !self.at(&Tok::RParen) {
+                        fields.push(self.ty()?);
+                        if !self.eat(&Tok::Comma) {
+                            break;
+                        }
                     }
+                    self.expect(&Tok::RParen)?;
                 }
-                self.expect(&Tok::RParen)?;
+                variants.push(Variant {
+                    name: ident,
+                    fields,
+                    field_names: vec![],
+                });
             }
-            variants.push(Variant { name: vname, fields });
             self.eat(&Tok::Comma); // optional separator
         }
         self.expect(&Tok::RBrace)?;
-        Ok(TypeDef { name, variants })
+        if is_record {
+            // A record becomes a single constructor named after the type, with
+            // its field types positional and field names recorded alongside.
+            Ok(TypeDef {
+                name: name.clone(),
+                variants: vec![Variant {
+                    name,
+                    fields: rec_types,
+                    field_names: rec_names,
+                }],
+            })
+        } else {
+            Ok(TypeDef { name, variants })
+        }
     }
 
     fn actor_def(&mut self) -> Result<ActorDef, ParseError> {
@@ -377,12 +406,41 @@ impl Parser {
         self.postfix()
     }
 
-    /// Postfix `?` binds tighter than any prefix or infix operator, so `f(x)?`
-    /// is `(f(x))?` and `-x?` is `-(x?)`.
+    /// Postfix operators `?` (Result/Option propagation) and `.` (field access /
+    /// module-qualified call) bind tighter than any prefix or infix operator, so
+    /// `f(x)?` is `(f(x))?` and `p.x + 1` is `(p.x) + 1`.
     fn postfix(&mut self) -> Result<Expr, ParseError> {
         let mut e = self.atom()?;
-        while self.eat(&Tok::Question) {
-            e = Expr::Try(Box::new(e));
+        loop {
+            if self.eat(&Tok::Question) {
+                e = Expr::Try(Box::new(e));
+            } else if self.eat(&Tok::Dot) {
+                let member = self.ident()?;
+                if self.at(&Tok::LParen) {
+                    // `mod.func(args)` — a module-qualified call (only on a bare
+                    // module name; witchy has no methods).
+                    let args = self.call_args()?;
+                    let modname = match e {
+                        Expr::Var(name) => name,
+                        _ => {
+                            return Err(self.error(
+                                "only module-qualified calls like `mod.func(...)` are allowed after `.`",
+                            ))
+                        }
+                    };
+                    e = Expr::Call {
+                        name: format!("{modname}.{member}"),
+                        args,
+                    };
+                } else {
+                    e = Expr::Field {
+                        base: Box::new(e),
+                        field: member,
+                    };
+                }
+            } else {
+                break;
+            }
         }
         Ok(e)
     }
@@ -473,16 +531,8 @@ impl Parser {
     /// Resolve a bare name into a variable, call, constructor, or a qualified
     /// call `module.func(args)`.
     fn name_application(&mut self, name: String) -> Result<Expr, ParseError> {
-        // Qualified call into an imported module: `math.add(...)`.
-        if self.at(&Tok::Dot) {
-            self.advance();
-            let member = self.ident()?;
-            let args = self.call_args()?;
-            return Ok(Expr::Call {
-                name: format!("{name}.{member}"),
-                args,
-            });
-        }
+        // Note: a trailing `.member` (module-qualified call or field access) is
+        // handled by `postfix`, which wraps this.
         let is_ctor = name.chars().next().is_some_and(|c| c.is_uppercase());
         if self.at(&Tok::LParen) {
             let args = self.call_args()?;

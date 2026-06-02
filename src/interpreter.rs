@@ -212,6 +212,8 @@ pub struct Interpreter {
     net_allow: Vec<String>,
     /// Open sockets, indexed by `Value::Socket` handle.
     sockets: Vec<BufReader<TcpStream>>,
+    /// Record constructor name -> ordered field names, for `value.field` access.
+    record_fields: HashMap<String, Vec<String>>,
     pub output: Vec<String>,
 }
 
@@ -219,6 +221,7 @@ impl Interpreter {
     pub fn new(module: Module) -> Self {
         let mut functions = HashMap::new();
         let mut actor_defs = HashMap::new();
+        let mut record_fields = HashMap::new();
         for item in module.items {
             match item {
                 Item::Function(f) => {
@@ -227,9 +230,15 @@ impl Interpreter {
                 Item::Actor(a) => {
                     actor_defs.insert(a.name.clone(), a);
                 }
-                // Type declarations are erased at runtime; the type checker
-                // uses them.
-                Item::Type(_) => {}
+                // Types are erased at runtime, except a record's field names,
+                // which map `value.field` to a position in the constructor.
+                Item::Type(t) => {
+                    for v in &t.variants {
+                        if !v.field_names.is_empty() {
+                            record_fields.insert(v.name.clone(), v.field_names.clone());
+                        }
+                    }
+                }
             }
         }
         Self {
@@ -240,6 +249,7 @@ impl Interpreter {
             root: PathBuf::from("."),
             net_allow: Vec::new(),
             sockets: Vec::new(),
+            record_fields,
             output: Vec::new(),
         }
     }
@@ -692,6 +702,22 @@ impl Interpreter {
                     (UnOp::Neg, other) => err(format!("cannot negate `{other}`")),
                     (UnOp::Not, Value::Bool(b)) => Ok(Value::Bool(!b)),
                     (UnOp::Not, other) => err(format!("cannot apply `!` to `{other}`")),
+                }
+            }
+            Expr::Field { base, field } => {
+                let v = self.eval(base, env)?;
+                match v {
+                    Value::Ctor { name, fields } => {
+                        let idx = self
+                            .record_fields
+                            .get(&name)
+                            .and_then(|names| names.iter().position(|n| n == field));
+                        match idx {
+                            Some(i) => Ok(fields[i].clone()),
+                            None => err(format!("`{name}` has no field `{field}`")),
+                        }
+                    }
+                    other => err(format!("field access `.{field}` on a non-record value `{other}`")),
                 }
             }
             Expr::Try(inner) => {
@@ -1360,6 +1386,18 @@ mod tests {
             }
         "#;
         assert_eq!(run(src).unwrap(), vec!["ok 7", "err boom"]);
+    }
+
+    #[test]
+    fn record_field_access_runs() {
+        let src = r#"
+            type Person { name: String, age: Int }
+            fn main(console: Console) {
+              let p = Person("witchy", 7)
+              print(console, p.name <> " is " <> int_to_string(p.age))
+            }
+        "#;
+        assert_eq!(run(src).unwrap(), vec!["witchy is 7"]);
     }
 
     #[test]

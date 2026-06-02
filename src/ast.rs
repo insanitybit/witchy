@@ -30,6 +30,10 @@ pub struct TypeDef {
 pub struct Variant {
     pub name: String,
     pub fields: Vec<Type>,
+    /// For a *record* type (`type Point { x: Int, y: Int }`), the name of each
+    /// field, parallel to `fields`. Empty for ordinary positional variants
+    /// (`Circle(Int)`). A record is a single constructor with named fields.
+    pub field_names: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -132,6 +136,9 @@ pub enum Expr {
     /// A constructor application: `Click(x, y)` or nullary `Closed`.
     Ctor { name: String, args: Vec<Expr> },
     Unary { op: UnOp, expr: Box<Expr> },
+    /// Record field access: `point.x`. (Module-qualified calls `mod.func(...)`
+    /// are parsed as `Call`, not `Field`.)
+    Field { base: Box<Expr>, field: String },
     /// `e?` — propagate a `Result`/`Option`: unwrap `Ok`/`Some` to its payload,
     /// or short-circuit, returning the `Err`/`None` from the enclosing function.
     Try(Box<Expr>),
