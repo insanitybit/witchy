@@ -1,0 +1,31 @@
+// The witchy standard `Option` type and helpers. `import option` brings the type
+// into scope (so the `?` operator works) and gives the usual combinators. Pure
+// and capability-free.
+
+type Option {
+  Some(a)
+  None
+}
+
+pub fn is_some(o: Option(a)) -> Bool {
+  match o {
+    Some(_) -> true
+    None -> false
+  }
+}
+
+// The Some value, or `default` if it's None.
+pub fn unwrap_or(o: Option(a), default: a) -> a {
+  match o {
+    Some(v) -> v
+    None -> default
+  }
+}
+
+// Transform the Some value, leaving None untouched.
+pub fn map(o: Option(a), f: fn(a) -> b) -> Option(b) {
+  match o {
+    Some(v) -> Some(f(v))
+    None -> None
+  }
+}

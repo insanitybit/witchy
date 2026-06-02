@@ -1,0 +1,31 @@
+// The witchy standard `Result` type and helpers. `import result` brings the
+// type into scope (so the `?` operator works) and gives the usual combinators.
+// Pure and capability-free, like every std module.
+
+type Result {
+  Ok(a)
+  Err(e)
+}
+
+pub fn is_ok(r: Result(a, e)) -> Bool {
+  match r {
+    Ok(_) -> true
+    Err(_) -> false
+  }
+}
+
+// The Ok value, or `default` if it's an Err.
+pub fn unwrap_or(r: Result(a, e), default: a) -> a {
+  match r {
+    Ok(v) -> v
+    Err(_) -> default
+  }
+}
+
+// Transform the Ok value, leaving an Err untouched.
+pub fn map_ok(r: Result(a, e), f: fn(a) -> b) -> Result(b, e) {
+  match r {
+    Ok(v) -> Ok(f(v))
+    Err(x) -> Err(x)
+  }
+}

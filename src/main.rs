@@ -233,6 +233,38 @@ fn main() -> wasmtime::Result<()> {
         ],
         "floats",
     );
+    run_program_demo(
+        "witchy standard Result (import result + ?)",
+        &[
+            ("result", include_str!("../std/result.witchy")),
+            (
+                "rclient",
+                r#"
+                import result
+                fn checked_div(a: Int, b: Int) -> Result(Int, String) {
+                  match b { 0 -> Err("divide by zero")  _ -> Ok(a / b) }
+                }
+                fn compute(x: Int, y: Int) -> Result(Int, String) {
+                  let q = checked_div(x, y)?
+                  Ok(q + 1)
+                }
+                fn main(console: Console) {
+                  print(console, int_to_string(result.unwrap_or(compute(10, 2), 0 - 1)))
+                  print(console, int_to_string(result.unwrap_or(compute(10, 0), 0 - 1)))
+                }
+                "#,
+            ),
+        ],
+        "rclient",
+    );
+    run_program_demo(
+        "witchy standard Option (import option)",
+        &[
+            ("option", include_str!("../std/option.witchy")),
+            ("option_std", include_str!("../examples/option_std.witchy")),
+        ],
+        "option_std",
+    );
 
     println!("\nspike OK");
     Ok(())
@@ -250,6 +282,8 @@ fn bundled_module(name: &str) -> Option<&'static str> {
         "list" => Some(include_str!("../std/list.witchy")),
         "string" => Some(include_str!("../std/string.witchy")),
         "math" => Some(include_str!("../std/math.witchy")),
+        "result" => Some(include_str!("../std/result.witchy")),
+        "option" => Some(include_str!("../std/option.witchy")),
         _ => None,
     }
 }
@@ -698,6 +732,42 @@ mod example_tests {
             crate::execute_file("examples/floats.witchy").unwrap(),
             vec!["4", "3.5", "5", "1"]
         );
+    }
+
+    /// The bundled `option` module (type + helpers) resolves via the CLI.
+    #[test]
+    fn option_module_runs_via_cli() {
+        assert_eq!(
+            crate::execute_file("examples/option_std.witchy").unwrap(),
+            vec!["10", "-1"]
+        );
+    }
+
+    /// The bundled `result` module supplies the type `?` recognizes, plus
+    /// helpers, when linked against a client.
+    #[test]
+    fn result_module_links_with_try_and_helpers() {
+        let client = r#"
+            import result
+            fn checked_div(a: Int, b: Int) -> Result(Int, String) {
+              match b { 0 -> Err("zero")  _ -> Ok(a / b) }
+            }
+            fn compute(x: Int, y: Int) -> Result(Int, String) {
+              let q = checked_div(x, y)?
+              Ok(q + 1)
+            }
+            fn main(console: Console) {
+              print(console, int_to_string(result.unwrap_or(compute(10, 2), 0 - 1)))
+              print(console, int_to_string(result.unwrap_or(compute(10, 0), 0 - 1)))
+              print(console, to_string(result.is_ok(compute(10, 0))))
+            }
+        "#;
+        let out = interpreter::run_program(
+            &[("result", crate::bundled_module("result").unwrap()), ("main", client)],
+            "main",
+        )
+        .expect("result module program runs");
+        assert_eq!(out, vec!["6", "-1", "false"]);
     }
 
     /// String builtins + the bundled `list`/`string` modules end to end.
