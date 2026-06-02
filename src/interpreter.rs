@@ -41,6 +41,9 @@ pub enum Value {
         body: Block,
         env: Box<Env>,
     },
+    /// An immutable associative map, kept as insertion-ordered key/value pairs
+    /// (keys compared by value equality). `Dict(K, V)` in the type system.
+    Dict(Vec<(Value, Value)>),
     Nil,
 }
 
@@ -102,6 +105,16 @@ impl fmt::Display for Value {
             Value::Net(_) => write!(f, "<net>"),
             Value::Socket(id) => write!(f, "<socket #{id}>"),
             Value::Closure { params, .. } => write!(f, "<function/{}>", params.len()),
+            Value::Dict(entries) => {
+                write!(f, "{{")?;
+                for (i, (k, v)) in entries.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{k}: {v}")?;
+                }
+                write!(f, "}}")
+            }
         }
     }
 }
@@ -533,6 +546,47 @@ impl Interpreter {
                     Ok(Some(Value::List(out)))
                 }
                 _ => err("concat expects two lists"),
+            },
+            // --- Dict: an immutable association map ---
+            "dict_new" => match args {
+                [] => Ok(Some(Value::Dict(Vec::new()))),
+                _ => err("dict_new takes no arguments"),
+            },
+            // Return a new dict with `k` set to `v` (replacing any existing entry).
+            "insert" => match args {
+                [Value::Dict(entries), k, v] => {
+                    let mut out = entries.clone();
+                    match out.iter_mut().find(|(ek, _)| ek == k) {
+                        Some(slot) => slot.1 = v.clone(),
+                        None => out.push((k.clone(), v.clone())),
+                    }
+                    Ok(Some(Value::Dict(out)))
+                }
+                _ => err("insert expects a Dict, a key, and a value"),
+            },
+            // Value for `k`, or `default` if absent.
+            "get_or" => match args {
+                [Value::Dict(entries), k, default] => {
+                    let found = entries.iter().find(|(ek, _)| ek == k);
+                    Ok(Some(found.map(|(_, v)| v.clone()).unwrap_or_else(|| default.clone())))
+                }
+                _ => err("get_or expects a Dict, a key, and a default value"),
+            },
+            "has" => match args {
+                [Value::Dict(entries), k] => {
+                    Ok(Some(Value::Bool(entries.iter().any(|(ek, _)| ek == k))))
+                }
+                _ => err("has expects a Dict and a key"),
+            },
+            "keys" => match args {
+                [Value::Dict(entries)] => {
+                    Ok(Some(Value::List(entries.iter().map(|(k, _)| k.clone()).collect())))
+                }
+                _ => err("keys expects a Dict"),
+            },
+            "size" => match args {
+                [Value::Dict(entries)] => Ok(Some(Value::Int(entries.len() as i64))),
+                _ => err("size expects a Dict"),
             },
             // Filesystem capability (cap-std style): attenuate to a subdirectory.
             "subdir" => match args {
@@ -1533,6 +1587,28 @@ mod tests {
             }
         "#;
         assert!(run_capped(src, 100_000).is_ok());
+    }
+
+    #[test]
+    fn dict_insert_get_has_keys_and_immutability() {
+        let src = r#"
+            fn main(console: Console) {
+              let a = insert(dict_new(), "x", 1)
+              let b = insert(a, "y", 2)
+              let c = insert(b, "x", 9)        // overwrite x
+              print(console, int_to_string(get_or(c, "x", 0)))   // 9
+              print(console, int_to_string(get_or(c, "y", 0)))   // 2
+              print(console, int_to_string(get_or(c, "z", 0)))   // 0 default
+              print(console, int_to_string(size(c)))             // 2 (x overwritten)
+              print(console, int_to_string(get_or(a, "x", 0)))   // 1 (a unchanged)
+              print(console, to_string(has(c, "y")))             // true
+              print(console, int_to_string(length(keys(c))))     // 2
+            }
+        "#;
+        assert_eq!(
+            run(src).unwrap(),
+            vec!["9", "2", "0", "2", "1", "true", "2"]
+        );
     }
 
     #[test]

@@ -1,0 +1,19 @@
+// A word-frequency count using the Dict associative map. `dict_new` makes an
+// empty map; `get_or` reads with a default; `insert` returns a new map with a
+// key updated (dicts are immutable values, like lists). Keys are compared by
+// value, so the same word lands in the same bucket.
+
+fn main(console: Console) {
+  let text = "the cat the dog the bird"
+  let words = split(text, " ")
+
+  var counts = dict_new()
+  for w in words {
+    counts = insert(counts, w, get_or(counts, w, 0) + 1)
+  }
+
+  print(console, int_to_string(get_or(counts, "the", 0)))
+  print(console, int_to_string(get_or(counts, "cat", 0)))
+  print(console, int_to_string(get_or(counts, "missing", 0)))
+  print(console, int_to_string(size(counts)))
+}

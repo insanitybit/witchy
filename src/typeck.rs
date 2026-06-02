@@ -410,6 +410,42 @@ impl Checker {
                 let list = Ty::List(Box::new(elem));
                 Some((vec![list.clone(), list.clone()], list))
             }
+            // Dict(k, v) is an ordinary parameterized Named type; these builtins
+            // are generic in its key and value types.
+            "dict_new" => {
+                let k = self.fresh();
+                let v = self.fresh();
+                Some((vec![], Ty::Named("Dict".into(), vec![k, v])))
+            }
+            "insert" => {
+                let k = self.fresh();
+                let v = self.fresh();
+                let d = Ty::Named("Dict".into(), vec![k.clone(), v.clone()]);
+                Some((vec![d.clone(), k, v], d))
+            }
+            "get_or" => {
+                let k = self.fresh();
+                let v = self.fresh();
+                let d = Ty::Named("Dict".into(), vec![k.clone(), v.clone()]);
+                Some((vec![d, k, v.clone()], v))
+            }
+            "has" => {
+                let k = self.fresh();
+                let v = self.fresh();
+                let d = Ty::Named("Dict".into(), vec![k.clone(), v]);
+                Some((vec![d, k], Ty::Bool))
+            }
+            "keys" => {
+                let k = self.fresh();
+                let v = self.fresh();
+                let d = Ty::Named("Dict".into(), vec![k.clone(), v]);
+                Some((vec![d], Ty::List(Box::new(k))))
+            }
+            "size" => {
+                let k = self.fresh();
+                let v = self.fresh();
+                Some((vec![Ty::Named("Dict".into(), vec![k, v])], Ty::Int))
+            }
             "read" => Some((vec![Ty::Dir, Ty::String], Ty::String)),
             "subdir" => Some((vec![Ty::Dir, Ty::String], Ty::Dir)),
             "connect" => Some((vec![Ty::Net, Ty::String], Ty::Socket)),
@@ -1211,6 +1247,33 @@ mod tests {
     fn equality_still_works_on_any_matching_type() {
         // `==` is unaffected — structural equality is defined for every value.
         assert!(check_str("fn f(a: (Int, Int), b: (Int, Int)) -> Bool { a == b }").is_ok());
+    }
+
+    #[test]
+    fn dict_builtins_are_generic() {
+        let src = r#"
+            fn tally(words: List(String)) -> Int {
+              var d = dict_new()
+              for w in words {
+                d = insert(d, w, get_or(d, w, 0) + 1)
+              }
+              size(d)
+            }
+        "#;
+        assert!(check_str(src).is_ok(), "{:?}", check_str(src));
+    }
+
+    #[test]
+    fn rejects_dict_key_type_mismatch() {
+        // The dict's key type is fixed by the first insert (String here), so
+        // looking it up with an Int key must fail.
+        let src = r#"
+            fn f() -> Int {
+              let d = insert(dict_new(), "a", 1)
+              get_or(d, 2, 0)
+            }
+        "#;
+        assert!(check_str(src).is_err());
     }
 
     #[test]
