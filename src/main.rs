@@ -162,6 +162,7 @@ fn main() -> wasmtime::Result<()> {
     run_witchy("witchy fizzbuzz (while, %, if/else)", include_str!("../examples/fizzbuzz.witchy"));
     run_witchy("witchy tuples (multiple return values)", include_str!("../examples/tuples.witchy"));
     run_witchy("witchy generics (swap any pair)", include_str!("../examples/generics.witchy"));
+    run_witchy("witchy generic ADTs (Result)", include_str!("../examples/result.witchy"));
     run_witchy("witchy actors", include_str!("../examples/actors.witchy"));
     run_witchy("witchy filesystem capability", include_str!("../examples/files.witchy"));
     run_compiled(&mut rt, "witchy compiled to WASM (ints)", include_str!("../examples/compute.witchy"));
@@ -525,6 +526,14 @@ mod example_tests {
         assert_eq!(
             interp(include_str!("../examples/generics.witchy")),
             vec!["answer", "42"]
+        );
+    }
+
+    #[test]
+    fn result_example() {
+        assert_eq!(
+            interp(include_str!("../examples/result.witchy")),
+            vec!["ok 5", "err divide by zero"]
         );
     }
 

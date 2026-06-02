@@ -1256,6 +1256,27 @@ mod tests {
     }
 
     #[test]
+    fn generic_adt_runs() {
+        let src = r#"
+            type Result {
+              Ok(a)
+              Err(e)
+            }
+            fn show(r: Result(Int, String)) -> String {
+              match r {
+                Ok(n) -> "ok " <> int_to_string(n)
+                Err(msg) -> "err " <> msg
+              }
+            }
+            fn main(console: Console) {
+              print(console, show(Ok(7)))
+              print(console, show(Err("boom")))
+            }
+        "#;
+        assert_eq!(run(src).unwrap(), vec!["ok 7", "err boom"]);
+    }
+
+    #[test]
     fn conversions() {
         let src = r#"
             fn main(console: Console) {

@@ -33,7 +33,9 @@ pub enum Ty {
     Socket,
     List(Box<Ty>),
     Tuple(Vec<Ty>),
-    Named(String),
+    /// A user-declared type, possibly with type arguments: `Option(Int)`,
+    /// `Result(String, Error)`. Non-generic types carry an empty argument list.
+    Named(String, Vec<Ty>),
     Var(u32),
 }
 
@@ -61,7 +63,20 @@ impl fmt::Display for Ty {
                 }
                 write!(f, ")")
             }
-            Ty::Named(n) => write!(f, "{n}"),
+            Ty::Named(n, args) => {
+                write!(f, "{n}")?;
+                if !args.is_empty() {
+                    write!(f, "(")?;
+                    for (i, t) in args.iter().enumerate() {
+                        if i > 0 {
+                            write!(f, ", ")?;
+                        }
+                        write!(f, "{t}")?;
+                    }
+                    write!(f, ")")?;
+                }
+                Ok(())
+            }
             Ty::Var(_) => write!(f, "?"),
         }
     }
@@ -86,9 +101,36 @@ fn terr<T>(message: impl Into<String>) -> Result<T, TypeError> {
     })
 }
 
+/// Collect the type-parameter names (lowercase, argument-less) appearing in a
+/// type expression, in order of first appearance. Used to infer the parameters
+/// of a generic ADT from its variant field types.
+fn collect_type_params(t: &ast::Type, acc: &mut Vec<String>) {
+    match t {
+        ast::Type::Tuple(ts) => {
+            for x in ts {
+                collect_type_params(x, acc);
+            }
+        }
+        ast::Type::Named(name, args) => {
+            if args.is_empty() && name.chars().next().is_some_and(|c| c.is_lowercase()) {
+                if !acc.contains(name) {
+                    acc.push(name.clone());
+                }
+            } else {
+                for a in args {
+                    collect_type_params(a, acc);
+                }
+            }
+        }
+    }
+}
+
 struct Checker {
     fn_sigs: HashMap<String, (Vec<Ty>, Ty)>,
     ctor_sigs: HashMap<String, (Vec<Ty>, Ty)>,
+    /// Type-parameter var ids per constructor, so a generic ADT's constructors
+    /// are instantiated fresh at each use (e.g. `Some(1)` vs `Some("x")`).
+    ctor_typarams: HashMap<String, HashSet<u32>>,
     adt_variants: HashMap<String, Vec<String>>,
     actor_field_sigs: HashMap<String, Vec<Ty>>,
     fn_conventions: HashMap<String, Vec<Convention>>,
@@ -136,7 +178,7 @@ impl Checker {
                 };
                 Ty::List(Box::new(elem))
             }
-            _ => Ty::Named(name.clone()),
+            _ => Ty::Named(name.clone(), args.iter().map(|a| self.to_ty(a)).collect()),
         }
     }
 
@@ -177,7 +219,10 @@ impl Checker {
                         v
                     }
                 }
-                other => Ty::Named(other.to_string()),
+                other => Ty::Named(
+                    other.to_string(),
+                    args.iter().map(|a| self.to_ty_generic(a, vars)).collect(),
+                ),
             },
         }
     }
@@ -201,6 +246,9 @@ impl Checker {
             Ty::Var(v) => map.get(&v).cloned().unwrap_or(Ty::Var(v)),
             Ty::List(e) => Ty::List(Box::new(self.subst_vars(&e, map))),
             Ty::Tuple(ts) => Ty::Tuple(ts.iter().map(|x| self.subst_vars(x, map)).collect()),
+            Ty::Named(n, args) => {
+                Ty::Named(n, args.iter().map(|x| self.subst_vars(x, map)).collect())
+            }
             other => other,
         }
     }
@@ -213,6 +261,7 @@ impl Checker {
             },
             Ty::List(e) => Ty::List(Box::new(self.resolve(e))),
             Ty::Tuple(ts) => Ty::Tuple(ts.iter().map(|t| self.resolve(t)).collect()),
+            Ty::Named(n, args) => Ty::Named(n.clone(), args.iter().map(|t| self.resolve(t)).collect()),
             _ => t.clone(),
         }
     }
@@ -233,7 +282,12 @@ impl Checker {
                 }
                 Ok(())
             }
-            (Ty::Named(x), Ty::Named(y)) if x == y => Ok(()),
+            (Ty::Named(x, xa), Ty::Named(y, ya)) if x == y && xa.len() == ya.len() => {
+                for (p, q) in xa.iter().zip(ya) {
+                    self.unify(p, q)?;
+                }
+                Ok(())
+            }
             _ if a == b => Ok(()),
             _ => terr(format!("expected `{a}`, found `{b}`")),
         }
@@ -438,6 +492,8 @@ impl Checker {
             }
             Expr::Ctor { name, args } => {
                 if let Some((fields, result)) = self.ctor_sigs.get(name).cloned() {
+                    let typarams = self.ctor_typarams.get(name).cloned().unwrap_or_default();
+                    let (fields, result) = self.instantiate(&fields, &result, &typarams);
                     if fields.len() != args.len() {
                         return terr(format!(
                             "constructor `{name}` takes {} field(s) but got {}",
@@ -624,6 +680,8 @@ impl Checker {
             }
             Pattern::Ctor { name, args } => {
                 if let Some((fields, result)) = self.ctor_sigs.get(name).cloned() {
+                    let typarams = self.ctor_typarams.get(name).cloned().unwrap_or_default();
+                    let (fields, result) = self.instantiate(&fields, &result, &typarams);
                     self.unify(expected, &result)?;
                     if fields.len() != args.len() {
                         return terr(format!(
@@ -651,7 +709,7 @@ impl Checker {
     /// If the scrutinee is a known sum type, every variant must be covered (or a
     /// wildcard/variable arm must catch the rest).
     fn check_exhaustive(&self, scrut: &Ty, arms: &[MatchArm]) -> Result<(), TypeError> {
-        let Ty::Named(adt) = self.resolve(scrut) else {
+        let Ty::Named(adt, _) = self.resolve(scrut) else {
             return Ok(());
         };
         let Some(variants) = self.adt_variants.get(&adt) else {
@@ -738,6 +796,7 @@ pub fn check(module: &Module) -> Result<(), TypeError> {
         fn_sigs: HashMap::new(),
         fn_conventions: HashMap::new(),
         ctor_sigs: HashMap::new(),
+        ctor_typarams: HashMap::new(),
         adt_variants: HashMap::new(),
         actor_field_sigs: HashMap::new(),
         fn_typarams: HashMap::new(),
@@ -777,11 +836,38 @@ pub fn check(module: &Module) -> Result<(), TypeError> {
                     .insert(f.name.clone(), f.params.iter().map(|p| p.convention).collect());
             }
             Item::Type(t) => {
+                // A type's parameters are the lowercase, argument-less names that
+                // appear in its variants' field types, in order of first
+                // appearance (so `type Option { Some(a) None }` has one param `a`).
+                let mut param_names: Vec<String> = Vec::new();
+                for variant in &t.variants {
+                    for ft in &variant.fields {
+                        collect_type_params(ft, &mut param_names);
+                    }
+                }
+                let mut vars: HashMap<String, Ty> = HashMap::new();
+                let mut typaram_ids: HashSet<u32> = HashSet::new();
+                let mut result_args: Vec<Ty> = Vec::new();
+                for pn in &param_names {
+                    let v = c.fresh();
+                    if let Ty::Var(id) = v {
+                        typaram_ids.insert(id);
+                    }
+                    vars.insert(pn.clone(), v.clone());
+                    result_args.push(v);
+                }
+                let result = Ty::Named(t.name.clone(), result_args);
                 let mut names = Vec::new();
                 for variant in &t.variants {
-                    let fields = variant.fields.iter().map(|ft| c.to_ty(ft)).collect();
+                    let fields = variant
+                        .fields
+                        .iter()
+                        .map(|ft| c.to_ty_generic(ft, &mut vars))
+                        .collect();
                     c.ctor_sigs
-                        .insert(variant.name.clone(), (fields, Ty::Named(t.name.clone())));
+                        .insert(variant.name.clone(), (fields, result.clone()));
+                    c.ctor_typarams
+                        .insert(variant.name.clone(), typaram_ids.clone());
                     names.push(variant.name.clone());
                 }
                 c.adt_variants.insert(t.name.clone(), names);
@@ -873,6 +959,33 @@ mod tests {
     fn rejects_over_constrained_type_param() {
         // `a` can't be generic if the body forces it to Int.
         assert!(check_str("fn bad(x: a) -> a { x + 1 }").is_err());
+    }
+
+    #[test]
+    fn generic_adt_used_at_multiple_types() {
+        // A generic `Box(a)` can be unwrapped at both Int and String.
+        let src = r#"
+            type Box { Wrap(a) }
+            fn unwrap_int(b: Box(Int)) -> Int { match b { Wrap(n) -> n } }
+            fn unwrap_str(b: Box(String)) -> String { match b { Wrap(s) -> s } }
+            fn main(console: Console) {
+              print(console, int_to_string(unwrap_int(Wrap(5))))
+              print(console, unwrap_str(Wrap("hi")))
+            }
+        "#;
+        assert!(check_str(src).is_ok(), "{:?}", check_str(src));
+    }
+
+    #[test]
+    fn rejects_generic_adt_type_mismatch() {
+        // `Box(Int)` and `Box(String)` are distinct: passing one for the other
+        // must fail to unify their type arguments.
+        let src = r#"
+            type Box { Wrap(a) }
+            fn need_int(b: Box(Int)) -> Int { match b { Wrap(n) -> n } }
+            fn main() -> Int { need_int(Wrap("nope")) }
+        "#;
+        assert!(check_str(src).is_err());
     }
 
     #[test]
