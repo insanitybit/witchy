@@ -79,6 +79,9 @@ struct Checker {
     next_var: u32,
     /// Each binding carries its type and whether it is mutable.
     scopes: Vec<HashMap<String, (Ty, bool)>>,
+    /// Bindings that have been consumed (moved out via a `sink` parameter) and
+    /// may not be used again until reassigned. Flow-sensitive within a body.
+    consumed: HashSet<String>,
 }
 
 impl Checker {
@@ -202,6 +205,7 @@ impl Checker {
                         ));
                     }
                     self.unify(&existing, &vt)?;
+                    self.consumed.remove(name); // reassignment re-initializes
                     ty = Ty::Nil;
                 }
                 Stmt::Expr(e) => {
@@ -227,9 +231,15 @@ impl Checker {
                 }
                 Ok(Ty::List(Box::new(elem)))
             }
-            Expr::Var(name) => self
-                .lookup(name)
-                .ok_or_else(|| TypeError { message: format!("unbound variable `{name}`") }),
+            Expr::Var(name) => {
+                if self.consumed.contains(name) {
+                    return terr(format!(
+                        "use of `{name}` after it was moved (consumed by a `sink` parameter)"
+                    ));
+                }
+                self.lookup(name)
+                    .ok_or_else(|| TypeError { message: format!("unbound variable `{name}`") })
+            }
             Expr::Call { name, args } => {
                 let Some((params, ret)) = self.call_sig(name) else {
                     return terr(format!("call to unknown function `{name}`"));
@@ -246,11 +256,12 @@ impl Checker {
                     self.unify(param_ty, &at)
                         .map_err(|e| TypeError { message: format!("in call to `{name}`: {}", e.message) })?;
                 }
-                // `inout` arguments must be mutable variables.
+                // Enforce conventions: `inout` needs a mutable variable; `sink`
+                // consumes its argument (use-after-move becomes an error).
                 if let Some(convs) = self.fn_conventions.get(name).cloned() {
                     for (arg, conv) in args.iter().zip(&convs) {
-                        if *conv == Convention::Inout {
-                            match arg {
+                        match conv {
+                            Convention::Inout => match arg {
                                 Expr::Var(v) if self.is_mutable(v) == Some(true) => {}
                                 Expr::Var(v) => {
                                     return terr(format!(
@@ -262,7 +273,13 @@ impl Checker {
                                         "`inout` argument to `{name}` must be a mutable variable"
                                     ))
                                 }
+                            },
+                            Convention::Sink => {
+                                if let Expr::Var(v) = arg {
+                                    self.consumed.insert(v.clone());
+                                }
                             }
+                            Convention::Let => {}
                         }
                     }
                 }
@@ -315,7 +332,9 @@ impl Checker {
                 let ct = self.infer(cond)?;
                 self.unify(&Ty::Bool, &ct)
                     .map_err(|e| TypeError { message: format!("`if` condition: {}", e.message) })?;
+                let before = self.consumed.clone();
                 let tt = self.infer_block(then_block)?;
+                let consumed_then = std::mem::replace(&mut self.consumed, before.clone());
                 match else_block {
                     Some(eb) => {
                         let et = self.infer_block(eb)?;
@@ -327,6 +346,8 @@ impl Checker {
                         self.unify(&tt, &Ty::Nil)?;
                     }
                 }
+                // A binding consumed on either path is treated as consumed after.
+                self.consumed = &consumed_then | &self.consumed;
                 Ok(tt)
             }
             Expr::Block(b) => self.infer_block(b),
@@ -385,7 +406,10 @@ impl Checker {
     fn infer_match(&mut self, scrutinee: &Expr, arms: &[MatchArm]) -> Result<Ty, TypeError> {
         let st = self.infer(scrutinee)?;
         let result = self.fresh();
+        let before = self.consumed.clone();
+        let mut merged = before.clone();
         for arm in arms {
+            self.consumed = before.clone();
             self.push();
             self.check_pattern(&arm.pattern, &st)?;
             if let Some(guard) = &arm.guard {
@@ -398,7 +422,9 @@ impl Checker {
                 message: format!("match arms produce different types: {}", e.message),
             })?;
             self.pop();
+            merged = &merged | &self.consumed;
         }
+        self.consumed = merged;
         self.check_exhaustive(&st, arms)?;
         Ok(result)
     }
@@ -474,6 +500,7 @@ impl Checker {
     fn check_function(&mut self, func: &Function) -> Result<(), TypeError> {
         let (params, ret) = self.fn_sigs.get(&func.name).cloned().unwrap();
         self.scopes = vec![HashMap::new()];
+        self.consumed.clear();
         for (param, ty) in func.params.iter().zip(&params) {
             self.define(param.name.clone(), ty.clone(), param.convention != Convention::Let);
         }
@@ -487,6 +514,7 @@ impl Checker {
     fn check_actor(&mut self, actor: &ActorDef) -> Result<(), TypeError> {
         for handler in &actor.handlers {
             self.scopes = vec![HashMap::new()];
+            self.consumed.clear();
             for field in &actor.fields {
                 let ty = self.to_ty(&field.ty);
                 self.define(field.name.clone(), ty, field.mutable);
@@ -519,6 +547,7 @@ pub fn check(module: &Module) -> Result<(), TypeError> {
         subst: HashMap::new(),
         next_var: 0,
         scopes: vec![HashMap::new()],
+        consumed: HashSet::new(),
     };
 
     // Pass 1: collect all signatures so definitions can refer to each other.
@@ -719,6 +748,34 @@ mod tests {
         let src = r#"
             fn bump(inout n: Int) { n = n + 1 }
             fn main() { var x = 1  bump(x) }
+        "#;
+        assert!(check_str(src).is_ok(), "{:?}", check_str(src));
+    }
+
+    #[test]
+    fn rejects_use_after_sink_move() {
+        let src = r#"
+            fn take(sink s: String) -> String { s }
+            fn main() {
+              let x = "hi"
+              let a = take(x)
+              let b = take(x)
+            }
+        "#;
+        let e = check_str(src).unwrap_err();
+        assert!(e.contains("moved"), "got: {e}");
+    }
+
+    #[test]
+    fn accepts_reassignment_after_sink_move() {
+        let src = r#"
+            fn take(sink s: String) -> String { s }
+            fn main() {
+              var x = "hi"
+              take(x)
+              x = "again"
+              take(x)
+            }
         "#;
         assert!(check_str(src).is_ok(), "{:?}", check_str(src));
     }
