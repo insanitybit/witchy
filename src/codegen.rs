@@ -549,7 +549,7 @@ pub fn compile_actor_module(actor: &ActorDef) -> Result<String, CodegenError> {
         ));
     }
 
-    let mut handler_wat = String::new();
+    let mut handlers: Vec<(String, String)> = Vec::new();
     for h in &actor.handlers {
         for p in &h.params {
             if !matches!(&p.ty, Some(Type::Named(t, _)) if t == "Int") {
@@ -572,15 +572,31 @@ pub fn compile_actor_module(actor: &ActorDef) -> Result<String, CodegenError> {
             header.push_str(&format!("    (local ${name} i32)\n"));
         }
         let body = cg.compile_block(&h.body)?;
-        // Handlers return nothing; discard the block's trailing value.
-        handler_wat.push_str(&format!("{header}{body}    drop\n  )\n"));
+        handlers.push((header, body));
     }
+
+    // No-GC for actors: reset the heap arena at the start of each message, since
+    // a handler's heap allocations never escape (state lives in globals; sends
+    // copy). This bounds memory for long-running actors without a collector.
+    let mut extra_globals = state_globals;
+    let reset = if cg.need_heap() {
+        extra_globals.push_str(&format!(
+            "  (global $heap_base i32 (i32.const {}))\n",
+            cg.next_offset
+        ));
+        "    global.get $heap_base\n    global.set $heap\n"
+    } else {
+        ""
+    };
 
     let mut wat = String::from("(module\n");
     wat.push_str(&cg.emit_imports());
     wat.push_str("  (memory (export \"memory\") 1)\n");
-    wat.push_str(&cg.emit_data_globals_helpers(&state_globals));
-    wat.push_str(&handler_wat);
+    wat.push_str(&cg.emit_data_globals_helpers(&extra_globals));
+    for (header, body) in &handlers {
+        // Handlers return nothing; discard the block's trailing value.
+        wat.push_str(&format!("{header}{reset}{body}    drop\n  )\n"));
+    }
     wat.push_str(")\n");
     Ok(wat)
 }
@@ -880,6 +896,54 @@ mod tests {
             }
         "#;
         assert_eq!(run_int(src), 43);
+    }
+
+    #[test]
+    fn actor_arena_is_reset_each_message() {
+        let src = r#"
+            actor Counter {
+              console: Console
+              var count: Int = 0
+              on Tick() {
+                count = count + 1
+                print(console, "n=" <> int_to_string(count))
+              }
+            }
+        "#;
+        let module = parse_module(src).unwrap();
+        let Item::Actor(actor) = &module.items[0] else {
+            panic!("expected actor");
+        };
+        let wat = compile_actor_module(actor).unwrap();
+        let engine = Engine::default();
+        let wt = WtModule::new(&engine, &wat).unwrap();
+        let captured: Arc<Mutex<Vec<(i32, String)>>> = Arc::new(Mutex::new(Vec::new()));
+        let mut linker = Linker::new(&engine);
+        let sink = Arc::clone(&captured);
+        linker
+            .func_wrap(
+                "witchy",
+                "print",
+                move |mut caller: Caller<'_, ()>, ptr: i32, len: i32| {
+                    let mem = caller.get_export("memory").unwrap().into_memory().unwrap();
+                    let data = mem.data(&caller);
+                    let s = String::from_utf8_lossy(&data[ptr as usize..(ptr + len) as usize])
+                        .into_owned();
+                    sink.lock().unwrap().push((ptr, s));
+                },
+            )
+            .unwrap();
+        let mut store = Store::new(&engine, ());
+        let instance = linker.instantiate(&mut store, &wt).unwrap();
+        let tick = instance.get_typed_func::<(), ()>(&mut store, "Tick").unwrap();
+        tick.call(&mut store, ()).unwrap();
+        tick.call(&mut store, ()).unwrap();
+        let c = captured.lock().unwrap();
+        // State persists (count is a global); the heap arena is reset, so the
+        // second message reuses the same addresses.
+        assert_eq!(c[0].1, "n=1");
+        assert_eq!(c[1].1, "n=2");
+        assert_eq!(c[0].0, c[1].0, "arena should be reset, reusing heap addresses");
     }
 
     #[test]
