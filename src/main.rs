@@ -2097,6 +2097,47 @@ mod example_tests {
         assert!(result.is_err(), "ungranted module must fail to instantiate");
     }
 
+    // A Net capability is an allow-list, and attenuation only ever narrows it.
+    // These rejections fire on the allow-list check, before any socket is
+    // opened, so the test needs no network. (`run_with` grants the root Net.)
+    #[test]
+    fn net_capability_cannot_escalate() {
+        // connect outside the granted allow-list is denied.
+        let connect_denied = r#"
+            fn main(console: Console, net: Net) {
+              send_line(connect(net, "evil.test:80"), "x")
+            }
+        "#;
+        let e = interpreter::run_with(connect_denied, ".", vec!["allowed.test:80".into()])
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("not permitted"), "expected a connect denial, got: {e}");
+
+        // restrict to an address not already held is denied (can't widen).
+        let restrict_denied = r#"
+            fn main(console: Console, net: Net) {
+              send_line(connect(restrict(net, "evil.test:80"), "evil.test:80"), "x")
+            }
+        "#;
+        let e = interpreter::run_with(restrict_denied, ".", vec!["allowed.test:80".into()])
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("not in this Net"), "expected a restrict denial, got: {e}");
+
+        // Attenuation is real: after restricting to one address, a sibling that
+        // was in the original grant is no longer reachable.
+        let attenuated = r#"
+            fn main(console: Console, net: Net) {
+              let narrow = restrict(net, "a.test:80")
+              send_line(connect(narrow, "b.test:80"), "x")
+            }
+        "#;
+        let e = interpreter::run_with(attenuated, ".", vec!["a.test:80".into(), "b.test:80".into()])
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("not permitted"), "expected the sibling to be unreachable, got: {e}");
+    }
+
     /// A library imported into a program brings its functions into scope but no
     /// authority: `lib` has no capability parameters, so it can only compute.
     #[test]
