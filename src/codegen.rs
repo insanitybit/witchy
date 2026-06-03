@@ -645,7 +645,10 @@ impl Codegen {
                 _ => {}
             }
         }
-        self.infer_locals(&f.body);
+        // Rename shadowing bindings to unique names so function-wide locals
+        // don't alias (the interpreter scopes lexically; this preserves that).
+        let renamed = alpha_rename(&f.body, &f.params);
+        self.infer_locals(&renamed);
 
         let mut header = format!("  (func ${} ", f.name);
         for p in &f.params {
@@ -655,7 +658,7 @@ impl Codegen {
         // (moved back out to the caller).
         let ret_kind = match &f.ret {
             Some(t) => ty_kind(t),
-            None => self.block_kind(&f.body),
+            None => self.block_kind(&renamed),
         };
         self.cur_fn_ret_kind = ret_kind;
         self.cur_fn_inout = f.params.iter().any(|p| p.convention == Convention::Inout);
@@ -668,7 +671,7 @@ impl Codegen {
         header.push_str(")\n");
 
         let mut lets = Vec::new();
-        collect_let_names(&f.body, &mut lets);
+        collect_let_names(&renamed, &mut lets);
         lets.sort();
         lets.dedup();
         for name in &lets {
@@ -680,7 +683,7 @@ impl Codegen {
         header.push_str(&format!("    (local ${TRY_TMP} i32)\n"));
         header.push_str(&format!("    (local ${MATCH_TMP} i32)\n"));
 
-        let body = self.compile_block(&f.body)?;
+        let body = self.compile_block(&renamed)?;
         // Move-out: append each `inout` parameter's final value (declaration order).
         let mut epilogue = String::new();
         for p in &f.params {
@@ -1935,14 +1938,15 @@ fn compile_actor_with_tags(
             cg.local_val_types.insert(p.name.clone(), ValType::Int);
         }
         header.push('\n');
+        let renamed = alpha_rename(&h.body, &h.params);
         let mut lets = Vec::new();
-        collect_let_names(&h.body, &mut lets);
+        collect_let_names(&renamed, &mut lets);
         lets.sort();
         lets.dedup();
         for name in &lets {
             header.push_str(&format!("    (local ${name} i32)\n"));
         }
-        let body = cg.compile_block(&h.body)?;
+        let body = cg.compile_block(&renamed)?;
         handlers.push((header, body));
     }
 
@@ -2894,6 +2898,189 @@ fn collect_pattern_vars(pat: &Pattern, out: &mut Vec<String>) {
         }
         _ => {}
     }
+}
+
+/// Give shadowing bindings unique names before codegen. The compiled backend
+/// declares one WASM local per distinct local *name* across a whole function,
+/// so an inner binding that reuses an outer name would otherwise alias the
+/// same local and clobber the outer value once the inner scope ends. This pass
+/// walks the body with a scope stack and renames any binding (let, lettuple,
+/// loop var, match-pattern var, lambda param) that shadows a name already in
+/// scope, rewriting the references that resolve to it. Names that don't shadow
+/// are left untouched, so output is unchanged for the common case.
+struct Renamer {
+    scopes: Vec<HashMap<String, String>>,
+    counter: u32,
+}
+
+impl Renamer {
+    fn new() -> Self {
+        Self { scopes: Vec::new(), counter: 0 }
+    }
+
+    fn resolve(&self, name: &str) -> String {
+        for s in self.scopes.iter().rev() {
+            if let Some(n) = s.get(name) {
+                return n.clone();
+            }
+        }
+        name.to_string()
+    }
+
+    /// Bind `name` in the current scope, renaming it if it's already in scope.
+    fn declare(&mut self, name: &str) -> String {
+        let shadows = self.scopes.iter().any(|s| s.contains_key(name));
+        let unique = if shadows {
+            self.counter += 1;
+            format!("{name}__shadow{}", self.counter)
+        } else {
+            name.to_string()
+        };
+        self.scopes
+            .last_mut()
+            .expect("scope")
+            .insert(name.to_string(), unique.clone());
+        unique
+    }
+
+    fn rename_block(&mut self, b: &mut Block) {
+        self.scopes.push(HashMap::new());
+        for stmt in &mut b.stmts {
+            self.rename_stmt(stmt);
+        }
+        self.scopes.pop();
+    }
+
+    fn rename_stmt(&mut self, s: &mut Stmt) {
+        match s {
+            // The value is evaluated in the scope *before* the binding exists.
+            Stmt::Let { name, value, .. } => {
+                self.rename_expr(value);
+                *name = self.declare(name);
+            }
+            Stmt::Assign { name, value } => {
+                self.rename_expr(value);
+                *name = self.resolve(name);
+            }
+            Stmt::LetTuple { names, value } => {
+                self.rename_expr(value);
+                for n in names {
+                    *n = self.declare(n);
+                }
+            }
+            Stmt::Return(Some(e)) | Stmt::Expr(e) => self.rename_expr(e),
+            Stmt::Return(None) => {}
+        }
+    }
+
+    fn rename_expr(&mut self, e: &mut Expr) {
+        match e {
+            Expr::Var(n) => *n = self.resolve(n),
+            Expr::Int(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) => {}
+            // Call / Ctor / Spawn names are functions / constructors / actors,
+            // not locals — only the arguments are renamed.
+            Expr::List(xs) | Expr::Tuple(xs) => {
+                for x in xs {
+                    self.rename_expr(x);
+                }
+            }
+            Expr::Call { args, .. } | Expr::Ctor { args, .. } | Expr::Spawn { args, .. } => {
+                for a in args {
+                    self.rename_expr(a);
+                }
+            }
+            Expr::Unary { expr, .. } | Expr::Try(expr) => self.rename_expr(expr),
+            // The field name is not a local.
+            Expr::Field { base, .. } => self.rename_expr(base),
+            Expr::RecordUpdate { base, fields } => {
+                self.rename_expr(base);
+                for (_, v) in fields {
+                    self.rename_expr(v);
+                }
+            }
+            Expr::Binary { lhs, rhs, .. } => {
+                self.rename_expr(lhs);
+                self.rename_expr(rhs);
+            }
+            Expr::If { cond, then_block, else_block } => {
+                self.rename_expr(cond);
+                self.rename_block(then_block);
+                if let Some(b) = else_block {
+                    self.rename_block(b);
+                }
+            }
+            Expr::Match { scrutinee, arms } => {
+                self.rename_expr(scrutinee);
+                for arm in arms {
+                    self.scopes.push(HashMap::new());
+                    self.rename_pattern(&mut arm.pattern);
+                    if let Some(g) = &mut arm.guard {
+                        self.rename_expr(g);
+                    }
+                    self.rename_expr(&mut arm.body);
+                    self.scopes.pop();
+                }
+            }
+            Expr::Block(b) => self.rename_block(b),
+            Expr::While { cond, body } => {
+                self.rename_expr(cond);
+                self.rename_block(body);
+            }
+            // The loop variable is bound in the same scope as the body.
+            Expr::For { var, iter, body } => {
+                self.rename_expr(iter);
+                self.scopes.push(HashMap::new());
+                *var = self.declare(var);
+                for stmt in &mut body.stmts {
+                    self.rename_stmt(stmt);
+                }
+                self.scopes.pop();
+            }
+            Expr::Lambda { params, body } => {
+                self.scopes.push(HashMap::new());
+                for p in params {
+                    p.name = self.declare(&p.name);
+                }
+                for stmt in &mut body.stmts {
+                    self.rename_stmt(stmt);
+                }
+                self.scopes.pop();
+            }
+        }
+    }
+
+    fn rename_pattern(&mut self, p: &mut Pattern) {
+        match p {
+            Pattern::Var(n) => *n = self.declare(n),
+            Pattern::Ctor { args, .. } | Pattern::Tuple(args) => {
+                for a in args {
+                    self.rename_pattern(a);
+                }
+            }
+            Pattern::List { elems, rest } => {
+                for e in elems {
+                    self.rename_pattern(e);
+                }
+                if let Some(Some(n)) = rest {
+                    *n = self.declare(n);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Alpha-rename a function/handler body so shadowing bindings get unique names.
+/// `params` are bound in the outermost scope (never renamed themselves).
+fn alpha_rename(body: &Block, params: &[Param]) -> Block {
+    let mut r = Renamer::new();
+    r.scopes.push(HashMap::new());
+    for p in params {
+        r.declare(&p.name);
+    }
+    let mut b = body.clone();
+    r.rename_block(&mut b);
+    b
 }
 
 #[cfg(test)]

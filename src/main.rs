@@ -2141,6 +2141,24 @@ mod example_tests {
     }
 
     #[test]
+    fn nested_scope_shadowing_backends_agree() {
+        // An inner binding that shadows an outer one of the same name must not
+        // clobber the outer: after the inner scope ends, the outer value is back.
+        let src = r#"
+            fn main(console: Console) {
+              let x = 1
+              if true {
+                let x = 2
+                print(console, int_to_string(x))
+              }
+              print(console, int_to_string(x))
+            }
+        "#;
+        assert_eq!(interp(src), run_on_wasm(src));
+        assert_eq!(run_on_wasm(src), vec!["2", "1"]);
+    }
+
+    #[test]
     fn nested_records_backends_agree() {
         // A record containing a record: chained field access (o.inner.v), nested
         // construction, `update` on a nested field, and immutability of the
