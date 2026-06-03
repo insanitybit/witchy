@@ -3123,6 +3123,31 @@ mod example_tests {
         assert_eq!(compiled, vec!["10"]);
     }
 
+    // The composable, total lookups: list.head/last/get/find return Option
+    // (None instead of an out-of-bounds trap). `list` imports `option`, and the
+    // caller provides only `main` — the linker auto-resolves both std modules.
+    #[test]
+    fn std_list_option_lookups_backends_agree() {
+        let client = r#"
+            import list
+            import option
+            fn main(console: Console) {
+              print(console, int_to_string(option.unwrap_or(list.head([10, 20]), 0)))
+              print(console, int_to_string(option.unwrap_or(list.head([]), 0 - 1)))
+              print(console, int_to_string(option.unwrap_or(list.last([10, 20]), 0)))
+              print(console, int_to_string(option.unwrap_or(list.get([10, 20, 30], 1), 0)))
+              print(console, int_to_string(option.unwrap_or(list.get([10], 5), 0 - 1)))
+              print(console, int_to_string(option.unwrap_or(list.find([1, 3, 4], fn(n: Int) { n % 2 == 0 }), 0 - 1)))
+              print(console, to_string(option.is_none(list.find([1, 3, 5], fn(n: Int) { n % 2 == 0 }))))
+            }
+        "#;
+        let sources = [("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "list option lookups diverged");
+        assert_eq!(compiled, vec!["10", "-1", "20", "20", "-1", "4", "true"]);
+    }
+
     #[test]
     fn std_list_head_last_find_or_backends_agree() {
         // Total accessors: head_or/last_or return a default for the empty list
