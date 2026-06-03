@@ -288,8 +288,16 @@ impl Checker {
     fn instantiate(&mut self, params: &[Ty], ret: &Ty, typarams: &HashSet<u32>) -> (Vec<Ty>, Ty) {
         let mut fresh_map: HashMap<u32, Ty> = HashMap::new();
         for &v in typarams {
-            let f = self.fresh();
-            fresh_map.insert(v, f);
+            // Checking the function's body may have *bound* the type-param var to
+            // another (still-unbound) var — e.g. matching on the param. Key the
+            // fresh substitution by that resolved representative, since
+            // `subst_vars` resolves before it looks up the map; otherwise the
+            // substitution would never apply and the function would behave
+            // monomorphically across call sites. A param resolved to a concrete
+            // type isn't generic, so skip it.
+            if let Ty::Var(rv) = self.resolve(&Ty::Var(v)) {
+                fresh_map.entry(rv).or_insert_with(|| self.fresh());
+            }
         }
         let p = params.iter().map(|t| self.subst_vars(t, &fresh_map)).collect();
         let r = self.subst_vars(ret, &fresh_map);
@@ -1309,6 +1317,25 @@ mod tests {
             fn main(console: Console) {
               print(console, int_to_string(unwrap_int(Wrap(5))))
               print(console, unwrap_str(Wrap("hi")))
+            }
+        "#;
+        assert!(check_str(src).is_ok(), "{:?}", check_str(src));
+    }
+
+    #[test]
+    fn generic_function_with_binding_body_at_multiple_types() {
+        // The same generic function — whose body *binds* its type parameter (here
+        // by matching on it) — called at two different types in one program. This
+        // regressed previously: checking the body bound the type-param var, and
+        // instantiation then reused that binding instead of a fresh one per call.
+        let src = r#"
+            type Box { Wrap(a) }
+            fn unwrap(b: Box(a), default: a) -> a {
+              match b { Wrap(v) -> v }
+            }
+            fn main(console: Console) {
+              print(console, int_to_string(unwrap(Wrap(5), 0)))
+              print(console, unwrap(Wrap("hi"), "none"))
             }
         "#;
         assert!(check_str(src).is_ok(), "{:?}", check_str(src));

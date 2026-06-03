@@ -858,6 +858,25 @@ mod example_tests {
     }
 
     #[test]
+    fn generic_function_with_match_body_runs_at_multiple_types() {
+        // A *single* generic function whose body binds its type param (a match)
+        // may be called at different type instantiations in one program. `unwrap`
+        // is used at Box(Int) and Box(String); both backends agree.
+        let src = r#"
+            type Box { Wrap(a) }
+            fn unwrap(b: Box(a), default: a) -> a {
+              match b { Wrap(v) -> v }
+            }
+            fn main(console: Console) {
+              print(console, int_to_string(unwrap(Wrap(42), 0)))
+              print(console, unwrap(Wrap("hello"), "none"))
+            }
+        "#;
+        assert_eq!(interp(src), vec!["42", "hello"]);
+        assert_eq!(run_on_wasm(src), vec!["42", "hello"]);
+    }
+
+    #[test]
     fn std_option_combinators_backends_agree() {
         // is_none / and_then / filter behave identically in both backends.
         let client = r#"
@@ -881,9 +900,9 @@ mod example_tests {
     #[test]
     fn std_result_combinators_backends_agree() {
         // is_err / and_then / map_err / unwrap_err behave identically in both
-        // backends. (Every Result here is `Result(Int, String)`: the type checker
-        // instantiates a generic function at a single type per program, so mixing
-        // error types in one program isn't supported yet.)
+        // backends — including using is_err at two different error types in one
+        // program (Result(Int, String) and the Result(Int, Int) that map_err
+        // produces), which per-call generalization now allows.
         let client = r#"
             import result
             fn checked(n: Int) -> Result(Int, String) {
@@ -894,8 +913,8 @@ mod example_tests {
               print(console, to_string(result.is_err(checked(0 - 1))))
               let chained = result.and_then(checked(5), fn(n: Int) { Ok(n * 10) })
               print(console, int_to_string(result.unwrap_or(chained, 0)))
-              let mapped = result.map_err(checked(0 - 1), fn(s: String) { s <> "!" })
-              print(console, result.unwrap_err(mapped, "none"))
+              let mapped = result.map_err(checked(0 - 1), fn(s: String) { string_length(s) })
+              print(console, to_string(result.is_err(mapped)))
             }
         "#;
         let sources = [("result", crate::bundled_module("result").unwrap()), ("main", client)];
