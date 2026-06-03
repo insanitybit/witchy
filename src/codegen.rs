@@ -111,9 +111,10 @@ struct Codegen {
     message_tags: HashMap<String, u32>,
     /// Whether the inter-actor `send` import is needed.
     uses_send: bool,
-    /// Whether the list `push`/`concat` runtime helpers are needed.
+    /// Whether the list `push`/`concat`/`drop` runtime helpers are needed.
     uses_list_push: bool,
     uses_list_concat: bool,
+    uses_list_drop: bool,
     /// Record type name -> ordered fields as `(name, named-type)`, where the
     /// second is the field's type name when it is a `Named` type (so nested
     /// records can be chained, `a.b.c`). For compiling `value.field`.
@@ -158,6 +159,7 @@ impl Codegen {
             cur_fn_inout: false,
             uses_list_push: false,
             uses_list_concat: false,
+            uses_list_drop: false,
         }
     }
 
@@ -292,6 +294,7 @@ impl Codegen {
             || !self.mk_arities.is_empty()
             || self.uses_list_push
             || self.uses_list_concat
+            || self.uses_list_drop
     }
 
     fn emit_imports(&self) -> String {
@@ -335,6 +338,9 @@ impl Codegen {
         }
         if self.uses_list_concat {
             s.push_str(LIST_CONCAT_WAT);
+        }
+        if self.uses_list_drop {
+            s.push_str(LIST_DROP_WAT);
         }
         if self.uses_print {
             s.push_str(PRINT_STR_WAT);
@@ -823,7 +829,36 @@ impl Codegen {
                 };
                 (cond, binds)
             }
-            Pattern::List { .. } => return cerr("list patterns are not compiled to WASM yet"),
+            Pattern::List { elems, rest } => {
+                // A list is `[len][e0]...`. Check the length first (exact when
+                // there's no `..`, else a minimum), and only then inspect the
+                // prefix elements (so a short list never reads out of bounds).
+                let n = elems.len();
+                let len_cmp = if rest.is_some() { "i32.ge_s" } else { "i32.eq" };
+                let len_check = format!("{value}    i32.load\n    i32.const {n}\n    {len_cmp}\n");
+                let mut elem_conds = Vec::new();
+                let mut binds = String::new();
+                for (i, sub) in elems.iter().enumerate() {
+                    let elem_value =
+                        format!("{value}    i32.const {}\n    i32.add\n    i32.load\n", 4 + 4 * i);
+                    let (sc, sb) = self.pattern_match(&elem_value, sub)?;
+                    if sc != TRUE {
+                        elem_conds.push(sc);
+                    }
+                    binds.push_str(&sb);
+                }
+                // `..name` binds the remaining tail as a freshly allocated list.
+                if let Some(Some(name)) = rest {
+                    self.uses_list_drop = true;
+                    binds.push_str(&format!(
+                        "{value}    i32.const {n}\n    call $list_drop\n    local.set ${name}\n"
+                    ));
+                }
+                let inner = and_chain(&elem_conds);
+                let cond =
+                    format!("{len_check}    if (result i32)\n{inner}    else\n    i32.const 0\n    end\n");
+                (cond, binds)
+            }
             Pattern::Str(s) => {
                 self.uses_str_eq = true;
                 let off = self.intern(s);
@@ -1346,6 +1381,20 @@ const LIST_CONCAT_WAT: &str = r#"  (func $list_concat (param $a i32) (param $b i
     local.get $new)
 "#;
 
+// drop(list, k): the sublist `[len-k][elem_k...]` (used by `[h, ..t]` patterns).
+const LIST_DROP_WAT: &str = r#"  (func $list_drop (param $list i32) (param $k i32) (result i32)
+    (local $newlen i32) (local $new i32)
+    local.get $list i32.load local.get $k i32.sub local.set $newlen
+    global.get $heap local.set $new
+    local.get $new local.get $newlen i32.store
+    local.get $new i32.const 4 i32.add
+    local.get $list i32.const 4 i32.add local.get $k i32.const 4 i32.mul i32.add
+    local.get $newlen i32.const 4 i32.mul
+    memory.copy
+    local.get $new local.get $newlen i32.const 1 i32.add i32.const 4 i32.mul i32.add global.set $heap
+    local.get $new)
+"#;
+
 const PRINT_STR_WAT: &str = r#"  (func $print_str (param $s i32)
     local.get $s i32.const 4 i32.add
     local.get $s i32.load
@@ -1459,6 +1508,14 @@ fn collect_pattern_vars(pat: &Pattern, out: &mut Vec<String>) {
         Pattern::Ctor { args, .. } | Pattern::Tuple(args) => {
             for sub in args {
                 collect_pattern_vars(sub, out);
+            }
+        }
+        Pattern::List { elems, rest } => {
+            for sub in elems {
+                collect_pattern_vars(sub, out);
+            }
+            if let Some(Some(name)) = rest {
+                out.push(name.clone());
             }
         }
         _ => {}

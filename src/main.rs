@@ -694,6 +694,22 @@ mod example_tests {
     }
 
     #[test]
+    fn list_patterns_on_wasm() {
+        // Recursive head/tail list processing compiles: `[]` and `[h, ..t]`
+        // (the tail is a freshly allocated sublist). sum([10,20,30,40]) = 100.
+        let src = r#"
+            fn sum(xs: List(Int)) -> Int {
+              match xs {
+                [] -> 0
+                [h, ..t] -> h + sum(t)
+              }
+            }
+            fn main() -> Int { sum([10, 20, 30, 40]) }
+        "#;
+        assert_eq!(run_on_wasm(src), vec!["100"]);
+    }
+
+    #[test]
     fn list_push_and_concat_on_wasm() {
         // Build a list with `push` in a loop, then `concat` — both allocate new
         // lists at runtime. double_all([1,2,3]) = [2,4,6], ++ [100], summed = 112.
