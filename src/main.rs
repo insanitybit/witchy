@@ -2878,6 +2878,30 @@ mod example_tests {
         );
     }
 
+    // The classic loop-capture pitfall: each iteration creates a closure that
+    // captures a fresh `let` binding. Capture is by value at creation, so the
+    // three closures must remember 0, 1, 2 (giving 10, 11, 12) — not share the
+    // final loop value. Both backends must agree.
+    #[test]
+    fn closure_captures_loop_value_backends_agree() {
+        let src = r#"
+            fn main(console: Console) {
+              var fns = []
+              var i = 0
+              while i < 3 {
+                let captured = i
+                fns = push(fns, fn(x: Int) { x + captured })
+                i = i + 1
+              }
+              for f in fns {
+                print(console, int_to_string(f(10)))
+              }
+            }
+        "#;
+        assert_eq!(interp(src), run_on_wasm(src), "loop-captured closures diverged");
+        assert_eq!(run_on_wasm(src), vec!["10", "11", "12"]);
+    }
+
     #[test]
     fn function_pipeline_fold_backends_agree() {
         let client = r#"
