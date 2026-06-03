@@ -79,9 +79,45 @@ const BUILTINS: &[&str] = &[
 
 type FnTable = HashMap<String, HashSet<String>>;
 
+/// The source of a bundled standard-library module, if `name` is one. This is
+/// the canonical std registry: the linker treats it as a built-in search path,
+/// and the CLI/test harness resolve `import` against it too.
+pub fn std_source(name: &str) -> Option<&'static str> {
+    match name {
+        "list" => Some(include_str!("../std/list.witchy")),
+        "string" => Some(include_str!("../std/string.witchy")),
+        "math" => Some(include_str!("../std/math.witchy")),
+        "result" => Some(include_str!("../std/result.witchy")),
+        "option" => Some(include_str!("../std/option.witchy")),
+        "func" => Some(include_str!("../std/func.witchy")),
+        _ => None,
+    }
+}
+
 /// Link `modules` (each a name + parsed module) into one flat module, with
 /// `entry` the module holding `main`.
-pub fn link(modules: Vec<(String, Module)>, entry: &str) -> Result<Module, LinkError> {
+pub fn link(mut modules: Vec<(String, Module)>, entry: &str) -> Result<Module, LinkError> {
+    // Pull in any imported standard-library module not already provided (the
+    // std registry is a built-in search path), transitively — so a std module
+    // can import another (e.g. `list` importing `option`) and callers need not
+    // list the dependency explicitly. Locally provided modules take precedence:
+    // a name already present is never overridden by the bundled copy.
+    let mut i = 0;
+    while i < modules.len() {
+        let imports = modules[i].1.imports.clone();
+        for imp in imports {
+            if !modules.iter().any(|(n, _)| n == &imp) {
+                if let Some(src) = std_source(&imp) {
+                    let m = crate::parser::parse_module(src).map_err(|e| LinkError {
+                        message: format!("std module `{imp}`: {e}"),
+                    })?;
+                    modules.push((imp.clone(), m));
+                }
+            }
+        }
+        i += 1;
+    }
+
     let mut fns: FnTable = HashMap::new();
     for (name, m) in &modules {
         let mut names = HashSet::new();

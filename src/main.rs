@@ -388,15 +388,7 @@ fn run_benchmarks() -> wasmtime::Result<()> {
 /// `import list` works without a local file. A local file of the same name
 /// takes precedence (see `execute_file`).
 fn bundled_module(name: &str) -> Option<&'static str> {
-    match name {
-        "list" => Some(include_str!("../std/list.witchy")),
-        "string" => Some(include_str!("../std/string.witchy")),
-        "math" => Some(include_str!("../std/math.witchy")),
-        "result" => Some(include_str!("../std/result.witchy")),
-        "option" => Some(include_str!("../std/option.witchy")),
-        "func" => Some(include_str!("../std/func.witchy")),
-        _ => None,
-    }
+    crate::linker::std_source(name)
 }
 
 fn execute_file(path: &str) -> Result<Vec<String>, String> {
@@ -3110,6 +3102,25 @@ mod example_tests {
         let compiled = run_linked_on_wasm(&sources, "main");
         assert_eq!(interpreted, compiled, "local shadowing a function name diverged");
         assert_eq!(compiled, vec!["7"]);
+    }
+
+    // The linker treats the bundled std as a built-in search path: a program can
+    // `import list` without the caller listing the module's source. This unblocks
+    // composable std modules (one std module importing another). Verified on both
+    // backends with only `main` provided.
+    #[test]
+    fn linker_auto_resolves_std_imports() {
+        let client = r#"
+            import list
+            fn main(console: Console) {
+              print(console, int_to_string(list.sum(list.range(5))))
+            }
+        "#;
+        let sources = [("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "auto-resolved std import diverged");
+        assert_eq!(compiled, vec!["10"]);
     }
 
     #[test]
