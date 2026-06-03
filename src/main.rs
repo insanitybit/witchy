@@ -848,6 +848,53 @@ mod example_tests {
     }
 
     #[test]
+    fn split_runs_on_wasm() {
+        // `split` compiled to WASM, matching Rust's str::split: pieces between
+        // separators, empty pieces kept, multi-char separators, and an empty
+        // separator yielding the whole string.
+        let src = r#"
+            fn main(console: Console) {
+              let p = split("a,bb,ccc", ",")
+              print(console, int_to_string(length(p)))         // 3
+              print(console, at(p, 0))                          // a
+              print(console, at(p, 2))                          // ccc
+              print(console, int_to_string(length(split("a,,b", ","))))   // 3
+              print(console, at(split("a,,b", ","), 1))         // (empty)
+              print(console, int_to_string(length(split("", ","))))       // 1
+              print(console, int_to_string(length(split("abc", ""))))     // 1 (empty sep)
+              print(console, at(split("xXXyXXz", "XX"), 2))     // z
+            }
+        "#;
+        assert_eq!(
+            run_on_wasm(src),
+            vec!["3", "a", "ccc", "3", "", "1", "1", "z"]
+        );
+    }
+
+    #[test]
+    fn std_string_compiles_and_runs_on_wasm() {
+        // With `split` compiled, the whole `string` module compiles: `lines`
+        // (split on "\n"), `join`, and `repeat`. lines -> ["a","bb","ccc"] (3);
+        // join -> "a-bb-ccc" (8); repeat -> "zzzzz" (5): 3*100 + 8 + 5 = 313.
+        let client = r#"
+            import string
+            fn main() -> Int {
+              let parts = string.lines("a\nbb\nccc")
+              let joined = string.join(parts, "-")
+              let r = string.repeat("z", 5)
+              length(parts) * 100 + string_length(joined) + string_length(r)
+            }
+        "#;
+        assert_eq!(
+            run_linked_on_wasm(
+                &[("string", crate::bundled_module("string").unwrap()), ("main", client)],
+                "main",
+            ),
+            vec!["313"]
+        );
+    }
+
+    #[test]
     fn compute_runs_on_wasm() {
         assert_eq!(
             run_on_wasm(include_str!("../examples/compute.witchy")),

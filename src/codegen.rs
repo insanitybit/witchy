@@ -122,6 +122,8 @@ struct Codegen {
     /// Whether the `starts_with`/`ends_with` string helpers are needed.
     uses_starts_with: bool,
     uses_ends_with: bool,
+    /// Whether the `split` helper (and its `substr` companion) is needed.
+    uses_split: bool,
     /// Record type name -> ordered fields as `(name, named-type)`, where the
     /// second is the field's type name when it is a `Named` type (so nested
     /// records can be chained, `a.b.c`). For compiling `value.field`.
@@ -184,6 +186,7 @@ impl Codegen {
             uses_list_drop: false,
             uses_starts_with: false,
             uses_ends_with: false,
+            uses_split: false,
             lambdas: Vec::new(),
             clos_arities: HashSet::new(),
         }
@@ -328,6 +331,7 @@ impl Codegen {
             || self.uses_list_push
             || self.uses_list_concat
             || self.uses_list_drop
+            || self.uses_split
     }
 
     fn emit_imports(&self) -> String {
@@ -380,6 +384,13 @@ impl Codegen {
         }
         if self.uses_ends_with {
             s.push_str(ENDS_WITH_WAT);
+        }
+        // `$split` builds its result list with `$list_push` (emitted above via
+        // `uses_list_push`, which the split call site also sets) and allocates
+        // each piece with `$substr`.
+        if self.uses_split {
+            s.push_str(SUBSTR_WAT);
+            s.push_str(SPLIT_WAT);
         }
         if self.uses_print {
             s.push_str(PRINT_STR_WAT);
@@ -1157,6 +1168,15 @@ impl Codegen {
                 let p = self.compile_expr(&args[1])?;
                 Ok(format!("{s}{p}    call $ends_with\n"))
             }
+            // split(text, sep) -> List(String): pieces between separators (the
+            // separator dropped); an empty separator yields the whole string.
+            ("split", 2) => {
+                self.uses_split = true;
+                self.uses_list_push = true; // `$split` builds its result with it
+                let s = self.compile_expr(&args[0])?;
+                let sep = self.compile_expr(&args[1])?;
+                Ok(format!("{s}{sep}    call $split\n"))
+            }
             ("to_upper", _) | ("to_lower", _) | ("trim", _) => cerr(
                 "to_upper/to_lower/trim run in the interpreter; WASM string transforms are future",
             ),
@@ -1710,6 +1730,65 @@ const STARTS_WITH_WAT: &str = r#"  (func $starts_with (param $s i32) (param $p i
         (local.set $i (i32.add (local.get $i) (i32.const 1)))
         (br $l)))
     (i32.const 1))
+"#;
+
+// substr(src, start, len): a fresh string `[len][src bytes start..start+len]`.
+const SUBSTR_WAT: &str = r#"  (func $substr (param $src i32) (param $start i32) (param $len i32) (result i32)
+    (local $res i32)
+    (local.set $res (global.get $heap))
+    (i32.store (local.get $res) (local.get $len))
+    (memory.copy
+      (i32.add (local.get $res) (i32.const 4))
+      (i32.add (i32.add (local.get $src) (i32.const 4)) (local.get $start))
+      (local.get $len))
+    (global.set $heap (i32.add (i32.add (local.get $res) (i32.const 4)) (local.get $len)))
+    (local.get $res))
+"#;
+
+// split(s, sep): a List(String) of the pieces between (non-overlapping)
+// occurrences of `sep`, the separator dropped. Leading/trailing empty pieces
+// are kept (matching Rust's str::split); an empty separator yields `[s]`. The
+// result list is grown one piece at a time with `$list_push`.
+const SPLIT_WAT: &str = r#"  (func $split (param $s i32) (param $sep i32) (result i32)
+    (local $slen i32) (local $seplen i32) (local $result i32)
+    (local $start i32) (local $i i32) (local $j i32) (local $match i32)
+    (local.set $slen (i32.load (local.get $s)))
+    (local.set $seplen (i32.load (local.get $sep)))
+    (local.set $result (global.get $heap))
+    (i32.store (local.get $result) (i32.const 0))
+    (global.set $heap (i32.add (local.get $result) (i32.const 4)))
+    (if (i32.eqz (local.get $seplen))
+      (then (return (call $list_push (local.get $result) (local.get $s)))))
+    (local.set $start (i32.const 0))
+    (local.set $i (i32.const 0))
+    (block $done
+      (loop $scan
+        (br_if $done (i32.gt_s (local.get $i) (i32.sub (local.get $slen) (local.get $seplen))))
+        (local.set $match (i32.const 1))
+        (local.set $j (i32.const 0))
+        (block $cmpdone
+          (loop $cmp
+            (br_if $cmpdone (i32.ge_s (local.get $j) (local.get $seplen)))
+            (if (i32.ne
+                  (i32.load8_u (i32.add (i32.add (local.get $s) (i32.const 4)) (i32.add (local.get $i) (local.get $j))))
+                  (i32.load8_u (i32.add (i32.add (local.get $sep) (i32.const 4)) (local.get $j))))
+              (then (local.set $match (i32.const 0)) (br $cmpdone)))
+            (local.set $j (i32.add (local.get $j) (i32.const 1)))
+            (br $cmp)))
+        (if (local.get $match)
+          (then
+            (local.set $result
+              (call $list_push (local.get $result)
+                (call $substr (local.get $s) (local.get $start) (i32.sub (local.get $i) (local.get $start)))))
+            (local.set $i (i32.add (local.get $i) (local.get $seplen)))
+            (local.set $start (local.get $i)))
+          (else
+            (local.set $i (i32.add (local.get $i) (i32.const 1)))))
+        (br $scan)))
+    (local.set $result
+      (call $list_push (local.get $result)
+        (call $substr (local.get $s) (local.get $start) (i32.sub (local.get $slen) (local.get $start)))))
+    (local.get $result))
 "#;
 
 // ends_with(s, p): do s's last p.len bytes equal p?
