@@ -403,26 +403,28 @@ fn rewrite_expr(
 }
 
 fn resolve_call(name: &str, m: &str, imps: &[String], fns: &FnTable) -> Result<String, LinkError> {
-    if BUILTINS.contains(&name) {
-        return Ok(name.to_string());
-    }
     if let Some((modname, fname)) = name.split_once('.') {
         if !imps.iter().any(|i| i == modname) {
             return lerr(format!(
                 "module `{m}` calls `{modname}.{fname}` but does not `import {modname}`"
             ));
         }
-        match fns.get(modname) {
+        return match fns.get(modname) {
             Some(s) if s.contains(fname) => Ok(name.to_string()),
             _ => lerr(format!("module `{modname}` has no function `{fname}`")),
-        }
-    } else {
-        match fns.get(m) {
-            Some(s) if s.contains(name) => Ok(format!("{m}.{name}")),
-            // Not a function defined here: it's a local binding being applied
-            // (e.g. a lambda passed as a parameter). Leave it unqualified; the
-            // type checker is the authority on whether the name is bound.
-            _ => Ok(name.to_string()),
-        }
+        };
     }
+    // A function defined in THIS module wins over a builtin of the same name, so
+    // e.g. `list.contains` is reachable as a bare `contains` inside `list` (a
+    // builtin would otherwise shadow it). Checked before BUILTINS for that
+    // reason.
+    if fns.get(m).is_some_and(|s| s.contains(name)) {
+        return Ok(format!("{m}.{name}"));
+    }
+    if BUILTINS.contains(&name) {
+        return Ok(name.to_string());
+    }
+    // Not a function here and not a builtin: a local binding being applied (e.g.
+    // a lambda parameter). Leave it unqualified; the type checker decides.
+    Ok(name.to_string())
 }

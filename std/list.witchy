@@ -379,19 +379,13 @@ pub fn contains(xs: List(a), target: a) -> Bool {
 }
 
 // The list with duplicates removed, keeping the first occurrence of each
-// element (by value equality), in original order. (Membership is checked
-// inline rather than via `contains`, whose bare name resolves to the string
-// builtin inside this module.)
+// element (by value equality), in original order. `contains` here is this
+// module's own list function — a same-module function shadows the like-named
+// string builtin.
 pub fn unique(xs: List(a)) -> List(a) {
   var out = []
   for x in xs {
-    var seen = false
-    for y in out {
-      if y == x {
-        seen = true
-      }
-    }
-    if !seen {
+    if !contains(out, x) {
       out = push(out, x)
     }
   }
