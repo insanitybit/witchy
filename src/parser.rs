@@ -464,6 +464,13 @@ impl Parser {
                 expr: Box::new(expr),
             });
         }
+        if self.eat(&Tok::Tilde) {
+            let expr = self.prefix()?;
+            return Ok(Expr::Unary {
+                op: UnOp::BitNot,
+                expr: Box::new(expr),
+            });
+        }
         self.postfix()
     }
 

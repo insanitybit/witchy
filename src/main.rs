@@ -2464,6 +2464,21 @@ mod example_tests {
     }
 
     #[test]
+    fn bitwise_not_backends_agree() {
+        // ~x = -x-1 (width-independent), so it agrees across backends.
+        let src = r#"
+            fn main(console: Console) {
+              print(console, int_to_string(~0))
+              print(console, int_to_string(~5))
+              print(console, int_to_string(~(0 - 1)))
+              print(console, int_to_string(255 & ~15))
+            }
+        "#;
+        assert_eq!(interp(src), run_on_wasm(src));
+        assert_eq!(run_on_wasm(src), vec!["-1", "-6", "0", "240"]);
+    }
+
+    #[test]
     fn bitwise_operators_backends_agree() {
         // & | ^ << >> on Int, with precedence (& tighter than |, both tighter
         // than ==), and or-patterns still parsing (| in pattern position). Both

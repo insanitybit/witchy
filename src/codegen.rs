@@ -302,6 +302,7 @@ impl Codegen {
             Expr::Unary { op, expr } => match op {
                 UnOp::Not => ValType::Bool,
                 UnOp::Neg => self.val_type_of(expr),
+                UnOp::BitNot => ValType::Int,
             },
             Expr::Binary { op, lhs, .. } => match op {
                 BinOp::Eq | BinOp::NotEq | BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq
@@ -838,6 +839,10 @@ impl Codegen {
                     } else {
                         Ok(format!("    i32.const 0\n{}    i32.sub\n", self.compile_expr(expr)?))
                     }
+                }
+                // ~x == x ^ -1 (all bits set); width-independent (= -x - 1).
+                UnOp::BitNot => {
+                    Ok(format!("{}    i32.const -1\n    i32.xor\n", self.compile_expr(expr)?))
                 }
             },
             Expr::Binary { op, lhs, rhs } => {

@@ -1026,6 +1026,8 @@ impl Interpreter {
                     (UnOp::Neg, other) => err(format!("cannot negate `{other}`")),
                     (UnOp::Not, Value::Bool(b)) => Ok(Value::Bool(!b)),
                     (UnOp::Not, other) => err(format!("cannot apply `!` to `{other}`")),
+                    (UnOp::BitNot, Value::Int(n)) => Ok(Value::Int(!n)),
+                    (UnOp::BitNot, other) => err(format!("cannot apply `~` to `{other}`")),
                 }
             }
             Expr::Lambda { params, body } => Ok(Value::Closure {

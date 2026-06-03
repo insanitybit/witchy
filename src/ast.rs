@@ -193,6 +193,7 @@ pub enum Expr {
 pub enum UnOp {
     Neg,
     Not,
+    BitNot,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

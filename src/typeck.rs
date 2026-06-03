@@ -753,6 +753,10 @@ impl Checker {
                             Ok(Ty::Int)
                         }
                     },
+                    UnOp::BitNot => {
+                        self.unify(&Ty::Int, &t)?;
+                        Ok(Ty::Int)
+                    }
                 }
             }
             Expr::Field { base, field } => {

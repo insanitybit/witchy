@@ -73,6 +73,7 @@ pub enum Tok {
     PercentEq, // %=
     Amp,    // &  (bitwise and)
     Caret,  // ^  (bitwise xor)
+    Tilde,  // ~  (bitwise not)
     Shl,    // << (shift left)
     Shr,    // >> (shift right)
     LArrow, // <-
@@ -148,6 +149,7 @@ impl fmt::Display for Tok {
             PercentEq => write!(f, "%="),
             Amp => write!(f, "&"),
             Caret => write!(f, "^"),
+            Tilde => write!(f, "~"),
             Shl => write!(f, "<<"),
             Shr => write!(f, ">>"),
             LArrow => write!(f, "<-"),
@@ -534,6 +536,7 @@ impl Lexer {
             ('|', _) => Tok::Bar,
             ('&', _) => Tok::Amp,
             ('^', _) => Tok::Caret,
+            ('~', _) => Tok::Tilde,
             ('!', _) => Tok::Bang,
             ('=', _) => Tok::Eq,
             ('<', _) => Tok::Lt,
@@ -690,6 +693,7 @@ mod tests {
         assert_eq!(kinds("a ^ b"), vec![id("a"), Tok::Caret, id("b"), Tok::Eof]);
         assert_eq!(kinds("a << b"), vec![id("a"), Tok::Shl, id("b"), Tok::Eof]);
         assert_eq!(kinds("a >> b"), vec![id("a"), Tok::Shr, id("b"), Tok::Eof]);
+        assert_eq!(kinds("~a"), vec![Tok::Tilde, id("a"), Tok::Eof]);
     }
 
     #[test]
