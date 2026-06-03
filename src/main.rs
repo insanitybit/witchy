@@ -1448,6 +1448,33 @@ mod example_tests {
     }
 
     #[test]
+    fn list_of_records_index_access_backends_agree() {
+        // `at(items, i).field` via a let, for both a List(Record) parameter and a
+        // let-bound list literal of records; and a for-loop over the let-bound
+        // list. Both backends agree.
+        let src = r#"
+            type Item { price: Int, qty: Int }
+            fn first_value(items: List(Item)) -> Int {
+              let first = at(items, 0)
+              first.price * first.qty
+            }
+            fn main(console: Console) {
+              print(console, int_to_string(first_value([Item(3, 10), Item(5, 2)])))
+              let items = [Item(2, 4), Item(7, 1)]
+              let second = at(items, 1)
+              print(console, int_to_string(second.price + second.qty))
+              var total = 0
+              for it in items {
+                total = total + it.price
+              }
+              print(console, int_to_string(total))
+            }
+        "#;
+        assert_eq!(interp(src), run_on_wasm(src));
+        assert_eq!(run_on_wasm(src), vec!["30", "8", "9"]);
+    }
+
+    #[test]
     fn dict_of_records_field_access_backends_agree() {
         // Looking a record up in a Dict and accessing its field: the result of
         // get_or carries the default's record type, so `it.price` resolves.

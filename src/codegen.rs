@@ -372,6 +372,16 @@ impl Codegen {
                     if evt != ValType::Other {
                         self.local_list_elem_valtype.insert(name.clone(), evt);
                     }
+                    // A list literal of record constructors records its element
+                    // record type, so `for x in items` and `at(items, i)` resolve
+                    // fields (the same tracking params already get).
+                    if let Expr::List(items) = value {
+                        if let Some(Expr::Ctor { name: ctor, .. }) = items.first() {
+                            if self.record_fields.contains_key(ctor) {
+                                self.local_list_elem.insert(name.clone(), ctor.clone());
+                            }
+                        }
+                    }
                     // Remember the binding's record type (if any) so `name.field`
                     // resolves: a constructor, a record-returning call, or an
                     // `update` of a known record.
@@ -396,6 +406,14 @@ impl Codegen {
                                         Some(ctor.clone())
                                     }
                                     Some(Expr::Var(v)) => self.local_records.get(v).cloned(),
+                                    _ => None,
+                                }
+                            } else if fname == "at" {
+                                // at(list, i) returns the element; for a
+                                // List(Record) the result is that record, so
+                                // `let x = at(items, i); x.field` resolves.
+                                match args.first() {
+                                    Some(Expr::Var(v)) => self.local_list_elem.get(v).cloned(),
                                     _ => None,
                                 }
                             } else {
