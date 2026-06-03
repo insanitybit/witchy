@@ -512,6 +512,7 @@ impl Codegen {
         }
         s.push_str(extra_globals);
         if self.need_heap() {
+            s.push_str(ENSURE_WAT);
             s.push_str(CONCAT_WAT);
         }
         if self.uses_list_push {
@@ -1944,6 +1945,20 @@ const STR_EQ_WAT: &str = r#"  (func $str_eq (param $a i32) (param $b i32) (resul
     (i32.const 1))
 "#;
 
+// ensure(size): grow linear memory so the bump allocator has room for `size`
+// more bytes past `$heap`. Called by every allocating helper before it bumps
+// `$heap`, so compiled programs grow memory on demand instead of trapping once
+// the initial page fills. Growing past the limit (true OOM) leaves the
+// subsequent store to trap, as before.
+const ENSURE_WAT: &str = r#"  (func $ensure (param $size i32)
+    (local $need i32) (local $have i32)
+    (local.set $need (i32.add (global.get $heap) (local.get $size)))
+    (local.set $have (i32.mul (memory.size) (i32.const 65536)))
+    (if (i32.gt_u (local.get $need) (local.get $have))
+      (then (drop (memory.grow
+        (i32.div_u (i32.add (i32.sub (local.get $need) (local.get $have)) (i32.const 65535)) (i32.const 65536)))))))
+"#;
+
 /// Allocation helper for an N-field constructor record `[tag][f0..f{N-1}]`.
 fn mk_helper(n: usize) -> String {
     let mut params = String::from("(param $tag i32)");
@@ -1952,6 +1967,7 @@ fn mk_helper(n: usize) -> String {
     }
     let size = 4 + 4 * n;
     let mut s = format!("  (func $mk{n} {params} (result i32)\n    (local $p i32)\n");
+    s.push_str(&format!("    (call $ensure (i32.const {size}))\n"));
     s.push_str("    global.get $heap local.set $p\n");
     s.push_str("    local.get $p local.get $tag i32.store\n");
     for i in 0..n {
@@ -1969,6 +1985,7 @@ const CONCAT_WAT: &str = r#"  (func $concat (param $a i32) (param $b i32) (resul
     (local $alen i32) (local $blen i32) (local $res i32)
     local.get $a i32.load local.set $alen
     local.get $b i32.load local.set $blen
+    (call $ensure (i32.add (i32.const 4) (i32.add (local.get $alen) (local.get $blen))))
     global.get $heap local.set $res
     local.get $res local.get $alen local.get $blen i32.add i32.store
     local.get $res i32.const 4 i32.add
@@ -1989,6 +2006,7 @@ const CONCAT_WAT: &str = r#"  (func $concat (param $a i32) (param $b i32) (resul
 const LIST_PUSH_WAT: &str = r#"  (func $list_push (param $list i32) (param $x i32) (result i32)
     (local $len i32) (local $new i32)
     local.get $list i32.load local.set $len
+    (call $ensure (i32.mul (i32.add (local.get $len) (i32.const 2)) (i32.const 4)))
     global.get $heap local.set $new
     local.get $new local.get $len i32.const 1 i32.add i32.store
     local.get $new i32.const 4 i32.add
@@ -2006,6 +2024,7 @@ const LIST_CONCAT_WAT: &str = r#"  (func $list_concat (param $a i32) (param $b i
     (local $alen i32) (local $blen i32) (local $new i32)
     local.get $a i32.load local.set $alen
     local.get $b i32.load local.set $blen
+    (call $ensure (i32.mul (i32.add (i32.add (local.get $alen) (local.get $blen)) (i32.const 1)) (i32.const 4)))
     global.get $heap local.set $new
     local.get $new local.get $alen local.get $blen i32.add i32.store
     local.get $new i32.const 4 i32.add
@@ -2024,6 +2043,7 @@ const LIST_CONCAT_WAT: &str = r#"  (func $list_concat (param $a i32) (param $b i
 const LIST_DROP_WAT: &str = r#"  (func $list_drop (param $list i32) (param $k i32) (result i32)
     (local $newlen i32) (local $new i32)
     local.get $list i32.load local.get $k i32.sub local.set $newlen
+    (call $ensure (i32.mul (i32.add (local.get $newlen) (i32.const 1)) (i32.const 4)))
     global.get $heap local.set $new
     local.get $new local.get $newlen i32.store
     local.get $new i32.const 4 i32.add
@@ -2056,6 +2076,7 @@ const STARTS_WITH_WAT: &str = r#"  (func $starts_with (param $s i32) (param $p i
 // substr(src, start, len): a fresh string `[len][src bytes start..start+len]`.
 const SUBSTR_WAT: &str = r#"  (func $substr (param $src i32) (param $start i32) (param $len i32) (result i32)
     (local $res i32)
+    (call $ensure (i32.add (i32.const 4) (local.get $len)))
     (local.set $res (global.get $heap))
     (i32.store (local.get $res) (local.get $len))
     (memory.copy
@@ -2095,6 +2116,8 @@ const REPLACE_WAT: &str = r#"  (func $replace (param $s i32) (param $from i32) (
     (local.set $slen (i32.load (local.get $s)))
     (local.set $flen (i32.load (local.get $from)))
     (local.set $tlen (i32.load (local.get $to)))
+    (call $ensure (i32.add (i32.add (i32.const 4) (local.get $slen))
+      (i32.mul (i32.add (local.get $slen) (i32.const 1)) (local.get $tlen))))
     (if (i32.eqz (local.get $flen))
       (then
         (local.set $res (global.get $heap))
@@ -2162,6 +2185,7 @@ const REPLACE_WAT: &str = r#"  (func $replace (param $s i32) (param $from i32) (
 // the call site fixes from the key's compile-time type.
 const DICT_NEW_WAT: &str = r#"  (func $dict_new (result i32)
     (local $p i32)
+    (call $ensure (i32.const 4))
     (local.set $p (global.get $heap))
     (i32.store (local.get $p) (i32.const 0))
     (global.set $heap (i32.add (local.get $p) (i32.const 4)))
@@ -2179,6 +2203,7 @@ const KEY_EQ_WAT: &str = r#"  (func $key_eq (param $a i32) (param $b i32) (param
 const DICT_INSERT_WAT: &str = r#"  (func $dict_insert (param $d i32) (param $k i32) (param $v i32) (param $mode i32) (result i32)
     (local $count i32) (local $i i32) (local $found i32) (local $new i32) (local $bytes i32)
     (local.set $count (i32.load (local.get $d)))
+    (call $ensure (i32.add (i32.const 12) (i32.mul (local.get $count) (i32.const 8))))
     (local.set $found (i32.const -1))
     (local.set $i (i32.const 0))
     (block $fdone
@@ -2244,6 +2269,7 @@ const DICT_HAS_WAT: &str = r#"  (func $dict_has (param $d i32) (param $k i32) (p
 const DICT_KEYS_WAT: &str = r#"  (func $dict_keys (param $d i32) (result i32)
     (local $count i32) (local $i i32) (local $new i32)
     (local.set $count (i32.load (local.get $d)))
+    (call $ensure (i32.add (i32.const 4) (i32.mul (local.get $count) (i32.const 4))))
     (local.set $new (global.get $heap))
     (i32.store (local.get $new) (local.get $count))
     (local.set $i (i32.const 0))
@@ -2262,6 +2288,7 @@ const DICT_KEYS_WAT: &str = r#"  (func $dict_keys (param $d i32) (result i32)
 const DICT_VALUES_WAT: &str = r#"  (func $dict_values (param $d i32) (result i32)
     (local $count i32) (local $i i32) (local $new i32)
     (local.set $count (i32.load (local.get $d)))
+    (call $ensure (i32.add (i32.const 4) (i32.mul (local.get $count) (i32.const 4))))
     (local.set $new (global.get $heap))
     (i32.store (local.get $new) (local.get $count))
     (local.set $i (i32.const 0))
@@ -2282,6 +2309,7 @@ const DICT_VALUES_WAT: &str = r#"  (func $dict_values (param $d i32) (result i32
 const DICT_PAIRS_WAT: &str = r#"  (func $dict_pairs (param $d i32) (result i32)
     (local $count i32) (local $i i32) (local $list i32) (local $tup i32)
     (local.set $count (i32.load (local.get $d)))
+    (call $ensure (i32.add (i32.const 4) (i32.mul (local.get $count) (i32.const 16))))
     (local.set $list (global.get $heap))
     (i32.store (local.get $list) (local.get $count))
     (global.set $heap (i32.add (i32.add (local.get $list) (i32.const 4)) (i32.mul (local.get $count) (i32.const 4))))
@@ -2313,6 +2341,7 @@ const SPLIT_WAT: &str = r#"  (func $split (param $s i32) (param $sep i32) (resul
     (local $start i32) (local $i i32) (local $j i32) (local $match i32)
     (local.set $slen (i32.load (local.get $s)))
     (local.set $seplen (i32.load (local.get $sep)))
+    (call $ensure (i32.const 4))
     (local.set $result (global.get $heap))
     (i32.store (local.get $result) (i32.const 0))
     (global.set $heap (i32.add (local.get $result) (i32.const 4)))
@@ -2463,12 +2492,13 @@ const PRINT_STR_WAT: &str = r#"  (func $print_str (param $s i32)
     call $print)
 "#;
 
-/// Non-negative integer to a string record. Negative inputs are out of scope.
 // int_to_string(n): the decimal text of `n`, with a leading '-' for negatives.
 // Digits are extracted from the magnitude with unsigned div/rem (so a negative
-// `n` works), written back-to-front after the optional sign.
+// `n` works), written back-to-front after the optional sign. 15 bytes covers
+// any i32 ("-2147483648" plus the 4-byte header).
 const INT_TO_STRING_WAT: &str = r#"  (func $int_to_string (param $n i32) (result i32)
     (local $mag i32) (local $t i32) (local $ndigits i32) (local $len i32) (local $res i32) (local $p i32) (local $neg i32)
+    (call $ensure (i32.const 15))
     (if (result i32) (i32.eqz (local.get $n))
       (then
         (local.set $res (global.get $heap))

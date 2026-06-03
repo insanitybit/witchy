@@ -1133,6 +1133,46 @@ mod example_tests {
     }
 
     #[test]
+    fn large_list_allocation_grows_memory() {
+        // Building a 200-element list via `push` allocates ~80KB total (each push
+        // copies the whole list, and the bump allocator never frees) — past the
+        // initial 64KB page, so the memory must grow. Summing 0..199 verifies no
+        // element was corrupted by the growth.
+        let src = r#"
+            fn main() -> Int {
+              var out = []
+              var i = 0
+              while i < 200 {
+                out = push(out, i)
+                i = i + 1
+              }
+              var total = 0
+              for x in out { total = total + x }
+              total
+            }
+        "#;
+        assert_eq!(run_on_wasm(src), vec!["19900"]); // 199*200/2
+    }
+
+    #[test]
+    fn large_string_concat_grows_memory() {
+        // Concatenating a 400-char string one char at a time allocates ~80KB of
+        // intermediate strings — past the initial page — and must grow.
+        let src = r#"
+            fn main() -> Int {
+              var s = ""
+              var i = 0
+              while i < 400 {
+                s = s <> "x"
+                i = i + 1
+              }
+              string_length(s)
+            }
+        "#;
+        assert_eq!(run_on_wasm(src), vec!["400"]);
+    }
+
+    #[test]
     fn compute_runs_on_wasm() {
         assert_eq!(
             run_on_wasm(include_str!("../examples/compute.witchy")),
