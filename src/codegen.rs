@@ -800,7 +800,18 @@ impl Codegen {
 
     fn compile_expr(&mut self, expr: &Expr) -> Result<String, CodegenError> {
         match expr {
-            Expr::Int(n) => Ok(format!("    i32.const {n}\n")),
+            Expr::Int(n) => {
+                // Compiled `Int` is i32. A literal outside the signed 32-bit
+                // range would silently wrap (e.g. 3_000_000_000 -> negative) or
+                // fail WASM validation, diverging from the i64 interpreter — so
+                // reject it explicitly.
+                if *n < i32::MIN as i64 || *n > i32::MAX as i64 {
+                    return cerr(format!(
+                        "integer literal {n} exceeds the 32-bit range of compiled Int"
+                    ));
+                }
+                Ok(format!("    i32.const {n}\n"))
+            }
             Expr::Bool(b) => Ok(format!("    i32.const {}\n", if *b { 1 } else { 0 })),
             Expr::Str(s) => {
                 let off = self.intern(s);
@@ -3183,6 +3194,17 @@ mod tests {
             fn main() -> Float { pick(2.5, 7.5) + pick(9.0, 1.0) }
         "#;
         assert_eq!(run_float(src), 3.5); // min(2.5,7.5)=2.5 + min(9.0,1.0)=1.0
+    }
+
+    #[test]
+    fn out_of_range_int_literal_rejected_clearly() {
+        // Compiled Int is i32; a literal in [2^31, 2^32-1] would silently wrap to
+        // a negative, so it's rejected rather than diverging from the i64
+        // interpreter. An in-range literal still compiles.
+        let big = parse_module("fn main() -> Int { 3000000000 }").expect("parse");
+        let err = compile_module(&big).expect_err("out-of-range literal should be rejected");
+        assert!(err.to_string().contains("32-bit range"), "unexpected error: {err}");
+        assert_eq!(run_int("fn main() -> Int { 2000000000 }"), 2000000000);
     }
 
     #[test]
