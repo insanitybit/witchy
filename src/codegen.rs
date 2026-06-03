@@ -1034,7 +1034,11 @@ impl Codegen {
             Expr::Lambda { params, body } => self.compile_lambda(params, body),
             Expr::List(items) => {
                 // A list is a record [len][elem0..]; reuse the $mk{N} helper with
-                // the length as the header slot.
+                // the length as the header slot. Slots are 4 bytes, so f64
+                // elements don't fit (same limitation as tuples).
+                if items.iter().any(|e| self.kind_of(e) == Kind::F64) {
+                    return cerr("lists with Float elements are not compiled to WASM yet");
+                }
                 let n = items.len();
                 self.mk_arities.insert(n);
                 let mut out = format!("    i32.const {n}\n");
@@ -1054,6 +1058,12 @@ impl Codegen {
                     return cerr(format!(
                         "constructor `{name}` takes {nfields} field(s) but got {}",
                         args.len()
+                    ));
+                }
+                // Record/ADT fields occupy 4-byte slots, so f64 fields don't fit.
+                if args.iter().any(|a| self.kind_of(a) == Kind::F64) {
+                    return cerr(format!(
+                        "`{name}` has a Float field; Float fields are not compiled to WASM yet"
                     ));
                 }
                 self.mk_arities.insert(nfields);
@@ -3156,6 +3166,29 @@ mod tests {
             fn main() -> Float { pick(2.5, 7.5) + pick(9.0, 1.0) }
         "#;
         assert_eq!(run_float(src), 3.5); // min(2.5,7.5)=2.5 + min(9.0,1.0)=1.0
+    }
+
+    #[test]
+    fn float_record_field_rejected_clearly() {
+        // Heap slots are 4 bytes, so an f64 field can't be stored; reject with a
+        // clear message rather than a cryptic WASM type mismatch.
+        let src = r#"
+            type Vec2 { x: Float, y: Float }
+            fn main() -> Int { let v = Vec2(1.5, 2.5)  0 }
+        "#;
+        let module = parse_module(src).expect("parse");
+        let err = compile_module(&module).expect_err("Float field should be rejected");
+        assert!(err.to_string().contains("Float field"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn float_list_element_rejected_clearly() {
+        let src = r#"
+            fn main() -> Int { let xs = [1.5, 2.5]  0 }
+        "#;
+        let module = parse_module(src).expect("parse");
+        let err = compile_module(&module).expect_err("Float list should be rejected");
+        assert!(err.to_string().contains("Float elements"), "unexpected error: {err}");
     }
 
     #[test]
