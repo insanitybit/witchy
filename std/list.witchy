@@ -194,6 +194,38 @@ pub fn max(xs: List(Int)) -> Option(Int) {
   }
 }
 
+// The maximum element under a caller-supplied "is-less-than" comparator, as
+// `Some` (the first of equal maxima), or `None` for the empty list. Generic, so
+// it works for any type — e.g. max by a record field.
+pub fn max_by(xs: List(a), less: fn(a, a) -> Bool) -> Option(a) {
+  if is_empty(xs) {
+    None
+  } else {
+    var best = at(xs, 0)
+    for x in xs {
+      if less(best, x) {
+        best = x
+      }
+    }
+    Some(best)
+  }
+}
+
+// The minimum element under `less`, as `Some`; `None` for the empty list.
+pub fn min_by(xs: List(a), less: fn(a, a) -> Bool) -> Option(a) {
+  if is_empty(xs) {
+    None
+  } else {
+    var best = at(xs, 0)
+    for x in xs {
+      if less(x, best) {
+        best = x
+      }
+    }
+    Some(best)
+  }
+}
+
 // The index of the first element equal to `target` as `Some`, or `None` — the
 // Option-returning companion to `index_of` (which uses a -1 sentinel).
 pub fn position(xs: List(a), target: a) -> Option(Int) {

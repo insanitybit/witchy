@@ -3260,6 +3260,29 @@ mod example_tests {
         );
     }
 
+    // max_by/min_by generalize min/max to any type via a comparator, returning
+    // Option. The second comparator (`(0-a) < (0-b)`, i.e. larger magnitude is
+    // "less") shows the result tracks the supplied ordering, not the natural one.
+    #[test]
+    fn std_list_min_max_by_backends_agree() {
+        let client = r#"
+            import list
+            import option
+            fn main(console: Console) {
+              let xs = [3, 1, 4, 1, 5, 9, 2]
+              print(console, int_to_string(option.unwrap_or(list.max_by(xs, fn(a: Int, b: Int) { a < b }), 0)))
+              print(console, int_to_string(option.unwrap_or(list.min_by(xs, fn(a: Int, b: Int) { a < b }), 0)))
+              print(console, int_to_string(option.unwrap_or(list.max_by(xs, fn(a: Int, b: Int) { (0 - a) < (0 - b) }), 0)))
+              print(console, to_string(option.is_none(list.max_by([], fn(a: Int, b: Int) { a < b }))))
+            }
+        "#;
+        let sources = [("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "min_by/max_by diverged");
+        assert_eq!(compiled, vec!["9", "1", "1", "true"]);
+    }
+
     #[test]
     fn std_list_min_max_position_backends_agree() {
         let client = r#"
