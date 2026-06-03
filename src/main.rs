@@ -864,6 +864,39 @@ mod example_tests {
         assert_eq!(run_on_wasm(src), vec!["14"]);
     }
 
+    /// Real examples (not toy snippets) compile and run on the WASM backend,
+    /// matching the interpreter — a concrete check of codegen breadth.
+    #[test]
+    fn eval_example_runs_on_wasm() {
+        assert_eq!(run_on_wasm(include_str!("../examples/eval.witchy")), vec!["20"]);
+    }
+
+    #[test]
+    fn records_example_runs_on_wasm() {
+        assert_eq!(
+            run_on_wasm(include_str!("../examples/records.witchy")),
+            vec!["origin.x = 2", "moved = (12, 3)", "manhattan(moved) = 15"]
+        );
+    }
+
+    #[test]
+    fn record_typed_list_iteration_on_wasm() {
+        // `for it in items` where items: List(Record) — the loop var's fields
+        // resolve. total([Item(3,2), Item(5,1)]) = 3*2 + 5*1 = 11.
+        let src = r#"
+            type Item { price: Int, qty: Int }
+            fn total(items: List(Item)) -> Int {
+              var sum = 0
+              for it in items {
+                sum = sum + it.price * it.qty
+              }
+              sum
+            }
+            fn main() -> Int { total([Item(3, 2), Item(5, 1)]) }
+        "#;
+        assert_eq!(run_on_wasm(src), vec!["11"]);
+    }
+
     #[test]
     fn record_field_access_and_update_run_on_wasm() {
         // Records — field access *and* update — compile and run on the WASM

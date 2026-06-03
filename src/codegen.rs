@@ -122,6 +122,9 @@ struct Codegen {
     /// Variables (params / let-bound constructors) known to hold a record of a
     /// given type, so `var.field` can resolve a field index.
     local_records: HashMap<String, String>,
+    /// Variables holding a `List(Record)`, mapping to the element record type, so
+    /// a `for x in list` loop variable's fields can be resolved.
+    local_list_elem: HashMap<String, String>,
     /// Function name -> the record type it returns (when it returns one), so a
     /// `let q = f(...)` binds `q` to that record type.
     fn_ret_records: HashMap<String, String>,
@@ -154,6 +157,7 @@ impl Codegen {
             uses_send: false,
             record_fields: HashMap::new(),
             local_records: HashMap::new(),
+            local_list_elem: HashMap::new(),
             fn_ret_records: HashMap::new(),
             cur_fn_ret_kind: Kind::I32,
             cur_fn_inout: false,
@@ -362,14 +366,24 @@ impl Codegen {
     fn compile_function(&mut self, f: &Function) -> Result<String, CodegenError> {
         self.locals.clear();
         self.local_records.clear();
+        self.local_list_elem.clear();
         for p in &f.params {
             let k = p.ty.as_ref().map(ty_kind).unwrap_or(Kind::I32);
             self.locals.insert(p.name.clone(), k);
-            // A parameter annotated with a record type lets `p.field` resolve.
-            if let Some(Type::Named(n, _)) = &p.ty {
-                if self.record_fields.contains_key(n) {
+            match &p.ty {
+                // A record-typed parameter lets `p.field` resolve.
+                Some(Type::Named(n, _)) if self.record_fields.contains_key(n) => {
                     self.local_records.insert(p.name.clone(), n.clone());
                 }
+                // A `List(Record)` parameter lets a `for x in p` loop var resolve.
+                Some(Type::Named(n, args)) if n == "List" => {
+                    if let Some(Type::Named(elem, _)) = args.first() {
+                        if self.record_fields.contains_key(elem) {
+                            self.local_list_elem.insert(p.name.clone(), elem.clone());
+                        }
+                    }
+                }
+                _ => {}
             }
         }
         self.infer_locals(&f.body);
@@ -660,6 +674,13 @@ impl Codegen {
                 let list_l = format!("__forlist_{var}");
                 let idx_l = format!("__fori_{var}");
                 let iter_wat = self.compile_expr(iter)?;
+                // If iterating a `List(Record)`, the loop var is that record, so
+                // `x.field` in the body resolves.
+                if let Expr::Var(v) = iter.as_ref() {
+                    if let Some(elem) = self.local_list_elem.get(v).cloned() {
+                        self.local_records.insert(var.clone(), elem);
+                    }
+                }
                 let body_wat = self.compile_block(body)?;
                 Ok(format!(
                     "{iter_wat}    local.set ${list_l}\n    \
