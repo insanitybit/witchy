@@ -174,6 +174,7 @@ fn main() -> wasmtime::Result<()> {
     run_witchy("witchy dictionaries (word count)", include_str!("../examples/wordcount.witchy"));
     run_witchy("witchy dict iteration (values/pairs)", include_str!("../examples/inventory.witchy"));
     run_witchy("witchy early return (guard clauses)", include_str!("../examples/guard.witchy"));
+    run_witchy("witchy negative-literal patterns", include_str!("../examples/signs.witchy"));
     run_witchy("witchy string slicing (substring/index_of)", include_str!("../examples/parse_kv.witchy"));
     run_witchy("witchy actors", include_str!("../examples/actors.witchy"));
     run_witchy("witchy filesystem capability", include_str!("../examples/files.witchy"));
@@ -1016,6 +1017,14 @@ mod example_tests {
         assert_eq!(
             interp(include_str!("../examples/guard.witchy")),
             vec!["negative", "zero", "positive", "8", "-1"]
+        );
+    }
+
+    #[test]
+    fn signs_example() {
+        assert_eq!(
+            interp(include_str!("../examples/signs.witchy")),
+            vec!["left", "right", "stay", "?"]
         );
     }
 

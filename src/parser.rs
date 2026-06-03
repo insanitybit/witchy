@@ -34,11 +34,19 @@ pub fn parse_module(src: &str) -> Result<Module, ParseError> {
 struct Parser {
     toks: Vec<Token>,
     pos: usize,
+    /// True while parsing a match-arm body. Match arms have no separator, so a
+    /// `-` that begins a new line ends the arm (it starts the next arm's
+    /// negative-literal pattern) rather than continuing the body as subtraction.
+    in_match_arm: bool,
 }
 
 impl Parser {
     fn new(toks: Vec<Token>) -> Self {
-        Self { toks, pos: 0 }
+        Self {
+            toks,
+            pos: 0,
+            in_match_arm: false,
+        }
     }
 
     // --- token cursor helpers ---
@@ -392,6 +400,14 @@ impl Parser {
     fn expr(&mut self, min_bp: u8) -> Result<Expr, ParseError> {
         let mut lhs = self.prefix()?;
         loop {
+            // Inside a match-arm body, a `-` that starts a new line is the next
+            // arm's negative pattern, not a continuation of this expression.
+            if self.in_match_arm
+                && *self.kind() == Tok::Minus
+                && self.cur().line > self.toks[self.pos.saturating_sub(1)].line
+            {
+                break;
+            }
             let Some((l_bp, r_bp)) = infix_bp(self.kind()) else {
                 break;
             };
@@ -647,7 +663,10 @@ impl Parser {
                 None
             };
             self.expect(&Tok::RArrow)?;
+            let outer = self.in_match_arm;
+            self.in_match_arm = true;
             let body = self.expr(0)?;
+            self.in_match_arm = outer;
             arms.push(MatchArm { pattern, guard, body });
             self.eat(&Tok::Comma); // optional separator
         }
@@ -705,6 +724,19 @@ impl Parser {
             Tok::Int(n) => {
                 self.advance();
                 Ok(Pattern::Int(n))
+            }
+            Tok::Minus => {
+                // Negative integer literal pattern, e.g. `-1`.
+                self.advance();
+                match self.kind().clone() {
+                    Tok::Int(n) => {
+                        self.advance();
+                        Ok(Pattern::Int(-n))
+                    }
+                    other => Err(self.error(format!(
+                        "expected an integer after `-` in a pattern, found `{other}`"
+                    ))),
+                }
             }
             Tok::Str(s) => {
                 self.advance();
@@ -887,6 +919,28 @@ mod tests {
         assert!(matches!(arms[0].pattern, Pattern::Ctor { .. }));
         assert!(arms[0].guard.is_some());
         assert!(matches!(arms[2].pattern, Pattern::Wildcard));
+    }
+
+    #[test]
+    fn parses_negative_patterns_across_newlines() {
+        // The `-2` on the next line is a pattern, not `0 - 2` continuing arm 1.
+        let stmts = fn_body("fn f(n: Int) -> Int {\n  match n {\n    -1 -> 0\n    -2 -> 0\n    _ -> 1\n  }\n}");
+        let Stmt::Expr(Expr::Match { arms, .. }) = &stmts[0] else {
+            panic!("expected a match expression");
+        };
+        assert_eq!(arms.len(), 3);
+        assert_eq!(arms[0].pattern, Pattern::Int(-1));
+        assert_eq!(arms[1].pattern, Pattern::Int(-2));
+    }
+
+    #[test]
+    fn subtraction_in_an_arm_body_still_parses() {
+        // A `-` on the *same* line is ordinary subtraction.
+        let stmts = fn_body("fn f(n: Int) -> Int { match n { 0 -> n - 1  _ -> n } }");
+        let Stmt::Expr(Expr::Match { arms, .. }) = &stmts[0] else {
+            panic!("expected a match expression");
+        };
+        assert!(matches!(arms[0].body, Expr::Binary { op: BinOp::Sub, .. }));
     }
 
     #[test]

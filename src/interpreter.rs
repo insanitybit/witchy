@@ -1754,6 +1754,25 @@ mod tests {
     }
 
     #[test]
+    fn negative_int_patterns_match() {
+        let src = r#"
+            fn classify(n: Int) -> String {
+              match n {
+                -1 -> "neg one"
+                0 -> "zero"
+                _ -> "other"
+              }
+            }
+            fn main(console: Console) {
+              print(console, classify(-1))
+              print(console, classify(0))
+              print(console, classify(3))
+            }
+        "#;
+        assert_eq!(run(src).unwrap(), vec!["neg one", "zero", "other"]);
+    }
+
+    #[test]
     fn deep_recursion_is_a_graceful_error_not_a_crash() {
         // Runaway recursion must hit the depth limit and return an error rather
         // than overflowing the stack and aborting the host.
