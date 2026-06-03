@@ -73,6 +73,12 @@ pub fn strip_suffix(s: String, suffix: String) -> String {
   }
 }
 
+// The single character at character index `i` (counted by Unicode scalar), or
+// "" when `i` is out of range. A readable shorthand over `substring`.
+pub fn char_at(s: String, i: Int) -> String {
+  substring(s, i, i + 1)
+}
+
 // Split text into its newline-separated lines.
 pub fn lines(text: String) -> List(String) {
   split(text, "\n")

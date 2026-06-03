@@ -2680,6 +2680,52 @@ mod example_tests {
         assert_eq!(run_on_wasm(src), vec!["negative", "zero", "big", "small", "small"]);
     }
 
+    // Dict operations factored into helper functions: codegen picks the
+    // string-vs-i32 key comparison from the static key type, so a `k: String`
+    // parameter must compile to by-value comparison just like an inline String
+    // key. Looking up with a freshly built string (`"ap" <> "ple"`) proves the
+    // match is structural, not by pointer — and both backends must agree.
+    #[test]
+    fn std_string_char_at_backends_agree() {
+        // char_at returns the single character at an index, or "" out of range.
+        let client = r#"
+            import string
+            fn main(console: Console) {
+              print(console, string.char_at("witchy", 0))
+              print(console, string.char_at("witchy", 5))
+              print(console, "[" <> string.char_at("witchy", 10) <> "]")
+              print(console, "[" <> string.char_at("", 0) <> "]")
+            }
+        "#;
+        let sources = [("string", crate::bundled_module("string").unwrap()), ("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "char_at diverged");
+        assert_eq!(compiled, vec!["w", "y", "[]", "[]"]);
+    }
+
+    #[test]
+    fn dict_string_key_through_helpers_backends_agree() {
+        let src = r#"
+            fn put(d: Dict(String, Int), k: String, v: Int) -> Dict(String, Int) {
+              insert(d, k, v)
+            }
+            fn lookup(d: Dict(String, Int), k: String) -> Int {
+              get_or(d, k, 0 - 1)
+            }
+            fn main(console: Console) {
+              var d = dict_new()
+              d = put(d, "apple", 1)
+              d = put(d, "banana", 2)
+              print(console, int_to_string(lookup(d, "ap" <> "ple")))
+              print(console, int_to_string(lookup(d, "banana")))
+              print(console, int_to_string(lookup(d, "cherry")))
+            }
+        "#;
+        assert_eq!(interp(src), run_on_wasm(src), "dict string-key via helpers diverged");
+        assert_eq!(run_on_wasm(src), vec!["1", "2", "-1"]);
+    }
+
     #[test]
     fn std_list_product_slice_scan_backends_agree() {
         // product (1 for empty), slice (clamped half-open range), and scan
