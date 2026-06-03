@@ -3036,6 +3036,26 @@ mod example_tests {
         assert_eq!(run_on_wasm(src), vec!["5", "5", "4", "5", "0"]);
     }
 
+    // reverse flips character order using char_count + char-based substring, so
+    // it's correct for multi-byte UTF-8 ("café" -> "éfac"), not just ASCII.
+    #[test]
+    fn std_string_reverse_backends_agree() {
+        let client = r#"
+            import string
+            fn main(console: Console) {
+              print(console, string.reverse("hello"))
+              print(console, "[" <> string.reverse("") <> "]")
+              print(console, string.reverse("a"))
+              print(console, string.reverse("café"))
+            }
+        "#;
+        let sources = [("string", crate::bundled_module("string").unwrap()), ("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "string reverse diverged");
+        assert_eq!(compiled, vec!["olleh", "[]", "a", "éfac"]);
+    }
+
     #[test]
     fn std_string_is_empty_count_backends_agree() {
         // is_empty checks for zero characters; count returns non-overlapping
