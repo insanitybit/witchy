@@ -2211,6 +2211,31 @@ mod example_tests {
     }
 
     #[test]
+    fn compound_assignment_backends_agree() {
+        // `x op= e` desugars to `x = x op e`; verify all five ops in both
+        // backends, in a loop and a sequence.
+        let src = r#"
+            fn main(console: Console) {
+              var sum = 0
+              var i = 0
+              while i < 5 {
+                sum += i
+                i += 1
+              }
+              print(console, int_to_string(sum))
+              var x = 100
+              x -= 30
+              x *= 2
+              x /= 7
+              x %= 5
+              print(console, int_to_string(x))
+            }
+        "#;
+        assert_eq!(interp(src), run_on_wasm(src));
+        assert_eq!(run_on_wasm(src), vec!["10", "0"]);
+    }
+
+    #[test]
     fn or_patterns_backends_agree() {
         // `p1 | p2 -> body` desugars to one arm per alternative. Works for
         // literal alternatives and for constructor alternatives that bind the

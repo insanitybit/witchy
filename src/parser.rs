@@ -247,7 +247,17 @@ impl Parser {
 
     fn is_assignment(&self) -> bool {
         matches!(self.kind(), Tok::Ident(_))
-            && self.toks.get(self.pos + 1).map(|t| &t.kind) == Some(&Tok::Eq)
+            && matches!(
+                self.toks.get(self.pos + 1).map(|t| &t.kind),
+                Some(
+                    Tok::Eq
+                        | Tok::PlusEq
+                        | Tok::MinusEq
+                        | Tok::StarEq
+                        | Tok::SlashEq
+                        | Tok::PercentEq
+                )
+            )
     }
 
     fn function(&mut self, public: bool) -> Result<Function, ParseError> {
@@ -387,8 +397,17 @@ impl Parser {
             Ok(Stmt::Let { name, mutable, value })
         } else if self.is_assignment() {
             let name = self.ident()?;
-            self.expect(&Tok::Eq)?;
-            let value = self.expr(0)?;
+            // `x op= e` desugars to `x = x op e`; plain `x = e` is unchanged.
+            let op = self.advance();
+            let rhs = self.expr(0)?;
+            let value = match compound_assign_op(&op) {
+                Some(binop) => Expr::Binary {
+                    op: binop,
+                    lhs: Box::new(Expr::Var(name.clone())),
+                    rhs: Box::new(rhs),
+                },
+                None => rhs,
+            };
             Ok(Stmt::Assign { name, value })
         } else {
             Ok(Stmt::Expr(self.expr(0)?))
@@ -850,6 +869,19 @@ fn bin_op(t: &Tok) -> BinOp {
     }
 }
 
+/// The arithmetic op a compound-assignment token applies (`+=` -> Add, ...);
+/// `None` for a plain `=`.
+fn compound_assign_op(t: &Tok) -> Option<BinOp> {
+    match t {
+        Tok::PlusEq => Some(BinOp::Add),
+        Tok::MinusEq => Some(BinOp::Sub),
+        Tok::StarEq => Some(BinOp::Mul),
+        Tok::SlashEq => Some(BinOp::Div),
+        Tok::PercentEq => Some(BinOp::Mod),
+        _ => None,
+    }
+}
+
 /// `lhs |> rhs` threads `lhs` in as the first argument of `rhs`.
 fn desugar_pipe(lhs: Expr, rhs: Expr, p: &Parser) -> Result<Expr, ParseError> {
     match rhs {
@@ -890,6 +922,23 @@ mod tests {
         assert_eq!(f.name, "add");
         assert_eq!(f.params.len(), 2);
         assert_eq!(f.ret, Some(Type::Named("Int".into(), vec![])));
+    }
+
+    #[test]
+    fn compound_assignment_desugars() {
+        // `x += 2` becomes `x = x + 2`.
+        let stmts = fn_body("fn f() { var x = 1  x += 2 }");
+        assert_eq!(
+            stmts[1],
+            Stmt::Assign {
+                name: "x".into(),
+                value: Expr::Binary {
+                    op: BinOp::Add,
+                    lhs: Box::new(Expr::Var("x".into())),
+                    rhs: Box::new(Expr::Int(2)),
+                },
+            }
+        );
     }
 
     #[test]

@@ -66,6 +66,11 @@ pub enum Tok {
     Concat, // <>
     Pipe,   // |>
     Bar,    // |  (or-patterns)
+    PlusEq,    // +=
+    MinusEq,   // -=
+    StarEq,    // *=
+    SlashEq,   // /=
+    PercentEq, // %=
     LArrow, // <-
     RArrow, // ->
     AndAnd, // &&
@@ -132,6 +137,11 @@ impl fmt::Display for Tok {
             Concat => write!(f, "<>"),
             Pipe => write!(f, "|>"),
             Bar => write!(f, "|"),
+            PlusEq => write!(f, "+="),
+            MinusEq => write!(f, "-="),
+            StarEq => write!(f, "*="),
+            SlashEq => write!(f, "/="),
+            PercentEq => write!(f, "%="),
             LArrow => write!(f, "<-"),
             RArrow => write!(f, "->"),
             AndAnd => write!(f, "&&"),
@@ -473,6 +483,26 @@ impl Lexer {
                 self.bump();
                 Tok::RArrow
             }
+            ('+', Some('=')) => {
+                self.bump();
+                Tok::PlusEq
+            }
+            ('-', Some('=')) => {
+                self.bump();
+                Tok::MinusEq
+            }
+            ('*', Some('=')) => {
+                self.bump();
+                Tok::StarEq
+            }
+            ('/', Some('=')) => {
+                self.bump();
+                Tok::SlashEq
+            }
+            ('%', Some('=')) => {
+                self.bump();
+                Tok::PercentEq
+            }
             ('|', Some('>')) => {
                 self.bump();
                 Tok::Pipe
@@ -619,6 +649,19 @@ mod tests {
     #[test]
     fn underscore_vs_identifier() {
         assert_eq!(kinds("_ _foo"), vec![Tok::Underscore, Tok::Ident("_foo".into()), Tok::Eof]);
+    }
+
+    #[test]
+    fn compound_assign_tokens() {
+        assert_eq!(
+            kinds("x += 1"),
+            vec![Tok::Ident("x".into()), Tok::PlusEq, Tok::Int(1), Tok::Eof]
+        );
+        // `-=` is distinct from `->` and a bare `-`.
+        assert_eq!(
+            kinds("x -= y"),
+            vec![Tok::Ident("x".into()), Tok::MinusEq, Tok::Ident("y".into()), Tok::Eof]
+        );
     }
 
     #[test]
