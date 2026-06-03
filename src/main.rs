@@ -1099,6 +1099,29 @@ mod example_tests {
     }
 
     #[test]
+    fn std_option_or_mapor_backends_agree() {
+        // The fallback combinators: `or` / `or_else` keep a Some or supply an
+        // alternative (eagerly / lazily), and `map_or` transforms a Some or
+        // returns the default for None. Both backends agree.
+        let client = r#"
+            import option
+            fn main(console: Console) {
+              print(console, int_to_string(option.unwrap_or(option.or(Some(5), Some(9)), 0)))
+              print(console, int_to_string(option.unwrap_or(option.or(None, Some(9)), 0)))
+              print(console, int_to_string(option.unwrap_or(option.or_else(None, fn() { Some(7) }), 0)))
+              print(console, int_to_string(option.unwrap_or(option.or_else(Some(3), fn() { Some(7) }), 0)))
+              print(console, int_to_string(option.map_or(Some(10), 0, fn(x: Int) { x * 2 })))
+              print(console, int_to_string(option.map_or(None, 99, fn(x: Int) { x * 2 })))
+            }
+        "#;
+        let sources = [("option", crate::bundled_module("option").unwrap()), ("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "option or/map_or diverged");
+        assert_eq!(compiled, vec!["5", "9", "7", "3", "20", "99"]);
+    }
+
+    #[test]
     fn std_result_combinators_backends_agree() {
         // is_err / and_then / map_err / unwrap_err behave identically in both
         // backends — including using is_err at two different error types in one
