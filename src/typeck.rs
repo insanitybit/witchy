@@ -1318,6 +1318,20 @@ mod tests {
     }
 
     #[test]
+    fn capabilities_do_not_leak_across_kinds() {
+        // Holding one capability never confers another. A function given only a
+        // Console cannot reach the network or the filesystem: `connect` demands
+        // a Net and `read` demands a Dir, and a Console can't stand in for
+        // either. Authority is per-kind and (with no capability constructors)
+        // unforgeable — the heart of witchy's confinement guarantee.
+        let net = check_str(r#"fn f(c: Console) -> Nil { connect(c, "host") }"#).unwrap_err();
+        assert!(net.contains("Net"), "expected a Net mismatch, got: {net}");
+        let dir = check_str(r#"fn f(c: Console) -> String { read(c, "/etc/passwd") }"#)
+            .unwrap_err();
+        assert!(dir.contains("Dir"), "expected a Dir mismatch, got: {dir}");
+    }
+
+    #[test]
     fn rejects_wrong_arity() {
         let src = r#"
             fn double(n: Int) -> Int { n * 2 }
