@@ -2507,6 +2507,23 @@ mod example_tests {
     }
 
     #[test]
+    fn trim_backends_agree() {
+        // trim now compiles: leading/trailing ASCII whitespace (spaces, tabs,
+        // newlines, CRs) is stripped; an all-whitespace string trims to "".
+        let src = r#"
+            fn main(console: Console) {
+              print(console, trim("  hello  "))
+              print(console, trim("\t\nfoo\r\n"))
+              print(console, trim("nospaces"))
+              print(console, trim("   "))
+              print(console, int_to_string(string_length(trim("  a b  "))))
+            }
+        "#;
+        assert_eq!(interp(src), run_on_wasm(src));
+        assert_eq!(run_on_wasm(src), vec!["hello", "foo", "nospaces", "", "3"]);
+    }
+
+    #[test]
     fn string_to_int_backends_agree() {
         // string_to_int now compiles: leading whitespace and an optional sign
         // are honored, and the parsed value feeds straight into arithmetic.

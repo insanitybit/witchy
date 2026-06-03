@@ -163,6 +163,8 @@ struct Codegen {
     uses_replace: bool,
     /// Whether the `string_to_int` parser (`$str_to_int`) is needed.
     uses_str_to_int: bool,
+    /// Whether the `trim` helper (`$trim` + `$is_ws`) is needed.
+    uses_trim: bool,
     /// Whether the lexicographic string comparison helper `$str_cmp` is needed
     /// (String `<`/`<=`/`>`/`>=`).
     uses_str_cmp: bool,
@@ -255,6 +257,7 @@ impl Codegen {
             uses_substring: false,
             uses_replace: false,
             uses_str_to_int: false,
+            uses_trim: false,
             uses_str_cmp: false,
             uses_dict: false,
             uses_dict_iter: false,
@@ -624,6 +627,10 @@ impl Codegen {
         }
         if self.uses_str_to_int {
             s.push_str(STR_TO_INT_WAT);
+        }
+        if self.uses_trim {
+            s.push_str(IS_WS_WAT);
+            s.push_str(TRIM_WAT);
         }
         // Dict helpers; `$key_eq` references `$str_eq`, which the dict call sites
         // force on (so it is emitted below via `uses_str_eq`).
@@ -1579,8 +1586,18 @@ impl Codegen {
                 let to = self.compile_expr(&args[2])?;
                 Ok(format!("{s}{from}{to}    call $replace\n"))
             }
-            ("to_upper", _) | ("to_lower", _) | ("trim", _) => cerr(
-                "to_upper/to_lower/trim run in the interpreter; WASM string transforms are future",
+            // trim(s): drop leading/trailing ASCII whitespace. A byte scan is
+            // safe for UTF-8 since whitespace bytes never appear inside a
+            // multi-byte scalar; this matches the interpreter on ASCII edges
+            // (Unicode-whitespace trimming remains interpreter-only).
+            ("trim", 1) => {
+                self.uses_trim = true;
+                self.uses_substr = true;
+                let s = self.compile_expr(&args[0])?;
+                Ok(format!("{s}    call $trim\n"))
+            }
+            ("to_upper", _) | ("to_lower", _) => cerr(
+                "to_upper/to_lower run in the interpreter; WASM Unicode case mapping is future",
             ),
             // --- Dict (immutable association map) ---
             ("dict_new", 0) => {
@@ -2720,6 +2737,40 @@ const STR_TO_INT_WAT: &str = r#"  (func $str_to_int (param $s i32) (result i32)
     (if (result i32) (local.get $neg)
       (then (i32.sub (i32.const 0) (local.get $acc)))
       (else (local.get $acc))))
+"#;
+
+// is_ws(b): is byte `b` one of the six ASCII whitespace characters?
+const IS_WS_WAT: &str = r#"  (func $is_ws (param $b i32) (result i32)
+    (i32.or
+      (i32.eq (local.get $b) (i32.const 32))
+      (i32.or (i32.eq (local.get $b) (i32.const 9))
+      (i32.or (i32.eq (local.get $b) (i32.const 10))
+      (i32.or (i32.eq (local.get $b) (i32.const 13))
+      (i32.or (i32.eq (local.get $b) (i32.const 11))
+              (i32.eq (local.get $b) (i32.const 12))))))))
+"#;
+
+// trim(s): a fresh string with leading/trailing ASCII whitespace removed.
+const TRIM_WAT: &str = r#"  (func $trim (param $s i32) (result i32)
+    (local $len i32) (local $lo i32) (local $hi i32)
+    (local.set $len (i32.load (local.get $s)))
+    (local.set $lo (i32.const 0))
+    (local.set $hi (local.get $len))
+    (block $lodone
+      (loop $l
+        (br_if $lodone (i32.ge_s (local.get $lo) (local.get $hi)))
+        (br_if $lodone (i32.eqz (call $is_ws
+          (i32.load8_u (i32.add (i32.add (local.get $s) (i32.const 4)) (local.get $lo))))))
+        (local.set $lo (i32.add (local.get $lo) (i32.const 1)))
+        (br $l)))
+    (block $hidone
+      (loop $h
+        (br_if $hidone (i32.le_s (local.get $hi) (local.get $lo)))
+        (br_if $hidone (i32.eqz (call $is_ws
+          (i32.load8_u (i32.add (i32.add (local.get $s) (i32.const 4)) (i32.sub (local.get $hi) (i32.const 1)))))))
+        (local.set $hi (i32.sub (local.get $hi) (i32.const 1)))
+        (br $h)))
+    (call $substr (local.get $s) (local.get $lo) (i32.sub (local.get $hi) (local.get $lo))))
 "#;
 
 // ends_with(s, p): do s's last p.len bytes equal p?
