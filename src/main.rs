@@ -1319,6 +1319,29 @@ mod example_tests {
     }
 
     #[test]
+    fn std_math_lcm_parity_backends_agree() {
+        // lcm (built on gcd) and the is_even/is_odd predicates agree across
+        // backends, including negative operands.
+        let client = r#"
+            import math
+            fn main(console: Console) {
+              print(console, int_to_string(math.lcm(4, 6)))
+              print(console, int_to_string(math.lcm(21, 6)))
+              print(console, int_to_string(math.lcm(0, 5)))
+              print(console, int_to_string(math.lcm(0 - 4, 6)))
+              print(console, to_string(math.is_even(10)))
+              print(console, to_string(math.is_odd(7)))
+              print(console, to_string(math.is_odd(0 - 3)))
+            }
+        "#;
+        let sources = [("math", crate::bundled_module("math").unwrap()), ("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "math lcm/parity diverged");
+        assert_eq!(compiled, vec!["12", "42", "0", "12", "true", "true", "true"]);
+    }
+
+    #[test]
     fn std_result_compiles_and_runs_on_wasm() {
         // The Result type + combinators compile; map_ok runs a closure over Ok.
         let client = r#"

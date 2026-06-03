@@ -53,6 +53,28 @@ pub fn gcd(a: Int, b: Int) -> Int {
   x
 }
 
+// Least common multiple (0 if either argument is 0). Divides before
+// multiplying to keep the intermediate value small.
+pub fn lcm(a: Int, b: Int) -> Int {
+  if a == 0 {
+    0
+  } else if b == 0 {
+    0
+  } else {
+    abs(a / gcd(a, b) * b)
+  }
+}
+
+// Whether `n` is even.
+pub fn is_even(n: Int) -> Bool {
+  n % 2 == 0
+}
+
+// Whether `n` is odd.
+pub fn is_odd(n: Int) -> Bool {
+  n % 2 != 0
+}
+
 // --- Float versions (Int comparison can't be reused for Float) ---
 
 pub fn fmin(a: Float, b: Float) -> Float {
