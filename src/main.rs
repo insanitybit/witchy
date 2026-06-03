@@ -2592,6 +2592,31 @@ mod example_tests {
     // argument — must behave identically on both backends. The nested-in-arg
     // case in particular exercises codegen's per-level scratch locals (the
     // callee pointer must survive argument evaluation).
+    // Function values stored in data structures and applied immediately — the
+    // composition unlocked by Expr::Apply. A closure pulled from a list with
+    // `at`, one selected by an `if` expression, and one held in a record field
+    // (reached via `(b.f)(b.n)`) must all apply identically on both backends.
+    #[test]
+    fn fn_values_in_data_backends_agree() {
+        let src = r#"
+            type Box {
+              f: fn(Int) -> Int
+              n: Int
+            }
+            fn main(console: Console) {
+              let fns = [fn(x: Int) { x + 1 }, fn(x: Int) { x * 10 }]
+              print(console, int_to_string(at(fns, 0)(5)))
+              print(console, int_to_string(at(fns, 1)(5)))
+              let pick = true
+              print(console, int_to_string((if pick { fn(x: Int) { x + 100 } } else { fn(x: Int) { x } })(7)))
+              let b = Box(fn(x: Int) { x * 3 }, 7)
+              print(console, int_to_string((b.f)(b.n)))
+            }
+        "#;
+        assert_eq!(interp(src), run_on_wasm(src), "fn-values-in-data diverged");
+        assert_eq!(run_on_wasm(src), vec!["6", "50", "107", "21"]);
+    }
+
     #[test]
     fn immediate_application_backends_agree() {
         let src = r#"
