@@ -953,7 +953,9 @@ impl Interpreter {
             Expr::Unary { op, expr } => {
                 let v = self.eval(expr, env)?;
                 match (op, v) {
-                    (UnOp::Neg, Value::Int(n)) => Ok(Value::Int(-n)),
+                    (UnOp::Neg, Value::Int(n)) => {
+                        n.checked_neg().map(Value::Int).ok_or_else(over("-")).map_err(Flow::Err)
+                    }
                     (UnOp::Neg, Value::Float(x)) => Ok(Value::Float(-x)),
                     (UnOp::Neg, other) => err(format!("cannot negate `{other}`")),
                     (UnOp::Not, Value::Bool(b)) => Ok(Value::Bool(!b)),
@@ -1139,16 +1141,25 @@ fn match_pattern(pat: &Pattern, value: &Value, env: &mut Env) -> bool {
     }
 }
 
+/// Build an "integer overflow" error producer for the given operator.
+fn over(op: &str) -> impl FnOnce() -> RuntimeError + '_ {
+    move || RuntimeError {
+        message: format!("integer overflow in `{op}`"),
+    }
+}
+
 fn eval_binary(op: BinOp, l: Value, r: Value) -> Result<Value, RuntimeError> {
     use BinOp::*;
     use Value::{Float, Int, Str};
     match op {
+        // Int arithmetic is checked: overflow yields a runtime error rather than
+        // panicking the host (a program must never crash the interpreter).
         Add | Sub | Mul | Div => match (op, l, r) {
-            (Add, Int(a), Int(b)) => Ok(Int(a + b)),
-            (Sub, Int(a), Int(b)) => Ok(Int(a - b)),
-            (Mul, Int(a), Int(b)) => Ok(Int(a * b)),
+            (Add, Int(a), Int(b)) => a.checked_add(b).map(Int).ok_or_else(over("+")),
+            (Sub, Int(a), Int(b)) => a.checked_sub(b).map(Int).ok_or_else(over("-")),
+            (Mul, Int(a), Int(b)) => a.checked_mul(b).map(Int).ok_or_else(over("*")),
             (Div, Int(_), Int(0)) => err("division by zero"),
-            (Div, Int(a), Int(b)) => Ok(Int(a / b)),
+            (Div, Int(a), Int(b)) => a.checked_div(b).map(Int).ok_or_else(over("/")),
             (Add, Float(a), Float(b)) => Ok(Float(a + b)),
             (Sub, Float(a), Float(b)) => Ok(Float(a - b)),
             (Mul, Float(a), Float(b)) => Ok(Float(a * b)),
@@ -1157,7 +1168,7 @@ fn eval_binary(op: BinOp, l: Value, r: Value) -> Result<Value, RuntimeError> {
         },
         Mod => match (l, r) {
             (Int(_), Int(0)) => err("modulo by zero"),
-            (Int(a), Int(b)) => Ok(Int(a % b)),
+            (Int(a), Int(b)) => a.checked_rem(b).map(Int).ok_or_else(over("%")),
             (a, b) => err(format!("`%` expects two Ints, got `{a}` and `{b}`")),
         },
         Concat => match (l, r) {
@@ -1681,6 +1692,31 @@ mod tests {
             }
         "#;
         assert_eq!(run(src).unwrap(), vec!["8", "-1"]);
+    }
+
+    #[test]
+    fn integer_overflow_is_a_graceful_error_not_a_panic() {
+        // Multiplication that overflows i64 must return an error, never panic.
+        let src = r#"
+            fn main(console: Console) {
+              let big = 9999999999
+              print(console, int_to_string(big * big))
+            }
+        "#;
+        let e = run(src).unwrap_err();
+        assert!(e.message.contains("overflow"), "got: {}", e.message);
+    }
+
+    #[test]
+    fn negating_int_min_does_not_panic() {
+        // -(i64::MIN) overflows via unary negation; it must be a graceful error.
+        let src = r#"
+            fn main(console: Console) {
+              let lo = 0 - 9223372036854775807 - 1
+              print(console, int_to_string(-lo))
+            }
+        "#;
+        assert!(run(src).is_err());
     }
 
     #[test]
