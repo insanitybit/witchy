@@ -155,6 +155,8 @@ struct Codegen {
     uses_index_of: bool,
     /// Whether the char-indexed `substring` wrapper (+ `$char_to_byte`) is needed.
     uses_substring: bool,
+    /// Whether `replace` (and its `$match_at` companion) is needed.
+    uses_replace: bool,
     /// Whether the Dict helpers (`$dict_new`/`$dict_insert`/`$dict_get_or`/
     /// `$dict_has` + `$key_eq`) are needed.
     uses_dict: bool,
@@ -242,6 +244,7 @@ impl Codegen {
             uses_find_byte: false,
             uses_index_of: false,
             uses_substring: false,
+            uses_replace: false,
             uses_dict: false,
             uses_dict_iter: false,
             lambdas: Vec::new(),
@@ -470,6 +473,7 @@ impl Codegen {
             || self.uses_list_drop
             || self.uses_split
             || self.uses_substr
+            || self.uses_replace
             || self.uses_dict
             || self.uses_dict_iter
     }
@@ -545,6 +549,10 @@ impl Codegen {
         if self.uses_substring {
             s.push_str(CHAR_TO_BYTE_WAT);
             s.push_str(STR_SUBSTRING_WAT);
+        }
+        if self.uses_replace {
+            s.push_str(MATCH_AT_WAT);
+            s.push_str(REPLACE_WAT);
         }
         // Dict helpers; `$key_eq` references `$str_eq`, which the dict call sites
         // force on (so it is emitted below via `uses_str_eq`).
@@ -1424,6 +1432,14 @@ impl Codegen {
                 let end = self.compile_expr(&args[2])?;
                 Ok(format!("{s}{start}{end}    call $str_substring\n"))
             }
+            // replace(s, from, to): all non-overlapping occurrences of `from`.
+            ("replace", 3) => {
+                self.uses_replace = true;
+                let s = self.compile_expr(&args[0])?;
+                let from = self.compile_expr(&args[1])?;
+                let to = self.compile_expr(&args[2])?;
+                Ok(format!("{s}{from}{to}    call $replace\n"))
+            }
             ("to_upper", _) | ("to_lower", _) | ("trim", _) => cerr(
                 "to_upper/to_lower/trim run in the interpreter; WASM string transforms are future",
             ),
@@ -2047,6 +2063,95 @@ const SUBSTR_WAT: &str = r#"  (func $substr (param $src i32) (param $start i32) 
       (i32.add (i32.add (local.get $src) (i32.const 4)) (local.get $start))
       (local.get $len))
     (global.set $heap (i32.add (i32.add (local.get $res) (i32.const 4)) (local.get $len)))
+    (local.get $res))
+"#;
+
+// match_at(s, from, pos): does `from` occur in `s` starting at byte `pos`?
+const MATCH_AT_WAT: &str = r#"  (func $match_at (param $s i32) (param $from i32) (param $pos i32) (result i32)
+    (local $flen i32) (local $j i32)
+    (local.set $flen (i32.load (local.get $from)))
+    (if (i32.gt_s (i32.add (local.get $pos) (local.get $flen)) (i32.load (local.get $s)))
+      (then (return (i32.const 0))))
+    (local.set $j (i32.const 0))
+    (block $done
+      (loop $l
+        (br_if $done (i32.ge_s (local.get $j) (local.get $flen)))
+        (if (i32.ne
+              (i32.load8_u (i32.add (i32.add (local.get $s) (i32.const 4)) (i32.add (local.get $pos) (local.get $j))))
+              (i32.load8_u (i32.add (i32.add (local.get $from) (i32.const 4)) (local.get $j))))
+          (then (return (i32.const 0))))
+        (local.set $j (i32.add (local.get $j) (i32.const 1)))
+        (br $l)))
+    (i32.const 1))
+"#;
+
+// replace(s, from, to): every non-overlapping occurrence of `from` replaced by
+// `to` (Rust's str::replace). A non-empty `from` is matched on bytes (UTF-8 safe)
+// in two passes — count, then fill. An empty `from` inserts `to` at every UTF-8
+// character boundary (and at both ends).
+const REPLACE_WAT: &str = r#"  (func $replace (param $s i32) (param $from i32) (param $to i32) (result i32)
+    (local $slen i32) (local $flen i32) (local $tlen i32) (local $cnt i32)
+    (local $src i32) (local $dst i32) (local $res i32) (local $reslen i32) (local $b i32) (local $clen i32)
+    (local.set $slen (i32.load (local.get $s)))
+    (local.set $flen (i32.load (local.get $from)))
+    (local.set $tlen (i32.load (local.get $to)))
+    (if (i32.eqz (local.get $flen))
+      (then
+        (local.set $res (global.get $heap))
+        (local.set $dst (i32.add (local.get $res) (i32.const 4)))
+        (memory.copy (local.get $dst) (i32.add (local.get $to) (i32.const 4)) (local.get $tlen))
+        (local.set $dst (i32.add (local.get $dst) (local.get $tlen)))
+        (local.set $src (i32.const 0))
+        (block $cdone
+          (loop $cl
+            (br_if $cdone (i32.ge_s (local.get $src) (local.get $slen)))
+            (local.set $b (i32.load8_u (i32.add (i32.add (local.get $s) (i32.const 4)) (local.get $src))))
+            (local.set $clen
+              (if (result i32) (i32.lt_u (local.get $b) (i32.const 0x80)) (then (i32.const 1))
+                (else (if (result i32) (i32.lt_u (local.get $b) (i32.const 0xe0)) (then (i32.const 2))
+                  (else (if (result i32) (i32.lt_u (local.get $b) (i32.const 0xf0)) (then (i32.const 3))
+                    (else (i32.const 4))))))))
+            (memory.copy (local.get $dst) (i32.add (i32.add (local.get $s) (i32.const 4)) (local.get $src)) (local.get $clen))
+            (local.set $dst (i32.add (local.get $dst) (local.get $clen)))
+            (memory.copy (local.get $dst) (i32.add (local.get $to) (i32.const 4)) (local.get $tlen))
+            (local.set $dst (i32.add (local.get $dst) (local.get $tlen)))
+            (local.set $src (i32.add (local.get $src) (local.get $clen)))
+            (br $cl)))
+        (local.set $reslen (i32.sub (local.get $dst) (i32.add (local.get $res) (i32.const 4))))
+        (i32.store (local.get $res) (local.get $reslen))
+        (global.set $heap (local.get $dst))
+        (return (local.get $res))))
+    (local.set $cnt (i32.const 0))
+    (local.set $src (i32.const 0))
+    (block $countdone
+      (loop $cl2
+        (br_if $countdone (i32.gt_s (i32.add (local.get $src) (local.get $flen)) (local.get $slen)))
+        (if (call $match_at (local.get $s) (local.get $from) (local.get $src))
+          (then
+            (local.set $cnt (i32.add (local.get $cnt) (i32.const 1)))
+            (local.set $src (i32.add (local.get $src) (local.get $flen))))
+          (else
+            (local.set $src (i32.add (local.get $src) (i32.const 1)))))
+        (br $cl2)))
+    (local.set $reslen (i32.add (local.get $slen) (i32.mul (local.get $cnt) (i32.sub (local.get $tlen) (local.get $flen)))))
+    (local.set $res (global.get $heap))
+    (i32.store (local.get $res) (local.get $reslen))
+    (local.set $dst (i32.add (local.get $res) (i32.const 4)))
+    (local.set $src (i32.const 0))
+    (block $filldone
+      (loop $fl
+        (br_if $filldone (i32.ge_s (local.get $src) (local.get $slen)))
+        (if (call $match_at (local.get $s) (local.get $from) (local.get $src))
+          (then
+            (memory.copy (local.get $dst) (i32.add (local.get $to) (i32.const 4)) (local.get $tlen))
+            (local.set $dst (i32.add (local.get $dst) (local.get $tlen)))
+            (local.set $src (i32.add (local.get $src) (local.get $flen))))
+          (else
+            (i32.store8 (local.get $dst) (i32.load8_u (i32.add (i32.add (local.get $s) (i32.const 4)) (local.get $src))))
+            (local.set $dst (i32.add (local.get $dst) (i32.const 1)))
+            (local.set $src (i32.add (local.get $src) (i32.const 1)))))
+        (br $fl)))
+    (global.set $heap (local.get $dst))
     (local.get $res))
 "#;
 

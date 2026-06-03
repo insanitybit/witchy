@@ -944,6 +944,30 @@ mod example_tests {
     }
 
     #[test]
+    fn replace_on_wasm() {
+        // `replace` compiled to WASM, matching Rust's str::replace: simple and
+        // multi-char patterns, greedy non-overlapping, deletion (empty `to`),
+        // growth (`to` longer than `from`), no match, an empty `from` (inserted
+        // at every char boundary), and UTF-8 (`é` is a 2-byte match).
+        let src = r#"
+            fn main(console: Console) {
+              print(console, replace("a,b,c", ",", ";"))
+              print(console, replace("aXXbXXc", "XX", "-"))
+              print(console, replace("aaa", "aa", "x"))
+              print(console, replace("a,b,c", ",", ""))
+              print(console, replace("abc", "b", "XYZ"))
+              print(console, replace("abc", "z", "Q"))
+              print(console, replace("ab", "", "-"))
+              print(console, replace("café", "é", "e"))
+            }
+        "#;
+        assert_eq!(
+            run_on_wasm(src),
+            vec!["a;b;c", "a-b-c", "xa", "abc", "aXYZc", "abc", "-a-b-", "cafe"]
+        );
+    }
+
+    #[test]
     fn string_search_slice_on_wasm() {
         // contains / index_of / substring compiled to WASM, matching the
         // interpreter — including Unicode: "café!" has the `!` at character index
