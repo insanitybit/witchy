@@ -53,6 +53,26 @@ pub fn pad_right(s: String, width: Int, fill: String) -> String {
   }
 }
 
+// Remove `prefix` from the front of `s` when present; otherwise return `s`
+// unchanged. The complement of the `starts_with` builtin.
+pub fn strip_prefix(s: String, prefix: String) -> String {
+  if starts_with(s, prefix) {
+    substring(s, string_length(prefix), string_length(s))
+  } else {
+    s
+  }
+}
+
+// Remove `suffix` from the end of `s` when present; otherwise return `s`
+// unchanged. The complement of the `ends_with` builtin.
+pub fn strip_suffix(s: String, suffix: String) -> String {
+  if ends_with(s, suffix) {
+    substring(s, 0, string_length(s) - string_length(suffix))
+  } else {
+    s
+  }
+}
+
 // Split text into its newline-separated lines.
 pub fn lines(text: String) -> List(String) {
   split(text, "\n")

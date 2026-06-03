@@ -1736,6 +1736,28 @@ mod example_tests {
     }
 
     #[test]
+    fn std_string_strip_backends_agree() {
+        // strip_prefix/strip_suffix remove an affix only when it matches,
+        // leaving the string untouched otherwise; stripping the whole string
+        // yields "". Complements starts_with/ends_with.
+        let client = r#"
+            import string
+            fn main(console: Console) {
+              print(console, string.strip_prefix("witchy.lang", "witchy."))
+              print(console, string.strip_prefix("witchy.lang", "scala."))
+              print(console, string.strip_suffix("main.witchy", ".witchy"))
+              print(console, string.strip_suffix("main.rs", ".witchy"))
+              print(console, string.strip_prefix("abc", "abc"))
+            }
+        "#;
+        let sources = [("string", crate::bundled_module("string").unwrap()), ("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "strip diverged between backends");
+        assert_eq!(compiled, vec!["lang", "witchy.lang", "main", "main.rs", ""]);
+    }
+
+    #[test]
     fn large_list_allocation_grows_memory() {
         // Building a 200-element list via `push` allocates ~80KB total (each push
         // copies the whole list, and the bump allocator never frees) — past the
