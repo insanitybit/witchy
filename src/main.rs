@@ -3264,6 +3264,27 @@ mod example_tests {
         assert_eq!(compiled, vec!["10", "-1", "30", "-1", "4", "-1"]);
     }
 
+    // windows: sliding sublists of length n (step 1), empty when n exceeds the
+    // list or n < 1. Complements chunks. Iterating List(List(Int)) too.
+    #[test]
+    fn std_list_windows_backends_agree() {
+        let client = r#"
+            import list
+            fn main(console: Console) {
+              let ws = list.windows([1, 2, 3, 4], 2)
+              print(console, int_to_string(length(ws)))
+              for w in ws { print(console, int_to_string(list.sum(w))) }
+              print(console, int_to_string(length(list.windows([1, 2], 5))))
+              print(console, int_to_string(length(list.windows([1, 2, 3], 0))))
+            }
+        "#;
+        let sources = [("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "windows diverged");
+        assert_eq!(compiled, vec!["3", "3", "5", "7", "0", "0"]);
+    }
+
     #[test]
     fn std_list_chunks_tail_init_backends_agree() {
         // chunks groups into fixed-size sublists (last may be short), tail drops

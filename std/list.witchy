@@ -495,6 +495,23 @@ pub fn slice(xs: List(a), start: Int, end: Int) -> List(a) {
   out
 }
 
+// All contiguous sublists of length `n` (a sliding window of step 1). Empty
+// when `n < 1` or longer than the list. `windows([1,2,3,4], 2)` is
+// `[[1,2],[2,3],[3,4]]`.
+pub fn windows(xs: List(a), n: Int) -> List(List(a)) {
+  if n < 1 {
+    []
+  } else {
+    var out = []
+    var i = 0
+    while i + n <= length(xs) {
+      out = push(out, slice(xs, i, i + n))
+      i = i + 1
+    }
+    out
+  }
+}
+
 // Pair up two lists element-wise, stopping at the shorter one.
 pub fn zip(xs: List(a), ys: List(b)) -> List((a, b)) {
   var out = []
