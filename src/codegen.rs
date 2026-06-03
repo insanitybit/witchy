@@ -112,6 +112,10 @@ struct Codegen {
     /// Function name -> the record type it returns (when it returns one), so a
     /// `let q = f(...)` binds `q` to that record type.
     fn_ret_records: HashMap<String, String>,
+    /// Return kind of the function currently being compiled (for `return`).
+    cur_fn_ret_kind: Kind,
+    /// Whether the current function has any `inout` parameters.
+    cur_fn_inout: bool,
 }
 
 impl Codegen {
@@ -138,6 +142,8 @@ impl Codegen {
             record_fields: HashMap::new(),
             local_records: HashMap::new(),
             fn_ret_records: HashMap::new(),
+            cur_fn_ret_kind: Kind::I32,
+            cur_fn_inout: false,
         }
     }
 
@@ -342,6 +348,8 @@ impl Codegen {
             Some(t) => ty_kind(t),
             None => self.block_kind(&f.body),
         };
+        self.cur_fn_ret_kind = ret_kind;
+        self.cur_fn_inout = f.params.iter().any(|p| p.convention == Convention::Inout);
         header.push_str(&format!("(result {}", wasm_ty(ret_kind)));
         for p in &f.params {
             if p.convention == Convention::Inout {
@@ -393,8 +401,20 @@ impl Codegen {
                 Stmt::LetTuple { .. } => {
                     return cerr("tuple destructure is not compiled to WASM yet");
                 }
-                Stmt::Return(_) => {
-                    return cerr("`return` is not compiled to WASM yet");
+                Stmt::Return(opt) => {
+                    // `inout` functions return extra results; an early return
+                    // would have to reproduce them, so disallow that combination.
+                    if self.cur_fn_inout {
+                        return cerr("`return` is not compiled for functions with `inout` parameters");
+                    }
+                    let value = match opt {
+                        Some(e) => self.compile_expr(e)?,
+                        None => format!("    {}.const 0\n", wasm_ty(self.cur_fn_ret_kind)),
+                    };
+                    out.push_str(&value);
+                    out.push_str("    return\n");
+                    // Anything after a `return` in this block is unreachable.
+                    tail_is_value = false;
                 }
                 Stmt::Expr(e) => {
                     out.push_str(&self.compile_expr(e)?);

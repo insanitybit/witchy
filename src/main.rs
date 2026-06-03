@@ -626,6 +626,23 @@ mod example_tests {
     }
 
     #[test]
+    fn early_return_runs_on_wasm() {
+        // Guard-clause early returns compile to valid WASM and run.
+        // classify(-5) = -1, classify(0) = 0, classify(9) = 1; sum = 0.
+        let src = r#"
+            fn classify(n: Int) -> Int {
+              if n < 0 { return 0 - 1 }
+              if n == 0 { return 0 }
+              1
+            }
+            fn main() -> Int {
+              classify(0 - 5) + classify(0) + classify(9)
+            }
+        "#;
+        assert_eq!(run_on_wasm(src), vec!["0"]);
+    }
+
+    #[test]
     fn shapes_runs_on_wasm() {
         assert_eq!(
             run_on_wasm(include_str!("../examples/shapes.witchy")),
