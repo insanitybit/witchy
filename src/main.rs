@@ -694,6 +694,24 @@ mod example_tests {
     }
 
     #[test]
+    fn for_in_over_list_on_wasm() {
+        // `for x in list` compiles to a WASM loop; sum a list = 100.
+        let src = r#"
+            fn total(xs: List(Int)) -> Int {
+              var sum = 0
+              for x in xs {
+                sum = sum + x
+              }
+              sum
+            }
+            fn main() -> Int {
+              total([10, 20, 30, 40])
+            }
+        "#;
+        assert_eq!(run_on_wasm(src), vec!["100"]);
+    }
+
+    #[test]
     fn tuple_match_patterns_on_wasm() {
         // Tuple patterns in `match` compile to WASM (no tag; element-wise).
         // classify((3,0))=3, classify((0,5))=5, classify((2,4))=6; sum = 14.

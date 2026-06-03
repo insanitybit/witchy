@@ -241,6 +241,14 @@ impl Codegen {
                 self.infer_locals_expr(cond);
                 self.infer_locals(body);
             }
+            Expr::For { var, iter, body } => {
+                // The loop var and the two scratch locals are all i32.
+                for n in [var.clone(), format!("__forlist_{var}"), format!("__fori_{var}")] {
+                    self.locals.insert(n, Kind::I32);
+                }
+                self.infer_locals_expr(iter);
+                self.infer_locals(body);
+            }
             Expr::Match { arms, .. } => {
                 for arm in arms {
                     // Pattern-bound vars are i32 (floats aren't stored in records).
@@ -600,7 +608,27 @@ impl Codegen {
                 Ok(out)
             }
             Expr::Try(_) => cerr("the `?` operator is not compiled to WASM yet"),
-            Expr::For { .. } => cerr("`for` loops are not compiled to WASM yet"),
+            Expr::For { var, iter, body } => {
+                // Iterate a list `[len][e0][e1]...`: keep the list pointer and an
+                // index in scratch locals (named after the loop var so they're
+                // declared), bind each element, run the body, and drop its value.
+                let id = self.next_label;
+                self.next_label += 1;
+                let list_l = format!("__forlist_{var}");
+                let idx_l = format!("__fori_{var}");
+                let iter_wat = self.compile_expr(iter)?;
+                let body_wat = self.compile_block(body)?;
+                Ok(format!(
+                    "{iter_wat}    local.set ${list_l}\n    \
+                     i32.const 0\n    local.set ${idx_l}\n    \
+                     block $fe{id}\n    loop $fl{id}\n    \
+                     local.get ${idx_l}\n    local.get ${list_l}\n    i32.load\n    i32.ge_s\n    br_if $fe{id}\n    \
+                     local.get ${list_l}\n    i32.const 4\n    i32.add\n    local.get ${idx_l}\n    i32.const 4\n    i32.mul\n    i32.add\n    i32.load\n    local.set ${var}\n\
+                     {body_wat}    drop\n    \
+                     local.get ${idx_l}\n    i32.const 1\n    i32.add\n    local.set ${idx_l}\n    \
+                     br $fl{id}\n    end\n    end\n    i32.const 0\n"
+                ))
+            }
             Expr::Field { base, field } => {
                 // A record value is a heap record `[tag][field0][field1]...`, so
                 // a field is `*(base + 4 + 4*index)`. `record_base` resolves the
@@ -1315,6 +1343,13 @@ fn collect_let_names_expr(expr: &Expr, out: &mut Vec<String>) {
         Expr::Block(b) => collect_let_names(b, out),
         Expr::While { cond, body } => {
             collect_let_names_expr(cond, out);
+            collect_let_names(body, out);
+        }
+        Expr::For { var, iter, body } => {
+            out.push(var.clone());
+            out.push(format!("__forlist_{var}"));
+            out.push(format!("__fori_{var}"));
+            collect_let_names_expr(iter, out);
             collect_let_names(body, out);
         }
         Expr::Match { scrutinee, arms } => {
