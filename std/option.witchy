@@ -2,6 +2,9 @@
 // into scope (so the `?` operator works) and gives the usual combinators. Pure
 // and capability-free.
 
+// For the `ok_or`/`ok_or_else` conversions to Result.
+import result
+
 type Option {
   Some(a)
   None
@@ -85,5 +88,22 @@ pub fn map_or(o: Option(a), default: b, f: fn(a) -> b) -> b {
   match o {
     Some(v) -> f(v)
     None -> default
+  }
+}
+
+// Turn an Option into a Result: `Some(v)` becomes `Ok(v)`, `None` becomes
+// `Err(err)` — the inverse of `result.ok`.
+pub fn ok_or(o: Option(a), err: e) -> Result(a, e) {
+  match o {
+    Some(v) -> Ok(v)
+    None -> Err(err)
+  }
+}
+
+// Like `ok_or`, but the error for `None` is produced lazily by `f`.
+pub fn ok_or_else(o: Option(a), f: fn() -> e) -> Result(a, e) {
+  match o {
+    Some(v) -> Ok(v)
+    None -> Err(f())
   }
 }

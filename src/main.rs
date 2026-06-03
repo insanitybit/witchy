@@ -3131,6 +3131,28 @@ mod example_tests {
     // result -> option conversions (result imports option): `ok` keeps the Ok
     // value as Some and drops an Err to None; `err` does the reverse. Caller
     // provides only `main`; the linker resolves result and option.
+    // option -> result conversions (option imports result, completing the
+    // Option<->Result pair; the linker flattens the cyclic import). ok_or maps
+    // Some to Ok and None to Err(err); ok_or_else computes the error lazily.
+    #[test]
+    fn std_option_to_result_backends_agree() {
+        let client = r#"
+            import option
+            import result
+            fn main(console: Console) {
+              print(console, int_to_string(result.unwrap_or(option.ok_or(Some(5), "none"), 0)))
+              print(console, to_string(result.is_err(option.ok_or(None, "none"))))
+              print(console, int_to_string(result.unwrap_or(option.ok_or_else(Some(9), fn() { "none" }), 0)))
+              print(console, to_string(result.is_err(option.ok_or_else(None, fn() { "none" }))))
+            }
+        "#;
+        let sources = [("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "option->result diverged");
+        assert_eq!(compiled, vec!["5", "true", "9", "true"]);
+    }
+
     #[test]
     fn std_result_to_option_backends_agree() {
         let client = r#"
