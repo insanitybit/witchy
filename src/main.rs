@@ -877,6 +877,58 @@ mod example_tests {
     }
 
     #[test]
+    fn try_operator_result_backends_agree() {
+        // `?` propagation on Result: the success path unwraps and continues, the
+        // failure path short-circuits with the Err. Both backends must agree.
+        let client = r#"
+            import result
+            fn parse_pos(n: Int) -> Result(Int, String) {
+              if n > 0 { Ok(n) } else { Err("bad") }
+            }
+            fn add_two(a: Int, b: Int) -> Result(Int, String) {
+              let x = parse_pos(a)?
+              let y = parse_pos(b)?
+              Ok(x + y)
+            }
+            fn main(console: Console) {
+              print(console, int_to_string(result.unwrap_or(add_two(3, 4), 0)))
+              print(console, int_to_string(result.unwrap_or(add_two(3, 0 - 1), 0)))
+              print(console, to_string(result.is_err(add_two(0 - 5, 2))))
+              print(console, to_string(result.is_ok(add_two(10, 20))))
+            }
+        "#;
+        let sources = [("result", crate::bundled_module("result").unwrap()), ("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "`?` on Result diverged between backends");
+    }
+
+    #[test]
+    fn try_operator_option_backends_agree() {
+        // `?` propagation on Option: short-circuit on None, unwrap on Some.
+        let client = r#"
+            import option
+            fn first_even(a: Int, b: Int) -> Option(Int) {
+              let x = pick_even(a)?
+              let y = pick_even(b)?
+              Some(x + y)
+            }
+            fn pick_even(n: Int) -> Option(Int) {
+              if n % 2 == 0 { Some(n) } else { None }
+            }
+            fn main(console: Console) {
+              print(console, int_to_string(option.unwrap_or(first_even(4, 6), 0)))
+              print(console, int_to_string(option.unwrap_or(first_even(4, 7), 0)))
+              print(console, to_string(option.is_none(first_even(3, 8))))
+            }
+        "#;
+        let sources = [("option", crate::bundled_module("option").unwrap()), ("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "`?` on Option diverged between backends");
+    }
+
+    #[test]
     fn std_option_combinators_backends_agree() {
         // is_none / and_then / filter behave identically in both backends.
         let client = r#"

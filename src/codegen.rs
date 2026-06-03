@@ -1774,15 +1774,21 @@ pub fn compile_module(module: &Module) -> Result<String, CodegenError> {
     wat.push_str(&cg.emit_imports());
     wat.push_str("  (memory (export \"memory\") 1)\n");
     // Function table populated with the lifted lambdas; slot i holds `$__lam{i}`.
-    if !cg.lambdas.is_empty() {
+    // A function table is needed whenever a closure is *called* (`call_indirect`
+    // references table 0), even when the program constructs no lambdas — e.g. an
+    // imported, never-called closure-taking std function still has its body
+    // compiled. The table is then empty; `elem` only lists the actual lambdas.
+    if !cg.lambdas.is_empty() || !cg.clos_arities.is_empty() {
         let count = cg.lambdas.len();
         wat.push_str(&format!("  (table {count} funcref)\n"));
-        let mut elem = String::from("  (elem (i32.const 0)");
-        for i in 0..count {
-            elem.push_str(&format!(" $__lam{i}"));
+        if !cg.lambdas.is_empty() {
+            let mut elem = String::from("  (elem (i32.const 0)");
+            for i in 0..count {
+                elem.push_str(&format!(" $__lam{i}"));
+            }
+            elem.push_str(")\n");
+            wat.push_str(&elem);
         }
-        elem.push_str(")\n");
-        wat.push_str(&elem);
     }
     wat.push_str(&cg.emit_data_globals_helpers(""));
     wat.push_str(&func_wat);
@@ -1954,15 +1960,21 @@ fn compile_actor_with_tags(
     }
     wat.push_str(&cg.emit_imports());
     wat.push_str("  (memory (export \"memory\") 1)\n");
-    if !cg.lambdas.is_empty() {
+    // A function table is needed whenever a closure is *called* (`call_indirect`
+    // references table 0), even when the program constructs no lambdas — e.g. an
+    // imported, never-called closure-taking std function still has its body
+    // compiled. The table is then empty; `elem` only lists the actual lambdas.
+    if !cg.lambdas.is_empty() || !cg.clos_arities.is_empty() {
         let count = cg.lambdas.len();
         wat.push_str(&format!("  (table {count} funcref)\n"));
-        let mut elem = String::from("  (elem (i32.const 0)");
-        for i in 0..count {
-            elem.push_str(&format!(" $__lam{i}"));
+        if !cg.lambdas.is_empty() {
+            let mut elem = String::from("  (elem (i32.const 0)");
+            for i in 0..count {
+                elem.push_str(&format!(" $__lam{i}"));
+            }
+            elem.push_str(")\n");
+            wat.push_str(&elem);
         }
-        elem.push_str(")\n");
-        wat.push_str(&elem);
     }
     wat.push_str(&cg.emit_data_globals_helpers(&extra_globals));
     for (header, body) in &handlers {
