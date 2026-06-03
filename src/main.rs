@@ -219,6 +219,14 @@ fn main() -> wasmtime::Result<()> {
         "zip",
     );
     run_program_demo(
+        "witchy list any/all (predicates)",
+        &[
+            ("list", include_str!("../std/list.witchy")),
+            ("predicates", include_str!("../examples/predicates.witchy")),
+        ],
+        "predicates",
+    );
+    run_program_demo(
         "witchy text processing (split/map/join)",
         &[
             ("list", include_str!("../std/list.witchy")),
@@ -769,6 +777,34 @@ mod example_tests {
             crate::execute_file("examples/zip.witchy").unwrap(),
             vec!["0:alice 1:bob 2:carol", "alice=30 bob=25 carol=40"]
         );
+    }
+
+    /// `any`/`all` predicate combinators via the CLI.
+    #[test]
+    fn predicates_run_via_cli() {
+        assert_eq!(
+            crate::execute_file("examples/predicates.witchy").unwrap(),
+            vec!["true", "true", "false", "false"]
+        );
+    }
+
+    /// `all` is vacuously true on the empty list; `any` is false.
+    #[test]
+    fn any_all_empty_list_edge_cases() {
+        let client = r#"
+            import list
+            fn main(console: Console) {
+              let empty = list.filter([1], fn(n: Int) { n > 100 })
+              print(console, to_string(list.all(empty, fn(n: Int) { n > 0 })))
+              print(console, to_string(list.any(empty, fn(n: Int) { n > 0 })))
+            }
+        "#;
+        let out = interpreter::run_program(
+            &[("list", crate::bundled_module("list").unwrap()), ("main", client)],
+            "main",
+        )
+        .expect("predicates program runs");
+        assert_eq!(out, vec!["true", "false"]);
     }
 
     /// `zip` is generic and stops at the shorter list.

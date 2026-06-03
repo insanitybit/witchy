@@ -96,6 +96,26 @@ pub fn contains(xs: List(a), target: a) -> Bool {
   false
 }
 
+// Whether at least one element satisfies `pred`.
+pub fn any(xs: List(a), pred: fn(a) -> Bool) -> Bool {
+  for x in xs {
+    if pred(x) {
+      return true
+    }
+  }
+  false
+}
+
+// Whether every element satisfies `pred` (true for the empty list).
+pub fn all(xs: List(a), pred: fn(a) -> Bool) -> Bool {
+  for x in xs {
+    if !pred(x) {
+      return false
+    }
+  }
+  true
+}
+
 // Index of the first element equal to `target`, or -1 if absent.
 pub fn index_of(xs: List(a), target: a) -> Int {
   var i = 0
