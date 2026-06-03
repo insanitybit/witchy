@@ -111,6 +111,9 @@ struct Codegen {
     message_tags: HashMap<String, u32>,
     /// Whether the inter-actor `send` import is needed.
     uses_send: bool,
+    /// Whether the list `push`/`concat` runtime helpers are needed.
+    uses_list_push: bool,
+    uses_list_concat: bool,
     /// Record type name -> ordered fields as `(name, named-type)`, where the
     /// second is the field's type name when it is a `Named` type (so nested
     /// records can be chained, `a.b.c`). For compiling `value.field`.
@@ -153,6 +156,8 @@ impl Codegen {
             fn_ret_records: HashMap::new(),
             cur_fn_ret_kind: Kind::I32,
             cur_fn_inout: false,
+            uses_list_push: false,
+            uses_list_concat: false,
         }
     }
 
@@ -285,6 +290,8 @@ impl Codegen {
             || self.uses_int_to_string
             || !self.strings.is_empty()
             || !self.mk_arities.is_empty()
+            || self.uses_list_push
+            || self.uses_list_concat
     }
 
     fn emit_imports(&self) -> String {
@@ -322,6 +329,12 @@ impl Codegen {
         s.push_str(extra_globals);
         if self.need_heap() {
             s.push_str(CONCAT_WAT);
+        }
+        if self.uses_list_push {
+            s.push_str(LIST_PUSH_WAT);
+        }
+        if self.uses_list_concat {
+            s.push_str(LIST_CONCAT_WAT);
         }
         if self.uses_print {
             s.push_str(PRINT_STR_WAT);
@@ -892,6 +905,19 @@ impl Codegen {
                     "{list}    i32.const 4\n    i32.add\n{idx}    i32.const 4\n    i32.mul\n    i32.add\n    i32.load\n"
                 ))
             }
+            // push(list, x) / concat(a, b): allocate a new list (runtime helper).
+            ("push", 2) => {
+                self.uses_list_push = true;
+                let list = self.compile_expr(&args[0])?;
+                let x = self.compile_expr(&args[1])?;
+                Ok(format!("{list}{x}    call $list_push\n"))
+            }
+            ("concat", 2) => {
+                self.uses_list_concat = true;
+                let a = self.compile_expr(&args[0])?;
+                let b = self.compile_expr(&args[1])?;
+                Ok(format!("{a}{b}    call $list_concat\n"))
+            }
             // send(subject, Message(arg)): route to the target actor's handler.
             ("send", 2) => {
                 let Expr::Ctor { name: msg, args: fields } = &args[1] else {
@@ -1282,6 +1308,42 @@ const CONCAT_WAT: &str = r#"  (func $concat (param $a i32) (param $b i32) (resul
     local.get $res i32.const 4 i32.add local.get $alen i32.add local.get $blen i32.add
     global.set $heap
     local.get $res)
+"#;
+
+// push(list, x): a fresh list `[len+1][elems...][x]`. Elements are 4-byte i32s,
+// so the element block is copied with `memory.copy`.
+const LIST_PUSH_WAT: &str = r#"  (func $list_push (param $list i32) (param $x i32) (result i32)
+    (local $len i32) (local $new i32)
+    local.get $list i32.load local.set $len
+    global.get $heap local.set $new
+    local.get $new local.get $len i32.const 1 i32.add i32.store
+    local.get $new i32.const 4 i32.add
+    local.get $list i32.const 4 i32.add
+    local.get $len i32.const 4 i32.mul
+    memory.copy
+    local.get $new i32.const 4 i32.add local.get $len i32.const 4 i32.mul i32.add
+    local.get $x i32.store
+    local.get $new local.get $len i32.const 2 i32.add i32.const 4 i32.mul i32.add global.set $heap
+    local.get $new)
+"#;
+
+// concat(a, b): a fresh list `[alen+blen][a elems][b elems]`.
+const LIST_CONCAT_WAT: &str = r#"  (func $list_concat (param $a i32) (param $b i32) (result i32)
+    (local $alen i32) (local $blen i32) (local $new i32)
+    local.get $a i32.load local.set $alen
+    local.get $b i32.load local.set $blen
+    global.get $heap local.set $new
+    local.get $new local.get $alen local.get $blen i32.add i32.store
+    local.get $new i32.const 4 i32.add
+    local.get $a i32.const 4 i32.add
+    local.get $alen i32.const 4 i32.mul
+    memory.copy
+    local.get $new i32.const 4 i32.add local.get $alen i32.const 4 i32.mul i32.add
+    local.get $b i32.const 4 i32.add
+    local.get $blen i32.const 4 i32.mul
+    memory.copy
+    local.get $new local.get $alen local.get $blen i32.add i32.const 1 i32.add i32.const 4 i32.mul i32.add global.set $heap
+    local.get $new)
 "#;
 
 const PRINT_STR_WAT: &str = r#"  (func $print_str (param $s i32)

@@ -694,6 +694,26 @@ mod example_tests {
     }
 
     #[test]
+    fn list_push_and_concat_on_wasm() {
+        // Build a list with `push` in a loop, then `concat` — both allocate new
+        // lists at runtime. double_all([1,2,3]) = [2,4,6], ++ [100], summed = 112.
+        let src = r#"
+            fn double_all(xs: List(Int)) -> List(Int) {
+              var out = []
+              for x in xs {
+                out = push(out, x * 2)
+              }
+              out
+            }
+            fn main() -> Int {
+              let ys = concat(double_all([1, 2, 3]), [100])
+              at(ys, 0) + at(ys, 1) + at(ys, 2) + at(ys, 3)
+            }
+        "#;
+        assert_eq!(run_on_wasm(src), vec!["112"]);
+    }
+
+    #[test]
     fn for_in_over_list_on_wasm() {
         // `for x in list` compiles to a WASM loop; sum a list = 100.
         let src = r#"
