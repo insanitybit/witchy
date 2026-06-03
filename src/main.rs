@@ -206,6 +206,15 @@ fn main() -> wasmtime::Result<()> {
         ],
         "std_demo",
     );
+    run_compiled_program(
+        &mut rt,
+        "witchy list combinators compiled to WASM (map/filter/fold/sort_by)",
+        &[
+            ("list", include_str!("../std/list.witchy")),
+            ("list_pipeline", include_str!("../examples/list_pipeline.witchy")),
+        ],
+        "list_pipeline",
+    );
     run_program_demo(
         "witchy list search/slice (contains/index_of/take/drop)",
         &[
@@ -685,6 +694,95 @@ mod example_tests {
         actor.output()
     }
 
+    /// Link a multi-module program, compile the flat module to WASM, run it on
+    /// the runtime with output capabilities, and return what it printed.
+    fn run_linked_on_wasm(sources: &[(&str, &str)], entry: &str) -> Vec<String> {
+        use crate::runtime::{Capabilities, Runtime};
+        let mods: Vec<(String, ast::Module)> = sources
+            .iter()
+            .map(|(n, s)| ((*n).to_string(), parser::parse_module(s).expect("parse")))
+            .collect();
+        let linked = crate::linker::link(mods, entry).expect("link");
+        assert!(typeck::check(&linked).is_ok(), "{:?}", typeck::check(&linked));
+        let wat = codegen::compile_module(&linked).expect("compile");
+        let mut rt = Runtime::new().expect("runtime");
+        let mut actor = rt
+            .spawn(
+                wat.as_bytes(),
+                Capabilities {
+                    print: true,
+                    print_int: true,
+                    ..Default::default()
+                },
+                4,
+            )
+            .expect("spawn");
+        actor.run().expect("run");
+        actor.output()
+    }
+
+    #[test]
+    fn std_list_compiles_and_runs_on_wasm() {
+        // The whole bundled `list` library links + compiles to WASM (every
+        // function in it must compile), and map/filter/fold driven by closures
+        // run end-to-end: doubled = [2,4,6,8,10] (sum 30); evens = [2,4] (len 2).
+        let client = r#"
+            import list
+            fn main() -> Int {
+              let xs = [1, 2, 3, 4, 5]
+              let doubled = list.map(xs, fn(n: Int) { n * 2 })
+              let evens = list.filter(xs, fn(n: Int) { n % 2 == 0 })
+              let sum = list.fold(doubled, 0, fn(acc: Int, n: Int) { acc + n })
+              sum + length(evens)
+            }
+        "#;
+        assert_eq!(
+            run_linked_on_wasm(
+                &[("list", crate::bundled_module("list").unwrap()), ("main", client)],
+                "main",
+            ),
+            vec!["32"]
+        );
+    }
+
+    #[test]
+    fn std_list_sort_by_runs_on_wasm() {
+        // A comparator closure threaded through `sort_by` into its `insert_sorted`
+        // helper (which calls it via call_indirect) compiles and sorts ascending:
+        // [1,1,2,3,4,5,6,9]; first*100 + last = 109.
+        let client = r#"
+            import list
+            fn main() -> Int {
+              let xs = [3, 1, 4, 1, 5, 9, 2, 6]
+              let sorted = list.sort_by(xs, fn(a: Int, b: Int) { a < b })
+              at(sorted, 0) * 100 + at(sorted, 7)
+            }
+        "#;
+        assert_eq!(
+            run_linked_on_wasm(
+                &[("list", crate::bundled_module("list").unwrap()), ("main", client)],
+                "main",
+            ),
+            vec!["109"]
+        );
+    }
+
+    #[test]
+    fn list_pipeline_example_runs_on_wasm() {
+        // The example program (import list; map/filter/fold/sort_by + a capturing
+        // closure) compiles to WASM and prints identically to the interpreter.
+        assert_eq!(
+            run_linked_on_wasm(
+                &[
+                    ("list", crate::bundled_module("list").unwrap()),
+                    ("main", include_str!("../examples/list_pipeline.witchy")),
+                ],
+                "main",
+            ),
+            vec!["233", "2 8", "735"]
+        );
+    }
+
     #[test]
     fn compute_runs_on_wasm() {
         assert_eq!(
@@ -1081,6 +1179,17 @@ mod example_tests {
         assert_eq!(
             crate::execute_file("examples/list_more.witchy").unwrap(),
             vec!["true", "3", "-1", "20", "30"]
+        );
+    }
+
+    /// The list-combinator pipeline example runs via the CLI (interpreter); a
+    /// companion compiled test (`list_pipeline_example_runs_on_wasm`) asserts the
+    /// same output through the WASM backend.
+    #[test]
+    fn list_pipeline_runs_via_cli() {
+        assert_eq!(
+            crate::execute_file("examples/list_pipeline.witchy").unwrap(),
+            vec!["233", "2 8", "735"]
         );
     }
 
@@ -1512,6 +1621,55 @@ fn run_compiled(rt: &mut Runtime, title: &str, program: &str) {
     match rt.spawn(wat.as_bytes(), Capabilities::none(), 4) {
         Ok(_) => println!("!! SECURITY FAILURE: compiled module ran without the capability"),
         Err(e) => println!("DENIED without capability (as designed): {e}"),
+    }
+}
+
+/// Link a multi-module program, compile the flat module to WASM, and run it on
+/// its own VM — so an imported library (e.g. `list`) is genuinely compiled, not
+/// just the entry module.
+fn run_compiled_program(rt: &mut Runtime, title: &str, sources: &[(&str, &str)], entry: &str) {
+    println!("\n== {title} ==");
+    let mods: Result<Vec<(String, ast::Module)>, String> = sources
+        .iter()
+        .map(|(n, s)| {
+            parser::parse_module(s)
+                .map(|m| ((*n).to_string(), m))
+                .map_err(|e| e.to_string())
+        })
+        .collect();
+    let linked = match mods.and_then(|m| linker::link(m, entry).map_err(|e| e.to_string())) {
+        Ok(m) => m,
+        Err(e) => {
+            println!("{e}");
+            return;
+        }
+    };
+    if let Err(e) = typeck::check(&linked) {
+        println!("{e}");
+        return;
+    }
+    let wat = match codegen::compile_module(&linked) {
+        Ok(w) => w,
+        Err(e) => {
+            println!("{e}");
+            return;
+        }
+    };
+    match rt.spawn(
+        wat.as_bytes(),
+        Capabilities {
+            print: true,
+            print_int: true,
+            ..Default::default()
+        },
+        4,
+    ) {
+        Ok(mut actor) => {
+            if let Err(e) = actor.run() {
+                println!("error: {e}");
+            }
+        }
+        Err(e) => println!("spawn failed: {e}"),
     }
 }
 
