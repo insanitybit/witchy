@@ -634,6 +634,23 @@ mod example_tests {
     }
 
     #[test]
+    fn record_call_and_update_results_field_access_on_wasm() {
+        // Field access on a `let` bound to a record-returning call / update —
+        // exercises return-record and update-result type tracking in codegen.
+        let src = r#"
+            type Point { x: Int, y: Int }
+            fn make(a: Int, b: Int) -> Point { Point(a, b) }
+            fn shift(p: Point, dx: Int) -> Point { update p { x: p.x + dx } }
+            fn main() -> Int {
+              let p = make(3, 4)
+              let q = shift(p, 7)
+              q.x + q.y
+            }
+        "#;
+        assert_eq!(run_on_wasm(src), vec!["14"]);
+    }
+
+    #[test]
     fn record_field_access_and_update_run_on_wasm() {
         // Records — field access *and* update — compile and run on the WASM
         // runtime. shift_x(Point(3,4), 1) = Point(4,4); 4*4 + 4*4 = 32.

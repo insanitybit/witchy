@@ -107,6 +107,9 @@ struct Codegen {
     /// Variables (params / let-bound constructors) known to hold a record of a
     /// given type, so `var.field` can resolve a field index.
     local_records: HashMap<String, String>,
+    /// Function name -> the record type it returns (when it returns one), so a
+    /// `let q = f(...)` binds `q` to that record type.
+    fn_ret_records: HashMap<String, String>,
 }
 
 impl Codegen {
@@ -132,6 +135,7 @@ impl Codegen {
             uses_send: false,
             record_fields: HashMap::new(),
             local_records: HashMap::new(),
+            fn_ret_records: HashMap::new(),
         }
     }
 
@@ -173,12 +177,26 @@ impl Codegen {
                 Stmt::Let { name, value, .. } => {
                     let k = self.kind_of(value);
                     self.locals.insert(name.clone(), k);
-                    // `let p = Point(..)` lets `p.field` resolve (record ctor name
-                    // is the type name).
-                    if let Expr::Ctor { name: ctor, .. } = value {
-                        if self.record_fields.contains_key(ctor) {
-                            self.local_records.insert(name.clone(), ctor.clone());
+                    // Remember the binding's record type (if any) so `name.field`
+                    // resolves: a constructor, a record-returning call, or an
+                    // `update` of a known record.
+                    let rec_ty = match value {
+                        Expr::Ctor { name: ctor, .. }
+                            if self.record_fields.contains_key(ctor) =>
+                        {
+                            Some(ctor.clone())
                         }
+                        Expr::Call { name: fname, .. } => {
+                            self.fn_ret_records.get(fname).cloned()
+                        }
+                        Expr::RecordUpdate { base, .. } => match base.as_ref() {
+                            Expr::Var(v) => self.local_records.get(v).cloned(),
+                            _ => None,
+                        },
+                        _ => None,
+                    };
+                    if let Some(ty) = rec_ty {
+                        self.local_records.insert(name.clone(), ty);
                     }
                     self.infer_locals_expr(value);
                 }
@@ -811,6 +829,17 @@ pub fn compile_module(module: &Module) -> Result<String, CodegenError> {
                 }
             }
             Item::Actor(_) => {}
+        }
+    }
+    // Now that record types are known, note which functions return one, so a
+    // `let q = f(...)` can resolve `q.field`.
+    for item in &module.items {
+        if let Item::Function(f) = item {
+            if let Some(Type::Named(n, _)) = &f.ret {
+                if cg.record_fields.contains_key(n) {
+                    cg.fn_ret_records.insert(f.name.clone(), n.clone());
+                }
+            }
         }
     }
     let mut func_wat = String::new();
