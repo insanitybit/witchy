@@ -759,6 +759,21 @@ mod example_tests {
                 "#,
             ),
             (
+                "string equality + ordering",
+                r#"
+                fn main(console: Console) {
+                  let a = substring("xapple", 1, 6)
+                  print(console, to_string(a == "apple"))
+                  print(console, to_string(a == "apricot"))
+                  print(console, to_string(a != "apricot"))
+                  print(console, to_string("apple" < "banana"))
+                  print(console, to_string("banana" < "apple"))
+                  print(console, to_string("app" < "apple"))
+                  print(console, to_string("apple" <= "apple"))
+                }
+                "#,
+            ),
+            (
                 "tuples + polymorphic to_string",
                 r#"
                 fn main(console: Console) {

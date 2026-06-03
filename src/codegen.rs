@@ -161,6 +161,9 @@ struct Codegen {
     uses_substring: bool,
     /// Whether `replace` (and its `$match_at` companion) is needed.
     uses_replace: bool,
+    /// Whether the lexicographic string comparison helper `$str_cmp` is needed
+    /// (String `<`/`<=`/`>`/`>=`).
+    uses_str_cmp: bool,
     /// Whether the Dict helpers (`$dict_new`/`$dict_insert`/`$dict_get_or`/
     /// `$dict_has` + `$key_eq`) are needed.
     uses_dict: bool,
@@ -249,6 +252,7 @@ impl Codegen {
             uses_index_of: false,
             uses_substring: false,
             uses_replace: false,
+            uses_str_cmp: false,
             uses_dict: false,
             uses_dict_iter: false,
             lambdas: Vec::new(),
@@ -593,6 +597,9 @@ impl Codegen {
         if self.uses_str_eq {
             s.push_str(STR_EQ_WAT);
         }
+        if self.uses_str_cmp {
+            s.push_str(STR_CMP_WAT);
+        }
         let mut arities: Vec<usize> = self.mk_arities.iter().copied().collect();
         arities.sort_unstable();
         for n in arities {
@@ -817,6 +824,38 @@ impl Codegen {
                         self.compile_expr(lhs)?,
                         self.compile_expr(rhs)?
                     ));
+                }
+                // String comparison is structural / lexicographic, not by pointer.
+                // Concrete String operands (per their value type) use $str_eq /
+                // $str_cmp; values of unknown type (e.g. a generic `a`) fall back
+                // to i32 comparison, as before.
+                if matches!(
+                    op,
+                    BinOp::Eq | BinOp::NotEq | BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq
+                ) && self.val_type_of(lhs) == ValType::Str
+                {
+                    let l = self.compile_expr(lhs)?;
+                    let r = self.compile_expr(rhs)?;
+                    match op {
+                        BinOp::Eq => {
+                            self.uses_str_eq = true;
+                            return Ok(format!("{l}{r}    call $str_eq\n"));
+                        }
+                        BinOp::NotEq => {
+                            self.uses_str_eq = true;
+                            return Ok(format!("{l}{r}    call $str_eq\n    i32.eqz\n"));
+                        }
+                        _ => {
+                            self.uses_str_cmp = true;
+                            let cmp = match op {
+                                BinOp::Lt => "i32.lt_s",
+                                BinOp::LtEq => "i32.le_s",
+                                BinOp::Gt => "i32.gt_s",
+                                _ => "i32.ge_s", // GtEq
+                            };
+                            return Ok(format!("{l}{r}    call $str_cmp\n    i32.const 0\n    {cmp}\n"));
+                        }
+                    }
                 }
                 let float = self.kind_of(lhs) == Kind::F64;
                 let l = self.compile_expr(lhs)?;
@@ -1958,6 +1997,29 @@ const STR_EQ_WAT: &str = r#"  (func $str_eq (param $a i32) (param $b i32) (resul
         (local.set $i (i32.add (local.get $i) (i32.const 1)))
         (br $l)))
     (i32.const 1))
+"#;
+
+// str_cmp(a, b): byte-lexicographic comparison, returning a negative/zero/
+// positive i32 like Rust's `String::cmp` (and, since UTF-8 preserves code-point
+// order, matching the interpreter). At the first differing byte the unsigned
+// difference is returned; if one string is a prefix of the other, the shorter
+// compares less (the length difference).
+const STR_CMP_WAT: &str = r#"  (func $str_cmp (param $a i32) (param $b i32) (result i32)
+    (local $alen i32) (local $blen i32) (local $n i32) (local $i i32) (local $ca i32) (local $cb i32)
+    (local.set $alen (i32.load (local.get $a)))
+    (local.set $blen (i32.load (local.get $b)))
+    (local.set $n (select (local.get $alen) (local.get $blen) (i32.lt_s (local.get $alen) (local.get $blen))))
+    (local.set $i (i32.const 0))
+    (block $done
+      (loop $l
+        (br_if $done (i32.ge_s (local.get $i) (local.get $n)))
+        (local.set $ca (i32.load8_u (i32.add (i32.add (local.get $a) (i32.const 4)) (local.get $i))))
+        (local.set $cb (i32.load8_u (i32.add (i32.add (local.get $b) (i32.const 4)) (local.get $i))))
+        (if (i32.ne (local.get $ca) (local.get $cb))
+          (then (return (i32.sub (local.get $ca) (local.get $cb)))))
+        (local.set $i (i32.add (local.get $i) (i32.const 1)))
+        (br $l)))
+    (i32.sub (local.get $alen) (local.get $blen)))
 "#;
 
 // ensure(size): grow linear memory so the bump allocator has room for `size`
