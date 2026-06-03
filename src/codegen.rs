@@ -135,6 +135,10 @@ struct Codegen {
     /// Constructor name -> (variant tag, field count). A constructor value is a
     /// heap record `[tag: i32][field: i32]...`.
     ctors: HashMap<String, (u32, usize)>,
+    /// Constructor name -> per-field record type name (Some when that field is
+    /// a record), so binding `Circle(p)` in a pattern lets `p.field` resolve.
+    /// Only concrete (non-generic) field types are known here.
+    ctor_field_records: HashMap<String, Vec<Option<String>>>,
     /// Constructor arities for which an allocation helper `$mk{N}` is needed.
     mk_arities: HashSet<usize>,
     /// Counter for unique `match` block labels.
@@ -245,6 +249,7 @@ impl Codegen {
             fn_conventions: HashMap::new(),
             fn_params: HashMap::new(),
             ctors: HashMap::new(),
+            ctor_field_records: HashMap::new(),
             mk_arities: HashSet::new(),
             next_label: 0,
             uses_str_eq: false,
@@ -427,6 +432,36 @@ impl Codegen {
     /// determine it (a `split` result, a list literal, or a tracked list local),
     /// so a `for x in <iter>` loop variable's value type — and its use as a Dict
     /// key — can be resolved.
+    /// Collect `(var, record_type)` for each pattern variable bound to a
+    /// record-typed constructor field, recursing through nested patterns. Lets a
+    /// `match` arm like `Circle(p) -> p.x` resolve `p`'s record type.
+    fn pattern_record_binds(&self, pat: &Pattern, out: &mut Vec<(String, String)>) {
+        match pat {
+            Pattern::Ctor { name, args } => {
+                let field_recs = self.ctor_field_records.get(name);
+                for (i, arg) in args.iter().enumerate() {
+                    if let Pattern::Var(v) = arg {
+                        if let Some(Some(rec)) = field_recs.and_then(|fr| fr.get(i)) {
+                            out.push((v.clone(), rec.clone()));
+                        }
+                    }
+                    self.pattern_record_binds(arg, out);
+                }
+            }
+            Pattern::Tuple(args) => {
+                for a in args {
+                    self.pattern_record_binds(a, out);
+                }
+            }
+            Pattern::List { elems, .. } => {
+                for e in elems {
+                    self.pattern_record_binds(e, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
     /// The record type of a list expression's elements, where codegen can
     /// determine it: a `List(Record)` variable, a list literal of records, or a
     /// call to a function declared to return `List(Record)`. Lets
@@ -548,6 +583,13 @@ impl Codegen {
                     collect_pattern_vars(&arm.pattern, &mut pvars);
                     for v in pvars {
                         self.locals.insert(v, Kind::I32);
+                    }
+                    // A var bound to a record-typed constructor field resolves
+                    // `.field` in the arm body (concrete field types only).
+                    let mut recbinds = Vec::new();
+                    self.pattern_record_binds(&arm.pattern, &mut recbinds);
+                    for (v, rec) in recbinds {
+                        self.local_records.insert(v, rec);
                     }
                     self.infer_locals_expr(&arm.body);
                 }
@@ -1937,6 +1979,25 @@ pub fn compile_module(module: &Module) -> Result<String, CodegenError> {
                 }
             }
             Item::Actor(_) => {}
+        }
+    }
+    // Now that all record types are known, record which constructor fields are
+    // records, so binding `Circle(p)` in a pattern lets `p.field` resolve.
+    for item in &module.items {
+        if let Item::Type(t) = item {
+            for variant in &t.variants {
+                let field_recs: Vec<Option<String>> = variant
+                    .fields
+                    .iter()
+                    .map(|ty| match ty {
+                        Type::Named(n, _) if cg.record_fields.contains_key(n) => Some(n.clone()),
+                        _ => None,
+                    })
+                    .collect();
+                if field_recs.iter().any(|r| r.is_some()) {
+                    cg.ctor_field_records.insert(variant.name.clone(), field_recs);
+                }
+            }
         }
     }
     // Now that record types are known, note which functions return a record, so

@@ -3263,6 +3263,33 @@ mod example_tests {
     // max_by/min_by generalize min/max to any type via a comparator, returning
     // Option. The second comparator (`(0-a) < (0-b)`, i.e. larger magnitude is
     // "less") shows the result tracks the supplied ordering, not the natural one.
+    // A variable bound to a record-typed constructor field in a match pattern
+    // (`Circle(c)`) now resolves field access in the arm body (`c.x`). Codegen
+    // previously rejected this; it's fixed for concrete (non-generic) field
+    // types. Both backends agree.
+    #[test]
+    fn match_binds_record_field_backends_agree() {
+        let src = r#"
+            type Point { x: Int  y: Int }
+            type Shape {
+              Circle(Point)
+              Rect(Int, Int)
+            }
+            fn describe(s: Shape) -> Int {
+              match s {
+                Circle(c) -> c.x + c.y
+                Rect(w, h) -> w * h
+              }
+            }
+            fn main(console: Console) {
+              print(console, int_to_string(describe(Circle(Point(3, 4)))))
+              print(console, int_to_string(describe(Rect(5, 6))))
+            }
+        "#;
+        assert_eq!(interp(src), run_on_wasm(src), "match record-field bind diverged");
+        assert_eq!(run_on_wasm(src), vec!["7", "30"]);
+    }
+
     #[test]
     fn std_list_min_max_by_backends_agree() {
         let client = r#"
