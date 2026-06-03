@@ -1,0 +1,23 @@
+// Higher-order functions compile to WebAssembly. A `fn(Int) -> Int` parameter
+// becomes an i32 (a slot in the module's function table); a non-capturing lambda
+// is lifted to its own function and evaluates to its table index; and a call
+// through such a parameter lowers to `call_indirect`. So closures cross the
+// compiled boundary now — as long as they capture nothing from their
+// environment (the table holds bare code pointers, with no closed-over values).
+
+fn apply(f: fn(Int) -> Int, x: Int) -> Int {
+  f(x)
+}
+
+// `twice` threads a function value through a second higher-order call: the
+// `f` parameter (a table index) is passed straight on to `apply`.
+fn twice(f: fn(Int) -> Int, x: Int) -> Int {
+  apply(f, apply(f, x))
+}
+
+fn main(console: Console) {
+  // A non-capturing lambda, lifted and invoked via call_indirect.
+  print(console, int_to_string(apply(fn(n: Int) { n * n }, 9)))
+  // The same machinery through two layers of higher-order calls.
+  print(console, int_to_string(twice(fn(n: Int) { n + 3 }, 10)))
+}

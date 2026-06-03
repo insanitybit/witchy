@@ -21,8 +21,8 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 use crate::ast::{
-    ActorDef, BinOp, Block, Convention, Expr, Function, Item, MatchArm, Module, Pattern, Stmt, Type,
-    UnOp,
+    ActorDef, BinOp, Block, Convention, Expr, Function, Item, MatchArm, Module, Param, Pattern,
+    Stmt, Type, UnOp,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -138,6 +138,13 @@ struct Codegen {
     cur_fn_ret_kind: Kind,
     /// Whether the current function has any `inout` parameters.
     cur_fn_inout: bool,
+    /// Lifted lambda functions, indexed by their table slot: a `fn(...) {...}`
+    /// expression compiles to a function `$__lam{i}` here and evaluates to the
+    /// index `i`. A `call_indirect` through the function table then invokes it.
+    lambdas: Vec<String>,
+    /// Closure arities for which a `(type $clos{n})` signature is needed (all
+    /// i32 params, i32 result), used by `call_indirect`.
+    clos_arities: HashSet<usize>,
 }
 
 impl Codegen {
@@ -173,6 +180,8 @@ impl Codegen {
             uses_list_drop: false,
             uses_starts_with: false,
             uses_ends_with: false,
+            lambdas: Vec::new(),
+            clos_arities: HashSet::new(),
         }
     }
 
@@ -756,7 +765,7 @@ impl Codegen {
                 out.push_str(&format!("    call $mk{nfields}\n"));
                 Ok(out)
             }
-            Expr::Lambda { .. } => cerr("lambdas are not compiled to WASM yet"),
+            Expr::Lambda { params, body } => self.compile_lambda(params, body),
             Expr::List(items) => {
                 // A list is a record [len][elem0..]; reuse the $mk{N} helper with
                 // the length as the header slot.
@@ -941,6 +950,104 @@ impl Codegen {
         })
     }
 
+    /// Compile a non-capturing lambda by lifting it to a top-level function
+    /// `$__lam{i}` and evaluating to its table index `i`. Capturing lambdas (and
+    /// non-Int param/result kinds) are rejected for now: the WASM function table
+    /// holds bare code pointers with no closed-over environment.
+    fn compile_lambda(
+        &mut self,
+        params: &[Param],
+        body: &Block,
+    ) -> Result<String, CodegenError> {
+        let free = lambda_free_vars(params, body);
+        if !free.is_empty() {
+            return cerr(format!(
+                "capturing closures are not compiled to WASM yet (lambda captures `{}`)",
+                free.join("`, `")
+            ));
+        }
+        // Reserve this lambda's table slot *before* compiling the body, so any
+        // nested lambdas take the following slots rather than colliding.
+        let index = self.lambdas.len();
+        self.lambdas.push(String::new());
+
+        // The lambda body compiles in a fresh local scope (its params + lets).
+        let saved_locals = std::mem::take(&mut self.locals);
+        let saved_records = std::mem::take(&mut self.local_records);
+        let saved_list_elem = std::mem::take(&mut self.local_list_elem);
+        let saved_ret = self.cur_fn_ret_kind;
+        let saved_inout = self.cur_fn_inout;
+        self.cur_fn_inout = false;
+
+        for p in params {
+            let k = p.ty.as_ref().map(ty_kind).unwrap_or(Kind::I32);
+            if k != Kind::I32 {
+                self.restore_locals(saved_locals, saved_records, saved_list_elem, saved_ret, saved_inout);
+                return cerr("non-Int lambda parameters are not compiled to WASM yet");
+            }
+            self.locals.insert(p.name.clone(), k);
+            match &p.ty {
+                Some(Type::Named(n, _)) if self.record_fields.contains_key(n) => {
+                    self.local_records.insert(p.name.clone(), n.clone());
+                }
+                Some(Type::Named(n, args)) if n == "List" => {
+                    if let Some(Type::Named(elem, _)) = args.first() {
+                        if self.record_fields.contains_key(elem) {
+                            self.local_list_elem.insert(p.name.clone(), elem.clone());
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        self.infer_locals(body);
+        let ret_kind = self.block_kind(body);
+        if ret_kind != Kind::I32 {
+            self.restore_locals(saved_locals, saved_records, saved_list_elem, saved_ret, saved_inout);
+            return cerr("non-Int lambda results are not compiled to WASM yet");
+        }
+        self.cur_fn_ret_kind = ret_kind;
+
+        let mut header = format!("  (func $__lam{index} ");
+        for p in params {
+            header.push_str(&format!("(param ${} i32) ", p.name));
+        }
+        header.push_str("(result i32)\n");
+        let mut lets = Vec::new();
+        collect_let_names(body, &mut lets);
+        lets.sort();
+        lets.dedup();
+        for name in &lets {
+            let k = self.locals.get(name).copied().unwrap_or(Kind::I32);
+            header.push_str(&format!("    (local ${name} {})\n", wasm_ty(k)));
+        }
+        header.push_str(&format!("    (local ${TUPLE_TMP} i32)\n"));
+        header.push_str(&format!("    (local ${TRY_TMP} i32)\n"));
+        header.push_str(&format!("    (local ${MATCH_TMP} i32)\n"));
+
+        let body_wat = self.compile_block(body)?;
+        self.lambdas[index] = format!("{header}{body_wat}  )\n");
+        self.clos_arities.insert(params.len());
+
+        self.restore_locals(saved_locals, saved_records, saved_list_elem, saved_ret, saved_inout);
+        Ok(format!("    i32.const {index}\n"))
+    }
+
+    fn restore_locals(
+        &mut self,
+        locals: HashMap<String, Kind>,
+        records: HashMap<String, String>,
+        list_elem: HashMap<String, String>,
+        ret: Kind,
+        inout: bool,
+    ) {
+        self.locals = locals;
+        self.local_records = records;
+        self.local_list_elem = list_elem;
+        self.cur_fn_ret_kind = ret;
+        self.cur_fn_inout = inout;
+    }
+
     fn compile_call(&mut self, name: &str, args: &[Expr]) -> Result<String, CodegenError> {
         match (name, args.len()) {
             ("print", 2) => {
@@ -1039,6 +1146,19 @@ impl Codegen {
                 "network capabilities are not compiled to WASM yet (interpreter only; maps to wasi:sockets)",
             ),
             _ => {
+                // A function-valued local (a closure param/binding) holds a table
+                // index: call it indirectly rather than emitting a direct `call`.
+                if self.locals.contains_key(name) {
+                    let n = args.len();
+                    let mut out = String::new();
+                    for arg in args {
+                        out.push_str(&self.compile_expr(arg)?);
+                    }
+                    out.push_str(&format!("    local.get ${name}\n"));
+                    out.push_str(&format!("    call_indirect (type $clos{n})\n"));
+                    self.clos_arities.insert(n);
+                    return Ok(out);
+                }
                 let mut out = String::new();
                 for arg in args {
                     out.push_str(&self.compile_expr(arg)?);
@@ -1162,10 +1282,31 @@ pub fn compile_module(module: &Module) -> Result<String, CodegenError> {
     }
 
     let mut wat = String::from("(module\n");
+    // Closure call signatures (all i32 params, i32 result) for `call_indirect`.
+    let mut arities: Vec<usize> = cg.clos_arities.iter().copied().collect();
+    arities.sort_unstable();
+    for n in &arities {
+        let params = "(param i32) ".repeat(*n);
+        wat.push_str(&format!("  (type $clos{n} (func {params}(result i32)))\n"));
+    }
     wat.push_str(&cg.emit_imports());
     wat.push_str("  (memory (export \"memory\") 1)\n");
+    // Function table populated with the lifted lambdas; slot i holds `$__lam{i}`.
+    if !cg.lambdas.is_empty() {
+        let count = cg.lambdas.len();
+        wat.push_str(&format!("  (table {count} funcref)\n"));
+        let mut elem = String::from("  (elem (i32.const 0)");
+        for i in 0..count {
+            elem.push_str(&format!(" $__lam{i}"));
+        }
+        elem.push_str(")\n");
+        wat.push_str(&elem);
+    }
     wat.push_str(&cg.emit_data_globals_helpers(""));
     wat.push_str(&func_wat);
+    for lam in &cg.lambdas {
+        wat.push_str(lam);
+    }
 
     wat.push_str("  (func (export \"run\")\n");
     for _ in 0..main_params {
@@ -1320,12 +1461,31 @@ fn compile_actor_with_tags(
     };
 
     let mut wat = String::from("(module\n");
+    let mut arities: Vec<usize> = cg.clos_arities.iter().copied().collect();
+    arities.sort_unstable();
+    for n in &arities {
+        let params = "(param i32) ".repeat(*n);
+        wat.push_str(&format!("  (type $clos{n} (func {params}(result i32)))\n"));
+    }
     wat.push_str(&cg.emit_imports());
     wat.push_str("  (memory (export \"memory\") 1)\n");
+    if !cg.lambdas.is_empty() {
+        let count = cg.lambdas.len();
+        wat.push_str(&format!("  (table {count} funcref)\n"));
+        let mut elem = String::from("  (elem (i32.const 0)");
+        for i in 0..count {
+            elem.push_str(&format!(" $__lam{i}"));
+        }
+        elem.push_str(")\n");
+        wat.push_str(&elem);
+    }
     wat.push_str(&cg.emit_data_globals_helpers(&extra_globals));
     for (header, body) in &handlers {
         // Handlers return nothing; discard the block's trailing value.
         wat.push_str(&format!("{header}{reset}{body}    drop\n  )\n"));
+    }
+    for lam in &cg.lambdas {
+        wat.push_str(lam);
     }
     wat.push_str(")\n");
     Ok(wat)
@@ -1545,6 +1705,119 @@ const INT_TO_STRING_WAT: &str = r#"  (func $int_to_string (param $n i32) (result
     end)
 "#;
 
+/// Variables a lambda references from its enclosing scope (i.e. captures).
+/// Computed as referenced names minus the lambda's own params and any names it
+/// binds internally (lets, loop vars, match patterns, nested lambda params).
+/// An over-approximation of "bound" (binders apply to the whole body), which is
+/// sound for the rejection check on all but pathological shadowing.
+fn lambda_free_vars(params: &[Param], body: &Block) -> Vec<String> {
+    let mut refs = HashSet::new();
+    let mut bound: HashSet<String> = params.iter().map(|p| p.name.clone()).collect();
+    fv_block(body, &mut refs, &mut bound);
+    let mut free: Vec<String> = refs.difference(&bound).cloned().collect();
+    free.sort();
+    free
+}
+
+fn fv_block(block: &Block, refs: &mut HashSet<String>, bound: &mut HashSet<String>) {
+    for stmt in &block.stmts {
+        match stmt {
+            Stmt::Let { name, value, .. } => {
+                fv_expr(value, refs, bound);
+                bound.insert(name.clone());
+            }
+            // Assigning a name that is not bound within the lambda mutates an
+            // outer binding — that is a capture too.
+            Stmt::Assign { name, value } => {
+                refs.insert(name.clone());
+                fv_expr(value, refs, bound);
+            }
+            Stmt::LetTuple { names, value } => {
+                fv_expr(value, refs, bound);
+                for n in names {
+                    bound.insert(n.clone());
+                }
+            }
+            Stmt::Return(Some(e)) | Stmt::Expr(e) => fv_expr(e, refs, bound),
+            Stmt::Return(None) => {}
+        }
+    }
+}
+
+fn fv_expr(e: &Expr, refs: &mut HashSet<String>, bound: &mut HashSet<String>) {
+    match e {
+        Expr::Var(n) => {
+            refs.insert(n.clone());
+        }
+        Expr::Int(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) => {}
+        // A `Call` name is a function/builtin (or a closure local, caught at WASM
+        // validation), never an outer value capture — only its args matter here.
+        Expr::List(xs) | Expr::Tuple(xs) => {
+            for x in xs {
+                fv_expr(x, refs, bound);
+            }
+        }
+        Expr::Call { args, .. } | Expr::Ctor { args, .. } | Expr::Spawn { args, .. } => {
+            for a in args {
+                fv_expr(a, refs, bound);
+            }
+        }
+        Expr::Unary { expr, .. } | Expr::Try(expr) => fv_expr(expr, refs, bound),
+        Expr::Field { base, .. } => fv_expr(base, refs, bound),
+        Expr::RecordUpdate { base, fields } => {
+            fv_expr(base, refs, bound);
+            for (_, v) in fields {
+                fv_expr(v, refs, bound);
+            }
+        }
+        Expr::Binary { lhs, rhs, .. } => {
+            fv_expr(lhs, refs, bound);
+            fv_expr(rhs, refs, bound);
+        }
+        Expr::If {
+            cond,
+            then_block,
+            else_block,
+        } => {
+            fv_expr(cond, refs, bound);
+            fv_block(then_block, refs, bound);
+            if let Some(b) = else_block {
+                fv_block(b, refs, bound);
+            }
+        }
+        Expr::Match { scrutinee, arms } => {
+            fv_expr(scrutinee, refs, bound);
+            for arm in arms {
+                let mut pv = Vec::new();
+                collect_pattern_vars(&arm.pattern, &mut pv);
+                for v in pv {
+                    bound.insert(v);
+                }
+                if let Some(g) = &arm.guard {
+                    fv_expr(g, refs, bound);
+                }
+                fv_expr(&arm.body, refs, bound);
+            }
+        }
+        Expr::Block(b) => fv_block(b, refs, bound),
+        Expr::While { cond, body } => {
+            fv_expr(cond, refs, bound);
+            fv_block(body, refs, bound);
+        }
+        Expr::For { var, iter, body } => {
+            fv_expr(iter, refs, bound);
+            bound.insert(var.clone());
+            fv_block(body, refs, bound);
+        }
+        Expr::Lambda { params, body } => {
+            for p in params {
+                bound.insert(p.name.clone());
+            }
+            fv_block(body, refs, bound);
+        }
+    }
+}
+
 fn collect_let_names(block: &Block, out: &mut Vec<String>) {
     for stmt in &block.stmts {
         match stmt {
@@ -1686,6 +1959,61 @@ mod tests {
             fn main() -> Float { half(7.0) + 1.5 }
         "#;
         assert_eq!(run_float(src), 5.0); // 3.5 + 1.5
+    }
+
+    #[test]
+    fn compiles_non_capturing_closure() {
+        // A non-capturing lambda passed to a higher-order function: lifted to a
+        // table slot, then invoked via `call_indirect`.
+        let src = r#"
+            fn apply(f: fn(Int) -> Int, x: Int) -> Int { f(x) }
+            fn main() -> Int { apply(fn(n: Int) { n * n }, 9) }
+        "#;
+        assert_eq!(run_int(src), 81);
+    }
+
+    #[test]
+    fn compiles_multiple_closures() {
+        // Two distinct lambdas take distinct table slots and call_indirect each.
+        let src = r#"
+            fn apply(f: fn(Int) -> Int, x: Int) -> Int { f(x) }
+            fn main() -> Int {
+                let a = apply(fn(n: Int) { n + 1 }, 10)
+                let b = apply(fn(n: Int) { n * 3 }, 10)
+                a + b
+            }
+        "#;
+        assert_eq!(run_int(src), 41); // 11 + 30
+    }
+
+    #[test]
+    fn closure_can_call_global_function() {
+        // A lambda calling a top-level function is still non-capturing.
+        let src = r#"
+            fn dbl(x: Int) -> Int { x * 2 }
+            fn apply(f: fn(Int) -> Int, x: Int) -> Int { f(x) }
+            fn main() -> Int { apply(fn(n: Int) { dbl(n) + 1 }, 4) }
+        "#;
+        assert_eq!(run_int(src), 9); // dbl(4) + 1
+    }
+
+    #[test]
+    fn capturing_closure_is_rejected() {
+        // The lambda reads `k` from the enclosing scope: rejected (no environment
+        // in the WASM function table yet).
+        let src = r#"
+            fn apply(f: fn(Int) -> Int, x: Int) -> Int { f(x) }
+            fn main() -> Int {
+                let k = 5
+                apply(fn(n: Int) { n + k }, 10)
+            }
+        "#;
+        let module = parse_module(src).expect("parse");
+        let err = compile_module(&module).expect_err("should reject capture");
+        assert!(
+            err.to_string().contains("captures `k`"),
+            "unexpected error: {err}"
+        );
     }
 
     /// Build a wasmtime instance whose `print` captures strings from memory.

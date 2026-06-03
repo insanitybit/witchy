@@ -908,6 +908,16 @@ mod example_tests {
     }
 
     #[test]
+    fn closures_example_runs_on_wasm() {
+        // Higher-order functions + non-capturing lambdas, compiled to WASM:
+        // apply(square, 9) = 81; twice(+3, 10) = ((10+3)+3) = 16.
+        assert_eq!(
+            run_on_wasm(include_str!("../examples/closures.witchy")),
+            vec!["81", "16"]
+        );
+    }
+
+    #[test]
     fn record_typed_list_iteration_on_wasm() {
         // `for it in items` where items: List(Record) — the loop var's fields
         // resolve. total([Item(3,2), Item(5,1)]) = 3*2 + 5*1 = 11.
