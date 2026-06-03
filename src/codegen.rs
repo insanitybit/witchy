@@ -736,7 +736,28 @@ impl Codegen {
                 TRUE.to_string(),
                 format!("{value}    local.set ${name}\n"),
             ),
-            Pattern::Tuple(_) => return cerr("tuple patterns are not compiled to WASM yet"),
+            Pattern::Tuple(pats) => {
+                // A tuple is `[0][elem0][elem1]...`; there's no tag to check
+                // (tuples always match by shape), so the condition is just the
+                // AND of the element-pattern conditions.
+                let mut elem_conds = Vec::new();
+                let mut binds = String::new();
+                for (i, sub) in pats.iter().enumerate() {
+                    let elem_value =
+                        format!("{value}    i32.const {}\n    i32.add\n    i32.load\n", 4 + 4 * i);
+                    let (sub_cond, sub_binds) = self.pattern_match(&elem_value, sub)?;
+                    if sub_cond != TRUE {
+                        elem_conds.push(sub_cond);
+                    }
+                    binds.push_str(&sub_binds);
+                }
+                let cond = if elem_conds.is_empty() {
+                    TRUE.to_string()
+                } else {
+                    and_chain(&elem_conds)
+                };
+                (cond, binds)
+            }
             Pattern::List { .. } => return cerr("list patterns are not compiled to WASM yet"),
             Pattern::Str(s) => {
                 self.uses_str_eq = true;
@@ -1314,7 +1335,7 @@ fn collect_let_names_expr(expr: &Expr, out: &mut Vec<String>) {
 fn collect_pattern_vars(pat: &Pattern, out: &mut Vec<String>) {
     match pat {
         Pattern::Var(name) => out.push(name.clone()),
-        Pattern::Ctor { args, .. } => {
+        Pattern::Ctor { args, .. } | Pattern::Tuple(args) => {
             for sub in args {
                 collect_pattern_vars(sub, out);
             }

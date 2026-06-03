@@ -694,6 +694,26 @@ mod example_tests {
     }
 
     #[test]
+    fn tuple_match_patterns_on_wasm() {
+        // Tuple patterns in `match` compile to WASM (no tag; element-wise).
+        // classify((3,0))=3, classify((0,5))=5, classify((2,4))=6; sum = 14.
+        let src = r#"
+            fn classify(p: (Int, Int)) -> Int {
+              match p {
+                (0, 0) -> 0
+                (x, 0) -> x
+                (0, y) -> y
+                (x, y) -> x + y
+              }
+            }
+            fn main() -> Int {
+              classify((3, 0)) + classify((0, 5)) + classify((2, 4))
+            }
+        "#;
+        assert_eq!(run_on_wasm(src), vec!["14"]);
+    }
+
+    #[test]
     fn tuple_construct_and_destructure_on_wasm() {
         // Multiple-return-value tuples compile to WASM: divmod(17,5) = (3,2),
         // then 3*100 + 2 = 302.

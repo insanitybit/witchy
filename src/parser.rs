@@ -604,7 +604,13 @@ impl Parser {
         // Note: a trailing `.member` (module-qualified call or field access) is
         // handled by `postfix`, which wraps this.
         let is_ctor = name.chars().next().is_some_and(|c| c.is_uppercase());
-        if self.at(&Tok::LParen) {
+        // In a match-arm body, a `(` that begins a new line is the next arm's
+        // tuple pattern, not call arguments for this name. (Arms have no
+        // separator; same rule as a leading `-`.)
+        let paren_starts_next_arm = self.in_match_arm
+            && *self.kind() == Tok::LParen
+            && self.cur().line > self.toks[self.pos.saturating_sub(1)].line;
+        if self.at(&Tok::LParen) && !paren_starts_next_arm {
             let args = self.call_args()?;
             if is_ctor {
                 Ok(Expr::Ctor { name, args })
@@ -938,6 +944,20 @@ mod tests {
         assert!(matches!(arms[0].pattern, Pattern::Ctor { .. }));
         assert!(arms[0].guard.is_some());
         assert!(matches!(arms[2].pattern, Pattern::Wildcard));
+    }
+
+    #[test]
+    fn tuple_pattern_after_ident_body_parses() {
+        // A bare-identifier arm body must not swallow the next arm's `(..)`.
+        let stmts = fn_body(
+            "fn f(p: (Int, Int)) -> Int {\n  match p {\n    (a, b) -> a\n    (x, y) -> y\n  }\n}",
+        );
+        let Stmt::Expr(Expr::Match { arms, .. }) = &stmts[0] else {
+            panic!("expected a match expression");
+        };
+        assert_eq!(arms.len(), 2);
+        assert!(matches!(arms[0].pattern, Pattern::Tuple(_)));
+        assert!(matches!(arms[0].body, Expr::Var(_)));
     }
 
     #[test]
