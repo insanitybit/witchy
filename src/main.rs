@@ -2791,6 +2791,45 @@ mod example_tests {
         assert_eq!(run_on_wasm(src), vec!["11", "3"]);
     }
 
+    // Tuple patterns in `match`: literals and wildcards in each position
+    // (quadrant), plus binding tuple elements alongside a literal in another
+    // position (describe). Destructuring a matched tuple must agree across
+    // backends.
+    #[test]
+    fn tuple_patterns_backends_agree() {
+        let src = r#"
+            fn quadrant(x: Int, y: Int) -> String {
+              match (x, y) {
+                (0, 0) -> "origin"
+                (0, _) -> "y-axis"
+                (_, 0) -> "x-axis"
+                _ -> "other"
+              }
+            }
+            fn describe(pair: (Int, String)) -> String {
+              match pair {
+                (0, s) -> "zero:" <> s
+                (n, "stop") -> "stop@" <> int_to_string(n)
+                (n, s) -> s <> "=" <> int_to_string(n)
+              }
+            }
+            fn main(console: Console) {
+              print(console, quadrant(0, 0))
+              print(console, quadrant(0, 5))
+              print(console, quadrant(5, 0))
+              print(console, quadrant(2, 3))
+              print(console, describe((0, "x")))
+              print(console, describe((7, "stop")))
+              print(console, describe((4, "k")))
+            }
+        "#;
+        assert_eq!(interp(src), run_on_wasm(src), "tuple patterns diverged");
+        assert_eq!(
+            run_on_wasm(src),
+            vec!["origin", "y-axis", "x-axis", "other", "zero:x", "stop@7", "k=4"]
+        );
+    }
+
     #[test]
     fn function_pipeline_fold_backends_agree() {
         let client = r#"
