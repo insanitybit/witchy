@@ -748,6 +748,31 @@ mod example_tests {
     }
 
     #[test]
+    fn try_operator_runs_on_wasm() {
+        // `?` compiles: success unwraps, error early-returns. compute(3,4)=Ok(7),
+        // compute(0,9)=Err(99); 7*100 + 99 = 799.
+        let src = r#"
+            type Result { Ok(a) Err(e) }
+            fn checked(n: Int) -> Result(Int, Int) {
+              match n { 0 -> Err(99)  _ -> Ok(n) }
+            }
+            fn compute(a: Int, b: Int) -> Result(Int, Int) {
+              let x = checked(a)?
+              let y = checked(b)?
+              Ok(x + y)
+            }
+            fn main() -> Int {
+              let r1 = compute(3, 4)
+              let ok = match r1 { Ok(v) -> v  Err(e) -> e }
+              let r2 = compute(0, 9)
+              let bad = match r2 { Ok(v) -> v  Err(e) -> e }
+              ok * 100 + bad
+            }
+        "#;
+        assert_eq!(run_on_wasm(src), vec!["799"]);
+    }
+
+    #[test]
     fn early_return_runs_on_wasm() {
         // Guard-clause early returns compile to valid WASM and run.
         // classify(-5) = -1, classify(0) = 0, classify(9) = 1; sum = 0.

@@ -49,6 +49,9 @@ const DATA_BASE: u32 = 8;
 /// Scratch local holding a tuple pointer while its elements are unpacked.
 const TUPLE_TMP: &str = "__witchy_tuple_tmp";
 
+/// Scratch local holding the Result/Option being unwrapped by `?`.
+const TRY_TMP: &str = "__witchy_try_tmp";
+
 /// The WASM representation of a value: f64 for floats, i32 for everything else
 /// (ints, bools, and pointers to strings/lists/records).
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -377,8 +380,9 @@ impl Codegen {
             let k = self.locals.get(name).copied().unwrap_or(Kind::I32);
             header.push_str(&format!("    (local ${name} {})\n", wasm_ty(k)));
         }
-        // Scratch slot used by tuple destructuring (`let (a, b) = ...`).
+        // Scratch slots: tuple destructuring (`let (a, b) = ...`) and `?`.
         header.push_str(&format!("    (local ${TUPLE_TMP} i32)\n"));
+        header.push_str(&format!("    (local ${TRY_TMP} i32)\n"));
 
         let body = self.compile_block(&f.body)?;
         // Move-out: append each `inout` parameter's final value (declaration order).
@@ -607,7 +611,23 @@ impl Codegen {
                 out.push_str(&format!("    call $mk{n}\n"));
                 Ok(out)
             }
-            Expr::Try(_) => cerr("the `?` operator is not compiled to WASM yet"),
+            Expr::Try(inner) => {
+                // The type checker guarantees `inner` is a Result/Option, whose
+                // success variant (Ok/Some) is tag 0 carrying one payload. So:
+                // if tag==0, take the payload; otherwise early-return the whole
+                // value (the Err/None) — which needs the function's `return`.
+                if self.cur_fn_inout {
+                    return cerr("`?` is not compiled for functions with `inout` parameters");
+                }
+                let v = self.compile_expr(inner)?;
+                Ok(format!(
+                    "{v}    local.set ${TRY_TMP}\n    \
+                     local.get ${TRY_TMP}\n    i32.load\n    i32.eqz\n    \
+                     if (result i32)\n    \
+                     local.get ${TRY_TMP}\n    i32.const 4\n    i32.add\n    i32.load\n    \
+                     else\n    local.get ${TRY_TMP}\n    return\n    i32.const 0\n    end\n"
+                ))
+            }
             Expr::For { var, iter, body } => {
                 // Iterate a list `[len][e0][e1]...`: keep the list pointer and an
                 // index in scratch locals (named after the loop var so they're
