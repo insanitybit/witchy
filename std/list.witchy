@@ -86,6 +86,50 @@ pub fn count(xs: List(a), pred: fn(a) -> Bool) -> Int {
   n
 }
 
+// The longest leading run of elements satisfying `pred`.
+pub fn take_while(xs: List(a), pred: fn(a) -> Bool) -> List(a) {
+  var out = []
+  var taking = true
+  for x in xs {
+    if taking {
+      if pred(x) {
+        out = push(out, x)
+      } else {
+        taking = false
+      }
+    }
+  }
+  out
+}
+
+// Drop the longest leading run satisfying `pred`, keeping the rest.
+pub fn drop_while(xs: List(a), pred: fn(a) -> Bool) -> List(a) {
+  var out = []
+  var dropping = true
+  for x in xs {
+    if dropping {
+      if !pred(x) {
+        dropping = false
+        out = push(out, x)
+      }
+    } else {
+      out = push(out, x)
+    }
+  }
+  out
+}
+
+// A list of `n` copies of `x` (empty when `n <= 0`).
+pub fn repeat(x: a, n: Int) -> List(a) {
+  var out = []
+  var i = 0
+  while i < n {
+    out = push(out, x)
+    i = i + 1
+  }
+  out
+}
+
 // Index of the first element satisfying `pred`, or -1 if none do. (Like
 // `index_of`, but matching by predicate rather than value equality.)
 pub fn find_index(xs: List(a), pred: fn(a) -> Bool) -> Int {

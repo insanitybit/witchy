@@ -971,6 +971,29 @@ mod example_tests {
     }
 
     #[test]
+    fn std_list_take_drop_while_repeat_backends_agree() {
+        // take_while/drop_while split at the first failing element; repeat makes
+        // n copies. Both backends agree.
+        let client = r#"
+            import list
+            fn main(console: Console) {
+              let xs = [1, 2, 3, 10, 4, 5]
+              print(console, int_to_string(list.sum(list.take_while(xs, fn(n: Int) { n < 5 }))))
+              print(console, int_to_string(list.sum(list.drop_while(xs, fn(n: Int) { n < 5 }))))
+              let threes = list.repeat(7, 3)
+              print(console, int_to_string(list.sum(threes)))
+              print(console, int_to_string(length(threes)))
+              print(console, int_to_string(length(list.repeat(9, 0))))
+            }
+        "#;
+        let sources = [("list", crate::bundled_module("list").unwrap()), ("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "take_while/drop_while/repeat diverged");
+        assert_eq!(compiled, vec!["6", "19", "21", "3", "0"]);
+    }
+
+    #[test]
     fn std_list_flatten_flatmap_backends_agree() {
         // flatten / flat_map (concat-based, with a list-returning closure for
         // flat_map) behave identically in both backends.
