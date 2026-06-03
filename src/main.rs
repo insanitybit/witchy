@@ -971,6 +971,30 @@ mod example_tests {
     }
 
     #[test]
+    fn std_list_zip_with_intersperse_backends_agree() {
+        // zip_with combines element-wise (stopping at the shorter list);
+        // intersperse inserts a separator between elements. Both backends agree.
+        let client = r#"
+            import list
+            fn main(console: Console) {
+              let sums = list.zip_with([1, 2, 3], [10, 20], fn(a: Int, b: Int) { a + b })
+              print(console, int_to_string(length(sums)))    // 2 (shorter)
+              print(console, int_to_string(list.sum(sums)))   // 11 + 22 = 33
+              let spaced = list.intersperse([5, 6, 7], 0)
+              print(console, int_to_string(length(spaced)))   // 5
+              print(console, int_to_string(list.sum(spaced))) // 5+0+6+0+7 = 18
+              print(console, int_to_string(length(list.intersperse([9], 0))))  // 1
+              print(console, int_to_string(length(list.intersperse([], 0))))   // 0
+            }
+        "#;
+        let sources = [("list", crate::bundled_module("list").unwrap()), ("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "zip_with/intersperse diverged");
+        assert_eq!(compiled, vec!["2", "33", "5", "18", "1", "0"]);
+    }
+
+    #[test]
     fn std_list_take_drop_while_repeat_backends_agree() {
         // take_while/drop_while split at the first failing element; repeat makes
         // n copies. Both backends agree.

@@ -143,6 +143,33 @@ pub fn find_index(xs: List(a), pred: fn(a) -> Bool) -> Int {
   0 - 1
 }
 
+// Combine two lists element-wise with `f`, stopping at the shorter one.
+pub fn zip_with(xs: List(a), ys: List(b), f: fn(a, b) -> c) -> List(c) {
+  var out = []
+  var i = 0
+  while i < length(xs) && i < length(ys) {
+    out = push(out, f(at(xs, i), at(ys, i)))
+    i = i + 1
+  }
+  out
+}
+
+// Insert `sep` between adjacent elements: [a, b, c] -> [a, sep, b, sep, c].
+pub fn intersperse(xs: List(a), sep: a) -> List(a) {
+  var out = []
+  var first = true
+  for x in xs {
+    if first {
+      out = push(out, x)
+      first = false
+    } else {
+      out = push(out, sep)
+      out = push(out, x)
+    }
+  }
+  out
+}
+
 // The list, reversed.
 pub fn reverse(xs: List(a)) -> List(a) {
   var out = []
