@@ -1007,8 +1007,8 @@ impl Interpreter {
                             .record_fields
                             .get(&name)
                             .and_then(|names| names.iter().position(|n| n == field));
-                        match idx {
-                            Some(i) => Ok(fields[i].clone()),
+                        match idx.and_then(|i| fields.get(i)) {
+                            Some(v) => Ok(v.clone()),
                             None => err(format!("`{name}` has no field `{field}`")),
                         }
                     }
@@ -1306,12 +1306,20 @@ pub fn run_module(
     // accommodates legitimate depth; `depth_limit` is the graceful guard against
     // runaway recursion well before this stack is exhausted.
     let root = root.as_ref().to_path_buf();
-    std::thread::Builder::new()
+    let handle = std::thread::Builder::new()
         .stack_size(4 * 1024 * 1024 * 1024)
         .spawn(move || run_module_inner(module, root, net_allow))
-        .expect("spawn interpreter thread")
-        .join()
-        .expect("interpreter thread panicked")
+        .map_err(|e| RuntimeError {
+            message: format!("could not start the interpreter thread: {e}"),
+        })?;
+    // `join` contains any panic from the evaluator thread, so even an unforeseen
+    // panic becomes a graceful error here instead of taking down the host.
+    match handle.join() {
+        Ok(result) => result,
+        Err(_) => Err(RuntimeError {
+            message: "internal error: the interpreter thread panicked".into(),
+        }),
+    }
 }
 
 fn run_module_inner(
