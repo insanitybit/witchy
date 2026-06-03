@@ -681,7 +681,13 @@ impl Parser {
         self.expect(&Tok::LBrace)?;
         let mut arms = Vec::new();
         while !self.at(&Tok::RBrace) && !self.at(&Tok::Eof) {
-            let pattern = self.pattern()?;
+            // Or-patterns: `p1 | p2 | ... -> body` is sugar for one arm per
+            // alternative, all sharing the guard and body. Alternatives that
+            // bind variables work too, since each expanded arm binds them.
+            let mut alternatives = vec![self.pattern()?];
+            while self.eat(&Tok::Bar) {
+                alternatives.push(self.pattern()?);
+            }
             let guard = if self.eat(&Tok::If) {
                 Some(self.expr(0)?)
             } else {
@@ -692,7 +698,19 @@ impl Parser {
             self.in_match_arm = true;
             let body = self.expr(0)?;
             self.in_match_arm = outer;
-            arms.push(MatchArm { pattern, guard, body });
+            let last = alternatives.len() - 1;
+            for (i, pattern) in alternatives.into_iter().enumerate() {
+                // Clone the shared guard/body for every alternative but the last.
+                if i == last {
+                    arms.push(MatchArm { pattern, guard, body });
+                    break;
+                }
+                arms.push(MatchArm {
+                    pattern,
+                    guard: guard.clone(),
+                    body: body.clone(),
+                });
+            }
             self.eat(&Tok::Comma); // optional separator
         }
         self.expect(&Tok::RBrace)?;
@@ -872,6 +890,24 @@ mod tests {
         assert_eq!(f.name, "add");
         assert_eq!(f.params.len(), 2);
         assert_eq!(f.ret, Some(Type::Named("Int".into(), vec![])));
+    }
+
+    #[test]
+    fn or_patterns_desugar_to_one_arm_per_alternative() {
+        // `1 | 2 | 3 -> body` becomes three arms sharing the body.
+        let stmts = fn_body(r#"fn f(n: Int) -> Int { match n { 1 | 2 | 3 -> 0  _ -> 1 } }"#);
+        let Stmt::Expr(Expr::Match { arms, .. }) = &stmts[0] else {
+            panic!("expected a match");
+        };
+        // 1, 2, 3, _  => 4 arms
+        assert_eq!(arms.len(), 4);
+        assert_eq!(arms[0].pattern, Pattern::Int(1));
+        assert_eq!(arms[1].pattern, Pattern::Int(2));
+        assert_eq!(arms[2].pattern, Pattern::Int(3));
+        assert_eq!(arms[3].pattern, Pattern::Wildcard);
+        // The shared body is duplicated to each alternative.
+        assert_eq!(arms[0].body, arms[1].body);
+        assert_eq!(arms[1].body, arms[2].body);
     }
 
     #[test]

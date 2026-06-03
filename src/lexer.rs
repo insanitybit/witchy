@@ -65,6 +65,7 @@ pub enum Tok {
     Percent, // %
     Concat, // <>
     Pipe,   // |>
+    Bar,    // |  (or-patterns)
     LArrow, // <-
     RArrow, // ->
     AndAnd, // &&
@@ -130,6 +131,7 @@ impl fmt::Display for Tok {
             Percent => write!(f, "%"),
             Concat => write!(f, "<>"),
             Pipe => write!(f, "|>"),
+            Bar => write!(f, "|"),
             LArrow => write!(f, "<-"),
             RArrow => write!(f, "->"),
             AndAnd => write!(f, "&&"),
@@ -483,6 +485,7 @@ impl Lexer {
                 self.bump();
                 Tok::OrOr
             }
+            ('|', _) => Tok::Bar,
             ('!', _) => Tok::Bang,
             ('=', _) => Tok::Eq,
             ('<', _) => Tok::Lt,
@@ -616,5 +619,13 @@ mod tests {
     #[test]
     fn underscore_vs_identifier() {
         assert_eq!(kinds("_ _foo"), vec![Tok::Underscore, Tok::Ident("_foo".into()), Tok::Eof]);
+    }
+
+    #[test]
+    fn bar_distinct_from_pipe_and_oror() {
+        // `|` (or-patterns) vs `|>` (pipe) vs `||` (logical or).
+        assert_eq!(kinds("a | b"), vec![Tok::Ident("a".into()), Tok::Bar, Tok::Ident("b".into()), Tok::Eof]);
+        assert_eq!(kinds("a |> b"), vec![Tok::Ident("a".into()), Tok::Pipe, Tok::Ident("b".into()), Tok::Eof]);
+        assert_eq!(kinds("a || b"), vec![Tok::Ident("a".into()), Tok::OrOr, Tok::Ident("b".into()), Tok::Eof]);
     }
 }

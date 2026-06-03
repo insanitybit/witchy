@@ -2211,6 +2211,35 @@ mod example_tests {
     }
 
     #[test]
+    fn or_patterns_backends_agree() {
+        // `p1 | p2 -> body` desugars to one arm per alternative. Works for
+        // literal alternatives and for constructor alternatives that bind the
+        // same variable. Both backends agree.
+        let src = r#"
+            type Shape { Circle(Int)  Square(Int)  Rect(Int, Int) }
+            fn classify(n: Int) -> String {
+              match n { 1 | 2 | 3 -> "small"  4 | 5 -> "medium"  _ -> "big" }
+            }
+            fn side(s: Shape) -> Int {
+              match s { Circle(r) | Square(r) -> r  Rect(w, h) -> w }
+            }
+            fn main(console: Console) {
+              print(console, classify(2))
+              print(console, classify(5))
+              print(console, classify(10))
+              print(console, int_to_string(side(Circle(5))))
+              print(console, int_to_string(side(Square(7))))
+              print(console, int_to_string(side(Rect(3, 4))))
+            }
+        "#;
+        assert_eq!(interp(src), run_on_wasm(src));
+        assert_eq!(
+            run_on_wasm(src),
+            vec!["small", "medium", "big", "5", "7", "3"]
+        );
+    }
+
+    #[test]
     fn generics_example_runs_on_wasm() {
         // A generic `swap((a, b)) -> (b, a)` on a mixed (Int, String) tuple:
         // tuple pattern match + construction through a generic function.
