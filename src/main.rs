@@ -1406,6 +1406,36 @@ mod example_tests {
     }
 
     #[test]
+    fn dict_remove_backends_agree() {
+        // `remove` (string and int keys) — present, absent, and the surviving
+        // entries — agrees across the interpreter and compiled backends.
+        let src = r#"
+            fn main(console: Console) {
+              var d = dict_new()
+              d = insert(d, "a", 1)
+              d = insert(d, "b", 2)
+              d = insert(d, "c", 3)
+              let d2 = remove(d, "b")
+              print(console, int_to_string(size(d2)))                         // 2
+              print(console, int_to_string(if has(d2, "b") { 1 } else { 0 })) // 0
+              print(console, int_to_string(get_or(d2, "a", 0)))               // 1
+              print(console, int_to_string(get_or(d2, "c", 0)))               // 3
+              let d3 = remove(d, "missing")
+              print(console, int_to_string(size(d3)))                         // 3 (unchanged)
+              print(console, int_to_string(size(d)))                          // 3 (original intact)
+              var nums = dict_new()
+              nums = insert(nums, 10, 100)
+              nums = insert(nums, 20, 200)
+              let nums2 = remove(nums, 10)
+              print(console, int_to_string(size(nums2)))                      // 1
+              print(console, int_to_string(get_or(nums2, 20, 0)))             // 200
+            }
+        "#;
+        assert_eq!(interp(src), run_on_wasm(src));
+        assert_eq!(run_on_wasm(src), vec!["2", "0", "1", "3", "3", "3", "1", "200"]);
+    }
+
+    #[test]
     fn dict_keys_values_pairs_on_wasm() {
         // keys/values/pairs compiled to WASM: keys -> list of keys, values ->
         // list of values, pairs -> list of (k, v) tuples destructured in a loop.

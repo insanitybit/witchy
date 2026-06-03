@@ -468,6 +468,12 @@ impl Checker {
                 let d = Ty::Named("Dict".into(), vec![k.clone(), v]);
                 Some((vec![d, k], Ty::Bool))
             }
+            "remove" => {
+                let k = self.fresh();
+                let v = self.fresh();
+                let d = Ty::Named("Dict".into(), vec![k.clone(), v]);
+                Some((vec![d.clone(), k], d))
+            }
             "keys" => {
                 let k = self.fresh();
                 let v = self.fresh();

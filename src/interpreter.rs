@@ -694,6 +694,15 @@ impl Interpreter {
                 }
                 _ => err("has expects a Dict and a key"),
             },
+            // A new dict with `k` (and its value) removed; unchanged if absent.
+            "remove" => match args {
+                [Value::Dict(entries), k] => {
+                    let out: Vec<(Value, Value)> =
+                        entries.iter().filter(|(ek, _)| ek != k).cloned().collect();
+                    Ok(Some(Value::Dict(out)))
+                }
+                _ => err("remove expects a Dict and a key"),
+            },
             "keys" => match args {
                 [Value::Dict(entries)] => {
                     Ok(Some(Value::List(entries.iter().map(|(k, _)| k.clone()).collect())))

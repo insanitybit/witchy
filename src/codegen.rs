@@ -582,6 +582,7 @@ impl Codegen {
             s.push_str(DICT_INSERT_WAT);
             s.push_str(DICT_GET_OR_WAT);
             s.push_str(DICT_HAS_WAT);
+            s.push_str(DICT_REMOVE_WAT);
         }
         if self.uses_dict_iter {
             s.push_str(DICT_KEYS_WAT);
@@ -1544,6 +1545,15 @@ impl Codegen {
                 let k = self.compile_expr(&args[1])?;
                 Ok(format!("{d}{k}    i32.const {mode}\n    call $dict_has\n"))
             }
+            // remove(dict, k): a fresh map with `k` (and its value) dropped.
+            ("remove", 2) => {
+                let mode = self.dict_key_mode(&args[1])?;
+                self.uses_dict = true;
+                self.uses_str_eq = true;
+                let d = self.compile_expr(&args[0])?;
+                let k = self.compile_expr(&args[1])?;
+                Ok(format!("{d}{k}    i32.const {mode}\n    call $dict_remove\n"))
+            }
             // size(dict): the entry count is the map's header word.
             ("size", 1) => {
                 let d = self.compile_expr(&args[0])?;
@@ -2366,6 +2376,34 @@ const DICT_HAS_WAT: &str = r#"  (func $dict_has (param $d i32) (param $k i32) (p
         (local.set $i (i32.add (local.get $i) (i32.const 1)))
         (br $l)))
     (i32.const 0))
+"#;
+
+// remove(d, k): a fresh map with the entry for `k` dropped (unchanged if
+// absent). Copies every entry whose key isn't `k` into a new map.
+const DICT_REMOVE_WAT: &str = r#"  (func $dict_remove (param $d i32) (param $k i32) (param $mode i32) (result i32)
+    (local $count i32) (local $i i32) (local $new i32) (local $n i32)
+    (local.set $count (i32.load (local.get $d)))
+    (call $ensure (i32.add (i32.const 4) (i32.mul (local.get $count) (i32.const 8))))
+    (local.set $new (global.get $heap))
+    (local.set $i (i32.const 0))
+    (local.set $n (i32.const 0))
+    (block $done
+      (loop $l
+        (br_if $done (i32.ge_s (local.get $i) (local.get $count)))
+        (if (i32.eqz (call $key_eq
+              (i32.load (i32.add (i32.add (local.get $d) (i32.const 4)) (i32.mul (local.get $i) (i32.const 8))))
+              (local.get $k) (local.get $mode)))
+          (then
+            (i32.store (i32.add (i32.add (local.get $new) (i32.const 4)) (i32.mul (local.get $n) (i32.const 8)))
+              (i32.load (i32.add (i32.add (local.get $d) (i32.const 4)) (i32.mul (local.get $i) (i32.const 8)))))
+            (i32.store (i32.add (i32.add (local.get $new) (i32.const 8)) (i32.mul (local.get $n) (i32.const 8)))
+              (i32.load (i32.add (i32.add (local.get $d) (i32.const 8)) (i32.mul (local.get $i) (i32.const 8)))))
+            (local.set $n (i32.add (local.get $n) (i32.const 1)))))
+        (local.set $i (i32.add (local.get $i) (i32.const 1)))
+        (br $l)))
+    (i32.store (local.get $new) (local.get $n))
+    (global.set $heap (i32.add (i32.add (local.get $new) (i32.const 4)) (i32.mul (local.get $n) (i32.const 8))))
+    (local.get $new))
 "#;
 
 // keys(d) / values(d): a fresh List of the keys (or values), in insertion order.
