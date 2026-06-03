@@ -889,7 +889,17 @@ impl Interpreter {
     }
 
     fn eval_block(&mut self, block: &Block, env: &mut Env) -> Result<Value, Flow> {
-        env.push();
+        // Only open a scope if the block actually introduces bindings. Most
+        // function bodies and if-branches are binding-free (just an expression),
+        // and skipping the push/pop avoids growing the scopes vector on the hot
+        // call path.
+        let needs_scope = block
+            .stmts
+            .iter()
+            .any(|s| matches!(s, Stmt::Let { .. } | Stmt::LetTuple { .. }));
+        if needs_scope {
+            env.push();
+        }
         let mut result = Value::Nil;
         for (i, stmt) in block.stmts.iter().enumerate() {
             if let Some(line) = block.lines.get(i) {
@@ -925,6 +935,7 @@ impl Interpreter {
                             }
                         }
                         other => {
+                            // (`needs_scope` is always true here — there's a LetTuple.)
                             env.pop();
                             return err(format!(
                                 "tuple destructure expected a {}-tuple, got `{other}`",
@@ -939,7 +950,9 @@ impl Interpreter {
                         Some(e) => self.eval(e, env)?,
                         None => Value::Nil,
                     };
-                    env.pop();
+                    if needs_scope {
+                        env.pop();
+                    }
                     // Unwind to the enclosing function boundary, which turns this
                     // into the function's result (same channel `?` uses).
                     return Err(Flow::Return(v));
@@ -949,7 +962,9 @@ impl Interpreter {
                 }
             }
         }
-        env.pop();
+        if needs_scope {
+            env.pop();
+        }
         Ok(result)
     }
 
