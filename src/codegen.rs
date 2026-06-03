@@ -158,6 +158,10 @@ struct Codegen {
     /// Whether the Dict helpers (`$dict_new`/`$dict_insert`/`$dict_get_or`/
     /// `$dict_has` + `$key_eq`) are needed.
     uses_dict: bool,
+    /// Whether the list-producing Dict ops (`$dict_keys`/`$dict_values`/
+    /// `$dict_pairs`) are needed. These don't compare keys, so they need neither
+    /// `$key_eq` nor `$str_eq`.
+    uses_dict_iter: bool,
     /// Record type name -> ordered fields as `(name, named-type)`, where the
     /// second is the field's type name when it is a `Named` type (so nested
     /// records can be chained, `a.b.c`). For compiling `value.field`.
@@ -239,6 +243,7 @@ impl Codegen {
             uses_index_of: false,
             uses_substring: false,
             uses_dict: false,
+            uses_dict_iter: false,
             lambdas: Vec::new(),
             clos_arities: HashSet::new(),
         }
@@ -466,6 +471,7 @@ impl Codegen {
             || self.uses_split
             || self.uses_substr
             || self.uses_dict
+            || self.uses_dict_iter
     }
 
     fn emit_imports(&self) -> String {
@@ -548,6 +554,11 @@ impl Codegen {
             s.push_str(DICT_INSERT_WAT);
             s.push_str(DICT_GET_OR_WAT);
             s.push_str(DICT_HAS_WAT);
+        }
+        if self.uses_dict_iter {
+            s.push_str(DICT_KEYS_WAT);
+            s.push_str(DICT_VALUES_WAT);
+            s.push_str(DICT_PAIRS_WAT);
         }
         if self.uses_print {
             s.push_str(PRINT_STR_WAT);
@@ -1453,6 +1464,22 @@ impl Codegen {
                 let d = self.compile_expr(&args[0])?;
                 Ok(format!("{d}    i32.load\n"))
             }
+            // keys/values/pairs(dict): a fresh List in insertion order.
+            ("keys", 1) => {
+                self.uses_dict_iter = true;
+                let d = self.compile_expr(&args[0])?;
+                Ok(format!("{d}    call $dict_keys\n"))
+            }
+            ("values", 1) => {
+                self.uses_dict_iter = true;
+                let d = self.compile_expr(&args[0])?;
+                Ok(format!("{d}    call $dict_values\n"))
+            }
+            ("pairs", 1) => {
+                self.uses_dict_iter = true;
+                let d = self.compile_expr(&args[0])?;
+                Ok(format!("{d}    call $dict_pairs\n"))
+            }
             // length(list): the record header is the length.
             ("length", 1) => {
                 let arg = self.compile_expr(&args[0])?;
@@ -2106,6 +2133,70 @@ const DICT_HAS_WAT: &str = r#"  (func $dict_has (param $d i32) (param $k i32) (p
         (local.set $i (i32.add (local.get $i) (i32.const 1)))
         (br $l)))
     (i32.const 0))
+"#;
+
+// keys(d) / values(d): a fresh List of the keys (or values), in insertion order.
+const DICT_KEYS_WAT: &str = r#"  (func $dict_keys (param $d i32) (result i32)
+    (local $count i32) (local $i i32) (local $new i32)
+    (local.set $count (i32.load (local.get $d)))
+    (local.set $new (global.get $heap))
+    (i32.store (local.get $new) (local.get $count))
+    (local.set $i (i32.const 0))
+    (block $done
+      (loop $l
+        (br_if $done (i32.ge_s (local.get $i) (local.get $count)))
+        (i32.store
+          (i32.add (i32.add (local.get $new) (i32.const 4)) (i32.mul (local.get $i) (i32.const 4)))
+          (i32.load (i32.add (i32.add (local.get $d) (i32.const 4)) (i32.mul (local.get $i) (i32.const 8)))))
+        (local.set $i (i32.add (local.get $i) (i32.const 1)))
+        (br $l)))
+    (global.set $heap (i32.add (i32.add (local.get $new) (i32.const 4)) (i32.mul (local.get $count) (i32.const 4))))
+    (local.get $new))
+"#;
+
+const DICT_VALUES_WAT: &str = r#"  (func $dict_values (param $d i32) (result i32)
+    (local $count i32) (local $i i32) (local $new i32)
+    (local.set $count (i32.load (local.get $d)))
+    (local.set $new (global.get $heap))
+    (i32.store (local.get $new) (local.get $count))
+    (local.set $i (i32.const 0))
+    (block $done
+      (loop $l
+        (br_if $done (i32.ge_s (local.get $i) (local.get $count)))
+        (i32.store
+          (i32.add (i32.add (local.get $new) (i32.const 4)) (i32.mul (local.get $i) (i32.const 4)))
+          (i32.load (i32.add (i32.add (local.get $d) (i32.const 8)) (i32.mul (local.get $i) (i32.const 8)))))
+        (local.set $i (i32.add (local.get $i) (i32.const 1)))
+        (br $l)))
+    (global.set $heap (i32.add (i32.add (local.get $new) (i32.const 4)) (i32.mul (local.get $count) (i32.const 4))))
+    (local.get $new))
+"#;
+
+// pairs(d): a List of `(key, value)` 2-tuples in insertion order. Each tuple is
+// the codegen layout `[0][k][v]`, so `let (k, v) = entry` destructures it.
+const DICT_PAIRS_WAT: &str = r#"  (func $dict_pairs (param $d i32) (result i32)
+    (local $count i32) (local $i i32) (local $list i32) (local $tup i32)
+    (local.set $count (i32.load (local.get $d)))
+    (local.set $list (global.get $heap))
+    (i32.store (local.get $list) (local.get $count))
+    (global.set $heap (i32.add (i32.add (local.get $list) (i32.const 4)) (i32.mul (local.get $count) (i32.const 4))))
+    (local.set $i (i32.const 0))
+    (block $done
+      (loop $l
+        (br_if $done (i32.ge_s (local.get $i) (local.get $count)))
+        (local.set $tup (global.get $heap))
+        (i32.store (local.get $tup) (i32.const 0))
+        (i32.store (i32.add (local.get $tup) (i32.const 4))
+          (i32.load (i32.add (i32.add (local.get $d) (i32.const 4)) (i32.mul (local.get $i) (i32.const 8)))))
+        (i32.store (i32.add (local.get $tup) (i32.const 8))
+          (i32.load (i32.add (i32.add (local.get $d) (i32.const 8)) (i32.mul (local.get $i) (i32.const 8)))))
+        (global.set $heap (i32.add (local.get $tup) (i32.const 12)))
+        (i32.store
+          (i32.add (i32.add (local.get $list) (i32.const 4)) (i32.mul (local.get $i) (i32.const 4)))
+          (local.get $tup))
+        (local.set $i (i32.add (local.get $i) (i32.const 1)))
+        (br $l)))
+    (local.get $list))
 "#;
 
 // split(s, sep): a List(String) of the pieces between (non-overlapping)

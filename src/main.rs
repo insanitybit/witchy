@@ -1047,6 +1047,45 @@ mod example_tests {
     }
 
     #[test]
+    fn dict_keys_values_pairs_on_wasm() {
+        // keys/values/pairs compiled to WASM: keys -> list of keys, values ->
+        // list of values, pairs -> list of (k, v) tuples destructured in a loop.
+        let src = r#"
+            fn main(console: Console) {
+              var d = dict_new()
+              d = insert(d, "a", 10)
+              d = insert(d, "b", 20)
+              d = insert(d, "c", 30)
+              var ksum = 0
+              for k in keys(d) { ksum = ksum + string_length(k) }
+              print(console, int_to_string(ksum))
+              var vsum = 0
+              for v in values(d) { vsum = vsum + v }
+              print(console, int_to_string(vsum))
+              var psum = 0
+              for entry in pairs(d) {
+                let (k, v) = entry
+                psum = psum + string_length(k) + v
+              }
+              print(console, int_to_string(psum))
+            }
+        "#;
+        // keys "a","b","c" (len 1 each) -> 3; values 10+20+30 -> 60; pairs
+        // (1+10)+(1+20)+(1+30) -> 63.
+        assert_eq!(run_on_wasm(src), vec!["3", "60", "63"]);
+    }
+
+    #[test]
+    fn inventory_example_runs_on_wasm() {
+        // Dict iteration example compiles: `values` summed in a loop, and `pairs`
+        // destructured. total = 3+2+4 = 9; prices over 2 = {apple, milk} = 2.
+        assert_eq!(
+            run_on_wasm(include_str!("../examples/inventory.witchy")),
+            vec!["total = 9", "over 2: 2"]
+        );
+    }
+
+    #[test]
     fn std_string_compiles_and_runs_on_wasm() {
         // With `split` compiled, the whole `string` module compiles: `lines`
         // (split on "\n"), `join`, and `repeat`. lines -> ["a","bb","ccc"] (3);
