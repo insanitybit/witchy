@@ -97,6 +97,16 @@ pub fn reverse(s: String) -> String {
   out
 }
 
+// The first `n` characters (the whole string if it is shorter, "" if n <= 0).
+pub fn take(s: String, n: Int) -> String {
+  substring(s, 0, n)
+}
+
+// All characters after the first `n` ("" if n covers the whole string).
+pub fn drop(s: String, n: Int) -> String {
+  substring(s, n, char_count(s))
+}
+
 // The number of non-overlapping occurrences of `sub` in `s` (0 for an empty
 // `sub`). After each match the search resumes past it.
 pub fn count(s: String, sub: String) -> Int {

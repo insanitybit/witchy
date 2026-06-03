@@ -3038,6 +3038,29 @@ mod example_tests {
 
     // reverse flips character order using char_count + char-based substring, so
     // it's correct for multi-byte UTF-8 ("café" -> "éfac"), not just ASCII.
+    // Char-based take/drop: clamp at the ends and count by Unicode scalar, so
+    // they slice "café" correctly (take 2 -> "ca", drop 3 -> "é").
+    #[test]
+    fn std_string_take_drop_backends_agree() {
+        let client = r#"
+            import string
+            fn main(console: Console) {
+              print(console, string.take("hello", 3))
+              print(console, "[" <> string.take("hi", 10) <> "]")
+              print(console, "[" <> string.take("hi", 0) <> "]")
+              print(console, string.drop("hello", 2))
+              print(console, "[" <> string.drop("hi", 5) <> "]")
+              print(console, string.take("café", 2))
+              print(console, string.drop("café", 3))
+            }
+        "#;
+        let sources = [("string", crate::bundled_module("string").unwrap()), ("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "string take/drop diverged");
+        assert_eq!(compiled, vec!["hel", "[hi]", "[]", "llo", "[]", "ca", "é"]);
+    }
+
     #[test]
     fn std_string_reverse_backends_agree() {
         let client = r#"
