@@ -2961,6 +2961,28 @@ mod example_tests {
         assert_eq!(run_on_wasm(src), vec!["100", "2", "1", "99", "7", "4"]);
     }
 
+    // Iterating records produced by a non-variable expression: a call returning
+    // `List(Record)` and a list literal of records. Codegen now resolves the
+    // loop variable's record type (so `p.x` works in the body) for any list
+    // expression, not just a bare variable — matching the interpreter.
+    #[test]
+    fn for_over_nonvar_record_list_backends_agree() {
+        let src = r#"
+            type P { x: Int  y: Int }
+            fn mk() -> List(P) { [P(1, 2), P(3, 4), P(5, 6)] }
+            fn main(console: Console) {
+              for p in mk() {
+                print(console, int_to_string(p.x + p.y))
+              }
+              for q in [P(10, 1), P(20, 2)] {
+                print(console, int_to_string(q.x))
+              }
+            }
+        "#;
+        assert_eq!(interp(src), run_on_wasm(src), "for over non-var record list diverged");
+        assert_eq!(run_on_wasm(src), vec!["3", "7", "11", "10", "20"]);
+    }
+
     #[test]
     fn function_pipeline_fold_backends_agree() {
         let client = r#"

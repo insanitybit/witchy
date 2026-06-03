@@ -211,6 +211,9 @@ struct Codegen {
     /// Function name -> the record type that is the success payload of its
     /// Result/Option return, so `let q = f(...)?` binds `q` to that record.
     fn_ret_result_record: HashMap<String, String>,
+    /// Function name -> the record type of the elements of its `List(_)` return,
+    /// so `for x in f(...) { x.field }` resolves x's record type.
+    fn_ret_list_elem: HashMap<String, String>,
     /// Return kind of the function currently being compiled (for `return`).
     cur_fn_ret_kind: Kind,
     /// Whether the current function has any `inout` parameters.
@@ -256,6 +259,7 @@ impl Codegen {
             fn_ret_valtype: HashMap::new(),
             fn_ret_records: HashMap::new(),
             fn_ret_result_record: HashMap::new(),
+            fn_ret_list_elem: HashMap::new(),
             cur_fn_ret_kind: Kind::I32,
             cur_fn_inout: false,
             uses_list_push: false,
@@ -421,6 +425,19 @@ impl Codegen {
     /// determine it (a `split` result, a list literal, or a tracked list local),
     /// so a `for x in <iter>` loop variable's value type — and its use as a Dict
     /// key — can be resolved.
+    /// The record type of a list expression's elements, where codegen can
+    /// determine it: a `List(Record)` variable, a list literal of records, or a
+    /// call to a function declared to return `List(Record)`. Lets
+    /// `for x in <expr> { x.field }` resolve x's record type for any such expr.
+    fn elem_record_type_of(&self, iter: &Expr) -> Option<String> {
+        match iter {
+            Expr::Var(v) => self.local_list_elem.get(v).cloned(),
+            Expr::List(items) => items.first().and_then(|e| self.record_type_of(e)),
+            Expr::Call { name, .. } => self.fn_ret_list_elem.get(name).cloned(),
+            _ => None,
+        }
+    }
+
     fn elem_val_type_of(&self, iter: &Expr) -> ValType {
         match iter {
             Expr::Call { name, .. } if name == "split" => ValType::Str,
@@ -1080,12 +1097,11 @@ impl Codegen {
                 let list_l = format!("__forlist_{var}");
                 let idx_l = format!("__fori_{var}");
                 let iter_wat = self.compile_expr(iter)?;
-                // If iterating a `List(Record)`, the loop var is that record, so
-                // `x.field` in the body resolves.
-                if let Expr::Var(v) = iter.as_ref() {
-                    if let Some(elem) = self.local_list_elem.get(v).cloned() {
-                        self.local_records.insert(var.clone(), elem);
-                    }
+                // If iterating a `List(Record)` (a variable, a list literal, or a
+                // call returning one), the loop var is that record, so `x.field`
+                // in the body resolves.
+                if let Some(elem) = self.elem_record_type_of(iter) {
+                    self.local_records.insert(var.clone(), elem);
                 }
                 let body_wat = self.compile_block(body)?;
                 Ok(format!(
@@ -1911,6 +1927,13 @@ pub fn compile_module(module: &Module) -> Result<String, CodegenError> {
             if let Some(Type::Named(n, args)) = &f.ret {
                 if cg.record_fields.contains_key(n) {
                     cg.fn_ret_records.insert(f.name.clone(), n.clone());
+                } else if n == "List" {
+                    // `List(Account)`: `for x in f(...)` binds x to that record.
+                    if let Some(Type::Named(elem, _)) = args.first() {
+                        if cg.record_fields.contains_key(elem) {
+                            cg.fn_ret_list_elem.insert(f.name.clone(), elem.clone());
+                        }
+                    }
                 } else if let Some(Type::Named(payload, _)) = args.first() {
                     // e.g. `Result(Account, _)` / `Option(Account)`: `?` yields it.
                     if cg.record_fields.contains_key(payload) {
