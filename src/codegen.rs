@@ -46,6 +46,9 @@ fn cerr<T>(message: impl Into<String>) -> Result<T, CodegenError> {
 
 const DATA_BASE: u32 = 8;
 
+/// Scratch local holding a tuple pointer while its elements are unpacked.
+const TUPLE_TMP: &str = "__witchy_tuple_tmp";
+
 /// The WASM representation of a value: f64 for floats, i32 for everything else
 /// (ints, bools, and pointers to strings/lists/records).
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -366,6 +369,8 @@ impl Codegen {
             let k = self.locals.get(name).copied().unwrap_or(Kind::I32);
             header.push_str(&format!("    (local ${name} {})\n", wasm_ty(k)));
         }
+        // Scratch slot used by tuple destructuring (`let (a, b) = ...`).
+        header.push_str(&format!("    (local ${TUPLE_TMP} i32)\n"));
 
         let body = self.compile_block(&f.body)?;
         // Move-out: append each `inout` parameter's final value (declaration order).
@@ -398,8 +403,18 @@ impl Codegen {
                     }
                     tail_is_value = false;
                 }
-                Stmt::LetTuple { .. } => {
-                    return cerr("tuple destructure is not compiled to WASM yet");
+                Stmt::LetTuple { names, value } => {
+                    // Evaluate the tuple once into a scratch local, then load each
+                    // element (at offset 4 + 4*i) into its binding.
+                    out.push_str(&self.compile_expr(value)?);
+                    out.push_str(&format!("    local.set ${TUPLE_TMP}\n"));
+                    for (i, name) in names.iter().enumerate() {
+                        let offset = 4 + 4 * i;
+                        out.push_str(&format!(
+                            "    local.get ${TUPLE_TMP}\n    i32.const {offset}\n    i32.add\n    i32.load\n    local.set ${name}\n"
+                        ));
+                    }
+                    tail_is_value = false;
                 }
                 Stmt::Return(opt) => {
                     // `inout` functions return extra results; an early return
@@ -568,7 +583,22 @@ impl Codegen {
             }
             Expr::Call { name, args } => self.compile_call(name, args),
             Expr::Float(x) => Ok(format!("    f64.const {x}\n")),
-            Expr::Tuple(_) => cerr("tuples are not compiled to WASM yet"),
+            Expr::Tuple(items) => {
+                // A tuple is a heap record [0][elem0][elem1]...] (a 0 tag, then
+                // the elements), reusing the constructor allocator. i32 elements
+                // only (the slots are 4 bytes wide).
+                if items.iter().any(|e| self.kind_of(e) == Kind::F64) {
+                    return cerr("tuples with Float elements are not compiled to WASM yet");
+                }
+                let n = items.len();
+                self.mk_arities.insert(n);
+                let mut out = String::from("    i32.const 0\n");
+                for item in items {
+                    out.push_str(&self.compile_expr(item)?);
+                }
+                out.push_str(&format!("    call $mk{n}\n"));
+                Ok(out)
+            }
             Expr::Try(_) => cerr("the `?` operator is not compiled to WASM yet"),
             Expr::For { .. } => cerr("`for` loops are not compiled to WASM yet"),
             Expr::Field { base, field } => {

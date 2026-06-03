@@ -626,6 +626,22 @@ mod example_tests {
     }
 
     #[test]
+    fn tuple_construct_and_destructure_on_wasm() {
+        // Multiple-return-value tuples compile to WASM: divmod(17,5) = (3,2),
+        // then 3*100 + 2 = 302.
+        let src = r#"
+            fn divmod(a: Int, b: Int) -> (Int, Int) {
+              (a / b, a % b)
+            }
+            fn main() -> Int {
+              let (q, r) = divmod(17, 5)
+              q * 100 + r
+            }
+        "#;
+        assert_eq!(run_on_wasm(src), vec!["302"]);
+    }
+
+    #[test]
     fn early_return_runs_on_wasm() {
         // Guard-clause early returns compile to valid WASM and run.
         // classify(-5) = -1, classify(0) = 0, classify(9) = 1; sum = 0.
