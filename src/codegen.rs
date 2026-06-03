@@ -644,13 +644,16 @@ impl Codegen {
                 then_block,
                 else_block,
             } => {
-                // No `else` means the `if` is used for effect (Nil); yield 0.
-                let else_wat = match else_block {
-                    Some(eb) => self.compile_block(eb)?,
-                    None => "    i32.const 0\n".to_string(),
+                // With an `else`, the `if` yields the branches' value, whose kind
+                // (i32 or f64) is the result type. Without one it is used for
+                // effect (Nil); yield i32 0, matching the i32 tail compile_block
+                // leaves for a statement-style branch.
+                let (result_ty, else_wat) = match else_block {
+                    Some(eb) => (wasm_ty(self.block_kind(then_block)), self.compile_block(eb)?),
+                    None => ("i32", "    i32.const 0\n".to_string()),
                 };
                 Ok(format!(
-                    "{}    if (result i32)\n{}    else\n{else_wat}    end\n",
+                    "{}    if (result {result_ty})\n{}    else\n{else_wat}    end\n",
                     self.compile_expr(cond)?,
                     self.compile_block(then_block)?,
                 ))
@@ -2056,6 +2059,17 @@ mod tests {
             fn main() -> Float { half(7.0) + 1.5 }
         "#;
         assert_eq!(run_float(src), 5.0); // 3.5 + 1.5
+    }
+
+    #[test]
+    fn float_valued_if_compiles() {
+        // An `if/else` whose branches are Float must yield an f64 result (the
+        // `if` result type follows the branch kind, not a hardcoded i32).
+        let src = r#"
+            fn pick(a: Float, b: Float) -> Float { if a < b { a } else { b } }
+            fn main() -> Float { pick(2.5, 7.5) + pick(9.0, 1.0) }
+        "#;
+        assert_eq!(run_float(src), 3.5); // min(2.5,7.5)=2.5 + min(9.0,1.0)=1.0
     }
 
     #[test]

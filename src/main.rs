@@ -784,6 +784,70 @@ mod example_tests {
     }
 
     #[test]
+    fn std_math_compiles_and_runs_on_wasm() {
+        // Importing `math` forces every function in it to compile (Int helpers
+        // *and* the Float ones: fmin/fmax/fabs/fclamp, which use f64 compares and
+        // unary negation). gcd(48,36)=12, pow(2,10)=1024, clamp(15,0,10)=10,
+        // fclamp(15,0,10)=10.0, fabs(-3.5)=3.5 -> 12+1024+10+10+3 = 1059.
+        let client = r#"
+            import math
+            fn main() -> Int {
+              let a = math.gcd(48, 36)
+              let b = math.pow(2, 10)
+              let c = math.clamp(15, 0, 10)
+              let f = math.fclamp(15.0, 0.0, 10.0)
+              let g = math.fabs(0.0 - 3.5)
+              a + b + c + float_to_int(f) + float_to_int(g)
+            }
+        "#;
+        assert_eq!(
+            run_linked_on_wasm(
+                &[("math", crate::bundled_module("math").unwrap()), ("main", client)],
+                "main",
+            ),
+            vec!["1059"]
+        );
+    }
+
+    #[test]
+    fn std_result_compiles_and_runs_on_wasm() {
+        // The Result type + combinators compile; map_ok runs a closure over Ok.
+        let client = r#"
+            import result
+            fn main() -> Int {
+              let r = result.map_ok(Ok(20), fn(n: Int) { n + 1 })
+              result.unwrap_or(r, 0)
+            }
+        "#;
+        assert_eq!(
+            run_linked_on_wasm(
+                &[("result", crate::bundled_module("result").unwrap()), ("main", client)],
+                "main",
+            ),
+            vec!["21"]
+        );
+    }
+
+    #[test]
+    fn std_option_compiles_and_runs_on_wasm() {
+        // The Option type + combinators compile; map runs a closure over Some.
+        let client = r#"
+            import option
+            fn main() -> Int {
+              let o = option.map(Some(20), fn(n: Int) { n * 2 })
+              option.unwrap_or(o, 0)
+            }
+        "#;
+        assert_eq!(
+            run_linked_on_wasm(
+                &[("option", crate::bundled_module("option").unwrap()), ("main", client)],
+                "main",
+            ),
+            vec!["40"]
+        );
+    }
+
+    #[test]
     fn compute_runs_on_wasm() {
         assert_eq!(
             run_on_wasm(include_str!("../examples/compute.witchy")),
