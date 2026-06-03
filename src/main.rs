@@ -2731,6 +2731,29 @@ mod example_tests {
     // element to the accumulator (`f(acc)`). Exercises closures stored in a
     // list, a function-typed fold element, and calling a function-valued lambda
     // parameter — all of which must agree across backends.
+    // Nested records: `l.from.x` requires codegen to resolve the record type of
+    // the intermediate field (`l.from` is a Point) to index the next one. Record
+    // update rebuilds the outer record with one field replaced, leaving the rest
+    // (and the original value) untouched. Both backends must agree.
+    #[test]
+    fn nested_records_and_update_backends_agree() {
+        let src = r#"
+            type Point { x: Int  y: Int }
+            type Line { from: Point  to: Point }
+            fn main(console: Console) {
+              let l = Line(Point(1, 2), Point(3, 4))
+              print(console, int_to_string(l.from.x))
+              print(console, int_to_string(l.to.y))
+              let l2 = update l { from: Point(10, 20) }
+              print(console, int_to_string(l2.from.x))
+              print(console, int_to_string(l2.to.y))
+              print(console, int_to_string(l.from.x))
+            }
+        "#;
+        assert_eq!(interp(src), run_on_wasm(src), "nested records / update diverged");
+        assert_eq!(run_on_wasm(src), vec!["1", "4", "10", "4", "1"]);
+    }
+
     #[test]
     fn function_pipeline_fold_backends_agree() {
         let client = r#"
