@@ -394,6 +394,7 @@ fn bundled_module(name: &str) -> Option<&'static str> {
         "math" => Some(include_str!("../std/math.witchy")),
         "result" => Some(include_str!("../std/result.witchy")),
         "option" => Some(include_str!("../std/option.witchy")),
+        "func" => Some(include_str!("../std/func.witchy")),
         _ => None,
     }
 }
@@ -2615,6 +2616,32 @@ mod example_tests {
         "#;
         assert_eq!(interp(src), run_on_wasm(src), "fn-values-in-data diverged");
         assert_eq!(run_on_wasm(src), vec!["6", "50", "107", "21"]);
+    }
+
+    #[test]
+    fn std_func_combinators_backends_agree() {
+        // The whole `func` module links + compiles, and its combinators — built
+        // on first-class functions — agree across backends: compose threads
+        // named functions, flip swaps a subtraction's operands, constant
+        // ignores its argument, identity is a no-op.
+        let client = r#"
+            import func
+            fn double(x: Int) -> Int { x * 2 }
+            fn inc(x: Int) -> Int { x + 1 }
+            fn sub(a: Int, b: Int) -> Int { a - b }
+            fn main(console: Console) {
+              let h = func.compose(double, inc)
+              print(console, int_to_string(h(10)))
+              print(console, int_to_string(func.flip(sub)(3, 10)))
+              print(console, int_to_string(func.constant(42)(999)))
+              print(console, int_to_string(func.identity(7)))
+            }
+        "#;
+        let sources = [("func", crate::bundled_module("func").unwrap()), ("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "func combinators diverged");
+        assert_eq!(compiled, vec!["22", "7", "42", "7"]);
     }
 
     // A closure that *calls* a captured function-valued variable (`f(g(x))`,

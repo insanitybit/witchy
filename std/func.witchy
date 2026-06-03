@@ -1,0 +1,23 @@
+// The witchy standard function-combinator library. Pure and capability-free.
+// With first-class functions these build new functions from existing ones
+// without writing wrapper lambdas by hand.
+
+// Return the argument unchanged.
+pub fn identity(x: a) -> a {
+  x
+}
+
+// `compose(f, g)` is the function `x -> f(g(x))` — apply `g`, then `f`.
+pub fn compose(f: fn(b) -> c, g: fn(a) -> b) -> fn(a) -> c {
+  fn(x) { f(g(x)) }
+}
+
+// `flip(f)` applies the two-argument `f` with its arguments swapped.
+pub fn flip(f: fn(a, b) -> c) -> fn(b, a) -> c {
+  fn(x, y) { f(y, x) }
+}
+
+// A function that ignores its argument and always returns `x`.
+pub fn constant(x: a) -> fn(b) -> a {
+  fn(y) { x }
+}
