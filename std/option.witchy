@@ -54,3 +54,11 @@ pub fn filter(o: Option(a), pred: fn(a) -> Bool) -> Option(a) {
     None -> None
   }
 }
+
+// The Some value, or the result of calling `f` (a lazily-computed default).
+pub fn unwrap_or_else(o: Option(a), f: fn() -> a) -> a {
+  match o {
+    Some(v) -> v
+    None -> f()
+  }
+}

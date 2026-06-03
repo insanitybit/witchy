@@ -62,3 +62,11 @@ pub fn unwrap_err(r: Result(a, e), default: e) -> e {
     Err(x) -> x
   }
 }
+
+// The Ok value, or the result of calling `f` (a lazily-computed default).
+pub fn unwrap_or_else(r: Result(a, e), f: fn() -> a) -> a {
+  match r {
+    Ok(v) -> v
+    Err(_) -> f()
+  }
+}

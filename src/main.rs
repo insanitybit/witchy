@@ -1041,6 +1041,42 @@ mod example_tests {
     }
 
     #[test]
+    fn unwrap_or_else_backends_agree() {
+        // Lazy defaults via a zero-arg closure, for both Option and Result.
+        let opt = r#"
+            import option
+            fn main(console: Console) {
+              print(console, int_to_string(option.unwrap_or_else(Some(5), fn() { 0 })))
+              let fallback = 99
+              print(console, int_to_string(option.unwrap_or_else(option.filter(Some(3), fn(n: Int) { n > 10 }), fn() { fallback })))
+            }
+        "#;
+        let osrc = [("option", crate::bundled_module("option").unwrap()), ("main", opt)];
+        assert_eq!(
+            interpreter::run_program(&osrc, "main").expect("interp"),
+            run_linked_on_wasm(&osrc, "main")
+        );
+        assert_eq!(run_linked_on_wasm(&osrc, "main"), vec!["5", "99"]);
+
+        let res = r#"
+            import result
+            fn checked(n: Int) -> Result(Int, String) {
+              if n > 0 { Ok(n) } else { Err("bad") }
+            }
+            fn main(console: Console) {
+              print(console, int_to_string(result.unwrap_or_else(checked(7), fn() { 0 })))
+              print(console, int_to_string(result.unwrap_or_else(checked(0 - 1), fn() { 42 })))
+            }
+        "#;
+        let rsrc = [("result", crate::bundled_module("result").unwrap()), ("main", res)];
+        assert_eq!(
+            interpreter::run_program(&rsrc, "main").expect("interp"),
+            run_linked_on_wasm(&rsrc, "main")
+        );
+        assert_eq!(run_linked_on_wasm(&rsrc, "main"), vec!["7", "42"]);
+    }
+
+    #[test]
     fn std_option_combinators_backends_agree() {
         // is_none / and_then / filter behave identically in both backends.
         let client = r#"
@@ -2368,6 +2404,21 @@ mod example_tests {
         "#;
         assert_eq!(interp(src), run_on_wasm(src));
         assert_eq!(run_on_wasm(src), vec!["11", "13"]);
+    }
+
+    #[test]
+    fn zero_arg_closures_backends_agree() {
+        // Zero-argument closures (incl. capturing ones) compile and run.
+        let src = r#"
+            fn call0(f: fn() -> Int) -> Int { f() }
+            fn main(console: Console) {
+              print(console, int_to_string(call0(fn() { 42 })))
+              let base = 100
+              print(console, int_to_string(call0(fn() { base + 1 })))
+            }
+        "#;
+        assert_eq!(interp(src), run_on_wasm(src));
+        assert_eq!(run_on_wasm(src), vec!["42", "101"]);
     }
 
     #[test]
