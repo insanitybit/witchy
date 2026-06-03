@@ -129,6 +129,9 @@ struct Codegen {
     /// Parameter conventions per function, so call sites can write back `inout`
     /// results (move-in / move-out).
     fn_conventions: HashMap<String, Vec<Convention>>,
+    /// Parameters of each top-level function, so a bare function name used as a
+    /// value can be materialized as a forwarding closure.
+    fn_params: HashMap<String, Vec<Param>>,
     /// Constructor name -> (variant tag, field count). A constructor value is a
     /// heap record `[tag: i32][field: i32]...`.
     ctors: HashMap<String, (u32, usize)>,
@@ -235,6 +238,7 @@ impl Codegen {
             globals: HashSet::new(),
             cap_fields: HashSet::new(),
             fn_conventions: HashMap::new(),
+            fn_params: HashMap::new(),
             ctors: HashMap::new(),
             mk_arities: HashSet::new(),
             next_label: 0,
@@ -854,6 +858,24 @@ impl Codegen {
                     Ok("    i32.const 0\n".to_string())
                 } else if self.globals.contains(name) {
                     Ok(format!("    global.get ${name}\n"))
+                } else if !self.locals.contains_key(name) {
+                    // A bare top-level function name used as a value: materialize
+                    // it as a forwarding closure `fn(p..) { name(p..) }`, reusing
+                    // the lambda machinery (a fresh table slot + `[code_index]`
+                    // record). Locals shadow functions, so this only fires when
+                    // `name` is not a local binding.
+                    let Some(params) = self.fn_params.get(name).cloned() else {
+                        return Ok(format!("    local.get ${name}\n"));
+                    };
+                    let args = params.iter().map(|p| Expr::Var(p.name.clone())).collect();
+                    let body = Block {
+                        stmts: vec![Stmt::Expr(Expr::Call {
+                            name: name.clone(),
+                            args,
+                        })],
+                        lines: vec![0],
+                    };
+                    self.compile_lambda(&params, &body)
                 } else {
                     Ok(format!("    local.get ${name}\n"))
                 }
@@ -1821,6 +1843,7 @@ pub fn compile_module(module: &Module) -> Result<String, CodegenError> {
             Item::Function(f) => {
                 cg.fn_conventions
                     .insert(f.name.clone(), f.params.iter().map(|p| p.convention).collect());
+                cg.fn_params.insert(f.name.clone(), f.params.clone());
                 let ret = f.ret.as_ref().map(ty_kind).unwrap_or(Kind::I32);
                 cg.fn_ret.insert(f.name.clone(), ret);
                 if let Some(t) = &f.ret {

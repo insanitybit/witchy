@@ -215,7 +215,16 @@ fn rewrite_expr(e: &mut Expr, m: &str, imps: &[String], fns: &FnTable) -> Result
                 rewrite_expr(&mut arm.body, m, imps, fns)?;
             }
         }
-        Expr::Int(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) | Expr::Var(_) => {}
+        Expr::Var(name) => {
+            // A bare name matching a function defined in this module is a
+            // first-class reference to it; qualify it like a call so the type
+            // checker and codegen resolve it. Locals/params/loop variables don't
+            // match a function name and pass through untouched.
+            if fns.get(m).is_some_and(|s| s.contains(name.as_str())) {
+                *name = format!("{m}.{name}");
+            }
+        }
+        Expr::Int(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) => {}
     }
     Ok(())
 }

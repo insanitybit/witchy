@@ -612,8 +612,31 @@ impl Checker {
                         "use of `{name}` after it was moved (consumed by a `sink` parameter)"
                     ));
                 }
-                self.lookup(name)
-                    .ok_or_else(|| TypeError { message: format!("unbound variable `{name}`") })
+                if let Some(t) = self.lookup(name) {
+                    return Ok(t);
+                }
+                // A bare top-level function name used as a value is a first-class
+                // function. Reject `inout`/`sink` functions, whose move-in/out
+                // calling convention can't be expressed as a plain value.
+                if let Some((params, ret)) = self.fn_sigs.get(name).cloned() {
+                    if let Some(convs) = self.fn_conventions.get(name) {
+                        if convs.iter().any(|c| *c != Convention::Let) {
+                            return terr(format!(
+                                "`{name}` takes an `inout`/`sink` parameter, so it can't be used as a function value"
+                            ));
+                        }
+                    }
+                    let typarams: HashSet<u32> = self
+                        .fn_typarams
+                        .get(name)
+                        .into_iter()
+                        .flatten()
+                        .map(|(_, id)| *id)
+                        .collect();
+                    let (params, ret) = self.instantiate(&params, &ret, &typarams);
+                    return Ok(Ty::Fn(params, Box::new(ret)));
+                }
+                terr(format!("unbound variable `{name}`"))
             }
             Expr::Lambda { params, body } => {
                 self.push();

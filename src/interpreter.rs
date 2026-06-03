@@ -1003,7 +1003,18 @@ impl Interpreter {
             }
             Expr::Var(name) => match env.get(name) {
                 Some(v) => Ok(v.clone()),
-                None => err(format!("unbound variable `{name}`")),
+                None => match self.functions.get(name).cloned() {
+                    // A bare top-level function name is a first-class function
+                    // value: wrap it as a closure over an empty environment
+                    // (top-level functions are closed; nested calls resolve
+                    // through the global function table at apply time).
+                    Some(func) => Ok(Value::Closure {
+                        params: func.params.clone(),
+                        body: func.body.clone(),
+                        env: Box::new(Env::new()),
+                    }),
+                    None => err(format!("unbound variable `{name}`")),
+                },
             },
             Expr::Call { name, args } => self.eval_call(name, args, env),
             Expr::Apply { func, args } => {

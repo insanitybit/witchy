@@ -2618,6 +2618,45 @@ mod example_tests {
     }
 
     #[test]
+    fn function_by_name_as_value_backends_agree() {
+        // A bare top-level function name is a first-class value: bind it, call
+        // it, and apply it repeatedly. Both backends materialize it as a
+        // callable closure.
+        let src = r#"
+            fn double(x: Int) -> Int { x * 2 }
+            fn inc(x: Int) -> Int { x + 1 }
+            fn main(console: Console) {
+              let f = double
+              print(console, int_to_string(f(5)))
+              let g = inc
+              print(console, int_to_string(g(g(g(0)))))
+            }
+        "#;
+        assert_eq!(interp(src), run_on_wasm(src), "function-as-value diverged");
+        assert_eq!(run_on_wasm(src), vec!["10", "3"]);
+    }
+
+    #[test]
+    fn named_function_passed_to_map_backends_agree() {
+        // Point-free style: pass a named function (not a lambda) straight to a
+        // higher-order std function. Exercises the linker qualifying a bare
+        // function-name reference and codegen forwarding through a closure.
+        let client = r#"
+            import list
+            fn triple(x: Int) -> Int { x * 3 }
+            fn main(console: Console) {
+              let ys = list.map([1, 2, 3], triple)
+              for y in ys { print(console, int_to_string(y)) }
+            }
+        "#;
+        let sources = [("list", crate::bundled_module("list").unwrap()), ("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "named-function-to-map diverged");
+        assert_eq!(compiled, vec!["3", "6", "9"]);
+    }
+
+    #[test]
     fn immediate_application_backends_agree() {
         let src = r#"
             fn twice(f: fn(Int) -> Int, x: Int) -> Int { f(f(x)) }
