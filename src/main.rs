@@ -2933,6 +2933,34 @@ mod example_tests {
         assert_eq!(run_on_wasm(src), vec!["1", "a", "b", "7", "mixed"]);
     }
 
+    // `update` on a base that is not a bare variable: a field access (`l.from`)
+    // and an `if` expression. Codegen used to require a record-typed variable;
+    // it now evaluates an arbitrary base once into a scratch slot, matching the
+    // interpreter. Nested update in an override (`update p { x: update q ... }`)
+    // exercises the level-scoped scratch reuse.
+    #[test]
+    fn record_update_on_expression_base_backends_agree() {
+        let src = r#"
+            type Point { x: Int  y: Int }
+            type Line { from: Point  to: Point }
+            fn main(console: Console) {
+              let l = Line(Point(1, 2), Point(3, 4))
+              let p2 = update l.from { x: 100 }
+              print(console, int_to_string(p2.x))
+              print(console, int_to_string(p2.y))
+              let cond = true
+              let p3 = update (if cond { l.from } else { l.to }) { y: 99 }
+              print(console, int_to_string(p3.x))
+              print(console, int_to_string(p3.y))
+              let l2 = update l { from: update l.to { x: 7 } }
+              print(console, int_to_string(l2.from.x))
+              print(console, int_to_string(l2.from.y))
+            }
+        "#;
+        assert_eq!(interp(src), run_on_wasm(src), "record update on expression base diverged");
+        assert_eq!(run_on_wasm(src), vec!["100", "2", "1", "99", "7", "4"]);
+    }
+
     #[test]
     fn function_pipeline_fold_backends_agree() {
         let client = r#"

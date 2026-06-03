@@ -1124,25 +1124,47 @@ impl Codegen {
             Expr::RecordUpdate { base, fields } => {
                 // Build a fresh record: push the tag, then each field — the
                 // override expression where given, else a load from the base.
-                let Expr::Var(v) = base.as_ref() else {
-                    return cerr("record update in WASM needs a record-typed variable");
-                };
-                let Some(tyname) = self.local_records.get(v).cloned() else {
-                    return cerr(format!("cannot determine the record type of `{v}` to update"));
+                let Some(tyname) = self.record_type_of(base) else {
+                    return cerr("cannot determine the record type for this `update`");
                 };
                 let names = self.record_fields[&tyname].clone();
                 let (tag, nfields) = self.ctors[&tyname];
                 self.mk_arities.insert(nfields);
-                let mut out = format!("    i32.const {tag}\n");
+                // The base is read once per non-overridden field. A bare variable
+                // is re-read directly; any other base expression is evaluated once
+                // into a level-scoped scratch local (the same pool `Apply` uses),
+                // with override expressions compiled at the next level so a nested
+                // update can't clobber it.
+                let prelude;
+                let load_base;
+                let mut restore_level = None;
+                if let Expr::Var(v) = base.as_ref() {
+                    prelude = String::new();
+                    load_base = format!("    local.get ${v}\n");
+                } else {
+                    let level = self.apply_level;
+                    if level >= APPLY_POOL {
+                        return cerr("record update nested too deeply to compile");
+                    }
+                    let tmp = format!("__witchy_call_{level}");
+                    prelude = format!("{}    local.set ${tmp}\n", self.compile_expr(base)?);
+                    load_base = format!("    local.get ${tmp}\n");
+                    self.apply_level = level + 1;
+                    restore_level = Some(level);
+                }
+                let mut out = format!("{prelude}    i32.const {tag}\n");
                 for (i, (fname, _)) in names.iter().enumerate() {
                     if let Some((_, vexpr)) = fields.iter().find(|(n, _)| n == fname) {
                         out.push_str(&self.compile_expr(vexpr)?);
                     } else {
                         let offset = 4 + 4 * i;
                         out.push_str(&format!(
-                            "    local.get ${v}\n    i32.const {offset}\n    i32.add\n    i32.load\n"
+                            "{load_base}    i32.const {offset}\n    i32.add\n    i32.load\n"
                         ));
                     }
+                }
+                if let Some(level) = restore_level {
+                    self.apply_level = level;
                 }
                 out.push_str(&format!("    call $mk{nfields}\n"));
                 Ok(out)
