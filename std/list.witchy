@@ -164,6 +164,49 @@ pub fn find(xs: List(a), pred: fn(a) -> Bool) -> Option(a) {
   None
 }
 
+// The smallest element as `Some`, or `None` for the empty list.
+pub fn min(xs: List(Int)) -> Option(Int) {
+  if is_empty(xs) {
+    None
+  } else {
+    var m = at(xs, 0)
+    for x in xs {
+      if x < m {
+        m = x
+      }
+    }
+    Some(m)
+  }
+}
+
+// The largest element as `Some`, or `None` for the empty list.
+pub fn max(xs: List(Int)) -> Option(Int) {
+  if is_empty(xs) {
+    None
+  } else {
+    var m = at(xs, 0)
+    for x in xs {
+      if x > m {
+        m = x
+      }
+    }
+    Some(m)
+  }
+}
+
+// The index of the first element equal to `target` as `Some`, or `None` — the
+// Option-returning companion to `index_of` (which uses a -1 sentinel).
+pub fn position(xs: List(a), target: a) -> Option(Int) {
+  var i = 0
+  for x in xs {
+    if x == target {
+      return Some(i)
+    }
+    i = i + 1
+  }
+  None
+}
+
 // Concatenate a list of lists into one.
 pub fn flatten(xss: List(List(a))) -> List(a) {
   var out = []

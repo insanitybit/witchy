@@ -3126,6 +3126,28 @@ mod example_tests {
     // The composable, total lookups: list.head/last/get/find return Option
     // (None instead of an out-of-bounds trap). `list` imports `option`, and the
     // caller provides only `main` — the linker auto-resolves both std modules.
+    // More total Option-returning list functions: min/max (None for the empty
+    // list) and position (the Option counterpart to index_of's -1 sentinel).
+    #[test]
+    fn std_list_min_max_position_backends_agree() {
+        let client = r#"
+            import list
+            import option
+            fn main(console: Console) {
+              print(console, int_to_string(option.unwrap_or(list.min([3, 1, 4, 1, 5]), 0)))
+              print(console, int_to_string(option.unwrap_or(list.max([3, 1, 4, 1, 5]), 0)))
+              print(console, to_string(option.is_none(list.min([]))))
+              print(console, int_to_string(option.unwrap_or(list.position([10, 20, 30], 20), 0 - 1)))
+              print(console, to_string(option.is_none(list.position([10, 20], 99))))
+            }
+        "#;
+        let sources = [("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "list min/max/position diverged");
+        assert_eq!(compiled, vec!["1", "5", "true", "1", "true"]);
+    }
+
     #[test]
     fn std_list_option_lookups_backends_agree() {
         let client = r#"
