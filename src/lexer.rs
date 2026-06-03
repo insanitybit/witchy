@@ -217,10 +217,17 @@ impl Lexer {
                 out.push(Token { kind: Tok::Eof, line, col });
                 return Ok(out);
             };
+            // A string literal may expand into several tokens (interpolation),
+            // so it pushes directly; everything else yields a single token.
+            if c == '"' {
+                for kind in self.string()? {
+                    out.push(Token { kind, line, col });
+                }
+                continue;
+            }
             let kind = match c {
                 '0'..='9' => self.number()?,
                 'a'..='z' | 'A'..='Z' | '_' => self.ident_or_keyword(),
-                '"' => self.string()?,
                 _ => self.operator()?,
             };
             out.push(Token { kind, line, col });
@@ -320,13 +327,20 @@ impl Lexer {
         }
     }
 
-    fn string(&mut self) -> Result<Tok, LexError> {
+    /// Lex a string literal. A plain string is a single `Str` token. A string
+    /// with `${ expr }` interpolations expands to the token stream for
+    /// `( lit0 <> to_string(expr0) <> lit1 <> ... )`, so the parser needs no
+    /// special handling and interpolation works in both backends (`to_string` +
+    /// concat). Write `\$` for a literal `$`.
+    fn string(&mut self) -> Result<Vec<Tok>, LexError> {
         self.bump(); // opening quote
         let mut text = String::new();
+        let mut out: Vec<Tok> = Vec::new();
+        let mut interpolated = false;
         loop {
             match self.bump() {
                 None => return Err(self.err("unterminated string literal")),
-                Some('"') => return Ok(Tok::Str(text)),
+                Some('"') => break,
                 Some('\\') => {
                     let esc = self
                         .bump()
@@ -338,12 +352,89 @@ impl Lexer {
                         '0' => text.push('\0'),
                         '\\' => text.push('\\'),
                         '"' => text.push('"'),
+                        '$' => text.push('$'),
                         other => {
                             return Err(self.err(format!("unknown escape `\\{other}`")));
                         }
                     }
                 }
+                Some('$') if self.peek() == Some('{') => {
+                    self.bump(); // consume '{'
+                    // Close off the preceding literal segment.
+                    if interpolated {
+                        out.push(Tok::Concat);
+                    } else {
+                        out.push(Tok::LParen);
+                        interpolated = true;
+                    }
+                    out.push(Tok::Str(std::mem::take(&mut text)));
+                    // `<> to_string( <embedded expression> )`
+                    let src = self.interp_source()?;
+                    let expr_toks = Lexer::new(&src).tokenize()?;
+                    out.push(Tok::Concat);
+                    out.push(Tok::Ident("to_string".into()));
+                    out.push(Tok::LParen);
+                    for t in expr_toks {
+                        if t.kind == Tok::Eof {
+                            break;
+                        }
+                        out.push(t.kind);
+                    }
+                    out.push(Tok::RParen);
+                }
                 Some(c) => text.push(c),
+            }
+        }
+        if interpolated {
+            out.push(Tok::Concat);
+            out.push(Tok::Str(text));
+            out.push(Tok::RParen);
+            Ok(out)
+        } else {
+            Ok(vec![Tok::Str(text)])
+        }
+    }
+
+    /// Read the source of a `${ ... }` interpolation (the opening `${` already
+    /// consumed) up to the matching `}`. Tracks brace depth and skips over nested
+    /// string literals so their braces and quotes don't confuse the match.
+    fn interp_source(&mut self) -> Result<String, LexError> {
+        let mut depth = 1;
+        let mut src = String::new();
+        loop {
+            match self.bump() {
+                None => return Err(self.err("unterminated `${` interpolation")),
+                Some('{') => {
+                    depth += 1;
+                    src.push('{');
+                }
+                Some('}') => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Ok(src);
+                    }
+                    src.push('}');
+                }
+                Some('"') => {
+                    src.push('"');
+                    loop {
+                        match self.bump() {
+                            None => return Err(self.err("unterminated string in interpolation")),
+                            Some('\\') => {
+                                src.push('\\');
+                                if let Some(c) = self.bump() {
+                                    src.push(c);
+                                }
+                            }
+                            Some('"') => {
+                                src.push('"');
+                                break;
+                            }
+                            Some(c) => src.push(c),
+                        }
+                    }
+                }
+                Some(c) => src.push(c),
             }
         }
     }
@@ -495,6 +586,31 @@ mod tests {
     #[test]
     fn rejects_unterminated_string() {
         assert!(tokenize("\"oops").is_err());
+    }
+
+    #[test]
+    fn interpolation_expands_to_concat_tokens() {
+        // "a${x}b" lexes to the token stream for `("a" <> to_string(x) <> "b")`.
+        assert_eq!(
+            kinds(r#""a${x}b""#),
+            vec![
+                Tok::LParen,
+                Tok::Str("a".into()),
+                Tok::Concat,
+                Tok::Ident("to_string".into()),
+                Tok::LParen,
+                Tok::Ident("x".into()),
+                Tok::RParen,
+                Tok::Concat,
+                Tok::Str("b".into()),
+                Tok::RParen,
+                Tok::Eof,
+            ]
+        );
+        // A plain string stays a single token (backward compatible).
+        assert_eq!(kinds(r#""plain""#), vec![Tok::Str("plain".into()), Tok::Eof]);
+        // `\$` is a literal dollar, not an interpolation.
+        assert_eq!(kinds(r#""\${x}""#), vec![Tok::Str("${x}".into()), Tok::Eof]);
     }
 
     #[test]

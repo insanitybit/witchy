@@ -1,6 +1,7 @@
 // Iterating a Dict. `values` walks the values and `pairs` walks `(key, value)`
 // entries (destructured with `let (k, v) = ...`), so you can aggregate over a
-// map's contents — not just look keys up.
+// map's contents — not just look keys up. The results are reported with string
+// interpolation: `${expr}` splices `to_string(expr)` into the string.
 
 fn main(console: Console) {
   var prices = dict_new()
@@ -12,7 +13,7 @@ fn main(console: Console) {
   for v in values(prices) {
     total = total + v
   }
-  print(console, "total = " <> int_to_string(total))
+  print(console, "total = ${total}")
 
   var pricey = 0
   for entry in pairs(prices) {
@@ -21,5 +22,5 @@ fn main(console: Console) {
       pricey = pricey + 1
     }
   }
-  print(console, "over 2: " <> int_to_string(pricey))
+  print(console, "over 2: ${pricey}")
 }

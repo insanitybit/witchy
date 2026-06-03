@@ -2112,6 +2112,35 @@ mod example_tests {
     }
 
     #[test]
+    fn string_interpolation_backends_agree() {
+        // `${expr}` desugars to `<> to_string(expr) <>`, so interpolation works
+        // in both backends: String pass-through, Int/Bool via to_string, embedded
+        // calls/arithmetic, `\$` for a literal `$`, and adjacent interpolations.
+        let src = r#"
+            fn main(console: Console) {
+              let name = "witchy"
+              let age = 3
+              print(console, "hi ${name}, age ${age}")
+              print(console, "sum: ${int_to_string(age + 10)}")
+              print(console, "flag ${age > 1}")
+              print(console, "literal \${x} stays")
+              print(console, "${name}${name}")
+            }
+        "#;
+        assert_eq!(interp(src), run_on_wasm(src));
+        assert_eq!(
+            run_on_wasm(src),
+            vec![
+                "hi witchy, age 3",
+                "sum: 13",
+                "flag true",
+                "literal ${x} stays",
+                "witchywitchy",
+            ]
+        );
+    }
+
+    #[test]
     fn nested_records_backends_agree() {
         // A record containing a record: chained field access (o.inner.v), nested
         // construction, `update` on a nested field, and immutability of the
