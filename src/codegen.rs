@@ -128,6 +128,9 @@ struct Codegen {
     /// Function name -> the record type it returns (when it returns one), so a
     /// `let q = f(...)` binds `q` to that record type.
     fn_ret_records: HashMap<String, String>,
+    /// Function name -> the record type that is the success payload of its
+    /// Result/Option return, so `let q = f(...)?` binds `q` to that record.
+    fn_ret_result_record: HashMap<String, String>,
     /// Return kind of the function currently being compiled (for `return`).
     cur_fn_ret_kind: Kind,
     /// Whether the current function has any `inout` parameters.
@@ -159,6 +162,7 @@ impl Codegen {
             local_records: HashMap::new(),
             local_list_elem: HashMap::new(),
             fn_ret_records: HashMap::new(),
+            fn_ret_result_record: HashMap::new(),
             cur_fn_ret_kind: Kind::I32,
             cur_fn_inout: false,
             uses_list_push: false,
@@ -217,6 +221,13 @@ impl Codegen {
                         Expr::Call { name: fname, .. } => {
                             self.fn_ret_records.get(fname).cloned()
                         }
+                        // `let q = f(...)?` — the Result/Option payload record.
+                        Expr::Try(inner) => match inner.as_ref() {
+                            Expr::Call { name: fname, .. } => {
+                                self.fn_ret_result_record.get(fname).cloned()
+                            }
+                            _ => None,
+                        },
                         Expr::RecordUpdate { base, .. } => match base.as_ref() {
                             Expr::Var(v) => self.local_records.get(v).cloned(),
                             _ => None,
@@ -1074,13 +1085,20 @@ pub fn compile_module(module: &Module) -> Result<String, CodegenError> {
             Item::Actor(_) => {}
         }
     }
-    // Now that record types are known, note which functions return one, so a
-    // `let q = f(...)` can resolve `q.field`.
+    // Now that record types are known, note which functions return a record, so
+    // `let q = f(...)` resolves `q.field`; and which return a Result/Option whose
+    // success payload is a record, so `let q = f(...)?` resolves it too.
     for item in &module.items {
         if let Item::Function(f) = item {
-            if let Some(Type::Named(n, _)) = &f.ret {
+            if let Some(Type::Named(n, args)) = &f.ret {
                 if cg.record_fields.contains_key(n) {
                     cg.fn_ret_records.insert(f.name.clone(), n.clone());
+                } else if let Some(Type::Named(payload, _)) = args.first() {
+                    // e.g. `Result(Account, _)` / `Option(Account)`: `?` yields it.
+                    if cg.record_fields.contains_key(payload) {
+                        cg.fn_ret_result_record
+                            .insert(f.name.clone(), payload.clone());
+                    }
                 }
             }
         }

@@ -880,6 +880,15 @@ mod example_tests {
     }
 
     #[test]
+    fn bank_example_runs_on_wasm() {
+        // Records + lists + for-in + Result + `?` together, compiled to WASM.
+        assert_eq!(
+            run_on_wasm(include_str!("../examples/bank.witchy")),
+            vec!["total = 150", "remaining: 90", "error: insufficient funds for bob"]
+        );
+    }
+
+    #[test]
     fn record_typed_list_iteration_on_wasm() {
         // `for it in items` where items: List(Record) — the loop var's fields
         // resolve. total([Item(3,2), Item(5,1)]) = 3*2 + 5*1 = 11.
