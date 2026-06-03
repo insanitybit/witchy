@@ -1363,7 +1363,14 @@ impl Codegen {
                 assigns_outer.join("`, `")
             ));
         }
-        let captures = scan.captures();
+        // Keep only names bound in the enclosing scope (locals or actor-state
+        // globals). Called names that are top-level functions or builtins are
+        // not captured — they compile to direct calls.
+        let captures: Vec<String> = scan
+            .captures()
+            .into_iter()
+            .filter(|c| self.locals.contains_key(c) || self.globals.contains(c))
+            .collect();
         // Resolve each capture against the *enclosing* scope (before the local
         // tables are swapped out for the lambda body).
         let mut cap_info: Vec<(String, bool, Option<String>, Option<String>)> = Vec::new();
@@ -2990,7 +2997,16 @@ fn fv_expr(e: &Expr, s: &mut LambdaScan) {
                 fv_expr(x, s);
             }
         }
-        Expr::Call { args, .. } | Expr::Ctor { args, .. } | Expr::Spawn { args, .. } => {
+        // The callee name matters: it may be a captured function-valued local
+        // (which must be pulled into the closure), not only a top-level
+        // function. Non-local names are filtered out where captures are built.
+        Expr::Call { name, args } => {
+            s.reads.insert(name.clone());
+            for a in args {
+                fv_expr(a, s);
+            }
+        }
+        Expr::Ctor { args, .. } | Expr::Spawn { args, .. } => {
             for a in args {
                 fv_expr(a, s);
             }

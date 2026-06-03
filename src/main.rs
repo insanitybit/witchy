@@ -2617,6 +2617,28 @@ mod example_tests {
         assert_eq!(run_on_wasm(src), vec!["6", "50", "107", "21"]);
     }
 
+    // A closure that *calls* a captured function-valued variable (`f(g(x))`,
+    // where f and g are captured) must thread f and g through the closure
+    // environment and invoke them indirectly — not emit a direct `call $g`.
+    // This is the classic `compose`; it must agree across backends.
+    #[test]
+    fn compose_captured_functions_backends_agree() {
+        let src = r#"
+            fn compose(f: fn(Int) -> Int, g: fn(Int) -> Int) -> fn(Int) -> Int {
+              fn(x: Int) { f(g(x)) }
+            }
+            fn double(x: Int) -> Int { x * 2 }
+            fn inc(x: Int) -> Int { x + 1 }
+            fn main(console: Console) {
+              let h = compose(double, inc)
+              print(console, int_to_string(h(10)))
+              print(console, int_to_string(compose(inc, double)(10)))
+            }
+        "#;
+        assert_eq!(interp(src), run_on_wasm(src), "compose diverged");
+        assert_eq!(run_on_wasm(src), vec!["22", "21"]);
+    }
+
     #[test]
     fn function_by_name_as_value_backends_agree() {
         // A bare top-level function name is a first-class value: bind it, call
