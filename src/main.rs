@@ -1715,6 +1715,27 @@ mod example_tests {
     }
 
     #[test]
+    fn std_string_pad_backends_agree() {
+        // pad_left/pad_right reach an exact target width, trimming the padding
+        // even when `fill` is multi-character; an already-wide string is left
+        // untouched. Multi-char fill "-=" padding "ab" to 7 -> "-=-=-ab".
+        let client = r#"
+            import string
+            fn main(console: Console) {
+              print(console, string.pad_left("42", 5, "0"))
+              print(console, string.pad_right("42", 5, "."))
+              print(console, string.pad_left("hello", 3, "x"))
+              print(console, string.pad_left("ab", 7, "-="))
+            }
+        "#;
+        let sources = [("string", crate::bundled_module("string").unwrap()), ("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "pad diverged between backends");
+        assert_eq!(compiled, vec!["00042", "42...", "hello", "-=-=-ab"]);
+    }
+
+    #[test]
     fn large_list_allocation_grows_memory() {
         // Building a 200-element list via `push` allocates ~80KB total (each push
         // copies the whole list, and the bump allocator never frees) — past the
