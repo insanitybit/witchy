@@ -2,6 +2,9 @@
 // type into scope (so the `?` operator works) and gives the usual combinators.
 // Pure and capability-free, like every std module.
 
+// For the `ok`/`err` conversions to Option.
+import option
+
 type Result {
   Ok(a)
   Err(e)
@@ -94,5 +97,22 @@ pub fn map_or(r: Result(a, e), default: b, f: fn(a) -> b) -> b {
   match r {
     Ok(v) -> f(v)
     Err(_) -> default
+  }
+}
+
+// The Ok value as `Some`, or `None` for an Err — discards the error, turning a
+// Result into an Option.
+pub fn ok(r: Result(a, e)) -> Option(a) {
+  match r {
+    Ok(v) -> Some(v)
+    Err(_) -> None
+  }
+}
+
+// The Err value as `Some`, or `None` for an Ok.
+pub fn err(r: Result(a, e)) -> Option(e) {
+  match r {
+    Ok(_) -> None
+    Err(x) -> Some(x)
   }
 }

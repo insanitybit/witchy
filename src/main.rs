@@ -3128,6 +3128,31 @@ mod example_tests {
     // caller provides only `main` — the linker auto-resolves both std modules.
     // More total Option-returning list functions: min/max (None for the empty
     // list) and position (the Option counterpart to index_of's -1 sentinel).
+    // result -> option conversions (result imports option): `ok` keeps the Ok
+    // value as Some and drops an Err to None; `err` does the reverse. Caller
+    // provides only `main`; the linker resolves result and option.
+    #[test]
+    fn std_result_to_option_backends_agree() {
+        let client = r#"
+            import result
+            import option
+            fn check(n: Int) -> Result(Int, String) {
+              if n > 0 { Ok(n) } else { Err("bad") }
+            }
+            fn main(console: Console) {
+              print(console, int_to_string(option.unwrap_or(result.ok(check(5)), 0)))
+              print(console, to_string(option.is_none(result.ok(check(0 - 1)))))
+              print(console, to_string(option.is_none(result.err(check(5)))))
+              print(console, int_to_string(string_length(option.unwrap_or(result.err(check(0 - 1)), ""))))
+            }
+        "#;
+        let sources = [("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "result->option diverged");
+        assert_eq!(compiled, vec!["5", "true", "true", "3"]);
+    }
+
     #[test]
     fn std_list_min_max_position_backends_agree() {
         let client = r#"
