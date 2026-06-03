@@ -759,6 +759,22 @@ mod example_tests {
                 "#,
             ),
             (
+                "string equality across a List(String) parameter",
+                r#"
+                fn count_matches(words: List(String), target: String) -> Int {
+                  var n = 0
+                  for w in words {
+                    if w == target { n = n + 1 }
+                  }
+                  n
+                }
+                fn main(console: Console) {
+                  let words = split("apple banana apple cherry apple", " ")
+                  print(console, int_to_string(count_matches(words, "apple")))
+                }
+                "#,
+            ),
+            (
                 "string equality + ordering",
                 r#"
                 fn main(console: Console) {

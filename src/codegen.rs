@@ -625,11 +625,19 @@ impl Codegen {
                 Some(Type::Named(n, _)) if self.record_fields.contains_key(n) => {
                     self.local_records.insert(p.name.clone(), n.clone());
                 }
-                // A `List(Record)` parameter lets a `for x in p` loop var resolve.
+                // A `List(...)` parameter lets a `for x in p` loop var resolve:
+                // record elements for field access, scalar elements (e.g.
+                // String) for `to_string` and correct `==`/ordering.
                 Some(Type::Named(n, args)) if n == "List" => {
-                    if let Some(Type::Named(elem, _)) = args.first() {
-                        if self.record_fields.contains_key(elem) {
-                            self.local_list_elem.insert(p.name.clone(), elem.clone());
+                    if let Some(elem) = args.first() {
+                        if let Type::Named(en, _) = elem {
+                            if self.record_fields.contains_key(en) {
+                                self.local_list_elem.insert(p.name.clone(), en.clone());
+                            }
+                        }
+                        let evt = ty_to_valtype(elem);
+                        if evt != ValType::Other {
+                            self.local_list_elem_valtype.insert(p.name.clone(), evt);
                         }
                     }
                 }
@@ -1273,9 +1281,15 @@ impl Codegen {
                     self.local_records.insert(p.name.clone(), n.clone());
                 }
                 Some(Type::Named(n, args)) if n == "List" => {
-                    if let Some(Type::Named(elem, _)) = args.first() {
-                        if self.record_fields.contains_key(elem) {
-                            self.local_list_elem.insert(p.name.clone(), elem.clone());
+                    if let Some(elem) = args.first() {
+                        if let Type::Named(en, _) = elem {
+                            if self.record_fields.contains_key(en) {
+                                self.local_list_elem.insert(p.name.clone(), en.clone());
+                            }
+                        }
+                        let evt = ty_to_valtype(elem);
+                        if evt != ValType::Other {
+                            self.local_list_elem_valtype.insert(p.name.clone(), evt);
                         }
                     }
                 }
