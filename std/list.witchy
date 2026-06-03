@@ -86,6 +86,19 @@ pub fn count(xs: List(a), pred: fn(a) -> Bool) -> Int {
   n
 }
 
+// Index of the first element satisfying `pred`, or -1 if none do. (Like
+// `index_of`, but matching by predicate rather than value equality.)
+pub fn find_index(xs: List(a), pred: fn(a) -> Bool) -> Int {
+  var i = 0
+  for x in xs {
+    if pred(x) {
+      return i
+    }
+    i = i + 1
+  }
+  0 - 1
+}
+
 // The list, reversed.
 pub fn reverse(xs: List(a)) -> List(a) {
   var out = []

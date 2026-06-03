@@ -929,6 +929,48 @@ mod example_tests {
     }
 
     #[test]
+    fn sort_strings_backends_agree() {
+        // Sorting strings lexicographically with `sort_by` and a String
+        // comparator — exercising string `<` through call_indirect inside
+        // insert_sorted — agrees across backends.
+        let client = r#"
+            import list
+            fn main(console: Console) {
+              let words = ["cherry", "apple", "banana", "date", "apple"]
+              let sorted = list.sort_by(words, fn(a: String, b: String) { a < b })
+              for w in sorted { print(console, w) }
+            }
+        "#;
+        let sources = [("list", crate::bundled_module("list").unwrap()), ("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "string sort diverged between backends");
+        assert_eq!(
+            compiled,
+            vec!["apple", "apple", "banana", "cherry", "date"]
+        );
+    }
+
+    #[test]
+    fn std_list_find_index_backends_agree() {
+        // find_index returns the position of the first predicate match, or -1.
+        let client = r#"
+            import list
+            fn main(console: Console) {
+              let xs = [3, 8, 1, 9, 4]
+              print(console, int_to_string(list.find_index(xs, fn(n: Int) { n > 5 })))
+              print(console, int_to_string(list.find_index(xs, fn(n: Int) { n > 100 })))
+              print(console, int_to_string(list.find_index(xs, fn(n: Int) { n == 1 })))
+            }
+        "#;
+        let sources = [("list", crate::bundled_module("list").unwrap()), ("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "find_index diverged");
+        assert_eq!(compiled, vec!["1", "-1", "2"]);
+    }
+
+    #[test]
     fn std_list_flatten_flatmap_backends_agree() {
         // flatten / flat_map (concat-based, with a list-returning closure for
         // flat_map) behave identically in both backends.
