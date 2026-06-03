@@ -2754,6 +2754,43 @@ mod example_tests {
         assert_eq!(run_on_wasm(src), vec!["1", "4", "10", "4", "1"]);
     }
 
+    // A recursive ADT (binary tree) with nested constructor patterns, exercised
+    // by two recursive traversals (sum and depth). Recursion through a
+    // heap-allocated ADT and destructuring `Node(l, v, r)` must agree across
+    // backends.
+    #[test]
+    fn recursive_tree_adt_backends_agree() {
+        let src = r#"
+            type Tree {
+              Leaf
+              Node(Tree, Int, Tree)
+            }
+            fn sum_tree(t: Tree) -> Int {
+              match t {
+                Leaf -> 0
+                Node(l, v, r) -> sum_tree(l) + v + sum_tree(r)
+              }
+            }
+            fn depth(t: Tree) -> Int {
+              match t {
+                Leaf -> 0
+                Node(l, v, r) -> {
+                  let dl = depth(l)
+                  let dr = depth(r)
+                  1 + if dl > dr { dl } else { dr }
+                }
+              }
+            }
+            fn main(console: Console) {
+              let t = Node(Node(Leaf, 1, Node(Leaf, 5, Leaf)), 2, Node(Leaf, 3, Leaf))
+              print(console, int_to_string(sum_tree(t)))
+              print(console, int_to_string(depth(t)))
+            }
+        "#;
+        assert_eq!(interp(src), run_on_wasm(src), "recursive tree ADT diverged");
+        assert_eq!(run_on_wasm(src), vec!["11", "3"]);
+    }
+
     #[test]
     fn function_pipeline_fold_backends_agree() {
         let client = r#"
