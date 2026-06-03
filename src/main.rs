@@ -784,6 +784,25 @@ mod example_tests {
     }
 
     #[test]
+    fn string_prefix_suffix_on_wasm() {
+        // starts_with / ends_with compile to byte-loop helpers.
+        // check("html")=2, check("http")=1, check("xml")=0 -> 210.
+        let src = r#"
+            fn check(s: String) -> Int {
+              if starts_with(s, "ht") {
+                if ends_with(s, "ml") { 2 } else { 1 }
+              } else {
+                0
+              }
+            }
+            fn main() -> Int {
+              check("html") * 100 + check("http") * 10 + check("xml")
+            }
+        "#;
+        assert_eq!(run_on_wasm(src), vec!["210"]);
+    }
+
+    #[test]
     fn try_operator_runs_on_wasm() {
         // `?` compiles: success unwraps, error early-returns. compute(3,4)=Ok(7),
         // compute(0,9)=Err(99); 7*100 + 99 = 799.

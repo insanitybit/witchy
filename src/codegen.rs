@@ -115,6 +115,9 @@ struct Codegen {
     uses_list_push: bool,
     uses_list_concat: bool,
     uses_list_drop: bool,
+    /// Whether the `starts_with`/`ends_with` string helpers are needed.
+    uses_starts_with: bool,
+    uses_ends_with: bool,
     /// Record type name -> ordered fields as `(name, named-type)`, where the
     /// second is the field's type name when it is a `Named` type (so nested
     /// records can be chained, `a.b.c`). For compiling `value.field`.
@@ -168,6 +171,8 @@ impl Codegen {
             uses_list_push: false,
             uses_list_concat: false,
             uses_list_drop: false,
+            uses_starts_with: false,
+            uses_ends_with: false,
         }
     }
 
@@ -356,6 +361,12 @@ impl Codegen {
         }
         if self.uses_list_drop {
             s.push_str(LIST_DROP_WAT);
+        }
+        if self.uses_starts_with {
+            s.push_str(STARTS_WITH_WAT);
+        }
+        if self.uses_ends_with {
+            s.push_str(ENDS_WITH_WAT);
         }
         if self.uses_print {
             s.push_str(PRINT_STR_WAT);
@@ -956,8 +967,21 @@ impl Codegen {
             ("string_to_int", _) => {
                 cerr("string_to_int runs in the interpreter (WASM string parsing is future)")
             }
-            ("to_upper", _) | ("to_lower", _) | ("trim", _) | ("starts_with", _) => cerr(
-                "string stdlib functions run in the interpreter; WASM string ops are future",
+            // Prefix/suffix tests over the string's bytes (`[len][bytes]`).
+            ("starts_with", 2) => {
+                self.uses_starts_with = true;
+                let s = self.compile_expr(&args[0])?;
+                let p = self.compile_expr(&args[1])?;
+                Ok(format!("{s}{p}    call $starts_with\n"))
+            }
+            ("ends_with", 2) => {
+                self.uses_ends_with = true;
+                let s = self.compile_expr(&args[0])?;
+                let p = self.compile_expr(&args[1])?;
+                Ok(format!("{s}{p}    call $ends_with\n"))
+            }
+            ("to_upper", _) | ("to_lower", _) | ("trim", _) => cerr(
+                "to_upper/to_lower/trim run in the interpreter; WASM string transforms are future",
             ),
             // length(list): the record header is the length.
             ("length", 1) => {
@@ -1432,6 +1456,45 @@ const LIST_DROP_WAT: &str = r#"  (func $list_drop (param $list i32) (param $k i3
     memory.copy
     local.get $new local.get $newlen i32.const 1 i32.add i32.const 4 i32.mul i32.add global.set $heap
     local.get $new)
+"#;
+
+// starts_with(s, p): do s's first p.len bytes equal p?
+const STARTS_WITH_WAT: &str = r#"  (func $starts_with (param $s i32) (param $p i32) (result i32)
+    (local $plen i32) (local $i i32)
+    (local.set $plen (i32.load (local.get $p)))
+    (if (i32.gt_s (local.get $plen) (i32.load (local.get $s)))
+      (then (return (i32.const 0))))
+    (local.set $i (i32.const 0))
+    (block $done
+      (loop $l
+        (br_if $done (i32.ge_s (local.get $i) (local.get $plen)))
+        (if (i32.ne
+              (i32.load8_u (i32.add (i32.add (local.get $s) (i32.const 4)) (local.get $i)))
+              (i32.load8_u (i32.add (i32.add (local.get $p) (i32.const 4)) (local.get $i))))
+          (then (return (i32.const 0))))
+        (local.set $i (i32.add (local.get $i) (i32.const 1)))
+        (br $l)))
+    (i32.const 1))
+"#;
+
+// ends_with(s, p): do s's last p.len bytes equal p?
+const ENDS_WITH_WAT: &str = r#"  (func $ends_with (param $s i32) (param $p i32) (result i32)
+    (local $plen i32) (local $off i32) (local $i i32)
+    (local.set $plen (i32.load (local.get $p)))
+    (local.set $off (i32.sub (i32.load (local.get $s)) (local.get $plen)))
+    (if (i32.lt_s (local.get $off) (i32.const 0))
+      (then (return (i32.const 0))))
+    (local.set $i (i32.const 0))
+    (block $done
+      (loop $l
+        (br_if $done (i32.ge_s (local.get $i) (local.get $plen)))
+        (if (i32.ne
+              (i32.load8_u (i32.add (i32.add (local.get $s) (i32.const 4)) (i32.add (local.get $off) (local.get $i))))
+              (i32.load8_u (i32.add (i32.add (local.get $p) (i32.const 4)) (local.get $i))))
+          (then (return (i32.const 0))))
+        (local.set $i (i32.add (local.get $i) (i32.const 1)))
+        (br $l)))
+    (i32.const 1))
 "#;
 
 const PRINT_STR_WAT: &str = r#"  (func $print_str (param $s i32)
