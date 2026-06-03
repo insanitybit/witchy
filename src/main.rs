@@ -3027,6 +3027,30 @@ mod example_tests {
     }
 
     #[test]
+    fn std_string_is_empty_count_backends_agree() {
+        // is_empty checks for zero characters; count returns non-overlapping
+        // occurrences (0 for an empty needle, and overlapping matches don't
+        // double-count: "aaaa"/"aa" is 2). Both backends agree.
+        let client = r#"
+            import string
+            fn main(console: Console) {
+              print(console, to_string(string.is_empty("")))
+              print(console, to_string(string.is_empty("x")))
+              print(console, int_to_string(string.count("banana", "a")))
+              print(console, int_to_string(string.count("banana", "an")))
+              print(console, int_to_string(string.count("aaaa", "aa")))
+              print(console, int_to_string(string.count("abc", "x")))
+              print(console, int_to_string(string.count("abc", "")))
+            }
+        "#;
+        let sources = [("string", crate::bundled_module("string").unwrap()), ("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "string is_empty/count diverged");
+        assert_eq!(compiled, vec!["true", "false", "3", "2", "2", "0", "0"]);
+    }
+
+    #[test]
     fn std_string_char_at_backends_agree() {
         // char_at returns the single character at an index, or "" out of range.
         let client = r#"

@@ -79,6 +79,29 @@ pub fn char_at(s: String, i: Int) -> String {
   substring(s, i, i + 1)
 }
 
+// Whether the string has no characters.
+pub fn is_empty(s: String) -> Bool {
+  string_length(s) == 0
+}
+
+// The number of non-overlapping occurrences of `sub` in `s` (0 for an empty
+// `sub`). After each match the search resumes past it.
+pub fn count(s: String, sub: String) -> Int {
+  if string_length(sub) == 0 {
+    0
+  } else {
+    var total = 0
+    var rest = s
+    var i = index_of(rest, sub)
+    while i >= 0 {
+      total = total + 1
+      rest = substring(rest, i + string_length(sub), string_length(rest))
+      i = index_of(rest, sub)
+    }
+    total
+  }
+}
+
 // Split text into its newline-separated lines.
 pub fn lines(text: String) -> List(String) {
   split(text, "\n")
