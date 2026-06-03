@@ -363,6 +363,11 @@ pub fn sort_by(xs: List(a), less: fn(a, a) -> Bool) -> List(a) {
   out
 }
 
+// Sort a list of integers ascending — the common default over `sort_by`.
+pub fn sort(xs: List(Int)) -> List(Int) {
+  sort_by(xs, fn(a: Int, b: Int) { a < b })
+}
+
 // Whether `target` appears in the list (by value equality).
 pub fn contains(xs: List(a), target: a) -> Bool {
   for x in xs {
@@ -371,6 +376,26 @@ pub fn contains(xs: List(a), target: a) -> Bool {
     }
   }
   false
+}
+
+// The list with duplicates removed, keeping the first occurrence of each
+// element (by value equality), in original order. (Membership is checked
+// inline rather than via `contains`, whose bare name resolves to the string
+// builtin inside this module.)
+pub fn unique(xs: List(a)) -> List(a) {
+  var out = []
+  for x in xs {
+    var seen = false
+    for y in out {
+      if y == x {
+        seen = true
+      }
+    }
+    if !seen {
+      out = push(out, x)
+    }
+  }
+  out
 }
 
 // Whether at least one element satisfies `pred`.

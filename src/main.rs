@@ -3175,6 +3175,30 @@ mod example_tests {
         assert_eq!(compiled, vec!["5", "true", "true", "3"]);
     }
 
+    // sort (ascending Int convenience over sort_by) and unique (drop duplicates,
+    // keeping the first occurrence in order). Both backends agree.
+    #[test]
+    fn std_list_sort_unique_backends_agree() {
+        let client = r#"
+            import list
+            fn main(console: Console) {
+              let s = list.sort([3, 1, 4, 1, 5, 9, 2, 6])
+              for x in s { print(console, int_to_string(x)) }
+              let u = list.unique([1, 2, 2, 3, 1, 4, 3])
+              print(console, int_to_string(length(u)))
+              for x in u { print(console, int_to_string(x)) }
+            }
+        "#;
+        let sources = [("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "sort/unique diverged");
+        assert_eq!(
+            compiled,
+            vec!["1", "1", "2", "3", "4", "5", "6", "9", "4", "1", "2", "3", "4"]
+        );
+    }
+
     #[test]
     fn std_list_min_max_position_backends_agree() {
         let client = r#"
