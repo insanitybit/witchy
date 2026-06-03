@@ -872,6 +872,63 @@ mod example_tests {
     }
 
     #[test]
+    fn to_string_polymorphic_on_wasm() {
+        // `to_string` renders by the argument's compile-time value type: Int
+        // literals/arithmetic, Bool literals/comparisons/user-fn results, and
+        // String pass-through — all in compiled code.
+        let src = r#"
+            fn classify(n: Int) -> Bool { n > 0 }
+            fn main(console: Console) {
+              print(console, to_string(42))
+              print(console, to_string(0 - 5))
+              print(console, to_string(true))
+              print(console, to_string(3 > 7))
+              print(console, to_string("hi"))
+              print(console, to_string(classify(9)))
+              let flag = 2 == 2
+              print(console, to_string(flag))
+            }
+        "#;
+        assert_eq!(
+            run_on_wasm(src),
+            vec!["42", "-5", "true", "false", "hi", "true", "true"]
+        );
+    }
+
+    #[test]
+    fn to_string_respects_lambda_param_shadowing_on_wasm() {
+        // The outer `x` is an Int; the lambda's `x` is a String param. `to_string`
+        // inside the lambda must pass the String through, not run int_to_string on
+        // the pointer — i.e. value-type tracking is scoped per lambda.
+        let src = r#"
+            fn apply(f: fn(String) -> String, s: String) -> String { f(s) }
+            fn main(console: Console) {
+              let x = 5
+              print(console, to_string(x))
+              print(console, apply(fn(x: String) { to_string(x) }, "hey"))
+            }
+        "#;
+        assert_eq!(run_on_wasm(src), vec!["5", "hey"]);
+    }
+
+    #[test]
+    fn to_string_on_undetermined_type_is_rejected() {
+        // A value type codegen can't pin down (here a list) errors clearly rather
+        // than silently mis-rendering.
+        let src = r#"
+            fn main(console: Console) {
+              print(console, to_string([1, 2, 3]))
+            }
+        "#;
+        let module = parser::parse_module(src).expect("parse");
+        let err = codegen::compile_module(&module).expect_err("should reject");
+        assert!(
+            err.to_string().contains("could not determine"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
     fn negative_int_to_string_on_wasm() {
         // `int_to_string` renders negatives with a leading '-' (previously it
         // emitted garbage, e.g. "/" for -1).
@@ -908,6 +965,17 @@ mod example_tests {
         assert_eq!(
             run_on_wasm(src),
             vec!["1", "0", "1", "2", "-1", "ell", "hi", "", "4", "é!"]
+        );
+    }
+
+    #[test]
+    fn parse_kv_example_runs_on_wasm() {
+        // The `key=value` parser example now compiles end-to-end: index_of +
+        // substring + string_length + ends_with + to_string(Bool), matching the
+        // interpreter.
+        assert_eq!(
+            run_on_wasm(include_str!("../examples/parse_kv.witchy")),
+            vec!["timeout", "30", "true"]
         );
     }
 

@@ -81,6 +81,29 @@ fn ty_kind(t: &Type) -> Kind {
     }
 }
 
+/// A finer source-level value type than `Kind`, used where i32 alone is
+/// ambiguous — e.g. `to_string` must render an Int, a Bool, and a String
+/// differently even though all three are i32 at runtime. `Other` covers
+/// everything not (yet) distinguished (lists, records, tuples, ...).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ValType {
+    Int,
+    Bool,
+    Float,
+    Str,
+    Other,
+}
+
+fn ty_to_valtype(t: &Type) -> ValType {
+    match t {
+        Type::Named(n, _) if n == "Int" => ValType::Int,
+        Type::Named(n, _) if n == "Bool" => ValType::Bool,
+        Type::Named(n, _) if n == "Float" => ValType::Float,
+        Type::Named(n, _) if n == "String" => ValType::Str,
+        _ => ValType::Other,
+    }
+}
+
 struct Codegen {
     strings: Vec<(String, u32)>,
     next_offset: u32,
@@ -142,6 +165,12 @@ struct Codegen {
     /// Variables holding a `List(Record)`, mapping to the element record type, so
     /// a `for x in list` loop variable's fields can be resolved.
     local_list_elem: HashMap<String, String>,
+    /// Value type of params / let-bound locals, where known, so `to_string` can
+    /// pick the right rendering. Absent = `Other`.
+    local_val_types: HashMap<String, ValType>,
+    /// Function name -> the value type it returns, so `to_string(f(...))` can be
+    /// rendered. Populated from return-type annotations.
+    fn_ret_valtype: HashMap<String, ValType>,
     /// Function name -> the record type it returns (when it returns one), so a
     /// `let q = f(...)` binds `q` to that record type.
     fn_ret_records: HashMap<String, String>,
@@ -185,6 +214,8 @@ impl Codegen {
             record_fields: HashMap::new(),
             local_records: HashMap::new(),
             local_list_elem: HashMap::new(),
+            local_val_types: HashMap::new(),
+            fn_ret_valtype: HashMap::new(),
             fn_ret_records: HashMap::new(),
             fn_ret_result_record: HashMap::new(),
             cur_fn_ret_kind: Kind::I32,
@@ -235,6 +266,54 @@ impl Codegen {
         }
     }
 
+    /// The source-level value type of an expression, to the extent codegen can
+    /// determine it. Used by `to_string`; `Other` means "not distinguished".
+    fn val_type_of(&self, e: &Expr) -> ValType {
+        match e {
+            Expr::Int(_) => ValType::Int,
+            Expr::Bool(_) => ValType::Bool,
+            Expr::Float(_) => ValType::Float,
+            Expr::Str(_) => ValType::Str,
+            Expr::Unary { op, expr } => match op {
+                UnOp::Not => ValType::Bool,
+                UnOp::Neg => self.val_type_of(expr),
+            },
+            Expr::Binary { op, lhs, .. } => match op {
+                BinOp::Eq | BinOp::NotEq | BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq
+                | BinOp::And | BinOp::Or => ValType::Bool,
+                BinOp::Concat => ValType::Str,
+                BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {
+                    self.val_type_of(lhs)
+                }
+            },
+            Expr::Var(n) => self.local_val_types.get(n).copied().unwrap_or(ValType::Other),
+            Expr::If { then_block, .. } => self.block_val_type(then_block),
+            Expr::Block(b) => self.block_val_type(b),
+            Expr::Match { arms, .. } => arms
+                .first()
+                .map(|a| self.val_type_of(&a.body))
+                .unwrap_or(ValType::Other),
+            Expr::Call { name, .. } => match name.as_str() {
+                "int_to_string" | "to_string" | "to_upper" | "to_lower" | "trim" | "replace"
+                | "substring" => ValType::Str,
+                "starts_with" | "ends_with" | "contains" => ValType::Bool,
+                "string_length" | "index_of" | "length" | "float_to_int" | "string_to_int" => {
+                    ValType::Int
+                }
+                "int_to_float" | "sqrt" => ValType::Float,
+                other => self.fn_ret_valtype.get(other).copied().unwrap_or(ValType::Other),
+            },
+            _ => ValType::Other,
+        }
+    }
+
+    fn block_val_type(&self, b: &Block) -> ValType {
+        match b.stmts.last() {
+            Some(Stmt::Expr(e)) => self.val_type_of(e),
+            _ => ValType::Other,
+        }
+    }
+
     /// Record the kinds of all `let`/pattern-bound locals in a body.
     fn infer_locals(&mut self, block: &Block) {
         for stmt in &block.stmts {
@@ -242,6 +321,8 @@ impl Codegen {
                 Stmt::Let { name, value, .. } => {
                     let k = self.kind_of(value);
                     self.locals.insert(name.clone(), k);
+                    let vt = self.val_type_of(value);
+                    self.local_val_types.insert(name.clone(), vt);
                     // Remember the binding's record type (if any) so `name.field`
                     // resolves: a constructor, a record-returning call, or an
                     // `update` of a known record.
@@ -440,9 +521,13 @@ impl Codegen {
         self.locals.clear();
         self.local_records.clear();
         self.local_list_elem.clear();
+        self.local_val_types.clear();
         for p in &f.params {
             let k = p.ty.as_ref().map(ty_kind).unwrap_or(Kind::I32);
             self.locals.insert(p.name.clone(), k);
+            if let Some(t) = &p.ty {
+                self.local_val_types.insert(p.name.clone(), ty_to_valtype(t));
+            }
             match &p.ty {
                 // A record-typed parameter lets `p.field` resolve.
                 Some(Type::Named(n, _)) if self.record_fields.contains_key(n) => {
@@ -1043,6 +1128,7 @@ impl Codegen {
         let saved_locals = std::mem::take(&mut self.locals);
         let saved_records = std::mem::take(&mut self.local_records);
         let saved_list_elem = std::mem::take(&mut self.local_list_elem);
+        let saved_val_types = std::mem::take(&mut self.local_val_types);
         let saved_ret = self.cur_fn_ret_kind;
         let saved_inout = self.cur_fn_inout;
         self.cur_fn_inout = false;
@@ -1050,10 +1136,13 @@ impl Codegen {
         for p in params {
             let k = p.ty.as_ref().map(ty_kind).unwrap_or(Kind::I32);
             if k != Kind::I32 {
-                self.restore_locals(saved_locals, saved_records, saved_list_elem, saved_ret, saved_inout);
+                self.restore_locals(saved_locals, saved_records, saved_list_elem, saved_val_types, saved_ret, saved_inout);
                 return cerr("non-Int lambda parameters are not compiled to WASM yet");
             }
             self.locals.insert(p.name.clone(), k);
+            if let Some(t) = &p.ty {
+                self.local_val_types.insert(p.name.clone(), ty_to_valtype(t));
+            }
             match &p.ty {
                 Some(Type::Named(n, _)) if self.record_fields.contains_key(n) => {
                     self.local_records.insert(p.name.clone(), n.clone());
@@ -1082,7 +1171,7 @@ impl Codegen {
         self.infer_locals(body);
         let ret_kind = self.block_kind(body);
         if ret_kind != Kind::I32 {
-            self.restore_locals(saved_locals, saved_records, saved_list_elem, saved_ret, saved_inout);
+            self.restore_locals(saved_locals, saved_records, saved_list_elem, saved_val_types, saved_ret, saved_inout);
             return cerr("non-Int lambda results are not compiled to WASM yet");
         }
         self.cur_fn_ret_kind = ret_kind;
@@ -1123,7 +1212,7 @@ impl Codegen {
         self.lambdas[index] = format!("{header}{prologue}{body_wat}  )\n");
         self.clos_arities.insert(params.len());
 
-        self.restore_locals(saved_locals, saved_records, saved_list_elem, saved_ret, saved_inout);
+        self.restore_locals(saved_locals, saved_records, saved_list_elem, saved_val_types, saved_ret, saved_inout);
 
         // Construction site: allocate `[code_index][cap0]..[capN]` via `$mkN`,
         // pushing the captures from the *enclosing* scope in slot order.
@@ -1146,12 +1235,14 @@ impl Codegen {
         locals: HashMap<String, Kind>,
         records: HashMap<String, String>,
         list_elem: HashMap<String, String>,
+        val_types: HashMap<String, ValType>,
         ret: Kind,
         inout: bool,
     ) {
         self.locals = locals;
         self.local_records = records;
         self.local_list_elem = list_elem;
+        self.local_val_types = val_types;
         self.cur_fn_ret_kind = ret;
         self.cur_fn_inout = inout;
     }
@@ -1168,6 +1259,32 @@ impl Codegen {
                 let arg = self.compile_expr(&args[0])?;
                 Ok(format!("{arg}    call $int_to_string\n"))
             }
+            // to_string(x): render by the argument's compile-time value type. A
+            // String passes through; an Int reuses `$int_to_string`; a Bool picks
+            // an interned "true"/"false". Floats and undetermined types error
+            // (rather than silently mis-rendering).
+            ("to_string", 1) => match self.val_type_of(&args[0]) {
+                ValType::Str => self.compile_expr(&args[0]),
+                ValType::Int => {
+                    self.uses_int_to_string = true;
+                    let arg = self.compile_expr(&args[0])?;
+                    Ok(format!("{arg}    call $int_to_string\n"))
+                }
+                ValType::Bool => {
+                    let t = self.intern("true");
+                    let f = self.intern("false");
+                    let arg = self.compile_expr(&args[0])?;
+                    Ok(format!(
+                        "{arg}    if (result i32)\n    i32.const {t}\n    else\n    i32.const {f}\n    end\n"
+                    ))
+                }
+                ValType::Float => {
+                    cerr("to_string on a Float is not compiled to WASM yet (no float formatting)")
+                }
+                ValType::Other => cerr(
+                    "to_string could not determine the value's type for WASM; convert it explicitly (e.g. int_to_string)",
+                ),
+            },
             // The string record's header is its byte length.
             ("string_length", 1) => {
                 let arg = self.compile_expr(&args[0])?;
@@ -1350,6 +1467,9 @@ pub fn compile_module(module: &Module) -> Result<String, CodegenError> {
                     .insert(f.name.clone(), f.params.iter().map(|p| p.convention).collect());
                 let ret = f.ret.as_ref().map(ty_kind).unwrap_or(Kind::I32);
                 cg.fn_ret.insert(f.name.clone(), ret);
+                if let Some(t) = &f.ret {
+                    cg.fn_ret_valtype.insert(f.name.clone(), ty_to_valtype(t));
+                }
             }
             Item::Type(t) => {
                 for (tag, variant) in t.variants.iter().enumerate() {
@@ -1580,6 +1700,8 @@ fn compile_actor_with_tags(
         let mut header = format!("  (func (export \"{}\") ", h.message);
         for p in &h.params {
             header.push_str(&format!("(param ${} i32) ", p.name));
+            // Handler params are all Int (validated above), so `to_string` works.
+            cg.local_val_types.insert(p.name.clone(), ValType::Int);
         }
         header.push('\n');
         let mut lets = Vec::new();
