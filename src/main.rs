@@ -3089,6 +3089,29 @@ mod example_tests {
     }
 
     #[test]
+    fn std_list_head_last_find_or_backends_agree() {
+        // Total accessors: head_or/last_or return a default for the empty list
+        // (never indexing out of bounds), and find_or returns the first match or
+        // a default. Both backends agree.
+        let client = r#"
+            import list
+            fn main(console: Console) {
+              print(console, int_to_string(list.head_or([10, 20, 30], 0)))
+              print(console, int_to_string(list.head_or([], 0 - 1)))
+              print(console, int_to_string(list.last_or([10, 20, 30], 0)))
+              print(console, int_to_string(list.last_or([], 0 - 1)))
+              print(console, int_to_string(list.find_or([1, 3, 4, 7], fn(n: Int) { n % 2 == 0 }, 0 - 1)))
+              print(console, int_to_string(list.find_or([1, 3, 5], fn(n: Int) { n % 2 == 0 }, 0 - 1)))
+            }
+        "#;
+        let sources = [("list", crate::bundled_module("list").unwrap()), ("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "head_or/last_or/find_or diverged");
+        assert_eq!(compiled, vec!["10", "-1", "30", "-1", "4", "-1"]);
+    }
+
+    #[test]
     fn std_list_chunks_tail_init_backends_agree() {
         // chunks groups into fixed-size sublists (last may be short), tail drops
         // the first element, init drops the last — all total (empty stays empty).

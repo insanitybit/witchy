@@ -93,6 +93,35 @@ pub fn is_empty(xs: List(a)) -> Bool {
   length(xs) == 0
 }
 
+// The first element, or `default` when the list is empty. (A total accessor in
+// the style of `get_or`/`unwrap_or`, so it never indexes out of bounds.)
+pub fn head_or(xs: List(a), default: a) -> a {
+  if is_empty(xs) {
+    default
+  } else {
+    at(xs, 0)
+  }
+}
+
+// The last element, or `default` when the list is empty.
+pub fn last_or(xs: List(a), default: a) -> a {
+  if is_empty(xs) {
+    default
+  } else {
+    at(xs, length(xs) - 1)
+  }
+}
+
+// The first element satisfying `pred`, or `default` if none do.
+pub fn find_or(xs: List(a), pred: fn(a) -> Bool, default: a) -> a {
+  for x in xs {
+    if pred(x) {
+      return x
+    }
+  }
+  default
+}
+
 // Concatenate a list of lists into one.
 pub fn flatten(xss: List(List(a))) -> List(a) {
   var out = []
