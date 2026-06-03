@@ -2902,6 +2902,37 @@ mod example_tests {
         assert_eq!(run_on_wasm(src), vec!["10", "11", "12"]);
     }
 
+    // Generic functions instantiated at several distinct types within one
+    // program: pair_up / first_of / second_of are used at (Int,Int),
+    // (String,String), and (Int,String). Per-call generalization must give each
+    // call site its own instantiation, and both backends must agree.
+    #[test]
+    fn generics_at_multiple_types_backends_agree() {
+        let src = r#"
+            fn pair_up(x: a, y: b) -> (a, b) { (x, y) }
+            fn first_of(p: (a, b)) -> a {
+              let (f, s) = p
+              f
+            }
+            fn second_of(p: (a, b)) -> b {
+              let (f, s) = p
+              s
+            }
+            fn main(console: Console) {
+              let pi = pair_up(1, 2)
+              let ps = pair_up("a", "b")
+              let pm = pair_up(7, "mixed")
+              print(console, int_to_string(first_of(pi)))
+              print(console, first_of(ps))
+              print(console, second_of(ps))
+              print(console, int_to_string(first_of(pm)))
+              print(console, second_of(pm))
+            }
+        "#;
+        assert_eq!(interp(src), run_on_wasm(src), "multi-type generics diverged");
+        assert_eq!(run_on_wasm(src), vec!["1", "a", "b", "7", "mixed"]);
+    }
+
     #[test]
     fn function_pipeline_fold_backends_agree() {
         let client = r#"
