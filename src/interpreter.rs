@@ -264,8 +264,18 @@ pub struct Interpreter {
     /// The function currently executing (after linking, `module.func`), attached
     /// to runtime errors. Empty means "unknown".
     cur_fn: String,
+    /// Current call nesting and its ceiling. The tree-walker recurses in Rust,
+    /// so unbounded recursion would overflow the (large) stack; this errors
+    /// gracefully well before that.
+    depth: u32,
+    depth_limit: u32,
     pub output: Vec<String>,
 }
+
+/// Maximum call-nesting depth. Comfortably below what the 4 GiB interpreter
+/// thread can hold (debug frames are large), but far deeper than any reasonable
+/// program recurses.
+const DEFAULT_DEPTH_LIMIT: u32 = 25_000;
 
 /// Default ceiling on evaluation steps for one program run. High enough that no
 /// realistic program reaches it, low enough that an infinite loop fails in
@@ -309,6 +319,8 @@ impl Interpreter {
             step_limit: DEFAULT_STEP_LIMIT,
             cur_line: 0,
             cur_fn: String::new(),
+            depth: 0,
+            depth_limit: DEFAULT_DEPTH_LIMIT,
             output: Vec::new(),
         }
     }
@@ -350,7 +362,13 @@ impl Interpreter {
             );
         }
         let prev = std::mem::replace(&mut self.cur_fn, name.to_string());
+        self.depth += 1;
+        if self.depth > self.depth_limit {
+            self.depth -= 1;
+            return err("call stack too deep (possible infinite recursion)");
+        }
         let result = finish(self.eval_block(&func.body, &mut env));
+        self.depth -= 1;
         // On success, restore the caller's name; on error, keep this one so the
         // innermost failing function is reported.
         if result.is_ok() {
@@ -378,7 +396,14 @@ impl Interpreter {
         for (p, v) in params.iter().zip(argvals) {
             cenv.define(p.name.clone(), v, !matches!(p.convention, Convention::Let));
         }
-        match self.eval_block(&body, &mut cenv) {
+        self.depth += 1;
+        if self.depth > self.depth_limit {
+            self.depth -= 1;
+            return err("call stack too deep (possible infinite recursion)");
+        }
+        let result = self.eval_block(&body, &mut cenv);
+        self.depth -= 1;
+        match result {
             Ok(v) | Err(Flow::Return(v)) => Ok(v),
             Err(e @ Flow::Err(_)) => Err(e),
         }
@@ -432,7 +457,14 @@ impl Interpreter {
         // The callee's own `?` early-return stops here; it becomes the call's
         // value rather than propagating into the caller.
         let prev = std::mem::replace(&mut self.cur_fn, name.to_string());
-        let result = match self.eval_block(&func.body, &mut fenv) {
+        self.depth += 1;
+        if self.depth > self.depth_limit {
+            self.depth -= 1;
+            return err("call stack too deep (possible infinite recursion)");
+        }
+        let block_result = self.eval_block(&func.body, &mut fenv);
+        self.depth -= 1;
+        let result = match block_result {
             Ok(v) => v,
             Err(Flow::Return(v)) => v,
             // On error keep `cur_fn = name` so the innermost frame is reported.
@@ -1268,8 +1300,27 @@ pub fn run_module(
     root: impl AsRef<Path>,
     net_allow: Vec<String>,
 ) -> Result<Vec<String>, RuntimeError> {
+    // Run the tree-walker on a thread with a large stack. The interpreter
+    // recurses in Rust for nested calls, so deep (but bounded) recursion would
+    // otherwise overflow the default stack and *abort the host*. The big stack
+    // accommodates legitimate depth; `depth_limit` is the graceful guard against
+    // runaway recursion well before this stack is exhausted.
+    let root = root.as_ref().to_path_buf();
+    std::thread::Builder::new()
+        .stack_size(4 * 1024 * 1024 * 1024)
+        .spawn(move || run_module_inner(module, root, net_allow))
+        .expect("spawn interpreter thread")
+        .join()
+        .expect("interpreter thread panicked")
+}
+
+fn run_module_inner(
+    module: Module,
+    root: PathBuf,
+    net_allow: Vec<String>,
+) -> Result<Vec<String>, RuntimeError> {
     let mut interp = Interpreter::new(module);
-    interp.root = root.as_ref().to_path_buf();
+    interp.root = root;
     interp.net_allow = net_allow;
     let root_args = match interp.functions.get("main").cloned() {
         Some(f) => f
@@ -1692,6 +1743,28 @@ mod tests {
             }
         "#;
         assert_eq!(run(src).unwrap(), vec!["8", "-1"]);
+    }
+
+    #[test]
+    fn deep_recursion_is_a_graceful_error_not_a_crash() {
+        // Runaway recursion must hit the depth limit and return an error rather
+        // than overflowing the stack and aborting the host.
+        let src = r#"
+            fn rec(n: Int) -> Int { if n == 0 { 0 } else { rec(n - 1) } }
+            fn main(console: Console) { print(console, int_to_string(rec(5000000))) }
+        "#;
+        let e = run(src).unwrap_err();
+        assert!(e.message.contains("too deep"), "got: {}", e.message);
+    }
+
+    #[test]
+    fn moderate_recursion_succeeds() {
+        // Recursion well within the limit still works.
+        let src = r#"
+            fn rec(n: Int) -> Int { if n == 0 { 0 } else { rec(n - 1) } }
+            fn main(console: Console) { print(console, int_to_string(rec(10000))) }
+        "#;
+        assert_eq!(run(src).unwrap(), vec!["0"]);
     }
 
     #[test]
