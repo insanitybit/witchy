@@ -75,6 +75,10 @@ fn wasm_ty(k: Kind) -> &'static str {
 }
 
 fn ty_kind(t: &Type) -> Kind {
+    // `Int` maps to i32 here, not i64 — a deliberate divergence from the
+    // interpreter's 64-bit `Int`. Programs whose integers exceed ±2^31 will
+    // wrap in compiled code where the interpreter would not; the differential
+    // test suite stays within this range.
     match t {
         Type::Named(n, _) if n == "Float" => Kind::F64,
         _ => Kind::I32,
@@ -398,6 +402,17 @@ impl Codegen {
                 Stmt::LetTuple { names, value } => {
                     for n in names {
                         self.locals.insert(n.clone(), Kind::I32);
+                    }
+                    // Destructuring a tuple literal carries each element's value
+                    // type to its binding, so e.g. `let (a, b) = (7, 8)` knows
+                    // `a`/`b` are Ints (for `to_string`, Dict keys, ...).
+                    if let Expr::Tuple(items) = value {
+                        if items.len() == names.len() {
+                            for (n, item) in names.iter().zip(items) {
+                                let vt = self.val_type_of(item);
+                                self.local_val_types.insert(n.clone(), vt);
+                            }
+                        }
                     }
                     self.infer_locals_expr(value);
                 }

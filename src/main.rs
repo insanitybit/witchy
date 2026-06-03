@@ -355,12 +355,17 @@ fn run_benchmarks() -> wasmtime::Result<()> {
         }
         fn main() -> Int { fib(30) }
     "#;
+    // The accumulator is kept under 10^6 (`% 1000000`) so it stays well within
+    // the compiled backend's 32-bit `Int`; otherwise this sum would overflow in
+    // the compiled run (which wraps at 2^31) while the i64 interpreter would not,
+    // making the two columns incomparable. (Compiled `Int` is i32, a deliberate
+    // divergence from the interpreter's i64 — see `ty_kind` in codegen.)
     let loop_sum = r#"
         fn main() -> Int {
           var sum = 0
           var i = 0
           while i < 1000000 {
-            sum = sum + i
+            sum = (sum + i) % 1000000
             i = i + 1
           }
           sum
@@ -661,6 +666,118 @@ mod example_tests {
             typeck::check_str(src)
         );
         interpreter::run(src).expect("should run")
+    }
+
+    /// The reference interpreter and the compiled WASM backend must produce the
+    /// same output for the same program — the core promise of witchy's two-tier
+    /// design. This differential test exercises a spread of features and asserts
+    /// agreement directly (no hardcoded expectations), so a future codegen change
+    /// that silently diverges from the interpreter is caught. Programs stay
+    /// within the compiled backend's supported semantics (notably 32-bit Int).
+    #[test]
+    fn interpreter_and_compiled_backends_agree() {
+        let programs: &[(&str, &str)] = &[
+            (
+                "arithmetic + control flow",
+                r#"
+                fn main(console: Console) {
+                  var acc = 0
+                  var i = 0
+                  while i < 12 {
+                    if i % 2 == 0 { acc = acc + i } else { acc = acc - i }
+                    i = i + 1
+                  }
+                  print(console, int_to_string(acc))
+                }
+                "#,
+            ),
+            (
+                "records + update + field access",
+                r#"
+                type Point { x: Int, y: Int }
+                fn main(console: Console) {
+                  let p = Point(3, 4)
+                  let q = update p { x: p.x + 10 }
+                  print(console, int_to_string(q.x * q.y))
+                }
+                "#,
+            ),
+            (
+                "lists + recursion + head/tail match",
+                r#"
+                fn sum(xs: List(Int)) -> Int {
+                  match xs { [] -> 0  [h, ..t] -> h + sum(t) }
+                }
+                fn main(console: Console) {
+                  print(console, int_to_string(sum([1, 2, 3, 4, 5])))
+                }
+                "#,
+            ),
+            (
+                "ADTs + match",
+                r#"
+                type Shape { Circle(Int)  Rect(Int, Int) }
+                fn area(s: Shape) -> Int {
+                  match s { Circle(r) -> 3 * r * r  Rect(w, h) -> w * h }
+                }
+                fn main(console: Console) {
+                  print(console, int_to_string(area(Circle(5)) + area(Rect(3, 4))))
+                }
+                "#,
+            ),
+            (
+                "capturing closures + higher-order",
+                r#"
+                fn apply(f: fn(Int) -> Int, x: Int) -> Int { f(x) }
+                fn main(console: Console) {
+                  let k = 100
+                  print(console, int_to_string(apply(fn(n: Int) { n + k }, 5)))
+                }
+                "#,
+            ),
+            (
+                "dicts",
+                r#"
+                fn main(console: Console) {
+                  var d = dict_new()
+                  d = insert(d, "a", 1)
+                  d = insert(d, "b", 2)
+                  d = insert(d, "a", 9)
+                  print(console, int_to_string(get_or(d, "a", 0) + size(d)))
+                }
+                "#,
+            ),
+            (
+                "strings",
+                r#"
+                fn main(console: Console) {
+                  print(console, replace("a,b,c", ",", "-"))
+                  print(console, int_to_string(index_of("hello", "l")))
+                  print(console, substring("hello", 1, 4))
+                  for w in split("the cat sat", " ") { print(console, w) }
+                }
+                "#,
+            ),
+            (
+                "tuples + polymorphic to_string",
+                r#"
+                fn main(console: Console) {
+                  let (a, b) = (7, 8)
+                  print(console, to_string(a + b))
+                  print(console, to_string(a < b))
+                  print(console, to_string("done"))
+                }
+                "#,
+            ),
+        ];
+        for (name, src) in programs {
+            let interpreted = interp(src);
+            let compiled = run_on_wasm(src);
+            assert_eq!(
+                interpreted, compiled,
+                "interpreter and compiled backends diverged for `{name}`"
+            );
+        }
     }
 
     fn assert_fn_compiles(src: &str) {
