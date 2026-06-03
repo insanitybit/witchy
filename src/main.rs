@@ -1448,6 +1448,26 @@ mod example_tests {
     }
 
     #[test]
+    fn dict_of_records_field_access_backends_agree() {
+        // Looking a record up in a Dict and accessing its field: the result of
+        // get_or carries the default's record type, so `it.price` resolves.
+        let src = r#"
+            type Item { price: Int, qty: Int }
+            fn main(console: Console) {
+              var d = dict_new()
+              d = insert(d, "apple", Item(3, 10))
+              d = insert(d, "bread", Item(2, 5))
+              let it = get_or(d, "apple", Item(0, 0))
+              print(console, int_to_string(it.price * it.qty))
+              let missing = get_or(d, "milk", Item(0, 0))
+              print(console, int_to_string(missing.price))
+            }
+        "#;
+        assert_eq!(interp(src), run_on_wasm(src));
+        assert_eq!(run_on_wasm(src), vec!["30", "0"]);
+    }
+
+    #[test]
     fn dict_remove_backends_agree() {
         // `remove` (string and int keys) — present, absent, and the surviving
         // entries — agrees across the interpreter and compiled backends.

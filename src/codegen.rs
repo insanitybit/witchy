@@ -381,8 +381,26 @@ impl Codegen {
                         {
                             Some(ctor.clone())
                         }
-                        Expr::Call { name: fname, .. } => {
-                            self.fn_ret_records.get(fname).cloned()
+                        Expr::Call { name: fname, args } => {
+                            if let Some(ty) = self.fn_ret_records.get(fname) {
+                                Some(ty.clone())
+                            } else if fname == "get_or" {
+                                // `get_or(d, k, default)` returns the default's
+                                // type (signature: ... -> v), so a record default
+                                // means a record result — letting `it.field`
+                                // resolve for a Dict of records.
+                                match args.get(2) {
+                                    Some(Expr::Ctor { name: ctor, .. })
+                                        if self.record_fields.contains_key(ctor) =>
+                                    {
+                                        Some(ctor.clone())
+                                    }
+                                    Some(Expr::Var(v)) => self.local_records.get(v).cloned(),
+                                    _ => None,
+                                }
+                            } else {
+                                None
+                            }
                         }
                         // `let q = f(...)?` — the Result/Option payload record.
                         Expr::Try(inner) => match inner.as_ref() {
