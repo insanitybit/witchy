@@ -29,3 +29,28 @@ pub fn map(o: Option(a), f: fn(a) -> b) -> Option(b) {
     None -> None
   }
 }
+
+// True if the option holds no value.
+pub fn is_none(o: Option(a)) -> Bool {
+  match o {
+    Some(_) -> false
+    None -> true
+  }
+}
+
+// Chain a fallible step: apply `f` (which itself yields an Option) to the Some
+// value, or short-circuit on None.
+pub fn and_then(o: Option(a), f: fn(a) -> Option(b)) -> Option(b) {
+  match o {
+    Some(v) -> f(v)
+    None -> None
+  }
+}
+
+// Keep the Some value only if it satisfies `pred`; otherwise None.
+pub fn filter(o: Option(a), pred: fn(a) -> Bool) -> Option(a) {
+  match o {
+    Some(v) -> if pred(v) { Some(v) } else { None }
+    None -> None
+  }
+}

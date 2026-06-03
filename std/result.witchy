@@ -29,3 +29,36 @@ pub fn map_ok(r: Result(a, e), f: fn(a) -> b) -> Result(b, e) {
     Err(x) -> Err(x)
   }
 }
+
+// True if the result is an Err.
+pub fn is_err(r: Result(a, e)) -> Bool {
+  match r {
+    Ok(_) -> false
+    Err(_) -> true
+  }
+}
+
+// Chain a fallible step: apply `f` (which itself yields a Result) to the Ok
+// value, or propagate the Err unchanged.
+pub fn and_then(r: Result(a, e), f: fn(a) -> Result(b, e)) -> Result(b, e) {
+  match r {
+    Ok(v) -> f(v)
+    Err(x) -> Err(x)
+  }
+}
+
+// Transform the Err value, leaving an Ok untouched.
+pub fn map_err(r: Result(a, e), f: fn(e) -> g) -> Result(a, g) {
+  match r {
+    Ok(v) -> Ok(v)
+    Err(x) -> Err(f(x))
+  }
+}
+
+// The Err value, or `default` if it's Ok.
+pub fn unwrap_err(r: Result(a, e), default: e) -> e {
+  match r {
+    Ok(_) -> default
+    Err(x) -> x
+  }
+}

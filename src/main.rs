@@ -857,6 +857,53 @@ mod example_tests {
         );
     }
 
+    #[test]
+    fn std_option_combinators_backends_agree() {
+        // is_none / and_then / filter behave identically in both backends.
+        let client = r#"
+            import option
+            fn main(console: Console) {
+              let s = Some(5)
+              print(console, to_string(option.is_none(s)))
+              print(console, to_string(option.is_none(option.filter(s, fn(n: Int) { n > 10 }))))
+              let chained = option.and_then(s, fn(n: Int) { Some(n * 2) })
+              print(console, int_to_string(option.unwrap_or(chained, 0)))
+              let kept = option.filter(s, fn(n: Int) { n > 0 })
+              print(console, int_to_string(option.unwrap_or(kept, 0)))
+            }
+        "#;
+        let sources = [("option", crate::bundled_module("option").unwrap()), ("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "option combinators diverged");
+    }
+
+    #[test]
+    fn std_result_combinators_backends_agree() {
+        // is_err / and_then / map_err / unwrap_err behave identically in both
+        // backends. (Every Result here is `Result(Int, String)`: the type checker
+        // instantiates a generic function at a single type per program, so mixing
+        // error types in one program isn't supported yet.)
+        let client = r#"
+            import result
+            fn checked(n: Int) -> Result(Int, String) {
+              if n > 0 { Ok(n) } else { Err("bad") }
+            }
+            fn main(console: Console) {
+              print(console, to_string(result.is_err(checked(5))))
+              print(console, to_string(result.is_err(checked(0 - 1))))
+              let chained = result.and_then(checked(5), fn(n: Int) { Ok(n * 10) })
+              print(console, int_to_string(result.unwrap_or(chained, 0)))
+              let mapped = result.map_err(checked(0 - 1), fn(s: String) { s <> "!" })
+              print(console, result.unwrap_err(mapped, "none"))
+            }
+        "#;
+        let sources = [("result", crate::bundled_module("result").unwrap()), ("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "result combinators diverged");
+    }
+
     fn assert_fn_compiles(src: &str) {
         assert!(typeck::check_str(src).is_ok(), "{:?}", typeck::check_str(src));
         let module = parser::parse_module(src).expect("parse");
