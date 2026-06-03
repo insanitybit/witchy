@@ -2681,6 +2681,28 @@ mod example_tests {
     }
 
     #[test]
+    fn std_list_product_slice_scan_backends_agree() {
+        // product (1 for empty), slice (clamped half-open range), and scan
+        // (running fold collecting intermediates) all agree across backends.
+        let client = r#"
+            import list
+            fn main(console: Console) {
+              print(console, int_to_string(list.product([1, 2, 3, 4])))
+              print(console, int_to_string(list.product([])))
+              let s = list.slice([10, 20, 30, 40, 50], 1, 4)
+              for x in s { print(console, int_to_string(x)) }
+              let running = list.scan([1, 2, 3], 0, fn(acc: Int, n: Int) { acc + n })
+              for x in running { print(console, int_to_string(x)) }
+            }
+        "#;
+        let sources = [("list", crate::bundled_module("list").unwrap()), ("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "product/slice/scan diverged");
+        assert_eq!(compiled, vec!["24", "1", "20", "30", "40", "0", "1", "3", "6"]);
+    }
+
+    #[test]
     fn std_func_combinators_backends_agree() {
         // The whole `func` module links + compiles, and its combinators — built
         // on first-class functions — agree across backends: compose threads
