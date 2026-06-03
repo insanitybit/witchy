@@ -980,6 +980,73 @@ mod example_tests {
     }
 
     #[test]
+    fn dict_string_keys_on_wasm() {
+        // String-keyed Dict compiled to WASM: insert (append + replace), get_or
+        // (present/absent), has, and size — keys compared with $str_eq.
+        let src = r#"
+            fn main(console: Console) {
+              var d = dict_new()
+              d = insert(d, "a", 1)
+              d = insert(d, "b", 2)
+              d = insert(d, "a", 10)
+              print(console, int_to_string(get_or(d, "a", 0)))
+              print(console, int_to_string(get_or(d, "b", 0)))
+              print(console, int_to_string(get_or(d, "z", 0 - 1)))
+              print(console, int_to_string(size(d)))
+              print(console, int_to_string(if has(d, "b") { 1 } else { 0 }))
+              print(console, int_to_string(if has(d, "q") { 1 } else { 0 }))
+            }
+        "#;
+        assert_eq!(run_on_wasm(src), vec!["10", "2", "-1", "2", "1", "0"]);
+    }
+
+    #[test]
+    fn dict_int_keys_on_wasm() {
+        // Int-keyed Dict: keys compared with i32 equality (mode 0).
+        let src = r#"
+            fn main(console: Console) {
+              var d = dict_new()
+              d = insert(d, 1, 100)
+              d = insert(d, 2, 200)
+              print(console, int_to_string(get_or(d, 1, 0)))
+              print(console, int_to_string(get_or(d, 2, 0)))
+              print(console, int_to_string(get_or(d, 3, 0 - 1)))
+            }
+        "#;
+        assert_eq!(run_on_wasm(src), vec!["100", "200", "-1"]);
+    }
+
+    #[test]
+    fn wordcount_example_runs_on_wasm() {
+        // The word-frequency example compiles to WASM: a String-keyed Dict built
+        // in a `for w in split(...)` loop (so `w`'s type resolves to String).
+        // the=3, cat=1, missing=0, size=4.
+        assert_eq!(
+            run_on_wasm(include_str!("../examples/wordcount.witchy")),
+            vec!["3", "1", "0", "4"]
+        );
+    }
+
+    #[test]
+    fn dict_undetermined_key_is_rejected() {
+        // A key whose type codegen can't pin down (here a list) errors clearly
+        // rather than picking a wrong comparison.
+        let src = r#"
+            fn main(console: Console) {
+              var d = dict_new()
+              d = insert(d, [1, 2], 5)
+              print(console, int_to_string(size(d)))
+            }
+        "#;
+        let module = parser::parse_module(src).expect("parse");
+        let err = codegen::compile_module(&module).expect_err("should reject");
+        assert!(
+            err.to_string().contains("could not determine the Dict key type"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
     fn std_string_compiles_and_runs_on_wasm() {
         // With `split` compiled, the whole `string` module compiles: `lines`
         // (split on "\n"), `join`, and `repeat`. lines -> ["a","bb","ccc"] (3);

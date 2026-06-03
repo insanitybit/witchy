@@ -155,6 +155,9 @@ struct Codegen {
     uses_index_of: bool,
     /// Whether the char-indexed `substring` wrapper (+ `$char_to_byte`) is needed.
     uses_substring: bool,
+    /// Whether the Dict helpers (`$dict_new`/`$dict_insert`/`$dict_get_or`/
+    /// `$dict_has` + `$key_eq`) are needed.
+    uses_dict: bool,
     /// Record type name -> ordered fields as `(name, named-type)`, where the
     /// second is the field's type name when it is a `Named` type (so nested
     /// records can be chained, `a.b.c`). For compiling `value.field`.
@@ -168,6 +171,10 @@ struct Codegen {
     /// Value type of params / let-bound locals, where known, so `to_string` can
     /// pick the right rendering. Absent = `Other`.
     local_val_types: HashMap<String, ValType>,
+    /// Element value type of list-typed locals (e.g. a `let words = split(...)`
+    /// is `List(String)`), so a `for x in words` loop variable's type — and thus
+    /// its use as a Dict key — resolves.
+    local_list_elem_valtype: HashMap<String, ValType>,
     /// Function name -> the value type it returns, so `to_string(f(...))` can be
     /// rendered. Populated from return-type annotations.
     fn_ret_valtype: HashMap<String, ValType>,
@@ -215,6 +222,7 @@ impl Codegen {
             local_records: HashMap::new(),
             local_list_elem: HashMap::new(),
             local_val_types: HashMap::new(),
+            local_list_elem_valtype: HashMap::new(),
             fn_ret_valtype: HashMap::new(),
             fn_ret_records: HashMap::new(),
             fn_ret_result_record: HashMap::new(),
@@ -230,6 +238,7 @@ impl Codegen {
             uses_find_byte: false,
             uses_index_of: false,
             uses_substring: false,
+            uses_dict: false,
             lambdas: Vec::new(),
             clos_arities: HashSet::new(),
         }
@@ -314,6 +323,26 @@ impl Codegen {
         }
     }
 
+    /// The element value type of a list-producing expression, where codegen can
+    /// determine it (a `split` result, a list literal, or a tracked list local),
+    /// so a `for x in <iter>` loop variable's value type — and its use as a Dict
+    /// key — can be resolved.
+    fn elem_val_type_of(&self, iter: &Expr) -> ValType {
+        match iter {
+            Expr::Call { name, .. } if name == "split" => ValType::Str,
+            Expr::List(items) => items
+                .first()
+                .map(|e| self.val_type_of(e))
+                .unwrap_or(ValType::Other),
+            Expr::Var(v) => self
+                .local_list_elem_valtype
+                .get(v)
+                .copied()
+                .unwrap_or(ValType::Other),
+            _ => ValType::Other,
+        }
+    }
+
     /// Record the kinds of all `let`/pattern-bound locals in a body.
     fn infer_locals(&mut self, block: &Block) {
         for stmt in &block.stmts {
@@ -323,6 +352,10 @@ impl Codegen {
                     self.locals.insert(name.clone(), k);
                     let vt = self.val_type_of(value);
                     self.local_val_types.insert(name.clone(), vt);
+                    let evt = self.elem_val_type_of(value);
+                    if evt != ValType::Other {
+                        self.local_list_elem_valtype.insert(name.clone(), evt);
+                    }
                     // Remember the binding's record type (if any) so `name.field`
                     // resolves: a constructor, a record-returning call, or an
                     // `update` of a known record.
@@ -388,6 +421,12 @@ impl Codegen {
                 for n in [var.clone(), format!("__forlist_{var}"), format!("__fori_{var}")] {
                     self.locals.insert(n, Kind::I32);
                 }
+                // The loop variable's value type is the iterated list's element
+                // type, so e.g. `for w in split(...)` knows `w` is a String.
+                let evt = self.elem_val_type_of(iter);
+                if evt != ValType::Other {
+                    self.local_val_types.insert(var.clone(), evt);
+                }
                 self.infer_locals_expr(iter);
                 self.infer_locals(body);
             }
@@ -426,6 +465,7 @@ impl Codegen {
             || self.uses_list_drop
             || self.uses_split
             || self.uses_substr
+            || self.uses_dict
     }
 
     fn emit_imports(&self) -> String {
@@ -500,6 +540,15 @@ impl Codegen {
             s.push_str(CHAR_TO_BYTE_WAT);
             s.push_str(STR_SUBSTRING_WAT);
         }
+        // Dict helpers; `$key_eq` references `$str_eq`, which the dict call sites
+        // force on (so it is emitted below via `uses_str_eq`).
+        if self.uses_dict {
+            s.push_str(DICT_NEW_WAT);
+            s.push_str(KEY_EQ_WAT);
+            s.push_str(DICT_INSERT_WAT);
+            s.push_str(DICT_GET_OR_WAT);
+            s.push_str(DICT_HAS_WAT);
+        }
         if self.uses_print {
             s.push_str(PRINT_STR_WAT);
         }
@@ -522,6 +571,7 @@ impl Codegen {
         self.local_records.clear();
         self.local_list_elem.clear();
         self.local_val_types.clear();
+        self.local_list_elem_valtype.clear();
         for p in &f.params {
             let k = p.ty.as_ref().map(ty_kind).unwrap_or(Kind::I32);
             self.locals.insert(p.name.clone(), k);
@@ -1129,6 +1179,7 @@ impl Codegen {
         let saved_records = std::mem::take(&mut self.local_records);
         let saved_list_elem = std::mem::take(&mut self.local_list_elem);
         let saved_val_types = std::mem::take(&mut self.local_val_types);
+        let saved_list_elem_vt = std::mem::take(&mut self.local_list_elem_valtype);
         let saved_ret = self.cur_fn_ret_kind;
         let saved_inout = self.cur_fn_inout;
         self.cur_fn_inout = false;
@@ -1136,7 +1187,7 @@ impl Codegen {
         for p in params {
             let k = p.ty.as_ref().map(ty_kind).unwrap_or(Kind::I32);
             if k != Kind::I32 {
-                self.restore_locals(saved_locals, saved_records, saved_list_elem, saved_val_types, saved_ret, saved_inout);
+                self.restore_locals(saved_locals, saved_records, saved_list_elem, saved_val_types, saved_list_elem_vt, saved_ret, saved_inout);
                 return cerr("non-Int lambda parameters are not compiled to WASM yet");
             }
             self.locals.insert(p.name.clone(), k);
@@ -1171,7 +1222,7 @@ impl Codegen {
         self.infer_locals(body);
         let ret_kind = self.block_kind(body);
         if ret_kind != Kind::I32 {
-            self.restore_locals(saved_locals, saved_records, saved_list_elem, saved_val_types, saved_ret, saved_inout);
+            self.restore_locals(saved_locals, saved_records, saved_list_elem, saved_val_types, saved_list_elem_vt, saved_ret, saved_inout);
             return cerr("non-Int lambda results are not compiled to WASM yet");
         }
         self.cur_fn_ret_kind = ret_kind;
@@ -1212,7 +1263,7 @@ impl Codegen {
         self.lambdas[index] = format!("{header}{prologue}{body_wat}  )\n");
         self.clos_arities.insert(params.len());
 
-        self.restore_locals(saved_locals, saved_records, saved_list_elem, saved_val_types, saved_ret, saved_inout);
+        self.restore_locals(saved_locals, saved_records, saved_list_elem, saved_val_types, saved_list_elem_vt, saved_ret, saved_inout);
 
         // Construction site: allocate `[code_index][cap0]..[capN]` via `$mkN`,
         // pushing the captures from the *enclosing* scope in slot order.
@@ -1236,6 +1287,7 @@ impl Codegen {
         records: HashMap<String, String>,
         list_elem: HashMap<String, String>,
         val_types: HashMap<String, ValType>,
+        list_elem_vt: HashMap<String, ValType>,
         ret: Kind,
         inout: bool,
     ) {
@@ -1243,8 +1295,22 @@ impl Codegen {
         self.local_records = records;
         self.local_list_elem = list_elem;
         self.local_val_types = val_types;
+        self.local_list_elem_valtype = list_elem_vt;
         self.cur_fn_ret_kind = ret;
         self.cur_fn_inout = inout;
+    }
+
+    /// The `$key_eq` comparison mode for a Dict key expression: 0 for Int/Bool
+    /// (i32 equality), 1 for String (`$str_eq`). Other key types are rejected.
+    fn dict_key_mode(&self, key: &Expr) -> Result<u32, CodegenError> {
+        match self.val_type_of(key) {
+            ValType::Int | ValType::Bool => Ok(0),
+            ValType::Str => Ok(1),
+            ValType::Float => cerr("a Dict with Float keys is not compiled to WASM yet"),
+            ValType::Other => cerr(
+                "could not determine the Dict key type for WASM; use Int or String keys (annotate if needed)",
+            ),
+        }
     }
 
     fn compile_call(&mut self, name: &str, args: &[Expr]) -> Result<String, CodegenError> {
@@ -1350,6 +1416,43 @@ impl Codegen {
             ("to_upper", _) | ("to_lower", _) | ("trim", _) => cerr(
                 "to_upper/to_lower/trim run in the interpreter; WASM string transforms are future",
             ),
+            // --- Dict (immutable association map) ---
+            ("dict_new", 0) => {
+                self.uses_dict = true;
+                self.uses_str_eq = true; // `$key_eq` references `$str_eq`
+                Ok("    call $dict_new\n".to_string())
+            }
+            ("insert", 3) => {
+                let mode = self.dict_key_mode(&args[1])?;
+                self.uses_dict = true;
+                self.uses_str_eq = true;
+                let d = self.compile_expr(&args[0])?;
+                let k = self.compile_expr(&args[1])?;
+                let v = self.compile_expr(&args[2])?;
+                Ok(format!("{d}{k}{v}    i32.const {mode}\n    call $dict_insert\n"))
+            }
+            ("get_or", 3) => {
+                let mode = self.dict_key_mode(&args[1])?;
+                self.uses_dict = true;
+                self.uses_str_eq = true;
+                let d = self.compile_expr(&args[0])?;
+                let k = self.compile_expr(&args[1])?;
+                let default = self.compile_expr(&args[2])?;
+                Ok(format!("{d}{k}{default}    i32.const {mode}\n    call $dict_get_or\n"))
+            }
+            ("has", 2) => {
+                let mode = self.dict_key_mode(&args[1])?;
+                self.uses_dict = true;
+                self.uses_str_eq = true;
+                let d = self.compile_expr(&args[0])?;
+                let k = self.compile_expr(&args[1])?;
+                Ok(format!("{d}{k}    i32.const {mode}\n    call $dict_has\n"))
+            }
+            // size(dict): the entry count is the map's header word.
+            ("size", 1) => {
+                let d = self.compile_expr(&args[0])?;
+                Ok(format!("{d}    i32.load\n"))
+            }
             // length(list): the record header is the length.
             ("length", 1) => {
                 let arg = self.compile_expr(&args[0])?;
@@ -1918,6 +2021,91 @@ const SUBSTR_WAT: &str = r#"  (func $substr (param $src i32) (param $start i32) 
       (local.get $len))
     (global.set $heap (i32.add (i32.add (local.get $res) (i32.const 4)) (local.get $len)))
     (local.get $res))
+"#;
+
+// A Dict is an insertion-ordered association map `[count][k0][v0][k1][v1]...]`:
+// entry i has its key at `d + 4 + i*8` and value at `d + 8 + i*8`. Maps are
+// immutable values, so `insert` returns a fresh copy. Keys compare by `$key_eq`,
+// whose mode (0 = i32 equality for Int/Bool keys, 1 = `$str_eq` for String keys)
+// the call site fixes from the key's compile-time type.
+const DICT_NEW_WAT: &str = r#"  (func $dict_new (result i32)
+    (local $p i32)
+    (local.set $p (global.get $heap))
+    (i32.store (local.get $p) (i32.const 0))
+    (global.set $heap (i32.add (local.get $p) (i32.const 4)))
+    (local.get $p))
+"#;
+
+const KEY_EQ_WAT: &str = r#"  (func $key_eq (param $a i32) (param $b i32) (param $mode i32) (result i32)
+    (if (result i32) (i32.eqz (local.get $mode))
+      (then (i32.eq (local.get $a) (local.get $b)))
+      (else (call $str_eq (local.get $a) (local.get $b)))))
+"#;
+
+// insert(d, k, v): a fresh map like `d` with `k` set to `v` — the matching
+// entry's value replaced, or `(k, v)` appended (count+1) if `k` is absent.
+const DICT_INSERT_WAT: &str = r#"  (func $dict_insert (param $d i32) (param $k i32) (param $v i32) (param $mode i32) (result i32)
+    (local $count i32) (local $i i32) (local $found i32) (local $new i32) (local $bytes i32)
+    (local.set $count (i32.load (local.get $d)))
+    (local.set $found (i32.const -1))
+    (local.set $i (i32.const 0))
+    (block $fdone
+      (loop $f
+        (br_if $fdone (i32.ge_s (local.get $i) (local.get $count)))
+        (if (call $key_eq
+              (i32.load (i32.add (i32.add (local.get $d) (i32.const 4)) (i32.mul (local.get $i) (i32.const 8))))
+              (local.get $k) (local.get $mode))
+          (then (local.set $found (local.get $i)) (br $fdone)))
+        (local.set $i (i32.add (local.get $i) (i32.const 1)))
+        (br $f)))
+    (local.set $bytes (i32.add (i32.const 4) (i32.mul (local.get $count) (i32.const 8))))
+    (local.set $new (global.get $heap))
+    (memory.copy (local.get $new) (local.get $d) (local.get $bytes))
+    (if (result i32) (i32.ge_s (local.get $found) (i32.const 0))
+      (then
+        (i32.store (i32.add (i32.add (local.get $new) (i32.const 8)) (i32.mul (local.get $found) (i32.const 8))) (local.get $v))
+        (global.set $heap (i32.add (local.get $new) (local.get $bytes)))
+        (local.get $new))
+      (else
+        (i32.store (local.get $new) (i32.add (local.get $count) (i32.const 1)))
+        (i32.store (i32.add (local.get $new) (local.get $bytes)) (local.get $k))
+        (i32.store (i32.add (i32.add (local.get $new) (local.get $bytes)) (i32.const 4)) (local.get $v))
+        (global.set $heap (i32.add (i32.add (local.get $new) (local.get $bytes)) (i32.const 8)))
+        (local.get $new))))
+"#;
+
+// get_or(d, k, default): the value for `k`, or `default` if absent.
+const DICT_GET_OR_WAT: &str = r#"  (func $dict_get_or (param $d i32) (param $k i32) (param $default i32) (param $mode i32) (result i32)
+    (local $count i32) (local $i i32)
+    (local.set $count (i32.load (local.get $d)))
+    (local.set $i (i32.const 0))
+    (block $done
+      (loop $l
+        (br_if $done (i32.ge_s (local.get $i) (local.get $count)))
+        (if (call $key_eq
+              (i32.load (i32.add (i32.add (local.get $d) (i32.const 4)) (i32.mul (local.get $i) (i32.const 8))))
+              (local.get $k) (local.get $mode))
+          (then (return (i32.load (i32.add (i32.add (local.get $d) (i32.const 8)) (i32.mul (local.get $i) (i32.const 8)))))))
+        (local.set $i (i32.add (local.get $i) (i32.const 1)))
+        (br $l)))
+    (local.get $default))
+"#;
+
+// has(d, k): whether `k` is present.
+const DICT_HAS_WAT: &str = r#"  (func $dict_has (param $d i32) (param $k i32) (param $mode i32) (result i32)
+    (local $count i32) (local $i i32)
+    (local.set $count (i32.load (local.get $d)))
+    (local.set $i (i32.const 0))
+    (block $done
+      (loop $l
+        (br_if $done (i32.ge_s (local.get $i) (local.get $count)))
+        (if (call $key_eq
+              (i32.load (i32.add (i32.add (local.get $d) (i32.const 4)) (i32.mul (local.get $i) (i32.const 8))))
+              (local.get $k) (local.get $mode))
+          (then (return (i32.const 1))))
+        (local.set $i (i32.add (local.get $i) (i32.const 1)))
+        (br $l)))
+    (i32.const 0))
 "#;
 
 // split(s, sep): a List(String) of the pieces between (non-overlapping)
