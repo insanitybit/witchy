@@ -2531,6 +2531,81 @@ mod example_tests {
         assert_eq!(run_on_wasm(src), vec!["10", "0"]);
     }
 
+    // `replace` with an empty `from` is a notorious edge (the interpreter's
+    // Rust `str::replace` inserts the replacement around every character);
+    // Int-keyed dicts exercise the by-value key-comparison path. Both must
+    // match the compiled backend exactly. Agreement-only, so a future divergence
+    // is caught without baking in a hand-computed expectation.
+    #[test]
+    fn replace_and_int_keyed_dict_backends_agree() {
+        let src = r#"
+            fn main(console: Console) {
+              print(console, "[" <> replace("abc", "", "-") <> "]")
+              print(console, replace("abc", "x", "y"))
+              print(console, replace("aaa", "a", "bb"))
+              print(console, replace("hello world", "o", "0"))
+              var d = dict_new()
+              d = insert(d, 1, 100)
+              d = insert(d, 2, 200)
+              d = insert(d, 1, 111)
+              print(console, int_to_string(get_or(d, 1, 0)))
+              print(console, int_to_string(get_or(d, 2, 0)))
+              print(console, int_to_string(size(d)))
+            }
+        "#;
+        assert_eq!(interp(src), run_on_wasm(src), "replace/int-key dict diverged");
+    }
+
+    // Integer division/modulo truncate toward zero, and their signs must agree
+    // for negative operands across the i64 interpreter and i32 codegen (the
+    // results here stay well within i32). Also locks in dict insert-overwrite,
+    // removing an absent key, and `get_or`'s default path.
+    #[test]
+    fn negative_arithmetic_and_dict_mutation_backends_agree() {
+        let src = r#"
+            fn main(console: Console) {
+              print(console, int_to_string(0 - 7 / 2))
+              print(console, int_to_string((0 - 7) % 2))
+              print(console, int_to_string(7 / (0 - 2)))
+              print(console, int_to_string(7 % (0 - 2)))
+              print(console, int_to_string((0 - 7) / (0 - 2)))
+              var d = dict_new()
+              d = insert(d, "k", 1)
+              d = insert(d, "k", 2)
+              print(console, int_to_string(get_or(d, "k", 0)))
+              print(console, int_to_string(size(d)))
+              d = remove(d, "missing")
+              print(console, int_to_string(size(d)))
+              print(console, int_to_string(get_or(d, "absent", 99)))
+            }
+        "#;
+        assert_eq!(interp(src), run_on_wasm(src), "int/dict edges diverged");
+    }
+
+    // Boundary behavior of the string builtins: an empty separator yields the
+    // whole string, substrings clamp (and start>end gives ""), an empty needle
+    // for index_of returns 0, a missing one returns -1, and empty-string concat
+    // is identity. These clamp/empty rules are easy to get subtly different in
+    // codegen, so assert the backends agree.
+    #[test]
+    fn string_edge_cases_backends_agree() {
+        let src = r#"
+            fn main(console: Console) {
+              print(console, int_to_string(length(split("abc", ""))))
+              print(console, int_to_string(length(split("abc", "x"))))
+              print(console, int_to_string(length(split("a,b,c", ","))))
+              print(console, "[" <> substring("", 0, 5) <> "]")
+              print(console, "[" <> substring("hello", 3, 1) <> "]")
+              print(console, substring("hello", 2, 100))
+              print(console, int_to_string(index_of("hello", "")))
+              print(console, int_to_string(index_of("hello", "z")))
+              print(console, "[" <> ("" <> "x" <> "") <> "]")
+              print(console, int_to_string(string_length("")))
+            }
+        "#;
+        assert_eq!(interp(src), run_on_wasm(src), "string edge cases diverged");
+    }
+
     #[test]
     fn trim_backends_agree() {
         // trim now compiles: leading/trailing ASCII whitespace (spaces, tabs,
