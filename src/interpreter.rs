@@ -9,6 +9,7 @@ use std::fmt;
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpStream;
 use std::path::{Component, Path, PathBuf};
+use std::rc::Rc;
 
 use crate::ast::*;
 use crate::parser::parse_module;
@@ -241,7 +242,9 @@ struct ActorInstance {
 }
 
 pub struct Interpreter {
-    functions: HashMap<String, Function>,
+    // `Rc` so a call clones a pointer, not the whole function AST (this is the
+    // hot path for recursion).
+    functions: HashMap<String, Rc<Function>>,
     actor_defs: HashMap<String, ActorDef>,
     actors: Vec<ActorInstance>,
     queue: VecDeque<(usize, Value)>,
@@ -290,7 +293,7 @@ impl Interpreter {
         for item in module.items {
             match item {
                 Item::Function(f) => {
-                    functions.insert(f.name.clone(), f);
+                    functions.insert(f.name.clone(), Rc::new(f));
                 }
                 Item::Actor(a) => {
                     actor_defs.insert(a.name.clone(), a);

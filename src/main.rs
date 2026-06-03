@@ -89,6 +89,10 @@ fn sender_src(target: u32) -> String {
 }
 
 fn main() -> wasmtime::Result<()> {
+    // `witchy --bench` compares interpreter vs compiled execution.
+    if std::env::args().nth(1).as_deref() == Some("--bench") {
+        return run_benchmarks();
+    }
     // `witchy <file.witchy>` runs a program; with no argument, run the demos.
     if let Some(path) = std::env::args().nth(1) {
         match execute_file(&path) {
@@ -302,6 +306,70 @@ fn main() -> wasmtime::Result<()> {
 /// (transitively), link, type-check, then run with root capabilities (Console
 /// and a Dir rooted at the file's directory). Returns the program's output or a
 /// diagnostic.
+/// Time the interpreter against the compiled (WASM) backend on a few workloads.
+fn run_benchmarks() -> wasmtime::Result<()> {
+    use std::time::Instant;
+
+    fn interp_ms(src: &str, runs: u32) -> f64 {
+        let start = Instant::now();
+        for _ in 0..runs {
+            interpreter::run(src).expect("interpreter run");
+        }
+        start.elapsed().as_secs_f64() * 1000.0 / runs as f64
+    }
+
+    fn compiled_ms(src: &str, runs: u32) -> f64 {
+        let module = parser::parse_module(src).expect("parse");
+        let wat = codegen::compile_module(&module).expect("compile");
+        let mut rt = Runtime::new().expect("runtime");
+        let start = Instant::now();
+        for _ in 0..runs {
+            let mut actor = rt
+                .spawn(
+                    wat.as_bytes(),
+                    runtime::Capabilities {
+                        print: true,
+                        print_int: true,
+                        ..Default::default()
+                    },
+                    16,
+                )
+                .expect("spawn");
+            actor.run().expect("run");
+        }
+        start.elapsed().as_secs_f64() * 1000.0 / runs as f64
+    }
+
+    let fib = r#"
+        fn fib(n: Int) -> Int {
+          if n < 2 { n } else { fib(n - 1) + fib(n - 2) }
+        }
+        fn main() -> Int { fib(30) }
+    "#;
+    let loop_sum = r#"
+        fn main() -> Int {
+          var sum = 0
+          var i = 0
+          while i < 1000000 {
+            sum = sum + i
+            i = i + 1
+          }
+          sum
+        }
+    "#;
+
+    println!("== witchy benchmarks (avg ms/run) ==");
+    for (name, src, runs) in [("fib(30)", fib, 5u32), ("loop_sum(1e6)", loop_sum, 5u32)] {
+        let i = interp_ms(src, runs);
+        let c = compiled_ms(src, runs);
+        println!(
+            "{name:14}  interpreter {i:8.2} ms   compiled {c:8.3} ms   ({:.0}x)",
+            i / c
+        );
+    }
+    Ok(())
+}
+
 /// Source for a bundled standard-library module, shipped with the compiler so
 /// `import list` works without a local file. A local file of the same name
 /// takes precedence (see `execute_file`).
