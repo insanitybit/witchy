@@ -1006,6 +1006,14 @@ impl Interpreter {
                 None => err(format!("unbound variable `{name}`")),
             },
             Expr::Call { name, args } => self.eval_call(name, args, env),
+            Expr::Apply { func, args } => {
+                let clo = self.eval(func, env)?;
+                let argvals = args
+                    .iter()
+                    .map(|a| self.eval(a, env))
+                    .collect::<Result<Vec<_>, _>>()?;
+                self.apply_closure(clo, argvals)
+            }
             Expr::Ctor { name, args } => {
                 let fields = args
                     .iter()

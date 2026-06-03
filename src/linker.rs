@@ -161,6 +161,12 @@ fn rewrite_expr(e: &mut Expr, m: &str, imps: &[String], fns: &FnTable) -> Result
                 rewrite_expr(a, m, imps, fns)?;
             }
         }
+        Expr::Apply { func, args } => {
+            rewrite_expr(func, m, imps, fns)?;
+            for a in args {
+                rewrite_expr(a, m, imps, fns)?;
+            }
+        }
         Expr::Ctor { args, .. } | Expr::List(args) | Expr::Tuple(args) | Expr::Spawn { args, .. } => {
             for a in args {
                 rewrite_expr(a, m, imps, fns)?;

@@ -2587,6 +2587,55 @@ mod example_tests {
     // for index_of returns 0, a missing one returns -1, and empty-string concat
     // is identity. These clamp/empty rules are easy to get subtly different in
     // codegen, so assert the backends agree.
+    // Immediately applying a function-valued expression — `make(3)(4)`,
+    // `(fn(x){..})(7)`, chains, and an application nested inside another's
+    // argument — must behave identically on both backends. The nested-in-arg
+    // case in particular exercises codegen's per-level scratch locals (the
+    // callee pointer must survive argument evaluation).
+    #[test]
+    fn immediate_application_backends_agree() {
+        let src = r#"
+            fn twice(f: fn(Int) -> Int, x: Int) -> Int { f(f(x)) }
+            fn main(console: Console) {
+              let make_adder = fn(x: Int) { fn(y: Int) { x + y } }
+              let make_mul = fn(a: Int) { fn(b: Int) { fn(c: Int) { a * b * c } } }
+              print(console, int_to_string(make_adder(10)(5)))
+              print(console, int_to_string(make_mul(2)(3)(4)))
+              print(console, int_to_string((fn(n: Int) { n * n })(7)))
+              print(console, int_to_string(twice(make_adder(1), 10)))
+              print(console, int_to_string(make_adder(10)(make_adder(2)(3))))
+            }
+        "#;
+        assert_eq!(interp(src), run_on_wasm(src), "immediate application diverged");
+        assert_eq!(run_on_wasm(src), vec!["15", "24", "49", "12", "15"]);
+    }
+
+    #[test]
+    fn closures_and_string_ordering_backends_agree() {
+        let src = r#"
+            fn main(console: Console) {
+              let base = 10
+              let add = fn(n: Int) { n + base }
+              var total = 0
+              var i = 0
+              while i < 5 {
+                total = total + add(i)
+                i = i + 1
+              }
+              print(console, int_to_string(total))
+              let make_adder = fn(x: Int) { fn(y: Int) { x + y } }
+              let add3 = make_adder(3)
+              print(console, int_to_string(add3(4)))
+              print(console, int_to_string(make_adder(100)(1)))
+              if "abc" < "abcd" { print(console, "lt1") } else { print(console, "ge1") }
+              if "Z" < "a" { print(console, "lt2") } else { print(console, "ge2") }
+              if "" < "a" { print(console, "lt3") } else { print(console, "ge3") }
+              if "apple" < "apply" { print(console, "lt4") } else { print(console, "ge4") }
+            }
+        "#;
+        assert_eq!(interp(src), run_on_wasm(src), "closures/ordering diverged");
+    }
+
     #[test]
     fn string_edge_cases_backends_agree() {
         let src = r#"

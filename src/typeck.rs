@@ -709,6 +709,21 @@ impl Checker {
                 }
                 Ok(ret)
             }
+            Expr::Apply { func, args } => {
+                // The callee is an arbitrary expression of function type; unify
+                // it with `fn(argtys) -> r` and yield `r`.
+                let fty = self.infer(func)?;
+                let mut argtys = Vec::new();
+                for arg in args {
+                    argtys.push(self.infer(arg)?);
+                }
+                let ret = self.fresh();
+                self.unify(&fty, &Ty::Fn(argtys, Box::new(ret.clone())))
+                    .map_err(|e| TypeError {
+                        message: format!("in function application: {}", e.message),
+                    })?;
+                Ok(ret)
+            }
             Expr::Ctor { name, args } => {
                 if let Some((fields, result)) = self.ctor_sigs.get(name).cloned() {
                     let typarams = self.ctor_typarams.get(name).cloned().unwrap_or_default();

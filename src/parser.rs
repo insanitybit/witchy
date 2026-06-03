@@ -63,6 +63,13 @@ impl Parser {
         self.kind() == k
     }
 
+    /// Whether the current token sits on the same source line as the previously
+    /// consumed one. Used to keep postfix application (`f(x)(y)`) from spanning
+    /// a line break into the next statement.
+    fn on_same_line_as_prev(&self) -> bool {
+        self.pos > 0 && self.cur().line == self.toks[self.pos - 1].line
+    }
+
     fn advance(&mut self) -> Tok {
         let k = self.toks[self.pos].kind.clone();
         if self.pos + 1 < self.toks.len() {
@@ -482,6 +489,16 @@ impl Parser {
         loop {
             if self.eat(&Tok::Question) {
                 e = Expr::Try(Box::new(e));
+            } else if self.at(&Tok::LParen) && self.on_same_line_as_prev() {
+                // Apply the result of an expression: `f(x)(y)`, `make(3)(4)`.
+                // Requiring the `(` on the same line as the callee avoids
+                // swallowing a parenthesized expression that begins the next
+                // statement (witchy has no statement terminators).
+                let args = self.call_args()?;
+                e = Expr::Apply {
+                    func: Box::new(e),
+                    args,
+                };
             } else if self.eat(&Tok::Dot) {
                 let member = self.ident()?;
                 if self.at(&Tok::LParen) {

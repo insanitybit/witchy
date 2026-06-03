@@ -140,6 +140,9 @@ pub enum Expr {
     Var(String),
     /// A call to a named function: `f(a, b)`.
     Call { name: String, args: Vec<Expr> },
+    /// Application of an arbitrary expression that evaluates to a function:
+    /// `make_adder(3)(4)`, `(fn(x){x})(1)`. (A bare-name call is `Call`.)
+    Apply { func: Box<Expr>, args: Vec<Expr> },
     /// A constructor application: `Click(x, y)` or nullary `Closed`.
     Ctor { name: String, args: Vec<Expr> },
     Unary { op: UnOp, expr: Box<Expr> },

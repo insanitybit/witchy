@@ -55,6 +55,13 @@ const TRY_TMP: &str = "__witchy_try_tmp";
 /// Scratch local holding a `match` scrutinee while arms test it.
 const MATCH_TMP: &str = "__witchy_match_tmp";
 
+/// One scratch local per nesting level of expression application (`f(x)(y)`),
+/// holding the callee pointer while its arguments are evaluated. A nested
+/// application inside an argument uses the next level, so the levels never
+/// clobber each other. Application nested deeper than this in argument
+/// position is rejected (absurd in practice).
+const APPLY_POOL: usize = 8;
+
 /// The closure-environment pointer: the implicit first parameter of every
 /// lifted lambda, pointing at its `[code_index][cap0]..` heap record.
 const ENV_PARAM: &str = "__witchy_env";
@@ -212,6 +219,8 @@ struct Codegen {
     /// Closure arities for which a `(type $clos{n})` signature is needed (all
     /// i32 params, i32 result), used by `call_indirect`.
     clos_arities: HashSet<usize>,
+    /// Current nesting level of expression application, indexing `APPLY_POOL`.
+    apply_level: usize,
 }
 
 impl Codegen {
@@ -263,6 +272,7 @@ impl Codegen {
             uses_dict_iter: false,
             lambdas: Vec::new(),
             clos_arities: HashSet::new(),
+            apply_level: 0,
         }
     }
 
@@ -740,7 +750,11 @@ impl Codegen {
         header.push_str(&format!("    (local ${TUPLE_TMP} i32)\n"));
         header.push_str(&format!("    (local ${TRY_TMP} i32)\n"));
         header.push_str(&format!("    (local ${MATCH_TMP} i32)\n"));
+        for i in 0..APPLY_POOL {
+            header.push_str(&format!("    (local $__witchy_call_{i} i32)\n"));
+        }
 
+        self.apply_level = 0;
         let body = self.compile_block(&renamed)?;
         // Move-out: append each `inout` parameter's final value (declaration order).
         let mut epilogue = String::new();
@@ -974,6 +988,30 @@ impl Codegen {
                 let b = self.compile_block(body)?;
                 Ok(format!(
                     "    block $we{id}\n    loop $wl{id}\n{c}    i32.eqz\n    br_if $we{id}\n{b}    drop\n    br $wl{id}\n    end\n    end\n    i32.const 0\n"
+                ))
+            }
+            Expr::Apply { func, args } => {
+                // Call a function value produced by an expression. Stash the
+                // closure pointer in this level's scratch local, then build the
+                // indirect-call stack: env, args..., code index. Arguments use
+                // the next level so a nested application can't clobber the
+                // pointer between its two reads.
+                let level = self.apply_level;
+                if level >= APPLY_POOL {
+                    return cerr("function application nested too deeply in arguments to compile");
+                }
+                let n = args.len();
+                let tmp = format!("__witchy_call_{level}");
+                let fcode = self.compile_expr(func)?;
+                self.apply_level = level + 1;
+                let mut argcode = String::new();
+                for a in args {
+                    argcode.push_str(&self.compile_expr(a)?);
+                }
+                self.apply_level = level;
+                self.clos_arities.insert(n);
+                Ok(format!(
+                    "{fcode}    local.set ${tmp}\n    local.get ${tmp}\n{argcode}    local.get ${tmp}\n    i32.load\n    call_indirect (type $clos{n})\n"
                 ))
             }
             Expr::Call { name, args } => self.compile_call(name, args),
@@ -1407,6 +1445,9 @@ impl Codegen {
         header.push_str(&format!("    (local ${TUPLE_TMP} i32)\n"));
         header.push_str(&format!("    (local ${TRY_TMP} i32)\n"));
         header.push_str(&format!("    (local ${MATCH_TMP} i32)\n"));
+        for i in 0..APPLY_POOL {
+            header.push_str(&format!("    (local $__witchy_call_{i} i32)\n"));
+        }
         // Prologue: copy each capture out of the environment record (slot j is at
         // offset 4 + 4*j, past the code-index header).
         let mut prologue = String::new();
@@ -1417,7 +1458,11 @@ impl Codegen {
             ));
         }
 
+        // The lifted body is its own function: application nesting restarts at 0.
+        let saved_apply_level = self.apply_level;
+        self.apply_level = 0;
         let body_wat = self.compile_block(body)?;
+        self.apply_level = saved_apply_level;
         self.lambdas[index] = format!("{header}{prologue}{body_wat}  )\n");
         self.clos_arities.insert(params.len());
 
@@ -2927,6 +2972,12 @@ fn fv_expr(e: &Expr, s: &mut LambdaScan) {
                 fv_expr(a, s);
             }
         }
+        Expr::Apply { func, args } => {
+            fv_expr(func, s);
+            for a in args {
+                fv_expr(a, s);
+            }
+        }
         Expr::Unary { expr, .. } | Expr::Try(expr) => fv_expr(expr, s),
         Expr::Field { base, .. } => fv_expr(base, s),
         Expr::RecordUpdate { base, fields } => {
@@ -3144,6 +3195,12 @@ impl Renamer {
             Expr::List(xs) | Expr::Tuple(xs) => {
                 for x in xs {
                     self.rename_expr(x);
+                }
+            }
+            Expr::Apply { func, args } => {
+                self.rename_expr(func);
+                for a in args {
+                    self.rename_expr(a);
                 }
             }
             Expr::Call { args, .. } | Expr::Ctor { args, .. } | Expr::Spawn { args, .. } => {
