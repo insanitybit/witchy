@@ -1736,6 +1736,31 @@ mod example_tests {
     }
 
     #[test]
+    fn std_list_partition_unzip_backends_agree() {
+        // partition splits by a predicate in one pass; unzip is the inverse of
+        // zip. Both return tuples of lists, so this also exercises tuple-valued
+        // returns from generic std functions across backends.
+        let client = r#"
+            import list
+            fn main(console: Console) {
+              let xs = [1, 2, 3, 4, 5, 6]
+              let (evens, odds) = list.partition(xs, fn(n: Int) { n % 2 == 0 })
+              print(console, int_to_string(list.sum(evens)))
+              print(console, int_to_string(list.sum(odds)))
+              let pairs = list.zip([10, 20, 30], [1, 2, 3])
+              let (a, b) = list.unzip(pairs)
+              print(console, int_to_string(list.sum(a)))
+              print(console, int_to_string(list.sum(b)))
+            }
+        "#;
+        let sources = [("list", crate::bundled_module("list").unwrap()), ("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "partition/unzip diverged between backends");
+        assert_eq!(compiled, vec!["12", "9", "60", "6"]);
+    }
+
+    #[test]
     fn std_string_strip_backends_agree() {
         // strip_prefix/strip_suffix remove an affix only when it matches,
         // leaving the string untouched otherwise; stripping the whole string
