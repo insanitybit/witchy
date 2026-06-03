@@ -3067,6 +3067,51 @@ mod example_tests {
         assert_eq!(run_on_wasm(src), vec!["1", "2", "-1"]);
     }
 
+    // Regression: a local variable that shares its name with a same-module
+    // function must stay a local, not be rewritten into a first-class reference
+    // to that function by the linker. (The function-as-value feature qualifies
+    // bare function-name Vars; it must skip names shadowed by a local.)
+    #[test]
+    fn local_shadowing_function_name_backends_agree() {
+        let client = r#"
+            fn size(n: Int) -> Int { n * 100 }
+            fn main(console: Console) {
+              var size = 3
+              size = size + 4
+              print(console, int_to_string(size))
+            }
+        "#;
+        let sources = [("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "local shadowing a function name diverged");
+        assert_eq!(compiled, vec!["7"]);
+    }
+
+    #[test]
+    fn std_list_chunks_tail_init_backends_agree() {
+        // chunks groups into fixed-size sublists (last may be short), tail drops
+        // the first element, init drops the last — all total (empty stays empty).
+        // Iterating List(List(Int)) also exercises nested lists across backends.
+        let client = r#"
+            import list
+            fn main(console: Console) {
+              let cs = list.chunks([1, 2, 3, 4, 5], 2)
+              print(console, int_to_string(length(cs)))
+              for c in cs { print(console, int_to_string(list.sum(c))) }
+              print(console, int_to_string(list.sum(list.tail([1, 2, 3]))))
+              print(console, int_to_string(list.sum(list.init([1, 2, 3]))))
+              print(console, int_to_string(length(list.tail([]))))
+              print(console, int_to_string(length(list.init([]))))
+            }
+        "#;
+        let sources = [("list", crate::bundled_module("list").unwrap()), ("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "chunks/tail/init diverged");
+        assert_eq!(compiled, vec!["3", "3", "7", "5", "5", "3", "0", "0"]);
+    }
+
     #[test]
     fn std_list_product_slice_scan_backends_agree() {
         // product (1 for empty), slice (clamped half-open range), and scan

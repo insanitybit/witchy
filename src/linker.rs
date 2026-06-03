@@ -115,18 +115,28 @@ pub fn link(modules: Vec<(String, Module)>, entry: &str) -> Result<Module, LinkE
                     } else {
                         format!("{mname}.{}", f.name)
                     };
-                    rewrite_block(&mut f2.body, mname, &m.imports, &fns)?;
+                    let mut bound = HashSet::new();
+                    for p in &f2.params {
+                        bound.insert(p.name.clone());
+                    }
+                    collect_bound_block(&f2.body, &mut bound);
+                    rewrite_block(&mut f2.body, mname, &m.imports, &fns, &bound)?;
                     items.push(Item::Function(f2));
                 }
                 Item::Actor(a) => {
                     let mut a2 = a.clone();
                     for field in &mut a2.fields {
                         if let Some(init) = &mut field.init {
-                            rewrite_expr(init, mname, &m.imports, &fns)?;
+                            rewrite_expr(init, mname, &m.imports, &fns, &HashSet::new())?;
                         }
                     }
                     for h in &mut a2.handlers {
-                        rewrite_block(&mut h.body, mname, &m.imports, &fns)?;
+                        let mut bound = HashSet::new();
+                        for p in &h.params {
+                            bound.insert(p.name.clone());
+                        }
+                        collect_bound_block(&h.body, &mut bound);
+                        rewrite_block(&mut h.body, mname, &m.imports, &fns, &bound)?;
                     }
                     items.push(Item::Actor(a2));
                 }
@@ -140,88 +150,215 @@ pub fn link(modules: Vec<(String, Module)>, entry: &str) -> Result<Module, LinkE
     })
 }
 
-fn rewrite_block(b: &mut Block, m: &str, imps: &[String], fns: &FnTable) -> Result<(), LinkError> {
+/// Collect every name bound as a local within a block — `let`/`var` bindings,
+/// tuple destructurings, `for` loop variables, lambda parameters, and `match`
+/// pattern bindings (recursively, including nested blocks/expressions). Used so
+/// the linker never mistakes a local that shadows a same-module function name
+/// for a first-class reference to that function.
+fn collect_bound_block(b: &Block, out: &mut HashSet<String>) {
+    for stmt in &b.stmts {
+        match stmt {
+            Stmt::Let { name, value, .. } => {
+                out.insert(name.clone());
+                collect_bound_expr(value, out);
+            }
+            Stmt::LetTuple { names, value } => {
+                for n in names {
+                    out.insert(n.clone());
+                }
+                collect_bound_expr(value, out);
+            }
+            Stmt::Assign { value, .. } => collect_bound_expr(value, out),
+            Stmt::Return(Some(e)) | Stmt::Expr(e) => collect_bound_expr(e, out),
+            Stmt::Return(None) => {}
+        }
+    }
+}
+
+fn collect_pattern_vars(p: &Pattern, out: &mut HashSet<String>) {
+    match p {
+        Pattern::Var(n) => {
+            out.insert(n.clone());
+        }
+        Pattern::Ctor { args, .. } | Pattern::Tuple(args) => {
+            for a in args {
+                collect_pattern_vars(a, out);
+            }
+        }
+        Pattern::List { elems, rest } => {
+            for e in elems {
+                collect_pattern_vars(e, out);
+            }
+            if let Some(Some(name)) = rest {
+                out.insert(name.clone());
+            }
+        }
+        Pattern::Wildcard | Pattern::Int(_) | Pattern::Str(_) | Pattern::Bool(_) => {}
+    }
+}
+
+fn collect_bound_expr(e: &Expr, out: &mut HashSet<String>) {
+    match e {
+        Expr::Lambda { params, body } => {
+            for p in params {
+                out.insert(p.name.clone());
+            }
+            collect_bound_block(body, out);
+        }
+        Expr::For { var, iter, body } => {
+            out.insert(var.clone());
+            collect_bound_expr(iter, out);
+            collect_bound_block(body, out);
+        }
+        Expr::Match { scrutinee, arms } => {
+            collect_bound_expr(scrutinee, out);
+            for arm in arms {
+                collect_pattern_vars(&arm.pattern, out);
+                if let Some(g) = &arm.guard {
+                    collect_bound_expr(g, out);
+                }
+                collect_bound_expr(&arm.body, out);
+            }
+        }
+        Expr::If { cond, then_block, else_block } => {
+            collect_bound_expr(cond, out);
+            collect_bound_block(then_block, out);
+            if let Some(b) = else_block {
+                collect_bound_block(b, out);
+            }
+        }
+        Expr::While { cond, body } => {
+            collect_bound_expr(cond, out);
+            collect_bound_block(body, out);
+        }
+        Expr::Block(b) => collect_bound_block(b, out),
+        Expr::Call { args, .. }
+        | Expr::Ctor { args, .. }
+        | Expr::List(args)
+        | Expr::Tuple(args)
+        | Expr::Spawn { args, .. } => {
+            for a in args {
+                collect_bound_expr(a, out);
+            }
+        }
+        Expr::Apply { func, args } => {
+            collect_bound_expr(func, out);
+            for a in args {
+                collect_bound_expr(a, out);
+            }
+        }
+        Expr::Binary { lhs, rhs, .. } => {
+            collect_bound_expr(lhs, out);
+            collect_bound_expr(rhs, out);
+        }
+        Expr::Unary { expr, .. } | Expr::Try(expr) | Expr::Field { base: expr, .. } => {
+            collect_bound_expr(expr, out)
+        }
+        Expr::RecordUpdate { base, fields } => {
+            collect_bound_expr(base, out);
+            for (_, v) in fields {
+                collect_bound_expr(v, out);
+            }
+        }
+        Expr::Var(_) | Expr::Int(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) => {}
+    }
+}
+
+fn rewrite_block(
+    b: &mut Block,
+    m: &str,
+    imps: &[String],
+    fns: &FnTable,
+    bound: &HashSet<String>,
+) -> Result<(), LinkError> {
     for stmt in &mut b.stmts {
         match stmt {
             Stmt::Let { value, .. }
             | Stmt::Assign { value, .. }
-            | Stmt::LetTuple { value, .. } => rewrite_expr(value, m, imps, fns)?,
-            Stmt::Return(Some(e)) | Stmt::Expr(e) => rewrite_expr(e, m, imps, fns)?,
+            | Stmt::LetTuple { value, .. } => rewrite_expr(value, m, imps, fns, bound)?,
+            Stmt::Return(Some(e)) | Stmt::Expr(e) => rewrite_expr(e, m, imps, fns, bound)?,
             Stmt::Return(None) => {}
         }
     }
     Ok(())
 }
 
-fn rewrite_expr(e: &mut Expr, m: &str, imps: &[String], fns: &FnTable) -> Result<(), LinkError> {
+fn rewrite_expr(
+    e: &mut Expr,
+    m: &str,
+    imps: &[String],
+    fns: &FnTable,
+    bound: &HashSet<String>,
+) -> Result<(), LinkError> {
     match e {
         Expr::Call { name, args } => {
             *name = resolve_call(name, m, imps, fns)?;
             for a in args {
-                rewrite_expr(a, m, imps, fns)?;
+                rewrite_expr(a, m, imps, fns, bound)?;
+            }
+        }
+        // A bare name matching a same-module function is a first-class reference
+        // to it; qualify it like a call — unless it is shadowed by a local of the
+        // same name (a parameter, `let`, loop variable, or pattern binding).
+        Expr::Var(name) => {
+            if !bound.contains(name.as_str())
+                && fns.get(m).is_some_and(|s| s.contains(name.as_str()))
+            {
+                *name = format!("{m}.{name}");
             }
         }
         Expr::Apply { func, args } => {
-            rewrite_expr(func, m, imps, fns)?;
+            rewrite_expr(func, m, imps, fns, bound)?;
             for a in args {
-                rewrite_expr(a, m, imps, fns)?;
+                rewrite_expr(a, m, imps, fns, bound)?;
             }
         }
         Expr::Ctor { args, .. } | Expr::List(args) | Expr::Tuple(args) | Expr::Spawn { args, .. } => {
             for a in args {
-                rewrite_expr(a, m, imps, fns)?;
+                rewrite_expr(a, m, imps, fns, bound)?;
             }
         }
         Expr::Unary { expr, .. } | Expr::Try(expr) | Expr::Field { base: expr, .. } => {
-            rewrite_expr(expr, m, imps, fns)?
+            rewrite_expr(expr, m, imps, fns, bound)?
         }
         Expr::RecordUpdate { base, fields } => {
-            rewrite_expr(base, m, imps, fns)?;
+            rewrite_expr(base, m, imps, fns, bound)?;
             for (_, value) in fields {
-                rewrite_expr(value, m, imps, fns)?;
+                rewrite_expr(value, m, imps, fns, bound)?;
             }
         }
         Expr::Binary { lhs, rhs, .. } => {
-            rewrite_expr(lhs, m, imps, fns)?;
-            rewrite_expr(rhs, m, imps, fns)?;
+            rewrite_expr(lhs, m, imps, fns, bound)?;
+            rewrite_expr(rhs, m, imps, fns, bound)?;
         }
         Expr::If {
             cond,
             then_block,
             else_block,
         } => {
-            rewrite_expr(cond, m, imps, fns)?;
-            rewrite_block(then_block, m, imps, fns)?;
+            rewrite_expr(cond, m, imps, fns, bound)?;
+            rewrite_block(then_block, m, imps, fns, bound)?;
             if let Some(b) = else_block {
-                rewrite_block(b, m, imps, fns)?;
+                rewrite_block(b, m, imps, fns, bound)?;
             }
         }
-        Expr::Lambda { body, .. } => rewrite_block(body, m, imps, fns)?,
-        Expr::Block(b) => rewrite_block(b, m, imps, fns)?,
+        Expr::Lambda { body, .. } => rewrite_block(body, m, imps, fns, bound)?,
+        Expr::Block(b) => rewrite_block(b, m, imps, fns, bound)?,
         Expr::While { cond, body } => {
-            rewrite_expr(cond, m, imps, fns)?;
-            rewrite_block(body, m, imps, fns)?;
+            rewrite_expr(cond, m, imps, fns, bound)?;
+            rewrite_block(body, m, imps, fns, bound)?;
         }
         Expr::For { iter, body, .. } => {
-            rewrite_expr(iter, m, imps, fns)?;
-            rewrite_block(body, m, imps, fns)?;
+            rewrite_expr(iter, m, imps, fns, bound)?;
+            rewrite_block(body, m, imps, fns, bound)?;
         }
         Expr::Match { scrutinee, arms } => {
-            rewrite_expr(scrutinee, m, imps, fns)?;
+            rewrite_expr(scrutinee, m, imps, fns, bound)?;
             for arm in arms {
                 if let Some(g) = &mut arm.guard {
-                    rewrite_expr(g, m, imps, fns)?;
+                    rewrite_expr(g, m, imps, fns, bound)?;
                 }
-                rewrite_expr(&mut arm.body, m, imps, fns)?;
-            }
-        }
-        Expr::Var(name) => {
-            // A bare name matching a function defined in this module is a
-            // first-class reference to it; qualify it like a call so the type
-            // checker and codegen resolve it. Locals/params/loop variables don't
-            // match a function name and pass through untouched.
-            if fns.get(m).is_some_and(|s| s.contains(name.as_str())) {
-                *name = format!("{m}.{name}");
+                rewrite_expr(&mut arm.body, m, imps, fns, bound)?;
             }
         }
         Expr::Int(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) => {}
