@@ -43,6 +43,31 @@ pub fn fold(xs: List(a), init: b, f: fn(b, a) -> b) -> b {
   acc
 }
 
+// The sum of a list of integers (0 for the empty list).
+pub fn sum(xs: List(Int)) -> Int {
+  var total = 0
+  for x in xs {
+    total = total + x
+  }
+  total
+}
+
+// Whether the list has no elements.
+pub fn is_empty(xs: List(a)) -> Bool {
+  length(xs) == 0
+}
+
+// How many elements satisfy `pred`.
+pub fn count(xs: List(a), pred: fn(a) -> Bool) -> Int {
+  var n = 0
+  for x in xs {
+    if pred(x) {
+      n = n + 1
+    }
+  }
+  n
+}
+
 // The list, reversed.
 pub fn reverse(xs: List(a)) -> List(a) {
   var out = []

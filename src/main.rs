@@ -811,6 +811,52 @@ mod example_tests {
         }
     }
 
+    /// The std `list` library is the most-exercised witchy code; verify a broad
+    /// slice of it (reverse/take/drop/sort_by/zip/enumerate/map/filter/fold/
+    /// index_of/contains/any/all) produces identical results in the interpreter
+    /// and compiled to WASM. Int element lists keep this clear of the known
+    /// generic-`==`-on-strings limitation (compiled compares those by pointer).
+    #[test]
+    fn std_list_library_backends_agree() {
+        let client = r#"
+            import list
+            fn main(console: Console) {
+              let xs = [5, 3, 8, 1, 9, 2]
+              let rev = list.reverse(xs)
+              print(console, int_to_string(at(rev, 0)) <> "," <> int_to_string(at(rev, 5)))
+              print(console, int_to_string(length(list.take(xs, 3))) <> ":" <> int_to_string(at(list.take(xs, 3), 2)))
+              print(console, int_to_string(at(list.drop(xs, 4), 0)))
+              let sorted = list.sort_by(xs, fn(a: Int, b: Int) { a < b })
+              print(console, int_to_string(at(sorted, 0)) <> ".." <> int_to_string(at(sorted, 5)))
+              let pairs = list.zip([1, 2, 3], [10, 20, 30])
+              let (pa, pb) = at(pairs, 1)
+              print(console, int_to_string(pa + pb))
+              let en = list.enumerate([100, 200])
+              let (ei, ev) = at(en, 1)
+              print(console, int_to_string(ei * 1000 + ev))
+              let doubled = list.map(xs, fn(n: Int) { n * 2 })
+              let evens = list.filter(xs, fn(n: Int) { n % 2 == 0 })
+              print(console, int_to_string(list.fold(doubled, 0, fn(a: Int, b: Int) { a + b })))
+              print(console, int_to_string(length(evens)))
+              print(console, int_to_string(list.index_of(xs, 8)))
+              print(console, to_string(list.contains(xs, 9)))
+              print(console, to_string(list.any(xs, fn(n: Int) { n > 8 })))
+              print(console, to_string(list.all(xs, fn(n: Int) { n > 0 })))
+              print(console, int_to_string(list.sum(xs)))
+              print(console, to_string(list.is_empty(xs)))
+              print(console, to_string(list.is_empty(list.filter(xs, fn(n: Int) { n > 100 }))))
+              print(console, int_to_string(list.count(xs, fn(n: Int) { n % 2 == 0 })))
+            }
+        "#;
+        let sources = [("list", crate::bundled_module("list").unwrap()), ("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(
+            interpreted, compiled,
+            "std list library diverged between interpreter and compiled"
+        );
+    }
+
     fn assert_fn_compiles(src: &str) {
         assert!(typeck::check_str(src).is_ok(), "{:?}", typeck::check_str(src));
         let module = parser::parse_module(src).expect("parse");
