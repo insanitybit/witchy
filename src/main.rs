@@ -872,6 +872,46 @@ mod example_tests {
     }
 
     #[test]
+    fn negative_int_to_string_on_wasm() {
+        // `int_to_string` renders negatives with a leading '-' (previously it
+        // emitted garbage, e.g. "/" for -1).
+        let src = r#"
+            fn main(console: Console) {
+              print(console, int_to_string(0 - 1))
+              print(console, int_to_string(0 - 128))
+              print(console, int_to_string(255))
+              print(console, int_to_string(0))
+            }
+        "#;
+        assert_eq!(run_on_wasm(src), vec!["-1", "-128", "255", "0"]);
+    }
+
+    #[test]
+    fn string_search_slice_on_wasm() {
+        // contains / index_of / substring compiled to WASM, matching the
+        // interpreter — including Unicode: "café!" has the `!` at character index
+        // 4 (byte 5), and substring(3,5) is the two characters "é!".
+        let src = r#"
+            fn main(console: Console) {
+              print(console, int_to_string(if contains("hello world", "world") { 1 } else { 0 }))
+              print(console, int_to_string(if contains("abc", "xyz") { 1 } else { 0 }))
+              print(console, int_to_string(if contains("abc", "") { 1 } else { 0 }))
+              print(console, int_to_string(index_of("hello", "l")))
+              print(console, int_to_string(index_of("hello", "z")))
+              print(console, substring("hello", 1, 4))
+              print(console, substring("hi", 0, 100))
+              print(console, substring("hi", 5, 10))
+              print(console, int_to_string(index_of("café!", "!")))
+              print(console, substring("café!", 3, 5))
+            }
+        "#;
+        assert_eq!(
+            run_on_wasm(src),
+            vec!["1", "0", "1", "2", "-1", "ell", "hi", "", "4", "é!"]
+        );
+    }
+
+    #[test]
     fn std_string_compiles_and_runs_on_wasm() {
         // With `split` compiled, the whole `string` module compiles: `lines`
         // (split on "\n"), `join`, and `repeat`. lines -> ["a","bb","ccc"] (3);

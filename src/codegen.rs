@@ -122,8 +122,16 @@ struct Codegen {
     /// Whether the `starts_with`/`ends_with` string helpers are needed.
     uses_starts_with: bool,
     uses_ends_with: bool,
-    /// Whether the `split` helper (and its `substr` companion) is needed.
+    /// Whether the `split` helper is needed.
     uses_split: bool,
+    /// Whether the `$substr` allocator is needed (split, substring).
+    uses_substr: bool,
+    /// Whether the `$find_byte` substring search is needed (contains, index_of).
+    uses_find_byte: bool,
+    /// Whether the char-indexed `index_of` wrapper (+ `$byte_to_char`) is needed.
+    uses_index_of: bool,
+    /// Whether the char-indexed `substring` wrapper (+ `$char_to_byte`) is needed.
+    uses_substring: bool,
     /// Record type name -> ordered fields as `(name, named-type)`, where the
     /// second is the field's type name when it is a `Named` type (so nested
     /// records can be chained, `a.b.c`). For compiling `value.field`.
@@ -187,6 +195,10 @@ impl Codegen {
             uses_starts_with: false,
             uses_ends_with: false,
             uses_split: false,
+            uses_substr: false,
+            uses_find_byte: false,
+            uses_index_of: false,
+            uses_substring: false,
             lambdas: Vec::new(),
             clos_arities: HashSet::new(),
         }
@@ -332,6 +344,7 @@ impl Codegen {
             || self.uses_list_concat
             || self.uses_list_drop
             || self.uses_split
+            || self.uses_substr
     }
 
     fn emit_imports(&self) -> String {
@@ -385,12 +398,26 @@ impl Codegen {
         if self.uses_ends_with {
             s.push_str(ENDS_WITH_WAT);
         }
-        // `$split` builds its result list with `$list_push` (emitted above via
-        // `uses_list_push`, which the split call site also sets) and allocates
-        // each piece with `$substr`.
-        if self.uses_split {
+        // `$substr` allocates a string slice (used by `split` and `substring`).
+        if self.uses_substr {
             s.push_str(SUBSTR_WAT);
+        }
+        // `$split` builds its result list with `$list_push` (emitted above via
+        // `uses_list_push`, which the split call site also sets).
+        if self.uses_split {
             s.push_str(SPLIT_WAT);
+        }
+        // Substring search (`contains`/`index_of`) and char-indexed slicing.
+        if self.uses_find_byte {
+            s.push_str(FIND_BYTE_WAT);
+        }
+        if self.uses_index_of {
+            s.push_str(BYTE_TO_CHAR_WAT);
+            s.push_str(STR_INDEX_OF_WAT);
+        }
+        if self.uses_substring {
+            s.push_str(CHAR_TO_BYTE_WAT);
+            s.push_str(STR_SUBSTRING_WAT);
         }
         if self.uses_print {
             s.push_str(PRINT_STR_WAT);
@@ -1172,10 +1199,36 @@ impl Codegen {
             // separator dropped); an empty separator yields the whole string.
             ("split", 2) => {
                 self.uses_split = true;
+                self.uses_substr = true; // each piece is allocated with `$substr`
                 self.uses_list_push = true; // `$split` builds its result with it
                 let s = self.compile_expr(&args[0])?;
                 let sep = self.compile_expr(&args[1])?;
                 Ok(format!("{s}{sep}    call $split\n"))
+            }
+            // contains(s, sub): does `sub` occur in `s`? (UTF-8-safe byte match.)
+            ("contains", 2) => {
+                self.uses_find_byte = true;
+                let s = self.compile_expr(&args[0])?;
+                let sub = self.compile_expr(&args[1])?;
+                Ok(format!("{s}{sub}    call $find_byte\n    i32.const -1\n    i32.ne\n"))
+            }
+            // index_of(s, sub): character index of the first occurrence, or -1.
+            ("index_of", 2) => {
+                self.uses_find_byte = true;
+                self.uses_index_of = true;
+                let s = self.compile_expr(&args[0])?;
+                let sub = self.compile_expr(&args[1])?;
+                Ok(format!("{s}{sub}    call $str_index_of\n"))
+            }
+            // substring(s, start, end): the half-open character range [start, end),
+            // clamped to bounds (counted by Unicode scalar).
+            ("substring", 3) => {
+                self.uses_substring = true;
+                self.uses_substr = true;
+                let s = self.compile_expr(&args[0])?;
+                let start = self.compile_expr(&args[1])?;
+                let end = self.compile_expr(&args[2])?;
+                Ok(format!("{s}{start}{end}    call $str_substring\n"))
             }
             ("to_upper", _) | ("to_lower", _) | ("trim", _) => cerr(
                 "to_upper/to_lower/trim run in the interpreter; WASM string transforms are future",
@@ -1791,6 +1844,93 @@ const SPLIT_WAT: &str = r#"  (func $split (param $s i32) (param $sep i32) (resul
     (local.get $result))
 "#;
 
+// find_byte(s, sub): byte offset of the first occurrence of `sub` in `s`, or -1.
+// An empty `sub` matches at 0 (like Rust's str::find).
+const FIND_BYTE_WAT: &str = r#"  (func $find_byte (param $s i32) (param $sub i32) (result i32)
+    (local $slen i32) (local $sublen i32) (local $i i32) (local $j i32) (local $match i32)
+    (local.set $slen (i32.load (local.get $s)))
+    (local.set $sublen (i32.load (local.get $sub)))
+    (if (i32.eqz (local.get $sublen)) (then (return (i32.const 0))))
+    (local.set $i (i32.const 0))
+    (block $done
+      (loop $scan
+        (br_if $done (i32.gt_s (local.get $i) (i32.sub (local.get $slen) (local.get $sublen))))
+        (local.set $match (i32.const 1))
+        (local.set $j (i32.const 0))
+        (block $cmpdone
+          (loop $cmp
+            (br_if $cmpdone (i32.ge_s (local.get $j) (local.get $sublen)))
+            (if (i32.ne
+                  (i32.load8_u (i32.add (i32.add (local.get $s) (i32.const 4)) (i32.add (local.get $i) (local.get $j))))
+                  (i32.load8_u (i32.add (i32.add (local.get $sub) (i32.const 4)) (local.get $j))))
+              (then (local.set $match (i32.const 0)) (br $cmpdone)))
+            (local.set $j (i32.add (local.get $j) (i32.const 1)))
+            (br $cmp)))
+        (if (local.get $match) (then (return (local.get $i))))
+        (local.set $i (i32.add (local.get $i) (i32.const 1)))
+        (br $scan)))
+    (i32.const -1))
+"#;
+
+// byte_to_char(s, bytelen): number of Unicode scalars in the first `bytelen`
+// bytes of `s` (counts non-continuation bytes, i.e. those not 0b10xxxxxx).
+const BYTE_TO_CHAR_WAT: &str = r#"  (func $byte_to_char (param $s i32) (param $bytelen i32) (result i32)
+    (local $i i32) (local $count i32) (local $b i32)
+    (local.set $i (i32.const 0))
+    (local.set $count (i32.const 0))
+    (block $done
+      (loop $l
+        (br_if $done (i32.ge_s (local.get $i) (local.get $bytelen)))
+        (local.set $b (i32.load8_u (i32.add (i32.add (local.get $s) (i32.const 4)) (local.get $i))))
+        (if (i32.ne (i32.and (local.get $b) (i32.const 0xc0)) (i32.const 0x80))
+          (then (local.set $count (i32.add (local.get $count) (i32.const 1)))))
+        (local.set $i (i32.add (local.get $i) (i32.const 1)))
+        (br $l)))
+    (local.get $count))
+"#;
+
+// index_of(s, sub): the character index of the first occurrence, or -1.
+const STR_INDEX_OF_WAT: &str = r#"  (func $str_index_of (param $s i32) (param $sub i32) (result i32)
+    (local $b i32)
+    (local.set $b (call $find_byte (local.get $s) (local.get $sub)))
+    (if (result i32) (i32.lt_s (local.get $b) (i32.const 0))
+      (then (i32.const -1))
+      (else (call $byte_to_char (local.get $s) (local.get $b)))))
+"#;
+
+// char_to_byte(s, n): byte offset of character `n`. A negative `n` clamps to 0
+// and an `n` past the end clamps to the byte length, so callers need not bound
+// it themselves. Walks one UTF-8 scalar at a time using its lead byte's length.
+const CHAR_TO_BYTE_WAT: &str = r#"  (func $char_to_byte (param $s i32) (param $n i32) (result i32)
+    (local $slen i32) (local $i i32) (local $count i32) (local $b i32)
+    (local.set $slen (i32.load (local.get $s)))
+    (local.set $i (i32.const 0))
+    (local.set $count (i32.const 0))
+    (block $done
+      (loop $l
+        (br_if $done (i32.ge_s (local.get $i) (local.get $slen)))
+        (br_if $done (i32.ge_s (local.get $count) (local.get $n)))
+        (local.set $b (i32.load8_u (i32.add (i32.add (local.get $s) (i32.const 4)) (local.get $i))))
+        (local.set $i (i32.add (local.get $i)
+          (if (result i32) (i32.lt_u (local.get $b) (i32.const 0x80)) (then (i32.const 1))
+            (else (if (result i32) (i32.lt_u (local.get $b) (i32.const 0xe0)) (then (i32.const 2))
+              (else (if (result i32) (i32.lt_u (local.get $b) (i32.const 0xf0)) (then (i32.const 3))
+                (else (i32.const 4)))))))))
+        (local.set $count (i32.add (local.get $count) (i32.const 1)))
+        (br $l)))
+    (local.get $i))
+"#;
+
+// substring(s, start, end): the [start, end) character range as a fresh string.
+const STR_SUBSTRING_WAT: &str = r#"  (func $str_substring (param $s i32) (param $start i32) (param $end i32) (result i32)
+    (local $lo i32) (local $hi i32)
+    (local.set $lo (call $char_to_byte (local.get $s) (local.get $start)))
+    (local.set $hi (call $char_to_byte (local.get $s) (local.get $end)))
+    (if (result i32) (i32.ge_s (local.get $lo) (local.get $hi))
+      (then (call $substr (local.get $s) (i32.const 0) (i32.const 0)))
+      (else (call $substr (local.get $s) (local.get $lo) (i32.sub (local.get $hi) (local.get $lo))))))
+"#;
+
 // ends_with(s, p): do s's last p.len bytes equal p?
 const ENDS_WITH_WAT: &str = r#"  (func $ends_with (param $s i32) (param $p i32) (result i32)
     (local $plen i32) (local $off i32) (local $i i32)
@@ -1818,45 +1958,48 @@ const PRINT_STR_WAT: &str = r#"  (func $print_str (param $s i32)
 "#;
 
 /// Non-negative integer to a string record. Negative inputs are out of scope.
+// int_to_string(n): the decimal text of `n`, with a leading '-' for negatives.
+// Digits are extracted from the magnitude with unsigned div/rem (so a negative
+// `n` works), written back-to-front after the optional sign.
 const INT_TO_STRING_WAT: &str = r#"  (func $int_to_string (param $n i32) (result i32)
-    (local $tmp i32) (local $ndigits i32) (local $res i32) (local $p i32)
-    local.get $n
-    i32.eqz
-    if (result i32)
-      global.get $heap local.set $res
-      local.get $res i32.const 1 i32.store
-      local.get $res i32.const 4 i32.add i32.const 48 i32.store8
-      local.get $res i32.const 5 i32.add global.set $heap
-      local.get $res
-    else
-      local.get $n local.set $tmp
-      i32.const 0 local.set $ndigits
-      block $b1
-        loop $l1
-          local.get $tmp i32.eqz br_if $b1
-          local.get $ndigits i32.const 1 i32.add local.set $ndigits
-          local.get $tmp i32.const 10 i32.div_s local.set $tmp
-          br $l1
-        end
-      end
-      global.get $heap local.set $res
-      local.get $res local.get $ndigits i32.store
-      local.get $res i32.const 4 i32.add local.get $ndigits i32.add i32.const 1 i32.sub local.set $p
-      local.get $n local.set $tmp
-      block $b2
-        loop $l2
-          local.get $tmp i32.eqz br_if $b2
-          local.get $p
-          local.get $tmp i32.const 10 i32.rem_s i32.const 48 i32.add
-          i32.store8
-          local.get $p i32.const 1 i32.sub local.set $p
-          local.get $tmp i32.const 10 i32.div_s local.set $tmp
-          br $l2
-        end
-      end
-      local.get $res i32.const 4 i32.add local.get $ndigits i32.add global.set $heap
-      local.get $res
-    end)
+    (local $mag i32) (local $t i32) (local $ndigits i32) (local $len i32) (local $res i32) (local $p i32) (local $neg i32)
+    (if (result i32) (i32.eqz (local.get $n))
+      (then
+        (local.set $res (global.get $heap))
+        (i32.store (local.get $res) (i32.const 1))
+        (i32.store8 (i32.add (local.get $res) (i32.const 4)) (i32.const 48))
+        (global.set $heap (i32.add (local.get $res) (i32.const 5)))
+        (local.get $res))
+      (else
+        (local.set $neg (i32.lt_s (local.get $n) (i32.const 0)))
+        (local.set $mag
+          (if (result i32) (local.get $neg)
+            (then (i32.sub (i32.const 0) (local.get $n)))
+            (else (local.get $n))))
+        (local.set $ndigits (i32.const 0))
+        (local.set $t (local.get $mag))
+        (block $b1
+          (loop $l1
+            (br_if $b1 (i32.eqz (local.get $t)))
+            (local.set $ndigits (i32.add (local.get $ndigits) (i32.const 1)))
+            (local.set $t (i32.div_u (local.get $t) (i32.const 10)))
+            (br $l1)))
+        (local.set $len (i32.add (local.get $ndigits) (local.get $neg)))
+        (local.set $res (global.get $heap))
+        (i32.store (local.get $res) (local.get $len))
+        (if (local.get $neg)
+          (then (i32.store8 (i32.add (local.get $res) (i32.const 4)) (i32.const 45))))
+        (local.set $p (i32.sub (i32.add (i32.add (local.get $res) (i32.const 4)) (local.get $len)) (i32.const 1)))
+        (local.set $t (local.get $mag))
+        (block $b2
+          (loop $l2
+            (br_if $b2 (i32.eqz (local.get $t)))
+            (i32.store8 (local.get $p) (i32.add (i32.rem_u (local.get $t) (i32.const 10)) (i32.const 48)))
+            (local.set $p (i32.sub (local.get $p) (i32.const 1)))
+            (local.set $t (i32.div_u (local.get $t) (i32.const 10)))
+            (br $l2)))
+        (global.set $heap (i32.add (i32.add (local.get $res) (i32.const 4)) (local.get $len)))
+        (local.get $res))))
 "#;
 
 /// The result of scanning a lambda body: the variables it reads and the
