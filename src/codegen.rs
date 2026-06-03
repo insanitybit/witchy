@@ -52,6 +52,9 @@ const TUPLE_TMP: &str = "__witchy_tuple_tmp";
 /// Scratch local holding the Result/Option being unwrapped by `?`.
 const TRY_TMP: &str = "__witchy_try_tmp";
 
+/// Scratch local holding a `match` scrutinee while arms test it.
+const MATCH_TMP: &str = "__witchy_match_tmp";
+
 /// The WASM representation of a value: f64 for floats, i32 for everything else
 /// (ints, bools, and pointers to strings/lists/records).
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -380,9 +383,10 @@ impl Codegen {
             let k = self.locals.get(name).copied().unwrap_or(Kind::I32);
             header.push_str(&format!("    (local ${name} {})\n", wasm_ty(k)));
         }
-        // Scratch slots: tuple destructuring (`let (a, b) = ...`) and `?`.
+        // Scratch slots: tuple destructuring, `?`, and `match` scrutinees.
         header.push_str(&format!("    (local ${TUPLE_TMP} i32)\n"));
         header.push_str(&format!("    (local ${TRY_TMP} i32)\n"));
+        header.push_str(&format!("    (local ${MATCH_TMP} i32)\n"));
 
         let body = self.compile_block(&f.body)?;
         // Move-out: append each `inout` parameter's final value (declaration order).
@@ -733,18 +737,18 @@ impl Codegen {
     /// re-evaluated per arm without a temporary. Variable/string/constructor
     /// patterns and guards are not compiled yet.
     fn compile_match(&mut self, scrutinee: &Expr, arms: &[MatchArm]) -> Result<String, CodegenError> {
-        // The scrutinee must be re-evaluatable per arm without side effects.
-        let scrut = match scrutinee {
-            Expr::Var(_) | Expr::Int(_) | Expr::Bool(_) => self.compile_expr(scrutinee)?,
-            _ => {
-                return cerr("`match` scrutinee must be a variable or literal in WASM codegen (yet)")
-            }
-        };
+        // Patterns re-read the scrutinee, so evaluate it once into a scratch
+        // local and use `local.get` (cheap, side-effect-free) as the value. The
+        // matching arm's body runs only after its pattern is tested and bound, so
+        // a nested match reusing this slot is safe.
+        let scrut_setup = format!("{}    local.set ${MATCH_TMP}\n", self.compile_expr(scrutinee)?);
+        let scrut = format!("    local.get ${MATCH_TMP}\n");
         let id = self.next_label;
         self.next_label += 1;
         // Each arm is a block: test the pattern (skip on failure), bind, test the
         // guard (skip on failure), run the body and branch out with its value.
-        let mut s = format!("    block $d{id} (result i32)\n");
+        let mut s = scrut_setup;
+        s.push_str(&format!("    block $d{id} (result i32)\n"));
         for (i, arm) in arms.iter().enumerate() {
             let (cond, binds) = self.pattern_match(&scrut, &arm.pattern)?;
             s.push_str(&format!("    block $a{id}_{i}\n"));

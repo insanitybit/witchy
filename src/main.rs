@@ -762,10 +762,9 @@ mod example_tests {
               Ok(x + y)
             }
             fn main() -> Int {
-              let r1 = compute(3, 4)
-              let ok = match r1 { Ok(v) -> v  Err(e) -> e }
-              let r2 = compute(0, 9)
-              let bad = match r2 { Ok(v) -> v  Err(e) -> e }
+              // `match` directly on a call result (scrutinee need not be a var).
+              let ok = match compute(3, 4) { Ok(v) -> v  Err(e) -> e }
+              let bad = match compute(0, 9) { Ok(v) -> v  Err(e) -> e }
               ok * 100 + bad
             }
         "#;
