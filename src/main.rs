@@ -2453,6 +2453,29 @@ mod example_tests {
     }
 
     #[test]
+    fn record_with_collection_field_backends_agree() {
+        // A record holding a List(Int) and a String: field access, length on a
+        // list field, and a `for` loop iterating a list *field* (the iterand is a
+        // field expression, not a variable). Both backends agree.
+        let src = r#"
+            type Bag { items: List(Int), label: String }
+            fn main(console: Console) {
+              let b = Bag([10, 20, 30], "nums")
+              print(console, b.label)
+              print(console, int_to_string(length(b.items)))
+              var total = 0
+              for x in b.items {
+                total = total + x
+              }
+              print(console, int_to_string(total))
+              print(console, int_to_string(at(b.items, 1)))
+            }
+        "#;
+        assert_eq!(interp(src), run_on_wasm(src));
+        assert_eq!(run_on_wasm(src), vec!["nums", "3", "60", "20"]);
+    }
+
+    #[test]
     fn nested_records_backends_agree() {
         // A record containing a record: chained field access (o.inner.v), nested
         // construction, `update` on a nested field, and immutability of the
