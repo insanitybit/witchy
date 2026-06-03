@@ -35,6 +35,7 @@ pub enum Tok {
     For,
     In,
     Return,
+    Update,
 
     // Grouping / punctuation
     LParen,
@@ -103,6 +104,7 @@ impl fmt::Display for Tok {
             For => write!(f, "for"),
             In => write!(f, "in"),
             Return => write!(f, "return"),
+            Update => write!(f, "update"),
             LParen => write!(f, "("),
             RParen => write!(f, ")"),
             LBrace => write!(f, "{{"),
@@ -312,6 +314,7 @@ impl Lexer {
             "for" => Tok::For,
             "in" => Tok::In,
             "return" => Tok::Return,
+            "update" => Tok::Update,
             "_" => Tok::Underscore,
             _ => Tok::Ident(text),
         }

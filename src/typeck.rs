@@ -760,6 +760,33 @@ impl Checker {
                     params.iter().cloned().zip(args.iter().cloned()).collect();
                 Ok(self.subst_vars(fty, &map))
             }
+            Expr::RecordUpdate { base, fields } => {
+                let bt = self.infer(base)?;
+                let resolved = self.resolve(&bt);
+                let (tyname, args) = match &resolved {
+                    Ty::Named(n, a) => (n.clone(), a.clone()),
+                    other => {
+                        return terr(format!("`update` requires a record, found `{other}`"))
+                    }
+                };
+                let Some((params, rec_fields)) = self.record_fields.get(&tyname).cloned() else {
+                    return terr(format!("type `{tyname}` is not a record"));
+                };
+                let map: HashMap<u32, Ty> =
+                    params.into_iter().zip(args).collect();
+                for (fname, vexpr) in fields {
+                    let Some((_, fty)) = rec_fields.iter().find(|(n, _)| n == fname) else {
+                        return terr(format!("record `{tyname}` has no field `{fname}`"));
+                    };
+                    let expected = self.subst_vars(fty, &map);
+                    let vt = self.infer(vexpr)?;
+                    self.unify(&expected, &vt).map_err(|e| TypeError {
+                        message: format!("`update` of field `{fname}`: {}", e.message),
+                    })?;
+                }
+                // The result is a record of the same type as the base.
+                Ok(resolved)
+            }
             Expr::Try(inner) => {
                 let it = self.infer(inner)?;
                 let resolved = self.resolve(&it);
@@ -1427,6 +1454,33 @@ mod tests {
             fn main(console: Console) {
               print(console, run(fn(n: Int) { n + 1 }, "x"))
             }
+        "#;
+        assert!(check_str(src).is_err());
+    }
+
+    #[test]
+    fn record_update_types() {
+        let src = r#"
+            type Point { x: Int, y: Int }
+            fn bump(p: Point) -> Point { update p { x: p.x + 1 } }
+        "#;
+        assert!(check_str(src).is_ok(), "{:?}", check_str(src));
+    }
+
+    #[test]
+    fn rejects_record_update_wrong_field_type() {
+        let src = r#"
+            type Point { x: Int, y: Int }
+            fn bad(p: Point) -> Point { update p { x: "no" } }
+        "#;
+        assert!(check_str(src).is_err());
+    }
+
+    #[test]
+    fn rejects_record_update_unknown_field() {
+        let src = r#"
+            type Point { x: Int, y: Int }
+            fn bad(p: Point) -> Point { update p { z: 1 } }
         "#;
         assert!(check_str(src).is_err());
     }

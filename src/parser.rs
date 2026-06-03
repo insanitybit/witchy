@@ -560,6 +560,25 @@ impl Parser {
                 let body = self.block()?;
                 Ok(Expr::Lambda { params, body })
             }
+            Tok::Update => {
+                // `update <expr> { field: value, ... }` — a copy with overrides.
+                self.advance();
+                let base = self.expr(0)?;
+                self.expect(&Tok::LBrace)?;
+                let mut fields = Vec::new();
+                while !self.at(&Tok::RBrace) && !self.at(&Tok::Eof) {
+                    let name = self.ident()?;
+                    self.expect(&Tok::Colon)?;
+                    let value = self.expr(0)?;
+                    fields.push((name, value));
+                    self.eat(&Tok::Comma); // optional separator
+                }
+                self.expect(&Tok::RBrace)?;
+                Ok(Expr::RecordUpdate {
+                    base: Box::new(base),
+                    fields,
+                })
+            }
             Tok::Match => self.match_expr(),
             Tok::Spawn => {
                 self.advance();

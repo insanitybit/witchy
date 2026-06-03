@@ -999,6 +999,24 @@ impl Interpreter {
                 body: body.clone(),
                 env: Box::new(env.clone()),
             }),
+            Expr::RecordUpdate { base, fields } => {
+                let v = self.eval(base, env)?;
+                let Value::Ctor { name, fields: mut values } = v else {
+                    return err(format!("`update` requires a record value, got `{v}`"));
+                };
+                for (fname, vexpr) in fields {
+                    let idx = self
+                        .record_fields
+                        .get(&name)
+                        .and_then(|names| names.iter().position(|n| n == fname));
+                    let val = self.eval(vexpr, env)?;
+                    match idx.filter(|i| *i < values.len()) {
+                        Some(i) => values[i] = val,
+                        None => return err(format!("`{name}` has no field `{fname}`")),
+                    }
+                }
+                Ok(Value::Ctor { name, fields: values })
+            }
             Expr::Field { base, field } => {
                 let v = self.eval(base, env)?;
                 match v {
@@ -2022,6 +2040,20 @@ mod tests {
             }
         "#;
         assert_eq!(run(src).unwrap(), vec!["8", "none"]);
+    }
+
+    #[test]
+    fn record_update_does_not_mutate_the_original() {
+        let src = r#"
+            type Point { x: Int, y: Int }
+            fn main(console: Console) {
+              let p = Point(1, 2)
+              let q = update p { x: 10, y: p.y + 1 }
+              print(console, int_to_string(p.x) <> int_to_string(p.y))  // original unchanged: 12
+              print(console, int_to_string(q.x) <> int_to_string(q.y))  // 103
+            }
+        "#;
+        assert_eq!(run(src).unwrap(), vec!["12", "103"]);
     }
 
     #[test]

@@ -149,6 +149,12 @@ pub enum Expr {
     /// An anonymous function (closure): `fn(x: Int) { x + 1 }`. Captures the
     /// environment it is created in.
     Lambda { params: Vec<Param>, body: Block },
+    /// Record update: `update p { x: 5 }` — a new record like `p` with the named
+    /// fields replaced. `p` is not mutated.
+    RecordUpdate {
+        base: Box<Expr>,
+        fields: Vec<(String, Expr)>,
+    },
     /// `e?` — propagate a `Result`/`Option`: unwrap `Ok`/`Some` to its payload,
     /// or short-circuit, returning the `Err`/`None` from the enclosing function.
     Try(Box<Expr>),

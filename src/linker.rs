@@ -169,6 +169,12 @@ fn rewrite_expr(e: &mut Expr, m: &str, imps: &[String], fns: &FnTable) -> Result
         Expr::Unary { expr, .. } | Expr::Try(expr) | Expr::Field { base: expr, .. } => {
             rewrite_expr(expr, m, imps, fns)?
         }
+        Expr::RecordUpdate { base, fields } => {
+            rewrite_expr(base, m, imps, fns)?;
+            for (_, value) in fields {
+                rewrite_expr(value, m, imps, fns)?;
+            }
+        }
         Expr::Binary { lhs, rhs, .. } => {
             rewrite_expr(lhs, m, imps, fns)?;
             rewrite_expr(rhs, m, imps, fns)?;

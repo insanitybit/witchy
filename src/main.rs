@@ -167,6 +167,7 @@ fn main() -> wasmtime::Result<()> {
     run_witchy("witchy for-in loops over lists", include_str!("../examples/loops.witchy"));
     run_witchy("witchy list patterns (head/tail)", include_str!("../examples/listmatch.witchy"));
     run_witchy("witchy records (named fields)", include_str!("../examples/records.witchy"));
+    run_witchy("witchy record update", include_str!("../examples/record_update.witchy"));
     run_witchy("witchy expression evaluator (recursive ADT)", include_str!("../examples/eval.witchy"));
     run_witchy("witchy bank (records + lists + Result)", include_str!("../examples/bank.witchy"));
     run_witchy("witchy higher-order functions (closures)", include_str!("../examples/higher_order.witchy"));
@@ -999,6 +1000,14 @@ mod example_tests {
                 "moved = (12, 3)",
                 "manhattan(moved) = 15"
             ]
+        );
+    }
+
+    #[test]
+    fn record_update_example() {
+        assert_eq!(
+            interp(include_str!("../examples/record_update.witchy")),
+            vec!["alice 100", "alice 150", "alice smith 150"]
         );
     }
 
