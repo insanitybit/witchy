@@ -367,6 +367,17 @@ impl Codegen {
                 _ => None,
             },
             Expr::RecordUpdate { base, .. } => self.record_type_of(base),
+            // `a.b` is a record when field `b` of `a`'s record type is itself a
+            // record (so `a.b.c` resolves).
+            Expr::Field { base, field } => {
+                let base_ty = self.record_type_of(base)?;
+                let names = self.record_fields.get(&base_ty)?;
+                let idx = names.iter().position(|(n, _)| n == field)?;
+                names[idx]
+                    .1
+                    .clone()
+                    .filter(|t| self.record_fields.contains_key(t))
+            }
             Expr::If { then_block, .. } => self.block_record_type(then_block),
             Expr::Match { arms, .. } => arms.first().and_then(|a| self.record_type_of(&a.body)),
             Expr::Block(b) => self.block_record_type(b),
@@ -787,36 +798,6 @@ impl Codegen {
         Ok(out)
     }
 
-    /// Compile an expression known to evaluate to a record, returning the WAT
-    /// that pushes its heap pointer and the record's type name. Handles a
-    /// record-typed variable and (recursively) a field whose own type is a
-    /// record, so `a.b.c` resolves.
-    fn record_base(&self, e: &Expr) -> Result<(String, String), CodegenError> {
-        match e {
-            Expr::Var(v) => match self.local_records.get(v) {
-                Some(ty) => Ok((format!("    local.get ${v}\n"), ty.clone())),
-                None => cerr(format!("cannot determine the record type of `{v}`")),
-            },
-            Expr::Field { base, field } => {
-                let (base_wat, base_ty) = self.record_base(base)?;
-                let names = &self.record_fields[&base_ty];
-                let Some(idx) = names.iter().position(|(n, _)| n == field) else {
-                    return cerr(format!("record `{base_ty}` has no field `{field}`"));
-                };
-                let field_ty = names[idx].1.clone();
-                let Some(rec_ty) = field_ty.filter(|t| self.record_fields.contains_key(t)) else {
-                    return cerr(format!("field `{field}` of `{base_ty}` is not a record"));
-                };
-                let offset = 4 + 4 * idx;
-                Ok((
-                    format!("{base_wat}    i32.const {offset}\n    i32.add\n    i32.load\n"),
-                    rec_ty,
-                ))
-            }
-            _ => cerr("a record base must be a variable or a field access"),
-        }
-    }
-
     fn compile_expr(&mut self, expr: &Expr) -> Result<String, CodegenError> {
         match expr {
             Expr::Int(n) => Ok(format!("    i32.const {n}\n")),
@@ -1021,15 +1002,22 @@ impl Codegen {
             }
             Expr::Field { base, field } => {
                 // A record value is a heap record `[tag][field0][field1]...`, so
-                // a field is `*(base + 4 + 4*index)`. `record_base` resolves the
-                // base pointer and its record type (recursively, so `a.b.c`
-                // works on nested records).
-                let (base_wat, base_ty) = self.record_base(base)?;
+                // a field is `*(base + 4 + 4*index)`. The base may be any
+                // record-producing expression (a variable, a nested field, an
+                // `at`/`get_or` result, a constructor, an if/match, ...); its
+                // type comes from `record_type_of` and its pointer from compiling
+                // it directly.
+                let Some(base_ty) = self.record_type_of(base) else {
+                    return cerr(format!(
+                        "cannot determine the record type for field access `.{field}`"
+                    ));
+                };
                 let names = &self.record_fields[&base_ty];
                 let Some(idx) = names.iter().position(|(n, _)| n == field) else {
                     return cerr(format!("record `{base_ty}` has no field `{field}`"));
                 };
                 let offset = 4 + 4 * idx;
+                let base_wat = self.compile_expr(base)?;
                 Ok(format!(
                     "{base_wat}    i32.const {offset}\n    i32.add\n    i32.load\n"
                 ))

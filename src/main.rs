@@ -1448,6 +1448,26 @@ mod example_tests {
     }
 
     #[test]
+    fn direct_field_access_on_expressions_backends_agree() {
+        // Field access directly on a record-producing expression (no `let`): a
+        // constructor literal, a record-returning call, and an `at` result.
+        let src = r#"
+            type Item { price: Int, qty: Int }
+            fn lookup(b: Bool) -> Item {
+              if b { Item(3, 10) } else { Item(5, 2) }
+            }
+            fn main(console: Console) {
+              print(console, int_to_string(Item(7, 6).price))
+              print(console, int_to_string(lookup(true).qty))
+              let items = [Item(1, 2), Item(3, 4)]
+              print(console, int_to_string(at(items, 1).qty))
+            }
+        "#;
+        assert_eq!(interp(src), run_on_wasm(src));
+        assert_eq!(run_on_wasm(src), vec!["7", "10", "4"]);
+    }
+
+    #[test]
     fn conditional_record_field_access_backends_agree() {
         // `let x = if c { A } else { B }; x.field` (and a match-bound record):
         // the binding's record type is recovered from the branch/arm.
