@@ -55,6 +55,10 @@ const TRY_TMP: &str = "__witchy_try_tmp";
 /// Scratch local holding a `match` scrutinee while arms test it.
 const MATCH_TMP: &str = "__witchy_match_tmp";
 
+/// The closure-environment pointer: the implicit first parameter of every
+/// lifted lambda, pointing at its `[code_index][cap0]..` heap record.
+const ENV_PARAM: &str = "__witchy_env";
+
 /// The WASM representation of a value: f64 for floats, i32 for everything else
 /// (ints, bools, and pointers to strings/lists/records).
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -950,28 +954,51 @@ impl Codegen {
         })
     }
 
-    /// Compile a non-capturing lambda by lifting it to a top-level function
-    /// `$__lam{i}` and evaluating to its table index `i`. Capturing lambdas (and
-    /// non-Int param/result kinds) are rejected for now: the WASM function table
-    /// holds bare code pointers with no closed-over environment.
+    /// Compile a lambda to a uniform closure value: a heap record
+    /// `[code_index][cap0]..[capN]` (built via `$mkN`, the code index as its
+    /// tag). The lambda body is lifted to a function `$__lam{i}` whose first
+    /// parameter is the closure pointer (`$__env`); a prologue copies each
+    /// captured value out of the environment into a local. Captures are taken
+    /// by value at creation time — equivalent to the interpreter for the
+    /// immutable bindings that dominate, so writing back to a captured variable
+    /// is rejected rather than silently diverging.
     fn compile_lambda(
         &mut self,
         params: &[Param],
         body: &Block,
     ) -> Result<String, CodegenError> {
-        let free = lambda_free_vars(params, body);
-        if !free.is_empty() {
+        let scan = scan_lambda(params, body);
+        let assigns_outer = scan.assigns_outer();
+        if !assigns_outer.is_empty() {
             return cerr(format!(
-                "capturing closures are not compiled to WASM yet (lambda captures `{}`)",
-                free.join("`, `")
+                "a closure that assigns to a captured variable is not compiled yet (assigns `{}`)",
+                assigns_outer.join("`, `")
             ));
         }
+        let captures = scan.captures();
+        // Resolve each capture against the *enclosing* scope (before the local
+        // tables are swapped out for the lambda body).
+        let mut cap_info: Vec<(String, bool, Option<String>, Option<String>)> = Vec::new();
+        for c in &captures {
+            let kind = self.locals.get(c).copied().unwrap_or(Kind::I32);
+            if kind != Kind::I32 {
+                return cerr(format!("a closure capturing a Float (`{c}`) is not compiled yet"));
+            }
+            cap_info.push((
+                c.clone(),
+                self.globals.contains(c),
+                self.local_records.get(c).cloned(),
+                self.local_list_elem.get(c).cloned(),
+            ));
+        }
+
         // Reserve this lambda's table slot *before* compiling the body, so any
         // nested lambdas take the following slots rather than colliding.
         let index = self.lambdas.len();
         self.lambdas.push(String::new());
 
-        // The lambda body compiles in a fresh local scope (its params + lets).
+        // The lambda body compiles in a fresh local scope (its params, the
+        // captured locals, and any lets).
         let saved_locals = std::mem::take(&mut self.locals);
         let saved_records = std::mem::take(&mut self.local_records);
         let saved_list_elem = std::mem::take(&mut self.local_list_elem);
@@ -1000,6 +1027,17 @@ impl Codegen {
                 _ => {}
             }
         }
+        // Captured names are locals of the lifted function; carry over their
+        // record / list-element types so field and loop resolution still work.
+        for (name, _, rec, list_elem) in &cap_info {
+            self.locals.insert(name.clone(), Kind::I32);
+            if let Some(r) = rec {
+                self.local_records.insert(name.clone(), r.clone());
+            }
+            if let Some(e) = list_elem {
+                self.local_list_elem.insert(name.clone(), e.clone());
+            }
+        }
         self.infer_locals(body);
         let ret_kind = self.block_kind(body);
         if ret_kind != Kind::I32 {
@@ -1008,11 +1046,17 @@ impl Codegen {
         }
         self.cur_fn_ret_kind = ret_kind;
 
-        let mut header = format!("  (func $__lam{index} ");
+        let mut header = format!("  (func $__lam{index} (param ${ENV_PARAM} i32) ");
         for p in params {
             header.push_str(&format!("(param ${} i32) ", p.name));
         }
         header.push_str("(result i32)\n");
+        // Locals: captured values, then `let` bindings, then scratch. Captures
+        // are declared even when they shadow nothing, since the prologue stores
+        // into them.
+        for (name, _, _, _) in &cap_info {
+            header.push_str(&format!("    (local ${name} i32)\n"));
+        }
         let mut lets = Vec::new();
         collect_let_names(body, &mut lets);
         lets.sort();
@@ -1024,13 +1068,36 @@ impl Codegen {
         header.push_str(&format!("    (local ${TUPLE_TMP} i32)\n"));
         header.push_str(&format!("    (local ${TRY_TMP} i32)\n"));
         header.push_str(&format!("    (local ${MATCH_TMP} i32)\n"));
+        // Prologue: copy each capture out of the environment record (slot j is at
+        // offset 4 + 4*j, past the code-index header).
+        let mut prologue = String::new();
+        for (j, (name, _, _, _)) in cap_info.iter().enumerate() {
+            let offset = 4 + 4 * j;
+            prologue.push_str(&format!(
+                "    local.get ${ENV_PARAM}\n    i32.const {offset}\n    i32.add\n    i32.load\n    local.set ${name}\n"
+            ));
+        }
 
         let body_wat = self.compile_block(body)?;
-        self.lambdas[index] = format!("{header}{body_wat}  )\n");
+        self.lambdas[index] = format!("{header}{prologue}{body_wat}  )\n");
         self.clos_arities.insert(params.len());
 
         self.restore_locals(saved_locals, saved_records, saved_list_elem, saved_ret, saved_inout);
-        Ok(format!("    i32.const {index}\n"))
+
+        // Construction site: allocate `[code_index][cap0]..[capN]` via `$mkN`,
+        // pushing the captures from the *enclosing* scope in slot order.
+        let n = cap_info.len();
+        self.mk_arities.insert(n);
+        let mut out = format!("    i32.const {index}\n");
+        for (name, is_global, _, _) in &cap_info {
+            if *is_global {
+                out.push_str(&format!("    global.get ${name}\n"));
+            } else {
+                out.push_str(&format!("    local.get ${name}\n"));
+            }
+        }
+        out.push_str(&format!("    call $mk{n}\n"));
+        Ok(out)
     }
 
     fn restore_locals(
@@ -1146,15 +1213,18 @@ impl Codegen {
                 "network capabilities are not compiled to WASM yet (interpreter only; maps to wasi:sockets)",
             ),
             _ => {
-                // A function-valued local (a closure param/binding) holds a table
-                // index: call it indirectly rather than emitting a direct `call`.
+                // A function-valued local (a closure param/binding) holds a
+                // pointer to a `[code_index][caps..]` record. Call it through the
+                // table: pass the closure pointer as the environment (first
+                // param), then the args, then `call_indirect` on the code index
+                // loaded from the record's header.
                 if self.locals.contains_key(name) {
                     let n = args.len();
-                    let mut out = String::new();
+                    let mut out = format!("    local.get ${name}\n");
                     for arg in args {
                         out.push_str(&self.compile_expr(arg)?);
                     }
-                    out.push_str(&format!("    local.get ${name}\n"));
+                    out.push_str(&format!("    local.get ${name}\n    i32.load\n"));
                     out.push_str(&format!("    call_indirect (type $clos{n})\n"));
                     self.clos_arities.insert(n);
                     return Ok(out);
@@ -1282,11 +1352,12 @@ pub fn compile_module(module: &Module) -> Result<String, CodegenError> {
     }
 
     let mut wat = String::from("(module\n");
-    // Closure call signatures (all i32 params, i32 result) for `call_indirect`.
+    // Closure call signatures (env pointer + i32 args, i32 result).
     let mut arities: Vec<usize> = cg.clos_arities.iter().copied().collect();
     arities.sort_unstable();
     for n in &arities {
-        let params = "(param i32) ".repeat(*n);
+        // One leading param for the closure environment, then the call's args.
+        let params = "(param i32) ".repeat(*n + 1);
         wat.push_str(&format!("  (type $clos{n} (func {params}(result i32)))\n"));
     }
     wat.push_str(&cg.emit_imports());
@@ -1464,7 +1535,8 @@ fn compile_actor_with_tags(
     let mut arities: Vec<usize> = cg.clos_arities.iter().copied().collect();
     arities.sort_unstable();
     for n in &arities {
-        let params = "(param i32) ".repeat(*n);
+        // One leading param for the closure environment, then the call's args.
+        let params = "(param i32) ".repeat(*n + 1);
         wat.push_str(&format!("  (type $clos{n} (func {params}(result i32)))\n"));
     }
     wat.push_str(&cg.emit_imports());
@@ -1705,115 +1777,140 @@ const INT_TO_STRING_WAT: &str = r#"  (func $int_to_string (param $n i32) (result
     end)
 "#;
 
-/// Variables a lambda references from its enclosing scope (i.e. captures).
-/// Computed as referenced names minus the lambda's own params and any names it
-/// binds internally (lets, loop vars, match patterns, nested lambda params).
-/// An over-approximation of "bound" (binders apply to the whole body), which is
-/// sound for the rejection check on all but pathological shadowing.
-fn lambda_free_vars(params: &[Param], body: &Block) -> Vec<String> {
-    let mut refs = HashSet::new();
-    let mut bound: HashSet<String> = params.iter().map(|p| p.name.clone()).collect();
-    fv_block(body, &mut refs, &mut bound);
-    let mut free: Vec<String> = refs.difference(&bound).cloned().collect();
-    free.sort();
-    free
+/// The result of scanning a lambda body: the variables it reads and the
+/// variables it assigns, alongside the names it binds internally.
+#[derive(Default)]
+struct LambdaScan {
+    reads: HashSet<String>,
+    assigns: HashSet<String>,
+    bound: HashSet<String>,
 }
 
-fn fv_block(block: &Block, refs: &mut HashSet<String>, bound: &mut HashSet<String>) {
+impl LambdaScan {
+    /// Variables read from the enclosing scope (the closure's captures), sorted
+    /// for a deterministic capture-slot order.
+    fn captures(&self) -> Vec<String> {
+        let mut free: Vec<String> = self.reads.difference(&self.bound).cloned().collect();
+        free.sort();
+        free
+    }
+
+    /// Variables assigned that are not bound within the lambda — i.e. writes to
+    /// an outer binding. By-value capture cannot propagate these back out.
+    fn assigns_outer(&self) -> Vec<String> {
+        let mut a: Vec<String> = self.assigns.difference(&self.bound).cloned().collect();
+        a.sort();
+        a
+    }
+}
+
+/// Scan a lambda for captures and outer assignments. `bound` is seeded with the
+/// params and grows with every internal binder (lets, loop vars, match
+/// patterns, nested lambda params). The bound set is an over-approximation
+/// (binders apply to the whole body), sound for these checks on all but
+/// pathological shadowing.
+fn scan_lambda(params: &[Param], body: &Block) -> LambdaScan {
+    let mut s = LambdaScan::default();
+    for p in params {
+        s.bound.insert(p.name.clone());
+    }
+    fv_block(body, &mut s);
+    s
+}
+
+fn fv_block(block: &Block, s: &mut LambdaScan) {
     for stmt in &block.stmts {
         match stmt {
             Stmt::Let { name, value, .. } => {
-                fv_expr(value, refs, bound);
-                bound.insert(name.clone());
+                fv_expr(value, s);
+                s.bound.insert(name.clone());
             }
-            // Assigning a name that is not bound within the lambda mutates an
-            // outer binding — that is a capture too.
             Stmt::Assign { name, value } => {
-                refs.insert(name.clone());
-                fv_expr(value, refs, bound);
+                s.assigns.insert(name.clone());
+                fv_expr(value, s);
             }
             Stmt::LetTuple { names, value } => {
-                fv_expr(value, refs, bound);
+                fv_expr(value, s);
                 for n in names {
-                    bound.insert(n.clone());
+                    s.bound.insert(n.clone());
                 }
             }
-            Stmt::Return(Some(e)) | Stmt::Expr(e) => fv_expr(e, refs, bound),
+            Stmt::Return(Some(e)) | Stmt::Expr(e) => fv_expr(e, s),
             Stmt::Return(None) => {}
         }
     }
 }
 
-fn fv_expr(e: &Expr, refs: &mut HashSet<String>, bound: &mut HashSet<String>) {
+fn fv_expr(e: &Expr, s: &mut LambdaScan) {
     match e {
         Expr::Var(n) => {
-            refs.insert(n.clone());
+            s.reads.insert(n.clone());
         }
         Expr::Int(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) => {}
         // A `Call` name is a function/builtin (or a closure local, caught at WASM
         // validation), never an outer value capture — only its args matter here.
         Expr::List(xs) | Expr::Tuple(xs) => {
             for x in xs {
-                fv_expr(x, refs, bound);
+                fv_expr(x, s);
             }
         }
         Expr::Call { args, .. } | Expr::Ctor { args, .. } | Expr::Spawn { args, .. } => {
             for a in args {
-                fv_expr(a, refs, bound);
+                fv_expr(a, s);
             }
         }
-        Expr::Unary { expr, .. } | Expr::Try(expr) => fv_expr(expr, refs, bound),
-        Expr::Field { base, .. } => fv_expr(base, refs, bound),
+        Expr::Unary { expr, .. } | Expr::Try(expr) => fv_expr(expr, s),
+        Expr::Field { base, .. } => fv_expr(base, s),
         Expr::RecordUpdate { base, fields } => {
-            fv_expr(base, refs, bound);
+            fv_expr(base, s);
             for (_, v) in fields {
-                fv_expr(v, refs, bound);
+                fv_expr(v, s);
             }
         }
         Expr::Binary { lhs, rhs, .. } => {
-            fv_expr(lhs, refs, bound);
-            fv_expr(rhs, refs, bound);
+            fv_expr(lhs, s);
+            fv_expr(rhs, s);
         }
         Expr::If {
             cond,
             then_block,
             else_block,
         } => {
-            fv_expr(cond, refs, bound);
-            fv_block(then_block, refs, bound);
+            fv_expr(cond, s);
+            fv_block(then_block, s);
             if let Some(b) = else_block {
-                fv_block(b, refs, bound);
+                fv_block(b, s);
             }
         }
         Expr::Match { scrutinee, arms } => {
-            fv_expr(scrutinee, refs, bound);
+            fv_expr(scrutinee, s);
             for arm in arms {
                 let mut pv = Vec::new();
                 collect_pattern_vars(&arm.pattern, &mut pv);
                 for v in pv {
-                    bound.insert(v);
+                    s.bound.insert(v);
                 }
                 if let Some(g) = &arm.guard {
-                    fv_expr(g, refs, bound);
+                    fv_expr(g, s);
                 }
-                fv_expr(&arm.body, refs, bound);
+                fv_expr(&arm.body, s);
             }
         }
-        Expr::Block(b) => fv_block(b, refs, bound),
+        Expr::Block(b) => fv_block(b, s),
         Expr::While { cond, body } => {
-            fv_expr(cond, refs, bound);
-            fv_block(body, refs, bound);
+            fv_expr(cond, s);
+            fv_block(body, s);
         }
         Expr::For { var, iter, body } => {
-            fv_expr(iter, refs, bound);
-            bound.insert(var.clone());
-            fv_block(body, refs, bound);
+            fv_expr(iter, s);
+            s.bound.insert(var.clone());
+            fv_block(body, s);
         }
         Expr::Lambda { params, body } => {
             for p in params {
-                bound.insert(p.name.clone());
+                s.bound.insert(p.name.clone());
             }
-            fv_block(body, refs, bound);
+            fv_block(body, s);
         }
     }
 }
@@ -1998,20 +2095,64 @@ mod tests {
     }
 
     #[test]
-    fn capturing_closure_is_rejected() {
-        // The lambda reads `k` from the enclosing scope: rejected (no environment
-        // in the WASM function table yet).
+    fn compiles_capturing_closure() {
+        // The lambda reads `k` from the enclosing scope: captured by value into
+        // the closure's heap environment, then read back via the env prologue.
         let src = r#"
             fn apply(f: fn(Int) -> Int, x: Int) -> Int { f(x) }
             fn main() -> Int {
-                let k = 5
-                apply(fn(n: Int) { n + k }, 10)
+                let k = 100
+                apply(fn(n: Int) { n + k }, 5)
+            }
+        "#;
+        assert_eq!(run_int(src), 105);
+    }
+
+    #[test]
+    fn closure_captures_multiple_vars() {
+        // Several captures land in distinct environment slots.
+        let src = r#"
+            fn apply(f: fn(Int) -> Int, x: Int) -> Int { f(x) }
+            fn main() -> Int {
+                let a = 3
+                let b = 7
+                let c = 11
+                apply(fn(n: Int) { n * a + b - c }, 10)
+            }
+        "#;
+        assert_eq!(run_int(src), 26); // 10*3 + 7 - 11
+    }
+
+    #[test]
+    fn closure_captures_record_field() {
+        // Capturing a record value: the env carries the heap pointer, and field
+        // access still resolves inside the lambda.
+        let src = r#"
+            type Point { x: Int, y: Int }
+            fn apply(f: fn(Int) -> Int, n: Int) -> Int { f(n) }
+            fn main() -> Int {
+                let p = Point(4, 9)
+                apply(fn(n: Int) { n + p.x * p.y }, 1)
+            }
+        "#;
+        assert_eq!(run_int(src), 37); // 1 + 4*9
+    }
+
+    #[test]
+    fn closure_assigning_captured_var_is_rejected() {
+        // By-value capture cannot propagate a write back to the outer binding, so
+        // assigning a captured variable is rejected rather than diverging.
+        let src = r#"
+            fn run(f: fn(Int) -> Int, x: Int) -> Int { f(x) }
+            fn main() -> Int {
+                var total = 0
+                run(fn(n: Int) { total = total + n }, 5)
             }
         "#;
         let module = parse_module(src).expect("parse");
-        let err = compile_module(&module).expect_err("should reject capture");
+        let err = compile_module(&module).expect_err("should reject outer assignment");
         assert!(
-            err.to_string().contains("captures `k`"),
+            err.to_string().contains("assigns `total`"),
             "unexpected error: {err}"
         );
     }

@@ -909,11 +909,12 @@ mod example_tests {
 
     #[test]
     fn closures_example_runs_on_wasm() {
-        // Higher-order functions + non-capturing lambdas, compiled to WASM:
-        // apply(square, 9) = 81; twice(+3, 10) = ((10+3)+3) = 16.
+        // Higher-order functions + closures, compiled to WASM: apply(square, 9) =
+        // 81; twice(+3, 10) = ((10+3)+3) = 16; apply(adder(100), 5) = 105 (the
+        // returned closure captures `by = 100`).
         assert_eq!(
             run_on_wasm(include_str!("../examples/closures.witchy")),
-            vec!["81", "16"]
+            vec!["81", "16", "105"]
         );
     }
 
