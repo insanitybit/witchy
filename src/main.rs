@@ -1448,6 +1448,31 @@ mod example_tests {
     }
 
     #[test]
+    fn conditional_record_field_access_backends_agree() {
+        // `let x = if c { A } else { B }; x.field` (and a match-bound record):
+        // the binding's record type is recovered from the branch/arm.
+        let src = r#"
+            type Item { price: Int, qty: Int }
+            fn pick(b: Bool) -> Int {
+              let x = if b { Item(3, 10) } else { Item(5, 2) }
+              x.price * x.qty
+            }
+            fn from_tag(t: Int) -> Int {
+              let y = match t { 0 -> Item(1, 1)  _ -> Item(2, 3) }
+              y.price + y.qty
+            }
+            fn main(console: Console) {
+              print(console, int_to_string(pick(true)))
+              print(console, int_to_string(pick(false)))
+              print(console, int_to_string(from_tag(0)))
+              print(console, int_to_string(from_tag(9)))
+            }
+        "#;
+        assert_eq!(interp(src), run_on_wasm(src));
+        assert_eq!(run_on_wasm(src), vec!["30", "10", "2", "5"]);
+    }
+
+    #[test]
     fn list_of_records_index_access_backends_agree() {
         // `at(items, i).field` via a let, for both a List(Record) parameter and a
         // let-bound list literal of records; and a for-loop over the let-bound

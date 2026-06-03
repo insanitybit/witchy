@@ -339,6 +339,48 @@ impl Codegen {
         }
     }
 
+    /// The record type an expression evaluates to, where codegen can determine
+    /// it locally, so a `let x = <expr>` binds `x` to that record and `x.field`
+    /// resolves. Recursive: handles constructors, record-typed vars, record-
+    /// returning calls, `get_or` (the default's type), `at` (a List(Record)
+    /// element), `?` payloads, `update`, and the branches of if/match/block.
+    fn record_type_of(&self, e: &Expr) -> Option<String> {
+        match e {
+            Expr::Ctor { name, .. } if self.record_fields.contains_key(name) => Some(name.clone()),
+            Expr::Var(v) => self.local_records.get(v).cloned(),
+            Expr::Call { name, args } => {
+                if let Some(ty) = self.fn_ret_records.get(name) {
+                    Some(ty.clone())
+                } else if name == "get_or" {
+                    args.get(2).and_then(|d| self.record_type_of(d))
+                } else if name == "at" {
+                    match args.first() {
+                        Some(Expr::Var(v)) => self.local_list_elem.get(v).cloned(),
+                        _ => None,
+                    }
+                } else {
+                    None
+                }
+            }
+            Expr::Try(inner) => match inner.as_ref() {
+                Expr::Call { name, .. } => self.fn_ret_result_record.get(name).cloned(),
+                _ => None,
+            },
+            Expr::RecordUpdate { base, .. } => self.record_type_of(base),
+            Expr::If { then_block, .. } => self.block_record_type(then_block),
+            Expr::Match { arms, .. } => arms.first().and_then(|a| self.record_type_of(&a.body)),
+            Expr::Block(b) => self.block_record_type(b),
+            _ => None,
+        }
+    }
+
+    fn block_record_type(&self, b: &Block) -> Option<String> {
+        match b.stmts.last() {
+            Some(Stmt::Expr(e)) => self.record_type_of(e),
+            _ => None,
+        }
+    }
+
     /// The element value type of a list-producing expression, where codegen can
     /// determine it (a `split` result, a list literal, or a tracked list local),
     /// so a `for x in <iter>` loop variable's value type — and its use as a Dict
@@ -383,57 +425,8 @@ impl Codegen {
                         }
                     }
                     // Remember the binding's record type (if any) so `name.field`
-                    // resolves: a constructor, a record-returning call, or an
-                    // `update` of a known record.
-                    let rec_ty = match value {
-                        Expr::Ctor { name: ctor, .. }
-                            if self.record_fields.contains_key(ctor) =>
-                        {
-                            Some(ctor.clone())
-                        }
-                        Expr::Call { name: fname, args } => {
-                            if let Some(ty) = self.fn_ret_records.get(fname) {
-                                Some(ty.clone())
-                            } else if fname == "get_or" {
-                                // `get_or(d, k, default)` returns the default's
-                                // type (signature: ... -> v), so a record default
-                                // means a record result — letting `it.field`
-                                // resolve for a Dict of records.
-                                match args.get(2) {
-                                    Some(Expr::Ctor { name: ctor, .. })
-                                        if self.record_fields.contains_key(ctor) =>
-                                    {
-                                        Some(ctor.clone())
-                                    }
-                                    Some(Expr::Var(v)) => self.local_records.get(v).cloned(),
-                                    _ => None,
-                                }
-                            } else if fname == "at" {
-                                // at(list, i) returns the element; for a
-                                // List(Record) the result is that record, so
-                                // `let x = at(items, i); x.field` resolves.
-                                match args.first() {
-                                    Some(Expr::Var(v)) => self.local_list_elem.get(v).cloned(),
-                                    _ => None,
-                                }
-                            } else {
-                                None
-                            }
-                        }
-                        // `let q = f(...)?` — the Result/Option payload record.
-                        Expr::Try(inner) => match inner.as_ref() {
-                            Expr::Call { name: fname, .. } => {
-                                self.fn_ret_result_record.get(fname).cloned()
-                            }
-                            _ => None,
-                        },
-                        Expr::RecordUpdate { base, .. } => match base.as_ref() {
-                            Expr::Var(v) => self.local_records.get(v).cloned(),
-                            _ => None,
-                        },
-                        _ => None,
-                    };
-                    if let Some(ty) = rec_ty {
+                    // resolves — see `record_type_of` for the cases handled.
+                    if let Some(ty) = self.record_type_of(value) {
                         self.local_records.insert(name.clone(), ty);
                     }
                     self.infer_locals_expr(value);
