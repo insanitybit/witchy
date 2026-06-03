@@ -3018,6 +3018,24 @@ mod example_tests {
         assert_eq!(compiled, vec!["-12"]);
     }
 
+    // char_count returns Unicode scalars; string_length returns bytes. They
+    // agree for ASCII and diverge for multi-byte UTF-8 ("café" is 4 chars, 5
+    // bytes) — and both backends must compute each identically.
+    #[test]
+    fn char_count_vs_string_length_backends_agree() {
+        let src = r#"
+            fn main(console: Console) {
+              print(console, int_to_string(char_count("hello")))
+              print(console, int_to_string(string_length("hello")))
+              print(console, int_to_string(char_count("café")))
+              print(console, int_to_string(string_length("café")))
+              print(console, int_to_string(char_count("")))
+            }
+        "#;
+        assert_eq!(interp(src), run_on_wasm(src), "char_count diverged");
+        assert_eq!(run_on_wasm(src), vec!["5", "5", "4", "5", "0"]);
+    }
+
     #[test]
     fn std_string_is_empty_count_backends_agree() {
         // is_empty checks for zero characters; count returns non-overlapping

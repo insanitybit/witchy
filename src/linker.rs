@@ -57,6 +57,7 @@ const BUILTINS: &[&str] = &[
     "sqrt",
     "string_to_int",
     "length",
+    "char_count",
     "at",
     "push",
     "concat",

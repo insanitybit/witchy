@@ -535,6 +535,12 @@ impl Interpreter {
                 Value::Str(s) => Ok(Some(Value::Int(s.len() as i64))),
                 other => err(format!("string_length expects a String, got `{other}`")),
             },
+            // The number of Unicode scalars — the character count, as opposed to
+            // `string_length`'s byte count (they agree for ASCII).
+            "char_count" => match one(args)? {
+                Value::Str(s) => Ok(Some(Value::Int(s.chars().count() as i64))),
+                other => err(format!("char_count expects a String, got `{other}`")),
+            },
             "to_upper" => match one(args)? {
                 Value::Str(s) => Ok(Some(Value::Str(s.to_uppercase()))),
                 other => err(format!("to_upper expects a String, got `{other}`")),

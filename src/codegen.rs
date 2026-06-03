@@ -167,6 +167,8 @@ struct Codegen {
     uses_find_byte: bool,
     /// Whether the char-indexed `index_of` wrapper (+ `$byte_to_char`) is needed.
     uses_index_of: bool,
+    /// Whether `$byte_to_char` is needed on its own (char_count).
+    uses_byte_to_char: bool,
     /// Whether the char-indexed `substring` wrapper (+ `$char_to_byte`) is needed.
     uses_substring: bool,
     /// Whether `replace` (and its `$match_at` companion) is needed.
@@ -271,6 +273,7 @@ impl Codegen {
             uses_substr: false,
             uses_find_byte: false,
             uses_index_of: false,
+            uses_byte_to_char: false,
             uses_substring: false,
             uses_replace: false,
             uses_str_to_int: false,
@@ -351,9 +354,8 @@ impl Codegen {
                 "int_to_string" | "to_string" | "to_upper" | "to_lower" | "trim" | "replace"
                 | "substring" => ValType::Str,
                 "starts_with" | "ends_with" | "contains" => ValType::Bool,
-                "string_length" | "index_of" | "length" | "float_to_int" | "string_to_int" => {
-                    ValType::Int
-                }
+                "string_length" | "char_count" | "index_of" | "length" | "float_to_int"
+                | "string_to_int" => ValType::Int,
                 "int_to_float" | "sqrt" => ValType::Float,
                 other => self.fn_ret_valtype.get(other).copied().unwrap_or(ValType::Other),
             },
@@ -644,8 +646,12 @@ impl Codegen {
         if self.uses_find_byte {
             s.push_str(FIND_BYTE_WAT);
         }
-        if self.uses_index_of {
+        // `$byte_to_char` backs both index_of (char index) and char_count;
+        // emit it once if either needs it.
+        if self.uses_index_of || self.uses_byte_to_char {
             s.push_str(BYTE_TO_CHAR_WAT);
+        }
+        if self.uses_index_of {
             s.push_str(STR_INDEX_OF_WAT);
         }
         if self.uses_substring {
@@ -1625,6 +1631,20 @@ impl Codegen {
             ("string_length", 1) => {
                 let arg = self.compile_expr(&args[0])?;
                 Ok(format!("{arg}    i32.load\n"))
+            }
+            // char_count(s): Unicode scalars in `s`. Evaluate `s` once into a
+            // scratch slot, then `$byte_to_char(s, byte_length(s))`.
+            ("char_count", 1) => {
+                self.uses_byte_to_char = true;
+                let level = self.apply_level;
+                if level >= APPLY_POOL {
+                    return cerr("char_count nested too deeply to compile");
+                }
+                let tmp = format!("__witchy_call_{level}");
+                let arg = self.compile_expr(&args[0])?;
+                Ok(format!(
+                    "{arg}    local.set ${tmp}\n    local.get ${tmp}\n    local.get ${tmp}\n    i32.load\n    call $byte_to_char\n"
+                ))
             }
             ("int_to_float", 1) => {
                 Ok(format!("{}    f64.convert_i32_s\n", self.compile_expr(&args[0])?))
