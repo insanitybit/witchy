@@ -521,7 +521,32 @@ impl Codegen {
                     "    local.get ${v}\n    i32.const {offset}\n    i32.add\n    i32.load\n"
                 ))
             }
-            Expr::RecordUpdate { .. } => cerr("record update is not compiled to WASM yet"),
+            Expr::RecordUpdate { base, fields } => {
+                // Build a fresh record: push the tag, then each field — the
+                // override expression where given, else a load from the base.
+                let Expr::Var(v) = base.as_ref() else {
+                    return cerr("record update in WASM needs a record-typed variable");
+                };
+                let Some(tyname) = self.local_records.get(v).cloned() else {
+                    return cerr(format!("cannot determine the record type of `{v}` to update"));
+                };
+                let names = self.record_fields[&tyname].clone();
+                let (tag, nfields) = self.ctors[&tyname];
+                self.mk_arities.insert(nfields);
+                let mut out = format!("    i32.const {tag}\n");
+                for (i, fname) in names.iter().enumerate() {
+                    if let Some((_, vexpr)) = fields.iter().find(|(n, _)| n == fname) {
+                        out.push_str(&self.compile_expr(vexpr)?);
+                    } else {
+                        let offset = 4 + 4 * i;
+                        out.push_str(&format!(
+                            "    local.get ${v}\n    i32.const {offset}\n    i32.add\n    i32.load\n"
+                        ));
+                    }
+                }
+                out.push_str(&format!("    call $mk{nfields}\n"));
+                Ok(out)
+            }
             Expr::Lambda { .. } => cerr("lambdas are not compiled to WASM yet"),
             Expr::List(items) => {
                 // A list is a record [len][elem0..]; reuse the $mk{N} helper with

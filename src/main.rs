@@ -634,11 +634,12 @@ mod example_tests {
     }
 
     #[test]
-    fn record_field_access_runs_on_wasm() {
-        // Records (named-field access) now compile and run on the WASM runtime.
+    fn record_field_access_and_update_run_on_wasm() {
+        // Records — field access *and* update — compile and run on the WASM
+        // runtime. shift_x(Point(3,4), 1) = Point(4,4); 4*4 + 4*4 = 32.
         assert_eq!(
             run_on_wasm(include_str!("../examples/record_compiled.witchy")),
-            vec!["25"]
+            vec!["32"]
         );
     }
 
