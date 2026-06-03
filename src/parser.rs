@@ -843,8 +843,16 @@ fn infix_bp(t: &Tok) -> Option<(u8, u8)> {
         OrOr => (3, 4),
         AndAnd => (5, 6),
         EqEq | NotEq | Lt | LtEq | Gt | GtEq => (7, 8),
-        Plus | Minus | Concat => (9, 10),
-        Star | Slash | Percent => (11, 12),
+        // Bitwise ops bind tighter than comparison (so `a & b == c` is
+        // `(a & b) == c`) and looser than arithmetic, ordered `|` < `^` < `&` <
+        // shifts. `Bar` here is bitwise-or; in pattern position it's an
+        // or-pattern separator, consumed by `match_expr` before expressions run.
+        Bar => (9, 10),
+        Caret => (11, 12),
+        Amp => (13, 14),
+        Shl | Shr => (15, 16),
+        Plus | Minus | Concat => (17, 18),
+        Star | Slash | Percent => (19, 20),
         _ => return None,
     })
 }
@@ -865,6 +873,11 @@ fn bin_op(t: &Tok) -> BinOp {
         Tok::GtEq => BinOp::GtEq,
         Tok::AndAnd => BinOp::And,
         Tok::OrOr => BinOp::Or,
+        Tok::Bar => BinOp::BitOr,
+        Tok::Caret => BinOp::BitXor,
+        Tok::Amp => BinOp::BitAnd,
+        Tok::Shl => BinOp::Shl,
+        Tok::Shr => BinOp::Shr,
         other => unreachable!("not a binary operator: {other:?}"),
     }
 }

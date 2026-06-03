@@ -2464,6 +2464,34 @@ mod example_tests {
     }
 
     #[test]
+    fn bitwise_operators_backends_agree() {
+        // & | ^ << >> on Int, with precedence (& tighter than |, both tighter
+        // than ==), and or-patterns still parsing (| in pattern position). Both
+        // backends agree.
+        let src = r#"
+            fn classify(n: Int) -> String {
+              match n { 1 | 2 | 4 -> "pow2"  _ -> "other" }
+            }
+            fn main(console: Console) {
+              print(console, int_to_string(12 & 10))
+              print(console, int_to_string(12 | 10))
+              print(console, int_to_string(12 ^ 10))
+              print(console, int_to_string(1 << 4))
+              print(console, int_to_string(256 >> 2))
+              print(console, int_to_string(5 & 3 | 8))
+              print(console, to_string(5 & 4 == 4))
+              print(console, classify(2))
+              print(console, classify(3))
+            }
+        "#;
+        assert_eq!(interp(src), run_on_wasm(src));
+        assert_eq!(
+            run_on_wasm(src),
+            vec!["8", "14", "6", "16", "64", "9", "true", "pow2", "other"]
+        );
+    }
+
+    #[test]
     fn or_patterns_backends_agree() {
         // `p1 | p2 -> body` desugars to one arm per alternative. Works for
         // literal alternatives and for constructor alternatives that bind the

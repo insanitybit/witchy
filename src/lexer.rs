@@ -71,6 +71,10 @@ pub enum Tok {
     StarEq,    // *=
     SlashEq,   // /=
     PercentEq, // %=
+    Amp,    // &  (bitwise and)
+    Caret,  // ^  (bitwise xor)
+    Shl,    // << (shift left)
+    Shr,    // >> (shift right)
     LArrow, // <-
     RArrow, // ->
     AndAnd, // &&
@@ -142,6 +146,10 @@ impl fmt::Display for Tok {
             StarEq => write!(f, "*="),
             SlashEq => write!(f, "/="),
             PercentEq => write!(f, "%="),
+            Amp => write!(f, "&"),
+            Caret => write!(f, "^"),
+            Shl => write!(f, "<<"),
+            Shr => write!(f, ">>"),
             LArrow => write!(f, "<-"),
             RArrow => write!(f, "->"),
             AndAnd => write!(f, "&&"),
@@ -479,6 +487,14 @@ impl Lexer {
                 self.bump();
                 Tok::LArrow
             }
+            ('<', Some('<')) => {
+                self.bump();
+                Tok::Shl
+            }
+            ('>', Some('>')) => {
+                self.bump();
+                Tok::Shr
+            }
             ('-', Some('>')) => {
                 self.bump();
                 Tok::RArrow
@@ -516,6 +532,8 @@ impl Lexer {
                 Tok::OrOr
             }
             ('|', _) => Tok::Bar,
+            ('&', _) => Tok::Amp,
+            ('^', _) => Tok::Caret,
             ('!', _) => Tok::Bang,
             ('=', _) => Tok::Eq,
             ('<', _) => Tok::Lt,
@@ -662,6 +680,16 @@ mod tests {
             kinds("x -= y"),
             vec![Tok::Ident("x".into()), Tok::MinusEq, Tok::Ident("y".into()), Tok::Eof]
         );
+    }
+
+    #[test]
+    fn bitwise_op_tokens() {
+        let id = |s: &str| Tok::Ident(s.into());
+        assert_eq!(kinds("a & b"), vec![id("a"), Tok::Amp, id("b"), Tok::Eof]);
+        assert_eq!(kinds("a && b"), vec![id("a"), Tok::AndAnd, id("b"), Tok::Eof]);
+        assert_eq!(kinds("a ^ b"), vec![id("a"), Tok::Caret, id("b"), Tok::Eof]);
+        assert_eq!(kinds("a << b"), vec![id("a"), Tok::Shl, id("b"), Tok::Eof]);
+        assert_eq!(kinds("a >> b"), vec![id("a"), Tok::Shr, id("b"), Tok::Eof]);
     }
 
     #[test]

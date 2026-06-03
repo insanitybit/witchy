@@ -1255,6 +1255,26 @@ fn eval_binary(op: BinOp, l: Value, r: Value) -> Result<Value, RuntimeError> {
             (Int(a), Int(b)) => a.checked_rem(b).map(Int).ok_or_else(over("%")),
             (a, b) => err(format!("`%` expects two Ints, got `{a}` and `{b}`")),
         },
+        BitAnd => match (l, r) {
+            (Int(a), Int(b)) => Ok(Int(a & b)),
+            (a, b) => err(format!("`&` expects two Ints, got `{a}` and `{b}`")),
+        },
+        BitOr => match (l, r) {
+            (Int(a), Int(b)) => Ok(Int(a | b)),
+            (a, b) => err(format!("`|` expects two Ints, got `{a}` and `{b}`")),
+        },
+        BitXor => match (l, r) {
+            (Int(a), Int(b)) => Ok(Int(a ^ b)),
+            (a, b) => err(format!("`^` expects two Ints, got `{a}` and `{b}`")),
+        },
+        Shl => match (l, r) {
+            (Int(a), Int(b)) => Ok(Int(a.wrapping_shl(b as u32))),
+            (a, b) => err(format!("`<<` expects two Ints, got `{a}` and `{b}`")),
+        },
+        Shr => match (l, r) {
+            (Int(a), Int(b)) => Ok(Int(a.wrapping_shr(b as u32))),
+            (a, b) => err(format!("`>>` expects two Ints, got `{a}` and `{b}`")),
+        },
         Concat => match (l, r) {
             (Str(a), Str(b)) => Ok(Str(a + &b)),
             (a, b) => err(format!("`<>` expects two Strings, got `{a}` and `{b}`")),

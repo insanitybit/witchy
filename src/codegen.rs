@@ -310,6 +310,10 @@ impl Codegen {
                 BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {
                     self.val_type_of(lhs)
                 }
+                // Bitwise ops are always Int.
+                BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor | BinOp::Shl | BinOp::Shr => {
+                    ValType::Int
+                }
             },
             Expr::Var(n) => self.local_val_types.get(n).copied().unwrap_or(ValType::Other),
             Expr::If { then_block, .. } => self.block_val_type(then_block),
@@ -915,6 +919,12 @@ impl Codegen {
                     (BinOp::Gt, true) => "f64.gt",
                     (BinOp::GtEq, false) => "i32.ge_s",
                     (BinOp::GtEq, true) => "f64.ge",
+                    // Bitwise ops are Int-only (i32); `float` is always false.
+                    (BinOp::BitAnd, _) => "i32.and",
+                    (BinOp::BitOr, _) => "i32.or",
+                    (BinOp::BitXor, _) => "i32.xor",
+                    (BinOp::Shl, _) => "i32.shl",
+                    (BinOp::Shr, _) => "i32.shr_s",
                     (BinOp::Concat | BinOp::And | BinOp::Or, _) => unreachable!("handled above"),
                 };
                 Ok(format!("{l}{r}    {opcode}\n"))

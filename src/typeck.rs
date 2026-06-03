@@ -917,7 +917,7 @@ impl Checker {
                 self.unify(&rt, &num)?;
                 Ok(num)
             }
-            Mod => {
+            Mod | BitAnd | BitOr | BitXor | Shl | Shr => {
                 self.unify(&Ty::Int, &lt)?;
                 self.unify(&Ty::Int, &rt)?;
                 Ok(Ty::Int)
