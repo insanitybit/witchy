@@ -102,8 +102,10 @@ struct Codegen {
     message_tags: HashMap<String, u32>,
     /// Whether the inter-actor `send` import is needed.
     uses_send: bool,
-    /// Record type name -> ordered field names, for compiling `value.field`.
-    record_fields: HashMap<String, Vec<String>>,
+    /// Record type name -> ordered fields as `(name, named-type)`, where the
+    /// second is the field's type name when it is a `Named` type (so nested
+    /// records can be chained, `a.b.c`). For compiling `value.field`.
+    record_fields: HashMap<String, Vec<(String, Option<String>)>>,
     /// Variables (params / let-bound constructors) known to hold a record of a
     /// given type, so `var.field` can resolve a field index.
     local_records: HashMap<String, String>,
@@ -410,6 +412,36 @@ impl Codegen {
         Ok(out)
     }
 
+    /// Compile an expression known to evaluate to a record, returning the WAT
+    /// that pushes its heap pointer and the record's type name. Handles a
+    /// record-typed variable and (recursively) a field whose own type is a
+    /// record, so `a.b.c` resolves.
+    fn record_base(&self, e: &Expr) -> Result<(String, String), CodegenError> {
+        match e {
+            Expr::Var(v) => match self.local_records.get(v) {
+                Some(ty) => Ok((format!("    local.get ${v}\n"), ty.clone())),
+                None => cerr(format!("cannot determine the record type of `{v}`")),
+            },
+            Expr::Field { base, field } => {
+                let (base_wat, base_ty) = self.record_base(base)?;
+                let names = &self.record_fields[&base_ty];
+                let Some(idx) = names.iter().position(|(n, _)| n == field) else {
+                    return cerr(format!("record `{base_ty}` has no field `{field}`"));
+                };
+                let field_ty = names[idx].1.clone();
+                let Some(rec_ty) = field_ty.filter(|t| self.record_fields.contains_key(t)) else {
+                    return cerr(format!("field `{field}` of `{base_ty}` is not a record"));
+                };
+                let offset = 4 + 4 * idx;
+                Ok((
+                    format!("{base_wat}    i32.const {offset}\n    i32.add\n    i32.load\n"),
+                    rec_ty,
+                ))
+            }
+            _ => cerr("a record base must be a variable or a field access"),
+        }
+    }
+
     fn compile_expr(&mut self, expr: &Expr) -> Result<String, CodegenError> {
         match expr {
             Expr::Int(n) => Ok(format!("    i32.const {n}\n")),
@@ -521,22 +553,17 @@ impl Codegen {
             Expr::For { .. } => cerr("`for` loops are not compiled to WASM yet"),
             Expr::Field { base, field } => {
                 // A record value is a heap record `[tag][field0][field1]...`, so
-                // a field is `*(base + 4 + 4*index)`. We need the base's record
-                // type to find the index; that's tracked for record-typed
-                // variables (params and `let x = Ctor(..)`).
-                let Expr::Var(v) = base.as_ref() else {
-                    return cerr("record field access in WASM needs a record-typed variable");
-                };
-                let Some(tyname) = self.local_records.get(v) else {
-                    return cerr(format!("cannot determine the record type of `{v}` for `.{field}`"));
-                };
-                let names = &self.record_fields[tyname];
-                let Some(idx) = names.iter().position(|n| n == field) else {
-                    return cerr(format!("record `{tyname}` has no field `{field}`"));
+                // a field is `*(base + 4 + 4*index)`. `record_base` resolves the
+                // base pointer and its record type (recursively, so `a.b.c`
+                // works on nested records).
+                let (base_wat, base_ty) = self.record_base(base)?;
+                let names = &self.record_fields[&base_ty];
+                let Some(idx) = names.iter().position(|(n, _)| n == field) else {
+                    return cerr(format!("record `{base_ty}` has no field `{field}`"));
                 };
                 let offset = 4 + 4 * idx;
                 Ok(format!(
-                    "    local.get ${v}\n    i32.const {offset}\n    i32.add\n    i32.load\n"
+                    "{base_wat}    i32.const {offset}\n    i32.add\n    i32.load\n"
                 ))
             }
             Expr::RecordUpdate { base, fields } => {
@@ -552,7 +579,7 @@ impl Codegen {
                 let (tag, nfields) = self.ctors[&tyname];
                 self.mk_arities.insert(nfields);
                 let mut out = format!("    i32.const {tag}\n");
-                for (i, fname) in names.iter().enumerate() {
+                for (i, (fname, _)) in names.iter().enumerate() {
                     if let Some((_, vexpr)) = fields.iter().find(|(n, _)| n == fname) {
                         out.push_str(&self.compile_expr(vexpr)?);
                     } else {
@@ -823,8 +850,19 @@ pub fn compile_module(module: &Module) -> Result<String, CodegenError> {
                     cg.ctors
                         .insert(variant.name.clone(), (tag as u32, variant.fields.len()));
                     if !variant.field_names.is_empty() {
-                        cg.record_fields
-                            .insert(t.name.clone(), variant.field_names.clone());
+                        let fields = variant
+                            .field_names
+                            .iter()
+                            .zip(&variant.fields)
+                            .map(|(name, ty)| {
+                                let ty_name = match ty {
+                                    Type::Named(n, _) => Some(n.clone()),
+                                    _ => None,
+                                };
+                                (name.clone(), ty_name)
+                            })
+                            .collect();
+                        cg.record_fields.insert(t.name.clone(), fields);
                     }
                 }
             }
