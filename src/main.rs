@@ -2618,6 +2618,68 @@ mod example_tests {
         assert_eq!(run_on_wasm(src), vec!["6", "50", "107", "21"]);
     }
 
+    // A guard on a constructor pattern must bind the field first, then test it
+    // (`Yep(n) if n > 10`), and fall through to the next arm when the guard
+    // fails. Mutual recursion exercises forward references between compiled
+    // functions. Both must agree across backends.
+    #[test]
+    fn adt_guards_and_mutual_recursion_backends_agree() {
+        let src = r#"
+            type Opt {
+              Nope
+              Yep(Int)
+            }
+            fn describe(o: Opt) -> String {
+              match o {
+                Yep(n) if n > 10 -> "big"
+                Yep(n) -> "small"
+                Nope -> "none"
+              }
+            }
+            fn is_even(n: Int) -> Bool {
+              if n == 0 { true } else { is_odd(n - 1) }
+            }
+            fn is_odd(n: Int) -> Bool {
+              if n == 0 { false } else { is_even(n - 1) }
+            }
+            fn main(console: Console) {
+              print(console, describe(Yep(50)))
+              print(console, describe(Yep(3)))
+              print(console, describe(Nope))
+              print(console, int_to_string(if is_even(10) { 1 } else { 0 }))
+              print(console, int_to_string(if is_odd(7) { 1 } else { 0 }))
+            }
+        "#;
+        assert_eq!(interp(src), run_on_wasm(src), "adt guards / mutual recursion diverged");
+        assert_eq!(run_on_wasm(src), vec!["big", "small", "none", "1", "1"]);
+    }
+
+    // `match` arm guards (`pattern if cond -> body`): a guard that fails must
+    // fall through to later arms, and a wildcard catches the rest. The boundary
+    // value 100 (not > 100) must fall through to the `_` arm on both backends.
+    #[test]
+    fn match_guards_backends_agree() {
+        let src = r#"
+            fn classify(n: Int) -> String {
+              match n {
+                x if x < 0 -> "negative"
+                0 -> "zero"
+                x if x > 100 -> "big"
+                _ -> "small"
+              }
+            }
+            fn main(console: Console) {
+              print(console, classify(0 - 5))
+              print(console, classify(0))
+              print(console, classify(200))
+              print(console, classify(50))
+              print(console, classify(100))
+            }
+        "#;
+        assert_eq!(interp(src), run_on_wasm(src), "match guards diverged");
+        assert_eq!(run_on_wasm(src), vec!["negative", "zero", "big", "small", "small"]);
+    }
+
     #[test]
     fn std_func_combinators_backends_agree() {
         // The whole `func` module links + compiles, and its combinators — built
