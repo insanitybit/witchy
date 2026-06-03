@@ -133,3 +133,25 @@ pub fn drop(xs: List(a), n: Int) -> List(a) {
   }
   out
 }
+
+// Pair up two lists element-wise, stopping at the shorter one.
+pub fn zip(xs: List(a), ys: List(b)) -> List((a, b)) {
+  var out = []
+  var i = 0
+  while i < length(xs) && i < length(ys) {
+    out = push(out, (at(xs, i), at(ys, i)))
+    i = i + 1
+  }
+  out
+}
+
+// Pair each element with its index: `[a, b]` -> `[(0, a), (1, b)]`.
+pub fn enumerate(xs: List(a)) -> List((Int, a)) {
+  var out = []
+  var i = 0
+  for x in xs {
+    out = push(out, (i, x))
+    i = i + 1
+  }
+  out
+}

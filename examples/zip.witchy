@@ -1,0 +1,24 @@
+// `enumerate` pairs each element with its index; `zip` pairs two lists
+// element-wise. Both return lists of tuples, destructured in the loop.
+
+import list
+import string
+
+fn main(console: Console) {
+  let names = ["alice", "bob", "carol"]
+
+  var labelled = []
+  for pair in list.enumerate(names) {
+    let (i, name) = pair
+    labelled = push(labelled, int_to_string(i) <> ":" <> name)
+  }
+  print(console, string.join(labelled, " "))
+
+  let ages = [30, 25, 40]
+  var joined = []
+  for entry in list.zip(names, ages) {
+    let (name, age) = entry
+    joined = push(joined, name <> "=" <> int_to_string(age))
+  }
+  print(console, string.join(joined, " "))
+}

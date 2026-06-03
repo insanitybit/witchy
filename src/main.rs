@@ -209,6 +209,15 @@ fn main() -> wasmtime::Result<()> {
         "list_more",
     );
     run_program_demo(
+        "witchy list zip/enumerate",
+        &[
+            ("list", include_str!("../std/list.witchy")),
+            ("string", include_str!("../std/string.witchy")),
+            ("zip", include_str!("../examples/zip.witchy")),
+        ],
+        "zip",
+    );
+    run_program_demo(
         "witchy text processing (split/map/join)",
         &[
             ("list", include_str!("../std/list.witchy")),
@@ -750,6 +759,36 @@ mod example_tests {
             crate::execute_file("examples/list_more.witchy").unwrap(),
             vec!["true", "3", "-1", "20", "30"]
         );
+    }
+
+    /// `zip`/`enumerate` and tuple destructuring in a loop, via the CLI.
+    #[test]
+    fn zip_runs_via_cli() {
+        assert_eq!(
+            crate::execute_file("examples/zip.witchy").unwrap(),
+            vec!["0:alice 1:bob 2:carol", "alice=30 bob=25 carol=40"]
+        );
+    }
+
+    /// `zip` is generic and stops at the shorter list.
+    #[test]
+    fn zip_is_generic_and_truncates() {
+        let client = r#"
+            import list
+            fn main(console: Console) {
+              let ps = list.zip([1, 2, 3], ["a", "b"])
+              print(console, int_to_string(length(ps)))
+              let first = at(ps, 0)
+              let (n, s) = first
+              print(console, int_to_string(n) <> s)
+            }
+        "#;
+        let out = interpreter::run_program(
+            &[("list", crate::bundled_module("list").unwrap()), ("main", client)],
+            "main",
+        )
+        .expect("zip program runs");
+        assert_eq!(out, vec!["2", "1a"]);
     }
 
     /// `contains`/`index_of` are generic — they work on Strings too (by value).
