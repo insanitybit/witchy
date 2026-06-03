@@ -1310,6 +1310,29 @@ mod example_tests {
         );
     }
 
+    // factorial (1 for n<=1) and is_prime (trial division; n<2 not prime).
+    #[test]
+    fn std_math_factorial_is_prime_backends_agree() {
+        let client = r#"
+            import math
+            fn main(console: Console) {
+              print(console, int_to_string(math.factorial(5)))
+              print(console, int_to_string(math.factorial(0)))
+              print(console, int_to_string(math.factorial(1)))
+              print(console, to_string(math.is_prime(7)))
+              print(console, to_string(math.is_prime(12)))
+              print(console, to_string(math.is_prime(1)))
+              print(console, to_string(math.is_prime(2)))
+              print(console, to_string(math.is_prime(97)))
+            }
+        "#;
+        let sources = [("math", crate::bundled_module("math").unwrap()), ("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "factorial/is_prime diverged");
+        assert_eq!(compiled, vec!["120", "1", "1", "true", "false", "false", "true", "true"]);
+    }
+
     #[test]
     fn std_math_lcm_parity_backends_agree() {
         // lcm (built on gcd) and the is_even/is_odd predicates agree across

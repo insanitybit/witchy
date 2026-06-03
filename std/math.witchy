@@ -75,6 +75,35 @@ pub fn is_odd(n: Int) -> Bool {
   n % 2 != 0
 }
 
+// `n!` — the product 1*2*...*n (1 for n <= 1). Watch the 32-bit range:
+// factorial grows past it quickly (13! already overflows).
+pub fn factorial(n: Int) -> Int {
+  var r = 1
+  var i = 2
+  while i <= n {
+    r = r * i
+    i = i + 1
+  }
+  r
+}
+
+// Whether `n` is prime (trial division up to sqrt(n); n < 2 is not prime).
+pub fn is_prime(n: Int) -> Bool {
+  if n < 2 {
+    false
+  } else {
+    var prime = true
+    var i = 2
+    while i * i <= n {
+      if n % i == 0 {
+        prime = false
+      }
+      i = i + 1
+    }
+    prime
+  }
+}
+
 // --- Float versions (Int comparison can't be reused for Float) ---
 
 pub fn fmin(a: Float, b: Float) -> Float {
