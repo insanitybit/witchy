@@ -2507,6 +2507,24 @@ mod example_tests {
     }
 
     #[test]
+    fn string_to_int_backends_agree() {
+        // string_to_int now compiles: leading whitespace and an optional sign
+        // are honored, and the parsed value feeds straight into arithmetic.
+        let src = r#"
+            fn main(console: Console) {
+              print(console, int_to_string(string_to_int("42")))
+              print(console, int_to_string(string_to_int("-17")))
+              print(console, int_to_string(string_to_int("  123  ")))
+              print(console, int_to_string(string_to_int("+8")))
+              print(console, int_to_string(string_to_int("0")))
+              print(console, int_to_string(string_to_int("1000000") + 1))
+            }
+        "#;
+        assert_eq!(interp(src), run_on_wasm(src));
+        assert_eq!(run_on_wasm(src), vec!["42", "-17", "123", "8", "0", "1000001"]);
+    }
+
+    #[test]
     fn bitwise_not_backends_agree() {
         // ~x = -x-1 (width-independent), so it agrees across backends.
         let src = r#"

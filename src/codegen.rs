@@ -161,6 +161,8 @@ struct Codegen {
     uses_substring: bool,
     /// Whether `replace` (and its `$match_at` companion) is needed.
     uses_replace: bool,
+    /// Whether the `string_to_int` parser (`$str_to_int`) is needed.
+    uses_str_to_int: bool,
     /// Whether the lexicographic string comparison helper `$str_cmp` is needed
     /// (String `<`/`<=`/`>`/`>=`).
     uses_str_cmp: bool,
@@ -252,6 +254,7 @@ impl Codegen {
             uses_index_of: false,
             uses_substring: false,
             uses_replace: false,
+            uses_str_to_int: false,
             uses_str_cmp: false,
             uses_dict: false,
             uses_dict_iter: false,
@@ -618,6 +621,9 @@ impl Codegen {
         if self.uses_replace {
             s.push_str(MATCH_AT_WAT);
             s.push_str(REPLACE_WAT);
+        }
+        if self.uses_str_to_int {
+            s.push_str(STR_TO_INT_WAT);
         }
         // Dict helpers; `$key_eq` references `$str_eq`, which the dict call sites
         // force on (so it is emitted below via `uses_str_eq`).
@@ -1507,8 +1513,15 @@ impl Codegen {
             ("float_to_int", 1) => {
                 Ok(format!("{}    i32.trunc_f64_s\n", self.compile_expr(&args[0])?))
             }
-            ("string_to_int", _) => {
-                cerr("string_to_int runs in the interpreter (WASM string parsing is future)")
+            // string_to_int(s): parse a well-formed decimal integer — optional
+            // surrounding ASCII whitespace, an optional sign, then digits. The
+            // interpreter trims and rejects malformed input; the compiled parser
+            // is best-effort on the same valid inputs (sharing the i32 caveat),
+            // so the backends agree on any in-range integer string.
+            ("string_to_int", 1) => {
+                self.uses_str_to_int = true;
+                let s = self.compile_expr(&args[0])?;
+                Ok(format!("{s}    call $str_to_int\n"))
             }
             // Prefix/suffix tests over the string's bytes (`[len][bytes]`).
             ("starts_with", 2) => {
@@ -2662,6 +2675,51 @@ const STR_SUBSTRING_WAT: &str = r#"  (func $str_substring (param $s i32) (param 
     (if (result i32) (i32.ge_s (local.get $lo) (local.get $hi))
       (then (call $substr (local.get $s) (i32.const 0) (i32.const 0)))
       (else (call $substr (local.get $s) (local.get $lo) (i32.sub (local.get $hi) (local.get $lo))))))
+"#;
+
+// str_to_int(s): parse a decimal integer from `s` — leading ASCII whitespace,
+// an optional +/- sign, then digits (parsing stops at the first non-digit).
+// Mirrors the interpreter's `trim().parse()` on well-formed inputs.
+const STR_TO_INT_WAT: &str = r#"  (func $str_to_int (param $s i32) (result i32)
+    (local $len i32) (local $i i32) (local $b i32) (local $acc i32) (local $neg i32)
+    (local.set $len (i32.load (local.get $s)))
+    (local.set $i (i32.const 0))
+    (local.set $acc (i32.const 0))
+    (local.set $neg (i32.const 0))
+    (block $wsdone
+      (loop $ws
+        (br_if $wsdone (i32.ge_s (local.get $i) (local.get $len)))
+        (local.set $b (i32.load8_u (i32.add (i32.add (local.get $s) (i32.const 4)) (local.get $i))))
+        (br_if $wsdone (i32.eqz (i32.or
+          (i32.eq (local.get $b) (i32.const 32))
+          (i32.or (i32.eq (local.get $b) (i32.const 9))
+          (i32.or (i32.eq (local.get $b) (i32.const 10))
+          (i32.or (i32.eq (local.get $b) (i32.const 13))
+          (i32.or (i32.eq (local.get $b) (i32.const 11))
+                  (i32.eq (local.get $b) (i32.const 12)))))))))
+        (local.set $i (i32.add (local.get $i) (i32.const 1)))
+        (br $ws)))
+    (if (i32.lt_s (local.get $i) (local.get $len))
+      (then
+        (local.set $b (i32.load8_u (i32.add (i32.add (local.get $s) (i32.const 4)) (local.get $i))))
+        (if (i32.eq (local.get $b) (i32.const 45))
+          (then (local.set $neg (i32.const 1)) (local.set $i (i32.add (local.get $i) (i32.const 1))))
+          (else (if (i32.eq (local.get $b) (i32.const 43))
+            (then (local.set $i (i32.add (local.get $i) (i32.const 1)))))))))
+    (block $digdone
+      (loop $dig
+        (br_if $digdone (i32.ge_s (local.get $i) (local.get $len)))
+        (local.set $b (i32.load8_u (i32.add (i32.add (local.get $s) (i32.const 4)) (local.get $i))))
+        (br_if $digdone (i32.or
+          (i32.lt_u (local.get $b) (i32.const 48))
+          (i32.gt_u (local.get $b) (i32.const 57))))
+        (local.set $acc (i32.add (i32.mul (local.get $acc) (i32.const 10))
+          (i32.sub (local.get $b) (i32.const 48))))
+        (local.set $i (i32.add (local.get $i) (i32.const 1)))
+        (br $dig)))
+    (if (result i32) (local.get $neg)
+      (then (i32.sub (i32.const 0) (local.get $acc)))
+      (else (local.get $acc))))
 "#;
 
 // ends_with(s, p): do s's last p.len bytes equal p?
