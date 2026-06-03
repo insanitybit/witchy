@@ -2059,6 +2059,55 @@ mod example_tests {
     }
 
     #[test]
+    fn inout_swap_and_loop_backends_agree() {
+        // Harder `inout`: two inout parameters (swap) — exercising move-out of
+        // multiple values — and an inout mutation inside a loop. Both backends
+        // must agree.
+        let src = r#"
+            fn swap(inout a: Int, inout b: Int) {
+              let t = a
+              a = b
+              b = t
+            }
+            fn bump_by(inout n: Int, d: Int) {
+              n = n + d
+            }
+            fn main(console: Console) {
+              var x = 3
+              var y = 8
+              swap(x, y)
+              print(console, int_to_string(x))
+              print(console, int_to_string(y))
+              var acc = 0
+              var i = 1
+              while i < 5 {
+                bump_by(acc, i)
+                i = i + 1
+              }
+              print(console, int_to_string(acc))
+            }
+        "#;
+        assert_eq!(interp(src), run_on_wasm(src));
+        // And the concrete values, to be sure both compute the right thing.
+        assert_eq!(run_on_wasm(src), vec!["8", "3", "10"]);
+    }
+
+    #[test]
+    fn mutate_example_runs_on_wasm() {
+        // `inout` (move-in / move-out) compiles: the example agrees with the
+        // interpreter through the WASM backend.
+        let src = include_str!("../examples/mutate.witchy");
+        assert_eq!(interp(src), run_on_wasm(src));
+    }
+
+    #[test]
+    fn ownership_example_runs_on_wasm() {
+        // `sink` (consume / move ownership) compiles and agrees across backends.
+        let src = include_str!("../examples/ownership.witchy");
+        assert_eq!(interp(src), run_on_wasm(src));
+    }
+
+    #[test]
     fn actors_example() {
         assert_eq!(
             interp(include_str!("../examples/actors.witchy")),
