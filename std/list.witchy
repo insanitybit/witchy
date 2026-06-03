@@ -85,3 +85,51 @@ pub fn sort_by(xs: List(a), less: fn(a, a) -> Bool) -> List(a) {
   }
   out
 }
+
+// Whether `target` appears in the list (by value equality).
+pub fn contains(xs: List(a), target: a) -> Bool {
+  for x in xs {
+    if x == target {
+      return true
+    }
+  }
+  false
+}
+
+// Index of the first element equal to `target`, or -1 if absent.
+pub fn index_of(xs: List(a), target: a) -> Int {
+  var i = 0
+  for x in xs {
+    if x == target {
+      return i
+    }
+    i = i + 1
+  }
+  0 - 1
+}
+
+// The first `n` elements (fewer if the list is shorter).
+pub fn take(xs: List(a), n: Int) -> List(a) {
+  var out = []
+  var i = 0
+  for x in xs {
+    if i < n {
+      out = push(out, x)
+    }
+    i = i + 1
+  }
+  out
+}
+
+// All but the first `n` elements.
+pub fn drop(xs: List(a), n: Int) -> List(a) {
+  var out = []
+  var i = 0
+  for x in xs {
+    if i >= n {
+      out = push(out, x)
+    }
+    i = i + 1
+  }
+  out
+}

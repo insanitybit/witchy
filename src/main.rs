@@ -200,6 +200,14 @@ fn main() -> wasmtime::Result<()> {
         "std_demo",
     );
     run_program_demo(
+        "witchy list search/slice (contains/index_of/take/drop)",
+        &[
+            ("list", include_str!("../std/list.witchy")),
+            ("list_more", include_str!("../examples/list_more.witchy")),
+        ],
+        "list_more",
+    );
+    run_program_demo(
         "witchy text processing (split/map/join)",
         &[
             ("list", include_str!("../std/list.witchy")),
@@ -732,6 +740,34 @@ mod example_tests {
             crate::execute_file("examples/floats.witchy").unwrap(),
             vec!["4", "3.5", "5", "1"]
         );
+    }
+
+    /// The list module's search/slice helpers via the CLI.
+    #[test]
+    fn list_more_runs_via_cli() {
+        assert_eq!(
+            crate::execute_file("examples/list_more.witchy").unwrap(),
+            vec!["true", "3", "-1", "20", "30"]
+        );
+    }
+
+    /// `contains`/`index_of` are generic — they work on Strings too (by value).
+    #[test]
+    fn list_contains_is_generic_over_element_type() {
+        let client = r#"
+            import list
+            fn main(console: Console) {
+              let words = ["a", "bb", "ccc"]
+              print(console, to_string(list.contains(words, "bb")))
+              print(console, int_to_string(list.index_of(words, "ccc")))
+            }
+        "#;
+        let out = interpreter::run_program(
+            &[("list", crate::bundled_module("list").unwrap()), ("main", client)],
+            "main",
+        )
+        .expect("list program runs");
+        assert_eq!(out, vec!["true", "2"]);
     }
 
     /// The bundled `option` module (type + helpers) resolves via the CLI.
