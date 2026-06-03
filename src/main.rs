@@ -929,6 +929,29 @@ mod example_tests {
     }
 
     #[test]
+    fn std_list_flatten_flatmap_backends_agree() {
+        // flatten / flat_map (concat-based, with a list-returning closure for
+        // flat_map) behave identically in both backends.
+        let client = r#"
+            import list
+            fn main(console: Console) {
+              let nested = [[1, 2], [3], [4, 5, 6]]
+              let flat = list.flatten(nested)
+              print(console, int_to_string(length(flat)))
+              print(console, int_to_string(list.sum(flat)))
+              let fm = list.flat_map([1, 2, 3], fn(n: Int) { [n, n * 10] })
+              print(console, int_to_string(length(fm)))
+              print(console, int_to_string(list.sum(fm)))
+            }
+        "#;
+        let sources = [("list", crate::bundled_module("list").unwrap()), ("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "flatten/flat_map diverged");
+        assert_eq!(compiled, vec!["6", "21", "6", "66"]);
+    }
+
+    #[test]
     fn std_option_combinators_backends_agree() {
         // is_none / and_then / filter behave identically in both backends.
         let client = r#"
@@ -2056,6 +2079,27 @@ mod example_tests {
             interp(include_str!("../examples/ownership.witchy")),
             vec!["[witchy]"]
         );
+    }
+
+    #[test]
+    fn nested_records_backends_agree() {
+        // A record containing a record: chained field access (o.inner.v), nested
+        // construction, `update` on a nested field, and immutability of the
+        // original. Both backends must agree.
+        let src = r#"
+            type Inner { v: Int }
+            type Outer { name: String, inner: Inner }
+            fn main(console: Console) {
+              let o = Outer("x", Inner(42))
+              print(console, int_to_string(o.inner.v))
+              let o2 = update o { inner: Inner(o.inner.v + 1) }
+              print(console, int_to_string(o2.inner.v))
+              print(console, o.name)
+              print(console, int_to_string(o.inner.v))
+            }
+        "#;
+        assert_eq!(interp(src), run_on_wasm(src));
+        assert_eq!(run_on_wasm(src), vec!["42", "43", "x", "42"]);
     }
 
     #[test]

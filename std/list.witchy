@@ -57,6 +57,24 @@ pub fn is_empty(xs: List(a)) -> Bool {
   length(xs) == 0
 }
 
+// Concatenate a list of lists into one.
+pub fn flatten(xss: List(List(a))) -> List(a) {
+  var out = []
+  for xs in xss {
+    out = concat(out, xs)
+  }
+  out
+}
+
+// Map each element to a list, then concatenate the results.
+pub fn flat_map(xs: List(a), f: fn(a) -> List(b)) -> List(b) {
+  var out = []
+  for x in xs {
+    out = concat(out, f(x))
+  }
+  out
+}
+
 // How many elements satisfy `pred`.
 pub fn count(xs: List(a), pred: fn(a) -> Bool) -> Int {
   var n = 0
