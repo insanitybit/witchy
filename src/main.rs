@@ -2685,6 +2685,31 @@ mod example_tests {
     // parameter must compile to by-value comparison just like an inline String
     // key. Looking up with a freshly built string (`"ap" <> "ple"`) proves the
     // match is structural, not by pointer — and both backends must agree.
+    // An integration stress test for first-class functions: a list of closures
+    // folded with a higher-order lambda that applies each function-typed
+    // element to the accumulator (`f(acc)`). Exercises closures stored in a
+    // list, a function-typed fold element, and calling a function-valued lambda
+    // parameter — all of which must agree across backends.
+    #[test]
+    fn function_pipeline_fold_backends_agree() {
+        let client = r#"
+            import list
+            fn main(console: Console) {
+              let inc = fn(x: Int) { x + 1 }
+              let dbl = fn(x: Int) { x * 2 }
+              let neg = fn(x: Int) { 0 - x }
+              let pipeline = [inc, dbl, neg]
+              let result = list.fold(pipeline, 5, fn(acc: Int, f: fn(Int) -> Int) { f(acc) })
+              print(console, int_to_string(result))
+            }
+        "#;
+        let sources = [("list", crate::bundled_module("list").unwrap()), ("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "function-pipeline fold diverged");
+        assert_eq!(compiled, vec!["-12"]);
+    }
+
     #[test]
     fn std_string_char_at_backends_agree() {
         // char_at returns the single character at an index, or "" out of range.
