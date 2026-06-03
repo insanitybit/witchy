@@ -1122,6 +1122,31 @@ mod example_tests {
     }
 
     #[test]
+    fn std_result_or_mapor_backends_agree() {
+        // The fallback combinators mirror Option's: `or` / `or_else` keep an Ok
+        // or supply an alternative (eagerly / error-aware lazily), and `map_or`
+        // transforms an Ok or returns the default for an Err. Both backends agree.
+        let client = r#"
+            import result
+            fn checked(n: Int) -> Result(Int, String) {
+              if n > 0 { Ok(n) } else { Err("bad") }
+            }
+            fn main(console: Console) {
+              print(console, int_to_string(result.unwrap_or(result.or(checked(5), Ok(9)), 0)))
+              print(console, int_to_string(result.unwrap_or(result.or(checked(0 - 1), Ok(9)), 0)))
+              print(console, int_to_string(result.unwrap_or(result.or_else(checked(0 - 1), fn(e: String) { Ok(string_length(e)) }), 0)))
+              print(console, int_to_string(result.map_or(checked(5), 0, fn(x: Int) { x * 2 })))
+              print(console, int_to_string(result.map_or(checked(0 - 1), 99, fn(x: Int) { x * 2 })))
+            }
+        "#;
+        let sources = [("result", crate::bundled_module("result").unwrap()), ("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "result or/map_or diverged");
+        assert_eq!(compiled, vec!["5", "9", "3", "10", "99"]);
+    }
+
+    #[test]
     fn std_result_combinators_backends_agree() {
         // is_err / and_then / map_err / unwrap_err behave identically in both
         // backends — including using is_err at two different error types in one

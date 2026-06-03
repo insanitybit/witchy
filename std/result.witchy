@@ -70,3 +70,29 @@ pub fn unwrap_or_else(r: Result(a, e), f: fn() -> a) -> a {
     Err(_) -> f()
   }
 }
+
+// The result if it is Ok, otherwise the `alt` result.
+pub fn or(r: Result(a, e), alt: Result(a, e)) -> Result(a, e) {
+  match r {
+    Ok(v) -> Ok(v)
+    Err(_) -> alt
+  }
+}
+
+// The result if it is Ok, otherwise the result produced by applying `f` to the
+// error — a lazy, error-aware recovery step.
+pub fn or_else(r: Result(a, e), f: fn(e) -> Result(a, e)) -> Result(a, e) {
+  match r {
+    Ok(v) -> Ok(v)
+    Err(x) -> f(x)
+  }
+}
+
+// Apply `f` to the Ok value, or return `default` for an Err — `map_ok` then
+// `unwrap_or` in one step.
+pub fn map_or(r: Result(a, e), default: b, f: fn(a) -> b) -> b {
+  match r {
+    Ok(v) -> f(v)
+    Err(_) -> default
+  }
+}
