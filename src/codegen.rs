@@ -102,6 +102,11 @@ struct Codegen {
     message_tags: HashMap<String, u32>,
     /// Whether the inter-actor `send` import is needed.
     uses_send: bool,
+    /// Record type name -> ordered field names, for compiling `value.field`.
+    record_fields: HashMap<String, Vec<String>>,
+    /// Variables (params / let-bound constructors) known to hold a record of a
+    /// given type, so `var.field` can resolve a field index.
+    local_records: HashMap<String, String>,
 }
 
 impl Codegen {
@@ -125,6 +130,8 @@ impl Codegen {
             fn_ret: HashMap::new(),
             message_tags: HashMap::new(),
             uses_send: false,
+            record_fields: HashMap::new(),
+            local_records: HashMap::new(),
         }
     }
 
@@ -166,6 +173,13 @@ impl Codegen {
                 Stmt::Let { name, value, .. } => {
                     let k = self.kind_of(value);
                     self.locals.insert(name.clone(), k);
+                    // `let p = Point(..)` lets `p.field` resolve (record ctor name
+                    // is the type name).
+                    if let Expr::Ctor { name: ctor, .. } = value {
+                        if self.record_fields.contains_key(ctor) {
+                            self.local_records.insert(name.clone(), ctor.clone());
+                        }
+                    }
                     self.infer_locals_expr(value);
                 }
                 Stmt::Assign { value, .. } => self.infer_locals_expr(value),
@@ -285,9 +299,16 @@ impl Codegen {
 
     fn compile_function(&mut self, f: &Function) -> Result<String, CodegenError> {
         self.locals.clear();
+        self.local_records.clear();
         for p in &f.params {
             let k = p.ty.as_ref().map(ty_kind).unwrap_or(Kind::I32);
             self.locals.insert(p.name.clone(), k);
+            // A parameter annotated with a record type lets `p.field` resolve.
+            if let Some(Type::Named(n, _)) = &p.ty {
+                if self.record_fields.contains_key(n) {
+                    self.local_records.insert(p.name.clone(), n.clone());
+                }
+            }
         }
         self.infer_locals(&f.body);
 
@@ -480,7 +501,26 @@ impl Codegen {
             Expr::Tuple(_) => cerr("tuples are not compiled to WASM yet"),
             Expr::Try(_) => cerr("the `?` operator is not compiled to WASM yet"),
             Expr::For { .. } => cerr("`for` loops are not compiled to WASM yet"),
-            Expr::Field { .. } => cerr("record field access is not compiled to WASM yet"),
+            Expr::Field { base, field } => {
+                // A record value is a heap record `[tag][field0][field1]...`, so
+                // a field is `*(base + 4 + 4*index)`. We need the base's record
+                // type to find the index; that's tracked for record-typed
+                // variables (params and `let x = Ctor(..)`).
+                let Expr::Var(v) = base.as_ref() else {
+                    return cerr("record field access in WASM needs a record-typed variable");
+                };
+                let Some(tyname) = self.local_records.get(v) else {
+                    return cerr(format!("cannot determine the record type of `{v}` for `.{field}`"));
+                };
+                let names = &self.record_fields[tyname];
+                let Some(idx) = names.iter().position(|n| n == field) else {
+                    return cerr(format!("record `{tyname}` has no field `{field}`"));
+                };
+                let offset = 4 + 4 * idx;
+                Ok(format!(
+                    "    local.get ${v}\n    i32.const {offset}\n    i32.add\n    i32.load\n"
+                ))
+            }
             Expr::RecordUpdate { .. } => cerr("record update is not compiled to WASM yet"),
             Expr::Lambda { .. } => cerr("lambdas are not compiled to WASM yet"),
             Expr::List(items) => {
@@ -739,6 +779,10 @@ pub fn compile_module(module: &Module) -> Result<String, CodegenError> {
                 for (tag, variant) in t.variants.iter().enumerate() {
                     cg.ctors
                         .insert(variant.name.clone(), (tag as u32, variant.fields.len()));
+                    if !variant.field_names.is_empty() {
+                        cg.record_fields
+                            .insert(t.name.clone(), variant.field_names.clone());
+                    }
                 }
             }
             Item::Actor(_) => {}

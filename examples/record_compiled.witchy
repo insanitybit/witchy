@@ -1,0 +1,18 @@
+// Records compiled to WebAssembly: a Point is a heap record [tag][x][y], and
+// `p.x` loads a field by its offset. This whole program compiles to a WASM
+// module and runs on the witchy runtime — records, not just sum-type matches,
+// now work in the compiled backend.
+
+type Point {
+  x: Int
+  y: Int
+}
+
+fn dist_squared(p: Point) -> Int {
+  p.x * p.x + p.y * p.y
+}
+
+fn main() -> Int {
+  let p = Point(3, 4)
+  dist_squared(p)
+}

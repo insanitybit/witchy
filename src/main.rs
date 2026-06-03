@@ -181,6 +181,7 @@ fn main() -> wasmtime::Result<()> {
     run_witchy("witchy filesystem capability", include_str!("../examples/files.witchy"));
     run_compiled(&mut rt, "witchy compiled to WASM (ints)", include_str!("../examples/compute.witchy"));
     run_compiled(&mut rt, "witchy compiled to WASM (ADTs)", include_str!("../examples/shapes.witchy"));
+    run_compiled(&mut rt, "witchy compiled to WASM (record field access)", include_str!("../examples/record_compiled.witchy"));
     run_compiled(&mut rt, "witchy compiled to WASM (strings)", include_str!("../examples/strings.witchy"));
     run_compiled_actor(&mut rt, "witchy actor compiled to its own WASM VM", include_str!("../examples/counter.witchy"));
     run_actor_system("witchy compiled actors messaging", include_str!("../examples/mailbox.witchy"));
@@ -629,6 +630,15 @@ mod example_tests {
         assert_eq!(
             run_on_wasm(include_str!("../examples/shapes.witchy")),
             vec!["325"]
+        );
+    }
+
+    #[test]
+    fn record_field_access_runs_on_wasm() {
+        // Records (named-field access) now compile and run on the WASM runtime.
+        assert_eq!(
+            run_on_wasm(include_str!("../examples/record_compiled.witchy")),
+            vec!["25"]
         );
     }
 
