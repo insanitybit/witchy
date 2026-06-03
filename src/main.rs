@@ -2183,6 +2183,51 @@ mod example_tests {
     }
 
     #[test]
+    fn guard_example_runs_on_wasm() {
+        // Early `return` from a function and from inside a `for` loop.
+        let src = include_str!("../examples/guard.witchy");
+        assert_eq!(interp(src), run_on_wasm(src));
+        assert_eq!(run_on_wasm(src), vec!["negative", "zero", "positive", "8", "-1"]);
+    }
+
+    #[test]
+    fn higher_order_example_runs_on_wasm() {
+        // Closure returned from a function (make_adder) + higher-order reduce.
+        let src = include_str!("../examples/higher_order.witchy");
+        assert_eq!(interp(src), run_on_wasm(src));
+        assert_eq!(run_on_wasm(src), vec!["15", "81", "15", "120"]);
+    }
+
+    #[test]
+    fn record_update_example_runs_on_wasm() {
+        // `update` referencing the original record, plus a String-field update;
+        // the original is unchanged.
+        let src = include_str!("../examples/record_update.witchy");
+        assert_eq!(interp(src), run_on_wasm(src));
+        assert_eq!(
+            run_on_wasm(src),
+            vec!["alice 100", "alice 150", "alice smith 150"]
+        );
+    }
+
+    #[test]
+    fn generics_example_runs_on_wasm() {
+        // A generic `swap((a, b)) -> (b, a)` on a mixed (Int, String) tuple:
+        // tuple pattern match + construction through a generic function.
+        let src = include_str!("../examples/generics.witchy");
+        assert_eq!(interp(src), run_on_wasm(src));
+        assert_eq!(run_on_wasm(src), vec!["answer", "42"]);
+    }
+
+    #[test]
+    fn signs_example_runs_on_wasm() {
+        // Negative-literal match patterns (`-1 -> ...`).
+        let src = include_str!("../examples/signs.witchy");
+        assert_eq!(interp(src), run_on_wasm(src));
+        assert_eq!(run_on_wasm(src), vec!["left", "right", "stay", "?"]);
+    }
+
+    #[test]
     fn nested_scope_shadowing_backends_agree() {
         // An inner binding that shadows an outer one of the same name must not
         // clobber the outer: after the inner scope ends, the outer value is back.
