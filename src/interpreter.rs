@@ -190,45 +190,52 @@ enum Assign {
     Unbound,
 }
 
-#[derive(Default)]
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Default, Debug, Clone, PartialEq)]
 pub struct Env {
-    /// Each binding carries whether it is mutable (`var`/`inout`/`sink`) or not
-    /// (`let`). Mutable value semantics: bindings hold independent values.
-    scopes: Vec<HashMap<String, (Value, bool)>>,
+    /// A stack of scopes; each scope is a small list of bindings carrying whether
+    /// the binding is mutable (`var`/`inout`/`sink`) or not (`let`). Scopes are
+    /// usually tiny (a couple of params/locals), so a linear scan beats a
+    /// `HashMap`'s allocation and hashing on the hot call path. Lookups scan most
+    /// recent first, so a later `let` shadows an earlier one.
+    scopes: Vec<Vec<(String, Value, bool)>>,
 }
 
 impl Env {
     fn new() -> Self {
         Self {
-            scopes: vec![HashMap::new()],
+            scopes: vec![Vec::new()],
         }
     }
     fn push(&mut self) {
-        self.scopes.push(HashMap::new());
+        self.scopes.push(Vec::new());
     }
     fn pop(&mut self) {
         self.scopes.pop();
     }
     fn define(&mut self, name: String, value: Value, mutable: bool) {
-        self.scopes.last_mut().unwrap().insert(name, (value, mutable));
+        self.scopes.last_mut().unwrap().push((name, value, mutable));
     }
     fn get(&self, name: &str) -> Option<&Value> {
-        self.scopes
-            .iter()
-            .rev()
-            .find_map(|s| s.get(name))
-            .map(|(v, _)| v)
+        for scope in self.scopes.iter().rev() {
+            for (n, v, _) in scope.iter().rev() {
+                if n == name {
+                    return Some(v);
+                }
+            }
+        }
+        None
     }
     /// Reassign an existing binding in place; rejects immutable (`let`) bindings.
     fn assign(&mut self, name: &str, value: Value) -> Assign {
         for scope in self.scopes.iter_mut().rev() {
-            if let Some((slot, mutable)) = scope.get_mut(name) {
-                if *mutable {
-                    *slot = value;
-                    return Assign::Done;
+            for (n, slot, mutable) in scope.iter_mut().rev() {
+                if n == name {
+                    if *mutable {
+                        *slot = value;
+                        return Assign::Done;
+                    }
+                    return Assign::Immutable;
                 }
-                return Assign::Immutable;
             }
         }
         Assign::Unbound
