@@ -154,6 +154,17 @@ pub fn words(text: String) -> List(String) {
   out
 }
 
+// Replace only the first occurrence of `from` with `to`; return `s` unchanged
+// when `from` is absent. (The `replace` builtin replaces every occurrence.)
+pub fn replace_first(s: String, from: String, to: String) -> String {
+  let i = index_of(s, from)
+  if i < 0 {
+    s
+  } else {
+    substring(s, 0, i) <> to <> substring(s, i + char_count(from), char_count(s))
+  }
+}
+
 // Split at the first occurrence of `sep` into `(before, after)`, with `sep`
 // itself dropped. When `sep` is absent, returns `(s, "")`. Handy for parsing
 // `key=value` or `host:port`. Counted by Unicode scalar.

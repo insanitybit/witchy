@@ -3326,6 +3326,26 @@ mod example_tests {
     // split_once splits at the first separator into (before, after); the
     // separator is dropped, later occurrences stay in `after`, and an absent
     // separator gives (s, ""). Both backends agree.
+    // replace_first swaps only the first occurrence (unlike the all-replacing
+    // `replace` builtin); an absent needle leaves the string unchanged.
+    #[test]
+    fn std_string_replace_first_backends_agree() {
+        let client = r#"
+            import string
+            fn main(console: Console) {
+              print(console, string.replace_first("a.b.c", ".", "/"))
+              print(console, string.replace_first("hello", "l", "L"))
+              print(console, string.replace_first("xyz", "q", "Q"))
+              print(console, string.replace_first("aa", "a", "bb"))
+            }
+        "#;
+        let sources = [("string", crate::bundled_module("string").unwrap()), ("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "replace_first diverged");
+        assert_eq!(compiled, vec!["a/b.c", "heLlo", "xyz", "bba"]);
+    }
+
     #[test]
     fn std_string_split_once_backends_agree() {
         let client = r#"
