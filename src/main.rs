@@ -3339,6 +3339,39 @@ mod example_tests {
     // field resolution — fold over records, max_by/find returning Option(record)
     // (match payload reads fields), filter then iterate (loop var reads fields),
     // a helper function over a record, and first-class lambdas throughout.
+    // The `?` operator unwrapping a Result(Record): `let acc = lookup(n)?` binds
+    // acc to the payload record so `acc.balance` resolves, and an Err short-
+    // circuits the enclosing Result-returning function. Both backends agree.
+    #[test]
+    fn try_operator_record_payload_backends_agree() {
+        let client = r#"
+            import result
+            type Account { id: Int  balance: Int }
+            fn lookup(n: Int) -> Result(Account, String) {
+              if n > 0 { Ok(Account(n, n * 100)) } else { Err("bad") }
+            }
+            fn process(n: Int) -> Result(Int, String) {
+              let acc = lookup(n)?
+              Ok(acc.balance + 1)
+            }
+            fn main(console: Console) {
+              match process(5) {
+                Ok(v) -> print(console, int_to_string(v))
+                Err(e) -> print(console, e)
+              }
+              match process(0 - 1) {
+                Ok(v) -> print(console, int_to_string(v))
+                Err(e) -> print(console, e)
+              }
+            }
+        "#;
+        let sources = [("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "? with Result(Record) diverged");
+        assert_eq!(compiled, vec!["501", "bad"]);
+    }
+
     #[test]
     fn order_processing_integration_backends_agree() {
         let client = r#"
