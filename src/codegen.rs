@@ -201,6 +201,9 @@ struct Codegen {
     /// Variables holding a `List(Record)`, mapping to the element record type, so
     /// a `for x in list` loop variable's fields can be resolved.
     local_list_elem: HashMap<String, String>,
+    /// Variables holding an `Option(Record)`/`Result(Record, _)`, mapping to the
+    /// payload record type, so `match v { Some(a) -> a.field }` resolves `a`.
+    local_payload_records: HashMap<String, String>,
     /// Value type of params / let-bound locals, where known, so `to_string` can
     /// pick the right rendering. Absent = `Other`.
     local_val_types: HashMap<String, ValType>,
@@ -261,6 +264,7 @@ impl Codegen {
             record_fields: HashMap::new(),
             local_records: HashMap::new(),
             local_list_elem: HashMap::new(),
+            local_payload_records: HashMap::new(),
             local_val_types: HashMap::new(),
             local_list_elem_valtype: HashMap::new(),
             fn_ret_valtype: HashMap::new(),
@@ -440,6 +444,7 @@ impl Codegen {
     /// resolvable here — that needs full instantiation tracking.)
     fn match_payload_record(&self, scrutinee: &Expr) -> Option<String> {
         match scrutinee {
+            Expr::Var(v) => self.local_payload_records.get(v).cloned(),
             Expr::Call { name, .. } => self.fn_ret_result_record.get(name).cloned(),
             Expr::Ctor { name, args } if (name == "Some" || name == "Ok") && args.len() == 1 => {
                 self.record_type_of(&args[0])
@@ -520,15 +525,18 @@ impl Codegen {
                     if evt != ValType::Other {
                         self.local_list_elem_valtype.insert(name.clone(), evt);
                     }
-                    // A list literal of record constructors records its element
-                    // record type, so `for x in items` and `at(items, i)` resolve
-                    // fields (the same tracking params already get).
-                    if let Expr::List(items) = value {
-                        if let Some(Expr::Ctor { name: ctor, .. }) = items.first() {
-                            if self.record_fields.contains_key(ctor) {
-                                self.local_list_elem.insert(name.clone(), ctor.clone());
-                            }
-                        }
+                    // A binding to a `List(Record)` (literal, a `List(Record)`-
+                    // returning call, or another such variable) records its
+                    // element record type, so `for x in name` and `at(name, i)`
+                    // resolve fields.
+                    if let Some(elem) = self.elem_record_type_of(value) {
+                        self.local_list_elem.insert(name.clone(), elem);
+                    }
+                    // A binding to an `Option(Record)`/`Result(Record, _)` records
+                    // its payload type, so `match name { Some(a) -> a.field }`
+                    // resolves `a`.
+                    if let Some(rec) = self.match_payload_record(value) {
+                        self.local_payload_records.insert(name.clone(), rec);
                     }
                     // Remember the binding's record type (if any) so `name.field`
                     // resolves — see `record_type_of` for the cases handled.
@@ -1512,6 +1520,7 @@ impl Codegen {
         let saved_locals = std::mem::take(&mut self.locals);
         let saved_records = std::mem::take(&mut self.local_records);
         let saved_list_elem = std::mem::take(&mut self.local_list_elem);
+        let saved_payload = std::mem::take(&mut self.local_payload_records);
         let saved_val_types = std::mem::take(&mut self.local_val_types);
         let saved_list_elem_vt = std::mem::take(&mut self.local_list_elem_valtype);
         let saved_ret = self.cur_fn_ret_kind;
@@ -1521,7 +1530,7 @@ impl Codegen {
         for p in params {
             let k = p.ty.as_ref().map(ty_kind).unwrap_or(Kind::I32);
             if k != Kind::I32 {
-                self.restore_locals(saved_locals, saved_records, saved_list_elem, saved_val_types, saved_list_elem_vt, saved_ret, saved_inout);
+                self.restore_locals(saved_locals, saved_records, saved_list_elem, saved_payload, saved_val_types, saved_list_elem_vt, saved_ret, saved_inout);
                 return cerr("non-Int lambda parameters are not compiled to WASM yet");
             }
             self.locals.insert(p.name.clone(), k);
@@ -1562,7 +1571,7 @@ impl Codegen {
         self.infer_locals(body);
         let ret_kind = self.block_kind(body);
         if ret_kind != Kind::I32 {
-            self.restore_locals(saved_locals, saved_records, saved_list_elem, saved_val_types, saved_list_elem_vt, saved_ret, saved_inout);
+            self.restore_locals(saved_locals, saved_records, saved_list_elem, saved_payload, saved_val_types, saved_list_elem_vt, saved_ret, saved_inout);
             return cerr("non-Int lambda results are not compiled to WASM yet");
         }
         self.cur_fn_ret_kind = ret_kind;
@@ -1610,7 +1619,7 @@ impl Codegen {
         self.lambdas[index] = format!("{header}{prologue}{body_wat}  )\n");
         self.clos_arities.insert(params.len());
 
-        self.restore_locals(saved_locals, saved_records, saved_list_elem, saved_val_types, saved_list_elem_vt, saved_ret, saved_inout);
+        self.restore_locals(saved_locals, saved_records, saved_list_elem, saved_payload, saved_val_types, saved_list_elem_vt, saved_ret, saved_inout);
 
         // Construction site: allocate `[code_index][cap0]..[capN]` via `$mkN`,
         // pushing the captures from the *enclosing* scope in slot order.
@@ -1633,6 +1642,7 @@ impl Codegen {
         locals: HashMap<String, Kind>,
         records: HashMap<String, String>,
         list_elem: HashMap<String, String>,
+        payload: HashMap<String, String>,
         val_types: HashMap<String, ValType>,
         list_elem_vt: HashMap<String, ValType>,
         ret: Kind,
@@ -1641,6 +1651,7 @@ impl Codegen {
         self.locals = locals;
         self.local_records = records;
         self.local_list_elem = list_elem;
+        self.local_payload_records = payload;
         self.local_val_types = val_types;
         self.local_list_elem_valtype = list_elem_vt;
         self.cur_fn_ret_kind = ret;

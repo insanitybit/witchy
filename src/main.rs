@@ -3293,6 +3293,39 @@ mod example_tests {
     // Matching the Some of a function-returned Option(Record) binds the payload
     // to its record type, so `a.balance` resolves. Codegen learns the payload
     // record from the function's declared `-> Option(Account)` return.
+    // Let-bound intermediates inherit derived types: `let o = lookup()` carries
+    // the Option(Account) payload (so a later `match o { Some(a) -> a.balance }`
+    // resolves), and `let xs = mk()` carries the List(P) element type (so
+    // `for p in xs { p.x }` resolves). Both backends agree.
+    #[test]
+    fn let_bound_derived_types_backends_agree() {
+        let client = r#"
+            import option
+            type Account { id: Int  balance: Int }
+            type P { x: Int  y: Int }
+            fn lookup(n: Int) -> Option(Account) {
+              if n > 0 { Some(Account(n, n * 100)) } else { None }
+            }
+            fn mk() -> List(P) { [P(1, 2), P(3, 4)] }
+            fn main(console: Console) {
+              let o = lookup(7)
+              match o {
+                Some(a) -> print(console, int_to_string(a.balance))
+                None -> print(console, "none")
+              }
+              let xs = mk()
+              for p in xs {
+                print(console, int_to_string(p.x))
+              }
+            }
+        "#;
+        let sources = [("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "let-bound derived types diverged");
+        assert_eq!(compiled, vec!["700", "1", "3"]);
+    }
+
     #[test]
     fn match_option_record_payload_backends_agree() {
         let client = r#"
