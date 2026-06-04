@@ -3065,6 +3065,22 @@ mod example_tests {
 
     // The `a..b` range operator builds the half-open list [a, b): usable in a
     // for-loop, in a comprehension, and empty when a >= b. Both backends agree.
+    // Inclusive range `a..=b` includes the upper bound: [a, b]. Empty when
+    // a > b, single when a == b, and composes with comprehensions. Both backends agree.
+    #[test]
+    fn inclusive_range_backends_agree() {
+        let src = r#"
+            fn main(console: Console) {
+              for i in 1..=5 { print(console, int_to_string(i)) }
+              print(console, int_to_string(length(0..=0)))
+              print(console, int_to_string(length(5..=2)))
+              print(console, int_to_string(length([n for n in 1..=4])))
+            }
+        "#;
+        assert_eq!(interp(src), run_on_wasm(src), "inclusive range diverged");
+        assert_eq!(run_on_wasm(src), vec!["1", "2", "3", "4", "5", "1", "0", "4"]);
+    }
+
     #[test]
     fn range_operator_backends_agree() {
         let src = r#"

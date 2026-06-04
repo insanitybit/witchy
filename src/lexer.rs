@@ -50,6 +50,7 @@ pub enum Tok {
     Colon,
     Dot,
     DotDot,
+    DotDotEq,
     Underscore,
 
     // Operators
@@ -130,6 +131,7 @@ impl fmt::Display for Tok {
             Colon => write!(f, ":"),
             Dot => write!(f, "."),
             DotDot => write!(f, ".."),
+            DotDotEq => write!(f, "..="),
             Underscore => write!(f, "_"),
             Eq => write!(f, "="),
             EqEq => write!(f, "=="),
@@ -563,7 +565,12 @@ impl Lexer {
             (':', _) => Tok::Colon,
             ('.', Some('.')) => {
                 self.bump();
-                Tok::DotDot
+                if self.peek() == Some('=') {
+                    self.bump();
+                    Tok::DotDotEq
+                } else {
+                    Tok::DotDot
+                }
             }
             ('.', _) => Tok::Dot,
             (other, _) => return Err(self.err(format!("unexpected character `{other}`"))),
