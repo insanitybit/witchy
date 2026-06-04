@@ -3145,6 +3145,27 @@ mod example_tests {
 
     // to_chars splits a string into single-character strings by Unicode scalar
     // (so "café" yields 4 chars including the multi-byte é). Both backends agree.
+    // words splits on any whitespace (tabs/newlines/CRs treated as spaces) and
+    // drops empty pieces from runs of whitespace or trailing space.
+    #[test]
+    fn std_string_words_backends_agree() {
+        let client = r#"
+            import string
+            fn main(console: Console) {
+              let ws = string.words("the  quick\tbrown\nfox ")
+              print(console, int_to_string(length(ws)))
+              for w in ws { print(console, w) }
+              print(console, int_to_string(length(string.words("   "))))
+              print(console, int_to_string(length(string.words(""))))
+            }
+        "#;
+        let sources = [("string", crate::bundled_module("string").unwrap()), ("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "words diverged");
+        assert_eq!(compiled, vec!["4", "the", "quick", "brown", "fox", "0", "0"]);
+    }
+
     #[test]
     fn std_string_to_chars_backends_agree() {
         let client = r#"

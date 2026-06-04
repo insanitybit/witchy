@@ -138,6 +138,22 @@ pub fn count(s: String, sub: String) -> Int {
   }
 }
 
+// The whitespace-separated words of `text`: tabs, newlines, and carriage
+// returns are treated as spaces, and empty pieces (from runs of whitespace) are
+// dropped. `words("the  quick\tfox")` is `["the", "quick", "fox"]`.
+pub fn words(text: String) -> List(String) {
+  let a = replace(text, "\t", " ")
+  let b = replace(a, "\n", " ")
+  let c = replace(b, "\r", " ")
+  var out = []
+  for w in split(c, " ") {
+    if string_length(w) > 0 {
+      out = push(out, w)
+    }
+  }
+  out
+}
+
 // Split text into its newline-separated lines.
 pub fn lines(text: String) -> List(String) {
   split(text, "\n")
