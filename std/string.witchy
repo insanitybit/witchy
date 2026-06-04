@@ -123,7 +123,7 @@ pub fn drop(s: String, n: Int) -> String {
 // The number of non-overlapping occurrences of `sub` in `s` (0 for an empty
 // `sub`). After each match the search resumes past it.
 pub fn count(s: String, sub: String) -> Int {
-  if string_length(sub) == 0 {
+  if char_count(sub) == 0 {
     0
   } else {
     var total = 0
@@ -131,7 +131,7 @@ pub fn count(s: String, sub: String) -> Int {
     var i = index_of(rest, sub)
     while i >= 0 {
       total = total + 1
-      rest = substring(rest, i + string_length(sub), string_length(rest))
+      rest = substring(rest, i + char_count(sub), char_count(rest))
       i = index_of(rest, sub)
     }
     total

@@ -3471,13 +3471,16 @@ mod example_tests {
               print(console, int_to_string(string.count("aaaa", "aa")))
               print(console, int_to_string(string.count("abc", "x")))
               print(console, int_to_string(string.count("abc", "")))
+              print(console, int_to_string(string.count("aéaéa", "éa")))
             }
         "#;
         let sources = [("string", crate::bundled_module("string").unwrap()), ("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
         let compiled = run_linked_on_wasm(&sources, "main");
         assert_eq!(interpreted, compiled, "string is_empty/count diverged");
-        assert_eq!(compiled, vec!["true", "false", "3", "2", "2", "0", "0"]);
+        // The last counts a multi-byte needle: "éa" occurs twice in "aéaéa" —
+        // a byte-based advance would miscount it (and matters only off ASCII).
+        assert_eq!(compiled, vec!["true", "false", "3", "2", "2", "0", "0", "2"]);
     }
 
     #[test]
