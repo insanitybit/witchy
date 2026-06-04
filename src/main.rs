@@ -2980,6 +2980,33 @@ mod example_tests {
     // Multi-generator comprehensions nest in source order: two `for` clauses
     // form a cartesian product, and an interleaved `if` filters using earlier
     // loop variables. Both backends agree.
+    // Integration showcase: Pythagorean triples in one comprehension —
+    // three nested generators over inclusive ranges with variable bounds
+    // (`b in a..=20`), a filter, and tuple construction, then tuple
+    // destructuring in a for-loop. Exercises ranges + multi-generator
+    // comprehensions + tuples together; both backends agree.
+    #[test]
+    fn pythagorean_triples_comprehension_backends_agree() {
+        let client = r#"
+            import list
+            fn main(console: Console) {
+              let triples = [(a, b, c) for a in 1..=20 for b in a..=20 for c in b..=20 if a * a + b * b == c * c]
+              print(console, int_to_string(length(triples)))
+              var total = 0
+              for t in triples {
+                let (a, b, c) = t
+                total = total + c
+              }
+              print(console, int_to_string(total))
+            }
+        "#;
+        let sources = [("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "pythagorean comprehension diverged");
+        assert_eq!(compiled, vec!["6", "80"]);
+    }
+
     #[test]
     fn multi_generator_comprehension_backends_agree() {
         let src = r#"
