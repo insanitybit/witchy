@@ -453,6 +453,9 @@ impl Parser {
             if op_tok == Tok::Pipe {
                 let rhs = self.prefix()?;
                 lhs = desugar_pipe(lhs, rhs, self)?;
+            } else if op_tok == Tok::DotDot {
+                let rhs = self.expr(r_bp)?;
+                lhs = self.desugar_range(lhs, rhs);
             } else {
                 let rhs = self.expr(r_bp)?;
                 lhs = Expr::Binary {
@@ -713,6 +716,53 @@ impl Parser {
         Ok(Expr::List(items))
     }
 
+    /// Desugar `lo..hi` (half-open integer range) into a block that builds the
+    /// list `[lo, lo+1, ..., hi-1]`: `{ var acc = []; var i = lo; let end = hi;
+    /// while i < end { acc = push(acc, i); i = i + 1 }; acc }`. `hi` is bound
+    /// once so it isn't re-evaluated each iteration. Self-contained (no import).
+    fn desugar_range(&mut self, lo: Expr, hi: Expr) -> Expr {
+        let n = self.compr_counter;
+        self.compr_counter += 1;
+        let acc = format!("__range{n}");
+        let idx = format!("__ri{n}");
+        let end = format!("__rend{n}");
+        let lt = Expr::Binary {
+            op: BinOp::Lt,
+            lhs: Box::new(Expr::Var(idx.clone())),
+            rhs: Box::new(Expr::Var(end.clone())),
+        };
+        let body = Block {
+            stmts: vec![
+                Stmt::Assign {
+                    name: acc.clone(),
+                    value: Expr::Call {
+                        name: "push".to_string(),
+                        args: vec![Expr::Var(acc.clone()), Expr::Var(idx.clone())],
+                    },
+                },
+                Stmt::Assign {
+                    name: idx.clone(),
+                    value: Expr::Binary {
+                        op: BinOp::Add,
+                        lhs: Box::new(Expr::Var(idx.clone())),
+                        rhs: Box::new(Expr::Int(1)),
+                    },
+                },
+            ],
+            lines: vec![0, 0],
+        };
+        Expr::Block(Block {
+            stmts: vec![
+                Stmt::Let { name: acc.clone(), mutable: true, value: Expr::List(Vec::new()) },
+                Stmt::Let { name: idx.clone(), mutable: true, value: lo },
+                Stmt::Let { name: end, mutable: false, value: hi },
+                Stmt::Expr(Expr::While { cond: Box::new(lt), body }),
+                Stmt::Expr(Expr::Var(acc)),
+            ],
+            lines: vec![0, 0, 0, 0, 0],
+        })
+    }
+
     /// Desugar a list comprehension with one or more generators and filters —
     /// `[elem for x in xs (if c)* (for y in ys)* ...]` — into a block that builds
     /// the list with nested loops/conditionals: `{ var acc = []; for x in xs {
@@ -948,6 +998,9 @@ fn infix_bp(t: &Tok) -> Option<(u8, u8)> {
     use Tok::*;
     Some(match t {
         Pipe => (1, 2),
+        // `a..b` (half-open range) binds loosest after pipe, so `1..n+1` is
+        // `1..(n+1)` and `a..b` accepts arbitrary Int expressions on each side.
+        DotDot => (2, 3),
         OrOr => (3, 4),
         AndAnd => (5, 6),
         EqEq | NotEq | Lt | LtEq | Gt | GtEq => (7, 8),

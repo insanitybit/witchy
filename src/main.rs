@@ -3063,6 +3063,26 @@ mod example_tests {
         assert_eq!(run_on_wasm(src), vec!["9", "10", "3"]);
     }
 
+    // The `a..b` range operator builds the half-open list [a, b): usable in a
+    // for-loop, in a comprehension, and empty when a >= b. Both backends agree.
+    #[test]
+    fn range_operator_backends_agree() {
+        let src = r#"
+            fn main(console: Console) {
+              for i in 0..5 { print(console, int_to_string(i)) }
+              let squares = [x * x for x in 1..5]
+              for s in squares { print(console, int_to_string(s)) }
+              print(console, int_to_string(length(3..3)))
+              print(console, int_to_string(length(2..(1 + 4))))
+            }
+        "#;
+        assert_eq!(interp(src), run_on_wasm(src), "range operator diverged");
+        assert_eq!(
+            run_on_wasm(src),
+            vec!["0", "1", "2", "3", "4", "1", "4", "9", "16", "0", "3"]
+        );
+    }
+
     #[test]
     fn list_comprehension_backends_agree() {
         let src = r#"
