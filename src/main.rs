@@ -3917,6 +3917,28 @@ mod example_tests {
 
     // find_map searches and transforms in one pass: the first non-None result
     // of f, or None. Here it returns half of the first even number.
+    // reduce folds with the first element as the seed (Option-returning, None
+    // for empty) — here used as max and sum without an explicit initial value.
+    #[test]
+    fn std_list_reduce_backends_agree() {
+        let client = r#"
+            import list
+            import option
+            fn main(console: Console) {
+              let mx = list.reduce([3, 1, 4, 1, 5], fn(a: Int, b: Int) { if a > b { a } else { b } })
+              print(console, int_to_string(option.unwrap_or(mx, 0)))
+              print(console, to_string(option.is_none(list.reduce([], fn(a: Int, b: Int) { a + b }))))
+              let sum = list.reduce([10, 20, 30], fn(a: Int, b: Int) { a + b })
+              print(console, int_to_string(option.unwrap_or(sum, 0)))
+            }
+        "#;
+        let sources = [("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "reduce diverged");
+        assert_eq!(compiled, vec!["5", "true", "60"]);
+    }
+
     #[test]
     fn std_list_find_map_backends_agree() {
         let client = r#"
