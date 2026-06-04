@@ -1315,6 +1315,28 @@ mod example_tests {
     // the newly-wired print_float host, which formats f64 exactly like the
     // interpreter's Value::Float Display. Previously the compiled module failed
     // to instantiate (no print_float import provider).
+    // A broader compiled-float workout: division, fabs (negation + compare),
+    // fmax, a float comparison driving a float-valued `if`, multiply, subtract,
+    // and sqrt — all feeding one Float result. Both backends agree.
+    #[test]
+    fn float_arithmetic_compiled_backends_agree() {
+        let client = r#"
+            import math
+            fn main() -> Float {
+              let a = 10.0 / 4.0
+              let b = math.fabs(0.0 - 1.5)
+              let c = math.fmax(a, b)
+              let d = if c > 2.0 { c * 2.0 } else { 0.0 }
+              d - sqrt(4.0)
+            }
+        "#;
+        let sources = [("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "compiled float arithmetic diverged");
+        assert_eq!(compiled, vec!["3"]);
+    }
+
     #[test]
     fn float_returning_main_backends_agree() {
         let client = r#"
