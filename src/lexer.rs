@@ -282,6 +282,22 @@ impl Lexer {
     }
 
     fn number(&mut self) -> Result<Tok, LexError> {
+        // Hex (`0x..`) and binary (`0b..`) integer literals.
+        if self.peek() == Some('0') {
+            match self.peek2() {
+                Some('x') | Some('X') => {
+                    self.bump();
+                    self.bump();
+                    return self.radix_int(16, "hexadecimal");
+                }
+                Some('b') | Some('B') => {
+                    self.bump();
+                    self.bump();
+                    return self.radix_int(2, "binary");
+                }
+                _ => {}
+            }
+        }
         let mut text = String::new();
         while let Some(c) = self.peek() {
             if c.is_ascii_digit() || c == '_' {
@@ -314,6 +330,28 @@ impl Lexer {
         let value = text
             .parse::<i64>()
             .map_err(|_| self.err(format!("invalid integer literal `{text}`")))?;
+        Ok(Tok::Int(value))
+    }
+
+    /// Lex the digits of a `0x`/`0b` literal (the prefix already consumed),
+    /// allowing `_` separators. Errors on no digits or an out-of-range value.
+    fn radix_int(&mut self, radix: u32, name: &str) -> Result<Tok, LexError> {
+        let mut text = String::new();
+        while let Some(c) = self.peek() {
+            if c == '_' {
+                self.bump();
+            } else if c.is_digit(radix) {
+                text.push(c);
+                self.bump();
+            } else {
+                break;
+            }
+        }
+        if text.is_empty() {
+            return Err(self.err(format!("{name} literal has no digits")));
+        }
+        let value = i64::from_str_radix(&text, radix)
+            .map_err(|_| self.err(format!("invalid {name} integer literal `{text}`")))?;
         Ok(Tok::Int(value))
     }
 
@@ -707,6 +745,15 @@ mod tests {
         assert_eq!(kinds("a << b"), vec![id("a"), Tok::Shl, id("b"), Tok::Eof]);
         assert_eq!(kinds("a >> b"), vec![id("a"), Tok::Shr, id("b"), Tok::Eof]);
         assert_eq!(kinds("~a"), vec![Tok::Tilde, id("a"), Tok::Eof]);
+    }
+
+    #[test]
+    fn hex_and_binary_int_literals() {
+        assert_eq!(kinds("0xFF"), vec![Tok::Int(255), Tok::Eof]);
+        assert_eq!(kinds("0b1010"), vec![Tok::Int(10), Tok::Eof]);
+        assert_eq!(kinds("0xff_ff"), vec![Tok::Int(65535), Tok::Eof]);
+        // A bare 0 (no x/b) stays a normal decimal literal.
+        assert_eq!(kinds("0 + 1"), vec![Tok::Int(0), Tok::Plus, Tok::Int(1), Tok::Eof]);
     }
 
     #[test]

@@ -4370,6 +4370,23 @@ mod example_tests {
         assert_eq!(run_on_wasm(src), vec!["hello", "foo", "nospaces", "", "3"]);
     }
 
+    // Hex (0x..) and binary (0b..) integer literals, including underscore
+    // separators, feeding the bitwise operators. Both backends agree.
+    #[test]
+    fn hex_binary_literals_backends_agree() {
+        let src = r#"
+            fn main(console: Console) {
+              print(console, int_to_string(0xFF))
+              print(console, int_to_string(0b1010))
+              print(console, int_to_string(0xFF & 0x0F))
+              print(console, int_to_string(0b1100 | 0b0011))
+              print(console, int_to_string(0xFF_FF))
+            }
+        "#;
+        assert_eq!(interp(src), run_on_wasm(src), "hex/binary literals diverged");
+        assert_eq!(run_on_wasm(src), vec!["255", "10", "15", "15", "65535"]);
+    }
+
     #[test]
     fn string_to_int_backends_agree() {
         // string_to_int now compiles: leading whitespace and an optional sign
