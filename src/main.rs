@@ -3745,6 +3745,27 @@ mod example_tests {
         assert_eq!(run_on_wasm(src), vec!["7", "30"]);
     }
 
+    // find_map searches and transforms in one pass: the first non-None result
+    // of f, or None. Here it returns half of the first even number.
+    #[test]
+    fn std_list_find_map_backends_agree() {
+        let client = r#"
+            import list
+            import option
+            fn main(console: Console) {
+              let r = list.find_map([3, 5, 8, 10], fn(x: Int) { if x % 2 == 0 { Some(x / 2) } else { None } })
+              print(console, int_to_string(option.unwrap_or(r, 0 - 1)))
+              let none = list.find_map([1, 3, 5], fn(x: Int) { if x > 100 { Some(x) } else { None } })
+              print(console, to_string(option.is_none(none)))
+            }
+        "#;
+        let sources = [("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "find_map diverged");
+        assert_eq!(compiled, vec!["4", "true"]);
+    }
+
     #[test]
     fn std_list_min_max_by_backends_agree() {
         let client = r#"
