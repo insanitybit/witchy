@@ -84,6 +84,19 @@ pub fn is_empty(s: String) -> Bool {
   string_length(s) == 0
 }
 
+// The string's characters as a list of single-character strings, counted by
+// Unicode scalar: `to_chars("café")` is `["c", "a", "f", "é"]`.
+pub fn to_chars(s: String) -> List(String) {
+  var out = []
+  var i = 0
+  let n = char_count(s)
+  while i < n {
+    out = push(out, char_at(s, i))
+    i = i + 1
+  }
+  out
+}
+
 // The string with its characters in reverse order. Counted by Unicode scalar
 // (via `char_count`/`substring`), so multi-byte characters stay intact:
 // `reverse("café")` is `"éfac"`.

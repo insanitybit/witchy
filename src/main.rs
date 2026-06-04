@@ -3143,6 +3143,26 @@ mod example_tests {
         assert_eq!(compiled, vec!["olleh", "[]", "a", "éfac"]);
     }
 
+    // to_chars splits a string into single-character strings by Unicode scalar
+    // (so "café" yields 4 chars including the multi-byte é). Both backends agree.
+    #[test]
+    fn std_string_to_chars_backends_agree() {
+        let client = r#"
+            import string
+            fn main(console: Console) {
+              let cs = string.to_chars("café")
+              print(console, int_to_string(length(cs)))
+              for c in cs { print(console, c) }
+              print(console, int_to_string(length(string.to_chars(""))))
+            }
+        "#;
+        let sources = [("string", crate::bundled_module("string").unwrap()), ("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "to_chars diverged");
+        assert_eq!(compiled, vec!["4", "c", "a", "f", "é", "0"]);
+    }
+
     #[test]
     fn std_string_is_empty_count_backends_agree() {
         // is_empty checks for zero characters; count returns non-overlapping
