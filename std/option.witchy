@@ -107,3 +107,24 @@ pub fn ok_or_else(o: Option(a), f: fn() -> e) -> Result(a, e) {
     None -> Err(f())
   }
 }
+
+// Collapse one layer of nesting: `Some(Some(v))` becomes `Some(v)`, and both
+// `Some(None)` and `None` become `None`.
+pub fn flatten(oo: Option(Option(a))) -> Option(a) {
+  match oo {
+    Some(inner) -> inner
+    None -> None
+  }
+}
+
+// Combine two options into an option of a pair: `Some((x, y))` only when both
+// are `Some`, otherwise `None`.
+pub fn zip(oa: Option(a), ob: Option(b)) -> Option((a, b)) {
+  match oa {
+    Some(x) -> match ob {
+      Some(y) -> Some((x, y))
+      None -> None
+    }
+    None -> None
+  }
+}

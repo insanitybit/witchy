@@ -1090,6 +1090,35 @@ mod example_tests {
         assert_eq!(interpreted, compiled, "option combinators diverged");
     }
 
+    // flatten collapses Option(Option(a)) one level; zip pairs two options into
+    // Option((a, b)) only when both are Some. Both backends agree.
+    #[test]
+    fn std_option_flatten_zip_backends_agree() {
+        let client = r#"
+            import option
+            fn nested(n: Int) -> Option(Option(Int)) {
+              if n > 0 { Some(Some(n)) } else { Some(None) }
+            }
+            fn main(console: Console) {
+              print(console, int_to_string(option.unwrap_or(option.flatten(nested(7)), 0 - 1)))
+              print(console, int_to_string(option.unwrap_or(option.flatten(nested(0)), 0 - 1)))
+              match option.zip(Some(3), Some(4)) {
+                Some(pair) -> {
+                  let (x, y) = pair
+                  print(console, int_to_string(x + y))
+                }
+                None -> print(console, "none")
+              }
+              print(console, to_string(option.is_none(option.zip(Some(1), None))))
+            }
+        "#;
+        let sources = [("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "option flatten/zip diverged");
+        assert_eq!(compiled, vec!["7", "-1", "7", "true"]);
+    }
+
     #[test]
     fn std_option_or_mapor_backends_agree() {
         // The fallback combinators: `or` / `or_else` keep a Some or supply an
