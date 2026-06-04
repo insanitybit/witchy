@@ -2977,6 +2977,26 @@ mod example_tests {
         assert_eq!(compiled, vec!["apple", "milk", "30", "10", "20"]);
     }
 
+    // Multi-generator comprehensions nest in source order: two `for` clauses
+    // form a cartesian product, and an interleaved `if` filters using earlier
+    // loop variables. Both backends agree.
+    #[test]
+    fn multi_generator_comprehension_backends_agree() {
+        let src = r#"
+            fn main(console: Console) {
+              let pairs = [x * 10 + y for x in [1, 2] for y in [3, 4]]
+              for p in pairs { print(console, int_to_string(p)) }
+              let upper = [x * 10 + y for x in [1, 2, 3] for y in [1, 2, 3] if y > x]
+              for p in upper { print(console, int_to_string(p)) }
+            }
+        "#;
+        assert_eq!(interp(src), run_on_wasm(src), "multi-generator comprehension diverged");
+        assert_eq!(
+            run_on_wasm(src),
+            vec!["13", "14", "23", "24", "12", "13", "23"]
+        );
+    }
+
     #[test]
     fn list_comprehension_backends_agree() {
         let src = r#"

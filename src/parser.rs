@@ -707,41 +707,56 @@ impl Parser {
         Ok(Expr::List(items))
     }
 
-    /// Desugar `[elem for x in iter (if cond)?]` into a block that builds the
-    /// list explicitly: `{ var acc = []; for x in iter { (if cond) acc =
-    /// push(acc, elem) }; acc }`. Both backends handle this directly.
+    /// Desugar a list comprehension with one or more generators and filters —
+    /// `[elem for x in xs (if c)* (for y in ys)* ...]` — into a block that builds
+    /// the list with nested loops/conditionals: `{ var acc = []; for x in xs {
+    /// (if c) (for y in ys { ... acc = push(acc, elem) }) }; acc }`. The clauses
+    /// nest in source order, so later generators see earlier loop variables.
     fn list_comprehension(&mut self, elem: Expr) -> Result<Expr, ParseError> {
-        self.expect(&Tok::For)?;
-        let var = self.ident()?;
-        self.expect(&Tok::In)?;
-        let iter = self.expr(0)?;
-        let filter = if self.eat(&Tok::If) {
-            Some(self.expr(0)?)
-        } else {
-            None
-        };
+        enum Clause {
+            For(String, Expr),
+            If(Expr),
+        }
+        let mut clauses = Vec::new();
+        loop {
+            if self.eat(&Tok::For) {
+                let var = self.ident()?;
+                self.expect(&Tok::In)?;
+                clauses.push(Clause::For(var, self.expr(0)?));
+            } else if self.eat(&Tok::If) {
+                clauses.push(Clause::If(self.expr(0)?));
+            } else {
+                break;
+            }
+        }
         self.expect(&Tok::RBracket)?;
 
         let acc = format!("__compr{}", self.compr_counter);
         self.compr_counter += 1;
-        let push_stmt = Stmt::Assign {
+        // Innermost action: append `elem` to the accumulator.
+        let mut inner = Stmt::Assign {
             name: acc.clone(),
             value: Expr::Call {
                 name: "push".to_string(),
                 args: vec![Expr::Var(acc.clone()), elem],
             },
         };
-        let loop_body = match filter {
-            None => Block { stmts: vec![push_stmt], lines: vec![0] },
-            Some(cond) => Block {
-                stmts: vec![Stmt::Expr(Expr::If {
+        // Wrap from the innermost clause outward.
+        for clause in clauses.into_iter().rev() {
+            let body = Block { stmts: vec![inner], lines: vec![0] };
+            inner = match clause {
+                Clause::If(cond) => Stmt::Expr(Expr::If {
                     cond: Box::new(cond),
-                    then_block: Block { stmts: vec![push_stmt], lines: vec![0] },
+                    then_block: body,
                     else_block: None,
-                })],
-                lines: vec![0],
-            },
-        };
+                }),
+                Clause::For(var, iter) => Stmt::Expr(Expr::For {
+                    var,
+                    iter: Box::new(iter),
+                    body,
+                }),
+            };
+        }
         Ok(Expr::Block(Block {
             stmts: vec![
                 Stmt::Let {
@@ -749,11 +764,7 @@ impl Parser {
                     mutable: true,
                     value: Expr::List(Vec::new()),
                 },
-                Stmt::Expr(Expr::For {
-                    var,
-                    iter: Box::new(iter),
-                    body: loop_body,
-                }),
+                inner,
                 Stmt::Expr(Expr::Var(acc)),
             ],
             lines: vec![0, 0, 0],
