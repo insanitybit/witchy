@@ -3651,6 +3651,27 @@ mod example_tests {
         assert_eq!(compiled, vec!["3", "3", "7", "5", "5", "3", "0", "0"]);
     }
 
+    // sum_by totals a projection of each element (0 for empty) — including a
+    // record field via a record-typed lambda parameter.
+    #[test]
+    fn std_list_sum_by_backends_agree() {
+        let client = r#"
+            import list
+            type Item { price: Int  qty: Int }
+            fn main(console: Console) {
+              let cart = [Item(50, 3), Item(200, 1), Item(150, 2)]
+              print(console, int_to_string(list.sum_by(cart, fn(it: Item) { it.price * it.qty })))
+              print(console, int_to_string(list.sum_by([1, 2, 3, 4], fn(n: Int) { n * n })))
+              print(console, int_to_string(list.sum_by([], fn(n: Int) { n })))
+            }
+        "#;
+        let sources = [("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "sum_by diverged");
+        assert_eq!(compiled, vec!["650", "30", "0"]);
+    }
+
     #[test]
     fn std_list_product_slice_scan_backends_agree() {
         // product (1 for empty), slice (clamped half-open range), and scan

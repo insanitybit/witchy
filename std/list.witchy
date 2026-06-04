@@ -71,6 +71,16 @@ pub fn sum(xs: List(Int)) -> Int {
   total
 }
 
+// The sum of `f` applied to each element (0 for the empty list) — e.g. a total
+// over a record field: `sum_by(cart, fn(it) { it.price * it.qty })`.
+pub fn sum_by(xs: List(a), f: fn(a) -> Int) -> Int {
+  var total = 0
+  for x in xs {
+    total = total + f(x)
+  }
+  total
+}
+
 // The product of a list of integers (1 for the empty list).
 pub fn product(xs: List(Int)) -> Int {
   var p = 1
