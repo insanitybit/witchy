@@ -2294,9 +2294,11 @@ pub fn compile_actor_module(actor: &ActorDef) -> Result<String, CodegenError> {
 /// Compile every actor in a module, assigning each distinct handler message a
 /// shared tag so the host can route inter-actor sends. Returns (actor name,
 /// WAT) pairs and the tag -> message-name table.
-pub fn compile_program(
-    module: &Module,
-) -> Result<(Vec<(String, String)>, Vec<String>), CodegenError> {
+/// The result of compiling a module's actors: each actor's `(name, WAT)` and the
+/// program-wide message-tag table (tag index -> message name).
+pub type CompiledActors = (Vec<(String, String)>, Vec<String>);
+
+pub fn compile_program(module: &Module) -> Result<CompiledActors, CodegenError> {
     let mut tag_of: HashMap<String, u32> = HashMap::new();
     let mut names: Vec<String> = Vec::new();
     for item in &module.items {

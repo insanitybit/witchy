@@ -160,6 +160,11 @@ fn collect_type_params(t: &ast::Type, acc: &mut Vec<String>) {
     }
 }
 
+/// A record type's layout: its type-parameter var ids (in order) and its fields
+/// as `(name, type)`. Field types may mention the parameters, instantiated with
+/// the value's actual type arguments on access.
+type RecordInfo = (Vec<u32>, Vec<(String, Ty)>);
+
 struct Checker {
     fn_sigs: HashMap<String, (Vec<Ty>, Ty)>,
     ctor_sigs: HashMap<String, (Vec<Ty>, Ty)>,
@@ -169,7 +174,7 @@ struct Checker {
     /// Record types: name -> (type-parameter var ids in order, fields). A field
     /// type may mention the parameters, which are instantiated with the value's
     /// actual type arguments on access.
-    record_fields: HashMap<String, (Vec<u32>, Vec<(String, Ty)>)>,
+    record_fields: HashMap<String, RecordInfo>,
     adt_variants: HashMap<String, Vec<String>>,
     actor_field_sigs: HashMap<String, Vec<Ty>>,
     fn_conventions: HashMap<String, Vec<Convention>>,
