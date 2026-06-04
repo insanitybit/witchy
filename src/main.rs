@@ -3747,6 +3747,43 @@ mod example_tests {
         assert_eq!(compiled, vec!["501", "bad"]);
     }
 
+    // Integration showcase: a recursive JSON-value renderer. Exercises a
+    // recursive ADT (JArr holds List(Json)), every match arm form, recursion,
+    // list.map with a *named function* argument (function-as-value), and
+    // string.join — all composing. Both backends agree.
+    #[test]
+    fn json_renderer_integration_backends_agree() {
+        let client = r#"
+            import list
+            import string
+            type Json {
+              JNull
+              JBool(Bool)
+              JNum(Int)
+              JStr(String)
+              JArr(List(Json))
+            }
+            fn render(j: Json) -> String {
+              match j {
+                JNull -> "null"
+                JBool(b) -> if b { "true" } else { "false" }
+                JNum(n) -> int_to_string(n)
+                JStr(s) -> "\"" <> s <> "\""
+                JArr(items) -> "[" <> string.join(list.map(items, render), ",") <> "]"
+              }
+            }
+            fn main(console: Console) {
+              let doc = JArr([JNum(1), JStr("hi"), JBool(true), JNull, JArr([JNum(2), JNum(3)])])
+              print(console, render(doc))
+            }
+        "#;
+        let sources = [("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "json renderer diverged");
+        assert_eq!(compiled, vec!["[1,\"hi\",true,null,[2,3]]"]);
+    }
+
     #[test]
     fn order_processing_integration_backends_agree() {
         let client = r#"
