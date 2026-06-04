@@ -3335,6 +3335,40 @@ mod example_tests {
     // map's result element type is the mapper's return type, so iterating a
     // `list.map(records, fn(r){ OtherRecord(..) })` resolves field access on the
     // mapped records (a different record type than the input).
+    // End-to-end: records flow through the whole stdlib pipeline with correct
+    // field resolution — fold over records, max_by/find returning Option(record)
+    // (match payload reads fields), filter then iterate (loop var reads fields),
+    // a helper function over a record, and first-class lambdas throughout.
+    #[test]
+    fn order_processing_integration_backends_agree() {
+        let client = r#"
+            import list
+            import option
+            type Item { name: String  price: Int  qty: Int }
+            fn line_total(it: Item) -> Int { it.price * it.qty }
+            fn main(console: Console) {
+              let cart = [Item("apple", 50, 3), Item("bread", 200, 1), Item("milk", 150, 2)]
+              let total = list.fold(cart, 0, fn(acc: Int, it: Item) { acc + line_total(it) })
+              print(console, int_to_string(total))
+              match list.max_by(cart, fn(a: Item, b: Item) { line_total(a) < line_total(b) }) {
+                Some(it) -> print(console, it.name)
+                None -> print(console, "none")
+              }
+              let multi = list.filter(cart, fn(it: Item) { it.qty > 1 })
+              for it in multi { print(console, it.name) }
+              match list.find(cart, fn(it: Item) { it.name == "bread" }) {
+                Some(it) -> print(console, int_to_string(it.price))
+                None -> print(console, "0")
+              }
+            }
+        "#;
+        let sources = [("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "order processing diverged");
+        assert_eq!(compiled, vec!["650", "milk", "apple", "milk", "200"]);
+    }
+
     #[test]
     fn iterate_map_result_records_backends_agree() {
         let client = r#"
