@@ -232,6 +232,10 @@ struct Codegen {
     /// take/drop/reverse/sort_by/slice/unique): the return's element type is that
     /// argument's element type, so `for x in f(xs) { x.field }` resolves.
     fn_ret_list_of_list_arg: HashMap<String, usize>,
+    /// For the `map` shape `fn(.., fn(a) -> b, ..) -> List(b)`: the function-typed
+    /// argument index whose *return* is the result's element type. So
+    /// `for r in f(xs, fn(x){ Mk(..) }) { r.field }` resolves from the mapper.
+    fn_ret_list_of_fn_arg: HashMap<String, usize>,
     /// Return kind of the function currently being compiled (for `return`).
     cur_fn_ret_kind: Kind,
     /// Whether the current function has any `inout` parameters.
@@ -282,6 +286,7 @@ impl Codegen {
             fn_ret_list_elem: HashMap::new(),
             fn_ret_option_of_list_arg: HashMap::new(),
             fn_ret_list_of_list_arg: HashMap::new(),
+            fn_ret_list_of_fn_arg: HashMap::new(),
             cur_fn_ret_kind: Kind::I32,
             cur_fn_inout: false,
             uses_list_push: false,
@@ -526,6 +531,16 @@ impl Codegen {
                     if let Some(arg) = args.get(k) {
                         return self.elem_record_type_of(arg);
                     }
+                }
+                // ...or the `map` shape `fn(.., fn(a)->b, ..) -> List(b)`, whose
+                // element type is the mapper's return record (a lambda body, or
+                // a named function declared to return a record).
+                if let Some(&k) = self.fn_ret_list_of_fn_arg.get(name) {
+                    return match args.get(k) {
+                        Some(Expr::Lambda { body, .. }) => self.block_record_type(body),
+                        Some(Expr::Var(f)) => self.fn_ret_records.get(f).cloned(),
+                        _ => None,
+                    };
                 }
                 None
             }
@@ -2059,6 +2074,14 @@ fn list_param_of_var(params: &[crate::ast::Param], tv: &str) -> Option<usize> {
     })
 }
 
+/// The index of the first parameter typed `fn(..) -> tv` (a function returning
+/// the given type-var `tv`).
+fn fn_param_returning_var(params: &[crate::ast::Param], tv: &str) -> Option<usize> {
+    params.iter().position(|p| {
+        matches!(&p.ty, Some(Type::Fn(_, ret)) if bare_type_var(ret).as_deref() == Some(tv))
+    })
+}
+
 /// Compile a module's functions to WAT. Requires a `main` returning Int or Nil;
 /// `main` may take a single capability parameter.
 pub fn compile_module(module: &Module) -> Result<String, CodegenError> {
@@ -2155,6 +2178,9 @@ pub fn compile_module(module: &Module) -> Result<String, CodegenError> {
             if let Some(tv) = list_elem_type_var(&f.ret) {
                 if let Some(k) = list_param_of_var(&f.params, &tv) {
                     cg.fn_ret_list_of_list_arg.insert(f.name.clone(), k);
+                } else if let Some(k) = fn_param_returning_var(&f.params, &tv) {
+                    // `map`: result element type is the mapper's return type.
+                    cg.fn_ret_list_of_fn_arg.insert(f.name.clone(), k);
                 }
             }
         }

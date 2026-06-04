@@ -3332,6 +3332,31 @@ mod example_tests {
     // Generic `fn(List(a),..) -> List(a)` results (filter/reverse/...) carry the
     // argument's element record type, so iterating them resolves field access:
     // `for p in list.filter(records, pred) { p.field }`.
+    // map's result element type is the mapper's return type, so iterating a
+    // `list.map(records, fn(r){ OtherRecord(..) })` resolves field access on the
+    // mapped records (a different record type than the input).
+    #[test]
+    fn iterate_map_result_records_backends_agree() {
+        let client = r#"
+            import list
+            type Raw { a: Int  b: Int }
+            type Point { x: Int  y: Int }
+            fn main(console: Console) {
+              let raws = [Raw(1, 2), Raw(3, 4)]
+              let pts = list.map(raws, fn(r: Raw) { Point(r.a + r.b, r.a * r.b) })
+              for p in pts { print(console, int_to_string(p.x)) }
+              for p in list.map(raws, fn(r: Raw) { Point(r.b, r.a) }) {
+                print(console, int_to_string(p.y))
+              }
+            }
+        "#;
+        let sources = [("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "iterate map result diverged");
+        assert_eq!(compiled, vec!["3", "7", "1", "3"]);
+    }
+
     #[test]
     fn iterate_generic_list_result_records_backends_agree() {
         let client = r#"
