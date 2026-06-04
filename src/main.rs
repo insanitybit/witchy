@@ -3326,6 +3326,38 @@ mod example_tests {
         assert_eq!(compiled, vec!["700", "1", "3"]);
     }
 
+    // The generic stdlib case: `list.find` etc. have shape `fn(List(a),..) ->
+    // Option(a)`, so matching their result binds the payload to the list's
+    // element record type. `acc.field` now resolves through a generic lookup.
+    #[test]
+    fn match_generic_list_lookup_payload_backends_agree() {
+        let client = r#"
+            import list
+            import option
+            type Account { id: Int  balance: Int }
+            fn main(console: Console) {
+              let accounts = [Account(1, 100), Account(2, 200), Account(3, 300)]
+              match list.find(accounts, fn(a: Account) { a.balance > 150 }) {
+                Some(acc) -> print(console, int_to_string(acc.balance))
+                None -> print(console, "none")
+              }
+              match list.head(accounts) {
+                Some(acc) -> print(console, int_to_string(acc.id))
+                None -> print(console, "none")
+              }
+              match list.find(accounts, fn(a: Account) { a.balance > 999 }) {
+                Some(acc) -> print(console, int_to_string(acc.id))
+                None -> print(console, "none")
+              }
+            }
+        "#;
+        let sources = [("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "generic list lookup payload diverged");
+        assert_eq!(compiled, vec!["200", "1", "none"]);
+    }
+
     #[test]
     fn match_option_record_payload_backends_agree() {
         let client = r#"

@@ -223,6 +223,11 @@ struct Codegen {
     /// Function name -> the record type of the elements of its `List(_)` return,
     /// so `for x in f(...) { x.field }` resolves x's record type.
     fn_ret_list_elem: HashMap<String, String>,
+    /// Function name -> the argument index whose list element type is the payload
+    /// of its `Option(a)`/`Result(a, _)` return (the shape `fn(List(a),..)->
+    /// Option(a)`, as in list.find/head/min_by). Lets `match f(xs) { Some(r) ->
+    /// r.field }` resolve r from xs's element record type, without full inference.
+    fn_ret_option_of_list_arg: HashMap<String, usize>,
     /// Return kind of the function currently being compiled (for `return`).
     cur_fn_ret_kind: Kind,
     /// Whether the current function has any `inout` parameters.
@@ -271,6 +276,7 @@ impl Codegen {
             fn_ret_records: HashMap::new(),
             fn_ret_result_record: HashMap::new(),
             fn_ret_list_elem: HashMap::new(),
+            fn_ret_option_of_list_arg: HashMap::new(),
             cur_fn_ret_kind: Kind::I32,
             cur_fn_inout: false,
             uses_list_push: false,
@@ -445,7 +451,20 @@ impl Codegen {
     fn match_payload_record(&self, scrutinee: &Expr) -> Option<String> {
         match scrutinee {
             Expr::Var(v) => self.local_payload_records.get(v).cloned(),
-            Expr::Call { name, .. } => self.fn_ret_result_record.get(name).cloned(),
+            Expr::Call { name, args } => {
+                // A declared `-> Option(Record)` return...
+                if let Some(rec) = self.fn_ret_result_record.get(name) {
+                    return Some(rec.clone());
+                }
+                // ...or the generic `fn(List(a),..) -> Option(a)` shape, whose
+                // payload is the element record type of the given list argument.
+                if let Some(&k) = self.fn_ret_option_of_list_arg.get(name) {
+                    if let Some(arg) = args.get(k) {
+                        return self.elem_record_type_of(arg);
+                    }
+                }
+                None
+            }
             Expr::Ctor { name, args } if (name == "Some" || name == "Ok") && args.len() == 1 => {
                 self.record_type_of(&args[0])
             }
@@ -1979,6 +1998,22 @@ impl Codegen {
     }
 }
 
+/// If `ret` is `Option(a)` or `Result(a, _)` whose payload `a` is a bare
+/// type-parameter (a lowercase, argument-less name), return that parameter's
+/// name — used to spot the `fn(List(a),..) -> Option(a)` shape.
+fn payload_type_var(ret: &Option<Type>) -> Option<String> {
+    if let Some(Type::Named(n, args)) = ret {
+        if (n == "Option" || n == "Result") && !args.is_empty() {
+            if let Type::Named(tv, targs) = &args[0] {
+                if targs.is_empty() && tv.chars().next().is_some_and(|c| c.is_lowercase()) {
+                    return Some(tv.clone());
+                }
+            }
+        }
+    }
+    None
+}
+
 /// Compile a module's functions to WAT. Requires a `main` returning Int or Nil;
 /// `main` may take a single capability parameter.
 pub fn compile_module(module: &Module) -> Result<String, CodegenError> {
@@ -2060,6 +2095,23 @@ pub fn compile_module(module: &Module) -> Result<String, CodegenError> {
                     if cg.record_fields.contains_key(payload) {
                         cg.fn_ret_result_record
                             .insert(f.name.clone(), payload.clone());
+                    }
+                }
+            }
+            // Generic shape `fn(.., List(a), ..) -> Option(a)/Result(a, _)`
+            // (list.find/head/min_by/...): record which argument's element type is
+            // the payload, so the payload record resolves from the call's list arg.
+            if let Some(tv) = payload_type_var(&f.ret) {
+                for (k, p) in f.params.iter().enumerate() {
+                    if let Some(Type::Named(ln, targs)) = &p.ty {
+                        if ln == "List" && targs.len() == 1 {
+                            if let Type::Named(elem_tv, et) = &targs[0] {
+                                if et.is_empty() && elem_tv == &tv {
+                                    cg.fn_ret_option_of_list_arg.insert(f.name.clone(), k);
+                                    break;
+                                }
+                            }
+                        }
                     }
                 }
             }
