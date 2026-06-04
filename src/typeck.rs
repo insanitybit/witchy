@@ -585,6 +585,11 @@ impl Checker {
                 Stmt::Expr(e) => {
                     ty = self.infer(e)?;
                 }
+                // `break`/`continue` have no type; misuse outside a loop is
+                // caught at runtime / by codegen (no enclosing loop label).
+                Stmt::Break | Stmt::Continue => {
+                    ty = Ty::Nil;
+                }
             }
         }
         self.pop();

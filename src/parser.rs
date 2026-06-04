@@ -384,6 +384,12 @@ impl Parser {
             };
             return Ok(Stmt::Return(value));
         }
+        if self.eat(&Tok::Break) {
+            return Ok(Stmt::Break);
+        }
+        if self.eat(&Tok::Continue) {
+            return Ok(Stmt::Continue);
+        }
         if self.at(&Tok::Let) || self.at(&Tok::Var) {
             let mutable = self.advance() == Tok::Var;
             if self.at(&Tok::LParen) {

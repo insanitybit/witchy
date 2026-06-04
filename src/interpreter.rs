@@ -140,6 +140,11 @@ impl std::error::Error for RuntimeError {}
 enum Flow {
     Err(RuntimeError),
     Return(Value),
+    /// `break` — caught by the innermost loop, which stops.
+    Break,
+    /// `continue` — caught by the innermost loop, which proceeds to the next
+    /// iteration.
+    Continue,
 }
 
 impl From<RuntimeError> for Flow {
@@ -178,6 +183,9 @@ fn finish(r: Result<Value, Flow>) -> Result<Value, RuntimeError> {
         Ok(v) => Ok(v),
         Err(Flow::Return(v)) => Ok(v),
         Err(Flow::Err(e)) => Err(e),
+        Err(Flow::Break | Flow::Continue) => {
+            Err(RuntimeError { message: "`break`/`continue` outside a loop".into() })
+        }
     }
 }
 
@@ -416,6 +424,7 @@ impl Interpreter {
         match result {
             Ok(v) | Err(Flow::Return(v)) => Ok(v),
             Err(e @ Flow::Err(_)) => Err(e),
+            Err(Flow::Break | Flow::Continue) => err("`break`/`continue` outside a loop"),
         }
     }
 
@@ -479,6 +488,9 @@ impl Interpreter {
             Err(Flow::Return(v)) => v,
             // On error keep `cur_fn = name` so the innermost frame is reported.
             Err(e @ Flow::Err(_)) => return Err(e),
+            Err(Flow::Break | Flow::Continue) => {
+                return err("`break`/`continue` outside a loop")
+            }
         };
         for (caller, param_name) in writebacks {
             let final_v = fenv.get(&param_name).cloned().unwrap();
@@ -972,6 +984,18 @@ impl Interpreter {
                     // into the function's result (same channel `?` uses).
                     return Err(Flow::Return(v));
                 }
+                Stmt::Break => {
+                    if needs_scope {
+                        env.pop();
+                    }
+                    return Err(Flow::Break);
+                }
+                Stmt::Continue => {
+                    if needs_scope {
+                        env.pop();
+                    }
+                    return Err(Flow::Continue);
+                }
                 Stmt::Expr(e) => {
                     result = self.eval(e, env)?;
                 }
@@ -1153,7 +1177,11 @@ impl Interpreter {
                     env.define(var.clone(), item, false);
                     let r = self.eval_block(body, env);
                     env.pop();
-                    r?;
+                    match r {
+                        Ok(_) | Err(Flow::Continue) => {}
+                        Err(Flow::Break) => break,
+                        Err(e) => return Err(e),
+                    }
                 }
                 Ok(Value::Nil)
             }
@@ -1161,9 +1189,11 @@ impl Interpreter {
             Expr::While { cond, body } => {
                 loop {
                     match self.eval(cond, env)? {
-                        Value::Bool(true) => {
-                            self.eval_block(body, env)?;
-                        }
+                        Value::Bool(true) => match self.eval_block(body, env) {
+                            Ok(_) | Err(Flow::Continue) => {}
+                            Err(Flow::Break) => break,
+                            Err(e) => return Err(e),
+                        },
                         Value::Bool(false) => break,
                         other => {
                             return err(format!("`while` condition must be Bool, got `{other}`"))

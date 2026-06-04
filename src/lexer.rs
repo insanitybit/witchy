@@ -35,6 +35,8 @@ pub enum Tok {
     For,
     In,
     Return,
+    Break,
+    Continue,
     Update,
 
     // Grouping / punctuation
@@ -115,6 +117,8 @@ impl fmt::Display for Tok {
             For => write!(f, "for"),
             In => write!(f, "in"),
             Return => write!(f, "return"),
+            Break => write!(f, "break"),
+            Continue => write!(f, "continue"),
             Update => write!(f, "update"),
             LParen => write!(f, "("),
             RParen => write!(f, ")"),
@@ -343,6 +347,8 @@ impl Lexer {
             "for" => Tok::For,
             "in" => Tok::In,
             "return" => Tok::Return,
+            "break" => Tok::Break,
+            "continue" => Tok::Continue,
             "update" => Tok::Update,
             "_" => Tok::Underscore,
             _ => Tok::Ident(text),

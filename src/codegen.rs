@@ -263,6 +263,9 @@ struct Codegen {
     clos_arities: HashSet<usize>,
     /// Current nesting level of expression application, indexing `APPLY_POOL`.
     apply_level: usize,
+    /// Stack of enclosing loops' `(break-target, continue-target)` WASM labels
+    /// (innermost last), so `break`/`continue` branch to the right block.
+    loop_labels: Vec<(String, String)>,
 }
 
 impl Codegen {
@@ -323,6 +326,7 @@ impl Codegen {
             lambdas: Vec::new(),
             clos_arities: HashSet::new(),
             apply_level: 0,
+            loop_labels: Vec::new(),
         }
     }
 
@@ -630,7 +634,7 @@ impl Codegen {
                     self.infer_locals_expr(value);
                 }
                 Stmt::Return(Some(e)) | Stmt::Expr(e) => self.infer_locals_expr(e),
-                Stmt::Return(None) => {}
+                Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
             }
         }
     }
@@ -986,6 +990,14 @@ impl Codegen {
                     // Anything after a `return` in this block is unreachable.
                     tail_is_value = false;
                 }
+                Stmt::Break | Stmt::Continue => {
+                    let Some((brk, cont)) = self.loop_labels.last() else {
+                        return cerr("`break`/`continue` outside a loop");
+                    };
+                    let label = if matches!(stmt, Stmt::Break) { brk } else { cont };
+                    out.push_str(&format!("    br {label}\n"));
+                    tail_is_value = false;
+                }
                 Stmt::Expr(e) => {
                     out.push_str(&self.compile_expr(e)?);
                     if i == last {
@@ -1175,7 +1187,11 @@ impl Codegen {
                 let id = self.next_label;
                 self.next_label += 1;
                 let c = self.compile_expr(cond)?;
+                // `break` exits to $we{id}; `continue` re-enters $wl{id}, which
+                // re-checks the condition.
+                self.loop_labels.push((format!("$we{id}"), format!("$wl{id}")));
                 let b = self.compile_block(body)?;
+                self.loop_labels.pop();
                 Ok(format!(
                     "    block $we{id}\n    loop $wl{id}\n{c}    i32.eqz\n    br_if $we{id}\n{b}    drop\n    br $wl{id}\n    end\n    end\n    i32.const 0\n"
                 ))
@@ -1254,14 +1270,18 @@ impl Codegen {
                 if let Some(elem) = self.elem_record_type_of(iter) {
                     self.local_records.insert(var.clone(), elem);
                 }
+                // `break` branches to $fe{id} (loop exit); `continue` to $fc{id}
+                // (an inner block around the body, after which the index advances).
+                self.loop_labels.push((format!("$fe{id}"), format!("$fc{id}")));
                 let body_wat = self.compile_block(body)?;
+                self.loop_labels.pop();
                 Ok(format!(
                     "{iter_wat}    local.set ${list_l}\n    \
                      i32.const 0\n    local.set ${idx_l}\n    \
                      block $fe{id}\n    loop $fl{id}\n    \
                      local.get ${idx_l}\n    local.get ${list_l}\n    i32.load\n    i32.ge_s\n    br_if $fe{id}\n    \
                      local.get ${list_l}\n    i32.const 4\n    i32.add\n    local.get ${idx_l}\n    i32.const 4\n    i32.mul\n    i32.add\n    i32.load\n    local.set ${var}\n\
-                     {body_wat}    drop\n    \
+                     block $fc{id}\n{body_wat}    drop\n    end\n    \
                      local.get ${idx_l}\n    i32.const 1\n    i32.add\n    local.set ${idx_l}\n    \
                      br $fl{id}\n    end\n    end\n    i32.const 0\n"
                 ))
@@ -3277,7 +3297,7 @@ fn fv_block(block: &Block, s: &mut LambdaScan) {
                 }
             }
             Stmt::Return(Some(e)) | Stmt::Expr(e) => fv_expr(e, s),
-            Stmt::Return(None) => {}
+            Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
         }
     }
 }
@@ -3386,7 +3406,7 @@ fn collect_let_names(block: &Block, out: &mut Vec<String>) {
                 collect_let_names_expr(value, out);
             }
             Stmt::Return(Some(e)) | Stmt::Expr(e) => collect_let_names_expr(e, out),
-            Stmt::Return(None) => {}
+            Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
         }
     }
 }
@@ -3556,7 +3576,7 @@ impl Renamer {
                 }
             }
             Stmt::Return(Some(e)) | Stmt::Expr(e) => self.rename_expr(e),
-            Stmt::Return(None) => {}
+            Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
         }
     }
 

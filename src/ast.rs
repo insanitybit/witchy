@@ -125,6 +125,10 @@ pub enum Stmt {
     /// `return e` (or bare `return`) — exit the enclosing function early with a
     /// value (or Nil).
     Return(Option<Expr>),
+    /// `break` — exit the innermost enclosing loop.
+    Break,
+    /// `continue` — skip to the next iteration of the innermost enclosing loop.
+    Continue,
     Expr(Expr),
 }
 

@@ -207,7 +207,7 @@ fn collect_bound_block(b: &Block, out: &mut HashSet<String>) {
             }
             Stmt::Assign { value, .. } => collect_bound_expr(value, out),
             Stmt::Return(Some(e)) | Stmt::Expr(e) => collect_bound_expr(e, out),
-            Stmt::Return(None) => {}
+            Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
         }
     }
 }
@@ -314,7 +314,7 @@ fn rewrite_block(
             | Stmt::Assign { value, .. }
             | Stmt::LetTuple { value, .. } => rewrite_expr(value, m, imps, fns, bound)?,
             Stmt::Return(Some(e)) | Stmt::Expr(e) => rewrite_expr(e, m, imps, fns, bound)?,
-            Stmt::Return(None) => {}
+            Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
         }
     }
     Ok(())

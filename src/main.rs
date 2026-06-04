@@ -2997,6 +2997,43 @@ mod example_tests {
         );
     }
 
+    // break exits the innermost loop; continue skips to the next iteration —
+    // in both for-loops (continue advances the index) and while-loops (continue
+    // re-checks the condition). Both backends agree.
+    #[test]
+    fn break_continue_backends_agree() {
+        let src = r#"
+            fn main(console: Console) {
+              var sum = 0
+              for x in [1, 2, 3, 4, 5, 6, 7, 8] {
+                if x > 5 { break }
+                if x % 2 == 0 { continue }
+                sum = sum + x
+              }
+              print(console, int_to_string(sum))
+              var i = 0
+              var found = 0
+              while i < 100 {
+                i = i + 1
+                if i < 10 { continue }
+                found = i
+                break
+              }
+              print(console, int_to_string(found))
+              var count = 0
+              for a in [1, 2, 3] {
+                for b in [1, 2, 3] {
+                  if b == 2 { break }
+                  count = count + 1
+                }
+              }
+              print(console, int_to_string(count))
+            }
+        "#;
+        assert_eq!(interp(src), run_on_wasm(src), "break/continue diverged");
+        assert_eq!(run_on_wasm(src), vec!["9", "10", "3"]);
+    }
+
     #[test]
     fn list_comprehension_backends_agree() {
         let src = r#"
