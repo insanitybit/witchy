@@ -4064,6 +4064,31 @@ mod example_tests {
         assert_eq!(compiled, vec!["3", "3", "5", "7", "0", "0"]);
     }
 
+    // split_at splits a list into (first n, the rest); n is clamped at both
+    // ends. The list analogue of string.split_once. Both backends agree.
+    #[test]
+    fn std_list_split_at_backends_agree() {
+        let client = r#"
+            import list
+            fn main(console: Console) {
+              let (a, b) = list.split_at([1, 2, 3, 4, 5], 2)
+              print(console, int_to_string(list.sum(a)))
+              print(console, int_to_string(list.sum(b)))
+              let (c, d) = list.split_at([1, 2], 5)
+              print(console, int_to_string(list.sum(c)))
+              print(console, int_to_string(length(d)))
+              let (e, f) = list.split_at([1, 2, 3], 0)
+              print(console, int_to_string(length(e)))
+              print(console, int_to_string(list.sum(f)))
+            }
+        "#;
+        let sources = [("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "split_at diverged");
+        assert_eq!(compiled, vec!["3", "12", "3", "0", "0", "6"]);
+    }
+
     #[test]
     fn std_list_chunks_tail_init_backends_agree() {
         // chunks groups into fixed-size sublists (last may be short), tail drops

@@ -510,6 +510,12 @@ pub fn take(xs: List(a), n: Int) -> List(a) {
   out
 }
 
+// Split the list at index `n` into `(first n, the rest)`. `n` is clamped, so
+// `split_at(xs, 0)` is `([], xs)` and an `n` past the end gives `(xs, [])`.
+pub fn split_at(xs: List(a), n: Int) -> (List(a), List(a)) {
+  (take(xs, n), drop(xs, n))
+}
+
 // All but the first `n` elements.
 pub fn drop(xs: List(a), n: Int) -> List(a) {
   var out = []
