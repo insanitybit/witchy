@@ -3498,6 +3498,32 @@ mod example_tests {
         assert_eq!(compiled, vec!["500", "none"]);
     }
 
+    // Nested constructor patterns destructure through a record: `Circle(Point(x,
+    // y))` binds x and y from the inner Point in one pattern. Both backends agree.
+    #[test]
+    fn nested_constructor_pattern_backends_agree() {
+        let src = r#"
+            type Point { x: Int  y: Int }
+            type Shape {
+              Circle(Point)
+              Origin
+            }
+            fn f(s: Shape) -> Int {
+              match s {
+                Circle(Point(x, y)) -> x + y
+                Origin -> 0
+              }
+            }
+            fn main(console: Console) {
+              print(console, int_to_string(f(Circle(Point(3, 4)))))
+              print(console, int_to_string(f(Circle(Point(10, 1)))))
+              print(console, int_to_string(f(Origin)))
+            }
+        "#;
+        assert_eq!(interp(src), run_on_wasm(src), "nested constructor pattern diverged");
+        assert_eq!(run_on_wasm(src), vec!["7", "11", "0"]);
+    }
+
     #[test]
     fn match_binds_record_field_backends_agree() {
         let src = r#"
