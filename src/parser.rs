@@ -38,6 +38,8 @@ struct Parser {
     /// `-` that begins a new line ends the arm (it starts the next arm's
     /// negative-literal pattern) rather than continuing the body as subtraction.
     in_match_arm: bool,
+    /// Counter for fresh accumulator names in desugared list comprehensions.
+    compr_counter: usize,
 }
 
 impl Parser {
@@ -46,6 +48,7 @@ impl Parser {
             toks,
             pos: 0,
             in_match_arm: false,
+            compr_counter: 0,
         }
     }
 
@@ -682,15 +685,79 @@ impl Parser {
 
     fn list(&mut self) -> Result<Expr, ParseError> {
         self.expect(&Tok::LBracket)?;
-        let mut items = Vec::new();
-        while !self.at(&Tok::RBracket) {
-            items.push(self.expr(0)?);
-            if !self.eat(&Tok::Comma) {
-                break;
+        if self.at(&Tok::RBracket) {
+            self.advance();
+            return Ok(Expr::List(Vec::new()));
+        }
+        let first = self.expr(0)?;
+        // `[elem for x in iter (if cond)?]` — a list comprehension.
+        if self.at(&Tok::For) {
+            return self.list_comprehension(first);
+        }
+        let mut items = vec![first];
+        if self.eat(&Tok::Comma) {
+            while !self.at(&Tok::RBracket) {
+                items.push(self.expr(0)?);
+                if !self.eat(&Tok::Comma) {
+                    break;
+                }
             }
         }
         self.expect(&Tok::RBracket)?;
         Ok(Expr::List(items))
+    }
+
+    /// Desugar `[elem for x in iter (if cond)?]` into a block that builds the
+    /// list explicitly: `{ var acc = []; for x in iter { (if cond) acc =
+    /// push(acc, elem) }; acc }`. Both backends handle this directly.
+    fn list_comprehension(&mut self, elem: Expr) -> Result<Expr, ParseError> {
+        self.expect(&Tok::For)?;
+        let var = self.ident()?;
+        self.expect(&Tok::In)?;
+        let iter = self.expr(0)?;
+        let filter = if self.eat(&Tok::If) {
+            Some(self.expr(0)?)
+        } else {
+            None
+        };
+        self.expect(&Tok::RBracket)?;
+
+        let acc = format!("__compr{}", self.compr_counter);
+        self.compr_counter += 1;
+        let push_stmt = Stmt::Assign {
+            name: acc.clone(),
+            value: Expr::Call {
+                name: "push".to_string(),
+                args: vec![Expr::Var(acc.clone()), elem],
+            },
+        };
+        let loop_body = match filter {
+            None => Block { stmts: vec![push_stmt], lines: vec![0] },
+            Some(cond) => Block {
+                stmts: vec![Stmt::Expr(Expr::If {
+                    cond: Box::new(cond),
+                    then_block: Block { stmts: vec![push_stmt], lines: vec![0] },
+                    else_block: None,
+                })],
+                lines: vec![0],
+            },
+        };
+        Ok(Expr::Block(Block {
+            stmts: vec![
+                Stmt::Let {
+                    name: acc.clone(),
+                    mutable: true,
+                    value: Expr::List(Vec::new()),
+                },
+                Stmt::Expr(Expr::For {
+                    var,
+                    iter: Box::new(iter),
+                    body: loop_body,
+                }),
+                Stmt::Expr(Expr::Var(acc)),
+            ],
+            lines: vec![0, 0, 0],
+        }))
     }
 
     fn if_expr(&mut self) -> Result<Expr, ParseError> {

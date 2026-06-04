@@ -2951,6 +2951,24 @@ mod example_tests {
     // (quadrant), plus binding tuple elements alongside a literal in another
     // position (describe). Destructuring a matched tuple must agree across
     // backends.
+    // List comprehensions desugar to a block that builds the list with a for
+    // loop and push: `[elem for x in xs (if cond)?]`. Mapping, filtering, and an
+    // empty source all agree across backends.
+    #[test]
+    fn list_comprehension_backends_agree() {
+        let src = r#"
+            fn main(console: Console) {
+              let squares = [n * n for n in [1, 2, 3, 4]]
+              for s in squares { print(console, int_to_string(s)) }
+              let evens = [n for n in [1, 2, 3, 4, 5, 6] if n % 2 == 0]
+              for e in evens { print(console, int_to_string(e)) }
+              print(console, int_to_string(length([x for x in [] if x > 0])))
+            }
+        "#;
+        assert_eq!(interp(src), run_on_wasm(src), "list comprehension diverged");
+        assert_eq!(run_on_wasm(src), vec!["1", "4", "9", "16", "2", "4", "6", "0"]);
+    }
+
     #[test]
     fn tuple_patterns_backends_agree() {
         let src = r#"

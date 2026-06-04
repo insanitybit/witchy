@@ -3430,7 +3430,44 @@ fn collect_let_names_expr(expr: &Expr, out: &mut Vec<String>) {
                 collect_let_names_expr(&arm.body, out);
             }
         }
-        _ => {}
+        // Value-position sub-expressions may hold a nested block with `let`s
+        // (e.g. a list comprehension as a call argument), so recurse into them.
+        // A lambda body is compiled as its own function, so its lets are not
+        // this function's locals.
+        Expr::Call { args, .. }
+        | Expr::Ctor { args, .. }
+        | Expr::List(args)
+        | Expr::Tuple(args)
+        | Expr::Spawn { args, .. } => {
+            for a in args {
+                collect_let_names_expr(a, out);
+            }
+        }
+        Expr::Apply { func, args } => {
+            collect_let_names_expr(func, out);
+            for a in args {
+                collect_let_names_expr(a, out);
+            }
+        }
+        Expr::Binary { lhs, rhs, .. } => {
+            collect_let_names_expr(lhs, out);
+            collect_let_names_expr(rhs, out);
+        }
+        Expr::Unary { expr, .. } | Expr::Try(expr) | Expr::Field { base: expr, .. } => {
+            collect_let_names_expr(expr, out)
+        }
+        Expr::RecordUpdate { base, fields } => {
+            collect_let_names_expr(base, out);
+            for (_, v) in fields {
+                collect_let_names_expr(v, out);
+            }
+        }
+        Expr::Var(_)
+        | Expr::Int(_)
+        | Expr::Float(_)
+        | Expr::Str(_)
+        | Expr::Bool(_)
+        | Expr::Lambda { .. } => {}
     }
 }
 
