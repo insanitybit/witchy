@@ -1883,13 +1883,20 @@ mod example_tests {
               print(console, string.pad_right("42", 5, "."))
               print(console, string.pad_left("hello", 3, "x"))
               print(console, string.pad_left("ab", 7, "-="))
+              print(console, string.pad_left("café", 6, "*"))
+              print(console, string.pad_right("café", 6, "*"))
             }
         "#;
         let sources = [("string", crate::bundled_module("string").unwrap()), ("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
         let compiled = run_linked_on_wasm(&sources, "main");
         assert_eq!(interpreted, compiled, "pad diverged between backends");
-        assert_eq!(compiled, vec!["00042", "42...", "hello", "-=-=-ab"]);
+        // Widths are by character: "café" is 4 chars, so pad to 6 adds two stars
+        // (a byte-based width would have added only one).
+        assert_eq!(
+            compiled,
+            vec!["00042", "42...", "hello", "-=-=-ab", "**café", "café**"]
+        );
     }
 
     #[test]

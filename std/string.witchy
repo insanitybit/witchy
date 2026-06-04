@@ -33,7 +33,7 @@ pub fn repeat(s: String, n: Int) -> String {
 // The padding is trimmed to fit exactly, so any fill width yields a result of
 // exactly `width` chars; `s` is returned unchanged when already that long.
 pub fn pad_left(s: String, width: Int, fill: String) -> String {
-  let len = string_length(s)
+  let len = char_count(s)
   if len >= width {
     s
   } else {
@@ -44,7 +44,7 @@ pub fn pad_left(s: String, width: Int, fill: String) -> String {
 
 // Right-pad `s` with copies of `fill` until it is `width` characters wide.
 pub fn pad_right(s: String, width: Int, fill: String) -> String {
-  let len = string_length(s)
+  let len = char_count(s)
   if len >= width {
     s
   } else {
