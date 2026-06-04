@@ -115,6 +115,20 @@ fn ty_to_valtype(t: &Type) -> ValType {
     }
 }
 
+/// A function's local-type tables, taken out while a nested lambda body compiles
+/// and restored afterward. Bundled so `swap_out_scope`/`restore_scope` pass one
+/// value instead of a long argument list.
+struct SavedScope {
+    locals: HashMap<String, Kind>,
+    records: HashMap<String, String>,
+    list_elem: HashMap<String, String>,
+    payload: HashMap<String, String>,
+    val_types: HashMap<String, ValType>,
+    list_elem_vt: HashMap<String, ValType>,
+    ret: Kind,
+    inout: bool,
+}
+
 struct Codegen {
     strings: Vec<(String, u32)>,
     next_offset: u32,
@@ -1569,20 +1583,13 @@ impl Codegen {
 
         // The lambda body compiles in a fresh local scope (its params, the
         // captured locals, and any lets).
-        let saved_locals = std::mem::take(&mut self.locals);
-        let saved_records = std::mem::take(&mut self.local_records);
-        let saved_list_elem = std::mem::take(&mut self.local_list_elem);
-        let saved_payload = std::mem::take(&mut self.local_payload_records);
-        let saved_val_types = std::mem::take(&mut self.local_val_types);
-        let saved_list_elem_vt = std::mem::take(&mut self.local_list_elem_valtype);
-        let saved_ret = self.cur_fn_ret_kind;
-        let saved_inout = self.cur_fn_inout;
+        let saved = self.swap_out_scope();
         self.cur_fn_inout = false;
 
         for p in params {
             let k = p.ty.as_ref().map(ty_kind).unwrap_or(Kind::I32);
             if k != Kind::I32 {
-                self.restore_locals(saved_locals, saved_records, saved_list_elem, saved_payload, saved_val_types, saved_list_elem_vt, saved_ret, saved_inout);
+                self.restore_scope(saved);
                 return cerr("non-Int lambda parameters are not compiled to WASM yet");
             }
             self.locals.insert(p.name.clone(), k);
@@ -1623,7 +1630,7 @@ impl Codegen {
         self.infer_locals(body);
         let ret_kind = self.block_kind(body);
         if ret_kind != Kind::I32 {
-            self.restore_locals(saved_locals, saved_records, saved_list_elem, saved_payload, saved_val_types, saved_list_elem_vt, saved_ret, saved_inout);
+            self.restore_scope(saved);
             return cerr("non-Int lambda results are not compiled to WASM yet");
         }
         self.cur_fn_ret_kind = ret_kind;
@@ -1671,7 +1678,7 @@ impl Codegen {
         self.lambdas[index] = format!("{header}{prologue}{body_wat}  )\n");
         self.clos_arities.insert(params.len());
 
-        self.restore_locals(saved_locals, saved_records, saved_list_elem, saved_payload, saved_val_types, saved_list_elem_vt, saved_ret, saved_inout);
+        self.restore_scope(saved);
 
         // Construction site: allocate `[code_index][cap0]..[capN]` via `$mkN`,
         // pushing the captures from the *enclosing* scope in slot order.
@@ -1689,25 +1696,31 @@ impl Codegen {
         Ok(out)
     }
 
-    fn restore_locals(
-        &mut self,
-        locals: HashMap<String, Kind>,
-        records: HashMap<String, String>,
-        list_elem: HashMap<String, String>,
-        payload: HashMap<String, String>,
-        val_types: HashMap<String, ValType>,
-        list_elem_vt: HashMap<String, ValType>,
-        ret: Kind,
-        inout: bool,
-    ) {
-        self.locals = locals;
-        self.local_records = records;
-        self.local_list_elem = list_elem;
-        self.local_payload_records = payload;
-        self.local_val_types = val_types;
-        self.local_list_elem_valtype = list_elem_vt;
-        self.cur_fn_ret_kind = ret;
-        self.cur_fn_inout = inout;
+    /// Take the current function's local-type tables out (leaving them empty for
+    /// a lambda body to populate), returning them for later restoration.
+    fn swap_out_scope(&mut self) -> SavedScope {
+        SavedScope {
+            locals: std::mem::take(&mut self.locals),
+            records: std::mem::take(&mut self.local_records),
+            list_elem: std::mem::take(&mut self.local_list_elem),
+            payload: std::mem::take(&mut self.local_payload_records),
+            val_types: std::mem::take(&mut self.local_val_types),
+            list_elem_vt: std::mem::take(&mut self.local_list_elem_valtype),
+            ret: self.cur_fn_ret_kind,
+            inout: self.cur_fn_inout,
+        }
+    }
+
+    /// Restore a scope previously taken by `swap_out_scope`.
+    fn restore_scope(&mut self, s: SavedScope) {
+        self.locals = s.locals;
+        self.local_records = s.records;
+        self.local_list_elem = s.list_elem;
+        self.local_payload_records = s.payload;
+        self.local_val_types = s.val_types;
+        self.local_list_elem_valtype = s.list_elem_vt;
+        self.cur_fn_ret_kind = s.ret;
+        self.cur_fn_inout = s.inout;
     }
 
     /// The `$key_eq` comparison mode for a Dict key expression: 0 for Int/Bool
