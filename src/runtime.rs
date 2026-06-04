@@ -181,6 +181,8 @@ impl Runtime {
         }
         if caps.print_int {
             linker.func_wrap("witchy", "print_int", host_print_int)?;
+            // Same "print a computed result" facility, for a Float-returning main.
+            linker.func_wrap("witchy", "print_float", host_print_float)?;
         }
         // `recv` is intrinsic: reading your *own* mailbox is not authority over
         // anyone else, so every actor may do it.
@@ -234,6 +236,15 @@ fn host_print(mut caller: Caller<'_, ActorState>, ptr: i32, len: i32) -> Result<
 fn host_print_int(caller: Caller<'_, ActorState>, n: i32) -> Result<()> {
     println!("[actor {}] {n}", caller.data().id);
     caller.data().output.lock().unwrap().push(n.to_string());
+    Ok(())
+}
+
+fn host_print_float(caller: Caller<'_, ActorState>, x: f64) -> Result<()> {
+    // `f64::to_string` is Rust's `{}` Display — the same formatting the
+    // interpreter uses for a Float (Value::Float Display), so the two backends
+    // agree on float output.
+    println!("[actor {}] {x}", caller.data().id);
+    caller.data().output.lock().unwrap().push(x.to_string());
     Ok(())
 }
 

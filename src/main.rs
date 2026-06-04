@@ -1311,6 +1311,25 @@ mod example_tests {
     }
 
     // factorial (1 for n<=1) and is_prime (trial division; n<2 not prime).
+    // A Float-returning main now runs compiled: the auto-print wrapper calls
+    // the newly-wired print_float host, which formats f64 exactly like the
+    // interpreter's Value::Float Display. Previously the compiled module failed
+    // to instantiate (no print_float import provider).
+    #[test]
+    fn float_returning_main_backends_agree() {
+        let client = r#"
+            import math
+            fn main() -> Float {
+              math.fmin(2.5, sqrt(2.25)) + math.fclamp(5.0, 0.0, 1.0)
+            }
+        "#;
+        let sources = [("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "float main diverged");
+        assert_eq!(compiled, vec!["2.5"]);
+    }
+
     #[test]
     fn std_math_factorial_is_prime_backends_agree() {
         let client = r#"

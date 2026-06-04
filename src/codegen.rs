@@ -1786,6 +1786,8 @@ impl Codegen {
             ("float_to_int", 1) => {
                 Ok(format!("{}    i32.trunc_f64_s\n", self.compile_expr(&args[0])?))
             }
+            // sqrt(x): WASM has a native f64 square root.
+            ("sqrt", 1) => Ok(format!("{}    f64.sqrt\n", self.compile_expr(&args[0])?)),
             // string_to_int(s): parse a well-formed decimal integer — optional
             // surrounding ASCII whitespace, an optional sign, then digits. The
             // interpreter trims and rejects malformed input; the compiled parser
