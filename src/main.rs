@@ -2954,6 +2954,29 @@ mod example_tests {
     // List comprehensions desugar to a block that builds the list with a for
     // loop and push: `[elem for x in xs (if cond)?]`. Mapping, filtering, and an
     // empty source all agree across backends.
+    // Comprehensions compose with records: the element expression and the `if`
+    // filter both access fields of the loop variable (resolved because the
+    // source is a List(Record)). Both backends agree.
+    #[test]
+    fn list_comprehension_over_records_backends_agree() {
+        let client = r#"
+            import list
+            type Item { name: String  qty: Int }
+            fn main(console: Console) {
+              let cart = [Item("apple", 3), Item("bread", 1), Item("milk", 2)]
+              let multi = [it.name for it in cart if it.qty > 1]
+              for n in multi { print(console, n) }
+              let qtys = [it.qty * 10 for it in cart]
+              for q in qtys { print(console, int_to_string(q)) }
+            }
+        "#;
+        let sources = [("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "comprehension over records diverged");
+        assert_eq!(compiled, vec!["apple", "milk", "30", "10", "20"]);
+    }
+
     #[test]
     fn list_comprehension_backends_agree() {
         let src = r#"
