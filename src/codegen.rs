@@ -1976,18 +1976,13 @@ impl Codegen {
                 let Some(&tag) = self.message_tags.get(msg) else {
                     return cerr(format!("send to unknown message `{msg}` (no handler declares it)"));
                 };
-                if fields.len() > 1 {
-                    return cerr("only messages with 0 or 1 fields are compiled yet");
-                }
                 self.uses_send = true;
                 let target = self.compile_expr(&args[0])?;
-                let arg = if fields.len() == 1 {
-                    self.compile_expr(&fields[0])?
-                } else {
-                    "    i32.const 0\n".to_string()
-                };
+                // Pack the message fields as a `[count][f0]..` record (the list
+                // layout) and pass its pointer; the host copies the values out.
+                let payload = self.compile_expr(&Expr::List(fields.clone()))?;
                 Ok(format!(
-                    "{target}    i32.const {tag}\n{arg}    call $send\n    i32.const 0\n"
+                    "{target}    i32.const {tag}\n{payload}    call $send\n    i32.const 0\n"
                 ))
             }
             ("spawn", _) => cerr("`spawn` is not compiled to WASM yet (host-driven)"),

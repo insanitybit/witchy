@@ -15,8 +15,9 @@ use std::sync::{Arc, Mutex};
 
 use wasmtime::{Caller, Engine, Error, Extern, Instance, Linker, Module, Result, Store, Val};
 
-/// (target actor id, message tag, single Int argument).
-type Queue = Arc<Mutex<VecDeque<(usize, u32, i32)>>>;
+/// (target actor id, message tag, Int field values copied from the sender).
+/// Fields are copied at send time, so the receiver never sees sender memory.
+type Queue = Arc<Mutex<VecDeque<(usize, u32, Vec<i32>)>>>;
 type Output = Arc<Mutex<Vec<String>>>;
 
 /// Per-actor host state.
@@ -81,16 +82,41 @@ impl System {
         linker.func_wrap("witchy", "print_int", |caller: Caller<'_, Host>, n: i32| {
             caller.data().output.lock().unwrap().push(n.to_string());
         })?;
+        // The third argument is a pointer into the sender's memory to a field
+        // record `[count][f0]..[fN-1]` (the list layout). The fields are read
+        // and copied now, so the message carries values, not a pointer — actors
+        // stay isolated.
         linker.func_wrap(
             "witchy",
             "send",
-            |caller: Caller<'_, Host>, target: i32, tag: i32, arg: i32| {
+            |mut caller: Caller<'_, Host>, target: i32, tag: i32, ptr: i32| -> Result<()> {
+                let fields = {
+                    let mem = caller
+                        .get_export("memory")
+                        .and_then(Extern::into_memory)
+                        .ok_or_else(|| Error::msg("actor has no memory"))?;
+                    let data = mem.data(&caller);
+                    let read = |off: i32| -> Result<i32> {
+                        let o = off as usize;
+                        let b = data
+                            .get(o..o + 4)
+                            .ok_or_else(|| Error::msg("send field out of bounds"))?;
+                        Ok(i32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+                    };
+                    let count = read(ptr)?.max(0);
+                    let mut fs = Vec::with_capacity(count as usize);
+                    for i in 0..count {
+                        fs.push(read(ptr + 4 + 4 * i)?);
+                    }
+                    fs
+                };
                 caller
                     .data()
                     .queue
                     .lock()
                     .unwrap()
-                    .push_back((target as usize, tag as u32, arg));
+                    .push_back((target as usize, tag as u32, fields));
+                Ok(())
             },
         )?;
 
@@ -117,7 +143,9 @@ impl System {
             .iter()
             .position(|m| m == message)
             .ok_or_else(|| Error::msg(format!("unknown message `{message}`")))? as u32;
-        self.queue.lock().unwrap().push_back((target, tag, arg));
+        // Driver-injected message: a single Int field (one-field or, for a
+        // zero-field handler, ignored).
+        self.queue.lock().unwrap().push_back((target, tag, vec![arg]));
         self.run_to_quiescence()
     }
 
@@ -125,19 +153,19 @@ impl System {
         let mut steps = 0u64;
         loop {
             let item = self.queue.lock().unwrap().pop_front();
-            let Some((target, tag, arg)) = item else {
+            let Some((target, tag, fields)) = item else {
                 break;
             };
             steps += 1;
             if steps > 1_000_000 {
                 return Err(Error::msg("actor system exceeded its step budget"));
             }
-            self.invoke(target, tag, arg)?;
+            self.invoke(target, tag, &fields)?;
         }
         Ok(())
     }
 
-    fn invoke(&mut self, target: usize, tag: u32, arg: i32) -> Result<()> {
+    fn invoke(&mut self, target: usize, tag: u32, fields: &[i32]) -> Result<()> {
         let Some(name) = self.tag_to_message.get(tag as usize).cloned() else {
             return Ok(());
         };
@@ -147,11 +175,8 @@ impl System {
             return Ok(());
         };
         let nparams = func.ty(&*store).params().len();
-        let args: Vec<Val> = if nparams >= 1 {
-            vec![Val::I32(arg)]
-        } else {
-            vec![]
-        };
+        // Pass one Val per handler parameter, in order.
+        let args: Vec<Val> = fields.iter().take(nparams).map(|&f| Val::I32(f)).collect();
         func.call(&mut *store, &args, &mut [])?;
         Ok(())
     }
@@ -194,6 +219,31 @@ mod tests {
         sys.set_subject(ids["Forwarder"], "target", ids["Printer"]).unwrap();
         sys.send(ids["Forwarder"], "Relay", 42).unwrap();
         assert_eq!(sys.output(), vec!["got 42"]);
+    }
+
+    #[test]
+    fn multi_field_and_zero_field_messages() {
+        // Messages now carry any number of Int fields across the VM boundary
+        // (copied by value): a two-field Add and a zero-field Ping, both sent
+        // actor-to-actor.
+        let src = r#"
+            actor Worker {
+              console: Console
+              on Add(x: Int, y: Int) { print(console, int_to_string(x + y)) }
+              on Ping() { print(console, "pong") }
+            }
+            actor Boss {
+              target: Subject
+              on Go(n: Int) {
+                send(target, Add(n, n * 2))
+                send(target, Ping())
+              }
+            }
+        "#;
+        let (mut sys, ids) = build(src);
+        sys.set_subject(ids["Boss"], "target", ids["Worker"]).unwrap();
+        sys.send(ids["Boss"], "Go", 10).unwrap();
+        assert_eq!(sys.output(), vec!["30", "pong"]);
     }
 
     #[test]
