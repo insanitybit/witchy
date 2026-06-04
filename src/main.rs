@@ -3329,6 +3329,28 @@ mod example_tests {
     // The generic stdlib case: `list.find` etc. have shape `fn(List(a),..) ->
     // Option(a)`, so matching their result binds the payload to the list's
     // element record type. `acc.field` now resolves through a generic lookup.
+    // Generic `fn(List(a),..) -> List(a)` results (filter/reverse/...) carry the
+    // argument's element record type, so iterating them resolves field access:
+    // `for p in list.filter(records, pred) { p.field }`.
+    #[test]
+    fn iterate_generic_list_result_records_backends_agree() {
+        let client = r#"
+            import list
+            type P { x: Int  y: Int }
+            fn main(console: Console) {
+              let ps = [P(1, 10), P(2, 20), P(3, 30)]
+              let evens = list.filter(ps, fn(p: P) { p.x % 2 == 0 })
+              for p in evens { print(console, int_to_string(p.y)) }
+              for p in list.reverse(ps) { print(console, int_to_string(p.x)) }
+            }
+        "#;
+        let sources = [("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "iterate generic list result diverged");
+        assert_eq!(compiled, vec!["20", "3", "2", "1"]);
+    }
+
     #[test]
     fn match_generic_list_lookup_payload_backends_agree() {
         let client = r#"

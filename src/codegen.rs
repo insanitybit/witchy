@@ -228,6 +228,10 @@ struct Codegen {
     /// Option(a)`, as in list.find/head/min_by). Lets `match f(xs) { Some(r) ->
     /// r.field }` resolve r from xs's element record type, without full inference.
     fn_ret_option_of_list_arg: HashMap<String, usize>,
+    /// Like the above but for the shape `fn(List(a),..) -> List(a)` (list.filter/
+    /// take/drop/reverse/sort_by/slice/unique): the return's element type is that
+    /// argument's element type, so `for x in f(xs) { x.field }` resolves.
+    fn_ret_list_of_list_arg: HashMap<String, usize>,
     /// Return kind of the function currently being compiled (for `return`).
     cur_fn_ret_kind: Kind,
     /// Whether the current function has any `inout` parameters.
@@ -277,6 +281,7 @@ impl Codegen {
             fn_ret_result_record: HashMap::new(),
             fn_ret_list_elem: HashMap::new(),
             fn_ret_option_of_list_arg: HashMap::new(),
+            fn_ret_list_of_list_arg: HashMap::new(),
             cur_fn_ret_kind: Kind::I32,
             cur_fn_inout: false,
             uses_list_push: false,
@@ -510,7 +515,20 @@ impl Codegen {
         match iter {
             Expr::Var(v) => self.local_list_elem.get(v).cloned(),
             Expr::List(items) => items.first().and_then(|e| self.record_type_of(e)),
-            Expr::Call { name, .. } => self.fn_ret_list_elem.get(name).cloned(),
+            Expr::Call { name, args } => {
+                // A declared `-> List(Record)` return...
+                if let Some(rec) = self.fn_ret_list_elem.get(name) {
+                    return Some(rec.clone());
+                }
+                // ...or the generic `fn(List(a),..) -> List(a)` shape, whose
+                // element type is that of the given list argument.
+                if let Some(&k) = self.fn_ret_list_of_list_arg.get(name) {
+                    if let Some(arg) = args.get(k) {
+                        return self.elem_record_type_of(arg);
+                    }
+                }
+                None
+            }
             _ => None,
         }
     }
@@ -1998,20 +2016,47 @@ impl Codegen {
     }
 }
 
+/// If `ty` is a bare type-parameter (lowercase, argument-less name), return it.
+fn bare_type_var(ty: &Type) -> Option<String> {
+    match ty {
+        Type::Named(n, args)
+            if args.is_empty() && n.chars().next().is_some_and(|c| c.is_lowercase()) =>
+        {
+            Some(n.clone())
+        }
+        _ => None,
+    }
+}
+
 /// If `ret` is `Option(a)` or `Result(a, _)` whose payload `a` is a bare
-/// type-parameter (a lowercase, argument-less name), return that parameter's
-/// name — used to spot the `fn(List(a),..) -> Option(a)` shape.
+/// type-parameter, return that parameter's name — used to spot the
+/// `fn(List(a),..) -> Option(a)` shape.
 fn payload_type_var(ret: &Option<Type>) -> Option<String> {
     if let Some(Type::Named(n, args)) = ret {
         if (n == "Option" || n == "Result") && !args.is_empty() {
-            if let Type::Named(tv, targs) = &args[0] {
-                if targs.is_empty() && tv.chars().next().is_some_and(|c| c.is_lowercase()) {
-                    return Some(tv.clone());
-                }
-            }
+            return bare_type_var(&args[0]);
         }
     }
     None
+}
+
+/// If `ret` is `List(a)` whose element `a` is a bare type-parameter, return it —
+/// used to spot the `fn(List(a),..) -> List(a)` shape.
+fn list_elem_type_var(ret: &Option<Type>) -> Option<String> {
+    if let Some(Type::Named(n, args)) = ret {
+        if n == "List" && args.len() == 1 {
+            return bare_type_var(&args[0]);
+        }
+    }
+    None
+}
+
+/// The index of the first parameter typed `List(tv)` for the given type-var `tv`.
+fn list_param_of_var(params: &[crate::ast::Param], tv: &str) -> Option<usize> {
+    params.iter().position(|p| {
+        matches!(&p.ty, Some(Type::Named(n, targs))
+            if n == "List" && targs.len() == 1 && bare_type_var(&targs[0]).as_deref() == Some(tv))
+    })
 }
 
 /// Compile a module's functions to WAT. Requires a `main` returning Int or Nil;
@@ -2098,21 +2143,18 @@ pub fn compile_module(module: &Module) -> Result<String, CodegenError> {
                     }
                 }
             }
-            // Generic shape `fn(.., List(a), ..) -> Option(a)/Result(a, _)`
-            // (list.find/head/min_by/...): record which argument's element type is
-            // the payload, so the payload record resolves from the call's list arg.
+            // Generic shapes over a `List(a)` argument: `-> Option(a)/Result(a,_)`
+            // (find/head/min_by) and `-> List(a)` (filter/take/reverse/sort_by).
+            // Record which argument carries `a` so a call's payload / element
+            // record type resolves from that argument, without full inference.
             if let Some(tv) = payload_type_var(&f.ret) {
-                for (k, p) in f.params.iter().enumerate() {
-                    if let Some(Type::Named(ln, targs)) = &p.ty {
-                        if ln == "List" && targs.len() == 1 {
-                            if let Type::Named(elem_tv, et) = &targs[0] {
-                                if et.is_empty() && elem_tv == &tv {
-                                    cg.fn_ret_option_of_list_arg.insert(f.name.clone(), k);
-                                    break;
-                                }
-                            }
-                        }
-                    }
+                if let Some(k) = list_param_of_var(&f.params, &tv) {
+                    cg.fn_ret_option_of_list_arg.insert(f.name.clone(), k);
+                }
+            }
+            if let Some(tv) = list_elem_type_var(&f.ret) {
+                if let Some(k) = list_param_of_var(&f.params, &tv) {
+                    cg.fn_ret_list_of_list_arg.insert(f.name.clone(), k);
                 }
             }
         }
