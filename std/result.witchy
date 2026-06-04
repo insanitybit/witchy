@@ -100,6 +100,15 @@ pub fn map_or(r: Result(a, e), default: b, f: fn(a) -> b) -> b {
   }
 }
 
+// Collapse one layer of nesting: `Ok(Ok(v))` becomes `Ok(v)`; `Ok(Err(e))` and
+// `Err(e)` become `Err(e)`. The Result counterpart of `option.flatten`.
+pub fn flatten(rr: Result(Result(a, e), e)) -> Result(a, e) {
+  match rr {
+    Ok(inner) -> inner
+    Err(x) -> Err(x)
+  }
+}
+
 // The Ok value as `Some`, or `None` for an Err — discards the error, turning a
 // Result into an Option.
 pub fn ok(r: Result(a, e)) -> Option(a) {

@@ -3521,6 +3521,27 @@ mod example_tests {
         assert_eq!(compiled, vec!["5", "true", "9", "true"]);
     }
 
+    // result.flatten collapses Result(Result(a, e), e) one level (Ok(Ok(v)) ->
+    // Ok(v); Ok(Err) and Err -> Err), mirroring option.flatten. Both backends agree.
+    #[test]
+    fn std_result_flatten_backends_agree() {
+        let client = r#"
+            import result
+            fn nested(n: Int) -> Result(Result(Int, String), String) {
+              if n > 0 { Ok(Ok(n)) } else { Ok(Err("inner")) }
+            }
+            fn main(console: Console) {
+              print(console, int_to_string(result.unwrap_or(result.flatten(nested(5)), 0)))
+              print(console, to_string(result.is_err(result.flatten(nested(0)))))
+            }
+        "#;
+        let sources = [("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "result flatten diverged");
+        assert_eq!(compiled, vec!["5", "true"]);
+    }
+
     #[test]
     fn std_result_to_option_backends_agree() {
         let client = r#"
