@@ -154,6 +154,18 @@ pub fn words(text: String) -> List(String) {
   out
 }
 
+// Split at the first occurrence of `sep` into `(before, after)`, with `sep`
+// itself dropped. When `sep` is absent, returns `(s, "")`. Handy for parsing
+// `key=value` or `host:port`. Counted by Unicode scalar.
+pub fn split_once(s: String, sep: String) -> (String, String) {
+  let i = index_of(s, sep)
+  if i < 0 {
+    (s, "")
+  } else {
+    (substring(s, 0, i), substring(s, i + char_count(sep), char_count(s)))
+  }
+}
+
 // Split text into its newline-separated lines.
 pub fn lines(text: String) -> List(String) {
   split(text, "\n")

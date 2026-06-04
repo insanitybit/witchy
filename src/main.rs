@@ -3237,6 +3237,32 @@ mod example_tests {
     // (so "café" yields 4 chars including the multi-byte é). Both backends agree.
     // words splits on any whitespace (tabs/newlines/CRs treated as spaces) and
     // drops empty pieces from runs of whitespace or trailing space.
+    // split_once splits at the first separator into (before, after); the
+    // separator is dropped, later occurrences stay in `after`, and an absent
+    // separator gives (s, ""). Both backends agree.
+    #[test]
+    fn std_string_split_once_backends_agree() {
+        let client = r#"
+            import string
+            fn main(console: Console) {
+              let (k, v) = string.split_once("name=witchy", "=")
+              print(console, k)
+              print(console, v)
+              let (a, b) = string.split_once("no-sep-here", "=")
+              print(console, a)
+              print(console, "[" <> b <> "]")
+              let (h, rest) = string.split_once("a=b=c", "=")
+              print(console, h)
+              print(console, rest)
+            }
+        "#;
+        let sources = [("string", crate::bundled_module("string").unwrap()), ("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "split_once diverged");
+        assert_eq!(compiled, vec!["name", "witchy", "no-sep-here", "[]", "a", "b=c"]);
+    }
+
     #[test]
     fn std_string_words_backends_agree() {
         let client = r#"
