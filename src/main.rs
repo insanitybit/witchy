@@ -3000,6 +3000,35 @@ mod example_tests {
     // break exits the innermost loop; continue skips to the next iteration —
     // in both for-loops (continue advances the index) and while-loops (continue
     // re-checks the condition). Both backends agree.
+    // break/continue branching out of a result-typed `match` arm inside a loop
+    // must still produce valid WASM (the branch unwinds the match's value).
+    #[test]
+    fn break_inside_match_in_loop_backends_agree() {
+        let src = r#"
+            fn main(console: Console) {
+              var total = 0
+              for x in [1, 2, 3, 4, 5] {
+                match x {
+                  3 -> { break }
+                  _ -> { total = total + x }
+                }
+              }
+              print(console, int_to_string(total))
+              var kept = 0
+              for y in [1, 2, 3, 4] {
+                match y {
+                  2 -> { continue }
+                  _ -> 0
+                }
+                kept = kept + y
+              }
+              print(console, int_to_string(kept))
+            }
+        "#;
+        assert_eq!(interp(src), run_on_wasm(src), "break/continue in match diverged");
+        assert_eq!(run_on_wasm(src), vec!["3", "8"]);
+    }
+
     #[test]
     fn break_continue_backends_agree() {
         let src = r#"

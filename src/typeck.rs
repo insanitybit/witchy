@@ -585,10 +585,12 @@ impl Checker {
                 Stmt::Expr(e) => {
                     ty = self.infer(e)?;
                 }
-                // `break`/`continue` have no type; misuse outside a loop is
-                // caught at runtime / by codegen (no enclosing loop label).
+                // `break`/`continue` diverge (control leaves the block), so like
+                // `return` they contribute a fresh var that unifies with any
+                // expected type — letting `match x { _ -> { break } ... }` work.
+                // Misuse outside a loop is caught by codegen (no enclosing label).
                 Stmt::Break | Stmt::Continue => {
-                    ty = Ty::Nil;
+                    ty = self.fresh();
                 }
             }
         }
