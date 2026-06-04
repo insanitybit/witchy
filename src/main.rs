@@ -3290,6 +3290,35 @@ mod example_tests {
     // (`Circle(c)`) now resolves field access in the arm body (`c.x`). Codegen
     // previously rejected this; it's fixed for concrete (non-generic) field
     // types. Both backends agree.
+    // Matching the Some of a function-returned Option(Record) binds the payload
+    // to its record type, so `a.balance` resolves. Codegen learns the payload
+    // record from the function's declared `-> Option(Account)` return.
+    #[test]
+    fn match_option_record_payload_backends_agree() {
+        let client = r#"
+            import option
+            type Account { id: Int  balance: Int }
+            fn lookup(n: Int) -> Option(Account) {
+              if n > 0 { Some(Account(n, n * 100)) } else { None }
+            }
+            fn main(console: Console) {
+              match lookup(5) {
+                Some(a) -> print(console, int_to_string(a.balance))
+                None -> print(console, "none")
+              }
+              match lookup(0 - 1) {
+                Some(a) -> print(console, int_to_string(a.balance))
+                None -> print(console, "none")
+              }
+            }
+        "#;
+        let sources = [("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "Option(Record) match diverged");
+        assert_eq!(compiled, vec!["500", "none"]);
+    }
+
     #[test]
     fn match_binds_record_field_backends_agree() {
         let src = r#"

@@ -432,6 +432,22 @@ impl Codegen {
     /// determine it (a `split` result, a list literal, or a tracked list local),
     /// so a `for x in <iter>` loop variable's value type — and its use as a Dict
     /// key — can be resolved.
+    /// The record type carried by an Option/Result scrutinee's success variant
+    /// (`Some(R)` / `Ok(R)`), where codegen can determine it: a call to a
+    /// function declared to return `Option(R)`/`Result(R, _)`, or a literal
+    /// `Some(r)`/`Ok(r)` over a record. Lets `match f() { Some(a) -> a.field }`
+    /// resolve `a`. (A generic payload, e.g. `list.find`'s `Option(a)`, is not
+    /// resolvable here — that needs full instantiation tracking.)
+    fn match_payload_record(&self, scrutinee: &Expr) -> Option<String> {
+        match scrutinee {
+            Expr::Call { name, .. } => self.fn_ret_result_record.get(name).cloned(),
+            Expr::Ctor { name, args } if (name == "Some" || name == "Ok") && args.len() == 1 => {
+                self.record_type_of(&args[0])
+            }
+            _ => None,
+        }
+    }
+
     /// Collect `(var, record_type)` for each pattern variable bound to a
     /// record-typed constructor field, recursing through nested patterns. Lets a
     /// `match` arm like `Circle(p) -> p.x` resolve `p`'s record type.
@@ -576,7 +592,9 @@ impl Codegen {
                 self.infer_locals_expr(iter);
                 self.infer_locals(body);
             }
-            Expr::Match { arms, .. } => {
+            Expr::Match { scrutinee, arms } => {
+                // The record an Option/Result scrutinee's Some/Ok carries, if known.
+                let payload = self.match_payload_record(scrutinee);
                 for arm in arms {
                     // Pattern-bound vars are i32 (floats aren't stored in records).
                     let mut pvars = Vec::new();
@@ -590,6 +608,17 @@ impl Codegen {
                     self.pattern_record_binds(&arm.pattern, &mut recbinds);
                     for (v, rec) in recbinds {
                         self.local_records.insert(v, rec);
+                    }
+                    // `Some(a)`/`Ok(a)` over an Option/Result of a record binds
+                    // `a` to that record.
+                    if let Some(rec) = &payload {
+                        if let Pattern::Ctor { name, args } = &arm.pattern {
+                            if (name == "Some" || name == "Ok") && args.len() == 1 {
+                                if let Pattern::Var(v) = &args[0] {
+                                    self.local_records.insert(v.clone(), rec.clone());
+                                }
+                            }
+                        }
                     }
                     self.infer_locals_expr(&arm.body);
                 }
