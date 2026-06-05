@@ -95,3 +95,320 @@ fn status_code(line: String) -> Int:
         let sp2 = index_of(rest, " ")
         let code = if sp2 < 0: rest else: substring(rest, 0, sp2)
         string_to_int(code)
+
+// ============================================================================
+// HTTP server — the witchy answer to a slice of axum/tower, over the same Net
+// capability. A handler is a pure `fn(Request) -> Response`: it has NO
+// capability parameters, so it is *structurally* unable to touch the network,
+// filesystem, or console. To give a handler authority (a logger, a store, an
+// outbound client), capture it in the closure — capture IS dependency injection.
+// `serve` holds the Net to listen and never hands it to a handler, so a mounted
+// third-party handler can only compute over the request; it cannot phone home.
+// Build a Router with `get`/`post`/..., wrap it with `layer`, and `serve` it.
+// ============================================================================
+
+// A parsed request: method, raw path, the path params the router captured
+// (`:id`), the parsed query string, the (lowercased) headers, and the body.
+type Request:
+    Request(String, String, List((String, String)), List((String, String)), List((String, String)), String)
+
+pub fn method(req: Request) -> String:
+    match req:
+        Request(m, _p, _pa, _q, _h, _b) -> m
+
+pub fn path(req: Request) -> String:
+    match req:
+        Request(_m, p, _pa, _q, _h, _b) -> p
+
+// A captured path parameter (`:name`), or "" if absent.
+pub fn param(req: Request, name: String) -> String:
+    match req:
+        Request(_m, _p, pa, _q, _h, _b) -> lookup_or(pa, name, "")
+
+// A query-string parameter (`?name=...`), or "" if absent.
+pub fn query(req: Request, name: String) -> String:
+    match req:
+        Request(_m, _p, _pa, q, _h, _b) -> lookup_or(q, name, "")
+
+// A request header, looked up case-insensitively, or None.
+pub fn request_header(req: Request, name: String) -> Option(String):
+    match req:
+        Request(_m, _p, _pa, _q, h, _b) -> find_header(h, to_lower(name))
+
+pub fn request_body(req: Request) -> String:
+    match req:
+        Request(_m, _p, _pa, _q, _h, b) -> b
+
+fn lookup_or(pairs: List((String, String)), name: String, default: String) -> String:
+    for p in pairs:
+        let (k, v) = p
+        if k == name:
+            return v
+    default
+
+// ---- Response constructors (an axum `IntoResponse` in spirit) ----
+
+pub fn text(code: Int, b: String) -> Response:
+    Response(code, [("content-type", "text/plain; charset=utf-8")], b)
+
+pub fn html(code: Int, b: String) -> Response:
+    Response(code, [("content-type", "text/html; charset=utf-8")], b)
+
+// `b` is an already-encoded JSON string (e.g. from `json.encode`).
+pub fn json(code: Int, b: String) -> Response:
+    Response(code, [("content-type", "application/json")], b)
+
+pub fn status_only(code: Int) -> Response:
+    Response(code, [], "")
+
+pub fn not_found() -> Response:
+    Response(404, [("content-type", "text/plain; charset=utf-8")], "Not Found")
+
+pub fn redirect(location: String) -> Response:
+    Response(303, [("location", location)], "")
+
+// ---- Router (axum-flavored: declarative routes, path params, layers) ----
+
+// One route: HTTP method, a path pattern (`:param` captures a segment, `*rest`
+// captures the remainder), and the handler.
+type Route:
+    Route(String, String, fn(Request) -> Response)
+
+// A router: its routes plus the middleware layers wrapping the whole dispatch.
+type Router:
+    Router(List(Route), List(fn(fn(Request) -> Response) -> fn(Request) -> Response))
+
+pub fn router() -> Router:
+    Router([], [])
+
+pub fn route(r: Router, m: String, p: String, h: fn(Request) -> Response) -> Router:
+    match r:
+        Router(routes, layers) -> Router(push(routes, Route(m, p, h)), layers)
+
+pub fn get(r: Router, p: String, h: fn(Request) -> Response) -> Router:
+    route(r, "GET", p, h)
+pub fn post(r: Router, p: String, h: fn(Request) -> Response) -> Router:
+    route(r, "POST", p, h)
+pub fn put(r: Router, p: String, h: fn(Request) -> Response) -> Router:
+    route(r, "PUT", p, h)
+pub fn delete(r: Router, p: String, h: fn(Request) -> Response) -> Router:
+    route(r, "DELETE", p, h)
+pub fn patch(r: Router, p: String, h: fn(Request) -> Response) -> Router:
+    route(r, "PATCH", p, h)
+
+// Mount `sub`'s routes under `prefix` (axum-style nesting).
+pub fn nest(r: Router, prefix: String, sub: Router) -> Router:
+    match sub:
+        Router(sub_routes, _sub_layers) ->
+            var out = r
+            for rt in sub_routes:
+                match rt:
+                    Route(m, p, h) ->
+                        out = route(out, m, prefix <> p, h)
+            out
+
+// A tower-style middleware Layer: `fn(Handler) -> Handler`, wrapping the whole
+// dispatch (so it sees every request, 404s included).
+pub fn layer(r: Router, mw: fn(fn(Request) -> Response) -> fn(Request) -> Response) -> Router:
+    match r:
+        Router(routes, layers) -> Router(routes, push(layers, mw))
+
+// ---- Dispatch + path matching ----
+
+fn dispatch(routes: List(Route)) -> fn(Request) -> Response:
+    fn(req: Request):
+        match try_routes(routes, req):
+            Some(resp) -> resp
+            None -> not_found()
+
+fn try_routes(routes: List(Route), req: Request) -> Option(Response):
+    for rt in routes:
+        match rt:
+            Route(m, pat, h) ->
+                if m == method(req):
+                    match match_path(pat, path(req)):
+                        Some(params) ->
+                            return Some(h(with_params(req, params)))
+                        None -> 0
+    None
+
+fn with_params(req: Request, params: List((String, String))) -> Request:
+    match req:
+        Request(m, p, _old, q, h, b) -> Request(m, p, params, q, h, b)
+
+// Match a path against a pattern, returning the captured params or None.
+fn match_path(pattern: String, p: String) -> Option(List((String, String))):
+    match_segs(split_path(pattern), split_path(p), [])
+
+fn split_path(p: String) -> List(String):
+    var out = []
+    for seg in split(p, "/"):
+        if seg != "":
+            out = push(out, seg)
+    out
+
+fn match_segs(pat: List(String), segs: List(String), acc: List((String, String))) -> Option(List((String, String))):
+    if length(pat) == 0:
+        if length(segs) == 0:
+            Some(acc)
+        else:
+            None
+    else:
+        let ps = at(pat, 0)
+        if starts_with(ps, "*"):
+            Some(push(acc, (substring(ps, 1, char_count(ps)), join_segs(segs))))
+        else:
+            if length(segs) == 0:
+                None
+            else:
+                let seg = at(segs, 0)
+                if starts_with(ps, ":"):
+                    match_segs(rest(pat), rest(segs), push(acc, (substring(ps, 1, char_count(ps)), seg)))
+                else:
+                    if ps == seg:
+                        match_segs(rest(pat), rest(segs), acc)
+                    else:
+                        None
+
+fn rest(xs: List(a)) -> List(a):
+    var out = []
+    var i = 1
+    while i < length(xs):
+        out = push(out, at(xs, i))
+        i = i + 1
+    out
+
+fn join_segs(xs: List(String)) -> String:
+    var out = ""
+    var first = true
+    for s in xs:
+        if first:
+            out = s
+            first = false
+        else:
+            out = out <> "/" <> s
+    out
+
+// ---- Request parsing from the socket ----
+
+fn read_request(sock: Socket) -> Request:
+    let request_line = recv_line(sock)
+    let m = first_word(request_line)
+    let target = second_word(request_line)
+    let raw_path = before(target, "?")
+    let q = parse_query(after(target, "?"))
+    let headers = read_headers(sock)
+    let len = content_length(headers)
+    let body = if len > 0: recv_bytes(sock, len) else: ""
+    Request(m, raw_path, [], q, headers, body)
+
+fn read_headers(sock: Socket) -> List((String, String)):
+    var hdrs = []
+    var done = false
+    while !done:
+        let line = trim(recv_line(sock))
+        if line == "":
+            done = true
+        else:
+            let colon = index_of(line, ":")
+            if colon >= 0:
+                let name = to_lower(trim(substring(line, 0, colon)))
+                let value = trim(substring(line, colon + 1, char_count(line)))
+                hdrs = push(hdrs, (name, value))
+    hdrs
+
+fn content_length(headers: List((String, String))) -> Int:
+    match find_header(headers, "content-length"):
+        Some(v) -> string_to_int(v)
+        None -> 0
+
+fn parse_query(q: String) -> List((String, String)):
+    if q == "":
+        []
+    else:
+        var out = []
+        for pair in split(q, "&"):
+            let eq = index_of(pair, "=")
+            if eq >= 0:
+                out = push(out, (substring(pair, 0, eq), substring(pair, eq + 1, char_count(pair))))
+            else:
+                out = push(out, (pair, ""))
+        out
+
+fn first_word(s: String) -> String:
+    let sp = index_of(s, " ")
+    if sp < 0: s else: substring(s, 0, sp)
+
+fn second_word(s: String) -> String:
+    let sp = index_of(s, " ")
+    if sp < 0:
+        ""
+    else:
+        let r = substring(s, sp + 1, char_count(s))
+        let sp2 = index_of(r, " ")
+        if sp2 < 0: r else: substring(r, 0, sp2)
+
+fn before(s: String, sep: String) -> String:
+    let i = index_of(s, sep)
+    if i < 0: s else: substring(s, 0, i)
+
+fn after(s: String, sep: String) -> String:
+    let i = index_of(s, sep)
+    if i < 0: "" else: substring(s, i + char_count(sep), char_count(s))
+
+// ---- Rendering + the serve loop ----
+
+fn render_response(resp: Response) -> String:
+    match resp:
+        Response(code, headers, b) ->
+            var out = "HTTP/1.1 " <> int_to_string(code) <> " " <> reason(code) <> "\r\n"
+            for h in headers:
+                let (k, v) = h
+                out = out <> k <> ": " <> v <> "\r\n"
+            out = out <> "Content-Length: " <> int_to_string(string_length(b)) <> "\r\n"
+            out = out <> "Connection: close\r\n\r\n"
+            out <> b
+
+fn reason(code: Int) -> String:
+    if code == 200: "OK"
+    else: if code == 201: "Created"
+    else: if code == 204: "No Content"
+    else: if code == 303: "See Other"
+    else: if code == 400: "Bad Request"
+    else: if code == 404: "Not Found"
+    else: if code == 500: "Internal Server Error"
+    else: "Status"
+
+fn handler_of(app: Router) -> fn(Request) -> Response:
+    match app:
+        Router(routes, layers) -> wrap_layers(dispatch(routes), layers)
+
+fn wrap_layers(handler: fn(Request) -> Response, layers: List(fn(fn(Request) -> Response) -> fn(Request) -> Response)) -> fn(Request) -> Response:
+    var h = handler
+    for mw in layers:
+        h = mw(h)
+    h
+
+fn handle_one(server: Listener, handler: fn(Request) -> Response):
+    let sock = accept(server)
+    let resp = handler(read_request(sock))
+    send_bytes(sock, render_response(resp))
+    close(sock)
+
+// Serve `app` on `addr` forever. Needs the `Net` capability to listen; handlers
+// never receive it.
+pub fn serve(net: Net, addr: String, app: Router):
+    let server = listen(net, addr)
+    let handler = handler_of(app)
+    var running = true
+    while running:
+        handle_one(server, handler)
+
+// Serve exactly `n` requests then return — for tests and one-shot servers.
+pub fn serve_n(net: Net, addr: String, app: Router, n: Int):
+    let server = listen(net, addr)
+    let handler = handler_of(app)
+    var i = 0
+    while i < n:
+        handle_one(server, handler)
+        i = i + 1
