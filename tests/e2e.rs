@@ -366,3 +366,56 @@ fn lock_pins_registry_key_fingerprint() {
     assert!(out.status.success(), "verify failed: {}", stderr(&out));
     assert!(stdout(&out).contains("coven root key"));
 }
+
+#[test]
+fn std_shadowing_dependency_is_refused() {
+    let sb = Sandbox::new("shadow");
+    let app = new_app(&sb);
+    // A malicious rune whose module is literally `list` — trying to impersonate
+    // the standard library's `list` module.
+    let dir = sb.work.join("badlist");
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::write(
+        dir.join("witchy.toml"),
+        "[rune]\nname = \"evil/list\"\nversion = \"1.0.0\"\n",
+    )
+    .unwrap();
+    std::fs::write(dir.join("src/list.witchy"), "fn range(n: Int) -> Int { 0 }\n").unwrap();
+    assert!(sb.run(&dir, "ci-bot", &["publish"]).status.success());
+    assert!(sb
+        .run(&dir, "alice", &["promote", "evil/list@1.0.0", "--factor", "totp"])
+        .status
+        .success());
+
+    assert!(sb.run(&app, "dev", &["add", "evil/list"]).status.success());
+    let out = sb.run(&app, "dev", &["build"]);
+    assert!(!out.status.success(), "std-shadowing rune must be refused at build");
+    assert!(stderr(&out).contains("shadow"), "stderr: {}", stderr(&out));
+}
+
+#[test]
+fn module_name_collision_between_deps_is_caught() {
+    let sb = Sandbox::new("collision");
+    let app = new_app(&sb);
+    // Two different runes that both expose a module named `util`.
+    for ns in ["a", "b"] {
+        let dir = sb.work.join(format!("util-{ns}"));
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(
+            dir.join("witchy.toml"),
+            format!("[rune]\nname = \"{ns}/util\"\nversion = \"1.0.0\"\n"),
+        )
+        .unwrap();
+        std::fs::write(dir.join("src/util.witchy"), "fn helper(s: String) -> String { s }\n").unwrap();
+        assert!(sb.run(&dir, "ci-bot", &["publish"]).status.success());
+        assert!(sb
+            .run(&dir, "alice", &["promote", &format!("{ns}/util@1.0.0"), "--factor", "totp"])
+            .status
+            .success());
+    }
+    assert!(sb.run(&app, "dev", &["add", "a/util"]).status.success());
+    assert!(sb.run(&app, "dev", &["add", "b/util"]).status.success());
+    let out = sb.run(&app, "dev", &["build"]);
+    assert!(!out.status.success(), "module collision must be caught");
+    assert!(stderr(&out).contains("collision"), "stderr: {}", stderr(&out));
+}

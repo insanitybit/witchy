@@ -313,10 +313,36 @@ fn assemble(root_dir: &Path, env: &CovenEnv) -> PmResult<Assembled> {
         }
     }
 
-    // Gather every module: the root rune's own, plus each dependency's.
-    let mut modules: Vec<(String, String)> = root_src.modules();
+    // Gather every module: the root rune's own, plus each dependency's — while
+    // guarding against name collisions. Two different runes claiming the same
+    // module name is ambiguous; a dependency claiming a *standard-library* name
+    // (`list`, `string`, ...) is a std-shadowing attack and is refused outright.
+    // The root rune may shadow std (that's the consumer's own choice).
+    let mut modules: Vec<(String, String)> = Vec::new();
+    let mut owner: BTreeMap<String, String> = BTreeMap::new();
+    for (n, s) in root_src.modules() {
+        owner.insert(n.clone(), manifest.rune.name.clone());
+        modules.push((n, s));
+    }
     for r in &resolution.runes {
-        modules.extend(r.src.modules());
+        for (n, s) in r.src.modules() {
+            if crate::linker::std_source(&n).is_some() {
+                return err(format!(
+                    "rune `{}` provides a module `{n}` that shadows the standard library — refusing (possible std-shadowing attack)",
+                    r.name
+                ));
+            }
+            if let Some(prev) = owner.get(&n) {
+                if prev != &r.name {
+                    return err(format!(
+                        "module-name collision: `{n}` is provided by both `{prev}` and `{}` — rename one to disambiguate",
+                        r.name
+                    ));
+                }
+            }
+            owner.insert(n.clone(), r.name.clone());
+            modules.push((n, s));
+        }
     }
     if modules.is_empty() {
         return err("rune has no src/*.witchy modules");
