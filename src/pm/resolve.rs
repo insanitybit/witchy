@@ -82,6 +82,67 @@ impl Resolution {
     }
 }
 
+/// Reconstruct the resolved graph from an existing lockfile — honoring the
+/// pinned versions and hashes exactly, rather than re-resolving to the latest
+/// matching version. This is what `build`/`run` use, so a freshly published
+/// compatible version never silently changes (or breaks) a build; only
+/// `add`/`update` move the pins.
+///
+/// Sources are read from the local content-addressed store when present
+/// (offline), falling back to the registry/path for the pinned version and
+/// verifying the content hash matches the lock.
+pub fn from_lock(
+    lock: &Lockfile,
+    registry: &Registry,
+    store: &Store,
+) -> PmResult<Resolution> {
+    let mut runes = Vec::new();
+    for lr in &lock.runes {
+        let src = if let Some(sk) = &lr.source {
+            let path = sk.strip_prefix("path:").unwrap_or(sk);
+            let s = RuneSource::read_dir(Path::new(path))?;
+            if s.hash() != lr.hash {
+                return err(format!(
+                    "path dependency `{}` changed: hash {} != locked {} — run `witchy update`",
+                    lr.name,
+                    s.hash(),
+                    lr.hash
+                ));
+            }
+            s
+        } else if store.has(&lr.hash) {
+            store.get(&lr.hash)? // hash-verified by the store
+        } else {
+            // Repopulate the store from the registry at the pinned version.
+            let s = registry.fetch(&lr.name, &lr.version)?;
+            if s.hash() != lr.hash {
+                return err(format!(
+                    "registry `{}`@{} hashes to {} but the lock pins {} — refusing",
+                    lr.name,
+                    lr.version,
+                    s.hash(),
+                    lr.hash
+                ));
+            }
+            store.put(&s)?;
+            s
+        };
+        let footprint = super::footprint::of_modules(&src.modules())?;
+        runes.push(ResolvedRune {
+            name: lr.name.clone(),
+            version: lr.version.clone(),
+            registry: lr.registry.clone(),
+            source_kind: lr.source.clone(),
+            hash: lr.hash.clone(),
+            footprint,
+            provenance: lr.provenance.clone(),
+            src,
+        });
+    }
+    runes.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(Resolution { runes })
+}
+
 /// A pending dependency to resolve: how it's named, its requirement, and the
 /// directory path-deps resolve relative to.
 struct Pending {

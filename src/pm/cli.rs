@@ -17,7 +17,7 @@ use super::lockfile::Lockfile;
 use super::manifest::{Dep, DepDetail, Manifest, DEFAULT_REGISTRY};
 use super::registry::{Registry, State};
 use super::resolve::{self, Resolution};
-use super::semver::Req;
+use super::semver::{Req, Version};
 use super::store::{RuneSource, Store};
 use super::{err, PmResult};
 
@@ -25,8 +25,9 @@ use super::{err, PmResult};
 pub fn is_command(s: &str) -> bool {
     matches!(
         s,
-        "new" | "init" | "add" | "build" | "run" | "update" | "audit" | "tree" | "why"
-            | "why-cap" | "publish" | "promote" | "yank" | "list" | "verify" | "vendor" | "coven"
+        "new" | "init" | "add" | "build" | "run" | "update" | "audit" | "tree" | "outdated"
+            | "why" | "why-cap" | "publish" | "promote" | "yank" | "list" | "verify" | "vendor"
+            | "coven"
     )
 }
 
@@ -68,6 +69,7 @@ pub fn run(args: &[String]) -> PmResult<()> {
         "update" => cmd_update(rest),
         "audit" => cmd_audit(rest),
         "tree" => cmd_tree(rest),
+        "outdated" => cmd_outdated(rest),
         "why" => cmd_why(rest),
         "why-cap" => cmd_why_cap(rest),
         "publish" => cmd_publish(rest),
@@ -95,6 +97,7 @@ fn print_help() -> PmResult<()> {
          Audit:\n  \
            audit                 print runtime + build footprints + determinism\n  \
            tree                  dependency tree annotated with capabilities\n  \
+           outdated              deps with newer released versions (flags widening)\n  \
            why <pkg>             show why a rune is in the tree\n  \
            why-cap <Kind>        show which runes introduce a capability kind\n  \
            verify                re-verify the lock against the store/registry\n\n\
@@ -273,36 +276,37 @@ fn assemble(root_dir: &Path, env: &CovenEnv) -> PmResult<Assembled> {
         ));
     }
 
-    let resolution = resolve::resolve(&manifest, root_dir, &env.registry, &env.store)?;
-
-    // Lock-drift detection: a present lock must agree with what we resolved.
     let lock = Lockfile::load(root_dir)?;
     // TOFU: the registry's root signing key must match the one the lock pinned.
     if let Some(pinned) = &lock.registry_root {
-        if resolution.runes.iter().any(|r| r.registry.is_some()) {
-            let current = env.registry.root_fingerprint()?;
-            if &current != pinned {
+        let current = env.registry.root_fingerprint()?;
+        if &current != pinned {
+            return err(format!(
+                "coven registry root key changed: lock pins {pinned} but the registry now presents {current} — refusing to build (possible key compromise). If intentional, delete witchy.lock and re-resolve.",
+            ));
+        }
+    }
+
+    // Build from the lock (honoring pinned versions/hashes) when one exists;
+    // otherwise resolve fresh and bootstrap a lock. `add`/`update` are what move
+    // the pins — `build`/`run` never silently re-resolve to a newer version.
+    let resolution = if lock.runes.is_empty() {
+        let r = resolve::resolve(&manifest, root_dir, &env.registry, &env.store)?;
+        if !r.runes.is_empty() {
+            save_lock(root_dir, &r, env)?;
+        }
+        r
+    } else {
+        // A manifest dependency with no lock entry means the lock is stale.
+        for (key, dep) in &manifest.dependencies {
+            if dep.path().is_none() && lock.find(key).is_none() {
                 return err(format!(
-                    "coven registry root key changed: lock pins {pinned} but the registry now presents {current} — refusing to build (possible key compromise). If intentional, delete witchy.lock and re-resolve.",
+                    "dependency `{key}` is in witchy.toml but not the lock — run `witchy add {key}` or `witchy update`"
                 ));
             }
         }
-    }
-    if !lock.runes.is_empty() {
-        for r in &resolution.runes {
-            if let Some(l) = lock.find(&r.name) {
-                if l.hash != r.hash {
-                    return err(format!(
-                        "lockfile drift for `{}`: lock pins {} but resolution produced {} — run `witchy update`",
-                        r.name, l.hash, r.hash
-                    ));
-                }
-            }
-        }
-    } else if !resolution.runes.is_empty() {
-        // Bootstrap a lock so the next build is reproducible.
-        save_lock(root_dir, &resolution, env)?;
-    }
+        resolve::from_lock(&lock, &env.registry, &env.store)?
+    };
 
     // §7.1: a dependency's build step may run only with the build-time
     // capabilities the consuming project explicitly granted it. Enforce
@@ -638,6 +642,47 @@ fn cmd_audit(rest: &[String]) -> PmResult<()> {
     println!("    runtime: {}", set_or_none(&agg.runtime));
     println!("    build:   {}", set_or_none(&agg.build));
     println!("    determinism: {}", agg.determinism());
+    Ok(())
+}
+
+fn cmd_outdated(rest: &[String]) -> PmResult<()> {
+    let _ = rest;
+    let env = CovenEnv::load();
+    let root = Path::new(".");
+    // Compare the *locked* (pinned) versions against what's available — that's
+    // what "outdated" means. A fresh resolve would already pick the latest
+    // matching, hiding the gap.
+    let lock = Lockfile::load(root)?;
+    if lock.runes.is_empty() {
+        println!("no lockfile yet — run `witchy build` first.");
+        return Ok(());
+    }
+    let mut any = false;
+    for r in &lock.runes {
+        // Only registry runes have an "available latest"; path deps are local.
+        if r.registry.is_none() {
+            continue;
+        }
+        let Some(latest) = env.registry.best_match(&r.name, &Req::Any, false) else {
+            continue;
+        };
+        let (cur, new) = (Version::parse(&r.version)?, Version::parse(&latest.version)?);
+        if new > cur {
+            any = true;
+            // Would upgrading widen this rune's capability footprint? (It would
+            // then be gated by `update`.)
+            let widens = latest.footprint().widening_over(&r.footprint());
+            let note = if widens.is_empty() {
+                String::new()
+            } else {
+                format!("  ⚠ would widen caps: {}", render_widening(&widens))
+            };
+            println!("  {}  {} -> {}{note}", r.name, cur, new);
+        }
+    }
+    if !any {
+        println!("all dependencies are at their latest released version.");
+    }
     Ok(())
 }
 

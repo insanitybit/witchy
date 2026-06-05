@@ -332,22 +332,24 @@ fn signature_detects_registry_metadata_tampering() {
     sb.publish_lib("acme/x", "1.0.0", "fn f(s: String) -> String { s }\n");
     assert!(sb.run(&app, "dev", &["add", "acme/x"]).status.success());
 
-    // A healthy build verifies signatures.
-    assert!(sb.run(&app, "dev", &["build"]).status.success());
+    // A healthy verify checks signatures against the registry.
+    assert!(sb.run(&app, "dev", &["verify"]).status.success());
 
     // Attacker edits a signed field of the registry record (source untouched, so
     // content hashing alone would miss it — the Ed25519 signature must catch it).
-    let meta = sb
-        .home
-        .join("registry/acme/x/1.0.0/coven.json");
+    let meta = sb.home.join("registry/acme/x/1.0.0/coven.json");
     let json = std::fs::read_to_string(&meta).unwrap().replace("ci-bot", "attacker");
     std::fs::write(&meta, json).unwrap();
 
-    let out = sb.run(&app, "dev", &["build"]);
-    assert!(!out.status.success(), "tampered metadata must fail the build");
+    // `verify` re-fetches from the registry and must reject the tampered record.
+    // (A `build` legitimately keeps working — it uses the trusted, hash-pinned
+    // copy already in the local store; tampering upstream cannot affect it.)
+    let out = sb.run(&app, "dev", &["verify"]);
+    assert!(!out.status.success(), "tampered metadata must fail verify");
     assert!(
-        stderr(&out).contains("signature") || stderr(&out).contains("tampered"),
-        "stderr: {}",
+        stdout(&out).contains("FAIL") || stderr(&out).contains("signature") || stderr(&out).contains("tampered"),
+        "stdout: {} stderr: {}",
+        stdout(&out),
         stderr(&out)
     );
 }
@@ -418,6 +420,37 @@ fn module_name_collision_between_deps_is_caught() {
     let out = sb.run(&app, "dev", &["build"]);
     assert!(!out.status.success(), "module collision must be caught");
     assert!(stderr(&out).contains("collision"), "stderr: {}", stderr(&out));
+}
+
+#[test]
+fn outdated_reports_newer_versions_and_flags_widening() {
+    let sb = Sandbox::new("outdated");
+    let app = new_app(&sb);
+    sb.publish_lib("acme/lib", "1.0.0", "fn f(s: String) -> String { s }\n");
+    assert!(sb.run(&app, "dev", &["add", "acme/lib"]).status.success());
+
+    // Up to date initially.
+    let out = sb.run(&app, "dev", &["outdated"]);
+    assert!(stdout(&out).contains("up to date") || stdout(&out).contains("latest"), "got: {}", stdout(&out));
+
+    // Publish a newer version that demands Net.
+    let dir = sb.work.join("lib");
+    std::fs::write(dir.join("witchy.toml"), "[rune]\nname = \"acme/lib\"\nversion = \"1.1.0\"\n").unwrap();
+    std::fs::write(
+        dir.join("src/lib.witchy"),
+        "fn f(s: String) -> String { s }\nfn net_f(net: Net, s: String) -> String { s }\n",
+    )
+    .unwrap();
+    assert!(sb.run(&dir, "ci-bot", &["publish"]).status.success());
+    assert!(sb
+        .run(&dir, "alice", &["promote", "acme/lib@1.1.0", "--factor", "totp"])
+        .status
+        .success());
+
+    let out = sb.run(&app, "dev", &["outdated"]);
+    let s = stdout(&out);
+    assert!(s.contains("1.0.0 -> 1.1.0"), "outdated: {s}");
+    assert!(s.contains("widen") && s.contains("Net"), "should flag widening: {s}");
 }
 
 #[test]
