@@ -479,6 +479,29 @@ fn build_is_offline_from_the_store() {
 }
 
 #[test]
+fn vendored_sources_build_with_no_store_or_registry() {
+    let sb = Sandbox::new("vendor");
+    let app = new_app(&sb);
+    sb.publish_lib("acme/lib", "1.0.0", "fn f(s: String) -> String { s }\n");
+    assert!(sb.run(&app, "dev", &["add", "acme/lib"]).status.success());
+    std::fs::write(
+        app.join("src/app.witchy"),
+        "import lib\n\nfn main(console: Console) {\n  print(console, lib.f(\"vend\"))\n}\n",
+    )
+    .unwrap();
+    // Vendor the sources into the repo.
+    assert!(sb.run(&app, "dev", &["vendor"]).status.success());
+    assert!(app.join("vendor/acme/lib/witchy.toml").exists(), "vendor must write sources");
+
+    // Simulate a fresh clone on another machine: no global store, no registry —
+    // only the committed vendor/ tree and witchy.lock.
+    std::fs::remove_dir_all(&sb.home).unwrap();
+    let out = sb.run(&app, "dev", &["run"]);
+    assert!(out.status.success(), "vendored run failed: {}", stderr(&out));
+    assert!(stdout(&out).contains("vend"), "got: {}", stdout(&out));
+}
+
+#[test]
 fn outdated_reports_newer_versions_and_flags_widening() {
     let sb = Sandbox::new("outdated");
     let app = new_app(&sb);

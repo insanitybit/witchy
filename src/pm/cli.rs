@@ -311,7 +311,7 @@ fn assemble(root_dir: &Path, env: &CovenEnv) -> PmResult<Assembled> {
                 ));
             }
         }
-        resolve::from_lock(&lock, &env.registry, &env.store)?
+        resolve::from_lock(&lock, root_dir, &env.registry, &env.store)?
     };
 
     // §7.1: a dependency's build step may run only with the build-time

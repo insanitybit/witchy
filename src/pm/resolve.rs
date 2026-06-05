@@ -93,6 +93,7 @@ impl Resolution {
 /// verifying the content hash matches the lock.
 pub fn from_lock(
     lock: &Lockfile,
+    root_dir: &Path,
     registry: &Registry,
     store: &Store,
 ) -> PmResult<Resolution> {
@@ -112,6 +113,20 @@ pub fn from_lock(
             s
         } else if store.has(&lr.hash) {
             store.get(&lr.hash)? // hash-verified by the store
+        } else if root_dir.join("vendor").join(&lr.name).exists() {
+            // Vendored in-repo sources let a fresh clone build fully offline,
+            // with no global store and no registry.
+            let s = RuneSource::read_dir(&root_dir.join("vendor").join(&lr.name))?;
+            if s.hash() != lr.hash {
+                return err(format!(
+                    "vendored `{}` hashes to {} but the lock pins {} — run `witchy vendor`",
+                    lr.name,
+                    s.hash(),
+                    lr.hash
+                ));
+            }
+            store.put(&s)?;
+            s
         } else {
             // Repopulate the store from the registry at the pinned version.
             let s = registry.fetch(&lr.name, &lr.version)?;
