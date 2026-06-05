@@ -343,6 +343,7 @@ impl Parser {
         } else {
             None
         };
+        let bounds = self.where_clause()?;
         let body = self.block()?;
         Ok(Function {
             public,
@@ -350,7 +351,25 @@ impl Parser {
             params,
             ret,
             body,
+            bounds,
         })
+    }
+
+    /// An optional `where a: Trait, b: Trait2` clause after a function signature.
+    fn where_clause(&mut self) -> Result<Vec<(String, String)>, ParseError> {
+        let mut bounds = Vec::new();
+        if self.eat(&Tok::Where) {
+            loop {
+                let var = self.ident()?;
+                self.expect(&Tok::Colon)?;
+                let trait_name = self.ident()?;
+                bounds.push((var, trait_name));
+                if !self.eat(&Tok::Comma) {
+                    break;
+                }
+            }
+        }
+        Ok(bounds)
     }
 
     fn params(&mut self) -> Result<Vec<Param>, ParseError> {

@@ -40,6 +40,7 @@ pub enum Tok {
     Update,
     Trait,
     Impl,
+    Where,
 
     // Grouping / punctuation
     LParen,
@@ -125,6 +126,7 @@ impl fmt::Display for Tok {
             Update => write!(f, "update"),
             Trait => write!(f, "trait"),
             Impl => write!(f, "impl"),
+            Where => write!(f, "where"),
             LParen => write!(f, "("),
             RParen => write!(f, ")"),
             LBrace => write!(f, "{{"),
@@ -396,6 +398,7 @@ impl Lexer {
             "update" => Tok::Update,
             "trait" => Tok::Trait,
             "impl" => Tok::Impl,
+            "where" => Tok::Where,
             "_" => Tok::Underscore,
             _ => Tok::Ident(text),
         }

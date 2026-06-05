@@ -104,6 +104,10 @@ pub struct Function {
     pub params: Vec<Param>,
     pub ret: Option<Type>,
     pub body: Block,
+    /// Trait bounds from a `where` clause: `(type variable, trait)` pairs, e.g.
+    /// `where a: Ord` is `("a", "Ord")`. Such a function is a generic template;
+    /// `crate::traits` monomorphizes it per concrete instantiation.
+    pub bounds: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

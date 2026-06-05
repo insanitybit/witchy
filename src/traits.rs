@@ -46,6 +46,7 @@ fn method_fn(name: String, mut params: Vec<Param>, ret: Option<Type>, body: Bloc
         params,
         ret,
         body,
+        bounds: Vec::new(),
     }
 }
 
@@ -71,11 +72,11 @@ fn subst_self(t: &Type, impl_type: &str) -> Type {
 /// unchanged) when there are no traits or impls, so non-trait programs — every
 /// existing one — are unaffected.
 pub fn lower(module: Module) -> Module {
-    let has_traits = module
-        .items
-        .iter()
-        .any(|it| matches!(it, Item::Trait(_) | Item::Impl(_)));
-    if !has_traits {
+    let needs_lowering = module.items.iter().any(|it| {
+        matches!(it, Item::Trait(_) | Item::Impl(_))
+            || matches!(it, Item::Function(f) if !f.bounds.is_empty())
+    });
+    if !needs_lowering {
         return module;
     }
 
@@ -142,25 +143,31 @@ pub fn lower(module: Module) -> Module {
         .collect();
     items.extend(generated.into_iter().map(Item::Function));
 
-    // Tables used to determine a receiver's type at a call site.
-    let mut ctor_results: HashMap<String, String> = HashMap::new();
-    let mut fn_rets: HashMap<String, String> = HashMap::new();
-    for item in &items {
-        match item {
-            Item::Type(t) => {
-                for v in &t.variants {
-                    ctor_results.insert(v.name.clone(), t.name.clone());
-                }
-            }
-            Item::Function(f) => {
-                if let Some(Type::Named(n, _)) = &f.ret {
-                    fn_rets.insert(f.name.clone(), n.clone());
-                }
-            }
-            _ => {}
+    // Pull out bounded generic functions (templates). Only their concrete
+    // specializations are emitted, generated next.
+    let mut templates: HashMap<String, Function> = HashMap::new();
+    items.retain(|it| match it {
+        Item::Function(f) if !f.bounds.is_empty() => {
+            templates.insert(f.name.clone(), f.clone());
+            false
         }
+        _ => true,
+    });
+    if !templates.is_empty() {
+        let (ctor_results, fn_rets) = build_tables(&items);
+        let mut mono = Mono {
+            templates: &templates,
+            ctor_results: &ctor_results,
+            fn_rets,
+            memo: HashMap::new(),
+            generated: Vec::new(),
+        };
+        mono.run(&mut items);
+        items.extend(mono.generated.into_iter().map(Item::Function));
     }
 
+    // Tables used to determine a receiver's type at a trait-method call site.
+    let (ctor_results, fn_rets) = build_tables(&items);
     let ctx = Ctx {
         trait_methods: &trait_methods,
         impl_table: &impl_table,
@@ -212,22 +219,8 @@ struct Ctx<'a> {
 }
 
 impl Ctx<'_> {
-    /// Best-effort head type name of an expression, or `None` if undeterminable
-    /// without full inference.
     fn type_name(&self, e: &Expr, scope: &Scope) -> Option<String> {
-        match e {
-            Expr::Int(_) => Some("Int".into()),
-            Expr::Float(_) => Some("Float".into()),
-            Expr::Str(_) => Some("String".into()),
-            Expr::Bool(_) => Some("Bool".into()),
-            Expr::Var(n) => scope.get(n).cloned(),
-            Expr::Ctor { name, .. } => self.ctor_results.get(name).cloned(),
-            Expr::Call { name, .. } => {
-                self.fn_rets.get(name).cloned().or_else(|| builtin_ret(name))
-            }
-            Expr::RecordUpdate { base, .. } => self.type_name(base, scope),
-            _ => None,
-        }
+        head_type_name(e, scope, self.ctor_results, self.fn_rets)
     }
 
     fn rewrite_block(&self, b: &mut Block, scope: &mut Scope) {
@@ -346,4 +339,281 @@ fn builtin_ret(name: &str) -> Option<String> {
         _ => return None,
     };
     Some(t.into())
+}
+
+/// Best-effort head type name of an expression, or `None` if undeterminable
+/// without full inference. Shared by trait-call resolution and monomorphization.
+fn head_type_name(
+    e: &Expr,
+    scope: &Scope,
+    ctor_results: &HashMap<String, String>,
+    fn_rets: &HashMap<String, String>,
+) -> Option<String> {
+    match e {
+        Expr::Int(_) => Some("Int".into()),
+        Expr::Float(_) => Some("Float".into()),
+        Expr::Str(_) => Some("String".into()),
+        Expr::Bool(_) => Some("Bool".into()),
+        Expr::Var(n) => scope.get(n).cloned(),
+        Expr::Ctor { name, .. } => ctor_results.get(name).cloned(),
+        Expr::Call { name, .. } => fn_rets.get(name).cloned().or_else(|| builtin_ret(name)),
+        Expr::RecordUpdate { base, .. } => head_type_name(base, scope, ctor_results, fn_rets),
+        _ => None,
+    }
+}
+
+/// Constructor -> its type name, and function -> its (named) return type.
+fn build_tables(items: &[Item]) -> (HashMap<String, String>, HashMap<String, String>) {
+    let mut ctor_results = HashMap::new();
+    let mut fn_rets = HashMap::new();
+    for item in items {
+        match item {
+            Item::Type(t) => {
+                for v in &t.variants {
+                    ctor_results.insert(v.name.clone(), t.name.clone());
+                }
+            }
+            Item::Function(f) => {
+                if let Some(Type::Named(n, _)) = &f.ret {
+                    fn_rets.insert(f.name.clone(), n.clone());
+                }
+            }
+            _ => {}
+        }
+    }
+    (ctor_results, fn_rets)
+}
+
+/// Replace each bound type variable in a type with its concrete instantiation.
+fn subst_vars(t: &Type, subst: &HashMap<&str, String>) -> Type {
+    match t {
+        Type::Named(n, args) if args.is_empty() && subst.contains_key(n.as_str()) => {
+            Type::Named(subst[n.as_str()].clone(), vec![])
+        }
+        Type::Named(n, args) => {
+            Type::Named(n.clone(), args.iter().map(|a| subst_vars(a, subst)).collect())
+        }
+        Type::Tuple(ts) => Type::Tuple(ts.iter().map(|a| subst_vars(a, subst)).collect()),
+        Type::Fn(ps, r) => Type::Fn(
+            ps.iter().map(|a| subst_vars(a, subst)).collect(),
+            Box::new(subst_vars(r, subst)),
+        ),
+    }
+}
+
+/// Monomorphizes bounded generic functions: each call to a template with a
+/// determinable concrete type for its bound variable(s) is rewritten to a
+/// per-instantiation specialization (`max_of__Int`), generated by substituting
+/// the type variables in the clone's signature. The body is otherwise unchanged,
+/// so once its parameters are concrete the later trait-resolution pass resolves
+/// any trait-method calls inside it.
+struct Mono<'a> {
+    templates: &'a HashMap<String, Function>,
+    ctor_results: &'a HashMap<String, String>,
+    fn_rets: HashMap<String, String>,
+    memo: HashMap<(String, Vec<String>), String>,
+    generated: Vec<Function>,
+}
+
+impl Mono<'_> {
+    fn run(&mut self, items: &mut [Item]) {
+        for item in items.iter_mut() {
+            match item {
+                Item::Function(f) => {
+                    let mut s = Scope::new();
+                    seed_params(&f.params, &mut s);
+                    self.walk_block(&mut f.body, &mut s);
+                }
+                Item::Actor(a) => {
+                    for field in &mut a.fields {
+                        if let Some(init) = &mut field.init {
+                            self.walk_expr(init, &mut Scope::new());
+                        }
+                    }
+                    for h in &mut a.handlers {
+                        let mut s = Scope::new();
+                        seed_params(&h.params, &mut s);
+                        self.walk_block(&mut h.body, &mut s);
+                    }
+                }
+                _ => {}
+            }
+        }
+        // A specialization may itself call a template; walk the bodies we
+        // generate (the list grows as we go).
+        let mut i = 0;
+        while i < self.generated.len() {
+            let params = self.generated[i].params.clone();
+            let mut body = std::mem::replace(
+                &mut self.generated[i].body,
+                Block { stmts: Vec::new(), lines: Vec::new() },
+            );
+            let mut s = Scope::new();
+            seed_params(&params, &mut s);
+            self.walk_block(&mut body, &mut s);
+            self.generated[i].body = body;
+            i += 1;
+        }
+    }
+
+    fn type_name(&self, e: &Expr, scope: &Scope) -> Option<String> {
+        head_type_name(e, scope, self.ctor_results, &self.fn_rets)
+    }
+
+    fn resolve_type_args(
+        &self,
+        template: &Function,
+        args: &[Expr],
+        scope: &Scope,
+    ) -> Option<Vec<String>> {
+        let mut result = Vec::new();
+        for (var, _trait) in &template.bounds {
+            // The bound variable must appear directly as a parameter's type;
+            // take the concrete type from the matching argument.
+            let mut found = None;
+            for (i, p) in template.params.iter().enumerate() {
+                if let Some(Type::Named(n, a)) = &p.ty {
+                    if n == var && a.is_empty() {
+                        if let Some(tn) = args.get(i).and_then(|arg| self.type_name(arg, scope)) {
+                            found = Some(tn);
+                            break;
+                        }
+                    }
+                }
+            }
+            result.push(found?);
+        }
+        Some(result)
+    }
+
+    fn specialize(&mut self, name: &str, type_args: Vec<String>) -> String {
+        let key = (name.to_string(), type_args.clone());
+        if let Some(m) = self.memo.get(&key) {
+            return m.clone();
+        }
+        let mangled = format!("{name}__{}", type_args.join("__"));
+        self.memo.insert(key, mangled.clone());
+
+        let mut f = self.templates[name].clone();
+        f.name = mangled.clone();
+        let subst: HashMap<&str, String> = f
+            .bounds
+            .iter()
+            .map(|(v, _)| v.as_str())
+            .zip(type_args)
+            .collect();
+        for p in &mut f.params {
+            if let Some(t) = &p.ty {
+                p.ty = Some(subst_vars(t, &subst));
+            }
+        }
+        f.ret = f.ret.as_ref().map(|t| subst_vars(t, &subst));
+        if let Some(Type::Named(n, _)) = &f.ret {
+            self.fn_rets.insert(mangled.clone(), n.clone());
+        }
+        drop(subst);
+        self.generated.push(f);
+        mangled
+    }
+
+    fn walk_block(&mut self, b: &mut Block, scope: &mut Scope) {
+        for stmt in &mut b.stmts {
+            match stmt {
+                Stmt::Let { name, value, .. } => {
+                    self.walk_expr(value, scope);
+                    match self.type_name(value, scope) {
+                        Some(t) => {
+                            scope.insert(name.clone(), t);
+                        }
+                        None => {
+                            scope.remove(name.as_str());
+                        }
+                    }
+                }
+                Stmt::Assign { value, .. } | Stmt::LetTuple { value, .. } => {
+                    self.walk_expr(value, scope)
+                }
+                Stmt::Return(Some(e)) | Stmt::Expr(e) => self.walk_expr(e, scope),
+                Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
+            }
+        }
+    }
+
+    fn walk_expr(&mut self, e: &mut Expr, scope: &mut Scope) {
+        match e {
+            Expr::Call { name, args } => {
+                for a in args.iter_mut() {
+                    self.walk_expr(a, scope);
+                }
+                if let Some(template) = self.templates.get(name.as_str()).cloned() {
+                    if let Some(type_args) = self.resolve_type_args(&template, args, scope) {
+                        *name = self.specialize(name, type_args);
+                    }
+                }
+            }
+            Expr::Apply { func, args } => {
+                self.walk_expr(func, scope);
+                for a in args.iter_mut() {
+                    self.walk_expr(a, scope);
+                }
+            }
+            Expr::Ctor { args, .. }
+            | Expr::List(args)
+            | Expr::Tuple(args)
+            | Expr::Spawn { args, .. } => {
+                for a in args.iter_mut() {
+                    self.walk_expr(a, scope);
+                }
+            }
+            Expr::Unary { expr, .. } | Expr::Try(expr) | Expr::Field { base: expr, .. } => {
+                self.walk_expr(expr, scope)
+            }
+            Expr::RecordUpdate { base, fields } => {
+                self.walk_expr(base, scope);
+                for (_, v) in fields.iter_mut() {
+                    self.walk_expr(v, scope);
+                }
+            }
+            Expr::Binary { lhs, rhs, .. } => {
+                self.walk_expr(lhs, scope);
+                self.walk_expr(rhs, scope);
+            }
+            Expr::If {
+                cond,
+                then_block,
+                else_block,
+            } => {
+                self.walk_expr(cond, scope);
+                self.walk_block(then_block, &mut scope.clone());
+                if let Some(b) = else_block {
+                    self.walk_block(b, &mut scope.clone());
+                }
+            }
+            Expr::While { cond, body } => {
+                self.walk_expr(cond, scope);
+                self.walk_block(body, &mut scope.clone());
+            }
+            Expr::For { iter, body, .. } => {
+                self.walk_expr(iter, scope);
+                self.walk_block(body, &mut scope.clone());
+            }
+            Expr::Match { scrutinee, arms } => {
+                self.walk_expr(scrutinee, scope);
+                for arm in arms.iter_mut() {
+                    let mut s = scope.clone();
+                    if let Some(g) = &mut arm.guard {
+                        self.walk_expr(g, &mut s);
+                    }
+                    self.walk_expr(&mut arm.body, &mut s);
+                }
+            }
+            Expr::Lambda { params, body } => {
+                let mut s = scope.clone();
+                seed_params(params, &mut s);
+                self.walk_block(body, &mut s);
+            }
+            Expr::Block(b) => self.walk_block(b, &mut scope.clone()),
+            Expr::Var(_) | Expr::Int(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) => {}
+        }
+    }
 }

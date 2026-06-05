@@ -4567,6 +4567,45 @@ mod example_tests {
         assert_eq!(compiled, vec!["42", "true", "hi", "(2, 3)"]);
     }
 
+    // Generic bounds: `pick_max(x: a, y: a) -> a where a: Ord` is a template,
+    // monomorphized per concrete instantiation; the `greater` trait call inside
+    // each specialization resolves to that type's Ord impl. Exercised over Int
+    // (built-in impl) and a user type. Both backends agree.
+    #[test]
+    fn generic_bounds_backends_agree() {
+        let client = r#"
+            import ord
+            type Box {
+              Box(Int)
+            }
+            impl Ord for Box {
+              fn compare(self, other: Box) -> Int {
+                match self {
+                  Box(a) -> match other {
+                    Box(b) -> if a < b { -1 } else { if a > b { 1 } else { 0 } }
+                  }
+                }
+              }
+            }
+            fn pick_max(x: a, y: a) -> a where a: Ord {
+              if greater(x, y) { x } else { y }
+            }
+            fn unbox(b: Box) -> Int {
+              match b { Box(n) -> n }
+            }
+            fn main(console: Console) {
+              print(console, int_to_string(pick_max(3, 7)))
+              print(console, int_to_string(pick_max(20, 5)))
+              print(console, int_to_string(unbox(pick_max(Box(4), Box(11)))))
+            }
+        "#;
+        let sources = [("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "generic bounds diverged");
+        assert_eq!(compiled, vec!["7", "20", "11"]);
+    }
+
     // Hex (0x..) and binary (0b..) integer literals, including underscore
     // separators, feeding the bitwise operators. Both backends agree.
     #[test]
