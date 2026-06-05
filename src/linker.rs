@@ -119,13 +119,6 @@ pub fn link(mut modules: Vec<(String, Module)>, entry: &str) -> Result<Module, L
         i += 1;
     }
 
-    // Desugar each module's traits/impls into ordinary functions before name
-    // resolution, so the generated methods are qualified and their call sites
-    // rewritten exactly like any other function.
-    for (_, m) in modules.iter_mut() {
-        *m = crate::traits::lower(m.clone());
-    }
-
     let mut fns: FnTable = HashMap::new();
     for (name, m) in &modules {
         let mut names = HashSet::new();
@@ -185,8 +178,36 @@ pub fn link(mut modules: Vec<(String, Module)>, entry: &str) -> Result<Module, L
                     items.push(Item::Actor(a2));
                 }
                 Item::Type(t) => items.push(Item::Type(t.clone())),
-                // Lowered to functions per-module above; never reached here.
-                Item::Trait(_) | Item::Impl(_) => {}
+                // Traits/impls are carried into the merged module and desugared
+                // after linking (see `crate::traits`). Their method bodies are
+                // rewritten here, in their defining module's context, so calls
+                // inside them resolve like any other function body.
+                Item::Trait(t) => {
+                    let mut t2 = t.clone();
+                    for ms in &mut t2.methods {
+                        if let Some(body) = &mut ms.default {
+                            let mut bound = HashSet::new();
+                            for p in &ms.params {
+                                bound.insert(p.name.clone());
+                            }
+                            collect_bound_block(body, &mut bound);
+                            rewrite_block(body, mname, &m.imports, &fns, &bound)?;
+                        }
+                    }
+                    items.push(Item::Trait(t2));
+                }
+                Item::Impl(im) => {
+                    let mut im2 = im.clone();
+                    for method in &mut im2.methods {
+                        let mut bound = HashSet::new();
+                        for p in &method.params {
+                            bound.insert(p.name.clone());
+                        }
+                        collect_bound_block(&method.body, &mut bound);
+                        rewrite_block(&mut method.body, mname, &m.imports, &fns, &bound)?;
+                    }
+                    items.push(Item::Impl(im2));
+                }
             }
         }
     }

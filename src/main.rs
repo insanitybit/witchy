@@ -4464,6 +4464,37 @@ mod example_tests {
         assert_eq!(run_on_wasm(src), vec!["int!", "BOOL!!"]);
     }
 
+    // Cross-module traits: a trait and its impls defined in one module are used
+    // from another that imports it. Desugaring runs after linking, so the
+    // generated methods and their call sites resolve across the flat merged
+    // namespace. Both backends agree.
+    #[test]
+    fn traits_cross_module_backends_agree() {
+        let show_mod = r#"
+            trait Show {
+              fn show(self) -> String
+            }
+            impl Show for Int {
+              fn show(self) -> String { int_to_string(self) }
+            }
+            impl Show for Bool {
+              fn show(self) -> String { if self { "Y" } else { "N" } }
+            }
+        "#;
+        let app = r#"
+            import show_mod
+            fn main(console: Console) {
+              print(console, show(42))
+              print(console, show(false))
+            }
+        "#;
+        let sources = [("show_mod", show_mod), ("app", app)];
+        let interpreted = interpreter::run_program(&sources, "app").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "app");
+        assert_eq!(interpreted, compiled, "cross-module trait diverged");
+        assert_eq!(compiled, vec!["42", "N"]);
+    }
+
     // Hex (0x..) and binary (0b..) integer literals, including underscore
     // separators, feeding the bitwise operators. Both backends agree.
     #[test]
