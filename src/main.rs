@@ -4536,6 +4536,37 @@ mod example_tests {
         );
     }
 
+    // The standard `Show` trait: `show` renders built-in types and any user type
+    // that implements it — including the rendering of a value the built-in
+    // `to_string` couldn't. Both backends agree.
+    #[test]
+    fn std_show_trait_backends_agree() {
+        let client = r#"
+            import show
+            type Point {
+              Point(Int, Int)
+            }
+            impl Show for Point {
+              fn show(self) -> String {
+                match self {
+                  Point(x, y) -> "(" <> int_to_string(x) <> ", " <> int_to_string(y) <> ")"
+                }
+              }
+            }
+            fn main(console: Console) {
+              print(console, show(42))
+              print(console, show(true))
+              print(console, show("hi"))
+              print(console, show(Point(2, 3)))
+            }
+        "#;
+        let sources = [("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "std Show diverged");
+        assert_eq!(compiled, vec!["42", "true", "hi", "(2, 3)"]);
+    }
+
     // Hex (0x..) and binary (0b..) integer literals, including underscore
     // separators, feeding the bitwise operators. Both backends agree.
     #[test]

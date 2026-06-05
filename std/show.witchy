@@ -1,0 +1,22 @@
+// The witchy standard `Show` trait: render a value as a `String`. Built-in impls
+// cover `Int`, `Bool`, and `String`; implement `Show` for your own types to give
+// them a readable form (which the built-in `to_string` cannot do for user
+// types). Pure and capability-free, like every std module.
+
+trait Show {
+  fn show(self) -> String
+}
+
+impl Show for Int {
+  fn show(self) -> String { int_to_string(self) }
+}
+
+impl Show for Bool {
+  fn show(self) -> String {
+    if self { "true" } else { "false" }
+  }
+}
+
+impl Show for String {
+  fn show(self) -> String { self }
+}
