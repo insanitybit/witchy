@@ -19,8 +19,12 @@ use std::collections::{HashMap, HashSet};
 use crate::ast::*;
 
 /// Mangled name for an impl method: `Trait__Type__method`.
-fn mangle(trait_name: &str, type_name: &str, method: &str) -> String {
-    format!("{trait_name}__{type_name}__{method}")
+fn mangle(trait_name: Option<&str>, type_name: &str, method: &str) -> String {
+    match trait_name {
+        Some(t) => format!("{t}__{type_name}__{method}"),
+        // Inherent method: no trait segment, still dispatched by receiver type.
+        None => format!("{type_name}__{method}"),
+    }
 }
 
 /// Build the ordinary function a (possibly defaulted) method lowers to.
@@ -102,8 +106,13 @@ pub fn lower(module: Module) -> Module {
             let provided: HashSet<&str> = im.methods.iter().map(|m| m.name.as_str()).collect();
             // Methods the impl defines.
             for method in &im.methods {
-                let mangled = mangle(&im.trait_name, &im.type_name, &method.name);
+                let mangled = mangle(im.trait_name.as_deref(), &im.type_name, &method.name);
                 impl_table.insert((method.name.clone(), im.type_name.clone()), mangled.clone());
+                // An inherent method dispatches by receiver type too, so register
+                // its name as dispatchable (trait methods are already in the map).
+                trait_methods
+                    .entry(method.name.clone())
+                    .or_insert_with(|| im.trait_name.clone().unwrap_or_default());
                 generated.push(method_fn(
                     mangled,
                     method.params.clone(),
@@ -112,22 +121,26 @@ pub fn lower(module: Module) -> Module {
                     &im.type_name,
                 ));
             }
-            // Methods the impl omits but the trait provides a default for.
-            if let Some(methods) = trait_method_list.get(&im.trait_name) {
-                for ms in methods {
-                    if provided.contains(ms.name.as_str()) {
-                        continue;
-                    }
-                    if let Some(body) = &ms.default {
-                        let mangled = mangle(&im.trait_name, &im.type_name, &ms.name);
-                        impl_table.insert((ms.name.clone(), im.type_name.clone()), mangled.clone());
-                        generated.push(method_fn(
-                            mangled,
-                            ms.params.clone(),
-                            ms.ret.clone(),
-                            body.clone(),
-                            &im.type_name,
-                        ));
+            // Methods the impl omits but the trait provides a default for. Only
+            // trait impls inherit defaults; inherent impls have no trait.
+            if let Some(trait_name) = &im.trait_name {
+                if let Some(methods) = trait_method_list.get(trait_name) {
+                    for ms in methods {
+                        if provided.contains(ms.name.as_str()) {
+                            continue;
+                        }
+                        if let Some(body) = &ms.default {
+                            let mangled = mangle(Some(trait_name), &im.type_name, &ms.name);
+                            impl_table
+                                .insert((ms.name.clone(), im.type_name.clone()), mangled.clone());
+                            generated.push(method_fn(
+                                mangled,
+                                ms.params.clone(),
+                                ms.ret.clone(),
+                                body.clone(),
+                                &im.type_name,
+                            ));
+                        }
                     }
                 }
             }

@@ -46,11 +46,13 @@ pub struct MethodSig {
     pub default: Option<Block>,
 }
 
-/// `impl Trait for Type { <methods> }`. Each method is a full function whose
-/// first parameter (`self`) stands for a value of `type_name`.
+/// `impl Trait for Type { <methods> }`, or an inherent `impl Type { <methods> }`
+/// (`trait_name` is `None`). Each method is a full function whose first parameter
+/// (`self`) stands for a value of `type_name`. Inherent methods are dispatched by
+/// receiver type just like trait methods, but belong to no trait.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ImplDef {
-    pub trait_name: String,
+    pub trait_name: Option<String>,
     pub type_name: String,
     pub methods: Vec<Function>,
 }

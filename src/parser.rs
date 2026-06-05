@@ -195,12 +195,17 @@ impl Parser {
         })
     }
 
-    /// `impl Trait for Type { <fn ...> }` — full method definitions.
+    /// `impl Trait for Type { <fn ...> }` (trait impl), or the inherent form
+    /// `impl Type { <fn ...> }` (no `for`) whose methods belong to no trait but
+    /// still dispatch by receiver type.
     fn impl_def(&mut self) -> Result<ImplDef, ParseError> {
         self.expect(&Tok::Impl)?;
-        let trait_name = self.ident()?;
-        self.expect(&Tok::For)?;
-        let type_name = self.ident()?;
+        let first = self.ident()?;
+        let (trait_name, type_name) = if self.eat(&Tok::For) {
+            (Some(first), self.ident()?)
+        } else {
+            (None, first)
+        };
         self.expect(&Tok::LBrace)?;
         let mut methods = Vec::new();
         while !self.at(&Tok::RBrace) && !self.at(&Tok::Eof) {

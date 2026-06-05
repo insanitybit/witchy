@@ -1492,6 +1492,37 @@ mod example_tests {
     }
 
     #[test]
+    fn inherent_impl_in_indentation_syntax() {
+        // The inherent impl works under the off-side rule too: `impl Point:`.
+        let client = "type Point:\n    Point(Int, Int)\n\nimpl Point:\n    fn sum(self) -> Int:\n        match self:\n            Point(x, y) -> x + y\n\nfn main(console: Console):\n    print(console, int_to_string(sum(Point(4, 5))))\n";
+        assert_eq!(interp(client), vec!["9"]);
+        assert_eq!(run_on_wasm(client), vec!["9"]);
+    }
+
+    #[test]
+    fn inherent_impl_methods_dispatch_by_type() {
+        // `impl Type { fn m(self) ... }` (no trait) defines methods dispatched by
+        // receiver type, reusing the trait machinery. Two types share the method
+        // name `mag`; each call resolves to the right one. Both backends agree.
+        let client = r#"
+            type Point { Point(Int, Int) }
+            type Circle { Circle(Int) }
+            impl Point {
+              fn mag(self) -> Int { match self { Point(x, y) -> x * x + y * y } }
+            }
+            impl Circle {
+              fn mag(self) -> Int { match self { Circle(r) -> r * r } }
+            }
+            fn main(console: Console) {
+              print(console, int_to_string(mag(Point(3, 4))))
+              print(console, int_to_string(mag(Circle(6))))
+            }
+        "#;
+        assert_eq!(interp(client), vec!["25", "36"]);
+        assert_eq!(run_on_wasm(client), vec!["25", "36"]);
+    }
+
+    #[test]
     fn recursive_trait_dispatch_on_match_bound_fields() {
         // A trait method can now dispatch on a variable bound by a constructor
         // pattern when the field type is concrete: `show(x)` / `show(c)` inside a
