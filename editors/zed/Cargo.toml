@@ -1,0 +1,16 @@
+# Standalone workspace so this extension crate is never pulled into the witchy
+# binary's build (and vice versa).
+[workspace]
+
+[package]
+name = "zed-witchy"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+[dependencies]
+zed_extension_api = "0.7"
