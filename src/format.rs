@@ -1,0 +1,718 @@
+//! Off-side (indentation) pretty-printer for witchy. Renders a parsed `Module`
+//! as canonical brace-free source — the backend of `witchy fmt` and of the
+//! one-time migration that took the test corpus off braces.
+//!
+//! Correctness over beauty: any expression whose re-parse could regroup is fully
+//! parenthesized, and constructs that have no inline brace-free form (e.g.
+//! `match`) are always emitted multi-line. The migration driver only keeps a
+//! reformatting when it round-trips to the same AST, so this printer never has to
+//! be perfect — only sound where it fires.
+
+use crate::ast::*;
+
+const IND: &str = "    ";
+
+pub fn module(m: &Module) -> String {
+    let mut s = String::new();
+    for imp in &m.imports {
+        s.push_str("import ");
+        s.push_str(imp);
+        s.push('\n');
+    }
+    for item in &m.items {
+        if !s.is_empty() {
+            s.push('\n');
+        }
+        item_str(&mut s, item);
+    }
+    s
+}
+
+fn pad(s: &mut String, depth: usize) {
+    for _ in 0..depth {
+        s.push_str(IND);
+    }
+}
+
+fn item_str(s: &mut String, item: &Item) {
+    match item {
+        Item::Function(f) => function(s, f, false),
+        Item::Type(t) => type_def(s, t),
+        Item::Trait(t) => trait_def(s, t),
+        Item::Impl(im) => impl_def(s, im),
+        Item::Actor(a) => actor_def(s, a),
+    }
+}
+
+fn sig(name: &str, params: &[Param], ret: &Option<Type>, bounds: &[(String, String)]) -> String {
+    let mut h = String::new();
+    h.push_str(name);
+    h.push('(');
+    for (i, p) in params.iter().enumerate() {
+        if i > 0 {
+            h.push_str(", ");
+        }
+        h.push_str(&param(p));
+    }
+    h.push(')');
+    if let Some(r) = ret {
+        h.push_str(" -> ");
+        h.push_str(&type_str(r));
+    }
+    if !bounds.is_empty() {
+        h.push_str(" where ");
+        for (i, (v, t)) in bounds.iter().enumerate() {
+            if i > 0 {
+                h.push_str(", ");
+            }
+            h.push_str(v);
+            h.push_str(": ");
+            h.push_str(t);
+        }
+    }
+    h
+}
+
+fn param(p: &Param) -> String {
+    let conv = match p.convention {
+        Convention::Let => "",
+        Convention::Inout => "inout ",
+        Convention::Sink => "sink ",
+    };
+    match &p.ty {
+        Some(t) => format!("{conv}{}: {}", p.name, type_str(t)),
+        None => format!("{conv}{}", p.name),
+    }
+}
+
+fn function(s: &mut String, f: &Function, indented: bool) {
+    let depth = if indented { 1 } else { 0 };
+    pad(s, depth);
+    if f.public {
+        s.push_str("pub ");
+    }
+    s.push_str("fn ");
+    s.push_str(&sig(&f.name, &f.params, &f.ret, &f.bounds));
+    s.push_str(":\n");
+    block(s, &f.body, depth + 1);
+}
+
+fn type_def(s: &mut String, t: &TypeDef) {
+    s.push_str("type ");
+    s.push_str(&t.name);
+    s.push_str(":\n");
+    let is_record = t.variants.len() == 1 && !t.variants[0].field_names.is_empty();
+    if is_record {
+        let v = &t.variants[0];
+        for (n, ty) in v.field_names.iter().zip(&v.fields) {
+            pad(s, 1);
+            s.push_str(n);
+            s.push_str(": ");
+            s.push_str(&type_str(ty));
+            s.push('\n');
+        }
+    } else {
+        for v in &t.variants {
+            pad(s, 1);
+            s.push_str(&v.name);
+            if !v.fields.is_empty() {
+                s.push('(');
+                for (i, ty) in v.fields.iter().enumerate() {
+                    if i > 0 {
+                        s.push_str(", ");
+                    }
+                    s.push_str(&type_str(ty));
+                }
+                s.push(')');
+            }
+            s.push('\n');
+        }
+    }
+}
+
+fn trait_def(s: &mut String, t: &TraitDef) {
+    s.push_str("trait ");
+    s.push_str(&t.name);
+    s.push_str(":\n");
+    for m in &t.methods {
+        pad(s, 1);
+        s.push_str("fn ");
+        s.push_str(&sig(&m.name, &m.params, &m.ret, &[]));
+        match &m.default {
+            Some(b) => {
+                s.push_str(":\n");
+                block(s, b, 2);
+            }
+            None => s.push('\n'),
+        }
+    }
+}
+
+fn impl_def(s: &mut String, im: &ImplDef) {
+    s.push_str("impl ");
+    if let Some(t) = &im.trait_name {
+        s.push_str(t);
+        s.push_str(" for ");
+    }
+    s.push_str(&im.type_name);
+    s.push_str(":\n");
+    for (i, m) in im.methods.iter().enumerate() {
+        if i > 0 {
+            s.push('\n');
+        }
+        function(s, m, true);
+    }
+    for h in &im.handlers {
+        handler(s, h);
+    }
+}
+
+fn actor_def(s: &mut String, a: &ActorDef) {
+    s.push_str("actor ");
+    s.push_str(&a.name);
+    s.push_str(":\n");
+    for f in &a.fields {
+        pad(s, 1);
+        if f.mutable {
+            s.push_str("var ");
+        }
+        s.push_str(&f.name);
+        s.push_str(": ");
+        s.push_str(&type_str(&f.ty));
+        if let Some(init) = &f.init {
+            s.push_str(" = ");
+            s.push_str(&expr(init));
+        }
+        s.push('\n');
+    }
+    // Handlers go in a separate `impl Actor:` block (re-merged on parse).
+    if !a.handlers.is_empty() {
+        s.push_str("\nimpl ");
+        s.push_str(&a.name);
+        s.push_str(":\n");
+        for h in &a.handlers {
+            handler(s, h);
+        }
+    }
+}
+
+fn handler(s: &mut String, h: &Handler) {
+    pad(s, 1);
+    s.push_str("on ");
+    s.push_str(&h.message);
+    s.push('(');
+    for (i, p) in h.params.iter().enumerate() {
+        if i > 0 {
+            s.push_str(", ");
+        }
+        s.push_str(&param(p));
+    }
+    s.push_str("):\n");
+    block(s, &h.body, 2);
+}
+
+fn block(s: &mut String, b: &Block, depth: usize) {
+    if b.stmts.is_empty() {
+        // An empty block has no off-side representation; emit a no-op expression.
+        pad(s, depth);
+        s.push_str("0\n");
+        return;
+    }
+    for st in &b.stmts {
+        stmt(s, st, depth);
+    }
+}
+
+fn stmt(s: &mut String, st: &Stmt, depth: usize) {
+    match st {
+        Stmt::Let { name, mutable, value } => {
+            pad(s, depth);
+            s.push_str(if *mutable { "var " } else { "let " });
+            s.push_str(name);
+            s.push_str(" = ");
+            value_or_block(s, value, depth);
+        }
+        Stmt::Assign { name, value } => {
+            pad(s, depth);
+            s.push_str(name);
+            s.push_str(" = ");
+            value_or_block(s, value, depth);
+        }
+        Stmt::LetTuple { names, value } => {
+            pad(s, depth);
+            s.push_str("let (");
+            s.push_str(&names.join(", "));
+            s.push_str(") = ");
+            value_or_block(s, value, depth);
+        }
+        Stmt::Return(Some(e)) => {
+            pad(s, depth);
+            s.push_str("return ");
+            value_or_block(s, e, depth);
+        }
+        Stmt::Return(None) => {
+            pad(s, depth);
+            s.push_str("return\n");
+        }
+        Stmt::Break => {
+            pad(s, depth);
+            s.push_str("break\n");
+        }
+        Stmt::Continue => {
+            pad(s, depth);
+            s.push_str("continue\n");
+        }
+        Stmt::Expr(e) => block_stmt(s, e, depth),
+    }
+}
+
+/// A statement-position expression: control-flow forms expand multi-line.
+fn block_stmt(s: &mut String, e: &Expr, depth: usize) {
+    match e {
+        Expr::If { .. } | Expr::Match { .. } | Expr::While { .. } | Expr::For { .. } => {
+            pad(s, depth);
+            multiline(s, e, depth);
+        }
+        Expr::Block(b) => block(s, b, depth),
+        _ => {
+            pad(s, depth);
+            s.push_str(&expr(e));
+            s.push('\n');
+        }
+    }
+}
+
+/// The right-hand side of a `let`/`=`/`return`: use a multi-line form when the
+/// value is a `match`/`if` (`match` has no inline form), else an inline expr.
+fn value_or_block(s: &mut String, e: &Expr, depth: usize) {
+    match e {
+        Expr::Match { .. } => {
+            multiline(s, e, depth);
+        }
+        _ => {
+            s.push_str(&expr(e));
+            s.push('\n');
+        }
+    }
+}
+
+/// Emit a control-flow expression across multiple lines. `s` is already padded to
+/// the header position for `if`/`while`/`for`; for `match` it is positioned after
+/// `= ` so we do not pre-pad.
+fn multiline(s: &mut String, e: &Expr, depth: usize) {
+    match e {
+        Expr::If { cond, then_block, else_block } => {
+            s.push_str("if ");
+            s.push_str(&expr(cond));
+            s.push_str(":\n");
+            block(s, then_block, depth + 1);
+            if let Some(eb) = else_block {
+                pad(s, depth);
+                // `else if` chain: a single nested if statement.
+                if eb.stmts.len() == 1 {
+                    if let Stmt::Expr(inner @ Expr::If { .. }) = &eb.stmts[0] {
+                        s.push_str("else ");
+                        multiline(s, inner, depth);
+                        return;
+                    }
+                }
+                s.push_str("else:\n");
+                block(s, eb, depth + 1);
+            }
+        }
+        Expr::While { cond, body } => {
+            s.push_str("while ");
+            s.push_str(&expr(cond));
+            s.push_str(":\n");
+            block(s, body, depth + 1);
+        }
+        Expr::For { var, iter, body } => {
+            s.push_str("for ");
+            s.push_str(var);
+            s.push_str(" in ");
+            s.push_str(&expr(iter));
+            s.push_str(":\n");
+            block(s, body, depth + 1);
+        }
+        Expr::Match { scrutinee, arms } => {
+            s.push_str("match ");
+            s.push_str(&expr(scrutinee));
+            s.push_str(":\n");
+            for a in arms {
+                pad(s, depth + 1);
+                s.push_str(&pattern(&a.pattern));
+                if let Some(g) = &a.guard {
+                    s.push_str(" if ");
+                    s.push_str(&expr(g));
+                }
+                s.push_str(" ->");
+                arm_body(s, &a.body, depth + 1);
+            }
+        }
+        _ => {
+            s.push_str(&expr(e));
+            s.push('\n');
+        }
+    }
+}
+
+/// A match-arm body. A genuine block (multiple statements) opens an indented
+/// block after the `->`; otherwise the body stays a bare expression — a `match`
+/// continues multi-line on the same line as `->`, everything else is inline (so
+/// the re-parsed arm body has the same shape, not a `Block` wrapper).
+fn arm_body(s: &mut String, body: &Expr, depth: usize) {
+    match body {
+        Expr::Block(b) => {
+            s.push('\n');
+            block(s, b, depth + 1);
+        }
+        Expr::Match { .. } => {
+            s.push(' ');
+            multiline(s, body, depth);
+        }
+        _ => {
+            s.push(' ');
+            s.push_str(&expr(body));
+            s.push('\n');
+        }
+    }
+}
+
+/// Inline expression. Anything that could regroup on re-parse is parenthesized.
+fn expr(e: &Expr) -> String {
+    match e {
+        Expr::Int(n) => n.to_string(),
+        Expr::Float(x) => {
+            let t = x.to_string();
+            if t.contains('.') || t.contains('e') || t.contains("inf") || t.contains("NaN") {
+                t
+            } else {
+                format!("{t}.0")
+            }
+        }
+        Expr::Str(v) => string_lit(v),
+        Expr::Bool(b) => b.to_string(),
+        Expr::Var(n) => n.clone(),
+        Expr::List(xs) => format!("[{}]", comma(xs)),
+        Expr::Tuple(xs) => format!("({})", comma(xs)),
+        Expr::Call { name, args } => format!("{name}({})", comma(args)),
+        Expr::Ctor { name, args } => {
+            if args.is_empty() {
+                name.clone()
+            } else {
+                format!("{name}({})", comma(args))
+            }
+        }
+        Expr::Apply { func, args } => format!("({})({})", expr(func), comma(args)),
+        Expr::Field { base, field } => format!("({}).{field}", expr(base)),
+        Expr::Unary { op, expr: inner } => {
+            let o = match op {
+                UnOp::Neg => "-",
+                UnOp::Not => "!",
+                UnOp::BitNot => "~",
+            };
+            format!("({o}{})", expr(inner))
+        }
+        Expr::Binary { op, lhs, rhs } => {
+            format!("({} {} {})", expr(lhs), binop(*op), expr(rhs))
+        }
+        Expr::Try(inner) => format!("({})?", expr(inner)),
+        Expr::Lambda { params, body } => {
+            let ps: Vec<String> = params.iter().map(param).collect();
+            format!("fn({}): {}", ps.join(", "), block_value(body))
+        }
+        Expr::If { cond, then_block, else_block } => {
+            let e = else_block
+                .as_ref()
+                .map(|b| format!(" else: {}", block_value(b)))
+                .unwrap_or_default();
+            format!("if {}: {}{}", expr(cond), block_value(then_block), e)
+        }
+        Expr::RecordUpdate { base, fields } => {
+            let fs: Vec<String> = fields
+                .iter()
+                .map(|(n, v)| format!("{n} = {}", expr(v)))
+                .collect();
+            format!("update {}: {}", expr(base), fs.join(" "))
+        }
+        Expr::Spawn { actor, args } => format!("spawn {actor}({})", comma(args)),
+        // No inline form — caller should have routed these multi-line. Emit a
+        // best-effort block expression so output still parses.
+        Expr::Match { .. } | Expr::While { .. } | Expr::For { .. } | Expr::Block(_) => {
+            "0".to_string()
+        }
+    }
+}
+
+/// The single-expression value of a block (for inline lambda / if bodies).
+fn block_value(b: &Block) -> String {
+    if b.stmts.len() == 1 {
+        if let Stmt::Expr(e) = &b.stmts[0] {
+            return expr(e);
+        }
+    }
+    // Multi-statement block in inline position has no brace-free form; this will
+    // fail the round-trip check and be left for manual handling.
+    "0".to_string()
+}
+
+fn comma(xs: &[Expr]) -> String {
+    xs.iter().map(expr).collect::<Vec<_>>().join(", ")
+}
+
+fn binop(op: BinOp) -> &'static str {
+    match op {
+        BinOp::Add => "+",
+        BinOp::Sub => "-",
+        BinOp::Mul => "*",
+        BinOp::Div => "/",
+        BinOp::Mod => "%",
+        BinOp::Concat => "<>",
+        BinOp::Eq => "==",
+        BinOp::NotEq => "!=",
+        BinOp::Lt => "<",
+        BinOp::LtEq => "<=",
+        BinOp::Gt => ">",
+        BinOp::GtEq => ">=",
+        BinOp::And => "&&",
+        BinOp::Or => "||",
+        BinOp::BitAnd => "&",
+        BinOp::BitOr => "|",
+        BinOp::BitXor => "^",
+        BinOp::Shl => "<<",
+        BinOp::Shr => ">>",
+    }
+}
+
+fn pattern(p: &Pattern) -> String {
+    match p {
+        Pattern::Wildcard => "_".to_string(),
+        Pattern::Var(n) => n.clone(),
+        Pattern::Int(n) => n.to_string(),
+        Pattern::Str(v) => string_lit(v),
+        Pattern::Bool(b) => b.to_string(),
+        Pattern::Ctor { name, args } => {
+            if args.is_empty() {
+                name.clone()
+            } else {
+                format!("{name}({})", args.iter().map(pattern).collect::<Vec<_>>().join(", "))
+            }
+        }
+        Pattern::Tuple(ps) => {
+            format!("({})", ps.iter().map(pattern).collect::<Vec<_>>().join(", "))
+        }
+        Pattern::List { elems, rest } => {
+            let mut parts: Vec<String> = elems.iter().map(pattern).collect();
+            match rest {
+                Some(Some(n)) => parts.push(format!("..{n}")),
+                Some(None) => parts.push("..".to_string()),
+                None => {}
+            }
+            format!("[{}]", parts.join(", "))
+        }
+    }
+}
+
+fn type_str(t: &Type) -> String {
+    match t {
+        Type::Named(n, args) if args.is_empty() => n.clone(),
+        Type::Named(n, args) => {
+            format!("{n}({})", args.iter().map(type_str).collect::<Vec<_>>().join(", "))
+        }
+        Type::Tuple(ts) => {
+            format!("({})", ts.iter().map(type_str).collect::<Vec<_>>().join(", "))
+        }
+        Type::Fn(ps, r) => {
+            format!("fn({}) -> {}", ps.iter().map(type_str).collect::<Vec<_>>().join(", "), type_str(r))
+        }
+    }
+}
+
+/// Reformat witchy source (brace or off-side) as canonical brace-free source,
+/// returning `None` unless the result re-parses to the *same* AST. The round-trip
+/// guard makes the printer safe to apply in bulk: anything it cannot yet render
+/// faithfully is simply left untouched.
+pub fn reformat(src: &str) -> Option<String> {
+    let mut original = crate::parser::parse_module(src).ok()?;
+    let out = module(&original);
+    let mut reparsed = crate::parser::parse_module(&out).ok()?;
+    strip_lines_module(&mut original);
+    strip_lines_module(&mut reparsed);
+    if original == reparsed {
+        Some(out)
+    } else {
+        None
+    }
+}
+
+fn strip_lines_module(m: &mut Module) {
+    for it in &mut m.items {
+        strip_lines_item(it);
+    }
+}
+
+fn strip_lines_item(it: &mut Item) {
+    match it {
+        Item::Function(f) => strip_lines_block(&mut f.body),
+        Item::Actor(a) => {
+            for fld in &mut a.fields {
+                if let Some(e) = &mut fld.init {
+                    strip_lines_expr(e);
+                }
+            }
+            for h in &mut a.handlers {
+                strip_lines_block(&mut h.body);
+            }
+        }
+        Item::Type(_) => {}
+        Item::Trait(t) => {
+            for m in &mut t.methods {
+                if let Some(b) = &mut m.default {
+                    strip_lines_block(b);
+                }
+            }
+        }
+        Item::Impl(im) => {
+            for f in &mut im.methods {
+                strip_lines_block(&mut f.body);
+            }
+            for h in &mut im.handlers {
+                strip_lines_block(&mut h.body);
+            }
+        }
+    }
+}
+
+fn strip_lines_block(b: &mut Block) {
+    b.lines.clear();
+    for s in &mut b.stmts {
+        strip_lines_stmt(s);
+    }
+}
+
+fn strip_lines_stmt(s: &mut Stmt) {
+    match s {
+        Stmt::Let { value, .. } | Stmt::Assign { value, .. } | Stmt::LetTuple { value, .. } => {
+            strip_lines_expr(value)
+        }
+        Stmt::Return(Some(e)) | Stmt::Expr(e) => strip_lines_expr(e),
+        _ => {}
+    }
+}
+
+fn strip_lines_expr(e: &mut Expr) {
+    match e {
+        Expr::List(xs) | Expr::Tuple(xs) | Expr::Call { args: xs, .. }
+        | Expr::Ctor { args: xs, .. } | Expr::Spawn { args: xs, .. } => {
+            for x in xs {
+                strip_lines_expr(x);
+            }
+        }
+        Expr::Apply { func, args } => {
+            strip_lines_expr(func);
+            for x in args {
+                strip_lines_expr(x);
+            }
+        }
+        Expr::Unary { expr, .. } | Expr::Try(expr) | Expr::Field { base: expr, .. } => {
+            strip_lines_expr(expr)
+        }
+        Expr::Binary { lhs, rhs, .. } => {
+            strip_lines_expr(lhs);
+            strip_lines_expr(rhs);
+        }
+        Expr::Lambda { body, .. } => strip_lines_block(body),
+        Expr::RecordUpdate { base, fields } => {
+            strip_lines_expr(base);
+            for (_, v) in fields {
+                strip_lines_expr(v);
+            }
+        }
+        Expr::If { cond, then_block, else_block } => {
+            strip_lines_expr(cond);
+            strip_lines_block(then_block);
+            if let Some(b) = else_block {
+                strip_lines_block(b);
+            }
+        }
+        Expr::Match { scrutinee, arms } => {
+            strip_lines_expr(scrutinee);
+            for a in arms {
+                if let Some(g) = &mut a.guard {
+                    strip_lines_expr(g);
+                }
+                strip_lines_expr(&mut a.body);
+            }
+        }
+        Expr::Block(b) => strip_lines_block(b),
+        Expr::While { cond, body } => {
+            strip_lines_expr(cond);
+            strip_lines_block(body);
+        }
+        Expr::For { iter, body, .. } => {
+            strip_lines_expr(iter);
+            strip_lines_block(body);
+        }
+        _ => {}
+    }
+}
+
+fn string_lit(v: &str) -> String {
+    let mut s = String::from("\"");
+    for c in v.chars() {
+        match c {
+            '"' => s.push_str("\\\""),
+            '\\' => s.push_str("\\\\"),
+            '\n' => s.push_str("\\n"),
+            '\t' => s.push_str("\\t"),
+            '\r' => s.push_str("\\r"),
+            '\0' => s.push_str("\\0"),
+            _ => s.push(c),
+        }
+    }
+    s.push('"');
+    s
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn roundtrips(src: &str) -> bool {
+        reformat(src).is_some()
+    }
+
+    #[test]
+    fn reformats_every_std_and_example_to_an_equal_ast() {
+        // The printer must faithfully round-trip every shipped source file.
+        let dirs = ["std", "examples"];
+        let mut failures = Vec::new();
+        for dir in dirs {
+            for entry in std::fs::read_dir(dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.extension().and_then(|e| e.to_str()) != Some("witchy") {
+                    continue;
+                }
+                let src = std::fs::read_to_string(&path).unwrap();
+                if crate::parser::parse_module(&src).is_ok() && !roundtrips(&src) {
+                    failures.push(path.display().to_string());
+                }
+            }
+        }
+        assert!(failures.is_empty(), "did not round-trip: {failures:?}");
+    }
+
+    #[test]
+    fn reformats_brace_source_to_brace_free() {
+        let src = r#"
+            fn classify(n: Int) -> String {
+              if n > 0 { "pos" } else { "non-pos" }
+            }
+            fn main(console: Console) {
+              print(console, classify(5))
+            }
+        "#;
+        let out = reformat(src).expect("round-trips");
+        assert!(!out.contains('{'), "still has braces: {out}");
+    }
+}

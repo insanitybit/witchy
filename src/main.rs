@@ -9,6 +9,7 @@ mod actor_system;
 mod ast;
 mod capabilities;
 mod codegen;
+mod format;
 mod interpreter;
 mod lexer;
 mod linker;
@@ -125,6 +126,32 @@ fn main() -> wasmtime::Result<()> {
         if let Err(e) = lsp::run() {
             eprintln!("witchy lsp: {e}");
             std::process::exit(1);
+        }
+        return Ok(());
+    }
+    // `witchy fmt <file>` rewrites a source file in canonical brace-free form.
+    if std::env::args().nth(1).as_deref() == Some("fmt") {
+        let Some(path) = std::env::args().nth(2) else {
+            eprintln!("usage: witchy fmt <file.witchy>");
+            std::process::exit(1);
+        };
+        match std::fs::read_to_string(&path) {
+            Ok(src) => match format::reformat(&src) {
+                Some(out) => {
+                    if let Err(e) = std::fs::write(&path, out) {
+                        eprintln!("witchy fmt: {e}");
+                        std::process::exit(1);
+                    }
+                }
+                None => {
+                    eprintln!("witchy fmt: cannot format `{path}` (parse error or unsupported construct)");
+                    std::process::exit(1);
+                }
+            },
+            Err(e) => {
+                eprintln!("witchy fmt: cannot read `{path}`: {e}");
+                std::process::exit(1);
+            }
         }
         return Ok(());
     }
