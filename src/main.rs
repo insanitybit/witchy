@@ -4447,6 +4447,81 @@ mod example_tests {
         assert_eq!(run_on_wasm(src), vec!["hello", "foo", "nospaces", "", "3"]);
     }
 
+    // std/url: parse assorted URL strings (default ports, explicit port, path,
+    // and a malformed one). Pure, so both backends agree.
+    #[test]
+    fn std_url_parse_backends_agree() {
+        let client = r#"
+import url
+fn describe(s: String) -> String:
+    match url.parse(s):
+        Some(u) -> url.scheme(u) <> " " <> url.host(u) <> " " <> int_to_string(url.port(u)) <> " " <> url.path(u)
+        None -> "invalid"
+fn main(console: Console):
+    print(console, describe("http://example.com"))
+    print(console, describe("http://example.com:8080/foo"))
+    print(console, describe("https://x.com/a/b"))
+    print(console, describe("notaurl"))
+"#;
+        let sources = [("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "std url parse diverged");
+        assert_eq!(
+            compiled,
+            vec![
+                "http example.com 80 /",
+                "http example.com 8080 /foo",
+                "https x.com 443 /a/b",
+                "invalid"
+            ]
+        );
+    }
+
+    // std/http get_url: parse a URL string and GET it (loopback). Interpreter-only.
+    #[test]
+    fn std_http_get_url_against_loopback() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut req = Vec::new();
+                let mut tmp = [0u8; 256];
+                while let Ok(n) = stream.read(&mut tmp) {
+                    if n == 0 {
+                        break;
+                    }
+                    req.extend_from_slice(&tmp[..n]);
+                    if req.windows(4).any(|w| w == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                let resp = "HTTP/1.1 200 OK\r\nContent-Length: 9\r\nConnection: close\r\n\r\nhello-url";
+                let _ = stream.write_all(resp.as_bytes());
+            }
+        });
+        let program = format!(
+            r#"
+import http
+fn main(console: Console, net: Net):
+    match http.get_url(net, "http://127.0.0.1:{port}/path"):
+        Ok(r) -> print(console, http.body(r))
+        Err(e) -> print(console, e)
+"#
+        );
+        let mods = vec![("main".to_string(), parser::parse_module(&program).expect("parse"))];
+        let linked = crate::linker::link(mods, "main").expect("link");
+        let out = interpreter::run_module(
+            linked,
+            std::path::Path::new("."),
+            vec![format!("127.0.0.1:{port}")],
+        )
+        .expect("run");
+        server.join().ok();
+        assert_eq!(out, vec!["hello-url"]);
+    }
+
     // std/string trimming: trim/trim_start/trim_end over assorted whitespace.
     // Pure, so both backends agree.
     #[test]

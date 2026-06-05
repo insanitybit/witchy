@@ -5,6 +5,11 @@
 // reach the network at all. Interpreter-only for now (compiled networking maps
 // to wasi:sockets, a future step).
 
+// `header` returns Option; `get_url` returns Result; `url` parses URL strings.
+import option
+import result
+import url
+
 // A response: status code, headers (name lowercased for case-insensitive
 // lookup), and body.
 type Response:
@@ -18,6 +23,13 @@ pub fn get(net: Net, host: String, port: Int, path: String) -> Response:
 // length is sent as Content-Length.
 pub fn post(net: Net, host: String, port: Int, path: String, body: String) -> Response:
     request(net, "POST", host, port, path, body)
+
+// GET a full URL string (`http://host[:port]/path`), or an error if it doesn't
+// parse. Saves splitting host/port/path by hand.
+pub fn get_url(net: Net, raw: String) -> Result(Response, String):
+    match url.parse(raw):
+        Some(u) -> Ok(get(net, url.host(u), url.port(u), url.path(u)))
+        None -> Err("invalid URL: " <> raw)
 
 // Send one request (method/path/body) and read the whole response back.
 // `Connection: close` means the server closes after the body, ending recv_all.
