@@ -15,9 +15,18 @@ type Color:
 impl Eq for Color:
     fn eq(self, other: Self) -> Bool:
         match self:
-            Red -> match other { Red -> true  _ -> false }
-            Green -> match other { Green -> true  _ -> false }
-            Blue -> match other { Blue -> true  _ -> false }
+            Red ->
+                match other:
+                    Red -> true
+                    _ -> false
+            Green ->
+                match other:
+                    Green -> true
+                    _ -> false
+            Blue ->
+                match other:
+                    Blue -> true
+                    _ -> false
 
 fn main(console: Console):
     let palette = [Red, Green, Blue]

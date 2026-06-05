@@ -8,7 +8,7 @@ fn double(n: Int) -> Int:
 fn classify(n: Int) -> String:
     match n:
         0 -> "zero"
-        _ -> if n > 0 { "positive" } else { "negative" }
+        _ -> if n > 0: "positive" else: "negative"
 
 fn greet(console: Console, name: String) -> Nil:
     print(console, "hello, " <> name)

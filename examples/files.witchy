@@ -3,17 +3,16 @@
 // hands the narrower Dir to a Reader actor, which reads a file using *its* granted
 // capability — and cannot reach anything outside the directory it was given.
 
-actor Reader {
-  console: Console
-  dir: Dir
-  on Read(name: String) {
-    print(console, read(dir, name))
-  }
-}
+actor Reader:
+    console: Console
+    dir: Dir
 
-fn main(console: Console, root: Dir) {
-  let examples = subdir(root, "examples")
-  let data = subdir(examples, "data")
-  let reader = spawn Reader(console, data)
-  send(reader, Read("greeting.txt"))
-}
+impl Reader:
+    on Read(name: String):
+        print(console, read(dir, name))
+
+fn main(console: Console, root: Dir):
+    let examples = subdir(root, "examples")
+    let data = subdir(examples, "data")
+    let reader = spawn Reader(console, data)
+    send(reader, Read("greeting.txt"))

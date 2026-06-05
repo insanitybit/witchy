@@ -2,16 +2,16 @@
 // holds a Subject to the Printer (set at spawn); its `send` is compiled to a host
 // call that routes the message to the Printer's handler. Run-to-completion, no GC.
 
-actor Printer {
-  console: Console
-  on Show(n: Int) {
-    print(console, "printer got " <> int_to_string(n))
-  }
-}
+actor Printer:
+    console: Console
 
-actor Forwarder {
-  target: Subject
-  on Relay(n: Int) {
-    send(target, Show(n))
-  }
-}
+impl Printer:
+    on Show(n: Int):
+        print(console, "printer got " <> int_to_string(n))
+
+actor Forwarder:
+    target: Subject
+
+impl Forwarder:
+    on Relay(n: Int):
+        send(target, Show(n))

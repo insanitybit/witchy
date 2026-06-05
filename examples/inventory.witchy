@@ -3,24 +3,20 @@
 // map's contents — not just look keys up. The results are reported with string
 // interpolation: `${expr}` splices `to_string(expr)` into the string.
 
-fn main(console: Console) {
-  var prices = dict_new()
-  prices = insert(prices, "apple", 3)
-  prices = insert(prices, "bread", 2)
-  prices = insert(prices, "milk", 4)
+fn main(console: Console):
+    var prices = dict_new()
+    prices = insert(prices, "apple", 3)
+    prices = insert(prices, "bread", 2)
+    prices = insert(prices, "milk", 4)
 
-  var total = 0
-  for v in values(prices) {
-    total = total + v
-  }
-  print(console, "total = ${total}")
+    var total = 0
+    for v in values(prices):
+        total = total + v
+    print(console, "total = ${total}")
 
-  var pricey = 0
-  for entry in pairs(prices) {
-    let (name, price) = entry
-    if price > 2 {
-      pricey = pricey + 1
-    }
-  }
-  print(console, "over 2: ${pricey}")
-}
+    var pricey = 0
+    for entry in pairs(prices):
+        let (name, price) = entry
+        if price > 2:
+            pricey = pricey + 1
+    print(console, "over 2: ${pricey}")

@@ -4,13 +4,12 @@
 
 import list
 
-fn main(console: Console) {
-  let ns = list.range(5)
-  let squares = list.map(ns, fn(n: Int) { n * n })
-  let total = list.fold(squares, 0, fn(acc: Int, n: Int) { acc + n })
-  print(console, int_to_string(total))
+fn main(console: Console):
+    let ns = list.range(5)
+    let squares = list.map(ns, fn(n: Int): n * n)
+    let total = list.fold(squares, 0, fn(acc: Int, n: Int): acc + n)
+    print(console, int_to_string(total))
 
-  let odds = list.filter(ns, fn(n: Int) { n % 2 == 1 })
-  let rev = list.reverse(odds)
-  print(console, int_to_string(at(rev, 0)))
-}
+    let odds = list.filter(ns, fn(n: Int): n % 2 == 1)
+    let rev = list.reverse(odds)
+    print(console, int_to_string(at(rev, 0)))

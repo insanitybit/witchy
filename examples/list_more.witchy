@@ -4,15 +4,14 @@
 
 import list
 
-fn main(console: Console) {
-  let xs = [10, 20, 30, 40]
+fn main(console: Console):
+    let xs = [10, 20, 30, 40]
 
-  print(console, to_string(list.contains(xs, 30)))
-  print(console, int_to_string(list.index_of(xs, 40)))
-  print(console, int_to_string(list.index_of(xs, 99)))
+    print(console, to_string(list.contains(xs, 30)))
+    print(console, int_to_string(list.index_of(xs, 40)))
+    print(console, int_to_string(list.index_of(xs, 99)))
 
-  let head2 = list.take(xs, 2)
-  let tail2 = list.drop(xs, 2)
-  print(console, int_to_string(at(head2, 1)))
-  print(console, int_to_string(at(tail2, 0)))
-}
+    let head2 = list.take(xs, 2)
+    let tail2 = list.drop(xs, 2)
+    print(console, int_to_string(at(head2, 1)))
+    print(console, int_to_string(at(tail2, 0)))

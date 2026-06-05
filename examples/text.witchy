@@ -9,7 +9,7 @@ fn main(console: Console):
     let row = "alice,bob,carol"
 
     let fields = split(row, ",")
-    let loud = list.map(fields, fn(name: String) { to_upper(name) })
+    let loud = list.map(fields, fn(name: String): to_upper(name))
     print(console, string.join(loud, " | "))
 
     print(console, string.repeat("=", 3))

@@ -4,14 +4,11 @@
 
 import option
 
-fn first(xs: List(Int)) -> Option(Int) {
-  match xs {
-    [] -> None
-    [head, ..] -> Some(head)
-  }
-}
+fn first(xs: List(Int)) -> Option(Int):
+    match xs:
+        [] -> None
+        [head, ..] -> Some(head)
 
-fn main(console: Console) {
-  print(console, int_to_string(option.unwrap_or(first([10, 20, 30]), 0)))
-  print(console, int_to_string(option.unwrap_or(first([]), 0 - 1)))
-}
+fn main(console: Console):
+    print(console, int_to_string(option.unwrap_or(first([10, 20, 30]), 0)))
+    print(console, int_to_string(option.unwrap_or(first([]), 0 - 1)))

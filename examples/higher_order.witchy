@@ -6,7 +6,7 @@ fn apply(f: fn(Int) -> Int, x: Int) -> Int:
     f(x)
 
 fn make_adder(n: Int) -> fn(Int) -> Int:
-    fn(x: Int) { x + n }
+    fn(x: Int): x + n
 
 fn reduce(xs: List(Int), f: fn(Int, Int) -> Int, init: Int) -> Int:
     var acc = init
@@ -17,8 +17,8 @@ fn reduce(xs: List(Int), f: fn(Int, Int) -> Int, init: Int) -> Int:
 fn main(console: Console):
     let add10 = make_adder(10)
     print(console, int_to_string(apply(add10, 5)))
-    print(console, int_to_string(apply(fn(x: Int) { x * x }, 9)))
+    print(console, int_to_string(apply(fn(x: Int): x * x, 9)))
 
     let nums = [1, 2, 3, 4, 5]
-    print(console, int_to_string(reduce(nums, fn(a: Int, b: Int) { a + b }, 0)))
-    print(console, int_to_string(reduce(nums, fn(a: Int, b: Int) { a * b }, 1)))
+    print(console, int_to_string(reduce(nums, fn(a: Int, b: Int): a + b, 0)))
+    print(console, int_to_string(reduce(nums, fn(a: Int, b: Int): a * b, 1)))

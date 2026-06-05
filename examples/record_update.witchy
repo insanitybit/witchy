@@ -1,26 +1,22 @@
-// `update r { field: value }` makes a new record like `r` with some fields
+// `update r: field = value` makes a new record like `r` with some fields
 // replaced — it never mutates `r` (records are immutable values). Field values
 // can reference the original record.
 
-type Account {
-  name: String
-  balance: Int
-}
+type Account:
+    name: String
+    balance: Int
 
-fn deposit(a: Account, amount: Int) -> Account {
-  update a { balance: a.balance + amount }
-}
+fn deposit(a: Account, amount: Int) -> Account:
+    update a: balance = a.balance + amount
 
-fn rename(a: Account, name: String) -> Account {
-  update a { name: name }
-}
+fn rename(a: Account, name: String) -> Account:
+    update a: name = name
 
-fn main(console: Console) {
-  let acc = Account("alice", 100)
-  let acc2 = deposit(acc, 50)
-  let acc3 = rename(acc2, "alice smith")
+fn main(console: Console):
+    let acc = Account("alice", 100)
+    let acc2 = deposit(acc, 50)
+    let acc3 = rename(acc2, "alice smith")
 
-  print(console, acc.name <> " " <> int_to_string(acc.balance))
-  print(console, acc2.name <> " " <> int_to_string(acc2.balance))
-  print(console, acc3.name <> " " <> int_to_string(acc3.balance))
-}
+    print(console, acc.name <> " " <> int_to_string(acc.balance))
+    print(console, acc2.name <> " " <> int_to_string(acc2.balance))
+    print(console, acc3.name <> " " <> int_to_string(acc3.balance))

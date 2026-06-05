@@ -6,29 +6,26 @@
 // do nothing but relay. Messages are processed in mailbox (FIFO) order, which
 // is why the relayed message lands last.
 
-actor Logger {
-  console: Console
-  var count: Int = 0
+actor Logger:
+    console: Console
+    var count: Int = 0
 
-  on Log(msg: String) {
-    count = count + 1
-    print(console, "[" <> int_to_string(count) <> "] " <> msg)
-  }
-}
+impl Logger:
+    on Log(msg: String):
+        count = count + 1
+        print(console, "[" <> int_to_string(count) <> "] " <> msg)
 
-actor Forwarder {
-  logger: Subject
+actor Forwarder:
+    logger: Subject
 
-  on Relay(msg: String) {
-    send(logger, Log(msg))
-  }
-}
+impl Forwarder:
+    on Relay(msg: String):
+        send(logger, Log(msg))
 
-fn main(console: Console) {
-  let logger = spawn Logger(console)
-  let fwd = spawn Forwarder(logger)
+fn main(console: Console):
+    let logger = spawn Logger(console)
+    let fwd = spawn Forwarder(logger)
 
-  send(logger, Log("direct message"))
-  send(fwd, Relay("relayed message"))
-  send(logger, Log("another direct"))
-}
+    send(logger, Log("direct message"))
+    send(fwd, Relay("relayed message"))
+    send(logger, Log("another direct"))

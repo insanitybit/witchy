@@ -2,22 +2,20 @@
 // parameter that mutates the caller's variable in place, and the Console
 // capability for output. Runs in the interpreter and compiles to WASM.
 
-type Op {
-  Inc
-  Dec
-}
+type Op:
+    Inc
+    Dec
 
-fn apply(inout n: Int, op: Op) {
-  match op {
-    Inc -> { n = n + 1 }
-    Dec -> { n = n - 1 }
-  }
-}
+fn apply(inout n: Int, op: Op):
+    match op:
+        Inc ->
+            n = n + 1
+        Dec ->
+            n = n - 1
 
-fn main(console: Console) {
-  var total = 0
-  apply(total, Inc)
-  apply(total, Inc)
-  apply(total, Dec)
-  print(console, "total is " <> int_to_string(total))
-}
+fn main(console: Console):
+    var total = 0
+    apply(total, Inc)
+    apply(total, Inc)
+    apply(total, Dec)
+    print(console, "total is " <> int_to_string(total))

@@ -6,7 +6,7 @@ import list
 fn main(console: Console):
     let nums = [2, 4, 6, 8]
 
-    print(console, to_string(list.all(nums, fn(n: Int) { n % 2 == 0 })))
-    print(console, to_string(list.any(nums, fn(n: Int) { n > 5 })))
-    print(console, to_string(list.any(nums, fn(n: Int) { n > 100 })))
-    print(console, to_string(list.all(nums, fn(n: Int) { n > 3 })))
+    print(console, to_string(list.all(nums, fn(n: Int): n % 2 == 0)))
+    print(console, to_string(list.any(nums, fn(n: Int): n > 5)))
+    print(console, to_string(list.any(nums, fn(n: Int): n > 100)))
+    print(console, to_string(list.all(nums, fn(n: Int): n > 3)))
