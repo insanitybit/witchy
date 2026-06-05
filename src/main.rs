@@ -1353,6 +1353,49 @@ mod example_tests {
     }
 
     #[test]
+    fn std_ascii_classification_backends_agree() {
+        // ASCII predicates are implemented purely via string comparison, so they
+        // must agree across the interpreter and the compiled backend. Also drives
+        // a tiny tokenizer-style use: sum the digit values in a string.
+        let client = r#"
+            import ascii
+            import string
+            fn digit_sum(s: String) -> Int {
+              var total = 0
+              var i = 0
+              while i < char_count(s) {
+                let c = string.char_at(s, i)
+                if ascii.is_digit(c) { total = total + ascii.to_digit(c) }
+                i = i + 1
+              }
+              total
+            }
+            fn main(console: Console) {
+              print(console, to_string(ascii.is_digit("7")))
+              print(console, to_string(ascii.is_digit("x")))
+              print(console, to_string(ascii.is_alpha("Q")))
+              print(console, to_string(ascii.is_alnum("_")))
+              print(console, to_string(ascii.is_space("\t")))
+              print(console, int_to_string(ascii.to_digit("4")))
+              print(console, int_to_string(ascii.to_digit("z")))
+              print(console, int_to_string(digit_sum("a1b2c3")))
+            }
+        "#;
+        let sources = [
+            ("ascii", crate::bundled_module("ascii").unwrap()),
+            ("string", crate::bundled_module("string").unwrap()),
+            ("main", client),
+        ];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "std ascii diverged");
+        assert_eq!(
+            compiled,
+            vec!["true", "false", "true", "false", "true", "4", "-1", "6"]
+        );
+    }
+
+    #[test]
     fn std_show_list_backends_agree() {
         // `show.show_list` renders a list via the element type's Show impl, so it
         // works for a user type (Coord) that the built-in to_string cannot print.

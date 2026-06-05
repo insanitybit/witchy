@@ -1,0 +1,31 @@
+// ASCII character predicates over single-character strings (such as those
+// `string.char_at` returns). Pure and capability-free, like every std module.
+// Classification is by code point in the ASCII range; the comparisons use the
+// standard string ordering, so every function here is correct on both the
+// interpreter and the compiled backend. The rough equivalent of Go's `unicode`
+// helpers for the ASCII subset.
+
+pub fn is_digit(c: String) -> Bool:
+    "0" <= c && c <= "9"
+
+pub fn is_upper(c: String) -> Bool:
+    "A" <= c && c <= "Z"
+
+pub fn is_lower(c: String) -> Bool:
+    "a" <= c && c <= "z"
+
+pub fn is_alpha(c: String) -> Bool:
+    is_upper(c) || is_lower(c)
+
+pub fn is_alnum(c: String) -> Bool:
+    is_alpha(c) || is_digit(c)
+
+pub fn is_space(c: String) -> Bool:
+    c == " " || c == "\t" || c == "\n" || c == "\r"
+
+// The numeric value of a single decimal digit, or -1 when `c` is not a digit.
+pub fn to_digit(c: String) -> Int:
+    if is_digit(c):
+        string_to_int(c)
+    else:
+        0 - 1
