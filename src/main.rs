@@ -1492,6 +1492,26 @@ mod example_tests {
     }
 
     #[test]
+    fn brace_free_lambda_form() {
+        // `fn(params): expr` — the brace-free single-expression lambda, used
+        // inline inside call parens where layout is suppressed. Both backends.
+        let client = r#"
+            import list
+            fn main(console: Console) {
+              let xs = [1, 2, 3, 4]
+              let doubled = list.map(xs, fn(n: Int): n * 2)
+              print(console, int_to_string(list.fold(doubled, 0, fn(a: Int, b: Int): a + b)))
+              print(console, int_to_string(length(list.filter(xs, fn(n: Int): n % 2 == 0))))
+            }
+        "#;
+        let sources = [("list", crate::bundled_module("list").unwrap()), ("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "brace-free lambda diverged");
+        assert_eq!(compiled, vec!["20", "2"]);
+    }
+
+    #[test]
     fn inherent_impl_in_indentation_syntax() {
         // The inherent impl works under the off-side rule too: `impl Point:`.
         let client = "type Point:\n    Point(Int, Int)\n\nimpl Point:\n    fn sum(self) -> Int:\n        match self:\n            Point(x, y) -> x + y\n\nfn main(console: Console):\n    print(console, int_to_string(sum(Point(4, 5))))\n";

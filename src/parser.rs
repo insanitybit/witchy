@@ -740,12 +740,21 @@ impl Parser {
                 })
             }
             Tok::Fn => {
-                // Anonymous function: `fn(params) { body }`.
+                // Anonymous function. Brace-free single-expression form
+                // `fn(params): expr` (used inline inside call parens, where the
+                // off-side layout is suppressed), or an indented/`{ }` block body.
                 self.advance();
                 self.expect(&Tok::LParen)?;
                 let params = self.params()?;
                 self.expect(&Tok::RParen)?;
-                let body = self.block()?;
+                let body = if self.at(&Tok::Colon) {
+                    let line = self.cur().line;
+                    self.advance();
+                    let e = self.expr(0)?;
+                    Block { stmts: vec![Stmt::Expr(e)], lines: vec![line] }
+                } else {
+                    self.block()?
+                };
                 Ok(Expr::Lambda { params, body })
             }
             Tok::Update => {
