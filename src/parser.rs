@@ -28,6 +28,9 @@ pub fn parse_module(src: &str) -> Result<Module, ParseError> {
         line: e.line,
         col: e.col,
     })?;
+    // Off-side-rule layout: indentation-delimited blocks become brace-delimited
+    // ones (a no-op for code that already uses explicit braces).
+    let tokens = crate::lexer::apply_layout(tokens);
     Parser::new(tokens).module()
 }
 

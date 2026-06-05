@@ -4724,6 +4724,59 @@ mod example_tests {
         assert_eq!(compiled, vec!["9", "2", "42", "8"]);
     }
 
+    // Indentation-based (off-side rule) syntax: blocks are delimited by `:` +
+    // indentation rather than braces. A layout pass turns it into the brace form
+    // the rest of the pipeline expects, so both backends agree — here over a
+    // type, match, for-loop, let/var, and calls.
+    #[test]
+    fn indentation_syntax_backends_agree() {
+        let src = r#"
+type Shape:
+    Circle(Int)
+    Rect(Int, Int)
+
+fn area(s: Shape) -> Int:
+    match s:
+        Circle(r) -> 3 * r * r
+        Rect(w, h) -> w * h
+
+fn main(console: Console):
+    let xs = [area(Circle(2)), area(Rect(3, 4))]
+    var total = 0
+    for x in xs:
+        total = total + x
+    print(console, int_to_string(total))
+"#;
+        assert_eq!(interp(src), run_on_wasm(src), "indentation backends diverged");
+        assert_eq!(run_on_wasm(src), vec!["24"]);
+    }
+
+    // Indentation syntax with traits/impls and a nested if/else expression.
+    #[test]
+    fn indentation_traits_backends_agree() {
+        let src = r#"
+trait Show:
+    fn show(self) -> String
+
+impl Show for Int:
+    fn show(self) -> String:
+        int_to_string(self)
+
+impl Show for Bool:
+    fn show(self) -> String:
+        if self:
+            "yes"
+        else:
+            "no"
+
+fn main(console: Console):
+    print(console, show(42))
+    print(console, show(true))
+"#;
+        assert_eq!(interp(src), run_on_wasm(src), "indentation traits diverged");
+        assert_eq!(run_on_wasm(src), vec!["42", "yes"]);
+    }
+
     // Hex (0x..) and binary (0b..) integer literals, including underscore
     // separators, feeding the bitwise operators. Both backends agree.
     #[test]

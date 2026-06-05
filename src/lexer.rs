@@ -631,6 +631,95 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, LexError> {
     Lexer::new(src).tokenize()
 }
 
+fn vtok(kind: Tok, near: &Token) -> Token {
+    Token { kind, line: near.line, col: near.col }
+}
+
+/// Off-side-rule layout. Transforms an indentation-delimited token stream into a
+/// brace-delimited one: where a `:`-terminated header line is followed by a more
+/// deeply indented block, virtual `{`/`}` are inserted (and the header `:` is
+/// dropped). The parser, typechecker, interpreter, and codegen are unchanged —
+/// they only ever see braces.
+///
+/// Code that already uses explicit braces passes through untouched: inside `()`,
+/// `[]`, or `{}` layout is suppressed, and a line without a trailing `:` opens no
+/// block. So the two styles coexist, which is what lets the migration be gradual.
+pub fn apply_layout(tokens: Vec<Token>) -> Vec<Token> {
+    struct LayoutLine {
+        indent: u32,
+        toks: Vec<Token>,
+    }
+
+    // Phase 1: group tokens into layout lines. A new line begins at a token that
+    // starts a fresh source line while at bracket depth 0 (brackets and explicit
+    // braces suppress layout, keeping multi-line signatures and brace blocks
+    // whole).
+    let mut lines: Vec<LayoutLine> = Vec::new();
+    let mut eof: Option<Token> = None;
+    let mut depth: i32 = 0;
+    let mut prev_line: u32 = 0;
+    for t in tokens {
+        if t.kind == Tok::Eof {
+            eof = Some(t);
+            break;
+        }
+        let starts_line = lines.is_empty() || (depth == 0 && t.line != prev_line);
+        prev_line = t.line;
+        match t.kind {
+            Tok::LParen | Tok::LBracket | Tok::LBrace => depth += 1,
+            Tok::RParen | Tok::RBracket | Tok::RBrace => depth -= 1,
+            _ => {}
+        }
+        if starts_line {
+            lines.push(LayoutLine { indent: t.col, toks: vec![t] });
+        } else {
+            lines.last_mut().unwrap().toks.push(t);
+        }
+    }
+
+    // Phase 2: open a virtual block after each `:`-terminated header and close
+    // blocks on dedent.
+    let mut out: Vec<Token> = Vec::new();
+    let mut stack: Vec<u32> = Vec::new(); // header indents of open virtual blocks
+    let mut pending: Option<u32> = None; // header indent awaiting its block body
+    for line in &lines {
+        let here = &line.toks[0];
+        if let Some(header_indent) = pending.take() {
+            if line.indent > header_indent {
+                out.push(vtok(Tok::LBrace, here));
+                stack.push(header_indent);
+            } else {
+                // A `:` header with no indented body: an empty block.
+                out.push(vtok(Tok::LBrace, here));
+                out.push(vtok(Tok::RBrace, here));
+            }
+        }
+        while stack.last().is_some_and(|top| line.indent <= *top) {
+            out.push(vtok(Tok::RBrace, here));
+            stack.pop();
+        }
+        // A trailing `:` is a block header; drop it and remember to open a block.
+        if line.toks.last().is_some_and(|t| t.kind == Tok::Colon) {
+            out.extend(line.toks[..line.toks.len() - 1].iter().cloned());
+            pending = Some(line.indent);
+        } else {
+            out.extend(line.toks.iter().cloned());
+        }
+    }
+
+    if let Some(eof_tok) = eof {
+        if pending.take().is_some() {
+            out.push(vtok(Tok::LBrace, &eof_tok));
+            out.push(vtok(Tok::RBrace, &eof_tok));
+        }
+        while stack.pop().is_some() {
+            out.push(vtok(Tok::RBrace, &eof_tok));
+        }
+        out.push(eof_tok);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -754,6 +843,57 @@ mod tests {
         assert_eq!(kinds("a << b"), vec![id("a"), Tok::Shl, id("b"), Tok::Eof]);
         assert_eq!(kinds("a >> b"), vec![id("a"), Tok::Shr, id("b"), Tok::Eof]);
         assert_eq!(kinds("~a"), vec![Tok::Tilde, id("a"), Tok::Eof]);
+    }
+
+    fn laid_out(src: &str) -> Vec<Tok> {
+        apply_layout(tokenize(src).unwrap())
+            .into_iter()
+            .map(|t| t.kind)
+            .collect()
+    }
+
+    #[test]
+    fn layout_inserts_virtual_braces() {
+        let id = |s: &str| Tok::Ident(s.into());
+        assert_eq!(
+            laid_out("fn f():\n    x\n"),
+            vec![
+                Tok::Fn,
+                id("f"),
+                Tok::LParen,
+                Tok::RParen,
+                Tok::LBrace,
+                id("x"),
+                Tok::RBrace,
+                Tok::Eof
+            ]
+        );
+    }
+
+    #[test]
+    fn layout_leaves_brace_code_unchanged() {
+        // A line with no trailing `:` opens no block; bracket/brace interiors are
+        // suppressed — so explicit-brace code is a pass-through.
+        let src = "fn f() {\n  let x = [1, 2]\n  x\n}\n";
+        assert_eq!(kinds(src), laid_out(src));
+    }
+
+    #[test]
+    fn layout_closes_nested_blocks_on_dedent() {
+        // `if` nested in `fn`, both closed by the dedent to the next item.
+        let id = |s: &str| Tok::Ident(s.into());
+        assert_eq!(
+            laid_out("fn f():\n    if a:\n        x\n    y\n"),
+            vec![
+                Tok::Fn, id("f"), Tok::LParen, Tok::RParen, Tok::LBrace,
+                Tok::If, id("a"), Tok::LBrace,
+                id("x"),
+                Tok::RBrace,
+                id("y"),
+                Tok::RBrace,
+                Tok::Eof
+            ]
+        );
     }
 
     #[test]
