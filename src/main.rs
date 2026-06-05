@@ -1492,6 +1492,24 @@ mod example_tests {
     }
 
     #[test]
+    fn brace_free_record_update_form() {
+        // `update e: field = value ...` — brace-free record update (one or more
+        // whitespace-separated `name = value` overrides). Both backends agree.
+        let client = r#"
+            type Point { x: Int, y: Int }
+            fn main(console: Console) {
+              let p = Point(1, 2)
+              let q = update p: x = p.x + 10
+              print(console, int_to_string(q.x + q.y))
+              let r = update p: x = 5 y = 6
+              print(console, int_to_string(r.x + r.y))
+            }
+        "#;
+        assert_eq!(interp(client), vec!["13", "11"]);
+        assert_eq!(run_on_wasm(client), vec!["13", "11"]);
+    }
+
+    #[test]
     fn inline_if_else_expression_form() {
         // Brace-free inline `if c: a else: b` (chained), here inside a brace-free
         // lambda inside call parens. Both backends agree.

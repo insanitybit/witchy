@@ -751,19 +751,37 @@ impl Parser {
                 Ok(Expr::Lambda { params, body })
             }
             Tok::Update => {
-                // `update <expr> { field: value, ... }` — a copy with overrides.
+                // A copy with overrides. Brace-free inline `update e: f = v g = w`
+                // (fields are `name = value`, whitespace-separated), the indented
+                // form `update e:` + `name = value` lines (via layout), or the
+                // legacy `update e { f: v, ... }` block.
                 self.advance();
                 let base = self.expr(0)?;
-                self.expect(&Tok::LBrace)?;
                 let mut fields = Vec::new();
-                while !self.at(&Tok::RBrace) && !self.at(&Tok::Eof) {
-                    let name = self.ident()?;
-                    self.expect(&Tok::Colon)?;
-                    let value = self.expr(0)?;
-                    fields.push((name, value));
-                    self.eat(&Tok::Comma); // optional separator
+                if self.eat(&Tok::Colon) {
+                    while matches!(self.kind(), Tok::Ident(_))
+                        && matches!(
+                            self.toks.get(self.pos + 1).map(|t| &t.kind),
+                            Some(Tok::Eq)
+                        )
+                    {
+                        let name = self.ident()?;
+                        self.expect(&Tok::Eq)?;
+                        fields.push((name, self.expr(0)?));
+                    }
+                } else {
+                    self.expect(&Tok::LBrace)?;
+                    while !self.at(&Tok::RBrace) && !self.at(&Tok::Eof) {
+                        let name = self.ident()?;
+                        // Field separator is `=` (new) or `:` (legacy brace form).
+                        if !self.eat(&Tok::Eq) {
+                            self.expect(&Tok::Colon)?;
+                        }
+                        fields.push((name, self.expr(0)?));
+                        self.eat(&Tok::Comma);
+                    }
+                    self.expect(&Tok::RBrace)?;
                 }
-                self.expect(&Tok::RBrace)?;
                 Ok(Expr::RecordUpdate {
                     base: Box::new(base),
                     fields,
