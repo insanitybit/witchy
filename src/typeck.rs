@@ -1146,20 +1146,35 @@ impl Checker {
     }
 
     /// If the scrutinee is a known sum type, every variant must be covered (or a
-    /// wildcard/variable arm must catch the rest).
+    /// wildcard/variable arm must catch the rest). `Bool` is treated as a
+    /// two-variant sum (`true`/`false`), so an incomplete Bool match is rejected
+    /// just like an incomplete ADT match.
     fn check_exhaustive(&self, scrut: &Ty, arms: &[MatchArm]) -> Result<(), TypeError> {
-        let Ty::Named(adt, _) = self.resolve(scrut) else {
-            return Ok(());
-        };
-        let Some(variants) = self.adt_variants.get(&adt) else {
-            return Ok(());
-        };
+        let resolved = self.resolve(scrut);
         let has_catchall = arms.iter().any(|a| {
             a.guard.is_none() && matches!(a.pattern, Pattern::Wildcard | Pattern::Var(_))
         });
         if has_catchall {
             return Ok(());
         }
+        if matches!(resolved, Ty::Bool) {
+            let covers = |want: bool| {
+                arms.iter()
+                    .any(|a| a.guard.is_none() && matches!(a.pattern, Pattern::Bool(b) if b == want))
+            };
+            if covers(true) && covers(false) {
+                return Ok(());
+            }
+            return terr(
+                "non-exhaustive match on `Bool`: cover both `true` and `false` (or add `_`)",
+            );
+        }
+        let Ty::Named(adt, _) = resolved else {
+            return Ok(());
+        };
+        let Some(variants) = self.adt_variants.get(&adt) else {
+            return Ok(());
+        };
         let covered: HashSet<&str> = arms
             .iter()
             .filter(|a| a.guard.is_none())
@@ -1827,6 +1842,19 @@ mod tests {
             fn f(o: Opt(Int)) -> Int { match o { Some(x) if x > 0 -> 1  Some(y) -> y  None -> 0 } }
         "#;
         assert!(check_str(src).is_ok(), "{:?}", check_str(src));
+    }
+
+    #[test]
+    fn rejects_non_exhaustive_bool_match() {
+        let src = r#"fn f(b: Bool) -> Int { match b { true -> 1 } }"#;
+        let e = check_str(src).unwrap_err();
+        assert!(e.contains("non-exhaustive") && e.contains("Bool"), "got: {e}");
+    }
+
+    #[test]
+    fn allows_complete_bool_match() {
+        assert!(check_str(r#"fn f(b: Bool) -> Int { match b { true -> 1  false -> 0 } }"#).is_ok());
+        assert!(check_str(r#"fn f(b: Bool) -> Int { match b { true -> 1  _ -> 0 } }"#).is_ok());
     }
 
     #[test]
