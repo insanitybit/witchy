@@ -4,10 +4,75 @@
 //! build, run, audit. Each test is hermetic — its own temp `WITCHY_HOME` and
 //! working tree — so they can run in parallel.
 
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Child, Command, Output, Stdio};
 
 const BIN: &str = env!("CARGO_BIN_EXE_witchy");
+
+/// A coven registry server (the real `witchy coven-serve` binary) on a free
+/// local port, for end-to-end testing over HTTP. Killed on drop.
+struct RegistryServer {
+    child: Child,
+    port: u16,
+    regroot: PathBuf,
+    home: PathBuf,
+}
+
+impl RegistryServer {
+    /// Bind to an ephemeral port (`:0`) and discover the actual port from the
+    /// server's startup line — race-free, unlike pre-picking a port.
+    fn start() -> RegistryServer {
+        let regroot = unique("coven-regroot");
+        let home = unique("coven-srv-home");
+        let mut child = Command::new(BIN)
+            .args([
+                "coven-serve",
+                "--addr",
+                "127.0.0.1:0",
+                "--root",
+                regroot.to_str().unwrap(),
+            ])
+            .env("WITCHY_HOME", &home)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn coven-serve");
+
+        // The server prints "...serving at http://HOST:PORT ..." once bound.
+        let stdout = child.stdout.take().expect("piped stdout");
+        let mut reader = BufReader::new(stdout);
+        let mut line = String::new();
+        reader.read_line(&mut line).expect("read server startup line");
+        let port = line
+            .split("http://")
+            .nth(1)
+            .and_then(|s| s.split_whitespace().next())
+            .and_then(|hostport| hostport.rsplit(':').next())
+            .and_then(|p| p.trim().parse::<u16>().ok())
+            .unwrap_or_else(|| panic!("could not parse server port from: {line:?}"));
+
+        RegistryServer {
+            child,
+            port,
+            regroot,
+            home,
+        }
+    }
+
+    fn url(&self) -> String {
+        format!("http://127.0.0.1:{}", self.port)
+    }
+}
+
+impl Drop for RegistryServer {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        let _ = std::fs::remove_dir_all(&self.regroot);
+        let _ = std::fs::remove_dir_all(&self.home);
+    }
+}
 
 fn unique(tag: &str) -> PathBuf {
     let nanos = std::time::SystemTime::now()
@@ -22,6 +87,9 @@ fn unique(tag: &str) -> PathBuf {
 struct Sandbox {
     home: PathBuf,
     work: PathBuf,
+    /// When set, every command talks to a remote coven server instead of the
+    /// local-directory registry.
+    coven_url: Option<String>,
 }
 
 impl Sandbox {
@@ -29,17 +97,20 @@ impl Sandbox {
         Sandbox {
             home: unique(&format!("{tag}-home")),
             work: unique(&format!("{tag}-work")),
+            coven_url: None,
         }
     }
 
     fn run(&self, dir: &Path, user: &str, args: &[&str]) -> Output {
-        Command::new(BIN)
-            .current_dir(dir)
+        let mut cmd = Command::new(BIN);
+        cmd.current_dir(dir)
             .env("WITCHY_HOME", &self.home)
             .env("WITCHY_USER", user)
-            .args(args)
-            .output()
-            .expect("spawn witchy")
+            .args(args);
+        if let Some(u) = &self.coven_url {
+            cmd.env("COVEN_URL", u);
+        }
+        cmd.output().expect("spawn witchy")
     }
 
     /// Create + publish + promote a library rune in one shot. Returns its dir.
@@ -84,6 +155,87 @@ fn new_app(sb: &Sandbox) -> PathBuf {
     let out = sb.run(&sb.work, "dev", &["new", "app"]);
     assert!(out.status.success(), "new failed: {}", stderr(&out));
     sb.work.join("app")
+}
+
+#[test]
+fn networked_registry_full_lifecycle() {
+    let server = RegistryServer::start();
+    let mut sb = Sandbox::new("net");
+    sb.coven_url = Some(server.url());
+
+    let app = new_app(&sb);
+    // Publish to the remote server.
+    let lib = sb.work.join("lib");
+    std::fs::create_dir_all(lib.join("src")).unwrap();
+    std::fs::write(lib.join("witchy.toml"), "[rune]\nname = \"acme/lib\"\nversion = \"1.0.0\"\n").unwrap();
+    std::fs::write(lib.join("src/lib.witchy"), "fn shout(s: String) -> String { \"HEY \" <> s }\n").unwrap();
+    assert!(sb.run(&lib, "ci-bot", &["publish"]).status.success());
+
+    // Staged over the network → not addable.
+    let out = sb.run(&app, "dev", &["add", "acme/lib"]);
+    assert!(!out.status.success());
+    assert!(stderr(&out).contains("STAGED"), "stderr: {}", stderr(&out));
+
+    // Promote over the network with a second factor.
+    let out = sb.run(&lib, "alice", &["promote", "acme/lib@1.0.0", "--factor", "webauthn"]);
+    assert!(out.status.success(), "remote promote failed: {}", stderr(&out));
+    assert!(stdout(&out).contains("RELEASED"));
+
+    // Add (fetched over HTTP, signature-verified) and run.
+    let out = sb.run(&app, "dev", &["add", "acme/lib"]);
+    assert!(out.status.success(), "remote add failed: {}", stderr(&out));
+    std::fs::write(
+        app.join("src/app.witchy"),
+        "import lib\n\nfn main(console: Console) {\n  print(console, lib.shout(\"net\"))\n}\n",
+    )
+    .unwrap();
+    let out = sb.run(&app, "dev", &["run"]);
+    assert!(out.status.success(), "remote run failed: {}", stderr(&out));
+    assert!(stdout(&out).contains("HEY net"), "got: {}", stdout(&out));
+
+    // The lock pinned the remote registry's key fingerprint.
+    let lock = std::fs::read_to_string(app.join("witchy.lock")).unwrap();
+    assert!(lock.contains("ed25519:"), "lock should pin remote key: {lock}");
+
+    // `list` over the network reflects the released state.
+    let out = sb.run(&app, "dev", &["list", "acme/lib"]);
+    assert!(stdout(&out).contains("released"));
+}
+
+#[test]
+fn networked_registry_signature_detects_tampering() {
+    let server = RegistryServer::start();
+    let mut sb = Sandbox::new("nettamper");
+    sb.coven_url = Some(server.url());
+    let app = new_app(&sb);
+
+    let lib = sb.work.join("lib");
+    std::fs::create_dir_all(lib.join("src")).unwrap();
+    std::fs::write(lib.join("witchy.toml"), "[rune]\nname = \"acme/x\"\nversion = \"1.0.0\"\n").unwrap();
+    std::fs::write(lib.join("src/x.witchy"), "fn f(s: String) -> String { s }\n").unwrap();
+    assert!(sb.run(&lib, "ci-bot", &["publish"]).status.success());
+    assert!(sb
+        .run(&lib, "alice", &["promote", "acme/x@1.0.0", "--factor", "totp"])
+        .status
+        .success());
+    assert!(sb.run(&app, "dev", &["add", "acme/x"]).status.success());
+
+    // Tamper a signed field of the record in the SERVER's storage.
+    let meta = server.regroot.join("acme/x/1.0.0/coven.json");
+    let json = std::fs::read_to_string(&meta).unwrap().replace("ci-bot", "attacker");
+    std::fs::write(&meta, json).unwrap();
+
+    // A fresh client (clear its store so it must re-fetch) must reject the
+    // tampered record via the signature — verify re-fetches from the server.
+    std::fs::remove_dir_all(sb.home.join("store")).ok();
+    let out = sb.run(&app, "dev", &["verify"]);
+    assert!(!out.status.success(), "tampered remote record must fail verify");
+    assert!(
+        stdout(&out).contains("FAIL") || stderr(&out).contains("signature"),
+        "stdout {} stderr {}",
+        stdout(&out),
+        stderr(&out)
+    );
 }
 
 #[test]

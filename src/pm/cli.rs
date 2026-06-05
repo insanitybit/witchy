@@ -27,7 +27,7 @@ pub fn is_command(s: &str) -> bool {
         s,
         "new" | "init" | "add" | "build" | "run" | "update" | "audit" | "tree" | "outdated"
             | "why" | "why-cap" | "publish" | "promote" | "yank" | "list" | "verify" | "vendor"
-            | "coven"
+            | "coven" | "coven-serve"
     )
 }
 
@@ -47,9 +47,16 @@ impl CovenEnv {
                 PathBuf::from(base).join(".witchy")
             });
         let user = std::env::var("WITCHY_USER").unwrap_or_else(|_| "anon".into());
+        // A remote coven server is used when COVEN_URL is set; otherwise the
+        // in-process local-directory registry. The content-addressed store is
+        // always local (the global cache).
+        let registry = match std::env::var("COVEN_URL") {
+            Ok(url) if !url.trim().is_empty() => Registry::remote(url),
+            _ => Registry::local(home.join("registry")),
+        };
         CovenEnv {
             store: Store::new(home.join("store")),
-            registry: Registry::new(home.join("registry")),
+            registry,
             user,
         }
     }
@@ -61,6 +68,7 @@ pub fn run(args: &[String]) -> PmResult<()> {
     };
     match cmd.as_str() {
         "coven" => run(rest), // allow `witchy coven <subcommand>` too
+        "coven-serve" => cmd_serve(rest),
         "new" => cmd_new(rest),
         "init" => cmd_init(rest),
         "add" => cmd_add(rest),
@@ -127,6 +135,8 @@ const VALUE_FLAGS: &[&str] = &[
     "--registry",
     "--path",
     "--version",
+    "--addr",
+    "--root",
 ];
 
 fn parse_args(rest: &[String]) -> ParsedArgs {
@@ -175,6 +185,23 @@ impl ParsedArgs {
 
 fn module_ident(name: &str) -> String {
     name.rsplit('/').next().unwrap_or(name).replace('-', "_")
+}
+
+fn cmd_serve(rest: &[String]) -> PmResult<()> {
+    let a = parse_args(rest);
+    let addr = a.val("--addr").unwrap_or("127.0.0.1:8787").to_string();
+    let root = match a.val("--root") {
+        Some(r) => PathBuf::from(r),
+        None => {
+            let home = std::env::var("WITCHY_HOME")
+                .map(PathBuf::from)
+                .unwrap_or_else(|_| {
+                    PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into())).join(".witchy")
+                });
+            home.join("registry")
+        }
+    };
+    super::server::serve(&addr, root)
 }
 
 fn cmd_new(rest: &[String]) -> PmResult<()> {
@@ -283,7 +310,7 @@ fn assemble(root_dir: &Path, env: &CovenEnv) -> PmResult<Assembled> {
     // already hash-verified against the lock — so we do not require the registry
     // or mint a key just to look.
     if let Some(pinned) = &lock.registry_root
-        && let Ok(pubhex) = super::keys::read_public(env.registry.root())
+        && let Ok(pubhex) = env.registry.root_public_hex()
     {
         let current = super::keys::fingerprint_of(&pubhex);
         if &current != pinned {
@@ -1050,41 +1077,17 @@ fn cmd_list(rest: &[String]) -> PmResult<()> {
             Ok(())
         }
         None => {
-            // Walk the registry root listing namespaces/names.
-            let root = env.registry.root().to_path_buf();
-            if !root.exists() {
+            let names = env.registry.list_all();
+            if names.is_empty() {
                 println!("registry is empty.");
-                return Ok(());
+            } else {
+                println!("published runes:");
+                for n in names {
+                    println!("  {n}");
+                }
             }
-            println!("published runes:");
-            list_runes(&root, &root);
             Ok(())
         }
-    }
-}
-
-fn list_runes(base: &Path, dir: &Path) {
-    // A rune directory is one that has version subdirs containing coven.json.
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    let mut names = Vec::new();
-    for e in entries.flatten() {
-        let p = e.path();
-        if p.is_dir() {
-            let has_version = std::fs::read_dir(&p)
-                .map(|mut it| it.any(|c| c.map(|c| c.path().join("coven.json").exists()).unwrap_or(false)))
-                .unwrap_or(false);
-            if has_version {
-                names.push(p.strip_prefix(base).unwrap_or(&p).to_string_lossy().replace('\\', "/"));
-            } else {
-                list_runes(base, &p);
-            }
-        }
-    }
-    names.sort();
-    for n in names {
-        println!("  {n}");
     }
 }
 

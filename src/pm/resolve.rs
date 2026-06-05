@@ -375,7 +375,7 @@ mod tests {
     fn resolves_transitive_registry_deps() {
         let reg_root = tmp("reg");
         let store_root = tmp("store");
-        let reg = Registry::new(reg_root.clone());
+        let reg = Registry::local(reg_root.clone());
         let store = Store::new(store_root.clone());
 
         publish(&reg, "acme/url", "1.0.0", "fn parse(s: String) -> String { s }", "");
@@ -406,7 +406,7 @@ mod tests {
     fn staged_only_dep_is_not_resolvable() {
         let reg_root = tmp("reg2");
         let store_root = tmp("store2");
-        let reg = Registry::new(reg_root.clone());
+        let reg = Registry::local(reg_root.clone());
         let store = Store::new(store_root.clone());
 
         // Publish but do NOT promote.

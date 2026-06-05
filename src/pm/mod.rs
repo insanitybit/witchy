@@ -9,13 +9,17 @@
 pub mod cli;
 pub mod footprint;
 pub mod gate;
+pub mod http;
 pub mod keys;
 pub mod lockfile;
 pub mod manifest;
 pub mod registry;
+pub mod remote;
 pub mod resolve;
 pub mod semver;
+pub mod server;
 pub mod store;
+pub mod wire;
 
 use std::fmt;
 

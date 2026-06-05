@@ -52,6 +52,9 @@ impl RegistryKey {
     }
 
     /// A short, comparable fingerprint of the public key (for TOFU pinning).
+    /// (The registry computes fingerprints via [`fingerprint_of`] over the public
+    /// key; this convenience is exercised by tests.)
+    #[allow(dead_code)]
     pub fn fingerprint(&self) -> String {
         fingerprint_of(&self.public_hex())
     }

@@ -99,47 +99,48 @@ fn now_unix() -> u64 {
         .unwrap_or(0)
 }
 
-pub struct Registry {
+/// The local, directory-backed registry implementation. Used directly by the
+/// `coven serve` server, and wrapped by [`Registry::Local`] for in-process use.
+pub struct LocalRegistry {
     root: PathBuf,
 }
 
-impl Registry {
-    pub fn new(root: PathBuf) -> Registry {
-        Registry { root }
+impl LocalRegistry {
+    pub fn new(root: PathBuf) -> LocalRegistry {
+        LocalRegistry { root }
     }
 
-    pub fn root(&self) -> &Path {
-        &self.root
+    /// This registry's *existing* root public key (hex). Does NOT mint one —
+    /// errors if the registry has published nothing yet — so a TOFU pin check
+    /// against an absent registry simply finds no key rather than fabricating a
+    /// new (mismatching) one.
+    pub fn root_public_hex(&self) -> PmResult<String> {
+        super::keys::read_public(&self.root)
+    }
+
+    /// Ensure the root signing key exists (minting it on first use). Called by
+    /// the server at startup and implicitly on the first publish.
+    pub fn ensure_key(&self) -> PmResult<()> {
+        self.key().map(|_| ())
+    }
+
+    /// Every published rune name (namespaced), by walking the registry tree.
+    pub fn list_all(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        collect_rune_names(&self.root, &self.root, &mut out);
+        out.sort();
+        out
     }
 
     fn key(&self) -> PmResult<super::keys::RegistryKey> {
         super::keys::RegistryKey::load_or_create(&self.root)
     }
 
-    /// The fingerprint of this registry's root signing key — the value a client
-    /// pins (TOFU) so the key cannot be silently swapped.
-    pub fn root_fingerprint(&self) -> PmResult<String> {
-        Ok(self.key()?.fingerprint())
-    }
-
     /// Verify a record's signature against the registry's published root key.
     /// A missing or invalid signature is a hard failure (tampered metadata).
     pub fn verify_record(&self, record: &Record) -> PmResult<()> {
         let pubkey = super::keys::read_public(&self.root)?;
-        let Some(sig) = &record.sig else {
-            return err(format!(
-                "{}@{} has no signature — refusing to trust unsigned metadata",
-                record.name, record.version
-            ));
-        };
-        if super::keys::verify(&pubkey, record.signing_payload().as_bytes(), sig) {
-            Ok(())
-        } else {
-            err(format!(
-                "signature verification FAILED for {}@{} — registry metadata was tampered with",
-                record.name, record.version
-            ))
-        }
+        verify_record_with(&pubkey, record)
     }
 
     fn version_dir(&self, name: &str, version: &str) -> PathBuf {
@@ -323,22 +324,7 @@ impl Registry {
     /// versions are eligible too (used only by the publisher's own `--include-staged`
     /// testing path, never normal resolution).
     pub fn best_match(&self, name: &str, req: &Req, include_staged: bool) -> Option<Record> {
-        let mut candidates: Vec<Record> = self
-            .versions(name)
-            .into_iter()
-            .filter(|r| match r.state {
-                State::Released => true,
-                State::Staged => include_staged,
-                State::Yanked => false,
-            })
-            .filter(|r| Version::parse(&r.version).map(|v| req.matches(&v)).unwrap_or(false))
-            .collect();
-        candidates.sort_by(|a, b| {
-            Version::parse(&a.version)
-                .ok()
-                .cmp(&Version::parse(&b.version).ok())
-        });
-        candidates.pop()
+        select_best(self.versions(name), req, include_staged)
     }
 
     /// Fetch a version's source, verifying the content hash against its record.
@@ -387,18 +373,184 @@ fn verify_declared(computed: &Footprint, manifest: &Manifest) -> PmResult<()> {
     })
 }
 
+/// Select the best version of a rune satisfying `req`: released always eligible,
+/// staged only when `include_staged`, yanked never. Shared by the local and
+/// remote registries so version-selection policy lives in exactly one place.
+pub fn select_best(versions: Vec<Record>, req: &Req, include_staged: bool) -> Option<Record> {
+    let mut candidates: Vec<Record> = versions
+        .into_iter()
+        .filter(|r| match r.state {
+            State::Released => true,
+            State::Staged => include_staged,
+            State::Yanked => false,
+        })
+        .filter(|r| Version::parse(&r.version).map(|v| req.matches(&v)).unwrap_or(false))
+        .collect();
+    candidates.sort_by(|a, b| {
+        Version::parse(&a.version)
+            .ok()
+            .cmp(&Version::parse(&b.version).ok())
+    });
+    candidates.pop()
+}
+
+/// Verify a record's signature against a known public key (hex). A missing or
+/// invalid signature is a hard failure (tampered metadata).
+pub fn verify_record_with(pubkey_hex: &str, record: &Record) -> PmResult<()> {
+    let Some(sig) = &record.sig else {
+        return err(format!(
+            "{}@{} has no signature — refusing to trust unsigned metadata",
+            record.name, record.version
+        ));
+    };
+    if super::keys::verify(pubkey_hex, record.signing_payload().as_bytes(), sig) {
+        Ok(())
+    } else {
+        err(format!(
+            "signature verification FAILED for {}@{} — registry metadata was tampered with",
+            record.name, record.version
+        ))
+    }
+}
+
+fn collect_rune_names(base: &Path, dir: &Path, out: &mut Vec<String>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for e in entries.flatten() {
+        let p = e.path();
+        if !p.is_dir() {
+            continue;
+        }
+        // A rune dir has version subdirs that contain coven.json.
+        let is_rune = std::fs::read_dir(&p)
+            .map(|mut it| {
+                it.any(|c| c.map(|c| c.path().join(META).exists()).unwrap_or(false))
+            })
+            .unwrap_or(false);
+        if is_rune {
+            out.push(
+                p.strip_prefix(base)
+                    .unwrap_or(&p)
+                    .to_string_lossy()
+                    .replace('\\', "/"),
+            );
+        } else {
+            collect_rune_names(base, &p, out);
+        }
+    }
+}
+
+/// A registry handle: either the in-process local directory model, or a remote
+/// coven server reached over HTTP. The two expose an identical method surface so
+/// the resolver and CLI are transport-agnostic.
+pub enum Registry {
+    Local(LocalRegistry),
+    Remote(super::remote::RemoteRegistry),
+}
+
+impl Registry {
+    pub fn local(root: PathBuf) -> Registry {
+        Registry::Local(LocalRegistry::new(root))
+    }
+
+    pub fn remote(base_url: String) -> Registry {
+        Registry::Remote(super::remote::RemoteRegistry::new(base_url))
+    }
+
+    pub fn publish(
+        &self,
+        src: &RuneSource,
+        manifest: &Manifest,
+        uploaded_by: &str,
+    ) -> PmResult<Record> {
+        match self {
+            Registry::Local(r) => r.publish(src, manifest, uploaded_by),
+            Registry::Remote(r) => r.publish(src, manifest, uploaded_by),
+        }
+    }
+
+    pub fn promote(
+        &self,
+        name: &str,
+        version: &str,
+        promoter: &str,
+        second_factor: &str,
+    ) -> PmResult<Promotion> {
+        match self {
+            Registry::Local(r) => r.promote(name, version, promoter, second_factor),
+            Registry::Remote(r) => r.promote(name, version, promoter, second_factor),
+        }
+    }
+
+    pub fn yank(&self, name: &str, version: &str) -> PmResult<()> {
+        match self {
+            Registry::Local(r) => r.yank(name, version),
+            Registry::Remote(r) => r.yank(name, version),
+        }
+    }
+
+    pub fn record(&self, name: &str, version: &str) -> PmResult<Record> {
+        match self {
+            Registry::Local(r) => r.record(name, version),
+            Registry::Remote(r) => r.record(name, version),
+        }
+    }
+
+    pub fn versions(&self, name: &str) -> Vec<Record> {
+        match self {
+            Registry::Local(r) => r.versions(name),
+            Registry::Remote(r) => r.versions(name),
+        }
+    }
+
+    pub fn best_match(&self, name: &str, req: &Req, include_staged: bool) -> Option<Record> {
+        match self {
+            Registry::Local(r) => r.best_match(name, req, include_staged),
+            Registry::Remote(r) => select_best(r.versions(name), req, include_staged),
+        }
+    }
+
+    pub fn fetch(&self, name: &str, version: &str) -> PmResult<RuneSource> {
+        match self {
+            Registry::Local(r) => r.fetch(name, version),
+            Registry::Remote(r) => r.fetch(name, version),
+        }
+    }
+
+    /// The fingerprint of the registry's root signing key — the value pinned in
+    /// the lockfile (TOFU) so the key cannot be silently swapped.
+    pub fn root_fingerprint(&self) -> PmResult<String> {
+        Ok(super::keys::fingerprint_of(&self.root_public_hex()?))
+    }
+
+    pub fn root_public_hex(&self) -> PmResult<String> {
+        match self {
+            Registry::Local(r) => r.root_public_hex(),
+            Registry::Remote(r) => r.root_public_hex(),
+        }
+    }
+
+    pub fn list_all(&self) -> Vec<String> {
+        match self {
+            Registry::Local(r) => r.list_all(),
+            Registry::Remote(r) => r.list_all().unwrap_or_default(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn tmp_registry() -> (Registry, PathBuf) {
+    fn tmp_registry() -> (LocalRegistry, PathBuf) {
         let root = std::env::temp_dir().join(format!(
             "witchy-reg-{}-{}",
             std::process::id(),
             fastish_nonce()
         ));
         let _ = std::fs::remove_dir_all(&root);
-        (Registry::new(root.clone()), root)
+        (LocalRegistry::new(root.clone()), root)
     }
 
     fn fastish_nonce() -> u128 {
