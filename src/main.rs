@@ -4606,6 +4606,44 @@ mod example_tests {
         assert_eq!(compiled, vec!["7", "20", "11"]);
     }
 
+    // The stdlib's generic `Ord` helpers (max_of/min_of/clamp) are bounded
+    // generics living in the `ord` module, monomorphized at the user's call
+    // sites — over Int (incl. a negative literal) and a user Box type. Proves
+    // cross-module bounded-generic monomorphization. Both backends agree.
+    #[test]
+    fn std_ord_generics_backends_agree() {
+        let client = r#"
+            import ord
+            type Box {
+              Box(Int)
+            }
+            impl Ord for Box {
+              fn compare(self, other: Box) -> Int {
+                match self {
+                  Box(a) -> match other {
+                    Box(b) -> if a < b { -1 } else { if a > b { 1 } else { 0 } }
+                  }
+                }
+              }
+            }
+            fn unbox(b: Box) -> Int {
+              match b { Box(n) -> n }
+            }
+            fn main(console: Console) {
+              print(console, int_to_string(ord.max_of(-5, 3)))
+              print(console, int_to_string(ord.min_of(8, 2)))
+              print(console, int_to_string(ord.clamp(10, 0, 5)))
+              print(console, int_to_string(ord.clamp(0, 3, 9)))
+              print(console, int_to_string(unbox(ord.max_of(Box(4), Box(11)))))
+            }
+        "#;
+        let sources = [("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "std Ord generics diverged");
+        assert_eq!(compiled, vec!["3", "2", "5", "3", "11"]);
+    }
+
     // Hex (0x..) and binary (0b..) integer literals, including underscore
     // separators, feeding the bitwise operators. Both backends agree.
     #[test]

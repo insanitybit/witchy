@@ -358,6 +358,19 @@ fn head_type_name(
         Expr::Ctor { name, .. } => ctor_results.get(name).cloned(),
         Expr::Call { name, .. } => fn_rets.get(name).cloned().or_else(|| builtin_ret(name)),
         Expr::RecordUpdate { base, .. } => head_type_name(base, scope, ctor_results, fn_rets),
+        // `!` yields Bool; `-`/`~` preserve the operand's type (so `-5` is Int).
+        Expr::Unary { op, expr } => match op {
+            UnOp::Not => Some("Bool".into()),
+            UnOp::Neg | UnOp::BitNot => head_type_name(expr, scope, ctor_results, fn_rets),
+        },
+        // Comparisons/logic yield Bool; `<>` yields String; arithmetic and
+        // bitwise ops have the type of their (left) operand.
+        Expr::Binary { op, lhs, .. } => match op {
+            BinOp::Eq | BinOp::NotEq | BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq
+            | BinOp::And | BinOp::Or => Some("Bool".into()),
+            BinOp::Concat => Some("String".into()),
+            _ => head_type_name(lhs, scope, ctor_results, fn_rets),
+        },
         _ => None,
     }
 }

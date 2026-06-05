@@ -34,3 +34,23 @@ impl Ord for Float {
     }
   }
 }
+
+// Generic helpers over any `Ord` type — usable as `ord.max_of(a, b)`, etc.
+
+pub fn max_of(x: a, y: a) -> a where a: Ord {
+  if greater(x, y) { x } else { y }
+}
+
+pub fn min_of(x: a, y: a) -> a where a: Ord {
+  if less(x, y) { x } else { y }
+}
+
+// `x` confined to the range [lo, hi].
+pub fn clamp(x: a, lo: a, hi: a) -> a where a: Ord {
+  if less(x, lo) {
+    lo
+  } else {
+    if greater(x, hi) { hi } else { x }
+  }
+}
+
