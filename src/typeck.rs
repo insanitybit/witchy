@@ -1179,6 +1179,10 @@ impl Checker {
 
 /// Type-check a whole module. Returns the first error found.
 pub fn check(module: &Module) -> Result<(), TypeError> {
+    // Trait/impl declarations are desugared to ordinary functions first, so the
+    // checker only ever sees plain functions (a no-op for trait-free modules).
+    let lowered = crate::traits::lower(module.clone());
+    let module = &lowered;
     let mut c = Checker {
         fn_sigs: HashMap::new(),
         fn_conventions: HashMap::new(),
@@ -1286,6 +1290,8 @@ pub fn check(module: &Module) -> Result<(), TypeError> {
                     .collect();
                 c.actor_field_sigs.insert(a.name.clone(), field_tys);
             }
+            // Desugared to functions by `traits::lower` before this point.
+            Item::Trait(_) | Item::Impl(_) => {}
         }
     }
 
@@ -1297,7 +1303,7 @@ pub fn check(module: &Module) -> Result<(), TypeError> {
             }
             // Actor handler errors already carry actor/handler context.
             Item::Actor(a) => c.check_actor(a).map_err(|e| at_loc(e, c.cur_line, ""))?,
-            Item::Type(_) => {}
+            Item::Type(_) | Item::Trait(_) | Item::Impl(_) => {}
         }
     }
     Ok(())

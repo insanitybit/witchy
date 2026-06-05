@@ -322,6 +322,8 @@ impl Interpreter {
                         }
                     }
                 }
+                // Desugared to functions by `traits::lower` before this point.
+                Item::Trait(_) | Item::Impl(_) => {}
             }
         }
         Self {
@@ -1429,6 +1431,9 @@ pub fn run_module(
     root: impl AsRef<Path>,
     net_allow: Vec<String>,
 ) -> Result<Vec<String>, RuntimeError> {
+    // Desugar traits/impls to ordinary functions (no-op for trait-free modules)
+    // so the interpreter, like codegen, only ever sees plain functions.
+    let module = crate::traits::lower(module);
     // Run the tree-walker on a thread with a large stack. The interpreter
     // recurses in Rust for nested calls, so deep (but bounded) recursion would
     // otherwise overflow the default stack and *abort the host*. The big stack

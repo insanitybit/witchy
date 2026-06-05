@@ -38,6 +38,8 @@ pub enum Tok {
     Break,
     Continue,
     Update,
+    Trait,
+    Impl,
 
     // Grouping / punctuation
     LParen,
@@ -121,6 +123,8 @@ impl fmt::Display for Tok {
             Break => write!(f, "break"),
             Continue => write!(f, "continue"),
             Update => write!(f, "update"),
+            Trait => write!(f, "trait"),
+            Impl => write!(f, "impl"),
             LParen => write!(f, "("),
             RParen => write!(f, ")"),
             LBrace => write!(f, "{{"),
@@ -390,6 +394,8 @@ impl Lexer {
             "break" => Tok::Break,
             "continue" => Tok::Continue,
             "update" => Tok::Update,
+            "trait" => Tok::Trait,
+            "impl" => Tok::Impl,
             "_" => Tok::Underscore,
             _ => Tok::Ident(text),
         }

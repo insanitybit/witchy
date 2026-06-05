@@ -17,6 +17,39 @@ pub enum Item {
     Function(Function),
     Actor(ActorDef),
     Type(TypeDef),
+    /// A trait (interface): a set of method signatures a type can implement.
+    /// `trait Show { fn show(self) -> String }`.
+    Trait(TraitDef),
+    /// An implementation of a trait for a concrete type.
+    /// `impl Show for Int { fn show(self) -> String { int_to_string(self) } }`.
+    /// Lowered to ordinary functions before type-checking/codegen (see
+    /// `crate::traits`), so later stages never see this variant.
+    Impl(ImplDef),
+}
+
+/// A trait declaration: named method signatures (no bodies). The receiver is the
+/// first parameter, conventionally named `self`, whose type is the implementing
+/// type at each `impl`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TraitDef {
+    pub name: String,
+    pub methods: Vec<MethodSig>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct MethodSig {
+    pub name: String,
+    pub params: Vec<Param>,
+    pub ret: Option<Type>,
+}
+
+/// `impl Trait for Type { <methods> }`. Each method is a full function whose
+/// first parameter (`self`) stands for a value of `type_name`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ImplDef {
+    pub trait_name: String,
+    pub type_name: String,
+    pub methods: Vec<Function>,
 }
 
 /// A sum type: `type Event { Click(Int, Int) Closed }`.

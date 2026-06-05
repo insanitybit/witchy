@@ -14,6 +14,7 @@ mod linker;
 mod lsp;
 mod parser;
 mod runtime;
+mod traits;
 mod typeck;
 
 use std::time::Duration;
@@ -4377,6 +4378,64 @@ mod example_tests {
         "#;
         assert_eq!(interp(src), run_on_wasm(src));
         assert_eq!(run_on_wasm(src), vec!["hello", "foo", "nospaces", "", "3"]);
+    }
+
+    // Traits: an `impl` provides a method per type, and a trait-method call
+    // resolves to the impl for the receiver's concrete type — at a literal
+    // receiver, a `let`-bound one, and across two implementing types. The trait
+    // is lowered to ordinary functions, so both backends agree.
+    #[test]
+    fn traits_concrete_dispatch_backends_agree() {
+        let src = r#"
+            trait Show {
+              fn show(self) -> String
+            }
+            impl Show for Int {
+              fn show(self) -> String { int_to_string(self) }
+            }
+            impl Show for Bool {
+              fn show(self) -> String {
+                if self { "yes" } else { "no" }
+              }
+            }
+            fn main(console: Console) {
+              print(console, show(42))
+              print(console, show(true))
+              let n = 7
+              print(console, show(n))
+            }
+        "#;
+        assert_eq!(interp(src), run_on_wasm(src), "trait dispatch diverged");
+        assert_eq!(run_on_wasm(src), vec!["42", "yes", "7"]);
+    }
+
+    // Traits over a user ADT: the receiver type comes from the constructor, and
+    // the impl body matches on `self`. Both backends agree.
+    #[test]
+    fn traits_dispatch_on_adt_backends_agree() {
+        let src = r#"
+            type Shape {
+              Circle(Int)
+              Square(Int)
+            }
+            trait Area {
+              fn area(self) -> Int
+            }
+            impl Area for Shape {
+              fn area(self) -> Int {
+                match self {
+                  Circle(r) -> r * r * 3
+                  Square(s) -> s * s
+                }
+              }
+            }
+            fn main(console: Console) {
+              print(console, int_to_string(area(Circle(2))))
+              print(console, int_to_string(area(Square(3))))
+            }
+        "#;
+        assert_eq!(interp(src), run_on_wasm(src), "trait ADT dispatch diverged");
+        assert_eq!(run_on_wasm(src), vec!["12", "9"]);
     }
 
     // Hex (0x..) and binary (0b..) integer literals, including underscore

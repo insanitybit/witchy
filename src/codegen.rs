@@ -2115,6 +2115,10 @@ fn fn_param_returning_var(params: &[crate::ast::Param], tv: &str) -> Option<usiz
 /// Compile a module's functions to WAT. Requires a `main` returning Int or Nil;
 /// `main` may take a single capability parameter.
 pub fn compile_module(module: &Module) -> Result<String, CodegenError> {
+    // Desugar traits/impls to ordinary functions (no-op for trait-free modules)
+    // so codegen, like the interpreter, only ever sees plain functions.
+    let lowered = crate::traits::lower(module.clone());
+    let module = &lowered;
     let mut cg = Codegen::new();
     // Collect parameter conventions up front so call sites can resolve `inout`
     // write-back even for forward references.
@@ -2152,6 +2156,7 @@ pub fn compile_module(module: &Module) -> Result<String, CodegenError> {
                 }
             }
             Item::Actor(_) => {}
+            Item::Trait(_) | Item::Impl(_) => {}
         }
     }
     // Now that all record types are known, record which constructor fields are
@@ -2237,6 +2242,7 @@ pub fn compile_module(module: &Module) -> Result<String, CodegenError> {
             }
             Item::Type(_) => {}
             Item::Actor(_) => return cerr("use compile_actor_module to compile an actor"),
+            Item::Trait(_) | Item::Impl(_) => {}
         }
     }
     if !has_main {

@@ -141,12 +141,63 @@ impl Parser {
             Ok(Item::Actor(self.actor_def()?))
         } else if self.at(&Tok::Type) {
             Ok(Item::Type(self.type_def()?))
+        } else if self.at(&Tok::Trait) {
+            Ok(Item::Trait(self.trait_def()?))
+        } else if self.at(&Tok::Impl) {
+            Ok(Item::Impl(self.impl_def()?))
         } else {
             Err(self.error(format!(
-                "expected a top-level item (`fn`, `actor`, or `type`), found `{}`",
+                "expected a top-level item (`fn`, `actor`, `type`, `trait`, or `impl`), found `{}`",
                 self.kind()
             )))
         }
+    }
+
+    /// `trait Name { fn m(self, ...) -> Ret  ... }` — method signatures only.
+    fn trait_def(&mut self) -> Result<TraitDef, ParseError> {
+        self.expect(&Tok::Trait)?;
+        let name = self.ident()?;
+        self.expect(&Tok::LBrace)?;
+        let mut methods = Vec::new();
+        while !self.at(&Tok::RBrace) && !self.at(&Tok::Eof) {
+            methods.push(self.method_sig()?);
+        }
+        self.expect(&Tok::RBrace)?;
+        Ok(TraitDef { name, methods })
+    }
+
+    /// A bodyless method signature inside a `trait`: `fn name(params) -> Ret`.
+    fn method_sig(&mut self) -> Result<MethodSig, ParseError> {
+        self.expect(&Tok::Fn)?;
+        let name = self.ident()?;
+        self.expect(&Tok::LParen)?;
+        let params = self.params()?;
+        self.expect(&Tok::RParen)?;
+        let ret = if self.eat(&Tok::RArrow) {
+            Some(self.ty()?)
+        } else {
+            None
+        };
+        Ok(MethodSig { name, params, ret })
+    }
+
+    /// `impl Trait for Type { <fn ...> }` — full method definitions.
+    fn impl_def(&mut self) -> Result<ImplDef, ParseError> {
+        self.expect(&Tok::Impl)?;
+        let trait_name = self.ident()?;
+        self.expect(&Tok::For)?;
+        let type_name = self.ident()?;
+        self.expect(&Tok::LBrace)?;
+        let mut methods = Vec::new();
+        while !self.at(&Tok::RBrace) && !self.at(&Tok::Eof) {
+            methods.push(self.function(false)?);
+        }
+        self.expect(&Tok::RBrace)?;
+        Ok(ImplDef {
+            trait_name,
+            type_name,
+            methods,
+        })
     }
 
     fn type_def(&mut self) -> Result<TypeDef, ParseError> {
