@@ -52,14 +52,15 @@ impl RemoteRegistry {
         host == "localhost" || host == "::1" || host.starts_with("127.")
     }
 
-    /// Refuse to transmit a non-empty auth token over plaintext http to a
-    /// non-loopback host (credential-in-the-clear). https is not yet supported by
-    /// the minimal client, so any remote token use must target loopback.
-    fn guard_token(&self, token: &str) -> PmResult<()> {
-        if !token.is_empty() && !self.base.starts_with("https://") && !self.is_loopback() {
+    /// Refuse to transmit a credential (identity token) over plaintext http to a
+    /// non-loopback host — even short-lived tokens are replayable within their
+    /// validity window. https is not yet supported by the minimal client, so any
+    /// remote credential use must target loopback.
+    fn guard_credential(&self) -> PmResult<()> {
+        if !self.base.starts_with("https://") && !self.is_loopback() {
             return err(format!(
-                "refusing to send COVEN_TOKEN over plaintext http to non-loopback host `{}` — \
-                 publish/promote to a loopback registry, or serve coven over https",
+                "refusing to send an identity token over plaintext http to non-loopback host `{}` — \
+                 use a loopback registry, or serve coven over https",
                 self.base
             ));
         }
@@ -136,10 +137,9 @@ impl RemoteRegistry {
         &self,
         src: &RuneSource,
         manifest: &Manifest,
-        uploaded_by: &str,
-        token: &str,
+        id_token: &super::trusted::IdToken,
     ) -> PmResult<Record> {
-        self.guard_token(token)?;
+        self.guard_credential()?;
         let manifest_toml = src
             .files
             .iter()
@@ -152,8 +152,7 @@ impl RemoteRegistry {
         let req = PublishReq {
             manifest_toml,
             source: SourceDto::from_source(src),
-            uploaded_by: uploaded_by.to_string(),
-            token: token.to_string(),
+            id_token: id_token.clone(),
         };
         http::post(&self.url("/coven/publish"), &req)
     }
@@ -162,17 +161,15 @@ impl RemoteRegistry {
         &self,
         name: &str,
         version: &str,
-        promoter: &str,
         second_factor: &str,
-        token: &str,
+        id_token: &super::trusted::IdToken,
     ) -> PmResult<Promotion> {
-        self.guard_token(token)?;
+        self.guard_credential()?;
         let req = PromoteReq {
             name: name.to_string(),
             version: version.to_string(),
-            promoter: promoter.to_string(),
             second_factor: second_factor.to_string(),
-            token: token.to_string(),
+            id_token: id_token.clone(),
         };
         let resp: PromoteResp = http::post(&self.url("/coven/promote"), &req)?;
         Ok(Promotion {
@@ -185,12 +182,12 @@ impl RemoteRegistry {
         })
     }
 
-    pub fn yank(&self, name: &str, version: &str, token: &str) -> PmResult<()> {
-        self.guard_token(token)?;
+    pub fn yank(&self, name: &str, version: &str, id_token: &super::trusted::IdToken) -> PmResult<()> {
+        self.guard_credential()?;
         let req = YankReq {
             name: name.to_string(),
             version: version.to_string(),
-            token: token.to_string(),
+            id_token: id_token.clone(),
         };
         let _: OkResp = http::post(&self.url("/coven/yank"), &req)?;
         Ok(())
@@ -211,14 +208,12 @@ mod tests {
     }
 
     #[test]
-    fn token_is_not_sent_in_plaintext_to_remote_host() {
+    fn credential_not_sent_in_plaintext_to_remote_host() {
+        // A credential to a non-loopback plaintext host is refused...
         let r = RemoteRegistry::new("http://registry.example.com".into());
-        // A non-empty token to a non-loopback plaintext host is refused...
-        assert!(r.guard_token("secret").is_err());
-        // ...but an empty token (anonymous read/publish) is fine,
-        assert!(r.guard_token("").is_ok());
-        // ...and a token to loopback is fine.
+        assert!(r.guard_credential().is_err());
+        // ...but a credential to loopback is fine.
         let lo = RemoteRegistry::new("http://127.0.0.1:8787".into());
-        assert!(lo.guard_token("secret").is_ok());
+        assert!(lo.guard_credential().is_ok());
     }
 }

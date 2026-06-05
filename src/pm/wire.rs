@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use super::registry::Record;
 use super::store::RuneSource;
+use super::trusted::IdToken;
 
 /// A rune's source for transport: (relative-path, text) pairs.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -36,21 +37,19 @@ impl SourceDto {
 pub struct PublishReq {
     pub manifest_toml: String,
     pub source: SourceDto,
-    pub uploaded_by: String,
-    /// Bearer token proving the publisher's identity. The first publish to a
-    /// namespace claims it (TOFU); later publishes must present the same token.
-    #[serde(default)]
-    pub token: String,
+    /// Short-lived OIDC-style identity token (trusted publishing). The server
+    /// verifies it and derives the publisher identity from its claims — the
+    /// client cannot assert `uploaded_by`.
+    pub id_token: IdToken,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct PromoteReq {
     pub name: String,
     pub version: String,
-    pub promoter: String,
     pub second_factor: String,
-    #[serde(default)]
-    pub token: String,
+    /// Identity token of the human maintainer performing the release.
+    pub id_token: IdToken,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -65,8 +64,7 @@ pub struct PromoteResp {
 pub struct YankReq {
     pub name: String,
     pub version: String,
-    #[serde(default)]
-    pub token: String,
+    pub id_token: IdToken,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

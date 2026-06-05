@@ -27,7 +27,7 @@ pub fn is_command(s: &str) -> bool {
         s,
         "new" | "init" | "add" | "build" | "run" | "update" | "audit" | "tree" | "outdated"
             | "why" | "why-cap" | "publish" | "promote" | "yank" | "list" | "verify" | "vendor"
-            | "coven" | "coven-serve"
+            | "coven" | "coven-serve" | "coven-gen-issuer" | "coven-mint-token"
     )
 }
 
@@ -36,8 +36,9 @@ struct CovenEnv {
     store: Store,
     registry: Registry,
     user: String,
-    /// Bearer token for publish/promote/yank (namespace authorization).
-    token: String,
+    /// Short-lived identity token (trusted publishing) for publish/promote/yank,
+    /// from `COVEN_ID_TOKEN` (your CI's OIDC token, or `witchy coven-mint-token`).
+    id_token: Option<super::trusted::IdToken>,
 }
 
 impl CovenEnv {
@@ -56,11 +57,14 @@ impl CovenEnv {
             Ok(url) if !url.trim().is_empty() => Registry::remote(url),
             _ => Registry::local(home.join("registry")),
         };
+        let id_token = std::env::var("COVEN_ID_TOKEN")
+            .ok()
+            .and_then(|t| serde_json::from_str(&t).ok());
         CovenEnv {
             store: Store::new(home.join("store")),
             registry,
             user,
-            token: std::env::var("COVEN_TOKEN").unwrap_or_default(),
+            id_token,
         }
     }
 }
@@ -72,6 +76,8 @@ pub fn run(args: &[String]) -> PmResult<()> {
     match cmd.as_str() {
         "coven" => run(rest), // allow `witchy coven <subcommand>` too
         "coven-serve" => cmd_serve(rest),
+        "coven-gen-issuer" => cmd_gen_issuer(rest),
+        "coven-mint-token" => cmd_mint_token(rest),
         "new" => cmd_new(rest),
         "init" => cmd_init(rest),
         "add" => cmd_add(rest),
@@ -116,9 +122,12 @@ fn print_help() -> PmResult<()> {
            publish [dir]         publish a rune (lands STAGED, not resolvable)\n  \
            promote <pkg>@<ver> --factor <type>   release a staged version (2FA)\n  \
            yank <pkg>@<ver>      exclude a version from new resolutions\n  \
-           list [pkg]            list published versions and their state\n  \
-           coven-serve [--addr H:P] [--root DIR]  run a coven registry server\n\n\
-         Env: COVEN_URL (use a remote registry), COVEN_TOKEN (publish auth)."
+           list [pkg]            list published versions and their state\n\n\
+         Registry server / trusted publishing (no long-lived tokens):\n  \
+           coven-serve [--addr H:P] [--root DIR] [--trust-issuer iss=pubhex]\n  \
+           coven-gen-issuer [--out DIR]          generate an IdP signing key\n  \
+           coven-mint-token --issuer-key DIR --sub S [--claim k=v]  mint an OIDC token\n\n\
+         Env: COVEN_URL (remote registry), COVEN_ID_TOKEN (OIDC identity token)."
     );
     Ok(())
 }
@@ -143,6 +152,13 @@ const VALUE_FLAGS: &[&str] = &[
     "--version",
     "--addr",
     "--root",
+    "--trust-issuer",
+    "--out",
+    "--issuer-key",
+    "--issuer",
+    "--sub",
+    "--ttl",
+    "--claim",
 ];
 
 fn parse_args(rest: &[String]) -> ParsedArgs {
@@ -207,7 +223,63 @@ fn cmd_serve(rest: &[String]) -> PmResult<()> {
             home.join("registry")
         }
     };
-    super::server::serve(&addr, root)
+    // Trusted issuers: `--trust-issuer <issuer>=<pubkey-hex>` (repeatable). Each
+    // is a CI provider's identity-token signing key (a JWKS stand-in).
+    let mut issuers = Vec::new();
+    for spec in a.vals("--trust-issuer") {
+        let (iss, pubhex) = spec
+            .split_once('=')
+            .ok_or_else(|| super::PmError("--trust-issuer must be <issuer>=<pubkey-hex>".into()))?;
+        issuers.push((iss.to_string(), pubhex.to_string()));
+    }
+    super::server::serve(&addr, root, &issuers)
+}
+
+/// Generate an issuer (IdP) signing keypair, printing its public key (hex) for
+/// registration with `coven-serve --trust-issuer`. Models a CI provider's OIDC
+/// signing key; in production this is the provider's published JWKS.
+fn cmd_gen_issuer(rest: &[String]) -> PmResult<()> {
+    let a = parse_args(rest);
+    let dir = PathBuf::from(a.val("--out").unwrap_or("./issuer-key"));
+    let key = super::keys::RegistryKey::load_or_create(&dir)?;
+    println!("{}", key.public_hex());
+    eprintln!("issuer key written to {} (keep root.key secret)", dir.display());
+    Ok(())
+}
+
+/// Mint a short-lived identity token (the IdP's job — a CI provider does this
+/// automatically per run). Prints the token JSON for `COVEN_ID_TOKEN`.
+fn cmd_mint_token(rest: &[String]) -> PmResult<()> {
+    use std::collections::BTreeMap;
+    let a = parse_args(rest);
+    let key_dir = a
+        .val("--issuer-key")
+        .ok_or_else(|| super::PmError("--issuer-key <dir> is required".into()))?;
+    let key = super::keys::RegistryKey::load_or_create(&PathBuf::from(key_dir))?;
+    let iss = a.val("--issuer").unwrap_or("local-idp").to_string();
+    let sub = a.val("--sub").unwrap_or("anonymous").to_string();
+    let ttl: u64 = a.val("--ttl").and_then(|s| s.parse().ok()).unwrap_or(300);
+    let now = super::tuf::now_unix();
+    let mut extra = BTreeMap::new();
+    for c in a.vals("--claim") {
+        if let Some((k, v)) = c.split_once('=') {
+            extra.insert(k.to_string(), v.to_string());
+        }
+    }
+    let claims = super::trusted::Claims {
+        iss,
+        sub,
+        aud: super::trusted::AUDIENCE.to_string(),
+        exp: now + ttl,
+        iat: now,
+        extra,
+    };
+    let token = super::trusted::mint(&key, claims);
+    println!(
+        "{}",
+        serde_json::to_string(&token).map_err(|e| super::PmError(e.to_string()))?
+    );
+    Ok(())
 }
 
 fn cmd_new(rest: &[String]) -> PmResult<()> {
@@ -1037,10 +1109,10 @@ fn cmd_publish(rest: &[String]) -> PmResult<()> {
     let dir = a.positional.first().map(PathBuf::from).unwrap_or_else(|| ".".into());
     let manifest = Manifest::load(&dir)?;
     let src = RuneSource::read_dir(&dir)?;
-    let rec = env.registry.publish(&src, &manifest, &env.user, &env.token)?;
+    let rec = env.registry.publish(&src, &manifest, &env.user, env.id_token.as_ref())?;
     println!(
-        "published `{}`@{} as STAGED (uploaded by {}).",
-        rec.name, rec.version, env.user
+        "published `{}`@{} as STAGED (publisher identity: {}).",
+        rec.name, rec.version, rec.uploaded_by
     );
     println!("  hash: {}", short(&rec.hash));
     println!("  footprint: runtime={} build={} determinism={}",
@@ -1073,9 +1145,10 @@ fn cmd_promote(rest: &[String]) -> PmResult<()> {
     })?;
     let promoter = a.val("--as").unwrap_or(&env.user).to_string();
 
-    let p = env.registry.promote(name, version, &promoter, factor, &env.token)?;
+    let p = env.registry.promote(name, version, &promoter, factor, env.id_token.as_ref())?;
     println!("RELEASED `{name}`@{version}.");
-    println!("  promoted by: {promoter}  (second factor: {factor})");
+    let promoted_by = p.record.promoted_by.as_deref().unwrap_or(promoter.as_str());
+    println!("  promoted by: {promoted_by}  (second factor: {factor})");
     if p.separation_of_duties {
         println!("  separation of duties: OK — promoter differs from uploader `{}`.", p.record.uploaded_by);
     } else {
@@ -1104,7 +1177,7 @@ fn cmd_yank(rest: &[String]) -> PmResult<()> {
     let (name, version) = spec
         .split_once('@')
         .ok_or_else(|| super::PmError("specify the version: <pkg>@<version>".into()))?;
-    env.registry.yank(name, version, &env.token)?;
+    env.registry.yank(name, version, env.id_token.as_ref())?;
     println!(
         "yanked `{name}`@{version} — excluded from new resolutions; existing locks still resolve it."
     );

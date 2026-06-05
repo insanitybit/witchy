@@ -11,13 +11,18 @@ use std::process::{Child, Command, Output, Stdio};
 const BIN: &str = env!("CARGO_BIN_EXE_witchy");
 
 /// A coven registry server (the real `witchy coven-serve` binary) on a free
-/// local port, for end-to-end testing over HTTP. Killed on drop.
+/// local port, for end-to-end testing over HTTP. Trusted publishing is enabled
+/// with a generated issuer (the "IdP"); tests mint short-lived identity tokens.
+/// Killed on drop.
 struct RegistryServer {
     child: Child,
     port: u16,
     regroot: PathBuf,
     home: PathBuf,
+    issuer_dir: PathBuf,
 }
+
+const ISSUER: &str = "local-idp";
 
 impl RegistryServer {
     /// Bind to an ephemeral port (`:0`) and discover the actual port from the
@@ -25,6 +30,14 @@ impl RegistryServer {
     fn start() -> RegistryServer {
         let regroot = unique("coven-regroot");
         let home = unique("coven-srv-home");
+        // Generate the IdP signing key and capture its public key (the JWKS).
+        let issuer_dir = unique("coven-issuer");
+        let gen_out = Command::new(BIN)
+            .args(["coven-gen-issuer", "--out", issuer_dir.to_str().unwrap()])
+            .output()
+            .expect("gen issuer");
+        let pubhex = String::from_utf8_lossy(&gen_out.stdout).trim().to_string();
+
         let mut child = Command::new(BIN)
             .args([
                 "coven-serve",
@@ -32,6 +45,8 @@ impl RegistryServer {
                 "127.0.0.1:0",
                 "--root",
                 regroot.to_str().unwrap(),
+                "--trust-issuer",
+                &format!("{ISSUER}={pubhex}"),
             ])
             .env("WITCHY_HOME", &home)
             .stdout(Stdio::piped())
@@ -57,11 +72,46 @@ impl RegistryServer {
             port,
             regroot,
             home,
+            issuer_dir,
         }
     }
 
     fn url(&self) -> String {
         format!("http://127.0.0.1:{}", self.port)
+    }
+
+    /// Mint a short-lived identity token (JSON) via the IdP key, with arbitrary
+    /// claims (`key=value`).
+    fn mint(&self, sub: &str, claims: &[(&str, &str)]) -> String {
+        let mut args: Vec<String> = vec![
+            "coven-mint-token".into(),
+            "--issuer-key".into(),
+            self.issuer_dir.to_string_lossy().into_owned(),
+            "--issuer".into(),
+            ISSUER.into(),
+            "--sub".into(),
+            sub.into(),
+        ];
+        for (k, v) in claims {
+            args.push("--claim".into());
+            args.push(format!("{k}={v}"));
+        }
+        let out = Command::new(BIN).args(&args).output().expect("mint token");
+        assert!(out.status.success(), "mint failed: {}", String::from_utf8_lossy(&out.stderr));
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    /// A CI (machine) identity token bound to a repository + workflow.
+    fn ci_token(&self, repository: &str, workflow: &str) -> String {
+        self.mint(
+            &format!("repo:{repository}:ref:refs/heads/main"),
+            &[("repository", repository), ("workflow_ref", workflow), ("ref", "refs/heads/main")],
+        )
+    }
+
+    /// A human maintainer identity token (for promotion).
+    fn human_token(&self, name: &str) -> String {
+        self.mint(name, &[])
     }
 }
 
@@ -71,6 +121,7 @@ impl Drop for RegistryServer {
         let _ = self.child.wait();
         let _ = std::fs::remove_dir_all(&self.regroot);
         let _ = std::fs::remove_dir_all(&self.home);
+        let _ = std::fs::remove_dir_all(&self.issuer_dir);
     }
 }
 
@@ -113,13 +164,14 @@ impl Sandbox {
         cmd.output().expect("spawn witchy")
     }
 
-    /// Like `run`, but with a specific publish/promote authorization token.
-    fn run_token(&self, dir: &Path, user: &str, token: &str, args: &[&str]) -> Output {
+    /// Like `run`, but presenting a short-lived identity token (trusted
+    /// publishing) via `COVEN_ID_TOKEN`.
+    fn run_id(&self, dir: &Path, user: &str, id_token: &str, args: &[&str]) -> Output {
         let mut cmd = Command::new(BIN);
         cmd.current_dir(dir)
             .env("WITCHY_HOME", &self.home)
             .env("WITCHY_USER", user)
-            .env("COVEN_TOKEN", token)
+            .env("COVEN_ID_TOKEN", id_token)
             .args(args);
         if let Some(u) = &self.coven_url {
             cmd.env("COVEN_URL", u);
@@ -183,15 +235,18 @@ fn networked_registry_full_lifecycle() {
     std::fs::create_dir_all(lib.join("src")).unwrap();
     std::fs::write(lib.join("witchy.toml"), "[rune]\nname = \"acme/lib\"\nversion = \"1.0.0\"\n").unwrap();
     std::fs::write(lib.join("src/lib.witchy"), "fn shout(s: String) -> String { \"HEY \" <> s }\n").unwrap();
-    assert!(sb.run(&lib, "ci-bot", &["publish"]).status.success());
+    // Publish via a trusted CI identity token (no long-lived API key).
+    let ci = server.ci_token("acme/lib-repo", "release.yml");
+    assert!(sb.run_id(&lib, "ci", &ci, &["publish"]).status.success());
 
     // Staged over the network → not addable.
     let out = sb.run(&app, "dev", &["add", "acme/lib"]);
     assert!(!out.status.success());
     assert!(stderr(&out).contains("STAGED"), "stderr: {}", stderr(&out));
 
-    // Promote over the network with a second factor.
-    let out = sb.run(&lib, "alice", &["promote", "acme/lib@1.0.0", "--factor", "webauthn"]);
+    // Promote over the network with a human identity token + a second factor.
+    let alice = server.human_token("alice");
+    let out = sb.run_id(&lib, "alice", &alice, &["promote", "acme/lib@1.0.0", "--factor", "webauthn"]);
     assert!(out.status.success(), "remote promote failed: {}", stderr(&out));
     assert!(stdout(&out).contains("RELEASED"));
 
@@ -217,33 +272,73 @@ fn networked_registry_full_lifecycle() {
 }
 
 #[test]
-fn namespace_ownership_is_enforced() {
+fn trusted_publishing_binds_repo_and_rejects_others() {
     let server = RegistryServer::start();
     let mut sb = Sandbox::new("auth");
     sb.coven_url = Some(server.url());
 
-    // alice claims namespace `acme` by being the first to publish there.
     let lib = sb.work.join("lib");
     std::fs::create_dir_all(lib.join("src")).unwrap();
     std::fs::write(lib.join("witchy.toml"), "[rune]\nname = \"acme/secure\"\nversion = \"1.0.0\"\n").unwrap();
     std::fs::write(lib.join("src/secure.witchy"), "fn f(s: String) -> String { s }\n").unwrap();
-    assert!(sb.run_token(&lib, "alice", "alice-token", &["publish"]).status.success());
 
-    // mallory, with a different token, cannot publish into alice's namespace.
+    // First trusted publish from acme/secure-repo / release.yml binds the
+    // namespace `acme` to that exact source + workflow (TOFU).
+    let good = server.ci_token("acme/secure-repo", "release.yml");
+    assert!(sb.run_id(&lib, "ci", &good, &["publish"]).status.success());
+
+    // A token from a DIFFERENT repository cannot publish to `acme` — even though
+    // it's a valid token from the trusted issuer. (Namespace-squat / hijack.)
     std::fs::write(lib.join("witchy.toml"), "[rune]\nname = \"acme/secure\"\nversion = \"1.1.0\"\n").unwrap();
-    let out = sb.run_token(&lib, "mallory", "mallory-token", &["publish"]);
-    assert!(!out.status.success(), "cross-namespace publish must be refused");
-    assert!(stderr(&out).contains("owned by another"), "stderr: {}", stderr(&out));
+    let evil = server.ci_token("evil/fork", "release.yml");
+    let out = sb.run_id(&lib, "ci", &evil, &["publish"]);
+    assert!(!out.status.success(), "publish from wrong repo must be refused");
+    assert!(stderr(&out).contains("not authorized") || stderr(&out).contains("policy"), "stderr: {}", stderr(&out));
 
-    // mallory cannot promote alice's staged version either.
-    let out = sb.run_token(&lib, "mallory", "mallory-token", &["promote", "acme/secure@1.0.0", "--factor", "totp"]);
-    assert!(!out.status.success(), "non-owner promote must be refused");
-    assert!(stderr(&out).contains("owner"), "stderr: {}", stderr(&out));
+    // A token from the right repo but a NON-release workflow is also refused.
+    let wrong_wf = server.ci_token("acme/secure-repo", "ci.yml");
+    let out = sb.run_id(&lib, "ci", &wrong_wf, &["publish"]);
+    assert!(!out.status.success(), "publish from wrong workflow must be refused");
 
-    // alice, with her token + a second factor, can.
-    let out = sb.run_token(&lib, "alice", "alice-token", &["promote", "acme/secure@1.0.0", "--factor", "webauthn"]);
-    assert!(out.status.success(), "owner promote failed: {}", stderr(&out));
+    // The legitimate CI identity may publish the new version.
+    let out = sb.run_id(&lib, "ci", &good, &["publish"]);
+    assert!(out.status.success(), "legit re-publish failed: {}", stderr(&out));
+
+    // Promotion requires a human identity + second factor, and the human must
+    // not be the CI that staged it (separation of duties).
+    let alice = server.human_token("alice");
+    let out = sb.run_id(&lib, "alice", &alice, &["promote", "acme/secure@1.0.0", "--factor", "webauthn"]);
+    assert!(out.status.success(), "human promote failed: {}", stderr(&out));
     assert!(stdout(&out).contains("RELEASED"));
+}
+
+#[test]
+fn bearer_token_is_not_accepted_for_publishing() {
+    let server = RegistryServer::start();
+    let mut sb = Sandbox::new("nobearer");
+    sb.coven_url = Some(server.url());
+    let lib = sb.work.join("lib");
+    std::fs::create_dir_all(lib.join("src")).unwrap();
+    std::fs::write(lib.join("witchy.toml"), "[rune]\nname = \"acme/x\"\nversion = \"1.0.0\"\n").unwrap();
+    std::fs::write(lib.join("src/x.witchy"), "fn f(s: String) -> String { s }\n").unwrap();
+    // No identity token at all → remote publish is refused outright.
+    let out = sb.run(&lib, "ci", &["publish"]);
+    assert!(!out.status.success(), "publish without an identity token must be refused");
+    assert!(stderr(&out).contains("identity token"), "stderr: {}", stderr(&out));
+
+    // A token from an UNTRUSTED issuer is also refused.
+    let other_issuer = unique("rogue-idp");
+    let gen_out = Command::new(BIN).args(["coven-gen-issuer", "--out", other_issuer.to_str().unwrap()]).output().unwrap();
+    assert!(gen_out.status.success());
+    let mint = Command::new(BIN)
+        .args(["coven-mint-token", "--issuer-key", other_issuer.to_str().unwrap(), "--issuer", "rogue", "--sub", "x", "--claim", "repository=acme/x"])
+        .output()
+        .unwrap();
+    let rogue = String::from_utf8_lossy(&mint.stdout).trim().to_string();
+    let out = sb.run_id(&lib, "ci", &rogue, &["publish"]);
+    assert!(!out.status.success(), "token from untrusted issuer must be refused");
+    assert!(stderr(&out).contains("not trusted") || stderr(&out).contains("untrusted"), "stderr: {}", stderr(&out));
+    let _ = std::fs::remove_dir_all(&other_issuer);
 }
 
 #[test]
@@ -257,8 +352,10 @@ fn tuf_chain_verified_and_snapshot_tamper_rejected() {
     std::fs::create_dir_all(lib.join("src")).unwrap();
     std::fs::write(lib.join("witchy.toml"), "[rune]\nname = \"acme/t\"\nversion = \"1.0.0\"\n").unwrap();
     std::fs::write(lib.join("src/t.witchy"), "fn f(s: String) -> String { s }\n").unwrap();
-    assert!(sb.run(&lib, "ci-bot", &["publish"]).status.success());
-    assert!(sb.run(&lib, "alice", &["promote", "acme/t@1.0.0", "--factor", "totp"]).status.success());
+    let ci = server.ci_token("acme/t-repo", "release.yml");
+    assert!(sb.run_id(&lib, "ci", &ci, &["publish"]).status.success());
+    let alice = server.human_token("alice");
+    assert!(sb.run_id(&lib, "alice", &alice, &["promote", "acme/t@1.0.0", "--factor", "totp"]).status.success());
     assert!(sb.run(&app, "dev", &["add", "acme/t"]).status.success());
 
     // The lock pinned a TUF snapshot version, and verify confirms the chain.
@@ -291,8 +388,10 @@ fn tuf_rollback_is_rejected() {
     std::fs::create_dir_all(lib.join("src")).unwrap();
     std::fs::write(lib.join("witchy.toml"), "[rune]\nname = \"acme/r\"\nversion = \"1.0.0\"\n").unwrap();
     std::fs::write(lib.join("src/r.witchy"), "fn f(s: String) -> String { s }\n").unwrap();
-    assert!(sb.run(&lib, "ci-bot", &["publish"]).status.success());
-    assert!(sb.run(&lib, "alice", &["promote", "acme/r@1.0.0", "--factor", "totp"]).status.success());
+    let ci = server.ci_token("acme/r-repo", "release.yml");
+    assert!(sb.run_id(&lib, "ci", &ci, &["publish"]).status.success());
+    let alice = server.human_token("alice");
+    assert!(sb.run_id(&lib, "alice", &alice, &["promote", "acme/r@1.0.0", "--factor", "totp"]).status.success());
     assert!(sb.run(&app, "dev", &["add", "acme/r"]).status.success());
 
     // Simulate having previously seen a much newer snapshot: bump the pinned
@@ -328,16 +427,19 @@ fn networked_registry_signature_detects_tampering() {
     std::fs::create_dir_all(lib.join("src")).unwrap();
     std::fs::write(lib.join("witchy.toml"), "[rune]\nname = \"acme/x\"\nversion = \"1.0.0\"\n").unwrap();
     std::fs::write(lib.join("src/x.witchy"), "fn f(s: String) -> String { s }\n").unwrap();
-    assert!(sb.run(&lib, "ci-bot", &["publish"]).status.success());
+    let ci = server.ci_token("acme/x-repo", "release.yml");
+    assert!(sb.run_id(&lib, "ci", &ci, &["publish"]).status.success());
+    let alice = server.human_token("alice");
     assert!(sb
-        .run(&lib, "alice", &["promote", "acme/x@1.0.0", "--factor", "totp"])
+        .run_id(&lib, "alice", &alice, &["promote", "acme/x@1.0.0", "--factor", "totp"])
         .status
         .success());
     assert!(sb.run(&app, "dev", &["add", "acme/x"]).status.success());
 
-    // Tamper a signed field of the record in the SERVER's storage.
+    // Tamper a signed field of the record in the SERVER's storage (the
+    // provenance attestation is signed, so editing it breaks the signature).
     let meta = server.regroot.join("acme/x/1.0.0/coven.json");
-    let json = std::fs::read_to_string(&meta).unwrap().replace("ci-bot", "attacker");
+    let json = std::fs::read_to_string(&meta).unwrap().replace("trusted-publisher", "evil-publisher");
     std::fs::write(&meta, json).unwrap();
 
     // A fresh client (clear its store so it must re-fetch) must reject the

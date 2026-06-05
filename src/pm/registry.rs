@@ -76,7 +76,7 @@ impl Record {
             State::Yanked => "yanked",
         };
         format!(
-            "coven-v1\nname={}\nversion={}\nstate={}\nhash={}\nrt={}\nbuild={}\nuploaded_by={}\npromoted_by={}\nfactor={}",
+            "coven-v1\nname={}\nversion={}\nstate={}\nhash={}\nrt={}\nbuild={}\nuploaded_by={}\npromoted_by={}\nfactor={}\nprovenance={}",
             self.name,
             self.version,
             state,
@@ -86,6 +86,7 @@ impl Record {
             self.uploaded_by,
             self.promoted_by.as_deref().unwrap_or(""),
             self.second_factor.as_deref().unwrap_or(""),
+            self.provenance.as_deref().unwrap_or(""),
         )
     }
 }
@@ -97,14 +98,6 @@ fn now_unix() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
-}
-
-fn namespace_of(name: &str) -> &str {
-    name.split('/').next().unwrap_or(name)
-}
-
-fn token_hash(token: &str) -> String {
-    super::tuf::sha256_hex(token.as_bytes())
 }
 
 /// A path-component segment: starts with `[a-z0-9_]`, then `[a-z0-9_.-]`, and
@@ -179,56 +172,6 @@ impl LocalRegistry {
     /// the server at startup and implicitly on the first publish.
     pub fn ensure_key(&self) -> PmResult<()> {
         self.key().map(|_| ())
-    }
-
-    fn owners_path(&self) -> PathBuf {
-        self.root.join("owners.json")
-    }
-
-    fn load_owners(&self) -> std::collections::BTreeMap<String, String> {
-        std::fs::read_to_string(self.owners_path())
-            .ok()
-            .and_then(|t| serde_json::from_str(&t).ok())
-            .unwrap_or_default()
-    }
-
-    fn save_owners(&self, owners: &std::collections::BTreeMap<String, String>) -> PmResult<()> {
-        std::fs::create_dir_all(&self.root)?;
-        let text =
-            serde_json::to_string_pretty(owners).map_err(|e| PmError(format!("owners: {e}")))?;
-        std::fs::write(self.owners_path(), text)?;
-        Ok(())
-    }
-
-    /// Authorize a publish: the first publish to a namespace *claims* it for the
-    /// presenting token (TOFU); later publishes must present the same token. This
-    /// is what makes the two-phase publish / separation-of-duties real — not
-    /// bypassable by anyone who can reach the server.
-    fn authorize_publish(&self, name: &str, token: &str) -> PmResult<()> {
-        let ns = namespace_of(name);
-        let mut owners = self.load_owners();
-        let th = token_hash(token);
-        match owners.get(ns) {
-            Some(existing) if existing == &th => Ok(()),
-            Some(_) => err(format!(
-                "namespace `{ns}` is owned by another identity — your token does not authorize publishing here"
-            )),
-            None => {
-                owners.insert(ns.to_string(), th);
-                self.save_owners(&owners)
-            }
-        }
-    }
-
-    /// Authorize an owner-only action (promote/yank): the token must match the
-    /// namespace's claimed owner.
-    fn authorize_owner(&self, name: &str, token: &str) -> PmResult<()> {
-        let ns = namespace_of(name);
-        match self.load_owners().get(ns) {
-            Some(h) if h == &token_hash(token) => Ok(()),
-            Some(_) => err(format!("only the owner of namespace `{ns}` may do this")),
-            None => err(format!("namespace `{ns}` is unclaimed")),
-        }
     }
 
     fn snapshot_path(&self) -> PathBuf {
@@ -347,17 +290,21 @@ impl LocalRegistry {
     /// enforcement) and, if the manifest declares a `[capabilities]` contract,
     /// rejects any mismatch. Lands the version **staged** — not resolvable until
     /// promoted. Immutable: re-publishing an existing version is an error.
+    /// Publish a rune. The local registry is *anonymous* (filesystem access is
+    /// the trust boundary); authentication/authorization for the networked path
+    /// lives in the server's trust store ([`super::trusted`]). `provenance`, when
+    /// `Some`, overrides the manifest-derived provenance with a verified
+    /// trusted-publishing attestation.
     pub fn publish(
         &self,
         src: &RuneSource,
         manifest: &Manifest,
         uploaded_by: &str,
-        token: &str,
+        provenance: Option<String>,
     ) -> PmResult<Record> {
         let name = &manifest.rune.name;
         let version = &manifest.rune.version;
         check_ref(name, version)?;
-        self.authorize_publish(name, token)?;
         if self.meta_path(name, version).exists() {
             return err(format!(
                 "{name}@{version} already published — versions are immutable, bump the version"
@@ -386,16 +333,17 @@ impl LocalRegistry {
             uploaded_by: uploaded_by.to_string(),
             promoted_by: None,
             second_factor: None,
-            // Provenance always binds bytes -> uploader -> time; a declared source
-            // repo is an optional stronger anchor (SLSA-style) when present.
-            provenance: Some({
+            // A verified trusted-publishing attestation (from the server) takes
+            // precedence; otherwise provenance binds bytes -> uploader -> time,
+            // with a declared source repo as an optional anchor.
+            provenance: provenance.or_else(|| {
                 let src = manifest
                     .rune
                     .source
                     .as_deref()
                     .map(|s| format!("|source={s}"))
                     .unwrap_or_default();
-                format!("uploader={uploaded_by}|at={}|hash={hash}{src}", now_unix())
+                Some(format!("uploader={uploaded_by}|at={}|hash={hash}{src}", now_unix()))
             }),
             sig: None,
         };
@@ -414,10 +362,8 @@ impl LocalRegistry {
         version: &str,
         promoter: &str,
         second_factor: &str,
-        token: &str,
     ) -> PmResult<Promotion> {
         check_ref(name, version)?;
-        self.authorize_owner(name, token)?;
         let mut record = self.record(name, version)?;
         match record.state {
             State::Released => {
@@ -459,9 +405,8 @@ impl LocalRegistry {
         })
     }
 
-    pub fn yank(&self, name: &str, version: &str, token: &str) -> PmResult<()> {
+    pub fn yank(&self, name: &str, version: &str) -> PmResult<()> {
         check_ref(name, version)?;
-        self.authorize_owner(name, token)?;
         let mut record = self.record(name, version)?;
         record.state = State::Yanked;
         self.write_record(&mut record)?;
@@ -575,6 +520,19 @@ fn verify_declared(computed: &Footprint, manifest: &Manifest) -> PmResult<()> {
     })
 }
 
+/// A remote (networked) registry requires a short-lived identity token — bearer
+/// API tokens are not accepted.
+fn require_token(token: Option<&super::trusted::IdToken>) -> PmResult<&super::trusted::IdToken> {
+    token.ok_or_else(|| {
+        PmError(
+            "publishing/promoting to a remote registry requires a short-lived identity token \
+             (set COVEN_ID_TOKEN via your CI's OIDC / `witchy coven-mint-token`) — long-lived \
+             API tokens are not accepted"
+                .into(),
+        )
+    })
+}
+
 /// Select the best version of a rune satisfying `req`: released always eligible,
 /// staged only when `include_staged`, yanked never. Shared by the local and
 /// remote registries so version-selection policy lives in exactly one place.
@@ -665,11 +623,11 @@ impl Registry {
         src: &RuneSource,
         manifest: &Manifest,
         uploaded_by: &str,
-        token: &str,
+        id_token: Option<&super::trusted::IdToken>,
     ) -> PmResult<Record> {
         match self {
-            Registry::Local(r) => r.publish(src, manifest, uploaded_by, token),
-            Registry::Remote(r) => r.publish(src, manifest, uploaded_by, token),
+            Registry::Local(r) => r.publish(src, manifest, uploaded_by, None),
+            Registry::Remote(r) => r.publish(src, manifest, require_token(id_token)?),
         }
     }
 
@@ -679,18 +637,20 @@ impl Registry {
         version: &str,
         promoter: &str,
         second_factor: &str,
-        token: &str,
+        id_token: Option<&super::trusted::IdToken>,
     ) -> PmResult<Promotion> {
         match self {
-            Registry::Local(r) => r.promote(name, version, promoter, second_factor, token),
-            Registry::Remote(r) => r.promote(name, version, promoter, second_factor, token),
+            Registry::Local(r) => r.promote(name, version, promoter, second_factor),
+            Registry::Remote(r) => {
+                r.promote(name, version, second_factor, require_token(id_token)?)
+            }
         }
     }
 
-    pub fn yank(&self, name: &str, version: &str, token: &str) -> PmResult<()> {
+    pub fn yank(&self, name: &str, version: &str, id_token: Option<&super::trusted::IdToken>) -> PmResult<()> {
         match self {
-            Registry::Local(r) => r.yank(name, version, token),
-            Registry::Remote(r) => r.yank(name, version, token),
+            Registry::Local(r) => r.yank(name, version),
+            Registry::Remote(r) => r.yank(name, version, require_token(id_token)?),
         }
     }
 
@@ -855,7 +815,7 @@ mod tests {
     fn publish_stages_not_resolvable() {
         let (reg, root) = tmp_registry();
         let (src, m) = rune("acme/json", "1.0.0", "fn parse(s: String) -> String { s }");
-        let rec = reg.publish(&src, &m, "ci-bot", "").unwrap();
+        let rec = reg.publish(&src, &m, "ci-bot", None).unwrap();
         assert_eq!(rec.state, State::Staged);
         // Not resolvable while staged.
         assert!(reg.best_match("acme/json", &Req::Any, false).is_none());
@@ -868,11 +828,11 @@ mod tests {
     fn promote_requires_second_factor() {
         let (reg, root) = tmp_registry();
         let (src, m) = rune("acme/json", "1.0.0", "fn parse(s: String) -> String { s }");
-        reg.publish(&src, &m, "ci-bot", "").unwrap();
+        reg.publish(&src, &m, "ci-bot", None).unwrap();
         // No second factor -> refused.
-        assert!(reg.promote("acme/json", "1.0.0", "alice", "", "").is_err());
+        assert!(reg.promote("acme/json", "1.0.0", "alice", "").is_err());
         // With second factor -> released and resolvable.
-        let p = reg.promote("acme/json", "1.0.0", "alice", "webauthn", "").unwrap();
+        let p = reg.promote("acme/json", "1.0.0", "alice", "webauthn").unwrap();
         assert_eq!(p.record.state, State::Released);
         assert!(p.separation_of_duties, "alice != ci-bot");
         assert!(reg.best_match("acme/json", &Req::Any, false).is_some());
@@ -883,8 +843,8 @@ mod tests {
     fn immutable_versions() {
         let (reg, root) = tmp_registry();
         let (src, m) = rune("acme/json", "1.0.0", "fn parse(s: String) -> String { s }");
-        reg.publish(&src, &m, "ci-bot", "").unwrap();
-        assert!(reg.publish(&src, &m, "ci-bot", "").is_err(), "republish must fail");
+        reg.publish(&src, &m, "ci-bot", None).unwrap();
+        assert!(reg.publish(&src, &m, "ci-bot", None).is_err(), "republish must fail");
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -892,7 +852,7 @@ mod tests {
     fn server_recomputes_footprint() {
         let (reg, root) = tmp_registry();
         let (src, m) = rune("acme/http", "1.0.0", "fn get(net: Net, url: String) -> String { url }");
-        let rec = reg.publish(&src, &m, "ci-bot", "").unwrap();
+        let rec = reg.publish(&src, &m, "ci-bot", None).unwrap();
         assert!(rec.runtime_footprint.contains(&"Net".to_string()));
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -910,7 +870,7 @@ mod tests {
         let mut files = files;
         files.sort_by(|a, b| a.0.cmp(&b.0));
         let src = RuneSource { files };
-        let res = reg.publish(&src, &m, "ci-bot", "");
+        let res = reg.publish(&src, &m, "ci-bot", None);
         assert!(res.is_err(), "under-declared Net must be rejected");
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -919,7 +879,7 @@ mod tests {
     fn fetch_verifies_hash() {
         let (reg, root) = tmp_registry();
         let (src, m) = rune("acme/json", "1.0.0", "fn parse(s: String) -> String { s }");
-        let rec = reg.publish(&src, &m, "ci-bot", "").unwrap();
+        let rec = reg.publish(&src, &m, "ci-bot", None).unwrap();
         let fetched = reg.fetch("acme/json", "1.0.0").unwrap();
         assert_eq!(fetched.hash(), rec.hash);
         let _ = std::fs::remove_dir_all(&root);
@@ -929,7 +889,7 @@ mod tests {
     fn records_are_signed() {
         let (reg, root) = tmp_registry();
         let (src, m) = rune("acme/json", "1.0.0", "fn parse(s: String) -> String { s }");
-        let rec = reg.publish(&src, &m, "ci-bot", "").unwrap();
+        let rec = reg.publish(&src, &m, "ci-bot", None).unwrap();
         assert!(rec.sig.is_some(), "publish must sign the record");
         reg.verify_record(&rec).expect("freshly signed record must verify");
         let _ = std::fs::remove_dir_all(&root);
@@ -939,8 +899,8 @@ mod tests {
     fn tuf_chain_verifies_and_freeze_is_detected() {
         let (reg, root) = tmp_registry();
         let (src, m) = rune("acme/json", "1.0.0", "fn parse(s: String) -> String { s }");
-        reg.publish(&src, &m, "ci-bot", "").unwrap();
-        reg.promote("acme/json", "1.0.0", "alice", "webauthn", "").unwrap();
+        reg.publish(&src, &m, "ci-bot", None).unwrap();
+        reg.promote("acme/json", "1.0.0", "alice", "webauthn").unwrap();
 
         let registry = Registry::Local(reg);
         // Fresh chain verifies.
@@ -975,8 +935,8 @@ mod tests {
     fn tuf_rollback_is_detected() {
         let (reg, root) = tmp_registry();
         let (src, m) = rune("acme/json", "1.0.0", "fn parse(s: String) -> String { s }");
-        reg.publish(&src, &m, "ci-bot", "").unwrap();
-        reg.promote("acme/json", "1.0.0", "alice", "webauthn", "").unwrap();
+        reg.publish(&src, &m, "ci-bot", None).unwrap();
+        reg.promote("acme/json", "1.0.0", "alice", "webauthn").unwrap();
         let registry = Registry::Local(reg);
         let (v, _) = registry.verify_tuf_chain(None).unwrap();
         // Pinning a higher version than the registry presents = rollback.
@@ -1019,7 +979,7 @@ mod tests {
         let m = Manifest::parse(toml).unwrap();
         let files = vec![("witchy.toml".to_string(), toml.as_bytes().to_vec())];
         let src = RuneSource { files };
-        assert!(reg.publish(&src, &m, "ci-bot", "").is_err());
+        assert!(reg.publish(&src, &m, "ci-bot", None).is_err());
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -1027,8 +987,8 @@ mod tests {
     fn tampered_record_fails_verification() {
         let (reg, root) = tmp_registry();
         let (src, m) = rune("acme/json", "1.0.0", "fn parse(s: String) -> String { s }");
-        reg.publish(&src, &m, "ci-bot", "").unwrap();
-        reg.promote("acme/json", "1.0.0", "alice", "webauthn", "").unwrap();
+        reg.publish(&src, &m, "ci-bot", None).unwrap();
+        reg.promote("acme/json", "1.0.0", "alice", "webauthn").unwrap();
 
         // An attacker with write access edits a *signed* field of the metadata.
         // (Source bytes untouched, so the content hash alone would NOT catch it —
