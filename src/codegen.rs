@@ -3927,9 +3927,12 @@ mod tests {
     #[test]
     fn compiles_floats() {
         let src = r#"
-            fn half(x: Float) -> Float { x / 2.0 }
-            fn main() -> Float { half(7.0) + 1.5 }
-        "#;
+fn half(x: Float) -> Float:
+    (x / 2.0)
+
+fn main() -> Float:
+    (half(7.0) + 1.5)
+"#;
         assert_eq!(run_float(src), 5.0); // 3.5 + 1.5
     }
 
@@ -3938,9 +3941,15 @@ mod tests {
         // An `if/else` whose branches are Float must yield an f64 result (the
         // `if` result type follows the branch kind, not a hardcoded i32).
         let src = r#"
-            fn pick(a: Float, b: Float) -> Float { if a < b { a } else { b } }
-            fn main() -> Float { pick(2.5, 7.5) + pick(9.0, 1.0) }
-        "#;
+fn pick(a: Float, b: Float) -> Float:
+    if (a < b):
+        a
+    else:
+        b
+
+fn main() -> Float:
+    (pick(2.5, 7.5) + pick(9.0, 1.0))
+"#;
         assert_eq!(run_float(src), 3.5); // min(2.5,7.5)=2.5 + min(9.0,1.0)=1.0
     }
 
@@ -3960,9 +3969,14 @@ mod tests {
         // Heap slots are 4 bytes, so an f64 field can't be stored; reject with a
         // clear message rather than a cryptic WASM type mismatch.
         let src = r#"
-            type Vec2 { x: Float, y: Float }
-            fn main() -> Int { let v = Vec2(1.5, 2.5)  0 }
-        "#;
+type Vec2:
+    x: Float
+    y: Float
+
+fn main() -> Int:
+    let v = Vec2(1.5, 2.5)
+    0
+"#;
         let module = parse_module(src).expect("parse");
         let err = compile_module(&module).expect_err("Float field should be rejected");
         assert!(err.to_string().contains("Float field"), "unexpected error: {err}");
@@ -3971,8 +3985,10 @@ mod tests {
     #[test]
     fn float_list_element_rejected_clearly() {
         let src = r#"
-            fn main() -> Int { let xs = [1.5, 2.5]  0 }
-        "#;
+fn main() -> Int:
+    let xs = [1.5, 2.5]
+    0
+"#;
         let module = parse_module(src).expect("parse");
         let err = compile_module(&module).expect_err("Float list should be rejected");
         assert!(err.to_string().contains("Float elements"), "unexpected error: {err}");
@@ -3983,9 +3999,12 @@ mod tests {
         // A non-capturing lambda passed to a higher-order function: lifted to a
         // table slot, then invoked via `call_indirect`.
         let src = r#"
-            fn apply(f: fn(Int) -> Int, x: Int) -> Int { f(x) }
-            fn main() -> Int { apply(fn(n: Int) { n * n }, 9) }
-        "#;
+fn apply(f: fn(Int) -> Int, x: Int) -> Int:
+    f(x)
+
+fn main() -> Int:
+    apply(fn(n: Int): (n * n), 9)
+"#;
         assert_eq!(run_int(src), 81);
     }
 
@@ -3993,13 +4012,14 @@ mod tests {
     fn compiles_multiple_closures() {
         // Two distinct lambdas take distinct table slots and call_indirect each.
         let src = r#"
-            fn apply(f: fn(Int) -> Int, x: Int) -> Int { f(x) }
-            fn main() -> Int {
-                let a = apply(fn(n: Int) { n + 1 }, 10)
-                let b = apply(fn(n: Int) { n * 3 }, 10)
-                a + b
-            }
-        "#;
+fn apply(f: fn(Int) -> Int, x: Int) -> Int:
+    f(x)
+
+fn main() -> Int:
+    let a = apply(fn(n: Int): (n + 1), 10)
+    let b = apply(fn(n: Int): (n * 3), 10)
+    (a + b)
+"#;
         assert_eq!(run_int(src), 41); // 11 + 30
     }
 
@@ -4007,10 +4027,15 @@ mod tests {
     fn closure_can_call_global_function() {
         // A lambda calling a top-level function is still non-capturing.
         let src = r#"
-            fn dbl(x: Int) -> Int { x * 2 }
-            fn apply(f: fn(Int) -> Int, x: Int) -> Int { f(x) }
-            fn main() -> Int { apply(fn(n: Int) { dbl(n) + 1 }, 4) }
-        "#;
+fn dbl(x: Int) -> Int:
+    (x * 2)
+
+fn apply(f: fn(Int) -> Int, x: Int) -> Int:
+    f(x)
+
+fn main() -> Int:
+    apply(fn(n: Int): (dbl(n) + 1), 4)
+"#;
         assert_eq!(run_int(src), 9); // dbl(4) + 1
     }
 
@@ -4019,12 +4044,13 @@ mod tests {
         // The lambda reads `k` from the enclosing scope: captured by value into
         // the closure's heap environment, then read back via the env prologue.
         let src = r#"
-            fn apply(f: fn(Int) -> Int, x: Int) -> Int { f(x) }
-            fn main() -> Int {
-                let k = 100
-                apply(fn(n: Int) { n + k }, 5)
-            }
-        "#;
+fn apply(f: fn(Int) -> Int, x: Int) -> Int:
+    f(x)
+
+fn main() -> Int:
+    let k = 100
+    apply(fn(n: Int): (n + k), 5)
+"#;
         assert_eq!(run_int(src), 105);
     }
 
@@ -4032,14 +4058,15 @@ mod tests {
     fn closure_captures_multiple_vars() {
         // Several captures land in distinct environment slots.
         let src = r#"
-            fn apply(f: fn(Int) -> Int, x: Int) -> Int { f(x) }
-            fn main() -> Int {
-                let a = 3
-                let b = 7
-                let c = 11
-                apply(fn(n: Int) { n * a + b - c }, 10)
-            }
-        "#;
+fn apply(f: fn(Int) -> Int, x: Int) -> Int:
+    f(x)
+
+fn main() -> Int:
+    let a = 3
+    let b = 7
+    let c = 11
+    apply(fn(n: Int): (((n * a) + b) - c), 10)
+"#;
         assert_eq!(run_int(src), 26); // 10*3 + 7 - 11
     }
 
@@ -4048,13 +4075,17 @@ mod tests {
         // Capturing a record value: the env carries the heap pointer, and field
         // access still resolves inside the lambda.
         let src = r#"
-            type Point { x: Int, y: Int }
-            fn apply(f: fn(Int) -> Int, n: Int) -> Int { f(n) }
-            fn main() -> Int {
-                let p = Point(4, 9)
-                apply(fn(n: Int) { n + p.x * p.y }, 1)
-            }
-        "#;
+type Point:
+    x: Int
+    y: Int
+
+fn apply(f: fn(Int) -> Int, n: Int) -> Int:
+    f(n)
+
+fn main() -> Int:
+    let p = Point(4, 9)
+    apply(fn(n: Int): (n + ((p).x * (p).y)), 1)
+"#;
         assert_eq!(run_int(src), 37); // 1 + 4*9
     }
 
@@ -4126,10 +4157,20 @@ mod tests {
     #[test]
     fn full_int_program() {
         let src = r#"
-            fn double(n: Int) -> Int { n * 2 }
-            fn fib(n: Int) -> Int { if n < 2 { n } else { fib(n - 1) + fib(n - 2) } }
-            fn main() -> Int { let a = double(21) let b = fib(10) a + b }
-        "#;
+fn double(n: Int) -> Int:
+    (n * 2)
+
+fn fib(n: Int) -> Int:
+    if (n < 2):
+        n
+    else:
+        (fib((n - 1)) + fib((n - 2)))
+
+fn main() -> Int:
+    let a = double(21)
+    let b = fib(10)
+    (a + b)
+"#;
         assert_eq!(run_int(src), 97);
     }
 
@@ -4144,32 +4185,40 @@ mod tests {
 
     #[test]
     fn compiles_string_length() {
-        assert_eq!(run_int(r#"fn main() -> Int { string_length("hello") }"#), 5);
+        assert_eq!(run_int(r#"
+fn main() -> Int:
+    string_length("hello")
+"#), 5);
     }
 
     #[test]
     fn compiles_while_and_mod() {
         // sum of multiples of 3 below 10: 0 + 3 + 6 + 9
         let src = r#"
-            fn main() -> Int {
-              var i = 0
-              var total = 0
-              while i < 10 {
-                if i % 3 == 0 { total = total + i }
-                i = i + 1
-              }
-              total
-            }
-        "#;
+fn main() -> Int:
+    var i = 0
+    var total = 0
+    while (i < 10):
+        if ((i % 3) == 0):
+            total = (total + i)
+        i = (i + 1)
+    total
+"#;
         assert_eq!(run_int(src), 18);
     }
 
     #[test]
     fn compiles_boolean_ops() {
         let src = r#"
-            fn in_range(n: Int) -> Int { if n > 0 && n < 10 { 1 } else { 0 } }
-            fn main() -> Int { in_range(5) + in_range(50) + in_range(-3) }
-        "#;
+fn in_range(n: Int) -> Int:
+    if ((n > 0) && (n < 10)):
+        1
+    else:
+        0
+
+fn main() -> Int:
+    ((in_range(5) + in_range(50)) + in_range((-3)))
+"#;
         assert_eq!(run_int(src), 1); // 1 + 0 + 0
     }
 
@@ -4181,15 +4230,15 @@ mod tests {
     #[test]
     fn compiles_match_with_guards() {
         let src = r#"
-            fn sign(n: Int) -> Int {
-              match n {
-                0 -> 0
-                m if m > 0 -> 1
-                _ -> 0 - 1
-              }
-            }
-            fn main() -> Int { sign(5) + sign(-3) + sign(0) }
-        "#;
+fn sign(n: Int) -> Int:
+    match n:
+        0 -> 0
+        m if (m > 0) -> 1
+        _ -> (0 - 1)
+
+fn main() -> Int:
+    ((sign(5) + sign((-3))) + sign(0))
+"#;
         assert_eq!(run_int(src), 0); // 1 + (-1) + 0
     }
 
@@ -4198,75 +4247,78 @@ mod tests {
         // Constructors become heap records [tag][fields...]; ctor patterns load
         // the tag and bind fields.
         let src = r#"
-            type Shape { Circle(Int) Square(Int) }
-            fn area(s: Shape) -> Int {
-              match s {
-                Circle(r) -> 3 * r * r
-                Square(w) -> w * w
-              }
-            }
-            fn main() -> Int { area(Circle(10)) + area(Square(5)) }
-        "#;
+type Shape:
+    Circle(Int)
+    Square(Int)
+
+fn area(s: Shape) -> Int:
+    match s:
+        Circle(r) -> ((3 * r) * r)
+        Square(w) -> (w * w)
+
+fn main() -> Int:
+    (area(Circle(10)) + area(Square(5)))
+"#;
         assert_eq!(run_int(src), 325);
     }
 
     #[test]
     fn compiles_lists() {
         let src = r#"
-            fn main() -> Int {
-              let xs = [10, 20, 30]
-              length(xs) + at(xs, 0) + at(xs, 2)
-            }
-        "#;
+fn main() -> Int:
+    let xs = [10, 20, 30]
+    ((length(xs) + at(xs, 0)) + at(xs, 2))
+"#;
         assert_eq!(run_int(src), 43); // 3 + 10 + 30
     }
 
     #[test]
     fn compiles_nested_constructor_patterns() {
         let src = r#"
-            type Point { Point(Int, Int) }
-            type Shape { Dot(Point) Pair(Point, Point) }
-            fn x_of(s: Shape) -> Int {
-              match s {
-                Dot(Point(x, _)) -> x
-                Pair(Point(x, _), _) -> x
-              }
-            }
-            fn main() -> Int {
-              x_of(Dot(Point(7, 9))) + x_of(Pair(Point(3, 0), Point(0, 0)))
-            }
-        "#;
+type Point:
+    Point(Int, Int)
+
+type Shape:
+    Dot(Point)
+    Pair(Point, Point)
+
+fn x_of(s: Shape) -> Int:
+    match s:
+        Dot(Point(x, _)) -> x
+        Pair(Point(x, _), _) -> x
+
+fn main() -> Int:
+    (x_of(Dot(Point(7, 9))) + x_of(Pair(Point(3, 0), Point(0, 0))))
+"#;
         assert_eq!(run_int(src), 10); // 7 + 3
     }
 
     #[test]
     fn compiles_string_patterns() {
         let src = r#"
-            fn classify(s: String) -> Int {
-              match s {
-                "yes" -> 1
-                "no" -> 0
-                _ -> 0 - 1
-              }
-            }
-            fn main() -> Int {
-              classify("yes") + classify("no") + classify("maybe")
-            }
-        "#;
+fn classify(s: String) -> Int:
+    match s:
+        "yes" -> 1
+        "no" -> 0
+        _ -> (0 - 1)
+
+fn main() -> Int:
+    ((classify("yes") + classify("no")) + classify("maybe"))
+"#;
         assert_eq!(run_int(src), 0); // 1 + 0 + (-1)
     }
 
     #[test]
     fn compiles_match_and_recursion() {
         let src = r#"
-            fn fact(n: Int) -> Int {
-              match n {
-                0 -> 1
-                _ -> n * fact(n - 1)
-              }
-            }
-            fn main() -> Int { fact(5) }
-        "#;
+fn fact(n: Int) -> Int:
+    match n:
+        0 -> 1
+        _ -> (n * fact((n - 1)))
+
+fn main() -> Int:
+    fact(5)
+"#;
         assert_eq!(run_int(src), 120);
     }
 
@@ -4275,29 +4327,30 @@ mod tests {
         // `inout` compiles to move-in / move-out: bump returns the updated n,
         // and the caller writes it back into x.
         let src = r#"
-            fn bump(inout n: Int) { n = n + 1 }
-            fn main() -> Int {
-              var x = 41
-              bump(x)
-              bump(x)
-              x
-            }
-        "#;
+fn bump(inout n: Int):
+    n = (n + 1)
+
+fn main() -> Int:
+    var x = 41
+    bump(x)
+    bump(x)
+    x
+"#;
         assert_eq!(run_int(src), 43);
     }
 
     #[test]
     fn actor_arena_is_reset_each_message() {
         let src = r#"
-            actor Counter {
-              console: Console
-              var count: Int = 0
-              on Tick() {
-                count = count + 1
-                print(console, "n=" <> int_to_string(count))
-              }
-            }
-        "#;
+actor Counter:
+    console: Console
+    var count: Int = 0
+
+impl Counter:
+    on Tick():
+        count = (count + 1)
+        print(console, ("n=" <> int_to_string(count)))
+"#;
         let module = parse_module(src).unwrap();
         let Item::Actor(actor) = &module.items[0] else {
             panic!("expected actor");
@@ -4337,21 +4390,30 @@ mod tests {
     #[test]
     fn compiles_string_concatenation() {
         let src = r#"
-            fn shout(name: String) -> String { "hello, " <> name }
-            fn main(console: Console) { print(console, shout("witchy")) }
-        "#;
+fn shout(name: String) -> String:
+    ("hello, " <> name)
+
+fn main(console: Console):
+    print(console, shout("witchy"))
+"#;
         assert_eq!(run_str(src), vec!["hello, witchy"]);
     }
 
     #[test]
     fn compiles_int_to_string() {
-        let src = r#"fn main(console: Console) { print(console, int_to_string(12345)) }"#;
+        let src = r#"
+fn main(console: Console):
+    print(console, int_to_string(12345))
+"#;
         assert_eq!(run_str(src), vec!["12345"]);
     }
 
     #[test]
     fn int_to_string_handles_zero() {
-        let src = r#"fn main(console: Console) { print(console, int_to_string(0)) }"#;
+        let src = r#"
+fn main(console: Console):
+    print(console, int_to_string(0))
+"#;
         assert_eq!(run_str(src), vec!["0"]);
     }
 
@@ -4360,15 +4422,15 @@ mod tests {
     #[test]
     fn compiles_a_stateful_actor() {
         let src = r#"
-            actor Counter {
-              console: Console
-              var count: Int = 0
-              on Tick() {
-                count = count + 1
-                print(console, "count is " <> int_to_string(count))
-              }
-            }
-        "#;
+actor Counter:
+    console: Console
+    var count: Int = 0
+
+impl Counter:
+    on Tick():
+        count = (count + 1)
+        print(console, ("count is " <> int_to_string(count)))
+"#;
         let module = parse_module(src).unwrap();
         let Item::Actor(actor) = &module.items[0] else {
             panic!("expected actor");

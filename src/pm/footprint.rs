@@ -276,9 +276,12 @@ mod tests {
     #[test]
     fn multiple_caps_across_functions() {
         let f = fp(r#"
-            fn log(console: Console, msg: String) { print(msg) }
-            fn save(dir: Dir, name: String) -> String { name }
-        "#);
+fn log(console: Console, msg: String):
+    print(msg)
+
+fn save(dir: Dir, name: String) -> String:
+    name
+"#);
         assert!(f.runtime.contains("Console"));
         assert!(f.runtime.contains("Dir"));
     }
@@ -287,39 +290,52 @@ mod tests {
     fn taint_through_user_record() {
         // A record holding a Net taints; a function taking that record demands Net.
         let f = fp(r#"
-            type Client { conn: Net, name: String }
-            fn use_client(c: Client) -> String { c.name }
-        "#);
+type Client:
+    conn: Net
+    name: String
+
+fn use_client(c: Client) -> String:
+    (c).name
+"#);
         assert!(f.runtime.contains("Net"), "taint should propagate through Client");
     }
 
     #[test]
     fn taint_is_transitive() {
         let f = fp(r#"
-            type Inner { n: Net }
-            type Outer { inner: Inner, tag: String }
-            fn f(o: Outer) -> String { o.tag }
-        "#);
+type Inner:
+    n: Net
+
+type Outer:
+    inner: Inner
+    tag: String
+
+fn f(o: Outer) -> String:
+    (o).tag
+"#);
         assert!(f.runtime.contains("Net"), "taint must reach through two levels");
     }
 
     #[test]
     fn actor_capability_field_counts() {
         let f = fp(r#"
-            actor Logger {
-              console: Console
-              var count: Int = 0
-              on log(msg: String) { print(msg) }
-            }
-        "#);
+actor Logger:
+    console: Console
+    var count: Int = 0
+
+impl Logger:
+    on log(msg: String):
+        print(msg)
+"#);
         assert!(f.runtime.contains("Console"));
     }
 
     #[test]
     fn build_cap_routes_to_build_axis() {
         let f = fp(r#"
-            fn build(out: BuildOut, exec: BuildExec) { print("gen") }
-        "#);
+fn build(out: BuildOut, exec: BuildExec):
+    print("gen")
+"#);
         assert!(f.build.contains("BuildOut"));
         assert!(f.build.contains("BuildExec"));
         assert!(f.runtime.is_empty());
@@ -358,9 +374,12 @@ mod tests {
     fn widening_detects_new_kind() {
         let old = fp("fn log(c: Console) { print(\"x\") }");
         let new = fp(r#"
-            fn log(c: Console) { print("x") }
-            fn beacon(n: Net) { print("x") }
-        "#);
+fn log(c: Console):
+    print("x")
+
+fn beacon(n: Net):
+    print("x")
+"#);
         let w = new.widening_over(&old);
         assert!(w.runtime.contains("Net"));
         assert!(!w.is_empty());

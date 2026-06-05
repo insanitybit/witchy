@@ -1564,43 +1564,43 @@ mod tests {
     #[test]
     fn calls_user_functions_and_concats_strings() {
         let src = r#"
-            fn double(n: Int) -> Int { n * 2 }
-            fn main(console: Console) {
-              print(console, "doubled: " <> int_to_string(double(21)))
-            }
-        "#;
+fn double(n: Int) -> Int:
+    (n * 2)
+
+fn main(console: Console):
+    print(console, ("doubled: " <> int_to_string(double(21))))
+"#;
         assert_eq!(run(src).unwrap(), vec!["doubled: 42"]);
     }
 
     #[test]
     fn pipelines_thread_left_to_right() {
         let src = r#"
-            fn double(n: Int) -> Int { n * 2 }
-            fn main(console: Console) {
-              let result = 4 |> double() |> int_to_string()
-              print(console, result)
-            }
-        "#;
+fn double(n: Int) -> Int:
+    (n * 2)
+
+fn main(console: Console):
+    let result = int_to_string(double(4))
+    print(console, result)
+"#;
         assert_eq!(run(src).unwrap(), vec!["8"]);
     }
 
     #[test]
     fn match_with_constructors_and_guards() {
         let src = r#"
-            fn describe(e: Event) -> String {
-              match e {
-                Click(x, _) if x > 0 -> "right click"
-                Click(_, _) -> "other click"
-                Closed -> "closed"
-                _ -> "unknown"
-              }
-            }
-            fn main(console: Console) {
-              print(console, describe(Click(5, 9)))
-              print(console, describe(Click(-1, 0)))
-              print(console, describe(Closed))
-            }
-        "#;
+fn describe(e: Event) -> String:
+    match e:
+        Click(x, _) if (x > 0) -> "right click"
+        Click(_, _) -> "other click"
+        Closed -> "closed"
+        _ -> "unknown"
+
+fn main(console: Console):
+    print(console, describe(Click(5, 9)))
+    print(console, describe(Click((-1), 0)))
+    print(console, describe(Closed))
+"#;
         assert_eq!(
             run(src).unwrap(),
             vec!["right click", "other click", "closed"]
@@ -1610,29 +1610,28 @@ mod tests {
     #[test]
     fn if_else_and_let_bindings() {
         let src = r#"
-            fn sign(n: Int) -> String {
-              let label = if n > 0 { "positive" } else { "non-positive" }
-              label
-            }
-            fn main(console: Console) {
-              print(console, sign(3))
-              print(console, sign(-2))
-            }
-        "#;
+fn sign(n: Int) -> String:
+    let label = if (n > 0): "positive" else: "non-positive"
+    label
+
+fn main(console: Console):
+    print(console, sign(3))
+    print(console, sign((-2)))
+"#;
         assert_eq!(run(src).unwrap(), vec!["positive", "non-positive"]);
     }
 
     #[test]
     fn recursion_works() {
         let src = r#"
-            fn fact(n: Int) -> Int {
-              match n {
-                0 -> 1
-                _ -> n * fact(n - 1)
-              }
-            }
-            fn main(console: Console) { print(console, int_to_string(fact(5))) }
-        "#;
+fn fact(n: Int) -> Int:
+    match n:
+        0 -> 1
+        _ -> (n * fact((n - 1)))
+
+fn main(console: Console):
+    print(console, int_to_string(fact(5)))
+"#;
         assert_eq!(run(src).unwrap(), vec!["120"]);
     }
 
@@ -1647,9 +1646,12 @@ mod tests {
     #[test]
     fn function_without_capability_cannot_print() {
         let src = r#"
-            fn leak(secret: String) -> Nil { print(secret) }
-            fn main(console: Console) { leak("password") }
-        "#;
+fn leak(secret: String) -> Nil:
+    print(secret)
+
+fn main(console: Console):
+    leak("password")
+"#;
         let e = run(src).unwrap_err();
         assert!(
             e.message.contains("Console capability"),
@@ -1663,11 +1665,12 @@ mod tests {
     #[test]
     fn capability_can_be_threaded_to_a_helper() {
         let src = r#"
-            fn announce(console: Console, who: String) -> Nil {
-              print(console, "hello, " <> who)
-            }
-            fn main(console: Console) { announce(console, "witchy") }
-        "#;
+fn announce(console: Console, who: String) -> Nil:
+    print(console, ("hello, " <> who))
+
+fn main(console: Console):
+    announce(console, "witchy")
+"#;
         assert_eq!(run(src).unwrap(), vec!["hello, witchy"]);
     }
 
@@ -1679,26 +1682,27 @@ mod tests {
 
         // Attenuate to a subdir and read a file within it.
         let ok = r#"
-            fn main(console: Console, root: Dir) {
-              let d = subdir(root, "sub")
-              print(console, read(d, "hi.txt"))
-            }
-        "#;
+fn main(console: Console, root: Dir):
+    let d = subdir(root, "sub")
+    print(console, read(d, "hi.txt"))
+"#;
         assert_eq!(run_in(ok, &root).unwrap(), vec!["hi!"]);
 
         // Confinement: `..` cannot escape the granted subtree.
         let escape = r#"
-            fn main(console: Console, root: Dir) {
-              print(console, read(root, "../secret"))
-            }
-        "#;
+fn main(console: Console, root: Dir):
+    print(console, read(root, "../secret"))
+"#;
         assert!(run_in(escape, &root).is_err());
 
         // A function with no Dir cannot read (no way to obtain the capability).
         let no_cap = r#"
-            fn sneaky() -> String { read(root, "sub/hi.txt") }
-            fn main(console: Console, root: Dir) { print(console, sneaky()) }
-        "#;
+fn sneaky() -> String:
+    read(root, "sub/hi.txt")
+
+fn main(console: Console, root: Dir):
+    print(console, sneaky())
+"#;
         assert!(run_in(no_cap, &root).is_err());
 
         // Confinement holds against symlinks: a link inside the subtree pointing
@@ -1709,11 +1713,10 @@ mod tests {
             std::fs::write(&outside, "secret").unwrap();
             std::os::unix::fs::symlink(&outside, root.join("sub/escape")).ok();
             let via_symlink = r#"
-                fn main(console: Console, root: Dir) {
-                  let d = subdir(root, "sub")
-                  print(console, read(d, "escape"))
-                }
-            "#;
+fn main(console: Console, root: Dir):
+    let d = subdir(root, "sub")
+    print(console, read(d, "escape"))
+"#;
             assert!(run_in(via_symlink, &root).is_err());
             std::fs::remove_file(&outside).ok();
         }
@@ -1765,21 +1768,25 @@ mod tests {
 
         // Denied: cannot attenuate to an address not already held.
         let bad_restrict = r#"
-            fn main(console: Console, net: Net) {
-              let bad = restrict(net, "10.255.255.1:80")
-              print(console, "unreachable")
-            }
-        "#;
+fn main(console: Console, net: Net):
+    let bad = restrict(net, "10.255.255.1:80")
+    print(console, "unreachable")
+"#;
         assert!(run_with(bad_restrict, ".", vec![addr]).is_err());
     }
 
     #[test]
     fn modules_qualified_calls() {
-        let strutil = r#"fn shout(name: String) -> String { "HELLO, " <> name }"#;
+        let strutil = r#"
+fn shout(name: String) -> String:
+    ("HELLO, " <> name)
+"#;
         let app = r#"
-            import strutil
-            fn main(console: Console) { print(console, strutil.shout("witchy")) }
-        "#;
+import strutil
+
+fn main(console: Console):
+    print(console, strutil.shout("witchy"))
+"#;
         assert_eq!(
             run_program(&[("strutil", strutil), ("app", app)], "app").unwrap(),
             vec!["HELLO, witchy"]
@@ -1789,11 +1796,16 @@ mod tests {
     #[test]
     fn library_uses_only_passed_capabilities() {
         // The app chooses to hand the logger its Console.
-        let logger = r#"fn log(console: Console, msg: String) { print(console, "[log] " <> msg) }"#;
+        let logger = r#"
+fn log(console: Console, msg: String):
+    print(console, ("[log] " <> msg))
+"#;
         let app = r#"
-            import logger
-            fn main(console: Console) { logger.log(console, "hi") }
-        "#;
+import logger
+
+fn main(console: Console):
+    logger.log(console, "hi")
+"#;
         assert_eq!(
             run_program(&[("logger", logger), ("app", app)], "app").unwrap(),
             vec!["[log] hi"]
@@ -1804,11 +1816,16 @@ mod tests {
     fn library_cannot_fabricate_a_capability() {
         // `steal` references `console` it was never given — caught at compile
         // time as an unbound variable (no ambient authority to grab).
-        let evil = r#"fn steal(secret: String) -> String { print(console, secret) }"#;
+        let evil = r#"
+fn steal(secret: String) -> String:
+    print(console, secret)
+"#;
         let app = r#"
-            import evil
-            fn main(console: Console) { print(console, evil.steal("data")) }
-        "#;
+import evil
+
+fn main(console: Console):
+    print(console, evil.steal("data"))
+"#;
         let linked = crate::linker::link(
             vec![
                 ("evil".into(), parse_module(evil).unwrap()),
@@ -1822,33 +1839,41 @@ mod tests {
 
     #[test]
     fn calling_unimported_module_is_a_link_error() {
-        let app = r#"fn main(console: Console) { print(console, other.foo()) }"#;
+        let app = r#"
+fn main(console: Console):
+    print(console, other.foo())
+"#;
         assert!(run_program(&[("app", app)], "app").is_err());
     }
 
     #[test]
     fn float_arithmetic() {
         let src = r#"
-            fn half(x: Float) -> Float { x / 2.0 }
-            fn main(console: Console) { print(console, to_string(half(7.0))) }
-        "#;
+fn half(x: Float) -> Float:
+    (x / 2.0)
+
+fn main(console: Console):
+    print(console, to_string(half(7.0)))
+"#;
         assert_eq!(run(src).unwrap(), vec!["3.5"]);
     }
 
     #[test]
     fn boolean_operators() {
         let src = r#"
-            fn classify(n: Int) -> String {
-              if n > 0 && n < 10 { "small positive" }
-              else if n <= 0 || n >= 100 { "out of range" }
-              else { "other" }
-            }
-            fn main(console: Console) {
-              print(console, classify(5))
-              print(console, classify(-1))
-              print(console, classify(50))
-            }
-        "#;
+fn classify(n: Int) -> String:
+    if ((n > 0) && (n < 10)):
+        "small positive"
+    else if ((n <= 0) || (n >= 100)):
+        "out of range"
+    else:
+        "other"
+
+fn main(console: Console):
+    print(console, classify(5))
+    print(console, classify((-1)))
+    print(console, classify(50))
+"#;
         assert_eq!(
             run(src).unwrap(),
             vec!["small positive", "out of range", "other"]
@@ -1858,50 +1883,49 @@ mod tests {
     #[test]
     fn tuples_destructure_and_match() {
         let src = r#"
-            fn divmod(a: Int, b: Int) -> (Int, Int) { (a / b, a % b) }
-            fn main(console: Console) {
-              let (q, r) = divmod(17, 5)
-              print(console, int_to_string(q))
-              print(console, int_to_string(r))
-              let pair = (1, "one")
-              match pair {
-                (n, name) -> print(console, int_to_string(n) <> "=" <> name)
-              }
-            }
-        "#;
+fn divmod(a: Int, b: Int) -> (Int, Int):
+    ((a / b), (a % b))
+
+fn main(console: Console):
+    let (q, r) = divmod(17, 5)
+    print(console, int_to_string(q))
+    print(console, int_to_string(r))
+    let pair = (1, "one")
+    match pair:
+        (n, name) -> print(console, ((int_to_string(n) <> "=") <> name))
+"#;
         assert_eq!(run(src).unwrap(), vec!["3", "2", "1=one"]);
     }
 
     #[test]
     fn generic_identity_runs() {
         let src = r#"
-            fn id(x: a) -> a { x }
-            fn main(console: Console) {
-              print(console, id("hi"))
-              print(console, int_to_string(id(5)))
-            }
-        "#;
+fn id(x: a) -> a:
+    x
+
+fn main(console: Console):
+    print(console, id("hi"))
+    print(console, int_to_string(id(5)))
+"#;
         assert_eq!(run(src).unwrap(), vec!["hi", "5"]);
     }
 
     #[test]
     fn generic_adt_runs() {
         let src = r#"
-            type Result {
-              Ok(a)
-              Err(e)
-            }
-            fn show(r: Result(Int, String)) -> String {
-              match r {
-                Ok(n) -> "ok " <> int_to_string(n)
-                Err(msg) -> "err " <> msg
-              }
-            }
-            fn main(console: Console) {
-              print(console, show(Ok(7)))
-              print(console, show(Err("boom")))
-            }
-        "#;
+type Result:
+    Ok(a)
+    Err(e)
+
+fn show(r: Result(Int, String)) -> String:
+    match r:
+        Ok(n) -> ("ok " <> int_to_string(n))
+        Err(msg) -> ("err " <> msg)
+
+fn main(console: Console):
+    print(console, show(Ok(7)))
+    print(console, show(Err("boom")))
+"#;
         assert_eq!(run(src).unwrap(), vec!["ok 7", "err boom"]);
     }
 
@@ -1919,38 +1943,33 @@ mod tests {
     #[test]
     fn early_return_exits_function_and_loop() {
         let src = r#"
-            fn first_even(xs: List(Int)) -> Int {
-              for x in xs {
-                if x % 2 == 0 {
-                  return x
-                }
-              }
-              0 - 1
-            }
-            fn main(console: Console) {
-              print(console, int_to_string(first_even([1, 3, 8, 5])))
-              print(console, int_to_string(first_even([1, 3, 5])))
-            }
-        "#;
+fn first_even(xs: List(Int)) -> Int:
+    for x in xs:
+        if ((x % 2) == 0):
+            return x
+    (0 - 1)
+
+fn main(console: Console):
+    print(console, int_to_string(first_even([1, 3, 8, 5])))
+    print(console, int_to_string(first_even([1, 3, 5])))
+"#;
         assert_eq!(run(src).unwrap(), vec!["8", "-1"]);
     }
 
     #[test]
     fn negative_int_patterns_match() {
         let src = r#"
-            fn classify(n: Int) -> String {
-              match n {
-                -1 -> "neg one"
-                0 -> "zero"
-                _ -> "other"
-              }
-            }
-            fn main(console: Console) {
-              print(console, classify(-1))
-              print(console, classify(0))
-              print(console, classify(3))
-            }
-        "#;
+fn classify(n: Int) -> String:
+    match n:
+        -1 -> "neg one"
+        0 -> "zero"
+        _ -> "other"
+
+fn main(console: Console):
+    print(console, classify((-1)))
+    print(console, classify(0))
+    print(console, classify(3))
+"#;
         assert_eq!(run(src).unwrap(), vec!["neg one", "zero", "other"]);
     }
 
@@ -1959,9 +1978,15 @@ mod tests {
         // Runaway recursion must hit the depth limit and return an error rather
         // than overflowing the stack and aborting the host.
         let src = r#"
-            fn rec(n: Int) -> Int { if n == 0 { 0 } else { rec(n - 1) } }
-            fn main(console: Console) { print(console, int_to_string(rec(5000000))) }
-        "#;
+fn rec(n: Int) -> Int:
+    if (n == 0):
+        0
+    else:
+        rec((n - 1))
+
+fn main(console: Console):
+    print(console, int_to_string(rec(5000000)))
+"#;
         let e = run(src).unwrap_err();
         assert!(e.message.contains("too deep"), "got: {}", e.message);
     }
@@ -1970,9 +1995,15 @@ mod tests {
     fn moderate_recursion_succeeds() {
         // Recursion well within the limit still works.
         let src = r#"
-            fn rec(n: Int) -> Int { if n == 0 { 0 } else { rec(n - 1) } }
-            fn main(console: Console) { print(console, int_to_string(rec(10000))) }
-        "#;
+fn rec(n: Int) -> Int:
+    if (n == 0):
+        0
+    else:
+        rec((n - 1))
+
+fn main(console: Console):
+    print(console, int_to_string(rec(10000)))
+"#;
         assert_eq!(run(src).unwrap(), vec!["0"]);
     }
 
@@ -1980,11 +2011,10 @@ mod tests {
     fn integer_overflow_is_a_graceful_error_not_a_panic() {
         // Multiplication that overflows i64 must return an error, never panic.
         let src = r#"
-            fn main(console: Console) {
-              let big = 9999999999
-              print(console, int_to_string(big * big))
-            }
-        "#;
+fn main(console: Console):
+    let big = 9999999999
+    print(console, int_to_string((big * big)))
+"#;
         let e = run(src).unwrap_err();
         assert!(e.message.contains("overflow"), "got: {}", e.message);
     }
@@ -1993,11 +2023,10 @@ mod tests {
     fn negating_int_min_does_not_panic() {
         // -(i64::MIN) overflows via unary negation; it must be a graceful error.
         let src = r#"
-            fn main(console: Console) {
-              let lo = 0 - 9223372036854775807 - 1
-              print(console, int_to_string(-lo))
-            }
-        "#;
+fn main(console: Console):
+    let lo = ((0 - 9223372036854775807) - 1)
+    print(console, int_to_string((-lo)))
+"#;
         assert!(run(src).is_err());
     }
 
@@ -2013,11 +2042,12 @@ mod tests {
     fn runtime_errors_name_the_innermost_function() {
         // The error must be attributed to `risky`, not the caller `main`.
         let src = r#"
-            fn risky(n: Int) -> Int { n / 0 }
-            fn main(console: Console) {
-              print(console, int_to_string(risky(5)))
-            }
-        "#;
+fn risky(n: Int) -> Int:
+    (n / 0)
+
+fn main(console: Console):
+    print(console, int_to_string(risky(5)))
+"#;
         let e = run(src).unwrap_err();
         assert!(e.message.contains("risky"), "got: {}", e.message);
     }
@@ -2025,14 +2055,12 @@ mod tests {
     #[test]
     fn runaway_loop_is_bounded_not_hung() {
         let src = r#"
-            fn main() -> Int {
-              var i = 0
-              while true {
-                i = i + 1
-              }
-              i
-            }
-        "#;
+fn main() -> Int:
+    var i = 0
+    while true:
+        i = (i + 1)
+    i
+"#;
         let e = run_capped(src, 100_000).unwrap_err();
         assert!(e.message.contains("step budget"), "got: {}", e.message);
     }
@@ -2041,58 +2069,52 @@ mod tests {
     fn normal_program_runs_within_budget() {
         // A finite loop well under the ceiling completes normally.
         let src = r#"
-            fn main() -> Int {
-              var sum = 0
-              var i = 0
-              while i < 1000 {
-                sum = sum + i
-                i = i + 1
-              }
-              sum
-            }
-        "#;
+fn main() -> Int:
+    var sum = 0
+    var i = 0
+    while (i < 1000):
+        sum = (sum + i)
+        i = (i + 1)
+    sum
+"#;
         assert!(run_capped(src, 100_000).is_ok());
     }
 
     #[test]
     fn dict_values_and_pairs_iterate() {
         let src = r#"
-            fn main(console: Console) {
-              var d = dict_new()
-              d = insert(d, "a", 10)
-              d = insert(d, "b", 20)
-              var sum = 0
-              for v in values(d) {
-                sum = sum + v
-              }
-              print(console, int_to_string(sum))           // 30
-              var report = ""
-              for e in pairs(d) {
-                let (k, v) = e
-                report = report <> k <> "=" <> int_to_string(v) <> ";"
-              }
-              print(console, report)                        // a=10;b=20;
-            }
-        "#;
+fn main(console: Console):
+    var d = dict_new()
+    d = insert(d, "a", 10)
+    d = insert(d, "b", 20)
+    var sum = 0
+    for v in values(d):
+        sum = (sum + v)
+    print(console, int_to_string(sum))
+    var report = ""
+    for e in pairs(d):
+        let (k, v) = e
+        report = ((((report <> k) <> "=") <> int_to_string(v)) <> ";")
+    print(console, report)
+"#;
         assert_eq!(run(src).unwrap(), vec!["30", "a=10;b=20;"]);
     }
 
     #[test]
     fn dict_insert_get_has_keys_and_immutability() {
         let src = r#"
-            fn main(console: Console) {
-              let a = insert(dict_new(), "x", 1)
-              let b = insert(a, "y", 2)
-              let c = insert(b, "x", 9)        // overwrite x
-              print(console, int_to_string(get_or(c, "x", 0)))   // 9
-              print(console, int_to_string(get_or(c, "y", 0)))   // 2
-              print(console, int_to_string(get_or(c, "z", 0)))   // 0 default
-              print(console, int_to_string(size(c)))             // 2 (x overwritten)
-              print(console, int_to_string(get_or(a, "x", 0)))   // 1 (a unchanged)
-              print(console, to_string(has(c, "y")))             // true
-              print(console, int_to_string(length(keys(c))))     // 2
-            }
-        "#;
+fn main(console: Console):
+    let a = insert(dict_new(), "x", 1)
+    let b = insert(a, "y", 2)
+    let c = insert(b, "x", 9)
+    print(console, int_to_string(get_or(c, "x", 0)))
+    print(console, int_to_string(get_or(c, "y", 0)))
+    print(console, int_to_string(get_or(c, "z", 0)))
+    print(console, int_to_string(size(c)))
+    print(console, int_to_string(get_or(a, "x", 0)))
+    print(console, to_string(has(c, "y")))
+    print(console, int_to_string(length(keys(c))))
+"#;
         assert_eq!(
             run(src).unwrap(),
             vec!["9", "2", "0", "2", "1", "true", "2"]
@@ -2102,11 +2124,10 @@ mod tests {
     #[test]
     fn sqrt_builtin_computes() {
         let src = r#"
-            fn main(console: Console) {
-              print(console, to_string(sqrt(2.0)))
-              print(console, to_string(float_to_int(sqrt(144.0))))
-            }
-        "#;
+fn main(console: Console):
+    print(console, to_string(sqrt(2.0)))
+    print(console, to_string(float_to_int(sqrt(144.0))))
+"#;
         assert_eq!(
             run(src).unwrap(),
             vec!["1.4142135623730951", "12"]
@@ -2116,16 +2137,15 @@ mod tests {
     #[test]
     fn string_slicing_and_search() {
         let src = r#"
-            fn main(console: Console) {
-              let s = "abcdef"
-              print(console, substring(s, 1, 4))       // bcd
-              print(console, substring(s, 4, 100))     // ef (clamped)
-              print(console, substring(s, 3, 1))       // "" (empty)
-              print(console, int_to_string(index_of(s, "cd")))  // 2
-              print(console, int_to_string(index_of(s, "z")))   // -1
-              print(console, to_string(ends_with(s, "ef")))     // true
-            }
-        "#;
+fn main(console: Console):
+    let s = "abcdef"
+    print(console, substring(s, 1, 4))
+    print(console, substring(s, 4, 100))
+    print(console, substring(s, 3, 1))
+    print(console, int_to_string(index_of(s, "cd")))
+    print(console, int_to_string(index_of(s, "z")))
+    print(console, to_string(ends_with(s, "ef")))
+"#;
         assert_eq!(
             run(src).unwrap(),
             vec!["bcd", "ef", "", "2", "-1", "true"]
@@ -2136,55 +2156,55 @@ mod tests {
     fn substring_is_char_based_not_byte_based() {
         // A multi-byte char must count as one position, not its byte length.
         let src = r#"
-            fn main(console: Console) {
-              let s = "héllo"
-              print(console, substring(s, 0, 2))   // hé
-            }
-        "#;
+fn main(console: Console):
+    let s = "héllo"
+    print(console, substring(s, 0, 2))
+"#;
         assert_eq!(run(src).unwrap(), vec!["hé"]);
     }
 
     #[test]
     fn string_split_contains_replace() {
         let src = r#"
-            fn main(console: Console) {
-              let parts = split("a,b,c", ",")
-              print(console, int_to_string(length(parts)))
-              print(console, at(parts, 1))
-              print(console, replace("a,b,c", ",", "-"))
-              print(console, to_string(contains("hello", "ell")))
-            }
-        "#;
+fn main(console: Console):
+    let parts = split("a,b,c", ",")
+    print(console, int_to_string(length(parts)))
+    print(console, at(parts, 1))
+    print(console, replace("a,b,c", ",", "-"))
+    print(console, to_string(contains("hello", "ell")))
+"#;
         assert_eq!(run(src).unwrap(), vec!["3", "b", "a-b-c", "true"]);
     }
 
     #[test]
     fn push_is_immutable_and_concat_joins() {
         let src = r#"
-            fn main(console: Console) {
-              let a = [1, 2]
-              let b = push(a, 3)
-              print(console, int_to_string(length(a)))   // a is unchanged
-              print(console, int_to_string(length(b)))
-              let c = concat(a, [9, 9])
-              print(console, int_to_string(at(c, 3)))
-            }
-        "#;
+fn main(console: Console):
+    let a = [1, 2]
+    let b = push(a, 3)
+    print(console, int_to_string(length(a)))
+    print(console, int_to_string(length(b)))
+    let c = concat(a, [9, 9])
+    print(console, int_to_string(at(c, 3)))
+"#;
         assert_eq!(run(src).unwrap(), vec!["2", "3", "9"]);
     }
 
     #[test]
     fn closure_captures_environment() {
         let src = r#"
-            fn adder(n: Int) -> fn(Int) -> Int { fn(x: Int) { x + n } }
-            fn apply(f: fn(Int) -> Int, x: Int) -> Int { f(x) }
-            fn main(console: Console) {
-              let inc = adder(1)
-              let plus100 = adder(100)
-              print(console, int_to_string(apply(inc, 5)))
-              print(console, int_to_string(apply(plus100, 5)))
-            }
-        "#;
+fn adder(n: Int) -> fn(Int) -> Int:
+    fn(x: Int): (x + n)
+
+fn apply(f: fn(Int) -> Int, x: Int) -> Int:
+    f(x)
+
+fn main(console: Console):
+    let inc = adder(1)
+    let plus100 = adder(100)
+    print(console, int_to_string(apply(inc, 5)))
+    print(console, int_to_string(apply(plus100, 5)))
+"#;
         assert_eq!(run(src).unwrap(), vec!["6", "105"]);
     }
 
@@ -2209,56 +2229,56 @@ mod tests {
     #[test]
     fn record_update_does_not_mutate_the_original() {
         let src = r#"
-            type Point { x: Int, y: Int }
-            fn main(console: Console) {
-              let p = Point(1, 2)
-              let q = update p { x: 10, y: p.y + 1 }
-              print(console, int_to_string(p.x) <> int_to_string(p.y))  // original unchanged: 12
-              print(console, int_to_string(q.x) <> int_to_string(q.y))  // 103
-            }
-        "#;
+type Point:
+    x: Int
+    y: Int
+
+fn main(console: Console):
+    let p = Point(1, 2)
+    let q = update p: x = 10 y = ((p).y + 1)
+    print(console, (int_to_string((p).x) <> int_to_string((p).y)))
+    print(console, (int_to_string((q).x) <> int_to_string((q).y)))
+"#;
         assert_eq!(run(src).unwrap(), vec!["12", "103"]);
     }
 
     #[test]
     fn record_field_access_runs() {
         let src = r#"
-            type Person { name: String, age: Int }
-            fn main(console: Console) {
-              let p = Person("witchy", 7)
-              print(console, p.name <> " is " <> int_to_string(p.age))
-            }
-        "#;
+type Person:
+    name: String
+    age: Int
+
+fn main(console: Console):
+    let p = Person("witchy", 7)
+    print(console, (((p).name <> " is ") <> int_to_string((p).age)))
+"#;
         assert_eq!(run(src).unwrap(), vec!["witchy is 7"]);
     }
 
     #[test]
     fn list_pattern_head_tail() {
         let src = r#"
-            fn len(xs: List(Int)) -> Int {
-              match xs {
-                [] -> 0
-                [_, ..tail] -> 1 + len(tail)
-              }
-            }
-            fn main(console: Console) {
-              print(console, int_to_string(len([5, 6, 7, 8])))
-            }
-        "#;
+fn len(xs: List(Int)) -> Int:
+    match xs:
+        [] -> 0
+        [_, ..tail] -> (1 + len(tail))
+
+fn main(console: Console):
+    print(console, int_to_string(len([5, 6, 7, 8])))
+"#;
         assert_eq!(run(src).unwrap(), vec!["4"]);
     }
 
     #[test]
     fn for_in_accumulates() {
         let src = r#"
-            fn main(console: Console) {
-              var total = 0
-              for n in [10, 20, 30] {
-                total = total + n
-              }
-              print(console, int_to_string(total))
-            }
-        "#;
+fn main(console: Console):
+    var total = 0
+    for n in [10, 20, 30]:
+        total = (total + n)
+    print(console, int_to_string(total))
+"#;
         assert_eq!(run(src).unwrap(), vec!["60"]);
     }
 
@@ -2266,87 +2286,90 @@ mod tests {
     fn try_option_short_circuits() {
         // `?` on `None` returns `None` from `first_word`; on `Some` it unwraps.
         let src = r#"
-            type Option { Some(a) None }
-            fn head(o: Option(Int)) -> Option(Int) {
-              let n = o?
-              Some(n + 100)
-            }
-            fn render(o: Option(Int)) -> String {
-              match o {
-                Some(n) -> int_to_string(n)
-                None -> "none"
-              }
-            }
-            fn main(console: Console) {
-              print(console, render(head(Some(1))))
-              print(console, render(head(None)))
-            }
-        "#;
+type Option:
+    Some(a)
+    None
+
+fn head(o: Option(Int)) -> Option(Int):
+    let n = (o)?
+    Some((n + 100))
+
+fn render(o: Option(Int)) -> String:
+    match o:
+        Some(n) -> int_to_string(n)
+        None -> "none"
+
+fn main(console: Console):
+    print(console, render(head(Some(1))))
+    print(console, render(head(None)))
+"#;
         assert_eq!(run(src).unwrap(), vec!["101", "none"]);
     }
 
     #[test]
     fn conversions() {
         let src = r#"
-            fn main(console: Console) {
-              print(console, to_string(int_to_float(7)))
-              print(console, int_to_string(float_to_int(3.9)))
-              print(console, int_to_string(string_to_int("42")))
-            }
-        "#;
+fn main(console: Console):
+    print(console, to_string(int_to_float(7)))
+    print(console, int_to_string(float_to_int(3.9)))
+    print(console, int_to_string(string_to_int("42")))
+"#;
         assert_eq!(run(src).unwrap(), vec!["7", "3", "42"]);
     }
 
     #[test]
     fn string_stdlib() {
         let src = r#"
-            fn main(console: Console) {
-              print(console, to_upper("witchy"))
-              print(console, int_to_string(string_length("hello")))
-              print(console, trim("  hi  "))
-              if starts_with("witchy", "wit") { print(console, "yes") } else { print(console, "no") }
-            }
-        "#;
+fn main(console: Console):
+    print(console, to_upper("witchy"))
+    print(console, int_to_string(string_length("hello")))
+    print(console, trim("  hi  "))
+    if starts_with("witchy", "wit"):
+        print(console, "yes")
+    else:
+        print(console, "no")
+"#;
         assert_eq!(run(src).unwrap(), vec!["WITCHY", "5", "hi", "yes"]);
     }
 
     #[test]
     fn while_loop_and_modulo() {
         let src = r#"
-            fn main(console: Console) {
-              var i = 1
-              var total = 0
-              while i <= 5 {
-                total = total + i
-                i = i + 1
-              }
-              print(console, int_to_string(total))
-              print(console, int_to_string(10 % 3))
-            }
-        "#;
+fn main(console: Console):
+    var i = 1
+    var total = 0
+    while (i <= 5):
+        total = (total + i)
+        i = (i + 1)
+    print(console, int_to_string(total))
+    print(console, int_to_string((10 % 3)))
+"#;
         assert_eq!(run(src).unwrap(), vec!["15", "1"]);
     }
 
     #[test]
     fn boolean_not_and_short_circuit() {
         let src = r#"
-            fn is_zero(n: Int) -> Bool { n == 0 }
-            fn main(console: Console) {
-              if !is_zero(5) { print(console, "nonzero") } else { print(console, "zero") }
-            }
-        "#;
+fn is_zero(n: Int) -> Bool:
+    (n == 0)
+
+fn main(console: Console):
+    if (!is_zero(5)):
+        print(console, "nonzero")
+    else:
+        print(console, "zero")
+"#;
         assert_eq!(run(src).unwrap(), vec!["nonzero"]);
     }
 
     #[test]
     fn lists_length_and_index() {
         let src = r#"
-            fn main(console: Console) {
-              let xs = [10, 20, 30]
-              print(console, int_to_string(length(xs)))
-              print(console, int_to_string(at(xs, 1)))
-            }
-        "#;
+fn main(console: Console):
+    let xs = [10, 20, 30]
+    print(console, int_to_string(length(xs)))
+    print(console, int_to_string(at(xs, 1)))
+"#;
         assert_eq!(run(src).unwrap(), vec!["3", "20"]);
     }
 
@@ -2355,20 +2378,20 @@ mod tests {
     #[test]
     fn actor_handles_messages_with_state_and_capability() {
         let src = r#"
-            actor Logger {
-              console: Console
-              var count: Int = 0
-              on Log(msg: String) {
-                count = count + 1
-                print(console, "[" <> int_to_string(count) <> "] " <> msg)
-              }
-            }
-            fn main(console: Console) {
-              let logger = spawn Logger(console)
-              send(logger, Log("first"))
-              send(logger, Log("second"))
-            }
-        "#;
+actor Logger:
+    console: Console
+    var count: Int = 0
+
+impl Logger:
+    on Log(msg: String):
+        count = (count + 1)
+        print(console, ((("[" <> int_to_string(count)) <> "] ") <> msg))
+
+fn main(console: Console):
+    let logger = spawn Logger(console)
+    send(logger, Log("first"))
+    send(logger, Log("second"))
+"#;
         assert_eq!(run(src).unwrap(), vec!["[1] first", "[2] second"]);
     }
 
@@ -2377,14 +2400,16 @@ mod tests {
     #[test]
     fn actor_without_capability_cannot_print() {
         let src = r#"
-            actor Sneaky {
-              on Go(msg: String) { print(msg) }
-            }
-            fn main(console: Console) {
-              let s = spawn Sneaky()
-              send(s, Go("exfiltrate"))
-            }
-        "#;
+actor Sneaky:
+
+impl Sneaky:
+    on Go(msg: String):
+        print(msg)
+
+fn main(console: Console):
+    let s = spawn Sneaky()
+    send(s, Go("exfiltrate"))
+"#;
         let e = run(src).unwrap_err();
         assert!(
             e.message.contains("Console capability"),
@@ -2398,31 +2423,35 @@ mod tests {
     #[test]
     fn actors_can_message_other_actors() {
         let src = r#"
-            actor Printer {
-              console: Console
-              on Say(msg: String) { print(console, msg) }
-            }
-            actor Forwarder {
-              target: Subject
-              on Relay(msg: String) { send(target, Say(msg)) }
-            }
-            fn main(console: Console) {
-              let printer = spawn Printer(console)
-              let fwd = spawn Forwarder(printer)
-              send(fwd, Relay("relayed hello"))
-            }
-        "#;
+actor Printer:
+    console: Console
+
+impl Printer:
+    on Say(msg: String):
+        print(console, msg)
+
+actor Forwarder:
+    target: Subject
+
+impl Forwarder:
+    on Relay(msg: String):
+        send(target, Say(msg))
+
+fn main(console: Console):
+    let printer = spawn Printer(console)
+    let fwd = spawn Forwarder(printer)
+    send(fwd, Relay("relayed hello"))
+"#;
         assert_eq!(run(src).unwrap(), vec!["relayed hello"]);
     }
 
     #[test]
     fn let_bindings_are_immutable() {
         let src = r#"
-            fn main(console: Console) {
-              let x = 1
-              x = 2
-            }
-        "#;
+fn main(console: Console):
+    let x = 1
+    x = 2
+"#;
         let e = run(src).unwrap_err();
         assert!(e.message.contains("immutable"), "got: {}", e.message);
     }
@@ -2430,12 +2459,11 @@ mod tests {
     #[test]
     fn var_bindings_are_mutable() {
         let src = r#"
-            fn main(console: Console) {
-              var x = 1
-              x = x + 41
-              print(console, int_to_string(x))
-            }
-        "#;
+fn main(console: Console):
+    var x = 1
+    x = (x + 41)
+    print(console, int_to_string(x))
+"#;
         assert_eq!(run(src).unwrap(), vec!["42"]);
     }
 
@@ -2444,25 +2472,27 @@ mod tests {
     #[test]
     fn inout_parameter_writes_back_to_caller() {
         let src = r#"
-            fn bump(inout n: Int) { n = n + 1 }
-            fn main(console: Console) {
-              var x = 41
-              bump(x)
-              print(console, int_to_string(x))
-            }
-        "#;
+fn bump(inout n: Int):
+    n = (n + 1)
+
+fn main(console: Console):
+    var x = 41
+    bump(x)
+    print(console, int_to_string(x))
+"#;
         assert_eq!(run(src).unwrap(), vec!["42"]);
     }
 
     #[test]
     fn inout_requires_a_mutable_variable() {
         let src = r#"
-            fn bump(inout n: Int) { n = n + 1 }
-            fn main(console: Console) {
-              let x = 41
-              bump(x)
-            }
-        "#;
+fn bump(inout n: Int):
+    n = (n + 1)
+
+fn main(console: Console):
+    let x = 41
+    bump(x)
+"#;
         let e = run(src).unwrap_err();
         assert!(
             e.message.contains("var") || e.message.contains("immutable"),

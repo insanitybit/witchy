@@ -1407,17 +1407,21 @@ mod tests {
     #[test]
     fn accepts_a_well_typed_program() {
         let src = r#"
-            fn double(n: Int) -> Int { n * 2 }
-            fn main(console: Console) {
-              print(console, int_to_string(double(21)))
-            }
-        "#;
+fn double(n: Int) -> Int:
+    (n * 2)
+
+fn main(console: Console):
+    print(console, int_to_string(double(21)))
+"#;
         assert!(check_str(src).is_ok(), "{:?}", check_str(src));
     }
 
     #[test]
     fn rejects_string_plus_int() {
-        let src = r#"fn f() -> String { "a" <> 1 }"#;
+        let src = r#"
+fn f() -> String:
+    ("a" <> 1)
+"#;
         assert!(check_str(src).is_err());
     }
 
@@ -1428,9 +1432,15 @@ mod tests {
         // a Net and `read` demands a Dir, and a Console can't stand in for
         // either. Authority is per-kind and (with no capability constructors)
         // unforgeable — the heart of witchy's confinement guarantee.
-        let net = check_str(r#"fn f(c: Console) -> Nil { connect(c, "host") }"#).unwrap_err();
+        let net = check_str(r#"
+fn f(c: Console) -> Nil:
+    connect(c, "host")
+"#).unwrap_err();
         assert!(net.contains("Net"), "expected a Net mismatch, got: {net}");
-        let dir = check_str(r#"fn f(c: Console) -> String { read(c, "/etc/passwd") }"#)
+        let dir = check_str(r#"
+fn f(c: Console) -> String:
+    read(c, "/etc/passwd")
+"#)
             .unwrap_err();
         assert!(dir.contains("Dir"), "expected a Dir mismatch, got: {dir}");
     }
@@ -1438,9 +1448,12 @@ mod tests {
     #[test]
     fn rejects_wrong_arity() {
         let src = r#"
-            fn double(n: Int) -> Int { n * 2 }
-            fn main() { double(1, 2) }
-        "#;
+fn double(n: Int) -> Int:
+    (n * 2)
+
+fn main():
+    double(1, 2)
+"#;
         let e = check_str(src).unwrap_err();
         assert!(e.contains("argument"));
     }
@@ -1458,12 +1471,13 @@ mod tests {
     #[test]
     fn generic_function_used_at_multiple_types() {
         let src = r#"
-            fn id(x: a) -> a { x }
-            fn main(console: Console) {
-              print(console, id("hi"))
-              print(console, int_to_string(id(5)))
-            }
-        "#;
+fn id(x: a) -> a:
+    x
+
+fn main(console: Console):
+    print(console, id("hi"))
+    print(console, int_to_string(id(5)))
+"#;
         assert!(check_str(src).is_ok(), "{:?}", check_str(src));
     }
 
@@ -1477,14 +1491,21 @@ mod tests {
     fn generic_adt_used_at_multiple_types() {
         // A generic `Box(a)` can be unwrapped at both Int and String.
         let src = r#"
-            type Box { Wrap(a) }
-            fn unwrap_int(b: Box(Int)) -> Int { match b { Wrap(n) -> n } }
-            fn unwrap_str(b: Box(String)) -> String { match b { Wrap(s) -> s } }
-            fn main(console: Console) {
-              print(console, int_to_string(unwrap_int(Wrap(5))))
-              print(console, unwrap_str(Wrap("hi")))
-            }
-        "#;
+type Box:
+    Wrap(a)
+
+fn unwrap_int(b: Box(Int)) -> Int:
+    match b:
+        Wrap(n) -> n
+
+fn unwrap_str(b: Box(String)) -> String:
+    match b:
+        Wrap(s) -> s
+
+fn main(console: Console):
+    print(console, int_to_string(unwrap_int(Wrap(5))))
+    print(console, unwrap_str(Wrap("hi")))
+"#;
         assert!(check_str(src).is_ok(), "{:?}", check_str(src));
     }
 
@@ -1495,15 +1516,17 @@ mod tests {
         // regressed previously: checking the body bound the type-param var, and
         // instantiation then reused that binding instead of a fresh one per call.
         let src = r#"
-            type Box { Wrap(a) }
-            fn unwrap(b: Box(a), default: a) -> a {
-              match b { Wrap(v) -> v }
-            }
-            fn main(console: Console) {
-              print(console, int_to_string(unwrap(Wrap(5), 0)))
-              print(console, unwrap(Wrap("hi"), "none"))
-            }
-        "#;
+type Box:
+    Wrap(a)
+
+fn unwrap(b: Box(a), default: a) -> a:
+    match b:
+        Wrap(v) -> v
+
+fn main(console: Console):
+    print(console, int_to_string(unwrap(Wrap(5), 0)))
+    print(console, unwrap(Wrap("hi"), "none"))
+"#;
         assert!(check_str(src).is_ok(), "{:?}", check_str(src));
     }
 
@@ -1512,12 +1535,14 @@ mod tests {
         // A guard `return` in an if-branch (no else) must not force the branch to
         // the function's return type — divergence is handled.
         let src = r#"
-            fn classify(n: Int) -> String {
-              if n < 0 { return "neg" }
-              "nonneg"
-            }
-            fn only_return() -> Int { return 5 }
-        "#;
+fn classify(n: Int) -> String:
+    if (n < 0):
+        return "neg"
+    "nonneg"
+
+fn only_return() -> Int:
+    return 5
+"#;
         assert!(check_str(src).is_ok(), "{:?}", check_str(src));
     }
 
@@ -1560,14 +1585,12 @@ mod tests {
     #[test]
     fn dict_builtins_are_generic() {
         let src = r#"
-            fn tally(words: List(String)) -> Int {
-              var d = dict_new()
-              for w in words {
-                d = insert(d, w, get_or(d, w, 0) + 1)
-              }
-              size(d)
-            }
-        "#;
+fn tally(words: List(String)) -> Int:
+    var d = dict_new()
+    for w in words:
+        d = insert(d, w, (get_or(d, w, 0) + 1))
+    size(d)
+"#;
         assert!(check_str(src).is_ok(), "{:?}", check_str(src));
     }
 
@@ -1576,21 +1599,25 @@ mod tests {
         // The dict's key type is fixed by the first insert (String here), so
         // looking it up with an Int key must fail.
         let src = r#"
-            fn f() -> Int {
-              let d = insert(dict_new(), "a", 1)
-              get_or(d, 2, 0)
-            }
-        "#;
+fn f() -> Int:
+    let d = insert(dict_new(), "a", 1)
+    get_or(d, 2, 0)
+"#;
         assert!(check_str(src).is_err());
     }
 
     #[test]
     fn string_builtins_type() {
         let src = r#"
-            fn first_field(row: String) -> String { at(split(row, ","), 0) }
-            fn has(s: String, sub: String) -> Bool { contains(s, sub) }
-            fn fix(s: String) -> String { replace(s, "a", "b") }
-        "#;
+fn first_field(row: String) -> String:
+    at(split(row, ","), 0)
+
+fn has(s: String, sub: String) -> Bool:
+    contains(s, sub)
+
+fn fix(s: String) -> String:
+    replace(s, "a", "b")
+"#;
         assert!(check_str(src).is_ok(), "{:?}", check_str(src));
     }
 
@@ -1602,9 +1629,12 @@ mod tests {
     #[test]
     fn push_and_concat_are_generic() {
         let src = r#"
-            fn ints() -> List(Int) { push([1, 2], 3) }
-            fn strs() -> List(String) { concat(["a"], ["b", "c"]) }
-        "#;
+fn ints() -> List(Int):
+    push([1, 2], 3)
+
+fn strs() -> List(String):
+    concat(["a"], ["b", "c"])
+"#;
         assert!(check_str(src).is_ok(), "{:?}", check_str(src));
     }
 
@@ -1617,11 +1647,12 @@ mod tests {
     #[test]
     fn higher_order_and_lambda_type() {
         let src = r#"
-            fn apply(f: fn(Int) -> Int, x: Int) -> Int { f(x) }
-            fn main(console: Console) {
-              print(console, int_to_string(apply(fn(n: Int) { n + 1 }, 10)))
-            }
-        "#;
+fn apply(f: fn(Int) -> Int, x: Int) -> Int:
+    f(x)
+
+fn main(console: Console):
+    print(console, int_to_string(apply(fn(n: Int): (n + 1), 10)))
+"#;
         assert!(check_str(src).is_ok(), "{:?}", check_str(src));
     }
 
@@ -1630,12 +1661,13 @@ mod tests {
         // `apply` is generic over the value type `a`; the explicit fn-type
         // parameter keeps the type parameters free.
         let src = r#"
-            fn apply(f: fn(a) -> a, x: a) -> a { f(x) }
-            fn main(console: Console) {
-              print(console, apply(fn(s: String) { s }, "hi"))
-              print(console, int_to_string(apply(fn(n: Int) { n }, 5)))
-            }
-        "#;
+fn apply(f: fn(a) -> a, x: a) -> a:
+    f(x)
+
+fn main(console: Console):
+    print(console, apply(fn(s: String): s, "hi"))
+    print(console, int_to_string(apply(fn(n: Int): n, 5)))
+"#;
         assert!(check_str(src).is_ok(), "{:?}", check_str(src));
     }
 
@@ -1643,56 +1675,77 @@ mod tests {
     fn rejects_lambda_argument_type_mismatch() {
         // Passing a `fn(Int)->Int` where a `fn(String)->String` is required fails.
         let src = r#"
-            fn run(f: fn(String) -> String, s: String) -> String { f(s) }
-            fn main(console: Console) {
-              print(console, run(fn(n: Int) { n + 1 }, "x"))
-            }
-        "#;
+fn run(f: fn(String) -> String, s: String) -> String:
+    f(s)
+
+fn main(console: Console):
+    print(console, run(fn(n: Int): (n + 1), "x"))
+"#;
         assert!(check_str(src).is_err());
     }
 
     #[test]
     fn record_update_types() {
         let src = r#"
-            type Point { x: Int, y: Int }
-            fn bump(p: Point) -> Point { update p { x: p.x + 1 } }
-        "#;
+type Point:
+    x: Int
+    y: Int
+
+fn bump(p: Point) -> Point:
+    update p: x = ((p).x + 1)
+"#;
         assert!(check_str(src).is_ok(), "{:?}", check_str(src));
     }
 
     #[test]
     fn rejects_record_update_wrong_field_type() {
         let src = r#"
-            type Point { x: Int, y: Int }
-            fn bad(p: Point) -> Point { update p { x: "no" } }
-        "#;
+type Point:
+    x: Int
+    y: Int
+
+fn bad(p: Point) -> Point:
+    update p: x = "no"
+"#;
         assert!(check_str(src).is_err());
     }
 
     #[test]
     fn rejects_record_update_unknown_field() {
         let src = r#"
-            type Point { x: Int, y: Int }
-            fn bad(p: Point) -> Point { update p { z: 1 } }
-        "#;
+type Point:
+    x: Int
+    y: Int
+
+fn bad(p: Point) -> Point:
+    update p: z = 1
+"#;
         assert!(check_str(src).is_err());
     }
 
     #[test]
     fn record_field_access_types() {
         let src = r#"
-            type Point { x: Int, y: Int }
-            fn sum(p: Point) -> Int { p.x + p.y }
-        "#;
+type Point:
+    x: Int
+    y: Int
+
+fn sum(p: Point) -> Int:
+    ((p).x + (p).y)
+"#;
         assert!(check_str(src).is_ok(), "{:?}", check_str(src));
     }
 
     #[test]
     fn rejects_unknown_record_field() {
         let src = r#"
-            type Point { x: Int, y: Int }
-            fn f(p: Point) -> Int { p.z }
-        "#;
+type Point:
+    x: Int
+    y: Int
+
+fn f(p: Point) -> Int:
+    (p).z
+"#;
         assert!(check_str(src).is_err());
     }
 
@@ -1706,14 +1759,20 @@ mod tests {
         // `value`'s type is the parameter `a`; reading `.value` on a `Box(Int)`
         // must yield Int (and concatenating it as a string must fail).
         let ok = r#"
-            type Box { value: a }
-            fn unwrap(b: Box(Int)) -> Int { b.value }
-        "#;
+type Box:
+    value: a
+
+fn unwrap(b: Box(Int)) -> Int:
+    (b).value
+"#;
         assert!(check_str(ok).is_ok(), "{:?}", check_str(ok));
         let bad = r#"
-            type Box { value: a }
-            fn unwrap(b: Box(Int)) -> String { b.value }
-        "#;
+type Box:
+    value: a
+
+fn unwrap(b: Box(Int)) -> String:
+    (b).value
+"#;
         assert!(check_str(bad).is_err());
     }
 
@@ -1721,13 +1780,11 @@ mod tests {
     fn list_pattern_binds_element_and_tail() {
         // `head` is the element type, `tail` is a list of the same element type.
         let src = r#"
-            fn f(xs: List(Int)) -> Int {
-              match xs {
-                [] -> 0
-                [head, ..tail] -> head + f(tail)
-              }
-            }
-        "#;
+fn f(xs: List(Int)) -> Int:
+    match xs:
+        [] -> 0
+        [head, ..tail] -> (head + f(tail))
+"#;
         assert!(check_str(src).is_ok(), "{:?}", check_str(src));
     }
 
@@ -1735,45 +1792,49 @@ mod tests {
     fn rejects_list_pattern_element_misuse() {
         // Binding a list element as Int then concatenating it as a String fails.
         let src = r#"
-            fn f(xs: List(Int)) -> String {
-              match xs {
-                [] -> ""
-                [head, ..] -> head <> "!"
-              }
-            }
-        "#;
+fn f(xs: List(Int)) -> String:
+    match xs:
+        [] -> ""
+        [head, ..] -> (head <> "!")
+"#;
         assert!(check_str(src).is_err());
     }
 
     #[test]
     fn for_in_binds_element_type() {
         let src = r#"
-            fn main(console: Console) {
-              for n in [1, 2, 3] {
-                print(console, int_to_string(n))
-              }
-            }
-        "#;
+fn main(console: Console):
+    for n in [1, 2, 3]:
+        print(console, int_to_string(n))
+"#;
         assert!(check_str(src).is_ok(), "{:?}", check_str(src));
     }
 
     #[test]
     fn rejects_for_over_non_list() {
-        let src = r#"fn main(console: Console) { for x in 5 { print(console, "x") } }"#;
+        let src = r#"
+fn main(console: Console):
+    for x in 5:
+        print(console, "x")
+"#;
         assert!(check_str(src).is_err());
     }
 
     #[test]
     fn try_operator_propagates_result() {
         let src = r#"
-            type Result { Ok(a) Err(e) }
-            fn parse(s: String) -> Result(Int, String) { Ok(string_to_int(s)) }
-            fn add(a: String, b: String) -> Result(Int, String) {
-              let x = parse(a)?
-              let y = parse(b)?
-              Ok(x + y)
-            }
-        "#;
+type Result:
+    Ok(a)
+    Err(e)
+
+fn parse(s: String) -> Result(Int, String):
+    Ok(string_to_int(s))
+
+fn add(a: String, b: String) -> Result(Int, String):
+    let x = (parse(a))?
+    let y = (parse(b))?
+    Ok((x + y))
+"#;
         assert!(check_str(src).is_ok(), "{:?}", check_str(src));
     }
 
@@ -1782,10 +1843,17 @@ mod tests {
         // `?` yields `Err(String)`, but the function returns `Result(Int, Int)`,
         // so the error types can't match.
         let src = r#"
-            type Result { Ok(a) Err(e) }
-            fn src_fn() -> Result(Int, String) { Err("x") }
-            fn bad() -> Result(Int, Int) { let v = src_fn()?  Ok(v) }
-        "#;
+type Result:
+    Ok(a)
+    Err(e)
+
+fn src_fn() -> Result(Int, String):
+    Err("x")
+
+fn bad() -> Result(Int, Int):
+    let v = (src_fn())?
+    Ok(v)
+"#;
         assert!(check_str(src).is_err());
     }
 
@@ -1793,15 +1861,24 @@ mod tests {
     fn rejects_try_on_non_result() {
         // `?` on a plain Int is meaningless.
         let src = r#"
-            type Result { Ok(a) Err(e) }
-            fn bad(n: Int) -> Result(Int, String) { Ok(n?) }
-        "#;
+type Result:
+    Ok(a)
+    Err(e)
+
+fn bad(n: Int) -> Result(Int, String):
+    Ok((n)?)
+"#;
         assert!(check_str(src).is_err());
     }
 
     #[test]
     fn rejects_arm_after_catchall() {
-        let src = r#"fn f(n: Int) -> Int { match n { _ -> 0  1 -> 2 } }"#;
+        let src = r#"
+fn f(n: Int) -> Int:
+    match n:
+        _ -> 0
+        1 -> 2
+"#;
         let e = check_str(src).unwrap_err();
         assert!(e.contains("unreachable"), "got: {e}");
     }
@@ -1809,16 +1886,29 @@ mod tests {
     #[test]
     fn rejects_duplicate_variant_arm() {
         let src = r#"
-            type Opt { Some(a) None }
-            fn f(o: Opt(Int)) -> Int { match o { Some(x) -> x  Some(y) -> y  None -> 0 } }
-        "#;
+type Opt:
+    Some(a)
+    None
+
+fn f(o: Opt(Int)) -> Int:
+    match o:
+        Some(x) -> x
+        Some(y) -> y
+        None -> 0
+"#;
         let e = check_str(src).unwrap_err();
         assert!(e.contains("unreachable"), "got: {e}");
     }
 
     #[test]
     fn rejects_duplicate_literal_arm() {
-        let src = r#"fn f(n: Int) -> Int { match n { 1 -> 1  1 -> 2  _ -> 0 } }"#;
+        let src = r#"
+fn f(n: Int) -> Int:
+    match n:
+        1 -> 1
+        1 -> 2
+        _ -> 0
+"#;
         assert!(check_str(src).unwrap_err().contains("unreachable"));
     }
 
@@ -1827,9 +1917,16 @@ mod tests {
         // `Some(0)` is refutable, so a following `Some(n)` is still reachable —
         // the unreachable check must NOT flag this valid program.
         let src = r#"
-            type Opt { Some(a) None }
-            fn f(o: Opt(Int)) -> Int { match o { Some(0) -> 1  Some(n) -> n  None -> 0 } }
-        "#;
+type Opt:
+    Some(a)
+    None
+
+fn f(o: Opt(Int)) -> Int:
+    match o:
+        Some(0) -> 1
+        Some(n) -> n
+        None -> 0
+"#;
         assert!(check_str(src).is_ok(), "{:?}", check_str(src));
     }
 
@@ -1838,23 +1935,44 @@ mod tests {
         // A guarded arm may fail at runtime, so it does not cover its variant; a
         // later unguarded arm for that variant stays reachable.
         let src = r#"
-            type Opt { Some(a) None }
-            fn f(o: Opt(Int)) -> Int { match o { Some(x) if x > 0 -> 1  Some(y) -> y  None -> 0 } }
-        "#;
+type Opt:
+    Some(a)
+    None
+
+fn f(o: Opt(Int)) -> Int:
+    match o:
+        Some(x) if (x > 0) -> 1
+        Some(y) -> y
+        None -> 0
+"#;
         assert!(check_str(src).is_ok(), "{:?}", check_str(src));
     }
 
     #[test]
     fn rejects_non_exhaustive_bool_match() {
-        let src = r#"fn f(b: Bool) -> Int { match b { true -> 1 } }"#;
+        let src = r#"
+fn f(b: Bool) -> Int:
+    match b:
+        true -> 1
+"#;
         let e = check_str(src).unwrap_err();
         assert!(e.contains("non-exhaustive") && e.contains("Bool"), "got: {e}");
     }
 
     #[test]
     fn allows_complete_bool_match() {
-        assert!(check_str(r#"fn f(b: Bool) -> Int { match b { true -> 1  false -> 0 } }"#).is_ok());
-        assert!(check_str(r#"fn f(b: Bool) -> Int { match b { true -> 1  _ -> 0 } }"#).is_ok());
+        assert!(check_str(r#"
+fn f(b: Bool) -> Int:
+    match b:
+        true -> 1
+        false -> 0
+"#).is_ok());
+        assert!(check_str(r#"
+fn f(b: Bool) -> Int:
+    match b:
+        true -> 1
+        _ -> 0
+"#).is_ok());
     }
 
     #[test]
@@ -1862,10 +1980,16 @@ mod tests {
         // `Box(Int)` and `Box(String)` are distinct: passing one for the other
         // must fail to unify their type arguments.
         let src = r#"
-            type Box { Wrap(a) }
-            fn need_int(b: Box(Int)) -> Int { match b { Wrap(n) -> n } }
-            fn main() -> Int { need_int(Wrap("nope")) }
-        "#;
+type Box:
+    Wrap(a)
+
+fn need_int(b: Box(Int)) -> Int:
+    match b:
+        Wrap(n) -> n
+
+fn main() -> Int:
+    need_int(Wrap("nope"))
+"#;
         assert!(check_str(src).is_err());
     }
 
@@ -1876,14 +2000,23 @@ mod tests {
 
     #[test]
     fn rejects_non_bool_if_condition() {
-        let src = r#"fn f() -> Int { if 1 { 2 } else { 3 } }"#;
+        let src = r#"
+fn f() -> Int:
+    if 1:
+        2
+    else:
+        3
+"#;
         let e = check_str(src).unwrap_err();
         assert!(e.contains("if") || e.contains("Bool"));
     }
 
     #[test]
     fn rejects_return_type_mismatch() {
-        let src = r#"fn f() -> Int { "not an int" }"#;
+        let src = r#"
+fn f() -> Int:
+    "not an int"
+"#;
         assert!(check_str(src).is_err());
     }
 
@@ -1892,41 +2025,49 @@ mod tests {
     /// `main`) can satisfy it.
     #[test]
     fn rejects_print_without_console_capability() {
-        let src = r#"fn leak(s: String) -> Nil { print(s, s) }"#;
+        let src = r#"
+fn leak(s: String) -> Nil:
+    print(s, s)
+"#;
         let e = check_str(src).unwrap_err();
         assert!(e.contains("Console"), "expected a Console error, got: {e}");
     }
 
     #[test]
     fn accepts_print_with_console_capability() {
-        let src = r#"fn shout(console: Console, s: String) -> Nil { print(console, s) }"#;
+        let src = r#"
+fn shout(console: Console, s: String) -> Nil:
+    print(console, s)
+"#;
         assert!(check_str(src).is_ok());
     }
 
     #[test]
     fn checks_adt_constructors_and_exhaustive_match() {
         let src = r#"
-            type Event { Click(Int, Int) Closed }
-            fn describe(e: Event) -> String {
-              match e {
-                Click(x, _) -> int_to_string(x)
-                Closed -> "closed"
-              }
-            }
-        "#;
+type Event:
+    Click(Int, Int)
+    Closed
+
+fn describe(e: Event) -> String:
+    match e:
+        Click(x, _) -> int_to_string(x)
+        Closed -> "closed"
+"#;
         assert!(check_str(src).is_ok(), "{:?}", check_str(src));
     }
 
     #[test]
     fn rejects_non_exhaustive_match() {
         let src = r#"
-            type Event { Click(Int, Int) Closed }
-            fn describe(e: Event) -> String {
-              match e {
-                Closed -> "closed"
-              }
-            }
-        "#;
+type Event:
+    Click(Int, Int)
+    Closed
+
+fn describe(e: Event) -> String:
+    match e:
+        Closed -> "closed"
+"#;
         let e = check_str(src).unwrap_err();
         assert!(e.contains("non-exhaustive"), "got: {e}");
     }
@@ -1934,50 +2075,66 @@ mod tests {
     #[test]
     fn rejects_constructor_field_type_mismatch() {
         let src = r#"
-            type Event { Click(Int, Int) Closed }
-            fn f() -> Event { Click("not an int", 2) }
-        "#;
+type Event:
+    Click(Int, Int)
+    Closed
+
+fn f() -> Event:
+    Click("not an int", 2)
+"#;
         assert!(check_str(src).is_err());
     }
 
     #[test]
     fn accepts_the_actor_example() {
         let src = r#"
-            actor Logger {
-              console: Console
-              var count: Int = 0
-              on Log(msg: String) {
-                count = count + 1
-                print(console, "[" <> int_to_string(count) <> "] " <> msg)
-              }
-            }
-            fn main(console: Console) {
-              let logger = spawn Logger(console)
-              send(logger, Log("hello"))
-            }
-        "#;
+actor Logger:
+    console: Console
+    var count: Int = 0
+
+impl Logger:
+    on Log(msg: String):
+        count = (count + 1)
+        print(console, ((("[" <> int_to_string(count)) <> "] ") <> msg))
+
+fn main(console: Console):
+    let logger = spawn Logger(console)
+    send(logger, Log("hello"))
+"#;
         assert!(check_str(src).is_ok(), "{:?}", check_str(src));
     }
 
     #[test]
     fn rejects_assignment_to_let() {
-        let src = r#"fn main() { let x = 1  x = 2 }"#;
+        let src = r#"
+fn main():
+    let x = 1
+    x = 2
+"#;
         let e = check_str(src).unwrap_err();
         assert!(e.contains("immutable"), "got: {e}");
     }
 
     #[test]
     fn accepts_assignment_to_var() {
-        let src = r#"fn main() { var x = 1  x = 2 }"#;
+        let src = r#"
+fn main():
+    var x = 1
+    x = 2
+"#;
         assert!(check_str(src).is_ok(), "{:?}", check_str(src));
     }
 
     #[test]
     fn rejects_inout_argument_that_is_immutable() {
         let src = r#"
-            fn bump(inout n: Int) { n = n + 1 }
-            fn main() { let x = 1  bump(x) }
-        "#;
+fn bump(inout n: Int):
+    n = (n + 1)
+
+fn main():
+    let x = 1
+    bump(x)
+"#;
         let e = check_str(src).unwrap_err();
         assert!(e.contains("inout"), "got: {e}");
     }
@@ -1985,22 +2142,27 @@ mod tests {
     #[test]
     fn accepts_inout_argument_that_is_var() {
         let src = r#"
-            fn bump(inout n: Int) { n = n + 1 }
-            fn main() { var x = 1  bump(x) }
-        "#;
+fn bump(inout n: Int):
+    n = (n + 1)
+
+fn main():
+    var x = 1
+    bump(x)
+"#;
         assert!(check_str(src).is_ok(), "{:?}", check_str(src));
     }
 
     #[test]
     fn rejects_use_after_sink_move() {
         let src = r#"
-            fn take(sink s: String) -> String { s }
-            fn main() {
-              let x = "hi"
-              let a = take(x)
-              let b = take(x)
-            }
-        "#;
+fn take(sink s: String) -> String:
+    s
+
+fn main():
+    let x = "hi"
+    let a = take(x)
+    let b = take(x)
+"#;
         let e = check_str(src).unwrap_err();
         assert!(e.contains("moved"), "got: {e}");
     }
@@ -2008,14 +2170,15 @@ mod tests {
     #[test]
     fn accepts_reassignment_after_sink_move() {
         let src = r#"
-            fn take(sink s: String) -> String { s }
-            fn main() {
-              var x = "hi"
-              take(x)
-              x = "again"
-              take(x)
-            }
-        "#;
+fn take(sink s: String) -> String:
+    s
+
+fn main():
+    var x = "hi"
+    take(x)
+    x = "again"
+    take(x)
+"#;
         assert!(check_str(src).is_ok(), "{:?}", check_str(src));
     }
 }

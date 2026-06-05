@@ -127,10 +127,15 @@ mod tests {
     #[test]
     fn footprint_is_the_union_of_entry_capabilities() {
         let src = r#"
-            fn helper(a: Int) -> Int { a }
-            pub fn serve(console: Console, net: Net) -> Int { 0 }
-            fn main(console: Console) { print(console, "hi") }
-        "#;
+fn helper(a: Int) -> Int:
+    a
+
+pub fn serve(console: Console, net: Net) -> Int:
+    0
+
+fn main(console: Console):
+    print(console, "hi")
+"#;
         let fp = footprint(src);
         // Private `helper` is not an entry point; the union is Console + Net.
         assert_eq!(
@@ -150,8 +155,14 @@ mod tests {
     fn diff_flags_a_widening_as_added_authority() {
         // A dependency update whose public API newly demands `Net` is a widening:
         // the gate must see `Net` as added and report widened().
-        let old = footprint(r#"pub fn serve(console: Console) -> Int { 0 }"#);
-        let new = footprint(r#"pub fn serve(console: Console, net: Net) -> Int { 0 }"#);
+        let old = footprint(r#"
+pub fn serve(console: Console) -> Int:
+    0
+"#);
+        let new = footprint(r#"
+pub fn serve(console: Console, net: Net) -> Int:
+    0
+"#);
         let d = diff(&old, &new);
         assert_eq!(d.added, ["Net"].into_iter().collect::<BTreeSet<_>>());
         assert!(d.removed.is_empty());
@@ -160,8 +171,14 @@ mod tests {
 
     #[test]
     fn diff_of_unchanged_footprint_is_not_a_widening() {
-        let old = footprint(r#"pub fn serve(net: Net) -> Int { 0 }"#);
-        let new = footprint(r#"pub fn serve(net: Net) -> Int { 1 }"#);
+        let old = footprint(r#"
+pub fn serve(net: Net) -> Int:
+    0
+"#);
+        let new = footprint(r#"
+pub fn serve(net: Net) -> Int:
+    1
+"#);
         let d = diff(&old, &new);
         assert!(d.added.is_empty());
         assert!(!d.widened());
@@ -170,8 +187,14 @@ mod tests {
     #[test]
     fn diff_treats_dropped_authority_as_a_safe_narrowing() {
         // Giving up `Net` is a narrowing — recorded in `removed`, never widened().
-        let old = footprint(r#"pub fn serve(console: Console, net: Net) -> Int { 0 }"#);
-        let new = footprint(r#"pub fn serve(console: Console) -> Int { 0 }"#);
+        let old = footprint(r#"
+pub fn serve(console: Console, net: Net) -> Int:
+    0
+"#);
+        let new = footprint(r#"
+pub fn serve(console: Console) -> Int:
+    0
+"#);
         let d = diff(&old, &new);
         assert!(d.added.is_empty());
         assert_eq!(d.removed, ["Net"].into_iter().collect::<BTreeSet<_>>());
@@ -181,12 +204,14 @@ mod tests {
     #[test]
     fn actor_spawn_fields_count_as_footprint() {
         let src = r#"
-            actor Logger {
-              console: Console
-              var count: Int = 0
-              on Log(msg: String) { count = count + 1 }
-            }
-        "#;
+actor Logger:
+    console: Console
+    var count: Int = 0
+
+impl Logger:
+    on Log(msg: String):
+        count = (count + 1)
+"#;
         let fp = footprint(src);
         assert!(fp.total.contains("Console"));
     }
