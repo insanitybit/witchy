@@ -1,8 +1,14 @@
-(block "}" @end) @indent
-(type_body "}" @end) @indent
-(actor_body "}" @end) @indent
-(match_block "}" @end) @indent
-(update_expression "}" @end) @indent
+; Off-side rule: an indented block follows a `:` header, so the indentation
+; level tracks these block nodes. Bracketed constructs indent until their close.
+[
+  (block)
+  (type_body)
+  (trait_body)
+  (impl_body)
+  (actor_body)
+  (match_block)
+] @indent
+
 (parameters ")" @end) @indent
 (list "]" @end) @indent
 (tuple ")" @end) @indent

@@ -24,6 +24,7 @@
 
 [
   "import" "type" "actor" "on"
+  "trait" "impl" "where"
   "fn" "pub" "let" "var" "update" "spawn"
   "return"
   "if" "else" "match"
@@ -49,7 +50,7 @@
   "->" ".." "..=" "?"
 ] @operator
 
-["(" ")" "[" "]" "{" "}"] @punctuation.bracket
+["(" ")" "[" "]"] @punctuation.bracket
 ["," ":" "."] @punctuation.delimiter
 
 ; ---- Refined identifier roles (last so they take precedence) -------------
@@ -65,7 +66,14 @@
 (constructor_pattern name: (identifier) @constructor)
 
 (function_definition name: (identifier) @function)
+(method_signature name: (identifier) @function)
 (handler name: (identifier) @function)
+
+; Traits, impls, and `where` bounds name types.
+(trait_definition name: (identifier) @type)
+(impl_definition trait: (identifier) @type)
+(impl_definition type: (identifier) @type)
+(bound trait: (identifier) @type)
 
 ; Calls: lowercase are functions, capitalised are constructors, `a.b(...)` is a
 ; method. These override the @property/@type defaults for the called name.
