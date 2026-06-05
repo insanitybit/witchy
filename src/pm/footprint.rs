@@ -89,6 +89,11 @@ pub fn compute(module: &Module) -> Footprint {
     let mut fp = Footprint::default();
     for item in &module.items {
         match item {
+            // `main` is the root entrypoint — never called by an importer — so its
+            // capability parameters are the root grant, not a demand on a caller.
+            // Excluding it makes the footprint exactly "what this rune asks of
+            // whoever uses it".
+            Item::Function(f) if f.name == "main" => {}
             Item::Function(f) => {
                 for p in &f.params {
                     taint.collect(p.ty.as_ref(), &mut fp);
@@ -110,6 +115,36 @@ pub fn compute(module: &Module) -> Footprint {
         }
     }
     fp
+}
+
+/// Verify that a declared `[capabilities]` contract covers everything the
+/// computed footprint actually demands. Under-declaration (the rune demands
+/// authority it does not admit to) is the dangerous case. An empty declaration
+/// is treated as "no contract" and always passes. Returns `Err(gap)` describing
+/// the undeclared kinds.
+pub fn check_declared(
+    computed: &Footprint,
+    declared_runtime: &[String],
+    declared_build: &[String],
+) -> Result<(), String> {
+    if declared_runtime.is_empty() && declared_build.is_empty() {
+        return Ok(());
+    }
+    let dr: BTreeSet<String> = declared_runtime.iter().cloned().collect();
+    let db: BTreeSet<String> = declared_build.iter().cloned().collect();
+    let ur: Vec<String> = computed.runtime.difference(&dr).cloned().collect();
+    let ub: Vec<String> = computed.build.difference(&db).cloned().collect();
+    if ur.is_empty() && ub.is_empty() {
+        return Ok(());
+    }
+    let mut parts = Vec::new();
+    if !ur.is_empty() {
+        parts.push(format!("runtime: {}", ur.join(", ")));
+    }
+    if !ub.is_empty() {
+        parts.push(format!("build: {}", ub.join(", ")));
+    }
+    Err(parts.join("; "))
 }
 
 /// Parse a rune's `(module-name, source)` pairs and compute its footprint. Used
@@ -295,6 +330,28 @@ mod tests {
     fn build_without_exec_is_guaranteed() {
         let f = fp("fn build(out: BuildOut, read: BuildRead) { print(\"x\") }");
         assert_eq!(f.determinism(), "guaranteed");
+    }
+
+    #[test]
+    fn main_is_excluded_from_footprint() {
+        // main's capability params are the root grant, not a demand on a caller.
+        let f = fp("fn main(console: Console) { print(console, \"hi\") }");
+        assert!(f.is_empty(), "main must not contribute to the footprint");
+        // But a non-main function's caps still count.
+        let f2 = fp("fn main(c: Console) { print(c, \"x\") }\nfn helper(net: Net) -> Int { 0 }");
+        assert!(f2.runtime.contains("Net"));
+        assert!(!f2.runtime.contains("Console"), "Console came only via main");
+    }
+
+    #[test]
+    fn check_declared_catches_underdeclaration() {
+        let f = fp("fn fetch(net: Net, u: String) -> String { u }");
+        assert!(check_declared(&f, &[], &[]).is_ok(), "no contract = ok");
+        assert!(
+            check_declared(&f, &["Console".into()], &[]).is_err(),
+            "declares Console but demands Net"
+        );
+        assert!(check_declared(&f, &["Net".into()], &[]).is_ok(), "declares Net, demands Net");
     }
 
     #[test]

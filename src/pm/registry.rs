@@ -374,33 +374,18 @@ pub struct Promotion {
 /// footprint (T7). An under-declaration (the rune demands more than it admits)
 /// is the dangerous case and is always rejected.
 fn verify_declared(computed: &Footprint, manifest: &Manifest) -> PmResult<()> {
-    let declared = &manifest.capabilities;
-    if declared.runtime.is_empty() && declared.build.is_empty() {
-        return Ok(()); // no contract declared — nothing to verify against
-    }
-    let declared_rt: std::collections::BTreeSet<String> =
-        declared.runtime.iter().cloned().collect();
-    let declared_build: std::collections::BTreeSet<String> =
-        declared.build.iter().cloned().collect();
-
-    let undeclared_rt: Vec<_> = computed.runtime.difference(&declared_rt).cloned().collect();
-    let undeclared_build: Vec<_> = computed.build.difference(&declared_build).cloned().collect();
-    if !undeclared_rt.is_empty() || !undeclared_build.is_empty() {
-        let mut parts = Vec::new();
-        if !undeclared_rt.is_empty() {
-            parts.push(format!("runtime: {}", undeclared_rt.join(", ")));
-        }
-        if !undeclared_build.is_empty() {
-            parts.push(format!("build: {}", undeclared_build.join(", ")));
-        }
-        return err(format!(
-            "declared [capabilities] does not cover what the source actually demands ({}). \
+    super::footprint::check_declared(
+        computed,
+        &manifest.capabilities.runtime,
+        &manifest.capabilities.build,
+    )
+    .map_err(|gap| {
+        super::PmError(format!(
+            "declared [capabilities] does not cover what the source actually demands ({gap}). \
              Update the manifest's declared capabilities to match — coven recomputes and will not \
-             publish an under-declared rune.",
-            parts.join("; ")
-        ));
-    }
-    Ok(())
+             publish an under-declared rune."
+        ))
+    })
 }
 
 #[cfg(test)]

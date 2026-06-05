@@ -419,3 +419,51 @@ fn module_name_collision_between_deps_is_caught() {
     assert!(!out.status.success(), "module collision must be caught");
     assert!(stderr(&out).contains("collision"), "stderr: {}", stderr(&out));
 }
+
+#[test]
+fn path_dependency_builds_and_runs() {
+    let sb = Sandbox::new("path");
+    let app = new_app(&sb);
+
+    // A sibling library on disk (no registry involved).
+    let lib = sb.work.join("greet");
+    std::fs::create_dir_all(lib.join("src")).unwrap();
+    std::fs::write(lib.join("witchy.toml"), "[rune]\nname = \"greet\"\nversion = \"0.1.0\"\n").unwrap();
+    std::fs::write(
+        lib.join("src/greet.witchy"),
+        "fn hi(s: String) -> String { \"hi \" <> s }\n",
+    )
+    .unwrap();
+
+    // Add it as a path dependency, then use it.
+    let out = sb.run(&app, "dev", &["add", "greet", "--path", "../greet"]);
+    assert!(out.status.success(), "add --path failed: {}", stderr(&out));
+    std::fs::write(
+        app.join("src/app.witchy"),
+        "import greet\n\nfn main(console: Console) {\n  print(console, greet.hi(\"witchy\"))\n}\n",
+    )
+    .unwrap();
+    let out = sb.run(&app, "dev", &["run"]);
+    assert!(out.status.success(), "run failed: {}", stderr(&out));
+    assert!(stdout(&out).contains("hi witchy"), "got: {}", stdout(&out));
+}
+
+#[test]
+fn build_rejects_underdeclared_capabilities() {
+    let sb = Sandbox::new("declared");
+    let app = new_app(&sb);
+    // A library rune that demands Net but declares only Console.
+    std::fs::write(
+        app.join("witchy.toml"),
+        "[rune]\nname = \"lib\"\nversion = \"0.1.0\"\n\n[capabilities]\nruntime = [\"Console\"]\n",
+    )
+    .unwrap();
+    std::fs::write(
+        app.join("src/app.witchy"),
+        "fn fetch(net: Net, u: String) -> String { u }\n",
+    )
+    .unwrap();
+    let out = sb.run(&app, "dev", &["build"]);
+    assert!(!out.status.success(), "under-declared caps must fail build");
+    assert!(stderr(&out).contains("under-declare"), "stderr: {}", stderr(&out));
+}

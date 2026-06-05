@@ -256,6 +256,21 @@ fn save_lock(root: &Path, resolution: &Resolution, env: &CovenEnv) -> PmResult<(
 fn assemble(root_dir: &Path, env: &CovenEnv) -> PmResult<Assembled> {
     let manifest = Manifest::load(root_dir)?;
     let root_src = RuneSource::read_dir(root_dir)?;
+
+    // Author feedback: a declared `[capabilities]` contract must cover what the
+    // rune's own source actually demands (the same check coven enforces at
+    // publish, surfaced here at build time). `main` is excluded by the footprint
+    // engine, so an app's root grant never trips this.
+    let root_fp = super::footprint::of_modules(&root_src.modules())?;
+    if let Err(gap) =
+        super::footprint::check_declared(&root_fp, &manifest.capabilities.runtime, &manifest.capabilities.build)
+    {
+        return err(format!(
+            "`{}`: declared [capabilities] under-declares what your code demands ({gap}). Update [capabilities] in witchy.toml.",
+            manifest.rune.name
+        ));
+    }
+
     let resolution = resolve::resolve(&manifest, root_dir, &env.registry, &env.store)?;
 
     // Lock-drift detection: a present lock must agree with what we resolved.
