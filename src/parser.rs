@@ -747,14 +747,7 @@ impl Parser {
                 self.expect(&Tok::LParen)?;
                 let params = self.params()?;
                 self.expect(&Tok::RParen)?;
-                let body = if self.at(&Tok::Colon) {
-                    let line = self.cur().line;
-                    self.advance();
-                    let e = self.expr(0)?;
-                    Block { stmts: vec![Stmt::Expr(e)], lines: vec![line] }
-                } else {
-                    self.block()?
-                };
+                let body = self.colon_or_block()?;
                 Ok(Expr::Lambda { params, body })
             }
             Tok::Update => {
@@ -969,10 +962,27 @@ impl Parser {
         }))
     }
 
+    /// A block body that may be written brace-free as `: expr` (a single
+    /// expression, used inline where the off-side layout is suppressed) or as a
+    /// normal indented / `{ ... }` block.
+    fn colon_or_block(&mut self) -> Result<Block, ParseError> {
+        if self.at(&Tok::Colon) {
+            let line = self.cur().line;
+            self.advance();
+            let e = self.expr(0)?;
+            Ok(Block {
+                stmts: vec![Stmt::Expr(e)],
+                lines: vec![line],
+            })
+        } else {
+            self.block()
+        }
+    }
+
     fn if_expr(&mut self) -> Result<Expr, ParseError> {
         self.expect(&Tok::If)?;
         let cond = self.expr(0)?;
-        let then_block = self.block()?;
+        let then_block = self.colon_or_block()?;
         let else_block = if self.eat(&Tok::Else) {
             if self.at(&Tok::If) {
                 // `else if` chains nest as a block containing one if-expression.
@@ -982,7 +992,7 @@ impl Parser {
                     lines: vec![line],
                 })
             } else {
-                Some(self.block()?)
+                Some(self.colon_or_block()?)
             }
         } else {
             None

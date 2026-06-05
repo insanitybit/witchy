@@ -1492,6 +1492,25 @@ mod example_tests {
     }
 
     #[test]
+    fn inline_if_else_expression_form() {
+        // Brace-free inline `if c: a else: b` (chained), here inside a brace-free
+        // lambda inside call parens. Both backends agree.
+        let client = r#"
+            import list
+            fn main(console: Console) {
+              let xs = [3, 0 - 2, 0, 5]
+              let signs = list.map(xs, fn(n: Int): if n > 0: 1 else: if n < 0: 0 - 1 else: 0)
+              print(console, int_to_string(list.fold(signs, 0, fn(a: Int, b: Int): a + b)))
+            }
+        "#;
+        let sources = [("list", crate::bundled_module("list").unwrap()), ("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "inline if-else diverged");
+        assert_eq!(compiled, vec!["1"]);
+    }
+
+    #[test]
     fn brace_free_lambda_form() {
         // `fn(params): expr` — the brace-free single-expression lambda, used
         // inline inside call parens where layout is suppressed. Both backends.
