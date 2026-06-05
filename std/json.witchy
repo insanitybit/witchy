@@ -1,0 +1,68 @@
+// A JSON library — the witchy take on Go's encoding/json. This slice is the
+// value type and the encoder (serialization); the decoder (parsing) follows.
+// Pure and capability-free, so — unlike networking — it compiles to WASM like
+// the rest of the data std.
+
+import string
+
+type Json:
+    JsonNull
+    JsonBool(Bool)
+    JsonInt(Int)
+    JsonString(String)
+    JsonArray(List(Json))
+    JsonObject(List((String, Json)))
+
+// Serialize a Json value to its compact textual form.
+pub fn encode(j: Json) -> String:
+    match j:
+        JsonNull -> "null"
+        JsonBool(b) -> if b { "true" } else { "false" }
+        JsonInt(n) -> int_to_string(n)
+        JsonString(s) -> encode_string(s)
+        JsonArray(items) -> encode_array(items)
+        JsonObject(pairs) -> encode_object(pairs)
+
+fn encode_array(items: List(Json)) -> String:
+    var out = "["
+    var first = true
+    for it in items:
+        if first:
+            first = false
+        else:
+            out = out <> ","
+        out = out <> encode(it)
+    out <> "]"
+
+fn encode_object(pairs: List((String, Json))) -> String:
+    var out = "{"
+    var first = true
+    for p in pairs:
+        let (k, v) = p
+        if first:
+            first = false
+        else:
+            out = out <> ","
+        out = out <> encode_string(k) <> ":" <> encode(v)
+    out <> "}"
+
+// Wrap `s` in quotes, escaping the characters JSON requires.
+fn encode_string(s: String) -> String:
+    var out = "\""
+    for c in string.to_chars(s):
+        out = out <> escape_char(c)
+    out <> "\""
+
+fn escape_char(c: String) -> String:
+    if c == "\"":
+        "\\\""
+    else if c == "\\":
+        "\\\\"
+    else if c == "\n":
+        "\\n"
+    else if c == "\t":
+        "\\t"
+    else if c == "\r":
+        "\\r"
+    else:
+        c

@@ -4873,6 +4873,34 @@ fn main(console: Console, net: Net):
         assert_eq!(out, vec!["200".to_string(), "hello".to_string()]);
     }
 
+    // std/json: build a nested Json value and serialize it. Pure (no
+    // capabilities), so it compiles to WASM and both backends must agree.
+    #[test]
+    fn std_json_encode_backends_agree() {
+        let client = r#"
+import json
+fn main(console: Console):
+    let j = JsonObject([
+        ("name", JsonString("witchy")),
+        ("version", JsonInt(1)),
+        ("tags", JsonArray([JsonString("safe"), JsonString("fast")])),
+        ("stable", JsonBool(false)),
+        ("extra", JsonNull)
+    ])
+    print(console, json.encode(j))
+"#;
+        let sources = [("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "std json encode diverged");
+        assert_eq!(
+            compiled,
+            vec![
+                r#"{"name":"witchy","version":1,"tags":["safe","fast"],"stable":false,"extra":null}"#
+            ]
+        );
+    }
+
     // Hex (0x..) and binary (0b..) integer literals, including underscore
     // separators, feeding the bitwise operators. Both backends agree.
     #[test]

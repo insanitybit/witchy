@@ -94,6 +94,7 @@ pub fn std_source(name: &str) -> Option<&'static str> {
         "ord" => Some(include_str!("../std/ord.witchy")),
         "show" => Some(include_str!("../std/show.witchy")),
         "http" => Some(include_str!("../std/http.witchy")),
+        "json" => Some(include_str!("../std/json.witchy")),
         _ => None,
     }
 }
