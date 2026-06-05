@@ -111,6 +111,7 @@ pub fn resolve(
     while let Some(p) = queue.pop_front() {
         let (src, manifest, registry_name, source_kind, provenance) =
             fetch_dep(&p, registry, store)?;
+        let from_registry = registry_name.is_some();
         let name = manifest.rune.name.clone();
         let version = manifest.rune.version.clone();
 
@@ -153,6 +154,13 @@ pub fn resolve(
             None => p.base_dir.clone(), // registry deps: base_dir unused downstream
         };
         for (key, dep) in &manifest.dependencies {
+            // A published rune must be self-contained: it may not reach into the
+            // consumer's filesystem via a path dependency.
+            if from_registry && dep.path().is_some() {
+                return err(format!(
+                    "rune `{name}` (from a registry) declares a path dependency `{key}` — published runes may not depend on local paths"
+                ));
+            }
             queue.push_back(Pending {
                 dep: dep.clone(),
                 referrer_key: format!("{name} -> {key}"),

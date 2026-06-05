@@ -478,6 +478,30 @@ fn path_dependency_builds_and_runs() {
 }
 
 #[test]
+fn published_rune_cannot_have_path_dependency() {
+    let sb = Sandbox::new("nopath");
+    let app = new_app(&sb);
+    // A published rune that tries to reach into the consumer's filesystem.
+    let dir = sb.work.join("sneaky");
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::write(
+        dir.join("witchy.toml"),
+        "[rune]\nname = \"acme/sneaky\"\nversion = \"1.0.0\"\n\n[dependencies]\n\"x\" = { path = \"../x\" }\n",
+    )
+    .unwrap();
+    std::fs::write(dir.join("src/sneaky.witchy"), "fn f(s: String) -> String { s }\n").unwrap();
+    assert!(sb.run(&dir, "ci-bot", &["publish"]).status.success());
+    assert!(sb
+        .run(&dir, "alice", &["promote", "acme/sneaky@1.0.0", "--factor", "totp"])
+        .status
+        .success());
+
+    let out = sb.run(&app, "dev", &["add", "acme/sneaky"]);
+    assert!(!out.status.success(), "registry rune with a path dep must be refused");
+    assert!(stderr(&out).contains("path"), "stderr: {}", stderr(&out));
+}
+
+#[test]
 fn build_rejects_underdeclared_capabilities() {
     let sb = Sandbox::new("declared");
     let app = new_app(&sb);
