@@ -31,6 +31,7 @@ pub enum Ty {
     Dir,
     Net,
     Socket,
+    Listener,
     List(Box<Ty>),
     Tuple(Vec<Ty>),
     /// A user-declared type, possibly with type arguments: `Option(Int)`,
@@ -54,6 +55,7 @@ impl fmt::Display for Ty {
             Ty::Dir => write!(f, "Dir"),
             Ty::Net => write!(f, "Net"),
             Ty::Socket => write!(f, "Socket"),
+            Ty::Listener => write!(f, "Listener"),
             Ty::List(e) => write!(f, "List({e})"),
             Ty::Tuple(ts) => {
                 write!(f, "(")?;
@@ -227,6 +229,7 @@ impl Checker {
             "Dir" => Ty::Dir,
             "Net" => Ty::Net,
             "Socket" => Ty::Socket,
+            "Listener" => Ty::Listener,
             "List" => {
                 let elem = match args.first() {
                     Some(a) => self.to_ty(a),
@@ -260,6 +263,7 @@ impl Checker {
                 "Dir" => Ty::Dir,
                 "Net" => Ty::Net,
                 "Socket" => Ty::Socket,
+                "Listener" => Ty::Listener,
                 "List" => {
                     let elem = match args.first() {
                         Some(a) => self.to_ty_generic(a, vars),
@@ -511,6 +515,10 @@ impl Checker {
             "send_bytes" => Some((vec![Ty::Socket, Ty::String], Ty::Nil)),
             "recv_line" => Some((vec![Ty::Socket], Ty::String)),
             "recv_all" => Some((vec![Ty::Socket], Ty::String)),
+            "recv_bytes" => Some((vec![Ty::Socket, Ty::Int], Ty::String)),
+            "listen" => Some((vec![Ty::Net, Ty::String], Ty::Listener)),
+            "accept" => Some((vec![Ty::Listener], Ty::Socket)),
+            "close" => Some((vec![Ty::Socket], Ty::Nil)),
             // User functions: instantiate generic type parameters fresh per call.
             _ => match self.fn_sigs.get(name).cloned() {
                 Some((params, ret)) => {

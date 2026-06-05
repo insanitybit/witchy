@@ -6,8 +6,8 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::fmt;
-use std::io::{BufRead, BufReader, Write};
-use std::net::TcpStream;
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::{TcpListener, TcpStream};
 use std::path::{Component, Path, PathBuf};
 use std::rc::Rc;
 
@@ -35,6 +35,9 @@ pub enum Value {
     Net(Vec<String>),
     /// A connected socket — a handle into the interpreter's socket table.
     Socket(usize),
+    /// A listening server socket — a handle into the interpreter's listener
+    /// table. Obtained from `listen(net, addr)`; `accept` blocks for a `Socket`.
+    Listener(usize),
     /// A first-class function (closure): its parameters, body, and the
     /// environment captured where it was defined.
     Closure {
@@ -105,6 +108,7 @@ impl fmt::Display for Value {
             Value::Dir(_) => write!(f, "<dir>"),
             Value::Net(_) => write!(f, "<net>"),
             Value::Socket(id) => write!(f, "<socket #{id}>"),
+            Value::Listener(id) => write!(f, "<listener #{id}>"),
             Value::Closure { params, .. } => write!(f, "<function/{}>", params.len()),
             Value::Dict(entries) => {
                 write!(f, "{{")?;
@@ -269,6 +273,8 @@ pub struct Interpreter {
     net_allow: Vec<String>,
     /// Open sockets, indexed by `Value::Socket` handle.
     sockets: Vec<BufReader<TcpStream>>,
+    /// Listening server sockets, indexed by `Value::Listener` handle.
+    listeners: Vec<TcpListener>,
     /// Record constructor name -> ordered field names, for `value.field` access.
     record_fields: HashMap<String, Vec<String>>,
     /// Evaluation-step counter and ceiling. Unlike the runtime's epoch
@@ -334,6 +340,7 @@ impl Interpreter {
             root: PathBuf::from("."),
             net_allow: Vec::new(),
             sockets: Vec::new(),
+            listeners: Vec::new(),
             record_fields,
             steps: 0,
             step_limit: DEFAULT_STEP_LIMIT,
@@ -851,6 +858,77 @@ impl Interpreter {
                     Ok(Some(Value::Str(String::from_utf8_lossy(&buf).into_owned())))
                 }
                 _ => err("recv_all expects a Socket"),
+            },
+            // Read exactly `n` bytes from the socket — for a request/response body
+            // of a known `Content-Length`. Returns fewer bytes only if the peer
+            // closes early.
+            "recv_bytes" => match args {
+                [Value::Socket(id), Value::Int(n)] => {
+                    let sock = self
+                        .sockets
+                        .get_mut(*id)
+                        .ok_or_else(|| RuntimeError { message: "invalid socket".into() })?;
+                    let want = (*n).max(0) as usize;
+                    let mut buf = vec![0u8; want];
+                    let mut read = 0;
+                    while read < want {
+                        match sock.read(&mut buf[read..]) {
+                            Ok(0) => break,
+                            Ok(k) => read += k,
+                            Err(e) => return err(format!("recv failed: {e}")),
+                        }
+                    }
+                    buf.truncate(read);
+                    Ok(Some(Value::Str(String::from_utf8_lossy(&buf).into_owned())))
+                }
+                _ => err("recv_bytes expects a Socket and an Int"),
+            },
+            // Bind and listen on an address the Net capability permits — the
+            // server side of the network capability. Returns a `Listener`.
+            "listen" => match args {
+                [Value::Net(allow), Value::Str(addr)] => {
+                    if !allow.iter().any(|a| a == addr) {
+                        return err(format!("listen: `{addr}` is not permitted by this Net capability"));
+                    }
+                    match TcpListener::bind(addr) {
+                        Ok(listener) => {
+                            let id = self.listeners.len();
+                            self.listeners.push(listener);
+                            Ok(Some(Value::Listener(id)))
+                        }
+                        Err(e) => err(format!("listen on `{addr}` failed: {e}")),
+                    }
+                }
+                _ => err("listen expects a Net and an address"),
+            },
+            // Block until a client connects, returning the connection `Socket`.
+            "accept" => match args {
+                [Value::Listener(id)] => {
+                    let listener = self
+                        .listeners
+                        .get(*id)
+                        .ok_or_else(|| RuntimeError { message: "invalid listener".into() })?;
+                    match listener.accept() {
+                        Ok((stream, _peer)) => {
+                            let sid = self.sockets.len();
+                            self.sockets.push(BufReader::new(stream));
+                            Ok(Some(Value::Socket(sid)))
+                        }
+                        Err(e) => err(format!("accept failed: {e}")),
+                    }
+                }
+                _ => err("accept expects a Listener"),
+            },
+            // Close a connected socket (e.g. after sending a `Connection: close`
+            // response). Idempotent; an already-closed socket is not an error.
+            "close" => match args {
+                [Value::Socket(id)] => {
+                    if let Some(sock) = self.sockets.get_mut(*id) {
+                        let _ = sock.get_mut().shutdown(std::net::Shutdown::Both);
+                    }
+                    Ok(Some(Value::Nil))
+                }
+                _ => err("close expects a Socket"),
             },
             _ => Ok(None),
         }
@@ -1777,6 +1855,47 @@ fn main(console: Console, net: Net):
     print(console, "unreachable")
 "#;
         assert!(run_with(bad_restrict, ".", vec![addr]).is_err());
+    }
+
+    #[test]
+    fn net_server_listen_accept_roundtrip() {
+        use std::io::{Read, Write};
+        use std::net::{TcpListener, TcpStream};
+        // A free port to hand the witchy server (bind+drop to discover it).
+        let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let addr = format!("127.0.0.1:{port}");
+        let src = format!(
+            r#"
+fn main(console: Console, net: Net):
+    let server = listen(net, "{addr}")
+    let sock = accept(server)
+    let line = recv_line(sock)
+    print(console, line)
+    send_bytes(sock, "HTTP/1.1 200 OK\r\nContent-Length: 11\r\nConnection: close\r\n\r\nhello witchy")
+    close(sock)
+"#
+        );
+        let allow = vec![addr.clone()];
+        let server = std::thread::spawn(move || run_with(&src, ".", allow));
+
+        // Connect once the server has bound (retry through the bind race).
+        let mut stream = None;
+        for _ in 0..100 {
+            if let Ok(s) = TcpStream::connect(&addr) {
+                stream = Some(s);
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let mut stream = stream.expect("connect to witchy server");
+        stream.write_all(b"GET /hi HTTP/1.1\r\nHost: x\r\n\r\n").unwrap();
+        let mut resp = String::new();
+        stream.read_to_string(&mut resp).unwrap();
+        assert!(resp.contains("200 OK"), "resp: {resp}");
+        assert!(resp.ends_with("hello witchy"), "resp: {resp}");
+
+        let out = server.join().unwrap().unwrap();
+        assert_eq!(out, vec!["GET /hi HTTP/1.1\r"]);
     }
 
     #[test]

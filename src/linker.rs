@@ -76,6 +76,12 @@ const BUILTINS: &[&str] = &[
     "restrict",
     "send_line",
     "recv_line",
+    "send_bytes",
+    "recv_all",
+    "recv_bytes",
+    "listen",
+    "accept",
+    "close",
 ];
 
 type FnTable = HashMap<String, HashSet<String>>;
