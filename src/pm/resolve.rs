@@ -368,8 +368,8 @@ mod tests {
         ];
         files.sort_by(|a, b| a.0.cmp(&b.0));
         let src = RuneSource { files };
-        reg.publish(&src, &manifest, "ci-bot").unwrap();
-        reg.promote(name, version, "alice", "webauthn").unwrap();
+        reg.publish(&src, &manifest, "ci-bot", "").unwrap();
+        reg.promote(name, version, "alice", "webauthn", "").unwrap();
     }
 
     #[test]
@@ -418,7 +418,7 @@ mod tests {
             ("src/json.witchy".to_string(), b"fn p(s: String) -> String { s }".to_vec()),
         ];
         files.sort_by(|a, b| a.0.cmp(&b.0));
-        reg.publish(&RuneSource { files }, &m, "ci-bot").unwrap();
+        reg.publish(&RuneSource { files }, &m, "ci-bot", "").unwrap();
 
         let root = Manifest::parse(
             "[rune]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"acme/json\" = \"^1.0.0\"\n",

@@ -37,6 +37,10 @@ pub struct PublishReq {
     pub manifest_toml: String,
     pub source: SourceDto,
     pub uploaded_by: String,
+    /// Bearer token proving the publisher's identity. The first publish to a
+    /// namespace claims it (TOFU); later publishes must present the same token.
+    #[serde(default)]
+    pub token: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -45,6 +49,8 @@ pub struct PromoteReq {
     pub version: String,
     pub promoter: String,
     pub second_factor: String,
+    #[serde(default)]
+    pub token: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -59,6 +65,8 @@ pub struct PromoteResp {
 pub struct YankReq {
     pub name: String,
     pub version: String,
+    #[serde(default)]
+    pub token: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

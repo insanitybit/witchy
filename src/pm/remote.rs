@@ -104,6 +104,7 @@ impl RemoteRegistry {
         src: &RuneSource,
         manifest: &Manifest,
         uploaded_by: &str,
+        token: &str,
     ) -> PmResult<Record> {
         let manifest_toml = src
             .files
@@ -118,6 +119,7 @@ impl RemoteRegistry {
             manifest_toml,
             source: SourceDto::from_source(src),
             uploaded_by: uploaded_by.to_string(),
+            token: token.to_string(),
         };
         http::post(&self.url("/coven/publish"), &req)
     }
@@ -128,12 +130,14 @@ impl RemoteRegistry {
         version: &str,
         promoter: &str,
         second_factor: &str,
+        token: &str,
     ) -> PmResult<Promotion> {
         let req = PromoteReq {
             name: name.to_string(),
             version: version.to_string(),
             promoter: promoter.to_string(),
             second_factor: second_factor.to_string(),
+            token: token.to_string(),
         };
         let resp: PromoteResp = http::post(&self.url("/coven/promote"), &req)?;
         Ok(Promotion {
@@ -146,10 +150,11 @@ impl RemoteRegistry {
         })
     }
 
-    pub fn yank(&self, name: &str, version: &str) -> PmResult<()> {
+    pub fn yank(&self, name: &str, version: &str, token: &str) -> PmResult<()> {
         let req = YankReq {
             name: name.to_string(),
             version: version.to_string(),
+            token: token.to_string(),
         };
         let _: OkResp = http::post(&self.url("/coven/yank"), &req)?;
         Ok(())

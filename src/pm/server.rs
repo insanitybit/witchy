@@ -89,7 +89,7 @@ fn handle(reg: &LocalRegistry, request: &mut tiny_http::Request) -> (u16, String
                 Ok(m) => m,
                 Err(e) => return errj(400, e),
             };
-            match reg.publish(&src, &manifest, &req.uploaded_by) {
+            match reg.publish(&src, &manifest, &req.uploaded_by, &req.token) {
                 Ok(r) => json(200, &r),
                 Err(e) => errj(409, e),
             }
@@ -99,7 +99,7 @@ fn handle(reg: &LocalRegistry, request: &mut tiny_http::Request) -> (u16, String
                 Ok(r) => r,
                 Err(e) => return errj(400, e),
             };
-            match reg.promote(&req.name, &req.version, &req.promoter, &req.second_factor) {
+            match reg.promote(&req.name, &req.version, &req.promoter, &req.second_factor, &req.token) {
                 Ok(p) => json(
                     200,
                     &PromoteResp {
@@ -117,7 +117,7 @@ fn handle(reg: &LocalRegistry, request: &mut tiny_http::Request) -> (u16, String
                 Ok(r) => r,
                 Err(e) => return errj(400, e),
             };
-            match reg.yank(&req.name, &req.version) {
+            match reg.yank(&req.name, &req.version, &req.token) {
                 Ok(()) => json(200, &OkResp { ok: true }),
                 Err(e) => errj(404, e),
             }

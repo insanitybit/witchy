@@ -36,6 +36,8 @@ struct CovenEnv {
     store: Store,
     registry: Registry,
     user: String,
+    /// Bearer token for publish/promote/yank (namespace authorization).
+    token: String,
 }
 
 impl CovenEnv {
@@ -58,6 +60,7 @@ impl CovenEnv {
             store: Store::new(home.join("store")),
             registry,
             user,
+            token: std::env::var("COVEN_TOKEN").unwrap_or_default(),
         }
     }
 }
@@ -112,7 +115,10 @@ fn print_help() -> PmResult<()> {
          Registry (coven):\n  \
            publish [dir]         publish a rune (lands STAGED, not resolvable)\n  \
            promote <pkg>@<ver> --factor <type>   release a staged version (2FA)\n  \
-           list [pkg]            list published versions and their state"
+           yank <pkg>@<ver>      exclude a version from new resolutions\n  \
+           list [pkg]            list published versions and their state\n  \
+           coven-serve [--addr H:P] [--root DIR]  run a coven registry server\n\n\
+         Env: COVEN_URL (use a remote registry), COVEN_TOKEN (publish auth)."
     );
     Ok(())
 }
@@ -1031,7 +1037,7 @@ fn cmd_publish(rest: &[String]) -> PmResult<()> {
     let dir = a.positional.first().map(PathBuf::from).unwrap_or_else(|| ".".into());
     let manifest = Manifest::load(&dir)?;
     let src = RuneSource::read_dir(&dir)?;
-    let rec = env.registry.publish(&src, &manifest, &env.user)?;
+    let rec = env.registry.publish(&src, &manifest, &env.user, &env.token)?;
     println!(
         "published `{}`@{} as STAGED (uploaded by {}).",
         rec.name, rec.version, env.user
@@ -1067,7 +1073,7 @@ fn cmd_promote(rest: &[String]) -> PmResult<()> {
     })?;
     let promoter = a.val("--as").unwrap_or(&env.user).to_string();
 
-    let p = env.registry.promote(name, version, &promoter, factor)?;
+    let p = env.registry.promote(name, version, &promoter, factor, &env.token)?;
     println!("RELEASED `{name}`@{version}.");
     println!("  promoted by: {promoter}  (second factor: {factor})");
     if p.separation_of_duties {
@@ -1098,7 +1104,7 @@ fn cmd_yank(rest: &[String]) -> PmResult<()> {
     let (name, version) = spec
         .split_once('@')
         .ok_or_else(|| super::PmError("specify the version: <pkg>@<version>".into()))?;
-    env.registry.yank(name, version)?;
+    env.registry.yank(name, version, &env.token)?;
     println!(
         "yanked `{name}`@{version} — excluded from new resolutions; existing locks still resolve it."
     );

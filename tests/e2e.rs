@@ -113,6 +113,20 @@ impl Sandbox {
         cmd.output().expect("spawn witchy")
     }
 
+    /// Like `run`, but with a specific publish/promote authorization token.
+    fn run_token(&self, dir: &Path, user: &str, token: &str, args: &[&str]) -> Output {
+        let mut cmd = Command::new(BIN);
+        cmd.current_dir(dir)
+            .env("WITCHY_HOME", &self.home)
+            .env("WITCHY_USER", user)
+            .env("COVEN_TOKEN", token)
+            .args(args);
+        if let Some(u) = &self.coven_url {
+            cmd.env("COVEN_URL", u);
+        }
+        cmd.output().expect("spawn witchy")
+    }
+
     /// Create + publish + promote a library rune in one shot. Returns its dir.
     fn publish_lib(&self, name: &str, version: &str, module_body: &str) -> PathBuf {
         let dir_name = name.rsplit('/').next().unwrap();
@@ -200,6 +214,36 @@ fn networked_registry_full_lifecycle() {
     // `list` over the network reflects the released state.
     let out = sb.run(&app, "dev", &["list", "acme/lib"]);
     assert!(stdout(&out).contains("released"));
+}
+
+#[test]
+fn namespace_ownership_is_enforced() {
+    let server = RegistryServer::start();
+    let mut sb = Sandbox::new("auth");
+    sb.coven_url = Some(server.url());
+
+    // alice claims namespace `acme` by being the first to publish there.
+    let lib = sb.work.join("lib");
+    std::fs::create_dir_all(lib.join("src")).unwrap();
+    std::fs::write(lib.join("witchy.toml"), "[rune]\nname = \"acme/secure\"\nversion = \"1.0.0\"\n").unwrap();
+    std::fs::write(lib.join("src/secure.witchy"), "fn f(s: String) -> String { s }\n").unwrap();
+    assert!(sb.run_token(&lib, "alice", "alice-token", &["publish"]).status.success());
+
+    // mallory, with a different token, cannot publish into alice's namespace.
+    std::fs::write(lib.join("witchy.toml"), "[rune]\nname = \"acme/secure\"\nversion = \"1.1.0\"\n").unwrap();
+    let out = sb.run_token(&lib, "mallory", "mallory-token", &["publish"]);
+    assert!(!out.status.success(), "cross-namespace publish must be refused");
+    assert!(stderr(&out).contains("owned by another"), "stderr: {}", stderr(&out));
+
+    // mallory cannot promote alice's staged version either.
+    let out = sb.run_token(&lib, "mallory", "mallory-token", &["promote", "acme/secure@1.0.0", "--factor", "totp"]);
+    assert!(!out.status.success(), "non-owner promote must be refused");
+    assert!(stderr(&out).contains("owner"), "stderr: {}", stderr(&out));
+
+    // alice, with her token + a second factor, can.
+    let out = sb.run_token(&lib, "alice", "alice-token", &["promote", "acme/secure@1.0.0", "--factor", "webauthn"]);
+    assert!(out.status.success(), "owner promote failed: {}", stderr(&out));
+    assert!(stdout(&out).contains("RELEASED"));
 }
 
 #[test]
