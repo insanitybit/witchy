@@ -694,8 +694,13 @@ pub fn apply_layout(tokens: Vec<Token>) -> Vec<Token> {
                 out.push(vtok(Tok::RBrace, here));
             }
         }
+        // A closing `}` is placed on the PREVIOUS token's line, never the
+        // dedent line's, so the parser doesn't read a following `(...)` as
+        // applying the block's value (e.g. `} \n (a, b)` must stay two
+        // statements, not `}(a, b)`).
         while stack.last().is_some_and(|top| line.indent <= *top) {
-            out.push(vtok(Tok::RBrace, here));
+            let near = out.last().cloned().unwrap_or_else(|| here.clone());
+            out.push(vtok(Tok::RBrace, &near));
             stack.pop();
         }
         // A trailing `:` is a block header; drop it and remember to open a block.
@@ -709,11 +714,13 @@ pub fn apply_layout(tokens: Vec<Token>) -> Vec<Token> {
 
     if let Some(eof_tok) = eof {
         if pending.take().is_some() {
-            out.push(vtok(Tok::LBrace, &eof_tok));
-            out.push(vtok(Tok::RBrace, &eof_tok));
+            let near = out.last().cloned().unwrap_or_else(|| eof_tok.clone());
+            out.push(vtok(Tok::LBrace, &near));
+            out.push(vtok(Tok::RBrace, &near));
         }
         while stack.pop().is_some() {
-            out.push(vtok(Tok::RBrace, &eof_tok));
+            let near = out.last().cloned().unwrap_or_else(|| eof_tok.clone());
+            out.push(vtok(Tok::RBrace, &near));
         }
         out.push(eof_tok);
     }

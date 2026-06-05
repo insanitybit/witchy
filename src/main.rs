@@ -4777,6 +4777,28 @@ fn main(console: Console):
         assert_eq!(run_on_wasm(src), vec!["42", "yes"]);
     }
 
+    // Regression: a `(...)` expression on the line after a block must be its own
+    // statement, not an application of the block's value — the virtual closing
+    // brace sits on the previous line so `} (a, n)` stays two things. (This is
+    // what `list.partition`'s trailing `(yes, no)` exercises.)
+    #[test]
+    fn indentation_block_then_paren_expr_backends_agree() {
+        let src = r#"
+fn pair(n: Int) -> (Int, Int):
+    var a = 0
+    for i in [1, 2, 3]:
+        a = a + i
+    (a, n)
+
+fn main(console: Console):
+    let (x, y) = pair(10)
+    print(console, int_to_string(x))
+    print(console, int_to_string(y))
+"#;
+        assert_eq!(interp(src), run_on_wasm(src), "block-then-paren diverged");
+        assert_eq!(run_on_wasm(src), vec!["6", "10"]);
+    }
+
     // Hex (0x..) and binary (0b..) integer literals, including underscore
     // separators, feeding the bitwise operators. Both backends agree.
     #[test]
