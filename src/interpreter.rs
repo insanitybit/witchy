@@ -1947,6 +1947,128 @@ fn main(console: Console, net: Net):
     }
 
     #[test]
+    fn serve_middleware_nest_and_notfound_roundtrip() {
+        use std::io::{Read, Write};
+        use std::net::{TcpListener, TcpStream};
+        let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let addr = format!("127.0.0.1:{port}");
+        let src = format!(
+            r#"
+import http
+import server
+
+// A tower-style Layer that tags every response with a header.
+fn tagger(next: fn(Request) -> Response) -> fn(Request) -> Response:
+    fn(req: Request): tag(next(req))
+
+fn tag(resp: Response) -> Response:
+    match resp:
+        Response(code, hdrs, body) -> Response(code, push(hdrs, ("x-by", "witchy")), body)
+
+fn main(console: Console, net: Net):
+    let api = server.router()
+        |> server.get("/ping", fn(req: Request): server.text(200, "pong"))
+    let app = server.router()
+        |> server.get("/", fn(req: Request): server.text(200, "root"))
+        |> server.nest("/api", api)
+        |> server.layer(tagger)
+    server.serve_n(net, "{addr}", app, 3)
+"#
+        );
+        let parsed = crate::parser::parse_module(&src).expect("parse");
+        let linked =
+            crate::linker::link(vec![("main".to_string(), parsed)], "main").expect("link");
+        let allow = vec![addr.clone()];
+        let server = std::thread::spawn(move || run_module(linked, ".", allow));
+
+        let request = |raw: &str| -> String {
+            for _ in 0..100 {
+                if let Ok(mut s) = TcpStream::connect(&addr) {
+                    s.write_all(raw.as_bytes()).unwrap();
+                    let mut resp = String::new();
+                    s.read_to_string(&mut resp).unwrap();
+                    return resp;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            panic!("could not connect to server");
+        };
+
+        // Middleware tagged the response; root handler ran.
+        let r1 = request("GET / HTTP/1.1\r\nHost: x\r\n\r\n");
+        assert!(r1.contains("x-by: witchy") && r1.ends_with("root"), "r1: {r1}");
+        // Nested route under /api.
+        let r2 = request("GET /api/ping HTTP/1.1\r\nHost: x\r\n\r\n");
+        assert!(r2.ends_with("pong"), "r2: {r2}");
+        // Unknown path -> 404 (still tagged by the layer).
+        let r3 = request("GET /nope HTTP/1.1\r\nHost: x\r\n\r\n");
+        assert!(r3.contains("404 ") && r3.contains("x-by: witchy"), "r3: {r3}");
+
+        server.join().unwrap().unwrap();
+    }
+
+    #[test]
+    fn serve_json_handler_roundtrip() {
+        use std::io::{Read, Write};
+        use std::net::{TcpListener, TcpStream};
+        let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let addr = format!("127.0.0.1:{port}");
+        let src = format!(
+            r#"
+import http
+import server
+import json
+fn greet(req: Request) -> Response:
+    server.json(200, json.encode(JsonObject([("hello", JsonString(server.param(req, "name")))])))
+fn main(console: Console, net: Net):
+    let app = server.router() |> server.get("/hello/:name", greet)
+    server.serve_n(net, "{addr}", app, 1)
+"#
+        );
+        let parsed = crate::parser::parse_module(&src).expect("parse");
+        let linked =
+            crate::linker::link(vec![("main".to_string(), parsed)], "main").expect("link");
+        let allow = vec![addr.clone()];
+        let server = std::thread::spawn(move || run_module(linked, ".", allow));
+
+        let mut stream = None;
+        for _ in 0..100 {
+            if let Ok(s) = TcpStream::connect(&addr) {
+                stream = Some(s);
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let mut stream = stream.expect("connect");
+        stream.write_all(b"GET /hello/witchy HTTP/1.1\r\nHost: x\r\n\r\n").unwrap();
+        let mut resp = String::new();
+        stream.read_to_string(&mut resp).unwrap();
+        assert!(resp.contains("application/json"), "resp: {resp}");
+        assert!(resp.contains("\"hello\"") && resp.contains("\"witchy\""), "resp: {resp}");
+
+        server.join().unwrap().unwrap();
+    }
+
+    #[test]
+    fn handlers_cannot_reach_the_network() {
+        // The capability guarantee: a pure handler has no Net, so even trying to
+        // open a socket is a compile-time (type) error — it can't be written.
+        let src = r#"
+import server
+fn evil(req: Request) -> Response:
+    let s = connect(net, "10.0.0.1:80")
+    server.text(200, "leaked")
+fn main(console: Console, net: Net):
+    let app = server.router() |> server.get("/", evil)
+    server.serve_n(net, "127.0.0.1:0", app, 0)
+"#;
+        let parsed = crate::parser::parse_module(src).expect("parse");
+        let linked = crate::linker::link(vec![("main".to_string(), parsed)], "main").expect("link");
+        // Type-check the linked program: `connect` needs a Net the handler lacks.
+        assert!(crate::typeck::check(&linked).is_err());
+    }
+
+    #[test]
     fn modules_qualified_calls() {
         let strutil = r#"
 fn shout(name: String) -> String:

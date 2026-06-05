@@ -31,6 +31,18 @@ pub fn get(net: Net, host: String, port: Int, path: String) -> Response:
 pub fn post(net: Net, host: String, port: Int, path: String, body: String) -> Response:
     request(net, "POST", host, port, path, body)
 
+pub fn put(net: Net, host: String, port: Int, path: String, body: String) -> Response:
+    request(net, "PUT", host, port, path, body)
+
+pub fn delete(net: Net, host: String, port: Int, path: String) -> Response:
+    request(net, "DELETE", host, port, path, "")
+
+pub fn patch(net: Net, host: String, port: Int, path: String, body: String) -> Response:
+    request(net, "PATCH", host, port, path, body)
+
+pub fn head(net: Net, host: String, port: Int, path: String) -> Response:
+    request(net, "HEAD", host, port, path, "")
+
 // GET a full URL string (`http://host[:port]/path`), or an error if it doesn't
 // parse. Saves splitting host/port/path by hand.
 pub fn get_url(net: Net, raw: String) -> Result(Response, String):
@@ -38,17 +50,24 @@ pub fn get_url(net: Net, raw: String) -> Result(Response, String):
         Some(u) -> Ok(get(net, url.host(u), url.port(u), url.path(u)))
         None -> Err("invalid URL: " <> raw)
 
-// Send one request (method/path/body) and read the whole response back.
-// `Connection: close` means the server closes after the body, ending recv_all.
-fn request(net: Net, method: String, host: String, port: Int, path: String, body: String) -> Response:
+// Send a request with custom headers, returning the response. The generic form
+// behind the method helpers — use it when you need to set headers (auth,
+// content-type, ...). `Connection: close` ends `recv_all` after the body.
+pub fn request_with(net: Net, method: String, host: String, port: Int, path: String, headers: List((String, String)), body: String) -> Response:
     let sock = connect(net, host <> ":" <> int_to_string(port))
-    let req = method <> " " <> path <> " HTTP/1.1\r\n"
-        <> "Host: " <> host <> "\r\n"
+    var head = method <> " " <> path <> " HTTP/1.1\r\n" <> "Host: " <> host <> "\r\n"
+    for h in headers:
+        let (k, v) = h
+        head = head <> k <> ": " <> v <> "\r\n"
+    let req = head
         <> "Content-Length: " <> int_to_string(string_length(body)) <> "\r\n"
         <> "Connection: close\r\n\r\n"
         <> body
     send_bytes(sock, req)
     parse_response(recv_all(sock))
+
+fn request(net: Net, method: String, host: String, port: Int, path: String, body: String) -> Response:
+    request_with(net, method, host, port, path, [], body)
 
 // The numeric status code, e.g. 200.
 pub fn status(r: Response) -> Int:
