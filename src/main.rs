@@ -1261,6 +1261,49 @@ mod example_tests {
     }
 
     #[test]
+    fn std_ord_string_and_sort_backends_agree() {
+        // `impl Ord for String` makes strings comparable, and the bounded generic
+        // `ord.sort` dispatches through the element's Ord impl — so it sorts
+        // runtime-BUILT strings content-correctly on both backends (a pointer
+        // comparison sort would scramble them in compiled code). Also covers
+        // Ord-over-String for max_of/maximum and Ints via the same `sort`.
+        let client = r#"
+            import ord
+            import string
+            fn build(s: String) -> String {
+              var acc = ""
+              var i = 0
+              while i < char_count(s) {
+                acc = acc <> substring(s, i, i + 1)
+                i = i + 1
+              }
+              acc
+            }
+            fn main(console: Console) {
+              let words = [build("pear"), build("apple"), build("fig"), build("apple")]
+              print(console, string.join(ord.sort(words), ","))
+              print(console, string.join(ord.sort(["c", "a", "b"]), ""))
+              print(console, ord.max_of(build("alpha"), build("omega")))
+              print(console, ord.maximum([build("x"), build("a"), build("m")], ""))
+              let nums = ord.sort([3, 1, 2, 1])
+              print(console, int_to_string(at(nums, 0) + at(nums, 3) * 10))
+            }
+        "#;
+        let sources = [
+            ("ord", crate::bundled_module("ord").unwrap()),
+            ("string", crate::bundled_module("string").unwrap()),
+            ("main", client),
+        ];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "std ord string/sort diverged");
+        assert_eq!(
+            compiled,
+            vec!["apple,apple,fig,pear", "abc", "omega", "x", "31"]
+        );
+    }
+
+    #[test]
     fn std_result_or_mapor_backends_agree() {
         // The fallback combinators mirror Option's: `or` / `or_else` keep an Ok
         // or supply an alternative (eagerly / error-aware lazily), and `map_or`
@@ -5831,3 +5874,4 @@ fn run_witchy(title: &str, program: &str) {
         Err(e) => println!("error: {e}"),
     }
 }
+
