@@ -104,6 +104,21 @@ fn main() -> wasmtime::Result<()> {
         }
         return Ok(());
     }
+    // `witchy caps-diff <old> <new>` reports whether the newer version widens the
+    // capability footprint, exiting 2 on a widening so it can gate CI/installs.
+    if std::env::args().nth(1).as_deref() == Some("caps-diff") {
+        let (Some(old), Some(new)) = (std::env::args().nth(2), std::env::args().nth(3)) else {
+            eprintln!("usage: witchy caps-diff <old.witchy> <new.witchy>");
+            std::process::exit(1);
+        };
+        match report_capability_diff(&old, &new) {
+            Ok(widened) => std::process::exit(if widened { 2 } else { 0 }),
+            Err(e) => {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
+        }
+    }
     // `witchy lsp` starts the language server (stdio), used by editor extensions.
     if std::env::args().nth(1).as_deref() == Some("lsp") {
         if let Err(e) = lsp::run() {
@@ -515,20 +530,27 @@ fn execute_file(path: &str, net_allow: Vec<String>) -> Result<Vec<String>, Strin
     interpreter::run_module(linked, Path::new("."), net_allow).map_err(|e| e.to_string())
 }
 
+/// Render a capability set for human output: a comma-joined list, or `(none)`.
+fn show_caps(caps: &std::collections::BTreeSet<&'static str>) -> String {
+    if caps.is_empty() {
+        "(none)".to_string()
+    } else {
+        caps.iter().copied().collect::<Vec<_>>().join(", ")
+    }
+}
+
+/// Read, parse, and compute the host-capability footprint of a source file.
+fn analyze_file(path: &str) -> Result<capabilities::Footprint, String> {
+    let src = std::fs::read_to_string(path).map_err(|e| format!("cannot read `{path}`: {e}"))?;
+    let module = parser::parse_module(&src).map_err(|e| e.to_string())?;
+    Ok(capabilities::analyze(&module))
+}
+
 /// Print the host-capability footprint of a single source file: which of
 /// `Console`/`Dir`/`Net` each entry point requires, and the union.
 fn report_capabilities(path: &str) -> Result<(), String> {
-    use std::collections::BTreeSet;
-    let src = std::fs::read_to_string(path).map_err(|e| format!("cannot read `{path}`: {e}"))?;
-    let module = parser::parse_module(&src).map_err(|e| e.to_string())?;
-    let fp = capabilities::analyze(&module);
-    let show = |caps: &BTreeSet<&'static str>| -> String {
-        if caps.is_empty() {
-            "(none)".to_string()
-        } else {
-            caps.iter().copied().collect::<Vec<_>>().join(", ")
-        }
-    };
+    let fp = analyze_file(path)?;
+    let show = show_caps;
     println!("Host-capability footprint of {path}:");
     let width = fp
         .entries
@@ -542,6 +564,32 @@ fn report_capabilities(path: &str) -> Result<(), String> {
     }
     println!("  {:<width$}  {}", "total", show(&fp.total));
     Ok(())
+}
+
+/// Compare the capability footprints of two versions of a module and report any
+/// *widening* — host authority the newer version demands that the older did not.
+/// Returns whether it widened so the caller can fail the supply-chain gate. This
+/// is what makes `witchy` dependency updates auditable: unlike Go, where a
+/// version bump can silently start touching the network, a widening is visible
+/// and blockable here.
+fn report_capability_diff(old_path: &str, new_path: &str) -> Result<bool, String> {
+    let old = analyze_file(old_path)?;
+    let new = analyze_file(new_path)?;
+    let d = capabilities::diff(&old, &new);
+    println!("Capability footprint diff {old_path} -> {new_path}:");
+    println!("  old total:  {}", show_caps(&old.total));
+    println!("  new total:  {}", show_caps(&new.total));
+    println!("  added:      {}", show_caps(&d.added));
+    println!("  removed:    {}", show_caps(&d.removed));
+    if d.widened() {
+        println!(
+            "WIDENING: the newer version demands new host authority ({}). Review before trusting.",
+            show_caps(&d.added)
+        );
+    } else {
+        println!("OK: no widening — the newer version demands no new host authority.");
+    }
+    Ok(d.widened())
 }
 
 /// Parse, link, and run a multi-module program through the interpreter.
@@ -5629,6 +5677,32 @@ fn main(console: Console):
 
         let out = crate::execute_file(app.to_str().unwrap(), Vec::new()).unwrap();
         assert_eq!(out, vec!["HI x"]);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn caps_diff_gate_flags_a_widening_across_versions() {
+        // The supply-chain gate end-to-end: a dependency update whose public API
+        // newly demands `Net` is reported as a widening (so CI/install can block),
+        // while an unchanged footprint is not.
+        let dir = std::env::temp_dir().join(format!("witchy_capsdiff_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let v1 = dir.join("v1.witchy");
+        let v2 = dir.join("v2.witchy");
+        std::fs::write(&v1, "pub fn serve(console: Console) -> Int { 0 }").unwrap();
+        std::fs::write(
+            &v2,
+            "pub fn serve(console: Console, net: Net) -> Int { 0 }",
+        )
+        .unwrap();
+        assert!(
+            crate::report_capability_diff(v1.to_str().unwrap(), v2.to_str().unwrap()).unwrap(),
+            "newly demanding Net must be flagged as a widening"
+        );
+        assert!(
+            !crate::report_capability_diff(v1.to_str().unwrap(), v1.to_str().unwrap()).unwrap(),
+            "an unchanged footprint must not be a widening"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 

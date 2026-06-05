@@ -50,6 +50,35 @@ pub struct Footprint {
     pub total: BTreeSet<&'static str>,
 }
 
+/// What changed between two versions of a module's footprint. `added` is a
+/// *widening* — host authority the newer version demands that the older did not
+/// (e.g. a dependency update that suddenly asks for `Net`); `removed` is a
+/// narrowing, which is always safe. The supply-chain gate blocks on widening.
+pub struct FootprintDiff {
+    pub added: BTreeSet<&'static str>,
+    pub removed: BTreeSet<&'static str>,
+}
+
+impl FootprintDiff {
+    /// Whether the newer footprint demands authority the older one did not. This
+    /// is the signal the install/CI gate fails on: new authority must be an
+    /// explicit, reviewed decision, never something a version bump slips in.
+    pub fn widened(&self) -> bool {
+        !self.added.is_empty()
+    }
+}
+
+/// Compare two footprints by their total authority — the primitive behind the
+/// block-on-widening gate. Because capabilities are unforgeable and only enter
+/// through parameters, a module cannot gain authority without changing a public
+/// entry point's signature, so this total-level diff fully captures a widening.
+pub fn diff(old: &Footprint, new: &Footprint) -> FootprintDiff {
+    FootprintDiff {
+        added: new.total.difference(&old.total).copied().collect(),
+        removed: old.total.difference(&new.total).copied().collect(),
+    }
+}
+
 pub fn analyze(module: &Module) -> Footprint {
     let mut entries = Vec::new();
     let mut total = BTreeSet::new();
@@ -115,6 +144,38 @@ mod tests {
             serve.capabilities,
             ["Console", "Net"].into_iter().collect::<BTreeSet<_>>()
         );
+    }
+
+    #[test]
+    fn diff_flags_a_widening_as_added_authority() {
+        // A dependency update whose public API newly demands `Net` is a widening:
+        // the gate must see `Net` as added and report widened().
+        let old = footprint(r#"pub fn serve(console: Console) -> Int { 0 }"#);
+        let new = footprint(r#"pub fn serve(console: Console, net: Net) -> Int { 0 }"#);
+        let d = diff(&old, &new);
+        assert_eq!(d.added, ["Net"].into_iter().collect::<BTreeSet<_>>());
+        assert!(d.removed.is_empty());
+        assert!(d.widened());
+    }
+
+    #[test]
+    fn diff_of_unchanged_footprint_is_not_a_widening() {
+        let old = footprint(r#"pub fn serve(net: Net) -> Int { 0 }"#);
+        let new = footprint(r#"pub fn serve(net: Net) -> Int { 1 }"#);
+        let d = diff(&old, &new);
+        assert!(d.added.is_empty());
+        assert!(!d.widened());
+    }
+
+    #[test]
+    fn diff_treats_dropped_authority_as_a_safe_narrowing() {
+        // Giving up `Net` is a narrowing — recorded in `removed`, never widened().
+        let old = footprint(r#"pub fn serve(console: Console, net: Net) -> Int { 0 }"#);
+        let new = footprint(r#"pub fn serve(console: Console) -> Int { 0 }"#);
+        let d = diff(&old, &new);
+        assert!(d.added.is_empty());
+        assert_eq!(d.removed, ["Net"].into_iter().collect::<BTreeSet<_>>());
+        assert!(!d.widened());
     }
 
     #[test]
