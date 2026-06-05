@@ -774,6 +774,16 @@ impl Interpreter {
                 }
                 _ => err("read expects a Dir and a relative path"),
             },
+            // Whether a file exists within the Dir capability's subtree — total
+            // (never errors), so a path outside the subtree, or a missing file,
+            // simply reads as `false`. Lets `read` callers avoid a crash.
+            "exists" => match args {
+                [Value::Dir(base), Value::Str(rel)] => {
+                    let ok = resolve(base, rel).map(|p| p.exists()).unwrap_or(false);
+                    Ok(Some(Value::Bool(ok)))
+                }
+                _ => err("exists expects a Dir and a relative path"),
+            },
             // Network capability: attenuate a Net to a held address.
             "restrict" => match args {
                 [Value::Net(allow), Value::Str(addr)] => {
@@ -2142,6 +2152,58 @@ fn main(console: Console, net: Net):
         let mut resp = String::new();
         stream.read_to_string(&mut resp).unwrap();
         assert!(resp.contains("200 OK") && resp.ends_with("witchy"), "resp: {resp}");
+
+        server.join().unwrap().unwrap();
+    }
+
+    #[test]
+    fn serve_static_files_roundtrip() {
+        use std::io::{Read, Write};
+        use std::net::{TcpListener, TcpStream};
+        let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let addr = format!("127.0.0.1:{port}");
+        // The handler captures a Dir rooted at examples/data and serves from it.
+        let src = format!(
+            r#"
+import http
+import server
+fn file_server(dir: Dir) -> fn(Request) -> Response:
+    fn(req: Request): serve_file(dir, server.param(req, "path"))
+fn serve_file(dir: Dir, p: String) -> Response:
+    if exists(dir, p):
+        server.text(200, read(dir, p))
+    else:
+        server.not_found()
+fn main(console: Console, net: Net, root: Dir):
+    let examples = subdir(root, "examples")
+    let data = subdir(examples, "data")
+    let app = server.router() |> server.get("/files/*path", file_server(data))
+    server.serve_n(net, "{addr}", app, 2)
+"#
+        );
+        let parsed = crate::parser::parse_module(&src).expect("parse");
+        let linked =
+            crate::linker::link(vec![("main".to_string(), parsed)], "main").expect("link");
+        let allow = vec![addr.clone()];
+        let server = std::thread::spawn(move || run_module(linked, ".", allow));
+
+        let request = |raw: &str| -> String {
+            for _ in 0..100 {
+                if let Ok(mut s) = TcpStream::connect(&addr) {
+                    s.write_all(raw.as_bytes()).unwrap();
+                    let mut resp = String::new();
+                    s.read_to_string(&mut resp).unwrap();
+                    return resp;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            panic!("could not connect to server");
+        };
+
+        let r1 = request("GET /files/greeting.txt HTTP/1.1\r\nHost: x\r\n\r\n");
+        assert!(r1.contains("200 OK") && r1.contains("sandboxed Dir"), "r1: {r1}");
+        let r2 = request("GET /files/nope.txt HTTP/1.1\r\nHost: x\r\n\r\n");
+        assert!(r2.contains("404 "), "r2: {r2}");
 
         server.join().unwrap().unwrap();
     }

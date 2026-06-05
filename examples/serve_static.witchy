@@ -1,0 +1,28 @@
+// Serving static files — and a vivid capability story. The file handler captures
+// a `Dir` scoped to ./examples/data, so it can read files there but it CANNOT
+// reach the network (it has no Net) or any other directory (a Dir capability is
+// confined to its subtree — `../secret` and symlinks can't escape it). `serve`
+// holds the Net to listen and never hands the Dir or Net to a route that didn't
+// explicitly capture it. `exists` keeps the handler total: a missing file is a
+// 404, not a crash.
+// Run: witchy --net 127.0.0.1:8080 examples/serve_static.witchy
+
+import http
+import server
+
+fn file_server(dir: Dir) -> fn(Request) -> Response:
+    fn(req: Request): serve_file(dir, server.param(req, "path"))
+
+fn serve_file(dir: Dir, p: String) -> Response:
+    if exists(dir, p):
+        server.text(200, read(dir, p))
+    else:
+        server.not_found()
+
+fn main(console: Console, net: Net, root: Dir):
+    let examples = subdir(root, "examples")
+    let data = subdir(examples, "data")
+    let app = server.router()
+        |> server.get("/files/*path", file_server(data))
+    print(console, "serving files on 127.0.0.1:8080")
+    server.serve(net, "127.0.0.1:8080", app)

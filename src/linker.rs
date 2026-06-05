@@ -71,6 +71,7 @@ const BUILTINS: &[&str] = &[
     "size",
     "send",
     "read",
+    "exists",
     "subdir",
     "connect",
     "restrict",
