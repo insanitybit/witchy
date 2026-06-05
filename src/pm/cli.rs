@@ -25,8 +25,8 @@ use super::{err, PmResult};
 pub fn is_command(s: &str) -> bool {
     matches!(
         s,
-        "new" | "init" | "add" | "build" | "run" | "update" | "audit" | "why" | "why-cap"
-            | "publish" | "promote" | "yank" | "list" | "verify" | "vendor" | "coven"
+        "new" | "init" | "add" | "build" | "run" | "update" | "audit" | "tree" | "why"
+            | "why-cap" | "publish" | "promote" | "yank" | "list" | "verify" | "vendor" | "coven"
     )
 }
 
@@ -67,6 +67,7 @@ pub fn run(args: &[String]) -> PmResult<()> {
         "run" => cmd_run(rest),
         "update" => cmd_update(rest),
         "audit" => cmd_audit(rest),
+        "tree" => cmd_tree(rest),
         "why" => cmd_why(rest),
         "why-cap" => cmd_why_cap(rest),
         "publish" => cmd_publish(rest),
@@ -93,6 +94,7 @@ fn print_help() -> PmResult<()> {
            vendor                materialize resolved sources into ./vendor\n\n\
          Audit:\n  \
            audit                 print runtime + build footprints + determinism\n  \
+           tree                  dependency tree annotated with capabilities\n  \
            why <pkg>             show why a rune is in the tree\n  \
            why-cap <Kind>        show which runes introduce a capability kind\n  \
            verify                re-verify the lock against the store/registry\n\n\
@@ -649,8 +651,25 @@ fn cmd_why(rest: &[String]) -> PmResult<()> {
     let root = Path::new(".");
     let manifest = Manifest::load(root)?;
     let resolution = resolve::resolve(&manifest, root, &env.registry, &env.store)?;
+    let edges = build_edges(&manifest, &resolution);
 
-    // Build adjacency: rune-name -> child rune-names (via each rune's manifest).
+    let mut paths = Vec::new();
+    let mut stack = vec![manifest.rune.name.clone()];
+    find_paths(&edges, &manifest.rune.name, target, &mut stack, &mut paths);
+    if paths.is_empty() {
+        println!("`{target}` is not in the dependency tree.");
+    } else {
+        println!("`{target}` is required via:");
+        for p in paths {
+            println!("  {}", p.join(" -> "));
+        }
+    }
+    Ok(())
+}
+
+/// Build the dependency adjacency: each rune-name -> its child rune-names, via
+/// each rune's own manifest. The root is the consuming rune.
+fn build_edges(manifest: &Manifest, resolution: &Resolution) -> BTreeMap<String, Vec<String>> {
     let mut edges: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let root_children: Vec<String> = resolution
         .runes
@@ -670,19 +689,59 @@ fn cmd_why(rest: &[String]) -> PmResult<()> {
             edges.insert(r.name.clone(), kids);
         }
     }
+    edges
+}
 
-    let mut paths = Vec::new();
-    let mut stack = vec![manifest.rune.name.clone()];
-    find_paths(&edges, &manifest.rune.name, target, &mut stack, &mut paths);
-    if paths.is_empty() {
-        println!("`{target}` is not in the dependency tree.");
-    } else {
-        println!("`{target}` is required via:");
-        for p in paths {
-            println!("  {}", p.join(" -> "));
-        }
+fn cmd_tree(rest: &[String]) -> PmResult<()> {
+    let _ = rest;
+    let env = CovenEnv::load();
+    let root = Path::new(".");
+    let manifest = Manifest::load(root)?;
+    let resolution = resolve::resolve(&manifest, root, &env.registry, &env.store)?;
+    let edges = build_edges(&manifest, &resolution);
+
+    println!("{}@{}", manifest.rune.name, manifest.rune.version);
+    let mut seen = BTreeSet::new();
+    let children = edges.get(&manifest.rune.name).cloned().unwrap_or_default();
+    for (i, child) in children.iter().enumerate() {
+        let last = i + 1 == children.len();
+        print_tree(&resolution, &edges, child, "", last, &mut seen);
     }
     Ok(())
+}
+
+fn print_tree(
+    resolution: &Resolution,
+    edges: &BTreeMap<String, Vec<String>>,
+    node: &str,
+    prefix: &str,
+    last: bool,
+    seen: &mut BTreeSet<String>,
+) {
+    let branch = if last { "└── " } else { "├── " };
+    let annot = resolution
+        .find(node)
+        .map(|r| {
+            let fp = if r.footprint.is_empty() {
+                String::new()
+            } else {
+                format!("  caps: {}", render_footprint(&r.footprint))
+            };
+            format!("{}@{}{fp}", node, r.version)
+        })
+        .unwrap_or_else(|| node.to_string());
+
+    if !seen.insert(node.to_string()) {
+        println!("{prefix}{branch}{annot} (*)"); // already expanded above
+        return;
+    }
+    println!("{prefix}{branch}{annot}");
+    let child_prefix = format!("{prefix}{}", if last { "    " } else { "│   " });
+    let children = edges.get(node).cloned().unwrap_or_default();
+    for (i, child) in children.iter().enumerate() {
+        let l = i + 1 == children.len();
+        print_tree(resolution, edges, child, &child_prefix, l, seen);
+    }
 }
 
 fn find_paths(

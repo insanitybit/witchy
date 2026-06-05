@@ -421,6 +421,35 @@ fn module_name_collision_between_deps_is_caught() {
 }
 
 #[test]
+fn tree_shows_transitive_deps_and_capabilities() {
+    let sb = Sandbox::new("tree");
+    let app = new_app(&sb);
+    sb.publish_lib("acme/url", "1.0.0", "fn parse(s: String) -> String { s }\n");
+
+    let dir = sb.work.join("http");
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::write(
+        dir.join("witchy.toml"),
+        "[rune]\nname = \"acme/http\"\nversion = \"1.0.0\"\n\n[dependencies]\n\"acme/url\" = \"^1.0.0\"\n",
+    )
+    .unwrap();
+    std::fs::write(dir.join("src/http.witchy"), "fn get(net: Net, u: String) -> String { u }\n").unwrap();
+    assert!(sb.run(&dir, "ci-bot", &["publish"]).status.success());
+    assert!(sb
+        .run(&dir, "alice", &["promote", "acme/http@1.0.0", "--factor", "totp"])
+        .status
+        .success());
+    assert!(sb.run(&app, "dev", &["add", "acme/http", "--allow-cap", "Net"]).status.success());
+
+    let out = sb.run(&app, "dev", &["tree"]);
+    let s = stdout(&out);
+    assert!(s.contains("acme/http"), "tree: {s}");
+    assert!(s.contains("acme/url"), "tree: {s}");
+    assert!(s.contains("Net"), "tree should annotate caps: {s}");
+    assert!(s.contains("└──") || s.contains("├──"), "tree should draw branches: {s}");
+}
+
+#[test]
 fn path_dependency_builds_and_runs() {
     let sb = Sandbox::new("path");
     let app = new_app(&sb);
