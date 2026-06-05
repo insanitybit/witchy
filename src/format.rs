@@ -703,16 +703,10 @@ mod tests {
     }
 
     #[test]
-    fn reformats_brace_source_to_brace_free() {
-        let src = r#"
-            fn classify(n: Int) -> String {
-              if n > 0 { "pos" } else { "non-pos" }
-            }
-            fn main(console: Console) {
-              print(console, classify(5))
-            }
-        "#;
+    fn reformat_is_idempotent_and_brace_free() {
+        let src = "fn classify(n: Int) -> String:\n    if n > 0: \"pos\" else: \"non-pos\"\n\nfn main(console: Console):\n    print(console, classify(5))\n";
         let out = reformat(src).expect("round-trips");
         assert!(!out.contains('{'), "still has braces: {out}");
+        assert_eq!(reformat(&out).unwrap(), out, "not idempotent");
     }
 }

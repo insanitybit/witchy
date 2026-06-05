@@ -604,8 +604,11 @@ impl Lexer {
             ('?', _) => Tok::Question,
             ('(', _) => Tok::LParen,
             (')', _) => Tok::RParen,
-            ('{', _) => Tok::LBrace,
-            ('}', _) => Tok::RBrace,
+            ('{', _) | ('}', _) => {
+                return Err(self.err(
+                    "braces are not part of witchy syntax — use indentation (`:` and an indented block)",
+                ))
+            }
             ('[', _) => Tok::LBracket,
             (']', _) => Tok::RBracket,
             (',', _) => Tok::Comma,
@@ -745,12 +748,7 @@ mod tests {
 
     #[test]
     fn lexes_a_small_program() {
-        let src = r#"
-            // a greeter
-            fn greet(name: String) -> String {
-              "hi, " <> name
-            }
-        "#;
+        let src = "fn greet(name: String) -> String: \"hi, \" <> name";
         let toks = kinds(src);
         assert_eq!(
             toks,
@@ -764,11 +762,10 @@ mod tests {
                 Tok::RParen,
                 Tok::RArrow,
                 Tok::Ident("String".into()),
-                Tok::LBrace,
+                Tok::Colon,
                 Tok::Str("hi, ".into()),
                 Tok::Concat,
                 Tok::Ident("name".into()),
-                Tok::RBrace,
                 Tok::Eof,
             ]
         );
@@ -886,11 +883,11 @@ mod tests {
     }
 
     #[test]
-    fn layout_leaves_brace_code_unchanged() {
-        // A line with no trailing `:` opens no block; bracket/brace interiors are
-        // suppressed — so explicit-brace code is a pass-through.
-        let src = "fn f() {\n  let x = [1, 2]\n  x\n}\n";
-        assert_eq!(kinds(src), laid_out(src));
+    fn braces_are_rejected() {
+        // Braces are no longer part of witchy syntax; blocks come only from the
+        // off-side rule, so a literal `{`/`}` is a lex error.
+        assert!(tokenize("fn f() { 0 }").is_err());
+        assert!(tokenize("fn f():\n    0\n").is_ok());
     }
 
     #[test]

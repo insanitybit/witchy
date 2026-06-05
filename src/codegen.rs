@@ -3958,7 +3958,7 @@ fn main() -> Float:
         // Compiled Int is i32; a literal in [2^31, 2^32-1] would silently wrap to
         // a negative, so it's rejected rather than diverging from the i64
         // interpreter. An in-range literal still compiles.
-        let big = parse_module("fn main() -> Int { 3000000000 }").expect("parse");
+        let big = parse_module("fn main() -> Int:\n    3000000000\n").expect("parse");
         let err = compile_module(&big).expect_err("out-of-range literal should be rejected");
         assert!(err.to_string().contains("32-bit range"), "unexpected error: {err}");
         assert_eq!(run_int(r#"
@@ -4097,12 +4097,14 @@ fn main() -> Int:
         // By-value capture cannot propagate a write back to the outer binding, so
         // assigning a captured variable is rejected rather than diverging.
         let src = r#"
-            fn run(f: fn(Int) -> Int, x: Int) -> Int { f(x) }
-            fn main() -> Int {
-                var total = 0
-                run(fn(n: Int) { total = total + n }, 5)
-            }
-        "#;
+fn run(f: fn(Int) -> Int, x: Int) -> Int:
+    f(x)
+fn main() -> Int:
+    var total = 0
+    let add = fn(n: Int):
+        total = total + n
+    run(add, 5)
+"#;
         let module = parse_module(src).expect("parse");
         let err = compile_module(&module).expect_err("should reject outer assignment");
         assert!(
@@ -4184,7 +4186,7 @@ fn main() -> Int:
     fn compiles_int_float_conversions() {
         // int_to_float(7) / 2.0 = 3.5; float_to_int(3.5) = 3
         assert_eq!(
-            run_int("fn main() -> Int { float_to_int(int_to_float(7) / 2.0) }"),
+            run_int("fn main() -> Int:\n    float_to_int(int_to_float(7) / 2.0)\n"),
             3
         );
     }
@@ -4230,7 +4232,7 @@ fn main() -> Int:
 
     #[test]
     fn compiles_boolean_not() {
-        assert_eq!(run_int("fn main() -> Int { if !(1 == 2) { 7 } else { 0 } }"), 7);
+        assert_eq!(run_int("fn main() -> Int:\n    if !(1 == 2): 7 else: 0\n"), 7);
     }
 
     #[test]

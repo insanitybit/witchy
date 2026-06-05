@@ -234,7 +234,7 @@ fn networked_registry_full_lifecycle() {
     let lib = sb.work.join("lib");
     std::fs::create_dir_all(lib.join("src")).unwrap();
     std::fs::write(lib.join("witchy.toml"), "[rune]\nname = \"acme/lib\"\nversion = \"1.0.0\"\n").unwrap();
-    std::fs::write(lib.join("src/lib.witchy"), "fn shout(s: String) -> String { \"HEY \" <> s }\n").unwrap();
+    std::fs::write(lib.join("src/lib.witchy"), "fn shout(s: String) -> String:\n    \"HEY \" <> s\n").unwrap();
     // Publish via a trusted CI identity token (no long-lived API key).
     let ci = server.ci_token("acme/lib-repo", "release.yml");
     assert!(sb.run_id(&lib, "ci", &ci, &["publish"]).status.success());
@@ -255,7 +255,7 @@ fn networked_registry_full_lifecycle() {
     assert!(out.status.success(), "remote add failed: {}", stderr(&out));
     std::fs::write(
         app.join("src/app.witchy"),
-        "import lib\n\nfn main(console: Console) {\n  print(console, lib.shout(\"net\"))\n}\n",
+        "import lib\n\nfn main(console: Console):\n    print(console, lib.shout(\"net\"))\n",
     )
     .unwrap();
     let out = sb.run(&app, "dev", &["run"]);
@@ -280,7 +280,7 @@ fn trusted_publishing_binds_repo_and_rejects_others() {
     let lib = sb.work.join("lib");
     std::fs::create_dir_all(lib.join("src")).unwrap();
     std::fs::write(lib.join("witchy.toml"), "[rune]\nname = \"acme/secure\"\nversion = \"1.0.0\"\n").unwrap();
-    std::fs::write(lib.join("src/secure.witchy"), "fn f(s: String) -> String { s }\n").unwrap();
+    std::fs::write(lib.join("src/secure.witchy"), "fn f(s: String) -> String:\n    s\n").unwrap();
 
     // First trusted publish from acme/secure-repo / release.yml binds the
     // namespace `acme` to that exact source + workflow (TOFU).
@@ -320,7 +320,7 @@ fn bearer_token_is_not_accepted_for_publishing() {
     let lib = sb.work.join("lib");
     std::fs::create_dir_all(lib.join("src")).unwrap();
     std::fs::write(lib.join("witchy.toml"), "[rune]\nname = \"acme/x\"\nversion = \"1.0.0\"\n").unwrap();
-    std::fs::write(lib.join("src/x.witchy"), "fn f(s: String) -> String { s }\n").unwrap();
+    std::fs::write(lib.join("src/x.witchy"), "fn f(s: String) -> String:\n    s\n").unwrap();
     // No identity token at all → remote publish is refused outright.
     let out = sb.run(&lib, "ci", &["publish"]);
     assert!(!out.status.success(), "publish without an identity token must be refused");
@@ -351,7 +351,7 @@ fn tuf_chain_verified_and_snapshot_tamper_rejected() {
     let lib = sb.work.join("lib");
     std::fs::create_dir_all(lib.join("src")).unwrap();
     std::fs::write(lib.join("witchy.toml"), "[rune]\nname = \"acme/t\"\nversion = \"1.0.0\"\n").unwrap();
-    std::fs::write(lib.join("src/t.witchy"), "fn f(s: String) -> String { s }\n").unwrap();
+    std::fs::write(lib.join("src/t.witchy"), "fn f(s: String) -> String:\n    s\n").unwrap();
     let ci = server.ci_token("acme/t-repo", "release.yml");
     assert!(sb.run_id(&lib, "ci", &ci, &["publish"]).status.success());
     let alice = server.human_token("alice");
@@ -387,7 +387,7 @@ fn tuf_rollback_is_rejected() {
     let lib = sb.work.join("lib");
     std::fs::create_dir_all(lib.join("src")).unwrap();
     std::fs::write(lib.join("witchy.toml"), "[rune]\nname = \"acme/r\"\nversion = \"1.0.0\"\n").unwrap();
-    std::fs::write(lib.join("src/r.witchy"), "fn f(s: String) -> String { s }\n").unwrap();
+    std::fs::write(lib.join("src/r.witchy"), "fn f(s: String) -> String:\n    s\n").unwrap();
     let ci = server.ci_token("acme/r-repo", "release.yml");
     assert!(sb.run_id(&lib, "ci", &ci, &["publish"]).status.success());
     let alice = server.human_token("alice");
@@ -426,7 +426,7 @@ fn networked_registry_signature_detects_tampering() {
     let lib = sb.work.join("lib");
     std::fs::create_dir_all(lib.join("src")).unwrap();
     std::fs::write(lib.join("witchy.toml"), "[rune]\nname = \"acme/x\"\nversion = \"1.0.0\"\n").unwrap();
-    std::fs::write(lib.join("src/x.witchy"), "fn f(s: String) -> String { s }\n").unwrap();
+    std::fs::write(lib.join("src/x.witchy"), "fn f(s: String) -> String:\n    s\n").unwrap();
     let ci = server.ci_token("acme/x-repo", "release.yml");
     assert!(sb.run_id(&lib, "ci", &ci, &["publish"]).status.success());
     let alice = server.human_token("alice");
@@ -471,7 +471,7 @@ fn full_lifecycle_publish_promote_add_use() {
     sb.publish_lib(
         "acme/strkit",
         "0.1.0",
-        "fn shout(s: String) -> String {\n  \"HEY \" <> s\n}\n",
+        "fn shout(s: String) -> String:\n    \"HEY \" <> s\n",
     );
 
     // Add the released library (pure — no capability widening, so no consent needed).
@@ -482,7 +482,7 @@ fn full_lifecycle_publish_promote_add_use() {
     // Use it from main.
     std::fs::write(
         app.join("src").join("app.witchy"),
-        "import strkit\n\nfn main(console: Console) {\n  print(console, strkit.shout(\"witchy\"))\n}\n",
+        "import strkit\n\nfn main(console: Console):\n    print(console, strkit.shout(\"witchy\"))\n",
     )
     .unwrap();
     let out = sb.run(&app, "dev", &["run"]);
@@ -508,7 +508,7 @@ fn staged_dependency_is_not_resolvable() {
         "[rune]\nname = \"acme/json\"\nversion = \"1.0.0\"\n",
     )
     .unwrap();
-    std::fs::write(dir.join("src/json.witchy"), "fn p(s: String) -> String { s }\n").unwrap();
+    std::fs::write(dir.join("src/json.witchy"), "fn p(s: String) -> String:\n    s\n").unwrap();
     assert!(sb.run(&dir, "ci-bot", &["publish"]).status.success());
 
     // Adding a pinned-but-staged version must fail and mention STAGED.
@@ -532,7 +532,7 @@ fn promote_requires_second_factor() {
         "[rune]\nname = \"acme/lib\"\nversion = \"1.0.0\"\n",
     )
     .unwrap();
-    std::fs::write(dir.join("src/lib.witchy"), "fn f(s: String) -> String { s }\n").unwrap();
+    std::fs::write(dir.join("src/lib.witchy"), "fn f(s: String) -> String:\n    s\n").unwrap();
     assert!(sb.run(&dir, "ci-bot", &["publish"]).status.success());
 
     // No --factor -> refused.
@@ -555,7 +555,7 @@ fn gate_blocks_capability_widening_then_allows_with_consent() {
     sb.publish_lib(
         "acme/netkit",
         "0.1.0",
-        "fn fetch(net: Net, url: String) -> String {\n  url\n}\n",
+        "fn fetch(net: Net, url: String) -> String:\n    url\n",
     );
 
     // Adding it to a pure app must BLOCK and write nothing.
@@ -593,7 +593,7 @@ fn gate_blocks_capability_widening_then_allows_with_consent() {
 fn transitive_dependency_caps_aggregate() {
     let sb = Sandbox::new("transitive");
     let app = new_app(&sb);
-    sb.publish_lib("acme/url", "1.0.0", "fn parse(s: String) -> String { s }\n");
+    sb.publish_lib("acme/url", "1.0.0", "fn parse(s: String) -> String:\n    s\n");
 
     // http depends on url and demands Net.
     let dir = sb.work.join("http");
@@ -603,7 +603,7 @@ fn transitive_dependency_caps_aggregate() {
         "[rune]\nname = \"acme/http\"\nversion = \"1.0.0\"\n\n[dependencies]\n\"acme/url\" = \"^1.0.0\"\n",
     )
     .unwrap();
-    std::fs::write(dir.join("src/http.witchy"), "fn get(net: Net, u: String) -> String { u }\n").unwrap();
+    std::fs::write(dir.join("src/http.witchy"), "fn get(net: Net, u: String) -> String:\n    u\n").unwrap();
     assert!(sb.run(&dir, "ci-bot", &["publish"]).status.success());
     assert!(sb
         .run(&dir, "alice", &["promote", "acme/http@1.0.0", "--factor", "totp"])
@@ -627,7 +627,7 @@ fn upgrade_that_widens_is_gated() {
     sb.publish_lib(
         "acme/logger",
         "1.0.0",
-        "fn line(s: String) -> String { s }\n",
+        "fn line(s: String) -> String:\n    s\n",
     );
     let out = sb.run(&app, "dev", &["add", "acme/logger"]);
     assert!(out.status.success(), "add v1 failed: {}", stderr(&out));
@@ -641,7 +641,7 @@ fn upgrade_that_widens_is_gated() {
     .unwrap();
     std::fs::write(
         dir.join("src/logger.witchy"),
-        "fn line(s: String) -> String { s }\nfn beacon(net: Net, s: String) -> String { s }\n",
+        "fn line(s: String) -> String:\n    s\nfn beacon(net: Net, s: String) -> String:\n    s\n",
     )
     .unwrap();
     assert!(sb.run(&dir, "ci-bot", &["publish"]).status.success());
@@ -666,7 +666,7 @@ fn upgrade_that_widens_is_gated() {
 fn diamond_dependency_resolves_shared_base_once() {
     let sb = Sandbox::new("diamond");
     let app = new_app(&sb);
-    sb.publish_lib("acme/base", "1.0.0", "fn b(s: String) -> String { s }\n");
+    sb.publish_lib("acme/base", "1.0.0", "fn b(s: String) -> String:\n    s\n");
 
     // left and right both depend on base.
     for side in ["left", "right"] {
@@ -677,7 +677,7 @@ fn diamond_dependency_resolves_shared_base_once() {
             format!("[rune]\nname = \"acme/{side}\"\nversion = \"1.0.0\"\n\n[dependencies]\n\"acme/base\" = \"^1.0.0\"\n"),
         )
         .unwrap();
-        std::fs::write(dir.join(format!("src/{side}.witchy")), "fn x(s: String) -> String { s }\n").unwrap();
+        std::fs::write(dir.join(format!("src/{side}.witchy")), "fn x(s: String) -> String:\n    s\n").unwrap();
         assert!(sb.run(&dir, "ci-bot", &["publish"]).status.success());
         assert!(sb
             .run(&dir, "alice", &["promote", &format!("acme/{side}@1.0.0"), "--factor", "totp"])
@@ -699,8 +699,8 @@ fn diamond_dependency_resolves_shared_base_once() {
 fn update_single_package_leaves_others_pinned() {
     let sb = Sandbox::new("update1");
     let app = new_app(&sb);
-    sb.publish_lib("acme/a", "1.0.0", "fn f(s: String) -> String { s }\n");
-    sb.publish_lib("acme/b", "1.0.0", "fn g(s: String) -> String { s }\n");
+    sb.publish_lib("acme/a", "1.0.0", "fn f(s: String) -> String:\n    s\n");
+    sb.publish_lib("acme/b", "1.0.0", "fn g(s: String) -> String:\n    s\n");
     assert!(sb.run(&app, "dev", &["add", "acme/a"]).status.success());
     assert!(sb.run(&app, "dev", &["add", "acme/b"]).status.success());
 
@@ -733,7 +733,7 @@ fn update_single_package_leaves_others_pinned() {
 #[test]
 fn yank_excludes_from_new_resolution() {
     let sb = Sandbox::new("yank");
-    let lib = sb.publish_lib("acme/old", "1.0.0", "fn f(s: String) -> String { s }\n");
+    let lib = sb.publish_lib("acme/old", "1.0.0", "fn f(s: String) -> String:\n    s\n");
 
     // Yank it.
     let out = sb.run(&lib, "alice", &["yank", "acme/old@1.0.0"]);
@@ -753,7 +753,7 @@ fn yank_excludes_from_new_resolution() {
 fn provenance_is_always_recorded() {
     let sb = Sandbox::new("prov");
     let app = new_app(&sb);
-    sb.publish_lib("acme/p", "1.0.0", "fn f(s: String) -> String { s }\n");
+    sb.publish_lib("acme/p", "1.0.0", "fn f(s: String) -> String:\n    s\n");
     let out = sb.run(&app, "dev", &["add", "acme/p"]);
     assert!(out.status.success(), "add failed: {}", stderr(&out));
     let out = sb.run(&app, "dev", &["audit"]);
@@ -766,7 +766,7 @@ fn provenance_is_always_recorded() {
 fn signature_detects_registry_metadata_tampering() {
     let sb = Sandbox::new("tamper");
     let app = new_app(&sb);
-    sb.publish_lib("acme/x", "1.0.0", "fn f(s: String) -> String { s }\n");
+    sb.publish_lib("acme/x", "1.0.0", "fn f(s: String) -> String:\n    s\n");
     assert!(sb.run(&app, "dev", &["add", "acme/x"]).status.success());
 
     // A healthy verify checks signatures against the registry.
@@ -795,7 +795,7 @@ fn signature_detects_registry_metadata_tampering() {
 fn lock_pins_registry_key_fingerprint() {
     let sb = Sandbox::new("pin");
     let app = new_app(&sb);
-    sb.publish_lib("acme/y", "1.0.0", "fn f(s: String) -> String { s }\n");
+    sb.publish_lib("acme/y", "1.0.0", "fn f(s: String) -> String:\n    s\n");
     assert!(sb.run(&app, "dev", &["add", "acme/y"]).status.success());
     let lock = std::fs::read_to_string(app.join("witchy.lock")).unwrap();
     assert!(lock.contains("registry_root"), "lock must pin the registry key");
@@ -819,7 +819,7 @@ fn std_shadowing_dependency_is_refused() {
         "[rune]\nname = \"evil/list\"\nversion = \"1.0.0\"\n",
     )
     .unwrap();
-    std::fs::write(dir.join("src/list.witchy"), "fn range(n: Int) -> Int { 0 }\n").unwrap();
+    std::fs::write(dir.join("src/list.witchy"), "fn range(n: Int) -> Int:\n    0\n").unwrap();
     assert!(sb.run(&dir, "ci-bot", &["publish"]).status.success());
     assert!(sb
         .run(&dir, "alice", &["promote", "evil/list@1.0.0", "--factor", "totp"])
@@ -845,7 +845,7 @@ fn module_name_collision_between_deps_is_caught() {
             format!("[rune]\nname = \"{ns}/util\"\nversion = \"1.0.0\"\n"),
         )
         .unwrap();
-        std::fs::write(dir.join("src/util.witchy"), "fn helper(s: String) -> String { s }\n").unwrap();
+        std::fs::write(dir.join("src/util.witchy"), "fn helper(s: String) -> String:\n    s\n").unwrap();
         assert!(sb.run(&dir, "ci-bot", &["publish"]).status.success());
         assert!(sb
             .run(&dir, "alice", &["promote", &format!("{ns}/util@1.0.0"), "--factor", "totp"])
@@ -863,11 +863,11 @@ fn module_name_collision_between_deps_is_caught() {
 fn build_is_offline_from_the_store() {
     let sb = Sandbox::new("offline");
     let app = new_app(&sb);
-    sb.publish_lib("acme/lib", "1.0.0", "fn f(s: String) -> String { s }\n");
+    sb.publish_lib("acme/lib", "1.0.0", "fn f(s: String) -> String:\n    s\n");
     assert!(sb.run(&app, "dev", &["add", "acme/lib"]).status.success());
     std::fs::write(
         app.join("src/app.witchy"),
-        "import lib\n\nfn main(console: Console) {\n  print(console, lib.f(\"ok\"))\n}\n",
+        "import lib\n\nfn main(console: Console):\n    print(console, lib.f(\"ok\"))\n",
     )
     .unwrap();
     assert!(sb.run(&app, "dev", &["run"]).status.success());
@@ -884,11 +884,11 @@ fn build_is_offline_from_the_store() {
 fn vendored_sources_build_with_no_store_or_registry() {
     let sb = Sandbox::new("vendor");
     let app = new_app(&sb);
-    sb.publish_lib("acme/lib", "1.0.0", "fn f(s: String) -> String { s }\n");
+    sb.publish_lib("acme/lib", "1.0.0", "fn f(s: String) -> String:\n    s\n");
     assert!(sb.run(&app, "dev", &["add", "acme/lib"]).status.success());
     std::fs::write(
         app.join("src/app.witchy"),
-        "import lib\n\nfn main(console: Console) {\n  print(console, lib.f(\"vend\"))\n}\n",
+        "import lib\n\nfn main(console: Console):\n    print(console, lib.f(\"vend\"))\n",
     )
     .unwrap();
     // Vendor the sources into the repo.
@@ -907,7 +907,7 @@ fn vendored_sources_build_with_no_store_or_registry() {
 fn outdated_reports_newer_versions_and_flags_widening() {
     let sb = Sandbox::new("outdated");
     let app = new_app(&sb);
-    sb.publish_lib("acme/lib", "1.0.0", "fn f(s: String) -> String { s }\n");
+    sb.publish_lib("acme/lib", "1.0.0", "fn f(s: String) -> String:\n    s\n");
     assert!(sb.run(&app, "dev", &["add", "acme/lib"]).status.success());
 
     // Up to date initially.
@@ -919,7 +919,7 @@ fn outdated_reports_newer_versions_and_flags_widening() {
     std::fs::write(dir.join("witchy.toml"), "[rune]\nname = \"acme/lib\"\nversion = \"1.1.0\"\n").unwrap();
     std::fs::write(
         dir.join("src/lib.witchy"),
-        "fn f(s: String) -> String { s }\nfn net_f(net: Net, s: String) -> String { s }\n",
+        "fn f(s: String) -> String:\n    s\nfn net_f(net: Net, s: String) -> String:\n    s\n",
     )
     .unwrap();
     assert!(sb.run(&dir, "ci-bot", &["publish"]).status.success());
@@ -938,7 +938,7 @@ fn outdated_reports_newer_versions_and_flags_widening() {
 fn tree_shows_transitive_deps_and_capabilities() {
     let sb = Sandbox::new("tree");
     let app = new_app(&sb);
-    sb.publish_lib("acme/url", "1.0.0", "fn parse(s: String) -> String { s }\n");
+    sb.publish_lib("acme/url", "1.0.0", "fn parse(s: String) -> String:\n    s\n");
 
     let dir = sb.work.join("http");
     std::fs::create_dir_all(dir.join("src")).unwrap();
@@ -947,7 +947,7 @@ fn tree_shows_transitive_deps_and_capabilities() {
         "[rune]\nname = \"acme/http\"\nversion = \"1.0.0\"\n\n[dependencies]\n\"acme/url\" = \"^1.0.0\"\n",
     )
     .unwrap();
-    std::fs::write(dir.join("src/http.witchy"), "fn get(net: Net, u: String) -> String { u }\n").unwrap();
+    std::fs::write(dir.join("src/http.witchy"), "fn get(net: Net, u: String) -> String:\n    u\n").unwrap();
     assert!(sb.run(&dir, "ci-bot", &["publish"]).status.success());
     assert!(sb
         .run(&dir, "alice", &["promote", "acme/http@1.0.0", "--factor", "totp"])
@@ -974,7 +974,7 @@ fn path_dependency_builds_and_runs() {
     std::fs::write(lib.join("witchy.toml"), "[rune]\nname = \"greet\"\nversion = \"0.1.0\"\n").unwrap();
     std::fs::write(
         lib.join("src/greet.witchy"),
-        "fn hi(s: String) -> String { \"hi \" <> s }\n",
+        "fn hi(s: String) -> String:\n    \"hi \" <> s\n",
     )
     .unwrap();
 
@@ -983,7 +983,7 @@ fn path_dependency_builds_and_runs() {
     assert!(out.status.success(), "add --path failed: {}", stderr(&out));
     std::fs::write(
         app.join("src/app.witchy"),
-        "import greet\n\nfn main(console: Console) {\n  print(console, greet.hi(\"witchy\"))\n}\n",
+        "import greet\n\nfn main(console: Console):\n    print(console, greet.hi(\"witchy\"))\n",
     )
     .unwrap();
     let out = sb.run(&app, "dev", &["run"]);
@@ -1003,7 +1003,7 @@ fn published_rune_cannot_have_path_dependency() {
         "[rune]\nname = \"acme/sneaky\"\nversion = \"1.0.0\"\n\n[dependencies]\n\"x\" = { path = \"../x\" }\n",
     )
     .unwrap();
-    std::fs::write(dir.join("src/sneaky.witchy"), "fn f(s: String) -> String { s }\n").unwrap();
+    std::fs::write(dir.join("src/sneaky.witchy"), "fn f(s: String) -> String:\n    s\n").unwrap();
     assert!(sb.run(&dir, "ci-bot", &["publish"]).status.success());
     assert!(sb
         .run(&dir, "alice", &["promote", "acme/sneaky@1.0.0", "--factor", "totp"])
@@ -1027,7 +1027,7 @@ fn build_rejects_underdeclared_capabilities() {
     .unwrap();
     std::fs::write(
         app.join("src/app.witchy"),
-        "fn fetch(net: Net, u: String) -> String { u }\n",
+        "fn fetch(net: Net, u: String) -> String:\n    u\n",
     )
     .unwrap();
     let out = sb.run(&app, "dev", &["build"]);

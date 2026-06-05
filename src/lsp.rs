@@ -243,7 +243,7 @@ fn main(console: Console):
     fn importing_std_resolves_without_false_errors() {
         // `string` isn't on disk next to /tmp/main.witchy, so this exercises the
         // bundled-module fallback. A clean program must stay diagnostic-free.
-        let src = "import string\nfn main(console: Console) {\n  print(console, string.repeat(\"ab\", 2))\n}\n";
+        let src = "import string\nfn main(console: Console):\n    print(console, string.repeat(\"ab\", 2))\n";
         assert_eq!(diags(src), Vec::<Value>::new());
     }
 

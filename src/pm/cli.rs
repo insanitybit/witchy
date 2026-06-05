@@ -301,9 +301,8 @@ fn cmd_new(rest: &[String]) -> PmResult<()> {
         "// {name} — a witchy rune.\n\
          // `main` is the root actor: the host mints the capabilities it declares\n\
          // (here, Console) and nothing else can perform effects.\n\n\
-         fn main(console: Console) {{\n  \
-           print(console, \"hello from {name}\")\n\
-         }}\n"
+         fn main(console: Console):\n    \
+           print(console, \"hello from {name}\")\n"
     );
     std::fs::write(dir.join("src").join(format!("{module}.witchy")), starter)?;
     println!("created rune `{name}` in {}/", dir.display());
@@ -333,7 +332,7 @@ fn cmd_init(rest: &[String]) -> PmResult<()> {
     if !src.exists() {
         std::fs::write(
             &src,
-            format!("fn main(console: Console) {{\n  print(console, \"hello from {name}\")\n}}\n"),
+            format!("fn main(console: Console):\n    print(console, \"hello from {name}\")\n"),
         )?;
     }
     println!("initialized rune `{name}` (witchy.toml + src/{module}.witchy)");

@@ -3258,16 +3258,15 @@ fn main(console: Console):
         // in both backends: String pass-through, Int/Bool via to_string, embedded
         // calls/arithmetic, `\$` for a literal `$`, and adjacent interpolations.
         let src = r#"
-            fn main(console: Console) {
-              let name = "witchy"
-              let age = 3
-              print(console, "hi ${name}, age ${age}")
-              print(console, "sum: ${int_to_string(age + 10)}")
-              print(console, "flag ${age > 1}")
-              print(console, "literal \${x} stays")
-              print(console, "${name}${name}")
-            }
-        "#;
+fn main(console: Console):
+    let name = "witchy"
+    let age = 3
+    print(console, "hi ${name}, age ${age}")
+    print(console, "sum: ${int_to_string(age + 10)}")
+    print(console, "flag ${age > 1}")
+    print(console, "literal \${x} stays")
+    print(console, "${name}${name}")
+"#;
         assert_eq!(interp(src), run_on_wasm(src));
         assert_eq!(
             run_on_wasm(src),
@@ -3616,16 +3615,19 @@ fn main(console: Console):
     #[test]
     fn list_comprehension_over_records_backends_agree() {
         let client = r#"
-            import list
-            type Item { name: String  qty: Int }
-            fn main(console: Console) {
-              let cart = [Item("apple", 3), Item("bread", 1), Item("milk", 2)]
-              let multi = [it.name for it in cart if it.qty > 1]
-              for n in multi { print(console, n) }
-              let qtys = [it.qty * 10 for it in cart]
-              for q in qtys { print(console, int_to_string(q)) }
-            }
-        "#;
+import list
+type Item:
+    name: String
+    qty: Int
+fn main(console: Console):
+    let cart = [Item("apple", 3), Item("bread", 1), Item("milk", 2)]
+    let multi = [it.name for it in cart if it.qty > 1]
+    for n in multi:
+        print(console, n)
+    let qtys = [it.qty * 10 for it in cart]
+    for q in qtys:
+        print(console, int_to_string(q))
+"#;
         let sources = [("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
         let compiled = run_linked_on_wasm(&sources, "main");
@@ -3644,18 +3646,16 @@ fn main(console: Console):
     #[test]
     fn pythagorean_triples_comprehension_backends_agree() {
         let client = r#"
-            import list
-            fn main(console: Console) {
-              let triples = [(a, b, c) for a in 1..=20 for b in a..=20 for c in b..=20 if a * a + b * b == c * c]
-              print(console, int_to_string(length(triples)))
-              var total = 0
-              for t in triples {
-                let (a, b, c) = t
-                total = total + c
-              }
-              print(console, int_to_string(total))
-            }
-        "#;
+import list
+fn main(console: Console):
+    let triples = [(a, b, c) for a in 1..=20 for b in a..=20 for c in b..=20 if a * a + b * b == c * c]
+    print(console, int_to_string(length(triples)))
+    var total = 0
+    for t in triples:
+        let (a, b, c) = t
+        total = total + c
+    print(console, int_to_string(total))
+"#;
         let sources = [("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
         let compiled = run_linked_on_wasm(&sources, "main");
@@ -3666,13 +3666,14 @@ fn main(console: Console):
     #[test]
     fn multi_generator_comprehension_backends_agree() {
         let src = r#"
-            fn main(console: Console) {
-              let pairs = [x * 10 + y for x in [1, 2] for y in [3, 4]]
-              for p in pairs { print(console, int_to_string(p)) }
-              let upper = [x * 10 + y for x in [1, 2, 3] for y in [1, 2, 3] if y > x]
-              for p in upper { print(console, int_to_string(p)) }
-            }
-        "#;
+fn main(console: Console):
+    let pairs = [x * 10 + y for x in [1, 2] for y in [3, 4]]
+    for p in pairs:
+        print(console, int_to_string(p))
+    let upper = [x * 10 + y for x in [1, 2, 3] for y in [1, 2, 3] if y > x]
+    for p in upper:
+        print(console, int_to_string(p))
+"#;
         assert_eq!(interp(src), run_on_wasm(src), "multi-generator comprehension diverged");
         assert_eq!(
             run_on_wasm(src),
@@ -3750,13 +3751,13 @@ fn main(console: Console):
     #[test]
     fn inclusive_range_backends_agree() {
         let src = r#"
-            fn main(console: Console) {
-              for i in 1..=5 { print(console, int_to_string(i)) }
-              print(console, int_to_string(length(0..=0)))
-              print(console, int_to_string(length(5..=2)))
-              print(console, int_to_string(length([n for n in 1..=4])))
-            }
-        "#;
+fn main(console: Console):
+    for i in 1..=5:
+        print(console, int_to_string(i))
+    print(console, int_to_string(length(0..=0)))
+    print(console, int_to_string(length(5..=2)))
+    print(console, int_to_string(length([n for n in 1..=4])))
+"#;
         assert_eq!(interp(src), run_on_wasm(src), "inclusive range diverged");
         assert_eq!(run_on_wasm(src), vec!["1", "2", "3", "4", "5", "1", "0", "4"]);
     }
@@ -3764,14 +3765,15 @@ fn main(console: Console):
     #[test]
     fn range_operator_backends_agree() {
         let src = r#"
-            fn main(console: Console) {
-              for i in 0..5 { print(console, int_to_string(i)) }
-              let squares = [x * x for x in 1..5]
-              for s in squares { print(console, int_to_string(s)) }
-              print(console, int_to_string(length(3..3)))
-              print(console, int_to_string(length(2..(1 + 4))))
-            }
-        "#;
+fn main(console: Console):
+    for i in 0..5:
+        print(console, int_to_string(i))
+    let squares = [x * x for x in 1..5]
+    for s in squares:
+        print(console, int_to_string(s))
+    print(console, int_to_string(length(3..3)))
+    print(console, int_to_string(length(2..(1 + 4))))
+"#;
         assert_eq!(interp(src), run_on_wasm(src), "range operator diverged");
         assert_eq!(
             run_on_wasm(src),
@@ -3782,14 +3784,15 @@ fn main(console: Console):
     #[test]
     fn list_comprehension_backends_agree() {
         let src = r#"
-            fn main(console: Console) {
-              let squares = [n * n for n in [1, 2, 3, 4]]
-              for s in squares { print(console, int_to_string(s)) }
-              let evens = [n for n in [1, 2, 3, 4, 5, 6] if n % 2 == 0]
-              for e in evens { print(console, int_to_string(e)) }
-              print(console, int_to_string(length([x for x in [] if x > 0])))
-            }
-        "#;
+fn main(console: Console):
+    let squares = [n * n for n in [1, 2, 3, 4]]
+    for s in squares:
+        print(console, int_to_string(s))
+    let evens = [n for n in [1, 2, 3, 4, 5, 6] if n % 2 == 0]
+    for e in evens:
+        print(console, int_to_string(e))
+    print(console, int_to_string(length([x for x in [] if x > 0])))
+"#;
         assert_eq!(interp(src), run_on_wasm(src), "list comprehension diverged");
         assert_eq!(run_on_wasm(src), vec!["1", "4", "9", "16", "2", "4", "6", "0"]);
     }
@@ -5109,11 +5112,10 @@ fn int_at(j: Json, path: String) -> Int:
         None -> 0
 fn main(console: Console):
     match json.decode("{\"user\":{\"name\":\"witchy\",\"age\":1},\"tags\":[\"a\"]}"):
-        Ok(j) -> {
+        Ok(j) ->
             print(console, str_at(j, "user.name"))
             print(console, int_to_string(int_at(j, "user.age")))
             print(console, str_at(j, "user.missing"))
-        }
         Err(e) -> print(console, e)
 "#;
         let sources = [("main", client)];
@@ -5855,11 +5857,10 @@ fn elem_int(j: Json, k: String, i: Int) -> Int:
 
 fn main(console: Console):
     match json.decode("{\"name\":\"witchy\",\"version\":3,\"items\":[10,20,30]}"):
-        Ok(j) -> {
+        Ok(j) ->
             print(console, option.unwrap_or(json.as_string(field(j, "name")), "?"))
             print(console, int_to_string(option.unwrap_or(json.as_int(field(j, "version")), 0)))
             print(console, int_to_string(elem_int(j, "items", 1)))
-        }
         Err(e) -> print(console, e)
 "#;
         let sources = [("main", client)];
@@ -6156,7 +6157,7 @@ fn shout(s: String) -> String:
         let app = dir.join("app.witchy");
         std::fs::write(
             &app,
-            "import strutil\nfn main(console: Console) { print(console, strutil.shout(\"x\")) }",
+            "import strutil\nfn main(console: Console):\n    print(console, strutil.shout(\"x\"))\n",
         )
         .unwrap();
 

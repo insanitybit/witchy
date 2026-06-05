@@ -1750,13 +1750,12 @@ fn main(console: Console, root: Dir):
         // Attenuate to the one held address, connect, send, receive the echo.
         let ok = format!(
             r#"
-            fn main(console: Console, net: Net) {{
-              let only = restrict(net, "{addr}")
-              let s = connect(only, "{addr}")
-              send_line(s, "ping")
-              print(console, recv_line(s))
-            }}
-        "#
+fn main(console: Console, net: Net):
+    let only = restrict(net, "{addr}")
+    let s = connect(only, "{addr}")
+    send_line(s, "ping")
+    print(console, recv_line(s))
+"#
         );
         assert_eq!(run_with(&ok, ".", vec![addr.clone()]).unwrap(), vec!["ping"]);
         server.join().ok();
@@ -1764,11 +1763,10 @@ fn main(console: Console, root: Dir):
         // Denied: connecting to an address not in the allow-list.
         let denied = format!(
             r#"
-            fn main(console: Console, net: Net) {{
-              let s = connect(net, "10.255.255.1:80")
-              send_line(s, "x")
-            }}
-        "#
+fn main(console: Console, net: Net):
+    let s = connect(net, "10.255.255.1:80")
+    send_line(s, "x")
+"#
         );
         assert!(run_with(&denied, ".", vec![addr.clone()]).is_err());
 
@@ -2039,7 +2037,7 @@ fn main(console: Console):
     #[test]
     fn runtime_errors_report_their_source_line() {
         // Division by zero happens on the third line.
-        let src = "fn main(console: Console) {\n  let a = 1\n  print(console, int_to_string(a / 0))\n}";
+        let src = "fn main(console: Console):\n    let a = 1\n    print(console, int_to_string(a / 0))\n";
         let e = run(src).unwrap_err();
         assert!(e.message.contains("line 3"), "got: {}", e.message);
     }
@@ -2218,17 +2216,22 @@ fn main(console: Console):
     fn try_inside_lambda_returns_from_lambda() {
         // `?` inside a lambda short-circuits the lambda, not the outer function.
         let src = r#"
-            type Option { Some(a) None }
-            fn run(f: fn(Option(Int)) -> Option(Int), o: Option(Int)) -> Option(Int) { f(o) }
-            fn render(o: Option(Int)) -> String {
-              match o { Some(n) -> int_to_string(n)  None -> "none" }
-            }
-            fn main(console: Console) {
-              let g = fn(o: Option(Int)) { let n = o?  Some(n + 1) }
-              print(console, render(run(g, Some(7))))
-              print(console, render(run(g, None)))
-            }
-        "#;
+type Option:
+    Some(a)
+    None
+fn run(f: fn(Option(Int)) -> Option(Int), o: Option(Int)) -> Option(Int):
+    f(o)
+fn render(o: Option(Int)) -> String:
+    match o:
+        Some(n) -> int_to_string(n)
+        None -> "none"
+fn main(console: Console):
+    let g = fn(o: Option(Int)):
+        let n = o?
+        Some(n + 1)
+    print(console, render(run(g, Some(7))))
+    print(console, render(run(g, None)))
+"#;
         assert_eq!(run(src).unwrap(), vec!["8", "none"]);
     }
 

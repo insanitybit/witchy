@@ -421,7 +421,7 @@ fn get(net: Net, u: String) -> String:
         let m = Manifest::parse(toml).unwrap();
         let mut files = vec![
             ("witchy.toml".to_string(), toml.as_bytes().to_vec()),
-            ("src/json.witchy".to_string(), b"fn p(s: String) -> String { s }".to_vec()),
+            ("src/json.witchy".to_string(), b"fn p(s: String) -> String:\n    s\n".to_vec()),
         ];
         files.sort_by(|a, b| a.0.cmp(&b.0));
         reg.publish(&RuneSource { files }, &m, "ci-bot", None).unwrap();
