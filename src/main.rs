@@ -4926,6 +4926,41 @@ fn main(console: Console):
         );
     }
 
+    // std/json accessors: decode then pull out a string field, an int field,
+    // and an array element. Interpreter-only: object key lookup compares the
+    // decoded (heap-built) key string with `==`, and the WASM backend can't yet
+    // see that a tuple-destructured loop variable is a String, so it falls back
+    // to pointer comparison (works for interned literals, not for built keys).
+    // See the codegen-gaps note; encode/decode themselves are differential.
+    #[test]
+    fn std_json_accessors_interpreter() {
+        let client = r#"
+import json
+import option
+fn field(j: Json, k: String) -> Json:
+    match json.get(j, k):
+        Some(v) -> v
+        None -> JsonNull
+
+fn elem_int(j: Json, k: String, i: Int) -> Int:
+    match json.index(field(j, k), i):
+        Some(e) -> option.unwrap_or(json.as_int(e), 0)
+        None -> 0
+
+fn main(console: Console):
+    match json.decode("{\"name\":\"witchy\",\"version\":3,\"items\":[10,20,30]}"):
+        Ok(j) -> {
+            print(console, option.unwrap_or(json.as_string(field(j, "name")), "?"))
+            print(console, int_to_string(option.unwrap_or(json.as_int(field(j, "version")), 0)))
+            print(console, int_to_string(elem_int(j, "items", 1)))
+        }
+        Err(e) -> print(console, e)
+"#;
+        let sources = [("main", client)];
+        let out = interpreter::run_program(&sources, "main").expect("interp");
+        assert_eq!(out, vec!["witchy", "3", "20"]);
+    }
+
     // Hex (0x..) and binary (0b..) integer literals, including underscore
     // separators, feeding the bitwise operators. Both backends agree.
     #[test]

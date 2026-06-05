@@ -4,9 +4,11 @@
 // the rest of the data std.
 
 import string
-// `decode` returns a `Result`; importing it here brings `Ok`/`Err`/`Result`
-// into scope for any program that imports `json`.
+// `decode` returns a `Result` and the accessors return `Option`; importing
+// these brings `Ok`/`Err`/`Result` and `Some`/`None`/`Option` into scope for any
+// program that imports `json`.
 import result
+import option
 
 type Json:
     JsonNull
@@ -229,3 +231,51 @@ fn parse_object(s: String, i: Int) -> Result((Json, Int), String):
         else:
             return Err("expected , or } in object")
     Err("unreachable")
+
+// --- Accessors -----------------------------------------------------------
+//
+// Read data out of a decoded value. Each returns an Option, so a wrong shape is
+// `None` rather than a trap.
+
+// Look up a key in a JSON object.
+pub fn get(j: Json, key: String) -> Option(Json):
+    match j:
+        JsonObject(pairs) -> find_key(pairs, key)
+        _ -> None
+
+fn find_key(pairs: List((String, Json)), key: String) -> Option(Json):
+    for p in pairs:
+        let (k, v) = p
+        if k == key:
+            return Some(v)
+    None
+
+// The element at index `i` of a JSON array.
+pub fn index(j: Json, i: Int) -> Option(Json):
+    match j:
+        JsonArray(items) -> if i >= 0 && i < length(items) { Some(at(items, i)) } else { None }
+        _ -> None
+
+// `j` as an integer, when it is one.
+pub fn as_int(j: Json) -> Option(Int):
+    match j:
+        JsonInt(n) -> Some(n)
+        _ -> None
+
+// `j` as a string, when it is one.
+pub fn as_string(j: Json) -> Option(String):
+    match j:
+        JsonString(s) -> Some(s)
+        _ -> None
+
+// `j` as a bool, when it is one.
+pub fn as_bool(j: Json) -> Option(Bool):
+    match j:
+        JsonBool(b) -> Some(b)
+        _ -> None
+
+// `j` as a list of elements, when it is an array.
+pub fn as_array(j: Json) -> Option(List(Json)):
+    match j:
+        JsonArray(items) -> Some(items)
+        _ -> None
