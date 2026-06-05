@@ -1,20 +1,23 @@
 // A capability-secure web server. Handlers are pure `fn(Request) -> Response` —
 // they have no Net/Dir/Console, so a handler literally cannot touch the network,
 // filesystem, or console. Only `main` holds the `Net`, and it hands it to
-// `serve` to listen — never to a handler. Run: witchy --net 127.0.0.1:8080 examples/serve_hello.witchy
+// `serve` to listen — never to a handler. The router, path params, and
+// middleware are axum-flavored; the capability sandbox is pure witchy.
+// Run: witchy --net 127.0.0.1:8080 examples/serve_hello.witchy
 
 import http
+import server
 
 fn home(req: Request) -> Response:
-    http.text(200, "hello, witchy")
+    server.text(200, "hello, witchy")
 
 fn show_user(req: Request) -> Response:
-    http.text(200, "user " <> http.param(req, "id"))
+    server.text(200, "user " <> server.param(req, "id"))
 
 fn main(console: Console, net: Net):
-    let app = http.router()
-        |> http.get("/", home)
-        |> http.get("/users/:id", show_user)
-        |> http.post("/echo", fn(req: Request): http.text(200, http.request_body(req)))
+    let app = server.router()
+        |> server.get("/", home)
+        |> server.get("/users/:id", show_user)
+        |> server.post("/echo", fn(req: Request): server.text(200, server.request_body(req)))
     print(console, "serving on 127.0.0.1:8080")
-    http.serve(net, "127.0.0.1:8080", app)
+    server.serve(net, "127.0.0.1:8080", app)

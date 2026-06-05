@@ -2988,13 +2988,20 @@ impl Counter:
 
     /// Every example must at least compile (parse + link + type-check) and run
     /// to completion through the CLI without an error — whether it prints, just
-    /// returns a value, or is a library/actor file with no `main`.
+    /// returns a value, or is a library/actor file with no `main`. Server demos
+    /// (`serve_*`) are excluded: they need a `--net` grant and run forever, so
+    /// they're covered by the loopback tests instead, not run-to-completion here.
     #[test]
     fn all_examples_run_via_cli() {
         let mut files: Vec<std::path::PathBuf> = std::fs::read_dir("examples")
             .expect("examples directory")
             .filter_map(|e| e.ok().map(|e| e.path()))
             .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("witchy"))
+            .filter(|p| {
+                !p.file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.starts_with("serve_"))
+            })
             .collect();
         files.sort();
         assert!(!files.is_empty(), "no examples found");

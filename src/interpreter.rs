@@ -1899,6 +1899,54 @@ fn main(console: Console, net: Net):
     }
 
     #[test]
+    fn serve_loopback_roundtrip() {
+        use std::io::{Read, Write};
+        use std::net::{TcpListener, TcpStream};
+        let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let addr = format!("127.0.0.1:{port}");
+        let src = format!(
+            r#"
+import http
+import server
+fn main(console: Console, net: Net):
+    let app = server.router()
+        |> server.get("/", fn(req: Request): server.text(200, "home"))
+        |> server.get("/users/:id", fn(req: Request): server.text(200, "user " <> server.param(req, "id")))
+        |> server.post("/echo", fn(req: Request): server.text(201, server.request_body(req)))
+    server.serve_n(net, "{addr}", app, 3)
+"#
+        );
+        // Link in the bundled std (http + its deps), then run on a thread.
+        let parsed = crate::parser::parse_module(&src).expect("parse");
+        let linked =
+            crate::linker::link(vec![("main".to_string(), parsed)], "main").expect("link");
+        let allow = vec![addr.clone()];
+        let server = std::thread::spawn(move || run_module(linked, ".", allow));
+
+        let request = |raw: &str| -> String {
+            for _ in 0..100 {
+                if let Ok(mut s) = TcpStream::connect(&addr) {
+                    s.write_all(raw.as_bytes()).unwrap();
+                    let mut resp = String::new();
+                    s.read_to_string(&mut resp).unwrap();
+                    return resp;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            panic!("could not connect to server");
+        };
+
+        let r1 = request("GET / HTTP/1.1\r\nHost: x\r\n\r\n");
+        assert!(r1.contains("200 OK") && r1.ends_with("home"), "r1: {r1}");
+        let r2 = request("GET /users/42 HTTP/1.1\r\nHost: x\r\n\r\n");
+        assert!(r2.ends_with("user 42"), "r2: {r2}");
+        let r3 = request("POST /echo HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\n\r\nhello");
+        assert!(r3.contains("201 ") && r3.ends_with("hello"), "r3: {r3}");
+
+        server.join().unwrap().unwrap();
+    }
+
+    #[test]
     fn modules_qualified_calls() {
         let strutil = r#"
 fn shout(name: String) -> String:
