@@ -7,6 +7,7 @@
 
 mod actor_system;
 mod ast;
+mod capabilities;
 mod codegen;
 mod interpreter;
 mod lexer;
@@ -91,6 +92,18 @@ fn sender_src(target: u32) -> String {
 }
 
 fn main() -> wasmtime::Result<()> {
+    // `witchy caps <file>` reports the program's host-capability footprint.
+    if std::env::args().nth(1).as_deref() == Some("caps") {
+        let Some(path) = std::env::args().nth(2) else {
+            eprintln!("usage: witchy caps <file>");
+            std::process::exit(1);
+        };
+        if let Err(e) = report_capabilities(&path) {
+            eprintln!("{e}");
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
     // `witchy lsp` starts the language server (stdio), used by editor extensions.
     if std::env::args().nth(1).as_deref() == Some("lsp") {
         if let Err(e) = lsp::run() {
@@ -475,6 +488,35 @@ fn execute_file(path: &str) -> Result<Vec<String>, String> {
     // The root `Dir` capability is anchored at the current directory (the same
     // root the demos use), independent of where the source file lives.
     interpreter::run_module(linked, Path::new("."), Vec::new()).map_err(|e| e.to_string())
+}
+
+/// Print the host-capability footprint of a single source file: which of
+/// `Console`/`Dir`/`Net` each entry point requires, and the union.
+fn report_capabilities(path: &str) -> Result<(), String> {
+    use std::collections::BTreeSet;
+    let src = std::fs::read_to_string(path).map_err(|e| format!("cannot read `{path}`: {e}"))?;
+    let module = parser::parse_module(&src).map_err(|e| e.to_string())?;
+    let fp = capabilities::analyze(&module);
+    let show = |caps: &BTreeSet<&'static str>| -> String {
+        if caps.is_empty() {
+            "(none)".to_string()
+        } else {
+            caps.iter().copied().collect::<Vec<_>>().join(", ")
+        }
+    };
+    println!("Host-capability footprint of {path}:");
+    let width = fp
+        .entries
+        .iter()
+        .map(|e| e.name.len())
+        .max()
+        .unwrap_or(0)
+        .max("total".len());
+    for e in &fp.entries {
+        println!("  {:<width$}  {}", e.name, show(&e.capabilities));
+    }
+    println!("  {:<width$}  {}", "total", show(&fp.total));
+    Ok(())
 }
 
 /// Parse, link, and run a multi-module program through the interpreter.
