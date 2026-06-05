@@ -18,11 +18,11 @@ pub const DEFAULT_REGISTRY: &str = "coven";
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Manifest {
     pub rune: RuneMeta,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "DeclaredCaps::is_empty")]
     pub capabilities: DeclaredCaps,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub dependencies: BTreeMap<String, Dep>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "BuildSection::is_empty")]
     pub build: BuildSection,
 }
 
@@ -38,10 +38,16 @@ pub struct RuneMeta {
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct DeclaredCaps {
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub runtime: Vec<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub build: Vec<String>,
+}
+
+impl DeclaredCaps {
+    pub fn is_empty(&self) -> bool {
+        self.runtime.is_empty() && self.build.is_empty()
+    }
 }
 
 /// A dependency value: either a bare version string or a detailed table.
@@ -88,8 +94,14 @@ impl Dep {
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct BuildSection {
     /// Per-rune build-time capability grants: `[build.grants."ns/name"]`.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub grants: BTreeMap<String, Grant>,
+}
+
+impl BuildSection {
+    pub fn is_empty(&self) -> bool {
+        self.grants.is_empty()
+    }
 }
 
 /// The attenuated build-time authority the consumer grants to one dependency's
