@@ -1962,8 +1962,7 @@ fn tagger(next: fn(Request) -> Response) -> fn(Request) -> Response:
     fn(req: Request): tag(next(req))
 
 fn tag(resp: Response) -> Response:
-    match resp:
-        Response(code, hdrs, body) -> Response(code, push(hdrs, ("x-by", "witchy")), body)
+    server.with_header(resp, "x-by", "witchy")
 
 fn main(console: Console, net: Net):
     let api = server.router()

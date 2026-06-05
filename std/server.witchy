@@ -89,6 +89,17 @@ pub fn not_found() -> Response:
 pub fn redirect(location: String) -> Response:
     Response(303, [("location", location)], "")
 
+// Return `resp` with an extra header — for handlers and middleware that decorate
+// a response (e.g. add a `set-cookie` or a tracing header).
+pub fn with_header(resp: Response, name: String, value: String) -> Response:
+    match resp:
+        Response(code, hdrs, body) -> Response(code, push(hdrs, (name, value)), body)
+
+// Return `resp` with its status code replaced.
+pub fn with_status(resp: Response, code: Int) -> Response:
+    match resp:
+        Response(_code, hdrs, body) -> Response(code, hdrs, body)
+
 // ---- Router (axum-flavored: declarative routes, path params, layers) ----
 
 // One route: HTTP method, a path pattern (`:param` captures a segment, `*rest`
