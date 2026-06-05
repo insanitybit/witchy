@@ -4519,6 +4519,8 @@ mod example_tests {
               print(console, int_to_string(compare(3, 5)))
               print(console, to_string(less(3, 5)))
               print(console, to_string(greater_equal(5, 5)))
+              print(console, int_to_string(compare(1.5, 0.5)))
+              print(console, to_string(less(1.5, 2.5)))
               print(console, int_to_string(compare(Money(10), Money(4))))
               print(console, to_string(greater(Money(10), Money(4))))
               print(console, to_string(equal(Money(7), Money(7))))
@@ -4528,7 +4530,10 @@ mod example_tests {
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
         let compiled = run_linked_on_wasm(&sources, "main");
         assert_eq!(interpreted, compiled, "std Ord diverged");
-        assert_eq!(compiled, vec!["-1", "true", "true", "1", "true", "true"]);
+        assert_eq!(
+            compiled,
+            vec!["-1", "true", "true", "1", "true", "1", "true", "true"]
+        );
     }
 
     // Hex (0x..) and binary (0b..) integer literals, including underscore

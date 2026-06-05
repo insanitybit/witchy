@@ -23,21 +23,46 @@ fn mangle(trait_name: &str, type_name: &str, method: &str) -> String {
     format!("{trait_name}__{type_name}__{method}")
 }
 
-/// Build the ordinary function a (possibly defaulted) method lowers to, giving
-/// the receiver (`self`, the first parameter) the implementing type if it was
-/// left unannotated.
+/// Build the ordinary function a (possibly defaulted) method lowers to.
+/// `Self` in any annotation refers to the implementing type (so a trait can
+/// write `fn eq(self, other: Self) -> Bool`), and an unannotated receiver
+/// (`self`) takes the implementing type too. Without this, an untyped non-self
+/// parameter would default to i32 in codegen and clash with, e.g., an f64 arg.
 fn method_fn(name: String, mut params: Vec<Param>, ret: Option<Type>, body: Block, type_name: &str) -> Function {
+    for p in &mut params {
+        if let Some(t) = &p.ty {
+            p.ty = Some(subst_self(t, type_name));
+        }
+    }
     if let Some(first) = params.first_mut() {
         if first.ty.is_none() {
             first.ty = Some(Type::Named(type_name.to_string(), vec![]));
         }
     }
+    let ret = ret.map(|t| subst_self(&t, type_name));
     Function {
         public: true,
         name,
         params,
         ret,
         body,
+    }
+}
+
+/// Replace every `Self` in a type with the implementing type.
+fn subst_self(t: &Type, impl_type: &str) -> Type {
+    match t {
+        Type::Named(n, args) if n == "Self" && args.is_empty() => {
+            Type::Named(impl_type.to_string(), vec![])
+        }
+        Type::Named(n, args) => {
+            Type::Named(n.clone(), args.iter().map(|a| subst_self(a, impl_type)).collect())
+        }
+        Type::Tuple(ts) => Type::Tuple(ts.iter().map(|a| subst_self(a, impl_type)).collect()),
+        Type::Fn(ps, r) => Type::Fn(
+            ps.iter().map(|a| subst_self(a, impl_type)).collect(),
+            Box::new(subst_self(r, impl_type)),
+        ),
     }
 }
 
