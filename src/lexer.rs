@@ -703,12 +703,20 @@ pub fn apply_layout(tokens: Vec<Token>) -> Vec<Token> {
             out.push(vtok(Tok::RBrace, &near));
             stack.pop();
         }
-        // A trailing `:` is a block header; drop it and remember to open a block.
-        if line.toks.last().is_some_and(|t| t.kind == Tok::Colon) {
-            out.extend(line.toks[..line.toks.len() - 1].iter().cloned());
-            pending = Some(line.indent);
-        } else {
-            out.extend(line.toks.iter().cloned());
+        // A trailing `:` or `->` opens a virtual block for the indented body. The
+        // `:` is a pure block header and is dropped; a match-arm `->` is part of
+        // the grammar, so it is kept and the block opens right after it (giving a
+        // multi-statement match-arm body without braces).
+        match line.toks.last().map(|t| &t.kind) {
+            Some(Tok::Colon) => {
+                out.extend(line.toks[..line.toks.len() - 1].iter().cloned());
+                pending = Some(line.indent);
+            }
+            Some(Tok::RArrow) => {
+                out.extend(line.toks.iter().cloned());
+                pending = Some(line.indent);
+            }
+            _ => out.extend(line.toks.iter().cloned()),
         }
     }
 

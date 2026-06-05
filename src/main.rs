@@ -1492,6 +1492,15 @@ mod example_tests {
     }
 
     #[test]
+    fn multi_statement_match_arm_body_indented() {
+        // A match arm with a multi-statement body, brace-free: `Pat ->` opens an
+        // indented block. Both backends agree.
+        let client = "type Cmd:\n    Inc\n    Dec\n\nfn apply(n: Int, c: Cmd) -> Int:\n    match c:\n        Inc ->\n            let m = n + 1\n            m\n        Dec ->\n            n - 1\n\nfn main(console: Console):\n    print(console, int_to_string(apply(10, Inc)))\n    print(console, int_to_string(apply(10, Dec)))\n";
+        assert_eq!(interp(client), vec!["11", "9"]);
+        assert_eq!(run_on_wasm(client), vec!["11", "9"]);
+    }
+
+    #[test]
     fn brace_free_record_update_form() {
         // `update e: field = value ...` — brace-free record update (one or more
         // whitespace-separated `name = value` overrides). Both backends agree.
