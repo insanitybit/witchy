@@ -3,28 +3,22 @@
 // function ONLY when granted. Without the grant, the compiled module cannot even
 // instantiate — capability security enforced by the WASM sandbox itself.
 
-fn double(n: Int) -> Int {
-  n * 2
-}
+fn double(n: Int) -> Int:
+    n * 2
 
-fn fib(n: Int) -> Int {
-  if n < 2 {
-    n
-  } else {
-    fib(n - 1) + fib(n - 2)
-  }
-}
+fn fib(n: Int) -> Int:
+    if n < 2:
+        n
+    else:
+        fib(n - 1) + fib(n - 2)
 
-fn fact(n: Int) -> Int {
-  match n {
-    0 -> 1
-    _ -> n * fact(n - 1)
-  }
-}
+fn fact(n: Int) -> Int:
+    match n:
+        0 -> 1
+        _ -> n * fact(n - 1)
 
-fn main() -> Int {
-  let a = double(21)
-  let b = fib(10)
-  let c = fact(5)
-  a + b + c
-}
+fn main() -> Int:
+    let a = double(21)
+    let b = fib(10)
+    let c = fact(5)
+    a + b + c
