@@ -2,11 +2,9 @@
 // (quotient, remainder) pair, and main destructures it with `let (q, r) = ...`.
 // (An interpreter feature for now; tuples aren't compiled to WASM yet.)
 
-fn divmod(a: Int, b: Int) -> (Int, Int) {
-  (a / b, a % b)
-}
+fn divmod(a: Int, b: Int) -> (Int, Int):
+    (a / b, a % b)
 
-fn main(console: Console) {
-  let (q, r) = divmod(17, 5)
-  print(console, int_to_string(q) <> " remainder " <> int_to_string(r))
-}
+fn main(console: Console):
+    let (q, r) = divmod(17, 5)
+    print(console, int_to_string(q) <> " remainder " <> int_to_string(r))
