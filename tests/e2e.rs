@@ -324,3 +324,45 @@ fn provenance_is_always_recorded() {
     assert!(s.contains("provenance:"), "audit: {s}");
     assert!(s.contains("uploader=ci-bot"), "audit: {s}");
 }
+
+#[test]
+fn signature_detects_registry_metadata_tampering() {
+    let sb = Sandbox::new("tamper");
+    let app = new_app(&sb);
+    sb.publish_lib("acme/x", "1.0.0", "fn f(s: String) -> String { s }\n");
+    assert!(sb.run(&app, "dev", &["add", "acme/x"]).status.success());
+
+    // A healthy build verifies signatures.
+    assert!(sb.run(&app, "dev", &["build"]).status.success());
+
+    // Attacker edits a signed field of the registry record (source untouched, so
+    // content hashing alone would miss it — the Ed25519 signature must catch it).
+    let meta = sb
+        .home
+        .join("registry/acme/x/1.0.0/coven.json");
+    let json = std::fs::read_to_string(&meta).unwrap().replace("ci-bot", "attacker");
+    std::fs::write(&meta, json).unwrap();
+
+    let out = sb.run(&app, "dev", &["build"]);
+    assert!(!out.status.success(), "tampered metadata must fail the build");
+    assert!(
+        stderr(&out).contains("signature") || stderr(&out).contains("tampered"),
+        "stderr: {}",
+        stderr(&out)
+    );
+}
+
+#[test]
+fn lock_pins_registry_key_fingerprint() {
+    let sb = Sandbox::new("pin");
+    let app = new_app(&sb);
+    sb.publish_lib("acme/y", "1.0.0", "fn f(s: String) -> String { s }\n");
+    assert!(sb.run(&app, "dev", &["add", "acme/y"]).status.success());
+    let lock = std::fs::read_to_string(app.join("witchy.lock")).unwrap();
+    assert!(lock.contains("registry_root"), "lock must pin the registry key");
+    assert!(lock.contains("ed25519:"), "fingerprint format");
+    // verify reports the pinned key as OK.
+    let out = sb.run(&app, "dev", &["verify"]);
+    assert!(out.status.success(), "verify failed: {}", stderr(&out));
+    assert!(stdout(&out).contains("coven root key"));
+}

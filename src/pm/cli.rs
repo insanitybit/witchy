@@ -243,6 +243,16 @@ struct Assembled {
     manifest: Manifest,
 }
 
+/// Write the lockfile for a resolution, pinning the registry's root-key
+/// fingerprint (TOFU) when any dependency comes from a registry.
+fn save_lock(root: &Path, resolution: &Resolution, env: &CovenEnv) -> PmResult<()> {
+    let mut lock = resolution.to_lockfile();
+    if resolution.runes.iter().any(|r| r.registry.is_some()) {
+        lock.registry_root = Some(env.registry.root_fingerprint()?);
+    }
+    lock.save(root)
+}
+
 fn assemble(root_dir: &Path, env: &CovenEnv) -> PmResult<Assembled> {
     let manifest = Manifest::load(root_dir)?;
     let root_src = RuneSource::read_dir(root_dir)?;
@@ -250,6 +260,17 @@ fn assemble(root_dir: &Path, env: &CovenEnv) -> PmResult<Assembled> {
 
     // Lock-drift detection: a present lock must agree with what we resolved.
     let lock = Lockfile::load(root_dir)?;
+    // TOFU: the registry's root signing key must match the one the lock pinned.
+    if let Some(pinned) = &lock.registry_root {
+        if resolution.runes.iter().any(|r| r.registry.is_some()) {
+            let current = env.registry.root_fingerprint()?;
+            if &current != pinned {
+                return err(format!(
+                    "coven registry root key changed: lock pins {pinned} but the registry now presents {current} — refusing to build (possible key compromise). If intentional, delete witchy.lock and re-resolve.",
+                ));
+            }
+        }
+    }
     if !lock.runes.is_empty() {
         for r in &resolution.runes {
             if let Some(l) = lock.find(&r.name) {
@@ -263,7 +284,7 @@ fn assemble(root_dir: &Path, env: &CovenEnv) -> PmResult<Assembled> {
         }
     } else if !resolution.runes.is_empty() {
         // Bootstrap a lock so the next build is reproducible.
-        resolution.to_lockfile().save(root_dir)?;
+        save_lock(root_dir, &resolution, env)?;
     }
 
     // §7.1: a dependency's build step may run only with the build-time
@@ -446,7 +467,7 @@ fn cmd_add(rest: &[String]) -> PmResult<()> {
 
     // Persist manifest + lock.
     manifest.save(root)?;
-    resolution.to_lockfile().save(root)?;
+    save_lock(root, &resolution, &env)?;
 
     let added = resolution.find(&name);
     match added {
@@ -484,7 +505,7 @@ fn cmd_update(rest: &[String]) -> PmResult<()> {
         print_block("(update)", "update", &report);
         return err("blocked: capability footprint would widen (see above)");
     }
-    resolution.to_lockfile().save(root)?;
+    save_lock(root, &resolution, &env)?;
     println!("lock updated: {} rune(s) resolved", resolution.runes.len());
     Ok(())
 }
@@ -679,6 +700,22 @@ fn cmd_verify(rest: &[String]) -> PmResult<()> {
         return Ok(());
     }
     let mut ok = true;
+    // Confirm the registry's signing key still matches the pinned fingerprint.
+    if let Some(pinned) = &lock.registry_root {
+        match env.registry.root_fingerprint() {
+            Ok(current) if &current == pinned => {
+                println!("  OK  coven root key {pinned}");
+            }
+            Ok(current) => {
+                println!("  FAIL coven root key changed: pinned {pinned}, now {current}");
+                ok = false;
+            }
+            Err(e) => {
+                println!("  FAIL coven root key unreadable: {e}");
+                ok = false;
+            }
+        }
+    }
     for r in &lock.runes {
         // Re-fetch the source and confirm its content hash matches the lock.
         let src = if let Some(src_kind) = &r.source {

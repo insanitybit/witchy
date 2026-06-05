@@ -18,6 +18,11 @@ pub const LOCKFILE_NAME: &str = "witchy.lock";
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct Lockfile {
+    /// Pinned fingerprint of the coven registry's root signing key (TOFU). A
+    /// mismatch on a later build means the registry's key changed — a possible
+    /// key compromise — and the build is refused.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub registry_root: Option<String>,
     /// Sorted by name for a stable, diff-friendly file.
     #[serde(default, rename = "rune")]
     pub runes: Vec<LockedRune>,
@@ -121,6 +126,7 @@ mod tests {
     #[test]
     fn roundtrip_and_lookup() {
         let lf = Lockfile {
+            registry_root: None,
             runes: vec![locked("acme/json", &[]), locked("acme/http", &["Net"])],
         };
         let tmp = std::env::temp_dir().join(format!("witchy-lock-{}", std::process::id()));
@@ -135,6 +141,7 @@ mod tests {
     #[test]
     fn aggregate_unions_caps() {
         let lf = Lockfile {
+            registry_root: None,
             runes: vec![locked("a", &["Net"]), locked("b", &["Console"])],
         };
         let agg = lf.aggregate_footprint();

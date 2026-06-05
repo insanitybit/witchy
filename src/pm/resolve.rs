@@ -61,7 +61,10 @@ impl Resolution {
             })
             .collect();
         runes.sort_by(|a, b| a.name.cmp(&b.name));
-        Lockfile { runes }
+        Lockfile {
+            registry_root: None,
+            runes,
+        }
     }
 
     /// The aggregate (maximum) authority of the resolved dependency tree.

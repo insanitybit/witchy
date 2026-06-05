@@ -615,7 +615,8 @@ full lifecycle. What is built vs. modelled-for-later:
 | Determinism tiering (§7.2) | **Built.** computed class surfaced by `audit`. |
 | Build-grant enforcement (§7.1) | **Built (enforced; grant ⊇ demand).** Build *capability types* don't exist in the language yet, so build footprints are empty in practice — the machinery is ready for when they land. |
 | CLI (§11) | **Built.** new/init/add/build/run/update/audit/why/why-cap/publish/promote/yank/list/verify/vendor. Never executes dependency code. |
-| coven as a **hosted, network** registry with real **TUF roles + Sigstore/OIDC signing** (§8, §12) | **Modelled, not built.** The current registry is a faithful *local* directory model (content-addressed, immutable, lifecycle + provenance). The cryptographic trust chain and network transport are the next real-infra step. |
+| **Cryptographic record signing** (§8 targets role) | **Built.** `src/pm/keys.rs` — every registry record is **Ed25519-signed** by the registry root key; `fetch`/`build`/`verify` reject any record whose signature fails (catches metadata tampering that content-hashing alone would miss). The client **pins the key fingerprint (TOFU)** in `witchy.lock` and refuses to build if the registry's key changes. |
+| coven as a **hosted, network** registry with full **TUF role separation + Sigstore/OIDC** (§8, §12) | **Partly modelled.** Signing + TOFU pinning are built (above); what remains is the *hosted* network transport, separate `snapshot`/`timestamp` roles, per-namespace delegated maintainer keys, and keyless OIDC identity. The current registry is a faithful *local* directory model. |
 | Sandboxed **build actor execution** (§7.1) | **Modelled, not built.** Awaits Build* capability types in the language; the footprint/grant/gate plumbing already accounts for it. |
 
 The invariant holds today: **no dependency code is ever executed during

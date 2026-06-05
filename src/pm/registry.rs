@@ -52,6 +52,10 @@ pub struct Record {
     pub second_factor: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provenance: Option<String>,
+    /// Ed25519 signature (hex) over [`Record::signing_payload`], by the registry
+    /// root key. Re-signed on every state transition.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sig: Option<String>,
 }
 
 impl Record {
@@ -60,6 +64,29 @@ impl Record {
             runtime: self.runtime_footprint.iter().cloned().collect(),
             build: self.build_footprint.iter().cloned().collect(),
         }
+    }
+
+    /// The canonical, signed view of a record: every security-relevant field
+    /// except the signature itself. Tampering with any of these breaks the
+    /// signature.
+    fn signing_payload(&self) -> String {
+        let state = match self.state {
+            State::Staged => "staged",
+            State::Released => "released",
+            State::Yanked => "yanked",
+        };
+        format!(
+            "coven-v1\nname={}\nversion={}\nstate={}\nhash={}\nrt={}\nbuild={}\nuploaded_by={}\npromoted_by={}\nfactor={}",
+            self.name,
+            self.version,
+            state,
+            self.hash,
+            self.runtime_footprint.join(","),
+            self.build_footprint.join(","),
+            self.uploaded_by,
+            self.promoted_by.as_deref().unwrap_or(""),
+            self.second_factor.as_deref().unwrap_or(""),
+        )
     }
 }
 
@@ -83,6 +110,36 @@ impl Registry {
 
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    fn key(&self) -> PmResult<super::keys::RegistryKey> {
+        super::keys::RegistryKey::load_or_create(&self.root)
+    }
+
+    /// The fingerprint of this registry's root signing key — the value a client
+    /// pins (TOFU) so the key cannot be silently swapped.
+    pub fn root_fingerprint(&self) -> PmResult<String> {
+        Ok(self.key()?.fingerprint())
+    }
+
+    /// Verify a record's signature against the registry's published root key.
+    /// A missing or invalid signature is a hard failure (tampered metadata).
+    pub fn verify_record(&self, record: &Record) -> PmResult<()> {
+        let pubkey = super::keys::read_public(&self.root)?;
+        let Some(sig) = &record.sig else {
+            return err(format!(
+                "{}@{} has no signature — refusing to trust unsigned metadata",
+                record.name, record.version
+            ));
+        };
+        if super::keys::verify(&pubkey, record.signing_payload().as_bytes(), sig) {
+            Ok(())
+        } else {
+            err(format!(
+                "signature verification FAILED for {}@{} — registry metadata was tampered with",
+                record.name, record.version
+            ))
+        }
     }
 
     fn version_dir(&self, name: &str, version: &str) -> PathBuf {
@@ -127,7 +184,7 @@ impl Registry {
         std::fs::create_dir_all(&dir)?;
         src.write_to(&dir)?;
 
-        let record = Record {
+        let mut record = Record {
             name: name.clone(),
             version: version.clone(),
             state: State::Staged,
@@ -149,8 +206,9 @@ impl Registry {
                     .unwrap_or_default();
                 format!("uploader={uploaded_by}|at={}|hash={hash}{src}", now_unix())
             }),
+            sig: None,
         };
-        self.write_record(&record)?;
+        self.write_record(&mut record)?;
         Ok(record)
     }
 
@@ -196,7 +254,7 @@ impl Registry {
         record.state = State::Released;
         record.promoted_by = Some(promoter.to_string());
         record.second_factor = Some(second_factor.to_string());
-        self.write_record(&record)?;
+        self.write_record(&mut record)?;
 
         Ok(Promotion {
             record,
@@ -208,7 +266,7 @@ impl Registry {
     pub fn yank(&self, name: &str, version: &str) -> PmResult<()> {
         let mut record = self.record(name, version)?;
         record.state = State::Yanked;
-        self.write_record(&record)
+        self.write_record(&mut record)
     }
 
     /// Read a version's metadata record.
@@ -219,7 +277,11 @@ impl Registry {
         serde_json::from_str(&text).map_err(|e| PmError(format!("corrupt {META} for {name}: {e}")))
     }
 
-    fn write_record(&self, record: &Record) -> PmResult<()> {
+    /// Sign and persist a record. Signing happens here so every state
+    /// transition (publish/promote/yank) re-signs the canonical payload.
+    fn write_record(&self, record: &mut Record) -> PmResult<()> {
+        let key = self.key()?;
+        record.sig = Some(key.sign(record.signing_payload().as_bytes()));
         let path = self.meta_path(&record.name, &record.version);
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
@@ -283,6 +345,10 @@ impl Registry {
     /// Fetch a version's source, verifying the content hash against its record.
     pub fn fetch(&self, name: &str, version: &str) -> PmResult<RuneSource> {
         let record = self.record(name, version)?;
+        // The record itself must be validly signed — otherwise an attacker who
+        // swapped the source could just rewrite `hash` to match. Signature first,
+        // then confirm the source matches the signed hash.
+        self.verify_record(&record)?;
         let src = RuneSource::read_dir(&self.rune_dir(name, version))?;
         if src.hash() != record.hash {
             return err(format!(
@@ -352,10 +418,13 @@ mod tests {
     }
 
     fn fastish_nonce() -> u128 {
-        std::time::SystemTime::now()
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static CTR: AtomicU64 = AtomicU64::new(0);
+        let n = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
-            .as_nanos()
+            .as_nanos();
+        n.wrapping_mul(1000) + CTR.fetch_add(1, Ordering::Relaxed) as u128
     }
 
     fn rune(name: &str, version: &str, body: &str) -> (RuneSource, Manifest) {
@@ -441,6 +510,37 @@ mod tests {
         let rec = reg.publish(&src, &m, "ci-bot").unwrap();
         let fetched = reg.fetch("acme/json", "1.0.0").unwrap();
         assert_eq!(fetched.hash(), rec.hash);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn records_are_signed() {
+        let (reg, root) = tmp_registry();
+        let (src, m) = rune("acme/json", "1.0.0", "fn parse(s: String) -> String { s }");
+        let rec = reg.publish(&src, &m, "ci-bot").unwrap();
+        assert!(rec.sig.is_some(), "publish must sign the record");
+        reg.verify_record(&rec).expect("freshly signed record must verify");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn tampered_record_fails_verification() {
+        let (reg, root) = tmp_registry();
+        let (src, m) = rune("acme/json", "1.0.0", "fn parse(s: String) -> String { s }");
+        reg.publish(&src, &m, "ci-bot").unwrap();
+        reg.promote("acme/json", "1.0.0", "alice", "webauthn").unwrap();
+
+        // An attacker with write access edits a *signed* field of the metadata.
+        // (Source bytes untouched, so the content hash alone would NOT catch it —
+        // only the signature does.)
+        let path = reg.meta_path("acme/json", "1.0.0");
+        let json = std::fs::read_to_string(&path).unwrap().replace("ci-bot", "attacker");
+        std::fs::write(&path, json).unwrap();
+
+        let tampered = reg.record("acme/json", "1.0.0").unwrap();
+        assert!(reg.verify_record(&tampered).is_err(), "tampered record must fail");
+        // ...and fetch refuses it.
+        assert!(reg.fetch("acme/json", "1.0.0").is_err());
         let _ = std::fs::remove_dir_all(&root);
     }
 }

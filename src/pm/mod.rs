@@ -9,6 +9,7 @@
 pub mod cli;
 pub mod footprint;
 pub mod gate;
+pub mod keys;
 pub mod lockfile;
 pub mod manifest;
 pub mod registry;
