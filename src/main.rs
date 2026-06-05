@@ -1353,6 +1353,55 @@ mod example_tests {
     }
 
     #[test]
+    fn std_set_operations_backends_agree() {
+        // Set ops dispatch through Eq (cross-module: set -> eq.member, both
+        // bounded generics), so they are content-correct on both backends for
+        // runtime-built strings and a user Eq type (Id), and dedupe along the way.
+        let client = r#"
+            import set
+            import string
+            type Id { Id(Int) }
+            impl Eq for Id {
+              fn eq(self, other: Self) -> Bool {
+                match self { Id(a) -> match other { Id(b) -> a == b } }
+              }
+            }
+            fn build(s: String) -> String {
+              var acc = ""
+              var i = 0
+              while i < char_count(s) {
+                acc = acc <> substring(s, i, i + 1)
+                i = i + 1
+              }
+              acc
+            }
+            fn main(console: Console) {
+              let a = [build("x"), build("y"), build("x")]
+              let b = [build("y"), build("z")]
+              print(console, string.join(set.union(a, b), ","))
+              print(console, string.join(set.intersection(a, b), ","))
+              print(console, string.join(set.difference(a, b), ","))
+              print(console, to_string(set.is_subset([build("y")], a)))
+              print(console, to_string(set.is_subset([build("z")], a)))
+              print(console, int_to_string(length(set.union([Id(1), Id(2), Id(1)], [Id(2), Id(3)]))))
+            }
+        "#;
+        let sources = [
+            ("set", crate::bundled_module("set").unwrap()),
+            ("eq", crate::bundled_module("eq").unwrap()),
+            ("string", crate::bundled_module("string").unwrap()),
+            ("main", client),
+        ];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "std set ops diverged");
+        assert_eq!(
+            compiled,
+            vec!["x,y,z", "y", "x", "true", "false", "3"]
+        );
+    }
+
+    #[test]
     fn std_ascii_classification_backends_agree() {
         // ASCII predicates are implemented purely via string comparison, so they
         // must agree across the interpreter and the compiled backend. Also drives
