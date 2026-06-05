@@ -3,6 +3,8 @@
 // them a readable form (which the built-in `to_string` cannot do for user
 // types). Pure and capability-free, like every std module.
 
+import string
+
 trait Show:
     fn show(self) -> String
 
@@ -20,3 +22,12 @@ impl Show for Bool:
 impl Show for String:
     fn show(self) -> String:
         self
+
+// Render a list as "[a, b, c]" using the element type's Show impl — so it works
+// for lists of YOUR types too, which the built-in to_string cannot render.
+// Correct on both backends (the Show dispatch is monomorphized per element type).
+pub fn show_list(xs: List(a)) -> String where a: Show:
+    var parts = []
+    for x in xs:
+        parts = push(parts, show(x))
+    "[" <> string.join(parts, ", ") <> "]"

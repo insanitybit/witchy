@@ -1353,6 +1353,40 @@ mod example_tests {
     }
 
     #[test]
+    fn std_show_list_backends_agree() {
+        // `show.show_list` renders a list via the element type's Show impl, so it
+        // works for a user type (Coord) that the built-in to_string cannot print.
+        // Monomorphized dispatch keeps it content-correct on both backends.
+        let client = r#"
+            import show
+            type Coord { Coord(Int, Int) }
+            impl Show for Coord {
+              fn show(self) -> String {
+                match self { Coord(x, y) -> "(" <> int_to_string(x) <> "," <> int_to_string(y) <> ")" }
+              }
+            }
+            fn main(console: Console) {
+              print(console, show.show_list([1, 2, 3]))
+              print(console, show.show_list(["a", "b"]))
+              print(console, show.show_list([Coord(0, 0), Coord(1, 2)]))
+              print(console, show.show_list([true, false]))
+            }
+        "#;
+        let sources = [
+            ("show", crate::bundled_module("show").unwrap()),
+            ("string", crate::bundled_module("string").unwrap()),
+            ("main", client),
+        ];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "std show_list diverged");
+        assert_eq!(
+            compiled,
+            vec!["[1, 2, 3]", "[a, b]", "[(0,0), (1,2)]", "[true, false]"]
+        );
+    }
+
+    #[test]
     fn std_ord_string_and_sort_backends_agree() {
         // `impl Ord for String` makes strings comparable, and the bounded generic
         // `ord.sort` dispatches through the element's Ord impl — so it sorts

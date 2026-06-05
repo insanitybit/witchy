@@ -1,0 +1,18 @@
+// The `Show` trait renders any type as a String — including your own, which the
+// built-in `to_string` cannot. `show_list` formats a whole list through each
+// element's Show impl, so it works for lists of user types too, and it produces
+// the same output whether interpreted or compiled.
+
+import show
+
+type Coord:
+    Coord(Int, Int)
+
+impl Show for Coord:
+    fn show(self) -> String:
+        match self:
+            Coord(x, y) -> "(" <> int_to_string(x) <> ", " <> int_to_string(y) <> ")"
+
+fn main(console: Console):
+    print(console, show.show_list([1, 2, 3]))
+    print(console, show.show_list([Coord(0, 0), Coord(3, 4)]))
