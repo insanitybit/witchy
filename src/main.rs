@@ -4686,6 +4686,44 @@ mod example_tests {
         assert_eq!(compiled, vec!["3", "2", "5", "3", "11"]);
     }
 
+    // Bounds through `List(a)`: a generic over a collection. `ord.maximum` /
+    // `ord.minimum` are bounded generics taking `List(a) where a: Ord`,
+    // monomorphized by the list's element type; the trait call inside resolves
+    // via the for-loop variable's element type. Exercised over Int (incl. an
+    // empty list -> default) and a user Box type. Both backends agree.
+    #[test]
+    fn generic_over_list_backends_agree() {
+        let client = r#"
+            import ord
+            type Box {
+              Box(Int)
+            }
+            impl Ord for Box {
+              fn compare(self, other: Box) -> Int {
+                match self {
+                  Box(a) -> match other {
+                    Box(b) -> if a < b { -1 } else { if a > b { 1 } else { 0 } }
+                  }
+                }
+              }
+            }
+            fn unbox(b: Box) -> Int {
+              match b { Box(n) -> n }
+            }
+            fn main(console: Console) {
+              print(console, int_to_string(ord.maximum([3, 7, 2, 9, 4], 0)))
+              print(console, int_to_string(ord.minimum([3, 7, 2, 9, 4], 100)))
+              print(console, int_to_string(ord.maximum([], 42)))
+              print(console, int_to_string(unbox(ord.maximum([Box(2), Box(8), Box(5)], Box(0)))))
+            }
+        "#;
+        let sources = [("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "generic-over-list diverged");
+        assert_eq!(compiled, vec!["9", "2", "42", "8"]);
+    }
+
     // Hex (0x..) and binary (0b..) integer literals, including underscore
     // separators, feeding the bitwise operators. Both backends agree.
     #[test]

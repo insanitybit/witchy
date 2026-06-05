@@ -54,3 +54,25 @@ pub fn clamp(x: a, lo: a, hi: a) -> a where a: Ord {
   }
 }
 
+// The largest element of `xs`, or `default` when `xs` is empty.
+pub fn maximum(xs: List(a), default: a) -> a where a: Ord {
+  var best = default
+  for x in xs {
+    if greater(x, best) {
+      best = x
+    }
+  }
+  best
+}
+
+// The smallest element of `xs`, or `default` when `xs` is empty.
+pub fn minimum(xs: List(a), default: a) -> a where a: Ord {
+  var best = default
+  for x in xs {
+    if less(x, best) {
+      best = x
+    }
+  }
+  best
+}
+

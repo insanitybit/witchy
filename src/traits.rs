@@ -205,9 +205,17 @@ type Scope = HashMap<String, String>;
 
 fn seed_params(params: &[Param], scope: &mut Scope) {
     for p in params {
-        if let Some(Type::Named(n, _)) = &p.ty {
-            scope.insert(p.name.clone(), n.clone());
+        if let Some(name) = p.ty.as_ref().and_then(type_to_scope_name) {
+            scope.insert(p.name.clone(), name);
         }
+    }
+}
+
+/// Bind a `for`-loop variable to the element type of the iterable, when the
+/// iterable's type is a known `List<...>`.
+fn bind_loop_var(var: &str, iter_type: Option<String>, scope: &mut Scope) {
+    if let Some(elem) = iter_type.as_deref().and_then(list_elem) {
+        scope.insert(var.to_string(), elem.to_string());
     }
 }
 
@@ -304,9 +312,11 @@ impl Ctx<'_> {
                 self.rewrite_expr(cond, scope);
                 self.rewrite_block(body, &mut scope.clone());
             }
-            Expr::For { iter, body, .. } => {
+            Expr::For { var, iter, body } => {
                 self.rewrite_expr(iter, scope);
-                self.rewrite_block(body, &mut scope.clone());
+                let mut s = scope.clone();
+                bind_loop_var(var, self.type_name(iter, scope), &mut s);
+                self.rewrite_block(body, &mut s);
             }
             Expr::Match { scrutinee, arms } => {
                 self.rewrite_expr(scrutinee, scope);
@@ -371,6 +381,38 @@ fn head_type_name(
             BinOp::Concat => Some("String".into()),
             _ => head_type_name(lhs, scope, ctor_results, fn_rets),
         },
+        // A list literal's type encodes its element type when determinable from
+        // the first element, e.g. `List<Int>`, so a `for` loop over it can type
+        // the loop variable. `list_elem` reads the element back out.
+        Expr::List(items) => Some(
+            match items
+                .first()
+                .and_then(|e| head_type_name(e, scope, ctor_results, fn_rets))
+            {
+                Some(elem) => format!("List<{elem}>"),
+                None => "List".to_string(),
+            },
+        ),
+        _ => None,
+    }
+}
+
+/// The element type encoded in a `List<...>` scope name, if any.
+fn list_elem(type_name: &str) -> Option<&str> {
+    type_name.strip_prefix("List<")?.strip_suffix('>')
+}
+
+/// The scope name for a declared parameter type, encoding a list's element type
+/// (`List<Int>`) so loop-variable typing works on annotated list parameters.
+fn type_to_scope_name(t: &Type) -> Option<String> {
+    match t {
+        Type::Named(n, args) if n == "List" => {
+            Some(match args.first().and_then(type_to_scope_name) {
+                Some(elem) => format!("List<{elem}>"),
+                None => "List".to_string(),
+            })
+        }
+        Type::Named(n, _) => Some(n.clone()),
         _ => None,
     }
 }
@@ -481,17 +523,33 @@ impl Mono<'_> {
     ) -> Option<Vec<String>> {
         let mut result = Vec::new();
         for (var, _trait) in &template.bounds {
-            // The bound variable must appear directly as a parameter's type;
-            // take the concrete type from the matching argument.
+            // The bound variable must appear in a parameter's type, either
+            // directly (`x: a`) or as a list element (`xs: List(a)`); take the
+            // concrete type from the matching argument.
             let mut found = None;
             for (i, p) in template.params.iter().enumerate() {
-                if let Some(Type::Named(n, a)) = &p.ty {
-                    if n == var && a.is_empty() {
-                        if let Some(tn) = args.get(i).and_then(|arg| self.type_name(arg, scope)) {
+                let Some(arg) = args.get(i) else { continue };
+                match &p.ty {
+                    Some(Type::Named(n, a)) if n == var && a.is_empty() => {
+                        if let Some(tn) = self.type_name(arg, scope) {
                             found = Some(tn);
                             break;
                         }
                     }
+                    Some(Type::Named(n, a))
+                        if n == "List"
+                            && matches!(a.first(), Some(Type::Named(vn, va)) if vn == var && va.is_empty()) =>
+                    {
+                        if let Some(elem) = self
+                            .type_name(arg, scope)
+                            .as_deref()
+                            .and_then(list_elem)
+                        {
+                            found = Some(elem.to_string());
+                            break;
+                        }
+                    }
+                    _ => {}
                 }
             }
             result.push(found?);
@@ -606,9 +664,11 @@ impl Mono<'_> {
                 self.walk_expr(cond, scope);
                 self.walk_block(body, &mut scope.clone());
             }
-            Expr::For { iter, body, .. } => {
+            Expr::For { var, iter, body } => {
                 self.walk_expr(iter, scope);
-                self.walk_block(body, &mut scope.clone());
+                let mut s = scope.clone();
+                bind_loop_var(var, self.type_name(iter, scope), &mut s);
+                self.walk_block(body, &mut s);
             }
             Expr::Match { scrutinee, arms } => {
                 self.walk_expr(scrutinee, scope);
