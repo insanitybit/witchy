@@ -1,0 +1,26 @@
+// The witchy standard `Ord` trait: a total ordering. `compare(a, b)` returns a
+// negative number, zero, or a positive number when `a` is respectively less
+// than, equal to, or greater than `b`. A built-in impl covers `Int` (a `Float`
+// impl awaits float-parameter codegen support); implement `Ord` for your own
+// types to make them comparable — the derived `less`/`greater`/`equal` (and the
+// `_equal` variants) then come for free. Pure and capability-free, like every
+// std module.
+
+trait Ord {
+  fn compare(self, other) -> Int
+  fn less(self, other) -> Bool { compare(self, other) < 0 }
+  fn greater(self, other) -> Bool { compare(self, other) > 0 }
+  fn equal(self, other) -> Bool { compare(self, other) == 0 }
+  fn less_equal(self, other) -> Bool { compare(self, other) <= 0 }
+  fn greater_equal(self, other) -> Bool { compare(self, other) >= 0 }
+}
+
+impl Ord for Int {
+  fn compare(self, other: Int) -> Int {
+    if self < other {
+      -1
+    } else {
+      if self > other { 1 } else { 0 }
+    }
+  }
+}

@@ -4495,6 +4495,42 @@ mod example_tests {
         assert_eq!(compiled, vec!["42", "N"]);
     }
 
+    // The standard `Ord` trait: `import ord` brings comparison polymorphism into
+    // scope. The built-in Int impl, a user type implementing only `compare`, and
+    // the derived default methods (`less`/`greater`/`equal`) all work, and both
+    // backends agree.
+    #[test]
+    fn std_ord_trait_backends_agree() {
+        let client = r#"
+            import ord
+            type Money {
+              Money(Int)
+            }
+            impl Ord for Money {
+              fn compare(self, other: Money) -> Int {
+                match self {
+                  Money(a) -> match other {
+                    Money(b) -> if a < b { -1 } else { if a > b { 1 } else { 0 } }
+                  }
+                }
+              }
+            }
+            fn main(console: Console) {
+              print(console, int_to_string(compare(3, 5)))
+              print(console, to_string(less(3, 5)))
+              print(console, to_string(greater_equal(5, 5)))
+              print(console, int_to_string(compare(Money(10), Money(4))))
+              print(console, to_string(greater(Money(10), Money(4))))
+              print(console, to_string(equal(Money(7), Money(7))))
+            }
+        "#;
+        let sources = [("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "std Ord diverged");
+        assert_eq!(compiled, vec!["-1", "true", "true", "1", "true", "true"]);
+    }
+
     // Hex (0x..) and binary (0b..) integer literals, including underscore
     // separators, feeding the bitwise operators. Both backends agree.
     #[test]
