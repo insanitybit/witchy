@@ -41,3 +41,23 @@ pub fn index_of(xs: List(a), x: a) -> Int where a: Eq:
             return i
         i = i + 1
     0 - 1
+
+// How many elements equal `x` (by the element type's Eq). Correct on both
+// backends, unlike a generic `==` count over non-primitive elements.
+pub fn count(xs: List(a), x: a) -> Int where a: Eq:
+    var n = 0
+    for e in xs:
+        if eq(e, x):
+            n = n + 1
+    n
+
+// The list with duplicates removed, keeping the first occurrence of each
+// element (by the element type's Eq), in original order. The content-correct
+// counterpart to `list.unique`, which compares pointers in compiled code and so
+// fails to dedupe runtime-built strings and records.
+pub fn unique(xs: List(a)) -> List(a) where a: Eq:
+    var out = []
+    for x in xs:
+        if !member(out, x):
+            out = push(out, x)
+    out

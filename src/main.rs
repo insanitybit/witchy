@@ -1261,6 +1261,50 @@ mod example_tests {
     }
 
     #[test]
+    fn std_eq_count_unique_backends_agree() {
+        // `eq.count` / `eq.unique` dispatch through the element type's Eq impl, so
+        // they are content-correct on BOTH backends — including runtime-built
+        // strings, where `list.unique`'s generic `==` compares pointers and fails
+        // to dedupe in compiled code. A user `impl Eq` works too (Tag).
+        let client = r#"
+            import eq
+            import string
+            type Tag { Tag(Int) }
+            impl Eq for Tag {
+              fn eq(self, other: Self) -> Bool {
+                match self { Tag(a) -> match other { Tag(b) -> a == b } }
+              }
+            }
+            fn build(s: String) -> String {
+              var acc = ""
+              var i = 0
+              while i < char_count(s) {
+                acc = acc <> substring(s, i, i + 1)
+                i = i + 1
+              }
+              acc
+            }
+            fn main(console: Console) {
+              let words = [build("a"), build("b"), build("a"), build("c"), build("b"), build("a")]
+              print(console, int_to_string(eq.count(words, build("a"))))
+              print(console, int_to_string(eq.count(words, build("z"))))
+              print(console, string.join(eq.unique(words), ","))
+              print(console, int_to_string(length(eq.unique([Tag(1), Tag(2), Tag(1), Tag(2), Tag(3)]))))
+              print(console, int_to_string(eq.count([Tag(1), Tag(2), Tag(1)], Tag(1))))
+            }
+        "#;
+        let sources = [
+            ("eq", crate::bundled_module("eq").unwrap()),
+            ("string", crate::bundled_module("string").unwrap()),
+            ("main", client),
+        ];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "std eq count/unique diverged");
+        assert_eq!(compiled, vec!["3", "0", "a,b,c", "3", "2"]);
+    }
+
+    #[test]
     fn std_ord_string_and_sort_backends_agree() {
         // `impl Ord for String` makes strings comparable, and the bounded generic
         // `ord.sort` dispatches through the element's Ord impl — so it sorts
