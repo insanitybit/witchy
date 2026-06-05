@@ -4956,6 +4956,53 @@ fn main(console: Console, net: Net):
         assert_eq!(out, vec!["200".to_string(), "hello body".to_string()]);
     }
 
+    // std/http response headers: case-insensitive lookup + a missing header.
+    // Interpreter-only (networking).
+    #[test]
+    fn std_http_headers_against_loopback() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut req = Vec::new();
+                let mut tmp = [0u8; 256];
+                while let Ok(n) = stream.read(&mut tmp) {
+                    if n == 0 {
+                        break;
+                    }
+                    req.extend_from_slice(&tmp[..n]);
+                    if req.windows(4).any(|w| w == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                let resp = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nX-Custom: abc\r\nContent-Length: 2\r\nConnection: close\r\n\r\nhi";
+                let _ = stream.write_all(resp.as_bytes());
+            }
+        });
+        let program = format!(
+            r#"
+import http
+import option
+fn main(console: Console, net: Net):
+    let r = http.get(net, "127.0.0.1", {port}, "/")
+    print(console, option.unwrap_or(http.header(r, "Content-Type"), "none"))
+    print(console, option.unwrap_or(http.header(r, "x-custom"), "none"))
+    print(console, option.unwrap_or(http.header(r, "Missing"), "none"))
+"#
+        );
+        let mods = vec![("main".to_string(), parser::parse_module(&program).expect("parse"))];
+        let linked = crate::linker::link(mods, "main").expect("link");
+        let out = interpreter::run_module(
+            linked,
+            std::path::Path::new("."),
+            vec![format!("127.0.0.1:{port}")],
+        )
+        .expect("run");
+        server.join().ok();
+        assert_eq!(out, vec!["application/json", "abc", "none"]);
+    }
+
     // std/json: build a nested Json value and serialize it. Pure (no
     // capabilities), so it compiles to WASM and both backends must agree.
     #[test]
