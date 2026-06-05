@@ -2104,6 +2104,50 @@ fn main(console: Console, net: Net):
     }
 
     #[test]
+    fn serve_form_field_roundtrip() {
+        use std::io::{Read, Write};
+        use std::net::{TcpListener, TcpStream};
+        let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let addr = format!("127.0.0.1:{port}");
+        let src = format!(
+            r#"
+import http
+import server
+fn main(console: Console, net: Net):
+    let app = server.router() |> server.post("/", fn(req: Request): server.text(200, server.form_field(req, "name")))
+    server.serve_n(net, "{addr}", app, 1)
+"#
+        );
+        let parsed = crate::parser::parse_module(&src).expect("parse");
+        let linked =
+            crate::linker::link(vec![("main".to_string(), parsed)], "main").expect("link");
+        let allow = vec![addr.clone()];
+        let server = std::thread::spawn(move || run_module(linked, ".", allow));
+
+        let mut stream = None;
+        for _ in 0..100 {
+            if let Ok(s) = TcpStream::connect(&addr) {
+                stream = Some(s);
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let mut stream = stream.expect("connect");
+        let body = "name=witchy&lang=rust";
+        let req = format!(
+            "POST / HTTP/1.1\r\nHost: x\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        stream.write_all(req.as_bytes()).unwrap();
+        let mut resp = String::new();
+        stream.read_to_string(&mut resp).unwrap();
+        assert!(resp.contains("200 OK") && resp.ends_with("witchy"), "resp: {resp}");
+
+        server.join().unwrap().unwrap();
+    }
+
+    #[test]
     fn handlers_cannot_reach_the_network() {
         // The capability guarantee: a pure handler has no Net, so even trying to
         // open a socket is a compile-time (type) error — it can't be written.
