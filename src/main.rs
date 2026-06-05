@@ -116,20 +116,45 @@ fn main() -> wasmtime::Result<()> {
     if std::env::args().nth(1).as_deref() == Some("--bench") {
         return run_benchmarks();
     }
-    // `witchy <file.witchy>` runs a program; with no argument, run the demos.
-    if let Some(path) = std::env::args().nth(1) {
-        match execute_file(&path) {
-            Ok(output) => {
-                for line in output {
-                    println!("{line}");
+    // `witchy [--net <host:port>]... <file.witchy>` runs a program, granting the
+    // listed hosts to its `Net` capability (the host decides what authority to
+    // hand over). With no file argument, run the demos.
+    {
+        let mut net_allow: Vec<String> = Vec::new();
+        let mut file: Option<String> = None;
+        let mut args = std::env::args().skip(1);
+        while let Some(arg) = args.next() {
+            if let Some(host) = arg.strip_prefix("--net=") {
+                net_allow.push(host.to_string());
+            } else if arg == "--net" {
+                match args.next() {
+                    Some(host) => net_allow.push(host),
+                    None => {
+                        eprintln!("--net requires a <host:port> argument");
+                        std::process::exit(1);
+                    }
                 }
-            }
-            Err(e) => {
-                eprintln!("{e}");
+            } else if file.is_none() {
+                file = Some(arg);
+            } else {
+                eprintln!("unexpected argument: {arg}");
                 std::process::exit(1);
             }
         }
-        return Ok(());
+        if let Some(path) = file {
+            match execute_file(&path, net_allow) {
+                Ok(output) => {
+                    for line in output {
+                        println!("{line}");
+                    }
+                }
+                Err(e) => {
+                    eprintln!("{e}");
+                    std::process::exit(1);
+                }
+            }
+            return Ok(());
+        }
     }
 
     let mut rt = Runtime::new()?;
@@ -414,7 +439,7 @@ fn bundled_module(name: &str) -> Option<&'static str> {
     crate::linker::std_source(name)
 }
 
-fn execute_file(path: &str) -> Result<Vec<String>, String> {
+fn execute_file(path: &str, net_allow: Vec<String>) -> Result<Vec<String>, String> {
     use std::collections::{HashSet, VecDeque};
     use std::path::{Path, PathBuf};
 
@@ -487,7 +512,7 @@ fn execute_file(path: &str) -> Result<Vec<String>, String> {
 
     // The root `Dir` capability is anchored at the current directory (the same
     // root the demos use), independent of where the source file lives.
-    interpreter::run_module(linked, Path::new("."), Vec::new()).map_err(|e| e.to_string())
+    interpreter::run_module(linked, Path::new("."), net_allow).map_err(|e| e.to_string())
 }
 
 /// Print the host-capability footprint of a single source file: which of
@@ -2403,7 +2428,7 @@ mod example_tests {
         assert!(!files.is_empty(), "no examples found");
         for path in files {
             let p = path.to_str().unwrap();
-            let result = crate::execute_file(p);
+            let result = crate::execute_file(p, Vec::new());
             assert!(result.is_ok(), "example `{p}` failed: {result:?}");
         }
     }
@@ -2411,7 +2436,7 @@ mod example_tests {
     #[test]
     fn compute_example_returns_value() {
         assert_eq!(
-            crate::execute_file("examples/compute.witchy").unwrap(),
+            crate::execute_file("examples/compute.witchy", Vec::new()).unwrap(),
             vec!["217"]
         );
     }
@@ -2419,7 +2444,7 @@ mod example_tests {
     #[test]
     fn shapes_example_returns_value() {
         assert_eq!(
-            crate::execute_file("examples/shapes.witchy").unwrap(),
+            crate::execute_file("examples/shapes.witchy", Vec::new()).unwrap(),
             vec!["325"]
         );
     }
@@ -2427,7 +2452,7 @@ mod example_tests {
     #[test]
     fn files_example_reads_sandboxed_file() {
         assert_eq!(
-            crate::execute_file("examples/files.witchy").unwrap(),
+            crate::execute_file("examples/files.witchy", Vec::new()).unwrap(),
             vec!["hello from a sandboxed Dir capability"]
         );
     }
@@ -2437,7 +2462,7 @@ mod example_tests {
     #[test]
     fn std_library_resolves_and_runs_via_cli() {
         assert_eq!(
-            crate::execute_file("examples/std_demo.witchy").unwrap(),
+            crate::execute_file("examples/std_demo.witchy", Vec::new()).unwrap(),
             vec!["30", "3"]
         );
     }
@@ -2446,7 +2471,7 @@ mod example_tests {
     #[test]
     fn sort_runs_via_cli() {
         assert_eq!(
-            crate::execute_file("examples/sort.witchy").unwrap(),
+            crate::execute_file("examples/sort.witchy", Vec::new()).unwrap(),
             vec!["1,1,3,4,5", "5,4,3,1,1"]
         );
     }
@@ -2455,7 +2480,7 @@ mod example_tests {
     #[test]
     fn math_runs_via_cli() {
         assert_eq!(
-            crate::execute_file("examples/math_demo.witchy").unwrap(),
+            crate::execute_file("examples/math_demo.witchy", Vec::new()).unwrap(),
             vec!["7", "5", "10", "1024", "12"]
         );
     }
@@ -2464,7 +2489,7 @@ mod example_tests {
     #[test]
     fn floats_run_via_cli() {
         assert_eq!(
-            crate::execute_file("examples/floats.witchy").unwrap(),
+            crate::execute_file("examples/floats.witchy", Vec::new()).unwrap(),
             vec!["4", "3.5", "5", "1"]
         );
     }
@@ -2473,7 +2498,7 @@ mod example_tests {
     #[test]
     fn list_more_runs_via_cli() {
         assert_eq!(
-            crate::execute_file("examples/list_more.witchy").unwrap(),
+            crate::execute_file("examples/list_more.witchy", Vec::new()).unwrap(),
             vec!["true", "3", "-1", "20", "30"]
         );
     }
@@ -2484,7 +2509,7 @@ mod example_tests {
     #[test]
     fn list_pipeline_runs_via_cli() {
         assert_eq!(
-            crate::execute_file("examples/list_pipeline.witchy").unwrap(),
+            crate::execute_file("examples/list_pipeline.witchy", Vec::new()).unwrap(),
             vec!["233", "2 8", "735"]
         );
     }
@@ -2493,7 +2518,7 @@ mod example_tests {
     #[test]
     fn zip_runs_via_cli() {
         assert_eq!(
-            crate::execute_file("examples/zip.witchy").unwrap(),
+            crate::execute_file("examples/zip.witchy", Vec::new()).unwrap(),
             vec!["0:alice 1:bob 2:carol", "alice=30 bob=25 carol=40"]
         );
     }
@@ -2502,7 +2527,7 @@ mod example_tests {
     #[test]
     fn predicates_run_via_cli() {
         assert_eq!(
-            crate::execute_file("examples/predicates.witchy").unwrap(),
+            crate::execute_file("examples/predicates.witchy", Vec::new()).unwrap(),
             vec!["true", "true", "false", "false"]
         );
     }
@@ -2570,7 +2595,7 @@ mod example_tests {
     #[test]
     fn option_module_runs_via_cli() {
         assert_eq!(
-            crate::execute_file("examples/option_std.witchy").unwrap(),
+            crate::execute_file("examples/option_std.witchy", Vec::new()).unwrap(),
             vec!["10", "-1"]
         );
     }
@@ -2606,7 +2631,7 @@ mod example_tests {
     #[test]
     fn text_processing_runs_via_cli() {
         assert_eq!(
-            crate::execute_file("examples/text.witchy").unwrap(),
+            crate::execute_file("examples/text.witchy", Vec::new()).unwrap(),
             vec!["ALICE | BOB | CAROL", "===", "alice,***,carol"]
         );
     }
@@ -4799,6 +4824,55 @@ fn main(console: Console):
         assert_eq!(run_on_wasm(src), vec!["6", "10"]);
     }
 
+    // std/http: a real HTTP/1.1 GET over the Net capability against a loopback
+    // server. Networking is interpreter-only (not compiled), so this isn't a
+    // differential test; it proves the capability-gated socket primitives plus
+    // the http library parse a live response into status + body.
+    #[test]
+    fn std_http_get_against_loopback() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                // Drain the whole request (up to the blank header line) before
+                // replying — closing with unread data would RST the client.
+                let mut req = Vec::new();
+                let mut tmp = [0u8; 256];
+                while let Ok(n) = stream.read(&mut tmp) {
+                    if n == 0 {
+                        break;
+                    }
+                    req.extend_from_slice(&tmp[..n]);
+                    if req.windows(4).any(|w| w == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                let resp = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello";
+                let _ = stream.write_all(resp.as_bytes());
+            }
+        });
+        let program = format!(
+            r#"
+import http
+fn main(console: Console, net: Net):
+    let r = http.get(net, "127.0.0.1", {port}, "/")
+    print(console, int_to_string(http.status(r)))
+    print(console, http.body(r))
+"#
+        );
+        let mods = vec![("main".to_string(), parser::parse_module(&program).expect("parse"))];
+        let linked = crate::linker::link(mods, "main").expect("link");
+        let out = interpreter::run_module(
+            linked,
+            std::path::Path::new("."),
+            vec![format!("127.0.0.1:{port}")],
+        )
+        .expect("run");
+        server.join().ok();
+        assert_eq!(out, vec!["200".to_string(), "hello".to_string()]);
+    }
+
     // Hex (0x..) and binary (0b..) integer literals, including underscore
     // separators, feeding the bitwise operators. Both backends agree.
     #[test]
@@ -5074,7 +5148,7 @@ fn main(console: Console):
         )
         .unwrap();
 
-        let out = crate::execute_file(app.to_str().unwrap()).unwrap();
+        let out = crate::execute_file(app.to_str().unwrap(), Vec::new()).unwrap();
         assert_eq!(out, vec!["HI x"]);
         std::fs::remove_dir_all(&dir).ok();
     }

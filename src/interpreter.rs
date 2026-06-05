@@ -821,6 +821,21 @@ impl Interpreter {
                 }
                 _ => err("recv_line expects a Socket"),
             },
+            // Read the rest of the connection to EOF (the peer closing the
+            // connection ends it) — e.g. an HTTP `Connection: close` response.
+            "recv_all" => match args {
+                [Value::Socket(id)] => {
+                    let sock = self
+                        .sockets
+                        .get_mut(*id)
+                        .ok_or_else(|| RuntimeError { message: "invalid socket".into() })?;
+                    let mut buf = Vec::new();
+                    std::io::Read::read_to_end(sock, &mut buf)
+                        .map_err(|e| RuntimeError { message: format!("recv failed: {e}") })?;
+                    Ok(Some(Value::Str(String::from_utf8_lossy(&buf).into_owned())))
+                }
+                _ => err("recv_all expects a Socket"),
+            },
             _ => Ok(None),
         }
     }

@@ -509,6 +509,7 @@ impl Checker {
             "restrict" => Some((vec![Ty::Net, Ty::String], Ty::Net)),
             "send_line" => Some((vec![Ty::Socket, Ty::String], Ty::Nil)),
             "recv_line" => Some((vec![Ty::Socket], Ty::String)),
+            "recv_all" => Some((vec![Ty::Socket], Ty::String)),
             // User functions: instantiate generic type parameters fresh per call.
             _ => match self.fn_sigs.get(name).cloned() {
                 Some((params, ret)) => {

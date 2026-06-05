@@ -1,0 +1,48 @@
+// A small HTTP/1.1 client over the `Net` capability — the witchy answer to a
+// slice of Go's net/http. Pure transport built on the capability-gated socket
+// primitives (`connect`/`send_line`/`recv_all`): a module handed a `Net`
+// restricted to some hosts can reach only those, and one handed no `Net` can't
+// reach the network at all. Interpreter-only for now (compiled networking maps
+// to wasi:sockets, a future step).
+
+type Response:
+    Response(Int, String)
+
+// Perform a GET request to `host:port` for `path`, returning the response.
+// Sends `Connection: close`, so the whole response is read back in one go.
+pub fn get(net: Net, host: String, port: Int, path: String) -> Response:
+    let sock = connect(net, host <> ":" <> int_to_string(port))
+    send_line(sock, "GET " <> path <> " HTTP/1.1\r")
+    send_line(sock, "Host: " <> host <> "\r")
+    send_line(sock, "Connection: close\r")
+    send_line(sock, "\r")
+    parse_response(recv_all(sock))
+
+// The numeric status code, e.g. 200.
+pub fn status(r: Response) -> Int:
+    match r:
+        Response(code, _) -> code
+
+// The response body.
+pub fn body(r: Response) -> String:
+    match r:
+        Response(_, b) -> b
+
+// Split the raw response at the blank line separating headers from body.
+fn parse_response(raw: String) -> Response:
+    let sep = index_of(raw, "\r\n\r\n")
+    let bdy = if sep < 0 { "" } else { substring(raw, sep + 4, char_count(raw)) }
+    let line_end = index_of(raw, "\r\n")
+    let status_line = if line_end < 0 { raw } else { substring(raw, 0, line_end) }
+    Response(status_code(status_line), bdy)
+
+// Pull the numeric code out of a status line like "HTTP/1.1 200 OK".
+fn status_code(line: String) -> Int:
+    let sp = index_of(line, " ")
+    if sp < 0:
+        0
+    else:
+        let rest = substring(line, sp + 1, char_count(line))
+        let sp2 = index_of(rest, " ")
+        let code = if sp2 < 0 { rest } else { substring(rest, 0, sp2) }
+        string_to_int(code)
