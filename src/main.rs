@@ -1220,6 +1220,47 @@ mod example_tests {
     }
 
     #[test]
+    fn std_eq_member_backends_agree() {
+        // The Eq trait + the bounded `member` / `index_of` give content-correct
+        // equality on BOTH backends — even for runtime-BUILT strings, where a
+        // generic `==` search does pointer comparison in compiled code and would
+        // wrongly miss. A user `impl Eq` (Box) works, as does the default `ne`.
+        let client = r#"
+            import eq
+            type Box { Box(Int) }
+            impl Eq for Box {
+              fn eq(self, other: Self) -> Bool {
+                match self { Box(a) -> match other { Box(b) -> a == b } }
+              }
+            }
+            fn build(s: String) -> String {
+              var acc = ""
+              var i = 0
+              while i < char_count(s) {
+                acc = acc <> substring(s, i, i + 1)
+                i = i + 1
+              }
+              acc
+            }
+            fn main(console: Console) {
+              let words = [build("apple"), build("banana")]
+              print(console, to_string(eq.member(words, build("banana"))))
+              print(console, to_string(eq.member(words, build("cherry"))))
+              print(console, int_to_string(eq.index_of([10, 20, 30], 20)))
+              print(console, int_to_string(eq.index_of([10, 20, 30], 99)))
+              print(console, to_string(eq.member([Box(1), Box(2)], Box(2))))
+              print(console, to_string(ne(Box(1), Box(2))))
+              print(console, to_string(ne(Box(2), Box(2))))
+            }
+        "#;
+        let sources = [("eq", crate::bundled_module("eq").unwrap()), ("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "std eq member/index_of diverged");
+        assert_eq!(compiled, vec!["true", "false", "1", "-1", "true", "true", "false"]);
+    }
+
+    #[test]
     fn std_result_or_mapor_backends_agree() {
         // The fallback combinators mirror Option's: `or` / `or_else` keep an Ok
         // or supply an alternative (eagerly / error-aware lazily), and `map_or`
