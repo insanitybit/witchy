@@ -4,9 +4,8 @@
 
 import math
 
-fn main(console: Console) {
-  print(console, to_string(sqrt(16.0)))
-  print(console, to_string(math.fabs(-3.5)))
-  print(console, to_string(math.fmax(2.0, 5.0)))
-  print(console, to_string(math.fclamp(9.5, 0.0, 1.0)))
-}
+fn main(console: Console):
+    print(console, to_string(sqrt(16.0)))
+    print(console, to_string(math.fabs(-3.5)))
+    print(console, to_string(math.fmax(2.0, 5.0)))
+    print(console, to_string(math.fclamp(9.5, 0.0, 1.0)))
