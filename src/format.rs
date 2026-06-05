@@ -274,6 +274,10 @@ fn block_stmt(s: &mut String, e: &Expr, depth: usize) {
             multiline(s, e, depth);
         }
         Expr::Block(b) => block(s, b, depth),
+        Expr::Lambda { params, body } => {
+            pad(s, depth);
+            lambda_at(s, params, body, depth);
+        }
         _ => {
             pad(s, depth);
             s.push_str(&expr(e));
@@ -283,11 +287,15 @@ fn block_stmt(s: &mut String, e: &Expr, depth: usize) {
 }
 
 /// The right-hand side of a `let`/`=`/`return`: use a multi-line form when the
-/// value is a `match`/`if` (`match` has no inline form), else an inline expr.
+/// value is a `match` (no inline form) or a lambda with a block body, else an
+/// inline expr.
 fn value_or_block(s: &mut String, e: &Expr, depth: usize) {
     match e {
         Expr::Match { .. } => {
             multiline(s, e, depth);
+        }
+        Expr::Lambda { params, body } => {
+            lambda_at(s, params, body, depth);
         }
         _ => {
             s.push_str(&expr(e));
@@ -370,6 +378,10 @@ fn arm_body(s: &mut String, body: &Expr, depth: usize) {
             s.push(' ');
             multiline(s, body, depth);
         }
+        Expr::Lambda { params, body } => {
+            s.push(' ');
+            lambda_at(s, params, body, depth);
+        }
         _ => {
             s.push(' ');
             s.push_str(&expr(body));
@@ -444,16 +456,59 @@ fn expr(e: &Expr) -> String {
     }
 }
 
-/// The single-expression value of a block (for inline lambda / if bodies).
-fn block_value(b: &Block) -> String {
+/// The single-expression value of a block (for inline lambda / if bodies), or
+/// `None` if the block has no faithful inline form (multiple statements, or a
+/// single expression that itself needs multiple lines).
+fn block_value_opt(b: &Block) -> Option<String> {
     if b.stmts.len() == 1 {
         if let Stmt::Expr(e) = &b.stmts[0] {
-            return expr(e);
+            if inline_ok(e) {
+                return Some(expr(e));
+            }
         }
     }
-    // Multi-statement block in inline position has no brace-free form; this will
-    // fail the round-trip check and be left for manual handling.
-    "0".to_string()
+    None
+}
+
+/// Whether `expr(e)` faithfully renders `e` inline (no `0` placeholder). `match`
+/// and loops have no inline form; an `if`/lambda is inline only if its sub-blocks
+/// are.
+fn inline_ok(e: &Expr) -> bool {
+    match e {
+        Expr::Match { .. } | Expr::While { .. } | Expr::For { .. } | Expr::Block(_) => false,
+        Expr::If { then_block, else_block, .. } => {
+            block_value_opt(then_block).is_some()
+                && else_block.as_ref().is_none_or(|b| block_value_opt(b).is_some())
+        }
+        Expr::Lambda { body, .. } => block_value_opt(body).is_some(),
+        _ => true,
+    }
+}
+
+fn block_value(b: &Block) -> String {
+    block_value_opt(b).unwrap_or_else(|| "0".to_string())
+}
+
+/// Emit a lambda in a layout-friendly position (statement / `let` value / arm):
+/// inline `fn(p): expr` when the body is a single inline expression, otherwise
+/// `fn(p):` followed by an indented block. `s` is positioned where the `fn`
+/// begins.
+fn lambda_at(s: &mut String, params: &[Param], body: &Block, depth: usize) {
+    let ps: Vec<String> = params.iter().map(param).collect();
+    s.push_str("fn(");
+    s.push_str(&ps.join(", "));
+    s.push(')');
+    match block_value_opt(body) {
+        Some(inline) => {
+            s.push_str(": ");
+            s.push_str(&inline);
+            s.push('\n');
+        }
+        None => {
+            s.push_str(":\n");
+            block(s, body, depth + 1);
+        }
+    }
 }
 
 fn comma(xs: &[Expr]) -> String {
@@ -700,6 +755,18 @@ mod tests {
             }
         }
         assert!(failures.is_empty(), "did not round-trip: {failures:?}");
+    }
+
+    #[test]
+    fn block_body_lambdas_round_trip() {
+        // A closure with a multi-statement body, and one whose body is a `match`,
+        // now format as block-form lambdas and re-parse to the same AST.
+        let multi = "fn make(n: Int) -> fn(Int) -> Int:\n    fn(x: Int):\n        let y = (x + n)\n        (y * 2)\n";
+        let out = reformat(multi).expect("multi-statement closure round-trips");
+        assert!(!out.contains('{'), "braces: {out}");
+
+        let matchy = "type Opt:\n    Some(a)\n    None\n\nfn classify() -> fn(Opt(Int)) -> Int:\n    fn(o: Opt(Int)):\n        match o:\n            Some(n) -> n\n            None -> 0\n";
+        assert!(reformat(matchy).is_some(), "match-body closure should round-trip");
     }
 
     #[test]
