@@ -248,3 +248,79 @@ fn transitive_dependency_caps_aggregate() {
     assert!(stdout(&out).contains("acme/http"), "why output: {}", stdout(&out));
     assert!(stdout(&out).contains("acme/url"));
 }
+
+#[test]
+fn upgrade_that_widens_is_gated() {
+    let sb = Sandbox::new("upgrade");
+    let app = new_app(&sb);
+
+    // v1.0.0 of a logger: pure, no capabilities.
+    sb.publish_lib(
+        "acme/logger",
+        "1.0.0",
+        "fn line(s: String) -> String { s }\n",
+    );
+    let out = sb.run(&app, "dev", &["add", "acme/logger"]);
+    assert!(out.status.success(), "add v1 failed: {}", stderr(&out));
+
+    // v1.1.0 quietly starts demanding Net (a classic account-takeover scenario).
+    let dir = sb.work.join("logger");
+    std::fs::write(
+        dir.join("witchy.toml"),
+        "[rune]\nname = \"acme/logger\"\nversion = \"1.1.0\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("src/logger.witchy"),
+        "fn line(s: String) -> String { s }\nfn beacon(net: Net, s: String) -> String { s }\n",
+    )
+    .unwrap();
+    assert!(sb.run(&dir, "ci-bot", &["publish"]).status.success());
+    assert!(sb
+        .run(&dir, "alice", &["promote", "acme/logger@1.1.0", "--factor", "webauthn"])
+        .status
+        .success());
+
+    // `update` must BLOCK: the upgrade widens logger's footprint with Net.
+    let out = sb.run(&app, "dev", &["update"]);
+    assert!(!out.status.success(), "update should block the widening upgrade");
+    assert!(stdout(&out).contains("Net"), "got: {}", stdout(&out));
+
+    // With consent it proceeds.
+    let out = sb.run(&app, "dev", &["update", "--allow-cap", "Net"]);
+    assert!(out.status.success(), "consented update failed: {}", stderr(&out));
+    let lock = std::fs::read_to_string(app.join("witchy.lock")).unwrap();
+    assert!(lock.contains("1.1.0"), "lock should pin the upgraded version");
+}
+
+#[test]
+fn yank_excludes_from_new_resolution() {
+    let sb = Sandbox::new("yank");
+    let lib = sb.publish_lib("acme/old", "1.0.0", "fn f(s: String) -> String { s }\n");
+
+    // Yank it.
+    let out = sb.run(&lib, "alice", &["yank", "acme/old@1.0.0"]);
+    assert!(out.status.success(), "yank failed: {}", stderr(&out));
+
+    // A fresh app can no longer add it (no non-yanked released version).
+    let app = new_app(&sb);
+    let out = sb.run(&app, "dev", &["add", "acme/old"]);
+    assert!(!out.status.success(), "yanked version must not be addable");
+
+    // `list` reflects the yanked state.
+    let out = sb.run(&app, "dev", &["list", "acme/old"]);
+    assert!(stdout(&out).contains("yanked"), "list: {}", stdout(&out));
+}
+
+#[test]
+fn provenance_is_always_recorded() {
+    let sb = Sandbox::new("prov");
+    let app = new_app(&sb);
+    sb.publish_lib("acme/p", "1.0.0", "fn f(s: String) -> String { s }\n");
+    let out = sb.run(&app, "dev", &["add", "acme/p"]);
+    assert!(out.status.success(), "add failed: {}", stderr(&out));
+    let out = sb.run(&app, "dev", &["audit"]);
+    let s = stdout(&out);
+    assert!(s.contains("provenance:"), "audit: {s}");
+    assert!(s.contains("uploader=ci-bot"), "audit: {s}");
+}

@@ -405,12 +405,17 @@ fn cmd_add(rest: &[String]) -> PmResult<()> {
             Some(v) => v,
             None => {
                 // Default to a caret on the latest released version.
-                let latest = env
-                    .registry
-                    .best_match(&name, &Req::Any, false)
-                    .ok_or_else(|| super::PmError(format!(
-                        "no released version of `{name}` in registry `{registry}` to add"
-                    )))?;
+                let latest = env.registry.best_match(&name, &Req::Any, false).ok_or_else(|| {
+                    if env.registry.best_match(&name, &Req::Any, true).is_some() {
+                        super::PmError(format!(
+                            "`{name}` exists but is only STAGED, not released — it must be promoted (second factor) before it can be added"
+                        ))
+                    } else {
+                        super::PmError(format!(
+                            "no released version of `{name}` in registry `{registry}` to add"
+                        ))
+                    }
+                })?;
                 format!("^{}", latest.version)
             }
         };
@@ -551,17 +556,16 @@ fn cmd_audit(rest: &[String]) -> PmResult<()> {
             fp,
             r.footprint.determinism()
         );
-        // Flag yanked deps + missing provenance for registry runes.
-        if let Some(reg) = &r.registry {
-            if reg == DEFAULT_REGISTRY || env.registry.root().exists() {
-                if let Ok(rec) = env.registry.record(&r.name, &r.version) {
-                    if rec.state == State::Yanked {
-                        println!("      WARNING: this version is YANKED.");
-                    }
+        match &r.provenance {
+            Some(p) => println!("      provenance: {p}"),
+            None => println!("      WARNING: no provenance attestation recorded."),
+        }
+        // Flag yanked deps for registry runes.
+        if r.registry.is_some() {
+            if let Ok(rec) = env.registry.record(&r.name, &r.version) {
+                if rec.state == State::Yanked {
+                    println!("      WARNING: this version is YANKED.");
                 }
-            }
-            if r.provenance.is_none() {
-                println!("      note: no provenance attestation recorded.");
             }
         }
     }

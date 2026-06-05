@@ -598,6 +598,29 @@ explicit, recorded approval. No ambient-authority ecosystem can offer this.
 5. **Polish & ecosystem.** Yank/audit advisories, `vendor`, std-as-runes
    decision, WIT-world forward-compat.
 
+---
+
+## 15. Implementation status
+
+A working implementation lives in `src/pm/` (folded into the `witchy` binary)
+with unit tests per module and `tests/e2e.rs` driving the real CLI through the
+full lifecycle. What is built vs. modelled-for-later:
+
+| Area | Status |
+|---|---|
+| Footprint engine (§4) | **Built.** `src/pm/footprint.rs` — static runtime+build footprint from the typed AST, transitive taint through user types. |
+| Block-on-widening gate (§10) | **Built.** `src/pm/gate.rs` + enforced in `add`/`update`; blocks silent widening, `--allow-cap`/`--allow-build-cap` to consent. |
+| Manifest / lockfile / semver / store (§5,6,7) | **Built.** `witchy.toml`, `witchy.lock` (pins hash+footprint+provenance), content-addressed store, PubGrub-lite resolution. |
+| Two-phase publish (§8.1) | **Built (local).** stage → second-factor `promote`, immutability, separation of duties, server-side footprint recomputation. |
+| Determinism tiering (§7.2) | **Built.** computed class surfaced by `audit`. |
+| Build-grant enforcement (§7.1) | **Built (enforced; grant ⊇ demand).** Build *capability types* don't exist in the language yet, so build footprints are empty in practice — the machinery is ready for when they land. |
+| CLI (§11) | **Built.** new/init/add/build/run/update/audit/why/why-cap/publish/promote/yank/list/verify/vendor. Never executes dependency code. |
+| coven as a **hosted, network** registry with real **TUF roles + Sigstore/OIDC signing** (§8, §12) | **Modelled, not built.** The current registry is a faithful *local* directory model (content-addressed, immutable, lifecycle + provenance). The cryptographic trust chain and network transport are the next real-infra step. |
+| Sandboxed **build actor execution** (§7.1) | **Modelled, not built.** Awaits Build* capability types in the language; the footprint/grant/gate plumbing already accounts for it. |
+
+The invariant holds today: **no dependency code is ever executed during
+resolve/install/build** — only `witchy run` executes the user's own program.
+
 Each phase preserves the invariant that **no rune code ever runs with ambient
 authority** — build steps, when present, run only as sandboxed actors holding
 exactly the build-time capabilities the user explicitly granted, pinned in the

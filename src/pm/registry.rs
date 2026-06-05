@@ -65,6 +65,13 @@ impl Record {
 
 const META: &str = "coven.json";
 
+fn now_unix() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
 pub struct Registry {
     root: PathBuf,
 }
@@ -131,11 +138,17 @@ impl Registry {
             uploaded_by: uploaded_by.to_string(),
             promoted_by: None,
             second_factor: None,
-            provenance: manifest
-                .rune
-                .source
-                .clone()
-                .map(|s| format!("source={s}|uploader={uploaded_by}|hash={hash}")),
+            // Provenance always binds bytes -> uploader -> time; a declared source
+            // repo is an optional stronger anchor (SLSA-style) when present.
+            provenance: Some({
+                let src = manifest
+                    .rune
+                    .source
+                    .as_deref()
+                    .map(|s| format!("|source={s}"))
+                    .unwrap_or_default();
+                format!("uploader={uploaded_by}|at={}|hash={hash}{src}", now_unix())
+            }),
         };
         self.write_record(&record)?;
         Ok(record)
