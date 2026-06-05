@@ -4,6 +4,9 @@
 // the rest of the data std.
 
 import string
+// `decode` returns a `Result`; importing it here brings `Ok`/`Err`/`Result`
+// into scope for any program that imports `json`.
+import result
 
 type Json:
     JsonNull
@@ -66,3 +69,163 @@ fn escape_char(c: String) -> String:
         "\\r"
     else:
         c
+
+// --- Decoder (parsing) ---------------------------------------------------
+//
+// A recursive-descent parser. Helpers return `(value, index just past it)` on
+// success and thread errors with `?`. Numbers are integers for now (JSON floats
+// would need a Float-in-collections representation the WASM backend lacks).
+
+// Parse a complete JSON document, or return an error message.
+pub fn decode(s: String) -> Result(Json, String):
+    let r = parse_value(s, skip_ws(s, 0))?
+    let (v, _rest) = r
+    Ok(v)
+
+// The index of the first non-whitespace char at or after `i`.
+fn skip_ws(s: String, i: Int) -> Int:
+    var j = i
+    let n = char_count(s)
+    while j < n:
+        let c = substring(s, j, j + 1)
+        if c == " " || c == "\n" || c == "\t" || c == "\r":
+            j = j + 1
+        else:
+            return j
+    j
+
+// Parse the value at `i` (whitespace already skipped).
+fn parse_value(s: String, i: Int) -> Result((Json, Int), String):
+    if i >= char_count(s):
+        Err("unexpected end of input")
+    else:
+        let c = substring(s, i, i + 1)
+        if c == "{":
+            parse_object(s, i)
+        else if c == "[":
+            parse_array(s, i)
+        else if c == "\"":
+            parse_string(s, i)
+        else if c == "t":
+            parse_lit(s, i, "true", JsonBool(true))
+        else if c == "f":
+            parse_lit(s, i, "false", JsonBool(false))
+        else if c == "n":
+            parse_lit(s, i, "null", JsonNull)
+        else:
+            parse_number(s, i)
+
+fn parse_lit(s: String, i: Int, word: String, value: Json) -> Result((Json, Int), String):
+    let n = char_count(word)
+    if i + n <= char_count(s) && substring(s, i, i + n) == word:
+        Ok((value, i + n))
+    else:
+        Err("invalid literal at " <> int_to_string(i))
+
+fn is_digit(c: String) -> Bool:
+    c == "0" || c == "1" || c == "2" || c == "3" || c == "4"
+        || c == "5" || c == "6" || c == "7" || c == "8" || c == "9"
+
+fn parse_number(s: String, i: Int) -> Result((Json, Int), String):
+    let n = char_count(s)
+    var j = i
+    if j < n && substring(s, j, j + 1) == "-":
+        j = j + 1
+    var digits = 0
+    while j < n && is_digit(substring(s, j, j + 1)):
+        j = j + 1
+        digits = digits + 1
+    if digits == 0:
+        Err("invalid number at " <> int_to_string(i))
+    else:
+        Ok((JsonInt(string_to_int(substring(s, i, j))), j))
+
+fn parse_string(s: String, i: Int) -> Result((Json, Int), String):
+    let r = scan_string(s, i + 1)?
+    let (text, j) = r
+    Ok((JsonString(text), j))
+
+// Scan string contents from `start` (just past the opening quote) to the
+// closing quote, returning the unescaped text and the index past the quote.
+fn scan_string(s: String, start: Int) -> Result((String, Int), String):
+    var acc = ""
+    var j = start
+    let n = char_count(s)
+    while j < n:
+        let c = substring(s, j, j + 1)
+        if c == "\"":
+            return Ok((acc, j + 1))
+        else if c == "\\":
+            if j + 1 >= n:
+                return Err("unterminated escape")
+            else:
+                acc = acc <> unescape(substring(s, j + 1, j + 2))
+                j = j + 2
+        else:
+            acc = acc <> c
+            j = j + 1
+    Err("unterminated string")
+
+fn unescape(e: String) -> String:
+    if e == "n":
+        "\n"
+    else if e == "t":
+        "\t"
+    else if e == "r":
+        "\r"
+    else if e == "/":
+        "/"
+    else:
+        e
+
+fn parse_array(s: String, i: Int) -> Result((Json, Int), String):
+    let n = char_count(s)
+    var items = []
+    var j = skip_ws(s, i + 1)
+    if j < n && substring(s, j, j + 1) == "]":
+        return Ok((JsonArray(items), j + 1))
+    while true:
+        let r = parse_value(s, skip_ws(s, j))?
+        let (v, k) = r
+        items = push(items, v)
+        let m = skip_ws(s, k)
+        if m >= n:
+            return Err("unterminated array")
+        let c = substring(s, m, m + 1)
+        if c == "]":
+            return Ok((JsonArray(items), m + 1))
+        else if c == ",":
+            j = m + 1
+        else:
+            return Err("expected , or ] in array")
+    Err("unreachable")
+
+fn parse_object(s: String, i: Int) -> Result((Json, Int), String):
+    let n = char_count(s)
+    var pairs = []
+    var j = skip_ws(s, i + 1)
+    if j < n && substring(s, j, j + 1) == "}":
+        return Ok((JsonObject(pairs), j + 1))
+    while true:
+        let ws = skip_ws(s, j)
+        if ws >= n || substring(s, ws, ws + 1) != "\"":
+            return Err("expected string key in object")
+        let kr = scan_string(s, ws + 1)?
+        let (key, k1) = kr
+        let colon = skip_ws(s, k1)
+        if colon >= n || substring(s, colon, colon + 1) != ":":
+            return Err("expected : in object")
+        let vr = parse_value(s, skip_ws(s, colon + 1))?
+        let (v, k2) = vr
+        pairs = push(pairs, (key, v))
+        let m = skip_ws(s, k2)
+        if m >= n:
+            return Err("unterminated object")
+        let c = substring(s, m, m + 1)
+        if c == "}":
+            return Ok((JsonObject(pairs), m + 1))
+        else if c == ",":
+            j = m + 1
+        else:
+            return Err("expected , or } in object")
+    Err("unreachable")

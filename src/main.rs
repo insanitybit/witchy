@@ -4901,6 +4901,31 @@ fn main(console: Console):
         );
     }
 
+    // std/json decode: parse JSON text then re-encode it. The round trip
+    // exercises the recursive-descent parser (objects, arrays, strings, bools,
+    // null, negative ints, nesting) and must agree on both backends.
+    #[test]
+    fn std_json_decode_roundtrip_backends_agree() {
+        let client = r#"
+import json
+fn main(console: Console):
+    let input = "{\"name\":\"witchy\",\"nums\":[1,2,3],\"ok\":true,\"nil\":null,\"neg\":-5,\"nested\":{\"a\":[true,false]}}"
+    match json.decode(input):
+        Ok(j) -> print(console, json.encode(j))
+        Err(e) -> print(console, "error: " <> e)
+"#;
+        let sources = [("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "std json decode diverged");
+        assert_eq!(
+            compiled,
+            vec![
+                r#"{"name":"witchy","nums":[1,2,3],"ok":true,"nil":null,"neg":-5,"nested":{"a":[true,false]}}"#
+            ]
+        );
+    }
+
     // Hex (0x..) and binary (0b..) integer literals, including underscore
     // separators, feeding the bitwise operators. Both backends agree.
     #[test]
