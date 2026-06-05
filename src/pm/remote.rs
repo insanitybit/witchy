@@ -33,6 +33,39 @@ impl RemoteRegistry {
         format!("{}{}", self.base, path)
     }
 
+    /// Is the registry host a loopback address? Bearer tokens may only be sent in
+    /// the clear to loopback (or, once supported, over TLS).
+    fn is_loopback(&self) -> bool {
+        let authority = self
+            .base
+            .strip_prefix("http://")
+            .or_else(|| self.base.strip_prefix("https://"))
+            .unwrap_or(&self.base)
+            .split('/')
+            .next()
+            .unwrap_or("");
+        let host = if let Some(rest) = authority.strip_prefix('[') {
+            rest.split(']').next().unwrap_or("") // IPv6 `[::1]:port`
+        } else {
+            authority.rsplit_once(':').map(|(h, _)| h).unwrap_or(authority)
+        };
+        host == "localhost" || host == "::1" || host.starts_with("127.")
+    }
+
+    /// Refuse to transmit a non-empty auth token over plaintext http to a
+    /// non-loopback host (credential-in-the-clear). https is not yet supported by
+    /// the minimal client, so any remote token use must target loopback.
+    fn guard_token(&self, token: &str) -> PmResult<()> {
+        if !token.is_empty() && !self.base.starts_with("https://") && !self.is_loopback() {
+            return err(format!(
+                "refusing to send COVEN_TOKEN over plaintext http to non-loopback host `{}` — \
+                 publish/promote to a loopback registry, or serve coven over https",
+                self.base
+            ));
+        }
+        Ok(())
+    }
+
     pub fn root_public_hex(&self) -> PmResult<String> {
         if let Some(p) = self.root_pub.borrow().clone() {
             return Ok(p);
@@ -106,6 +139,7 @@ impl RemoteRegistry {
         uploaded_by: &str,
         token: &str,
     ) -> PmResult<Record> {
+        self.guard_token(token)?;
         let manifest_toml = src
             .files
             .iter()
@@ -132,6 +166,7 @@ impl RemoteRegistry {
         second_factor: &str,
         token: &str,
     ) -> PmResult<Promotion> {
+        self.guard_token(token)?;
         let req = PromoteReq {
             name: name.to_string(),
             version: version.to_string(),
@@ -151,6 +186,7 @@ impl RemoteRegistry {
     }
 
     pub fn yank(&self, name: &str, version: &str, token: &str) -> PmResult<()> {
+        self.guard_token(token)?;
         let req = YankReq {
             name: name.to_string(),
             version: version.to_string(),
@@ -158,5 +194,31 @@ impl RemoteRegistry {
         };
         let _: OkResp = http::post(&self.url("/coven/yank"), &req)?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn loopback_detection() {
+        assert!(RemoteRegistry::new("http://127.0.0.1:8787".into()).is_loopback());
+        assert!(RemoteRegistry::new("http://localhost:80".into()).is_loopback());
+        assert!(RemoteRegistry::new("http://[::1]:9000".into()).is_loopback());
+        assert!(!RemoteRegistry::new("http://registry.example.com:80".into()).is_loopback());
+        assert!(!RemoteRegistry::new("http://10.0.0.5:8787".into()).is_loopback());
+    }
+
+    #[test]
+    fn token_is_not_sent_in_plaintext_to_remote_host() {
+        let r = RemoteRegistry::new("http://registry.example.com".into());
+        // A non-empty token to a non-loopback plaintext host is refused...
+        assert!(r.guard_token("secret").is_err());
+        // ...but an empty token (anonymous read/publish) is fine,
+        assert!(r.guard_token("").is_ok());
+        // ...and a token to loopback is fine.
+        let lo = RemoteRegistry::new("http://127.0.0.1:8787".into());
+        assert!(lo.guard_token("secret").is_ok());
     }
 }

@@ -107,6 +107,55 @@ fn token_hash(token: &str) -> String {
     super::tuf::sha256_hex(token.as_bytes())
 }
 
+/// A path-component segment: starts with `[a-z0-9_]`, then `[a-z0-9_.-]`, and
+/// never contains `..`. `allow_dot` lets the version-suffix-bearing name segment
+/// include `.` (the namespace segment may not).
+fn valid_segment(s: &str, allow_dot: bool) -> bool {
+    if s.is_empty() || s.contains("..") {
+        return false;
+    }
+    let bytes = s.as_bytes();
+    let first = bytes[0];
+    if !(first.is_ascii_lowercase() || first.is_ascii_digit() || first == b'_') {
+        return false;
+    }
+    bytes.iter().all(|&b| {
+        b.is_ascii_lowercase()
+            || b.is_ascii_digit()
+            || b == b'_'
+            || b == b'-'
+            || (allow_dot && b == b'.')
+    })
+}
+
+/// Validate a rune name before it is ever used to build a filesystem path —
+/// `namespace/name`, lowercase, exactly one `/`, no `..`, no traversal, no
+/// backslashes or absolute paths. (Defeats path-traversal via a malicious
+/// publish/fetch over the network.)
+pub fn valid_name(name: &str) -> bool {
+    let mut parts = name.split('/');
+    match (parts.next(), parts.next(), parts.next()) {
+        (Some(ns), Some(nm), None) => valid_segment(ns, false) && valid_segment(nm, true),
+        _ => false,
+    }
+}
+
+/// A version must parse as strict `major.minor.patch` — which, being digits and
+/// dots only, can carry no path-traversal payload.
+pub fn valid_version(version: &str) -> bool {
+    Version::parse(version).is_ok()
+}
+
+fn check_ref(name: &str, version: &str) -> PmResult<()> {
+    if !valid_name(name) {
+        return err(format!("invalid rune name `{name}` (must be lowercase `namespace/name`, no path traversal)"));
+    }
+    if !valid_version(version) {
+        return err(format!("invalid version `{version}`"));
+    }
+    Ok(())
+}
+
 /// The local, directory-backed registry implementation. Used directly by the
 /// `coven serve` server, and wrapped by [`Registry::Local`] for in-process use.
 pub struct LocalRegistry {
@@ -307,6 +356,7 @@ impl LocalRegistry {
     ) -> PmResult<Record> {
         let name = &manifest.rune.name;
         let version = &manifest.rune.version;
+        check_ref(name, version)?;
         self.authorize_publish(name, token)?;
         if self.meta_path(name, version).exists() {
             return err(format!(
@@ -366,6 +416,7 @@ impl LocalRegistry {
         second_factor: &str,
         token: &str,
     ) -> PmResult<Promotion> {
+        check_ref(name, version)?;
         self.authorize_owner(name, token)?;
         let mut record = self.record(name, version)?;
         match record.state {
@@ -409,6 +460,7 @@ impl LocalRegistry {
     }
 
     pub fn yank(&self, name: &str, version: &str, token: &str) -> PmResult<()> {
+        check_ref(name, version)?;
         self.authorize_owner(name, token)?;
         let mut record = self.record(name, version)?;
         record.state = State::Yanked;
@@ -418,6 +470,7 @@ impl LocalRegistry {
 
     /// Read a version's metadata record.
     pub fn record(&self, name: &str, version: &str) -> PmResult<Record> {
+        check_ref(name, version)?;
         let path = self.meta_path(name, version);
         let text = std::fs::read_to_string(&path)
             .map_err(|_| PmError(format!("{name}@{version} not found in registry")))?;
@@ -441,6 +494,9 @@ impl LocalRegistry {
 
     /// All published versions of a rune (any state), sorted ascending.
     pub fn versions(&self, name: &str) -> Vec<Record> {
+        if !valid_name(name) {
+            return Vec::new();
+        }
         let dir = self.root.join(name);
         let mut out = Vec::new();
         if let Ok(entries) = std::fs::read_dir(&dir) {
@@ -927,6 +983,43 @@ mod tests {
         let res = registry.verify_tuf_chain(Some(v + 100));
         assert!(res.is_err());
         assert!(res.unwrap_err().to_string().contains("rolled back"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn rune_names_reject_path_traversal() {
+        assert!(valid_name("acme/json"));
+        assert!(valid_name("acme/http-client"));
+        assert!(valid_name("std/json2"));
+        // Traversal / unsafe forms are rejected.
+        assert!(!valid_name("../../etc"));
+        assert!(!valid_name("acme/../../etc"));
+        assert!(!valid_name("acme/..%2f"));
+        assert!(!valid_name("/etc/passwd"));
+        assert!(!valid_name("acme"), "must be namespaced");
+        assert!(!valid_name("acme/json/extra"));
+        assert!(!valid_name("acme\\json"));
+        assert!(!valid_name(".hidden/x"));
+        assert!(!valid_name("acme/.."));
+        assert!(valid_version("1.2.3"));
+        assert!(!valid_version("../../etc"));
+        assert!(!valid_version("1.0.0/.."));
+    }
+
+    #[test]
+    fn registry_refuses_malicious_refs() {
+        let (reg, root) = tmp_registry();
+        // Reads with a traversal name/version must error, not touch the fs path.
+        assert!(reg.record("../../etc", "1.0.0").is_err());
+        assert!(reg.record("acme/json", "../../etc").is_err());
+        assert!(reg.fetch("../../etc", "1.0.0").is_err());
+        assert!(reg.versions("../../etc").is_empty());
+        // Publish of a traversal name is refused.
+        let toml = "[rune]\nname = \"../../evil\"\nversion = \"1.0.0\"\n";
+        let m = Manifest::parse(toml).unwrap();
+        let files = vec![("witchy.toml".to_string(), toml.as_bytes().to_vec())];
+        let src = RuneSource { files };
+        assert!(reg.publish(&src, &m, "ci-bot", "").is_err());
         let _ = std::fs::remove_dir_all(&root);
     }
 
