@@ -277,9 +277,15 @@ fn assemble(root_dir: &Path, env: &CovenEnv) -> PmResult<Assembled> {
     }
 
     let lock = Lockfile::load(root_dir)?;
-    // TOFU: the registry's root signing key must match the one the lock pinned.
-    if let Some(pinned) = &lock.registry_root {
-        let current = env.registry.root_fingerprint()?;
+    // TOFU: if the registry is present, its root signing key must match the one
+    // the lock pinned. If the registry is absent (offline build straight from the
+    // content-addressed store), there is nothing to check — the store's source is
+    // already hash-verified against the lock — so we do not require the registry
+    // or mint a key just to look.
+    if let Some(pinned) = &lock.registry_root
+        && let Ok(pubhex) = super::keys::read_public(env.registry.root())
+    {
+        let current = super::keys::fingerprint_of(&pubhex);
         if &current != pinned {
             return err(format!(
                 "coven registry root key changed: lock pins {pinned} but the registry now presents {current} — refusing to build (possible key compromise). If intentional, delete witchy.lock and re-resolve.",

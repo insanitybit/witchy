@@ -423,6 +423,27 @@ fn module_name_collision_between_deps_is_caught() {
 }
 
 #[test]
+fn build_is_offline_from_the_store() {
+    let sb = Sandbox::new("offline");
+    let app = new_app(&sb);
+    sb.publish_lib("acme/lib", "1.0.0", "fn f(s: String) -> String { s }\n");
+    assert!(sb.run(&app, "dev", &["add", "acme/lib"]).status.success());
+    std::fs::write(
+        app.join("src/app.witchy"),
+        "import lib\n\nfn main(console: Console) {\n  print(console, lib.f(\"ok\"))\n}\n",
+    )
+    .unwrap();
+    assert!(sb.run(&app, "dev", &["run"]).status.success());
+
+    // Now obliterate the registry entirely. A build/run must still succeed,
+    // straight from the content-addressed store (hash-verified against the lock).
+    std::fs::remove_dir_all(sb.home.join("registry")).unwrap();
+    let out = sb.run(&app, "dev", &["run"]);
+    assert!(out.status.success(), "offline run failed: {}", stderr(&out));
+    assert!(stdout(&out).contains("ok"), "got: {}", stdout(&out));
+}
+
+#[test]
 fn outdated_reports_newer_versions_and_flags_widening() {
     let sb = Sandbox::new("outdated");
     let app = new_app(&sb);
