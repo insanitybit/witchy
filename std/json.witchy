@@ -279,3 +279,16 @@ pub fn as_array(j: Json) -> Option(List(Json)):
     match j:
         JsonArray(items) -> Some(items)
         _ -> None
+
+// Follow a dotted path of object keys, e.g. `get_path(resp, "user.name")`. Any
+// missing key (or a non-object along the way) yields `None`.
+pub fn get_path(j: Json, path: String) -> Option(Json):
+    var cur = Some(j)
+    for seg in split(path, "."):
+        cur = step(cur, seg)
+    cur
+
+fn step(cur: Option(Json), seg: String) -> Option(Json):
+    match cur:
+        Some(j) -> get(j, seg)
+        None -> None

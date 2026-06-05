@@ -4447,6 +4447,37 @@ mod example_tests {
         assert_eq!(run_on_wasm(src), vec!["hello", "foo", "nospaces", "", "3"]);
     }
 
+    // std/json get_path: follow a dotted key path into a decoded value (and a
+    // missing path -> None). Pure, so both backends agree.
+    #[test]
+    fn std_json_get_path_backends_agree() {
+        let client = r#"
+import json
+import option
+fn str_at(j: Json, path: String) -> String:
+    match json.get_path(j, path):
+        Some(v) -> option.unwrap_or(json.as_string(v), "?")
+        None -> "none"
+fn int_at(j: Json, path: String) -> Int:
+    match json.get_path(j, path):
+        Some(v) -> option.unwrap_or(json.as_int(v), 0)
+        None -> 0
+fn main(console: Console):
+    match json.decode("{\"user\":{\"name\":\"witchy\",\"age\":1},\"tags\":[\"a\"]}"):
+        Ok(j) -> {
+            print(console, str_at(j, "user.name"))
+            print(console, int_to_string(int_at(j, "user.age")))
+            print(console, str_at(j, "user.missing"))
+        }
+        Err(e) -> print(console, e)
+"#;
+        let sources = [("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "std json get_path diverged");
+        assert_eq!(compiled, vec!["witchy", "1", "none"]);
+    }
+
     // Dead-code elimination: a program importing `list` but using only `map`
     // and `sum` must not compile the rest of the list API (or `option`, which
     // `list` imports) into the WASM — only functions reachable from `main`.
