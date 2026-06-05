@@ -149,3 +149,26 @@ pub fn split_once(s: String, sep: String) -> (String, String):
 // Split text into its newline-separated lines.
 pub fn lines(text: String) -> List(String):
     split(text, "\n")
+
+// Whether `c` is an ASCII whitespace character (space, tab, newline, return).
+fn is_space(c: String) -> Bool:
+    c == " " || c == "\t" || c == "\n" || c == "\r"
+
+// Remove leading whitespace.
+pub fn trim_start(s: String) -> String:
+    var i = 0
+    let n = char_count(s)
+    while i < n && is_space(char_at(s, i)):
+        i = i + 1
+    substring(s, i, n)
+
+// Remove trailing whitespace.
+pub fn trim_end(s: String) -> String:
+    var j = char_count(s)
+    while j > 0 && is_space(char_at(s, j - 1)):
+        j = j - 1
+    substring(s, 0, j)
+
+// Remove leading and trailing whitespace.
+pub fn trim(s: String) -> String:
+    trim_end(trim_start(s))

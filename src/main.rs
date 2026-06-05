@@ -4447,6 +4447,26 @@ mod example_tests {
         assert_eq!(run_on_wasm(src), vec!["hello", "foo", "nospaces", "", "3"]);
     }
 
+    // std/string trimming: trim/trim_start/trim_end over assorted whitespace.
+    // Pure, so both backends agree.
+    #[test]
+    fn std_string_trim_backends_agree() {
+        let client = r#"
+import string
+fn main(console: Console):
+    print(console, "[" <> string.trim("  hello  ") <> "]")
+    print(console, "[" <> string.trim_start("  hi") <> "]")
+    print(console, "[" <> string.trim_end("bye  ") <> "]")
+    print(console, "[" <> string.trim("\t\n x \r\n") <> "]")
+    print(console, "[" <> string.trim("nospace") <> "]")
+"#;
+        let sources = [("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "std string trim diverged");
+        assert_eq!(compiled, vec!["[hello]", "[hi]", "[bye]", "[x]", "[nospace]"]);
+    }
+
     // Traits: an `impl` provides a method per type, and a trait-method call
     // resolves to the impl for the receiver's concrete type — at a literal
     // receiver, a `let`-bound one, and across two implementing types. The trait
