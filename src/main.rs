@@ -4926,14 +4926,13 @@ fn main(console: Console):
         );
     }
 
-    // std/json accessors: decode then pull out a string field, an int field,
-    // and an array element. Interpreter-only: object key lookup compares the
-    // decoded (heap-built) key string with `==`, and the WASM backend can't yet
-    // see that a tuple-destructured loop variable is a String, so it falls back
-    // to pointer comparison (works for interned literals, not for built keys).
-    // See the codegen-gaps note; encode/decode themselves are differential.
+    // std/json accessors: decode then pull out a string field (object key
+    // lookup), an int field, and an array element. Object lookup compares the
+    // decoded, heap-built key with `==`; both backends agree now that codegen
+    // tracks the type of a tuple-destructured loop variable (so the comparison
+    // is by content, not pointer).
     #[test]
-    fn std_json_accessors_interpreter() {
+    fn std_json_accessors_backends_agree() {
         let client = r#"
 import json
 import option
@@ -4957,8 +4956,10 @@ fn main(console: Console):
         Err(e) -> print(console, e)
 "#;
         let sources = [("main", client)];
-        let out = interpreter::run_program(&sources, "main").expect("interp");
-        assert_eq!(out, vec!["witchy", "3", "20"]);
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "std json accessors diverged");
+        assert_eq!(compiled, vec!["witchy", "3", "20"]);
     }
 
     // Hex (0x..) and binary (0b..) integer literals, including underscore

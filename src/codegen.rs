@@ -125,6 +125,8 @@ struct SavedScope {
     payload: HashMap<String, String>,
     val_types: HashMap<String, ValType>,
     list_elem_vt: HashMap<String, ValType>,
+    list_elem_tuple: HashMap<String, Vec<ValType>>,
+    tuple_slots: HashMap<String, Vec<ValType>>,
     ret: Kind,
     inout: bool,
 }
@@ -225,6 +227,14 @@ struct Codegen {
     /// is `List(String)`), so a `for x in words` loop variable's type — and thus
     /// its use as a Dict key — resolves.
     local_list_elem_valtype: HashMap<String, ValType>,
+    /// Element tuple-slot value types of list-of-tuples locals (e.g. a param
+    /// `pairs: List((String, Int))`), so a `for p in pairs` loop variable's
+    /// slots are known.
+    local_list_elem_tuple: HashMap<String, Vec<ValType>>,
+    /// Tuple-slot value types of tuple-typed locals (e.g. a for-loop variable
+    /// over a list of tuples), so `let (k, v) = p` gives `k`/`v` their types and
+    /// `k == key` compiles to string (not pointer) comparison.
+    local_tuple_slots: HashMap<String, Vec<ValType>>,
     /// Function name -> the value type it returns, so `to_string(f(...))` can be
     /// rendered. Populated from return-type annotations.
     fn_ret_valtype: HashMap<String, ValType>,
@@ -297,6 +307,8 @@ impl Codegen {
             local_payload_records: HashMap::new(),
             local_val_types: HashMap::new(),
             local_list_elem_valtype: HashMap::new(),
+            local_list_elem_tuple: HashMap::new(),
+            local_tuple_slots: HashMap::new(),
             fn_ret_valtype: HashMap::new(),
             fn_ret_records: HashMap::new(),
             fn_ret_result_record: HashMap::new(),
@@ -630,6 +642,16 @@ impl Codegen {
                                 self.local_val_types.insert(n.clone(), vt);
                             }
                         }
+                    } else if let Expr::Var(p) = value {
+                        // Destructuring a tuple-typed variable (e.g. a for-loop
+                        // var over a list of tuples) carries its slot types.
+                        if let Some(slots) = self.local_tuple_slots.get(p).cloned() {
+                            if slots.len() == names.len() {
+                                for (n, vt) in names.iter().zip(slots) {
+                                    self.local_val_types.insert(n.clone(), vt);
+                                }
+                            }
+                        }
                     }
                     self.infer_locals_expr(value);
                 }
@@ -666,6 +688,14 @@ impl Codegen {
                 let evt = self.elem_val_type_of(iter);
                 if evt != ValType::Other {
                     self.local_val_types.insert(var.clone(), evt);
+                }
+                // Iterating a list of tuples: the loop var is a tuple with the
+                // element's slot types, so a `let (k, v) = p` inside can type its
+                // bindings (and `k == key` use string, not pointer, comparison).
+                if let Expr::Var(x) = iter.as_ref() {
+                    if let Some(slots) = self.local_list_elem_tuple.get(x).cloned() {
+                        self.local_tuple_slots.insert(var.clone(), slots);
+                    }
                 }
                 self.infer_locals_expr(iter);
                 self.infer_locals(body);
@@ -859,6 +889,8 @@ impl Codegen {
         self.local_list_elem.clear();
         self.local_val_types.clear();
         self.local_list_elem_valtype.clear();
+        self.local_list_elem_tuple.clear();
+        self.local_tuple_slots.clear();
         for p in &f.params {
             let k = p.ty.as_ref().map(ty_kind).unwrap_or(Kind::I32);
             self.locals.insert(p.name.clone(), k);
@@ -883,6 +915,12 @@ impl Codegen {
                         let evt = ty_to_valtype(elem);
                         if evt != ValType::Other {
                             self.local_list_elem_valtype.insert(p.name.clone(), evt);
+                        }
+                        // List of tuples: remember the element's slot value types
+                        // so `for p in xs` then `let (k, v) = p` types `k`/`v`.
+                        if let Type::Tuple(slots) = elem {
+                            self.local_list_elem_tuple
+                                .insert(p.name.clone(), slots.iter().map(ty_to_valtype).collect());
                         }
                     }
                 }
@@ -1631,6 +1669,12 @@ impl Codegen {
                         if evt != ValType::Other {
                             self.local_list_elem_valtype.insert(p.name.clone(), evt);
                         }
+                        // List of tuples: remember the element's slot value types
+                        // so `for p in xs` then `let (k, v) = p` types `k`/`v`.
+                        if let Type::Tuple(slots) = elem {
+                            self.local_list_elem_tuple
+                                .insert(p.name.clone(), slots.iter().map(ty_to_valtype).collect());
+                        }
                     }
                 }
                 _ => {}
@@ -1726,6 +1770,8 @@ impl Codegen {
             payload: std::mem::take(&mut self.local_payload_records),
             val_types: std::mem::take(&mut self.local_val_types),
             list_elem_vt: std::mem::take(&mut self.local_list_elem_valtype),
+            list_elem_tuple: std::mem::take(&mut self.local_list_elem_tuple),
+            tuple_slots: std::mem::take(&mut self.local_tuple_slots),
             ret: self.cur_fn_ret_kind,
             inout: self.cur_fn_inout,
         }
@@ -1739,6 +1785,8 @@ impl Codegen {
         self.local_payload_records = s.payload;
         self.local_val_types = s.val_types;
         self.local_list_elem_valtype = s.list_elem_vt;
+        self.local_list_elem_tuple = s.list_elem_tuple;
+        self.local_tuple_slots = s.tuple_slots;
         self.cur_fn_ret_kind = s.ret;
         self.cur_fn_inout = s.inout;
     }
