@@ -11,7 +11,7 @@
 trait Eq:
     fn eq(self, other: Self) -> Bool
     fn ne(self, other: Self) -> Bool:
-        if eq(self, other) { false } else { true }
+        if eq(self, other): false else: true
 
 impl Eq for Int:
     fn eq(self, other: Self) -> Bool:

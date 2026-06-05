@@ -69,10 +69,10 @@ fn find_header(hdrs: List((String, String)), name: String) -> Option(String):
 // parse the header lines into (lowercased name, trimmed value) pairs.
 fn parse_response(raw: String) -> Response:
     let sep = index_of(raw, "\r\n\r\n")
-    let head = if sep < 0 { raw } else { substring(raw, 0, sep) }
-    let bdy = if sep < 0 { "" } else { substring(raw, sep + 4, char_count(raw)) }
+    let head = if sep < 0: raw else: substring(raw, 0, sep)
+    let bdy = if sep < 0: "" else: substring(raw, sep + 4, char_count(raw))
     let lines = split(head, "\r\n")
-    let status_line = if length(lines) > 0 { at(lines, 0) } else { "" }
+    let status_line = if length(lines) > 0: at(lines, 0) else: ""
     var hdrs = []
     var i = 1
     while i < length(lines):
@@ -93,5 +93,5 @@ fn status_code(line: String) -> Int:
     else:
         let rest = substring(line, sp + 1, char_count(line))
         let sp2 = index_of(rest, " ")
-        let code = if sp2 < 0 { rest } else { substring(rest, 0, sp2) }
+        let code = if sp2 < 0: rest else: substring(rest, 0, sp2)
         string_to_int(code)

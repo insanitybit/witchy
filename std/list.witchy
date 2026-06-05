@@ -56,16 +56,14 @@ pub fn fold(xs: List(a), init: b, f: fn(b, a) -> b) -> b:
 pub fn reduce(xs: List(a), f: fn(a, a) -> a) -> Option(a):
     match head(xs):
         None -> None
-        Some(first) -> {
+        Some(first) ->
             var acc = first
             var i = 1
             let n = length(xs)
-            while i < n {
+            while i < n:
                 acc = f(acc, at(xs, i))
                 i = i + 1
-            }
             Some(acc)
-        }
 
 // The sum of a list of integers (0 for the empty list).
 pub fn sum(xs: List(Int)) -> Int:
@@ -75,7 +73,7 @@ pub fn sum(xs: List(Int)) -> Int:
     total
 
 // The sum of `f` applied to each element (0 for the empty list) — e.g. a total
-// over a record field: `sum_by(cart, fn(it) { it.price * it.qty })`.
+// over a record field: `sum_by(cart, fn(it): it.price * it.qty)`.
 pub fn sum_by(xs: List(a), f: fn(a) -> Int) -> Int:
     var total = 0
     for x in xs:
@@ -343,7 +341,7 @@ pub fn sort_by(xs: List(a), less: fn(a, a) -> Bool) -> List(a):
 
 // Sort a list of integers ascending — the common default over `sort_by`.
 pub fn sort(xs: List(Int)) -> List(Int):
-    sort_by(xs, fn(a: Int, b: Int) { a < b })
+    sort_by(xs, fn(a: Int, b: Int): a < b)
 
 // Whether `target` appears in the list (by value equality).
 pub fn contains(xs: List(a), target: a) -> Bool:

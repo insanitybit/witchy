@@ -22,7 +22,7 @@ type Json:
 pub fn encode(j: Json) -> String:
     match j:
         JsonNull -> "null"
-        JsonBool(b) -> if b { "true" } else { "false" }
+        JsonBool(b) -> if b: "true" else: "false"
         JsonInt(n) -> int_to_string(n)
         JsonString(s) -> encode_string(s)
         JsonArray(items) -> encode_array(items)
@@ -253,7 +253,7 @@ fn find_key(pairs: List((String, Json)), key: String) -> Option(Json):
 // The element at index `i` of a JSON array.
 pub fn index(j: Json, i: Int) -> Option(Json):
     match j:
-        JsonArray(items) -> if i >= 0 && i < length(items) { Some(at(items, i)) } else { None }
+        JsonArray(items) -> if i >= 0 && i < length(items): Some(at(items, i)) else: None
         _ -> None
 
 // `j` as an integer, when it is one.

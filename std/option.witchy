@@ -42,7 +42,7 @@ pub fn and_then(o: Option(a), f: fn(a) -> Option(b)) -> Option(b):
 // Keep the Some value only if it satisfies `pred`; otherwise None.
 pub fn filter(o: Option(a), pred: fn(a) -> Bool) -> Option(a):
     match o:
-        Some(v) -> if pred(v) { Some(v) } else { None }
+        Some(v) -> if pred(v): Some(v) else: None
         None -> None
 
 // The Some value, or the result of calling `f` (a lazily-computed default).
@@ -94,8 +94,8 @@ pub fn flatten(oo: Option(Option(a))) -> Option(a):
 // are `Some`, otherwise `None`.
 pub fn zip(oa: Option(a), ob: Option(b)) -> Option((a, b)):
     match oa:
-        Some(x) -> match ob {
-            Some(y) -> Some((x, y))
-            None -> None
-        }
+        Some(x) ->
+            match ob:
+                Some(y) -> Some((x, y))
+                None -> None
         None -> None
