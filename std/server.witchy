@@ -16,6 +16,7 @@
 
 import http
 import option
+import json
 
 // ---- Request accessors ----
 
@@ -45,6 +46,11 @@ pub fn request_header(req: Request, name: String) -> Option(String):
 pub fn request_body(req: Request) -> String:
     match req:
         Request(_m, _p, _pa, _q, _h, b) -> b
+
+// Decode the request body as JSON — the role of axum's `Json` extractor. Returns
+// an Err (rather than panicking) on malformed input, so handlers stay total.
+pub fn json_body(req: Request) -> Result(Json, String):
+    json.decode(request_body(req))
 
 fn lookup_or(pairs: List((String, String)), name: String, default: String) -> String:
     for p in pairs:
