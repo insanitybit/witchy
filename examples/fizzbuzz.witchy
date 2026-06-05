@@ -2,22 +2,18 @@
 // mutable counter, `%` (modulo), and `if`/`else if`. The Console is threaded in
 // from main (the root actor) — fizzbuzz can only print because it was handed it.
 
-fn fizzbuzz(console: Console, n: Int) {
-  var i = 1
-  while i <= n {
-    if i % 15 == 0 {
-      print(console, "FizzBuzz")
-    } else if i % 3 == 0 {
-      print(console, "Fizz")
-    } else if i % 5 == 0 {
-      print(console, "Buzz")
-    } else {
-      print(console, int_to_string(i))
-    }
-    i = i + 1
-  }
-}
+fn fizzbuzz(console: Console, n: Int):
+    var i = 1
+    while i <= n:
+        if i % 15 == 0:
+            print(console, "FizzBuzz")
+        else if i % 3 == 0:
+            print(console, "Fizz")
+        else if i % 5 == 0:
+            print(console, "Buzz")
+        else:
+            print(console, int_to_string(i))
+        i = i + 1
 
-fn main(console: Console) {
-  fizzbuzz(console, 15)
-}
+fn main(console: Console):
+    fizzbuzz(console, 15)

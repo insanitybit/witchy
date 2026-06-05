@@ -3,11 +3,9 @@
 // rejects use-after-move. (A `var` could be reassigned to re-initialize it.)
 // `let` borrows (the default) just read, leaving the value usable.
 
-fn into_label(sink name: String) -> String {
-  "[" <> name <> "]"
-}
+fn into_label(sink name: String) -> String:
+    "[" <> name <> "]"
 
-fn main(console: Console) {
-  let name = "witchy"
-  print(console, into_label(name))
-}
+fn main(console: Console):
+    let name = "witchy"
+    print(console, into_label(name))

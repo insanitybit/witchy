@@ -4,180 +4,171 @@
 // builtins; these are the conveniences built on top of them.
 
 // Join a list of strings with a separator between each.
-pub fn join(parts: List(String), sep: String) -> String {
-  var s = ""
-  var first = true
-  for p in parts {
-    if first {
-      s = p
-      first = false
-    } else {
-      s = s <> sep <> p
-    }
-  }
-  s
-}
+pub fn join(parts: List(String), sep: String) -> String:
+    var s = ""
+    var first = true
+    for p in parts:
+        if first:
+            s = p
+            first = false
+        else:
+            s = s <> sep <> p
+    s
 
 // Repeat a string `n` times.
-pub fn repeat(s: String, n: Int) -> String {
-  var out = ""
-  var i = 0
-  while i < n {
-    out = out <> s
-    i = i + 1
-  }
-  out
-}
+pub fn repeat(s: String, n: Int) -> String:
+    var out = ""
+    var i = 0
+    while i < n:
+        out = out <> s
+        i = i + 1
+    out
 
 // Left-pad `s` with copies of `fill` until it is `width` characters wide.
 // The padding is trimmed to fit exactly, so any fill width yields a result of
 // exactly `width` chars; `s` is returned unchanged when already that long.
-pub fn pad_left(s: String, width: Int, fill: String) -> String {
-  let len = char_count(s)
-  if len >= width {
-    s
-  } else {
-    let needed = width - len
-    substring(repeat(fill, needed), 0, needed) <> s
-  }
-}
+pub fn pad_left(s: String, width: Int, fill: String) -> String:
+    let len = char_count(s)
+    if len >= width:
+        s
+    else:
+        let needed = width - len
+        substring(repeat(fill, needed), 0, needed) <> s
 
 // Right-pad `s` with copies of `fill` until it is `width` characters wide.
-pub fn pad_right(s: String, width: Int, fill: String) -> String {
-  let len = char_count(s)
-  if len >= width {
-    s
-  } else {
-    let needed = width - len
-    s <> substring(repeat(fill, needed), 0, needed)
-  }
-}
+pub fn pad_right(s: String, width: Int, fill: String) -> String:
+    let len = char_count(s)
+    if len >= width:
+        s
+    else:
+        let needed = width - len
+        s <> substring(repeat(fill, needed), 0, needed)
 
 // Remove `prefix` from the front of `s` when present; otherwise return `s`
 // unchanged. The complement of the `starts_with` builtin.
-pub fn strip_prefix(s: String, prefix: String) -> String {
-  if starts_with(s, prefix) {
-    substring(s, string_length(prefix), string_length(s))
-  } else {
-    s
-  }
-}
+pub fn strip_prefix(s: String, prefix: String) -> String:
+    if starts_with(s, prefix):
+        substring(s, string_length(prefix), string_length(s))
+    else:
+        s
 
 // Remove `suffix` from the end of `s` when present; otherwise return `s`
 // unchanged. The complement of the `ends_with` builtin.
-pub fn strip_suffix(s: String, suffix: String) -> String {
-  if ends_with(s, suffix) {
-    substring(s, 0, string_length(s) - string_length(suffix))
-  } else {
-    s
-  }
-}
+pub fn strip_suffix(s: String, suffix: String) -> String:
+    if ends_with(s, suffix):
+        substring(s, 0, string_length(s) - string_length(suffix))
+    else:
+        s
 
 // The single character at character index `i` (counted by Unicode scalar), or
 // "" when `i` is out of range. A readable shorthand over `substring`.
-pub fn char_at(s: String, i: Int) -> String {
-  substring(s, i, i + 1)
-}
+pub fn char_at(s: String, i: Int) -> String:
+    substring(s, i, i + 1)
 
 // Whether the string has no characters.
-pub fn is_empty(s: String) -> Bool {
-  string_length(s) == 0
-}
+pub fn is_empty(s: String) -> Bool:
+    string_length(s) == 0
 
 // The string's characters as a list of single-character strings, counted by
 // Unicode scalar: `to_chars("café")` is `["c", "a", "f", "é"]`.
-pub fn to_chars(s: String) -> List(String) {
-  var out = []
-  var i = 0
-  let n = char_count(s)
-  while i < n {
-    out = push(out, char_at(s, i))
-    i = i + 1
-  }
-  out
-}
+pub fn to_chars(s: String) -> List(String):
+    var out = []
+    var i = 0
+    let n = char_count(s)
+    while i < n:
+        out = push(out, char_at(s, i))
+        i = i + 1
+    out
 
 // The string with its characters in reverse order. Counted by Unicode scalar
 // (via `char_count`/`substring`), so multi-byte characters stay intact:
 // `reverse("café")` is `"éfac"`.
-pub fn reverse(s: String) -> String {
-  var out = ""
-  var i = char_count(s) - 1
-  while i >= 0 {
-    out = out <> substring(s, i, i + 1)
-    i = i - 1
-  }
-  out
-}
+pub fn reverse(s: String) -> String:
+    var out = ""
+    var i = char_count(s) - 1
+    while i >= 0:
+        out = out <> substring(s, i, i + 1)
+        i = i - 1
+    out
 
 // The first `n` characters (the whole string if it is shorter, "" if n <= 0).
-pub fn take(s: String, n: Int) -> String {
-  substring(s, 0, n)
-}
+pub fn take(s: String, n: Int) -> String:
+    substring(s, 0, n)
 
 // All characters after the first `n` ("" if n covers the whole string).
-pub fn drop(s: String, n: Int) -> String {
-  substring(s, n, char_count(s))
-}
+pub fn drop(s: String, n: Int) -> String:
+    substring(s, n, char_count(s))
 
 // The number of non-overlapping occurrences of `sub` in `s` (0 for an empty
 // `sub`). After each match the search resumes past it.
-pub fn count(s: String, sub: String) -> Int {
-  if char_count(sub) == 0 {
-    0
-  } else {
-    var total = 0
-    var rest = s
-    var i = index_of(rest, sub)
-    while i >= 0 {
-      total = total + 1
-      rest = substring(rest, i + char_count(sub), char_count(rest))
-      i = index_of(rest, sub)
-    }
-    total
-  }
-}
+pub fn count(s: String, sub: String) -> Int:
+    if char_count(sub) == 0:
+        0
+    else:
+        var total = 0
+        var rest = s
+        var i = index_of(rest, sub)
+        while i >= 0:
+            total = total + 1
+            rest = substring(rest, i + char_count(sub), char_count(rest))
+            i = index_of(rest, sub)
+        total
 
 // The whitespace-separated words of `text`: tabs, newlines, and carriage
 // returns are treated as spaces, and empty pieces (from runs of whitespace) are
 // dropped. `words("the  quick\tfox")` is `["the", "quick", "fox"]`.
-pub fn words(text: String) -> List(String) {
-  let a = replace(text, "\t", " ")
-  let b = replace(a, "\n", " ")
-  let c = replace(b, "\r", " ")
-  var out = []
-  for w in split(c, " ") {
-    if string_length(w) > 0 {
-      out = push(out, w)
-    }
-  }
-  out
-}
+pub fn words(text: String) -> List(String):
+    let a = replace(text, "\t", " ")
+    let b = replace(a, "\n", " ")
+    let c = replace(b, "\r", " ")
+    var out = []
+    for w in split(c, " "):
+        if string_length(w) > 0:
+            out = push(out, w)
+    out
 
 // Replace only the first occurrence of `from` with `to`; return `s` unchanged
 // when `from` is absent. (The `replace` builtin replaces every occurrence.)
-pub fn replace_first(s: String, from: String, to: String) -> String {
-  let i = index_of(s, from)
-  if i < 0 {
-    s
-  } else {
-    substring(s, 0, i) <> to <> substring(s, i + char_count(from), char_count(s))
-  }
-}
+pub fn replace_first(s: String, from: String, to: String) -> String:
+    let i = index_of(s, from)
+    if i < 0:
+        s
+    else:
+        substring(s, 0, i) <> to <> substring(s, i + char_count(from), char_count(s))
 
 // Split at the first occurrence of `sep` into `(before, after)`, with `sep`
 // itself dropped. When `sep` is absent, returns `(s, "")`. Handy for parsing
 // `key=value` or `host:port`. Counted by Unicode scalar.
-pub fn split_once(s: String, sep: String) -> (String, String) {
-  let i = index_of(s, sep)
-  if i < 0 {
-    (s, "")
-  } else {
-    (substring(s, 0, i), substring(s, i + char_count(sep), char_count(s)))
-  }
-}
+pub fn split_once(s: String, sep: String) -> (String, String):
+    let i = index_of(s, sep)
+    if i < 0:
+        (s, "")
+    else:
+        (substring(s, 0, i), substring(s, i + char_count(sep), char_count(s)))
 
 // Split text into its newline-separated lines.
-pub fn lines(text: String) -> List(String) {
-  split(text, "\n")
-}
+pub fn lines(text: String) -> List(String):
+    split(text, "\n")
+
+// Whether `c` is an ASCII whitespace character (space, tab, newline, return).
+fn is_space(c: String) -> Bool:
+    c == " " || c == "\t" || c == "\n" || c == "\r"
+
+// Remove leading whitespace.
+pub fn trim_start(s: String) -> String:
+    var i = 0
+    let n = char_count(s)
+    while i < n && is_space(char_at(s, i)):
+        i = i + 1
+    substring(s, i, n)
+
+// Remove trailing whitespace.
+pub fn trim_end(s: String) -> String:
+    var j = char_count(s)
+    while j > 0 && is_space(char_at(s, j - 1)):
+        j = j - 1
+    substring(s, 0, j)
+
+// Remove leading and trailing whitespace.
+pub fn trim(s: String) -> String:
+    trim_end(trim_start(s))

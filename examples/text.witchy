@@ -5,14 +5,13 @@
 import list
 import string
 
-fn main(console: Console) {
-  let row = "alice,bob,carol"
+fn main(console: Console):
+    let row = "alice,bob,carol"
 
-  let fields = split(row, ",")
-  let loud = list.map(fields, fn(name: String) { to_upper(name) })
-  print(console, string.join(loud, " | "))
+    let fields = split(row, ",")
+    let loud = list.map(fields, fn(name: String) { to_upper(name) })
+    print(console, string.join(loud, " | "))
 
-  print(console, string.repeat("=", 3))
+    print(console, string.repeat("=", 3))
 
-  print(console, replace(row, "bob", "***"))
-}
+    print(console, replace(row, "bob", "***"))

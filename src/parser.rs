@@ -28,6 +28,9 @@ pub fn parse_module(src: &str) -> Result<Module, ParseError> {
         line: e.line,
         col: e.col,
     })?;
+    // Off-side-rule layout: indentation-delimited blocks become brace-delimited
+    // ones (a no-op for code that already uses explicit braces).
+    let tokens = crate::lexer::apply_layout(tokens);
     Parser::new(tokens).module()
 }
 
@@ -166,7 +169,8 @@ impl Parser {
         Ok(TraitDef { name, methods })
     }
 
-    /// A bodyless method signature inside a `trait`: `fn name(params) -> Ret`.
+    /// A method signature inside a `trait`: `fn name(params) -> Ret`, with an
+    /// optional default body `{ ... }` that impls inherit unless they override it.
     fn method_sig(&mut self) -> Result<MethodSig, ParseError> {
         self.expect(&Tok::Fn)?;
         let name = self.ident()?;
@@ -178,7 +182,17 @@ impl Parser {
         } else {
             None
         };
-        Ok(MethodSig { name, params, ret })
+        let default = if self.at(&Tok::LBrace) {
+            Some(self.block()?)
+        } else {
+            None
+        };
+        Ok(MethodSig {
+            name,
+            params,
+            ret,
+            default,
+        })
     }
 
     /// `impl Trait for Type { <fn ...> }` — full method definitions.
@@ -332,6 +346,7 @@ impl Parser {
         } else {
             None
         };
+        let bounds = self.where_clause()?;
         let body = self.block()?;
         Ok(Function {
             public,
@@ -339,7 +354,25 @@ impl Parser {
             params,
             ret,
             body,
+            bounds,
         })
+    }
+
+    /// An optional `where a: Trait, b: Trait2` clause after a function signature.
+    fn where_clause(&mut self) -> Result<Vec<(String, String)>, ParseError> {
+        let mut bounds = Vec::new();
+        if self.eat(&Tok::Where) {
+            loop {
+                let var = self.ident()?;
+                self.expect(&Tok::Colon)?;
+                let trait_name = self.ident()?;
+                bounds.push((var, trait_name));
+                if !self.eat(&Tok::Comma) {
+                    break;
+                }
+            }
+        }
+        Ok(bounds)
     }
 
     fn params(&mut self) -> Result<Vec<Param>, ParseError> {

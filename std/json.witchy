@@ -1,0 +1,294 @@
+// A JSON library — the witchy take on Go's encoding/json. This slice is the
+// value type and the encoder (serialization); the decoder (parsing) follows.
+// Pure and capability-free, so — unlike networking — it compiles to WASM like
+// the rest of the data std.
+
+import string
+// `decode` returns a `Result` and the accessors return `Option`; importing
+// these brings `Ok`/`Err`/`Result` and `Some`/`None`/`Option` into scope for any
+// program that imports `json`.
+import result
+import option
+
+type Json:
+    JsonNull
+    JsonBool(Bool)
+    JsonInt(Int)
+    JsonString(String)
+    JsonArray(List(Json))
+    JsonObject(List((String, Json)))
+
+// Serialize a Json value to its compact textual form.
+pub fn encode(j: Json) -> String:
+    match j:
+        JsonNull -> "null"
+        JsonBool(b) -> if b { "true" } else { "false" }
+        JsonInt(n) -> int_to_string(n)
+        JsonString(s) -> encode_string(s)
+        JsonArray(items) -> encode_array(items)
+        JsonObject(pairs) -> encode_object(pairs)
+
+fn encode_array(items: List(Json)) -> String:
+    var out = "["
+    var first = true
+    for it in items:
+        if first:
+            first = false
+        else:
+            out = out <> ","
+        out = out <> encode(it)
+    out <> "]"
+
+fn encode_object(pairs: List((String, Json))) -> String:
+    var out = "{"
+    var first = true
+    for p in pairs:
+        let (k, v) = p
+        if first:
+            first = false
+        else:
+            out = out <> ","
+        out = out <> encode_string(k) <> ":" <> encode(v)
+    out <> "}"
+
+// Wrap `s` in quotes, escaping the characters JSON requires.
+fn encode_string(s: String) -> String:
+    var out = "\""
+    for c in string.to_chars(s):
+        out = out <> escape_char(c)
+    out <> "\""
+
+fn escape_char(c: String) -> String:
+    if c == "\"":
+        "\\\""
+    else if c == "\\":
+        "\\\\"
+    else if c == "\n":
+        "\\n"
+    else if c == "\t":
+        "\\t"
+    else if c == "\r":
+        "\\r"
+    else:
+        c
+
+// --- Decoder (parsing) ---------------------------------------------------
+//
+// A recursive-descent parser. Helpers return `(value, index just past it)` on
+// success and thread errors with `?`. Numbers are integers for now (JSON floats
+// would need a Float-in-collections representation the WASM backend lacks).
+
+// Parse a complete JSON document, or return an error message.
+pub fn decode(s: String) -> Result(Json, String):
+    let r = parse_value(s, skip_ws(s, 0))?
+    let (v, _rest) = r
+    Ok(v)
+
+// The index of the first non-whitespace char at or after `i`.
+fn skip_ws(s: String, i: Int) -> Int:
+    var j = i
+    let n = char_count(s)
+    while j < n:
+        let c = substring(s, j, j + 1)
+        if c == " " || c == "\n" || c == "\t" || c == "\r":
+            j = j + 1
+        else:
+            return j
+    j
+
+// Parse the value at `i` (whitespace already skipped).
+fn parse_value(s: String, i: Int) -> Result((Json, Int), String):
+    if i >= char_count(s):
+        Err("unexpected end of input")
+    else:
+        let c = substring(s, i, i + 1)
+        if c == "{":
+            parse_object(s, i)
+        else if c == "[":
+            parse_array(s, i)
+        else if c == "\"":
+            parse_string(s, i)
+        else if c == "t":
+            parse_lit(s, i, "true", JsonBool(true))
+        else if c == "f":
+            parse_lit(s, i, "false", JsonBool(false))
+        else if c == "n":
+            parse_lit(s, i, "null", JsonNull)
+        else:
+            parse_number(s, i)
+
+fn parse_lit(s: String, i: Int, word: String, value: Json) -> Result((Json, Int), String):
+    let n = char_count(word)
+    if i + n <= char_count(s) && substring(s, i, i + n) == word:
+        Ok((value, i + n))
+    else:
+        Err("invalid literal at " <> int_to_string(i))
+
+fn is_digit(c: String) -> Bool:
+    c == "0" || c == "1" || c == "2" || c == "3" || c == "4"
+        || c == "5" || c == "6" || c == "7" || c == "8" || c == "9"
+
+fn parse_number(s: String, i: Int) -> Result((Json, Int), String):
+    let n = char_count(s)
+    var j = i
+    if j < n && substring(s, j, j + 1) == "-":
+        j = j + 1
+    var digits = 0
+    while j < n && is_digit(substring(s, j, j + 1)):
+        j = j + 1
+        digits = digits + 1
+    if digits == 0:
+        Err("invalid number at " <> int_to_string(i))
+    else:
+        Ok((JsonInt(string_to_int(substring(s, i, j))), j))
+
+fn parse_string(s: String, i: Int) -> Result((Json, Int), String):
+    let r = scan_string(s, i + 1)?
+    let (text, j) = r
+    Ok((JsonString(text), j))
+
+// Scan string contents from `start` (just past the opening quote) to the
+// closing quote, returning the unescaped text and the index past the quote.
+fn scan_string(s: String, start: Int) -> Result((String, Int), String):
+    var acc = ""
+    var j = start
+    let n = char_count(s)
+    while j < n:
+        let c = substring(s, j, j + 1)
+        if c == "\"":
+            return Ok((acc, j + 1))
+        else if c == "\\":
+            if j + 1 >= n:
+                return Err("unterminated escape")
+            else:
+                acc = acc <> unescape(substring(s, j + 1, j + 2))
+                j = j + 2
+        else:
+            acc = acc <> c
+            j = j + 1
+    Err("unterminated string")
+
+fn unescape(e: String) -> String:
+    if e == "n":
+        "\n"
+    else if e == "t":
+        "\t"
+    else if e == "r":
+        "\r"
+    else if e == "/":
+        "/"
+    else:
+        e
+
+fn parse_array(s: String, i: Int) -> Result((Json, Int), String):
+    let n = char_count(s)
+    var items = []
+    var j = skip_ws(s, i + 1)
+    if j < n && substring(s, j, j + 1) == "]":
+        return Ok((JsonArray(items), j + 1))
+    while true:
+        let r = parse_value(s, skip_ws(s, j))?
+        let (v, k) = r
+        items = push(items, v)
+        let m = skip_ws(s, k)
+        if m >= n:
+            return Err("unterminated array")
+        let c = substring(s, m, m + 1)
+        if c == "]":
+            return Ok((JsonArray(items), m + 1))
+        else if c == ",":
+            j = m + 1
+        else:
+            return Err("expected , or ] in array")
+    Err("unreachable")
+
+fn parse_object(s: String, i: Int) -> Result((Json, Int), String):
+    let n = char_count(s)
+    var pairs = []
+    var j = skip_ws(s, i + 1)
+    if j < n && substring(s, j, j + 1) == "}":
+        return Ok((JsonObject(pairs), j + 1))
+    while true:
+        let ws = skip_ws(s, j)
+        if ws >= n || substring(s, ws, ws + 1) != "\"":
+            return Err("expected string key in object")
+        let kr = scan_string(s, ws + 1)?
+        let (key, k1) = kr
+        let colon = skip_ws(s, k1)
+        if colon >= n || substring(s, colon, colon + 1) != ":":
+            return Err("expected : in object")
+        let vr = parse_value(s, skip_ws(s, colon + 1))?
+        let (v, k2) = vr
+        pairs = push(pairs, (key, v))
+        let m = skip_ws(s, k2)
+        if m >= n:
+            return Err("unterminated object")
+        let c = substring(s, m, m + 1)
+        if c == "}":
+            return Ok((JsonObject(pairs), m + 1))
+        else if c == ",":
+            j = m + 1
+        else:
+            return Err("expected , or } in object")
+    Err("unreachable")
+
+// --- Accessors -----------------------------------------------------------
+//
+// Read data out of a decoded value. Each returns an Option, so a wrong shape is
+// `None` rather than a trap.
+
+// Look up a key in a JSON object.
+pub fn get(j: Json, key: String) -> Option(Json):
+    match j:
+        JsonObject(pairs) -> find_key(pairs, key)
+        _ -> None
+
+fn find_key(pairs: List((String, Json)), key: String) -> Option(Json):
+    for p in pairs:
+        let (k, v) = p
+        if k == key:
+            return Some(v)
+    None
+
+// The element at index `i` of a JSON array.
+pub fn index(j: Json, i: Int) -> Option(Json):
+    match j:
+        JsonArray(items) -> if i >= 0 && i < length(items) { Some(at(items, i)) } else { None }
+        _ -> None
+
+// `j` as an integer, when it is one.
+pub fn as_int(j: Json) -> Option(Int):
+    match j:
+        JsonInt(n) -> Some(n)
+        _ -> None
+
+// `j` as a string, when it is one.
+pub fn as_string(j: Json) -> Option(String):
+    match j:
+        JsonString(s) -> Some(s)
+        _ -> None
+
+// `j` as a bool, when it is one.
+pub fn as_bool(j: Json) -> Option(Bool):
+    match j:
+        JsonBool(b) -> Some(b)
+        _ -> None
+
+// `j` as a list of elements, when it is an array.
+pub fn as_array(j: Json) -> Option(List(Json)):
+    match j:
+        JsonArray(items) -> Some(items)
+        _ -> None
+
+// Follow a dotted path of object keys, e.g. `get_path(resp, "user.name")`. Any
+// missing key (or a non-object along the way) yields `None`.
+pub fn get_path(j: Json, path: String) -> Option(Json):
+    var cur = Some(j)
+    for seg in split(path, "."):
+        cur = step(cur, seg)
+    cur
+
+fn step(cur: Option(Json), seg: String) -> Option(Json):
+    match cur:
+        Some(j) -> get(j, seg)
+        None -> None

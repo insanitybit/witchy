@@ -2,18 +2,15 @@
 // Arms are newline-separated, and a `-` that begins a new line starts the next
 // arm's pattern rather than continuing the previous arm's body.
 
-fn step(direction: Int) -> String {
-  match direction {
-    -1 -> "left"
-    1 -> "right"
-    0 -> "stay"
-    _ -> "?"
-  }
-}
+fn step(direction: Int) -> String:
+    match direction:
+        -1 -> "left"
+        1 -> "right"
+        0 -> "stay"
+        _ -> "?"
 
-fn main(console: Console) {
-  print(console, step(-1))
-  print(console, step(1))
-  print(console, step(0))
-  print(console, step(2))
-}
+fn main(console: Console):
+    print(console, step(-1))
+    print(console, step(1))
+    print(console, step(0))
+    print(console, step(2))

@@ -3,14 +3,12 @@
 // Because values are independent (value semantics), there's no aliasing to
 // reason about; `let` bindings stay immutable.
 
-fn bump(inout n: Int) {
-  n = n + 1
-}
+fn bump(inout n: Int):
+    n = n + 1
 
-fn main(console: Console) {
-  var total = 0
-  bump(total)
-  bump(total)
-  bump(total)
-  print(console, "bumped to " <> int_to_string(total))
-}
+fn main(console: Console):
+    var total = 0
+    bump(total)
+    bump(total)
+    bump(total)
+    print(console, "bumped to " <> int_to_string(total))

@@ -508,7 +508,9 @@ impl Checker {
             "connect" => Some((vec![Ty::Net, Ty::String], Ty::Socket)),
             "restrict" => Some((vec![Ty::Net, Ty::String], Ty::Net)),
             "send_line" => Some((vec![Ty::Socket, Ty::String], Ty::Nil)),
+            "send_bytes" => Some((vec![Ty::Socket, Ty::String], Ty::Nil)),
             "recv_line" => Some((vec![Ty::Socket], Ty::String)),
+            "recv_all" => Some((vec![Ty::Socket], Ty::String)),
             // User functions: instantiate generic type parameters fresh per call.
             _ => match self.fn_sigs.get(name).cloned() {
                 Some((params, ret)) => {
@@ -1028,6 +1030,7 @@ impl Checker {
             merged = &merged | &self.consumed;
         }
         self.consumed = merged;
+        self.check_unreachable(arms)?;
         self.check_exhaustive(&st, arms)?;
         Ok(result)
     }
@@ -1089,21 +1092,89 @@ impl Checker {
         }
     }
 
+    /// Flag arms that can never match because an earlier arm already covers
+    /// them — dead code that is almost always a bug (a typo'd duplicate, or arms
+    /// placed after a catch-all). Conservative: a guarded arm never establishes
+    /// coverage (its guard may fail at runtime), and a constructor arm only
+    /// covers its variant when all its fields are irrefutable (`_`/binding), so
+    /// `Some(0)` followed by `Some(n)` is correctly left reachable.
+    fn check_unreachable(&self, arms: &[MatchArm]) -> Result<(), TypeError> {
+        let mut saturated = false;
+        let mut ctors: HashSet<&str> = HashSet::new();
+        let mut ints: HashSet<i64> = HashSet::new();
+        let mut strs: HashSet<&str> = HashSet::new();
+        let mut bools: HashSet<bool> = HashSet::new();
+        for arm in arms {
+            let already = saturated
+                || match &arm.pattern {
+                    Pattern::Ctor { name, .. } => ctors.contains(name.as_str()),
+                    Pattern::Int(n) => ints.contains(n),
+                    Pattern::Str(s) => strs.contains(s.as_str()),
+                    Pattern::Bool(b) => bools.contains(b),
+                    _ => false,
+                };
+            if already {
+                return terr(format!(
+                    "unreachable match arm: `{}` is already covered by an earlier arm",
+                    describe_pattern(&arm.pattern)
+                ));
+            }
+            if arm.guard.is_none() {
+                match &arm.pattern {
+                    Pattern::Wildcard | Pattern::Var(_) => saturated = true,
+                    Pattern::Ctor { name, args }
+                        if args
+                            .iter()
+                            .all(|p| matches!(p, Pattern::Wildcard | Pattern::Var(_))) =>
+                    {
+                        ctors.insert(name.as_str());
+                    }
+                    Pattern::Int(n) => {
+                        ints.insert(*n);
+                    }
+                    Pattern::Str(s) => {
+                        strs.insert(s.as_str());
+                    }
+                    Pattern::Bool(b) => {
+                        bools.insert(*b);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// If the scrutinee is a known sum type, every variant must be covered (or a
-    /// wildcard/variable arm must catch the rest).
+    /// wildcard/variable arm must catch the rest). `Bool` is treated as a
+    /// two-variant sum (`true`/`false`), so an incomplete Bool match is rejected
+    /// just like an incomplete ADT match.
     fn check_exhaustive(&self, scrut: &Ty, arms: &[MatchArm]) -> Result<(), TypeError> {
-        let Ty::Named(adt, _) = self.resolve(scrut) else {
-            return Ok(());
-        };
-        let Some(variants) = self.adt_variants.get(&adt) else {
-            return Ok(());
-        };
+        let resolved = self.resolve(scrut);
         let has_catchall = arms.iter().any(|a| {
             a.guard.is_none() && matches!(a.pattern, Pattern::Wildcard | Pattern::Var(_))
         });
         if has_catchall {
             return Ok(());
         }
+        if matches!(resolved, Ty::Bool) {
+            let covers = |want: bool| {
+                arms.iter()
+                    .any(|a| a.guard.is_none() && matches!(a.pattern, Pattern::Bool(b) if b == want))
+            };
+            if covers(true) && covers(false) {
+                return Ok(());
+            }
+            return terr(
+                "non-exhaustive match on `Bool`: cover both `true` and `false` (or add `_`)",
+            );
+        }
+        let Ty::Named(adt, _) = resolved else {
+            return Ok(());
+        };
+        let Some(variants) = self.adt_variants.get(&adt) else {
+            return Ok(());
+        };
         let covered: HashSet<&str> = arms
             .iter()
             .filter(|a| a.guard.is_none())
@@ -1313,6 +1384,20 @@ pub fn check(module: &Module) -> Result<(), TypeError> {
 pub fn check_str(src: &str) -> Result<(), String> {
     let module = crate::parser::parse_module(src).map_err(|e| e.to_string())?;
     check(&module).map_err(|e| e.to_string())
+}
+
+/// A short, human-readable rendering of a pattern for diagnostics.
+fn describe_pattern(p: &Pattern) -> String {
+    match p {
+        Pattern::Wildcard => "_".to_string(),
+        Pattern::Var(n) => n.clone(),
+        Pattern::Int(n) => n.to_string(),
+        Pattern::Str(s) => format!("\"{s}\""),
+        Pattern::Bool(b) => b.to_string(),
+        Pattern::Ctor { name, .. } => name.clone(),
+        Pattern::Tuple(_) => "tuple pattern".to_string(),
+        Pattern::List { .. } => "list pattern".to_string(),
+    }
 }
 
 #[cfg(test)]
@@ -1712,6 +1797,64 @@ mod tests {
             fn bad(n: Int) -> Result(Int, String) { Ok(n?) }
         "#;
         assert!(check_str(src).is_err());
+    }
+
+    #[test]
+    fn rejects_arm_after_catchall() {
+        let src = r#"fn f(n: Int) -> Int { match n { _ -> 0  1 -> 2 } }"#;
+        let e = check_str(src).unwrap_err();
+        assert!(e.contains("unreachable"), "got: {e}");
+    }
+
+    #[test]
+    fn rejects_duplicate_variant_arm() {
+        let src = r#"
+            type Opt { Some(a) None }
+            fn f(o: Opt(Int)) -> Int { match o { Some(x) -> x  Some(y) -> y  None -> 0 } }
+        "#;
+        let e = check_str(src).unwrap_err();
+        assert!(e.contains("unreachable"), "got: {e}");
+    }
+
+    #[test]
+    fn rejects_duplicate_literal_arm() {
+        let src = r#"fn f(n: Int) -> Int { match n { 1 -> 1  1 -> 2  _ -> 0 } }"#;
+        assert!(check_str(src).unwrap_err().contains("unreachable"));
+    }
+
+    #[test]
+    fn allows_specific_then_general_constructor_arm() {
+        // `Some(0)` is refutable, so a following `Some(n)` is still reachable —
+        // the unreachable check must NOT flag this valid program.
+        let src = r#"
+            type Opt { Some(a) None }
+            fn f(o: Opt(Int)) -> Int { match o { Some(0) -> 1  Some(n) -> n  None -> 0 } }
+        "#;
+        assert!(check_str(src).is_ok(), "{:?}", check_str(src));
+    }
+
+    #[test]
+    fn allows_guarded_arm_before_same_variant() {
+        // A guarded arm may fail at runtime, so it does not cover its variant; a
+        // later unguarded arm for that variant stays reachable.
+        let src = r#"
+            type Opt { Some(a) None }
+            fn f(o: Opt(Int)) -> Int { match o { Some(x) if x > 0 -> 1  Some(y) -> y  None -> 0 } }
+        "#;
+        assert!(check_str(src).is_ok(), "{:?}", check_str(src));
+    }
+
+    #[test]
+    fn rejects_non_exhaustive_bool_match() {
+        let src = r#"fn f(b: Bool) -> Int { match b { true -> 1 } }"#;
+        let e = check_str(src).unwrap_err();
+        assert!(e.contains("non-exhaustive") && e.contains("Bool"), "got: {e}");
+    }
+
+    #[test]
+    fn allows_complete_bool_match() {
+        assert!(check_str(r#"fn f(b: Bool) -> Int { match b { true -> 1  false -> 0 } }"#).is_ok());
+        assert!(check_str(r#"fn f(b: Bool) -> Int { match b { true -> 1  _ -> 0 } }"#).is_ok());
     }
 
     #[test]

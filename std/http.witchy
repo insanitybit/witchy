@@ -1,0 +1,97 @@
+// A small HTTP/1.1 client over the `Net` capability — the witchy answer to a
+// slice of Go's net/http. Pure transport built on the capability-gated socket
+// primitives (`connect`/`send_line`/`recv_all`): a module handed a `Net`
+// restricted to some hosts can reach only those, and one handed no `Net` can't
+// reach the network at all. Interpreter-only for now (compiled networking maps
+// to wasi:sockets, a future step).
+
+// `header` returns Option; `get_url` returns Result; `url` parses URL strings.
+import option
+import result
+import url
+
+// A response: status code, headers (name lowercased for case-insensitive
+// lookup), and body.
+type Response:
+    Response(Int, List((String, String)), String)
+
+// Perform a GET request to `host:port` for `path`, returning the response.
+pub fn get(net: Net, host: String, port: Int, path: String) -> Response:
+    request(net, "GET", host, port, path, "")
+
+// Perform a POST request with `body` (e.g. a JSON document). The body's byte
+// length is sent as Content-Length.
+pub fn post(net: Net, host: String, port: Int, path: String, body: String) -> Response:
+    request(net, "POST", host, port, path, body)
+
+// GET a full URL string (`http://host[:port]/path`), or an error if it doesn't
+// parse. Saves splitting host/port/path by hand.
+pub fn get_url(net: Net, raw: String) -> Result(Response, String):
+    match url.parse(raw):
+        Some(u) -> Ok(get(net, url.host(u), url.port(u), url.path(u)))
+        None -> Err("invalid URL: " <> raw)
+
+// Send one request (method/path/body) and read the whole response back.
+// `Connection: close` means the server closes after the body, ending recv_all.
+fn request(net: Net, method: String, host: String, port: Int, path: String, body: String) -> Response:
+    let sock = connect(net, host <> ":" <> int_to_string(port))
+    let req = method <> " " <> path <> " HTTP/1.1\r\n"
+        <> "Host: " <> host <> "\r\n"
+        <> "Content-Length: " <> int_to_string(string_length(body)) <> "\r\n"
+        <> "Connection: close\r\n\r\n"
+        <> body
+    send_bytes(sock, req)
+    parse_response(recv_all(sock))
+
+// The numeric status code, e.g. 200.
+pub fn status(r: Response) -> Int:
+    match r:
+        Response(code, _hdrs, _body) -> code
+
+// The response body.
+pub fn body(r: Response) -> String:
+    match r:
+        Response(_code, _hdrs, b) -> b
+
+// The value of a response header, looked up case-insensitively, or None.
+pub fn header(r: Response, name: String) -> Option(String):
+    match r:
+        Response(_code, hdrs, _body) -> find_header(hdrs, to_lower(name))
+
+fn find_header(hdrs: List((String, String)), name: String) -> Option(String):
+    for p in hdrs:
+        let (k, v) = p
+        if k == name:
+            return Some(v)
+    None
+
+// Split the raw response at the blank line separating headers from body, and
+// parse the header lines into (lowercased name, trimmed value) pairs.
+fn parse_response(raw: String) -> Response:
+    let sep = index_of(raw, "\r\n\r\n")
+    let head = if sep < 0 { raw } else { substring(raw, 0, sep) }
+    let bdy = if sep < 0 { "" } else { substring(raw, sep + 4, char_count(raw)) }
+    let lines = split(head, "\r\n")
+    let status_line = if length(lines) > 0 { at(lines, 0) } else { "" }
+    var hdrs = []
+    var i = 1
+    while i < length(lines):
+        let line = at(lines, i)
+        let colon = index_of(line, ":")
+        if colon >= 0:
+            let name = to_lower(substring(line, 0, colon))
+            let value = trim(substring(line, colon + 1, char_count(line)))
+            hdrs = push(hdrs, (name, value))
+        i = i + 1
+    Response(status_code(status_line), hdrs, bdy)
+
+// Pull the numeric code out of a status line like "HTTP/1.1 200 OK".
+fn status_code(line: String) -> Int:
+    let sp = index_of(line, " ")
+    if sp < 0:
+        0
+    else:
+        let rest = substring(line, sp + 1, char_count(line))
+        let sp2 = index_of(rest, " ")
+        let code = if sp2 < 0 { rest } else { substring(rest, 0, sp2) }
+        string_to_int(code)

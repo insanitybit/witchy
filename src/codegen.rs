@@ -125,6 +125,8 @@ struct SavedScope {
     payload: HashMap<String, String>,
     val_types: HashMap<String, ValType>,
     list_elem_vt: HashMap<String, ValType>,
+    list_elem_tuple: HashMap<String, Vec<ValType>>,
+    tuple_slots: HashMap<String, Vec<ValType>>,
     ret: Kind,
     inout: bool,
 }
@@ -225,6 +227,14 @@ struct Codegen {
     /// is `List(String)`), so a `for x in words` loop variable's type — and thus
     /// its use as a Dict key — resolves.
     local_list_elem_valtype: HashMap<String, ValType>,
+    /// Element tuple-slot value types of list-of-tuples locals (e.g. a param
+    /// `pairs: List((String, Int))`), so a `for p in pairs` loop variable's
+    /// slots are known.
+    local_list_elem_tuple: HashMap<String, Vec<ValType>>,
+    /// Tuple-slot value types of tuple-typed locals (e.g. a for-loop variable
+    /// over a list of tuples), so `let (k, v) = p` gives `k`/`v` their types and
+    /// `k == key` compiles to string (not pointer) comparison.
+    local_tuple_slots: HashMap<String, Vec<ValType>>,
     /// Function name -> the value type it returns, so `to_string(f(...))` can be
     /// rendered. Populated from return-type annotations.
     fn_ret_valtype: HashMap<String, ValType>,
@@ -297,6 +307,8 @@ impl Codegen {
             local_payload_records: HashMap::new(),
             local_val_types: HashMap::new(),
             local_list_elem_valtype: HashMap::new(),
+            local_list_elem_tuple: HashMap::new(),
+            local_tuple_slots: HashMap::new(),
             fn_ret_valtype: HashMap::new(),
             fn_ret_records: HashMap::new(),
             fn_ret_result_record: HashMap::new(),
@@ -630,6 +642,16 @@ impl Codegen {
                                 self.local_val_types.insert(n.clone(), vt);
                             }
                         }
+                    } else if let Expr::Var(p) = value {
+                        // Destructuring a tuple-typed variable (e.g. a for-loop
+                        // var over a list of tuples) carries its slot types.
+                        if let Some(slots) = self.local_tuple_slots.get(p).cloned() {
+                            if slots.len() == names.len() {
+                                for (n, vt) in names.iter().zip(slots) {
+                                    self.local_val_types.insert(n.clone(), vt);
+                                }
+                            }
+                        }
                     }
                     self.infer_locals_expr(value);
                 }
@@ -666,6 +688,14 @@ impl Codegen {
                 let evt = self.elem_val_type_of(iter);
                 if evt != ValType::Other {
                     self.local_val_types.insert(var.clone(), evt);
+                }
+                // Iterating a list of tuples: the loop var is a tuple with the
+                // element's slot types, so a `let (k, v) = p` inside can type its
+                // bindings (and `k == key` use string, not pointer, comparison).
+                if let Expr::Var(x) = iter.as_ref() {
+                    if let Some(slots) = self.local_list_elem_tuple.get(x).cloned() {
+                        self.local_tuple_slots.insert(var.clone(), slots);
+                    }
                 }
                 self.infer_locals_expr(iter);
                 self.infer_locals(body);
@@ -859,6 +889,8 @@ impl Codegen {
         self.local_list_elem.clear();
         self.local_val_types.clear();
         self.local_list_elem_valtype.clear();
+        self.local_list_elem_tuple.clear();
+        self.local_tuple_slots.clear();
         for p in &f.params {
             let k = p.ty.as_ref().map(ty_kind).unwrap_or(Kind::I32);
             self.locals.insert(p.name.clone(), k);
@@ -883,6 +915,12 @@ impl Codegen {
                         let evt = ty_to_valtype(elem);
                         if evt != ValType::Other {
                             self.local_list_elem_valtype.insert(p.name.clone(), evt);
+                        }
+                        // List of tuples: remember the element's slot value types
+                        // so `for p in xs` then `let (k, v) = p` types `k`/`v`.
+                        if let Type::Tuple(slots) = elem {
+                            self.local_list_elem_tuple
+                                .insert(p.name.clone(), slots.iter().map(ty_to_valtype).collect());
                         }
                     }
                 }
@@ -1631,6 +1669,12 @@ impl Codegen {
                         if evt != ValType::Other {
                             self.local_list_elem_valtype.insert(p.name.clone(), evt);
                         }
+                        // List of tuples: remember the element's slot value types
+                        // so `for p in xs` then `let (k, v) = p` types `k`/`v`.
+                        if let Type::Tuple(slots) = elem {
+                            self.local_list_elem_tuple
+                                .insert(p.name.clone(), slots.iter().map(ty_to_valtype).collect());
+                        }
                     }
                 }
                 _ => {}
@@ -1726,6 +1770,8 @@ impl Codegen {
             payload: std::mem::take(&mut self.local_payload_records),
             val_types: std::mem::take(&mut self.local_val_types),
             list_elem_vt: std::mem::take(&mut self.local_list_elem_valtype),
+            list_elem_tuple: std::mem::take(&mut self.local_list_elem_tuple),
+            tuple_slots: std::mem::take(&mut self.local_tuple_slots),
             ret: self.cur_fn_ret_kind,
             inout: self.cur_fn_inout,
         }
@@ -1739,6 +1785,8 @@ impl Codegen {
         self.local_payload_records = s.payload;
         self.local_val_types = s.val_types;
         self.local_list_elem_valtype = s.list_elem_vt;
+        self.local_list_elem_tuple = s.list_elem_tuple;
+        self.local_tuple_slots = s.tuple_slots;
         self.cur_fn_ret_kind = s.ret;
         self.cur_fn_inout = s.inout;
     }
@@ -2009,7 +2057,8 @@ impl Codegen {
             ("read", _) | ("subdir", _) => cerr(
                 "filesystem capabilities are not compiled to WASM yet (interpreter only; maps to WASI preopens)",
             ),
-            ("connect", _) | ("restrict", _) | ("send_line", _) | ("recv_line", _) => cerr(
+            ("connect", _) | ("restrict", _) | ("send_line", _) | ("recv_line", _)
+            | ("recv_all", _) | ("send_bytes", _) => cerr(
                 "network capabilities are not compiled to WASM yet (interpreter only; maps to wasi:sockets)",
             ),
             _ => {
@@ -2114,6 +2163,120 @@ fn fn_param_returning_var(params: &[crate::ast::Param], tv: &str) -> Option<usiz
 
 /// Compile a module's functions to WAT. Requires a `main` returning Int or Nil;
 /// `main` may take a single capability parameter.
+/// Collect every name that could refer to a function — call targets and bare
+/// identifiers (first-class function values) — used for reachability/DCE. Over-
+/// approximates (also picks up locals), which is safe: non-function names just
+/// don't match any function and are ignored.
+fn collect_fn_refs_block(b: &Block, out: &mut HashSet<String>) {
+    for stmt in &b.stmts {
+        match stmt {
+            Stmt::Let { value, .. } | Stmt::Assign { value, .. } | Stmt::LetTuple { value, .. } => {
+                collect_fn_refs_expr(value, out)
+            }
+            Stmt::Return(Some(e)) | Stmt::Expr(e) => collect_fn_refs_expr(e, out),
+            Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
+        }
+    }
+}
+
+fn collect_fn_refs_expr(e: &Expr, out: &mut HashSet<String>) {
+    match e {
+        Expr::Call { name, args } => {
+            out.insert(name.clone());
+            for a in args {
+                collect_fn_refs_expr(a, out);
+            }
+        }
+        Expr::Var(name) => {
+            out.insert(name.clone());
+        }
+        Expr::Apply { func, args } => {
+            collect_fn_refs_expr(func, out);
+            for a in args {
+                collect_fn_refs_expr(a, out);
+            }
+        }
+        Expr::Ctor { args, .. }
+        | Expr::List(args)
+        | Expr::Tuple(args)
+        | Expr::Spawn { args, .. } => {
+            for a in args {
+                collect_fn_refs_expr(a, out);
+            }
+        }
+        Expr::Unary { expr, .. } | Expr::Try(expr) | Expr::Field { base: expr, .. } => {
+            collect_fn_refs_expr(expr, out)
+        }
+        Expr::RecordUpdate { base, fields } => {
+            collect_fn_refs_expr(base, out);
+            for (_, v) in fields {
+                collect_fn_refs_expr(v, out);
+            }
+        }
+        Expr::Binary { lhs, rhs, .. } => {
+            collect_fn_refs_expr(lhs, out);
+            collect_fn_refs_expr(rhs, out);
+        }
+        Expr::If { cond, then_block, else_block } => {
+            collect_fn_refs_expr(cond, out);
+            collect_fn_refs_block(then_block, out);
+            if let Some(b) = else_block {
+                collect_fn_refs_block(b, out);
+            }
+        }
+        Expr::Match { scrutinee, arms } => {
+            collect_fn_refs_expr(scrutinee, out);
+            for arm in arms {
+                if let Some(g) = &arm.guard {
+                    collect_fn_refs_expr(g, out);
+                }
+                collect_fn_refs_expr(&arm.body, out);
+            }
+        }
+        Expr::While { cond, body } => {
+            collect_fn_refs_expr(cond, out);
+            collect_fn_refs_block(body, out);
+        }
+        Expr::For { iter, body, .. } => {
+            collect_fn_refs_expr(iter, out);
+            collect_fn_refs_block(body, out);
+        }
+        Expr::Lambda { body, .. } => collect_fn_refs_block(body, out),
+        Expr::Block(b) => collect_fn_refs_block(b, out),
+        Expr::Int(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) => {}
+    }
+}
+
+/// The set of functions reachable from `main` (transitively). Only these need
+/// compiling — importing a std module no longer drags its whole API into the
+/// output.
+fn reachable_functions(module: &Module) -> HashSet<String> {
+    let mut bodies: HashMap<&str, &Block> = HashMap::new();
+    for item in &module.items {
+        if let Item::Function(f) = item {
+            bodies.insert(f.name.as_str(), &f.body);
+        }
+    }
+    let mut reachable: HashSet<String> = HashSet::new();
+    let mut work: Vec<String> = Vec::new();
+    if bodies.contains_key("main") {
+        reachable.insert("main".to_string());
+        work.push("main".to_string());
+    }
+    while let Some(name) = work.pop() {
+        if let Some(body) = bodies.get(name.as_str()) {
+            let mut refs = HashSet::new();
+            collect_fn_refs_block(body, &mut refs);
+            for r in refs {
+                if bodies.contains_key(r.as_str()) && reachable.insert(r.clone()) {
+                    work.push(r);
+                }
+            }
+        }
+    }
+    reachable
+}
+
 pub fn compile_module(module: &Module) -> Result<String, CodegenError> {
     // Desugar traits/impls to ordinary functions (no-op for trait-free modules)
     // so codegen, like the interpreter, only ever sees plain functions.
@@ -2226,6 +2389,8 @@ pub fn compile_module(module: &Module) -> Result<String, CodegenError> {
     let mut main_returns_float = false;
     let mut has_main = false;
 
+    // Dead-code elimination: compile only functions reachable from `main`.
+    let reachable = reachable_functions(module);
     for item in &module.items {
         match item {
             Item::Function(f) => {
@@ -2238,7 +2403,9 @@ pub fn compile_module(module: &Module) -> Result<String, CodegenError> {
                         return cerr("codegen `main` may take at most one (capability) argument");
                     }
                 }
-                func_wat.push_str(&cg.compile_function(f)?);
+                if reachable.contains(&f.name) {
+                    func_wat.push_str(&cg.compile_function(f)?);
+                }
             }
             Item::Type(_) => {}
             Item::Actor(_) => return cerr("use compile_actor_module to compile an actor"),

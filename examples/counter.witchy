@@ -4,12 +4,10 @@
 // increments the state and prints it, so state persists across messages — and
 // without the capability the compiled module cannot even instantiate.
 
-actor Counter {
-  console: Console
-  var count: Int = 0
+actor Counter:
+    console: Console
+    var count: Int = 0
 
-  on Tick() {
-    count = count + 1
-    print(console, "count is " <> int_to_string(count) <> "\n")
-  }
-}
+    on Tick():
+        count = count + 1
+        print(console, "count is " <> int_to_string(count) <> "\n")

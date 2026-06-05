@@ -7,6 +7,7 @@
 
 mod actor_system;
 mod ast;
+mod capabilities;
 mod codegen;
 mod interpreter;
 mod lexer;
@@ -92,6 +93,33 @@ fn sender_src(target: u32) -> String {
 }
 
 fn main() -> wasmtime::Result<()> {
+    // `witchy caps <file>` reports the program's host-capability footprint.
+    if std::env::args().nth(1).as_deref() == Some("caps") {
+        let Some(path) = std::env::args().nth(2) else {
+            eprintln!("usage: witchy caps <file>");
+            std::process::exit(1);
+        };
+        if let Err(e) = report_capabilities(&path) {
+            eprintln!("{e}");
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
+    // `witchy caps-diff <old> <new>` reports whether the newer version widens the
+    // capability footprint, exiting 2 on a widening so it can gate CI/installs.
+    if std::env::args().nth(1).as_deref() == Some("caps-diff") {
+        let (Some(old), Some(new)) = (std::env::args().nth(2), std::env::args().nth(3)) else {
+            eprintln!("usage: witchy caps-diff <old.witchy> <new.witchy>");
+            std::process::exit(1);
+        };
+        match report_capability_diff(&old, &new) {
+            Ok(widened) => std::process::exit(if widened { 2 } else { 0 }),
+            Err(e) => {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
+        }
+    }
     // `witchy lsp` starts the language server (stdio), used by editor extensions.
     if std::env::args().nth(1).as_deref() == Some("lsp") {
         if let Err(e) = lsp::run() {
@@ -104,7 +132,8 @@ fn main() -> wasmtime::Result<()> {
     if std::env::args().nth(1).as_deref() == Some("--bench") {
         return run_benchmarks();
     }
-    // coven package-manager subcommands (`witchy add`, `build`, `publish`, ...).
+    // coven package-manager subcommands (`witchy add`, `build`, `publish`, ...)
+    // are checked before the file/`--net` runner so they intercept first.
     if let Some(a1) = std::env::args().nth(1) {
         if pm::cli::is_command(&a1) {
             let args: Vec<String> = std::env::args().skip(1).collect();
@@ -115,20 +144,45 @@ fn main() -> wasmtime::Result<()> {
             return Ok(());
         }
     }
-    // `witchy <file.witchy>` runs a program; with no argument, run the demos.
-    if let Some(path) = std::env::args().nth(1) {
-        match execute_file(&path) {
-            Ok(output) => {
-                for line in output {
-                    println!("{line}");
+    // `witchy [--net <host:port>]... <file.witchy>` runs a program, granting the
+    // listed hosts to its `Net` capability (the host decides what authority to
+    // hand over). With no file argument, run the demos.
+    {
+        let mut net_allow: Vec<String> = Vec::new();
+        let mut file: Option<String> = None;
+        let mut args = std::env::args().skip(1);
+        while let Some(arg) = args.next() {
+            if let Some(host) = arg.strip_prefix("--net=") {
+                net_allow.push(host.to_string());
+            } else if arg == "--net" {
+                match args.next() {
+                    Some(host) => net_allow.push(host),
+                    None => {
+                        eprintln!("--net requires a <host:port> argument");
+                        std::process::exit(1);
+                    }
                 }
-            }
-            Err(e) => {
-                eprintln!("{e}");
+            } else if file.is_none() {
+                file = Some(arg);
+            } else {
+                eprintln!("unexpected argument: {arg}");
                 std::process::exit(1);
             }
         }
-        return Ok(());
+        if let Some(path) = file {
+            match execute_file(&path, net_allow) {
+                Ok(output) => {
+                    for line in output {
+                        println!("{line}");
+                    }
+                }
+                Err(e) => {
+                    eprintln!("{e}");
+                    std::process::exit(1);
+                }
+            }
+            return Ok(());
+        }
     }
 
     let mut rt = Runtime::new()?;
@@ -413,7 +467,7 @@ fn bundled_module(name: &str) -> Option<&'static str> {
     crate::linker::std_source(name)
 }
 
-fn execute_file(path: &str) -> Result<Vec<String>, String> {
+fn execute_file(path: &str, net_allow: Vec<String>) -> Result<Vec<String>, String> {
     use std::collections::{HashSet, VecDeque};
     use std::path::{Path, PathBuf};
 
@@ -486,7 +540,69 @@ fn execute_file(path: &str) -> Result<Vec<String>, String> {
 
     // The root `Dir` capability is anchored at the current directory (the same
     // root the demos use), independent of where the source file lives.
-    interpreter::run_module(linked, Path::new("."), Vec::new()).map_err(|e| e.to_string())
+    interpreter::run_module(linked, Path::new("."), net_allow).map_err(|e| e.to_string())
+}
+
+/// Render a capability set for human output: a comma-joined list, or `(none)`.
+fn show_caps(caps: &std::collections::BTreeSet<&'static str>) -> String {
+    if caps.is_empty() {
+        "(none)".to_string()
+    } else {
+        caps.iter().copied().collect::<Vec<_>>().join(", ")
+    }
+}
+
+/// Read, parse, and compute the host-capability footprint of a source file.
+fn analyze_file(path: &str) -> Result<capabilities::Footprint, String> {
+    let src = std::fs::read_to_string(path).map_err(|e| format!("cannot read `{path}`: {e}"))?;
+    let module = parser::parse_module(&src).map_err(|e| e.to_string())?;
+    Ok(capabilities::analyze(&module))
+}
+
+/// Print the host-capability footprint of a single source file: which of
+/// `Console`/`Dir`/`Net` each entry point requires, and the union.
+fn report_capabilities(path: &str) -> Result<(), String> {
+    let fp = analyze_file(path)?;
+    let show = show_caps;
+    println!("Host-capability footprint of {path}:");
+    let width = fp
+        .entries
+        .iter()
+        .map(|e| e.name.len())
+        .max()
+        .unwrap_or(0)
+        .max("total".len());
+    for e in &fp.entries {
+        println!("  {:<width$}  {}", e.name, show(&e.capabilities));
+    }
+    println!("  {:<width$}  {}", "total", show(&fp.total));
+    Ok(())
+}
+
+/// Compare the capability footprints of two versions of a module and report any
+/// *widening* — host authority the newer version demands that the older did not.
+/// Returns whether it widened so the caller can fail the supply-chain gate. This
+/// is what makes `witchy` dependency updates auditable: unlike Go, where a
+/// version bump can silently start touching the network, a widening is visible
+/// and blockable here.
+fn report_capability_diff(old_path: &str, new_path: &str) -> Result<bool, String> {
+    let old = analyze_file(old_path)?;
+    let new = analyze_file(new_path)?;
+    let d = capabilities::diff(&old, &new);
+    println!("Capability footprint diff {old_path} -> {new_path}:");
+    println!("  old total:  {}", show_caps(&old.total));
+    println!("  new total:  {}", show_caps(&new.total));
+    println!("  added:      {}", show_caps(&d.added));
+    println!("  removed:    {}", show_caps(&d.removed));
+    if d.widened() {
+        println!(
+            "WIDENING: the newer version demands new host authority ({}). Review before trusting.",
+            show_caps(&d.added)
+        );
+    } else {
+        println!("OK: no widening — the newer version demands no new host authority.");
+    }
+    Ok(d.widened())
 }
 
 /// Parse, link, and run a multi-module program through the interpreter.
@@ -1162,6 +1278,297 @@ mod example_tests {
         let compiled = run_linked_on_wasm(&sources, "main");
         assert_eq!(interpreted, compiled, "option or/map_or diverged");
         assert_eq!(compiled, vec!["5", "9", "7", "3", "20", "99"]);
+    }
+
+    #[test]
+    fn std_eq_member_backends_agree() {
+        // The Eq trait + the bounded `member` / `index_of` give content-correct
+        // equality on BOTH backends — even for runtime-BUILT strings, where a
+        // generic `==` search does pointer comparison in compiled code and would
+        // wrongly miss. A user `impl Eq` (Box) works, as does the default `ne`.
+        let client = r#"
+            import eq
+            type Box { Box(Int) }
+            impl Eq for Box {
+              fn eq(self, other: Self) -> Bool {
+                match self { Box(a) -> match other { Box(b) -> a == b } }
+              }
+            }
+            fn build(s: String) -> String {
+              var acc = ""
+              var i = 0
+              while i < char_count(s) {
+                acc = acc <> substring(s, i, i + 1)
+                i = i + 1
+              }
+              acc
+            }
+            fn main(console: Console) {
+              let words = [build("apple"), build("banana")]
+              print(console, to_string(eq.member(words, build("banana"))))
+              print(console, to_string(eq.member(words, build("cherry"))))
+              print(console, int_to_string(eq.index_of([10, 20, 30], 20)))
+              print(console, int_to_string(eq.index_of([10, 20, 30], 99)))
+              print(console, to_string(eq.member([Box(1), Box(2)], Box(2))))
+              print(console, to_string(ne(Box(1), Box(2))))
+              print(console, to_string(ne(Box(2), Box(2))))
+            }
+        "#;
+        let sources = [("eq", crate::bundled_module("eq").unwrap()), ("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "std eq member/index_of diverged");
+        assert_eq!(compiled, vec!["true", "false", "1", "-1", "true", "true", "false"]);
+    }
+
+    #[test]
+    fn std_eq_count_unique_backends_agree() {
+        // `eq.count` / `eq.unique` dispatch through the element type's Eq impl, so
+        // they are content-correct on BOTH backends — including runtime-built
+        // strings, where `list.unique`'s generic `==` compares pointers and fails
+        // to dedupe in compiled code. A user `impl Eq` works too (Tag).
+        let client = r#"
+            import eq
+            import string
+            type Tag { Tag(Int) }
+            impl Eq for Tag {
+              fn eq(self, other: Self) -> Bool {
+                match self { Tag(a) -> match other { Tag(b) -> a == b } }
+              }
+            }
+            fn build(s: String) -> String {
+              var acc = ""
+              var i = 0
+              while i < char_count(s) {
+                acc = acc <> substring(s, i, i + 1)
+                i = i + 1
+              }
+              acc
+            }
+            fn main(console: Console) {
+              let words = [build("a"), build("b"), build("a"), build("c"), build("b"), build("a")]
+              print(console, int_to_string(eq.count(words, build("a"))))
+              print(console, int_to_string(eq.count(words, build("z"))))
+              print(console, string.join(eq.unique(words), ","))
+              print(console, int_to_string(length(eq.unique([Tag(1), Tag(2), Tag(1), Tag(2), Tag(3)]))))
+              print(console, int_to_string(eq.count([Tag(1), Tag(2), Tag(1)], Tag(1))))
+            }
+        "#;
+        let sources = [
+            ("eq", crate::bundled_module("eq").unwrap()),
+            ("string", crate::bundled_module("string").unwrap()),
+            ("main", client),
+        ];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "std eq count/unique diverged");
+        assert_eq!(compiled, vec!["3", "0", "a,b,c", "3", "2"]);
+    }
+
+    #[test]
+    fn std_set_operations_backends_agree() {
+        // Set ops dispatch through Eq (cross-module: set -> eq.member, both
+        // bounded generics), so they are content-correct on both backends for
+        // runtime-built strings and a user Eq type (Id), and dedupe along the way.
+        let client = r#"
+            import set
+            import string
+            type Id { Id(Int) }
+            impl Eq for Id {
+              fn eq(self, other: Self) -> Bool {
+                match self { Id(a) -> match other { Id(b) -> a == b } }
+              }
+            }
+            fn build(s: String) -> String {
+              var acc = ""
+              var i = 0
+              while i < char_count(s) {
+                acc = acc <> substring(s, i, i + 1)
+                i = i + 1
+              }
+              acc
+            }
+            fn main(console: Console) {
+              let a = [build("x"), build("y"), build("x")]
+              let b = [build("y"), build("z")]
+              print(console, string.join(set.union(a, b), ","))
+              print(console, string.join(set.intersection(a, b), ","))
+              print(console, string.join(set.difference(a, b), ","))
+              print(console, to_string(set.is_subset([build("y")], a)))
+              print(console, to_string(set.is_subset([build("z")], a)))
+              print(console, int_to_string(length(set.union([Id(1), Id(2), Id(1)], [Id(2), Id(3)]))))
+            }
+        "#;
+        let sources = [
+            ("set", crate::bundled_module("set").unwrap()),
+            ("eq", crate::bundled_module("eq").unwrap()),
+            ("string", crate::bundled_module("string").unwrap()),
+            ("main", client),
+        ];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "std set ops diverged");
+        assert_eq!(
+            compiled,
+            vec!["x,y,z", "y", "x", "true", "false", "3"]
+        );
+    }
+
+    #[test]
+    fn std_ascii_classification_backends_agree() {
+        // ASCII predicates are implemented purely via string comparison, so they
+        // must agree across the interpreter and the compiled backend. Also drives
+        // a tiny tokenizer-style use: sum the digit values in a string.
+        let client = r#"
+            import ascii
+            import string
+            fn digit_sum(s: String) -> Int {
+              var total = 0
+              var i = 0
+              while i < char_count(s) {
+                let c = string.char_at(s, i)
+                if ascii.is_digit(c) { total = total + ascii.to_digit(c) }
+                i = i + 1
+              }
+              total
+            }
+            fn main(console: Console) {
+              print(console, to_string(ascii.is_digit("7")))
+              print(console, to_string(ascii.is_digit("x")))
+              print(console, to_string(ascii.is_alpha("Q")))
+              print(console, to_string(ascii.is_alnum("_")))
+              print(console, to_string(ascii.is_space("\t")))
+              print(console, int_to_string(ascii.to_digit("4")))
+              print(console, int_to_string(ascii.to_digit("z")))
+              print(console, int_to_string(digit_sum("a1b2c3")))
+            }
+        "#;
+        let sources = [
+            ("ascii", crate::bundled_module("ascii").unwrap()),
+            ("string", crate::bundled_module("string").unwrap()),
+            ("main", client),
+        ];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "std ascii diverged");
+        assert_eq!(
+            compiled,
+            vec!["true", "false", "true", "false", "true", "4", "-1", "6"]
+        );
+    }
+
+    #[test]
+    fn std_show_list_backends_agree() {
+        // `show.show_list` renders a list via the element type's Show impl, so it
+        // works for a user type (Coord) that the built-in to_string cannot print.
+        // Monomorphized dispatch keeps it content-correct on both backends.
+        let client = r#"
+            import show
+            type Coord { Coord(Int, Int) }
+            impl Show for Coord {
+              fn show(self) -> String {
+                match self { Coord(x, y) -> "(" <> int_to_string(x) <> "," <> int_to_string(y) <> ")" }
+              }
+            }
+            fn main(console: Console) {
+              print(console, show.show_list([1, 2, 3]))
+              print(console, show.show_list(["a", "b"]))
+              print(console, show.show_list([Coord(0, 0), Coord(1, 2)]))
+              print(console, show.show_list([true, false]))
+            }
+        "#;
+        let sources = [
+            ("show", crate::bundled_module("show").unwrap()),
+            ("string", crate::bundled_module("string").unwrap()),
+            ("main", client),
+        ];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "std show_list diverged");
+        assert_eq!(
+            compiled,
+            vec!["[1, 2, 3]", "[a, b]", "[(0,0), (1,2)]", "[true, false]"]
+        );
+    }
+
+    #[test]
+    fn recursive_trait_dispatch_on_match_bound_fields() {
+        // A trait method can now dispatch on a variable bound by a constructor
+        // pattern when the field type is concrete: `show(x)` / `show(c)` inside a
+        // Show impl resolve through the match arm. Covers a nested struct (Named
+        // holds a Coord) and stays content-correct on both backends.
+        let client = r#"
+            import show
+            type Coord { Coord(Int, Int) }
+            impl Show for Coord {
+              fn show(self) -> String {
+                match self { Coord(x, y) -> "(" <> show(x) <> ", " <> show(y) <> ")" }
+              }
+            }
+            type Named { Named(String, Coord) }
+            impl Show for Named {
+              fn show(self) -> String {
+                match self { Named(label, c) -> label <> "=" <> show(c) }
+              }
+            }
+            fn main(console: Console) {
+              print(console, show(Coord(3, 4)))
+              print(console, show(Named("p", Coord(1, 2))))
+              print(console, show.show_list([Coord(0, 0), Coord(5, 6)]))
+            }
+        "#;
+        let sources = [
+            ("show", crate::bundled_module("show").unwrap()),
+            ("string", crate::bundled_module("string").unwrap()),
+            ("main", client),
+        ];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "recursive show dispatch diverged");
+        assert_eq!(compiled, vec!["(3, 4)", "p=(1, 2)", "[(0, 0), (5, 6)]"]);
+    }
+
+    #[test]
+    fn std_ord_string_and_sort_backends_agree() {
+        // `impl Ord for String` makes strings comparable, and the bounded generic
+        // `ord.sort` dispatches through the element's Ord impl — so it sorts
+        // runtime-BUILT strings content-correctly on both backends (a pointer
+        // comparison sort would scramble them in compiled code). Also covers
+        // Ord-over-String for max_of/maximum and Ints via the same `sort`.
+        let client = r#"
+            import ord
+            import string
+            fn build(s: String) -> String {
+              var acc = ""
+              var i = 0
+              while i < char_count(s) {
+                acc = acc <> substring(s, i, i + 1)
+                i = i + 1
+              }
+              acc
+            }
+            fn main(console: Console) {
+              let words = [build("pear"), build("apple"), build("fig"), build("apple")]
+              print(console, string.join(ord.sort(words), ","))
+              print(console, string.join(ord.sort(["c", "a", "b"]), ""))
+              print(console, ord.max_of(build("alpha"), build("omega")))
+              print(console, ord.maximum([build("x"), build("a"), build("m")], ""))
+              let nums = ord.sort([3, 1, 2, 1])
+              print(console, int_to_string(at(nums, 0) + at(nums, 3) * 10))
+            }
+        "#;
+        let sources = [
+            ("ord", crate::bundled_module("ord").unwrap()),
+            ("string", crate::bundled_module("string").unwrap()),
+            ("main", client),
+        ];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "std ord string/sort diverged");
+        assert_eq!(
+            compiled,
+            vec!["apple,apple,fig,pear", "abc", "omega", "x", "31"]
+        );
     }
 
     #[test]
@@ -2373,7 +2780,7 @@ mod example_tests {
         assert!(!files.is_empty(), "no examples found");
         for path in files {
             let p = path.to_str().unwrap();
-            let result = crate::execute_file(p);
+            let result = crate::execute_file(p, Vec::new());
             assert!(result.is_ok(), "example `{p}` failed: {result:?}");
         }
     }
@@ -2381,7 +2788,7 @@ mod example_tests {
     #[test]
     fn compute_example_returns_value() {
         assert_eq!(
-            crate::execute_file("examples/compute.witchy").unwrap(),
+            crate::execute_file("examples/compute.witchy", Vec::new()).unwrap(),
             vec!["217"]
         );
     }
@@ -2389,7 +2796,7 @@ mod example_tests {
     #[test]
     fn shapes_example_returns_value() {
         assert_eq!(
-            crate::execute_file("examples/shapes.witchy").unwrap(),
+            crate::execute_file("examples/shapes.witchy", Vec::new()).unwrap(),
             vec!["325"]
         );
     }
@@ -2397,7 +2804,7 @@ mod example_tests {
     #[test]
     fn files_example_reads_sandboxed_file() {
         assert_eq!(
-            crate::execute_file("examples/files.witchy").unwrap(),
+            crate::execute_file("examples/files.witchy", Vec::new()).unwrap(),
             vec!["hello from a sandboxed Dir capability"]
         );
     }
@@ -2407,7 +2814,7 @@ mod example_tests {
     #[test]
     fn std_library_resolves_and_runs_via_cli() {
         assert_eq!(
-            crate::execute_file("examples/std_demo.witchy").unwrap(),
+            crate::execute_file("examples/std_demo.witchy", Vec::new()).unwrap(),
             vec!["30", "3"]
         );
     }
@@ -2416,7 +2823,7 @@ mod example_tests {
     #[test]
     fn sort_runs_via_cli() {
         assert_eq!(
-            crate::execute_file("examples/sort.witchy").unwrap(),
+            crate::execute_file("examples/sort.witchy", Vec::new()).unwrap(),
             vec!["1,1,3,4,5", "5,4,3,1,1"]
         );
     }
@@ -2425,7 +2832,7 @@ mod example_tests {
     #[test]
     fn math_runs_via_cli() {
         assert_eq!(
-            crate::execute_file("examples/math_demo.witchy").unwrap(),
+            crate::execute_file("examples/math_demo.witchy", Vec::new()).unwrap(),
             vec!["7", "5", "10", "1024", "12"]
         );
     }
@@ -2434,7 +2841,7 @@ mod example_tests {
     #[test]
     fn floats_run_via_cli() {
         assert_eq!(
-            crate::execute_file("examples/floats.witchy").unwrap(),
+            crate::execute_file("examples/floats.witchy", Vec::new()).unwrap(),
             vec!["4", "3.5", "5", "1"]
         );
     }
@@ -2443,7 +2850,7 @@ mod example_tests {
     #[test]
     fn list_more_runs_via_cli() {
         assert_eq!(
-            crate::execute_file("examples/list_more.witchy").unwrap(),
+            crate::execute_file("examples/list_more.witchy", Vec::new()).unwrap(),
             vec!["true", "3", "-1", "20", "30"]
         );
     }
@@ -2454,7 +2861,7 @@ mod example_tests {
     #[test]
     fn list_pipeline_runs_via_cli() {
         assert_eq!(
-            crate::execute_file("examples/list_pipeline.witchy").unwrap(),
+            crate::execute_file("examples/list_pipeline.witchy", Vec::new()).unwrap(),
             vec!["233", "2 8", "735"]
         );
     }
@@ -2463,7 +2870,7 @@ mod example_tests {
     #[test]
     fn zip_runs_via_cli() {
         assert_eq!(
-            crate::execute_file("examples/zip.witchy").unwrap(),
+            crate::execute_file("examples/zip.witchy", Vec::new()).unwrap(),
             vec!["0:alice 1:bob 2:carol", "alice=30 bob=25 carol=40"]
         );
     }
@@ -2472,7 +2879,7 @@ mod example_tests {
     #[test]
     fn predicates_run_via_cli() {
         assert_eq!(
-            crate::execute_file("examples/predicates.witchy").unwrap(),
+            crate::execute_file("examples/predicates.witchy", Vec::new()).unwrap(),
             vec!["true", "true", "false", "false"]
         );
     }
@@ -2540,7 +2947,7 @@ mod example_tests {
     #[test]
     fn option_module_runs_via_cli() {
         assert_eq!(
-            crate::execute_file("examples/option_std.witchy").unwrap(),
+            crate::execute_file("examples/option_std.witchy", Vec::new()).unwrap(),
             vec!["10", "-1"]
         );
     }
@@ -2576,7 +2983,7 @@ mod example_tests {
     #[test]
     fn text_processing_runs_via_cli() {
         assert_eq!(
-            crate::execute_file("examples/text.witchy").unwrap(),
+            crate::execute_file("examples/text.witchy", Vec::new()).unwrap(),
             vec!["ALICE | BOB | CAROL", "===", "alice,***,carol"]
         );
     }
@@ -4392,6 +4799,158 @@ mod example_tests {
         assert_eq!(run_on_wasm(src), vec!["hello", "foo", "nospaces", "", "3"]);
     }
 
+    // std/json get_path: follow a dotted key path into a decoded value (and a
+    // missing path -> None). Pure, so both backends agree.
+    #[test]
+    fn std_json_get_path_backends_agree() {
+        let client = r#"
+import json
+import option
+fn str_at(j: Json, path: String) -> String:
+    match json.get_path(j, path):
+        Some(v) -> option.unwrap_or(json.as_string(v), "?")
+        None -> "none"
+fn int_at(j: Json, path: String) -> Int:
+    match json.get_path(j, path):
+        Some(v) -> option.unwrap_or(json.as_int(v), 0)
+        None -> 0
+fn main(console: Console):
+    match json.decode("{\"user\":{\"name\":\"witchy\",\"age\":1},\"tags\":[\"a\"]}"):
+        Ok(j) -> {
+            print(console, str_at(j, "user.name"))
+            print(console, int_to_string(int_at(j, "user.age")))
+            print(console, str_at(j, "user.missing"))
+        }
+        Err(e) -> print(console, e)
+"#;
+        let sources = [("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "std json get_path diverged");
+        assert_eq!(compiled, vec!["witchy", "1", "none"]);
+    }
+
+    // Dead-code elimination: a program importing `list` but using only `map`
+    // and `sum` must not compile the rest of the list API (or `option`, which
+    // `list` imports) into the WASM — only functions reachable from `main`.
+    #[test]
+    fn dce_drops_unused_stdlib_functions() {
+        let client = r#"
+import list
+fn main(console: Console):
+    let xs = list.map([1, 2, 3], fn(x: Int) { x * 2 })
+    print(console, int_to_string(list.sum(xs)))
+"#;
+        let mods = vec![("main".to_string(), parser::parse_module(client).expect("parse"))];
+        let linked = crate::linker::link(mods, "main").expect("link");
+        let wat = codegen::compile_module(&linked).expect("compile");
+        // Reachable functions are present.
+        assert!(wat.contains("$list.map"), "map should be compiled");
+        assert!(wat.contains("$list.sum"), "sum should be compiled");
+        // Unused ones are gone.
+        assert!(!wat.contains("$list.partition"), "partition should be eliminated");
+        assert!(!wat.contains("$list.windows"), "windows should be eliminated");
+        assert!(!wat.contains("$list.sort_by"), "sort_by should be eliminated");
+        assert!(!wat.contains("$option."), "unused option fns should be eliminated");
+        // And it still runs correctly.
+        assert_eq!(run_linked_on_wasm(&[("main", client)], "main"), vec!["12"]);
+    }
+
+    // std/url: parse assorted URL strings (default ports, explicit port, path,
+    // and a malformed one). Pure, so both backends agree.
+    #[test]
+    fn std_url_parse_backends_agree() {
+        let client = r#"
+import url
+fn describe(s: String) -> String:
+    match url.parse(s):
+        Some(u) -> url.scheme(u) <> " " <> url.host(u) <> " " <> int_to_string(url.port(u)) <> " " <> url.path(u)
+        None -> "invalid"
+fn main(console: Console):
+    print(console, describe("http://example.com"))
+    print(console, describe("http://example.com:8080/foo"))
+    print(console, describe("https://x.com/a/b"))
+    print(console, describe("notaurl"))
+"#;
+        let sources = [("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "std url parse diverged");
+        assert_eq!(
+            compiled,
+            vec![
+                "http example.com 80 /",
+                "http example.com 8080 /foo",
+                "https x.com 443 /a/b",
+                "invalid"
+            ]
+        );
+    }
+
+    // std/http get_url: parse a URL string and GET it (loopback). Interpreter-only.
+    #[test]
+    fn std_http_get_url_against_loopback() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut req = Vec::new();
+                let mut tmp = [0u8; 256];
+                while let Ok(n) = stream.read(&mut tmp) {
+                    if n == 0 {
+                        break;
+                    }
+                    req.extend_from_slice(&tmp[..n]);
+                    if req.windows(4).any(|w| w == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                let resp = "HTTP/1.1 200 OK\r\nContent-Length: 9\r\nConnection: close\r\n\r\nhello-url";
+                let _ = stream.write_all(resp.as_bytes());
+            }
+        });
+        let program = format!(
+            r#"
+import http
+fn main(console: Console, net: Net):
+    match http.get_url(net, "http://127.0.0.1:{port}/path"):
+        Ok(r) -> print(console, http.body(r))
+        Err(e) -> print(console, e)
+"#
+        );
+        let mods = vec![("main".to_string(), parser::parse_module(&program).expect("parse"))];
+        let linked = crate::linker::link(mods, "main").expect("link");
+        let out = interpreter::run_module(
+            linked,
+            std::path::Path::new("."),
+            vec![format!("127.0.0.1:{port}")],
+        )
+        .expect("run");
+        server.join().ok();
+        assert_eq!(out, vec!["hello-url"]);
+    }
+
+    // std/string trimming: trim/trim_start/trim_end over assorted whitespace.
+    // Pure, so both backends agree.
+    #[test]
+    fn std_string_trim_backends_agree() {
+        let client = r#"
+import string
+fn main(console: Console):
+    print(console, "[" <> string.trim("  hello  ") <> "]")
+    print(console, "[" <> string.trim_start("  hi") <> "]")
+    print(console, "[" <> string.trim_end("bye  ") <> "]")
+    print(console, "[" <> string.trim("\t\n x \r\n") <> "]")
+    print(console, "[" <> string.trim("nospace") <> "]")
+"#;
+        let sources = [("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "std string trim diverged");
+        assert_eq!(compiled, vec!["[hello]", "[hi]", "[bye]", "[x]", "[nospace]"]);
+    }
+
     // Traits: an `impl` provides a method per type, and a trait-method call
     // resolves to the impl for the receiver's concrete type — at a literal
     // receiver, a `let`-bound one, and across two implementing types. The trait
@@ -4448,6 +5007,573 @@ mod example_tests {
         "#;
         assert_eq!(interp(src), run_on_wasm(src), "trait ADT dispatch diverged");
         assert_eq!(run_on_wasm(src), vec!["12", "9"]);
+    }
+
+    // Default trait methods: a method with a body in the trait is inherited by
+    // impls that don't define it (calling the impl's other methods on `self`),
+    // and can be overridden. Both backends agree.
+    #[test]
+    fn traits_default_methods_backends_agree() {
+        let src = r#"
+            trait Label {
+              fn tag(self) -> String
+              fn shout(self) -> String { tag(self) <> "!" }
+            }
+            impl Label for Int {
+              fn tag(self) -> String { "int" }
+            }
+            impl Label for Bool {
+              fn tag(self) -> String { "bool" }
+              fn shout(self) -> String { "BOOL!!" }
+            }
+            fn main(console: Console) {
+              print(console, shout(5))
+              print(console, shout(true))
+            }
+        "#;
+        assert_eq!(interp(src), run_on_wasm(src), "trait default-method diverged");
+        assert_eq!(run_on_wasm(src), vec!["int!", "BOOL!!"]);
+    }
+
+    // Cross-module traits: a trait and its impls defined in one module are used
+    // from another that imports it. Desugaring runs after linking, so the
+    // generated methods and their call sites resolve across the flat merged
+    // namespace. Both backends agree.
+    #[test]
+    fn traits_cross_module_backends_agree() {
+        let show_mod = r#"
+            trait Show {
+              fn show(self) -> String
+            }
+            impl Show for Int {
+              fn show(self) -> String { int_to_string(self) }
+            }
+            impl Show for Bool {
+              fn show(self) -> String { if self { "Y" } else { "N" } }
+            }
+        "#;
+        let app = r#"
+            import show_mod
+            fn main(console: Console) {
+              print(console, show(42))
+              print(console, show(false))
+            }
+        "#;
+        let sources = [("show_mod", show_mod), ("app", app)];
+        let interpreted = interpreter::run_program(&sources, "app").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "app");
+        assert_eq!(interpreted, compiled, "cross-module trait diverged");
+        assert_eq!(compiled, vec!["42", "N"]);
+    }
+
+    // The standard `Ord` trait: `import ord` brings comparison polymorphism into
+    // scope. The built-in Int impl, a user type implementing only `compare`, and
+    // the derived default methods (`less`/`greater`/`equal`) all work, and both
+    // backends agree.
+    #[test]
+    fn std_ord_trait_backends_agree() {
+        let client = r#"
+            import ord
+            type Money {
+              Money(Int)
+            }
+            impl Ord for Money {
+              fn compare(self, other: Money) -> Int {
+                match self {
+                  Money(a) -> match other {
+                    Money(b) -> if a < b { -1 } else { if a > b { 1 } else { 0 } }
+                  }
+                }
+              }
+            }
+            fn main(console: Console) {
+              print(console, int_to_string(compare(3, 5)))
+              print(console, to_string(less(3, 5)))
+              print(console, to_string(greater_equal(5, 5)))
+              print(console, int_to_string(compare(1.5, 0.5)))
+              print(console, to_string(less(1.5, 2.5)))
+              print(console, int_to_string(compare(Money(10), Money(4))))
+              print(console, to_string(greater(Money(10), Money(4))))
+              print(console, to_string(equal(Money(7), Money(7))))
+            }
+        "#;
+        let sources = [("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "std Ord diverged");
+        assert_eq!(
+            compiled,
+            vec!["-1", "true", "true", "1", "true", "1", "true", "true"]
+        );
+    }
+
+    // The standard `Show` trait: `show` renders built-in types and any user type
+    // that implements it — including the rendering of a value the built-in
+    // `to_string` couldn't. Both backends agree.
+    #[test]
+    fn std_show_trait_backends_agree() {
+        let client = r#"
+            import show
+            type Point {
+              Point(Int, Int)
+            }
+            impl Show for Point {
+              fn show(self) -> String {
+                match self {
+                  Point(x, y) -> "(" <> int_to_string(x) <> ", " <> int_to_string(y) <> ")"
+                }
+              }
+            }
+            fn main(console: Console) {
+              print(console, show(42))
+              print(console, show(true))
+              print(console, show("hi"))
+              print(console, show(Point(2, 3)))
+            }
+        "#;
+        let sources = [("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "std Show diverged");
+        assert_eq!(compiled, vec!["42", "true", "hi", "(2, 3)"]);
+    }
+
+    // Generic bounds: `pick_max(x: a, y: a) -> a where a: Ord` is a template,
+    // monomorphized per concrete instantiation; the `greater` trait call inside
+    // each specialization resolves to that type's Ord impl. Exercised over Int
+    // (built-in impl) and a user type. Both backends agree.
+    #[test]
+    fn generic_bounds_backends_agree() {
+        let client = r#"
+            import ord
+            type Box {
+              Box(Int)
+            }
+            impl Ord for Box {
+              fn compare(self, other: Box) -> Int {
+                match self {
+                  Box(a) -> match other {
+                    Box(b) -> if a < b { -1 } else { if a > b { 1 } else { 0 } }
+                  }
+                }
+              }
+            }
+            fn pick_max(x: a, y: a) -> a where a: Ord {
+              if greater(x, y) { x } else { y }
+            }
+            fn unbox(b: Box) -> Int {
+              match b { Box(n) -> n }
+            }
+            fn main(console: Console) {
+              print(console, int_to_string(pick_max(3, 7)))
+              print(console, int_to_string(pick_max(20, 5)))
+              print(console, int_to_string(unbox(pick_max(Box(4), Box(11)))))
+            }
+        "#;
+        let sources = [("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "generic bounds diverged");
+        assert_eq!(compiled, vec!["7", "20", "11"]);
+    }
+
+    // The stdlib's generic `Ord` helpers (max_of/min_of/clamp) are bounded
+    // generics living in the `ord` module, monomorphized at the user's call
+    // sites — over Int (incl. a negative literal) and a user Box type. Proves
+    // cross-module bounded-generic monomorphization. Both backends agree.
+    #[test]
+    fn std_ord_generics_backends_agree() {
+        let client = r#"
+            import ord
+            type Box {
+              Box(Int)
+            }
+            impl Ord for Box {
+              fn compare(self, other: Box) -> Int {
+                match self {
+                  Box(a) -> match other {
+                    Box(b) -> if a < b { -1 } else { if a > b { 1 } else { 0 } }
+                  }
+                }
+              }
+            }
+            fn unbox(b: Box) -> Int {
+              match b { Box(n) -> n }
+            }
+            fn main(console: Console) {
+              print(console, int_to_string(ord.max_of(-5, 3)))
+              print(console, int_to_string(ord.min_of(8, 2)))
+              print(console, int_to_string(ord.clamp(10, 0, 5)))
+              print(console, int_to_string(ord.clamp(0, 3, 9)))
+              print(console, int_to_string(unbox(ord.max_of(Box(4), Box(11)))))
+            }
+        "#;
+        let sources = [("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "std Ord generics diverged");
+        assert_eq!(compiled, vec!["3", "2", "5", "3", "11"]);
+    }
+
+    // Bounds through `List(a)`: a generic over a collection. `ord.maximum` /
+    // `ord.minimum` are bounded generics taking `List(a) where a: Ord`,
+    // monomorphized by the list's element type; the trait call inside resolves
+    // via the for-loop variable's element type. Exercised over Int (incl. an
+    // empty list -> default) and a user Box type. Both backends agree.
+    #[test]
+    fn generic_over_list_backends_agree() {
+        let client = r#"
+            import ord
+            type Box {
+              Box(Int)
+            }
+            impl Ord for Box {
+              fn compare(self, other: Box) -> Int {
+                match self {
+                  Box(a) -> match other {
+                    Box(b) -> if a < b { -1 } else { if a > b { 1 } else { 0 } }
+                  }
+                }
+              }
+            }
+            fn unbox(b: Box) -> Int {
+              match b { Box(n) -> n }
+            }
+            fn main(console: Console) {
+              print(console, int_to_string(ord.maximum([3, 7, 2, 9, 4], 0)))
+              print(console, int_to_string(ord.minimum([3, 7, 2, 9, 4], 100)))
+              print(console, int_to_string(ord.maximum([], 42)))
+              print(console, int_to_string(unbox(ord.maximum([Box(2), Box(8), Box(5)], Box(0)))))
+            }
+        "#;
+        let sources = [("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "generic-over-list diverged");
+        assert_eq!(compiled, vec!["9", "2", "42", "8"]);
+    }
+
+    // Indentation-based (off-side rule) syntax: blocks are delimited by `:` +
+    // indentation rather than braces. A layout pass turns it into the brace form
+    // the rest of the pipeline expects, so both backends agree — here over a
+    // type, match, for-loop, let/var, and calls.
+    #[test]
+    fn indentation_syntax_backends_agree() {
+        let src = r#"
+type Shape:
+    Circle(Int)
+    Rect(Int, Int)
+
+fn area(s: Shape) -> Int:
+    match s:
+        Circle(r) -> 3 * r * r
+        Rect(w, h) -> w * h
+
+fn main(console: Console):
+    let xs = [area(Circle(2)), area(Rect(3, 4))]
+    var total = 0
+    for x in xs:
+        total = total + x
+    print(console, int_to_string(total))
+"#;
+        assert_eq!(interp(src), run_on_wasm(src), "indentation backends diverged");
+        assert_eq!(run_on_wasm(src), vec!["24"]);
+    }
+
+    // Indentation syntax with traits/impls and a nested if/else expression.
+    #[test]
+    fn indentation_traits_backends_agree() {
+        let src = r#"
+trait Show:
+    fn show(self) -> String
+
+impl Show for Int:
+    fn show(self) -> String:
+        int_to_string(self)
+
+impl Show for Bool:
+    fn show(self) -> String:
+        if self:
+            "yes"
+        else:
+            "no"
+
+fn main(console: Console):
+    print(console, show(42))
+    print(console, show(true))
+"#;
+        assert_eq!(interp(src), run_on_wasm(src), "indentation traits diverged");
+        assert_eq!(run_on_wasm(src), vec!["42", "yes"]);
+    }
+
+    // Regression: a `(...)` expression on the line after a block must be its own
+    // statement, not an application of the block's value — the virtual closing
+    // brace sits on the previous line so `} (a, n)` stays two things. (This is
+    // what `list.partition`'s trailing `(yes, no)` exercises.)
+    #[test]
+    fn indentation_block_then_paren_expr_backends_agree() {
+        let src = r#"
+fn pair(n: Int) -> (Int, Int):
+    var a = 0
+    for i in [1, 2, 3]:
+        a = a + i
+    (a, n)
+
+fn main(console: Console):
+    let (x, y) = pair(10)
+    print(console, int_to_string(x))
+    print(console, int_to_string(y))
+"#;
+        assert_eq!(interp(src), run_on_wasm(src), "block-then-paren diverged");
+        assert_eq!(run_on_wasm(src), vec!["6", "10"]);
+    }
+
+    // std/http: a real HTTP/1.1 GET over the Net capability against a loopback
+    // server. Networking is interpreter-only (not compiled), so this isn't a
+    // differential test; it proves the capability-gated socket primitives plus
+    // the http library parse a live response into status + body.
+    #[test]
+    fn std_http_get_against_loopback() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                // Drain the whole request (up to the blank header line) before
+                // replying — closing with unread data would RST the client.
+                let mut req = Vec::new();
+                let mut tmp = [0u8; 256];
+                while let Ok(n) = stream.read(&mut tmp) {
+                    if n == 0 {
+                        break;
+                    }
+                    req.extend_from_slice(&tmp[..n]);
+                    if req.windows(4).any(|w| w == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                let resp = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello";
+                let _ = stream.write_all(resp.as_bytes());
+            }
+        });
+        let program = format!(
+            r#"
+import http
+fn main(console: Console, net: Net):
+    let r = http.get(net, "127.0.0.1", {port}, "/")
+    print(console, int_to_string(http.status(r)))
+    print(console, http.body(r))
+"#
+        );
+        let mods = vec![("main".to_string(), parser::parse_module(&program).expect("parse"))];
+        let linked = crate::linker::link(mods, "main").expect("link");
+        let out = interpreter::run_module(
+            linked,
+            std::path::Path::new("."),
+            vec![format!("127.0.0.1:{port}")],
+        )
+        .expect("run");
+        server.join().ok();
+        assert_eq!(out, vec!["200".to_string(), "hello".to_string()]);
+    }
+
+    // std/http POST: send a request body and read it back from a loopback echo
+    // server. Interpreter-only (networking isn't compiled).
+    #[test]
+    fn std_http_post_against_loopback() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = match listener.accept() {
+                Ok(x) => x,
+                Err(_) => return,
+            };
+            // Read the full request: headers, then Content-Length body bytes.
+            let mut data: Vec<u8> = Vec::new();
+            let mut tmp = [0u8; 1024];
+            loop {
+                let text = String::from_utf8_lossy(&data).into_owned();
+                if let Some(hdr_end) = text.find("\r\n\r\n") {
+                    let clen: usize = text[..hdr_end]
+                        .lines()
+                        .find_map(|l| l.strip_prefix("Content-Length: "))
+                        .and_then(|v| v.trim().parse().ok())
+                        .unwrap_or(0);
+                    if data.len() >= hdr_end + 4 + clen {
+                        break;
+                    }
+                }
+                match stream.read(&mut tmp) {
+                    Ok(0) => break,
+                    Ok(k) => data.extend_from_slice(&tmp[..k]),
+                    Err(_) => break,
+                }
+            }
+            let text = String::from_utf8_lossy(&data);
+            let body = text.split("\r\n\r\n").nth(1).unwrap_or("").to_string();
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.as_bytes().len(),
+                body
+            );
+            let _ = stream.write_all(resp.as_bytes());
+        });
+        let program = format!(
+            r#"
+import http
+fn main(console: Console, net: Net):
+    let r = http.post(net, "127.0.0.1", {port}, "/echo", "hello body")
+    print(console, int_to_string(http.status(r)))
+    print(console, http.body(r))
+"#
+        );
+        let mods = vec![("main".to_string(), parser::parse_module(&program).expect("parse"))];
+        let linked = crate::linker::link(mods, "main").expect("link");
+        let out = interpreter::run_module(
+            linked,
+            std::path::Path::new("."),
+            vec![format!("127.0.0.1:{port}")],
+        )
+        .expect("run");
+        server.join().ok();
+        assert_eq!(out, vec!["200".to_string(), "hello body".to_string()]);
+    }
+
+    // std/http response headers: case-insensitive lookup + a missing header.
+    // Interpreter-only (networking).
+    #[test]
+    fn std_http_headers_against_loopback() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut req = Vec::new();
+                let mut tmp = [0u8; 256];
+                while let Ok(n) = stream.read(&mut tmp) {
+                    if n == 0 {
+                        break;
+                    }
+                    req.extend_from_slice(&tmp[..n]);
+                    if req.windows(4).any(|w| w == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                let resp = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nX-Custom: abc\r\nContent-Length: 2\r\nConnection: close\r\n\r\nhi";
+                let _ = stream.write_all(resp.as_bytes());
+            }
+        });
+        let program = format!(
+            r#"
+import http
+import option
+fn main(console: Console, net: Net):
+    let r = http.get(net, "127.0.0.1", {port}, "/")
+    print(console, option.unwrap_or(http.header(r, "Content-Type"), "none"))
+    print(console, option.unwrap_or(http.header(r, "x-custom"), "none"))
+    print(console, option.unwrap_or(http.header(r, "Missing"), "none"))
+"#
+        );
+        let mods = vec![("main".to_string(), parser::parse_module(&program).expect("parse"))];
+        let linked = crate::linker::link(mods, "main").expect("link");
+        let out = interpreter::run_module(
+            linked,
+            std::path::Path::new("."),
+            vec![format!("127.0.0.1:{port}")],
+        )
+        .expect("run");
+        server.join().ok();
+        assert_eq!(out, vec!["application/json", "abc", "none"]);
+    }
+
+    // std/json: build a nested Json value and serialize it. Pure (no
+    // capabilities), so it compiles to WASM and both backends must agree.
+    #[test]
+    fn std_json_encode_backends_agree() {
+        let client = r#"
+import json
+fn main(console: Console):
+    let j = JsonObject([
+        ("name", JsonString("witchy")),
+        ("version", JsonInt(1)),
+        ("tags", JsonArray([JsonString("safe"), JsonString("fast")])),
+        ("stable", JsonBool(false)),
+        ("extra", JsonNull)
+    ])
+    print(console, json.encode(j))
+"#;
+        let sources = [("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "std json encode diverged");
+        assert_eq!(
+            compiled,
+            vec![
+                r#"{"name":"witchy","version":1,"tags":["safe","fast"],"stable":false,"extra":null}"#
+            ]
+        );
+    }
+
+    // std/json decode: parse JSON text then re-encode it. The round trip
+    // exercises the recursive-descent parser (objects, arrays, strings, bools,
+    // null, negative ints, nesting) and must agree on both backends.
+    #[test]
+    fn std_json_decode_roundtrip_backends_agree() {
+        let client = r#"
+import json
+fn main(console: Console):
+    let input = "{\"name\":\"witchy\",\"nums\":[1,2,3],\"ok\":true,\"nil\":null,\"neg\":-5,\"nested\":{\"a\":[true,false]}}"
+    match json.decode(input):
+        Ok(j) -> print(console, json.encode(j))
+        Err(e) -> print(console, "error: " <> e)
+"#;
+        let sources = [("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "std json decode diverged");
+        assert_eq!(
+            compiled,
+            vec![
+                r#"{"name":"witchy","nums":[1,2,3],"ok":true,"nil":null,"neg":-5,"nested":{"a":[true,false]}}"#
+            ]
+        );
+    }
+
+    // std/json accessors: decode then pull out a string field (object key
+    // lookup), an int field, and an array element. Object lookup compares the
+    // decoded, heap-built key with `==`; both backends agree now that codegen
+    // tracks the type of a tuple-destructured loop variable (so the comparison
+    // is by content, not pointer).
+    #[test]
+    fn std_json_accessors_backends_agree() {
+        let client = r#"
+import json
+import option
+fn field(j: Json, k: String) -> Json:
+    match json.get(j, k):
+        Some(v) -> v
+        None -> JsonNull
+
+fn elem_int(j: Json, k: String, i: Int) -> Int:
+    match json.index(field(j, k), i):
+        Some(e) -> option.unwrap_or(json.as_int(e), 0)
+        None -> 0
+
+fn main(console: Console):
+    match json.decode("{\"name\":\"witchy\",\"version\":3,\"items\":[10,20,30]}"):
+        Ok(j) -> {
+            print(console, option.unwrap_or(json.as_string(field(j, "name")), "?"))
+            print(console, int_to_string(option.unwrap_or(json.as_int(field(j, "version")), 0)))
+            print(console, int_to_string(elem_int(j, "items", 1)))
+        }
+        Err(e) -> print(console, e)
+"#;
+        let sources = [("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "std json accessors diverged");
+        assert_eq!(compiled, vec!["witchy", "3", "20"]);
     }
 
     // Hex (0x..) and binary (0b..) integer literals, including underscore
@@ -4725,8 +5851,34 @@ mod example_tests {
         )
         .unwrap();
 
-        let out = crate::execute_file(app.to_str().unwrap()).unwrap();
+        let out = crate::execute_file(app.to_str().unwrap(), Vec::new()).unwrap();
         assert_eq!(out, vec!["HI x"]);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn caps_diff_gate_flags_a_widening_across_versions() {
+        // The supply-chain gate end-to-end: a dependency update whose public API
+        // newly demands `Net` is reported as a widening (so CI/install can block),
+        // while an unchanged footprint is not.
+        let dir = std::env::temp_dir().join(format!("witchy_capsdiff_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let v1 = dir.join("v1.witchy");
+        let v2 = dir.join("v2.witchy");
+        std::fs::write(&v1, "pub fn serve(console: Console) -> Int { 0 }").unwrap();
+        std::fs::write(
+            &v2,
+            "pub fn serve(console: Console, net: Net) -> Int { 0 }",
+        )
+        .unwrap();
+        assert!(
+            crate::report_capability_diff(v1.to_str().unwrap(), v2.to_str().unwrap()).unwrap(),
+            "newly demanding Net must be flagged as a widening"
+        );
+        assert!(
+            !crate::report_capability_diff(v1.to_str().unwrap(), v1.to_str().unwrap()).unwrap(),
+            "an unchanged footprint must not be a widening"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -5016,3 +6168,4 @@ fn run_witchy(title: &str, program: &str) {
         Err(e) => println!("error: {e}"),
     }
 }
+

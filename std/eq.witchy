@@ -1,0 +1,63 @@
+// The witchy standard `Eq` trait: equality that is correct on both backends.
+//
+// The `==` operator works for every type in the interpreter, but in COMPILED
+// code a generic `==` on a non-primitive type (a String or record reached
+// through a type variable) falls back to pointer comparison. An `Eq` impl is a
+// concrete function, and the bounded generics below are monomorphized, so
+// `eq`-based equality is content-correct everywhere. Built-in impls cover Int,
+// Bool, and String; implement `Eq` for your own types to use these. `Self` is
+// the implementing type.
+
+trait Eq:
+    fn eq(self, other: Self) -> Bool
+    fn ne(self, other: Self) -> Bool:
+        if eq(self, other) { false } else { true }
+
+impl Eq for Int:
+    fn eq(self, other: Self) -> Bool:
+        self == other
+
+impl Eq for Bool:
+    fn eq(self, other: Self) -> Bool:
+        self == other
+
+impl Eq for String:
+    fn eq(self, other: Self) -> Bool:
+        self == other
+
+// Whether `x` is in `xs`, by the element type's Eq impl — correct on both
+// backends, unlike a generic `==`-based search.
+pub fn member(xs: List(a), x: a) -> Bool where a: Eq:
+    for e in xs:
+        if eq(e, x):
+            return true
+    false
+
+// The index of the first element equal to `x`, or -1 if absent.
+pub fn index_of(xs: List(a), x: a) -> Int where a: Eq:
+    var i = 0
+    for e in xs:
+        if eq(e, x):
+            return i
+        i = i + 1
+    0 - 1
+
+// How many elements equal `x` (by the element type's Eq). Correct on both
+// backends, unlike a generic `==` count over non-primitive elements.
+pub fn count(xs: List(a), x: a) -> Int where a: Eq:
+    var n = 0
+    for e in xs:
+        if eq(e, x):
+            n = n + 1
+    n
+
+// The list with duplicates removed, keeping the first occurrence of each
+// element (by the element type's Eq), in original order. The content-correct
+// counterpart to `list.unique`, which compares pointers in compiled code and so
+// fails to dedupe runtime-built strings and records.
+pub fn unique(xs: List(a)) -> List(a) where a: Eq:
+    var out = []
+    for x in xs:
+        if !member(out, x):
+            out = push(out, x)
+    out

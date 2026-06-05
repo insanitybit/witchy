@@ -1,0 +1,42 @@
+// Set operations over lists, treating a list as a set of distinct elements
+// compared by the element type's Eq impl. Pure and capability-free. Like the
+// eq-based searches, these are content-correct on both backends — so they work
+// for lists of runtime-built strings and your own Eq types, not just interned
+// literals. (witchy has no separate hashed Set type; a deduplicated list IS the
+// set, which keeps element order deterministic.)
+
+import eq
+
+// Elements appearing in either list, de-duplicated, xs-order then new ys.
+pub fn union(xs: List(a), ys: List(a)) -> List(a) where a: Eq:
+    var out = []
+    for x in xs:
+        if !eq.member(out, x):
+            out = push(out, x)
+    for y in ys:
+        if !eq.member(out, y):
+            out = push(out, y)
+    out
+
+// Elements appearing in BOTH lists, de-duplicated, in xs order.
+pub fn intersection(xs: List(a), ys: List(a)) -> List(a) where a: Eq:
+    var out = []
+    for x in xs:
+        if eq.member(ys, x) && !eq.member(out, x):
+            out = push(out, x)
+    out
+
+// Elements in xs but NOT in ys, de-duplicated, in xs order.
+pub fn difference(xs: List(a), ys: List(a)) -> List(a) where a: Eq:
+    var out = []
+    for x in xs:
+        if !eq.member(ys, x) && !eq.member(out, x):
+            out = push(out, x)
+    out
+
+// Whether every element of xs appears in ys.
+pub fn is_subset(xs: List(a), ys: List(a)) -> Bool where a: Eq:
+    for x in xs:
+        if !eq.member(ys, x):
+            return false
+    true
