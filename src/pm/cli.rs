@@ -353,13 +353,13 @@ fn assemble(root_dir: &Path, env: &CovenEnv) -> PmResult<Assembled> {
                     r.name
                 ));
             }
-            if let Some(prev) = owner.get(&n) {
-                if prev != &r.name {
-                    return err(format!(
-                        "module-name collision: `{n}` is provided by both `{prev}` and `{}` — rename one to disambiguate",
-                        r.name
-                    ));
-                }
+            if let Some(prev) = owner.get(&n)
+                && prev != &r.name
+            {
+                return err(format!(
+                    "module-name collision: `{n}` is provided by both `{prev}` and `{}` — rename one to disambiguate",
+                    r.name
+                ));
             }
             owner.insert(n.clone(), r.name.clone());
             modules.push((n, s));
@@ -629,12 +629,11 @@ fn cmd_audit(rest: &[String]) -> PmResult<()> {
             None => println!("      WARNING: no provenance attestation recorded."),
         }
         // Flag yanked deps for registry runes.
-        if r.registry.is_some() {
-            if let Ok(rec) = env.registry.record(&r.name, &r.version) {
-                if rec.state == State::Yanked {
-                    println!("      WARNING: this version is YANKED.");
-                }
-            }
+        if r.registry.is_some()
+            && let Ok(rec) = env.registry.record(&r.name, &r.version)
+            && rec.state == State::Yanked
+        {
+            println!("      WARNING: this version is YANKED.");
         }
     }
     let agg = resolution.aggregate_footprint();

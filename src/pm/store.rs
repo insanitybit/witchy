@@ -163,9 +163,6 @@ impl Store {
     }
 
     /// Load a rune source back out of the store, verifying its hash matches.
-    /// (Round-trip API: the integrity check is exercised by tests; resolution
-    /// reads sources via the registry/path layer.)
-    #[allow(dead_code)]
     pub fn get(&self, hash: &str) -> PmResult<RuneSource> {
         if !self.has(hash) {
             return err(format!("hash {hash} not in store"));

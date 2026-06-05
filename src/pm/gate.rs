@@ -8,7 +8,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::footprint::{Footprint, Widening};
+use super::footprint::Widening;
 use super::lockfile::Lockfile;
 use super::resolve::Resolution;
 
@@ -71,9 +71,7 @@ pub fn check(
     // Per-rune deltas vs each rune's own previous entry (upgrades).
     let mut per_rune = Vec::new();
     for r in &resolution.runes {
-        let base = old_lock
-            .footprint_of(&r.name)
-            .unwrap_or_else(Footprint::default);
+        let base = old_lock.footprint_of(&r.name).unwrap_or_default();
         let w = r.footprint.widening_over(&base);
         if !w.is_empty() {
             per_rune.push((r.name.clone(), w));

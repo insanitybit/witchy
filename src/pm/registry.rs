@@ -298,10 +298,10 @@ impl Registry {
         let mut out = Vec::new();
         if let Ok(entries) = std::fs::read_dir(&dir) {
             for e in entries.flatten() {
-                if let Some(v) = e.file_name().to_str() {
-                    if let Ok(rec) = self.record(name, v) {
-                        out.push(rec);
-                    }
+                if let Some(v) = e.file_name().to_str()
+                    && let Ok(rec) = self.record(name, v)
+                {
+                    out.push(rec);
                 }
             }
         }
@@ -316,8 +316,7 @@ impl Registry {
     pub fn latest_released(&self, name: &str) -> Option<Record> {
         self.versions(name)
             .into_iter()
-            .filter(|r| r.state == State::Released)
-            .last()
+            .rfind(|r| r.state == State::Released)
     }
 
     /// The best released version satisfying `req`. With `include_staged`, staged

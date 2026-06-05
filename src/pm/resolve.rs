@@ -235,12 +235,12 @@ pub fn resolve(
     Ok(Resolution { runes })
 }
 
+/// A fetched dependency: its source, parsed manifest, registry name (if from a
+/// registry), source-kind tag (if a path dep), and provenance.
+type FetchedDep = (RuneSource, Manifest, Option<String>, Option<String>, Option<String>);
+
 /// Fetch one dependency's source + manifest, from a local path or the registry.
-fn fetch_dep(
-    p: &Pending,
-    registry: &Registry,
-    _store: &Store,
-) -> PmResult<(RuneSource, Manifest, Option<String>, Option<String>, Option<String>)> {
+fn fetch_dep(p: &Pending, registry: &Registry, _store: &Store) -> PmResult<FetchedDep> {
     if let Some(rel) = p.dep.path() {
         let dir = p.base_dir.join(rel);
         let src = RuneSource::read_dir(&dir)?;
