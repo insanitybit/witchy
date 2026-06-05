@@ -13,6 +13,7 @@ mod lexer;
 mod linker;
 mod lsp;
 mod parser;
+mod pm;
 mod runtime;
 mod traits;
 mod typeck;
@@ -102,6 +103,17 @@ fn main() -> wasmtime::Result<()> {
     // `witchy --bench` compares interpreter vs compiled execution.
     if std::env::args().nth(1).as_deref() == Some("--bench") {
         return run_benchmarks();
+    }
+    // coven package-manager subcommands (`witchy add`, `build`, `publish`, ...).
+    if let Some(a1) = std::env::args().nth(1) {
+        if pm::cli::is_command(&a1) {
+            let args: Vec<String> = std::env::args().skip(1).collect();
+            if let Err(e) = pm::cli::run(&args) {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            }
+            return Ok(());
+        }
     }
     // `witchy <file.witchy>` runs a program; with no argument, run the demos.
     if let Some(path) = std::env::args().nth(1) {

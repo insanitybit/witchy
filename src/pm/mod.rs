@@ -1,0 +1,43 @@
+//! coven — witchy's package manager.
+//!
+//! A rune is a package; coven is the registry. The whole design is in
+//! `docs/package-manager.md`. The guiding invariant: this tool only moves bytes
+//! and verifies them — it never becomes a source of ambient authority. Its jobs
+//! are integrity, reproducibility, and making each rune's capability footprint
+//! (runtime *and* build) legible and gated.
+
+pub mod cli;
+pub mod footprint;
+pub mod gate;
+pub mod lockfile;
+pub mod manifest;
+pub mod registry;
+pub mod resolve;
+pub mod semver;
+pub mod store;
+
+use std::fmt;
+
+/// Any error surfaced by a coven subcommand.
+#[derive(Debug)]
+pub struct PmError(pub String);
+
+impl fmt::Display for PmError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl std::error::Error for PmError {}
+
+impl From<std::io::Error> for PmError {
+    fn from(e: std::io::Error) -> Self {
+        PmError(e.to_string())
+    }
+}
+
+pub type PmResult<T> = Result<T, PmError>;
+
+pub fn err<T>(msg: impl Into<String>) -> PmResult<T> {
+    Err(PmError(msg.into()))
+}
