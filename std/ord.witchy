@@ -6,73 +6,75 @@
 // and capability-free, like every std module. `Self` in a method signature
 // stands for the implementing type.
 
-trait Ord {
-  fn compare(self, other: Self) -> Int
-  fn less(self, other: Self) -> Bool { compare(self, other) < 0 }
-  fn greater(self, other: Self) -> Bool { compare(self, other) > 0 }
-  fn equal(self, other: Self) -> Bool { compare(self, other) == 0 }
-  fn less_equal(self, other: Self) -> Bool { compare(self, other) <= 0 }
-  fn greater_equal(self, other: Self) -> Bool { compare(self, other) >= 0 }
-}
+trait Ord:
+    fn compare(self, other: Self) -> Int
+    fn less(self, other: Self) -> Bool:
+        compare(self, other) < 0
+    fn greater(self, other: Self) -> Bool:
+        compare(self, other) > 0
+    fn equal(self, other: Self) -> Bool:
+        compare(self, other) == 0
+    fn less_equal(self, other: Self) -> Bool:
+        compare(self, other) <= 0
+    fn greater_equal(self, other: Self) -> Bool:
+        compare(self, other) >= 0
 
-impl Ord for Int {
-  fn compare(self, other: Self) -> Int {
-    if self < other {
-      -1
-    } else {
-      if self > other { 1 } else { 0 }
-    }
-  }
-}
+impl Ord for Int:
+    fn compare(self, other: Self) -> Int:
+        if self < other:
+            -1
+        else:
+            if self > other:
+                1
+            else:
+                0
 
-impl Ord for Float {
-  fn compare(self, other: Self) -> Int {
-    if self < other {
-      -1
-    } else {
-      if self > other { 1 } else { 0 }
-    }
-  }
-}
+impl Ord for Float:
+    fn compare(self, other: Self) -> Int:
+        if self < other:
+            -1
+        else:
+            if self > other:
+                1
+            else:
+                0
 
 // Generic helpers over any `Ord` type — usable as `ord.max_of(a, b)`, etc.
 
-pub fn max_of(x: a, y: a) -> a where a: Ord {
-  if greater(x, y) { x } else { y }
-}
+pub fn max_of(x: a, y: a) -> a where a: Ord:
+    if greater(x, y):
+        x
+    else:
+        y
 
-pub fn min_of(x: a, y: a) -> a where a: Ord {
-  if less(x, y) { x } else { y }
-}
+pub fn min_of(x: a, y: a) -> a where a: Ord:
+    if less(x, y):
+        x
+    else:
+        y
 
 // `x` confined to the range [lo, hi].
-pub fn clamp(x: a, lo: a, hi: a) -> a where a: Ord {
-  if less(x, lo) {
-    lo
-  } else {
-    if greater(x, hi) { hi } else { x }
-  }
-}
+pub fn clamp(x: a, lo: a, hi: a) -> a where a: Ord:
+    if less(x, lo):
+        lo
+    else:
+        if greater(x, hi):
+            hi
+        else:
+            x
 
 // The largest element of `xs`, or `default` when `xs` is empty.
-pub fn maximum(xs: List(a), default: a) -> a where a: Ord {
-  var best = default
-  for x in xs {
-    if greater(x, best) {
-      best = x
-    }
-  }
-  best
-}
+pub fn maximum(xs: List(a), default: a) -> a where a: Ord:
+    var best = default
+    for x in xs:
+        if greater(x, best):
+            best = x
+    best
 
 // The smallest element of `xs`, or `default` when `xs` is empty.
-pub fn minimum(xs: List(a), default: a) -> a where a: Ord {
-  var best = default
-  for x in xs {
-    if less(x, best) {
-      best = x
-    }
-  }
-  best
-}
-
+pub fn minimum(xs: List(a), default: a) -> a where a: Ord:
+    var best = default
+    for x in xs:
+        if less(x, best):
+            best = x
+    best

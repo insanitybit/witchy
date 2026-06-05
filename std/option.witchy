@@ -5,126 +5,97 @@
 // For the `ok_or`/`ok_or_else` conversions to Result.
 import result
 
-type Option {
-  Some(a)
-  None
-}
+type Option:
+    Some(a)
+    None
 
-pub fn is_some(o: Option(a)) -> Bool {
-  match o {
-    Some(_) -> true
-    None -> false
-  }
-}
+pub fn is_some(o: Option(a)) -> Bool:
+    match o:
+        Some(_) -> true
+        None -> false
 
 // The Some value, or `default` if it's None.
-pub fn unwrap_or(o: Option(a), default: a) -> a {
-  match o {
-    Some(v) -> v
-    None -> default
-  }
-}
+pub fn unwrap_or(o: Option(a), default: a) -> a:
+    match o:
+        Some(v) -> v
+        None -> default
 
 // Transform the Some value, leaving None untouched.
-pub fn map(o: Option(a), f: fn(a) -> b) -> Option(b) {
-  match o {
-    Some(v) -> Some(f(v))
-    None -> None
-  }
-}
+pub fn map(o: Option(a), f: fn(a) -> b) -> Option(b):
+    match o:
+        Some(v) -> Some(f(v))
+        None -> None
 
 // True if the option holds no value.
-pub fn is_none(o: Option(a)) -> Bool {
-  match o {
-    Some(_) -> false
-    None -> true
-  }
-}
+pub fn is_none(o: Option(a)) -> Bool:
+    match o:
+        Some(_) -> false
+        None -> true
 
 // Chain a fallible step: apply `f` (which itself yields an Option) to the Some
 // value, or short-circuit on None.
-pub fn and_then(o: Option(a), f: fn(a) -> Option(b)) -> Option(b) {
-  match o {
-    Some(v) -> f(v)
-    None -> None
-  }
-}
+pub fn and_then(o: Option(a), f: fn(a) -> Option(b)) -> Option(b):
+    match o:
+        Some(v) -> f(v)
+        None -> None
 
 // Keep the Some value only if it satisfies `pred`; otherwise None.
-pub fn filter(o: Option(a), pred: fn(a) -> Bool) -> Option(a) {
-  match o {
-    Some(v) -> if pred(v) { Some(v) } else { None }
-    None -> None
-  }
-}
+pub fn filter(o: Option(a), pred: fn(a) -> Bool) -> Option(a):
+    match o:
+        Some(v) -> if pred(v) { Some(v) } else { None }
+        None -> None
 
 // The Some value, or the result of calling `f` (a lazily-computed default).
-pub fn unwrap_or_else(o: Option(a), f: fn() -> a) -> a {
-  match o {
-    Some(v) -> v
-    None -> f()
-  }
-}
+pub fn unwrap_or_else(o: Option(a), f: fn() -> a) -> a:
+    match o:
+        Some(v) -> v
+        None -> f()
 
 // The option if it is Some, otherwise the `alt` option.
-pub fn or(o: Option(a), alt: Option(a)) -> Option(a) {
-  match o {
-    Some(v) -> Some(v)
-    None -> alt
-  }
-}
+pub fn or(o: Option(a), alt: Option(a)) -> Option(a):
+    match o:
+        Some(v) -> Some(v)
+        None -> alt
 
 // The option if it is Some, otherwise the option produced by `f` (lazy).
-pub fn or_else(o: Option(a), f: fn() -> Option(a)) -> Option(a) {
-  match o {
-    Some(v) -> Some(v)
-    None -> f()
-  }
-}
+pub fn or_else(o: Option(a), f: fn() -> Option(a)) -> Option(a):
+    match o:
+        Some(v) -> Some(v)
+        None -> f()
 
 // Apply `f` to the Some value, or return `default` for None — `map` then
 // `unwrap_or` in one step.
-pub fn map_or(o: Option(a), default: b, f: fn(a) -> b) -> b {
-  match o {
-    Some(v) -> f(v)
-    None -> default
-  }
-}
+pub fn map_or(o: Option(a), default: b, f: fn(a) -> b) -> b:
+    match o:
+        Some(v) -> f(v)
+        None -> default
 
 // Turn an Option into a Result: `Some(v)` becomes `Ok(v)`, `None` becomes
 // `Err(err)` — the inverse of `result.ok`.
-pub fn ok_or(o: Option(a), err: e) -> Result(a, e) {
-  match o {
-    Some(v) -> Ok(v)
-    None -> Err(err)
-  }
-}
+pub fn ok_or(o: Option(a), err: e) -> Result(a, e):
+    match o:
+        Some(v) -> Ok(v)
+        None -> Err(err)
 
 // Like `ok_or`, but the error for `None` is produced lazily by `f`.
-pub fn ok_or_else(o: Option(a), f: fn() -> e) -> Result(a, e) {
-  match o {
-    Some(v) -> Ok(v)
-    None -> Err(f())
-  }
-}
+pub fn ok_or_else(o: Option(a), f: fn() -> e) -> Result(a, e):
+    match o:
+        Some(v) -> Ok(v)
+        None -> Err(f())
 
 // Collapse one layer of nesting: `Some(Some(v))` becomes `Some(v)`, and both
 // `Some(None)` and `None` become `None`.
-pub fn flatten(oo: Option(Option(a))) -> Option(a) {
-  match oo {
-    Some(inner) -> inner
-    None -> None
-  }
-}
+pub fn flatten(oo: Option(Option(a))) -> Option(a):
+    match oo:
+        Some(inner) -> inner
+        None -> None
 
 // Combine two options into an option of a pair: `Some((x, y))` only when both
 // are `Some`, otherwise `None`.
-pub fn zip(oa: Option(a), ob: Option(b)) -> Option((a, b)) {
-  match oa {
-    Some(x) -> match ob {
-      Some(y) -> Some((x, y))
-      None -> None
-    }
-    None -> None
-  }
-}
+pub fn zip(oa: Option(a), ob: Option(b)) -> Option((a, b)):
+    match oa:
+        Some(x) -> match ob {
+            Some(y) -> Some((x, y))
+            None -> None
+        }
+        None -> None

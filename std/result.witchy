@@ -5,123 +5,94 @@
 // For the `ok`/`err` conversions to Option.
 import option
 
-type Result {
-  Ok(a)
-  Err(e)
-}
+type Result:
+    Ok(a)
+    Err(e)
 
-pub fn is_ok(r: Result(a, e)) -> Bool {
-  match r {
-    Ok(_) -> true
-    Err(_) -> false
-  }
-}
+pub fn is_ok(r: Result(a, e)) -> Bool:
+    match r:
+        Ok(_) -> true
+        Err(_) -> false
 
 // The Ok value, or `default` if it's an Err.
-pub fn unwrap_or(r: Result(a, e), default: a) -> a {
-  match r {
-    Ok(v) -> v
-    Err(_) -> default
-  }
-}
+pub fn unwrap_or(r: Result(a, e), default: a) -> a:
+    match r:
+        Ok(v) -> v
+        Err(_) -> default
 
 // Transform the Ok value, leaving an Err untouched.
-pub fn map_ok(r: Result(a, e), f: fn(a) -> b) -> Result(b, e) {
-  match r {
-    Ok(v) -> Ok(f(v))
-    Err(x) -> Err(x)
-  }
-}
+pub fn map_ok(r: Result(a, e), f: fn(a) -> b) -> Result(b, e):
+    match r:
+        Ok(v) -> Ok(f(v))
+        Err(x) -> Err(x)
 
 // True if the result is an Err.
-pub fn is_err(r: Result(a, e)) -> Bool {
-  match r {
-    Ok(_) -> false
-    Err(_) -> true
-  }
-}
+pub fn is_err(r: Result(a, e)) -> Bool:
+    match r:
+        Ok(_) -> false
+        Err(_) -> true
 
 // Chain a fallible step: apply `f` (which itself yields a Result) to the Ok
 // value, or propagate the Err unchanged.
-pub fn and_then(r: Result(a, e), f: fn(a) -> Result(b, e)) -> Result(b, e) {
-  match r {
-    Ok(v) -> f(v)
-    Err(x) -> Err(x)
-  }
-}
+pub fn and_then(r: Result(a, e), f: fn(a) -> Result(b, e)) -> Result(b, e):
+    match r:
+        Ok(v) -> f(v)
+        Err(x) -> Err(x)
 
 // Transform the Err value, leaving an Ok untouched.
-pub fn map_err(r: Result(a, e), f: fn(e) -> g) -> Result(a, g) {
-  match r {
-    Ok(v) -> Ok(v)
-    Err(x) -> Err(f(x))
-  }
-}
+pub fn map_err(r: Result(a, e), f: fn(e) -> g) -> Result(a, g):
+    match r:
+        Ok(v) -> Ok(v)
+        Err(x) -> Err(f(x))
 
 // The Err value, or `default` if it's Ok.
-pub fn unwrap_err(r: Result(a, e), default: e) -> e {
-  match r {
-    Ok(_) -> default
-    Err(x) -> x
-  }
-}
+pub fn unwrap_err(r: Result(a, e), default: e) -> e:
+    match r:
+        Ok(_) -> default
+        Err(x) -> x
 
 // The Ok value, or the result of calling `f` (a lazily-computed default).
-pub fn unwrap_or_else(r: Result(a, e), f: fn() -> a) -> a {
-  match r {
-    Ok(v) -> v
-    Err(_) -> f()
-  }
-}
+pub fn unwrap_or_else(r: Result(a, e), f: fn() -> a) -> a:
+    match r:
+        Ok(v) -> v
+        Err(_) -> f()
 
 // The result if it is Ok, otherwise the `alt` result.
-pub fn or(r: Result(a, e), alt: Result(a, e)) -> Result(a, e) {
-  match r {
-    Ok(v) -> Ok(v)
-    Err(_) -> alt
-  }
-}
+pub fn or(r: Result(a, e), alt: Result(a, e)) -> Result(a, e):
+    match r:
+        Ok(v) -> Ok(v)
+        Err(_) -> alt
 
 // The result if it is Ok, otherwise the result produced by applying `f` to the
 // error — a lazy, error-aware recovery step.
-pub fn or_else(r: Result(a, e), f: fn(e) -> Result(a, e)) -> Result(a, e) {
-  match r {
-    Ok(v) -> Ok(v)
-    Err(x) -> f(x)
-  }
-}
+pub fn or_else(r: Result(a, e), f: fn(e) -> Result(a, e)) -> Result(a, e):
+    match r:
+        Ok(v) -> Ok(v)
+        Err(x) -> f(x)
 
 // Apply `f` to the Ok value, or return `default` for an Err — `map_ok` then
 // `unwrap_or` in one step.
-pub fn map_or(r: Result(a, e), default: b, f: fn(a) -> b) -> b {
-  match r {
-    Ok(v) -> f(v)
-    Err(_) -> default
-  }
-}
+pub fn map_or(r: Result(a, e), default: b, f: fn(a) -> b) -> b:
+    match r:
+        Ok(v) -> f(v)
+        Err(_) -> default
 
 // Collapse one layer of nesting: `Ok(Ok(v))` becomes `Ok(v)`; `Ok(Err(e))` and
 // `Err(e)` become `Err(e)`. The Result counterpart of `option.flatten`.
-pub fn flatten(rr: Result(Result(a, e), e)) -> Result(a, e) {
-  match rr {
-    Ok(inner) -> inner
-    Err(x) -> Err(x)
-  }
-}
+pub fn flatten(rr: Result(Result(a, e), e)) -> Result(a, e):
+    match rr:
+        Ok(inner) -> inner
+        Err(x) -> Err(x)
 
 // The Ok value as `Some`, or `None` for an Err — discards the error, turning a
 // Result into an Option.
-pub fn ok(r: Result(a, e)) -> Option(a) {
-  match r {
-    Ok(v) -> Some(v)
-    Err(_) -> None
-  }
-}
+pub fn ok(r: Result(a, e)) -> Option(a):
+    match r:
+        Ok(v) -> Some(v)
+        Err(_) -> None
 
 // The Err value as `Some`, or `None` for an Ok.
-pub fn err(r: Result(a, e)) -> Option(e) {
-  match r {
-    Ok(_) -> None
-    Err(x) -> Some(x)
-  }
-}
+pub fn err(r: Result(a, e)) -> Option(e):
+    match r:
+        Ok(_) -> None
+        Err(x) -> Some(x)
