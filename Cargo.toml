@@ -5,3 +5,5 @@ edition = "2024"
 
 [dependencies]
 wasmtime = "45.0.0"
+lsp-server = "0.7.9"
+serde_json = "1"

@@ -11,6 +11,7 @@ mod codegen;
 mod interpreter;
 mod lexer;
 mod linker;
+mod lsp;
 mod parser;
 mod runtime;
 mod typeck;
@@ -89,6 +90,14 @@ fn sender_src(target: u32) -> String {
 }
 
 fn main() -> wasmtime::Result<()> {
+    // `witchy lsp` starts the language server (stdio), used by editor extensions.
+    if std::env::args().nth(1).as_deref() == Some("lsp") {
+        if let Err(e) = lsp::run() {
+            eprintln!("witchy lsp: {e}");
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
     // `witchy --bench` compares interpreter vs compiled execution.
     if std::env::args().nth(1).as_deref() == Some("--bench") {
         return run_benchmarks();
