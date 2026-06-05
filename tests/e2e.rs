@@ -294,6 +294,39 @@ fn upgrade_that_widens_is_gated() {
 }
 
 #[test]
+fn diamond_dependency_resolves_shared_base_once() {
+    let sb = Sandbox::new("diamond");
+    let app = new_app(&sb);
+    sb.publish_lib("acme/base", "1.0.0", "fn b(s: String) -> String { s }\n");
+
+    // left and right both depend on base.
+    for side in ["left", "right"] {
+        let dir = sb.work.join(side);
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(
+            dir.join("witchy.toml"),
+            format!("[rune]\nname = \"acme/{side}\"\nversion = \"1.0.0\"\n\n[dependencies]\n\"acme/base\" = \"^1.0.0\"\n"),
+        )
+        .unwrap();
+        std::fs::write(dir.join(format!("src/{side}.witchy")), "fn x(s: String) -> String { s }\n").unwrap();
+        assert!(sb.run(&dir, "ci-bot", &["publish"]).status.success());
+        assert!(sb
+            .run(&dir, "alice", &["promote", &format!("acme/{side}@1.0.0"), "--factor", "totp"])
+            .status
+            .success());
+    }
+
+    assert!(sb.run(&app, "dev", &["add", "acme/left"]).status.success());
+    assert!(sb.run(&app, "dev", &["add", "acme/right"]).status.success());
+
+    // base appears exactly once in the lock despite two paths to it.
+    let lock = std::fs::read_to_string(app.join("witchy.lock")).unwrap();
+    let occurrences = lock.matches("name = \"acme/base\"").count();
+    assert_eq!(occurrences, 1, "shared base must resolve once; lock:\n{lock}");
+    assert!(sb.run(&app, "dev", &["build"]).status.success());
+}
+
+#[test]
 fn update_single_package_leaves_others_pinned() {
     let sb = Sandbox::new("update1");
     let app = new_app(&sb);
