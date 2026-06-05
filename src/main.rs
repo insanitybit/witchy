@@ -4447,6 +4447,32 @@ mod example_tests {
         assert_eq!(run_on_wasm(src), vec!["hello", "foo", "nospaces", "", "3"]);
     }
 
+    // Dead-code elimination: a program importing `list` but using only `map`
+    // and `sum` must not compile the rest of the list API (or `option`, which
+    // `list` imports) into the WASM — only functions reachable from `main`.
+    #[test]
+    fn dce_drops_unused_stdlib_functions() {
+        let client = r#"
+import list
+fn main(console: Console):
+    let xs = list.map([1, 2, 3], fn(x: Int) { x * 2 })
+    print(console, int_to_string(list.sum(xs)))
+"#;
+        let mods = vec![("main".to_string(), parser::parse_module(client).expect("parse"))];
+        let linked = crate::linker::link(mods, "main").expect("link");
+        let wat = codegen::compile_module(&linked).expect("compile");
+        // Reachable functions are present.
+        assert!(wat.contains("$list.map"), "map should be compiled");
+        assert!(wat.contains("$list.sum"), "sum should be compiled");
+        // Unused ones are gone.
+        assert!(!wat.contains("$list.partition"), "partition should be eliminated");
+        assert!(!wat.contains("$list.windows"), "windows should be eliminated");
+        assert!(!wat.contains("$list.sort_by"), "sort_by should be eliminated");
+        assert!(!wat.contains("$option."), "unused option fns should be eliminated");
+        // And it still runs correctly.
+        assert_eq!(run_linked_on_wasm(&[("main", client)], "main"), vec!["12"]);
+    }
+
     // std/url: parse assorted URL strings (default ports, explicit port, path,
     // and a malformed one). Pure, so both backends agree.
     #[test]

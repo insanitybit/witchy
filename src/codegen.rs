@@ -2163,6 +2163,120 @@ fn fn_param_returning_var(params: &[crate::ast::Param], tv: &str) -> Option<usiz
 
 /// Compile a module's functions to WAT. Requires a `main` returning Int or Nil;
 /// `main` may take a single capability parameter.
+/// Collect every name that could refer to a function — call targets and bare
+/// identifiers (first-class function values) — used for reachability/DCE. Over-
+/// approximates (also picks up locals), which is safe: non-function names just
+/// don't match any function and are ignored.
+fn collect_fn_refs_block(b: &Block, out: &mut HashSet<String>) {
+    for stmt in &b.stmts {
+        match stmt {
+            Stmt::Let { value, .. } | Stmt::Assign { value, .. } | Stmt::LetTuple { value, .. } => {
+                collect_fn_refs_expr(value, out)
+            }
+            Stmt::Return(Some(e)) | Stmt::Expr(e) => collect_fn_refs_expr(e, out),
+            Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
+        }
+    }
+}
+
+fn collect_fn_refs_expr(e: &Expr, out: &mut HashSet<String>) {
+    match e {
+        Expr::Call { name, args } => {
+            out.insert(name.clone());
+            for a in args {
+                collect_fn_refs_expr(a, out);
+            }
+        }
+        Expr::Var(name) => {
+            out.insert(name.clone());
+        }
+        Expr::Apply { func, args } => {
+            collect_fn_refs_expr(func, out);
+            for a in args {
+                collect_fn_refs_expr(a, out);
+            }
+        }
+        Expr::Ctor { args, .. }
+        | Expr::List(args)
+        | Expr::Tuple(args)
+        | Expr::Spawn { args, .. } => {
+            for a in args {
+                collect_fn_refs_expr(a, out);
+            }
+        }
+        Expr::Unary { expr, .. } | Expr::Try(expr) | Expr::Field { base: expr, .. } => {
+            collect_fn_refs_expr(expr, out)
+        }
+        Expr::RecordUpdate { base, fields } => {
+            collect_fn_refs_expr(base, out);
+            for (_, v) in fields {
+                collect_fn_refs_expr(v, out);
+            }
+        }
+        Expr::Binary { lhs, rhs, .. } => {
+            collect_fn_refs_expr(lhs, out);
+            collect_fn_refs_expr(rhs, out);
+        }
+        Expr::If { cond, then_block, else_block } => {
+            collect_fn_refs_expr(cond, out);
+            collect_fn_refs_block(then_block, out);
+            if let Some(b) = else_block {
+                collect_fn_refs_block(b, out);
+            }
+        }
+        Expr::Match { scrutinee, arms } => {
+            collect_fn_refs_expr(scrutinee, out);
+            for arm in arms {
+                if let Some(g) = &arm.guard {
+                    collect_fn_refs_expr(g, out);
+                }
+                collect_fn_refs_expr(&arm.body, out);
+            }
+        }
+        Expr::While { cond, body } => {
+            collect_fn_refs_expr(cond, out);
+            collect_fn_refs_block(body, out);
+        }
+        Expr::For { iter, body, .. } => {
+            collect_fn_refs_expr(iter, out);
+            collect_fn_refs_block(body, out);
+        }
+        Expr::Lambda { body, .. } => collect_fn_refs_block(body, out),
+        Expr::Block(b) => collect_fn_refs_block(b, out),
+        Expr::Int(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) => {}
+    }
+}
+
+/// The set of functions reachable from `main` (transitively). Only these need
+/// compiling — importing a std module no longer drags its whole API into the
+/// output.
+fn reachable_functions(module: &Module) -> HashSet<String> {
+    let mut bodies: HashMap<&str, &Block> = HashMap::new();
+    for item in &module.items {
+        if let Item::Function(f) = item {
+            bodies.insert(f.name.as_str(), &f.body);
+        }
+    }
+    let mut reachable: HashSet<String> = HashSet::new();
+    let mut work: Vec<String> = Vec::new();
+    if bodies.contains_key("main") {
+        reachable.insert("main".to_string());
+        work.push("main".to_string());
+    }
+    while let Some(name) = work.pop() {
+        if let Some(body) = bodies.get(name.as_str()) {
+            let mut refs = HashSet::new();
+            collect_fn_refs_block(body, &mut refs);
+            for r in refs {
+                if bodies.contains_key(r.as_str()) && reachable.insert(r.clone()) {
+                    work.push(r);
+                }
+            }
+        }
+    }
+    reachable
+}
+
 pub fn compile_module(module: &Module) -> Result<String, CodegenError> {
     // Desugar traits/impls to ordinary functions (no-op for trait-free modules)
     // so codegen, like the interpreter, only ever sees plain functions.
@@ -2275,6 +2389,8 @@ pub fn compile_module(module: &Module) -> Result<String, CodegenError> {
     let mut main_returns_float = false;
     let mut has_main = false;
 
+    // Dead-code elimination: compile only functions reachable from `main`.
+    let reachable = reachable_functions(module);
     for item in &module.items {
         match item {
             Item::Function(f) => {
@@ -2287,7 +2403,9 @@ pub fn compile_module(module: &Module) -> Result<String, CodegenError> {
                         return cerr("codegen `main` may take at most one (capability) argument");
                     }
                 }
-                func_wat.push_str(&cg.compile_function(f)?);
+                if reachable.contains(&f.name) {
+                    func_wat.push_str(&cg.compile_function(f)?);
+                }
             }
             Item::Type(_) => {}
             Item::Actor(_) => return cerr("use compile_actor_module to compile an actor"),
