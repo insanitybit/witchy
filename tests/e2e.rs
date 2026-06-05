@@ -294,6 +294,41 @@ fn upgrade_that_widens_is_gated() {
 }
 
 #[test]
+fn update_single_package_leaves_others_pinned() {
+    let sb = Sandbox::new("update1");
+    let app = new_app(&sb);
+    sb.publish_lib("acme/a", "1.0.0", "fn f(s: String) -> String { s }\n");
+    sb.publish_lib("acme/b", "1.0.0", "fn g(s: String) -> String { s }\n");
+    assert!(sb.run(&app, "dev", &["add", "acme/a"]).status.success());
+    assert!(sb.run(&app, "dev", &["add", "acme/b"]).status.success());
+
+    // Newer versions of both become available.
+    for n in ["a", "b"] {
+        let dir = sb.work.join(n);
+        std::fs::write(
+            dir.join("witchy.toml"),
+            format!("[rune]\nname = \"acme/{n}\"\nversion = \"1.1.0\"\n"),
+        )
+        .unwrap();
+        assert!(sb.run(&dir, "ci-bot", &["publish"]).status.success());
+        assert!(sb
+            .run(&dir, "alice", &["promote", &format!("acme/{n}@1.1.0"), "--factor", "totp"])
+            .status
+            .success());
+    }
+
+    // Update only acme/a; acme/b must stay pinned at 1.0.0.
+    let out = sb.run(&app, "dev", &["update", "acme/a"]);
+    assert!(out.status.success(), "update failed: {}", stderr(&out));
+    let lock = std::fs::read_to_string(app.join("witchy.lock")).unwrap();
+    // a moved to 1.1.0, b stayed at 1.0.0.
+    let a_at = lock.find("acme/a").map(|i| &lock[i..i + 60]).unwrap_or("");
+    assert!(a_at.contains("1.1.0"), "acme/a should be 1.1.0; lock:\n{lock}");
+    let b_at = lock.find("acme/b").map(|i| &lock[i..i + 60]).unwrap_or("");
+    assert!(b_at.contains("1.0.0"), "acme/b should stay 1.0.0; lock:\n{lock}");
+}
+
+#[test]
 fn yank_excludes_from_new_resolution() {
     let sb = Sandbox::new("yank");
     let lib = sb.publish_lib("acme/old", "1.0.0", "fn f(s: String) -> String { s }\n");

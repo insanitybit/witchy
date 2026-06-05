@@ -549,8 +549,25 @@ fn cmd_update(rest: &[String]) -> PmResult<()> {
     let a = parse_args(rest);
     let root = Path::new(".");
     let manifest = Manifest::load(root)?;
-    let resolution = resolve::resolve(&manifest, root, &env.registry, &env.store)?;
     let old_lock = Lockfile::load(root)?;
+
+    // `update <pkg>` bumps only that rune (and anything it newly requires),
+    // pinning every other locked rune to its current version. Bare `update`
+    // re-resolves everything to the latest matching.
+    let resolution = if let Some(target) = a.positional.first() {
+        if old_lock.find(target).is_none() {
+            return err(format!("`{target}` is not a locked dependency — nothing to update"));
+        }
+        let pins: BTreeMap<String, String> = old_lock
+            .runes
+            .iter()
+            .filter(|r| &r.name != target)
+            .map(|r| (r.name.clone(), r.version.clone()))
+            .collect();
+        resolve::resolve_with_pins(&manifest, root, &env.registry, &env.store, &pins)?
+    } else {
+        resolve::resolve(&manifest, root, &env.registry, &env.store)?
+    };
     let allowed_runtime: BTreeSet<String> = a.vals("--allow-cap").into_iter().collect();
     let allowed_build: BTreeSet<String> = a.vals("--allow-build-cap").into_iter().collect();
     let report = super::gate::check(&resolution, &old_lock, &allowed_runtime, &allowed_build);

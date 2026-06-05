@@ -158,6 +158,19 @@ pub fn resolve(
     registry: &Registry,
     store: &Store,
 ) -> PmResult<Resolution> {
+    resolve_with_pins(root_manifest, root_dir, registry, store, &BTreeMap::new())
+}
+
+/// Resolve with a set of version pins: rune-name -> exact version that must be
+/// kept. Used by `update <pkg>`, which pins every rune except the target so only
+/// the target (and any newly-required transitive deps) moves.
+pub fn resolve_with_pins(
+    root_manifest: &Manifest,
+    root_dir: &Path,
+    registry: &Registry,
+    store: &Store,
+    pins: &BTreeMap<String, String>,
+) -> PmResult<Resolution> {
     let mut resolved: BTreeMap<String, ResolvedRune> = BTreeMap::new();
     let mut queue: VecDeque<Pending> = VecDeque::new();
 
@@ -171,7 +184,7 @@ pub fn resolve(
 
     while let Some(p) = queue.pop_front() {
         let (src, manifest, registry_name, source_kind, provenance) =
-            fetch_dep(&p, registry, store)?;
+            fetch_dep(&p, registry, store, pins)?;
         let from_registry = registry_name.is_some();
         let name = manifest.rune.name.clone();
         let version = manifest.rune.version.clone();
@@ -240,7 +253,12 @@ pub fn resolve(
 type FetchedDep = (RuneSource, Manifest, Option<String>, Option<String>, Option<String>);
 
 /// Fetch one dependency's source + manifest, from a local path or the registry.
-fn fetch_dep(p: &Pending, registry: &Registry, _store: &Store) -> PmResult<FetchedDep> {
+fn fetch_dep(
+    p: &Pending,
+    registry: &Registry,
+    _store: &Store,
+    pins: &BTreeMap<String, String>,
+) -> PmResult<FetchedDep> {
     if let Some(rel) = p.dep.path() {
         let dir = p.base_dir.join(rel);
         let src = RuneSource::read_dir(&dir)?;
@@ -250,27 +268,32 @@ fn fetch_dep(p: &Pending, registry: &Registry, _store: &Store) -> PmResult<Fetch
     }
 
     // Registry dependency.
-    let reqstr = p
-        .dep
-        .version_req()
-        .ok_or_else(|| super::PmError(format!(
-            "dependency `{}` needs a version (registry deps must be pinned)",
-            p.referrer_key
-        )))?;
-    let req = Req::parse(reqstr)?;
     let name = registry_dep_name(p)?;
     let registry_name = p.dep.registry().to_string();
+    // A pin (from `update <pkg>`) forces an exact version; otherwise honor the
+    // manifest's version requirement.
+    let req = if let Some(v) = pins.get(&name) {
+        Req::Exact(super::semver::Version::parse(v)?)
+    } else {
+        let reqstr = p.dep.version_req().ok_or_else(|| {
+            super::PmError(format!(
+                "dependency `{}` needs a version (registry deps must be pinned)",
+                p.referrer_key
+            ))
+        })?;
+        Req::parse(reqstr)?
+    };
 
     let Some(record) = registry.best_match(&name, &req, false) else {
         // Distinguish "nothing matches" from "only a staged version exists".
         let staged = registry.best_match(&name, &req, true).is_some();
         if staged {
             return err(format!(
-                "`{name}` matching {reqstr} exists but is only STAGED, not released — it must be promoted (second factor) before it can be resolved"
+                "`{name}` matching {req} exists but is only STAGED, not released — it must be promoted (second factor) before it can be resolved"
             ));
         }
         return err(format!(
-            "no released version of `{name}` matching {reqstr} in registry `{registry_name}`"
+            "no released version of `{name}` matching {req} in registry `{registry_name}`"
         ));
     };
 
