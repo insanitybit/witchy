@@ -4873,6 +4873,69 @@ fn main(console: Console, net: Net):
         assert_eq!(out, vec!["200".to_string(), "hello".to_string()]);
     }
 
+    // std/http POST: send a request body and read it back from a loopback echo
+    // server. Interpreter-only (networking isn't compiled).
+    #[test]
+    fn std_http_post_against_loopback() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = match listener.accept() {
+                Ok(x) => x,
+                Err(_) => return,
+            };
+            // Read the full request: headers, then Content-Length body bytes.
+            let mut data: Vec<u8> = Vec::new();
+            let mut tmp = [0u8; 1024];
+            loop {
+                let text = String::from_utf8_lossy(&data).into_owned();
+                if let Some(hdr_end) = text.find("\r\n\r\n") {
+                    let clen: usize = text[..hdr_end]
+                        .lines()
+                        .find_map(|l| l.strip_prefix("Content-Length: "))
+                        .and_then(|v| v.trim().parse().ok())
+                        .unwrap_or(0);
+                    if data.len() >= hdr_end + 4 + clen {
+                        break;
+                    }
+                }
+                match stream.read(&mut tmp) {
+                    Ok(0) => break,
+                    Ok(k) => data.extend_from_slice(&tmp[..k]),
+                    Err(_) => break,
+                }
+            }
+            let text = String::from_utf8_lossy(&data);
+            let body = text.split("\r\n\r\n").nth(1).unwrap_or("").to_string();
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.as_bytes().len(),
+                body
+            );
+            let _ = stream.write_all(resp.as_bytes());
+        });
+        let program = format!(
+            r#"
+import http
+fn main(console: Console, net: Net):
+    let r = http.post(net, "127.0.0.1", {port}, "/echo", "hello body")
+    print(console, int_to_string(http.status(r)))
+    print(console, http.body(r))
+"#
+        );
+        let mods = vec![("main".to_string(), parser::parse_module(&program).expect("parse"))];
+        let linked = crate::linker::link(mods, "main").expect("link");
+        let out = interpreter::run_module(
+            linked,
+            std::path::Path::new("."),
+            vec![format!("127.0.0.1:{port}")],
+        )
+        .expect("run");
+        server.join().ok();
+        assert_eq!(out, vec!["200".to_string(), "hello body".to_string()]);
+    }
+
     // std/json: build a nested Json value and serialize it. Pure (no
     // capabilities), so it compiles to WASM and both backends must agree.
     #[test]

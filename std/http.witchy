@@ -9,13 +9,24 @@ type Response:
     Response(Int, String)
 
 // Perform a GET request to `host:port` for `path`, returning the response.
-// Sends `Connection: close`, so the whole response is read back in one go.
 pub fn get(net: Net, host: String, port: Int, path: String) -> Response:
+    request(net, "GET", host, port, path, "")
+
+// Perform a POST request with `body` (e.g. a JSON document). The body's byte
+// length is sent as Content-Length.
+pub fn post(net: Net, host: String, port: Int, path: String, body: String) -> Response:
+    request(net, "POST", host, port, path, body)
+
+// Send one request (method/path/body) and read the whole response back.
+// `Connection: close` means the server closes after the body, ending recv_all.
+fn request(net: Net, method: String, host: String, port: Int, path: String, body: String) -> Response:
     let sock = connect(net, host <> ":" <> int_to_string(port))
-    send_line(sock, "GET " <> path <> " HTTP/1.1\r")
-    send_line(sock, "Host: " <> host <> "\r")
-    send_line(sock, "Connection: close\r")
-    send_line(sock, "\r")
+    let req = method <> " " <> path <> " HTTP/1.1\r\n"
+        <> "Host: " <> host <> "\r\n"
+        <> "Content-Length: " <> int_to_string(string_length(body)) <> "\r\n"
+        <> "Connection: close\r\n\r\n"
+        <> body
+    send_bytes(sock, req)
     parse_response(recv_all(sock))
 
 // The numeric status code, e.g. 200.

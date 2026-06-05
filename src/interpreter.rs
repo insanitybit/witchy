@@ -821,6 +821,22 @@ impl Interpreter {
                 }
                 _ => err("recv_line expects a Socket"),
             },
+            // Write raw bytes to the socket with no trailing newline — for
+            // sending an exact request (headers + body) where `send_line`'s
+            // appended `\n` would corrupt the framing.
+            "send_bytes" => match args {
+                [Value::Socket(id), Value::Str(s)] => {
+                    let sock = self
+                        .sockets
+                        .get_mut(*id)
+                        .ok_or_else(|| RuntimeError { message: "invalid socket".into() })?;
+                    sock.get_mut()
+                        .write_all(s.as_bytes())
+                        .map_err(|e| RuntimeError { message: format!("send failed: {e}") })?;
+                    Ok(Some(Value::Nil))
+                }
+                _ => err("send_bytes expects a Socket and a String"),
+            },
             // Read the rest of the connection to EOF (the peer closing the
             // connection ends it) — e.g. an HTTP `Connection: close` response.
             "recv_all" => match args {

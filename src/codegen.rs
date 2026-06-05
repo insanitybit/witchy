@@ -2058,7 +2058,7 @@ impl Codegen {
                 "filesystem capabilities are not compiled to WASM yet (interpreter only; maps to WASI preopens)",
             ),
             ("connect", _) | ("restrict", _) | ("send_line", _) | ("recv_line", _)
-            | ("recv_all", _) => cerr(
+            | ("recv_all", _) | ("send_bytes", _) => cerr(
                 "network capabilities are not compiled to WASM yet (interpreter only; maps to wasi:sockets)",
             ),
             _ => {
