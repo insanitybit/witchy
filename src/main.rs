@@ -1387,6 +1387,43 @@ mod example_tests {
     }
 
     #[test]
+    fn recursive_trait_dispatch_on_match_bound_fields() {
+        // A trait method can now dispatch on a variable bound by a constructor
+        // pattern when the field type is concrete: `show(x)` / `show(c)` inside a
+        // Show impl resolve through the match arm. Covers a nested struct (Named
+        // holds a Coord) and stays content-correct on both backends.
+        let client = r#"
+            import show
+            type Coord { Coord(Int, Int) }
+            impl Show for Coord {
+              fn show(self) -> String {
+                match self { Coord(x, y) -> "(" <> show(x) <> ", " <> show(y) <> ")" }
+              }
+            }
+            type Named { Named(String, Coord) }
+            impl Show for Named {
+              fn show(self) -> String {
+                match self { Named(label, c) -> label <> "=" <> show(c) }
+              }
+            }
+            fn main(console: Console) {
+              print(console, show(Coord(3, 4)))
+              print(console, show(Named("p", Coord(1, 2))))
+              print(console, show.show_list([Coord(0, 0), Coord(5, 6)]))
+            }
+        "#;
+        let sources = [
+            ("show", crate::bundled_module("show").unwrap()),
+            ("string", crate::bundled_module("string").unwrap()),
+            ("main", client),
+        ];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "recursive show dispatch diverged");
+        assert_eq!(compiled, vec!["(3, 4)", "p=(1, 2)", "[(0, 0), (5, 6)]"]);
+    }
+
+    #[test]
     fn std_ord_string_and_sort_backends_agree() {
         // `impl Ord for String` makes strings comparable, and the bounded generic
         // `ord.sort` dispatches through the element's Ord impl — so it sorts

@@ -155,9 +155,11 @@ pub fn lower(module: Module) -> Module {
     });
     if !templates.is_empty() {
         let (ctor_results, fn_rets) = build_tables(&items);
+        let ctor_fields = build_ctor_fields(&items);
         let mut mono = Mono {
             templates: &templates,
             ctor_results: &ctor_results,
+            ctor_fields: &ctor_fields,
             fn_rets,
             memo: HashMap::new(),
             generated: Vec::new(),
@@ -168,11 +170,13 @@ pub fn lower(module: Module) -> Module {
 
     // Tables used to determine a receiver's type at a trait-method call site.
     let (ctor_results, fn_rets) = build_tables(&items);
+    let ctor_fields = build_ctor_fields(&items);
     let ctx = Ctx {
         trait_methods: &trait_methods,
         impl_table: &impl_table,
         ctor_results: &ctor_results,
         fn_rets: &fn_rets,
+        ctor_fields: &ctor_fields,
     };
     for item in &mut items {
         match item {
@@ -224,6 +228,7 @@ struct Ctx<'a> {
     impl_table: &'a HashMap<(String, String), String>,
     ctor_results: &'a HashMap<String, String>,
     fn_rets: &'a HashMap<String, String>,
+    ctor_fields: &'a HashMap<String, Vec<Type>>,
 }
 
 impl Ctx<'_> {
@@ -322,6 +327,7 @@ impl Ctx<'_> {
                 self.rewrite_expr(scrutinee, scope);
                 for arm in arms.iter_mut() {
                     let mut s = scope.clone();
+                    bind_ctor_pattern(&arm.pattern, self.ctor_fields, &mut s);
                     if let Some(g) = &mut arm.guard {
                         self.rewrite_expr(g, &mut s);
                     }
@@ -439,6 +445,60 @@ fn build_tables(items: &[Item]) -> (HashMap<String, String>, HashMap<String, Str
     (ctor_results, fn_rets)
 }
 
+/// Constructor name -> the types of its fields, for typing the variables bound
+/// by a constructor pattern in a `match` arm.
+fn build_ctor_fields(items: &[Item]) -> HashMap<String, Vec<Type>> {
+    let mut map = HashMap::new();
+    for item in items {
+        if let Item::Type(t) = item {
+            for v in &t.variants {
+                map.insert(v.name.clone(), v.fields.clone());
+            }
+        }
+    }
+    map
+}
+
+/// The scope name for a field type that is a *concrete* (non-type-variable)
+/// type. Witchy spells type variables in lowercase and concrete types
+/// capitalized, so a capitalized, argument-free head name is concrete (`Int`,
+/// `Coord`). Generic fields (a lowercase var like `a`, or a parameterized type
+/// whose arguments we don't track here) return `None`, so their bound variable
+/// stays untyped rather than risk a wrong dispatch.
+fn concrete_scope_name(t: &Type) -> Option<String> {
+    match t {
+        Type::Named(n, args)
+            if args.is_empty() && n.chars().next().is_some_and(|c| c.is_uppercase()) =>
+        {
+            Some(n.clone())
+        }
+        _ => None,
+    }
+}
+
+/// Bind the variables of a constructor pattern to their concrete field types, so
+/// a trait-method call on one (e.g. a recursive `show(x)` inside a `Show` impl)
+/// resolves. Recurses into nested constructor patterns. Conservative: only
+/// concrete fields are bound (see `concrete_scope_name`); a wrong guess would in
+/// any case be caught by the type checker, never miscompiled.
+fn bind_ctor_pattern(pat: &Pattern, ctor_fields: &HashMap<String, Vec<Type>>, scope: &mut Scope) {
+    if let Pattern::Ctor { name, args } = pat {
+        if let Some(fields) = ctor_fields.get(name) {
+            for (arg, fty) in args.iter().zip(fields) {
+                match arg {
+                    Pattern::Var(v) => {
+                        if let Some(sn) = concrete_scope_name(fty) {
+                            scope.insert(v.clone(), sn);
+                        }
+                    }
+                    Pattern::Ctor { .. } => bind_ctor_pattern(arg, ctor_fields, scope),
+                    _ => {}
+                }
+            }
+        }
+    }
+}
+
 /// Replace each bound type variable in a type with its concrete instantiation.
 fn subst_vars(t: &Type, subst: &HashMap<&str, String>) -> Type {
     match t {
@@ -465,6 +525,7 @@ fn subst_vars(t: &Type, subst: &HashMap<&str, String>) -> Type {
 struct Mono<'a> {
     templates: &'a HashMap<String, Function>,
     ctor_results: &'a HashMap<String, String>,
+    ctor_fields: &'a HashMap<String, Vec<Type>>,
     fn_rets: HashMap<String, String>,
     memo: HashMap<(String, Vec<String>), String>,
     generated: Vec<Function>,
@@ -674,6 +735,7 @@ impl Mono<'_> {
                 self.walk_expr(scrutinee, scope);
                 for arm in arms.iter_mut() {
                     let mut s = scope.clone();
+                    bind_ctor_pattern(&arm.pattern, self.ctor_fields, &mut s);
                     if let Some(g) = &mut arm.guard {
                         self.walk_expr(g, &mut s);
                     }
