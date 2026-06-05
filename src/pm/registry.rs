@@ -814,7 +814,10 @@ mod tests {
     #[test]
     fn publish_stages_not_resolvable() {
         let (reg, root) = tmp_registry();
-        let (src, m) = rune("acme/json", "1.0.0", "fn parse(s: String) -> String { s }");
+        let (src, m) = rune("acme/json", "1.0.0", r#"
+fn parse(s: String) -> String:
+    s
+"#);
         let rec = reg.publish(&src, &m, "ci-bot", None).unwrap();
         assert_eq!(rec.state, State::Staged);
         // Not resolvable while staged.
@@ -827,7 +830,10 @@ mod tests {
     #[test]
     fn promote_requires_second_factor() {
         let (reg, root) = tmp_registry();
-        let (src, m) = rune("acme/json", "1.0.0", "fn parse(s: String) -> String { s }");
+        let (src, m) = rune("acme/json", "1.0.0", r#"
+fn parse(s: String) -> String:
+    s
+"#);
         reg.publish(&src, &m, "ci-bot", None).unwrap();
         // No second factor -> refused.
         assert!(reg.promote("acme/json", "1.0.0", "alice", "").is_err());
@@ -842,7 +848,10 @@ mod tests {
     #[test]
     fn immutable_versions() {
         let (reg, root) = tmp_registry();
-        let (src, m) = rune("acme/json", "1.0.0", "fn parse(s: String) -> String { s }");
+        let (src, m) = rune("acme/json", "1.0.0", r#"
+fn parse(s: String) -> String:
+    s
+"#);
         reg.publish(&src, &m, "ci-bot", None).unwrap();
         assert!(reg.publish(&src, &m, "ci-bot", None).is_err(), "republish must fail");
         let _ = std::fs::remove_dir_all(&root);
@@ -851,7 +860,10 @@ mod tests {
     #[test]
     fn server_recomputes_footprint() {
         let (reg, root) = tmp_registry();
-        let (src, m) = rune("acme/http", "1.0.0", "fn get(net: Net, url: String) -> String { url }");
+        let (src, m) = rune("acme/http", "1.0.0", r#"
+fn get(net: Net, url: String) -> String:
+    url
+"#);
         let rec = reg.publish(&src, &m, "ci-bot", None).unwrap();
         assert!(rec.runtime_footprint.contains(&"Net".to_string()));
         let _ = std::fs::remove_dir_all(&root);
@@ -878,7 +890,10 @@ mod tests {
     #[test]
     fn fetch_verifies_hash() {
         let (reg, root) = tmp_registry();
-        let (src, m) = rune("acme/json", "1.0.0", "fn parse(s: String) -> String { s }");
+        let (src, m) = rune("acme/json", "1.0.0", r#"
+fn parse(s: String) -> String:
+    s
+"#);
         let rec = reg.publish(&src, &m, "ci-bot", None).unwrap();
         let fetched = reg.fetch("acme/json", "1.0.0").unwrap();
         assert_eq!(fetched.hash(), rec.hash);
@@ -888,7 +903,10 @@ mod tests {
     #[test]
     fn records_are_signed() {
         let (reg, root) = tmp_registry();
-        let (src, m) = rune("acme/json", "1.0.0", "fn parse(s: String) -> String { s }");
+        let (src, m) = rune("acme/json", "1.0.0", r#"
+fn parse(s: String) -> String:
+    s
+"#);
         let rec = reg.publish(&src, &m, "ci-bot", None).unwrap();
         assert!(rec.sig.is_some(), "publish must sign the record");
         reg.verify_record(&rec).expect("freshly signed record must verify");
@@ -898,7 +916,10 @@ mod tests {
     #[test]
     fn tuf_chain_verifies_and_freeze_is_detected() {
         let (reg, root) = tmp_registry();
-        let (src, m) = rune("acme/json", "1.0.0", "fn parse(s: String) -> String { s }");
+        let (src, m) = rune("acme/json", "1.0.0", r#"
+fn parse(s: String) -> String:
+    s
+"#);
         reg.publish(&src, &m, "ci-bot", None).unwrap();
         reg.promote("acme/json", "1.0.0", "alice", "webauthn").unwrap();
 
@@ -934,7 +955,10 @@ mod tests {
     #[test]
     fn tuf_rollback_is_detected() {
         let (reg, root) = tmp_registry();
-        let (src, m) = rune("acme/json", "1.0.0", "fn parse(s: String) -> String { s }");
+        let (src, m) = rune("acme/json", "1.0.0", r#"
+fn parse(s: String) -> String:
+    s
+"#);
         reg.publish(&src, &m, "ci-bot", None).unwrap();
         reg.promote("acme/json", "1.0.0", "alice", "webauthn").unwrap();
         let registry = Registry::Local(reg);
@@ -986,7 +1010,10 @@ mod tests {
     #[test]
     fn tampered_record_fails_verification() {
         let (reg, root) = tmp_registry();
-        let (src, m) = rune("acme/json", "1.0.0", "fn parse(s: String) -> String { s }");
+        let (src, m) = rune("acme/json", "1.0.0", r#"
+fn parse(s: String) -> String:
+    s
+"#);
         reg.publish(&src, &m, "ci-bot", None).unwrap();
         reg.promote("acme/json", "1.0.0", "alice", "webauthn").unwrap();
 

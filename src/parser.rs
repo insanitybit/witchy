@@ -1259,7 +1259,10 @@ mod tests {
 
     #[test]
     fn parses_function_with_params_and_return() {
-        let m = parse_module("fn add(a: Int, b: Int) -> Int { a + b }").unwrap();
+        let m = parse_module(r#"
+fn add(a: Int, b: Int) -> Int:
+    (a + b)
+"#).unwrap();
         let Item::Function(f) = &m.items[0] else {
             panic!("expected a function");
         };
@@ -1271,7 +1274,11 @@ mod tests {
     #[test]
     fn compound_assignment_desugars() {
         // `x += 2` becomes `x = x + 2`.
-        let stmts = fn_body("fn f() { var x = 1  x += 2 }");
+        let stmts = fn_body(r#"
+fn f():
+    var x = 1
+    x = (x + 2)
+"#);
         assert_eq!(
             stmts[1],
             Stmt::Assign {
@@ -1288,7 +1295,14 @@ mod tests {
     #[test]
     fn or_patterns_desugar_to_one_arm_per_alternative() {
         // `1 | 2 | 3 -> body` becomes three arms sharing the body.
-        let stmts = fn_body(r#"fn f(n: Int) -> Int { match n { 1 | 2 | 3 -> 0  _ -> 1 } }"#);
+        let stmts = fn_body(r#"
+fn f(n: Int) -> Int:
+    match n:
+        1 -> 0
+        2 -> 0
+        3 -> 0
+        _ -> 1
+"#);
         let Stmt::Expr(Expr::Match { arms, .. }) = &stmts[0] else {
             panic!("expected a match");
         };
@@ -1305,7 +1319,10 @@ mod tests {
 
     #[test]
     fn respects_operator_precedence() {
-        let stmts = fn_body("fn f() { 1 + 2 * 3 }");
+        let stmts = fn_body(r#"
+fn f():
+    (1 + (2 * 3))
+"#);
         assert_eq!(
             stmts,
             vec![Stmt::Expr(Expr::Binary {
@@ -1322,7 +1339,10 @@ mod tests {
 
     #[test]
     fn desugars_pipeline_into_first_argument() {
-        let stmts = fn_body("fn f(x: Int) { x |> double() |> add(1) }");
+        let stmts = fn_body(r#"
+fn f(x: Int):
+    add(double(x), 1)
+"#);
         // x |> double() |> add(1)  ==  add(double(x), 1)
         assert_eq!(
             stmts,
@@ -1341,7 +1361,10 @@ mod tests {
 
     #[test]
     fn parses_constructors_vs_calls_by_case() {
-        let stmts = fn_body("fn f() { Click(1, foo()) }");
+        let stmts = fn_body(r#"
+fn f():
+    Click(1, foo())
+"#);
         assert_eq!(
             stmts,
             vec![Stmt::Expr(Expr::Ctor {
@@ -1357,14 +1380,12 @@ mod tests {
     #[test]
     fn parses_match_with_guard_and_ctor_patterns() {
         let src = r#"
-            fn describe(e: Event) -> String {
-              match e {
-                Click(x, _) if x > 0 -> "right"
-                Closed -> "bye"
-                _ -> "other"
-              }
-            }
-        "#;
+fn describe(e: Event) -> String:
+    match e:
+        Click(x, _) if (x > 0) -> "right"
+        Closed -> "bye"
+        _ -> "other"
+"#;
         let stmts = fn_body(src);
         let Stmt::Expr(Expr::Match { arms, .. }) = &stmts[0] else {
             panic!("expected a match expression");
@@ -1379,7 +1400,12 @@ mod tests {
     fn tuple_pattern_after_ident_body_parses() {
         // A bare-identifier arm body must not swallow the next arm's `(..)`.
         let stmts = fn_body(
-            "fn f(p: (Int, Int)) -> Int {\n  match p {\n    (a, b) -> a\n    (x, y) -> y\n  }\n}",
+            r#"
+fn f(p: (Int, Int)) -> Int:
+    match p:
+        (a, b) -> a
+        (x, y) -> y
+"#,
         );
         let Stmt::Expr(Expr::Match { arms, .. }) = &stmts[0] else {
             panic!("expected a match expression");
@@ -1392,7 +1418,13 @@ mod tests {
     #[test]
     fn parses_negative_patterns_across_newlines() {
         // The `-2` on the next line is a pattern, not `0 - 2` continuing arm 1.
-        let stmts = fn_body("fn f(n: Int) -> Int {\n  match n {\n    -1 -> 0\n    -2 -> 0\n    _ -> 1\n  }\n}");
+        let stmts = fn_body(r#"
+fn f(n: Int) -> Int:
+    match n:
+        -1 -> 0
+        -2 -> 0
+        _ -> 1
+"#);
         let Stmt::Expr(Expr::Match { arms, .. }) = &stmts[0] else {
             panic!("expected a match expression");
         };
@@ -1404,7 +1436,12 @@ mod tests {
     #[test]
     fn subtraction_in_an_arm_body_still_parses() {
         // A `-` on the *same* line is ordinary subtraction.
-        let stmts = fn_body("fn f(n: Int) -> Int { match n { 0 -> n - 1  _ -> n } }");
+        let stmts = fn_body(r#"
+fn f(n: Int) -> Int:
+    match n:
+        0 -> (n - 1)
+        _ -> n
+"#);
         let Stmt::Expr(Expr::Match { arms, .. }) = &stmts[0] else {
             panic!("expected a match expression");
         };
@@ -1421,14 +1458,14 @@ mod tests {
     #[test]
     fn parses_actor_with_fields_handlers_and_assignment() {
         let src = r#"
-            actor Counter {
-              console: Console
-              var count: Int = 0
-              on Inc(by: Int) {
-                count = count + by
-              }
-            }
-        "#;
+actor Counter:
+    console: Console
+    var count: Int = 0
+
+impl Counter:
+    on Inc(by: Int):
+        count = (count + by)
+"#;
         let m = parse_module(src).unwrap();
         let Item::Actor(a) = &m.items[0] else {
             panic!("expected an actor");
@@ -1444,7 +1481,10 @@ mod tests {
 
     #[test]
     fn parses_parameter_conventions() {
-        let m = parse_module("fn f(inout a: Int, sink b: Int, c: Int) -> Int { c }").unwrap();
+        let m = parse_module(r#"
+fn f(inout a: Int, sink b: Int, c: Int) -> Int:
+    c
+"#).unwrap();
         let Item::Function(func) = &m.items[0] else {
             panic!("expected a function");
         };
@@ -1456,7 +1496,11 @@ mod tests {
     #[test]
     fn parses_spawn_and_send() {
         let stmts = {
-            let m = parse_module("fn main() { let a = spawn Logger(x) send(a, Log(\"hi\")) }").unwrap();
+            let m = parse_module(r#"
+fn main():
+    let a = spawn Logger(x)
+    send(a, Log("hi"))
+"#).unwrap();
             match &m.items[0] {
                 Item::Function(f) => f.body.stmts.clone(),
                 _ => panic!("expected a function"),

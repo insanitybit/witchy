@@ -6174,10 +6174,16 @@ fn shout(s: String) -> String:
         std::fs::create_dir_all(&dir).unwrap();
         let v1 = dir.join("v1.witchy");
         let v2 = dir.join("v2.witchy");
-        std::fs::write(&v1, "pub fn serve(console: Console) -> Int { 0 }").unwrap();
+        std::fs::write(&v1, r#"
+pub fn serve(console: Console) -> Int:
+    0
+"#).unwrap();
         std::fs::write(
             &v2,
-            "pub fn serve(console: Console, net: Net) -> Int { 0 }",
+            r#"
+pub fn serve(console: Console, net: Net) -> Int:
+    0
+"#,
         )
         .unwrap();
         assert!(

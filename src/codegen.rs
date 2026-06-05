@@ -3961,7 +3961,10 @@ fn main() -> Float:
         let big = parse_module("fn main() -> Int { 3000000000 }").expect("parse");
         let err = compile_module(&big).expect_err("out-of-range literal should be rejected");
         assert!(err.to_string().contains("32-bit range"), "unexpected error: {err}");
-        assert_eq!(run_int("fn main() -> Int { 2000000000 }"), 2000000000);
+        assert_eq!(run_int(r#"
+fn main() -> Int:
+    2000000000
+"#), 2000000000);
     }
 
     #[test]
@@ -4151,7 +4154,10 @@ fn main() -> Int:
 
     #[test]
     fn compiles_arithmetic() {
-        assert_eq!(run_int("fn main() -> Int { 1 + 2 * 3 }"), 7);
+        assert_eq!(run_int(r#"
+fn main() -> Int:
+    (1 + (2 * 3))
+"#), 7);
     }
 
     #[test]

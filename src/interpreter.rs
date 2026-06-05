@@ -1539,7 +1539,10 @@ mod tests {
 
     #[test]
     fn evaluates_arithmetic_and_precedence() {
-        let out = run("fn main(console: Console) { print(console, int_to_string(1 + 2 * 3)) }")
+        let out = run(r#"
+fn main(console: Console):
+    print(console, int_to_string((1 + (2 * 3))))
+"#)
             .unwrap();
         assert_eq!(out, vec!["7"]);
     }
@@ -1637,7 +1640,10 @@ fn main(console: Console):
 
     #[test]
     fn reports_unknown_function() {
-        let e = run("fn main() { nope() }").unwrap_err();
+        let e = run(r#"
+fn main():
+    nope()
+"#).unwrap_err();
         assert!(e.message.contains("unknown function"));
     }
 

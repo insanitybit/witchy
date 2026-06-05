@@ -1460,12 +1460,18 @@ fn main():
 
     #[test]
     fn rejects_tuple_arity_mismatch() {
-        assert!(check_str("fn main() { let (a, b, c) = (1, 2) }").is_err());
+        assert!(check_str(r#"
+fn main():
+    let (a, b, c) = (1, 2)
+"#).is_err());
     }
 
     #[test]
     fn accepts_tuple_destructure() {
-        assert!(check_str("fn main() { let (a, b) = (1, 2) }").is_ok());
+        assert!(check_str(r#"
+fn main():
+    let (a, b) = (1, 2)
+"#).is_ok());
     }
 
     #[test]
@@ -1554,7 +1560,10 @@ fn only_return() -> Int:
     #[test]
     fn type_errors_report_function_and_source_line() {
         // The mismatch is on the third line, inside function `f`.
-        let src = "fn f() -> Int {\n  let a = 1\n  a + \"x\"\n}";
+        let src = r#"fn f() -> Int:
+    let a = 1
+    (a + "x")
+"#;
         let e = check_str(src).unwrap_err();
         assert!(e.contains("line 3"), "expected a line number, got: {e}");
         assert!(e.contains("`f`"), "expected the function name, got: {e}");
@@ -1562,24 +1571,45 @@ fn only_return() -> Int:
 
     #[test]
     fn ordering_allows_comparable_primitives() {
-        assert!(check_str("fn f(a: Int, b: Int) -> Bool { a < b }").is_ok());
-        assert!(check_str("fn f(a: Float, b: Float) -> Bool { a >= b }").is_ok());
-        assert!(check_str("fn f(a: String, b: String) -> Bool { a < b }").is_ok());
+        assert!(check_str(r#"
+fn f(a: Int, b: Int) -> Bool:
+    (a < b)
+"#).is_ok());
+        assert!(check_str(r#"
+fn f(a: Float, b: Float) -> Bool:
+    (a >= b)
+"#).is_ok());
+        assert!(check_str(r#"
+fn f(a: String, b: String) -> Bool:
+    (a < b)
+"#).is_ok());
     }
 
     #[test]
     fn rejects_ordering_on_non_primitives() {
         // These would type-check under bare unification but crash at runtime, so
         // the checker rejects them up front.
-        assert!(check_str("fn f(a: Bool, b: Bool) -> Bool { a < b }").is_err());
-        assert!(check_str("fn f(a: List(Int), b: List(Int)) -> Bool { a < b }").is_err());
-        assert!(check_str("fn f(a: (Int, Int), b: (Int, Int)) -> Bool { a < b }").is_err());
+        assert!(check_str(r#"
+fn f(a: Bool, b: Bool) -> Bool:
+    (a < b)
+"#).is_err());
+        assert!(check_str(r#"
+fn f(a: List(Int), b: List(Int)) -> Bool:
+    (a < b)
+"#).is_err());
+        assert!(check_str(r#"
+fn f(a: (Int, Int), b: (Int, Int)) -> Bool:
+    (a < b)
+"#).is_err());
     }
 
     #[test]
     fn equality_still_works_on_any_matching_type() {
         // `==` is unaffected — structural equality is defined for every value.
-        assert!(check_str("fn f(a: (Int, Int), b: (Int, Int)) -> Bool { a == b }").is_ok());
+        assert!(check_str(r#"
+fn f(a: (Int, Int), b: (Int, Int)) -> Bool:
+    (a == b)
+"#).is_ok());
     }
 
     #[test]

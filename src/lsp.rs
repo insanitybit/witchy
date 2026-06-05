@@ -232,7 +232,10 @@ mod tests {
 
     #[test]
     fn clean_program_has_no_diagnostics() {
-        let src = "fn main(console: Console) {\n  print(console, \"hi\")\n}\n";
+        let src = r#"
+fn main(console: Console):
+    print(console, "hi")
+"#;
         assert_eq!(diags(src), Vec::<Value>::new());
     }
 
@@ -260,7 +263,11 @@ mod tests {
     fn type_error_is_reported_on_the_offending_line() {
         // Adding a String to an Int is a type error; it should map to a single
         // diagnostic whose line was recovered from the checker's message.
-        let src = "fn main(console: Console) {\n  let x = 1 + \"two\"\n  print(console, \"\")\n}\n";
+        let src = r#"
+fn main(console: Console):
+    let x = (1 + "two")
+    print(console, "")
+"#;
         let d = diags(src);
         assert_eq!(d.len(), 1, "{d:?}");
         assert_eq!(d[0]["severity"], json!(1));

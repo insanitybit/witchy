@@ -202,19 +202,20 @@ mod tests {
     #[test]
     fn compiled_actors_message_each_other() {
         let src = r#"
-            actor Printer {
-              console: Console
-              on Show(n: Int) {
-                print(console, "got " <> int_to_string(n))
-              }
-            }
-            actor Forwarder {
-              target: Subject
-              on Relay(n: Int) {
-                send(target, Show(n))
-              }
-            }
-        "#;
+actor Printer:
+    console: Console
+
+impl Printer:
+    on Show(n: Int):
+        print(console, ("got " <> int_to_string(n)))
+
+actor Forwarder:
+    target: Subject
+
+impl Forwarder:
+    on Relay(n: Int):
+        send(target, Show(n))
+"#;
         let (mut sys, ids) = build(src);
         sys.set_subject(ids["Forwarder"], "target", ids["Printer"]).unwrap();
         sys.send(ids["Forwarder"], "Relay", 42).unwrap();
@@ -227,19 +228,23 @@ mod tests {
         // (copied by value): a two-field Add and a zero-field Ping, both sent
         // actor-to-actor.
         let src = r#"
-            actor Worker {
-              console: Console
-              on Add(x: Int, y: Int) { print(console, int_to_string(x + y)) }
-              on Ping() { print(console, "pong") }
-            }
-            actor Boss {
-              target: Subject
-              on Go(n: Int) {
-                send(target, Add(n, n * 2))
-                send(target, Ping())
-              }
-            }
-        "#;
+actor Worker:
+    console: Console
+
+impl Worker:
+    on Add(x: Int, y: Int):
+        print(console, int_to_string((x + y)))
+    on Ping():
+        print(console, "pong")
+
+actor Boss:
+    target: Subject
+
+impl Boss:
+    on Go(n: Int):
+        send(target, Add(n, (n * 2)))
+        send(target, Ping)
+"#;
         let (mut sys, ids) = build(src);
         sys.set_subject(ids["Boss"], "target", ids["Worker"]).unwrap();
         sys.send(ids["Boss"], "Go", 10).unwrap();
@@ -250,15 +255,20 @@ mod tests {
     fn message_chains_drain_to_quiescence() {
         // Relayer forwards to a Printer; deliver two messages.
         let src = r#"
-            actor Printer {
-              console: Console
-              on Show(n: Int) { print(console, int_to_string(n)) }
-            }
-            actor Relayer {
-              target: Subject
-              on Relay(n: Int) { send(target, Show(n)) }
-            }
-        "#;
+actor Printer:
+    console: Console
+
+impl Printer:
+    on Show(n: Int):
+        print(console, int_to_string(n))
+
+actor Relayer:
+    target: Subject
+
+impl Relayer:
+    on Relay(n: Int):
+        send(target, Show(n))
+"#;
         let (mut sys, ids) = build(src);
         sys.set_subject(ids["Relayer"], "target", ids["Printer"]).unwrap();
         sys.send(ids["Relayer"], "Relay", 1).unwrap();

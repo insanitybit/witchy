@@ -379,12 +379,18 @@ mod tests {
         let reg = Registry::local(reg_root.clone());
         let store = Store::new(store_root.clone());
 
-        publish(&reg, "acme/url", "1.0.0", "fn parse(s: String) -> String { s }", "");
+        publish(&reg, "acme/url", "1.0.0", r#"
+fn parse(s: String) -> String:
+    s
+"#, "");
         publish(
             &reg,
             "acme/http",
             "1.0.0",
-            "fn get(net: Net, u: String) -> String { u }",
+            r#"
+fn get(net: Net, u: String) -> String:
+    u
+"#,
             "\n[dependencies]\n\"acme/url\" = \"^1.0.0\"\n",
         );
 

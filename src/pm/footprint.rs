@@ -260,14 +260,20 @@ mod tests {
 
     #[test]
     fn pure_rune_demands_nothing() {
-        let f = fp("fn add(a: Int, b: Int) -> Int { a + b }");
+        let f = fp(r#"
+fn add(a: Int, b: Int) -> Int:
+    (a + b)
+"#);
         assert!(f.is_empty());
         assert_eq!(f.determinism(), "guaranteed");
     }
 
     #[test]
     fn net_param_is_detected() {
-        let f = fp("fn fetch(net: Net, url: String) -> String { url }");
+        let f = fp(r#"
+fn fetch(net: Net, url: String) -> String:
+    url
+"#);
         assert!(f.runtime.contains("Net"));
         assert_eq!(f.runtime.len(), 1);
         assert!(f.build.is_empty());
@@ -344,24 +350,39 @@ fn build(out: BuildOut, exec: BuildExec):
 
     #[test]
     fn build_without_exec_is_guaranteed() {
-        let f = fp("fn build(out: BuildOut, read: BuildRead) { print(\"x\") }");
+        let f = fp(r#"
+fn build(out: BuildOut, read: BuildRead):
+    print("x")
+"#);
         assert_eq!(f.determinism(), "guaranteed");
     }
 
     #[test]
     fn main_is_excluded_from_footprint() {
         // main's capability params are the root grant, not a demand on a caller.
-        let f = fp("fn main(console: Console) { print(console, \"hi\") }");
+        let f = fp(r#"
+fn main(console: Console):
+    print(console, "hi")
+"#);
         assert!(f.is_empty(), "main must not contribute to the footprint");
         // But a non-main function's caps still count.
-        let f2 = fp("fn main(c: Console) { print(c, \"x\") }\nfn helper(net: Net) -> Int { 0 }");
+        let f2 = fp(r#"
+fn main(c: Console):
+    print(c, "x")
+
+fn helper(net: Net) -> Int:
+    0
+"#);
         assert!(f2.runtime.contains("Net"));
         assert!(!f2.runtime.contains("Console"), "Console came only via main");
     }
 
     #[test]
     fn check_declared_catches_underdeclaration() {
-        let f = fp("fn fetch(net: Net, u: String) -> String { u }");
+        let f = fp(r#"
+fn fetch(net: Net, u: String) -> String:
+    u
+"#);
         assert!(check_declared(&f, &[], &[]).is_ok(), "no contract = ok");
         assert!(
             check_declared(&f, &["Console".into()], &[]).is_err(),
@@ -372,7 +393,10 @@ fn build(out: BuildOut, exec: BuildExec):
 
     #[test]
     fn widening_detects_new_kind() {
-        let old = fp("fn log(c: Console) { print(\"x\") }");
+        let old = fp(r#"
+fn log(c: Console):
+    print("x")
+"#);
         let new = fp(r#"
 fn log(c: Console):
     print("x")

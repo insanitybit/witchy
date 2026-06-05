@@ -118,7 +118,10 @@ mod tests {
 
     #[test]
     fn pure_functions_have_no_footprint() {
-        let fp = footprint("pub fn add(a: Int, b: Int) -> Int { a + b }");
+        let fp = footprint(r#"
+pub fn add(a: Int, b: Int) -> Int:
+    (a + b)
+"#);
         assert!(fp.total.is_empty());
         assert_eq!(fp.entries.len(), 1);
         assert!(fp.entries[0].capabilities.is_empty());
