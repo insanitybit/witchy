@@ -124,6 +124,86 @@ impl LocalRegistry {
         self.key().map(|_| ())
     }
 
+    fn snapshot_path(&self) -> PathBuf {
+        self.root.join("snapshot.json")
+    }
+    fn timestamp_path(&self) -> PathBuf {
+        self.root.join("timestamp.json")
+    }
+
+    /// Regenerate and re-sign the snapshot + timestamp roles. Called after every
+    /// mutation (publish/promote/yank), so the snapshot version bumps and the
+    /// timestamp's expiry window refreshes.
+    fn rebuild_metadata(&self) -> PmResult<()> {
+        let key = self.key()?;
+        let mut targets = std::collections::BTreeMap::new();
+        for name in self.list_all() {
+            for rec in self.versions(&name) {
+                targets.insert(
+                    format!("{}@{}", rec.name, rec.version),
+                    crate::pm::tuf::target_digest(&rec.signing_payload()),
+                );
+            }
+        }
+        let prev = self
+            .read_signed::<crate::pm::tuf::Snapshot>(&self.snapshot_path())
+            .map(|s| s.signed.version)
+            .unwrap_or(0);
+        let snapshot = crate::pm::tuf::Snapshot {
+            version: prev + 1,
+            created: crate::pm::tuf::now_unix(),
+            targets,
+        };
+        let signed_snapshot = crate::pm::tuf::sign(&key, snapshot);
+        self.write_signed(&self.snapshot_path(), &signed_snapshot)?;
+
+        let timestamp = crate::pm::tuf::Timestamp {
+            snapshot_version: signed_snapshot.signed.version,
+            snapshot_hash: crate::pm::tuf::sha256_hex(&crate::pm::tuf::canonical(&signed_snapshot.signed)),
+            expires: crate::pm::tuf::now_unix() + crate::pm::tuf::TIMESTAMP_TTL_SECS,
+        };
+        let signed_timestamp = crate::pm::tuf::sign(&key, timestamp);
+        self.write_signed(&self.timestamp_path(), &signed_timestamp)?;
+        Ok(())
+    }
+
+    fn read_signed<T: serde::de::DeserializeOwned>(
+        &self,
+        path: &Path,
+    ) -> Option<crate::pm::tuf::Signed<T>> {
+        let text = std::fs::read_to_string(path).ok()?;
+        serde_json::from_str(&text).ok()
+    }
+
+    fn write_signed<T: serde::Serialize>(
+        &self,
+        path: &Path,
+        value: &crate::pm::tuf::Signed<T>,
+    ) -> PmResult<()> {
+        let text =
+            serde_json::to_string_pretty(value).map_err(|e| PmError(format!("serialize: {e}")))?;
+        std::fs::write(path, text)?;
+        Ok(())
+    }
+
+    /// The signed snapshot role, rebuilding the metadata if it does not yet exist.
+    pub fn snapshot_signed(&self) -> PmResult<crate::pm::tuf::Signed<crate::pm::tuf::Snapshot>> {
+        if !self.snapshot_path().exists() {
+            self.rebuild_metadata()?;
+        }
+        self.read_signed(&self.snapshot_path())
+            .ok_or_else(|| PmError("registry snapshot unavailable".into()))
+    }
+
+    /// The signed timestamp role, rebuilding the metadata if it does not yet exist.
+    pub fn timestamp_signed(&self) -> PmResult<crate::pm::tuf::Signed<crate::pm::tuf::Timestamp>> {
+        if !self.timestamp_path().exists() {
+            self.rebuild_metadata()?;
+        }
+        self.read_signed(&self.timestamp_path())
+            .ok_or_else(|| PmError("registry timestamp unavailable".into()))
+    }
+
     /// Every published rune name (namespaced), by walking the registry tree.
     pub fn list_all(&self) -> Vec<String> {
         let mut out = Vec::new();
@@ -133,7 +213,7 @@ impl LocalRegistry {
     }
 
     fn key(&self) -> PmResult<super::keys::RegistryKey> {
-        super::keys::RegistryKey::load_or_create(&self.root)
+        crate::pm::keys::RegistryKey::load_or_create(&self.root)
     }
 
     /// Verify a record's signature against the registry's published root key.
@@ -210,6 +290,7 @@ impl LocalRegistry {
             sig: None,
         };
         self.write_record(&mut record)?;
+        self.rebuild_metadata()?;
         Ok(record)
     }
 
@@ -256,6 +337,7 @@ impl LocalRegistry {
         record.promoted_by = Some(promoter.to_string());
         record.second_factor = Some(second_factor.to_string());
         self.write_record(&mut record)?;
+        self.rebuild_metadata()?;
 
         Ok(Promotion {
             record,
@@ -267,7 +349,8 @@ impl LocalRegistry {
     pub fn yank(&self, name: &str, version: &str) -> PmResult<()> {
         let mut record = self.record(name, version)?;
         record.state = State::Yanked;
-        self.write_record(&mut record)
+        self.write_record(&mut record)?;
+        self.rebuild_metadata()
     }
 
     /// Read a version's metadata record.
@@ -537,6 +620,78 @@ impl Registry {
             Registry::Remote(r) => r.list_all().unwrap_or_default(),
         }
     }
+
+    pub fn tuf_timestamp(&self) -> PmResult<crate::pm::tuf::Signed<crate::pm::tuf::Timestamp>> {
+        match self {
+            Registry::Local(r) => r.timestamp_signed(),
+            Registry::Remote(r) => r.tuf_timestamp(),
+        }
+    }
+
+    pub fn tuf_snapshot(&self) -> PmResult<crate::pm::tuf::Signed<crate::pm::tuf::Snapshot>> {
+        match self {
+            Registry::Local(r) => r.snapshot_signed(),
+            Registry::Remote(r) => r.tuf_snapshot(),
+        }
+    }
+
+    /// Verify the full TUF chain: timestamp signature + freshness (freeze
+    /// protection), snapshot signature + consistency with the timestamp, and —
+    /// when `pinned` is given — that the snapshot version has not regressed
+    /// (rollback protection). Returns the verified snapshot version and payload.
+    pub fn verify_tuf_chain(&self, pinned: Option<u64>) -> PmResult<(u64, crate::pm::tuf::Snapshot)> {
+        let pubhex = self.root_public_hex()?;
+        let ts = self.tuf_timestamp()?;
+        if !crate::pm::tuf::verify_signed(&pubhex, &ts) {
+            return err("timestamp role signature invalid — registry metadata was tampered with");
+        }
+        if crate::pm::tuf::now_unix() > ts.signed.expires {
+            return err(
+                "registry timestamp has expired — metadata is stale (possible freeze attack); the registry must re-sign",
+            );
+        }
+        let snap = self.tuf_snapshot()?;
+        if !crate::pm::tuf::verify_signed(&pubhex, &snap) {
+            return err("snapshot role signature invalid — registry metadata was tampered with");
+        }
+        if crate::pm::tuf::sha256_hex(&crate::pm::tuf::canonical(&snap.signed)) != ts.signed.snapshot_hash {
+            return err("snapshot hash does not match the timestamp — inconsistent registry metadata");
+        }
+        if snap.signed.version != ts.signed.snapshot_version {
+            return err("snapshot/timestamp version mismatch — inconsistent registry metadata");
+        }
+        if let Some(p) = pinned
+            && snap.signed.version < p
+        {
+            return err(format!(
+                "snapshot rolled back: registry presents v{} but the lock pinned v{p} — possible rollback attack",
+                snap.signed.version
+            ));
+        }
+        Ok((snap.signed.version, snap.signed))
+    }
+
+    /// Confirm a specific record is exactly what the signed snapshot pins —
+    /// catching an omitted (rolled-back) or swapped record.
+    pub fn snapshot_contains(
+        &self,
+        snap: &crate::pm::tuf::Snapshot,
+        name: &str,
+        version: &str,
+    ) -> PmResult<()> {
+        let rec = self.record(name, version)?;
+        let key = format!("{name}@{version}");
+        let want = snap.targets.get(&key).ok_or_else(|| {
+            PmError(format!("{key} is absent from the signed snapshot (omitted or rolled back)"))
+        })?;
+        if want == &crate::pm::tuf::target_digest(&rec.signing_payload()) {
+            Ok(())
+        } else {
+            err(format!(
+                "{key} record digest does not match the signed snapshot — tampered metadata"
+            ))
+        }
+    }
 }
 
 #[cfg(test)]
@@ -656,6 +811,57 @@ mod tests {
         let rec = reg.publish(&src, &m, "ci-bot").unwrap();
         assert!(rec.sig.is_some(), "publish must sign the record");
         reg.verify_record(&rec).expect("freshly signed record must verify");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn tuf_chain_verifies_and_freeze_is_detected() {
+        let (reg, root) = tmp_registry();
+        let (src, m) = rune("acme/json", "1.0.0", "fn parse(s: String) -> String { s }");
+        reg.publish(&src, &m, "ci-bot").unwrap();
+        reg.promote("acme/json", "1.0.0", "alice", "webauthn").unwrap();
+
+        let registry = Registry::Local(reg);
+        // Fresh chain verifies.
+        let (v, snap) = registry.verify_tuf_chain(None).unwrap();
+        assert!(v >= 1);
+        registry
+            .snapshot_contains(&snap, "acme/json", "1.0.0")
+            .expect("released version must be in the snapshot");
+
+        // Forge a validly-signed but EXPIRED timestamp — freeze attack.
+        let key = crate::pm::keys::RegistryKey::load_or_create(&root).unwrap();
+        let stale = crate::pm::tuf::Timestamp {
+            snapshot_version: v,
+            snapshot_hash: crate::pm::tuf::sha256_hex(&crate::pm::tuf::canonical(&snap)),
+            expires: crate::pm::tuf::now_unix() - 10,
+        };
+        let signed = crate::pm::tuf::sign(&key, stale);
+        std::fs::write(
+            root.join("timestamp.json"),
+            serde_json::to_string_pretty(&signed).unwrap(),
+        )
+        .unwrap();
+
+        let res = registry.verify_tuf_chain(None);
+        assert!(res.is_err(), "expired timestamp must be rejected");
+        assert!(res.unwrap_err().to_string().contains("expired"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn tuf_rollback_is_detected() {
+        let (reg, root) = tmp_registry();
+        let (src, m) = rune("acme/json", "1.0.0", "fn parse(s: String) -> String { s }");
+        reg.publish(&src, &m, "ci-bot").unwrap();
+        reg.promote("acme/json", "1.0.0", "alice", "webauthn").unwrap();
+        let registry = Registry::Local(reg);
+        let (v, _) = registry.verify_tuf_chain(None).unwrap();
+        // Pinning a higher version than the registry presents = rollback.
+        let res = registry.verify_tuf_chain(Some(v + 100));
+        assert!(res.is_err());
+        assert!(res.unwrap_err().to_string().contains("rolled back"));
         let _ = std::fs::remove_dir_all(&root);
     }
 

@@ -203,6 +203,77 @@ fn networked_registry_full_lifecycle() {
 }
 
 #[test]
+fn tuf_chain_verified_and_snapshot_tamper_rejected() {
+    let server = RegistryServer::start();
+    let mut sb = Sandbox::new("tuf");
+    sb.coven_url = Some(server.url());
+    let app = new_app(&sb);
+
+    let lib = sb.work.join("lib");
+    std::fs::create_dir_all(lib.join("src")).unwrap();
+    std::fs::write(lib.join("witchy.toml"), "[rune]\nname = \"acme/t\"\nversion = \"1.0.0\"\n").unwrap();
+    std::fs::write(lib.join("src/t.witchy"), "fn f(s: String) -> String { s }\n").unwrap();
+    assert!(sb.run(&lib, "ci-bot", &["publish"]).status.success());
+    assert!(sb.run(&lib, "alice", &["promote", "acme/t@1.0.0", "--factor", "totp"]).status.success());
+    assert!(sb.run(&app, "dev", &["add", "acme/t"]).status.success());
+
+    // The lock pinned a TUF snapshot version, and verify confirms the chain.
+    let lock = std::fs::read_to_string(app.join("witchy.lock")).unwrap();
+    assert!(lock.contains("registry_snapshot_version"), "lock should pin snapshot version: {lock}");
+    let out = sb.run(&app, "dev", &["verify"]);
+    assert!(out.status.success(), "verify failed: {}", stderr(&out));
+    assert!(stdout(&out).contains("TUF chain"), "verify out: {}", stdout(&out));
+
+    // Tamper the SERVER's signed snapshot (changing a signed field breaks the
+    // snapshot-role signature). Clear the client store so it must re-consult.
+    let snap = server.regroot.join("snapshot.json");
+    let body = std::fs::read_to_string(&snap).unwrap().replace("1.0.0", "1.0.1");
+    std::fs::write(&snap, body).unwrap();
+    std::fs::remove_dir_all(sb.home.join("store")).ok();
+
+    let out = sb.run(&app, "dev", &["verify"]);
+    assert!(!out.status.success(), "tampered snapshot must fail verify");
+    assert!(stdout(&out).contains("FAIL"), "verify out: {}", stdout(&out));
+}
+
+#[test]
+fn tuf_rollback_is_rejected() {
+    let server = RegistryServer::start();
+    let mut sb = Sandbox::new("rollback");
+    sb.coven_url = Some(server.url());
+    let app = new_app(&sb);
+
+    let lib = sb.work.join("lib");
+    std::fs::create_dir_all(lib.join("src")).unwrap();
+    std::fs::write(lib.join("witchy.toml"), "[rune]\nname = \"acme/r\"\nversion = \"1.0.0\"\n").unwrap();
+    std::fs::write(lib.join("src/r.witchy"), "fn f(s: String) -> String { s }\n").unwrap();
+    assert!(sb.run(&lib, "ci-bot", &["publish"]).status.success());
+    assert!(sb.run(&lib, "alice", &["promote", "acme/r@1.0.0", "--factor", "totp"]).status.success());
+    assert!(sb.run(&app, "dev", &["add", "acme/r"]).status.success());
+
+    // Simulate having previously seen a much newer snapshot: bump the pinned
+    // version in the lock. The server now presents an older snapshot version —
+    // a rollback — which must be refused.
+    let lock = std::fs::read_to_string(app.join("witchy.lock")).unwrap();
+    let bumped = lock
+        .lines()
+        .map(|l| {
+            if l.trim_start().starts_with("registry_snapshot_version") {
+                "registry_snapshot_version = 9999".to_string()
+            } else {
+                l.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    std::fs::write(app.join("witchy.lock"), bumped).unwrap();
+
+    let out = sb.run(&app, "dev", &["verify"]);
+    assert!(!out.status.success(), "rollback must be refused");
+    assert!(stdout(&out).contains("rolled back") || stdout(&out).contains("rollback"), "out: {}", stdout(&out));
+}
+
+#[test]
 fn networked_registry_signature_detects_tampering() {
     let server = RegistryServer::start();
     let mut sb = Sandbox::new("nettamper");

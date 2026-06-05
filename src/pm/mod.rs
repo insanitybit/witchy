@@ -19,6 +19,7 @@ pub mod resolve;
 pub mod semver;
 pub mod server;
 pub mod store;
+pub mod tuf;
 pub mod wire;
 
 use std::fmt;

@@ -51,6 +51,16 @@ impl RemoteRegistry {
         Ok(r.names)
     }
 
+    pub fn tuf_timestamp(
+        &self,
+    ) -> PmResult<super::tuf::Signed<super::tuf::Timestamp>> {
+        http::get_json(&self.url("/coven/timestamp"))
+    }
+
+    pub fn tuf_snapshot(&self) -> PmResult<super::tuf::Signed<super::tuf::Snapshot>> {
+        http::get_json(&self.url("/coven/snapshot"))
+    }
+
     pub fn versions(&self, name: &str) -> Vec<Record> {
         let url = self.url(&format!("/coven/versions?name={}", wire_name(name)));
         http::get_json::<VersionsResp>(&url)

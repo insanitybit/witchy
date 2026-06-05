@@ -23,6 +23,10 @@ pub struct Lockfile {
     /// key compromise — and the build is refused.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub registry_root: Option<String>,
+    /// Pinned TUF snapshot version. If the registry ever presents a *lower*
+    /// version, that is a rollback attack and the operation is refused.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub registry_snapshot_version: Option<u64>,
     /// Sorted by name for a stable, diff-friendly file.
     #[serde(default, rename = "rune")]
     pub runes: Vec<LockedRune>,
@@ -127,6 +131,7 @@ mod tests {
     fn roundtrip_and_lookup() {
         let lf = Lockfile {
             registry_root: None,
+            registry_snapshot_version: None,
             runes: vec![locked("acme/json", &[]), locked("acme/http", &["Net"])],
         };
         let tmp = std::env::temp_dir().join(format!("witchy-lock-{}", std::process::id()));
@@ -142,6 +147,7 @@ mod tests {
     fn aggregate_unions_caps() {
         let lf = Lockfile {
             registry_root: None,
+            registry_snapshot_version: None,
             runes: vec![locked("a", &["Net"]), locked("b", &["Console"])],
         };
         let agg = lf.aggregate_footprint();

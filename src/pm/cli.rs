@@ -276,13 +276,40 @@ struct Assembled {
 }
 
 /// Write the lockfile for a resolution, pinning the registry's root-key
-/// fingerprint (TOFU) when any dependency comes from a registry.
-fn save_lock(root: &Path, resolution: &Resolution, env: &CovenEnv) -> PmResult<()> {
+/// fingerprint (TOFU) and the verified TUF snapshot version (anti-rollback) when
+/// any dependency comes from a registry.
+fn save_lock(
+    root: &Path,
+    resolution: &Resolution,
+    env: &CovenEnv,
+    snapshot_version: Option<u64>,
+) -> PmResult<()> {
     let mut lock = resolution.to_lockfile();
     if resolution.runes.iter().any(|r| r.registry.is_some()) {
         lock.registry_root = Some(env.registry.root_fingerprint()?);
+        lock.registry_snapshot_version = snapshot_version;
     }
     lock.save(root)
+}
+
+/// Verify the registry's TUF chain (timestamp freshness ⇒ no freeze; snapshot
+/// version ≥ pinned ⇒ no rollback; both signatures valid) when the resolution
+/// pulls from a registry. Returns the verified snapshot version to re-pin, or
+/// `None` when there are no registry deps or the registry is offline (the local
+/// store/hashes remain authoritative in that case).
+fn registry_chain_version(
+    env: &CovenEnv,
+    resolution: &Resolution,
+    pinned: Option<u64>,
+) -> PmResult<Option<u64>> {
+    if !resolution.runes.iter().any(|r| r.registry.is_some()) {
+        return Ok(None);
+    }
+    if env.registry.root_public_hex().is_err() {
+        return Ok(None); // offline / nothing published — store hashes still apply
+    }
+    let (version, _snap) = env.registry.verify_tuf_chain(pinned)?;
+    Ok(Some(version))
 }
 
 fn assemble(root_dir: &Path, env: &CovenEnv) -> PmResult<Assembled> {
@@ -326,7 +353,8 @@ fn assemble(root_dir: &Path, env: &CovenEnv) -> PmResult<Assembled> {
     let resolution = if lock.runes.is_empty() {
         let r = resolve::resolve(&manifest, root_dir, &env.registry, &env.store)?;
         if !r.runes.is_empty() {
-            save_lock(root_dir, &r, env)?;
+            let snap = registry_chain_version(env, &r, None)?;
+            save_lock(root_dir, &r, env, snap)?;
         }
         r
     } else {
@@ -338,7 +366,10 @@ fn assemble(root_dir: &Path, env: &CovenEnv) -> PmResult<Assembled> {
                 ));
             }
         }
-        resolve::from_lock(&lock, root_dir, &env.registry, &env.store)?
+        let r = resolve::from_lock(&lock, root_dir, &env.registry, &env.store)?;
+        // Enforce TUF freeze/rollback against the pinned snapshot version.
+        registry_chain_version(env, &r, lock.registry_snapshot_version)?;
+        r
     };
 
     // §7.1: a dependency's build step may run only with the build-time
@@ -540,6 +571,9 @@ fn cmd_add(rest: &[String]) -> PmResult<()> {
         return err("blocked: capability footprint would widen (see above)");
     }
 
+    // Enforce the TUF chain (freeze/rollback) and capture the version to re-pin.
+    let snap_ver = registry_chain_version(&env, &resolution, old_lock.registry_snapshot_version)?;
+
     if a.has("--dry-run") {
         println!("dry run: `{name}` would be added; capability gate OK. Nothing written.");
         return Ok(());
@@ -547,7 +581,7 @@ fn cmd_add(rest: &[String]) -> PmResult<()> {
 
     // Persist manifest + lock.
     manifest.save(root)?;
-    save_lock(root, &resolution, &env)?;
+    save_lock(root, &resolution, &env, snap_ver)?;
 
     let added = resolution.find(&name);
     match added {
@@ -602,7 +636,8 @@ fn cmd_update(rest: &[String]) -> PmResult<()> {
         print_block("(update)", "update", &report);
         return err("blocked: capability footprint would widen (see above)");
     }
-    save_lock(root, &resolution, &env)?;
+    let snap_ver = registry_chain_version(&env, &resolution, old_lock.registry_snapshot_version)?;
+    save_lock(root, &resolution, &env, snap_ver)?;
     println!("lock updated: {} rune(s) resolved", resolution.runes.len());
     Ok(())
 }
@@ -906,6 +941,27 @@ fn cmd_verify(rest: &[String]) -> PmResult<()> {
             }
             Err(e) => {
                 println!("  FAIL coven root key unreadable: {e}");
+                ok = false;
+            }
+        }
+    }
+    // Verify the TUF chain (timestamp freshness, snapshot signature + version)
+    // and that every locked registry rune is exactly what the snapshot pins.
+    if lock.runes.iter().any(|r| r.registry.is_some()) {
+        match env.registry.verify_tuf_chain(lock.registry_snapshot_version) {
+            Ok((v, snap)) => {
+                println!("  OK  coven TUF chain (snapshot v{v}, timestamp fresh)");
+                for r in &lock.runes {
+                    if r.registry.is_some()
+                        && let Err(e) = env.registry.snapshot_contains(&snap, &r.name, &r.version)
+                    {
+                        println!("  FAIL {}@{}: {e}", r.name, r.version);
+                        ok = false;
+                    }
+                }
+            }
+            Err(e) => {
+                println!("  FAIL coven TUF chain: {e}");
                 ok = false;
             }
         }

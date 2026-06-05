@@ -57,6 +57,14 @@ fn handle(reg: &LocalRegistry, request: &mut tiny_http::Request) -> (u16, String
             Err(e) => errj(500, e),
         },
         (Method::Get, "/coven/index") => json(200, &IndexResp { names: reg.list_all() }),
+        (Method::Get, "/coven/timestamp") => match reg.timestamp_signed() {
+            Ok(t) => json(200, &t),
+            Err(e) => errj(500, e),
+        },
+        (Method::Get, "/coven/snapshot") => match reg.snapshot_signed() {
+            Ok(s) => json(200, &s),
+            Err(e) => errj(500, e),
+        },
         (Method::Get, "/coven/versions") => json(
             200,
             &VersionsResp {

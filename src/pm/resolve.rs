@@ -63,6 +63,7 @@ impl Resolution {
         runes.sort_by(|a, b| a.name.cmp(&b.name));
         Lockfile {
             registry_root: None,
+            registry_snapshot_version: None,
             runes,
         }
     }
