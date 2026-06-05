@@ -4438,6 +4438,32 @@ mod example_tests {
         assert_eq!(run_on_wasm(src), vec!["12", "9"]);
     }
 
+    // Default trait methods: a method with a body in the trait is inherited by
+    // impls that don't define it (calling the impl's other methods on `self`),
+    // and can be overridden. Both backends agree.
+    #[test]
+    fn traits_default_methods_backends_agree() {
+        let src = r#"
+            trait Label {
+              fn tag(self) -> String
+              fn shout(self) -> String { tag(self) <> "!" }
+            }
+            impl Label for Int {
+              fn tag(self) -> String { "int" }
+            }
+            impl Label for Bool {
+              fn tag(self) -> String { "bool" }
+              fn shout(self) -> String { "BOOL!!" }
+            }
+            fn main(console: Console) {
+              print(console, shout(5))
+              print(console, shout(true))
+            }
+        "#;
+        assert_eq!(interp(src), run_on_wasm(src), "trait default-method diverged");
+        assert_eq!(run_on_wasm(src), vec!["int!", "BOOL!!"]);
+    }
+
     // Hex (0x..) and binary (0b..) integer literals, including underscore
     // separators, feeding the bitwise operators. Both backends agree.
     #[test]

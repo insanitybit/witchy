@@ -41,6 +41,9 @@ pub struct MethodSig {
     pub name: String,
     pub params: Vec<Param>,
     pub ret: Option<Type>,
+    /// A default body (`fn m(self) -> T { ... }` inside the trait). Impls that
+    /// don't provide this method inherit the default.
+    pub default: Option<Block>,
 }
 
 /// `impl Trait for Type { <methods> }`. Each method is a full function whose

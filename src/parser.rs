@@ -166,7 +166,8 @@ impl Parser {
         Ok(TraitDef { name, methods })
     }
 
-    /// A bodyless method signature inside a `trait`: `fn name(params) -> Ret`.
+    /// A method signature inside a `trait`: `fn name(params) -> Ret`, with an
+    /// optional default body `{ ... }` that impls inherit unless they override it.
     fn method_sig(&mut self) -> Result<MethodSig, ParseError> {
         self.expect(&Tok::Fn)?;
         let name = self.ident()?;
@@ -178,7 +179,17 @@ impl Parser {
         } else {
             None
         };
-        Ok(MethodSig { name, params, ret })
+        let default = if self.at(&Tok::LBrace) {
+            Some(self.block()?)
+        } else {
+            None
+        };
+        Ok(MethodSig {
+            name,
+            params,
+            ret,
+            default,
+        })
     }
 
     /// `impl Trait for Type { <fn ...> }` — full method definitions.

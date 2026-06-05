@@ -14,13 +14,31 @@
 //! call whose receiver type can't be determined is left untouched and the type
 //! checker reports it as an unknown function.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::ast::*;
 
 /// Mangled name for an impl method: `Trait__Type__method`.
 fn mangle(trait_name: &str, type_name: &str, method: &str) -> String {
     format!("{trait_name}__{type_name}__{method}")
+}
+
+/// Build the ordinary function a (possibly defaulted) method lowers to, giving
+/// the receiver (`self`, the first parameter) the implementing type if it was
+/// left unannotated.
+fn method_fn(name: String, mut params: Vec<Param>, ret: Option<Type>, body: Block, type_name: &str) -> Function {
+    if let Some(first) = params.first_mut() {
+        if first.ty.is_none() {
+            first.ty = Some(Type::Named(type_name.to_string(), vec![]));
+        }
+    }
+    Function {
+        public: true,
+        name,
+        params,
+        ret,
+        body,
+    }
 }
 
 /// Desugar all traits and impls in `module` into ordinary functions, rewriting
@@ -37,13 +55,15 @@ pub fn lower(module: Module) -> Module {
     }
 
     // method name -> owning trait (increment 1 assumes a method name is unique
-    // across traits).
+    // across traits), and each trait's full method list (for default bodies).
     let mut trait_methods: HashMap<String, String> = HashMap::new();
+    let mut trait_method_list: HashMap<String, Vec<MethodSig>> = HashMap::new();
     for item in &module.items {
         if let Item::Trait(t) = item {
             for m in &t.methods {
                 trait_methods.insert(m.name.clone(), t.name.clone());
             }
+            trait_method_list.insert(t.name.clone(), t.methods.clone());
         }
     }
 
@@ -53,17 +73,37 @@ pub fn lower(module: Module) -> Module {
     let mut generated: Vec<Function> = Vec::new();
     for item in &module.items {
         if let Item::Impl(im) = item {
+            let provided: HashSet<&str> = im.methods.iter().map(|m| m.name.as_str()).collect();
+            // Methods the impl defines.
             for method in &im.methods {
                 let mangled = mangle(&im.trait_name, &im.type_name, &method.name);
                 impl_table.insert((method.name.clone(), im.type_name.clone()), mangled.clone());
-                let mut f = method.clone();
-                f.name = mangled;
-                if let Some(first) = f.params.first_mut() {
-                    if first.ty.is_none() {
-                        first.ty = Some(Type::Named(im.type_name.clone(), vec![]));
+                generated.push(method_fn(
+                    mangled,
+                    method.params.clone(),
+                    method.ret.clone(),
+                    method.body.clone(),
+                    &im.type_name,
+                ));
+            }
+            // Methods the impl omits but the trait provides a default for.
+            if let Some(methods) = trait_method_list.get(&im.trait_name) {
+                for ms in methods {
+                    if provided.contains(ms.name.as_str()) {
+                        continue;
+                    }
+                    if let Some(body) = &ms.default {
+                        let mangled = mangle(&im.trait_name, &im.type_name, &ms.name);
+                        impl_table.insert((ms.name.clone(), im.type_name.clone()), mangled.clone());
+                        generated.push(method_fn(
+                            mangled,
+                            ms.params.clone(),
+                            ms.ret.clone(),
+                            body.clone(),
+                            &im.type_name,
+                        ));
                     }
                 }
-                generated.push(f);
             }
         }
     }
