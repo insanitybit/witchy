@@ -8,6 +8,7 @@ actor Counter:
     console: Console
     var count: Int = 0
 
+impl Counter:
     on Tick():
         count = count + 1
         print(console, "count is " <> int_to_string(count) <> "\n")

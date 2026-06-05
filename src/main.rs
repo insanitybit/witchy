@@ -2797,6 +2797,39 @@ mod example_tests {
         Module::new(&Engine::default(), &wat).expect("valid wasm");
     }
 
+    #[test]
+    fn actor_handlers_in_impl_block() {
+        // Handlers written in a separate `impl Actor { on ... }` block are merged
+        // onto the actor (so the actor body holds only state) and compile exactly
+        // as inline handlers would.
+        let src = r#"
+            actor Counter {
+              console: Console
+              var count: Int = 0
+            }
+            impl Counter {
+              on Tick() {
+                count = count + 1
+                print(console, int_to_string(count))
+              }
+            }
+        "#;
+        let module = parser::parse_module(src).expect("parse");
+        let actor = module
+            .items
+            .iter()
+            .find_map(|i| match i {
+                ast::Item::Actor(a) => Some(a),
+                _ => None,
+            })
+            .expect("actor");
+        assert_eq!(actor.handlers.len(), 1);
+        assert_eq!(actor.handlers[0].message, "Tick");
+        // The handler-only impl is consumed by the merge, leaving no impl item.
+        assert!(!module.items.iter().any(|i| matches!(i, ast::Item::Impl(_))));
+        assert_actor_compiles(src);
+    }
+
     /// Every example must at least compile (parse + link + type-check) and run
     /// to completion through the CLI without an error — whether it prints, just
     /// returns a value, or is a library/actor file with no `main`.

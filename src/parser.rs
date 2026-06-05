@@ -34,6 +34,41 @@ pub fn parse_module(src: &str) -> Result<Module, ParseError> {
     Parser::new(tokens).module()
 }
 
+/// Move `on` handlers written in an inherent `impl Actor { ... }` block onto the
+/// matching `ActorDef`, so the rest of the compiler sees handlers on the actor
+/// regardless of whether they were written inline or in a separate impl block.
+/// An impl left with neither methods nor handlers is dropped.
+fn merge_actor_impls(mut items: Vec<Item>) -> Vec<Item> {
+    use std::collections::HashSet;
+    let actors: HashSet<String> = items
+        .iter()
+        .filter_map(|it| match it {
+            Item::Actor(a) => Some(a.name.clone()),
+            _ => None,
+        })
+        .collect();
+    let mut pulled: Vec<(String, Vec<Handler>)> = Vec::new();
+    for it in &mut items {
+        if let Item::Impl(im) = it {
+            if actors.contains(&im.type_name) && !im.handlers.is_empty() {
+                pulled.push((im.type_name.clone(), std::mem::take(&mut im.handlers)));
+            }
+        }
+    }
+    for (name, handlers) in pulled {
+        for it in &mut items {
+            if let Item::Actor(a) = it {
+                if a.name == name {
+                    a.handlers.extend(handlers);
+                    break;
+                }
+            }
+        }
+    }
+    items.retain(|it| !matches!(it, Item::Impl(im) if im.methods.is_empty() && im.handlers.is_empty()));
+    items
+}
+
 struct Parser {
     toks: Vec<Token>,
     pos: usize,
@@ -133,7 +168,10 @@ impl Parser {
         while !self.at(&Tok::Eof) {
             items.push(self.item()?);
         }
-        Ok(Module { imports, items })
+        Ok(Module {
+            imports,
+            items: merge_actor_impls(items),
+        })
     }
 
     fn item(&mut self) -> Result<Item, ParseError> {
@@ -208,14 +246,20 @@ impl Parser {
         };
         self.expect(&Tok::LBrace)?;
         let mut methods = Vec::new();
+        let mut handlers = Vec::new();
         while !self.at(&Tok::RBrace) && !self.at(&Tok::Eof) {
-            methods.push(self.function(false)?);
+            if self.at(&Tok::On) {
+                handlers.push(self.handler()?);
+            } else {
+                methods.push(self.function(false)?);
+            }
         }
         self.expect(&Tok::RBrace)?;
         Ok(ImplDef {
             trait_name,
             type_name,
             methods,
+            handlers,
         })
     }
 

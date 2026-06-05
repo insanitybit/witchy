@@ -55,6 +55,10 @@ pub struct ImplDef {
     pub trait_name: Option<String>,
     pub type_name: String,
     pub methods: Vec<Function>,
+    /// Message handlers (`on Msg(...) { ... }`) for an inherent impl on an actor
+    /// type. Merged into the target `ActorDef` right after parsing, so later
+    /// stages see them on the actor; empty for ordinary trait/struct impls.
+    pub handlers: Vec<Handler>,
 }
 
 /// A sum type: `type Event { Click(Int, Int) Closed }`.
