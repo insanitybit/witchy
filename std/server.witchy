@@ -80,6 +80,10 @@ pub fn html(code: Int, b: String) -> Response:
 pub fn json(code: Int, b: String) -> Response:
     Response(code, [("content-type", "application/json")], b)
 
+// A JSON response from a `Json` value — encodes it for you.
+pub fn json_value(code: Int, j: Json) -> Response:
+    json(code, json.encode(j))
+
 pub fn status_only(code: Int) -> Response:
     Response(code, [], "")
 

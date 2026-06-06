@@ -10,21 +10,20 @@ import http
 import server
 import json
 
-// A request logger (a tower Layer: fn(Handler) -> Handler).
+// A request logger (a tower Layer: fn(Handler) -> Handler). The inner closure
+// runs before-and-after work around `next`, all captured in the closure.
 fn logging(console: Console) -> fn(fn(Request) -> Response) -> fn(Request) -> Response:
-    fn(next: fn(Request) -> Response): fn(req: Request): log_and_next(console, next, req)
-
-fn log_and_next(console: Console, next: fn(Request) -> Response, req: Request) -> Response:
-    print(console, server.method(req) <> " " <> server.path(req))
-    next(req)
+    fn(next: fn(Request) -> Response):
+        fn(req: Request):
+            print(console, server.method(req) <> " " <> server.path(req))
+            next(req)
 
 fn home(req: Request) -> Response:
     server.html(200, "<h1>witchy web</h1>")
 
 // Returns a JSON document built with the std `json` module.
 fn greet(req: Request) -> Response:
-    let doc = JsonObject([("hello", JsonString(server.param(req, "name")))])
-    server.json(200, json.encode(doc))
+    server.json_value(200, JsonObject([("hello", JsonString(server.param(req, "name")))]))
 
 fn main(console: Console, net: Net):
     let app = server.router()

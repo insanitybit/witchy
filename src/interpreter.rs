@@ -2028,7 +2028,7 @@ import http
 import server
 import json
 fn greet(req: Request) -> Response:
-    server.json(200, json.encode(JsonObject([("hello", JsonString(server.param(req, "name")))])))
+    server.json_value(200, JsonObject([("hello", JsonString(server.param(req, "name")))]))
 fn main(console: Console, net: Net):
     let app = server.router() |> server.get("/hello/:name", greet)
     server.serve_n(net, "{addr}", app, 1)
