@@ -2781,6 +2781,23 @@ fn main(console: Console):
     }
 
     #[test]
+    fn subscript_example_runs_on_wasm() {
+        // `xs[i]` desugars to `at(xs, i)`; chained subscripts index nested lists.
+        // The dot product and 2D-grid diagonal match on both backends.
+        let sources = [
+            ("string", crate::bundled_module("string").unwrap()),
+            ("main", include_str!("../examples/subscript.witchy")),
+        ];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "subscript diverged");
+        assert_eq!(
+            compiled,
+            vec!["dot = 32", "grid[1][2] = 6", "diagonal sum = 15"]
+        );
+    }
+
+    #[test]
     fn calculator_example_runs_on_wasm() {
         // The recursive-descent calculator (mutual recursion + tuple cursors +
         // string scanning) parses and evaluates expressions identically on both

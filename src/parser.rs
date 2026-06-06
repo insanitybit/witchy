@@ -652,6 +652,17 @@ impl Parser {
         loop {
             if self.eat(&Tok::Question) {
                 e = Expr::Try(Box::new(e));
+            } else if self.at(&Tok::LBracket) && self.on_same_line_as_prev() {
+                // `xs[i]` — list subscript: sugar for `at(xs, i)`. Requiring the
+                // `[` on the same line as the receiver avoids swallowing a list
+                // literal that begins the next statement (no statement terminators).
+                self.advance();
+                let index = self.expr(0)?;
+                self.expect(&Tok::RBracket)?;
+                e = Expr::Call {
+                    name: "at".into(),
+                    args: vec![e, index],
+                };
             } else if self.at(&Tok::LParen) && self.on_same_line_as_prev() {
                 // Apply the result of an expression: `f(x)(y)`, `make(3)(4)`.
                 // Requiring the `(` on the same line as the callee avoids
@@ -1504,6 +1515,35 @@ fn f(n: Int) -> Int:
         // The wildcard arm is untouched.
         assert_eq!(arms[1].pattern, Pattern::Wildcard);
         assert!(arms[1].guard.is_none());
+    }
+
+    #[test]
+    fn subscript_desugars_to_at_call() {
+        // `xs[i]` becomes `at(xs, i)`; `grid[r][c]` nests the calls.
+        let stmts = fn_body(
+            r#"
+fn f(xs: List(Int)) -> Int:
+    xs[2]
+"#,
+        );
+        assert_eq!(
+            stmts[0],
+            Stmt::Expr(Expr::Call {
+                name: "at".into(),
+                args: vec![Expr::Var("xs".into()), Expr::Int(2)],
+            })
+        );
+        let nested = fn_body(
+            r#"
+fn g(grid: List(List(Int))) -> Int:
+    grid[0][1]
+"#,
+        );
+        let Stmt::Expr(Expr::Call { name, args }) = &nested[0] else {
+            panic!("expected an `at` call");
+        };
+        assert_eq!(name, "at");
+        assert!(matches!(&args[0], Expr::Call { name, .. } if name == "at"));
     }
 
     #[test]
