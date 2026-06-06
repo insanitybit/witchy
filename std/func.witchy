@@ -16,6 +16,14 @@ pub fn flip(f: fn(a, b) -> c) -> fn(b, a) -> c:
     fn(x, y):
         f(y, x)
 
+// `on_key(op, key)` is the function `(x, y) -> op(key(x), key(y))` — run a
+// two-argument `op` on the projections of two values. Pairs with the
+// comparator-taking list functions: `list.sort_by(people, func.on_key(less,
+// age))` sorts by age. (Named `on_key` because bare `on` is a keyword.)
+pub fn on_key(op: fn(b, b) -> c, key: fn(a) -> b) -> fn(a, a) -> c:
+    fn(x, y):
+        op(key(x), key(y))
+
 // A function that ignores its argument and always returns `x`.
 pub fn constant(x: a) -> fn(b) -> a:
     fn(y):

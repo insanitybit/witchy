@@ -1927,6 +1927,42 @@ fn main(console: Console):
     }
 
     #[test]
+    fn func_on_backends_agree() {
+        // on(op, f) lifts op to act on projections — here sorting (name, age)
+        // pairs by age via func.on_key(lt, snd).
+        let client = r#"
+import func
+import list
+import string
+fn fst(p: (String, Int)) -> String:
+    let (a, _b) = p
+    a
+fn snd(p: (String, Int)) -> Int:
+    let (_a, b) = p
+    b
+fn lt(a: Int, b: Int) -> Bool:
+    a < b
+fn main(console: Console):
+    let people = [("alice", 30), ("bob", 25), ("carol", 35)]
+    let sorted = list.sort_by(people, func.on_key(lt, snd))
+    print(console, string.join(list.map(sorted, fst), ","))
+    let by_age = func.on_key(lt, snd)
+    print(console, if by_age(("x", 1), ("y", 2)): "lt" else: "ge")
+"#;
+        let sources = [
+            ("option", crate::bundled_module("option").unwrap()),
+            ("func", crate::bundled_module("func").unwrap()),
+            ("list", crate::bundled_module("list").unwrap()),
+            ("string", crate::bundled_module("string").unwrap()),
+            ("main", client),
+        ];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "func.on diverged");
+        assert_eq!(compiled, vec!["bob,alice,carol", "lt"]);
+    }
+
+    #[test]
     fn merge_sort_is_stable_on_both_backends() {
         // list.sort_by is a stable merge sort: equal keys keep their original
         // order. Sort (key, tag) items by key only; ties must preserve insertion
