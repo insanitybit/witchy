@@ -231,10 +231,190 @@ pub fn link(mut modules: Vec<(String, Module)>, entry: &str) -> Result<Module, L
             }
         }
     }
-    Ok(Module {
+    let mut module = Module {
         imports: Vec::new(),
         items,
-    })
+    };
+    resolve_methods(&mut module);
+    Ok(module)
+}
+
+/// The (nominal) type name of a `Type`, if it has one.
+fn type_name(t: &Type) -> Option<String> {
+    match t {
+        Type::Named(n, _) => Some(n.clone()),
+        _ => None,
+    }
+}
+
+/// Per-function nominal signature: first-parameter type name and return type
+/// name, used to resolve overloaded UFCS method calls by the receiver's type.
+struct FnSig {
+    first_param: Option<String>,
+    ret: Option<String>,
+}
+
+/// Resolve UFCS method calls the linker left unqualified because the bare name is
+/// provided by several imported modules (e.g. `get` in http/server/json). For
+/// each such `name(receiver, ...)`, pick the `mod.name` whose first parameter
+/// type matches the receiver's nominal type. The receiver's type is read from
+/// the function it calls (its return type) or a literal — so chains like
+/// `router().get(...).layer(...)` resolve left to right. A receiver whose type
+/// can't be determined (e.g. a plain variable) is left for the type checker.
+fn resolve_methods(module: &mut Module) {
+    let mut sig: HashMap<String, FnSig> = HashMap::new();
+    // base method name -> the qualified function names providing it.
+    let mut by_base: HashMap<String, Vec<String>> = HashMap::new();
+    for item in &module.items {
+        if let Item::Function(f) = item {
+            let first_param = f.params.first().and_then(|p| p.ty.as_ref()).and_then(type_name);
+            let ret = f.ret.as_ref().and_then(type_name);
+            sig.insert(f.name.clone(), FnSig { first_param, ret });
+            if let Some((_, base)) = f.name.rsplit_once('.') {
+                by_base.entry(base.to_string()).or_default().push(f.name.clone());
+            }
+        }
+    }
+    for item in &mut module.items {
+        match item {
+            Item::Function(f) => resolve_in_block(&mut f.body, &sig, &by_base),
+            Item::Actor(a) => {
+                for field in &mut a.fields {
+                    if let Some(init) = &mut field.init {
+                        resolve_in_expr(init, &sig, &by_base);
+                    }
+                }
+                for h in &mut a.handlers {
+                    resolve_in_block(&mut h.body, &sig, &by_base);
+                }
+            }
+            Item::Trait(t) => {
+                for ms in &mut t.methods {
+                    if let Some(body) = &mut ms.default {
+                        resolve_in_block(body, &sig, &by_base);
+                    }
+                }
+            }
+            Item::Impl(im) => {
+                for method in &mut im.methods {
+                    resolve_in_block(&mut method.body, &sig, &by_base);
+                }
+            }
+            Item::Type(_) => {}
+        }
+    }
+}
+
+/// The nominal type an expression evaluates to, where the linker can tell: a
+/// call's return type, or a literal's type. `None` otherwise.
+fn expr_nominal_type(e: &Expr, sig: &HashMap<String, FnSig>) -> Option<String> {
+    match e {
+        Expr::Call { name, .. } => sig.get(name).and_then(|s| s.ret.clone()),
+        Expr::Int(_) => Some("Int".to_string()),
+        Expr::Float(_) => Some("Float".to_string()),
+        Expr::Duration(_) => Some("Duration".to_string()),
+        Expr::Str(_) => Some("String".to_string()),
+        Expr::Bool(_) => Some("Bool".to_string()),
+        _ => None,
+    }
+}
+
+fn resolve_in_block(b: &mut Block, sig: &HashMap<String, FnSig>, by_base: &HashMap<String, Vec<String>>) {
+    for stmt in &mut b.stmts {
+        match stmt {
+            Stmt::Let { value, .. } | Stmt::Assign { value, .. } | Stmt::LetTuple { value, .. } => {
+                resolve_in_expr(value, sig, by_base)
+            }
+            Stmt::Return(Some(e)) | Stmt::Expr(e) => resolve_in_expr(e, sig, by_base),
+            Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
+        }
+    }
+}
+
+fn resolve_in_expr(e: &mut Expr, sig: &HashMap<String, FnSig>, by_base: &HashMap<String, Vec<String>>) {
+    match e {
+        Expr::Call { name, args } => {
+            // Resolve nested receivers/arguments first, so a chained receiver's
+            // call is already resolved when we read its return type.
+            for a in args.iter_mut() {
+                resolve_in_expr(a, sig, by_base);
+            }
+            if !name.contains('.') && !sig.contains_key(name.as_str()) {
+                if let Some(cands) = by_base.get(name.as_str()) {
+                    if cands.len() > 1 {
+                        if let Some(recv) = args.first().and_then(|a| expr_nominal_type(a, sig)) {
+                            let matches: Vec<&String> = cands
+                                .iter()
+                                .filter(|c| {
+                                    sig.get(*c).and_then(|s| s.first_param.as_deref())
+                                        == Some(recv.as_str())
+                                })
+                                .collect();
+                            if let [only] = matches.as_slice() {
+                                *name = (*only).clone();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Expr::Apply { func, args } => {
+            resolve_in_expr(func, sig, by_base);
+            for a in args.iter_mut() {
+                resolve_in_expr(a, sig, by_base);
+            }
+        }
+        Expr::Ctor { args, .. } | Expr::List(args) | Expr::Tuple(args) | Expr::Spawn { args, .. } => {
+            for a in args.iter_mut() {
+                resolve_in_expr(a, sig, by_base);
+            }
+        }
+        Expr::Unary { expr, .. } | Expr::Try(expr) | Expr::Field { base: expr, .. } => {
+            resolve_in_expr(expr, sig, by_base)
+        }
+        Expr::Binary { lhs, rhs, .. } => {
+            resolve_in_expr(lhs, sig, by_base);
+            resolve_in_expr(rhs, sig, by_base);
+        }
+        Expr::RecordUpdate { base, fields } => {
+            resolve_in_expr(base, sig, by_base);
+            for (_, v) in fields.iter_mut() {
+                resolve_in_expr(v, sig, by_base);
+            }
+        }
+        Expr::If { cond, then_block, else_block } => {
+            resolve_in_expr(cond, sig, by_base);
+            resolve_in_block(then_block, sig, by_base);
+            if let Some(b) = else_block {
+                resolve_in_block(b, sig, by_base);
+            }
+        }
+        Expr::Block(b) => resolve_in_block(b, sig, by_base),
+        Expr::While { cond, body } => {
+            resolve_in_expr(cond, sig, by_base);
+            resolve_in_block(body, sig, by_base);
+        }
+        Expr::For { iter, body, .. } => {
+            resolve_in_expr(iter, sig, by_base);
+            resolve_in_block(body, sig, by_base);
+        }
+        Expr::Match { scrutinee, arms } => {
+            resolve_in_expr(scrutinee, sig, by_base);
+            for arm in arms.iter_mut() {
+                if let Some(g) = &mut arm.guard {
+                    resolve_in_expr(g, sig, by_base);
+                }
+                resolve_in_expr(&mut arm.body, sig, by_base);
+            }
+        }
+        Expr::Lambda { body, .. } => resolve_in_block(body, sig, by_base),
+        Expr::Int(_)
+        | Expr::Duration(_)
+        | Expr::Float(_)
+        | Expr::Str(_)
+        | Expr::Bool(_)
+        | Expr::Var(_) => {}
+    }
 }
 
 /// Collect every name bound as a local within a block — `let`/`var` bindings,
@@ -491,15 +671,12 @@ fn resolve_call(
                 providers.push(imp.as_str());
             }
         }
-        match providers.len() {
-            1 => return Ok(format!("{}.{name}", providers[0])),
-            0 => {}
-            _ => {
-                return lerr(format!(
-                    "`{name}` is defined in multiple imported modules ({}); qualify it as `mod.{name}`",
-                    providers.join(", ")
-                ))
-            }
+        // Exactly one import provides it -> resolve. If several do, it's an
+        // overloaded method name (e.g. http.get / server.get / json.get): leave
+        // it unqualified for the post-link `resolve_methods` pass to pick by the
+        // receiver's type.
+        if providers.len() == 1 {
+            return Ok(format!("{}.{name}", providers[0]));
         }
     }
     // Not a function here and not a builtin: a local binding being applied (e.g.

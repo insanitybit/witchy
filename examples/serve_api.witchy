@@ -27,8 +27,8 @@ fn greet(req: Request) -> Response:
 
 fn main(console: Console, net: Net):
     let app = server.router()
-        |> server.get("/", home)
-        |> server.get("/hello/:name", greet)
-        |> server.layer(logging(console))
+        .get("/", home)
+        .get("/hello/:name", greet)
+        .layer(logging(console))
     print(console, "serving on 127.0.0.1:8080")
     server.serve(net, "127.0.0.1:8080", app)

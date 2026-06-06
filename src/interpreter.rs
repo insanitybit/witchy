@@ -1926,9 +1926,9 @@ import http
 import server
 fn main(console: Console, net: Net):
     let app = server.router()
-        |> server.get("/", fn(req: Request): server.text(200, "home"))
-        |> server.get("/users/:id", fn(req: Request): server.text(200, "user " <> server.param(req, "id")))
-        |> server.post("/echo", fn(req: Request): server.text(201, server.request_body(req)))
+        .get("/", fn(req: Request): server.text(200, "home"))
+        .get("/users/:id", fn(req: Request): server.text(200, "user " <> server.param(req, "id")))
+        .post("/echo", fn(req: Request): server.text(201, server.request_body(req)))
     server.serve_n(net, "{addr}", app, 3)
 "#
         );

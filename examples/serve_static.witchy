@@ -23,6 +23,6 @@ fn main(console: Console, net: Net, root: Dir):
     let examples = subdir(root, "examples")
     let data = subdir(examples, "data")
     let app = server.router()
-        |> server.get("/files/*path", file_server(data))
+        .get("/files/*path", file_server(data))
     print(console, "serving files on 127.0.0.1:8080")
     server.serve(net, "127.0.0.1:8080", app)

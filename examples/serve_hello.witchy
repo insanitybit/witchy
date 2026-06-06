@@ -16,8 +16,8 @@ fn show_user(req: Request) -> Response:
 
 fn main(console: Console, net: Net):
     let app = server.router()
-        |> server.get("/", home)
-        |> server.get("/users/:id", show_user)
-        |> server.post("/echo", fn(req: Request): server.text(200, server.request_body(req)))
+        .get("/", home)
+        .get("/users/:id", show_user)
+        .post("/echo", fn(req: Request): server.text(200, server.request_body(req)))
     print(console, "serving on 127.0.0.1:8080")
     server.serve(net, "127.0.0.1:8080", app)
