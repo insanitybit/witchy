@@ -2017,6 +2017,58 @@ fn main(console: Console, net: Net):
     }
 
     #[test]
+    fn serve_status_constructors_roundtrip() {
+        // The status-named response constructors (created/bad_request/
+        // unauthorized/no_content) render the right status line and reason.
+        use std::io::{Read, Write};
+        use std::net::{TcpListener, TcpStream};
+        let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let addr = format!("127.0.0.1:{port}");
+        let src = format!(
+            r#"
+import http
+import server
+fn main(console: Console, net: Net):
+    let app = server.router()
+        |> server.post("/make", fn(req: Request): server.created("made"))
+        |> server.get("/bad", fn(req: Request): server.bad_request("nope"))
+        |> server.get("/secret", fn(req: Request): server.unauthorized("auth"))
+        |> server.delete("/item", fn(req: Request): server.no_content())
+    server.serve_n(net, "{addr}", app, 4)
+"#
+        );
+        let parsed = crate::parser::parse_module(&src).expect("parse");
+        let linked =
+            crate::linker::link(vec![("main".to_string(), parsed)], "main").expect("link");
+        let allow = vec![addr.clone()];
+        let server = std::thread::spawn(move || run_module(linked, ".", allow));
+
+        let request = |raw: &str| -> String {
+            for _ in 0..100 {
+                if let Ok(mut s) = TcpStream::connect(&addr) {
+                    s.write_all(raw.as_bytes()).unwrap();
+                    let mut resp = String::new();
+                    s.read_to_string(&mut resp).unwrap();
+                    return resp;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            panic!("could not connect to server");
+        };
+
+        let r1 = request("POST /make HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\n");
+        assert!(r1.contains("201 Created") && r1.ends_with("made"), "r1: {r1}");
+        let r2 = request("GET /bad HTTP/1.1\r\nHost: x\r\n\r\n");
+        assert!(r2.contains("400 Bad Request") && r2.ends_with("nope"), "r2: {r2}");
+        let r3 = request("GET /secret HTTP/1.1\r\nHost: x\r\n\r\n");
+        assert!(r3.contains("401 Unauthorized") && r3.ends_with("auth"), "r3: {r3}");
+        let r4 = request("DELETE /item HTTP/1.1\r\nHost: x\r\n\r\n");
+        assert!(r4.contains("204 No Content"), "r4: {r4}");
+
+        server.join().unwrap().unwrap();
+    }
+
+    #[test]
     fn serve_middleware_nest_and_notfound_roundtrip() {
         use std::io::{Read, Write};
         use std::net::{TcpListener, TcpStream};

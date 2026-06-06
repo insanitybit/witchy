@@ -87,6 +87,32 @@ pub fn json_value(code: Int, j: Json) -> Response:
 pub fn status_only(code: Int) -> Response:
     Response(code, [], "")
 
+// ---- Status-named constructors (axum `StatusCode` ergonomics) ----
+
+pub fn ok(b: String) -> Response:
+    text(200, b)
+
+pub fn created(b: String) -> Response:
+    text(201, b)
+
+pub fn accepted(b: String) -> Response:
+    text(202, b)
+
+pub fn no_content() -> Response:
+    status_only(204)
+
+pub fn bad_request(b: String) -> Response:
+    text(400, b)
+
+pub fn unauthorized(b: String) -> Response:
+    text(401, b)
+
+pub fn forbidden(b: String) -> Response:
+    text(403, b)
+
+pub fn server_error(b: String) -> Response:
+    text(500, b)
+
 pub fn not_found() -> Response:
     Response(404, [("content-type", "text/plain; charset=utf-8")], "Not Found")
 
@@ -317,9 +343,12 @@ fn render_response(resp: Response) -> String:
 fn reason(code: Int) -> String:
     if code == 200: "OK"
     else: if code == 201: "Created"
+    else: if code == 202: "Accepted"
     else: if code == 204: "No Content"
     else: if code == 303: "See Other"
     else: if code == 400: "Bad Request"
+    else: if code == 401: "Unauthorized"
+    else: if code == 403: "Forbidden"
     else: if code == 404: "Not Found"
     else: if code == 500: "Internal Server Error"
     else: "Status"
