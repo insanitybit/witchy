@@ -258,6 +258,32 @@ pub fn flat_map(xs: List(a), f: fn(a) -> List(b)) -> List(b):
         out = concat(out, f(x))
     out
 
+// Turn a list of rows into a list of columns. Rows are read only up to the
+// length of the SHORTEST row, so a ragged tail is dropped and the result stays
+// rectangular: `transpose([[1, 2, 3], [4, 5, 6]])` is `[[1, 4], [2, 5], [3, 6]]`.
+pub fn transpose(xss: List(List(a))) -> List(List(a)):
+    if length(xss) == 0:
+        []
+    else:
+        let cols = min_len(xss)
+        var out = []
+        var c = 0
+        while c < cols:
+            var col = []
+            for row in xss:
+                col = push(col, at(row, c))
+            out = push(out, col)
+            c = c + 1
+        out
+
+fn min_len(xss: List(List(a))) -> Int:
+    var m = 0 - 1
+    for row in xss:
+        let l = length(row)
+        if m < 0 || l < m:
+            m = l
+    m
+
 // How many elements satisfy `pred`.
 pub fn count(xs: List(a), pred: fn(a) -> Bool) -> Int:
     var n = 0

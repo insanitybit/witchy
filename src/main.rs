@@ -2064,6 +2064,34 @@ fn main(console: Console):
     }
 
     #[test]
+    fn list_transpose_backends_agree() {
+        // transpose swaps rows and columns; a ragged input is truncated to the
+        // shortest row, and an empty input gives an empty result.
+        let client = r#"
+import list
+import string
+fn show_row(r: List(Int)) -> String:
+    string.join(list.map(r, fn(n: Int): int_to_string(n)), ",")
+fn show_grid(g: List(List(Int))) -> String:
+    string.join(list.map(g, show_row), ";")
+fn main(console: Console):
+    print(console, show_grid(list.transpose([[1, 2, 3], [4, 5, 6]])))
+    print(console, show_grid(list.transpose([[1, 2], [3, 4, 5]])))
+    print(console, show_grid(list.transpose([])))
+"#;
+        let sources = [
+            ("option", crate::bundled_module("option").unwrap()),
+            ("list", crate::bundled_module("list").unwrap()),
+            ("string", crate::bundled_module("string").unwrap()),
+            ("main", client),
+        ];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "transpose diverged");
+        assert_eq!(compiled, vec!["1,4;2,5;3,6", "1,3;2,4", ""]);
+    }
+
+    #[test]
     fn merge_sort_is_stable_on_both_backends() {
         // list.sort_by is a stable merge sort: equal keys keep their original
         // order. Sort (key, tag) items by key only; ties must preserve insertion
