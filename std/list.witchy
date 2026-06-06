@@ -16,6 +16,33 @@ pub fn range(n: Int) -> List(Int):
         i = i + 1
     out
 
+// The half-open span `lo..hi`: [lo, lo+1, ..., hi-1], empty when `lo >= hi`.
+pub fn range_between(lo: Int, hi: Int) -> List(Int):
+    var out = []
+    var i = lo
+    while i < hi:
+        out = push(out, i)
+        i = i + 1
+    out
+
+// The span from `start` toward `stop` (exclusive) advancing by `step`. A
+// positive `step` counts up while below `stop`, a negative `step` counts down
+// while above `stop`, and a zero `step` yields [] rather than looping forever.
+pub fn range_step(start: Int, stop: Int, step: Int) -> List(Int):
+    var out = []
+    if step > 0:
+        var i = start
+        while i < stop:
+            out = push(out, i)
+            i = i + step
+    else:
+        if step < 0:
+            var i = start
+            while i > stop:
+                out = push(out, i)
+                i = i + step
+    out
+
 // Apply `f` to every element, collecting the results.
 pub fn map(xs: List(a), f: fn(a) -> b) -> List(b):
     var out = []

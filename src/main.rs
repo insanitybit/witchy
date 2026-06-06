@@ -1776,6 +1776,34 @@ fn main(console: Console):
     }
 
     #[test]
+    fn list_range_between_and_step_backends_agree() {
+        // range_between is the half-open lo..hi; range_step counts by `step`,
+        // ascending or descending, and yields [] when step is 0.
+        let client = r#"
+import list
+import string
+fn show_ints(xs: List(Int)) -> String:
+    string.join(list.map(xs, fn(n: Int): int_to_string(n)), ",")
+fn main(console: Console):
+    print(console, show_ints(list.range_between(2, 6)))
+    print(console, show_ints(list.range_between(5, 5)))
+    print(console, show_ints(list.range_step(0, 10, 3)))
+    print(console, show_ints(list.range_step(5, 0, -2)))
+    print(console, show_ints(list.range_step(0, 5, 0)))
+"#;
+        let sources = [
+            ("option", crate::bundled_module("option").unwrap()),
+            ("list", crate::bundled_module("list").unwrap()),
+            ("string", crate::bundled_module("string").unwrap()),
+            ("main", client),
+        ];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "range_between/range_step diverged");
+        assert_eq!(compiled, vec!["2,3,4,5", "", "0,3,6,9", "5,3,1", ""]);
+    }
+
+    #[test]
     fn merge_sort_is_stable_on_both_backends() {
         // list.sort_by is a stable merge sort: equal keys keep their original
         // order. Sort (key, tag) items by key only; ties must preserve insertion
