@@ -42,6 +42,22 @@ pub fn pow(base: Int, exp: Int) -> Int:
         i = i + 1
     r
 
+// Ceiling division: the smallest integer >= a / b (e.g. items split into pages
+// of `b`). For a positive divisor `b`; `ceil_div(7, 3)` is 3, `ceil_div(6, 3)` is 2.
+pub fn ceil_div(a: Int, b: Int) -> Int:
+    if a >= 0:
+        (a + b - 1) / b
+    else:
+        0 - ((0 - a) / b)
+
+// Division rounded to the nearest integer (ties away from zero), for a positive
+// `b`: `round_div(7, 2)` is 4, `round_div(5, 3)` is 2, `round_div(-7, 2)` is -4.
+pub fn round_div(a: Int, b: Int) -> Int:
+    if a >= 0:
+        (a + b / 2) / b
+    else:
+        0 - ((0 - a + b / 2) / b)
+
 // Greatest common divisor (Euclid's algorithm).
 pub fn gcd(a: Int, b: Int) -> Int:
     var x = abs(a)

@@ -2211,6 +2211,34 @@ fn main(console: Console):
     }
 
     #[test]
+    fn math_ceil_and_round_div_backends_agree() {
+        // ceil_div rounds toward +inf for the quotient; round_div rounds to the
+        // nearest integer (ties away from zero). Both for a positive divisor.
+        let client = r#"
+import math
+import list
+import string
+fn show(xs: List(Int)) -> String:
+    string.join(list.map(xs, fn(n: Int): int_to_string(n)), ",")
+fn main(console: Console):
+    print(console, show([math.ceil_div(7, 3), math.ceil_div(6, 3), math.ceil_div(1, 3), math.ceil_div(0, 3)]))
+    print(console, show([math.ceil_div(0 - 7, 3), math.ceil_div(0 - 6, 3)]))
+    print(console, show([math.round_div(7, 2), math.round_div(5, 3), math.round_div(4, 3), math.round_div(0 - 7, 2)]))
+"#;
+        let sources = [
+            ("option", crate::bundled_module("option").unwrap()),
+            ("list", crate::bundled_module("list").unwrap()),
+            ("string", crate::bundled_module("string").unwrap()),
+            ("math", crate::bundled_module("math").unwrap()),
+            ("main", client),
+        ];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "ceil_div/round_div diverged");
+        assert_eq!(compiled, vec!["3,2,1,0", "-2,-2", "4,2,1,-4"]);
+    }
+
+    #[test]
     fn math_to_base_backends_agree() {
         // to_base renders a number in base 2..16 (recursively, MSB-first);
         // zero is "0", negatives get a "-", an out-of-range base is "".
