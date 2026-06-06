@@ -2120,20 +2120,20 @@ fn main(console: Console):
 
     #[test]
     fn duration_module_backends_agree() {
-        // The pure duration module: from_hms builds seconds; clock zero-pads
-        // mm:ss; human omits leading zero units. All Int arithmetic, so it
-        // compiles to WASM identically.
+        // The duration module over the built-in Duration type: human/clock format
+        // a Duration (combined from literals), to_millis bridges back to Int.
         let client = r#"
 import duration
 fn main(console: Console):
-    print(console, int_to_string(duration.from_hms(1, 2, 3)))
-    print(console, duration.clock(3723))
-    print(console, duration.clock(90))
-    print(console, duration.human(3661))
-    print(console, duration.human(90))
-    print(console, duration.human(5))
-    print(console, duration.human(0))
-    print(console, int_to_string(duration.part_minutes(3723)))
+    print(console, int_to_string(duration.to_millis(duration.from_hms(1, 2, 3))))
+    print(console, duration.clock(1h + 2m + 3s))
+    print(console, duration.clock(90s))
+    print(console, duration.human(1h + 1m + 1s))
+    print(console, duration.human(90s))
+    print(console, duration.human(5s))
+    print(console, duration.human(500ms))
+    print(console, int_to_string(duration.to_millis(duration.hours(2))))
+    print(console, int_to_string(duration.part_minutes(1h + 2m + 3s)))
 "#;
         let sources = [
             ("duration", crate::bundled_module("duration").unwrap()),
@@ -2144,35 +2144,39 @@ fn main(console: Console):
         assert_eq!(interpreted, compiled, "duration diverged");
         assert_eq!(
             compiled,
-            vec!["3723", "1:02:03", "0:01:30", "1h1m1s", "1m30s", "5s", "0s", "2"]
+            vec![
+                "3723000", "1:02:03", "0:01:30", "1h1m1s", "1m30s", "5s", "500ms", "7200000", "2",
+            ]
         );
     }
 
     #[test]
     fn duration_parse_backends_agree() {
-        // parse is the inverse of human: unit-tagged or bare-seconds input,
-        // None on junk or a dangling number, and parse(human(x)) round-trips.
+        // parse is the inverse of human, returning a Duration (ms): unit-tagged
+        // (incl. ms/hr) or bare-ms input, None on junk/dangling, and
+        // parse(human(d)) round-trips.
         let client = r#"
 import duration
 import option
-fn show(o: Option(Int)) -> String:
+fn show(o: Option(Duration)) -> String:
     match o:
-        Some(n) -> int_to_string(n)
+        Some(d) -> int_to_string(duration.to_millis(d))
         None -> "none"
-fn roundtrip(secs: Int) -> String:
-    match duration.parse(duration.human(secs)):
-        Some(n) -> if n == secs: "ok" else: "bad"
+fn roundtrip(d: Duration) -> String:
+    match duration.parse(duration.human(d)):
+        Some(p) -> if p == d: "ok" else: "bad"
         None -> "none"
 fn main(console: Console):
     print(console, show(duration.parse("1h2m3s")))
+    print(console, show(duration.parse("500ms")))
+    print(console, show(duration.parse("2hr")))
     print(console, show(duration.parse("90")))
-    print(console, show(duration.parse("2m30s")))
     print(console, show(duration.parse("1h30")))
     print(console, show(duration.parse("")))
     print(console, show(duration.parse("abc")))
-    print(console, roundtrip(3723))
-    print(console, roundtrip(90))
-    print(console, roundtrip(0))
+    print(console, roundtrip(1h + 1m + 1s))
+    print(console, roundtrip(90s))
+    print(console, roundtrip(250ms))
 "#;
         let sources = [
             ("duration", crate::bundled_module("duration").unwrap()),
@@ -2183,7 +2187,9 @@ fn main(console: Console):
         assert_eq!(interpreted, compiled, "duration.parse diverged");
         assert_eq!(
             compiled,
-            vec!["3723", "90", "150", "none", "none", "none", "ok", "ok", "ok"]
+            vec![
+                "3723000", "500", "7200000", "90", "none", "none", "none", "ok", "ok", "ok",
+            ]
         );
     }
 

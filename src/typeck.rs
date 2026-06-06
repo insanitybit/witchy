@@ -429,6 +429,9 @@ impl Checker {
             "substring" => Some((vec![Ty::String, Ty::Int, Ty::Int], Ty::String)),
             "int_to_float" => Some((vec![Ty::Int], Ty::Float)),
             "float_to_int" => Some((vec![Ty::Float], Ty::Int)),
+            // Duration <-> Int(milliseconds) bridge for the std `duration` module.
+            "int_to_duration" => Some((vec![Ty::Int], Ty::Duration)),
+            "duration_to_int" => Some((vec![Ty::Duration], Ty::Int)),
             "sqrt" => Some((vec![Ty::Float], Ty::Float)),
             "string_to_int" => Some((vec![Ty::String], Ty::Int)),
             "to_string" => {

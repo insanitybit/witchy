@@ -649,6 +649,12 @@ impl Interpreter {
                 Value::Float(x) => Ok(Some(Value::Int(x as i64))),
                 other => err(format!("float_to_int expects a Float, got `{other}`")),
             },
+            // Duration <-> Int(ms): a Duration is an Int(ms) at runtime, so both
+            // directions are the identity.
+            "int_to_duration" | "duration_to_int" => match one(args)? {
+                Value::Int(n) => Ok(Some(Value::Int(n))),
+                other => err(format!("{name} expects an Int/Duration, got `{other}`")),
+            },
             "sqrt" => match one(args)? {
                 Value::Float(x) => Ok(Some(Value::Float(x.sqrt()))),
                 other => err(format!("sqrt expects a Float, got `{other}`")),

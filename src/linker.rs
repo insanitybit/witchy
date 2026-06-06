@@ -54,6 +54,8 @@ const BUILTINS: &[&str] = &[
     "substring",
     "int_to_float",
     "float_to_int",
+    "int_to_duration",
+    "duration_to_int",
     "sqrt",
     "string_to_int",
     "length",
@@ -344,7 +346,7 @@ fn collect_bound_expr(e: &Expr, out: &mut HashSet<String>) {
                 collect_bound_expr(v, out);
             }
         }
-        Expr::Var(_) | Expr::Int(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) => {}
+        Expr::Var(_) | Expr::Int(_) | Expr::Duration(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) => {}
     }
 }
 
@@ -445,7 +447,7 @@ fn rewrite_expr(
                 rewrite_expr(&mut arm.body, m, imps, fns, bound)?;
             }
         }
-        Expr::Int(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) => {}
+        Expr::Int(_) | Expr::Duration(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) => {}
     }
     Ok(())
 }

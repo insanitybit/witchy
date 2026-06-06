@@ -477,7 +477,7 @@ impl Codegen {
             Expr::Call { name, .. } => match name.as_str() {
                 "int_to_float" => Kind::F64,
                 "float_to_int" | "string_length" | "char_count" | "index_of" | "length"
-                | "string_to_int" => Kind::I64,
+                | "string_to_int" | "int_to_duration" | "duration_to_int" => Kind::I64,
                 "at" => self.elem_kind_of_list_arg(e),
                 "to_string" | "int_to_string" | "print" => Kind::I32,
                 other => self.fn_ret.get(other).copied().unwrap_or(Kind::I32),
@@ -546,7 +546,7 @@ impl Codegen {
                 | "substring" => ValType::Str,
                 "starts_with" | "ends_with" | "contains" => ValType::Bool,
                 "string_length" | "char_count" | "index_of" | "length" | "float_to_int"
-                | "string_to_int" => ValType::Int,
+                | "string_to_int" | "int_to_duration" | "duration_to_int" => ValType::Int,
                 "int_to_float" | "sqrt" => ValType::Float,
                 other => self.fn_ret_valtype.get(other).copied().unwrap_or(ValType::Other),
             },
@@ -2159,6 +2159,8 @@ impl Codegen {
             ("float_to_int", 1) => {
                 Ok(format!("{}    i64.trunc_f64_s\n", self.compile_expr(&args[0])?))
             }
+            // Duration <-> Int(ms) is a no-op at runtime (both are i64).
+            ("int_to_duration", 1) | ("duration_to_int", 1) => self.compile_expr(&args[0]),
             // sqrt(x): WASM has a native f64 square root.
             ("sqrt", 1) => Ok(format!("{}    f64.sqrt\n", self.compile_expr(&args[0])?)),
             // string_to_int(s): parse a well-formed decimal integer — optional
