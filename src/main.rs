@@ -1746,6 +1746,36 @@ fn main(console: Console):
     }
 
     #[test]
+    fn json_as_object_backends_agree() {
+        // as_object exposes an object's key/value pairs for iteration when the
+        // keys aren't known ahead of time; a non-object yields None.
+        let client = r#"
+import json
+import option
+fn main(console: Console):
+    match json.decode("{\"a\": 1, \"b\": 2}"):
+        Ok(doc) ->
+            match json.as_object(doc):
+                Some(pairs) ->
+                    for p in pairs:
+                        let (k, _v) = p
+                        print(console, k)
+                None -> print(console, "not object")
+        Err(_e) -> print(console, "err")
+    print(console, if option.is_none(json.as_object(JsonInt(5))): "none" else: "some")
+"#;
+        let sources = [
+            ("json", crate::bundled_module("json").unwrap()),
+            ("option", crate::bundled_module("option").unwrap()),
+            ("main", client),
+        ];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "as_object diverged");
+        assert_eq!(compiled, vec!["a", "b", "none"]);
+    }
+
+    #[test]
     fn merge_sort_is_stable_on_both_backends() {
         // list.sort_by is a stable merge sort: equal keys keep their original
         // order. Sort (key, tag) items by key only; ties must preserve insertion

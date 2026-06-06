@@ -333,6 +333,13 @@ pub fn as_array(j: Json) -> Option(List(Json)):
         JsonArray(items) -> Some(items)
         _ -> None
 
+// `j` as its key/value pairs, when it is an object — for iterating an object
+// whose keys aren't known ahead of time.
+pub fn as_object(j: Json) -> Option(List((String, Json))):
+    match j:
+        JsonObject(pairs) -> Some(pairs)
+        _ -> None
+
 // Follow a dotted path of object keys, e.g. `get_path(resp, "user.name")`. Any
 // missing key (or a non-object along the way) yields `None`.
 pub fn get_path(j: Json, path: String) -> Option(Json):
