@@ -2187,6 +2187,74 @@ fn main(console: Console):
     }
 
     #[test]
+    fn big_int_arithmetic_backends_agree() {
+        // Compiled Int is now i64, so arithmetic beyond the old 32-bit range
+        // agrees with the interpreter instead of wrapping.
+        let client = r#"
+fn main(console: Console):
+    let a = 3000000000
+    let b = 4000000000
+    print(console, int_to_string(a + b))
+    print(console, int_to_string(a * 3))
+    let big = 9000000000000
+    print(console, int_to_string(big))
+    print(console, int_to_string(big / 1000))
+    print(console, int_to_string(0 - big))
+"#;
+        let sources = [("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "big-int arithmetic diverged");
+        assert_eq!(
+            compiled,
+            vec![
+                "7000000000",
+                "9000000000",
+                "9000000000000",
+                "9000000000",
+                "-9000000000000",
+            ]
+        );
+    }
+
+    #[test]
+    fn big_ints_in_list_backends_agree() {
+        // 8-byte heap slots carry a full i64 Int inside a (concretely-typed) list.
+        let client = r#"
+fn main(console: Console):
+    let xs = [3000000000, 5000000000]
+    print(console, int_to_string(at(xs, 0)))
+    print(console, int_to_string(at(xs, 1)))
+    print(console, int_to_string(at(xs, 0) + at(xs, 1)))
+"#;
+        let sources = [("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "big-ints-in-list diverged");
+        assert_eq!(compiled, vec!["3000000000", "5000000000", "8000000000"]);
+    }
+
+    #[test]
+    fn floats_in_collections_backends_agree() {
+        // 8-byte slots also hold f64, so floats now live in lists and tuples
+        // (read back with float_to_int, since Float to_string is still WASM-gated).
+        let client = r#"
+fn main(console: Console):
+    let fs = [1.5, 2.5, 3.5]
+    print(console, int_to_string(length(fs)))
+    print(console, int_to_string(float_to_int(at(fs, 1))))
+    let pair = (1.5, 9.5)
+    let (lo, hi) = pair
+    print(console, int_to_string(float_to_int(hi)))
+"#;
+        let sources = [("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "floats-in-collections diverged");
+        assert_eq!(compiled, vec!["3", "2", "9"]);
+    }
+
+    #[test]
     fn merge_sort_is_stable_on_both_backends() {
         // list.sort_by is a stable merge sort: equal keys keep their original
         // order. Sort (key, tag) items by key only; ties must preserve insertion

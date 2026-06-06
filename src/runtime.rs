@@ -233,7 +233,7 @@ fn host_print(mut caller: Caller<'_, ActorState>, ptr: i32, len: i32) -> Result<
     Ok(())
 }
 
-fn host_print_int(caller: Caller<'_, ActorState>, n: i32) -> Result<()> {
+fn host_print_int(caller: Caller<'_, ActorState>, n: i64) -> Result<()> {
     println!("[actor {}] {n}", caller.data().id);
     caller.data().output.lock().unwrap().push(n.to_string());
     Ok(())

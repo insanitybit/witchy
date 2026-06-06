@@ -66,29 +66,61 @@ const APPLY_POOL: usize = 8;
 /// lifted lambda, pointing at its `[code_index][cap0]..` heap record.
 const ENV_PARAM: &str = "__witchy_env";
 
-/// The WASM representation of a value: f64 for floats, i32 for everything else
-/// (ints, bools, and pointers to strings/lists/records).
+/// The WASM representation of a value:
+///   * `I64` — `Int`, and the UNIVERSAL representation for type variables /
+///     generic values / heap slots. Pointers and bools are zero-extended into
+///     i64 and floats are bit-reinterpreted when they enter this representation
+///     (see `to_slot`/`from_slot`).
+///   * `F64` — `Float`.
+///   * `I32` — concrete pointers (strings/lists/records/closures/capabilities)
+///     and `Bool`. These are the wasm32 address width.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Kind {
     I32,
+    I64,
     F64,
 }
 
 fn wasm_ty(k: Kind) -> &'static str {
     match k {
         Kind::I32 => "i32",
+        Kind::I64 => "i64",
         Kind::F64 => "f64",
     }
 }
 
 fn ty_kind(t: &Type) -> Kind {
-    // `Int` maps to i32 here, not i64 — a deliberate divergence from the
-    // interpreter's 64-bit `Int`. Programs whose integers exceed ±2^31 will
-    // wrap in compiled code where the interpreter would not; the differential
-    // test suite stays within this range.
+    // Concrete `Int` is i64 (matching the interpreter); `Float` is f64. Type
+    // variables / generics stay i32 (the existing universal ABI: a generic
+    // function compiled once passes values as i32, pointers natively and `Int`
+    // narrowed). Heap slots are 8 bytes regardless (see `to_slot`/`from_slot`),
+    // so a *concretely*-typed `Int` survives in a list/record; only values that
+    // pass through generic code narrow to 32 bits (a monomorphization gap).
     match t {
         Type::Named(n, _) if n == "Float" => Kind::F64,
+        Type::Named(n, _) if n == "Int" => Kind::I64,
         _ => Kind::I32,
+    }
+}
+
+/// Emit the conversion that puts a value of WASM kind `k` into the universal i64
+/// slot representation (for storing in a list/tuple/record/closure slot, or
+/// passing where a type variable is expected).
+fn to_slot(k: Kind) -> &'static str {
+    match k {
+        Kind::I64 => "",
+        Kind::F64 => "    i64.reinterpret_f64\n",
+        Kind::I32 => "    i64.extend_i32_u\n",
+    }
+}
+
+/// Emit the conversion that recovers a value of WASM kind `k` from the universal
+/// i64 slot representation (after loading a slot, or receiving a generic value).
+fn from_slot(k: Kind) -> &'static str {
+    match k {
+        Kind::I64 => "",
+        Kind::F64 => "    f64.reinterpret_i64\n",
+        Kind::I32 => "    i32.wrap_i64\n",
     }
 }
 
@@ -103,6 +135,56 @@ enum ValType {
     Float,
     Str,
     Other,
+}
+
+/// The common kind two numeric operands/branches promote to: f64 if either is
+/// Float, else i64 if either is i64 (a concrete Int), else i32.
+fn promote_kind(a: Kind, b: Kind) -> Kind {
+    if a == Kind::F64 || b == Kind::F64 {
+        Kind::F64
+    } else if a == Kind::I64 || b == Kind::I64 {
+        Kind::I64
+    } else {
+        Kind::I32
+    }
+}
+
+/// Convert a value of WASM kind `from` to kind `to` at an ABI boundary (a call
+/// argument or a return). The only crossings that occur in practice are between
+/// a concrete `Int` (i64) and the generic i32 ABI; matching kinds need nothing.
+fn kind_convert(from: Kind, to: Kind) -> &'static str {
+    match (from, to) {
+        (Kind::I64, Kind::I32) => "    i32.wrap_i64\n",
+        (Kind::I32, Kind::I64) => "    i64.extend_i32_s\n",
+        _ => "",
+    }
+}
+
+/// The WASM `Kind` for a field/element whose type is known only as an optional
+/// type-name string (as `record_fields` stores it). `Int` and type variables and
+/// unknown (None) use the universal i64; `Float` is f64; concrete pointer types
+/// and `Bool` are i32.
+fn name_kind(n: Option<&str>) -> Kind {
+    match n {
+        Some("Float") => Kind::F64,
+        Some("Int") => Kind::I64,
+        // Concrete pointers, Bool, type variables, and unknown all use i32 (the
+        // generic ABI). Only a concrete `Int`/`Float` field gets a wider kind.
+        _ => Kind::I32,
+    }
+}
+
+/// The WASM `Kind` a `ValType` is carried as. `Int` is i64; `Float` is f64;
+/// `Other` (a generic/undetermined value) uses the universal i64 slot rep;
+/// `Bool` and `Str` (a pointer) are i32.
+fn valtype_kind(vt: ValType) -> Kind {
+    match vt {
+        ValType::Int => Kind::I64,
+        ValType::Float => Kind::F64,
+        // Bool, Str (pointer), and Other (generic/undetermined) use the i32
+        // generic ABI.
+        ValType::Bool | ValType::Str | ValType::Other => Kind::I32,
+    }
 }
 
 fn ty_to_valtype(t: &Type) -> ValType {
@@ -345,25 +427,79 @@ impl Codegen {
     /// The WASM kind a compiled expression evaluates to.
     fn kind_of(&self, e: &Expr) -> Kind {
         match e {
+            Expr::Int(_) => Kind::I64,
             Expr::Float(_) => Kind::F64,
             Expr::Var(n) => self.locals.get(n).copied().unwrap_or(Kind::I32),
-            Expr::Unary { expr, .. } => self.kind_of(expr),
-            Expr::Binary { op, lhs, .. } => match op {
-                BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div => self.kind_of(lhs),
-                _ => Kind::I32, // concat (ptr) and comparisons (bool) are i32
+            Expr::Unary { op, expr } => match op {
+                // `!x` is a bool (i32); negation/complement keep the operand kind.
+                UnOp::Not => Kind::I32,
+                UnOp::Neg | UnOp::BitNot => self.kind_of(expr),
             },
-            Expr::If { then_block, .. } => self.block_kind(then_block),
-            Expr::Block(b) => self.block_kind(b),
-            Expr::Match { arms, .. } => {
-                arms.first().map(|a| self.kind_of(&a.body)).unwrap_or(Kind::I32)
+            Expr::Binary { op, lhs, rhs } => match op {
+                BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod | BinOp::BitAnd
+                | BinOp::BitOr | BinOp::BitXor | BinOp::Shl | BinOp::Shr => {
+                    // The common (promoted) kind of the two operands.
+                    let (lk, rk) = (self.kind_of(lhs), self.kind_of(rhs));
+                    if lk == Kind::F64 || rk == Kind::F64 {
+                        Kind::F64
+                    } else if lk == Kind::I64 || rk == Kind::I64 {
+                        Kind::I64
+                    } else {
+                        Kind::I32
+                    }
+                }
+                // concat (ptr) and comparisons / and / or (bool) are i32.
+                _ => Kind::I32,
+            },
+            Expr::Field { base, field } => {
+                if let Some(bt) = self.record_type_of(base) {
+                    if let Some(fields) = self.record_fields.get(&bt) {
+                        if let Some((_, ft)) = fields.iter().find(|(n, _)| n == field) {
+                            return name_kind(ft.as_deref());
+                        }
+                    }
+                }
+                Kind::I32
             }
+            Expr::If {
+                then_block,
+                else_block,
+                ..
+            } => {
+                let tk = self.block_kind(then_block);
+                let ek = else_block.as_ref().map(|b| self.block_kind(b)).unwrap_or(Kind::I32);
+                promote_kind(tk, ek)
+            }
+            Expr::Block(b) => self.block_kind(b),
+            Expr::Match { arms, .. } => arms
+                .iter()
+                .fold(Kind::I32, |acc, a| promote_kind(acc, self.kind_of(&a.body))),
             Expr::Call { name, .. } => match name.as_str() {
                 "int_to_float" => Kind::F64,
-                "to_string" | "int_to_string" | "length" | "at" | "print" => Kind::I32,
+                "float_to_int" | "string_length" | "char_count" | "index_of" | "length"
+                | "string_to_int" => Kind::I64,
+                "at" => self.elem_kind_of_list_arg(e),
+                "to_string" | "int_to_string" | "print" => Kind::I32,
                 other => self.fn_ret.get(other).copied().unwrap_or(Kind::I32),
             },
-            _ => Kind::I32, // Int, Bool, Str, List, Ctor, Spawn
+            _ => Kind::I32, // Bool, Str, List, Ctor, Spawn
         }
+    }
+
+    /// The WASM kind of the element produced by `at(list, i)`: the list's tracked
+    /// element kind, or the universal i64 when unknown (slots are i64, so a
+    /// generic element is recovered as i64 without truncation).
+    fn elem_kind_of_list_arg(&self, e: &Expr) -> Kind {
+        if let Expr::Call { name, args } = e {
+            if name == "at" {
+                if let Some(Expr::Var(v)) = args.first() {
+                    if let Some(vt) = self.local_list_elem_valtype.get(v) {
+                        return valtype_kind(*vt);
+                    }
+                }
+            }
+        }
+        Kind::I32
     }
 
     fn block_kind(&self, b: &Block) -> Kind {
@@ -594,6 +730,17 @@ impl Codegen {
         }
     }
 
+    /// The WASM kind of the elements iterated by `for x in iter`: a record
+    /// element is a pointer (i32); otherwise the element's value type maps via
+    /// `valtype_kind` (Int->i64, Float->f64, String/Bool->i32, generic->i64).
+    fn iter_elem_kind(&self, iter: &Expr) -> Kind {
+        if self.elem_record_type_of(iter).is_some() {
+            Kind::I32
+        } else {
+            valtype_kind(self.elem_val_type_of(iter))
+        }
+    }
+
     /// Record the kinds of all `let`/pattern-bound locals in a body.
     fn infer_locals(&mut self, block: &Block) {
         for stmt in &block.stmts {
@@ -606,6 +753,13 @@ impl Codegen {
                     let evt = self.elem_val_type_of(value);
                     if evt != ValType::Other {
                         self.local_list_elem_valtype.insert(name.clone(), evt);
+                    }
+                    // A binding to a tuple literal records its element slot value
+                    // types, so a later `let (a, b) = name` types `a`/`b` (and
+                    // gives Float/Int elements the right kind).
+                    if let Expr::Tuple(items) = value {
+                        self.local_tuple_slots
+                            .insert(name.clone(), items.iter().map(|e| self.val_type_of(e)).collect());
                     }
                     // A binding to a `List(Record)` (literal, a `List(Record)`-
                     // returning call, or another such variable) records its
@@ -629,29 +783,28 @@ impl Codegen {
                 }
                 Stmt::Assign { value, .. } => self.infer_locals_expr(value),
                 Stmt::LetTuple { names, value } => {
-                    for n in names {
-                        self.locals.insert(n.clone(), Kind::I32);
-                    }
-                    // Destructuring a tuple literal carries each element's value
-                    // type to its binding, so e.g. `let (a, b) = (7, 8)` knows
-                    // `a`/`b` are Ints (for `to_string`, Dict keys, ...).
-                    if let Expr::Tuple(items) = value {
+                    // The value type of each binding: from a tuple literal's
+                    // elements, or a tuple-typed variable's tracked slot types,
+                    // else Other. This drives both the binding's value type (for
+                    // `to_string`, Dict keys, ...) and its WASM kind (Int->i64).
+                    let vts: Vec<ValType> = if let Expr::Tuple(items) = value {
                         if items.len() == names.len() {
-                            for (n, item) in names.iter().zip(items) {
-                                let vt = self.val_type_of(item);
-                                self.local_val_types.insert(n.clone(), vt);
-                            }
+                            items.iter().map(|it| self.val_type_of(it)).collect()
+                        } else {
+                            vec![ValType::Other; names.len()]
                         }
                     } else if let Expr::Var(p) = value {
-                        // Destructuring a tuple-typed variable (e.g. a for-loop
-                        // var over a list of tuples) carries its slot types.
-                        if let Some(slots) = self.local_tuple_slots.get(p).cloned() {
-                            if slots.len() == names.len() {
-                                for (n, vt) in names.iter().zip(slots) {
-                                    self.local_val_types.insert(n.clone(), vt);
-                                }
-                            }
-                        }
+                        self.local_tuple_slots
+                            .get(p)
+                            .filter(|s| s.len() == names.len())
+                            .cloned()
+                            .unwrap_or_else(|| vec![ValType::Other; names.len()])
+                    } else {
+                        vec![ValType::Other; names.len()]
+                    };
+                    for (n, vt) in names.iter().zip(&vts) {
+                        self.local_val_types.insert(n.clone(), *vt);
+                        self.locals.insert(n.clone(), valtype_kind(*vt));
                     }
                     self.infer_locals_expr(value);
                 }
@@ -679,10 +832,11 @@ impl Codegen {
                 self.infer_locals(body);
             }
             Expr::For { var, iter, body } => {
-                // The loop var and the two scratch locals are all i32.
-                for n in [var.clone(), format!("__forlist_{var}"), format!("__fori_{var}")] {
-                    self.locals.insert(n, Kind::I32);
-                }
+                // The two scratch locals (list pointer, index) are i32; the loop
+                // var takes the element's kind (Int->i64, Float->f64, else i32).
+                self.locals.insert(format!("__forlist_{var}"), Kind::I32);
+                self.locals.insert(format!("__fori_{var}"), Kind::I32);
+                self.locals.insert(var.clone(), self.iter_elem_kind(iter));
                 // The loop variable's value type is the iterated list's element
                 // type, so e.g. `for w in split(...)` knows `w` is a String.
                 let evt = self.elem_val_type_of(iter);
@@ -731,6 +885,38 @@ impl Codegen {
                     self.infer_locals_expr(&arm.body);
                 }
             }
+            // Recurse into every sub-expression so a desugared range/comprehension
+            // Block nested in an argument, operand, etc. still has its loop/let
+            // locals inferred (otherwise their kinds default to i32).
+            Expr::Call { args, .. } | Expr::Ctor { args, .. } => {
+                for a in args {
+                    self.infer_locals_expr(a);
+                }
+            }
+            Expr::Apply { func, args } => {
+                self.infer_locals_expr(func);
+                for a in args {
+                    self.infer_locals_expr(a);
+                }
+            }
+            Expr::Binary { lhs, rhs, .. } => {
+                self.infer_locals_expr(lhs);
+                self.infer_locals_expr(rhs);
+            }
+            Expr::Unary { expr, .. } => self.infer_locals_expr(expr),
+            Expr::Tuple(xs) | Expr::List(xs) => {
+                for x in xs {
+                    self.infer_locals_expr(x);
+                }
+            }
+            Expr::Field { base, .. } => self.infer_locals_expr(base),
+            Expr::Try(inner) => self.infer_locals_expr(inner),
+            Expr::RecordUpdate { base, fields } => {
+                self.infer_locals_expr(base);
+                for (_, v) in fields {
+                    self.infer_locals_expr(v);
+                }
+            }
             _ => {}
         }
     }
@@ -766,7 +952,7 @@ impl Codegen {
             s.push_str("  (import \"witchy\" \"print\" (func $print (param i32 i32)))\n");
         }
         if self.uses_print_int {
-            s.push_str("  (import \"witchy\" \"print_int\" (func $print_int (param i32)))\n");
+            s.push_str("  (import \"witchy\" \"print_int\" (func $print_int (param i64)))\n");
         }
         if self.uses_print_float {
             s.push_str("  (import \"witchy\" \"print_float\" (func $print_float (param f64)))\n");
@@ -963,13 +1149,16 @@ impl Codegen {
         // Scratch slots: tuple destructuring, `?`, and `match` scrutinees.
         header.push_str(&format!("    (local ${TUPLE_TMP} i32)\n"));
         header.push_str(&format!("    (local ${TRY_TMP} i32)\n"));
-        header.push_str(&format!("    (local ${MATCH_TMP} i32)\n"));
+        header.push_str(&format!("    (local ${MATCH_TMP} i64)\n"));
         for i in 0..APPLY_POOL {
             header.push_str(&format!("    (local $__witchy_call_{i} i32)\n"));
         }
 
         self.apply_level = 0;
         let body = self.compile_block(&renamed)?;
+        // The body's tail value must match the declared result kind (a generic
+        // i32 body returned from an `-> Int` function is widened, etc.).
+        let body = format!("{body}{}", kind_convert(self.block_kind(&renamed), ret_kind));
         // Move-out: append each `inout` parameter's final value (declaration order).
         let mut epilogue = String::new();
         for p in &f.params {
@@ -992,23 +1181,30 @@ impl Codegen {
                     tail_is_value = false;
                 }
                 Stmt::Assign { name, value } => {
+                    let vk = self.kind_of(value);
                     out.push_str(&self.compile_expr(value)?);
                     if self.globals.contains(name) {
+                        out.push_str(kind_convert(vk, Kind::I32));
                         out.push_str(&format!("    global.set ${name}\n"));
                     } else {
+                        let target = self.locals.get(name).copied().unwrap_or(Kind::I32);
+                        out.push_str(kind_convert(vk, target));
                         out.push_str(&format!("    local.set ${name}\n"));
                     }
                     tail_is_value = false;
                 }
                 Stmt::LetTuple { names, value } => {
                     // Evaluate the tuple once into a scratch local, then load each
-                    // element (at offset 4 + 4*i) into its binding.
+                    // 8-byte slot (at offset 4 + 8*i) and recover each binding's
+                    // kind from the universal i64 slot rep.
                     out.push_str(&self.compile_expr(value)?);
                     out.push_str(&format!("    local.set ${TUPLE_TMP}\n"));
                     for (i, name) in names.iter().enumerate() {
-                        let offset = 4 + 4 * i;
+                        let offset = 4 + 8 * i;
+                        let k = self.locals.get(name).copied().unwrap_or(Kind::I32);
                         out.push_str(&format!(
-                            "    local.get ${TUPLE_TMP}\n    i32.const {offset}\n    i32.add\n    i32.load\n    local.set ${name}\n"
+                            "    local.get ${TUPLE_TMP}\n    i32.const {offset}\n    i32.add\n    i64.load\n{}    local.set ${name}\n",
+                            from_slot(k)
                         ));
                     }
                     tail_is_value = false;
@@ -1020,7 +1216,14 @@ impl Codegen {
                         return cerr("`return` is not compiled for functions with `inout` parameters");
                     }
                     let value = match opt {
-                        Some(e) => self.compile_expr(e)?,
+                        Some(e) => {
+                            let ek = self.kind_of(e);
+                            format!(
+                                "{}{}",
+                                self.compile_expr(e)?,
+                                kind_convert(ek, self.cur_fn_ret_kind)
+                            )
+                        }
                         None => format!("    {}.const 0\n", wasm_ty(self.cur_fn_ret_kind)),
                     };
                     out.push_str(&value);
@@ -1054,18 +1257,7 @@ impl Codegen {
 
     fn compile_expr(&mut self, expr: &Expr) -> Result<String, CodegenError> {
         match expr {
-            Expr::Int(n) => {
-                // Compiled `Int` is i32. A literal outside the signed 32-bit
-                // range would silently wrap (e.g. 3_000_000_000 -> negative) or
-                // fail WASM validation, diverging from the i64 interpreter — so
-                // reject it explicitly.
-                if *n < i32::MIN as i64 || *n > i32::MAX as i64 {
-                    return cerr(format!(
-                        "integer literal {n} exceeds the 32-bit range of compiled Int"
-                    ));
-                }
-                Ok(format!("    i32.const {n}\n"))
-            }
+            Expr::Int(n) => Ok(format!("    i64.const {n}\n")),
             Expr::Bool(b) => Ok(format!("    i32.const {}\n", if *b { 1 } else { 0 })),
             Expr::Str(s) => {
                 let off = self.intern(s);
@@ -1100,16 +1292,19 @@ impl Codegen {
             }
             Expr::Unary { op, expr } => match op {
                 UnOp::Not => Ok(format!("{}    i32.eqz\n", self.compile_expr(expr)?)),
-                UnOp::Neg => {
-                    if self.kind_of(expr) == Kind::F64 {
-                        Ok(format!("{}    f64.neg\n", self.compile_expr(expr)?))
-                    } else {
+                UnOp::Neg => match self.kind_of(expr) {
+                    Kind::F64 => Ok(format!("{}    f64.neg\n", self.compile_expr(expr)?)),
+                    Kind::I64 => {
+                        Ok(format!("    i64.const 0\n{}    i64.sub\n", self.compile_expr(expr)?))
+                    }
+                    Kind::I32 => {
                         Ok(format!("    i32.const 0\n{}    i32.sub\n", self.compile_expr(expr)?))
                     }
-                }
-                // ~x == x ^ -1 (all bits set); width-independent (= -x - 1).
+                },
+                // ~x == x ^ -1 (all bits set); Int is i64.
                 UnOp::BitNot => {
-                    Ok(format!("{}    i32.const -1\n    i32.xor\n", self.compile_expr(expr)?))
+                    let p = wasm_ty(self.kind_of(expr));
+                    Ok(format!("{}    {p}.const -1\n    {p}.xor\n", self.compile_expr(expr)?))
                 }
             },
             Expr::Binary { op, lhs, rhs } => {
@@ -1166,38 +1361,72 @@ impl Codegen {
                         }
                     }
                 }
-                let float = self.kind_of(lhs) == Kind::F64;
-                let l = self.compile_expr(lhs)?;
-                let r = self.compile_expr(rhs)?;
-                let opcode = match (op, float) {
-                    (BinOp::Add, false) => "i32.add",
-                    (BinOp::Add, true) => "f64.add",
-                    (BinOp::Sub, false) => "i32.sub",
-                    (BinOp::Sub, true) => "f64.sub",
-                    (BinOp::Mul, false) => "i32.mul",
-                    (BinOp::Mul, true) => "f64.mul",
-                    (BinOp::Div, false) => "i32.div_s",
-                    (BinOp::Div, true) => "f64.div",
-                    (BinOp::Mod, _) => "i32.rem_s",
-                    (BinOp::Eq, false) => "i32.eq",
-                    (BinOp::Eq, true) => "f64.eq",
-                    (BinOp::NotEq, false) => "i32.ne",
-                    (BinOp::NotEq, true) => "f64.ne",
-                    (BinOp::Lt, false) => "i32.lt_s",
-                    (BinOp::Lt, true) => "f64.lt",
-                    (BinOp::LtEq, false) => "i32.le_s",
-                    (BinOp::LtEq, true) => "f64.le",
-                    (BinOp::Gt, false) => "i32.gt_s",
-                    (BinOp::Gt, true) => "f64.gt",
-                    (BinOp::GtEq, false) => "i32.ge_s",
-                    (BinOp::GtEq, true) => "f64.ge",
-                    // Bitwise ops are Int-only (i32); `float` is always false.
-                    (BinOp::BitAnd, _) => "i32.and",
-                    (BinOp::BitOr, _) => "i32.or",
-                    (BinOp::BitXor, _) => "i32.xor",
-                    (BinOp::Shl, _) => "i32.shl",
-                    (BinOp::Shr, _) => "i32.shr_s",
-                    (BinOp::Concat | BinOp::And | BinOp::Or, _) => unreachable!("handled above"),
+                // Promote both operands to a common kind so a concrete i64 Int
+                // and an i32 (generic/narrowed) operand don't clash: f64 if either
+                // is Float, else i64 if either is i64, else i32. Comparisons still
+                // produce an i32 bool.
+                let lk = self.kind_of(lhs);
+                let rk = self.kind_of(rhs);
+                let ck = if lk == Kind::F64 || rk == Kind::F64 {
+                    Kind::F64
+                } else if lk == Kind::I64 || rk == Kind::I64 {
+                    Kind::I64
+                } else {
+                    Kind::I32
+                };
+                let p = wasm_ty(ck);
+                let float = ck == Kind::F64;
+                let l = format!("{}{}", self.compile_expr(lhs)?, kind_convert(lk, ck));
+                let r = format!("{}{}", self.compile_expr(rhs)?, kind_convert(rk, ck));
+                let opcode: String = match op {
+                    BinOp::Add => format!("{p}.add"),
+                    BinOp::Sub => format!("{p}.sub"),
+                    BinOp::Mul => format!("{p}.mul"),
+                    BinOp::Div => {
+                        if float {
+                            "f64.div".to_string()
+                        } else {
+                            format!("{p}.div_s")
+                        }
+                    }
+                    BinOp::Mod => format!("{p}.rem_s"),
+                    BinOp::Eq => format!("{p}.eq"),
+                    BinOp::NotEq => format!("{p}.ne"),
+                    BinOp::Lt => {
+                        if float {
+                            "f64.lt".to_string()
+                        } else {
+                            format!("{p}.lt_s")
+                        }
+                    }
+                    BinOp::LtEq => {
+                        if float {
+                            "f64.le".to_string()
+                        } else {
+                            format!("{p}.le_s")
+                        }
+                    }
+                    BinOp::Gt => {
+                        if float {
+                            "f64.gt".to_string()
+                        } else {
+                            format!("{p}.gt_s")
+                        }
+                    }
+                    BinOp::GtEq => {
+                        if float {
+                            "f64.ge".to_string()
+                        } else {
+                            format!("{p}.ge_s")
+                        }
+                    }
+                    // Bitwise ops are Int-only -> i64.
+                    BinOp::BitAnd => format!("{p}.and"),
+                    BinOp::BitOr => format!("{p}.or"),
+                    BinOp::BitXor => format!("{p}.xor"),
+                    BinOp::Shl => format!("{p}.shl"),
+                    BinOp::Shr => format!("{p}.shr_s"),
+                    BinOp::Concat | BinOp::And | BinOp::Or => unreachable!("handled above"),
                 };
                 Ok(format!("{l}{r}    {opcode}\n"))
             }
@@ -1206,19 +1435,36 @@ impl Codegen {
                 then_block,
                 else_block,
             } => {
-                // With an `else`, the `if` yields the branches' value, whose kind
-                // (i32 or f64) is the result type. Without one it is used for
-                // effect (Nil); yield i32 0, matching the i32 tail compile_block
-                // leaves for a statement-style branch.
-                let (result_ty, else_wat) = match else_block {
-                    Some(eb) => (wasm_ty(self.block_kind(then_block)), self.compile_block(eb)?),
-                    None => ("i32", "    i32.const 0\n".to_string()),
-                };
-                Ok(format!(
-                    "{}    if (result {result_ty})\n{}    else\n{else_wat}    end\n",
-                    self.compile_expr(cond)?,
-                    self.compile_block(then_block)?,
-                ))
+                // With an `else`, the `if` yields the branches' value. The two
+                // branches can compile to different kinds for one source type, so
+                // promote to their common kind and convert each. Without an else
+                // it is used for effect (Nil); yield i32 0.
+                match else_block {
+                    Some(eb) => {
+                        let tk = self.block_kind(then_block);
+                        let ek = self.block_kind(eb);
+                        let ck = if tk == Kind::F64 || ek == Kind::F64 {
+                            Kind::F64
+                        } else if tk == Kind::I64 || ek == Kind::I64 {
+                            Kind::I64
+                        } else {
+                            Kind::I32
+                        };
+                        let then_wat =
+                            format!("{}{}", self.compile_block(then_block)?, kind_convert(tk, ck));
+                        let else_wat = format!("{}{}", self.compile_block(eb)?, kind_convert(ek, ck));
+                        Ok(format!(
+                            "{}    if (result {})\n{then_wat}    else\n{else_wat}    end\n",
+                            self.compile_expr(cond)?,
+                            wasm_ty(ck),
+                        ))
+                    }
+                    None => Ok(format!(
+                        "{}    if (result i32)\n{}    else\n    i32.const 0\n    end\n",
+                        self.compile_expr(cond)?,
+                        self.compile_block(then_block)?,
+                    )),
+                }
             }
             Expr::Block(b) => self.compile_block(b),
             Expr::While { cond, body } => {
@@ -1250,7 +1496,9 @@ impl Codegen {
                 self.apply_level = level + 1;
                 let mut argcode = String::new();
                 for a in args {
+                    let ak = self.kind_of(a);
                     argcode.push_str(&self.compile_expr(a)?);
+                    argcode.push_str(kind_convert(ak, Kind::I32));
                 }
                 self.apply_level = level;
                 self.clos_arities.insert(n);
@@ -1262,16 +1510,15 @@ impl Codegen {
             Expr::Float(x) => Ok(format!("    f64.const {x}\n")),
             Expr::Tuple(items) => {
                 // A tuple is a heap record [0][elem0][elem1]...] (a 0 tag, then
-                // the elements), reusing the constructor allocator. i32 elements
-                // only (the slots are 4 bytes wide).
-                if items.iter().any(|e| self.kind_of(e) == Kind::F64) {
-                    return cerr("tuples with Float elements are not compiled to WASM yet");
-                }
+                // the elements), reusing the constructor allocator. Each element
+                // occupies an 8-byte slot holding the universal i64 rep.
                 let n = items.len();
                 self.mk_arities.insert(n);
                 let mut out = String::from("    i32.const 0\n");
                 for item in items {
+                    let k = self.kind_of(item);
                     out.push_str(&self.compile_expr(item)?);
+                    out.push_str(to_slot(k));
                 }
                 out.push_str(&format!("    call $mk{n}\n"));
                 Ok(out)
@@ -1284,12 +1531,15 @@ impl Codegen {
                 if self.cur_fn_inout {
                     return cerr("`?` is not compiled for functions with `inout` parameters");
                 }
+                // The payload occupies the first 8-byte slot (at +4). It is
+                // recovered as an i32 pointer — `?` payloads are overwhelmingly
+                // records/tuples/strings; an Int payload narrows to 32 bits.
                 let v = self.compile_expr(inner)?;
                 Ok(format!(
                     "{v}    local.set ${TRY_TMP}\n    \
                      local.get ${TRY_TMP}\n    i32.load\n    i32.eqz\n    \
                      if (result i32)\n    \
-                     local.get ${TRY_TMP}\n    i32.const 4\n    i32.add\n    i32.load\n    \
+                     local.get ${TRY_TMP}\n    i32.const 4\n    i32.add\n    i64.load\n    i32.wrap_i64\n    \
                      else\n    local.get ${TRY_TMP}\n    return\n    i32.const 0\n    end\n"
                 ))
             }
@@ -1308,6 +1558,7 @@ impl Codegen {
                 if let Some(elem) = self.elem_record_type_of(iter) {
                     self.local_records.insert(var.clone(), elem);
                 }
+                let elem_from = from_slot(self.iter_elem_kind(iter));
                 // `break` branches to $fe{id} (loop exit); `continue` to $fc{id}
                 // (an inner block around the body, after which the index advances).
                 self.loop_labels.push((format!("$fe{id}"), format!("$fc{id}")));
@@ -1318,7 +1569,7 @@ impl Codegen {
                      i32.const 0\n    local.set ${idx_l}\n    \
                      block $fe{id}\n    loop $fl{id}\n    \
                      local.get ${idx_l}\n    local.get ${list_l}\n    i32.load\n    i32.ge_s\n    br_if $fe{id}\n    \
-                     local.get ${list_l}\n    i32.const 4\n    i32.add\n    local.get ${idx_l}\n    i32.const 4\n    i32.mul\n    i32.add\n    i32.load\n    local.set ${var}\n\
+                     local.get ${list_l}\n    i32.const 4\n    i32.add\n    local.get ${idx_l}\n    i32.const 8\n    i32.mul\n    i32.add\n    i64.load\n{elem_from}    local.set ${var}\n\
                      block $fc{id}\n{body_wat}    drop\n    end\n    \
                      local.get ${idx_l}\n    i32.const 1\n    i32.add\n    local.set ${idx_l}\n    \
                      br $fl{id}\n    end\n    end\n    i32.const 0\n"
@@ -1340,10 +1591,12 @@ impl Codegen {
                 let Some(idx) = names.iter().position(|(n, _)| n == field) else {
                     return cerr(format!("record `{base_ty}` has no field `{field}`"));
                 };
-                let offset = 4 + 4 * idx;
+                let field_kind = name_kind(names[idx].1.as_deref());
+                let offset = 4 + 8 * idx;
                 let base_wat = self.compile_expr(base)?;
                 Ok(format!(
-                    "{base_wat}    i32.const {offset}\n    i32.add\n    i32.load\n"
+                    "{base_wat}    i32.const {offset}\n    i32.add\n    i64.load\n{}",
+                    from_slot(field_kind)
                 ))
             }
             Expr::RecordUpdate { base, fields } => {
@@ -1380,11 +1633,15 @@ impl Codegen {
                 let mut out = format!("{prelude}    i32.const {tag}\n");
                 for (i, (fname, _)) in names.iter().enumerate() {
                     if let Some((_, vexpr)) = fields.iter().find(|(n, _)| n == fname) {
+                        let k = self.kind_of(vexpr);
                         out.push_str(&self.compile_expr(vexpr)?);
+                        out.push_str(to_slot(k));
                     } else {
-                        let offset = 4 + 4 * i;
+                        // Preserved field: copy the raw 8-byte slot straight across
+                        // (already in the universal i64 rep).
+                        let offset = 4 + 8 * i;
                         out.push_str(&format!(
-                            "{load_base}    i32.const {offset}\n    i32.add\n    i32.load\n"
+                            "{load_base}    i32.const {offset}\n    i32.add\n    i64.load\n"
                         ));
                     }
                 }
@@ -1397,16 +1654,15 @@ impl Codegen {
             Expr::Lambda { params, body } => self.compile_lambda(params, body),
             Expr::List(items) => {
                 // A list is a record [len][elem0..]; reuse the $mk{N} helper with
-                // the length as the header slot. Slots are 4 bytes, so f64
-                // elements don't fit (same limitation as tuples).
-                if items.iter().any(|e| self.kind_of(e) == Kind::F64) {
-                    return cerr("lists with Float elements are not compiled to WASM yet");
-                }
+                // the length as the (i32) header. Each element is an 8-byte slot
+                // holding the universal i64 rep, so floats now fit too.
                 let n = items.len();
                 self.mk_arities.insert(n);
                 let mut out = format!("    i32.const {n}\n");
                 for item in items {
+                    let k = self.kind_of(item);
                     out.push_str(&self.compile_expr(item)?);
+                    out.push_str(to_slot(k));
                 }
                 out.push_str(&format!("    call $mk{n}\n"));
                 Ok(out)
@@ -1423,16 +1679,12 @@ impl Codegen {
                         args.len()
                     ));
                 }
-                // Record/ADT fields occupy 4-byte slots, so f64 fields don't fit.
-                if args.iter().any(|a| self.kind_of(a) == Kind::F64) {
-                    return cerr(format!(
-                        "`{name}` has a Float field; Float fields are not compiled to WASM yet"
-                    ));
-                }
                 self.mk_arities.insert(nfields);
                 let mut out = format!("    i32.const {tag}\n");
                 for arg in args {
+                    let k = self.kind_of(arg);
                     out.push_str(&self.compile_expr(arg)?);
+                    out.push_str(to_slot(k));
                 }
                 out.push_str(&format!("    call $mk{nfields}\n"));
                 Ok(out)
@@ -1451,14 +1703,36 @@ impl Codegen {
         // local and use `local.get` (cheap, side-effect-free) as the value. The
         // matching arm's body runs only after its pattern is tested and bound, so
         // a nested match reusing this slot is safe.
-        let scrut_setup = format!("{}    local.set ${MATCH_TMP}\n", self.compile_expr(scrutinee)?);
+        // The scrutinee is stored in the universal i64 rep (MATCH_TMP is i64);
+        // each pattern recovers the kind it needs from it.
+        let scrut_kind = self.kind_of(scrutinee);
+        let scrut_setup = format!(
+            "{}{}    local.set ${MATCH_TMP}\n",
+            self.compile_expr(scrutinee)?,
+            to_slot(scrut_kind)
+        );
         let scrut = format!("    local.get ${MATCH_TMP}\n");
         let id = self.next_label;
         self.next_label += 1;
+        // Arms can compile to different kinds for the same source type (an Int
+        // built from a literal is i64; one built only from narrowed i32 pattern
+        // vars is i32), so the block result is their promoted common kind and
+        // each arm body is converted to it.
+        let result_kind = arms.iter().fold(Kind::I32, |acc, a| {
+            let k = self.kind_of(&a.body);
+            if acc == Kind::F64 || k == Kind::F64 {
+                Kind::F64
+            } else if acc == Kind::I64 || k == Kind::I64 {
+                Kind::I64
+            } else {
+                Kind::I32
+            }
+        });
+        let result_ty = wasm_ty(result_kind);
         // Each arm is a block: test the pattern (skip on failure), bind, test the
         // guard (skip on failure), run the body and branch out with its value.
         let mut s = scrut_setup;
-        s.push_str(&format!("    block $d{id} (result i32)\n"));
+        s.push_str(&format!("    block $d{id} (result {result_ty})\n"));
         for (i, arm) in arms.iter().enumerate() {
             let (cond, binds) = self.pattern_match(&scrut, &arm.pattern)?;
             s.push_str(&format!("    block $a{id}_{i}\n"));
@@ -1469,7 +1743,9 @@ impl Codegen {
                 s.push_str(&self.compile_expr(guard)?);
                 s.push_str(&format!("    i32.eqz\n    br_if $a{id}_{i}\n"));
             }
+            let body_kind = self.kind_of(&arm.body);
             s.push_str(&self.compile_expr(&arm.body)?);
+            s.push_str(kind_convert(body_kind, result_kind));
             s.push_str(&format!("    br $d{id}\n    end\n"));
         }
         s.push_str("    unreachable\n    end\n");
@@ -1487,17 +1763,25 @@ impl Codegen {
         pat: &Pattern,
     ) -> Result<(String, String), CodegenError> {
         const TRUE: &str = "    i32.const 1\n";
+        // `value` always produces the matched value in the universal i64 rep.
+        // Scalar patterns (Int/Bool) compare as i64; pointer patterns first wrap
+        // it to an i32 address (`ptr`); field/element reads load the raw i64 slot
+        // and let the recursive sub-pattern recover its kind.
+        let ptr = format!("{value}    i32.wrap_i64\n");
         Ok(match pat {
             Pattern::Wildcard => (TRUE.to_string(), String::new()),
-            Pattern::Int(k) => (format!("{value}    i32.const {k}\n    i32.eq\n"), String::new()),
+            Pattern::Int(k) => (format!("{value}    i64.const {k}\n    i64.eq\n"), String::new()),
             Pattern::Bool(b) => (
-                format!("{value}    i32.const {}\n    i32.eq\n", if *b { 1 } else { 0 }),
+                format!("{value}    i64.const {}\n    i64.eq\n", if *b { 1 } else { 0 }),
                 String::new(),
             ),
-            Pattern::Var(name) => (
-                TRUE.to_string(),
-                format!("{value}    local.set ${name}\n"),
-            ),
+            Pattern::Var(name) => {
+                let k = self.locals.get(name).copied().unwrap_or(Kind::I32);
+                (
+                    TRUE.to_string(),
+                    format!("{value}{}    local.set ${name}\n", from_slot(k)),
+                )
+            }
             Pattern::Tuple(pats) => {
                 // A tuple is `[0][elem0][elem1]...`; there's no tag to check
                 // (tuples always match by shape), so the condition is just the
@@ -1506,7 +1790,7 @@ impl Codegen {
                 let mut binds = String::new();
                 for (i, sub) in pats.iter().enumerate() {
                     let elem_value =
-                        format!("{value}    i32.const {}\n    i32.add\n    i32.load\n", 4 + 4 * i);
+                        format!("{ptr}    i32.const {}\n    i32.add\n    i64.load\n", 4 + 8 * i);
                     let (sub_cond, sub_binds) = self.pattern_match(&elem_value, sub)?;
                     if sub_cond != TRUE {
                         elem_conds.push(sub_cond);
@@ -1526,12 +1810,12 @@ impl Codegen {
                 // prefix elements (so a short list never reads out of bounds).
                 let n = elems.len();
                 let len_cmp = if rest.is_some() { "i32.ge_s" } else { "i32.eq" };
-                let len_check = format!("{value}    i32.load\n    i32.const {n}\n    {len_cmp}\n");
+                let len_check = format!("{ptr}    i32.load\n    i32.const {n}\n    {len_cmp}\n");
                 let mut elem_conds = Vec::new();
                 let mut binds = String::new();
                 for (i, sub) in elems.iter().enumerate() {
                     let elem_value =
-                        format!("{value}    i32.const {}\n    i32.add\n    i32.load\n", 4 + 4 * i);
+                        format!("{ptr}    i32.const {}\n    i32.add\n    i64.load\n", 4 + 8 * i);
                     let (sc, sb) = self.pattern_match(&elem_value, sub)?;
                     if sc != TRUE {
                         elem_conds.push(sc);
@@ -1542,7 +1826,7 @@ impl Codegen {
                 if let Some(Some(name)) = rest {
                     self.uses_list_drop = true;
                     binds.push_str(&format!(
-                        "{value}    i32.const {n}\n    call $list_drop\n    local.set ${name}\n"
+                        "{ptr}    i32.const {n}\n    call $list_drop\n    local.set ${name}\n"
                     ));
                 }
                 let inner = and_chain(&elem_conds);
@@ -1554,7 +1838,7 @@ impl Codegen {
                 self.uses_str_eq = true;
                 let off = self.intern(s);
                 (
-                    format!("{value}    i32.const {off}\n    call $str_eq\n"),
+                    format!("{ptr}    i32.const {off}\n    call $str_eq\n"),
                     String::new(),
                 )
             }
@@ -1572,7 +1856,7 @@ impl Codegen {
                 let mut binds = String::new();
                 for (i, sub) in args.iter().enumerate() {
                     let field_value =
-                        format!("{value}    i32.const {}\n    i32.add\n    i32.load\n", 4 + 4 * i);
+                        format!("{ptr}    i32.const {}\n    i32.add\n    i64.load\n", 4 + 8 * i);
                     let (sub_cond, sub_binds) = self.pattern_match(&field_value, sub)?;
                     if sub_cond != TRUE {
                         field_conds.push(sub_cond);
@@ -1582,7 +1866,7 @@ impl Codegen {
                 // Only inspect fields once the tag has matched (short-circuit).
                 let inner = and_chain(&field_conds);
                 let cond = format!(
-                    "{value}    i32.load\n    i32.const {tag}\n    i32.eq\n    if (result i32)\n{inner}    else\n    i32.const 0\n    end\n"
+                    "{ptr}    i32.load\n    i32.const {tag}\n    i32.eq\n    if (result i32)\n{inner}    else\n    i32.const 0\n    end\n"
                 );
                 (cond, binds)
             }
@@ -1620,17 +1904,21 @@ impl Codegen {
             .collect();
         // Resolve each capture against the *enclosing* scope (before the local
         // tables are swapped out for the lambda body).
-        let mut cap_info: Vec<(String, bool, Option<String>, Option<String>)> = Vec::new();
+        let mut cap_info: Vec<(String, bool, Option<String>, Option<String>, Kind)> = Vec::new();
         for c in &captures {
-            let kind = self.locals.get(c).copied().unwrap_or(Kind::I32);
-            if kind != Kind::I32 {
-                return cerr(format!("a closure capturing a Float (`{c}`) is not compiled yet"));
-            }
+            // A global (actor field) is i32; a local keeps its kind so an Int
+            // capture survives as i64 in its 8-byte env slot.
+            let kind = if self.globals.contains(c) {
+                Kind::I32
+            } else {
+                self.locals.get(c).copied().unwrap_or(Kind::I32)
+            };
             cap_info.push((
                 c.clone(),
                 self.globals.contains(c),
                 self.local_records.get(c).cloned(),
                 self.local_list_elem.get(c).cloned(),
+                kind,
             ));
         }
 
@@ -1645,12 +1933,10 @@ impl Codegen {
         self.cur_fn_inout = false;
 
         for p in params {
-            let k = p.ty.as_ref().map(ty_kind).unwrap_or(Kind::I32);
-            if k != Kind::I32 {
-                self.restore_scope(saved);
-                return cerr("non-Int lambda parameters are not compiled to WASM yet");
-            }
-            self.locals.insert(p.name.clone(), k);
+            // Closures use the i32 generic ABI for every parameter (an Int arg
+            // is narrowed at the call_indirect boundary), so the body sees the
+            // param as i32.
+            self.locals.insert(p.name.clone(), Kind::I32);
             if let Some(t) = &p.ty {
                 self.local_val_types.insert(p.name.clone(), ty_to_valtype(t));
             }
@@ -1682,7 +1968,9 @@ impl Codegen {
         }
         // Captured names are locals of the lifted function; carry over their
         // record / list-element types so field and loop resolution still work.
-        for (name, _, rec, list_elem) in &cap_info {
+        for (name, _, rec, list_elem, _kind) in &cap_info {
+            // Inside the lambda a capture uses the i32 generic ABI (an Int
+            // capture is narrowed), matching params and result.
             self.locals.insert(name.clone(), Kind::I32);
             if let Some(r) = rec {
                 self.local_records.insert(name.clone(), r.clone());
@@ -1692,12 +1980,9 @@ impl Codegen {
             }
         }
         self.infer_locals(body);
-        let ret_kind = self.block_kind(body);
-        if ret_kind != Kind::I32 {
-            self.restore_scope(saved);
-            return cerr("non-Int lambda results are not compiled to WASM yet");
-        }
-        self.cur_fn_ret_kind = ret_kind;
+        // The closure result is the i32 generic ABI; the body's tail value is
+        // narrowed to it.
+        self.cur_fn_ret_kind = Kind::I32;
 
         let mut header = format!("  (func $__lam{index} (param ${ENV_PARAM} i32) ");
         for p in params {
@@ -1707,7 +1992,7 @@ impl Codegen {
         // Locals: captured values, then `let` bindings, then scratch. Captures
         // are declared even when they shadow nothing, since the prologue stores
         // into them.
-        for (name, _, _, _) in &cap_info {
+        for (name, _, _, _, _) in &cap_info {
             header.push_str(&format!("    (local ${name} i32)\n"));
         }
         let mut lets = Vec::new();
@@ -1720,17 +2005,19 @@ impl Codegen {
         }
         header.push_str(&format!("    (local ${TUPLE_TMP} i32)\n"));
         header.push_str(&format!("    (local ${TRY_TMP} i32)\n"));
-        header.push_str(&format!("    (local ${MATCH_TMP} i32)\n"));
+        header.push_str(&format!("    (local ${MATCH_TMP} i64)\n"));
         for i in 0..APPLY_POOL {
             header.push_str(&format!("    (local $__witchy_call_{i} i32)\n"));
         }
-        // Prologue: copy each capture out of the environment record (slot j is at
-        // offset 4 + 4*j, past the code-index header).
+        // Prologue: copy each capture out of the environment record (slot j is an
+        // 8-byte slot at offset 4 + 8*j, past the i32 code-index header), then
+        // recover its kind from the universal i64 slot rep.
         let mut prologue = String::new();
-        for (j, (name, _, _, _)) in cap_info.iter().enumerate() {
-            let offset = 4 + 4 * j;
+        for (j, (name, _, _, _, _)) in cap_info.iter().enumerate() {
+            let offset = 4 + 8 * j;
             prologue.push_str(&format!(
-                "    local.get ${ENV_PARAM}\n    i32.const {offset}\n    i32.add\n    i32.load\n    local.set ${name}\n"
+                "    local.get ${ENV_PARAM}\n    i32.const {offset}\n    i32.add\n    i64.load\n{}    local.set ${name}\n",
+                from_slot(Kind::I32)
             ));
         }
 
@@ -1738,6 +2025,8 @@ impl Codegen {
         let saved_apply_level = self.apply_level;
         self.apply_level = 0;
         let body_wat = self.compile_block(body)?;
+        // Narrow the body's tail value to the i32 closure-result ABI.
+        let body_wat = format!("{body_wat}{}", kind_convert(self.block_kind(body), Kind::I32));
         self.apply_level = saved_apply_level;
         self.lambdas[index] = format!("{header}{prologue}{body_wat}  )\n");
         self.clos_arities.insert(params.len());
@@ -1749,12 +2038,13 @@ impl Codegen {
         let n = cap_info.len();
         self.mk_arities.insert(n);
         let mut out = format!("    i32.const {index}\n");
-        for (name, is_global, _, _) in &cap_info {
+        for (name, is_global, _, _, kind) in &cap_info {
             if *is_global {
                 out.push_str(&format!("    global.get ${name}\n"));
             } else {
                 out.push_str(&format!("    local.get ${name}\n"));
             }
+            out.push_str(to_slot(*kind));
         }
         out.push_str(&format!("    call $mk{n}\n"));
         Ok(out)
@@ -1813,8 +2103,9 @@ impl Codegen {
             }
             ("int_to_string", 1) => {
                 self.uses_int_to_string = true;
+                let ak = self.kind_of(&args[0]);
                 let arg = self.compile_expr(&args[0])?;
-                Ok(format!("{arg}    call $int_to_string\n"))
+                Ok(format!("{arg}{}    call $int_to_string\n", kind_convert(ak, Kind::I64)))
             }
             // to_string(x): render by the argument's compile-time value type. A
             // String passes through; an Int reuses `$int_to_string`; a Bool picks
@@ -1824,8 +2115,9 @@ impl Codegen {
                 ValType::Str => self.compile_expr(&args[0]),
                 ValType::Int => {
                     self.uses_int_to_string = true;
+                    let ak = self.kind_of(&args[0]);
                     let arg = self.compile_expr(&args[0])?;
-                    Ok(format!("{arg}    call $int_to_string\n"))
+                    Ok(format!("{arg}{}    call $int_to_string\n", kind_convert(ak, Kind::I64)))
                 }
                 ValType::Bool => {
                     let t = self.intern("true");
@@ -1842,10 +2134,10 @@ impl Codegen {
                     "to_string could not determine the value's type for WASM; convert it explicitly (e.g. int_to_string)",
                 ),
             },
-            // The string record's header is its byte length.
+            // The string record's header is its byte length (i32) -> Int (i64).
             ("string_length", 1) => {
                 let arg = self.compile_expr(&args[0])?;
-                Ok(format!("{arg}    i32.load\n"))
+                Ok(format!("{arg}    i32.load\n    i64.extend_i32_u\n"))
             }
             // char_count(s): Unicode scalars in `s`. Evaluate `s` once into a
             // scratch slot, then `$byte_to_char(s, byte_length(s))`.
@@ -1858,14 +2150,14 @@ impl Codegen {
                 let tmp = format!("__witchy_call_{level}");
                 let arg = self.compile_expr(&args[0])?;
                 Ok(format!(
-                    "{arg}    local.set ${tmp}\n    local.get ${tmp}\n    local.get ${tmp}\n    i32.load\n    call $byte_to_char\n"
+                    "{arg}    local.set ${tmp}\n    local.get ${tmp}\n    local.get ${tmp}\n    i32.load\n    call $byte_to_char\n    i64.extend_i32_u\n"
                 ))
             }
             ("int_to_float", 1) => {
-                Ok(format!("{}    f64.convert_i32_s\n", self.compile_expr(&args[0])?))
+                Ok(format!("{}    f64.convert_i64_s\n", self.compile_expr(&args[0])?))
             }
             ("float_to_int", 1) => {
-                Ok(format!("{}    i32.trunc_f64_s\n", self.compile_expr(&args[0])?))
+                Ok(format!("{}    i64.trunc_f64_s\n", self.compile_expr(&args[0])?))
             }
             // sqrt(x): WASM has a native f64 square root.
             ("sqrt", 1) => Ok(format!("{}    f64.sqrt\n", self.compile_expr(&args[0])?)),
@@ -1877,7 +2169,7 @@ impl Codegen {
             ("string_to_int", 1) => {
                 self.uses_str_to_int = true;
                 let s = self.compile_expr(&args[0])?;
-                Ok(format!("{s}    call $str_to_int\n"))
+                Ok(format!("{s}    call $str_to_int\n    i64.extend_i32_s\n"))
             }
             // Prefix/suffix tests over the string's bytes (`[len][bytes]`).
             ("starts_with", 2) => {
@@ -1915,17 +2207,24 @@ impl Codegen {
                 self.uses_index_of = true;
                 let s = self.compile_expr(&args[0])?;
                 let sub = self.compile_expr(&args[1])?;
-                Ok(format!("{s}{sub}    call $str_index_of\n"))
+                Ok(format!("{s}{sub}    call $str_index_of\n    i64.extend_i32_s\n"))
             }
             // substring(s, start, end): the half-open character range [start, end),
             // clamped to bounds (counted by Unicode scalar).
             ("substring", 3) => {
                 self.uses_substring = true;
                 self.uses_substr = true;
+                // start/end are Int (i64) but the helper indexes with i32.
+                let sk = self.kind_of(&args[1]);
+                let ek = self.kind_of(&args[2]);
                 let s = self.compile_expr(&args[0])?;
                 let start = self.compile_expr(&args[1])?;
                 let end = self.compile_expr(&args[2])?;
-                Ok(format!("{s}{start}{end}    call $str_substring\n"))
+                Ok(format!(
+                    "{s}{start}{}{end}{}    call $str_substring\n",
+                    kind_convert(sk, Kind::I32),
+                    kind_convert(ek, Kind::I32)
+                ))
             }
             // replace(s, from, to): all non-overlapping occurrences of `from`.
             ("replace", 3) => {
@@ -1954,40 +2253,62 @@ impl Codegen {
                 self.uses_str_eq = true; // `$key_eq` references `$str_eq`
                 Ok("    call $dict_new\n".to_string())
             }
+            // Dicts use the i32 ABI for keys and values (a concrete i64 Int key
+            // or value is narrowed at the boundary).
             ("insert", 3) => {
                 let mode = self.dict_key_mode(&args[1])?;
                 self.uses_dict = true;
                 self.uses_str_eq = true;
+                let kk = self.kind_of(&args[1]);
+                let vk = self.kind_of(&args[2]);
                 let d = self.compile_expr(&args[0])?;
                 let k = self.compile_expr(&args[1])?;
                 let v = self.compile_expr(&args[2])?;
-                Ok(format!("{d}{k}{v}    i32.const {mode}\n    call $dict_insert\n"))
+                Ok(format!(
+                    "{d}{k}{}{v}{}    i32.const {mode}\n    call $dict_insert\n",
+                    kind_convert(kk, Kind::I32),
+                    kind_convert(vk, Kind::I32)
+                ))
             }
             ("get_or", 3) => {
                 let mode = self.dict_key_mode(&args[1])?;
                 self.uses_dict = true;
                 self.uses_str_eq = true;
+                let kk = self.kind_of(&args[1]);
+                let dk = self.kind_of(&args[2]);
                 let d = self.compile_expr(&args[0])?;
                 let k = self.compile_expr(&args[1])?;
                 let default = self.compile_expr(&args[2])?;
-                Ok(format!("{d}{k}{default}    i32.const {mode}\n    call $dict_get_or\n"))
+                Ok(format!(
+                    "{d}{k}{}{default}{}    i32.const {mode}\n    call $dict_get_or\n",
+                    kind_convert(kk, Kind::I32),
+                    kind_convert(dk, Kind::I32)
+                ))
             }
             ("has", 2) => {
                 let mode = self.dict_key_mode(&args[1])?;
                 self.uses_dict = true;
                 self.uses_str_eq = true;
+                let kk = self.kind_of(&args[1]);
                 let d = self.compile_expr(&args[0])?;
                 let k = self.compile_expr(&args[1])?;
-                Ok(format!("{d}{k}    i32.const {mode}\n    call $dict_has\n"))
+                Ok(format!(
+                    "{d}{k}{}    i32.const {mode}\n    call $dict_has\n",
+                    kind_convert(kk, Kind::I32)
+                ))
             }
             // remove(dict, k): a fresh map with `k` (and its value) dropped.
             ("remove", 2) => {
                 let mode = self.dict_key_mode(&args[1])?;
                 self.uses_dict = true;
                 self.uses_str_eq = true;
+                let kk = self.kind_of(&args[1]);
                 let d = self.compile_expr(&args[0])?;
                 let k = self.compile_expr(&args[1])?;
-                Ok(format!("{d}{k}    i32.const {mode}\n    call $dict_remove\n"))
+                Ok(format!(
+                    "{d}{k}{}    i32.const {mode}\n    call $dict_remove\n",
+                    kind_convert(kk, Kind::I32)
+                ))
             }
             // size(dict): the entry count is the map's header word.
             ("size", 1) => {
@@ -2011,24 +2332,37 @@ impl Codegen {
                 Ok(format!("{d}    call $dict_pairs\n"))
             }
             // length(list): the record header is the length.
+            // The list header is its element count (i32) -> Int (i64).
             ("length", 1) => {
                 let arg = self.compile_expr(&args[0])?;
-                Ok(format!("{arg}    i32.load\n"))
+                Ok(format!("{arg}    i32.load\n    i64.extend_i32_u\n"))
             }
-            // at(list, i): load element at ptr + 4 + i*4.
+            // at(list, i): load the 8-byte slot at ptr + 4 + i*8 (index is an
+            // i64 Int, wrapped to an i32 address offset), then recover the
+            // element's kind from the universal i64 slot rep.
             ("at", 2) => {
+                let ek = if let Expr::Var(v) = &args[0] {
+                    self.local_list_elem_valtype
+                        .get(v)
+                        .map(|vt| valtype_kind(*vt))
+                        .unwrap_or(Kind::I32)
+                } else {
+                    Kind::I32
+                };
                 let list = self.compile_expr(&args[0])?;
                 let idx = self.compile_expr(&args[1])?;
                 Ok(format!(
-                    "{list}    i32.const 4\n    i32.add\n{idx}    i32.const 4\n    i32.mul\n    i32.add\n    i32.load\n"
+                    "{list}    i32.const 4\n    i32.add\n{idx}    i32.wrap_i64\n    i32.const 8\n    i32.mul\n    i32.add\n    i64.load\n{}",
+                    from_slot(ek)
                 ))
             }
             // push(list, x) / concat(a, b): allocate a new list (runtime helper).
             ("push", 2) => {
                 self.uses_list_push = true;
+                let xk = self.kind_of(&args[1]);
                 let list = self.compile_expr(&args[0])?;
                 let x = self.compile_expr(&args[1])?;
-                Ok(format!("{list}{x}    call $list_push\n"))
+                Ok(format!("{list}{x}{}    call $list_push\n", to_slot(xk)))
             }
             ("concat", 2) => {
                 self.uses_list_concat = true;
@@ -2069,19 +2403,38 @@ impl Codegen {
                 // param), then the args, then `call_indirect` on the code index
                 // loaded from the record's header.
                 if self.locals.contains_key(name) {
+                    // Closures use the generic i32 ABI for every parameter, so a
+                    // concrete i64 Int argument is narrowed to i32.
                     let n = args.len();
                     let mut out = format!("    local.get ${name}\n");
                     for arg in args {
+                        let ak = self.kind_of(arg);
                         out.push_str(&self.compile_expr(arg)?);
+                        out.push_str(kind_convert(ak, Kind::I32));
                     }
                     out.push_str(&format!("    local.get ${name}\n    i32.load\n"));
                     out.push_str(&format!("    call_indirect (type $clos{n})\n"));
                     self.clos_arities.insert(n);
                     return Ok(out);
                 }
+                // Convert each argument to its parameter's kind (the only real
+                // crossing is a concrete i64 Int meeting a generic i32 param).
+                let param_kinds: Vec<Kind> = self
+                    .fn_params
+                    .get(name)
+                    .map(|ps| {
+                        ps.iter()
+                            .map(|p| p.ty.as_ref().map(ty_kind).unwrap_or(Kind::I32))
+                            .collect()
+                    })
+                    .unwrap_or_default();
                 let mut out = String::new();
-                for arg in args {
+                for (i, arg) in args.iter().enumerate() {
+                    let ak = self.kind_of(arg);
                     out.push_str(&self.compile_expr(arg)?);
+                    if let Some(&pk) = param_kinds.get(i) {
+                        out.push_str(kind_convert(ak, pk));
+                    }
                 }
                 out.push_str(&format!("    call ${name}\n"));
                 // Write back `inout` outputs, which sit on top of the stack in
@@ -2726,21 +3079,23 @@ const ENSURE_WAT: &str = r#"  (func $ensure (param $size i32)
         (i32.div_u (i32.add (i32.sub (local.get $need) (local.get $have)) (i32.const 65535)) (i32.const 65536)))))))
 "#;
 
-/// Allocation helper for an N-field constructor record `[tag][f0..f{N-1}]`.
+/// Allocation helper for an N-field constructor record `[tag: i32][f0..f{N-1}]`.
+/// The tag header is a 4-byte i32; every field is an 8-byte slot holding the
+/// universal i64 representation (callers convert via `to_slot`).
 fn mk_helper(n: usize) -> String {
     let mut params = String::from("(param $tag i32)");
     for i in 0..n {
-        params.push_str(&format!(" (param $f{i} i32)"));
+        params.push_str(&format!(" (param $f{i} i64)"));
     }
-    let size = 4 + 4 * n;
+    let size = 4 + 8 * n;
     let mut s = format!("  (func $mk{n} {params} (result i32)\n    (local $p i32)\n");
     s.push_str(&format!("    (call $ensure (i32.const {size}))\n"));
     s.push_str("    global.get $heap local.set $p\n");
     s.push_str("    local.get $p local.get $tag i32.store\n");
     for i in 0..n {
         s.push_str(&format!(
-            "    local.get $p i32.const {} i32.add local.get $f{i} i32.store\n",
-            4 + 4 * i
+            "    local.get $p i32.const {} i32.add local.get $f{i} i64.store\n",
+            4 + 8 * i
         ));
     }
     s.push_str(&format!("    local.get $p i32.const {size} i32.add global.set $heap\n"));
@@ -2770,39 +3125,39 @@ const CONCAT_WAT: &str = r#"  (func $concat (param $a i32) (param $b i32) (resul
 
 // push(list, x): a fresh list `[len+1][elems...][x]`. Elements are 4-byte i32s,
 // so the element block is copied with `memory.copy`.
-const LIST_PUSH_WAT: &str = r#"  (func $list_push (param $list i32) (param $x i32) (result i32)
+const LIST_PUSH_WAT: &str = r#"  (func $list_push (param $list i32) (param $x i64) (result i32)
     (local $len i32) (local $new i32)
     local.get $list i32.load local.set $len
-    (call $ensure (i32.mul (i32.add (local.get $len) (i32.const 2)) (i32.const 4)))
+    (call $ensure (i32.add (i32.const 4) (i32.mul (i32.add (local.get $len) (i32.const 1)) (i32.const 8))))
     global.get $heap local.set $new
     local.get $new local.get $len i32.const 1 i32.add i32.store
     local.get $new i32.const 4 i32.add
     local.get $list i32.const 4 i32.add
-    local.get $len i32.const 4 i32.mul
+    local.get $len i32.const 8 i32.mul
     memory.copy
-    local.get $new i32.const 4 i32.add local.get $len i32.const 4 i32.mul i32.add
-    local.get $x i32.store
-    local.get $new local.get $len i32.const 2 i32.add i32.const 4 i32.mul i32.add global.set $heap
+    local.get $new i32.const 4 i32.add local.get $len i32.const 8 i32.mul i32.add
+    local.get $x i64.store
+    local.get $new i32.const 4 i32.add local.get $len i32.const 1 i32.add i32.const 8 i32.mul i32.add global.set $heap
     local.get $new)
 "#;
 
-// concat(a, b): a fresh list `[alen+blen][a elems][b elems]`.
+// concat(a, b): a fresh list `[alen+blen][a elems][b elems]` (8-byte slots).
 const LIST_CONCAT_WAT: &str = r#"  (func $list_concat (param $a i32) (param $b i32) (result i32)
     (local $alen i32) (local $blen i32) (local $new i32)
     local.get $a i32.load local.set $alen
     local.get $b i32.load local.set $blen
-    (call $ensure (i32.mul (i32.add (i32.add (local.get $alen) (local.get $blen)) (i32.const 1)) (i32.const 4)))
+    (call $ensure (i32.add (i32.const 4) (i32.mul (i32.add (local.get $alen) (local.get $blen)) (i32.const 8))))
     global.get $heap local.set $new
     local.get $new local.get $alen local.get $blen i32.add i32.store
     local.get $new i32.const 4 i32.add
     local.get $a i32.const 4 i32.add
-    local.get $alen i32.const 4 i32.mul
+    local.get $alen i32.const 8 i32.mul
     memory.copy
-    local.get $new i32.const 4 i32.add local.get $alen i32.const 4 i32.mul i32.add
+    local.get $new i32.const 4 i32.add local.get $alen i32.const 8 i32.mul i32.add
     local.get $b i32.const 4 i32.add
-    local.get $blen i32.const 4 i32.mul
+    local.get $blen i32.const 8 i32.mul
     memory.copy
-    local.get $new local.get $alen local.get $blen i32.add i32.const 1 i32.add i32.const 4 i32.mul i32.add global.set $heap
+    local.get $new i32.const 4 i32.add local.get $alen local.get $blen i32.add i32.const 8 i32.mul i32.add global.set $heap
     local.get $new)
 "#;
 
@@ -2810,14 +3165,14 @@ const LIST_CONCAT_WAT: &str = r#"  (func $list_concat (param $a i32) (param $b i
 const LIST_DROP_WAT: &str = r#"  (func $list_drop (param $list i32) (param $k i32) (result i32)
     (local $newlen i32) (local $new i32)
     local.get $list i32.load local.get $k i32.sub local.set $newlen
-    (call $ensure (i32.mul (i32.add (local.get $newlen) (i32.const 1)) (i32.const 4)))
+    (call $ensure (i32.add (i32.const 4) (i32.mul (local.get $newlen) (i32.const 8))))
     global.get $heap local.set $new
     local.get $new local.get $newlen i32.store
     local.get $new i32.const 4 i32.add
-    local.get $list i32.const 4 i32.add local.get $k i32.const 4 i32.mul i32.add
-    local.get $newlen i32.const 4 i32.mul
+    local.get $list i32.const 4 i32.add local.get $k i32.const 8 i32.mul i32.add
+    local.get $newlen i32.const 8 i32.mul
     memory.copy
-    local.get $new local.get $newlen i32.const 1 i32.add i32.const 4 i32.mul i32.add global.set $heap
+    local.get $new i32.const 4 i32.add local.get $newlen i32.const 8 i32.mul i32.add global.set $heap
     local.get $new)
 "#;
 
@@ -3064,64 +3419,65 @@ const DICT_REMOVE_WAT: &str = r#"  (func $dict_remove (param $d i32) (param $k i
 const DICT_KEYS_WAT: &str = r#"  (func $dict_keys (param $d i32) (result i32)
     (local $count i32) (local $i i32) (local $new i32)
     (local.set $count (i32.load (local.get $d)))
-    (call $ensure (i32.add (i32.const 4) (i32.mul (local.get $count) (i32.const 4))))
+    (call $ensure (i32.add (i32.const 4) (i32.mul (local.get $count) (i32.const 8))))
     (local.set $new (global.get $heap))
     (i32.store (local.get $new) (local.get $count))
     (local.set $i (i32.const 0))
     (block $done
       (loop $l
         (br_if $done (i32.ge_s (local.get $i) (local.get $count)))
-        (i32.store
-          (i32.add (i32.add (local.get $new) (i32.const 4)) (i32.mul (local.get $i) (i32.const 4)))
-          (i32.load (i32.add (i32.add (local.get $d) (i32.const 4)) (i32.mul (local.get $i) (i32.const 8)))))
+        (i64.store
+          (i32.add (i32.add (local.get $new) (i32.const 4)) (i32.mul (local.get $i) (i32.const 8)))
+          (i64.extend_i32_u (i32.load (i32.add (i32.add (local.get $d) (i32.const 4)) (i32.mul (local.get $i) (i32.const 8))))))
         (local.set $i (i32.add (local.get $i) (i32.const 1)))
         (br $l)))
-    (global.set $heap (i32.add (i32.add (local.get $new) (i32.const 4)) (i32.mul (local.get $count) (i32.const 4))))
+    (global.set $heap (i32.add (i32.add (local.get $new) (i32.const 4)) (i32.mul (local.get $count) (i32.const 8))))
     (local.get $new))
 "#;
 
 const DICT_VALUES_WAT: &str = r#"  (func $dict_values (param $d i32) (result i32)
     (local $count i32) (local $i i32) (local $new i32)
     (local.set $count (i32.load (local.get $d)))
-    (call $ensure (i32.add (i32.const 4) (i32.mul (local.get $count) (i32.const 4))))
+    (call $ensure (i32.add (i32.const 4) (i32.mul (local.get $count) (i32.const 8))))
     (local.set $new (global.get $heap))
     (i32.store (local.get $new) (local.get $count))
     (local.set $i (i32.const 0))
     (block $done
       (loop $l
         (br_if $done (i32.ge_s (local.get $i) (local.get $count)))
-        (i32.store
-          (i32.add (i32.add (local.get $new) (i32.const 4)) (i32.mul (local.get $i) (i32.const 4)))
-          (i32.load (i32.add (i32.add (local.get $d) (i32.const 8)) (i32.mul (local.get $i) (i32.const 8)))))
+        (i64.store
+          (i32.add (i32.add (local.get $new) (i32.const 4)) (i32.mul (local.get $i) (i32.const 8)))
+          (i64.extend_i32_u (i32.load (i32.add (i32.add (local.get $d) (i32.const 8)) (i32.mul (local.get $i) (i32.const 8))))))
         (local.set $i (i32.add (local.get $i) (i32.const 1)))
         (br $l)))
-    (global.set $heap (i32.add (i32.add (local.get $new) (i32.const 4)) (i32.mul (local.get $count) (i32.const 4))))
+    (global.set $heap (i32.add (i32.add (local.get $new) (i32.const 4)) (i32.mul (local.get $count) (i32.const 8))))
     (local.get $new))
 "#;
 
 // pairs(d): a List of `(key, value)` 2-tuples in insertion order. Each tuple is
-// the codegen layout `[0][k][v]`, so `let (k, v) = entry` destructures it.
+// the codegen layout `[0][k][v]` with 8-byte slots, so `let (k, v) = entry`
+// destructures it; the list itself holds the tuple pointers in 8-byte slots.
 const DICT_PAIRS_WAT: &str = r#"  (func $dict_pairs (param $d i32) (result i32)
     (local $count i32) (local $i i32) (local $list i32) (local $tup i32)
     (local.set $count (i32.load (local.get $d)))
-    (call $ensure (i32.add (i32.const 4) (i32.mul (local.get $count) (i32.const 16))))
+    (call $ensure (i32.add (i32.add (i32.const 4) (i32.mul (local.get $count) (i32.const 8))) (i32.mul (local.get $count) (i32.const 20))))
     (local.set $list (global.get $heap))
     (i32.store (local.get $list) (local.get $count))
-    (global.set $heap (i32.add (i32.add (local.get $list) (i32.const 4)) (i32.mul (local.get $count) (i32.const 4))))
+    (global.set $heap (i32.add (i32.add (local.get $list) (i32.const 4)) (i32.mul (local.get $count) (i32.const 8))))
     (local.set $i (i32.const 0))
     (block $done
       (loop $l
         (br_if $done (i32.ge_s (local.get $i) (local.get $count)))
         (local.set $tup (global.get $heap))
         (i32.store (local.get $tup) (i32.const 0))
-        (i32.store (i32.add (local.get $tup) (i32.const 4))
-          (i32.load (i32.add (i32.add (local.get $d) (i32.const 4)) (i32.mul (local.get $i) (i32.const 8)))))
-        (i32.store (i32.add (local.get $tup) (i32.const 8))
-          (i32.load (i32.add (i32.add (local.get $d) (i32.const 8)) (i32.mul (local.get $i) (i32.const 8)))))
-        (global.set $heap (i32.add (local.get $tup) (i32.const 12)))
-        (i32.store
-          (i32.add (i32.add (local.get $list) (i32.const 4)) (i32.mul (local.get $i) (i32.const 4)))
-          (local.get $tup))
+        (i64.store (i32.add (local.get $tup) (i32.const 4))
+          (i64.extend_i32_u (i32.load (i32.add (i32.add (local.get $d) (i32.const 4)) (i32.mul (local.get $i) (i32.const 8))))))
+        (i64.store (i32.add (local.get $tup) (i32.const 12))
+          (i64.extend_i32_u (i32.load (i32.add (i32.add (local.get $d) (i32.const 8)) (i32.mul (local.get $i) (i32.const 8))))))
+        (global.set $heap (i32.add (local.get $tup) (i32.const 20)))
+        (i64.store
+          (i32.add (i32.add (local.get $list) (i32.const 4)) (i32.mul (local.get $i) (i32.const 8)))
+          (i64.extend_i32_u (local.get $tup)))
         (local.set $i (i32.add (local.get $i) (i32.const 1)))
         (br $l)))
     (local.get $list))
@@ -3141,7 +3497,7 @@ const SPLIT_WAT: &str = r#"  (func $split (param $s i32) (param $sep i32) (resul
     (i32.store (local.get $result) (i32.const 0))
     (global.set $heap (i32.add (local.get $result) (i32.const 4)))
     (if (i32.eqz (local.get $seplen))
-      (then (return (call $list_push (local.get $result) (local.get $s)))))
+      (then (return (call $list_push (local.get $result) (i64.extend_i32_u (local.get $s))))))
     (local.set $start (i32.const 0))
     (local.set $i (i32.const 0))
     (block $done
@@ -3162,7 +3518,7 @@ const SPLIT_WAT: &str = r#"  (func $split (param $s i32) (param $sep i32) (resul
           (then
             (local.set $result
               (call $list_push (local.get $result)
-                (call $substr (local.get $s) (local.get $start) (i32.sub (local.get $i) (local.get $start)))))
+                (i64.extend_i32_u (call $substr (local.get $s) (local.get $start) (i32.sub (local.get $i) (local.get $start))))))
             (local.set $i (i32.add (local.get $i) (local.get $seplen)))
             (local.set $start (local.get $i)))
           (else
@@ -3170,7 +3526,7 @@ const SPLIT_WAT: &str = r#"  (func $split (param $s i32) (param $sep i32) (resul
         (br $scan)))
     (local.set $result
       (call $list_push (local.get $result)
-        (call $substr (local.get $s) (local.get $start) (i32.sub (local.get $slen) (local.get $start)))))
+        (i64.extend_i32_u (call $substr (local.get $s) (local.get $start) (i32.sub (local.get $slen) (local.get $start))))))
     (local.get $result))
 "#;
 
@@ -3370,10 +3726,10 @@ const PRINT_STR_WAT: &str = r#"  (func $print_str (param $s i32)
 // Digits are extracted from the magnitude with unsigned div/rem (so a negative
 // `n` works), written back-to-front after the optional sign. 15 bytes covers
 // any i32 ("-2147483648" plus the 4-byte header).
-const INT_TO_STRING_WAT: &str = r#"  (func $int_to_string (param $n i32) (result i32)
-    (local $mag i32) (local $t i32) (local $ndigits i32) (local $len i32) (local $res i32) (local $p i32) (local $neg i32)
-    (call $ensure (i32.const 15))
-    (if (result i32) (i32.eqz (local.get $n))
+const INT_TO_STRING_WAT: &str = r#"  (func $int_to_string (param $n i64) (result i32)
+    (local $mag i64) (local $t i64) (local $ndigits i32) (local $len i32) (local $res i32) (local $p i32) (local $neg i32)
+    (call $ensure (i32.const 28))
+    (if (result i32) (i64.eqz (local.get $n))
       (then
         (local.set $res (global.get $heap))
         (i32.store (local.get $res) (i32.const 1))
@@ -3381,18 +3737,18 @@ const INT_TO_STRING_WAT: &str = r#"  (func $int_to_string (param $n i32) (result
         (global.set $heap (i32.add (local.get $res) (i32.const 5)))
         (local.get $res))
       (else
-        (local.set $neg (i32.lt_s (local.get $n) (i32.const 0)))
+        (local.set $neg (i64.lt_s (local.get $n) (i64.const 0)))
         (local.set $mag
-          (if (result i32) (local.get $neg)
-            (then (i32.sub (i32.const 0) (local.get $n)))
+          (if (result i64) (local.get $neg)
+            (then (i64.sub (i64.const 0) (local.get $n)))
             (else (local.get $n))))
         (local.set $ndigits (i32.const 0))
         (local.set $t (local.get $mag))
         (block $b1
           (loop $l1
-            (br_if $b1 (i32.eqz (local.get $t)))
+            (br_if $b1 (i64.eqz (local.get $t)))
             (local.set $ndigits (i32.add (local.get $ndigits) (i32.const 1)))
-            (local.set $t (i32.div_u (local.get $t) (i32.const 10)))
+            (local.set $t (i64.div_u (local.get $t) (i64.const 10)))
             (br $l1)))
         (local.set $len (i32.add (local.get $ndigits) (local.get $neg)))
         (local.set $res (global.get $heap))
@@ -3403,10 +3759,10 @@ const INT_TO_STRING_WAT: &str = r#"  (func $int_to_string (param $n i32) (result
         (local.set $t (local.get $mag))
         (block $b2
           (loop $l2
-            (br_if $b2 (i32.eqz (local.get $t)))
-            (i32.store8 (local.get $p) (i32.add (i32.rem_u (local.get $t) (i32.const 10)) (i32.const 48)))
+            (br_if $b2 (i64.eqz (local.get $t)))
+            (i32.store8 (local.get $p) (i32.add (i32.wrap_i64 (i64.rem_u (local.get $t) (i64.const 10))) (i32.const 48)))
             (local.set $p (i32.sub (local.get $p) (i32.const 1)))
-            (local.set $t (i32.div_u (local.get $t) (i32.const 10)))
+            (local.set $t (i64.div_u (local.get $t) (i64.const 10)))
             (br $l2)))
         (global.set $heap (i32.add (i32.add (local.get $res) (i32.const 4)) (local.get $len)))
         (local.get $res))))
@@ -3878,7 +4234,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use wasmtime::{Caller, Engine, Linker, Module as WtModule, Store};
 
-    fn run_int(src: &str) -> i32 {
+    fn run_int(src: &str) -> i64 {
         let module = parse_module(src).expect("parse");
         let wat = compile_module(&module).expect("compile");
         let engine = Engine::default();
@@ -3887,7 +4243,7 @@ mod tests {
         let mut linker = Linker::new(&engine);
         let sink = Arc::clone(&captured);
         linker
-            .func_wrap("witchy", "print_int", move |n: i32| {
+            .func_wrap("witchy", "print_int", move |n: i64| {
                 *sink.lock().unwrap() = Some(n);
             })
             .unwrap();
@@ -3955,23 +4311,19 @@ fn main() -> Float:
     }
 
     #[test]
-    fn out_of_range_int_literal_rejected_clearly() {
-        // Compiled Int is i32; a literal in [2^31, 2^32-1] would silently wrap to
-        // a negative, so it's rejected rather than diverging from the i64
-        // interpreter. An in-range literal still compiles.
-        let big = parse_module("fn main() -> Int:\n    3000000000\n").expect("parse");
-        let err = compile_module(&big).expect_err("out-of-range literal should be rejected");
-        assert!(err.to_string().contains("32-bit range"), "unexpected error: {err}");
-        assert_eq!(run_int(r#"
-fn main() -> Int:
-    2000000000
-"#), 2000000000);
+    fn large_int_literals_compile() {
+        // Compiled Int is i64, so a literal beyond the 32-bit range round-trips
+        // (it no longer wraps or is rejected), matching the interpreter.
+        assert_eq!(run_int("fn main() -> Int:\n    3000000000\n"), 3_000_000_000);
+        assert_eq!(
+            run_int("fn main() -> Int:\n    9000000000000\n"),
+            9_000_000_000_000
+        );
     }
 
     #[test]
-    fn float_record_field_rejected_clearly() {
-        // Heap slots are 4 bytes, so an f64 field can't be stored; reject with a
-        // clear message rather than a cryptic WASM type mismatch.
+    fn float_record_field_compiles() {
+        // 8-byte heap slots hold an f64 field; float_to_int reads it back.
         let src = r#"
 type Vec2:
     x: Float
@@ -3979,23 +4331,20 @@ type Vec2:
 
 fn main() -> Int:
     let v = Vec2(1.5, 2.5)
-    0
+    float_to_int((v).x)
 "#;
-        let module = parse_module(src).expect("parse");
-        let err = compile_module(&module).expect_err("Float field should be rejected");
-        assert!(err.to_string().contains("Float field"), "unexpected error: {err}");
+        assert_eq!(run_int(src), 1);
     }
 
     #[test]
-    fn float_list_element_rejected_clearly() {
+    fn float_list_element_compiles() {
+        // 8-byte heap slots hold an f64, so floats now live in lists.
         let src = r#"
 fn main() -> Int:
     let xs = [1.5, 2.5]
-    0
+    length(xs)
 "#;
-        let module = parse_module(src).expect("parse");
-        let err = compile_module(&module).expect_err("Float list should be rejected");
-        assert!(err.to_string().contains("Float elements"), "unexpected error: {err}");
+        assert_eq!(run_int(src), 2);
     }
 
     #[test]

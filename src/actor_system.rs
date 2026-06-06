@@ -79,7 +79,7 @@ impl System {
                 Ok(())
             },
         )?;
-        linker.func_wrap("witchy", "print_int", |caller: Caller<'_, Host>, n: i32| {
+        linker.func_wrap("witchy", "print_int", |caller: Caller<'_, Host>, n: i64| {
             caller.data().output.lock().unwrap().push(n.to_string());
         })?;
         // The third argument is a pointer into the sender's memory to a field
@@ -106,7 +106,9 @@ impl System {
                     let count = read(ptr)?.max(0);
                     let mut fs = Vec::with_capacity(count as usize);
                     for i in 0..count {
-                        fs.push(read(ptr + 4 + 4 * i)?);
+                        // Each element is an 8-byte slot; the Int value is in its
+                        // low 4 bytes (the list layout is now 8-byte slots).
+                        fs.push(read(ptr + 4 + 8 * i)?);
                     }
                     fs
                 };
