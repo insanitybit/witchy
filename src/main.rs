@@ -1863,6 +1863,32 @@ fn main(console: Console):
     }
 
     #[test]
+    fn string_center_backends_agree() {
+        // center pads both sides; an odd remainder goes on the right, and a
+        // string already at/over width is returned unchanged.
+        let client = r#"
+import string
+fn main(console: Console):
+    print(console, "[" <> string.center("hi", 6, " ") <> "]")
+    print(console, "[" <> string.center("hi", 7, " ") <> "]")
+    print(console, "[" <> string.center("odd", 8, "*") <> "]")
+    print(console, "[" <> string.center("toolong", 4, " ") <> "]")
+    print(console, "[" <> string.center("x", 1, " ") <> "]")
+"#;
+        let sources = [
+            ("string", crate::bundled_module("string").unwrap()),
+            ("main", client),
+        ];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "center diverged");
+        assert_eq!(
+            compiled,
+            vec!["[  hi  ]", "[  hi   ]", "[**odd***]", "[toolong]", "[x]"]
+        );
+    }
+
+    #[test]
     fn merge_sort_is_stable_on_both_backends() {
         // list.sort_by is a stable merge sort: equal keys keep their original
         // order. Sort (key, tag) items by key only; ties must preserve insertion

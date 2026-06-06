@@ -44,6 +44,19 @@ pub fn pad_right(s: String, width: Int, fill: String) -> String:
         let needed = width - len
         s <> substring(repeat(fill, needed), 0, needed)
 
+// Center `s` in a field `width` characters wide, padding both sides with `fill`;
+// an odd remainder goes on the right. `s` is returned unchanged when already at
+// least that wide.
+pub fn center(s: String, width: Int, fill: String) -> String:
+    let len = char_count(s)
+    if len >= width:
+        s
+    else:
+        let total = width - len
+        let left = total / 2
+        let right = total - left
+        substring(repeat(fill, left), 0, left) <> s <> substring(repeat(fill, right), 0, right)
+
 // Remove `prefix` from the front of `s` when present; otherwise return `s`
 // unchanged. The complement of the `starts_with` builtin.
 pub fn strip_prefix(s: String, prefix: String) -> String:
