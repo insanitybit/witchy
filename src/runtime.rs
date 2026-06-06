@@ -29,6 +29,9 @@ pub struct Capabilities {
     pub send: bool,
     /// May print an integer via `witchy.print_int` (used by compiled witchy).
     pub print_int: bool,
+    /// Capture output without echoing it to stdout (used by `witchy parity`,
+    /// which compares the captured lines rather than showing them).
+    pub quiet: bool,
 }
 
 impl Capabilities {
@@ -70,7 +73,6 @@ impl Mailboxes {
 /// Host-side state owned by each actor's `Store`.
 pub struct ActorState {
     id: ActorId,
-    #[allow(dead_code)]
     caps: Capabilities,
     mailbox: Mailbox,
     mailboxes: Arc<Mailboxes>,
@@ -223,7 +225,9 @@ fn host_print(mut caller: Caller<'_, ActorState>, ptr: i32, len: i32) -> Result<
     let bytes = slice(data, ptr, len)?;
     let text = String::from_utf8_lossy(bytes);
     let id = caller.data().id;
-    print!("[actor {id}] {text}");
+    if !caller.data().caps.quiet {
+        print!("[actor {id}] {text}");
+    }
     caller
         .data()
         .output
@@ -234,7 +238,9 @@ fn host_print(mut caller: Caller<'_, ActorState>, ptr: i32, len: i32) -> Result<
 }
 
 fn host_print_int(caller: Caller<'_, ActorState>, n: i64) -> Result<()> {
-    println!("[actor {}] {n}", caller.data().id);
+    if !caller.data().caps.quiet {
+        println!("[actor {}] {n}", caller.data().id);
+    }
     caller.data().output.lock().unwrap().push(n.to_string());
     Ok(())
 }
@@ -243,7 +249,9 @@ fn host_print_float(caller: Caller<'_, ActorState>, x: f64) -> Result<()> {
     // `f64::to_string` is Rust's `{}` Display — the same formatting the
     // interpreter uses for a Float (Value::Float Display), so the two backends
     // agree on float output.
-    println!("[actor {}] {x}", caller.data().id);
+    if !caller.data().caps.quiet {
+        println!("[actor {}] {x}", caller.data().id);
+    }
     caller.data().output.lock().unwrap().push(x.to_string());
     Ok(())
 }
@@ -354,7 +362,7 @@ mod tests {
     fn granted_capability_instantiates() {
         let mut rt = Runtime::new().unwrap();
         let mut actor = rt
-            .spawn(IMPORTS_PRINT, Capabilities { print: true, send: false, print_int: false }, 4)
+            .spawn(IMPORTS_PRINT, Capabilities { print: true, send: false, print_int: false, quiet: false }, 4)
             .unwrap();
         actor.run().unwrap();
     }
@@ -365,10 +373,10 @@ mod tests {
     fn message_passing_delivers_across_isolated_vms() {
         let mut rt = Runtime::new().unwrap();
         let mut receiver = rt
-            .spawn(RECEIVER, Capabilities { print: false, send: false, print_int: false }, 4)
+            .spawn(RECEIVER, Capabilities { print: false, send: false, print_int: false, quiet: false }, 4)
             .unwrap();
         let mut sender = rt
-            .spawn(sender(receiver.id, 5), Capabilities { print: false, send: true, print_int: false }, 4)
+            .spawn(sender(receiver.id, 5), Capabilities { print: false, send: true, print_int: false, quiet: false }, 4)
             .unwrap();
 
         sender.run().unwrap();
@@ -388,7 +396,7 @@ mod tests {
     fn send_to_unknown_actor_traps() {
         let mut rt = Runtime::new().unwrap();
         let mut sender = rt
-            .spawn(sender(9999, 5), Capabilities { print: false, send: true, print_int: false }, 4)
+            .spawn(sender(9999, 5), Capabilities { print: false, send: true, print_int: false, quiet: false }, 4)
             .unwrap();
         assert!(sender.run().is_err(), "sending to a nonexistent actor must fail");
     }

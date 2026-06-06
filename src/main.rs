@@ -145,6 +145,21 @@ fn main() -> wasmtime::Result<()> {
         }
         return Ok(());
     }
+    // `witchy parity <file>` runs the program on both the interpreter and the
+    // compiled WASM backend and confirms they produce identical output. (Named
+    // `parity`, not `verify` — `verify` is the package-manager's TUF/signature
+    // command.)
+    if std::env::args().nth(1).as_deref() == Some("parity") {
+        let Some(path) = std::env::args().nth(2) else {
+            eprintln!("usage: witchy parity <file.witchy>");
+            std::process::exit(1);
+        };
+        if let Err(e) = verify_file(&path) {
+            eprintln!("{e}");
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
     // `witchy fmt <file>` rewrites a source file in canonical brace-free form.
     if std::env::args().nth(1).as_deref() == Some("fmt") {
         let Some(path) = std::env::args().nth(2) else {
@@ -233,7 +248,7 @@ fn main() -> wasmtime::Result<()> {
     println!("== M2: capability gating ==");
 
     // Granted the `print` capability — works.
-    let mut greeter = rt.spawn(GREETER, Capabilities { print: true, send: false, print_int: false }, 4)?;
+    let mut greeter = rt.spawn(GREETER, Capabilities { print: true, send: false, print_int: false, quiet: false }, 4)?;
     greeter.run()?;
 
     // Granted nothing — must fail to instantiate because `witchy.print` is not
@@ -246,11 +261,11 @@ fn main() -> wasmtime::Result<()> {
     println!("\n== M3: message passing across isolated VMs ==");
 
     // Logger can print + recv, but cannot send.
-    let mut logger = rt.spawn(LOGGER, Capabilities { print: true, send: false, print_int: false }, 4)?;
+    let mut logger = rt.spawn(LOGGER, Capabilities { print: true, send: false, print_int: false, quiet: false }, 4)?;
     // Sender can only send.
     let mut sender = rt.spawn(
         sender_src(logger.id),
-        Capabilities { print: false, send: true, print_int: false },
+        Capabilities { print: false, send: true, print_int: false, quiet: false },
         4,
     )?;
 
@@ -605,6 +620,61 @@ fn execute_file(path: &str, net_allow: Vec<String>) -> Result<Vec<String>, Strin
     // The root `Dir` capability is anchored at the current directory (the same
     // root the demos use), independent of where the source file lives.
     interpreter::run_module(linked, Path::new("."), net_allow).map_err(|e| e.to_string())
+}
+
+/// Run a program on BOTH backends — the tree-walking interpreter and compiled
+/// WebAssembly — and confirm they produce identical output. Witchy's
+/// dual-backend equivalence is normally an internal test invariant; `witchy
+/// verify` surfaces it as a guarantee you can check on your own code.
+fn verify_file(path: &str) -> Result<(), String> {
+    use std::path::Path;
+    let (linked, _stem) = link_file(path)?;
+    typeck::check(&linked).map_err(|e| e.to_string())?;
+    let has_main = linked
+        .items
+        .iter()
+        .any(|it| matches!(it, ast::Item::Function(f) if f.name == "main"));
+    if !has_main {
+        return Err(format!("`{path}` has no `main` to run"));
+    }
+    // Compile first (borrows `linked`), then run the interpreter (consumes it).
+    let wat = codegen::compile_module(&linked)
+        .map_err(|e| format!("cannot compile to WASM (an interpreter-only feature?): {e}"))?;
+    let interp =
+        interpreter::run_module(linked, Path::new("."), Vec::new()).map_err(|e| e.to_string())?;
+    let compiled = run_wat_capture(&wat)?;
+    if interp == compiled {
+        println!(
+            "\u{2713} {path}: interpreter and compiled WASM agree ({} line(s) of output)",
+            interp.len()
+        );
+        Ok(())
+    } else {
+        Err(format!(
+            "\u{2717} {path}: the two backends DIVERGE\n  interpreter: {interp:?}\n  compiled:    {compiled:?}"
+        ))
+    }
+}
+
+/// Instantiate a compiled WAT module under print/print_int authority, run its
+/// `run` export, and return the captured output lines.
+fn run_wat_capture(wat: &str) -> Result<Vec<String>, String> {
+    use crate::runtime::{Capabilities, Runtime};
+    let mut rt = Runtime::new().map_err(|e| e.to_string())?;
+    let mut actor = rt
+        .spawn(
+            wat.as_bytes(),
+            Capabilities {
+                print: true,
+                print_int: true,
+                quiet: true,
+                ..Default::default()
+            },
+            4,
+        )
+        .map_err(|e| e.to_string())?;
+    actor.run().map_err(|e| e.to_string())?;
+    Ok(actor.output())
 }
 
 /// Render a capability set for human output: a comma-joined list, or `(none)`.
@@ -2572,6 +2642,19 @@ fn main(console: Console):
         let compiled = run_linked_on_wasm(&sources, "main");
         assert_eq!(interpreted, compiled, "method-call syntax diverged");
         assert_eq!(compiled, vec!["12", "7", "60"]);
+    }
+
+    #[test]
+    fn verify_file_agrees_on_a_simple_program() {
+        // `witchy verify` runs a program on both backends and confirms identical
+        // output; on a normal program that should succeed.
+        let path = std::env::temp_dir().join("witchy_verify_smoke.witchy");
+        std::fs::write(
+            &path,
+            "fn main(console: Console):\n    print(console, int_to_string((2 + 3) * 4))\n    print(console, \"hi\")\n",
+        )
+        .unwrap();
+        crate::verify_file(path.to_str().unwrap()).expect("backends should agree");
     }
 
     #[test]
