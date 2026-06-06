@@ -2210,6 +2210,30 @@ fn main(console: Console):
     }
 
     #[test]
+    fn random_choice_backends_agree() {
+        // choice picks a uniformly-random element (None for an empty list),
+        // deterministically for a given seed, identically on both backends.
+        let client = r#"
+import random
+import option
+fn main(console: Console):
+    let (c, _r) = random.choice(["a", "b", "c", "d"], random.seed(1))
+    print(console, option.unwrap_or(c, "?"))
+    let (e, _r2) = random.choice([], random.seed(1))
+    print(console, option.unwrap_or(e, "empty"))
+"#;
+        let sources = [
+            ("option", crate::bundled_module("option").unwrap()),
+            ("random", crate::bundled_module("random").unwrap()),
+            ("main", client),
+        ];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "random.choice diverged");
+        assert_eq!(compiled, vec!["d", "empty"]);
+    }
+
+    #[test]
     fn duration_combinators_backends_agree() {
         // max/min/is_zero/abs over the Duration type (it has no Ord impl, so the
         // generic ord helpers don't apply).

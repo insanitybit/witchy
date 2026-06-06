@@ -2351,10 +2351,14 @@ impl Codegen {
                 } else {
                     Kind::I32
                 };
+                // The index is normally an i64 Int, but a tuple-destructured Int
+                // can already be narrowed to i32; convert to the i32 address kind.
+                let ik = self.kind_of(&args[1]);
                 let list = self.compile_expr(&args[0])?;
                 let idx = self.compile_expr(&args[1])?;
                 Ok(format!(
-                    "{list}    i32.const 4\n    i32.add\n{idx}    i32.wrap_i64\n    i32.const 8\n    i32.mul\n    i32.add\n    i64.load\n{}",
+                    "{list}    i32.const 4\n    i32.add\n{idx}{}    i32.const 8\n    i32.mul\n    i32.add\n    i64.load\n{}",
+                    kind_convert(ik, Kind::I32),
                     from_slot(ek)
                 ))
             }

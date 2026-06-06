@@ -5,6 +5,8 @@
 // what you want for tests, sampling, and games. NOT for cryptography. Pure and
 // capability-free.
 
+import option
+
 type Rng:
     Rng(Int)
 
@@ -37,3 +39,12 @@ pub fn next_below(r: Rng, bound: Int) -> (Int, Rng):
 pub fn next_bool(r: Rng) -> (Bool, Rng):
     let (n, r2) = next(r)
     (n % 2 == 0, r2)
+
+// A uniformly-chosen element of `xs` (None if empty) and the next state.
+pub fn choice(xs: List(a), r: Rng) -> (Option(a), Rng):
+    let len = length(xs)
+    if len == 0:
+        (None, r)
+    else:
+        let (i, r2) = next_below(r, len)
+        (Some(at(xs, i)), r2)
