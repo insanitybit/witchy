@@ -2661,6 +2661,25 @@ fn main(console: Console):
     }
 
     #[test]
+    fn bst_example_runs_on_wasm() {
+        // The binary search tree (recursive ADT + pattern matching + tree sort)
+        // produces identical output on both backends.
+        let sources = [
+            ("string", crate::bundled_module("string").unwrap()),
+            ("option", crate::bundled_module("option").unwrap()),
+            ("list", crate::bundled_module("list").unwrap()),
+            ("main", include_str!("../examples/bst.witchy")),
+        ];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "bst diverged");
+        assert_eq!(
+            compiled,
+            vec!["1 2 3 4 5 6 7 8 9", "contains 7: true", "contains 10: false"]
+        );
+    }
+
+    #[test]
     fn calculator_example_runs_on_wasm() {
         // The recursive-descent calculator (mutual recursion + tuple cursors +
         // string scanning) parses and evaluates expressions identically on both
