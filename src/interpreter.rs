@@ -1134,7 +1134,7 @@ impl Interpreter {
             return err("evaluation step budget exceeded (possible infinite loop)");
         }
         match expr {
-            Expr::Int(n) => Ok(Value::Int(*n)),
+            Expr::Int(n) | Expr::Duration(n) => Ok(Value::Int(*n)),
             Expr::Float(x) => Ok(Value::Float(*x)),
             Expr::Str(s) => Ok(Value::Str(s.clone())),
             Expr::Bool(b) => Ok(Value::Bool(*b)),

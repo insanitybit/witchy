@@ -182,6 +182,9 @@ pub enum Stmt {
 pub enum Expr {
     Int(i64),
     Float(f64),
+    /// A duration literal (`30s`, `2hr`, ...), carried as whole milliseconds and
+    /// typed as the distinct `Duration` type.
+    Duration(i64),
     Str(String),
     Bool(bool),
     List(Vec<Expr>),

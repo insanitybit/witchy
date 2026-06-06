@@ -2092,6 +2092,33 @@ fn main(console: Console):
     }
 
     #[test]
+    fn duration_literals_backends_agree() {
+        // Native duration literals (1s/1ms/1m/1h/1d/1w, and the `hr` alias) are a
+        // distinct Duration type carried as milliseconds: they add/subtract,
+        // scale by an Int, divide to an Int ratio, and compare — identically on
+        // both backends.
+        let client = r#"
+fn main(console: Console):
+    print(console, to_string(30s > 500ms))
+    print(console, to_string(30s + 500ms == 30500ms))
+    print(console, to_string(1m == 60s))
+    print(console, to_string(2hr == 7200s))
+    print(console, to_string(1d == 24h))
+    print(console, to_string(1w > 6d))
+    print(console, to_string(2 * 1h == 7200s))
+    print(console, to_string(1h / 1m == 60))
+"#;
+        let sources = [("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "duration literals diverged");
+        assert_eq!(
+            compiled,
+            vec!["true", "true", "true", "true", "true", "true", "true", "true"]
+        );
+    }
+
+    #[test]
     fn duration_module_backends_agree() {
         // The pure duration module: from_hms builds seconds; clock zero-pads
         // mm:ss; human omits leading zero units. All Int arithmetic, so it

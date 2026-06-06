@@ -681,6 +681,10 @@ impl Parser {
                 self.advance();
                 Ok(Expr::Int(n))
             }
+            Tok::Duration(ms) => {
+                self.advance();
+                Ok(Expr::Duration(ms))
+            }
             Tok::Float(x) => {
                 self.advance();
                 Ok(Expr::Float(x))

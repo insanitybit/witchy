@@ -390,10 +390,29 @@ fn arm_body(s: &mut String, body: &Expr, depth: usize) {
     }
 }
 
+/// Render a duration literal (stored as whole milliseconds) using the largest
+/// unit that divides it exactly, so `30000` prints as `30s` and re-parses to the
+/// same value. A zero or non-dividing value falls back to `ms`.
+fn duration_literal(ms: i64) -> String {
+    for (unit_ms, suffix) in [
+        (604_800_000_i64, "w"),
+        (86_400_000, "d"),
+        (3_600_000, "h"),
+        (60_000, "m"),
+        (1_000, "s"),
+    ] {
+        if ms != 0 && ms % unit_ms == 0 {
+            return format!("{}{}", ms / unit_ms, suffix);
+        }
+    }
+    format!("{ms}ms")
+}
+
 /// Inline expression. Anything that could regroup on re-parse is parenthesized.
 fn expr(e: &Expr) -> String {
     match e {
         Expr::Int(n) => n.to_string(),
+        Expr::Duration(ms) => duration_literal(*ms),
         Expr::Float(x) => {
             let t = x.to_string();
             if t.contains('.') || t.contains('e') || t.contains("inf") || t.contains("NaN") {

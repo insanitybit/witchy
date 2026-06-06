@@ -23,6 +23,9 @@ use crate::ast::{
 pub enum Ty {
     Int,
     Float,
+    /// A length of time (from a duration literal like `30s`). A distinct type:
+    /// it does not mix with `Int` under arithmetic.
+    Duration,
     String,
     Bool,
     Nil,
@@ -47,6 +50,7 @@ impl fmt::Display for Ty {
         match self {
             Ty::Int => write!(f, "Int"),
             Ty::Float => write!(f, "Float"),
+            Ty::Duration => write!(f, "Duration"),
             Ty::String => write!(f, "String"),
             Ty::Bool => write!(f, "Bool"),
             Ty::Nil => write!(f, "Nil"),
@@ -221,6 +225,7 @@ impl Checker {
         match name.as_str() {
             "Int" => Ty::Int,
             "Float" => Ty::Float,
+            "Duration" => Ty::Duration,
             "String" => Ty::String,
             "Bool" => Ty::Bool,
             "Nil" => Ty::Nil,
@@ -255,6 +260,7 @@ impl Checker {
             ast::Type::Named(name, args) => match name.as_str() {
                 "Int" => Ty::Int,
                 "Float" => Ty::Float,
+                "Duration" => Ty::Duration,
                 "String" => Ty::String,
                 "Bool" => Ty::Bool,
                 "Nil" => Ty::Nil,
@@ -613,6 +619,7 @@ impl Checker {
         match expr {
             Expr::Int(_) => Ok(Ty::Int),
             Expr::Float(_) => Ok(Ty::Float),
+            Expr::Duration(_) => Ok(Ty::Duration),
             Expr::Str(_) => Ok(Ty::String),
             Expr::Bool(_) => Ok(Ty::Bool),
             Expr::List(items) => {
@@ -976,8 +983,41 @@ impl Checker {
         let rt = self.infer(rhs)?;
         match op {
             Add | Sub | Mul | Div => {
-                let either_float =
-                    matches!(self.resolve(&lt), Ty::Float) || matches!(self.resolve(&rt), Ty::Float);
+                let lr = self.resolve(&lt);
+                let rr = self.resolve(&rt);
+                // Duration arithmetic: durations add/subtract with each other,
+                // scale by an Int (multiply / divide), and Duration / Duration is
+                // their Int ratio. Mixing a Duration with a bare Int under +/-
+                // is a type error.
+                if matches!(lr, Ty::Duration) || matches!(rr, Ty::Duration) {
+                    return match op {
+                        Add | Sub => {
+                            self.unify(&Ty::Duration, &lt)?;
+                            self.unify(&Ty::Duration, &rt)?;
+                            Ok(Ty::Duration)
+                        }
+                        Mul => {
+                            if matches!(lr, Ty::Duration) {
+                                self.unify(&Ty::Int, &rt)?;
+                            } else {
+                                self.unify(&Ty::Int, &lt)?;
+                            }
+                            Ok(Ty::Duration)
+                        }
+                        Div => {
+                            if matches!(lr, Ty::Duration) && matches!(rr, Ty::Duration) {
+                                Ok(Ty::Int)
+                            } else if matches!(lr, Ty::Duration) {
+                                self.unify(&Ty::Int, &rt)?;
+                                Ok(Ty::Duration)
+                            } else {
+                                terr("an Int cannot be divided by a Duration")
+                            }
+                        }
+                        _ => unreachable!(),
+                    };
+                }
+                let either_float = matches!(lr, Ty::Float) || matches!(rr, Ty::Float);
                 let num = if either_float { Ty::Float } else { Ty::Int };
                 self.unify(&lt, &num)?;
                 self.unify(&rt, &num)?;
@@ -1003,9 +1043,9 @@ impl Checker {
                 // Without a type-class mechanism, allowing it on arbitrary types
                 // would type-check but crash at runtime, so reject it here.
                 match self.resolve(&lt) {
-                    Ty::Int | Ty::Float | Ty::String => Ok(Ty::Bool),
+                    Ty::Int | Ty::Float | Ty::String | Ty::Duration => Ok(Ty::Bool),
                     other => terr(format!(
-                        "ordering comparison requires Int, Float, or String, found `{other}`"
+                        "ordering comparison requires Int, Float, String, or Duration, found `{other}`"
                     )),
                 }
             }
@@ -1500,6 +1540,21 @@ fn main(console: Console):
     fn rejects_over_constrained_type_param() {
         // `a` can't be generic if the body forces it to Int.
         assert!(check_str("fn bad(x: a) -> a { x + 1 }").is_err());
+    }
+
+    #[test]
+    fn duration_is_a_distinct_type() {
+        // Durations combine with durations, scale by an Int, divide to an Int
+        // ratio, and compare; mixing with a bare Int under +/- is rejected.
+        assert!(check_str("fn f() -> Duration:\n    30s + 1m\n").is_ok());
+        assert!(check_str("fn f() -> Duration:\n    2 * 1h\n").is_ok());
+        assert!(check_str("fn f() -> Int:\n    1h / 1m\n").is_ok());
+        assert!(check_str("fn f() -> Bool:\n    30s > 1m\n").is_ok());
+        assert!(check_str("fn f(d: Duration) -> Duration:\n    d + 5s\n").is_ok());
+        // A Duration is not an Int.
+        assert!(check_str("fn f() -> Duration:\n    30s + 5\n").is_err());
+        assert!(check_str("fn f() -> Int:\n    30s\n").is_err());
+        assert!(check_str("fn f() -> Duration:\n    30s + true\n").is_err());
     }
 
     #[test]

@@ -98,7 +98,7 @@ fn ty_kind(t: &Type) -> Kind {
     // pass through generic code narrow to 32 bits (a monomorphization gap).
     match t {
         Type::Named(n, _) if n == "Float" => Kind::F64,
-        Type::Named(n, _) if n == "Int" => Kind::I64,
+        Type::Named(n, _) if n == "Int" || n == "Duration" => Kind::I64,
         _ => Kind::I32,
     }
 }
@@ -167,9 +167,9 @@ fn kind_convert(from: Kind, to: Kind) -> &'static str {
 fn name_kind(n: Option<&str>) -> Kind {
     match n {
         Some("Float") => Kind::F64,
-        Some("Int") => Kind::I64,
+        Some("Int") | Some("Duration") => Kind::I64,
         // Concrete pointers, Bool, type variables, and unknown all use i32 (the
-        // generic ABI). Only a concrete `Int`/`Float` field gets a wider kind.
+        // generic ABI). Only a concrete `Int`/`Float`/`Duration` field is wider.
         _ => Kind::I32,
     }
 }
@@ -189,7 +189,7 @@ fn valtype_kind(vt: ValType) -> Kind {
 
 fn ty_to_valtype(t: &Type) -> ValType {
     match t {
-        Type::Named(n, _) if n == "Int" => ValType::Int,
+        Type::Named(n, _) if n == "Int" || n == "Duration" => ValType::Int,
         Type::Named(n, _) if n == "Bool" => ValType::Bool,
         Type::Named(n, _) if n == "Float" => ValType::Float,
         Type::Named(n, _) if n == "String" => ValType::Str,
@@ -427,7 +427,7 @@ impl Codegen {
     /// The WASM kind a compiled expression evaluates to.
     fn kind_of(&self, e: &Expr) -> Kind {
         match e {
-            Expr::Int(_) => Kind::I64,
+            Expr::Int(_) | Expr::Duration(_) => Kind::I64,
             Expr::Float(_) => Kind::F64,
             Expr::Var(n) => self.locals.get(n).copied().unwrap_or(Kind::I32),
             Expr::Unary { op, expr } => match op {
@@ -513,7 +513,7 @@ impl Codegen {
     /// determine it. Used by `to_string`; `Other` means "not distinguished".
     fn val_type_of(&self, e: &Expr) -> ValType {
         match e {
-            Expr::Int(_) => ValType::Int,
+            Expr::Int(_) | Expr::Duration(_) => ValType::Int,
             Expr::Bool(_) => ValType::Bool,
             Expr::Float(_) => ValType::Float,
             Expr::Str(_) => ValType::Str,
@@ -1257,7 +1257,7 @@ impl Codegen {
 
     fn compile_expr(&mut self, expr: &Expr) -> Result<String, CodegenError> {
         match expr {
-            Expr::Int(n) => Ok(format!("    i64.const {n}\n")),
+            Expr::Int(n) | Expr::Duration(n) => Ok(format!("    i64.const {n}\n")),
             Expr::Bool(b) => Ok(format!("    i32.const {}\n", if *b { 1 } else { 0 })),
             Expr::Str(s) => {
                 let off = self.intern(s);
@@ -2597,7 +2597,7 @@ fn collect_fn_refs_expr(e: &Expr, out: &mut HashSet<String>) {
         }
         Expr::Lambda { body, .. } => collect_fn_refs_block(body, out),
         Expr::Block(b) => collect_fn_refs_block(b, out),
-        Expr::Int(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) => {}
+        Expr::Int(_) | Expr::Duration(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) => {}
     }
 }
 
@@ -3837,7 +3837,7 @@ fn fv_expr(e: &Expr, s: &mut LambdaScan) {
         Expr::Var(n) => {
             s.reads.insert(n.clone());
         }
-        Expr::Int(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) => {}
+        Expr::Int(_) | Expr::Duration(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) => {}
         // A `Call` name is a function/builtin (or a closure local, caught at WASM
         // validation), never an outer value capture — only its args matter here.
         Expr::List(xs) | Expr::Tuple(xs) => {
@@ -4009,6 +4009,7 @@ fn collect_let_names_expr(expr: &Expr, out: &mut Vec<String>) {
         }
         Expr::Var(_)
         | Expr::Int(_)
+        | Expr::Duration(_)
         | Expr::Float(_)
         | Expr::Str(_)
         | Expr::Bool(_)
@@ -4113,7 +4114,7 @@ impl Renamer {
     fn rename_expr(&mut self, e: &mut Expr) {
         match e {
             Expr::Var(n) => *n = self.resolve(n),
-            Expr::Int(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) => {}
+            Expr::Int(_) | Expr::Duration(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) => {}
             // Call / Ctor / Spawn names are functions / constructors / actors,
             // not locals — only the arguments are renamed.
             Expr::List(xs) | Expr::Tuple(xs) => {

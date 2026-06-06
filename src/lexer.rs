@@ -10,6 +10,8 @@ pub enum Tok {
     // Literals
     Int(i64),
     Float(f64),
+    /// A duration literal like `30s` or `2hr`, carried as whole milliseconds.
+    Duration(i64),
     Str(String),
     Ident(String),
 
@@ -98,6 +100,7 @@ impl fmt::Display for Tok {
         match self {
             Int(n) => write!(f, "{n}"),
             Float(x) => write!(f, "{x}"),
+            Duration(ms) => write!(f, "{ms}ms"),
             Str(s) => write!(f, "{s:?}"),
             Ident(s) => write!(f, "{s}"),
             Actor => write!(f, "actor"),
@@ -336,6 +339,39 @@ impl Lexer {
         let value = text
             .parse::<i64>()
             .map_err(|_| self.err(format!("invalid integer literal `{text}`")))?;
+        // A duration suffix (`30s`, `2hr`, `1ms`, ...) turns the integer into a
+        // Duration literal carried as whole milliseconds. The suffix is the
+        // maximal run of letters immediately after the digits; only an exact
+        // unit match consumes it (so `1hours` stays `1` then `hours`).
+        let mut k = 0;
+        while self
+            .chars
+            .get(self.pos + k)
+            .is_some_and(|c| c.is_ascii_alphabetic())
+        {
+            k += 1;
+        }
+        if k > 0 {
+            let suffix: String = self.chars[self.pos..self.pos + k].iter().collect();
+            let unit_ms = match suffix.as_str() {
+                "ms" => Some(1_i64),
+                "s" => Some(1_000),
+                "m" => Some(60_000),
+                "h" | "hr" => Some(3_600_000),
+                "d" => Some(86_400_000),
+                "w" => Some(604_800_000),
+                _ => None,
+            };
+            if let Some(unit_ms) = unit_ms {
+                for _ in 0..k {
+                    self.bump();
+                }
+                let ms = value.checked_mul(unit_ms).ok_or_else(|| {
+                    self.err(format!("duration literal `{text}{suffix}` overflows"))
+                })?;
+                return Ok(Tok::Duration(ms));
+            }
+        }
         Ok(Tok::Int(value))
     }
 
