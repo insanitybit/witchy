@@ -2119,6 +2119,23 @@ fn main(console: Console):
     }
 
     #[test]
+    fn durations_example_runs_on_wasm() {
+        // The durations example (literals + Duration*Int + comparison + the
+        // duration module) prints identically on both backends.
+        let sources = [
+            ("duration", crate::bundled_module("duration").unwrap()),
+            ("main", include_str!("../examples/durations.witchy")),
+        ];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "durations example diverged");
+        assert_eq!(
+            compiled,
+            vec!["1s", "2s", "4s", "5s", "5s", "1:30:00", "true", "2m30s"]
+        );
+    }
+
+    #[test]
     fn duration_module_backends_agree() {
         // The duration module over the built-in Duration type: human/clock format
         // a Duration (combined from literals), to_millis bridges back to Int.
