@@ -1963,6 +1963,58 @@ fn main(console: Console, net: Net):
     }
 
     #[test]
+    fn http_client_builder_loopback() {
+        // The reqwest-style client builder (get_request |> with_header |> send)
+        // against a raw TCP server: it sends the method/path/header and parses
+        // the response status and body.
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let addr = format!("127.0.0.1:{port}");
+        let srv = std::thread::spawn(move || {
+            let (mut sock, _) = listener.accept().unwrap();
+            let mut buf = Vec::new();
+            let mut tmp = [0u8; 1024];
+            loop {
+                let n = sock.read(&mut tmp).unwrap();
+                if n == 0 {
+                    break;
+                }
+                buf.extend_from_slice(&tmp[..n]);
+                if buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            sock.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 7\r\n\r\nhello!!")
+                .unwrap();
+            String::from_utf8_lossy(&buf).into_owned()
+        });
+
+        let src = format!(
+            r#"
+import http
+fn main(console: Console, net: Net):
+    let req = http.get_request("http://{addr}/path") |> http.with_header("X-Test", "abc")
+    match http.send(req, net):
+        Ok(resp) ->
+            print(console, int_to_string(http.status(resp)))
+            print(console, http.body(resp))
+            print(console, to_string(http.is_success(resp)))
+        Err(e) -> print(console, "err: " <> e)
+"#
+        );
+        let parsed = crate::parser::parse_module(&src).expect("parse");
+        let linked =
+            crate::linker::link(vec![("main".to_string(), parsed)], "main").expect("link");
+        let out = run_module(linked, ".", vec![addr.clone()]).expect("run");
+        assert_eq!(out, vec!["200", "hello!!", "true"]);
+        let req = srv.join().unwrap();
+        assert!(req.contains("GET /path HTTP/1.1"), "req: {req}");
+        assert!(req.contains("X-Test: abc"), "req: {req}");
+    }
+
+    #[test]
     fn serve_middleware_nest_and_notfound_roundtrip() {
         use std::io::{Read, Write};
         use std::net::{TcpListener, TcpStream};
