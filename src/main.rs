@@ -3067,6 +3067,28 @@ impl Counter:
         assert!(any, "no examples found");
     }
 
+    /// Every bundled std module must type-check on its own (linked with its
+    /// imports). The interpreter doesn't type-check, so without this a latent
+    /// type error in a module no example imports would go unnoticed.
+    #[test]
+    fn all_std_modules_type_check() {
+        let mut any = false;
+        for entry in std::fs::read_dir("std").expect("std directory") {
+            let path = entry.unwrap().path();
+            if path.extension().and_then(|s| s.to_str()) != Some("witchy") {
+                continue;
+            }
+            any = true;
+            let p = path.to_str().unwrap();
+            assert!(
+                crate::check_file(p).is_ok(),
+                "type-check failed for `{p}`: {:?}",
+                crate::check_file(p)
+            );
+        }
+        assert!(any, "no std modules found");
+    }
+
     #[test]
     fn compute_example_returns_value() {
         assert_eq!(
