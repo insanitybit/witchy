@@ -28,6 +28,59 @@ pub fn encode(j: Json) -> String:
         JsonArray(items) -> encode_array(items)
         JsonObject(pairs) -> encode_object(pairs)
 
+// Serialize with 2-space indentation, for human-readable output. Empty arrays
+// and objects stay on one line (`[]` / `{}`).
+pub fn encode_pretty(j: Json) -> String:
+    encode_indent(j, 0)
+
+fn encode_indent(j: Json, depth: Int) -> String:
+    match j:
+        JsonNull -> "null"
+        JsonBool(b) -> if b: "true" else: "false"
+        JsonInt(n) -> int_to_string(n)
+        JsonString(s) -> encode_string(s)
+        JsonArray(items) -> pretty_array(items, depth)
+        JsonObject(pairs) -> pretty_object(pairs, depth)
+
+fn pretty_array(items: List(Json), depth: Int) -> String:
+    if length(items) == 0:
+        "[]"
+    else:
+        let pad = indent(depth + 1)
+        var out = "[\n"
+        var first = true
+        for it in items:
+            if first:
+                first = false
+            else:
+                out = out <> ",\n"
+            out = out <> pad <> encode_indent(it, depth + 1)
+        out <> "\n" <> indent(depth) <> "]"
+
+fn pretty_object(pairs: List((String, Json)), depth: Int) -> String:
+    if length(pairs) == 0:
+        "{}"
+    else:
+        let pad = indent(depth + 1)
+        var out = "{\n"
+        var first = true
+        for p in pairs:
+            let (k, v) = p
+            if first:
+                first = false
+            else:
+                out = out <> ",\n"
+            out = out <> pad <> encode_string(k) <> ": " <> encode_indent(v, depth + 1)
+        out <> "\n" <> indent(depth) <> "}"
+
+fn indent(depth: Int) -> String:
+    var out = ""
+    var i = 0
+    while i < depth:
+        out = out <> "  "
+        i = i + 1
+    out
+
 fn encode_array(items: List(Json)) -> String:
     var out = "["
     var first = true

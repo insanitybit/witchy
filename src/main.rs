@@ -1728,6 +1728,24 @@ fn main(console: Console):
     }
 
     #[test]
+    fn json_encode_pretty_backends_agree() {
+        let client = r#"
+import json
+fn main(console: Console):
+    let doc = JsonObject([("name", JsonString("witchy")), ("tags", JsonArray([JsonInt(1), JsonInt(2)])), ("empty", JsonArray([]))])
+    print(console, json.encode_pretty(doc))
+"#;
+        let sources = [("json", crate::bundled_module("json").unwrap()), ("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "encode_pretty diverged");
+        assert_eq!(
+            compiled,
+            vec!["{\n  \"name\": \"witchy\",\n  \"tags\": [\n    1,\n    2\n  ],\n  \"empty\": []\n}"]
+        );
+    }
+
+    #[test]
     fn merge_sort_is_stable_on_both_backends() {
         // list.sort_by is a stable merge sort: equal keys keep their original
         // order. Sort (key, tag) items by key only; ties must preserve insertion
