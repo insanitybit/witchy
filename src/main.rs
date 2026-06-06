@@ -2161,6 +2161,32 @@ fn main(console: Console):
     }
 
     #[test]
+    fn math_to_base_backends_agree() {
+        // to_base renders a number in base 2..16 (recursively, MSB-first);
+        // zero is "0", negatives get a "-", an out-of-range base is "".
+        let client = r#"
+import math
+fn main(console: Console):
+    print(console, math.to_hex(255))
+    print(console, math.to_hex(0))
+    print(console, math.to_hex(4096))
+    print(console, math.to_binary(5))
+    print(console, math.to_base(255, 16))
+    print(console, math.to_base(0 - 255, 16))
+    print(console, math.to_base(100, 1))
+    print(console, math.to_base(0, 2))
+"#;
+        let sources = [("math", crate::bundled_module("math").unwrap()), ("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "to_base diverged");
+        assert_eq!(
+            compiled,
+            vec!["ff", "0", "1000", "101", "ff", "-ff", "", "0"]
+        );
+    }
+
+    #[test]
     fn merge_sort_is_stable_on_both_backends() {
         // list.sort_by is a stable merge sort: equal keys keep their original
         // order. Sort (key, tag) items by key only; ties must preserve insertion

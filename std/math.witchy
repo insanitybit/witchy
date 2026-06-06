@@ -119,6 +119,35 @@ pub fn is_perfect_square(n: Int) -> Bool:
         let r = isqrt(n)
         r * r == n
 
+// Render `n` in `base` (2..16) with lowercase digits; a negative `n` gets a
+// leading "-". An out-of-range base yields "" (so callers can detect misuse).
+pub fn to_base(n: Int, base: Int) -> String:
+    if base < 2 || base > 16:
+        ""
+    else if n == 0:
+        "0"
+    else if n < 0:
+        "-" <> to_base_pos(0 - n, base)
+    else:
+        to_base_pos(n, base)
+
+fn to_base_pos(n: Int, base: Int) -> String:
+    if n == 0:
+        ""
+    else:
+        to_base_pos(n / base, base) <> base_digit(n % base)
+
+fn base_digit(d: Int) -> String:
+    substring("0123456789abcdef", d, d + 1)
+
+// `n` in hexadecimal (e.g. 255 -> "ff").
+pub fn to_hex(n: Int) -> String:
+    to_base(n, 16)
+
+// `n` in binary (e.g. 5 -> "101").
+pub fn to_binary(n: Int) -> String:
+    to_base(n, 2)
+
 // --- Float versions (Int comparison can't be reused for Float) ---
 
 pub fn fmin(a: Float, b: Float) -> Float:
