@@ -41,6 +41,34 @@ pub fn to_millis(d: Duration) -> Int:
 pub fn to_seconds(d: Duration) -> Int:
     duration_to_int(d) / 1000
 
+// ---- Combinators ----
+
+// The longer of two durations.
+pub fn max(a: Duration, b: Duration) -> Duration:
+    if a > b:
+        a
+    else:
+        b
+
+// The shorter of two durations.
+pub fn min(a: Duration, b: Duration) -> Duration:
+    if a < b:
+        a
+    else:
+        b
+
+// Whether the duration is exactly zero.
+pub fn is_zero(d: Duration) -> Bool:
+    duration_to_int(d) == 0
+
+// The magnitude of a duration (a negative span, e.g. from subtraction, is made
+// positive).
+pub fn abs(d: Duration) -> Duration:
+    if duration_to_int(d) < 0:
+        int_to_duration(0 - duration_to_int(d))
+    else:
+        d
+
 // ---- Components ----
 
 // The hours component (everything an hour and above).

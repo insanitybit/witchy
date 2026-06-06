@@ -2136,6 +2136,29 @@ fn main(console: Console):
     }
 
     #[test]
+    fn duration_combinators_backends_agree() {
+        // max/min/is_zero/abs over the Duration type (it has no Ord impl, so the
+        // generic ord helpers don't apply).
+        let client = r#"
+import duration
+fn main(console: Console):
+    print(console, duration.human(duration.max(30s, 1m)))
+    print(console, duration.human(duration.min(30s, 1m)))
+    print(console, to_string(duration.is_zero(0ms)))
+    print(console, to_string(duration.is_zero(1s)))
+    print(console, duration.human(duration.abs(0s - 5s)))
+"#;
+        let sources = [
+            ("duration", crate::bundled_module("duration").unwrap()),
+            ("main", client),
+        ];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "duration combinators diverged");
+        assert_eq!(compiled, vec!["1m0s", "30s", "true", "false", "5s"]);
+    }
+
+    #[test]
     fn duration_module_backends_agree() {
         // The duration module over the built-in Duration type: human/clock format
         // a Duration (combined from literals), to_millis bridges back to Int.
