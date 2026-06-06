@@ -272,6 +272,18 @@ impl Parser {
     fn type_def(&mut self) -> Result<TypeDef, ParseError> {
         self.expect(&Tok::Type)?;
         let name = self.ident()?;
+        // Optional explicit type parameters: `type Pair(a, b):`. The type checker
+        // also infers the parameters from the variant field types, so these names
+        // are accepted for clarity/documentation and the inferred set is used.
+        if self.eat(&Tok::LParen) {
+            while !self.at(&Tok::RParen) {
+                self.ident()?;
+                if !self.eat(&Tok::Comma) {
+                    break;
+                }
+            }
+            self.expect(&Tok::RParen)?;
+        }
         self.expect(&Tok::LBrace)?;
         let mut variants = Vec::new();
         let mut rec_names: Vec<String> = Vec::new();
@@ -1287,6 +1299,26 @@ fn add(a: Int, b: Int) -> Int:
         assert_eq!(f.name, "add");
         assert_eq!(f.params.len(), 2);
         assert_eq!(f.ret, Some(Type::Named("Int".into(), vec![])));
+    }
+
+    #[test]
+    fn type_def_accepts_explicit_type_parameters() {
+        // The conventional `type Name(a, b):` form parses; the parameter names are
+        // accepted for clarity and the checker infers them from the field types.
+        let m = parse_module(
+            r#"
+type Pair(a, b):
+    Pair(a, b)
+"#,
+        )
+        .expect("explicit type params should parse");
+        let Item::Type(td) = &m.items[0] else {
+            panic!("expected a type definition");
+        };
+        assert_eq!(td.name, "Pair");
+        assert_eq!(td.variants.len(), 1);
+        assert_eq!(td.variants[0].name, "Pair");
+        assert_eq!(td.variants[0].fields.len(), 2);
     }
 
     #[test]

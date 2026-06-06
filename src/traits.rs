@@ -353,7 +353,7 @@ impl Ctx<'_> {
                 self.rewrite_block(body, &mut s);
             }
             Expr::Block(b) => self.rewrite_block(b, &mut scope.clone()),
-            Expr::Var(_) | Expr::Int(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) => {}
+            Expr::Var(_) | Expr::Int(_) | Expr::Duration(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) => {}
         }
     }
 }
@@ -761,7 +761,7 @@ impl Mono<'_> {
                 self.walk_block(body, &mut s);
             }
             Expr::Block(b) => self.walk_block(b, &mut scope.clone()),
-            Expr::Var(_) | Expr::Int(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) => {}
+            Expr::Var(_) | Expr::Int(_) | Expr::Duration(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) => {}
         }
     }
 }

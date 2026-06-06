@@ -2699,6 +2699,32 @@ fn main(console: Console):
     }
 
     #[test]
+    fn generic_stack_example_runs_on_wasm() {
+        // A recursive generic ADT `Stack(a)` used at two instantiations (Int and
+        // String) with a generic `Option(a)` peek produces identical output on
+        // both backends — parametric polymorphism end to end.
+        let sources = [
+            ("string", crate::bundled_module("string").unwrap()),
+            ("option", crate::bundled_module("option").unwrap()),
+            ("main", include_str!("../examples/generic_stack.witchy")),
+        ];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "generic_stack diverged");
+        assert_eq!(
+            compiled,
+            vec![
+                "nums size:  3",
+                "words size: 2",
+                "nums top:   1",
+                "words top:  first",
+                "rev nums top:  3",
+                "rev words top: second",
+            ]
+        );
+    }
+
+    #[test]
     fn calculator_example_runs_on_wasm() {
         // The recursive-descent calculator (mutual recursion + tuple cursors +
         // string scanning) parses and evaluates expressions identically on both
