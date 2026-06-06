@@ -1,0 +1,43 @@
+// Pure duration helpers over a whole number of seconds. There is no clock here,
+// so the module is capability-free and compiles to WASM — reading the wall clock
+// needs a host capability and lives elsewhere. This is the witchy slice of the
+// arithmetic/formatting side of Go's time.Duration.
+
+import string
+
+// Build a duration (in seconds) from hours, minutes, and seconds.
+pub fn from_hms(h: Int, m: Int, s: Int) -> Int:
+    h * 3600 + m * 60 + s
+
+// The hours component (everything an hour and above).
+pub fn part_hours(secs: Int) -> Int:
+    secs / 3600
+
+// The minutes component (0..59).
+pub fn part_minutes(secs: Int) -> Int:
+    (secs / 60) % 60
+
+// The seconds component (0..59).
+pub fn part_seconds(secs: Int) -> Int:
+    secs % 60
+
+// A clock string "H:MM:SS": minutes and seconds are zero-padded to two digits,
+// hours shown in full (so a long span reads as e.g. "100:00:00").
+pub fn clock(secs: Int) -> String:
+    int_to_string(part_hours(secs)) <> ":" <> pad2(part_minutes(secs)) <> ":" <> pad2(part_seconds(secs))
+
+fn pad2(n: Int) -> String:
+    string.pad_left(int_to_string(n), 2, "0")
+
+// A compact human label that omits any leading zero units: 3661 -> "1h1m1s",
+// 90 -> "1m30s", 5 -> "5s", 0 -> "0s".
+pub fn human(secs: Int) -> String:
+    let h = part_hours(secs)
+    let m = part_minutes(secs)
+    let s = part_seconds(secs)
+    if h > 0:
+        int_to_string(h) <> "h" <> int_to_string(m) <> "m" <> int_to_string(s) <> "s"
+    else if m > 0:
+        int_to_string(m) <> "m" <> int_to_string(s) <> "s"
+    else:
+        int_to_string(s) <> "s"

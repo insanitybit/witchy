@@ -2092,6 +2092,36 @@ fn main(console: Console):
     }
 
     #[test]
+    fn duration_module_backends_agree() {
+        // The pure duration module: from_hms builds seconds; clock zero-pads
+        // mm:ss; human omits leading zero units. All Int arithmetic, so it
+        // compiles to WASM identically.
+        let client = r#"
+import duration
+fn main(console: Console):
+    print(console, int_to_string(duration.from_hms(1, 2, 3)))
+    print(console, duration.clock(3723))
+    print(console, duration.clock(90))
+    print(console, duration.human(3661))
+    print(console, duration.human(90))
+    print(console, duration.human(5))
+    print(console, duration.human(0))
+    print(console, int_to_string(duration.part_minutes(3723)))
+"#;
+        let sources = [
+            ("duration", crate::bundled_module("duration").unwrap()),
+            ("main", client),
+        ];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "duration diverged");
+        assert_eq!(
+            compiled,
+            vec!["3723", "1:02:03", "0:01:30", "1h1m1s", "1m30s", "5s", "0s", "2"]
+        );
+    }
+
+    #[test]
     fn merge_sort_is_stable_on_both_backends() {
         // list.sort_by is a stable merge sort: equal keys keep their original
         // order. Sort (key, tag) items by key only; ties must preserve insertion
