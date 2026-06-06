@@ -116,6 +116,9 @@ pub fn server_error(b: String) -> Response:
 pub fn not_found() -> Response:
     Response(404, [("content-type", "text/plain; charset=utf-8")], "Not Found")
 
+pub fn method_not_allowed() -> Response:
+    Response(405, [("content-type", "text/plain; charset=utf-8")], "Method Not Allowed")
+
 pub fn redirect(location: String) -> Response:
     Response(303, [("location", location)], "")
 
@@ -184,7 +187,23 @@ fn dispatch(routes: List(Route)) -> fn(Request) -> Response:
 fn dispatch_one(routes: List(Route), req: Request) -> Response:
     match try_routes(routes, req):
         Some(resp) -> resp
-        None -> not_found()
+        None ->
+            // The path may exist under a different method — that's a 405, not a
+            // 404 (so clients can tell "wrong verb" from "no such resource").
+            if path_matches_any(routes, req):
+                method_not_allowed()
+            else:
+                not_found()
+
+fn path_matches_any(routes: List(Route), req: Request) -> Bool:
+    for rt in routes:
+        if route_path_matches(rt, req):
+            return true
+    false
+
+fn route_path_matches(rt: Route, req: Request) -> Bool:
+    match rt:
+        Route(_m, pat, _h) -> option.is_some(match_path(pat, path(req)))
 
 fn try_routes(routes: List(Route), req: Request) -> Option(Response):
     for rt in routes:
@@ -350,6 +369,7 @@ fn reason(code: Int) -> String:
     else: if code == 401: "Unauthorized"
     else: if code == 403: "Forbidden"
     else: if code == 404: "Not Found"
+    else: if code == 405: "Method Not Allowed"
     else: if code == 500: "Internal Server Error"
     else: "Status"
 
