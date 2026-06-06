@@ -2661,6 +2661,25 @@ fn main(console: Console):
     }
 
     #[test]
+    fn plugin_host_example_runs_on_wasm() {
+        // The capability-thesis demo: a list of function-value plugins applied as
+        // a pipeline, plus a console-capturing logger closure — identical on both
+        // backends.
+        let sources = [
+            ("string", crate::bundled_module("string").unwrap()),
+            ("option", crate::bundled_module("option").unwrap()),
+            ("main", include_str!("../examples/plugin_host.witchy")),
+        ];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "plugin_host diverged");
+        assert_eq!(
+            compiled,
+            vec!["1 -> 12", "5 -> 20", "10 -> 30", "[log] ran the pipeline"]
+        );
+    }
+
+    #[test]
     fn bst_example_runs_on_wasm() {
         // The binary search tree (recursive ADT + pattern matching + tree sort)
         // produces identical output on both backends.
