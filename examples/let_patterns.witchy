@@ -1,0 +1,39 @@
+// `if let` and `while let`: ergonomic pattern matching for the common case of
+// "do something only when a value matches one shape." `if let PAT = e:` runs its
+// body — with the pattern's bindings in scope — only on a match, with an optional
+// `else`. `while let PAT = e:` loops as long as the scrutinee keeps matching,
+// perfect for draining a source until it runs dry. Both desugar to `match`, so
+// they run identically interpreted, compiled, and inside the capability sandbox:
+//   witchy examples/let_patterns.witchy
+//   witchy parity examples/let_patterns.witchy
+//   witchy sandbox examples/let_patterns.witchy
+
+import option
+import string
+
+// Pop the head off a list, returning the value and the rest — or None if empty.
+fn pop(xs: List(Int)) -> Option((Int, List(Int))):
+    match xs:
+        [] -> None
+        [h, ..t] -> Some((h, t))
+
+fn main(console: Console):
+    // if let: bind and act only when the value is present, with an else fallback.
+    let found = Some(42)
+    if let Some(x) = found:
+        print(console, "found: " <> int_to_string(x))
+    else:
+        print(console, "nothing")
+
+    // if let with no else is a statement: the body runs, or nothing happens.
+    if let Some(x) = pop([7, 8, 9]):
+        let (head, _rest) = x
+        print(console, "head is " <> int_to_string(head))
+
+    // while let: keep matching until the pattern fails — here, until the list
+    // is empty and `pop` returns None.
+    var stack = [1, 2, 3, 4]
+    while let Some((top, rest)) = pop(stack):
+        print(console, "pop " <> int_to_string(top))
+        stack = rest
+    print(console, "drained")

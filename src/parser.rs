@@ -750,6 +750,37 @@ impl Parser {
             Tok::If => self.if_expr(),
             Tok::While => {
                 self.advance();
+                // `while let PAT = SCRUT:` loops while the scrutinee keeps
+                // matching: it desugars to `while true` over a match whose
+                // wildcard arm breaks out of the loop.
+                if self.eat(&Tok::Let) {
+                    let pattern = self.pattern()?;
+                    self.expect(&Tok::Eq)?;
+                    let scrutinee = self.expr(0)?;
+                    let line = self.cur().line;
+                    let body = self.block()?;
+                    let dispatch = Expr::Match {
+                        scrutinee: Box::new(scrutinee),
+                        arms: vec![
+                            MatchArm { pattern, guard: None, body: Expr::Block(body) },
+                            MatchArm {
+                                pattern: Pattern::Wildcard,
+                                guard: None,
+                                body: Expr::Block(Block {
+                                    stmts: vec![Stmt::Break],
+                                    lines: vec![line],
+                                }),
+                            },
+                        ],
+                    };
+                    return Ok(Expr::While {
+                        cond: Box::new(Expr::Bool(true)),
+                        body: Block {
+                            stmts: vec![Stmt::Expr(dispatch)],
+                            lines: vec![line],
+                        },
+                    });
+                }
                 let cond = self.expr(0)?;
                 let body = self.block()?;
                 Ok(Expr::While {
@@ -1029,27 +1060,51 @@ impl Parser {
 
     fn if_expr(&mut self) -> Result<Expr, ParseError> {
         self.expect(&Tok::If)?;
+        // `if let PAT = SCRUT:` is sugar for a match: the pattern arm runs the
+        // body, and a wildcard arm runs the `else` block (or nothing).
+        if self.eat(&Tok::Let) {
+            let pattern = self.pattern()?;
+            self.expect(&Tok::Eq)?;
+            let scrutinee = self.expr(0)?;
+            let then_block = self.colon_or_block()?;
+            let fallback = match self.else_block()? {
+                Some(eb) => Expr::Block(eb),
+                None => Expr::Block(Block { stmts: vec![], lines: vec![] }),
+            };
+            return Ok(Expr::Match {
+                scrutinee: Box::new(scrutinee),
+                arms: vec![
+                    MatchArm { pattern, guard: None, body: Expr::Block(then_block) },
+                    MatchArm { pattern: Pattern::Wildcard, guard: None, body: fallback },
+                ],
+            });
+        }
         let cond = self.expr(0)?;
         let then_block = self.colon_or_block()?;
-        let else_block = if self.eat(&Tok::Else) {
-            if self.at(&Tok::If) {
-                // `else if` chains nest as a block containing one if-expression.
-                let line = self.cur().line;
-                Some(Block {
-                    stmts: vec![Stmt::Expr(self.if_expr()?)],
-                    lines: vec![line],
-                })
-            } else {
-                Some(self.colon_or_block()?)
-            }
-        } else {
-            None
-        };
+        let else_block = self.else_block()?;
         Ok(Expr::If {
             cond: Box::new(cond),
             then_block,
             else_block,
         })
+    }
+
+    /// Parse an optional trailing `else:` / `else if …` clause as a block.
+    fn else_block(&mut self) -> Result<Option<Block>, ParseError> {
+        if self.eat(&Tok::Else) {
+            if self.at(&Tok::If) {
+                // `else if` chains nest as a block containing one if-expression.
+                let line = self.cur().line;
+                Ok(Some(Block {
+                    stmts: vec![Stmt::Expr(self.if_expr()?)],
+                    lines: vec![line],
+                }))
+            } else {
+                Ok(Some(self.colon_or_block()?))
+            }
+        } else {
+            Ok(None)
+        }
     }
 
     fn match_expr(&mut self) -> Result<Expr, ParseError> {
@@ -1319,6 +1374,53 @@ type Pair(a, b):
         assert_eq!(td.variants.len(), 1);
         assert_eq!(td.variants[0].name, "Pair");
         assert_eq!(td.variants[0].fields.len(), 2);
+    }
+
+    #[test]
+    fn if_let_desugars_to_match() {
+        // `if let PAT = e: ... else: ...` becomes a two-arm match: the pattern
+        // arm and a wildcard fallback carrying the else block.
+        let stmts = fn_body(
+            r#"
+fn f(o: Option(Int)) -> Int:
+    if let Some(x) = o:
+        x
+    else:
+        0
+"#,
+        );
+        let Stmt::Expr(Expr::Match { arms, .. }) = &stmts[0] else {
+            panic!("if let should desugar to a match, got {:?}", stmts[0]);
+        };
+        assert_eq!(arms.len(), 2);
+        assert!(matches!(arms[0].pattern, Pattern::Ctor { .. }));
+        assert_eq!(arms[1].pattern, Pattern::Wildcard);
+    }
+
+    #[test]
+    fn while_let_desugars_to_while_true_match() {
+        // `while let PAT = e: body` becomes `while true` over a match whose
+        // wildcard arm breaks the loop.
+        let stmts = fn_body(
+            r#"
+fn f(o: Option(Int)):
+    while let Some(x) = o:
+        o = None
+"#,
+        );
+        let Stmt::Expr(Expr::While { cond, body }) = &stmts[0] else {
+            panic!("while let should desugar to a while loop");
+        };
+        assert_eq!(**cond, Expr::Bool(true));
+        let Stmt::Expr(Expr::Match { arms, .. }) = &body.stmts[0] else {
+            panic!("while let body should be a match");
+        };
+        assert_eq!(arms.len(), 2);
+        assert_eq!(arms[1].pattern, Pattern::Wildcard);
+        let Expr::Block(b) = &arms[1].body else {
+            panic!("wildcard arm should be a block");
+        };
+        assert_eq!(b.stmts, vec![Stmt::Break]);
     }
 
     #[test]

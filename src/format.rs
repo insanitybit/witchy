@@ -343,6 +343,27 @@ fn multiline(s: &mut String, e: &Expr, depth: usize) {
             block(s, body, depth + 1);
         }
         Expr::Match { scrutinee, arms } => {
+            // An empty wildcard arm body can only arise from desugaring an
+            // `if let` without `else` (no other construct yields an empty block,
+            // which has no off-side surface form). Render it back as `if let`,
+            // which re-parses to exactly this match.
+            if let [then_arm, else_arm] = arms.as_slice() {
+                if then_arm.guard.is_none()
+                    && else_arm.guard.is_none()
+                    && else_arm.pattern == Pattern::Wildcard
+                    && matches!(&else_arm.body, Expr::Block(b) if b.stmts.is_empty())
+                {
+                    if let Expr::Block(tb) = &then_arm.body {
+                        s.push_str("if let ");
+                        s.push_str(&pattern(&then_arm.pattern));
+                        s.push_str(" = ");
+                        s.push_str(&expr(scrutinee));
+                        s.push_str(":\n");
+                        block(s, tb, depth + 1);
+                        return;
+                    }
+                }
+            }
             s.push_str("match ");
             s.push_str(&expr(scrutinee));
             s.push_str(":\n");

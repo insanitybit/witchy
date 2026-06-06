@@ -2725,6 +2725,33 @@ fn main(console: Console):
     }
 
     #[test]
+    fn let_patterns_example_runs_on_wasm() {
+        // `if let` / `while let` desugar to `match`, so the pattern-binding control
+        // flow (including draining a list via head/tail in a `while let`) produces
+        // identical output on both backends.
+        let sources = [
+            ("string", crate::bundled_module("string").unwrap()),
+            ("option", crate::bundled_module("option").unwrap()),
+            ("main", include_str!("../examples/let_patterns.witchy")),
+        ];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "let_patterns diverged");
+        assert_eq!(
+            compiled,
+            vec![
+                "found: 42",
+                "head is 7",
+                "pop 1",
+                "pop 2",
+                "pop 3",
+                "pop 4",
+                "drained",
+            ]
+        );
+    }
+
+    #[test]
     fn calculator_example_runs_on_wasm() {
         // The recursive-descent calculator (mutual recursion + tuple cursors +
         // string scanning) parses and evaluates expressions identically on both
