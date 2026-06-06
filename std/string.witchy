@@ -159,6 +159,33 @@ pub fn split_once(s: String, sep: String) -> (String, String):
     else:
         (substring(s, 0, i), substring(s, i + char_count(sep), char_count(s)))
 
+// The index of the LAST occurrence of `sep` in `s`, or -1 when absent (and -1
+// for an empty `sep`). The right-to-left companion of the `index_of` builtin.
+pub fn last_index_of(s: String, sep: String) -> Int:
+    if string_length(sep) == 0:
+        0 - 1
+    else:
+        var last = 0 - 1
+        var base = 0
+        var rest = s
+        var i = index_of(rest, sep)
+        while i >= 0:
+            last = base + i
+            base = base + i + char_count(sep)
+            rest = substring(rest, i + char_count(sep), char_count(rest))
+            i = index_of(rest, sep)
+        last
+
+// Split on the LAST occurrence of `sep` (e.g. a file extension): `rsplit_once`
+// of `"a.b.c"` on `"."` is `("a.b", "c")`. When `sep` is absent the whole string
+// is the right part: `("", s)` — mirroring `split_once`'s `(s, "")`.
+pub fn rsplit_once(s: String, sep: String) -> (String, String):
+    let i = last_index_of(s, sep)
+    if i < 0:
+        ("", s)
+    else:
+        (substring(s, 0, i), substring(s, i + char_count(sep), char_count(s)))
+
 // Split text into its newline-separated lines.
 pub fn lines(text: String) -> List(String):
     split(text, "\n")

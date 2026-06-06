@@ -2037,6 +2037,33 @@ fn main(console: Console):
     }
 
     #[test]
+    fn string_rsplit_once_backends_agree() {
+        // rsplit_once splits on the LAST separator (vs split_once's first); when
+        // the separator is absent the whole string is the right part.
+        let client = r#"
+import string
+fn show2(p: (String, String)) -> String:
+    let (a, b) = p
+    a <> "|" <> b
+fn main(console: Console):
+    print(console, show2(string.rsplit_once("a.b.c", ".")))
+    print(console, show2(string.split_once("a.b.c", ".")))
+    print(console, show2(string.rsplit_once("nodot", ".")))
+    print(console, show2(string.rsplit_once("file.tar.gz", ".")))
+    print(console, int_to_string(string.last_index_of("a.b.c", ".")))
+    print(console, int_to_string(string.last_index_of("nodot", ".")))
+"#;
+        let sources = [("string", crate::bundled_module("string").unwrap()), ("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "rsplit_once diverged");
+        assert_eq!(
+            compiled,
+            vec!["a.b|c", "a|b.c", "|nodot", "file.tar|gz", "3", "-1"]
+        );
+    }
+
+    #[test]
     fn merge_sort_is_stable_on_both_backends() {
         // list.sort_by is a stable merge sort: equal keys keep their original
         // order. Sort (key, tag) items by key only; ties must preserve insertion
