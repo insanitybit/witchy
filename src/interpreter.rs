@@ -2115,6 +2115,50 @@ fn main(console: Console, net: Net):
     }
 
     #[test]
+    fn serve_any_method_route_roundtrip() {
+        // An `any` route answers every verb (the `*` wildcard method).
+        use std::io::{Read, Write};
+        use std::net::{TcpListener, TcpStream};
+        let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let addr = format!("127.0.0.1:{port}");
+        let src = format!(
+            r#"
+import http
+import server
+fn main(console: Console, net: Net):
+    let app = server.router()
+        |> server.any("/ping", fn(req: Request): server.ok(server.method(req)))
+    server.serve_n(net, "{addr}", app, 2)
+"#
+        );
+        let parsed = crate::parser::parse_module(&src).expect("parse");
+        let linked =
+            crate::linker::link(vec![("main".to_string(), parsed)], "main").expect("link");
+        let allow = vec![addr.clone()];
+        let server = std::thread::spawn(move || run_module(linked, ".", allow));
+
+        let request = |raw: &str| -> String {
+            for _ in 0..100 {
+                if let Ok(mut s) = TcpStream::connect(&addr) {
+                    s.write_all(raw.as_bytes()).unwrap();
+                    let mut resp = String::new();
+                    s.read_to_string(&mut resp).unwrap();
+                    return resp;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            panic!("could not connect to server");
+        };
+
+        let g = request("GET /ping HTTP/1.1\r\nHost: x\r\n\r\n");
+        assert!(g.contains("200 OK") && g.ends_with("GET"), "g: {g}");
+        let d = request("DELETE /ping HTTP/1.1\r\nHost: x\r\n\r\n");
+        assert!(d.contains("200 OK") && d.ends_with("DELETE"), "d: {d}");
+
+        server.join().unwrap().unwrap();
+    }
+
+    #[test]
     fn serve_middleware_nest_and_notfound_roundtrip() {
         use std::io::{Read, Write};
         use std::net::{TcpListener, TcpStream};

@@ -161,6 +161,13 @@ pub fn delete(r: Router, p: String, h: fn(Request) -> Response) -> Router:
     route(r, "DELETE", p, h)
 pub fn patch(r: Router, p: String, h: fn(Request) -> Response) -> Router:
     route(r, "PATCH", p, h)
+pub fn head(r: Router, p: String, h: fn(Request) -> Response) -> Router:
+    route(r, "HEAD", p, h)
+
+// Match `p` under ANY method (axum's `any`). Stored with the `*` wildcard method,
+// which `check_route` accepts for any verb.
+pub fn any(r: Router, p: String, h: fn(Request) -> Response) -> Router:
+    route(r, "*", p, h)
 
 // Mount `sub`'s routes under `prefix` (axum-style nesting).
 pub fn nest(r: Router, prefix: String, sub: Router) -> Router:
@@ -215,7 +222,7 @@ fn try_routes(routes: List(Route), req: Request) -> Option(Response):
 fn check_route(rt: Route, req: Request) -> Option(Response):
     match rt:
         Route(m, pat, h) ->
-            if m == method(req):
+            if m == method(req) || m == "*":
                 match match_path(pat, path(req)):
                     Some(params) -> Some(h(with_params(req, params)))
                     None -> None
