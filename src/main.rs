@@ -1889,6 +1889,44 @@ fn main(console: Console):
     }
 
     #[test]
+    fn url_format_roundtrip_backends_agree() {
+        // format is parse's inverse; the default port is omitted, a non-default
+        // port is kept, and an absent path renders as "/".
+        let client = r#"
+import url
+import option
+fn render(s: String) -> String:
+    match url.parse(s):
+        Some(u) -> url.format(u)
+        None -> "no parse"
+fn main(console: Console):
+    print(console, render("https://example.com/path"))
+    print(console, render("http://example.com:8080/x"))
+    print(console, render("ftp://host:21/file"))
+    print(console, render("http://example.com"))
+    print(console, render("not a url"))
+"#;
+        let sources = [
+            ("option", crate::bundled_module("option").unwrap()),
+            ("url", crate::bundled_module("url").unwrap()),
+            ("main", client),
+        ];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "url.format diverged");
+        assert_eq!(
+            compiled,
+            vec![
+                "https://example.com/path",
+                "http://example.com:8080/x",
+                "ftp://host:21/file",
+                "http://example.com/",
+                "no parse",
+            ]
+        );
+    }
+
+    #[test]
     fn merge_sort_is_stable_on_both_backends() {
         // list.sort_by is a stable merge sort: equal keys keep their original
         // order. Sort (key, tag) items by key only; ties must preserve insertion

@@ -44,3 +44,12 @@ pub fn port(u: Url) -> Int:
 pub fn path(u: Url) -> String:
     match u:
         Url(_scheme, _host, _port, p) -> p
+
+// Render a Url back to its string form — the inverse of `parse`. The port is
+// shown only when it differs from the scheme default, so a parse/format round
+// trip of `https://host/p` stays `https://host/p` rather than gaining `:443`.
+pub fn format(u: Url) -> String:
+    match u:
+        Url(s, h, p, pa) ->
+            let authority = if p == default_port(s): h else: h <> ":" <> int_to_string(p)
+            s <> "://" <> authority <> pa
