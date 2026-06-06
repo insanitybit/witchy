@@ -1,0 +1,39 @@
+// A small, deterministic pseudo-random generator: the Park-Miller "minimal
+// standard" LCG, `state' = state * 16807 mod (2^31 - 1)`. The intermediate fits
+// in i64 (no overflow), so it is content-correct on both backends. State is
+// threaded explicitly — the same seed always replays the same sequence, which is
+// what you want for tests, sampling, and games. NOT for cryptography. Pure and
+// capability-free.
+
+type Rng:
+    Rng(Int)
+
+fn modulus() -> Int:
+    2147483647
+
+// A generator from seed `s` (any Int is mapped into the valid range 1..modulus).
+pub fn seed(s: Int) -> Rng:
+    let m = modulus()
+    var v = s % m
+    if v < 0:
+        v = v + m
+    if v == 0:
+        v = 1
+    Rng(v)
+
+// Advance the generator: a pseudo-random Int in [1, 2^31-1) and the next state.
+pub fn next(r: Rng) -> (Int, Rng):
+    match r:
+        Rng(state) ->
+            let n = (state * 16807) % modulus()
+            (n, Rng(n))
+
+// A pseudo-random Int in [0, bound) (bound must be positive) and the next state.
+pub fn next_below(r: Rng, bound: Int) -> (Int, Rng):
+    let (n, r2) = next(r)
+    (n % bound, r2)
+
+// A pseudo-random Bool (true ~half the time) and the next state.
+pub fn next_bool(r: Rng) -> (Bool, Rng):
+    let (n, r2) = next(r)
+    (n % 2 == 0, r2)

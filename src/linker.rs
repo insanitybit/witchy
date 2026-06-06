@@ -110,6 +110,7 @@ pub fn std_source(name: &str) -> Option<&'static str> {
         "json" => Some(include_str!("../std/json.witchy")),
         "url" => Some(include_str!("../std/url.witchy")),
         "duration" => Some(include_str!("../std/duration.witchy")),
+        "random" => Some(include_str!("../std/random.witchy")),
         _ => None,
     }
 }

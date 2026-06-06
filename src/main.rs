@@ -2171,6 +2171,45 @@ fn main(console: Console):
     }
 
     #[test]
+    fn random_module_backends_agree() {
+        // The Park-Miller LCG replays a deterministic sequence (the canonical
+        // seed-1 values) identically on both backends; next_below bounds it.
+        let client = r#"
+import random
+import list
+import string
+fn main(console: Console):
+    var r = random.seed(1)
+    var out = []
+    var i = 0
+    while i < 4:
+        let (n, r2) = random.next(r)
+        out = push(out, n)
+        r = r2
+        i = i + 1
+    print(console, string.join(list.map(out, fn(n: Int): int_to_string(n)), ","))
+    let (d, _r3) = random.next_below(random.seed(42), 6)
+    print(console, int_to_string(d))
+    let (b, _r4) = random.next_bool(random.seed(2))
+    print(console, if b: "even" else: "odd")
+"#;
+        let sources = [
+            ("option", crate::bundled_module("option").unwrap()),
+            ("list", crate::bundled_module("list").unwrap()),
+            ("string", crate::bundled_module("string").unwrap()),
+            ("random", crate::bundled_module("random").unwrap()),
+            ("main", client),
+        ];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "random diverged");
+        assert_eq!(
+            compiled,
+            vec!["16807,282475249,1622650073,984943658", "0", "even"]
+        );
+    }
+
+    #[test]
     fn duration_combinators_backends_agree() {
         // max/min/is_zero/abs over the Duration type (it has no Ord impl, so the
         // generic ord helpers don't apply).
