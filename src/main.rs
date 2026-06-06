@@ -1863,6 +1863,41 @@ fn main(console: Console):
     }
 
     #[test]
+    fn string_parse_int_backends_agree() {
+        // parse_int validates an optional sign + digits before calling the raw
+        // string_to_int builtin, so bad input is None (not a trap) consistently.
+        let client = r#"
+import string
+import option
+fn show(o: Option(Int)) -> String:
+    match o:
+        Some(n) -> int_to_string(n)
+        None -> "none"
+fn main(console: Console):
+    print(console, show(string.parse_int("42")))
+    print(console, show(string.parse_int("-7")))
+    print(console, show(string.parse_int("0")))
+    print(console, show(string.parse_int("")))
+    print(console, show(string.parse_int("-")))
+    print(console, show(string.parse_int("12a")))
+    print(console, show(string.parse_int("3.5")))
+    print(console, show(string.parse_int(" 5")))
+"#;
+        let sources = [
+            ("option", crate::bundled_module("option").unwrap()),
+            ("string", crate::bundled_module("string").unwrap()),
+            ("main", client),
+        ];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "parse_int diverged");
+        assert_eq!(
+            compiled,
+            vec!["42", "-7", "0", "none", "none", "none", "none", "none"]
+        );
+    }
+
+    #[test]
     fn string_center_backends_agree() {
         // center pads both sides; an odd remainder goes on the right, and a
         // string already at/over width is returned unchanged.

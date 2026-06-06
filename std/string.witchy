@@ -3,6 +3,8 @@
 // string operations (`split`, `replace`, `contains`, `to_upper`, ...) are
 // builtins; these are the conveniences built on top of them.
 
+import option
+
 // Join a list of strings with a separator between each.
 pub fn join(parts: List(String), sep: String) -> String:
     var s = ""
@@ -185,6 +187,33 @@ pub fn rsplit_once(s: String, sep: String) -> (String, String):
         ("", s)
     else:
         (substring(s, 0, i), substring(s, i + char_count(sep), char_count(s)))
+
+// Safely parse a base-10 integer: an optional leading `-`/`+` then one or more
+// digits. Returns None for empty, sign-only, or non-digit input — so it never
+// traps on bad input the way the raw `string_to_int` builtin can.
+pub fn parse_int(s: String) -> Option(Int):
+    let n = char_count(s)
+    if n == 0:
+        None
+    else:
+        var start = 0
+        let first = char_at(s, 0)
+        if first == "-" || first == "+":
+            start = 1
+        if start >= n:
+            None
+        else:
+            var i = start
+            var ok = true
+            while i < n:
+                let c = char_at(s, i)
+                if c < "0" || c > "9":
+                    ok = false
+                i = i + 1
+            if ok:
+                Some(string_to_int(s))
+            else:
+                None
 
 // Split text into its newline-separated lines.
 pub fn lines(text: String) -> List(String):
