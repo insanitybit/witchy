@@ -1,0 +1,77 @@
+// A complete arithmetic calculator: it parses and evaluates expressions like
+// "100 - 2 * (3 + 4)" straight from a string, honoring precedence and
+// parentheses. A hand-written recursive-descent parser/evaluator — mutual
+// recursion, tuples to thread the cursor, and character scanning — all pure
+// (only `main` touches the Console). So it runs identically interpreted,
+// compiled, and inside the capability sandbox:
+//   witchy examples/calculator.witchy   # interpret
+//   witchy parity examples/calculator.witchy
+//   witchy sandbox examples/calculator.witchy
+
+import string
+
+fn is_digit(c: String) -> Bool:
+    c >= "0" && c <= "9"
+
+// The index of the next non-space character at or after `i`.
+fn skip(s: String, i: Int) -> Int:
+    var j = i
+    while j < string_length(s) && string.char_at(s, j) == " ":
+        j = j + 1
+    j
+
+// A run of digits starting at `i`, as (value, index past it).
+fn read_number(s: String, i: Int) -> (Int, Int):
+    var j = i
+    while j < string_length(s) && is_digit(string.char_at(s, j)):
+        j = j + 1
+    (string_to_int(substring(s, i, j)), j)
+
+// factor := number | "(" expr ")"
+fn factor(s: String, i: Int) -> (Int, Int):
+    let p = skip(s, i)
+    if string.char_at(s, p) == "(":
+        let (v, q) = expr(s, p + 1)
+        (v, skip(s, q) + 1)
+    else:
+        read_number(s, p)
+
+// term := factor (("*" | "/") factor)*
+fn term(s: String, i: Int) -> (Int, Int):
+    let (lhs, start) = factor(s, i)
+    var acc = lhs
+    var p = skip(s, start)
+    while p < string_length(s) && (string.char_at(s, p) == "*" || string.char_at(s, p) == "/"):
+        let op = string.char_at(s, p)
+        let (rhs, q) = factor(s, p + 1)
+        if op == "*":
+            acc = acc * rhs
+        else:
+            acc = acc / rhs
+        p = skip(s, q)
+    (acc, p)
+
+// expr := term (("+" | "-") term)*
+fn expr(s: String, i: Int) -> (Int, Int):
+    let (lhs, start) = term(s, i)
+    var acc = lhs
+    var p = skip(s, start)
+    while p < string_length(s) && (string.char_at(s, p) == "+" || string.char_at(s, p) == "-"):
+        let op = string.char_at(s, p)
+        let (rhs, q) = term(s, p + 1)
+        if op == "+":
+            acc = acc + rhs
+        else:
+            acc = acc - rhs
+        p = skip(s, q)
+    (acc, p)
+
+fn eval(s: String) -> Int:
+    let (value, _rest) = expr(s, 0)
+    value
+
+fn main(console: Console):
+    print(console, "2 + 3 * 4        = " <> int_to_string(eval("2 + 3 * 4")))
+    print(console, "(2 + 3) * 4      = " <> int_to_string(eval("(2 + 3) * 4")))
+    print(console, "100 - 2 * (3 + 4) = " <> int_to_string(eval("100 - 2 * (3 + 4)")))
+    print(console, "7 + 6 / 2 - 1    = " <> int_to_string(eval("7 + 6 / 2 - 1")))

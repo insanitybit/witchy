@@ -2661,6 +2661,30 @@ fn main(console: Console):
     }
 
     #[test]
+    fn calculator_example_runs_on_wasm() {
+        // The recursive-descent calculator (mutual recursion + tuple cursors +
+        // string scanning) parses and evaluates expressions identically on both
+        // backends.
+        let sources = [
+            ("string", crate::bundled_module("string").unwrap()),
+            ("option", crate::bundled_module("option").unwrap()),
+            ("main", include_str!("../examples/calculator.witchy")),
+        ];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "calculator diverged");
+        assert_eq!(
+            compiled,
+            vec![
+                "2 + 3 * 4        = 14",
+                "(2 + 3) * 4      = 20",
+                "100 - 2 * (3 + 4) = 86",
+                "7 + 6 / 2 - 1    = 9",
+            ]
+        );
+    }
+
+    #[test]
     fn pipeline_example_runs_on_wasm() {
         // The method-chained data pipeline (filter/map/sum over list.range)
         // prints identically on both backends.
