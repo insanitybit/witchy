@@ -1996,8 +1996,8 @@ fn main(console: Console, net: Net):
 import http
 fn main(console: Console, net: Net):
     let req = http.get_request("http://{addr}/path")
-        |> http.with_header("X-Test", "abc")
-        |> http.with_query("q", "hi")
+        .with_header("X-Test", "abc")
+        .with_query("q", "hi")
     match http.send(req, net):
         Ok(resp) ->
             print(console, int_to_string(http.status(resp)))

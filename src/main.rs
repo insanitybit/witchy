@@ -2534,6 +2534,31 @@ fn main(console: Console):
     }
 
     #[test]
+    fn method_call_syntax_backends_agree() {
+        // UFCS method chaining: `recv.f(args)` == `f(recv, args)`. The method name
+        // resolves to a same-module function (inc) or an imported one (list.*),
+        // and reads like a Rust chain. The qualified form still works too.
+        let client = r#"
+import list
+fn inc(x: Int) -> Int:
+    x + 1
+fn main(console: Console):
+    print(console, int_to_string([1, 2, 3, 4].filter(fn(n: Int): n % 2 == 0).map(fn(n: Int): n * 2).sum()))
+    print(console, int_to_string(5.inc().inc()))
+    print(console, int_to_string(list.sum([10, 20, 30])))
+"#;
+        let sources = [
+            ("option", crate::bundled_module("option").unwrap()),
+            ("list", crate::bundled_module("list").unwrap()),
+            ("main", client),
+        ];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "method-call syntax diverged");
+        assert_eq!(compiled, vec!["12", "7", "60"]);
+    }
+
+    #[test]
     fn merge_sort_is_stable_on_both_backends() {
         // list.sort_by is a stable merge sort: equal keys keep their original
         // order. Sort (key, tag) items by key only; ties must preserve insertion

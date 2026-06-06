@@ -379,7 +379,7 @@ fn rewrite_expr(
 ) -> Result<(), LinkError> {
     match e {
         Expr::Call { name, args } => {
-            *name = resolve_call(name, m, imps, fns)?;
+            *name = resolve_call(name, m, imps, fns, bound)?;
             for a in args {
                 rewrite_expr(a, m, imps, fns, bound)?;
             }
@@ -453,7 +453,13 @@ fn rewrite_expr(
     Ok(())
 }
 
-fn resolve_call(name: &str, m: &str, imps: &[String], fns: &FnTable) -> Result<String, LinkError> {
+fn resolve_call(
+    name: &str,
+    m: &str,
+    imps: &[String],
+    fns: &FnTable,
+    bound: &HashSet<String>,
+) -> Result<String, LinkError> {
     if let Some((modname, fname)) = name.split_once('.') {
         if !imps.iter().any(|i| i == modname) {
             return lerr(format!(
@@ -474,6 +480,27 @@ fn resolve_call(name: &str, m: &str, imps: &[String], fns: &FnTable) -> Result<S
     }
     if BUILTINS.contains(&name) {
         return Ok(name.to_string());
+    }
+    // A bare name (e.g. from `recv.method(...)` UFCS sugar) may name a function
+    // in an imported module. Resolve it when exactly one import provides it and
+    // it isn't shadowed by a local binding; ambiguity across imports is an error.
+    if !bound.contains(name) {
+        let mut providers: Vec<&str> = Vec::new();
+        for imp in imps {
+            if fns.get(imp).is_some_and(|s| s.contains(name)) {
+                providers.push(imp.as_str());
+            }
+        }
+        match providers.len() {
+            1 => return Ok(format!("{}.{name}", providers[0])),
+            0 => {}
+            _ => {
+                return lerr(format!(
+                    "`{name}` is defined in multiple imported modules ({}); qualify it as `mod.{name}`",
+                    providers.join(", ")
+                ))
+            }
+        }
     }
     // Not a function here and not a builtin: a local binding being applied (e.g.
     // a lambda parameter). Leave it unqualified; the type checker decides.

@@ -78,6 +78,9 @@ struct Parser {
     in_match_arm: bool,
     /// Counter for fresh accumulator names in desugared list comprehensions.
     compr_counter: usize,
+    /// Imported module names, so `mod.func(...)` (module-qualified call) can be
+    /// told apart from `value.method(...)` (UFCS method call) after `.`.
+    imports: std::collections::HashSet<String>,
 }
 
 impl Parser {
@@ -87,6 +90,7 @@ impl Parser {
             pos: 0,
             in_match_arm: false,
             compr_counter: 0,
+            imports: std::collections::HashSet::new(),
         }
     }
 
@@ -162,7 +166,9 @@ impl Parser {
         let mut imports = Vec::new();
         while self.at(&Tok::Import) {
             self.advance();
-            imports.push(self.ident()?);
+            let name = self.ident()?;
+            self.imports.insert(name.clone());
+            imports.push(name);
         }
         let mut items = Vec::new();
         while !self.at(&Tok::Eof) {
@@ -647,21 +653,29 @@ impl Parser {
             } else if self.eat(&Tok::Dot) {
                 let member = self.ident()?;
                 if self.at(&Tok::LParen) {
-                    // `mod.func(args)` — a module-qualified call (only on a bare
-                    // module name; witchy has no methods).
                     let args = self.call_args()?;
-                    let modname = match e {
-                        Expr::Var(name) => name,
-                        _ => {
-                            return Err(self.error(
-                                "only module-qualified calls like `mod.func(...)` are allowed after `.`",
-                            ))
+                    match e {
+                        // `mod.func(args)` — a module-qualified call on a bare
+                        // imported module name.
+                        Expr::Var(name) if self.imports.contains(&name) => {
+                            e = Expr::Call {
+                                name: format!("{name}.{member}"),
+                                args,
+                            };
                         }
-                    };
-                    e = Expr::Call {
-                        name: format!("{modname}.{member}"),
-                        args,
-                    };
+                        // `receiver.method(args)` — UFCS method call: sugar for
+                        // `method(receiver, args)` (the method name resolves to a
+                        // same-module or imported function in the linker).
+                        receiver => {
+                            let mut all = Vec::with_capacity(args.len() + 1);
+                            all.push(receiver);
+                            all.extend(args);
+                            e = Expr::Call {
+                                name: member,
+                                args: all,
+                            };
+                        }
+                    }
                 } else {
                     e = Expr::Field {
                         base: Box::new(e),
