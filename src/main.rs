@@ -1963,6 +1963,31 @@ fn main(console: Console):
     }
 
     #[test]
+    fn json_merge_and_has_key_backends_agree() {
+        // merge is a shallow override (b wins per-key; a's other keys kept; a
+        // non-object b replaces wholesale); has_key checks top-level presence.
+        let client = r#"
+import json
+fn main(console: Console):
+    let a = JsonObject([("name", JsonString("a")), ("x", JsonInt(1))])
+    let b = JsonObject([("x", JsonInt(2)), ("y", JsonInt(3))])
+    print(console, json.encode(json.merge(a, b)))
+    print(console, json.encode(json.merge(a, JsonInt(9))))
+    print(console, if json.has_key(a, "x"): "T" else: "F")
+    print(console, if json.has_key(a, "z"): "T" else: "F")
+    print(console, if json.has_key(JsonInt(5), "x"): "T" else: "F")
+"#;
+        let sources = [("json", crate::bundled_module("json").unwrap()), ("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "json.merge/has_key diverged");
+        assert_eq!(
+            compiled,
+            vec!["{\"name\":\"a\",\"x\":2,\"y\":3}", "9", "T", "F", "F"]
+        );
+    }
+
+    #[test]
     fn merge_sort_is_stable_on_both_backends() {
         // list.sort_by is a stable merge sort: equal keys keep their original
         // order. Sort (key, tag) items by key only; ties must preserve insertion

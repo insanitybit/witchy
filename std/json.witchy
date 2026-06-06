@@ -303,6 +303,41 @@ fn find_key(pairs: List((String, Json)), key: String) -> Option(Json):
             return Some(v)
     None
 
+// Whether a JSON object has `key` (false for non-objects).
+pub fn has_key(j: Json, key: String) -> Bool:
+    match j:
+        JsonObject(pairs) -> pairs_has_key(pairs, key)
+        _ -> false
+
+fn pairs_has_key(pairs: List((String, Json)), key: String) -> Bool:
+    for p in pairs:
+        let (k, _v) = p
+        if k == key:
+            return true
+    false
+
+// A shallow merge of two JSON objects: every key of `b` overrides the same key
+// in `a`, and `a`'s other keys are kept. If either value is not an object, `b`
+// wins (so it works as "patch `a` with `b`"). Override is top-level only —
+// nested objects are replaced, not deep-merged.
+pub fn merge(a: Json, b: Json) -> Json:
+    match a:
+        JsonObject(pa) ->
+            match b:
+                JsonObject(pb) -> JsonObject(merge_pairs(pa, pb))
+                _ -> b
+        _ -> b
+
+fn merge_pairs(pa: List((String, Json)), pb: List((String, Json))) -> List((String, Json)):
+    var out = []
+    for p in pa:
+        let (k, _v) = p
+        if !pairs_has_key(pb, k):
+            out = push(out, p)
+    for q in pb:
+        out = push(out, q)
+    out
+
 // The element at index `i` of a JSON array.
 pub fn index(j: Json, i: Int) -> Option(Json):
     match j:
