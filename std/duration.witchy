@@ -4,6 +4,7 @@
 // arithmetic/formatting side of Go's time.Duration.
 
 import string
+import option
 
 // Build a duration (in seconds) from hours, minutes, and seconds.
 pub fn from_hms(h: Int, m: Int, s: Int) -> Int:
@@ -41,3 +42,48 @@ pub fn human(secs: Int) -> String:
         int_to_string(m) <> "m" <> int_to_string(s) <> "s"
     else:
         int_to_string(s) <> "s"
+
+// Parse a duration back to seconds — the inverse of `human`. Accepts unit-tagged
+// input ("1h2m3s", "2m30s", "45s", any subset) and a bare number as plain
+// seconds ("90"). Returns None on a stray character or a dangling number with no
+// unit after some units were given ("1h30"). `parse(human(x))` round-trips.
+pub fn parse(s: String) -> Option(Int):
+    var total = 0
+    var cur = 0
+    var seen_digit = false
+    var seen_unit = false
+    var i = 0
+    let n = char_count(s)
+    while i < n:
+        let c = substring(s, i, i + 1)
+        if c >= "0" && c <= "9":
+            cur = cur * 10 + string_to_int(c)
+            seen_digit = true
+        else if c == "h":
+            total = total + cur * 3600
+            cur = 0
+            seen_digit = false
+            seen_unit = true
+        else if c == "m":
+            total = total + cur * 60
+            cur = 0
+            seen_digit = false
+            seen_unit = true
+        else if c == "s":
+            total = total + cur
+            cur = 0
+            seen_digit = false
+            seen_unit = true
+        else:
+            return None
+        i = i + 1
+    if seen_digit:
+        if seen_unit:
+            None
+        else:
+            Some(cur)
+    else:
+        if seen_unit:
+            Some(total)
+        else:
+            None

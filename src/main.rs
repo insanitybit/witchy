@@ -2122,6 +2122,45 @@ fn main(console: Console):
     }
 
     #[test]
+    fn duration_parse_backends_agree() {
+        // parse is the inverse of human: unit-tagged or bare-seconds input,
+        // None on junk or a dangling number, and parse(human(x)) round-trips.
+        let client = r#"
+import duration
+import option
+fn show(o: Option(Int)) -> String:
+    match o:
+        Some(n) -> int_to_string(n)
+        None -> "none"
+fn roundtrip(secs: Int) -> String:
+    match duration.parse(duration.human(secs)):
+        Some(n) -> if n == secs: "ok" else: "bad"
+        None -> "none"
+fn main(console: Console):
+    print(console, show(duration.parse("1h2m3s")))
+    print(console, show(duration.parse("90")))
+    print(console, show(duration.parse("2m30s")))
+    print(console, show(duration.parse("1h30")))
+    print(console, show(duration.parse("")))
+    print(console, show(duration.parse("abc")))
+    print(console, roundtrip(3723))
+    print(console, roundtrip(90))
+    print(console, roundtrip(0))
+"#;
+        let sources = [
+            ("duration", crate::bundled_module("duration").unwrap()),
+            ("main", client),
+        ];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "duration.parse diverged");
+        assert_eq!(
+            compiled,
+            vec!["3723", "90", "150", "none", "none", "none", "ok", "ok", "ok"]
+        );
+    }
+
+    #[test]
     fn merge_sort_is_stable_on_both_backends() {
         // list.sort_by is a stable merge sort: equal keys keep their original
         // order. Sort (key, tag) items by key only; ties must preserve insertion
