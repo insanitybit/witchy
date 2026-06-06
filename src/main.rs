@@ -2210,6 +2210,23 @@ fn main(console: Console):
     }
 
     #[test]
+    fn dice_example_runs_on_wasm() {
+        // The dice example (seeded random.next_below, threaded Rng) prints the
+        // same deterministic rolls on both backends.
+        let sources = [
+            ("option", crate::bundled_module("option").unwrap()),
+            ("list", crate::bundled_module("list").unwrap()),
+            ("string", crate::bundled_module("string").unwrap()),
+            ("random", crate::bundled_module("random").unwrap()),
+            ("main", include_str!("../examples/dice.witchy")),
+        ];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "dice example diverged");
+        assert_eq!(compiled, vec!["2 2 1 6 2 2 1 5 2 2", "total: 25"]);
+    }
+
+    #[test]
     fn random_choice_backends_agree() {
         // choice picks a uniformly-random element (None for an empty list),
         // deterministically for a given seed, identically on both backends.

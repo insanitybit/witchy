@@ -1,0 +1,21 @@
+// Deterministic pseudo-randomness with the std `random` module: a seed replays
+// the same sequence, so this prints the same rolls every run — and identically on
+// the interpreter and compiled to WASM. The generator state is threaded
+// explicitly through an `Rng` value (no hidden global, no capability needed).
+// Run: witchy examples/dice.witchy
+
+import random
+import string
+import list
+
+fn main(console: Console):
+    var r = random.seed(7)
+    var rolls = []
+    var i = 0
+    while i < 10:
+        let (face, next) = random.next_below(r, 6)
+        rolls = push(rolls, face + 1)
+        r = next
+        i = i + 1
+    print(console, string.join(list.map(rolls, fn(n: Int): int_to_string(n)), " "))
+    print(console, "total: " <> int_to_string(list.sum(rolls)))
