@@ -1995,7 +1995,9 @@ fn main(console: Console, net: Net):
             r#"
 import http
 fn main(console: Console, net: Net):
-    let req = http.get_request("http://{addr}/path") |> http.with_header("X-Test", "abc")
+    let req = http.get_request("http://{addr}/path")
+        |> http.with_header("X-Test", "abc")
+        |> http.with_query("q", "hi")
     match http.send(req, net):
         Ok(resp) ->
             print(console, int_to_string(http.status(resp)))
@@ -2010,7 +2012,7 @@ fn main(console: Console, net: Net):
         let out = run_module(linked, ".", vec![addr.clone()]).expect("run");
         assert_eq!(out, vec!["200", "hello!!", "true"]);
         let req = srv.join().unwrap();
-        assert!(req.contains("GET /path HTTP/1.1"), "req: {req}");
+        assert!(req.contains("GET /path?q=hi HTTP/1.1"), "req: {req}");
         assert!(req.contains("X-Test: abc"), "req: {req}");
     }
 

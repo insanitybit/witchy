@@ -101,6 +101,14 @@ pub fn with_body(rb: RequestBuilder, b: String) -> RequestBuilder:
     match rb:
         RequestBuilder(m, u, hs, _b) -> RequestBuilder(m, u, hs, b)
 
+// Append a `key=value` query parameter to the URL (chainable), choosing `?` for
+// the first and `&` thereafter. Values are appended as-is (no escaping yet).
+pub fn with_query(rb: RequestBuilder, key: String, value: String) -> RequestBuilder:
+    match rb:
+        RequestBuilder(m, u, hs, b) ->
+            let sep = if contains(u, "?"): "&" else: "?"
+            RequestBuilder(m, u <> sep <> key <> "=" <> value, hs, b)
+
 // Send the assembled request, parsing host/port/path from its URL. An Err is
 // returned (rather than a panic) when the URL doesn't parse.
 pub fn send(rb: RequestBuilder, net: Net) -> Result(Response, String):
