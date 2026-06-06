@@ -2115,6 +2115,54 @@ fn main(console: Console, net: Net):
     }
 
     #[test]
+    fn serve_var_receiver_method_resolution() {
+        // Method calls on a variable receiver (`var app = router(); app = app.get(...)`)
+        // resolve the overloaded `get`/`post` by the tracked variable type (Router),
+        // even though http/server/json all export `get`.
+        use std::io::{Read, Write};
+        use std::net::{TcpListener, TcpStream};
+        let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let addr = format!("127.0.0.1:{port}");
+        let src = format!(
+            r#"
+import http
+import server
+import json
+fn main(console: Console, net: Net):
+    var app = server.router()
+    app = app.get("/", fn(req: Request): server.ok("home"))
+    app = app.post("/items", fn(req: Request): server.created("made"))
+    server.serve_n(net, "{addr}", app, 2)
+"#
+        );
+        let parsed = crate::parser::parse_module(&src).expect("parse");
+        let linked =
+            crate::linker::link(vec![("main".to_string(), parsed)], "main").expect("link");
+        let allow = vec![addr.clone()];
+        let server = std::thread::spawn(move || run_module(linked, ".", allow));
+
+        let request = |raw: &str| -> String {
+            for _ in 0..100 {
+                if let Ok(mut s) = TcpStream::connect(&addr) {
+                    s.write_all(raw.as_bytes()).unwrap();
+                    let mut resp = String::new();
+                    s.read_to_string(&mut resp).unwrap();
+                    return resp;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            panic!("could not connect to server");
+        };
+
+        let g = request("GET / HTTP/1.1\r\nHost: x\r\n\r\n");
+        assert!(g.contains("200 OK") && g.ends_with("home"), "g: {g}");
+        let p = request("POST /items HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\n");
+        assert!(p.contains("201 Created") && p.ends_with("made"), "p: {p}");
+
+        server.join().unwrap().unwrap();
+    }
+
+    #[test]
     fn serve_any_method_route_roundtrip() {
         // An `any` route answers every verb (the `*` wildcard method).
         use std::io::{Read, Write};

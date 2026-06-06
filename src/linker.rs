@@ -277,27 +277,33 @@ fn resolve_methods(module: &mut Module) {
     }
     for item in &mut module.items {
         match item {
-            Item::Function(f) => resolve_in_block(&mut f.body, &sig, &by_base),
+            Item::Function(f) => {
+                let mut vars = param_vars(&f.params);
+                resolve_in_block(&mut f.body, &sig, &by_base, &mut vars);
+            }
             Item::Actor(a) => {
                 for field in &mut a.fields {
                     if let Some(init) = &mut field.init {
-                        resolve_in_expr(init, &sig, &by_base);
+                        resolve_in_expr(init, &sig, &by_base, &mut HashMap::new());
                     }
                 }
                 for h in &mut a.handlers {
-                    resolve_in_block(&mut h.body, &sig, &by_base);
+                    let mut vars = param_vars(&h.params);
+                    resolve_in_block(&mut h.body, &sig, &by_base, &mut vars);
                 }
             }
             Item::Trait(t) => {
                 for ms in &mut t.methods {
                     if let Some(body) = &mut ms.default {
-                        resolve_in_block(body, &sig, &by_base);
+                        let mut vars = param_vars(&ms.params);
+                        resolve_in_block(body, &sig, &by_base, &mut vars);
                     }
                 }
             }
             Item::Impl(im) => {
                 for method in &mut im.methods {
-                    resolve_in_block(&mut method.body, &sig, &by_base);
+                    let mut vars = param_vars(&method.params);
+                    resolve_in_block(&mut method.body, &sig, &by_base, &mut vars);
                 }
             }
             Item::Type(_) => {}
@@ -305,11 +311,27 @@ fn resolve_methods(module: &mut Module) {
     }
 }
 
+/// Seed a variable-type scope from a function's parameters (nominal types only).
+fn param_vars(params: &[Param]) -> HashMap<String, String> {
+    let mut m = HashMap::new();
+    for p in params {
+        if let Some(n) = p.ty.as_ref().and_then(type_name) {
+            m.insert(p.name.clone(), n);
+        }
+    }
+    m
+}
+
 /// The nominal type an expression evaluates to, where the linker can tell: a
-/// call's return type, or a literal's type. `None` otherwise.
-fn expr_nominal_type(e: &Expr, sig: &HashMap<String, FnSig>) -> Option<String> {
+/// call's return type, a literal's type, or a variable whose type was tracked.
+fn expr_nominal_type(
+    e: &Expr,
+    sig: &HashMap<String, FnSig>,
+    vars: &HashMap<String, String>,
+) -> Option<String> {
     match e {
         Expr::Call { name, .. } => sig.get(name).and_then(|s| s.ret.clone()),
+        Expr::Var(n) => vars.get(n).cloned(),
         Expr::Int(_) => Some("Int".to_string()),
         Expr::Float(_) => Some("Float".to_string()),
         Expr::Duration(_) => Some("Duration".to_string()),
@@ -319,30 +341,58 @@ fn expr_nominal_type(e: &Expr, sig: &HashMap<String, FnSig>) -> Option<String> {
     }
 }
 
-fn resolve_in_block(b: &mut Block, sig: &HashMap<String, FnSig>, by_base: &HashMap<String, Vec<String>>) {
+fn resolve_in_block(
+    b: &mut Block,
+    sig: &HashMap<String, FnSig>,
+    by_base: &HashMap<String, Vec<String>>,
+    vars: &mut HashMap<String, String>,
+) {
     for stmt in &mut b.stmts {
         match stmt {
-            Stmt::Let { value, .. } | Stmt::Assign { value, .. } | Stmt::LetTuple { value, .. } => {
-                resolve_in_expr(value, sig, by_base)
+            Stmt::Let { name, value, .. } => {
+                resolve_in_expr(value, sig, by_base, vars);
+                // Track the binding's nominal type so later `name.method(...)`
+                // calls (a step-by-step builder) resolve by it.
+                if let Some(t) = expr_nominal_type(value, sig, vars) {
+                    vars.insert(name.clone(), t);
+                }
             }
-            Stmt::Return(Some(e)) | Stmt::Expr(e) => resolve_in_expr(e, sig, by_base),
+            Stmt::Assign { name, value } => {
+                resolve_in_expr(value, sig, by_base, vars);
+                match expr_nominal_type(value, sig, vars) {
+                    Some(t) => {
+                        vars.insert(name.clone(), t);
+                    }
+                    None => {
+                        vars.remove(name);
+                    }
+                }
+            }
+            Stmt::LetTuple { value, .. } => resolve_in_expr(value, sig, by_base, vars),
+            Stmt::Return(Some(e)) | Stmt::Expr(e) => resolve_in_expr(e, sig, by_base, vars),
             Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
         }
     }
 }
 
-fn resolve_in_expr(e: &mut Expr, sig: &HashMap<String, FnSig>, by_base: &HashMap<String, Vec<String>>) {
+fn resolve_in_expr(
+    e: &mut Expr,
+    sig: &HashMap<String, FnSig>,
+    by_base: &HashMap<String, Vec<String>>,
+    vars: &mut HashMap<String, String>,
+) {
     match e {
         Expr::Call { name, args } => {
             // Resolve nested receivers/arguments first, so a chained receiver's
             // call is already resolved when we read its return type.
             for a in args.iter_mut() {
-                resolve_in_expr(a, sig, by_base);
+                resolve_in_expr(a, sig, by_base, vars);
             }
             if !name.contains('.') && !sig.contains_key(name.as_str()) {
                 if let Some(cands) = by_base.get(name.as_str()) {
                     if cands.len() > 1 {
-                        if let Some(recv) = args.first().and_then(|a| expr_nominal_type(a, sig)) {
+                        if let Some(recv) = args.first().and_then(|a| expr_nominal_type(a, sig, vars))
+                        {
                             let matches: Vec<&String> = cands
                                 .iter()
                                 .filter(|c| {
@@ -359,55 +409,55 @@ fn resolve_in_expr(e: &mut Expr, sig: &HashMap<String, FnSig>, by_base: &HashMap
             }
         }
         Expr::Apply { func, args } => {
-            resolve_in_expr(func, sig, by_base);
+            resolve_in_expr(func, sig, by_base, vars);
             for a in args.iter_mut() {
-                resolve_in_expr(a, sig, by_base);
+                resolve_in_expr(a, sig, by_base, vars);
             }
         }
         Expr::Ctor { args, .. } | Expr::List(args) | Expr::Tuple(args) | Expr::Spawn { args, .. } => {
             for a in args.iter_mut() {
-                resolve_in_expr(a, sig, by_base);
+                resolve_in_expr(a, sig, by_base, vars);
             }
         }
         Expr::Unary { expr, .. } | Expr::Try(expr) | Expr::Field { base: expr, .. } => {
-            resolve_in_expr(expr, sig, by_base)
+            resolve_in_expr(expr, sig, by_base, vars)
         }
         Expr::Binary { lhs, rhs, .. } => {
-            resolve_in_expr(lhs, sig, by_base);
-            resolve_in_expr(rhs, sig, by_base);
+            resolve_in_expr(lhs, sig, by_base, vars);
+            resolve_in_expr(rhs, sig, by_base, vars);
         }
         Expr::RecordUpdate { base, fields } => {
-            resolve_in_expr(base, sig, by_base);
+            resolve_in_expr(base, sig, by_base, vars);
             for (_, v) in fields.iter_mut() {
-                resolve_in_expr(v, sig, by_base);
+                resolve_in_expr(v, sig, by_base, vars);
             }
         }
         Expr::If { cond, then_block, else_block } => {
-            resolve_in_expr(cond, sig, by_base);
-            resolve_in_block(then_block, sig, by_base);
+            resolve_in_expr(cond, sig, by_base, vars);
+            resolve_in_block(then_block, sig, by_base, vars);
             if let Some(b) = else_block {
-                resolve_in_block(b, sig, by_base);
+                resolve_in_block(b, sig, by_base, vars);
             }
         }
-        Expr::Block(b) => resolve_in_block(b, sig, by_base),
+        Expr::Block(b) => resolve_in_block(b, sig, by_base, vars),
         Expr::While { cond, body } => {
-            resolve_in_expr(cond, sig, by_base);
-            resolve_in_block(body, sig, by_base);
+            resolve_in_expr(cond, sig, by_base, vars);
+            resolve_in_block(body, sig, by_base, vars);
         }
         Expr::For { iter, body, .. } => {
-            resolve_in_expr(iter, sig, by_base);
-            resolve_in_block(body, sig, by_base);
+            resolve_in_expr(iter, sig, by_base, vars);
+            resolve_in_block(body, sig, by_base, vars);
         }
         Expr::Match { scrutinee, arms } => {
-            resolve_in_expr(scrutinee, sig, by_base);
+            resolve_in_expr(scrutinee, sig, by_base, vars);
             for arm in arms.iter_mut() {
                 if let Some(g) = &mut arm.guard {
-                    resolve_in_expr(g, sig, by_base);
+                    resolve_in_expr(g, sig, by_base, vars);
                 }
-                resolve_in_expr(&mut arm.body, sig, by_base);
+                resolve_in_expr(&mut arm.body, sig, by_base, vars);
             }
         }
-        Expr::Lambda { body, .. } => resolve_in_block(body, sig, by_base),
+        Expr::Lambda { body, .. } => resolve_in_block(body, sig, by_base, vars),
         Expr::Int(_)
         | Expr::Duration(_)
         | Expr::Float(_)
