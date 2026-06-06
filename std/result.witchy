@@ -96,3 +96,19 @@ pub fn err(r: Result(a, e)) -> Option(e):
     match r:
         Ok(_) -> None
         Err(x) -> Some(x)
+
+// Collect a list of Results into a Result of the list: `Ok` of every value in
+// order, or the first `Err` encountered (the "sequence" of fallible steps).
+pub fn all(xs: List(Result(a, e))) -> Result(List(a), e):
+    var acc = Ok([])
+    for x in xs:
+        acc = combine(acc, x)
+    acc
+
+fn combine(acc: Result(List(a), e), x: Result(a, e)) -> Result(List(a), e):
+    match acc:
+        Err(e) -> Err(e)
+        Ok(vs) ->
+            match x:
+                Ok(v) -> Ok(push(vs, v))
+                Err(e) -> Err(e)

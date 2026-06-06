@@ -2227,6 +2227,43 @@ fn main(console: Console):
     }
 
     #[test]
+    fn result_and_option_all_backends_agree() {
+        // `all` sequences a list of Results/Options: Ok/Some of the collected
+        // values, or the first failure (Err / None).
+        let client = r#"
+import result
+import option
+import list
+import string
+fn nums(r: Result(List(Int), String)) -> String:
+    match r:
+        Ok(xs) -> string.join(list.map(xs, fn(n: Int): int_to_string(n)), ",")
+        Err(e) -> "err:" <> e
+fn onums(o: Option(List(Int))) -> String:
+    match o:
+        Some(xs) -> string.join(list.map(xs, fn(n: Int): int_to_string(n)), ",")
+        None -> "none"
+fn main(console: Console):
+    print(console, nums(result.all([Ok(1), Ok(2), Ok(3)])))
+    print(console, nums(result.all([Ok(1), Err("bad"), Ok(3)])))
+    print(console, nums(result.all([])))
+    print(console, onums(option.all([Some(1), Some(2)])))
+    print(console, onums(option.all([Some(1), None, Some(3)])))
+"#;
+        let sources = [
+            ("option", crate::bundled_module("option").unwrap()),
+            ("result", crate::bundled_module("result").unwrap()),
+            ("list", crate::bundled_module("list").unwrap()),
+            ("string", crate::bundled_module("string").unwrap()),
+            ("main", client),
+        ];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "result/option.all diverged");
+        assert_eq!(compiled, vec!["1,2,3", "err:bad", "", "1,2", "none"]);
+    }
+
+    #[test]
     fn random_choice_backends_agree() {
         // choice picks a uniformly-random element (None for an empty list),
         // deterministically for a given seed, identically on both backends.

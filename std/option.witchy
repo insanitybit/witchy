@@ -99,3 +99,19 @@ pub fn zip(oa: Option(a), ob: Option(b)) -> Option((a, b)):
                 Some(y) -> Some((x, y))
                 None -> None
         None -> None
+
+// Collect a list of Options into an Option of the list: `Some` of every value in
+// order, or `None` if any element is `None`.
+pub fn all(xs: List(Option(a))) -> Option(List(a)):
+    var acc = Some([])
+    for x in xs:
+        acc = combine(acc, x)
+    acc
+
+fn combine(acc: Option(List(a)), x: Option(a)) -> Option(List(a)):
+    match acc:
+        None -> None
+        Some(vs) ->
+            match x:
+                Some(v) -> Some(push(vs, v))
+                None -> None
