@@ -2798,6 +2798,30 @@ fn main(console: Console):
     }
 
     #[test]
+    fn roman_example_runs_on_wasm() {
+        // Greedy table walk by subscript (to_roman) and a char scan with the
+        // subtractive rule (from_roman) round-trip identically on both backends.
+        let sources = [
+            ("string", crate::bundled_module("string").unwrap()),
+            ("main", include_str!("../examples/roman.witchy")),
+        ];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "roman diverged");
+        assert_eq!(
+            compiled,
+            vec![
+                "4 = IV -> 4",
+                "9 = IX -> 9",
+                "49 = XLIX -> 49",
+                "90 = XC -> 90",
+                "1994 = MCMXCIV -> 1994",
+                "2024 = MMXXIV -> 2024",
+            ]
+        );
+    }
+
+    #[test]
     fn calculator_example_runs_on_wasm() {
         // The recursive-descent calculator (mutual recursion + tuple cursors +
         // string scanning) parses and evaluates expressions identically on both
