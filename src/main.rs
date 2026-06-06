@@ -1804,6 +1804,36 @@ fn main(console: Console):
     }
 
     #[test]
+    fn set_symmetric_difference_and_disjoint_backends_agree() {
+        // symmetric_difference composes difference+union (so it de-dups);
+        // is_disjoint is true exactly when the intersection is empty.
+        let client = r#"
+import set
+import list
+import string
+fn show_ints(xs: List(Int)) -> String:
+    string.join(list.map(xs, fn(n: Int): int_to_string(n)), ",")
+fn main(console: Console):
+    print(console, show_ints(set.symmetric_difference([1, 2, 3], [2, 3, 4])))
+    print(console, show_ints(set.symmetric_difference([1, 1, 2], [2, 2, 3])))
+    print(console, if set.is_disjoint([1, 2], [3, 4]): "yes" else: "no")
+    print(console, if set.is_disjoint([1, 2], [2, 3]): "yes" else: "no")
+"#;
+        let sources = [
+            ("eq", crate::bundled_module("eq").unwrap()),
+            ("option", crate::bundled_module("option").unwrap()),
+            ("list", crate::bundled_module("list").unwrap()),
+            ("string", crate::bundled_module("string").unwrap()),
+            ("set", crate::bundled_module("set").unwrap()),
+            ("main", client),
+        ];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "set ops diverged");
+        assert_eq!(compiled, vec!["1,4", "1,3", "yes", "no"]);
+    }
+
+    #[test]
     fn merge_sort_is_stable_on_both_backends() {
         // list.sort_by is a stable merge sort: equal keys keep their original
         // order. Sort (key, tag) items by key only; ties must preserve insertion

@@ -40,3 +40,22 @@ pub fn is_subset(xs: List(a), ys: List(a)) -> Bool where a: Eq:
         if !eq.member(ys, x):
             return false
     true
+
+// Elements in exactly one of the two lists (xs-only first, then ys-only),
+// de-duplicated — the set XOR.
+pub fn symmetric_difference(xs: List(a), ys: List(a)) -> List(a) where a: Eq:
+    var out = []
+    for x in xs:
+        if !eq.member(ys, x) && !eq.member(out, x):
+            out = push(out, x)
+    for y in ys:
+        if !eq.member(xs, y) && !eq.member(out, y):
+            out = push(out, y)
+    out
+
+// Whether the two lists share no elements at all.
+pub fn is_disjoint(xs: List(a), ys: List(a)) -> Bool where a: Eq:
+    for x in xs:
+        if eq.member(ys, x):
+            return false
+    true
