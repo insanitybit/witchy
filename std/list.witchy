@@ -313,31 +313,39 @@ pub fn reverse(xs: List(a)) -> List(a):
     out
 
 // Insert `x` into an already-sorted list, keeping it ordered by `less`.
-fn insert_sorted(xs: List(a), x: a, less: fn(a, a) -> Bool) -> List(a):
+// Merge two already-sorted lists. Stable: on a tie an element from `a` (the
+// left half) is taken before one from `b`.
+fn merge(a: List(a), b: List(a), less: fn(a, a) -> Bool) -> List(a):
     var out = []
-    var placed = false
-    for y in xs:
-        if placed:
-            out = push(out, y)
+    var i = 0
+    var j = 0
+    let na = length(a)
+    let nb = length(b)
+    while i < na && j < nb:
+        if less(at(b, j), at(a, i)):
+            out = push(out, at(b, j))
+            j = j + 1
         else:
-            if less(x, y):
-                out = push(out, x)
-                out = push(out, y)
-                placed = true
-            else:
-                out = push(out, y)
-    if placed:
-        out
-    else:
-        push(out, x)
-
-// Sort using a caller-supplied "is-less-than" comparator (insertion sort, so
-// the order of equal elements is preserved). Generic over the element type.
-pub fn sort_by(xs: List(a), less: fn(a, a) -> Bool) -> List(a):
-    var out = []
-    for x in xs:
-        out = insert_sorted(out, x, less)
+            out = push(out, at(a, i))
+            i = i + 1
+    while i < na:
+        out = push(out, at(a, i))
+        i = i + 1
+    while j < nb:
+        out = push(out, at(b, j))
+        j = j + 1
     out
+
+// Sort using a caller-supplied "is-less-than" comparator — a stable merge sort
+// (O(n log n)), so equal elements keep their original order. Generic over the
+// element type.
+pub fn sort_by(xs: List(a), less: fn(a, a) -> Bool) -> List(a):
+    let n = length(xs)
+    if n <= 1:
+        xs
+    else:
+        let mid = n / 2
+        merge(sort_by(take(xs, mid), less), sort_by(drop(xs, mid), less), less)
 
 // Sort a list of integers ascending — the common default over `sort_by`.
 pub fn sort(xs: List(Int)) -> List(Int):

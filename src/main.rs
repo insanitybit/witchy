@@ -1728,6 +1728,34 @@ fn main(console: Console):
     }
 
     #[test]
+    fn merge_sort_is_stable_on_both_backends() {
+        // list.sort_by is a stable merge sort: equal keys keep their original
+        // order. Sort (key, tag) items by key only; ties must preserve insertion
+        // order. Both backends agree.
+        let client = r#"
+import list
+type Item:
+    Item(Int, String)
+fn key(it: Item) -> Int:
+    match it:
+        Item(k, _t) -> k
+fn tag(it: Item) -> String:
+    match it:
+        Item(_k, t) -> t
+fn main(console: Console):
+    let xs = [Item(2, "a"), Item(1, "b"), Item(2, "c"), Item(1, "d"), Item(2, "e")]
+    let sorted = list.sort_by(xs, fn(p: Item, q: Item): key(p) < key(q))
+    for it in sorted:
+        print(console, int_to_string(key(it)) <> tag(it))
+"#;
+        let sources = [("list", crate::bundled_module("list").unwrap()), ("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "merge sort diverged");
+        assert_eq!(compiled, vec!["1b", "1d", "2a", "2c", "2e"]);
+    }
+
+    #[test]
     fn std_ord_string_and_sort_backends_agree() {
         // `impl Ord for String` makes strings comparable, and the bounded generic
         // `ord.sort` dispatches through the element's Ord impl — so it sorts
