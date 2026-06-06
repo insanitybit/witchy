@@ -16,7 +16,7 @@ fn greet(console: Console, name: String) -> Nil:
 fn main(console: Console):
     greet(console, "witchy")
 
-    let n = 8 |> double()
+    let n = 8.double()
     print(console, "8 doubled is " <> int_to_string(n))
 
     print(console, classify(-3))
