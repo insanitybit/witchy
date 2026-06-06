@@ -1834,6 +1834,35 @@ fn main(console: Console):
     }
 
     #[test]
+    fn math_isqrt_and_perfect_square_backends_agree() {
+        // isqrt floors the square root (overflow-safe); is_perfect_square is
+        // true exactly on 0,1,4,9,... and false for negatives.
+        let client = r#"
+import math
+import list
+import string
+fn main(console: Console):
+    let roots = list.map([0, 1, 2, 3, 4, 8, 9, 15, 16, 100, 99], fn(n: Int): math.isqrt(n))
+    print(console, string.join(list.map(roots, fn(n: Int): int_to_string(n)), ","))
+    let flags = list.map([0, 1, 2, 4, 9, 10, 16, 17], fn(n: Int): if math.is_perfect_square(n): "T" else: "F")
+    print(console, string.join(flags, ""))
+    print(console, int_to_string(math.isqrt(-5)))
+    print(console, if math.is_perfect_square(-4): "T" else: "F")
+"#;
+        let sources = [
+            ("option", crate::bundled_module("option").unwrap()),
+            ("list", crate::bundled_module("list").unwrap()),
+            ("string", crate::bundled_module("string").unwrap()),
+            ("math", crate::bundled_module("math").unwrap()),
+            ("main", client),
+        ];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "isqrt/is_perfect_square diverged");
+        assert_eq!(compiled, vec!["0,1,1,1,2,2,3,3,4,10,9", "TTFTTFTF", "0", "F"]);
+    }
+
+    #[test]
     fn merge_sort_is_stable_on_both_backends() {
         // list.sort_by is a stable merge sort: equal keys keep their original
         // order. Sort (key, tag) items by key only; ties must preserve insertion
