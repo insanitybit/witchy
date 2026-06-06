@@ -1116,11 +1116,11 @@ impl Parser {
             // Or-patterns: `p1 | p2 | ... -> body` is sugar for one arm per
             // alternative, all sharing the guard and body. Alternatives that
             // bind variables work too, since each expanded arm binds them.
-            let mut alternatives = vec![self.pattern()?];
+            let mut alternatives = vec![self.arm_pattern()?];
             while self.eat(&Tok::Bar) {
-                alternatives.push(self.pattern()?);
+                alternatives.push(self.arm_pattern()?);
             }
-            let guard = if self.eat(&Tok::If) {
+            let explicit = if self.eat(&Tok::If) {
                 Some(self.expr(0)?)
             } else {
                 None
@@ -1131,15 +1131,25 @@ impl Parser {
             let body = self.expr(0)?;
             self.in_match_arm = outer;
             let last = alternatives.len() - 1;
-            for (i, pattern) in alternatives.into_iter().enumerate() {
-                // Clone the shared guard/body for every alternative but the last.
+            for (i, (pattern, range_guard)) in alternatives.into_iter().enumerate() {
+                // A range pattern contributes a bounds-check guard; combine it with
+                // any explicit `if` guard. Clone the shared body for all but the last.
+                let guard = match (range_guard, explicit.clone()) {
+                    (Some(r), Some(e)) => Some(Expr::Binary {
+                        op: BinOp::And,
+                        lhs: Box::new(r),
+                        rhs: Box::new(e),
+                    }),
+                    (Some(r), None) => Some(r),
+                    (None, e) => e,
+                };
                 if i == last {
                     arms.push(MatchArm { pattern, guard, body });
                     break;
                 }
                 arms.push(MatchArm {
                     pattern,
-                    guard: guard.clone(),
+                    guard,
                     body: body.clone(),
                 });
             }
@@ -1150,6 +1160,52 @@ impl Parser {
             scrutinee: Box::new(scrutinee),
             arms,
         })
+    }
+
+    /// A match-arm pattern, possibly an integer range. `lo..hi` (exclusive) and
+    /// `lo..=hi` (inclusive) desugar to a fresh binding plus a bounds-check guard,
+    /// so the existing guard machinery handles the test — no dedicated pattern.
+    fn arm_pattern(&mut self) -> Result<(Pattern, Option<Expr>), ParseError> {
+        let pat = self.pattern()?;
+        if let Pattern::Int(lo) = pat {
+            let inclusive = self.at(&Tok::DotDotEq);
+            if inclusive || self.at(&Tok::DotDot) {
+                self.advance();
+                let hi = self.int_bound()?;
+                let name = format!("_range{}", self.compr_counter);
+                self.compr_counter += 1;
+                let bind = || Box::new(Expr::Var(name.clone()));
+                let guard = Expr::Binary {
+                    op: BinOp::And,
+                    lhs: Box::new(Expr::Binary {
+                        op: BinOp::GtEq,
+                        lhs: bind(),
+                        rhs: Box::new(Expr::Int(lo)),
+                    }),
+                    rhs: Box::new(Expr::Binary {
+                        op: if inclusive { BinOp::LtEq } else { BinOp::Lt },
+                        lhs: bind(),
+                        rhs: Box::new(Expr::Int(hi)),
+                    }),
+                };
+                return Ok((Pattern::Var(name), Some(guard)));
+            }
+        }
+        Ok((pat, None))
+    }
+
+    /// An integer bound in a range pattern, allowing a leading `-`.
+    fn int_bound(&mut self) -> Result<i64, ParseError> {
+        let neg = self.eat(&Tok::Minus);
+        match self.kind().clone() {
+            Tok::Int(n) => {
+                self.advance();
+                Ok(if neg { -n } else { n })
+            }
+            other => Err(self.error(format!(
+                "expected an integer bound in a range pattern, found `{other}`"
+            ))),
+        }
     }
 
     fn pattern(&mut self) -> Result<Pattern, ParseError> {
@@ -1421,6 +1477,33 @@ fn f(o: Option(Int)):
             panic!("wildcard arm should be a block");
         };
         assert_eq!(b.stmts, vec![Stmt::Break]);
+    }
+
+    #[test]
+    fn range_pattern_desugars_to_guarded_binding() {
+        // `lo..hi` becomes a fresh binding guarded by `>= lo && < hi`; `..=`
+        // uses `<=` for the upper bound.
+        let stmts = fn_body(
+            r#"
+fn f(n: Int) -> Int:
+    match n:
+        1..=3 -> 0
+        _ -> 1
+"#,
+        );
+        let Stmt::Expr(Expr::Match { arms, .. }) = &stmts[0] else {
+            panic!("expected a match");
+        };
+        // First arm: a fresh var bound, with an inclusive bounds guard.
+        assert!(matches!(arms[0].pattern, Pattern::Var(_)));
+        let Some(Expr::Binary { op: BinOp::And, lhs, rhs }) = &arms[0].guard else {
+            panic!("range arm should carry an `&&` bounds guard");
+        };
+        assert!(matches!(**lhs, Expr::Binary { op: BinOp::GtEq, .. }));
+        assert!(matches!(**rhs, Expr::Binary { op: BinOp::LtEq, .. }));
+        // The wildcard arm is untouched.
+        assert_eq!(arms[1].pattern, Pattern::Wildcard);
+        assert!(arms[1].guard.is_none());
     }
 
     #[test]

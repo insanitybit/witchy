@@ -2752,6 +2752,35 @@ fn main(console: Console):
     }
 
     #[test]
+    fn ranges_example_runs_on_wasm() {
+        // Integer range patterns (`lo..hi`, `lo..=hi`) desugar to a guarded
+        // binding, so the HTTP-status and grade classifiers match identically on
+        // both backends.
+        let sources = [
+            ("string", crate::bundled_module("string").unwrap()),
+            ("main", include_str!("../examples/ranges.witchy")),
+        ];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "ranges diverged");
+        assert_eq!(
+            compiled,
+            vec![
+                "200 -> success",
+                "204 -> success",
+                "301 -> redirect",
+                "404 -> client error",
+                "503 -> server error",
+                "600 -> unknown",
+                "95 -> A",
+                "83 -> B",
+                "71 -> C",
+                "42 -> F",
+            ]
+        );
+    }
+
+    #[test]
     fn calculator_example_runs_on_wasm() {
         // The recursive-descent calculator (mutual recursion + tuple cursors +
         // string scanning) parses and evaluates expressions identically on both

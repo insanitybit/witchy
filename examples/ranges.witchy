@@ -1,0 +1,35 @@
+// Range patterns: match an integer against a span instead of enumerating every
+// value. `lo..hi` is exclusive of `hi`, `lo..=hi` is inclusive; both compose with
+// literal arms, or-patterns (`a | b`), and `if` guards. Pure (only `main` touches
+// the Console), so the classification runs identically interpreted, compiled, and
+// inside the capability sandbox:
+//   witchy examples/ranges.witchy
+//   witchy parity examples/ranges.witchy
+//   witchy sandbox examples/ranges.witchy
+
+import string
+
+// Classify an HTTP status code by its class (inclusive ranges).
+fn http_class(code: Int) -> String:
+    match code:
+        200..=299 -> "success"
+        300..=399 -> "redirect"
+        400..=499 -> "client error"
+        500..=599 -> "server error"
+        _ -> "unknown"
+
+// A letter grade from a 0–100 score (exclusive upper bounds tile the line).
+fn grade(score: Int) -> String:
+    match score:
+        90..=100 -> "A"
+        80..90 -> "B"
+        70..80 -> "C"
+        60..70 -> "D"
+        0..60 -> "F"
+        _ -> "invalid"
+
+fn main(console: Console):
+    for code in [200, 204, 301, 404, 503, 600]:
+        print(console, int_to_string(code) <> " -> " <> http_class(code))
+    for score in [95, 83, 71, 42]:
+        print(console, int_to_string(score) <> " -> " <> grade(score))
