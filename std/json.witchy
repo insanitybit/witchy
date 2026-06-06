@@ -131,11 +131,17 @@ fn escape_char(c: String) -> String:
 // success and thread errors with `?`. Numbers are integers for now (JSON floats
 // would need a Float-in-collections representation the WASM backend lacks).
 
-// Parse a complete JSON document, or return an error message.
+// Parse a complete JSON document, or return an error message. The whole input
+// must be a single value: trailing content after it (other than whitespace) is
+// rejected, so `decode("1 2")` is an Err rather than silently yielding `1`.
 pub fn decode(s: String) -> Result(Json, String):
     let r = parse_value(s, skip_ws(s, 0))?
-    let (v, _rest) = r
-    Ok(v)
+    let (v, rest) = r
+    let end = skip_ws(s, rest)
+    if end < char_count(s):
+        Err("unexpected trailing content at " <> int_to_string(end))
+    else:
+        Ok(v)
 
 // The index of the first non-whitespace char at or after `i`.
 fn skip_ws(s: String, i: Int) -> Int:

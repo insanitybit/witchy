@@ -2009,6 +2009,34 @@ fn main(console: Console):
     }
 
     #[test]
+    fn json_decode_rejects_trailing_content_backends_agree() {
+        // decode must consume the whole input: trailing whitespace is fine, but
+        // any trailing non-whitespace is an error (not a silently-ignored tail).
+        let client = r#"
+import json
+fn classify(s: String) -> String:
+    match json.decode(s):
+        Ok(j) ->
+            match json.as_int(j):
+                Some(n) -> "int:" <> int_to_string(n)
+                None -> "ok"
+        Err(_e) -> "err"
+fn main(console: Console):
+    print(console, classify("[1, 2]"))
+    print(console, classify("42  "))
+    print(console, classify("1 2"))
+    print(console, classify("true xyz"))
+    print(console, classify("{}extra"))
+    print(console, classify("  7"))
+"#;
+        let sources = [("json", crate::bundled_module("json").unwrap()), ("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "decode trailing-content diverged");
+        assert_eq!(compiled, vec!["ok", "int:42", "err", "err", "err", "int:7"]);
+    }
+
+    #[test]
     fn merge_sort_is_stable_on_both_backends() {
         // list.sort_by is a stable merge sort: equal keys keep their original
         // order. Sort (key, tag) items by key only; ties must preserve insertion
