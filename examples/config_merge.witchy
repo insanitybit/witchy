@@ -1,0 +1,21 @@
+// Layered configuration the witchy way: a base config patched by an environment
+// overlay, then rendered for humans. Shows `json.merge` (a shallow per-key
+// override) and `json.encode_pretty` from the std `json` module. Every function
+// here is pure, so this whole program prints identically on the interpreter and
+// the compiled WASM backend.
+// Run: witchy examples/config_merge.witchy
+
+import json
+
+fn base() -> Json:
+    JsonObject([("host", JsonString("localhost")), ("port", JsonInt(8080)), ("debug", JsonBool(true))])
+
+fn production() -> Json:
+    JsonObject([("host", JsonString("example.com")), ("port", JsonInt(443)), ("workers", JsonInt(8))])
+
+fn main(console: Console):
+    // `production` wins on the keys it sets (host, port) and adds `workers`;
+    // `base`'s own `debug` is preserved because the overlay doesn't mention it.
+    let merged = json.merge(base(), production())
+    print(console, json.encode_pretty(merged))
+    print(console, if json.has_key(merged, "workers"): "has workers" else: "no workers")

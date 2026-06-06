@@ -1988,6 +1988,27 @@ fn main(console: Console):
     }
 
     #[test]
+    fn config_merge_example_runs_on_wasm() {
+        // The layered-config example (json.merge shallow override + encode_pretty)
+        // prints identically on both backends: base.debug survives, production
+        // overrides host/port and adds workers.
+        let sources = [
+            ("json", crate::bundled_module("json").unwrap()),
+            ("main", include_str!("../examples/config_merge.witchy")),
+        ];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "config_merge diverged");
+        assert_eq!(
+            compiled,
+            vec![
+                "{\n  \"debug\": true,\n  \"host\": \"example.com\",\n  \"port\": 443,\n  \"workers\": 8\n}",
+                "has workers",
+            ]
+        );
+    }
+
+    #[test]
     fn merge_sort_is_stable_on_both_backends() {
         // list.sort_by is a stable merge sort: equal keys keep their original
         // order. Sort (key, tag) items by key only; ties must preserve insertion
