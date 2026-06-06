@@ -112,3 +112,17 @@ fn combine(acc: Result(List(a), e), x: Result(a, e)) -> Result(List(a), e):
             match x:
                 Ok(v) -> Ok(push(vs, v))
                 Err(e) -> Err(e)
+
+// Split a list of Results into the Ok values and the Err values, each in order —
+// for batch work that reports every failure, not just the first.
+pub fn partition(xs: List(Result(a, e))) -> (List(a), List(e)):
+    var acc = ([], [])
+    for x in xs:
+        acc = partition_step(acc, x)
+    acc
+
+fn partition_step(acc: (List(a), List(e)), x: Result(a, e)) -> (List(a), List(e)):
+    let (oks, errs) = acc
+    match x:
+        Ok(v) -> (push(oks, v), errs)
+        Err(er) -> (oks, push(errs, er))

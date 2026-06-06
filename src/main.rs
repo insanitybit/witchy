@@ -2264,6 +2264,32 @@ fn main(console: Console):
     }
 
     #[test]
+    fn result_partition_backends_agree() {
+        // partition splits a list of Results into the Ok values and the Err
+        // values, each in order.
+        let client = r#"
+import result
+import list
+import string
+fn main(console: Console):
+    let (oks, errs) = result.partition([Ok(1), Err("a"), Ok(2), Err("b"), Ok(3)])
+    print(console, string.join(list.map(oks, fn(n: Int): int_to_string(n)), ","))
+    print(console, string.join(errs, ","))
+"#;
+        let sources = [
+            ("option", crate::bundled_module("option").unwrap()),
+            ("result", crate::bundled_module("result").unwrap()),
+            ("list", crate::bundled_module("list").unwrap()),
+            ("string", crate::bundled_module("string").unwrap()),
+            ("main", client),
+        ];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "result.partition diverged");
+        assert_eq!(compiled, vec!["1,2,3", "a,b"]);
+    }
+
+    #[test]
     fn random_choice_backends_agree() {
         // choice picks a uniformly-random element (None for an empty list),
         // deterministically for a given seed, identically on both backends.
