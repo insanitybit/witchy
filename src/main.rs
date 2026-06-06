@@ -160,6 +160,26 @@ fn main() -> wasmtime::Result<()> {
         }
         return Ok(());
     }
+    // `witchy sandbox <file>` compiles the program to WASM and runs it in the
+    // capability-sandboxed VM, granted exactly its declared footprint.
+    if std::env::args().nth(1).as_deref() == Some("sandbox") {
+        let Some(path) = std::env::args().nth(2) else {
+            eprintln!("usage: witchy sandbox <file.witchy>");
+            std::process::exit(1);
+        };
+        match run_file_sandboxed(&path) {
+            Ok(lines) => {
+                for line in lines {
+                    println!("{line}");
+                }
+            }
+            Err(e) => {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
+        }
+        return Ok(());
+    }
     // `witchy fmt <file>` rewrites a source file in canonical brace-free form.
     if std::env::args().nth(1).as_deref() == Some("fmt") {
         let Some(path) = std::env::args().nth(2) else {
@@ -654,6 +674,43 @@ fn verify_file(path: &str) -> Result<(), String> {
             "\u{2717} {path}: the two backends DIVERGE\n  interpreter: {interp:?}\n  compiled:    {compiled:?}"
         ))
     }
+}
+
+/// Compile a program to WASM and run it inside the capability-sandboxed VM,
+/// granting exactly the authority its footprint declares. The compiled sandbox
+/// currently links only the console (`print`) host, so it supports Console-only
+/// (or pure) programs; anything needing `Dir`/`Net` is reported, not run.
+/// Returns the program's output lines.
+fn run_file_sandboxed(path: &str) -> Result<Vec<String>, String> {
+    let (linked, _stem) = link_file(path)?;
+    typeck::check(&linked).map_err(|e| e.to_string())?;
+    let has_main = linked
+        .items
+        .iter()
+        .any(|it| matches!(it, ast::Item::Function(f) if f.name == "main"));
+    if !has_main {
+        return Err(format!("`{path}` has no `main` to run"));
+    }
+    let footprint = capabilities::analyze(&linked);
+    let unsupported: Vec<&str> = footprint
+        .total
+        .iter()
+        .copied()
+        .filter(|c| *c != "Console")
+        .collect();
+    if !unsupported.is_empty() {
+        return Err(format!(
+            "the compiled sandbox supports Console-only programs for now; `{path}` also needs {}",
+            unsupported.join(", ")
+        ));
+    }
+    let wat = codegen::compile_module(&linked)
+        .map_err(|e| format!("cannot compile to WASM (an interpreter-only feature?): {e}"))?;
+    eprintln!(
+        "sandboxing `{path}` \u{2014} granted exactly: {}",
+        show_caps(&footprint.total)
+    );
+    run_wat_capture(&wat)
 }
 
 /// Instantiate a compiled WAT module under print/print_int authority, run its
@@ -2642,6 +2699,20 @@ fn main(console: Console):
         let compiled = run_linked_on_wasm(&sources, "main");
         assert_eq!(interpreted, compiled, "method-call syntax diverged");
         assert_eq!(compiled, vec!["12", "7", "60"]);
+    }
+
+    #[test]
+    fn sandbox_runs_compiled_and_captures_output() {
+        // `witchy sandbox` compiles to WASM and runs in the capability sandbox,
+        // returning the program's output.
+        let path = std::env::temp_dir().join("witchy_sandbox_smoke.witchy");
+        std::fs::write(
+            &path,
+            "fn main(console: Console):\n    print(console, int_to_string(6 * 7))\n",
+        )
+        .unwrap();
+        let out = crate::run_file_sandboxed(path.to_str().unwrap()).expect("sandbox run");
+        assert_eq!(out, vec!["42"]);
     }
 
     #[test]
