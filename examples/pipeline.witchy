@@ -1,0 +1,22 @@
+// Data pipelines read top-to-bottom with method chaining: `xs.map(f).filter(g)`
+// is the same UFCS sugar that powers the HTTP builders — `x.f(a)` is just
+// `f(x, a)`, resolved to the right `list` function. Pure, so it runs identically
+// on the interpreter and compiled to WASM.
+// Run: witchy examples/pipeline.witchy
+
+import list
+import string
+
+fn main(console: Console):
+    // Sum of the squares of the even numbers in 0..10.
+    let total = list.range(10)
+        .filter(fn(n: Int): n % 2 == 0)
+        .map(fn(n: Int): n * n)
+        .sum()
+    print(console, int_to_string(total))
+
+    // The first five numbers, doubled, rendered and comma-joined.
+    let doubled = list.range(5)
+        .map(fn(n: Int): n * 2)
+        .map(fn(n: Int): int_to_string(n))
+    print(console, string.join(doubled, ","))

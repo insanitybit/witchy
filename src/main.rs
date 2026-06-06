@@ -2534,6 +2534,22 @@ fn main(console: Console):
     }
 
     #[test]
+    fn pipeline_example_runs_on_wasm() {
+        // The method-chained data pipeline (filter/map/sum over list.range)
+        // prints identically on both backends.
+        let sources = [
+            ("option", crate::bundled_module("option").unwrap()),
+            ("list", crate::bundled_module("list").unwrap()),
+            ("string", crate::bundled_module("string").unwrap()),
+            ("main", include_str!("../examples/pipeline.witchy")),
+        ];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "pipeline diverged");
+        assert_eq!(compiled, vec!["120", "0,2,4,6,8"]);
+    }
+
+    #[test]
     fn method_call_syntax_backends_agree() {
         // UFCS method chaining: `recv.f(args)` == `f(recv, args)`. The method name
         // resolves to a same-module function (inc) or an imported one (list.*),
