@@ -158,14 +158,20 @@ fn dispatch_one(routes: List(Route), req: Request) -> Response:
 
 fn try_routes(routes: List(Route), req: Request) -> Option(Response):
     for rt in routes:
-        match rt:
-            Route(m, pat, h) ->
-                if m == method(req):
-                    match match_path(pat, path(req)):
-                        Some(params) ->
-                            return Some(h(with_params(req, params)))
-                        None -> 0
+        let result = check_route(rt, req)
+        if option.is_some(result):
+            return result
     None
+
+fn check_route(rt: Route, req: Request) -> Option(Response):
+    match rt:
+        Route(m, pat, h) ->
+            if m == method(req):
+                match match_path(pat, path(req)):
+                    Some(params) -> Some(h(with_params(req, params)))
+                    None -> None
+            else:
+                None
 
 fn with_params(req: Request, params: List((String, String))) -> Request:
     match req:

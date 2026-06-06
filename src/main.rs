@@ -129,6 +129,22 @@ fn main() -> wasmtime::Result<()> {
         }
         return Ok(());
     }
+    // `witchy check <file>` parses, links, and type-checks without running —
+    // exits non-zero on any error. Validates programs you can't run (servers).
+    if std::env::args().nth(1).as_deref() == Some("check") {
+        let Some(path) = std::env::args().nth(2) else {
+            eprintln!("usage: witchy check <file.witchy>");
+            std::process::exit(1);
+        };
+        match check_file(&path) {
+            Ok(()) => println!("{path}: ok"),
+            Err(e) => {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
+        }
+        return Ok(());
+    }
     // `witchy fmt <file>` rewrites a source file in canonical brace-free form.
     if std::env::args().nth(1).as_deref() == Some("fmt") {
         let Some(path) = std::env::args().nth(2) else {
@@ -498,7 +514,10 @@ fn bundled_module(name: &str) -> Option<&'static str> {
     crate::linker::std_source(name)
 }
 
-fn execute_file(path: &str, net_allow: Vec<String>) -> Result<Vec<String>, String> {
+/// Parse and link a source file, resolving each `import` from a sibling
+/// `<name>.witchy` (preferred) or the bundled std. Returns the linked module and
+/// the entry module's stem. Shared by `execute_file` and `check_file`.
+fn link_file(path: &str) -> Result<(ast::Module, String), String> {
     use std::collections::{HashSet, VecDeque};
     use std::path::{Path, PathBuf};
 
@@ -541,6 +560,20 @@ fn execute_file(path: &str, net_allow: Vec<String>) -> Result<Vec<String>, Strin
     }
 
     let linked = linker::link(modules, &entry_stem).map_err(|e| e.to_string())?;
+    Ok((linked, entry_stem))
+}
+
+/// Parse, link, and type-check a file WITHOUT running it (`witchy check`). Useful
+/// for CI and for validating programs you don't want to run — e.g. servers,
+/// which never return.
+fn check_file(path: &str) -> Result<(), String> {
+    let (linked, _stem) = link_file(path)?;
+    typeck::check(&linked).map_err(|e| e.to_string())
+}
+
+fn execute_file(path: &str, net_allow: Vec<String>) -> Result<Vec<String>, String> {
+    use std::path::Path;
+    let (linked, entry_stem) = link_file(path)?;
     typeck::check(&linked).map_err(|e| e.to_string())?;
 
     // No `main` means there's nothing to run directly — but the file still
@@ -3010,6 +3043,28 @@ impl Counter:
             let result = crate::execute_file(p, Vec::new());
             assert!(result.is_ok(), "example `{p}` failed: {result:?}");
         }
+    }
+
+    /// EVERY example — including the server demos that run forever (and so are
+    /// excluded from the run-to-completion test above) — must parse, link, and
+    /// type-check. Catches type errors the run test can't reach.
+    #[test]
+    fn all_examples_type_check() {
+        let mut any = false;
+        for entry in std::fs::read_dir("examples").expect("examples directory") {
+            let path = entry.unwrap().path();
+            if path.extension().and_then(|s| s.to_str()) != Some("witchy") {
+                continue;
+            }
+            any = true;
+            let p = path.to_str().unwrap();
+            assert!(
+                crate::check_file(p).is_ok(),
+                "type-check failed for `{p}`: {:?}",
+                crate::check_file(p)
+            );
+        }
+        assert!(any, "no examples found");
     }
 
     #[test]
