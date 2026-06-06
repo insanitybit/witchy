@@ -218,4 +218,36 @@ impl Logger:
         let fp = footprint(src);
         assert!(fp.total.contains("Console"));
     }
+
+    /// Supply-chain regression net: the bundled std modules must keep the
+    /// capability footprints they advertise. The pure modules stay pure (empty
+    /// footprint), and only the networking modules require authority — exactly
+    /// `Net`, never `Console`/`Dir`. If a future change slips a capability param
+    /// into, say, `list`, this fails loudly.
+    #[test]
+    fn std_module_footprints_are_pinned() {
+        let pure = [
+            "list", "string", "math", "option", "result", "func", "ord", "eq", "ascii", "set",
+            "show", "json", "url", "duration", "random",
+        ];
+        for name in pure {
+            let src = crate::linker::std_source(name).expect("bundled module");
+            let fp = footprint(src);
+            assert!(
+                fp.total.is_empty(),
+                "std module `{name}` should be pure but needs {:?}",
+                fp.total
+            );
+        }
+        let net_only = ["http", "server"];
+        for name in net_only {
+            let src = crate::linker::std_source(name).expect("bundled module");
+            let fp = footprint(src);
+            assert_eq!(
+                fp.total,
+                ["Net"].into_iter().collect::<BTreeSet<_>>(),
+                "networking module `{name}` should require only Net",
+            );
+        }
+    }
 }
