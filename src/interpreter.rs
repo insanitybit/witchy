@@ -531,7 +531,11 @@ impl Interpreter {
             // Effectful: requires the Console capability as its first argument.
             "print" => match args {
                 [Value::Cap(Capability::Console), msg] => {
-                    self.output.push(msg.to_string());
+                    // Each print is one output line; the trailing newline is the
+                    // line terminator. Strip it to match the WASM host
+                    // (`host_print` in runtime.rs), so the backends agree when a
+                    // printed string ends in `\n` (e.g. `s <> "\n"`).
+                    self.output.push(msg.to_string().trim_end_matches('\n').to_string());
                     Ok(Some(Value::Nil))
                 }
                 [_, _] => err("print requires a Console capability as its first argument"),

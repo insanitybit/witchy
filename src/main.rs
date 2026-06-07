@@ -2851,6 +2851,19 @@ fn main(console: Console):
     }
 
     #[test]
+    fn print_trailing_newline_agrees_on_both_backends() {
+        // Regression: a printed string ending in `\n` (the line terminator) must
+        // produce identical output on both backends. The WASM host strips a
+        // trailing newline; the interpreter now does too.
+        let src = "fn main(console: Console):\n    print(console, \"ab\" <> \"\\n\")\n    print(console, \"cd\")\n";
+        let sources = [("main", src)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "trailing-newline print diverged");
+        assert_eq!(compiled, vec!["ab", "cd"]);
+    }
+
+    #[test]
     fn aliases_example_runs_on_wasm() {
         // Type aliases (scalar and compound) are expanded before both backends,
         // so the temperature conversions and averaging agree.
