@@ -101,6 +101,27 @@ fn sender_src(target: u32) -> String {
     )
 }
 
+/// One-screen overview of the command-line interface, shown for bare `witchy`.
+fn print_usage() {
+    println!(
+        "\
+witchy — a capability-secure language with twin interpreter and WASM backends
+
+USAGE:
+    witchy [--net <host:port>]... <file.witchy>   run a program
+    witchy check    <file.witchy>                 type-check without running
+    witchy parity   <file.witchy>                 run on both backends, confirm identical output
+    witchy sandbox  <file.witchy>                 compile and run in a VM granted exactly its footprint
+    witchy caps     <file.witchy>                 report the capability footprint
+    witchy caps-diff <old.witchy> <new.witchy>    fail if the footprint widened
+    witchy fmt      <file.witchy>                 reformat in place
+    witchy lsp                                    run the language server
+    witchy demo                                   built-in capability/runtime demonstration
+
+Package commands (add, build, publish, ...) are also available; see `witchy add --help`."
+    );
+}
+
 fn main() -> wasmtime::Result<()> {
     // `witchy caps <file>` reports the program's host-capability footprint.
     if std::env::args().nth(1).as_deref() == Some("caps") {
@@ -255,19 +276,29 @@ fn main() -> wasmtime::Result<()> {
                 std::process::exit(1);
             }
         }
-        if let Some(path) = file {
-            match execute_file(&path, net_allow) {
-                Ok(output) => {
-                    for line in output {
-                        println!("{line}");
+        match file.as_deref() {
+            // `witchy demo` runs the built-in capability/runtime demonstration
+            // below; fall through to it.
+            Some("demo") => {}
+            Some(path) => {
+                match execute_file(path, net_allow) {
+                    Ok(output) => {
+                        for line in output {
+                            println!("{line}");
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("{e}");
+                        std::process::exit(1);
                     }
                 }
-                Err(e) => {
-                    eprintln!("{e}");
-                    std::process::exit(1);
-                }
+                return Ok(());
             }
-            return Ok(());
+            // Bare `witchy` (or only flags): show usage rather than the demo.
+            None => {
+                print_usage();
+                return Ok(());
+            }
         }
     }
 
