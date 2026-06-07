@@ -3035,6 +3035,35 @@ fn main(console: Console):
     }
 
     #[test]
+    fn every_compilable_example_agrees_on_both_backends() {
+        // Differential guard: every example that compiles to WASM must produce
+        // identical output on the interpreter and the compiled backend. Examples
+        // that are interpreter-only (actors, networking, float/case formatting) or
+        // are libraries with no `main` cannot compile and are skipped — only a
+        // genuine divergence fails. (This would have caught the trailing-newline
+        // print divergence.)
+        let mut diverged = Vec::new();
+        for entry in std::fs::read_dir("examples").unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().and_then(|e| e.to_str()) != Some("witchy") {
+                continue;
+            }
+            let p = path.to_str().unwrap();
+            match crate::verify_file(p) {
+                Ok(()) => {}
+                Err(e) if e.contains("DIVERGE") => diverged.push(e),
+                // Interpreter-only feature or no `main`: not comparable, skip.
+                Err(_) => {}
+            }
+        }
+        assert!(
+            diverged.is_empty(),
+            "examples diverge across backends:\n{}",
+            diverged.join("\n")
+        );
+    }
+
+    #[test]
     fn merge_sort_is_stable_on_both_backends() {
         // list.sort_by is a stable merge sort: equal keys keep their original
         // order. Sort (key, tag) items by key only; ties must preserve insertion
