@@ -129,6 +129,9 @@ fn std_pub_fns() -> Vec<(String, &'static str)> {
 /// The closest std-library function name to `name` within a small edit distance —
 /// used to suggest a likely-misspelled stdlib call. Returns `(function, module)`.
 pub fn closest_std_function(name: &str) -> Option<(String, &'static str)> {
+    if name.len() < 3 {
+        return None; // too short for a meaningful suggestion
+    }
     let mut best: Option<(usize, String, &'static str)> = None;
     for (cand, m) in std_pub_fns() {
         if cand == name {
@@ -142,6 +145,22 @@ pub fn closest_std_function(name: &str) -> Option<(String, &'static str)> {
         }
     }
     best.map(|(_, c, m)| (c, m))
+}
+
+/// The closest bundled std-module name to `name` within a small edit distance —
+/// used to suggest a correction for a misspelled `import`.
+pub fn closest_std_module(name: &str) -> Option<&'static str> {
+    if name.len() < 3 {
+        return None; // too short for a meaningful suggestion
+    }
+    let mut best: Option<(usize, &'static str)> = None;
+    for m in STD_MODULES {
+        let d = levenshtein(name, m);
+        if d <= 2 && d < name.len() && best.as_ref().is_none_or(|(bd, _)| d < *bd) {
+            best = Some((d, m));
+        }
+    }
+    best.map(|(_, m)| m)
 }
 
 /// Levenshtein edit distance (two-row dynamic programming).
@@ -824,4 +843,21 @@ fn resolve_call(
     // Not a function here and not a builtin: a local binding being applied (e.g.
     // a lambda parameter). Leave it unqualified; the type checker decides.
     Ok(name.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn suggests_near_miss_std_module_and_function() {
+        assert_eq!(closest_std_module("lst"), Some("list"));
+        assert_eq!(closest_std_module("str/ng"), Some("string"));
+        assert_eq!(closest_std_module("zzz"), None); // not close to anything
+        assert_eq!(closest_std_module("qq"), None); // too short to over-match
+
+        // `map` lives in list (and option); a near miss resolves to a real name.
+        assert!(closest_std_function("mep").is_some());
+        assert_eq!(closest_std_function("zzzzzz"), None);
+    }
 }

@@ -633,7 +633,17 @@ fn link_file(path: &str) -> Result<(ast::Module, String), String> {
             Ok(s) => s,
             Err(e) => match bundled_module(&name) {
                 Some(s) => s.to_string(),
-                None => return Err(format!("cannot read `{}`: {e}", p.display())),
+                None => {
+                    // A misspelled `import` of a std module gets a suggestion.
+                    let hint = if name != entry_stem {
+                        crate::linker::closest_std_module(&name)
+                            .map(|m| format!(" — did you mean `import {m}`?"))
+                            .unwrap_or_default()
+                    } else {
+                        String::new()
+                    };
+                    return Err(format!("cannot read `{}`: {e}{hint}", p.display()));
+                }
             },
         };
         let module = parser::parse_module(&src).map_err(|e| format!("{name}: {e}"))?;
