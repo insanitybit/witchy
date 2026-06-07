@@ -285,6 +285,32 @@ impl Lexer {
                         self.bump();
                     }
                 }
+                // Block comments `/* ... */`, which nest (so a block containing a
+                // block comment can itself be commented out). An unterminated
+                // block comment runs to end of input.
+                Some('/') if self.peek2() == Some('*') => {
+                    self.bump();
+                    self.bump();
+                    let mut depth = 1u32;
+                    while depth > 0 {
+                        match (self.peek(), self.peek2()) {
+                            (Some('/'), Some('*')) => {
+                                self.bump();
+                                self.bump();
+                                depth += 1;
+                            }
+                            (Some('*'), Some('/')) => {
+                                self.bump();
+                                self.bump();
+                                depth -= 1;
+                            }
+                            (Some(_), _) => {
+                                self.bump();
+                            }
+                            (None, _) => break,
+                        }
+                    }
+                }
                 _ => return,
             }
         }
@@ -780,6 +806,19 @@ mod tests {
 
     fn kinds(src: &str) -> Vec<Tok> {
         tokenize(src).unwrap().into_iter().map(|t| t.kind).collect()
+    }
+
+    #[test]
+    fn skips_block_comments_including_nested() {
+        // Block comments (nesting) are trivia; division still lexes outside them.
+        assert_eq!(
+            kinds("a /* x */ /* /* y */ z */ b"),
+            vec![Tok::Ident("a".into()), Tok::Ident("b".into()), Tok::Eof]
+        );
+        assert_eq!(
+            kinds("8 / 2"),
+            vec![Tok::Int(8), Tok::Slash, Tok::Int(2), Tok::Eof]
+        );
     }
 
     #[test]
