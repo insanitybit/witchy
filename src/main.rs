@@ -1135,6 +1135,26 @@ mod example_tests {
         assert!(codegen::compile_module(&linked).is_err(), "ed25519_verify should be WASM-rejected");
     }
 
+    /// The `Clock` capability yields wall-clock time (ms since epoch) via `now`.
+    /// Reading the clock is ambient nondeterminism, so it's capability-gated and
+    /// surfaces in the footprint — not a pure builtin.
+    #[test]
+    fn clock_capability_yields_wall_clock_time() {
+        let out = interp(
+            "fn main(console: Console, clock: Clock):\n    print(console, int_to_string(now(clock)))\n",
+        );
+        let ms: i64 = out[0].parse().expect("now should print an integer");
+        assert!(ms > 1_600_000_000_000, "now should be ms since the Unix epoch (got {ms})");
+        // `now` needs a Clock — calling it with another capability is a type error.
+        assert!(typeck::check_str("fn main(c: Console):\n    let t = now(c)\n").is_err());
+        // The Clock requirement surfaces in the capability footprint.
+        let fp = crate::capabilities::analyze(
+            &parser::parse_module("fn main(console: Console, clock: Clock):\n    let t = now(clock)\n")
+                .expect("parse"),
+        );
+        assert!(fp.total.contains_key("Clock"), "Clock should appear in the footprint");
+    }
+
     /// The reference interpreter and the compiled WASM backend must produce the
     /// same output for the same program — the core promise of witchy's two-tier
     /// design. This differential test exercises a spread of features and asserts

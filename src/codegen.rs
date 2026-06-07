@@ -2106,6 +2106,7 @@ impl Codegen {
             // `sha256` is String -> String (so it isn't filtered out by a
             // capability-typed parameter), but there's no WASM implementation —
             // it's interpreter-only, like the filesystem/network builtins.
+            ("now", 1) => cerr("`now` (Clock) is interpreter-only (not compiled to WASM)"),
             ("sha256", 1) => cerr("`sha256` is interpreter-only (not compiled to WASM)"),
             ("ed25519_verify", 3) => cerr("`ed25519_verify` is interpreter-only (not compiled to WASM)"),
             ("print", 2) => {

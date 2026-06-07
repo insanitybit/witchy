@@ -59,6 +59,7 @@ pub enum Value {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Capability {
     Console,
+    Clock,
 }
 
 impl fmt::Display for Value {
@@ -358,10 +359,11 @@ impl Interpreter {
     fn root_cap_for(&self, ty: &Option<Type>) -> Result<Value, RuntimeError> {
         match ty {
             Some(Type::Named(n, _)) if n == "Console" => Ok(Value::Cap(Capability::Console)),
+            Some(Type::Named(n, _)) if n == "Clock" => Ok(Value::Cap(Capability::Clock)),
             Some(Type::Named(n, _)) if n == "Dir" => Ok(Value::Dir(self.root.clone())),
             Some(Type::Named(n, _)) if n == "Net" => Ok(Value::Net(self.net_allow.clone())),
             other => err(format!(
-                "`main` may only declare capability parameters (Console, Dir, Net); got `{other:?}`"
+                "`main` may only declare capability parameters (Console, Clock, Dir, Net); got `{other:?}`"
             )),
         }
     }
@@ -880,6 +882,19 @@ impl Interpreter {
                     }
                 }
                 _ => err("make_dir expects a Dir and a name"),
+            },
+            // Wall-clock time (milliseconds since the Unix epoch) — requires a
+            // `Clock` capability, since reading the real clock is ambient
+            // nondeterminism (a side channel), not a pure computation.
+            "now" => match args {
+                [Value::Cap(Capability::Clock)] => {
+                    let ms = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_millis() as i64)
+                        .unwrap_or(0);
+                    Ok(Some(Value::Int(ms)))
+                }
+                _ => err("now expects a Clock"),
             },
             // Network capability: attenuate a Net to a held address.
             "restrict" => match args {
