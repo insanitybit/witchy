@@ -105,7 +105,9 @@ impl Lockfile {
             runtime.extend(r.runtime_footprint.iter().cloned());
             build.extend(r.build_footprint.iter().cloned());
         }
-        Footprint { runtime, build }
+        let mut fp = Footprint { runtime, build };
+        fp.normalize();
+        fp
     }
 }
 

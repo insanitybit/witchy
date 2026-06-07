@@ -30,6 +30,131 @@ fn is_build_cap(name: &str) -> bool {
     BUILD_CAPS.contains(&name)
 }
 
+// --- capability rights (verb-precision) ---
+//
+// A footprint string is either a bare capability (`Net`, full rights) or a
+// bracketed subset (`Net[Connect]`, `Dir[Read]`). Storage stays a flat
+// `BTreeSet<String>` (so manifests/lockfiles are unchanged and a legacy bare
+// `Net` keeps meaning "full"); the rights-precision lives in the *comparison*
+// primitives below, which parse the strings before diffing. This makes the gate
+// verb-aware: a `Net[Connect]` that grows to also `Listen` is a widening, while a
+// full `Net` tightened to `Net[Connect]` is a safe narrowing.
+
+/// The full right-set a *bare* capability confers. Only `Dir`/`Net` have rights.
+fn full_rights(cap: &str) -> BTreeSet<String> {
+    match cap {
+        "Dir" => ["Read", "Write"].iter().map(|s| s.to_string()).collect(),
+        "Net" => ["Connect", "Listen"].iter().map(|s| s.to_string()).collect(),
+        _ => BTreeSet::new(),
+    }
+}
+
+/// Map a bracket marker to its canonical right for a capability, or `None` if it
+/// isn't a recognized right (e.g. a future transport like `Tcp`, ignored here).
+fn right_marker(cap: &str, marker: &str) -> Option<&'static str> {
+    match (cap, marker) {
+        ("Dir", "Read") => Some("Read"),
+        ("Dir", "Write") => Some("Write"),
+        ("Net", "Connect") => Some("Connect"),
+        ("Net", "Listen") => Some("Listen"),
+        _ => None,
+    }
+}
+
+/// The rights a capability annotation confers: the recognized bracket markers if
+/// present, else (bare capability) the full set.
+fn rights_from_args(cap: &str, args: &[Type]) -> BTreeSet<String> {
+    if args.is_empty() {
+        return full_rights(cap);
+    }
+    let mut r = BTreeSet::new();
+    for a in args {
+        if let Type::Named(n, _) = a {
+            if let Some(m) = right_marker(cap, n) {
+                r.insert(m.to_string());
+            }
+        }
+    }
+    r
+}
+
+/// Render a capability + rights as a footprint string: a bare name when it
+/// carries its full right-set (or none), else bracketed — `Net`, `Net[Listen]`.
+fn render_cap(name: &str, rights: &BTreeSet<String>) -> String {
+    if rights.is_empty() || *rights == full_rights(name) {
+        name.to_string()
+    } else {
+        format!(
+            "{name}[{}]",
+            rights.iter().cloned().collect::<Vec<_>>().join(", ")
+        )
+    }
+}
+
+/// Parse a footprint string into `(capability, rights)`. A bare name carries the
+/// full right-set; brackets list a subset.
+fn parse_cap(s: &str) -> (String, BTreeSet<String>) {
+    if let Some(open) = s.find('[') {
+        let name = s[..open].to_string();
+        let inner = s[open + 1..].trim_end_matches(']');
+        let rights = inner
+            .split(',')
+            .map(|x| x.trim().to_string())
+            .filter(|x| !x.is_empty())
+            .collect();
+        (name, rights)
+    } else {
+        let r = full_rights(s);
+        (s.to_string(), r)
+    }
+}
+
+/// Collapse a flat footprint string-set into `capability -> union of rights`,
+/// merging multiple entries for one capability (one module's `Net[Connect]` and
+/// another's `Net[Listen]` become `Net -> {Connect, Listen}`).
+fn normalize(set: &BTreeSet<String>) -> BTreeMap<String, BTreeSet<String>> {
+    let mut m: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for s in set {
+        let (name, rights) = parse_cap(s);
+        m.entry(name).or_default().extend(rights);
+    }
+    m
+}
+
+/// The capabilities/rights present in `a` but not covered by `b`, rendered back
+/// to footprint strings. A wholly-new capability, or a new right on a shared one,
+/// both appear — the rights-precise difference behind `widening_over` and
+/// `check_declared` (undeclared = demanded − declared).
+pub fn cap_difference(a: &BTreeSet<String>, b: &BTreeSet<String>) -> BTreeSet<String> {
+    let (na, nb) = (normalize(a), normalize(b));
+    let mut out = BTreeSet::new();
+    for (cap, ar) in &na {
+        match nb.get(cap) {
+            None => {
+                out.insert(render_cap(cap, ar));
+            }
+            Some(br) => {
+                let extra: BTreeSet<String> = ar.difference(br).cloned().collect();
+                if !extra.is_empty() {
+                    out.insert(render_cap(cap, &extra));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Whether `set` (an allowed/declared footprint) covers a single demanded
+/// capability string: the capability is present and its granted rights include
+/// every demanded one. A bare grant (`Net`) covers any narrowing (`Net[Listen]`).
+pub fn covers(set: &BTreeSet<String>, demand: &str) -> bool {
+    let (name, dr) = parse_cap(demand);
+    match normalize(set).get(&name) {
+        Some(granted) => dr.is_subset(granted),
+        None => false,
+    }
+}
+
 /// A rune's computed capability footprint, on two independent axes.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Footprint {
@@ -55,13 +180,27 @@ impl Footprint {
         }
     }
 
-    /// The capability kinds present in `self` but absent in `base`, per axis.
-    /// A non-empty result means `self` *widens* the footprint (the gated event).
+    /// The capabilities/rights present in `self` but not covered by `base`, per
+    /// axis. A non-empty result means `self` *widens* the footprint (the gated
+    /// event) — including a new right on a capability already present.
     pub fn widening_over(&self, base: &Footprint) -> Widening {
         Widening {
-            runtime: self.runtime.difference(&base.runtime).cloned().collect(),
-            build: self.build.difference(&base.build).cloned().collect(),
+            runtime: cap_difference(&self.runtime, &base.runtime),
+            build: cap_difference(&self.build, &base.build),
         }
+    }
+
+    /// Collapse redundant per-capability entries (merging their rights) so the
+    /// stored set holds one tidy string per capability.
+    pub fn normalize(&mut self) {
+        let tidy = |set: &BTreeSet<String>| -> BTreeSet<String> {
+            normalize(set)
+                .iter()
+                .map(|(n, r)| render_cap(n, r))
+                .collect()
+        };
+        self.runtime = tidy(&self.runtime);
+        self.build = tidy(&self.build);
     }
 }
 
@@ -114,6 +253,7 @@ pub fn compute(module: &Module) -> Footprint {
             Item::Type(_) | Item::Trait(_) | Item::Impl(_) | Item::Const { .. } | Item::TypeAlias { .. } => {}
         }
     }
+    fp.normalize();
     fp
 }
 
@@ -132,8 +272,11 @@ pub fn check_declared(
     }
     let dr: BTreeSet<String> = declared_runtime.iter().cloned().collect();
     let db: BTreeSet<String> = declared_build.iter().cloned().collect();
-    let ur: Vec<String> = computed.runtime.difference(&dr).cloned().collect();
-    let ub: Vec<String> = computed.build.difference(&db).cloned().collect();
+    // Under-declaration is demanded minus declared, rights-aware: declaring a
+    // bare `Net` covers a demanded `Net[Connect]`, but declaring `Net[Connect]`
+    // does not cover a demanded `Net[Listen]`.
+    let ur: Vec<String> = cap_difference(&computed.runtime, &dr).into_iter().collect();
+    let ub: Vec<String> = cap_difference(&computed.build, &db).into_iter().collect();
     if ur.is_empty() && ub.is_empty() {
         return Ok(());
     }
@@ -159,6 +302,7 @@ pub fn of_modules(modules: &[(String, String)]) -> super::PmResult<Footprint> {
         fp.runtime.extend(sub.runtime);
         fp.build.extend(sub.build);
     }
+    fp.normalize();
     Ok(fp)
 }
 
@@ -223,7 +367,7 @@ impl TaintMap {
         match ty {
             Type::Named(name, args) => {
                 if is_cap_type(name) {
-                    out.insert(name.clone());
+                    out.insert(render_cap(name, &rights_from_args(name, args)));
                 }
                 if let Some(t) = map.get(name) {
                     out.extend(t.iter().cloned());
@@ -409,5 +553,53 @@ fn beacon(n: Net):
         assert!(!w.is_empty());
         // Narrowing (old over new) is free.
         assert!(old.widening_over(&new).is_empty());
+    }
+
+    #[test]
+    fn net_verb_is_carried_into_the_footprint() {
+        // A client rune demands `Net[Connect]`, not a bare `Net`.
+        let f = fp("fn fetch(n: Net[Connect], u: String) -> String:\n    u\n");
+        assert!(f.runtime.contains("Net[Connect]"));
+        assert!(!f.runtime.contains("Net"));
+    }
+
+    #[test]
+    fn verbs_union_across_functions_to_full_net() {
+        // One function connects, another listens — the rune's footprint is full Net.
+        let f = fp(
+            "fn fetch(n: Net[Connect]) -> Int:\n    0\nfn serve(n: Net[Listen]) -> Int:\n    0\n",
+        );
+        assert_eq!(f.runtime.iter().cloned().collect::<Vec<_>>(), vec!["Net"]);
+    }
+
+    #[test]
+    fn gaining_a_verb_is_a_widening() {
+        // A `Net[Connect]` client that learns to `listen` widens — verb-precisely.
+        let old = fp("fn h(n: Net[Connect]) -> Int:\n    0\n");
+        let new = fp("fn h(n: Net[Connect, Listen]) -> Int:\n    0\n");
+        let w = new.widening_over(&old);
+        assert_eq!(w.runtime.iter().cloned().collect::<Vec<_>>(), vec!["Net[Listen]"]);
+        assert!(!w.is_empty());
+        // Dropping the verb back is a safe narrowing.
+        assert!(old.widening_over(&new).is_empty());
+    }
+
+    #[test]
+    fn dropping_a_dir_right_is_not_a_widening() {
+        let old = fp("fn load(d: Dir) -> Int:\n    0\n");
+        let new = fp("fn load(d: Dir[Read]) -> Int:\n    0\n");
+        assert!(new.widening_over(&old).is_empty());
+        assert!(old.widening_over(&new).runtime.contains("Dir[Write]"));
+    }
+
+    #[test]
+    fn declared_coverage_is_rights_aware() {
+        let f = fp("fn fetch(n: Net[Connect], u: String) -> String:\n    u\n");
+        // A bare `Net` declaration covers the narrowed `Net[Connect]` demand.
+        assert!(check_declared(&f, &["Net".into()], &[]).is_ok());
+        // Declaring the exact verb also covers it.
+        assert!(check_declared(&f, &["Net[Connect]".into()], &[]).is_ok());
+        // Declaring only the *other* verb under-declares (demands Connect, not Listen).
+        assert!(check_declared(&f, &["Net[Listen]".into()], &[]).is_err());
     }
 }

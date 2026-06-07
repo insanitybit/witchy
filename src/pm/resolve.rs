@@ -75,6 +75,7 @@ impl Resolution {
             fp.runtime.extend(r.footprint.runtime.iter().cloned());
             fp.build.extend(r.footprint.build.iter().cloned());
         }
+        fp.normalize();
         fp
     }
 

@@ -115,9 +115,19 @@ bitset is cleaner.)
   safe narrowing. The supply-chain signal becomes "this dependency now listens /
   now writes files," not just "now uses Net."
 
-Still **future** ticks: the `Net` transport split (`Tcp`/`Udp`/`Uds`, TCP-only
-at runtime), and teaching the *package-manager* footprint (`pm/footprint.rs`,
-the `coven`/`runes` gate — a separate analyzer) about rights too.
+**The package-manager gate is rights-aware too** (`pm/footprint.rs`):
+
+- The `coven`/`runes` footprint stores capabilities as strings (`Net[Connect]`,
+  bare = full), so manifests/lockfiles are unchanged and a legacy bare `Net`
+  still means full. The verb-precision lives in two primitives — `cap_difference`
+  (rights-aware widening) and `covers` (rights-aware grant coverage) — used by
+  `widening_over`, `check_declared`, and the gate's blocking/contributor logic.
+- So a dependency upgrade from `Net[Connect]` to `Net[Connect, Listen]` is a
+  blocked widening (`--allow-cap Net` clears it), a tightening to `Net[Connect]`
+  is free, and an under-declared `[capabilities]` contract is caught per-verb.
+
+Still **future**: the `Net` transport split (`Tcp`/`Udp`/`Uds`, TCP-only at
+runtime) — the last user-requested axis of the decomposition.
 
 ## Open questions
 

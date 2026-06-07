@@ -41,13 +41,17 @@ pub fn check(
     let new_agg = resolution.aggregate_footprint();
     let agg_widening = new_agg.widening_over(&old_agg);
 
-    // Which runes introduce each newly-appearing kind?
+    // Which runes introduce each newly-appearing kind? Rights-aware: a rune that
+    // demands `Net` (full) is a contributor to a widened `Net[Listen]`.
     let mut contributors: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for kind in agg_widening.runtime.iter().chain(agg_widening.build.iter()) {
         let mut who: Vec<String> = resolution
             .runes
             .iter()
-            .filter(|r| r.footprint.runtime.contains(kind) || r.footprint.build.contains(kind))
+            .filter(|r| {
+                super::footprint::covers(&r.footprint.runtime, kind)
+                    || super::footprint::covers(&r.footprint.build, kind)
+            })
             .map(|r| r.name.clone())
             .collect();
         who.sort();
@@ -55,17 +59,10 @@ pub fn check(
     }
 
     // Subtract the explicitly-accepted kinds to get what remains blocking.
+    // Rights-aware: accepting `Net` (full) clears a blocked `Net[Listen]`.
     let blocking = Widening {
-        runtime: agg_widening
-            .runtime
-            .difference(allowed_runtime)
-            .cloned()
-            .collect(),
-        build: agg_widening
-            .build
-            .difference(allowed_build)
-            .cloned()
-            .collect(),
+        runtime: super::footprint::cap_difference(&agg_widening.runtime, allowed_runtime),
+        build: super::footprint::cap_difference(&agg_widening.build, allowed_build),
     };
 
     // Per-rune deltas vs each rune's own previous entry (upgrades).
@@ -155,5 +152,27 @@ mod tests {
         assert!(report.is_blocked());
         assert_eq!(report.per_rune.len(), 1);
         assert!(report.per_rune[0].1.runtime.contains("Net"));
+    }
+
+    #[test]
+    fn gaining_a_verb_blocks_verb_precisely_and_bare_allow_clears_it() {
+        // Lock has a connect-only client; the upgrade also wants to listen — a
+        // verb-precise widening, blocked until accepted.
+        let old = Resolution {
+            runes: vec![rune("acme/http", &["Net[Connect]"])],
+        }
+        .to_lockfile();
+        let new = Resolution {
+            runes: vec![rune("acme/http", &["Net[Connect, Listen]"])],
+        };
+        let report = check(&new, &old, &BTreeSet::new(), &BTreeSet::new());
+        assert!(report.is_blocked());
+        assert!(report.blocking.runtime.contains("Net[Listen]"));
+        assert_eq!(report.contributors["Net[Listen]"], vec!["acme/http".to_string()]);
+
+        // Accepting the bare capability (`--allow-cap Net`) covers the new verb.
+        let allowed: BTreeSet<String> = ["Net".to_string()].into_iter().collect();
+        let report = check(&new, &old, &allowed, &BTreeSet::new());
+        assert!(!report.is_blocked());
     }
 }
