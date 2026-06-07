@@ -480,7 +480,8 @@ fn expr(e: &Expr) -> String {
             format!("({o}{})", expr(inner))
         }
         Expr::Binary { op, lhs, rhs } => {
-            format!("({} {} {})", expr(lhs), binop(*op), expr(rhs))
+            let p = binop_prec(*op);
+            format!("{} {} {}", operand(lhs, p, false), binop(*op), operand(rhs, p, true))
         }
         Expr::Try(inner) => format!("({})?", expr(inner)),
         Expr::Lambda { params, body } => {
@@ -590,6 +591,46 @@ fn binop(op: BinOp) -> &'static str {
         BinOp::BitXor => "^",
         BinOp::Shl => "<<",
         BinOp::Shr => ">>",
+    }
+}
+
+/// The left binding power of a binary operator, mirroring the parser's
+/// `infix_bp` so the formatter can omit parentheses the precedence makes
+/// redundant. Higher binds tighter.
+fn binop_prec(op: BinOp) -> u8 {
+    match op {
+        BinOp::Or => 3,
+        BinOp::And => 5,
+        BinOp::Eq | BinOp::NotEq | BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq => 7,
+        BinOp::BitOr => 9,
+        BinOp::BitXor => 11,
+        BinOp::BitAnd => 13,
+        BinOp::Shl | BinOp::Shr => 15,
+        BinOp::Add | BinOp::Sub | BinOp::Concat => 17,
+        BinOp::Mul | BinOp::Div | BinOp::Mod => 19,
+    }
+}
+
+/// Precedence of an expression as a binary operand. Non-binary forms either are
+/// atomic or print their own delimiters, so they never need wrapping (100).
+fn expr_prec(e: &Expr) -> u8 {
+    match e {
+        Expr::Binary { op, .. } => binop_prec(*op),
+        _ => 100,
+    }
+}
+
+/// Render `e` as an operand of a binary operator with left binding power
+/// `parent`. All binary operators are left-associative, so the right operand is
+/// wrapped at equal precedence (`a - (b - c)`), the left operand only when it
+/// binds strictly looser (`a - b - c` stays flat).
+fn operand(e: &Expr, parent: u8, is_right: bool) -> String {
+    let s = expr(e);
+    let needs = if is_right { expr_prec(e) <= parent } else { expr_prec(e) < parent };
+    if needs {
+        format!("({s})")
+    } else {
+        s
     }
 }
 
