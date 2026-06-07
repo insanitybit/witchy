@@ -1,0 +1,72 @@
+// A small backtracking regular-expression matcher over strings — the classic
+// Kernighan & Pike design, in pure witchy. Supported syntax:
+//   .   any single character
+//   *   zero or more of the preceding atom
+//   +   one or more of the preceding atom
+//   ?   zero or one of the preceding atom
+//   ^   anchor to the start of the text (only as the first character)
+//   $   anchor to the end of the text (only as the last character)
+// any other character matches itself. There is no escaping yet, so the
+// metacharacters above cannot be matched literally. Pure and capability-free,
+// and correct on both the interpreter and the compiled backend.
+
+import string
+
+// True if `pattern` matches anywhere in `text` (anchored to the start when the
+// pattern begins with `^`).
+pub fn matches(pattern: String, text: String) -> Bool:
+    if string_length(pattern) > 0 && string.char_at(pattern, 0) == "^":
+        match_here(pattern, 1, text, 0)
+    else:
+        search(pattern, text, 0)
+
+// Try to match the pattern starting at each position in the text.
+fn search(pattern: String, text: String, ti: Int) -> Bool:
+    if match_here(pattern, 0, text, ti):
+        true
+    else if ti < string_length(text):
+        search(pattern, text, ti + 1)
+    else:
+        false
+
+// Match `pattern[pi..]` at `text[ti..]`.
+fn match_here(pattern: String, pi: Int, text: String, ti: Int) -> Bool:
+    if pi >= string_length(pattern):
+        true
+    else:
+        let pc = string.char_at(pattern, pi)
+        let nx = next_char(pattern, pi + 1)
+        if nx == "*":
+            match_star(pc, pattern, pi + 2, text, ti)
+        else if nx == "+":
+            here(pc, text, ti) && match_star(pc, pattern, pi + 2, text, ti + 1)
+        else if nx == "?":
+            (here(pc, text, ti) && match_here(pattern, pi + 2, text, ti + 1)) || match_here(pattern, pi + 2, text, ti)
+        else if pc == "$" && pi + 1 >= string_length(pattern):
+            ti >= string_length(text)
+        else if here(pc, text, ti):
+            match_here(pattern, pi + 1, text, ti + 1)
+        else:
+            false
+
+// Match zero or more of `c`, then the rest of the pattern.
+fn match_star(c: String, pattern: String, pi: Int, text: String, ti: Int) -> Bool:
+    if match_here(pattern, pi, text, ti):
+        true
+    else if here(c, text, ti):
+        match_star(c, pattern, pi, text, ti + 1)
+    else:
+        false
+
+// True if pattern char `pc` matches the text character at `ti` (and one exists).
+fn here(pc: String, text: String, ti: Int) -> Bool:
+    ti < string_length(text) && char_matches(pc, string.char_at(text, ti))
+
+fn char_matches(pc: String, tc: String) -> Bool:
+    pc == "." || pc == tc
+
+fn next_char(pattern: String, pi: Int) -> String:
+    if pi < string_length(pattern):
+        string.char_at(pattern, pi)
+    else:
+        ""

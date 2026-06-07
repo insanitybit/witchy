@@ -2859,6 +2859,33 @@ fn main(console: Console):
     }
 
     #[test]
+    fn regex_example_runs_on_wasm() {
+        // The std/regex backtracking matcher (. * + ? ^ $) produces identical
+        // results on both backends.
+        let sources = [
+            ("string", crate::bundled_module("string").unwrap()),
+            ("regex", crate::bundled_module("regex").unwrap()),
+            ("main", include_str!("../examples/patterns.witchy")),
+        ];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "regex diverged");
+        assert_eq!(
+            compiled,
+            vec![
+                "match  ^h.*o$  ~  hello",
+                "no     ^h.*o$  ~  hi there",
+                "match  colou?r  ~  color",
+                "match  colou?r  ~  colour",
+                "match  ab+a  ~  abbba",
+                "no     ab+a  ~  aa",
+                "match  cat  ~  the cat sat",
+                "no     ^cat  ~  the cat sat",
+            ]
+        );
+    }
+
+    #[test]
     fn calculator_example_runs_on_wasm() {
         // The recursive-descent calculator (mutual recursion + tuple cursors +
         // string scanning) parses and evaluates expressions identically on both
