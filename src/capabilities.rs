@@ -9,9 +9,14 @@
 //! actor is granted at spawn). Unlike Go — where any dependency runs with your
 //! full ambient authority — this makes "what can this code touch?" statically
 //! computable, so a dependency that *widens* its footprint (suddenly asks for
-//! `Net`) is visible and can be gated.
+//! `Net`, or asks for a `Net` it can now *listen* on) is visible and gateable.
+//!
+//! The footprint is right-precise: a capability carries the *verbs* it permits
+//! (`Dir[Read]`, `Net[Connect]`), so the audit distinguishes a read-only loader
+//! from one that writes files, or a client from a server. Bare `Dir`/`Net` carry
+//! the full right-set.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use crate::ast::{Item, Module, Type};
 
@@ -20,22 +25,78 @@ use crate::ast::{Item, Module, Type};
 /// so it isn't a supply-chain footprint concern.)
 pub const HOST_CAPABILITIES: &[&str] = &["Console", "Dir", "Net"];
 
+/// The rights (verbs) a single capability permits. Empty for `Console`, which
+/// has no sub-verbs.
+pub type Rights = BTreeSet<&'static str>;
+
+/// A capability footprint: each present capability mapped to the union of rights
+/// demanded for it. `Dir` ⇒ `{Read, Write}`, `Net` ⇒ `{Connect, Listen}`.
+pub type CapSet = BTreeMap<&'static str, Rights>;
+
 fn host_cap(name: &str) -> Option<&'static str> {
     HOST_CAPABILITIES.iter().copied().find(|c| *c == name)
 }
 
-/// Host capabilities reachable from a type, resolving user types through `taint`.
-/// A capability wrapped in a type — a brand like `ConfigDir(Dir)`, or any record
-/// holding one — still confers that authority on whoever receives the value, so
-/// the analyzer must see through the wrapper to stay sound.
-fn caps_in(ty: &Type, taint: &HashMap<String, BTreeSet<&'static str>>, out: &mut BTreeSet<&'static str>) {
+/// The full right-set for a capability — what a *bare* `Dir`/`Net` (no brackets)
+/// confers. `Console` and unknown names have no rights.
+fn full_rights(cap: &str) -> Rights {
+    match cap {
+        "Dir" => ["Read", "Write"].into_iter().collect(),
+        "Net" => ["Connect", "Listen"].into_iter().collect(),
+        _ => Rights::new(),
+    }
+}
+
+/// Map a bracketed marker (`Dir[Read]`, `Net[Connect]`) to its canonical right
+/// name, or `None` if it isn't a recognized right for that capability (e.g. a
+/// future transport marker like `Tcp`, which is ignored here).
+fn right_marker(cap: &str, marker: &str) -> Option<&'static str> {
+    match (cap, marker) {
+        ("Dir", "Read") => Some("Read"),
+        ("Dir", "Write") => Some("Write"),
+        ("Net", "Connect") => Some("Connect"),
+        ("Net", "Listen") => Some("Listen"),
+        _ => None,
+    }
+}
+
+/// The rights a capability-typed annotation confers: the bracketed markers if
+/// present, else (bare capability) the full set.
+fn rights_from_args(cap: &'static str, args: &[Type]) -> Rights {
+    if args.is_empty() {
+        return full_rights(cap);
+    }
+    let mut r = Rights::new();
+    for a in args {
+        if let Type::Named(n, _) = a {
+            if let Some(m) = right_marker(cap, n) {
+                r.insert(m);
+            }
+        }
+    }
+    r
+}
+
+/// Union `src` into `dst`, merging the rights of capabilities present in both.
+fn merge_into(dst: &mut CapSet, src: &CapSet) {
+    for (cap, rights) in src {
+        dst.entry(cap).or_default().extend(rights.iter().copied());
+    }
+}
+
+/// Host capabilities (with rights) reachable from a type, resolving user types
+/// through `taint`. A capability wrapped in a type — a brand like
+/// `ConfigDir(Dir[Read])`, or any record holding one — still confers that
+/// authority (at those rights) on whoever receives the value, so the analyzer
+/// must see through the wrapper to stay sound.
+fn caps_in(ty: &Type, taint: &HashMap<String, CapSet>, out: &mut CapSet) {
     match ty {
         Type::Named(name, args) => {
             if let Some(h) = host_cap(name) {
-                out.insert(h);
+                out.entry(h).or_default().extend(rights_from_args(h, args));
             }
             if let Some(caps) = taint.get(name) {
-                out.extend(caps.iter().copied());
+                merge_into(out, caps);
             }
             for a in args {
                 caps_in(a, taint, out);
@@ -55,11 +116,11 @@ fn caps_in(ty: &Type, taint: &HashMap<String, BTreeSet<&'static str>>, out: &mut
     }
 }
 
-/// For each user type, the host capabilities a value of it carries (transitively
-/// through its fields). Computed to a fixpoint, since a type may be tainted by
-/// another tainted user type.
-fn taint_map(module: &Module) -> HashMap<String, BTreeSet<&'static str>> {
-    let mut map: HashMap<String, BTreeSet<&'static str>> = HashMap::new();
+/// For each user type, the host capabilities (with rights) a value of it carries
+/// (transitively through its fields). Computed to a fixpoint, since a type may
+/// be tainted by another tainted user type.
+fn taint_map(module: &Module) -> HashMap<String, CapSet> {
+    let mut map: HashMap<String, CapSet> = HashMap::new();
     for item in &module.items {
         if let Item::Type(t) = item {
             map.entry(t.name.clone()).or_default();
@@ -69,16 +130,16 @@ fn taint_map(module: &Module) -> HashMap<String, BTreeSet<&'static str>> {
         let mut changed = false;
         for item in &module.items {
             let Item::Type(t) = item else { continue };
-            let mut acc = BTreeSet::new();
+            let mut acc = CapSet::new();
             for v in &t.variants {
                 for fty in &v.fields {
                     caps_in(fty, &map, &mut acc);
                 }
             }
             let slot = map.entry(t.name.clone()).or_default();
-            let before = slot.len();
-            slot.extend(acc);
-            if slot.len() != before {
+            let before = slot.clone();
+            merge_into(slot, &acc);
+            if *slot != before {
                 changed = true;
             }
         }
@@ -95,16 +156,16 @@ fn taint_map(module: &Module) -> HashMap<String, BTreeSet<&'static str>> {
 /// authority-equivalent to it, but carrying the program's intent.
 fn brand_map(
     module: &Module,
-    taint: &HashMap<String, BTreeSet<&'static str>>,
+    taint: &HashMap<String, CapSet>,
 ) -> HashMap<String, &'static str> {
     let mut brands = HashMap::new();
     for item in &module.items {
         if let Item::Type(t) = item {
             if t.variants.len() == 1 && t.variants[0].fields.len() == 1 {
-                let mut caps = BTreeSet::new();
+                let mut caps = CapSet::new();
                 caps_in(&t.variants[0].fields[0], taint, &mut caps);
                 if caps.len() == 1 {
-                    brands.insert(t.name.clone(), *caps.iter().next().unwrap());
+                    brands.insert(t.name.clone(), *caps.keys().next().unwrap());
                 }
             }
         }
@@ -112,11 +173,12 @@ fn brand_map(
     brands
 }
 
-/// One entry point: the host capabilities it requires, plus the names of any
-/// capability brands it receives them through (a display-only refinement).
+/// One entry point: the host capabilities (with rights) it requires, plus the
+/// names of any capability brands it receives them through (a display-only
+/// refinement).
 pub struct Entry {
     pub name: String,
-    pub capabilities: BTreeSet<&'static str>,
+    pub capabilities: CapSet,
     pub brands: BTreeSet<String>,
 }
 
@@ -124,7 +186,7 @@ pub struct Entry {
 /// union across all of them (the maximum host authority the module can wield).
 pub struct Footprint {
     pub entries: Vec<Entry>,
-    pub total: BTreeSet<&'static str>,
+    pub total: CapSet,
     /// The capability brands (refinements) used anywhere in the module — the
     /// union of every entry's brands. Authority-equivalent to their host caps,
     /// but a finer-grained record of *intent*.
@@ -132,30 +194,52 @@ pub struct Footprint {
 }
 
 /// What changed between two versions of a module's footprint. `added` is a
-/// *widening* — host authority the newer version demands that the older did not
-/// (e.g. a dependency update that suddenly asks for `Net`); `removed` is a
-/// narrowing, which is always safe. The supply-chain gate blocks on widening.
+/// *widening* — host authority the newer version demands that the older did not.
+/// That includes a wholly new capability (a dependency that suddenly asks for
+/// `Net`) *and* a new right on an existing one (a `Net[Connect]` that can now
+/// also `Listen`). `removed` is a narrowing (a dropped capability or right),
+/// which is always safe. The supply-chain gate blocks on widening.
 ///
 /// `refinements_dropped`/`refinements_gained` track *brand* changes. They never
 /// change host authority — a brand is authority-equivalent to its host cap — so
 /// they don't fail the gate, but a dropped refinement (a confined `ConfigDir`
 /// loosened back to a raw `Dir`) is an intent change worth surfacing in review.
 pub struct FootprintDiff {
-    pub added: BTreeSet<&'static str>,
-    pub removed: BTreeSet<&'static str>,
+    pub added: CapSet,
+    pub removed: CapSet,
     pub refinements_dropped: BTreeSet<String>,
     pub refinements_gained: BTreeSet<String>,
 }
 
 impl FootprintDiff {
     /// Whether the newer footprint demands authority the older one did not. This
-    /// is the signal the install/CI gate fails on: new authority must be an
-    /// explicit, reviewed decision, never something a version bump slips in.
-    /// Brand changes are intentional refinements, not authority, so they never
-    /// trip this.
+    /// is the signal the install/CI gate fails on: new authority — a new
+    /// capability or a new right on an existing one — must be an explicit,
+    /// reviewed decision, never something a version bump slips in. Brand changes
+    /// are intentional refinements, not authority, so they never trip this.
     pub fn widened(&self) -> bool {
         !self.added.is_empty()
     }
+}
+
+/// The capabilities/rights present in `a` but not `b`: a wholly new capability,
+/// or new rights on a shared one. The primitive behind both directions of a diff.
+fn cap_delta(a: &CapSet, b: &CapSet) -> CapSet {
+    let mut out = CapSet::new();
+    for (cap, ar) in a {
+        match b.get(cap) {
+            None => {
+                out.insert(cap, ar.clone());
+            }
+            Some(br) => {
+                let extra: Rights = ar.difference(br).copied().collect();
+                if !extra.is_empty() {
+                    out.insert(cap, extra);
+                }
+            }
+        }
+    }
+    out
 }
 
 /// Compare two footprints by their total authority — the primitive behind the
@@ -165,10 +249,36 @@ impl FootprintDiff {
 /// Brand differences are reported alongside as refinement (intent) changes.
 pub fn diff(old: &Footprint, new: &Footprint) -> FootprintDiff {
     FootprintDiff {
-        added: new.total.difference(&old.total).copied().collect(),
-        removed: old.total.difference(&new.total).copied().collect(),
+        added: cap_delta(&new.total, &old.total),
+        removed: cap_delta(&old.total, &new.total),
         refinements_dropped: old.brands.difference(&new.brands).cloned().collect(),
         refinements_gained: new.brands.difference(&old.brands).cloned().collect(),
+    }
+}
+
+/// Render one capability with its rights for human output: a bare name when it
+/// has the full right-set (or none, like `Console`), else bracketed —
+/// `Console`, `Dir`, `Dir[Read]`, `Net[Connect, Listen]`.
+pub fn show_cap(name: &str, rights: &Rights) -> String {
+    if rights.is_empty() || *rights == full_rights(name) {
+        name.to_string()
+    } else {
+        format!(
+            "{name}[{}]",
+            rights.iter().copied().collect::<Vec<_>>().join(", ")
+        )
+    }
+}
+
+/// Render a whole capability set as a comma-joined list, or `(none)`.
+pub fn show_caps(caps: &CapSet) -> String {
+    if caps.is_empty() {
+        "(none)".to_string()
+    } else {
+        caps.iter()
+            .map(|(n, r)| show_cap(n, r))
+            .collect::<Vec<_>>()
+            .join(", ")
     }
 }
 
@@ -176,7 +286,7 @@ pub fn analyze(module: &Module) -> Footprint {
     let taint = taint_map(module);
     let brands = brand_map(module, &taint);
     let mut entries = Vec::new();
-    let mut total = BTreeSet::new();
+    let mut total = CapSet::new();
     for item in &module.items {
         // The capability-bearing types at this entry point: a public function's
         // (or `main`'s) parameters, or an actor's spawn-granted fields.
@@ -195,15 +305,15 @@ pub fn analyze(module: &Module) -> Footprint {
             ),
             _ => continue,
         };
-        let mut capabilities = BTreeSet::new();
+        let mut capabilities = CapSet::new();
         let mut entry_brands = BTreeSet::new();
         for ty in types {
-            let mut caps = BTreeSet::new();
+            let mut caps = CapSet::new();
             caps_in(ty, &taint, &mut caps);
             if caps.is_empty() {
                 continue;
             }
-            capabilities.extend(caps.iter().copied());
+            merge_into(&mut capabilities, &caps);
             // A directly-named brand is recorded as a refinement.
             if let Type::Named(n, _) = ty {
                 if brands.contains_key(n.as_str()) {
@@ -211,7 +321,7 @@ pub fn analyze(module: &Module) -> Footprint {
                 }
             }
         }
-        total.extend(capabilities.iter().copied());
+        merge_into(&mut total, &capabilities);
         entries.push(Entry {
             name,
             capabilities,
@@ -233,6 +343,14 @@ mod tests {
 
     fn footprint(src: &str) -> Footprint {
         analyze(&parse_module(src).expect("parse"))
+    }
+
+    /// Build a `CapSet` from `(cap, &[rights])` pairs, for terse assertions.
+    fn cs(items: &[(&'static str, &[&'static str])]) -> CapSet {
+        items
+            .iter()
+            .map(|(c, rs)| (*c, rs.iter().copied().collect::<Rights>()))
+            .collect()
     }
 
     #[test]
@@ -262,14 +380,14 @@ fn main(console: Console):
         // Private `helper` is not an entry point; the union is Console + Net.
         assert_eq!(
             fp.total,
-            ["Console", "Net"].into_iter().collect::<BTreeSet<_>>()
+            cs(&[("Console", &[]), ("Net", &["Connect", "Listen"])])
         );
         let names: Vec<&str> = fp.entries.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, vec!["serve", "main"]);
         let serve = fp.entries.iter().find(|e| e.name == "serve").unwrap();
         assert_eq!(
             serve.capabilities,
-            ["Console", "Net"].into_iter().collect::<BTreeSet<_>>()
+            cs(&[("Console", &[]), ("Net", &["Connect", "Listen"])])
         );
     }
 
@@ -286,7 +404,7 @@ pub fn serve(console: Console, net: Net) -> Int:
     0
 "#);
         let d = diff(&old, &new);
-        assert_eq!(d.added, ["Net"].into_iter().collect::<BTreeSet<_>>());
+        assert_eq!(d.added, cs(&[("Net", &["Connect", "Listen"])]));
         assert!(d.removed.is_empty());
         assert!(d.widened());
     }
@@ -319,7 +437,59 @@ pub fn serve(console: Console) -> Int:
 "#);
         let d = diff(&old, &new);
         assert!(d.added.is_empty());
-        assert_eq!(d.removed, ["Net"].into_iter().collect::<BTreeSet<_>>());
+        assert_eq!(d.removed, cs(&[("Net", &["Connect", "Listen"])]));
+        assert!(!d.widened());
+    }
+
+    #[test]
+    fn dir_rights_appear_in_the_footprint() {
+        // A read-only loader audits as `Dir[Read]`, not a bare `Dir`.
+        let fp = footprint("pub fn load(d: Dir[Read]) -> Int:\n    0\n");
+        assert_eq!(fp.total, cs(&[("Dir", &["Read"])]));
+        assert_eq!(show_caps(&fp.total), "Dir[Read]");
+    }
+
+    #[test]
+    fn net_verbs_appear_in_the_footprint() {
+        // A client audits as `Net[Connect]`; a server as `Net[Listen]`.
+        let client = footprint("pub fn fetch(n: Net[Connect]) -> Int:\n    0\n");
+        assert_eq!(client.total, cs(&[("Net", &["Connect"])]));
+        assert_eq!(show_caps(&client.total), "Net[Connect]");
+        let server = footprint("pub fn serve(n: Net[Listen]) -> Int:\n    0\n");
+        assert_eq!(show_caps(&server.total), "Net[Listen]");
+    }
+
+    #[test]
+    fn entry_rights_union_across_entry_points() {
+        // One entry connects, another listens — the module's total is both verbs.
+        let fp = footprint(
+            "pub fn fetch(n: Net[Connect]) -> Int:\n    0\npub fn serve(n: Net[Listen]) -> Int:\n    0\n",
+        );
+        assert_eq!(fp.total, cs(&[("Net", &["Connect", "Listen"])]));
+        assert_eq!(show_caps(&fp.total), "Net");
+    }
+
+    #[test]
+    fn gaining_a_right_is_a_widening() {
+        // A `Net[Connect]` client that now also listens is a widening — the
+        // supply-chain signal is verb-precise.
+        let old = footprint("pub fn h(n: Net[Connect]) -> Int:\n    0\n");
+        let new = footprint("pub fn h(n: Net[Connect, Listen]) -> Int:\n    0\n");
+        let d = diff(&old, &new);
+        assert_eq!(d.added, cs(&[("Net", &["Listen"])]));
+        assert!(d.removed.is_empty());
+        assert!(d.widened());
+    }
+
+    #[test]
+    fn dropping_a_right_is_a_safe_narrowing() {
+        // The reverse — a full `Dir` tightened to `Dir[Read]` — drops `Write`,
+        // a narrowing that never trips the gate.
+        let old = footprint("pub fn load(d: Dir) -> Int:\n    0\n");
+        let new = footprint("pub fn load(d: Dir[Read]) -> Int:\n    0\n");
+        let d = diff(&old, &new);
+        assert!(d.added.is_empty());
+        assert_eq!(d.removed, cs(&[("Dir", &["Write"])]));
         assert!(!d.widened());
     }
 
@@ -330,10 +500,22 @@ pub fn serve(console: Console) -> Int:
         let fp = footprint(
             "type ConfigDir:\n    ConfigDir(Dir)\npub fn load(c: ConfigDir) -> Int:\n    0\n",
         );
-        assert_eq!(fp.total, ["Dir"].into_iter().collect::<BTreeSet<_>>());
+        assert_eq!(fp.total, cs(&[("Dir", &["Read", "Write"])]));
         let load = fp.entries.iter().find(|e| e.name == "load").unwrap();
-        assert!(load.capabilities.contains("Dir"));
+        assert!(load.capabilities.contains_key("Dir"));
         assert!(load.brands.contains("ConfigDir"));
+    }
+
+    #[test]
+    fn a_brand_carries_the_rights_of_the_capability_it_wraps() {
+        // A brand over a narrowed capability audits at those rights, not full.
+        let fp = footprint(
+            "type LogDir:\n    LogDir(Dir[Write])\npub fn log(d: LogDir) -> Int:\n    0\n",
+        );
+        assert_eq!(fp.total, cs(&[("Dir", &["Write"])]));
+        assert_eq!(show_caps(&fp.total), "Dir[Write]");
+        let log = fp.entries.iter().find(|e| e.name == "log").unwrap();
+        assert!(log.brands.contains("LogDir"));
     }
 
     #[test]
@@ -343,7 +525,7 @@ pub fn serve(console: Console) -> Int:
         let fp = footprint(
             "type ConfigDir:\n    dir: Dir\npub fn load(c: ConfigDir) -> Int:\n    0\n",
         );
-        assert_eq!(fp.total, ["Dir"].into_iter().collect::<BTreeSet<_>>());
+        assert_eq!(fp.total, cs(&[("Dir", &["Read", "Write"])]));
         let load = fp.entries.iter().find(|e| e.name == "load").unwrap();
         assert!(load.brands.contains("ConfigDir"));
     }
@@ -354,7 +536,7 @@ pub fn serve(console: Console) -> Int:
         let fp = footprint(
             "type Raw:\n    Raw(Net)\ntype Api:\n    Api(Raw)\npub fn fetch(a: Api) -> Int:\n    0\n",
         );
-        assert_eq!(fp.total, ["Net"].into_iter().collect::<BTreeSet<_>>());
+        assert_eq!(fp.total, cs(&[("Net", &["Connect", "Listen"])]));
     }
 
     #[test]
@@ -364,7 +546,7 @@ pub fn serve(console: Console) -> Int:
         let fp = footprint(
             "type Conn:\n    host: String\n    net: Net\npub fn open(c: Conn) -> Int:\n    0\n",
         );
-        assert!(fp.total.contains("Net"));
+        assert!(fp.total.contains_key("Net"));
     }
 
     #[test]
@@ -399,7 +581,7 @@ pub fn serve(console: Console) -> Int:
             "type ApiNet:\n    ApiNet(Net)\npub fn load(d: Dir) -> Int:\n    0\npub fn sync(n: ApiNet) -> Int:\n    0\n",
         );
         let d = diff(&old, &new);
-        assert_eq!(d.added, ["Net"].into_iter().collect::<BTreeSet<_>>());
+        assert_eq!(d.added, cs(&[("Net", &["Connect", "Listen"])]));
         assert!(d.widened());
     }
 
@@ -415,7 +597,7 @@ impl Logger:
         count = (count + 1)
 "#;
         let fp = footprint(src);
-        assert!(fp.total.contains("Console"));
+        assert!(fp.total.contains_key("Console"));
     }
 
     /// Supply-chain regression net: the bundled std modules must keep the
@@ -438,13 +620,15 @@ impl Logger:
                 fp.total
             );
         }
+        // The networking modules take a bare `Net` (full verbs) for now — they
+        // are not yet tightened to `Net[Connect]`/`Net[Listen]`.
         let net_only = ["http", "server"];
         for name in net_only {
             let src = crate::linker::std_source(name).expect("bundled module");
             let fp = footprint(src);
             assert_eq!(
-                fp.total,
-                ["Net"].into_iter().collect::<BTreeSet<_>>(),
+                fp.total.keys().copied().collect::<Vec<_>>(),
+                vec!["Net"],
                 "networking module `{name}` should require only Net",
             );
         }

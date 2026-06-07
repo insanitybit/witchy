@@ -764,7 +764,7 @@ fn run_file_sandboxed(path: &str) -> Result<Vec<String>, String> {
     let footprint = capabilities::analyze(&linked);
     let unsupported: Vec<&str> = footprint
         .total
-        .iter()
+        .keys()
         .copied()
         .filter(|c| *c != "Console")
         .collect();
@@ -778,7 +778,7 @@ fn run_file_sandboxed(path: &str) -> Result<Vec<String>, String> {
         .map_err(|e| format!("cannot compile to WASM (an interpreter-only feature?): {e}"))?;
     eprintln!(
         "sandboxing `{path}` \u{2014} granted exactly: {}",
-        show_caps(&footprint.total)
+        capabilities::show_caps(&footprint.total)
     );
     run_wat_capture(&wat)
 }
@@ -804,15 +804,6 @@ fn run_wat_capture(wat: &str) -> Result<Vec<String>, String> {
     Ok(actor.output())
 }
 
-/// Render a capability set for human output: a comma-joined list, or `(none)`.
-fn show_caps(caps: &std::collections::BTreeSet<&'static str>) -> String {
-    if caps.is_empty() {
-        "(none)".to_string()
-    } else {
-        caps.iter().copied().collect::<Vec<_>>().join(", ")
-    }
-}
-
 /// Read, parse, and compute the host-capability footprint of a source file.
 fn analyze_file(path: &str) -> Result<capabilities::Footprint, String> {
     let src = std::fs::read_to_string(path).map_err(|e| format!("cannot read `{path}`: {e}"))?;
@@ -824,7 +815,7 @@ fn analyze_file(path: &str) -> Result<capabilities::Footprint, String> {
 /// `Console`/`Dir`/`Net` each entry point requires, and the union.
 fn report_capabilities(path: &str) -> Result<(), String> {
     let fp = analyze_file(path)?;
-    let show = show_caps;
+    let show = capabilities::show_caps;
     println!("Host-capability footprint of {path}:");
     let width = fp
         .entries
@@ -857,10 +848,10 @@ fn report_capability_diff(old_path: &str, new_path: &str) -> Result<bool, String
     let new = analyze_file(new_path)?;
     let d = capabilities::diff(&old, &new);
     println!("Capability footprint diff {old_path} -> {new_path}:");
-    println!("  old total:  {}", show_caps(&old.total));
-    println!("  new total:  {}", show_caps(&new.total));
-    println!("  added:      {}", show_caps(&d.added));
-    println!("  removed:    {}", show_caps(&d.removed));
+    println!("  old total:  {}", capabilities::show_caps(&old.total));
+    println!("  new total:  {}", capabilities::show_caps(&new.total));
+    println!("  added:      {}", capabilities::show_caps(&d.added));
+    println!("  removed:    {}", capabilities::show_caps(&d.removed));
     let join = |s: &std::collections::BTreeSet<String>| {
         if s.is_empty() {
             "(none)".to_string()
@@ -878,7 +869,7 @@ fn report_capability_diff(old_path: &str, new_path: &str) -> Result<bool, String
     if d.widened() {
         println!(
             "WIDENING: the newer version demands new host authority ({}). Review before trusting.",
-            show_caps(&d.added)
+            capabilities::show_caps(&d.added)
         );
     } else if !d.refinements_dropped.is_empty() {
         // Same host authority, but a brand was dropped — a confined capability

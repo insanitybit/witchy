@@ -104,8 +104,20 @@ bitset is cleaner.)
 - Unrecognized bracket markers (a future transport like `Tcp`) are parsed but
   ignored, so the syntax is forward-compatible with the transport dimension.
 
+**The footprint is right-precise** (`witchy caps` / `caps-diff`):
+
+- `capabilities::analyze` carries a `CapSet` (capability → union of rights), so
+  `caps` shows `fetch  Net[Connect]` / `load  Dir[Read]`; bare = full renders as
+  the plain name. Brands still compose (`(refined: ConfigDir)`) and a brand
+  audits at the rights of the capability it wraps (`LogDir(Dir[Write])`).
+- `caps-diff` is verb-precise: a *gained* right (Connect → Connect+Listen, Read →
+  Read+Write) is a WIDENING that fails the gate (exit 2); a *dropped* right is a
+  safe narrowing. The supply-chain signal becomes "this dependency now listens /
+  now writes files," not just "now uses Net."
+
 Still **future** ticks: the `Net` transport split (`Tcp`/`Udp`/`Uds`, TCP-only
-at runtime), and surfacing the right-set in the `caps`/`caps-diff` footprint.
+at runtime), and teaching the *package-manager* footprint (`pm/footprint.rs`,
+the `coven`/`runes` gate — a separate analyzer) about rights too.
 
 ## Open questions
 
