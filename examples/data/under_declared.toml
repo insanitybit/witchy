@@ -1,0 +1,8 @@
+# A manifest that under-declares: it admits only Console, but the rune's source
+# (sample_rune.witchy) demands Dir and Net. coven_check must flag the gap.
+[rune]
+name = "acme/widget"
+version = "0.1.0"
+
+[capabilities]
+runtime = ["Console"]

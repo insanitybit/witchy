@@ -4924,6 +4924,28 @@ impl Counter:
         assert_eq!(crate::capabilities::show_caps(&fp.total), "Console, Dir[Read]");
     }
 
+    /// `coven_check` is the package manager's `check_declared`, self-hosted: it
+    /// reads a rune's `witchy.toml` (`std/toml`) and its source, asks the compiler
+    /// what the code demands (`compiler.footprint`), and verifies the manifest's
+    /// `[capabilities]` admits every demanded kind. The sample manifest declares
+    /// only `Console` while the code uses `Dir` + `Net`, so it flags the
+    /// under-declaration and exits 1 — wireable into CI as a supply-chain gate.
+    #[test]
+    fn coven_check_example_flags_under_declared_manifest_in_witchy() {
+        let (output, code) =
+            crate::execute_file_exit("examples/coven_check.witchy", Vec::new(), Vec::new(), None)
+                .unwrap();
+        assert_eq!(
+            output,
+            vec!["UNDER-DECLARED: code demands Dir, Net not in [capabilities]"]
+        );
+        assert_eq!(code, 1, "an under-declared manifest must exit 1");
+        // The checker itself only reads files and prints — provably no writes/net.
+        let src = std::fs::read_to_string("examples/coven_check.witchy").unwrap();
+        let fp = crate::capabilities::analyze(&parser::parse_module(&src).expect("parse"));
+        assert_eq!(crate::capabilities::show_caps(&fp.total), "Console, Dir[Read]");
+    }
+
     /// `main -> Int` sets the process exit code (C/Go/Rust convention) and is
     /// *not* printed; `main` returning Nil exits 0 and shows its `print` output.
     #[test]

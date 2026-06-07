@@ -1,0 +1,66 @@
+// coven_check — a manifest-vs-code consistency check, written entirely in witchy.
+// It reads a rune's witchy.toml manifest and its source (with a read-only Dir
+// capability), asks the compiler what capabilities the code actually demands
+// (`compiler.footprint`), and verifies the manifest's `[capabilities]` admits
+// them. A capability the code can use but the manifest hides is an
+// *under-declaration* — the dangerous supply-chain case. This is the package
+// manager's `check_declared`, self-hosted, composing std `toml` + `compiler` +
+// `json`. Run:  witchy examples/coven_check.witchy
+
+import toml
+import compiler
+import json
+import string
+
+fn main(console: Console, root: Dir[Read]) -> Int:
+    let manifest = read(root, "examples/data/under_declared.toml")
+    let source = read(root, "examples/data/sample_rune.witchy")
+    let declared = toml.get_array(manifest, "capabilities.runtime")
+    let demanded = total_caps(compiler.footprint(source))
+    let missing = undeclared(declared, demanded)
+    if string.is_empty(missing):
+        print(console, "OK: manifest declares everything the code demands")
+        0
+    else:
+        print(console, "UNDER-DECLARED: code demands " <> missing <> " not in [capabilities]")
+        1
+
+// The demanded capability *kinds* not covered by the declared list, comma-joined
+// (empty when the manifest covers everything).
+fn undeclared(declared: List(String), demanded: List(String)) -> String:
+    var missing = []
+    for cap in demanded:
+        let kind = base_name(cap)
+        if !has(declared, kind):
+            missing = push(missing, kind)
+    string.join(missing, ", ")
+
+// "Dir[Read]" -> "Dir"; "Console" -> "Console".
+fn base_name(cap: String) -> String:
+    if contains(cap, "["):
+        let (name, _rest) = string.split_once(cap, "[")
+        name
+    else:
+        cap
+
+fn has(xs: List(String), x: String) -> Bool:
+    var found = false
+    for y in xs:
+        if y == x:
+            found = true
+    found
+
+// The capability names in a footprint report's "total" array.
+fn total_caps(report: String) -> List(String):
+    match json.decode(report):
+        Ok(doc) -> string_items(json.get(doc, "total"))
+        Err(e) -> []
+
+fn string_items(field: Option(Json)) -> List(String):
+    var out = []
+    if let Some(j) = field:
+        if let Some(items) = json.as_array(j):
+            for it in items:
+                if let Some(s) = json.as_string(it):
+                    out = push(out, s)
+    out
