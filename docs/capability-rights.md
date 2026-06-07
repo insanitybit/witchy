@@ -126,8 +126,20 @@ bitset is cleaner.)
   blocked widening (`--allow-cap Net` clears it), a tightening to `Net[Connect]`
   is free, and an under-declared `[capabilities]` contract is caught per-verb.
 
-Still **future**: the `Net` transport split (`Tcp`/`Udp`/`Uds`, TCP-only at
-runtime) — the last user-requested axis of the decomposition.
+**The `Net` transport axis is implemented** (type level; TCP-only runtime):
+
+- `NetRights` carries verbs *and* transports (`Tcp`/`Udp`/`Uds`). Each axis
+  defaults to full independently: `Net[Connect]` keeps all transports, `Net[Tcp]`
+  keeps all verbs, `Net[Connect, Tcp]` narrows both.
+- Only TCP is implemented, so `connect`/`listen` require `Tcp`; a `Net[…, Udp]`
+  passed to `connect` is a compile error ("only implemented over `Tcp`"). `Udp`/
+  `Uds` thus remain type-level markers that keep the taxonomy expressible/auditable.
+- `tcp_only`/`udp_only`/`uds_only` narrow the transport axis (monotone, identity
+  at runtime), mirroring `connect_only`/`listen_only`.
+
+Open follow-up: the CLI/pm footprints currently track verbs but not transports
+(they ignore the transport markers), so a `Net[…, Udp]` audits as its verb only —
+surfacing transport in the footprint is the remaining polish.
 
 ## Open questions
 

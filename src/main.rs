@@ -4688,6 +4688,45 @@ impl Counter:
         );
     }
 
+    /// The `Net` transport axis: only `Tcp` is implemented, so `connect`/`listen`
+    /// require it; `Udp`/`Uds` are type-level markers that keep the taxonomy
+    /// expressible. Each axis defaults to full independently (`Net[Connect]` keeps
+    /// all transports). `tcp_only`/`udp_only`/`uds_only` narrow the transport axis.
+    #[test]
+    fn net_transport_is_statically_enforced() {
+        let ok = |src: &str| {
+            assert!(
+                crate::typeck::check_str(src).is_ok(),
+                "expected ok, got: {:?}",
+                crate::typeck::check_str(src)
+            );
+        };
+        let err = |src: &str, needle: &str| {
+            let e = crate::typeck::check_str(src).expect_err("expected a type error");
+            assert!(e.contains(needle), "error `{e}` should mention `{needle}`");
+        };
+
+        // `Net[Connect]` keeps all transports (incl. Tcp), so connect works.
+        ok("fn f(n: Net[Connect]):\n    let s = connect(n, \"a:1\")\nfn main(c: Console, net: Net):\n    f(connect_only(net))\n");
+        // A transport narrowed away from Tcp cannot drive a (TCP-only) connect.
+        err(
+            "fn f(n: Net[Connect, Udp]):\n    let s = connect(n, \"a:1\")\nfn main(c: Console, net: Net):\n    f(udp_only(connect_only(net)))\n",
+            "only implemented over `Tcp`",
+        );
+        err(
+            "fn f(n: Net[Listen, Uds]):\n    let l = listen(n, \"a:1\")\nfn main(c: Console, net: Net):\n    f(uds_only(listen_only(net)))\n",
+            "only implemented over `Tcp`",
+        );
+        // `tcp_only` narrows the transport axis and preserves the verb; a TCP
+        // connect through the result type-checks end to end.
+        ok("fn dial(n: Net[Connect, Tcp]) -> Socket:\n    connect(n, \"a:1\")\nfn main(c: Console, net: Net):\n    let s = dial(tcp_only(connect_only(net)))\n");
+        // You cannot keep a transport the capability does not hold.
+        err(
+            "fn f(n: Net[Connect, Tcp]):\n    let u = udp_only(n)\nfn main(c: Console, net: Net):\n    f(tcp_only(connect_only(net)))\n",
+            "`udp_only` cannot keep `Udp`",
+        );
+    }
+
     /// `import list` resolves to the bundled standard library (no local file),
     /// links, type-checks, and runs end to end through the CLI.
     #[test]

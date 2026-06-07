@@ -828,7 +828,7 @@ impl Interpreter {
             // Static attenuation of a Net capability: verbs live only in the type,
             // so at runtime these are the identity (the checker has already proved
             // the dropped verb was held).
-            "connect_only" | "listen_only" => match args {
+            "connect_only" | "listen_only" | "tcp_only" | "udp_only" | "uds_only" => match args {
                 [Value::Net(allow)] => Ok(Some(Value::Net(allow.clone()))),
                 _ => err(format!("{name} expects a Net")),
             },

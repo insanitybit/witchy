@@ -65,50 +65,96 @@ fn dir_rights(args: &[ast::Type]) -> DirRights {
     r
 }
 
-/// The verbs a `Net` capability permits. `Connect` lets code dial out (`connect`,
-/// `restrict`); `Listen` lets it accept inbound (`listen`). Decomposing the verbs
-/// distinguishes a client from a server in the footprint. Bare `Net` is the full
-/// set; `Net[Connect]`/`Net[Listen]` narrow it. (Transport — Tcp/Udp/Uds — is a
-/// separate, not-yet-implemented dimension; only TCP exists at runtime today.)
+/// The rights a `Net` capability permits, on two independent axes. **Verbs**:
+/// `Connect` lets code dial out (`connect`, `restrict`); `Listen` lets it accept
+/// inbound (`listen`) — distinguishing a client from a server. **Transports**:
+/// `Tcp`/`Udp`/`Uds` — though only TCP is implemented at runtime, so `connect`/
+/// `listen` require `Tcp`; `Udp`/`Uds` are type-level markers that keep the
+/// taxonomy expressible (and auditable) even though the transport isn't.
+///
+/// Each axis defaults independently: an unmentioned axis is *full*. Bare `Net` is
+/// full verbs + full transports; `Net[Connect]` is connect-only over all
+/// transports; `Net[Tcp]` is all verbs over TCP only; `Net[Connect, Tcp]` is both.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct NetRights {
     pub connect: bool,
     pub listen: bool,
+    pub tcp: bool,
+    pub udp: bool,
+    pub uds: bool,
 }
 
 impl NetRights {
     pub fn full() -> Self {
-        NetRights { connect: true, listen: true }
+        NetRights { connect: true, listen: true, tcp: true, udp: true, uds: true }
+    }
+
+    fn verbs_full(&self) -> bool {
+        self.connect && self.listen
+    }
+
+    fn transports_full(&self) -> bool {
+        self.tcp && self.udp && self.uds
     }
 }
 
 impl fmt::Display for NetRights {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match (self.connect, self.listen) {
-            (true, true) => write!(f, "Net"),
-            (true, false) => write!(f, "Net[Connect]"),
-            (false, true) => write!(f, "Net[Listen]"),
-            (false, false) => write!(f, "Net[]"),
+        if self.verbs_full() && self.transports_full() {
+            return write!(f, "Net");
         }
+        // List only the narrowed axes; an axis at its full set is omitted (so
+        // `Net[Connect]` reads as "connect-only, any transport").
+        let mut parts: Vec<&str> = Vec::new();
+        if !self.verbs_full() {
+            if self.connect {
+                parts.push("Connect");
+            }
+            if self.listen {
+                parts.push("Listen");
+            }
+        }
+        if !self.transports_full() {
+            if self.tcp {
+                parts.push("Tcp");
+            }
+            if self.udp {
+                parts.push("Udp");
+            }
+            if self.uds {
+                parts.push("Uds");
+            }
+        }
+        write!(f, "Net[{}]", parts.join(", "))
     }
 }
 
-/// Interpret a `Net`'s type arguments as its verbs. Bare `Net` (no args) is the
-/// full set; `Net[Connect]`/`Net[Listen]` narrow it. Unrecognized markers (e.g.
-/// a future transport like `Tcp`) are ignored so the syntax is forward-compatible.
+/// Interpret a `Net`'s type arguments as its rights. Bare `Net` (no args) is the
+/// full set. Each axis defaults to full independently: `Net[Connect]` keeps all
+/// transports, `Net[Tcp]` keeps all verbs. Unrecognized markers are ignored.
 fn net_rights(args: &[ast::Type]) -> NetRights {
     if args.is_empty() {
         return NetRights::full();
     }
-    let mut r = NetRights { connect: false, listen: false };
+    let mut r = NetRights { connect: false, listen: false, tcp: false, udp: false, uds: false };
+    let (mut saw_verb, mut saw_transport) = (false, false);
     for a in args {
         if let ast::Type::Named(n, _) = a {
             match n.as_str() {
-                "Connect" => r.connect = true,
-                "Listen" => r.listen = true,
+                "Connect" => (r.connect, saw_verb) = (true, true),
+                "Listen" => (r.listen, saw_verb) = (true, true),
+                "Tcp" => (r.tcp, saw_transport) = (true, true),
+                "Udp" => (r.udp, saw_transport) = (true, true),
+                "Uds" => (r.uds, saw_transport) = (true, true),
                 _ => {}
             }
         }
+    }
+    if !saw_verb {
+        (r.connect, r.listen) = (true, true);
+    }
+    if !saw_transport {
+        (r.tcp, r.udp, r.uds) = (true, true, true);
     }
     r
 }
@@ -760,7 +806,7 @@ impl Checker {
     fn check_net_op(&mut self, name: &str, args: &[Expr]) -> Result<Option<Ty>, TypeError> {
         let arity = match name {
             "connect" | "listen" | "restrict" => 2,
-            "connect_only" | "listen_only" => 1,
+            "connect_only" | "listen_only" | "tcp_only" | "udp_only" | "uds_only" => 1,
             _ => return Ok(None),
         };
         if args.len() != arity {
@@ -769,7 +815,7 @@ impl Checker {
                 args.len()
             ));
         }
-        let verbs = self.net_cap_rights(name, &args[0])?;
+        let rights = self.net_cap_rights(name, &args[0])?;
         // The trailing argument (an address) is a string.
         for arg in &args[1..] {
             let at = self.infer(arg)?;
@@ -779,38 +825,75 @@ impl Checker {
         }
         let ret = match name {
             "connect" => {
-                if !verbs.connect {
+                if !rights.connect {
                     return terr(format!(
-                        "`connect` needs `Connect` but the capability is `{verbs}`"
+                        "`connect` needs `Connect` but the capability is `{rights}`"
+                    ));
+                }
+                if !rights.tcp {
+                    return terr(format!(
+                        "`connect` is only implemented over `Tcp`, but the capability is `{rights}`"
                     ));
                 }
                 Ty::Socket
             }
             "listen" => {
-                if !verbs.listen {
+                if !rights.listen {
                     return terr(format!(
-                        "`listen` needs `Listen` but the capability is `{verbs}`"
+                        "`listen` needs `Listen` but the capability is `{rights}`"
+                    ));
+                }
+                if !rights.tcp {
+                    return terr(format!(
+                        "`listen` is only implemented over `Tcp`, but the capability is `{rights}`"
                     ));
                 }
                 Ty::Listener
             }
-            // Attenuating the address set leaves the verbs intact.
-            "restrict" => Ty::Net(verbs),
+            // Attenuating the address set leaves the rights (verbs + transports) intact.
+            "restrict" => Ty::Net(rights),
             "connect_only" => {
-                if !verbs.connect {
+                if !rights.connect {
                     return terr(format!(
-                        "`connect_only` cannot keep `Connect`: the capability is `{verbs}`"
+                        "`connect_only` cannot keep `Connect`: the capability is `{rights}`"
                     ));
                 }
-                Ty::Net(NetRights { connect: true, listen: false })
+                // Drop the `Listen` verb; preserve the transport axis.
+                Ty::Net(NetRights { connect: true, listen: false, ..rights })
             }
             "listen_only" => {
-                if !verbs.listen {
+                if !rights.listen {
                     return terr(format!(
-                        "`listen_only` cannot keep `Listen`: the capability is `{verbs}`"
+                        "`listen_only` cannot keep `Listen`: the capability is `{rights}`"
                     ));
                 }
-                Ty::Net(NetRights { connect: false, listen: true })
+                Ty::Net(NetRights { connect: false, listen: true, ..rights })
+            }
+            // Transport narrowing: drop to a single transport, preserving verbs.
+            // You can only keep a transport the capability already holds.
+            "tcp_only" => {
+                if !rights.tcp {
+                    return terr(format!(
+                        "`tcp_only` cannot keep `Tcp`: the capability is `{rights}`"
+                    ));
+                }
+                Ty::Net(NetRights { tcp: true, udp: false, uds: false, ..rights })
+            }
+            "udp_only" => {
+                if !rights.udp {
+                    return terr(format!(
+                        "`udp_only` cannot keep `Udp`: the capability is `{rights}`"
+                    ));
+                }
+                Ty::Net(NetRights { tcp: false, udp: true, uds: false, ..rights })
+            }
+            "uds_only" => {
+                if !rights.uds {
+                    return terr(format!(
+                        "`uds_only` cannot keep `Uds`: the capability is `{rights}`"
+                    ));
+                }
+                Ty::Net(NetRights { tcp: false, udp: false, uds: true, ..rights })
             }
             _ => unreachable!(),
         };
