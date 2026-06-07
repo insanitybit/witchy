@@ -1415,7 +1415,7 @@ pub fn check(module: &Module) -> Result<(), TypeError> {
             }
             // Desugared to functions by `traits::lower` and constants inlined by
             // `crate::consts` before this point.
-            Item::Trait(_) | Item::Impl(_) | Item::Const { .. } => {}
+            Item::Trait(_) | Item::Impl(_) | Item::Const { .. } | Item::TypeAlias { .. } => {}
         }
     }
 
@@ -1427,7 +1427,7 @@ pub fn check(module: &Module) -> Result<(), TypeError> {
             }
             // Actor handler errors already carry actor/handler context.
             Item::Actor(a) => c.check_actor(a).map_err(|e| at_loc(e, c.cur_line, ""))?,
-            Item::Type(_) | Item::Trait(_) | Item::Impl(_) | Item::Const { .. } => {}
+            Item::Type(_) | Item::Trait(_) | Item::Impl(_) | Item::Const { .. } | Item::TypeAlias { .. } => {}
         }
     }
     Ok(())

@@ -111,7 +111,7 @@ pub fn compute(module: &Module) -> Footprint {
             }
             // Traits/impls are lowered to functions before this runs in the real
             // pipeline; type defs contribute only via taint, handled above.
-            Item::Type(_) | Item::Trait(_) | Item::Impl(_) | Item::Const { .. } => {}
+            Item::Type(_) | Item::Trait(_) | Item::Impl(_) | Item::Const { .. } | Item::TypeAlias { .. } => {}
         }
     }
     fp

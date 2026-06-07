@@ -139,12 +139,13 @@ pub fn link(mut modules: Vec<(String, Module)>, entry: &str) -> Result<Module, L
         i += 1;
     }
 
-    // Inline each module's top-level constants before merging, so their use
-    // sites (and any function calls inside constant values) are qualified along
-    // with the bodies they expand into — no `Item::Const` reaches later stages.
+    // Expand type aliases and inline top-level constants per module before
+    // merging, so their use sites (and any function calls inside constant values)
+    // are qualified along with the bodies they expand into — no `Item::TypeAlias`
+    // or `Item::Const` reaches later stages.
     modules = modules
         .into_iter()
-        .map(|(n, m)| (n, crate::consts::inline(m)))
+        .map(|(n, m)| (n, crate::aliases::resolve(crate::consts::inline(m))))
         .collect();
 
     let mut fns: FnTable = HashMap::new();
@@ -206,8 +207,9 @@ pub fn link(mut modules: Vec<(String, Module)>, entry: &str) -> Result<Module, L
                     items.push(Item::Actor(a2));
                 }
                 Item::Type(t) => items.push(Item::Type(t.clone())),
-                // Constants were inlined per-module above, so none remain here.
-                Item::Const { .. } => {}
+                // Constants and aliases were resolved per-module above, so none
+                // remain here.
+                Item::Const { .. } | Item::TypeAlias { .. } => {}
                 // Traits/impls are carried into the merged module and desugared
                 // after linking (see `crate::traits`). Their method bodies are
                 // rewritten here, in their defining module's context, so calls
@@ -316,7 +318,7 @@ fn resolve_methods(module: &mut Module) {
                     resolve_in_block(&mut method.body, &sig, &by_base, &mut vars);
                 }
             }
-            Item::Type(_) | Item::Const { .. } => {}
+            Item::Type(_) | Item::Const { .. } | Item::TypeAlias { .. } => {}
         }
     }
 }

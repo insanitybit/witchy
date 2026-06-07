@@ -48,6 +48,13 @@ fn item_str(s: &mut String, item: &Item) {
             s.push_str(&expr(value));
             s.push('\n');
         }
+        Item::TypeAlias { name, ty } => {
+            s.push_str("type ");
+            s.push_str(name);
+            s.push_str(" = ");
+            s.push_str(&type_str(ty));
+            s.push('\n');
+        }
     }
 }
 
@@ -666,7 +673,7 @@ fn strip_lines_item(it: &mut Item) {
                 strip_lines_block(&mut h.body);
             }
         }
-        Item::Type(_) => {}
+        Item::Type(_) | Item::TypeAlias { .. } => {}
         Item::Const { value, .. } => strip_lines_expr(value),
         Item::Trait(t) => {
             for m in &mut t.methods {

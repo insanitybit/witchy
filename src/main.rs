@@ -6,6 +6,7 @@
 //! language surface yet.
 
 mod actor_system;
+mod aliases;
 mod ast;
 mod capabilities;
 mod codegen;
@@ -2841,6 +2842,20 @@ fn main(console: Console):
                 "1d 2h 3m 4s = 93784s",
             ]
         );
+    }
+
+    #[test]
+    fn aliases_example_runs_on_wasm() {
+        // Type aliases (scalar and compound) are expanded before both backends,
+        // so the temperature conversions and averaging agree.
+        let sources = [
+            ("string", crate::bundled_module("string").unwrap()),
+            ("main", include_str!("../examples/aliases.witchy")),
+        ];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "aliases diverged");
+        assert_eq!(compiled, vec!["avg C = 21", "25C = 77F", "0C  = 32F"]);
     }
 
     #[test]

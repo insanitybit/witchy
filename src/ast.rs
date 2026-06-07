@@ -29,6 +29,10 @@ pub enum Item {
     /// `crate::consts` before type-checking/codegen, so later stages never see
     /// this variant.
     Const { name: String, value: Expr },
+    /// A type alias: `type Id = Int`. Expanded to its target everywhere by
+    /// `crate::aliases` before type-checking/codegen, so later stages never see
+    /// this variant.
+    TypeAlias { name: String, ty: Type },
 }
 
 /// A trait declaration: named method signatures (no bodies). The receiver is the

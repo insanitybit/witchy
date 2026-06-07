@@ -187,7 +187,7 @@ impl Parser {
         } else if self.at(&Tok::Actor) {
             Ok(Item::Actor(self.actor_def()?))
         } else if self.at(&Tok::Type) {
-            Ok(Item::Type(self.type_def()?))
+            self.type_def()
         } else if self.at(&Tok::Trait) {
             Ok(Item::Trait(self.trait_def()?))
         } else if self.at(&Tok::Impl) {
@@ -276,7 +276,7 @@ impl Parser {
         })
     }
 
-    fn type_def(&mut self) -> Result<TypeDef, ParseError> {
+    fn type_def(&mut self) -> Result<Item, ParseError> {
         self.expect(&Tok::Type)?;
         let name = self.ident()?;
         // Optional explicit type parameters: `type Pair(a, b):`. The type checker
@@ -290,6 +290,11 @@ impl Parser {
                 }
             }
             self.expect(&Tok::RParen)?;
+        }
+        // A type alias: `type Id = Int`. Expanded to its target before later stages.
+        if self.eat(&Tok::Eq) {
+            let ty = self.ty()?;
+            return Ok(Item::TypeAlias { name, ty });
         }
         self.expect(&Tok::LBrace)?;
         let mut variants = Vec::new();
@@ -328,16 +333,16 @@ impl Parser {
         if is_record {
             // A record becomes a single constructor named after the type, with
             // its field types positional and field names recorded alongside.
-            Ok(TypeDef {
+            Ok(Item::Type(TypeDef {
                 name: name.clone(),
                 variants: vec![Variant {
                     name,
                     fields: rec_types,
                     field_names: rec_names,
                 }],
-            })
+            }))
         } else {
-            Ok(TypeDef { name, variants })
+            Ok(Item::Type(TypeDef { name, variants }))
         }
     }
 
@@ -1567,6 +1572,23 @@ let MAX = 100
                 assert_eq!(*value, Expr::Int(100));
             }
             other => panic!("expected a const item, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn type_alias_parses() {
+        let m = parse_module(
+            r#"
+type Id = Int
+"#,
+        )
+        .expect("type alias should parse");
+        match &m.items[0] {
+            Item::TypeAlias { name, ty } => {
+                assert_eq!(name, "Id");
+                assert_eq!(*ty, Type::Named("Int".into(), vec![]));
+            }
+            other => panic!("expected a type alias, got {other:?}"),
         }
     }
 
