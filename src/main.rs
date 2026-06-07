@@ -4987,6 +4987,32 @@ impl Counter:
         assert_eq!(shown("serve"), "Net[Listen]");
     }
 
+    /// `minigrep` is the CLI search tool from The Rust Programming Language ch. 12,
+    /// reproduced in witchy: it takes a query and a file path as args, reads the
+    /// file with a `Dir[Read]` capability, and prints the matching lines. Missing
+    /// args print usage and exit 1 (the conventional process exit code).
+    #[test]
+    fn minigrep_example_searches_a_file_like_the_rust_book() {
+        let (out, code) = crate::execute_file_exit(
+            "examples/minigrep.witchy",
+            Vec::new(),
+            vec!["nobody".into(), "examples/data/poem.txt".into()],
+            None,
+        )
+        .unwrap();
+        assert_eq!(code, 0);
+        assert_eq!(
+            out,
+            vec!["I'm nobody! Who are you?".to_string(), "Are you nobody, too?".to_string()]
+        );
+        // No args: usage message and a non-zero exit code.
+        let (out, code) =
+            crate::execute_file_exit("examples/minigrep.witchy", Vec::new(), Vec::new(), None)
+                .unwrap();
+        assert_eq!(code, 1);
+        assert_eq!(out, vec!["usage: minigrep <query> <file>".to_string()]);
+    }
+
     /// `caps_audit` is a capability auditor written *in witchy*: it reads a source
     /// file (`Dir[Read]`), computes its footprint via `compiler.footprint`, parses
     /// the JSON with `std/json`, and prints the total — a self-hosted slice of
