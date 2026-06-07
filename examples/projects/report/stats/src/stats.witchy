@@ -1,0 +1,28 @@
+// stats — pure integer statistics over a list, built on the std `list` module.
+// A library rune with no host capabilities, so depending on it grants nothing.
+
+import list
+
+// Number of values.
+pub fn count(xs: List(Int)) -> Int:
+    var n = 0
+    for x in xs:
+        n = n + 1
+    n
+
+// Sum of all values.
+pub fn total(xs: List(Int)) -> Int:
+    list.sum(xs)
+
+// Largest value, or 0 when the list is empty.
+pub fn max(xs: List(Int)) -> Int:
+    match list.max(xs):
+        Some(m) -> m
+        None -> 0
+
+// Integer (floor) average, or 0 when the list is empty.
+pub fn average(xs: List(Int)) -> Int:
+    if list.is_empty(xs):
+        0
+    else:
+        total(xs) / count(xs)

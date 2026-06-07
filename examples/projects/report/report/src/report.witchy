@@ -1,0 +1,48 @@
+// report — read a JSON array of records from a file and print summary statistics
+// over their "score" field. Uses the std `json`/`string` modules and the `stats`
+// rune (a path dependency), and reads its input through a read-only Dir
+// capability — so `witchy caps` reports exactly `Console, Dir[Read]`. Run with:
+//   witchy run
+
+import stats
+import json
+import string
+
+fn main(console: Console, root: Dir[Read]):
+    print(console, report(read(root, "scores.json")))
+
+// Decode the document and render the report, or an error line on malformed JSON.
+fn report(text: String) -> String:
+    match json.decode(text):
+        Ok(doc) -> render(array_or_empty(json.as_array(doc)))
+        Err(e) -> "parse error: " <> e
+
+fn render(records: List(Json)) -> String:
+    var scores = []
+    for r in records:
+        scores = push(scores, score_of(r))
+    string.join(
+        [
+            "records: " <> int_to_string(stats.count(scores)),
+            "total:   " <> int_to_string(stats.total(scores)),
+            "max:     " <> int_to_string(stats.max(scores)),
+            "average: " <> int_to_string(stats.average(scores)),
+        ],
+        "\n",
+    )
+
+// The integer "score" field of one record, defaulting to 0 if absent / non-int.
+fn score_of(record: Json) -> Int:
+    match json.get(record, "score"):
+        Some(j) -> int_or_zero(json.as_int(j))
+        None -> 0
+
+fn int_or_zero(o: Option(Int)) -> Int:
+    match o:
+        Some(n) -> n
+        None -> 0
+
+fn array_or_empty(o: Option(List(Json))) -> List(Json):
+    match o:
+        Some(xs) -> xs
+        None -> []

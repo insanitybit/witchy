@@ -1041,6 +1041,24 @@ fn example_ledger_workspace_runs_with_actors_and_a_path_dependency() {
     assert!(s.trim().ends_with("deposit  $0.99  -> balance $12.24"), "final balance wrong: {s}");
 }
 
+/// The committed `examples/projects/report` workspace — a `report` app that
+/// decodes a JSON file (via a read-only `Dir`) with the std `json` module and
+/// computes summary statistics with a `stats` library rune (a path dependency) —
+/// builds and runs end to end. Copied into a hermetic sandbox.
+#[test]
+fn example_report_workspace_runs_with_json_and_a_path_dependency() {
+    let sb = Sandbox::new("ex-report");
+    let srcroot = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/projects/report");
+    copy_tree(&srcroot, &sb.work);
+    let out = sb.run(&sb.work.join("report"), "dev", &["run"]);
+    assert!(out.status.success(), "run failed: {}", stderr(&out));
+    let s = stdout(&out);
+    assert!(s.contains("records: 4"), "record count missing: {s}");
+    assert!(s.contains("total:   200"), "total missing: {s}");
+    assert!(s.contains("max:     91"), "max missing: {s}");
+    assert!(s.contains("average: 50"), "average missing: {s}");
+}
+
 #[test]
 fn published_rune_cannot_have_path_dependency() {
     let sb = Sandbox::new("nopath");
