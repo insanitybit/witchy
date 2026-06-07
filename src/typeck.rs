@@ -565,10 +565,7 @@ impl Checker {
             "int_to_string" => Some((vec![Ty::Int], Ty::String)),
             "string_length" => Some((vec![Ty::String], Ty::Int)),
             "char_count" => Some((vec![Ty::String], Ty::Int)),
-            "to_upper" | "to_lower" | "trim" | "sha256" => Some((vec![Ty::String], Ty::String)),
-            "ed25519_verify" => {
-                Some((vec![Ty::String, Ty::String, Ty::String], Ty::Bool))
-            }
+            "to_upper" | "to_lower" | "trim" => Some((vec![Ty::String], Ty::String)),
             "starts_with" | "contains" | "ends_with" => {
                 Some((vec![Ty::String, Ty::String], Ty::Bool))
             }

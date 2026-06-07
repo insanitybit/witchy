@@ -577,10 +577,10 @@ impl Interpreter {
                 Value::Str(s) => Ok(Some(Value::Str(s.to_lowercase()))),
                 other => err(format!("to_lower expects a String, got `{other}`")),
             },
-            // SHA-256 of a string's UTF-8 bytes, as 64 lowercase hex chars. A pure
-            // computation (no capability) — the primitive behind content
-            // addressing, lockfile hashes, and integrity checks.
-            "sha256" => match one(args)? {
+            // SHA-256 of a string's UTF-8 bytes, as 64 lowercase hex chars. A
+            // native intrinsic of the `crypto` module (not a global builtin) —
+            // reached only as `crypto.sha256` after `import crypto`.
+            "crypto.sha256" => match one(args)? {
                 Value::Str(s) => {
                     use sha2::{Digest, Sha256};
                     let mut h = Sha256::new();
@@ -595,11 +595,11 @@ impl Interpreter {
                 }
                 other => err(format!("sha256 expects a String, got `{other}`")),
             },
-            // Verify an Ed25519 signature: `ed25519_verify(pubkey_hex, message,
-            // sig_hex) -> Bool`. Pure and total — malformed hex, a wrong-length
+            // Verify an Ed25519 signature: `crypto.ed25519_verify(pubkey_hex,
+            // message, sig_hex) -> Bool`. A native intrinsic of the `crypto`
+            // module (not a global builtin). Total — malformed hex, a wrong-length
             // key/signature, or a bad signature all yield `false`, never an error.
-            // The basis for checking registry metadata and signed releases.
-            "ed25519_verify" => match args {
+            "crypto.ed25519_verify" => match args {
                 [Value::Str(pk_hex), Value::Str(msg), Value::Str(sig_hex)] => {
                     use ed25519_dalek::{Signature, Verifier, VerifyingKey};
                     let decode = |s: &str| -> Option<Vec<u8>> {

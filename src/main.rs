@@ -1077,13 +1077,22 @@ mod example_tests {
         interpreter::run(src).expect("should run")
     }
 
-    /// The `sha256` builtin (a pure, capability-free hash — the primitive behind
-    /// content addressing) matches the canonical SHA-256 test vectors, and is
-    /// rejected by the compiled backend (interpreter-only for now).
+    /// Link a single-`main` source (pulling in any imported std module) and run
+    /// it on the interpreter — the path that resolves `import crypto`.
+    fn link_run(src: &str) -> Vec<String> {
+        let module = parser::parse_module(src).expect("parse");
+        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        typeck::check(&linked).expect("typecheck");
+        interpreter::run_module(linked, ".", Vec::new()).expect("run")
+    }
+
+    /// `crypto.sha256` — a native intrinsic of the `crypto` module, *not* a global
+    /// builtin — matches the canonical SHA-256 vectors, requires `import crypto`,
+    /// and is rejected by the compiled backend (interpreter-only).
     #[test]
-    fn sha256_builtin_matches_known_vectors() {
-        let out = interp(
-            "fn main(console: Console):\n    print(console, sha256(\"\"))\n    print(console, sha256(\"abc\"))\n",
+    fn crypto_sha256_matches_known_vectors() {
+        let out = link_run(
+            "import crypto\nfn main(console: Console):\n    print(console, crypto.sha256(\"\"))\n    print(console, crypto.sha256(\"abc\"))\n",
         );
         assert_eq!(
             out,
@@ -1092,22 +1101,22 @@ mod example_tests {
                 "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
             ]
         );
-        // String -> String, so it type-checks, but the WASM backend rejects it.
-        let src = "fn main(console: Console):\n    print(console, sha256(\"x\"))\n";
-        assert!(typeck::check_str(src).is_ok());
-        let module = crate::parser::parse_module(src).expect("parse");
+        // No global builtin: bare `sha256` (without `import crypto`) is unknown.
+        assert!(typeck::check_str("fn main(c: Console):\n    print(c, sha256(\"x\"))\n").is_err());
+        // Interpreter-only: the WASM backend rejects the call.
+        let module = parser::parse_module(
+            "import crypto\nfn main(console: Console):\n    print(console, crypto.sha256(\"x\"))\n",
+        )
+        .expect("parse");
         let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
-        assert!(
-            codegen::compile_module(&linked).is_err(),
-            "sha256 should be rejected by the WASM backend"
-        );
+        assert!(codegen::compile_module(&linked).is_err(), "crypto.sha256 should be WASM-rejected");
     }
 
-    /// `ed25519_verify` (a pure, total signature check — the basis for verifying
-    /// registry metadata and signed releases) accepts a genuine signature,
-    /// rejects a tampered message and malformed input, and is interpreter-only.
+    /// `crypto.ed25519_verify` — a native intrinsic of the `crypto` module — is a
+    /// total signature check: it accepts a genuine signature and rejects a
+    /// tampered message and malformed input.
     #[test]
-    fn ed25519_verify_builtin_checks_signatures() {
+    fn crypto_ed25519_verify_checks_signatures() {
         use ed25519_dalek::{Signer, SigningKey};
         let sk = SigningKey::from_bytes(&[7u8; 32]);
         let hex = |bs: &[u8]| -> String { bs.iter().map(|b| format!("{b:02x}")).collect() };
@@ -1117,22 +1126,16 @@ mod example_tests {
 
         let prog = |pubk: &str, m: &str, s: &str| {
             format!(
-                "fn main(console: Console):\n    print(console, if ed25519_verify(\"{pubk}\", \"{m}\", \"{s}\"): \"ok\" else: \"bad\")\n"
+                "import crypto\nfn main(console: Console):\n    print(console, if crypto.ed25519_verify(\"{pubk}\", \"{m}\", \"{s}\"): \"ok\" else: \"bad\")\n"
             )
         };
-        assert_eq!(interp(&prog(&pk, msg, &sig)), vec!["ok"], "valid signature must verify");
+        assert_eq!(link_run(&prog(&pk, msg, &sig)), vec!["ok"], "valid signature must verify");
         assert_eq!(
-            interp(&prog(&pk, "release: acme/widget@1.0.1", &sig)),
+            link_run(&prog(&pk, "release: acme/widget@1.0.1", &sig)),
             vec!["bad"],
             "tampered message must fail"
         );
-        assert_eq!(interp(&prog(&pk, msg, "00")), vec!["bad"], "malformed sig must fail, not panic");
-
-        // Interpreter-only: the WASM backend rejects it.
-        let src = "fn main(console: Console):\n    print(console, if ed25519_verify(\"a\", \"b\", \"c\"): \"y\" else: \"n\")\n";
-        let module = crate::parser::parse_module(src).expect("parse");
-        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
-        assert!(codegen::compile_module(&linked).is_err(), "ed25519_verify should be WASM-rejected");
+        assert_eq!(link_run(&prog(&pk, msg, "00")), vec!["bad"], "malformed sig must fail, not panic");
     }
 
     /// The `Clock` capability yields wall-clock time (ms since epoch) via `now`.

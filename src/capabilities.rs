@@ -659,7 +659,7 @@ impl Logger:
     fn std_module_footprints_are_pinned() {
         let pure = [
             "list", "string", "math", "option", "result", "func", "ord", "eq", "ascii", "set",
-            "show", "json", "url", "duration", "random", "regex",
+            "show", "json", "url", "duration", "random", "regex", "crypto",
         ];
         for name in pure {
             let src = crate::linker::std_source(name).expect("bundled module");

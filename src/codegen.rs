@@ -2107,8 +2107,10 @@ impl Codegen {
             // capability-typed parameter), but there's no WASM implementation —
             // it's interpreter-only, like the filesystem/network builtins.
             ("now", 1) => cerr("`now` (Clock) is interpreter-only (not compiled to WASM)"),
-            ("sha256", 1) => cerr("`sha256` is interpreter-only (not compiled to WASM)"),
-            ("ed25519_verify", 3) => cerr("`ed25519_verify` is interpreter-only (not compiled to WASM)"),
+            ("crypto.sha256", 1) => cerr("`crypto.sha256` is interpreter-only (not compiled to WASM)"),
+            ("crypto.ed25519_verify", 3) => {
+                cerr("`crypto.ed25519_verify` is interpreter-only (not compiled to WASM)")
+            }
             ("print", 2) => {
                 self.uses_print = true;
                 let msg = self.compile_expr(&args[1])?;
