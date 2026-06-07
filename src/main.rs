@@ -22,6 +22,7 @@ mod interpreter;
 mod lexer;
 mod linker;
 mod lsp;
+mod native;
 mod parser;
 mod pm;
 mod runtime;

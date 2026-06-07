@@ -525,6 +525,12 @@ impl Interpreter {
     }
 
     fn call_builtin(&mut self, name: &str, args: &[Value]) -> Result<Option<Value>, RuntimeError> {
+        // Native stdlib modules (crypto, …): pure, stateless functions reached by
+        // their qualified name (`crypto.sha256`). Dispatched through the registry
+        // so adding one needs no change here — see `src/native.rs`.
+        if let Some(f) = crate::native::lookup(name) {
+            return f(args).map(Some);
+        }
         let one = |args: &[Value]| -> Result<Value, RuntimeError> {
             match args {
                 [v] => Ok(v.clone()),
@@ -578,51 +584,6 @@ impl Interpreter {
             "to_lower" => match one(args)? {
                 Value::Str(s) => Ok(Some(Value::Str(s.to_lowercase()))),
                 other => err(format!("to_lower expects a String, got `{other}`")),
-            },
-            // SHA-256 of a string's UTF-8 bytes, as 64 lowercase hex chars. A
-            // native intrinsic of the `crypto` module (not a global builtin) —
-            // reached only as `crypto.sha256` after `import crypto`.
-            "crypto.sha256" => match one(args)? {
-                Value::Str(s) => {
-                    use sha2::{Digest, Sha256};
-                    let mut h = Sha256::new();
-                    h.update(s.as_bytes());
-                    let digest = h.finalize();
-                    let mut out = String::with_capacity(64);
-                    for b in digest.as_ref() as &[u8] {
-                        use std::fmt::Write;
-                        let _ = write!(out, "{b:02x}");
-                    }
-                    Ok(Some(Value::Str(out)))
-                }
-                other => err(format!("sha256 expects a String, got `{other}`")),
-            },
-            // Verify an Ed25519 signature: `crypto.ed25519_verify(pubkey_hex,
-            // message, sig_hex) -> Bool`. A native intrinsic of the `crypto`
-            // module (not a global builtin). Total — malformed hex, a wrong-length
-            // key/signature, or a bad signature all yield `false`, never an error.
-            "crypto.ed25519_verify" => match args {
-                [Value::Str(pk_hex), Value::Str(msg), Value::Str(sig_hex)] => {
-                    use ed25519_dalek::{Signature, Verifier, VerifyingKey};
-                    let decode = |s: &str| -> Option<Vec<u8>> {
-                        if !s.len().is_multiple_of(2) {
-                            return None;
-                        }
-                        (0..s.len())
-                            .step_by(2)
-                            .map(|i| u8::from_str_radix(s.get(i..i + 2)?, 16).ok())
-                            .collect()
-                    };
-                    let ok = (|| {
-                        let pk: [u8; 32] = decode(pk_hex)?.try_into().ok()?;
-                        let vk = VerifyingKey::from_bytes(&pk).ok()?;
-                        let sig: [u8; 64] = decode(sig_hex)?.try_into().ok()?;
-                        Some(vk.verify(msg.as_bytes(), &Signature::from_bytes(&sig)).is_ok())
-                    })()
-                    .unwrap_or(false);
-                    Ok(Some(Value::Bool(ok)))
-                }
-                _ => err("ed25519_verify expects (pubkey_hex, message, sig_hex) strings"),
             },
             "trim" => match one(args)? {
                 Value::Str(s) => Ok(Some(Value::Str(s.trim().to_string()))),

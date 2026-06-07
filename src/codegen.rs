@@ -2103,15 +2103,14 @@ impl Codegen {
 
     fn compile_call(&mut self, name: &str, args: &[Expr]) -> Result<String, CodegenError> {
         match (name, args.len()) {
-            // `sha256` is String -> String (so it isn't filtered out by a
-            // capability-typed parameter), but there's no WASM implementation —
-            // it's interpreter-only, like the filesystem/network builtins.
+            // Native-stdlib (`crypto.*`) functions have no WASM implementation —
+            // interpreter-only, like `now`/`get_env` below (those, being String/
+            // capability-shaped, aren't filtered out by a capability param type).
+            (n, _) if crate::native::is_native(n) => {
+                cerr(format!("`{n}` is interpreter-only (not compiled to WASM)"))
+            }
             ("now", 1) => cerr("`now` (Clock) is interpreter-only (not compiled to WASM)"),
             ("get_env", 2) => cerr("`get_env` (Env) is interpreter-only (not compiled to WASM)"),
-            ("crypto.sha256", 1) => cerr("`crypto.sha256` is interpreter-only (not compiled to WASM)"),
-            ("crypto.ed25519_verify", 3) => {
-                cerr("`crypto.ed25519_verify` is interpreter-only (not compiled to WASM)")
-            }
             ("print", 2) => {
                 self.uses_print = true;
                 let msg = self.compile_expr(&args[1])?;
