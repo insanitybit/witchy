@@ -282,6 +282,35 @@ fn at_loc(e: TypeError, line: u32, func: &str) -> TypeError {
     }
 }
 
+/// Reject two top-level functions with the same name. Witchy has no
+/// free-function overloading — a second definition silently overwrites the first
+/// (in both the linker's and the checker's name tables), so the duplicate is
+/// always a bug (a typo or a copy/paste). Methods live in `impl` blocks and are
+/// dispatched by receiver type, so they are not affected. Names may be
+/// module-qualified (`main.f`) after linking; the message shows the bare name.
+fn check_unique_functions(module: &Module) -> Result<(), TypeError> {
+    let mut seen: HashMap<&str, u32> = HashMap::new();
+    for (idx, item) in module.items.iter().enumerate() {
+        if let Item::Function(f) = item {
+            let line = module.item_lines.get(idx).copied().unwrap_or(0);
+            if let Some(&first) = seen.get(f.name.as_str()) {
+                let bare = f.name.rsplit('.').next().unwrap_or(&f.name);
+                let where_ = if first != 0 && line != 0 {
+                    format!(" (lines {first} and {line})")
+                } else {
+                    String::new()
+                };
+                return terr(format!(
+                    "function `{bare}` is defined more than once{where_}; \
+                     top-level function names must be unique"
+                ));
+            }
+            seen.insert(f.name.as_str(), line);
+        }
+    }
+    Ok(())
+}
+
 /// Whether `t` names a host capability that `main` may receive as a root
 /// authority (the rights of `Dir`/`Net` don't matter here — any are grantable).
 fn is_capability_type(t: &ast::Type) -> bool {
@@ -1779,6 +1808,11 @@ impl Checker {
 
 /// Type-check a whole module. Returns the first error found.
 pub fn check(module: &Module) -> Result<(), TypeError> {
+    // Catch duplicate top-level functions before lowering, while `impl` methods
+    // are still distinct from free functions (so overloaded methods aren't
+    // mistaken for duplicates) and source lines are still available.
+    check_unique_functions(module)?;
+
     // Trait/impl declarations are desugared to ordinary functions first, so the
     // checker only ever sees plain functions (a no-op for trait-free modules).
     let lowered = crate::traits::lower(module.clone());
@@ -1938,6 +1972,21 @@ fn describe_pattern(p: &Pattern) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn duplicate_top_level_functions_are_rejected() {
+        // Two functions with the same name silently overwrote each other; now it's
+        // a check-time error that names the function and (unlinked) the lines.
+        let err = check_str("fn g(x: Int) -> Int:\n    1\nfn g(x: Int) -> Int:\n    2\n").unwrap_err();
+        assert!(err.contains("function `g` is defined more than once"), "{err}");
+        assert!(err.contains("lines 1 and 3"), "{err}");
+        // Distinct names are fine.
+        check_str("fn a() -> Int:\n    1\nfn b() -> Int:\n    2\n").expect("distinct names are valid");
+        // Methods with the same name on different types are dispatched by receiver,
+        // not duplicates — they must still type-check.
+        let methods = "type A:\n    A\ntype B:\n    B\nimpl A:\n    fn tag(self) -> Int:\n        1\nimpl B:\n    fn tag(self) -> Int:\n        2\n";
+        check_str(methods).expect("same-named methods on different types are not duplicates");
+    }
 
     #[test]
     fn main_signature_is_validated_at_check_time() {
