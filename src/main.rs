@@ -5024,6 +5024,23 @@ impl Counter:
         assert_eq!(shown("serve"), "Net[Listen]");
     }
 
+    /// `largest` reproduces the generic function from The Rust Programming
+    /// Language ch. 10: a `where a: Ord` bound finds the biggest element of a
+    /// list, for `Int` and for a user `Version` type with an `Ord` impl (the
+    /// trait's derived `greater` dispatches correctly through monomorphization).
+    #[test]
+    fn largest_example_agrees_on_both_backends() {
+        let client = std::fs::read_to_string("examples/largest.witchy").unwrap();
+        let sources = [("ord", crate::bundled_module("ord").unwrap()), ("main", client.as_str())];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "largest diverged");
+        assert_eq!(
+            compiled,
+            vec!["largest number: 100".to_string(), "latest version: 2.0".to_string()]
+        );
+    }
+
     /// `higher_order_sum` reproduces Rust by Example's "sum of squared odd numbers
     /// under 1000" — an imperative range loop and a functional `std/list` pipeline
     /// (map / take_while / filter / sum) that must agree, on both backends.
