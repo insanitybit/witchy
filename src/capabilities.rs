@@ -125,21 +125,34 @@ pub struct Entry {
 pub struct Footprint {
     pub entries: Vec<Entry>,
     pub total: BTreeSet<&'static str>,
+    /// The capability brands (refinements) used anywhere in the module — the
+    /// union of every entry's brands. Authority-equivalent to their host caps,
+    /// but a finer-grained record of *intent*.
+    pub brands: BTreeSet<String>,
 }
 
 /// What changed between two versions of a module's footprint. `added` is a
 /// *widening* — host authority the newer version demands that the older did not
 /// (e.g. a dependency update that suddenly asks for `Net`); `removed` is a
 /// narrowing, which is always safe. The supply-chain gate blocks on widening.
+///
+/// `refinements_dropped`/`refinements_gained` track *brand* changes. They never
+/// change host authority — a brand is authority-equivalent to its host cap — so
+/// they don't fail the gate, but a dropped refinement (a confined `ConfigDir`
+/// loosened back to a raw `Dir`) is an intent change worth surfacing in review.
 pub struct FootprintDiff {
     pub added: BTreeSet<&'static str>,
     pub removed: BTreeSet<&'static str>,
+    pub refinements_dropped: BTreeSet<String>,
+    pub refinements_gained: BTreeSet<String>,
 }
 
 impl FootprintDiff {
     /// Whether the newer footprint demands authority the older one did not. This
     /// is the signal the install/CI gate fails on: new authority must be an
     /// explicit, reviewed decision, never something a version bump slips in.
+    /// Brand changes are intentional refinements, not authority, so they never
+    /// trip this.
     pub fn widened(&self) -> bool {
         !self.added.is_empty()
     }
@@ -149,10 +162,13 @@ impl FootprintDiff {
 /// block-on-widening gate. Because capabilities are unforgeable and only enter
 /// through parameters, a module cannot gain authority without changing a public
 /// entry point's signature, so this total-level diff fully captures a widening.
+/// Brand differences are reported alongside as refinement (intent) changes.
 pub fn diff(old: &Footprint, new: &Footprint) -> FootprintDiff {
     FootprintDiff {
         added: new.total.difference(&old.total).copied().collect(),
         removed: old.total.difference(&new.total).copied().collect(),
+        refinements_dropped: old.brands.difference(&new.brands).cloned().collect(),
+        refinements_gained: new.brands.difference(&old.brands).cloned().collect(),
     }
 }
 
@@ -202,7 +218,12 @@ pub fn analyze(module: &Module) -> Footprint {
             brands: entry_brands,
         });
     }
-    Footprint { entries, total }
+    let brands = entries.iter().flat_map(|e| e.brands.iter().cloned()).collect();
+    Footprint {
+        entries,
+        total,
+        brands,
+    }
 }
 
 #[cfg(test)]
@@ -332,6 +353,29 @@ pub fn serve(console: Console) -> Int:
             "type Conn:\n    host: String\n    net: Net\npub fn open(c: Conn) -> Int:\n    0\n",
         );
         assert!(fp.total.contains("Net"));
+    }
+
+    #[test]
+    fn dropping_a_brand_is_a_refinement_change_not_a_widening() {
+        // v1 confines its Dir as `ConfigDir`; v2 takes a raw `Dir`. Same host
+        // authority (no widening), but the refinement is dropped — surfaced.
+        let old = footprint("type ConfigDir:\n    ConfigDir(Dir)\npub fn load(c: ConfigDir) -> Int:\n    0\n");
+        let new = footprint("pub fn load(d: Dir) -> Int:\n    0\n");
+        let d = diff(&old, &new);
+        assert!(d.added.is_empty());
+        assert!(!d.widened());
+        assert_eq!(
+            d.refinements_dropped,
+            ["ConfigDir".to_string()].into_iter().collect::<BTreeSet<_>>()
+        );
+        assert!(d.refinements_gained.is_empty());
+        // The reverse direction reports the brand as gained (tightened intent).
+        let back = diff(&new, &old);
+        assert!(back.refinements_dropped.is_empty());
+        assert_eq!(
+            back.refinements_gained,
+            ["ConfigDir".to_string()].into_iter().collect::<BTreeSet<_>>()
+        );
     }
 
     #[test]

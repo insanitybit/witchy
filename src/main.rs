@@ -861,10 +861,31 @@ fn report_capability_diff(old_path: &str, new_path: &str) -> Result<bool, String
     println!("  new total:  {}", show_caps(&new.total));
     println!("  added:      {}", show_caps(&d.added));
     println!("  removed:    {}", show_caps(&d.removed));
+    let join = |s: &std::collections::BTreeSet<String>| {
+        if s.is_empty() {
+            "(none)".to_string()
+        } else {
+            s.iter().cloned().collect::<Vec<_>>().join(", ")
+        }
+    };
+    if !d.refinements_dropped.is_empty() || !d.refinements_gained.is_empty() {
+        println!(
+            "  refinements: dropped {} / gained {}",
+            join(&d.refinements_dropped),
+            join(&d.refinements_gained)
+        );
+    }
     if d.widened() {
         println!(
             "WIDENING: the newer version demands new host authority ({}). Review before trusting.",
             show_caps(&d.added)
+        );
+    } else if !d.refinements_dropped.is_empty() {
+        // Same host authority, but a brand was dropped — a confined capability
+        // loosened to its bare form. Not a widening, but an intent change.
+        println!(
+            "OK on authority, but a refinement was dropped ({}): a confined capability loosened to its bare form. Worth a look.",
+            join(&d.refinements_dropped)
         );
     } else {
         println!("OK: no widening — the newer version demands no new host authority.");
