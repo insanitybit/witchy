@@ -92,6 +92,23 @@ type FnTable = HashMap<String, HashSet<String>>;
 /// The source of a bundled standard-library module, if `name` is one. This is
 /// the canonical std registry: the linker treats it as a built-in search path,
 /// and the CLI/test harness resolve `import` against it too.
+/// Names of all bundled standard-library modules.
+pub const STD_MODULES: &[&str] = &[
+    "list", "string", "math", "result", "option", "func", "ord", "eq", "ascii", "set", "server",
+    "show", "http", "json", "url", "duration", "random", "regex",
+];
+
+/// The bundled std modules that export a `pub fn` of the given name — used to
+/// suggest a missing `import` when a call names an unimported stdlib function.
+pub fn std_modules_for_function(fn_name: &str) -> Vec<&'static str> {
+    let needle = format!("pub fn {fn_name}(");
+    STD_MODULES
+        .iter()
+        .copied()
+        .filter(|m| std_source(m).is_some_and(|s| s.contains(&needle)))
+        .collect()
+}
+
 pub fn std_source(name: &str) -> Option<&'static str> {
     match name {
         "list" => Some(include_str!("../std/list.witchy")),

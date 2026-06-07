@@ -727,7 +727,13 @@ impl Checker {
                     }
                 }
                 let Some((params, ret)) = self.call_sig(name) else {
-                    return terr(format!("call to unknown function `{name}`"));
+                    // If the name is an unimported stdlib function, point the way.
+                    let hint = match crate::linker::std_modules_for_function(name).as_slice() {
+                        [] => String::new(),
+                        [m] => format!(" — did you forget `import {m}`?"),
+                        many => format!(" — did you forget to import one of: {}?", many.join(", ")),
+                    };
+                    return terr(format!("call to unknown function `{name}`{hint}"));
                 };
                 if params.len() != args.len() {
                     return terr(format!(
@@ -1460,6 +1466,18 @@ fn describe_pattern(p: &Pattern) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unknown_stdlib_function_suggests_import() {
+        // Calling an unimported stdlib function points at the module to import.
+        let err = check_str("fn main(console: Console):\n    print(console, int_to_string(minimum([1], 0)))\n")
+            .expect_err("minimum is unimported");
+        assert!(err.contains("import ord"), "{err}");
+        // A genuine typo (no stdlib match) gets no misleading hint.
+        let typo = check_str("fn main(console: Console):\n    frobnicate()\n")
+            .expect_err("frobnicate is unknown");
+        assert!(!typo.contains("did you forget"), "{typo}");
+    }
 
     #[test]
     fn accepts_a_well_typed_program() {
