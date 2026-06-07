@@ -128,8 +128,10 @@ fn escape_char(c: String) -> String:
 // --- Decoder (parsing) ---------------------------------------------------
 //
 // A recursive-descent parser. Helpers return `(value, index just past it)` on
-// success and thread errors with `?`. Numbers are integers for now (JSON floats
-// would need a Float-in-collections representation the WASM backend lacks).
+// success and thread errors with `?`. Numbers are integers only (JSON floats
+// would need a Float-in-collections representation and float-to-string the WASM
+// backend still lacks); a fractional/exponent number is rejected with a clear
+// error rather than mis-parsed.
 
 // Parse a complete JSON document, or return an error message. The whole input
 // must be a single value: trailing content after it (other than whitespace) is
@@ -198,8 +200,16 @@ fn parse_number(s: String, i: Int) -> Result((Json, Int), String):
         digits = digits + 1
     if digits == 0:
         Err("invalid number at " <> int_to_string(i))
+    else if j < n && is_float_tail(substring(s, j, j + 1)):
+        // A `.`/`e`/`E` here means a fractional or exponent number. Rather than
+        // leave it for the caller to choke on (`expected , or }`), reject it with
+        // a clear message — this decoder is integer-only (see the section note).
+        Err("JSON floats are not supported (integers only) at " <> int_to_string(i))
     else:
         Ok((JsonInt(string_to_int(substring(s, i, j))), j))
+
+fn is_float_tail(c: String) -> Bool:
+    c == "." || c == "e" || c == "E"
 
 fn parse_string(s: String, i: Int) -> Result((Json, Int), String):
     let r = scan_string(s, i + 1)?

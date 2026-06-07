@@ -2641,6 +2641,41 @@ fn main(console: Console):
     }
 
     #[test]
+    fn json_decode_rejects_floats_with_a_clear_message_backends_agree() {
+        // The decoder is integer-only; a fractional/exponent number must be
+        // rejected with a clear message, not mis-parsed into "expected , or }".
+        let client = r#"
+import json
+fn classify(s: String) -> String:
+    match json.decode(s):
+        Ok(j) ->
+            match json.as_int(j):
+                Some(n) -> "int:" <> int_to_string(n)
+                None -> "ok"
+        Err(e) ->
+            if contains(e, "floats are not supported"):
+                "float-err"
+            else:
+                "err:" <> e
+fn main(console: Console):
+    print(console, classify("10"))
+    print(console, classify("-3"))
+    print(console, classify("2.5"))
+    print(console, classify("-2.5"))
+    print(console, classify("1e3"))
+    print(console, classify("{\"a\": 2.5}"))
+"#;
+        let sources = [("json", crate::bundled_module("json").unwrap()), ("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "float rejection diverged");
+        assert_eq!(
+            compiled,
+            vec!["int:10", "int:-3", "float-err", "float-err", "float-err", "float-err"]
+        );
+    }
+
+    #[test]
     fn string_rsplit_once_backends_agree() {
         // rsplit_once splits on the LAST separator (vs split_once's first); when
         // the separator is absent the whole string is the right part.
