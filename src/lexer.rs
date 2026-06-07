@@ -205,6 +205,10 @@ struct Lexer {
     pos: usize,
     line: u32,
     col: u32,
+    /// Own-line comments (only whitespace precedes them on their line), captured
+    /// as `(line, text)` so the formatter can reproduce them. Trailing comments
+    /// on a code line are not captured.
+    comments: Vec<(u32, String)>,
 }
 
 impl Lexer {
@@ -214,7 +218,21 @@ impl Lexer {
             pos: 0,
             line: 1,
             col: 1,
+            comments: Vec::new(),
         }
+    }
+
+    /// True if only whitespace precedes the current position on this line.
+    fn at_line_start(&self) -> bool {
+        let mut i = self.pos;
+        while i > 0 {
+            match self.chars[i - 1] {
+                '\n' => return true,
+                c if c.is_whitespace() => i -= 1,
+                _ => return false,
+            }
+        }
+        true
     }
 
     fn peek(&self) -> Option<char> {
@@ -245,7 +263,7 @@ impl Lexer {
         }
     }
 
-    fn tokenize(mut self) -> Result<Vec<Token>, LexError> {
+    fn tokenize(&mut self) -> Result<Vec<Token>, LexError> {
         let mut out = Vec::new();
         loop {
             self.skip_trivia();
@@ -271,6 +289,14 @@ impl Lexer {
         }
     }
 
+    /// Record an own-line comment spanning `start..self.pos` at `line`.
+    fn record_comment(&mut self, own_line: bool, line: u32, start: usize) {
+        if own_line {
+            let text: String = self.chars[start..self.pos].iter().collect();
+            self.comments.push((line, text.trim_end().to_string()));
+        }
+    }
+
     fn skip_trivia(&mut self) {
         loop {
             match self.peek() {
@@ -278,17 +304,22 @@ impl Lexer {
                     self.bump();
                 }
                 Some('/') if self.peek2() == Some('/') => {
+                    let own_line = self.at_line_start();
+                    let (line, start) = (self.line, self.pos);
                     while let Some(c) = self.peek() {
                         if c == '\n' {
                             break;
                         }
                         self.bump();
                     }
+                    self.record_comment(own_line, line, start);
                 }
                 // Block comments `/* ... */`, which nest (so a block containing a
                 // block comment can itself be commented out). An unterminated
                 // block comment runs to end of input.
                 Some('/') if self.peek2() == Some('*') => {
+                    let own_line = self.at_line_start();
+                    let (line, start) = (self.line, self.pos);
                     self.bump();
                     self.bump();
                     let mut depth = 1u32;
@@ -310,6 +341,7 @@ impl Lexer {
                             (None, _) => break,
                         }
                     }
+                    self.record_comment(own_line, line, start);
                 }
                 _ => return,
             }
@@ -696,6 +728,15 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, LexError> {
     Lexer::new(src).tokenize()
 }
 
+/// The own-line comments in `src`, as `(line, text)` in source order — used by
+/// the formatter to reproduce comments. Trailing comments (sharing a line with
+/// code) are not captured. Returns what was lexed even if a later error occurs.
+pub fn own_line_comments(src: &str) -> Vec<(u32, String)> {
+    let mut lexer = Lexer::new(src);
+    let _ = lexer.tokenize();
+    lexer.comments
+}
+
 fn vtok(kind: Tok, near: &Token) -> Token {
     Token { kind, line: near.line, col: near.col }
 }
@@ -806,6 +847,20 @@ mod tests {
 
     fn kinds(src: &str) -> Vec<Tok> {
         tokenize(src).unwrap().into_iter().map(|t| t.kind).collect()
+    }
+
+    #[test]
+    fn captures_own_line_comments_not_trailing() {
+        let src = "// header\nfn f() -> Int:\n    // inner\n    5 // trailing\n/* block */\n";
+        let cs = own_line_comments(src);
+        assert_eq!(
+            cs,
+            vec![
+                (1, "// header".to_string()),
+                (3, "// inner".to_string()),
+                (5, "/* block */".to_string()),
+            ]
+        );
     }
 
     #[test]

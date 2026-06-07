@@ -10,6 +10,11 @@ pub struct Module {
     /// scope, runs no code, grants no authority).
     pub imports: Vec<String>,
     pub items: Vec<Item>,
+    /// Source line of each import and each top-level item, parallel to `imports`
+    /// and `items` — used by the formatter to place comments. Empty when unknown
+    /// (e.g. after linking, or when actor-impl merging changed the item count).
+    pub import_lines: Vec<u32>,
+    pub item_lines: Vec<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

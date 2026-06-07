@@ -164,19 +164,33 @@ impl Parser {
     fn module(&mut self) -> Result<Module, ParseError> {
         // Imports come first: `import name` — declarations only, no code runs.
         let mut imports = Vec::new();
+        let mut import_lines = Vec::new();
         while self.at(&Tok::Import) {
+            import_lines.push(self.cur().line);
             self.advance();
             let name = self.ident()?;
             self.imports.insert(name.clone());
             imports.push(name);
         }
         let mut items = Vec::new();
+        let mut item_lines = Vec::new();
         while !self.at(&Tok::Eof) {
+            item_lines.push(self.cur().line);
             items.push(self.item()?);
         }
+        let items = merge_actor_impls(items);
+        // The item line list is only valid when merging didn't change the item
+        // count (actor-impl merging can drop items); otherwise leave it empty.
+        let item_lines = if items.len() == item_lines.len() {
+            item_lines
+        } else {
+            Vec::new()
+        };
         Ok(Module {
             imports,
-            items: merge_actor_impls(items),
+            items,
+            import_lines,
+            item_lines,
         })
     }
 

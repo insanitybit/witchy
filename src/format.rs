@@ -12,18 +12,56 @@ use crate::ast::*;
 
 const IND: &str = "    ";
 
-pub fn module(m: &Module) -> String {
-    let mut s = String::new();
-    for imp in &m.imports {
-        s.push_str("import ");
-        s.push_str(imp);
+/// Emit every captured own-line comment with a source line before `line`, each
+/// on its own line, advancing the cursor `ci`.
+fn emit_comments_before(s: &mut String, comments: &[(u32, String)], ci: &mut usize, line: u32) {
+    while *ci < comments.len() && comments[*ci].0 < line {
+        s.push_str(&comments[*ci].1);
         s.push('\n');
+        *ci += 1;
     }
-    for item in &m.items {
+}
+
+pub fn module(m: &Module, comments: &[(u32, String)]) -> String {
+    let mut s = String::new();
+    // Comment placement needs source lines parallel to imports and items; without
+    // them (e.g. a linked module) fall back to emitting no comments.
+    let have_lines =
+        m.import_lines.len() == m.imports.len() && m.item_lines.len() == m.items.len();
+    let cs: &[(u32, String)] = if have_lines { comments } else { &[] };
+    let mut ci = 0usize;
+
+    if !m.imports.is_empty() {
+        // The comments before the first import are the file header.
+        let first = m.import_lines.first().copied().unwrap_or(u32::MAX);
+        emit_comments_before(&mut s, cs, &mut ci, first);
         if !s.is_empty() {
             s.push('\n');
         }
+        for imp in &m.imports {
+            s.push_str("import ");
+            s.push_str(imp);
+            s.push('\n');
+        }
+    }
+
+    for (idx, item) in m.items.iter().enumerate() {
+        if !s.is_empty() {
+            s.push('\n');
+        }
+        let before = m.item_lines.get(idx).copied().unwrap_or(u32::MAX);
+        emit_comments_before(&mut s, cs, &mut ci, before);
         item_str(&mut s, item);
+    }
+
+    // Comments after the last item.
+    if ci < cs.len() && !s.is_empty() {
+        s.push('\n');
+    }
+    while ci < cs.len() {
+        s.push_str(&cs[ci].1);
+        s.push('\n');
+        ci += 1;
     }
     s
 }
@@ -694,7 +732,7 @@ fn type_str(t: &Type) -> String {
 /// faithfully is simply left untouched.
 pub fn reformat(src: &str) -> Option<String> {
     let mut original = crate::parser::parse_module(src).ok()?;
-    let out = module(&original);
+    let out = module(&original, &crate::lexer::own_line_comments(src));
     let mut reparsed = crate::parser::parse_module(&out).ok()?;
     strip_lines_module(&mut original);
     strip_lines_module(&mut reparsed);
@@ -706,6 +744,10 @@ pub fn reformat(src: &str) -> Option<String> {
 }
 
 fn strip_lines_module(m: &mut Module) {
+    // The source-line arrays are formatting metadata, not part of the program;
+    // clear them so the round-trip comparison ignores comment-induced line shifts.
+    m.import_lines.clear();
+    m.item_lines.clear();
     for it in &mut m.items {
         strip_lines_item(it);
     }
@@ -861,6 +903,18 @@ mod tests {
             }
         }
         assert!(failures.is_empty(), "did not round-trip: {failures:?}");
+    }
+
+    #[test]
+    fn preserves_top_level_comments() {
+        // The header (before imports) and a doc comment before an item survive
+        // formatting, attached in the right place.
+        let src = "// header one\n// header two\n\nimport string\n\n// doc for f\nfn f() -> Int:\n    5\n";
+        let out = reformat(src).expect("round-trips");
+        assert!(out.contains("// header one\n// header two"), "{out}");
+        assert!(out.contains("// doc for f\nfn f"), "{out}");
+        // The header stays above the import.
+        assert!(out.find("// header one").unwrap() < out.find("import string").unwrap(), "{out}");
     }
 
     #[test]

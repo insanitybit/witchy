@@ -345,6 +345,8 @@ pub fn link(mut modules: Vec<(String, Module)>, entry: &str) -> Result<Module, L
     let mut module = Module {
         imports: Vec::new(),
         items,
+        import_lines: Vec::new(),
+        item_lines: Vec::new(),
     };
     resolve_methods(&mut module);
     Ok(module)

@@ -217,7 +217,7 @@ pub fn lower(module: Module) -> Module {
         }
     }
 
-    Module { imports, items }
+    Module { imports, items, import_lines: Vec::new(), item_lines: Vec::new() }
 }
 
 /// Variable name -> the head name of its (known) type.
