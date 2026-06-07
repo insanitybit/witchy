@@ -263,6 +263,14 @@ pub enum Expr {
         hi: Box<Expr>,
         inclusive: bool,
     },
+    /// `base[index]` — list subscript, sugar for `at(base, index)`. Kept as a
+    /// node (rather than desugared at parse time) so the formatter can print it
+    /// back as `base[index]`; every other consumer lowers it via
+    /// `parser::desugar_index`.
+    Index {
+        base: Box<Expr>,
+        index: Box<Expr>,
+    },
     /// `spawn ActorName(args)` — create an actor, granting it the args as its
     /// initial (non-defaulted) fields. Evaluates to a `Subject`.
     Spawn {

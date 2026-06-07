@@ -703,9 +703,9 @@ impl Parser {
                 self.advance();
                 let index = self.expr(0)?;
                 self.expect(&Tok::RBracket)?;
-                e = Expr::Call {
-                    name: "at".into(),
-                    args: vec![e, index],
+                e = Expr::Index {
+                    base: Box::new(e),
+                    index: Box::new(index),
                 };
             } else if self.at(&Tok::LParen) && self.on_same_line_as_prev() {
                 // Apply the result of an expression: `f(x)(y)`, `make(3)(4)`.
@@ -1433,59 +1433,75 @@ pub(crate) fn desugar_range(lo: Expr, hi: Expr, inclusive: bool) -> Expr {
     })
 }
 
-/// Replace every `Expr::Range` in a module with its `desugar_range` lowering.
-/// Codegen runs this once up front so its multiple passes (local collection,
-/// then emission) agree on the synthetic loop-variable names; the formatter,
-/// which never lowers, keeps the `Range` nodes so it can print `lo..hi`.
-pub(crate) fn lower_ranges_module(m: &mut Module) {
+/// Lower `base[index]` to the call `at(base, index)`. A free function for the
+/// same reason as [`desugar_range`]: the parser keeps subscripts as
+/// `Expr::Index` for the formatter, and every other consumer lowers them here.
+pub(crate) fn desugar_index(base: Expr, index: Expr) -> Expr {
+    Expr::Call {
+        name: "at".into(),
+        args: vec![base, index],
+    }
+}
+
+/// Replace every sugar node the parser preserves for the formatter — `Expr::Range`
+/// and `Expr::Index` — with its lowering. Codegen runs this once up front so its
+/// multiple passes (local collection, then emission) agree on ranges' synthetic
+/// loop-variable names and see subscripts as plain `at` calls; the formatter,
+/// which never lowers, keeps the nodes so it can print `lo..hi` and `base[i]`.
+pub(crate) fn lower_sugar_module(m: &mut Module) {
     for item in &mut m.items {
         match item {
-            Item::Function(f) => lower_ranges_block(&mut f.body),
-            Item::Actor(a) => lower_ranges_actor(a),
+            Item::Function(f) => lower_sugar_block(&mut f.body),
+            Item::Actor(a) => lower_sugar_actor(a),
             Item::Impl(im) => {
                 for meth in &mut im.methods {
-                    lower_ranges_block(&mut meth.body);
+                    lower_sugar_block(&mut meth.body);
                 }
                 for h in &mut im.handlers {
-                    lower_ranges_block(&mut h.body);
+                    lower_sugar_block(&mut h.body);
                 }
             }
-            Item::Const { value, .. } => lower_ranges_expr(value),
+            Item::Const { value, .. } => lower_sugar_expr(value),
             Item::Type(_) | Item::Trait(_) | Item::TypeAlias { .. } => {}
         }
     }
 }
 
-pub(crate) fn lower_ranges_actor(a: &mut ActorDef) {
+pub(crate) fn lower_sugar_actor(a: &mut ActorDef) {
     for f in &mut a.fields {
         if let Some(init) = &mut f.init {
-            lower_ranges_expr(init);
+            lower_sugar_expr(init);
         }
     }
     for h in &mut a.handlers {
-        lower_ranges_block(&mut h.body);
+        lower_sugar_block(&mut h.body);
     }
 }
 
-fn lower_ranges_block(b: &mut Block) {
+fn lower_sugar_block(b: &mut Block) {
     for stmt in &mut b.stmts {
         match stmt {
             Stmt::Let { value, .. }
             | Stmt::LetTuple { value, .. }
             | Stmt::Assign { value, .. }
             | Stmt::Expr(value)
-            | Stmt::Return(Some(value)) => lower_ranges_expr(value),
+            | Stmt::Return(Some(value)) => lower_sugar_expr(value),
             Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
         }
     }
 }
 
-fn lower_ranges_expr(e: &mut Expr) {
+fn lower_sugar_expr(e: &mut Expr) {
     match e {
         Expr::Range { lo, hi, inclusive } => {
-            lower_ranges_expr(lo);
-            lower_ranges_expr(hi);
+            lower_sugar_expr(lo);
+            lower_sugar_expr(hi);
             *e = desugar_range((**lo).clone(), (**hi).clone(), *inclusive);
+        }
+        Expr::Index { base, index } => {
+            lower_sugar_expr(base);
+            lower_sugar_expr(index);
+            *e = desugar_index((**base).clone(), (**index).clone());
         }
         Expr::Int(_) | Expr::Float(_) | Expr::Duration(_) | Expr::Str(_) | Expr::Bool(_)
         | Expr::Var(_) => {}
@@ -1495,55 +1511,55 @@ fn lower_ranges_expr(e: &mut Expr) {
         | Expr::Ctor { args: xs, .. }
         | Expr::Spawn { args: xs, .. } => {
             for x in xs {
-                lower_ranges_expr(x);
+                lower_sugar_expr(x);
             }
         }
         Expr::Apply { func, args } => {
-            lower_ranges_expr(func);
+            lower_sugar_expr(func);
             for a in args {
-                lower_ranges_expr(a);
+                lower_sugar_expr(a);
             }
         }
         Expr::Unary { expr, .. }
         | Expr::Try(expr)
         | Expr::As { expr, .. }
-        | Expr::Field { base: expr, .. } => lower_ranges_expr(expr),
+        | Expr::Field { base: expr, .. } => lower_sugar_expr(expr),
         Expr::RecordUpdate { base, fields } => {
-            lower_ranges_expr(base);
+            lower_sugar_expr(base);
             for (_, v) in fields {
-                lower_ranges_expr(v);
+                lower_sugar_expr(v);
             }
         }
         Expr::Binary { lhs, rhs, .. } => {
-            lower_ranges_expr(lhs);
-            lower_ranges_expr(rhs);
+            lower_sugar_expr(lhs);
+            lower_sugar_expr(rhs);
         }
         Expr::If { cond, then_block, else_block } => {
-            lower_ranges_expr(cond);
-            lower_ranges_block(then_block);
+            lower_sugar_expr(cond);
+            lower_sugar_block(then_block);
             if let Some(b) = else_block {
-                lower_ranges_block(b);
+                lower_sugar_block(b);
             }
         }
         Expr::While { cond, body } => {
-            lower_ranges_expr(cond);
-            lower_ranges_block(body);
+            lower_sugar_expr(cond);
+            lower_sugar_block(body);
         }
         Expr::For { iter, body, .. } => {
-            lower_ranges_expr(iter);
-            lower_ranges_block(body);
+            lower_sugar_expr(iter);
+            lower_sugar_block(body);
         }
         Expr::Match { scrutinee, arms } => {
-            lower_ranges_expr(scrutinee);
+            lower_sugar_expr(scrutinee);
             for arm in arms.iter_mut() {
                 if let Some(g) = &mut arm.guard {
-                    lower_ranges_expr(g);
+                    lower_sugar_expr(g);
                 }
-                lower_ranges_expr(&mut arm.body);
+                lower_sugar_expr(&mut arm.body);
             }
         }
-        Expr::Lambda { body, .. } => lower_ranges_block(body),
-        Expr::Block(b) => lower_ranges_block(b),
+        Expr::Lambda { body, .. } => lower_sugar_block(body),
+        Expr::Block(b) => lower_sugar_block(b),
     }
 }
 
@@ -1687,32 +1703,40 @@ fn f(n: Int) -> Int:
     }
 
     #[test]
-    fn subscript_desugars_to_at_call() {
-        // `xs[i]` becomes `at(xs, i)`; `grid[r][c]` nests the calls.
+    fn subscript_parses_to_index_and_lowers_to_at_call() {
+        // `xs[i]` parses to `Expr::Index` (kept for the formatter) and lowers to
+        // `at(xs, i)`; `grid[r][c]` nests.
         let stmts = fn_body(
             r#"
 fn f(xs: List(Int)) -> Int:
     xs[2]
 "#,
         );
+        let Stmt::Expr(Expr::Index { base, index }) = &stmts[0] else {
+            panic!("expected an Index node, got {:?}", stmts[0]);
+        };
+        assert_eq!(**base, Expr::Var("xs".into()));
+        assert_eq!(**index, Expr::Int(2));
+        // Lowering turns it into the `at` call the rest of the pipeline expects.
+        let lowered = desugar_index((**base).clone(), (**index).clone());
         assert_eq!(
-            stmts[0],
-            Stmt::Expr(Expr::Call {
+            lowered,
+            Expr::Call {
                 name: "at".into(),
                 args: vec![Expr::Var("xs".into()), Expr::Int(2)],
-            })
+            }
         );
+        // `grid[0][1]` nests an Index inside an Index.
         let nested = fn_body(
             r#"
 fn g(grid: List(List(Int))) -> Int:
     grid[0][1]
 "#,
         );
-        let Stmt::Expr(Expr::Call { name, args }) = &nested[0] else {
-            panic!("expected an `at` call");
+        let Stmt::Expr(Expr::Index { base, .. }) = &nested[0] else {
+            panic!("expected an Index node");
         };
-        assert_eq!(name, "at");
-        assert!(matches!(&args[0], Expr::Call { name, .. } if name == "at"));
+        assert!(matches!(&**base, Expr::Index { .. }));
     }
 
     #[test]

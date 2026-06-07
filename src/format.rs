@@ -540,6 +540,9 @@ fn expr(e: &Expr) -> String {
             let op = if *inclusive { "..=" } else { ".." };
             format!("{}{op}{}", operand(lo, RANGE_PREC, false), operand(hi, RANGE_PREC, true))
         }
+        Expr::Index { base, index } => {
+            format!("{}[{}]", operand(base, POSTFIX_PREC, false), expr(index))
+        }
         Expr::Try(inner) => format!("{}?", operand(inner, POSTFIX_PREC, false)),
         Expr::As { expr, ty } => format!("{} as {}", operand(expr, POSTFIX_PREC, false), type_str(ty)),
         Expr::Lambda { params, body } => {
@@ -687,7 +690,7 @@ fn expr_prec(e: &Expr) -> u8 {
         Expr::Binary { op, .. } => binop_prec(*op),
         Expr::Range { .. } => RANGE_PREC,
         Expr::Unary { .. } => UNARY_PREC,
-        Expr::Field { .. } | Expr::Try(_) | Expr::Apply { .. } | Expr::As { .. } => POSTFIX_PREC,
+        Expr::Field { .. } | Expr::Try(_) | Expr::Apply { .. } | Expr::As { .. } | Expr::Index { .. } => POSTFIX_PREC,
         _ => 100,
     }
 }
@@ -857,6 +860,10 @@ fn strip_lines_expr(e: &mut Expr) {
             strip_lines_expr(lo);
             strip_lines_expr(hi);
         }
+        Expr::Index { base, index } => {
+            strip_lines_expr(base);
+            strip_lines_expr(index);
+        }
         Expr::Lambda { body, .. } => strip_lines_block(body),
         Expr::RecordUpdate { base, fields } => {
             strip_lines_expr(base);
@@ -949,6 +956,17 @@ mod tests {
         assert!(out.contains("let xs = 1..=n"), "{out}");
         // Operator operands bind tighter than `..`, so they need no parentheses.
         assert!(out.contains("let ys = a + 1..b * 2"), "{out}");
+    }
+
+    #[test]
+    fn preserves_subscripts() {
+        // Subscripts used to de-sugar to `at(xs, i)` on format; now they round-trip
+        // and print back as `base[index]`, including nested and computed indices.
+        let src = "fn main(console: Console):\n    let xs = [1, 2, 3]\n    let grid = [[1], [2]]\n    print(console, int_to_string(xs[0] + grid[1][0]))\n";
+        let out = reformat(src).expect("subscripts round-trip");
+        assert!(out.contains("xs[0]"), "{out}");
+        assert!(out.contains("grid[1][0]"), "{out}");
+        assert!(!out.contains("at("), "subscripts must not de-sugar to at(): {out}");
     }
 
     #[test]

@@ -77,6 +77,10 @@ fn collect_names(e: &Expr, out: &mut Vec<String>) {
             collect_names(lo, out);
             collect_names(hi, out);
         }
+        Expr::Index { base, index } => {
+            collect_names(base, out);
+            collect_names(index, out);
+        }
         Expr::If { cond, then_block, else_block } => {
             collect_names(cond, out);
             collect_names_block(then_block, out);
@@ -323,6 +327,11 @@ fn subst_expr(
         Expr::Range { lo, hi, .. } => {
             let a = subst_expr(lo, consts, cnames, scope);
             let b = subst_expr(hi, consts, cnames, scope);
+            a || b
+        }
+        Expr::Index { base, index } => {
+            let a = subst_expr(base, consts, cnames, scope);
+            let b = subst_expr(index, consts, cnames, scope);
             a || b
         }
         Expr::If { cond, then_block, else_block } => {

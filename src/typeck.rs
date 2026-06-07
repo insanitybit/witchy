@@ -1013,6 +1013,11 @@ impl Checker {
                 let d = crate::parser::desugar_range((**lo).clone(), (**hi).clone(), *inclusive);
                 self.infer(&d)
             }
+            // A subscript lowers to an `at(base, index)` call; type it as that.
+            Expr::Index { base, index } => {
+                let d = crate::parser::desugar_index((**base).clone(), (**index).clone());
+                self.infer(&d)
+            }
             Expr::List(items) => {
                 let elem = self.fresh();
                 for it in items {

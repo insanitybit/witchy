@@ -1240,6 +1240,11 @@ impl Interpreter {
                 let d = crate::parser::desugar_range((**lo).clone(), (**hi).clone(), *inclusive);
                 self.eval(&d, env)
             }
+            // A subscript lowers to an `at(base, index)` call; evaluate that.
+            Expr::Index { base, index } => {
+                let d = crate::parser::desugar_index((**base).clone(), (**index).clone());
+                self.eval(&d, env)
+            }
             Expr::List(items) => {
                 let vals = items
                     .iter()

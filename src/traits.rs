@@ -322,6 +322,10 @@ impl Ctx<'_> {
                 self.rewrite_expr(lo, scope);
                 self.rewrite_expr(hi, scope);
             }
+            Expr::Index { base, index } => {
+                self.rewrite_expr(base, scope);
+                self.rewrite_expr(index, scope);
+            }
             Expr::If {
                 cond,
                 then_block,
@@ -733,6 +737,10 @@ impl Mono<'_> {
             Expr::Range { lo, hi, .. } => {
                 self.walk_expr(lo, scope);
                 self.walk_expr(hi, scope);
+            }
+            Expr::Index { base, index } => {
+                self.walk_expr(base, scope);
+                self.walk_expr(index, scope);
             }
             Expr::If {
                 cond,
