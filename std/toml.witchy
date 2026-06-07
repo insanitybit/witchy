@@ -2,7 +2,7 @@
 // witchy (no native code). It supports what a package manifest needs: top-level
 // and `[section]` tables, `key = "string"` values, and `key = ["a", "b"]` string
 // arrays. Look values up by a `section.key` path (or just `key` for a top-level
-// value). Comments (`#`) and blank lines are ignored.
+// value). Comments (`#`) — whole-line and trailing — and blank lines are ignored.
 
 import string
 
@@ -58,13 +58,24 @@ fn match_key(line: String, key: String) -> Option(String):
     else:
         None
 
-// Strip one layer of surrounding double quotes, if present.
+// The value of `s`, with surrounding double quotes removed and any trailing
+// `# comment` dropped. For a quoted value we take the text up to the closing
+// quote, so a `#` *inside* the string is preserved; for a bare value we cut at
+// the first `#`.
 fn unquote(s: String) -> String:
-    string.strip_suffix(string.strip_prefix(s, "\""), "\"")
+    if starts_with(s, "\""):
+        let (inner, _rest) = string.split_once(string.strip_prefix(s, "\""), "\"")
+        inner
+    else:
+        let (bare, _comment) = string.split_once(s, "#")
+        string.trim(bare)
 
-// Parse `["a", "b"]` into ["a", "b"] (unquoted, blanks dropped).
+// Parse `["a", "b"]` into ["a", "b"] (unquoted, blanks dropped). Splits at the
+// last `]` so a trailing comment is dropped while `]` inside an element (e.g.
+// "Dir[Read]") is kept.
 fn parse_array(raw: String) -> List(String):
-    let inner = string.strip_suffix(string.strip_prefix(string.trim(raw), "["), "]")
+    let (body, _comment) = string.rsplit_once(string.trim(raw), "]")
+    let inner = string.strip_prefix(body, "[")
     var out = []
     for part in split(inner, ","):
         let t = string.trim(part)

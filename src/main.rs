@@ -1350,6 +1350,31 @@ fn opt(o: Option(String)) -> String:
         );
     }
 
+    /// Trailing `# comments` on values and arrays are stripped, but a `#` inside a
+    /// quoted string and a `]` inside an array element (e.g. "Dir[Read]") are
+    /// preserved — real manifests carry comments, so the reader must tolerate them.
+    #[test]
+    fn toml_module_ignores_trailing_comments() {
+        let src = r#"import toml
+import string
+
+fn main(console: Console):
+    let m = "[rune]\nname = \"acme/widget\"  # the canonical name\ntag = \"v#1\"  # has a hash inside\n\n[capabilities]\nruntime = [\"Console\", \"Dir[Read]\"]  # what it needs\n"
+    print(console, opt(toml.get(m, "rune.name")))
+    print(console, opt(toml.get(m, "rune.tag")))
+    print(console, string.join(toml.get_array(m, "capabilities.runtime"), "|"))
+
+fn opt(o: Option(String)) -> String:
+    match o:
+        Some(s) -> s
+        None -> "(none)"
+"#;
+        assert_eq!(
+            link_run(src),
+            vec!["acme/widget", "v#1", "Console|Dir[Read]"]
+        );
+    }
+
     /// The `Clock` capability yields wall-clock time (ms since epoch) via `now`.
     /// Reading the clock is ambient nondeterminism, so it's capability-gated and
     /// surfaces in the footprint — not a pure builtin.
