@@ -533,6 +533,16 @@ impl Parser {
                 }
             }
             self.expect(&Tok::RParen)?;
+        } else if self.eat(&Tok::LBracket) {
+            // Capability rights: `Dir[Read]`, `Net[Connect, Tcp]` — the bracketed
+            // names are carried as type arguments and read by the checker.
+            while !self.at(&Tok::RBracket) {
+                args.push(self.ty()?);
+                if !self.eat(&Tok::Comma) {
+                    break;
+                }
+            }
+            self.expect(&Tok::RBracket)?;
         }
         Ok(Type::Named(name, args))
     }

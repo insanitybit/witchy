@@ -808,6 +808,13 @@ impl Interpreter {
                 }
                 _ => err("exists expects a Dir and a relative path"),
             },
+            // Static attenuation of a Dir capability: rights live only in the type,
+            // so at runtime these are the identity (the type-checker has already
+            // proved the dropped right was held).
+            "read_only" | "write_only" => match args {
+                [Value::Dir(base)] => Ok(Some(Value::Dir(base.clone()))),
+                _ => err(format!("{name} expects a Dir")),
+            },
             // Network capability: attenuate a Net to a held address.
             "restrict" => match args {
                 [Value::Net(allow), Value::Str(addr)] => {

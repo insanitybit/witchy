@@ -77,12 +77,27 @@ bitset is cleaner.)
 - The std footprint pins tighten: `http`/`server` become `Net[Connect/Listen, Tcp]`.
 - Brands layer on top: `type LogDir(Dir[Write])`.
 
+## Status
+
+**`Dir` rights are implemented** (typechecker + interpreter + parser):
+
+- Surface syntax `Dir[Read]` / `Dir[Write]` / `Dir[Read, Write]`; bare `Dir` =
+  full set. (Chose brackets over `Dir(Read)` to avoid the constructor/generic
+  collision; no nominal `ReadDir`/`WriteDir` aliases — `Dir[Read]` reads fine.)
+- Ops are gated by right-membership in `Typeck::check_dir_op`: `read`/`exists`/
+  `subdir` need `Read`, `write` needs `Write`. A `Dir[Read]` passed to `write`
+  is a compile-time error.
+- Narrowing builtins `read_only`/`write_only` are monotone attenuations (you may
+  only keep a right you hold); they are the identity at runtime since rights are
+  type-level only.
+
+Still **future** ticks: `Net[Connect/Listen]` + transport split, and surfacing
+the right-set in the `caps`/`caps-diff` footprint.
+
 ## Open questions
 
-- Surface syntax: `Dir[Read]` (new bracket) vs `Dir(Read)` (reuse parens, but
-  collides with constructor/generic syntax) vs nominal aliases only.
-- Whether to ship `ReadDir`/`WriteDir`/`Dialer`/`Listener-grant` aliases for the
-  common cases alongside the parameterized form.
+- Whether to ship `Dialer`/`Listener-grant` aliases for the common `Net` cases
+  alongside the parameterized form (deferred with the `Net` split).
 
 ## Implementation order (non-breaking, incremental)
 

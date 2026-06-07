@@ -4591,6 +4591,65 @@ impl Counter:
         let _ = std::fs::remove_dir_all(&base);
     }
 
+    /// Rights-parameterized `Dir`: the right-set in the type statically gates the
+    /// ops. A `Dir[Read]` structurally cannot `write`; bare `Dir` is the full set
+    /// (back-compat); `read_only`/`write_only` are monotone attenuations that the
+    /// checker enforces (you can only keep a right you already hold).
+    #[test]
+    fn dir_rights_are_statically_enforced() {
+        let ok = |src: &str| {
+            assert!(
+                crate::typeck::check_str(src).is_ok(),
+                "expected ok, got: {:?}",
+                crate::typeck::check_str(src)
+            );
+        };
+        let err = |src: &str, needle: &str| {
+            let e = crate::typeck::check_str(src).expect_err("expected a type error");
+            assert!(e.contains(needle), "error `{e}` should mention `{needle}`");
+        };
+
+        // Bare `Dir` carries the full right-set: reads and writes both type-check.
+        ok("fn use_both(d: Dir):\n    write(d, \"o\", read(d, \"i\"))\nfn main(c: Console, root: Dir):\n    use_both(root)\n");
+        // `Dir[Read]` cannot write — a compile-time error.
+        err(
+            "fn save(d: Dir[Read]):\n    write(d, \"o\", \"x\")\nfn main(c: Console, root: Dir):\n    save(root)\n",
+            "`write` needs `Write`",
+        );
+        // `Dir[Write]` cannot read.
+        err(
+            "fn load(d: Dir[Write]):\n    let s = read(d, \"i\")\nfn main(c: Console, root: Dir):\n    load(root)\n",
+            "`read` needs `Read`",
+        );
+        // `read_only` narrows to `Dir[Read]`; a later write through it is rejected.
+        err(
+            "fn f(d: Dir):\n    let r = read_only(d)\n    write(r, \"o\", \"x\")\nfn main(c: Console, root: Dir):\n    f(root)\n",
+            "`write` needs `Write`",
+        );
+        // `write_only` cannot resurrect a `Write` the capability never had.
+        err(
+            "fn f(d: Dir[Read]):\n    let w = write_only(d)\nfn main(c: Console, root: Dir):\n    f(root)\n",
+            "`write_only` cannot keep `Write`",
+        );
+        // `Dir[Read, Write]` is equivalent to bare `Dir` — both verbs allowed.
+        ok("fn f(d: Dir[Read, Write]):\n    write(d, \"o\", read(d, \"i\"))\nfn main(c: Console, root: Dir):\n    f(root)\n");
+    }
+
+    /// `read_only` is the identity at runtime (rights live only in the type), so a
+    /// narrowed handle still reads the same confined subtree.
+    #[test]
+    fn read_only_is_identity_at_runtime() {
+        let tmp = std::env::temp_dir().join("witchy_dir_read_only_test");
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("in.txt"), "narrowed").unwrap();
+        let src = "fn main(console: Console, root: Dir):\n    let r = read_only(root)\n    print(console, read(r, \"in.txt\"))\n";
+        let mods = vec![("main".to_string(), parser::parse_module(src).expect("parse"))];
+        let linked = crate::linker::link(mods, "main").expect("link");
+        let out = interpreter::run_module(linked, &tmp, Vec::new()).expect("run");
+        assert_eq!(out, vec!["narrowed"]);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
     /// `import list` resolves to the bundled standard library (no local file),
     /// links, type-checks, and runs end to end through the CLI.
     #[test]

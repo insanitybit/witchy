@@ -19,6 +19,52 @@ use crate::ast::{
     self, ActorDef, Block, Convention, Expr, Function, Item, MatchArm, Module, Pattern, Stmt, UnOp,
 };
 
+/// The operations a `Dir` capability permits. Decomposing the capability by
+/// right makes the footprint distinguish read-only from writing code, and an op
+/// that needs a right it wasn't granted is a compile-time error. Bare `Dir` is
+/// the full set; `Dir[Read]`/`Dir[Write]` narrow it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DirRights {
+    pub read: bool,
+    pub write: bool,
+}
+
+impl DirRights {
+    pub fn full() -> Self {
+        DirRights { read: true, write: true }
+    }
+}
+
+impl fmt::Display for DirRights {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match (self.read, self.write) {
+            (true, true) => write!(f, "Dir"),
+            (true, false) => write!(f, "Dir[Read]"),
+            (false, true) => write!(f, "Dir[Write]"),
+            (false, false) => write!(f, "Dir[]"),
+        }
+    }
+}
+
+/// Interpret a `Dir`'s type arguments as its rights. Bare `Dir` (no args) is the
+/// full set; `Dir[Read]`/`Dir[Write]`/`Dir[Read, Write]` narrow it.
+fn dir_rights(args: &[ast::Type]) -> DirRights {
+    if args.is_empty() {
+        return DirRights::full();
+    }
+    let mut r = DirRights { read: false, write: false };
+    for a in args {
+        if let ast::Type::Named(n, _) = a {
+            match n.as_str() {
+                "Read" => r.read = true,
+                "Write" => r.write = true,
+                _ => {}
+            }
+        }
+    }
+    r
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Ty {
     Int,
@@ -31,7 +77,7 @@ pub enum Ty {
     Nil,
     Console,
     Subject,
-    Dir,
+    Dir(DirRights),
     Net,
     Socket,
     Listener,
@@ -56,7 +102,7 @@ impl fmt::Display for Ty {
             Ty::Nil => write!(f, "Nil"),
             Ty::Console => write!(f, "Console"),
             Ty::Subject => write!(f, "Subject"),
-            Ty::Dir => write!(f, "Dir"),
+            Ty::Dir(r) => write!(f, "{r}"),
             Ty::Net => write!(f, "Net"),
             Ty::Socket => write!(f, "Socket"),
             Ty::Listener => write!(f, "Listener"),
@@ -234,7 +280,7 @@ impl Checker {
             "Nil" => Ty::Nil,
             "Console" => Ty::Console,
             "Subject" => Ty::Subject,
-            "Dir" => Ty::Dir,
+            "Dir" => Ty::Dir(dir_rights(args)),
             "Net" => Ty::Net,
             "Socket" => Ty::Socket,
             "Listener" => Ty::Listener,
@@ -270,7 +316,7 @@ impl Checker {
                 "Nil" => Ty::Nil,
                 "Console" => Ty::Console,
                 "Subject" => Ty::Subject,
-                "Dir" => Ty::Dir,
+                "Dir" => Ty::Dir(dir_rights(args)),
                 "Net" => Ty::Net,
                 "Socket" => Ty::Socket,
                 "Listener" => Ty::Listener,
@@ -520,10 +566,8 @@ impl Checker {
                 let v = self.fresh();
                 Some((vec![Ty::Named("Dict".into(), vec![k, v])], Ty::Int))
             }
-            "read" => Some((vec![Ty::Dir, Ty::String], Ty::String)),
-            "write" => Some((vec![Ty::Dir, Ty::String, Ty::String], Ty::Nil)),
-            "exists" => Some((vec![Ty::Dir, Ty::String], Ty::Bool)),
-            "subdir" => Some((vec![Ty::Dir, Ty::String], Ty::Dir)),
+            // `read`/`write`/`exists`/`subdir`/`read_only`/`write_only` are handled
+            // by `check_dir_op` (their `Dir` rights are enforced per-op).
             "connect" => Some((vec![Ty::Net, Ty::String], Ty::Socket)),
             "restrict" => Some((vec![Ty::Net, Ty::String], Ty::Net)),
             "send_line" => Some((vec![Ty::Socket, Ty::String], Ty::Nil)),
@@ -549,6 +593,101 @@ impl Checker {
                 None => None,
             },
         }
+    }
+
+    /// Resolve a call's first argument as a `Dir` capability and yield its rights.
+    /// An unconstrained variable defaults to the full right-set (bare `Dir`).
+    fn dir_cap_rights(&mut self, name: &str, arg: &Expr) -> Result<DirRights, TypeError> {
+        let cap = self.infer(arg)?;
+        match self.resolve(&cap) {
+            Ty::Dir(r) => Ok(r),
+            Ty::Var(_) => {
+                self.unify(&cap, &Ty::Dir(DirRights::full()))?;
+                Ok(DirRights::full())
+            }
+            other => terr(format!(
+                "`{name}` expects a `Dir` capability but got `{other}`"
+            )),
+        }
+    }
+
+    /// Type-check a directory-capability op, enforcing that the `Dir`'s rights
+    /// permit the verb. `read`/`exists`/`subdir` need `Read`; `write` needs
+    /// `Write`; `read_only`/`write_only` are monotone attenuations that may only
+    /// keep a right the capability already holds. Returns `Ok(None)` when `name`
+    /// is not a Dir op, so the caller falls through to `call_sig`.
+    fn check_dir_op(&mut self, name: &str, args: &[Expr]) -> Result<Option<Ty>, TypeError> {
+        // (arity, needs_read, needs_write, return-type builder)
+        let arity = match name {
+            "read" | "exists" | "subdir" => 2,
+            "write" => 3,
+            "read_only" | "write_only" => 1,
+            _ => return Ok(None),
+        };
+        if args.len() != arity {
+            return terr(format!(
+                "`{name}` expects {arity} argument(s) but got {}",
+                args.len()
+            ));
+        }
+        let rights = self.dir_cap_rights(name, &args[0])?;
+        // The trailing arguments (path, and for `write` the content) are strings.
+        for arg in &args[1..] {
+            let at = self.infer(arg)?;
+            self.unify(&Ty::String, &at).map_err(|e| TypeError {
+                message: format!("in call to `{name}`: {}", e.message),
+            })?;
+        }
+        let ret = match name {
+            "read" => {
+                if !rights.read {
+                    return terr(format!("`read` needs `Read` but the capability is `{rights}`"));
+                }
+                Ty::String
+            }
+            "exists" => {
+                if !rights.read {
+                    return terr(format!(
+                        "`exists` needs `Read` but the capability is `{rights}`"
+                    ));
+                }
+                Ty::Bool
+            }
+            "subdir" => {
+                if !rights.read {
+                    return terr(format!(
+                        "`subdir` needs `Read` but the capability is `{rights}`"
+                    ));
+                }
+                Ty::Dir(rights)
+            }
+            "write" => {
+                if !rights.write {
+                    return terr(format!(
+                        "`write` needs `Write` but the capability is `{rights}`"
+                    ));
+                }
+                Ty::Nil
+            }
+            "read_only" => {
+                if !rights.read {
+                    return terr(format!(
+                        "`read_only` cannot keep `Read`: the capability is `{rights}`"
+                    ));
+                }
+                Ty::Dir(DirRights { read: true, write: false })
+            }
+            "write_only" => {
+                if !rights.write {
+                    return terr(format!(
+                        "`write_only` cannot keep `Write`: the capability is `{rights}`"
+                    ));
+                }
+                Ty::Dir(DirRights { read: false, write: true })
+            }
+            _ => unreachable!(),
+        };
+        Ok(Some(ret))
     }
 
     // --- inference ---
@@ -726,6 +865,9 @@ impl Checker {
                         }
                         _ => {} // a non-function local with this name: fall through
                     }
+                }
+                if let Some(t) = self.check_dir_op(name, args)? {
+                    return Ok(t);
                 }
                 let Some((params, ret)) = self.call_sig(name) else {
                     // If the name is an unimported stdlib function, point the way;
