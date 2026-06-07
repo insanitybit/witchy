@@ -3,6 +3,7 @@
 // the port defaults by scheme (443 for https, else 80) and the path to "/".
 
 import option
+import ascii
 
 type Url:
     Url(String, String, Int, String)
@@ -20,14 +21,37 @@ pub fn parse(s: String) -> Option(Url):
         let path = if slash < 0: "/" else: substring(rest, slash, char_count(rest))
         let colon = index_of(authority, ":")
         let host = if colon < 0: authority else: substring(authority, 0, colon)
-        let port = if colon < 0:
-            default_port(scheme)
+        if colon < 0:
+            Some(Url(scheme, host, default_port(scheme), path))
         else:
-            string_to_int(substring(authority, colon + 1, char_count(authority)))
-        Some(Url(scheme, host, port, path))
+            match parse_port(substring(authority, colon + 1, char_count(authority))):
+                Some(p) -> Some(Url(scheme, host, p, path))
+                None -> None
 
 fn default_port(scheme: String) -> Int:
     if scheme == "https": 443 else: 80
+
+// The `:port` digits as an Int, or None when empty or non-numeric — so a
+// malformed authority (`host:abc`) makes `parse` return None rather than trap
+// inside `string_to_int`.
+fn parse_port(digits: String) -> Option(Int):
+    if all_digits(digits):
+        Some(string_to_int(digits))
+    else:
+        None
+
+fn all_digits(s: String) -> Bool:
+    let n = char_count(s)
+    if n == 0:
+        false
+    else:
+        var ok = true
+        var i = 0
+        while i < n:
+            if !ascii.is_digit(substring(s, i, i + 1)):
+                ok = false
+            i = i + 1
+        ok
 
 pub fn scheme(u: Url) -> String:
     match u:

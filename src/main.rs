@@ -2531,6 +2531,35 @@ fn main(console: Console):
     }
 
     #[test]
+    fn url_parse_rejects_bad_port_without_trapping_backends_agree() {
+        // A non-numeric or empty `:port` makes parse return None — it used to trap
+        // in string_to_int. A valid or defaulted port still parses, both backends.
+        let client = r#"
+import url
+import option
+fn p(s: String) -> String:
+    match url.parse(s):
+        Some(u) -> "ok:" <> int_to_string(url.port(u))
+        None -> "none"
+fn main(console: Console):
+    print(console, p("https://h:8443/x"))
+    print(console, p("https://h:abc/x"))
+    print(console, p("https://h:/x"))
+    print(console, p("https://h:80x/x"))
+    print(console, p("https://h/x"))
+"#;
+        let sources = [
+            ("option", crate::bundled_module("option").unwrap()),
+            ("url", crate::bundled_module("url").unwrap()),
+            ("main", client),
+        ];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "url bad-port diverged");
+        assert_eq!(compiled, vec!["ok:8443", "none", "none", "none", "ok:443"]);
+    }
+
+    #[test]
     fn func_on_backends_agree() {
         // on(op, f) lifts op to act on projections — here sorting (name, age)
         // pairs by age via func.on_key(lt, snd).
