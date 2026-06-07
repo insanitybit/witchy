@@ -209,6 +209,9 @@ impl Checker {
         Ty::Var(v)
     }
 
+    // `&mut self` because resolving an unknown type can mint fresh type vars via
+    // `self.fresh()`, despite the `to_` name.
+    #[allow(clippy::wrong_self_convention)]
     fn to_ty(&mut self, t: &ast::Type) -> Ty {
         let (name, args) = match t {
             ast::Type::Named(name, args) => (name, args),
@@ -248,6 +251,7 @@ impl Checker {
 
     /// Like `to_ty`, but a lowercase, argument-less type name becomes a type
     /// *variable* (a parameter), shared within one signature via `vars`.
+    #[allow(clippy::wrong_self_convention)]
     fn to_ty_generic(&mut self, t: &ast::Type, vars: &mut HashMap<String, Ty>) -> Ty {
         match t {
             ast::Type::Tuple(ts) => {

@@ -49,6 +49,10 @@ const DATA_BASE: u32 = 8;
 /// Scratch local holding a tuple pointer while its elements are unpacked.
 const TUPLE_TMP: &str = "__witchy_tuple_tmp";
 
+/// One captured variable for a closure: (name, is-global-actor-field,
+/// record-type-name, list-element-type-name, slot kind).
+type CaptureInfo = (String, bool, Option<String>, Option<String>, Kind);
+
 /// Scratch local holding the Result/Option being unwrapped by `?`.
 const TRY_TMP: &str = "__witchy_try_tmp";
 
@@ -1904,7 +1908,7 @@ impl Codegen {
             .collect();
         // Resolve each capture against the *enclosing* scope (before the local
         // tables are swapped out for the lambda body).
-        let mut cap_info: Vec<(String, bool, Option<String>, Option<String>, Kind)> = Vec::new();
+        let mut cap_info: Vec<CaptureInfo> = Vec::new();
         for c in &captures {
             // A global (actor field) is i32; a local keeps its kind so an Int
             // capture survives as i64 in its 8-byte env slot.

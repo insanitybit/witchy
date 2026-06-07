@@ -5,6 +5,12 @@
 //! witchy code; the point of the spike is the security substrate, not the
 //! language surface yet.
 
+// This crate is hand-indented, not rustfmt-managed. Clippy's "collapse nested
+// conditionals" lints would rewrite explicit `if { if let ... }` nesting into
+// `let`-chains without re-indenting, hurting readability; the nested form is an
+// intentional style choice here.
+#![allow(clippy::collapsible_if, clippy::collapsible_match)]
+
 mod actor_system;
 mod aliases;
 mod ast;
