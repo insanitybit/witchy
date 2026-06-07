@@ -1,0 +1,73 @@
+// toml — a small TOML reader for manifests (`witchy.toml`), written in pure
+// witchy (no native code). It supports what a package manifest needs: top-level
+// and `[section]` tables, `key = "string"` values, and `key = ["a", "b"]` string
+// arrays. Look values up by a `section.key` path (or just `key` for a top-level
+// value). Comments (`#`) and blank lines are ignored.
+
+import string
+
+// The string value of `path` (e.g. "rune.name"), or None if absent. Surrounding
+// double quotes are stripped.
+pub fn get(text: String, path: String) -> Option(String):
+    match lookup(text, path):
+        Some(raw) -> Some(unquote(raw))
+        None -> None
+
+// The string-array value of `path` (e.g. "capabilities.runtime"), or [] if
+// absent. Each element is unquoted.
+pub fn get_array(text: String, path: String) -> List(String):
+    match lookup(text, path):
+        Some(raw) -> parse_array(raw)
+        None -> []
+
+// The raw (trimmed, still-quoted) value for `path`, scanning section by section.
+fn lookup(text: String, path: String) -> Option(String):
+    let (section, key) = split_path(path)
+    var in_section = section == ""
+    var result = None
+    for line in string.lines(text):
+        let t = string.trim(line)
+        if is_header(t):
+            in_section = header_name(t) == section
+        else if in_section:
+            if let Some(v) = match_key(t, key):
+                result = Some(v)
+    result
+
+// "rune.name" -> ("rune", "name"); a bare "name" -> ("", "name").
+fn split_path(path: String) -> (String, String):
+    if contains(path, "."):
+        string.rsplit_once(path, ".")
+    else:
+        ("", path)
+
+fn is_header(line: String) -> Bool:
+    starts_with(line, "[") && ends_with(line, "]")
+
+fn header_name(line: String) -> String:
+    string.strip_suffix(string.strip_prefix(line, "["), "]")
+
+// If `line` is `key = value`, return the trimmed raw value (still quoted).
+fn match_key(line: String, key: String) -> Option(String):
+    if contains(line, "="):
+        let (k, v) = string.split_once(line, "=")
+        if string.trim(k) == key:
+            Some(string.trim(v))
+        else:
+            None
+    else:
+        None
+
+// Strip one layer of surrounding double quotes, if present.
+fn unquote(s: String) -> String:
+    string.strip_suffix(string.strip_prefix(s, "\""), "\"")
+
+// Parse `["a", "b"]` into ["a", "b"] (unquoted, blanks dropped).
+fn parse_array(raw: String) -> List(String):
+    let inner = string.strip_suffix(string.strip_prefix(string.trim(raw), "["), "]")
+    var out = []
+    for part in split(inner, ","):
+        let t = string.trim(part)
+        if !string.is_empty(t):
+            out = push(out, unquote(t))
+    out

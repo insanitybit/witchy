@@ -1324,6 +1324,32 @@ mod example_tests {
         assert!(narrow.contains("\"removed\":[\"Net[Listen]\"]"), "removed wrong: {narrow}");
     }
 
+    /// `std/toml` (pure witchy) reads `witchy.toml` manifests: `toml.get` for
+    /// string values by `section.key`, `toml.get_array` for string arrays — what
+    /// a self-hosted package manager needs to read a manifest.
+    #[test]
+    fn toml_module_reads_manifest_values() {
+        let src = r#"import toml
+import string
+
+fn main(console: Console):
+    let m = "[rune]\nname = \"acme/widget\"\nversion = \"1.2.0\"\n\n[capabilities]\nruntime = [\"Net\", \"Console\"]\n"
+    print(console, opt(toml.get(m, "rune.name")))
+    print(console, opt(toml.get(m, "rune.version")))
+    print(console, string.join(toml.get_array(m, "capabilities.runtime"), "|"))
+    print(console, opt(toml.get(m, "rune.absent")))
+
+fn opt(o: Option(String)) -> String:
+    match o:
+        Some(s) -> s
+        None -> "(none)"
+"#;
+        assert_eq!(
+            link_run(src),
+            vec!["acme/widget", "1.2.0", "Net|Console", "(none)"]
+        );
+    }
+
     /// The `Clock` capability yields wall-clock time (ms since epoch) via `now`.
     /// Reading the clock is ambient nondeterminism, so it's capability-gated and
     /// surfaces in the footprint — not a pure builtin.
