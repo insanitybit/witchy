@@ -1158,6 +1158,26 @@ mod example_tests {
         assert!(fp.total.contains_key("Clock"), "Clock should appear in the footprint");
     }
 
+    /// The `Env` capability reads process environment variables via `get_env`,
+    /// returning `Option(String)` (None when unset). Reading the environment is
+    /// ambient authority, so it's capability-gated and surfaces in the footprint.
+    #[test]
+    fn env_capability_reads_environment_variables() {
+        // A definitely-unset variable yields None.
+        let out = interp(
+            "fn main(console: Console, env: Env):\n    match get_env(env, \"WITCHY_NOPE_UNSET_VAR\"):\n        Some(v) -> print(console, v)\n        None -> print(console, \"unset\")\n",
+        );
+        assert_eq!(out, vec!["unset"]);
+        // `get_env` needs an Env capability — another capability is a type error.
+        assert!(typeck::check_str("fn main(c: Console):\n    let x = get_env(c, \"X\")\n").is_err());
+        // The Env requirement surfaces in the capability footprint.
+        let fp = crate::capabilities::analyze(
+            &parser::parse_module("fn main(console: Console, env: Env):\n    let x = get_env(env, \"X\")\n")
+                .expect("parse"),
+        );
+        assert!(fp.total.contains_key("Env"), "Env should appear in the footprint");
+    }
+
     /// The reference interpreter and the compiled WASM backend must produce the
     /// same output for the same program — the core promise of witchy's two-tier
     /// design. This differential test exercises a spread of features and asserts

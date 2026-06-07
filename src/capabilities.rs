@@ -23,7 +23,7 @@ use crate::ast::{Item, Module, Type};
 /// The host capabilities the runtime grants at an entry point. (`Subject`, an
 /// actor handle from `spawn`, is intra-program authority, not host authority,
 /// so it isn't a supply-chain footprint concern.)
-pub const HOST_CAPABILITIES: &[&str] = &["Console", "Clock", "Dir", "Net"];
+pub const HOST_CAPABILITIES: &[&str] = &["Console", "Clock", "Env", "Dir", "Net"];
 
 /// The rights (verbs) a single capability permits. Empty for `Console`, which
 /// has no sub-verbs.

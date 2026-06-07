@@ -60,6 +60,7 @@ pub enum Value {
 pub enum Capability {
     Console,
     Clock,
+    Env,
 }
 
 impl fmt::Display for Value {
@@ -360,10 +361,11 @@ impl Interpreter {
         match ty {
             Some(Type::Named(n, _)) if n == "Console" => Ok(Value::Cap(Capability::Console)),
             Some(Type::Named(n, _)) if n == "Clock" => Ok(Value::Cap(Capability::Clock)),
+            Some(Type::Named(n, _)) if n == "Env" => Ok(Value::Cap(Capability::Env)),
             Some(Type::Named(n, _)) if n == "Dir" => Ok(Value::Dir(self.root.clone())),
             Some(Type::Named(n, _)) if n == "Net" => Ok(Value::Net(self.net_allow.clone())),
             other => err(format!(
-                "`main` may only declare capability parameters (Console, Clock, Dir, Net); got `{other:?}`"
+                "`main` may only declare capability parameters (Console, Clock, Env, Dir, Net); got `{other:?}`"
             )),
         }
     }
@@ -895,6 +897,16 @@ impl Interpreter {
                     Ok(Some(Value::Int(ms)))
                 }
                 _ => err("now expects a Clock"),
+            },
+            // Read a named environment variable through an `Env` capability:
+            // `get_env(env, name) -> Option(String)` (None when unset). Reading the
+            // process environment is ambient authority, so it is capability-gated.
+            "get_env" => match args {
+                [Value::Cap(Capability::Env), Value::Str(name)] => Ok(Some(match std::env::var(name) {
+                    Ok(v) => Value::Ctor { name: "Some".into(), fields: vec![Value::Str(v)] },
+                    Err(_) => Value::Ctor { name: "None".into(), fields: Vec::new() },
+                })),
+                _ => err("get_env expects an Env and a variable name"),
             },
             // Network capability: attenuate a Net to a held address.
             "restrict" => match args {
