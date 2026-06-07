@@ -1212,6 +1212,32 @@ mod example_tests {
         assert!(bad[0].contains("\"error\""), "expected an error object: {}", bad[0]);
     }
 
+    /// `compiler.diff` is the rights-precise block-on-widening gate (the package
+    /// manager's core safety check), exposed to witchy as JSON.
+    #[test]
+    fn compiler_diff_is_the_widening_gate() {
+        let diff = |old: &str, new: &str| -> String {
+            link_run(&format!(
+                "import compiler\nfn main(console: Console):\n    print(console, compiler.diff(\"{old}\", \"{new}\"))\n"
+            ))
+            .remove(0)
+        };
+        // A connect-only client that gains `Listen` is a widening (the gate blocks).
+        let widen = diff(
+            "pub fn f(n: Net[Connect]) -> Int:\\n    0\\n",
+            "pub fn f(n: Net[Connect, Listen]) -> Int:\\n    0\\n",
+        );
+        assert!(widen.contains("\"widened\":true"), "should widen: {widen}");
+        assert!(widen.contains("\"added\":[\"Net[Listen]\"]"), "added wrong: {widen}");
+        // The reverse (tightening to connect-only) is a safe narrowing.
+        let narrow = diff(
+            "pub fn f(n: Net[Connect, Listen]) -> Int:\\n    0\\n",
+            "pub fn f(n: Net[Connect]) -> Int:\\n    0\\n",
+        );
+        assert!(narrow.contains("\"widened\":false"), "should not widen: {narrow}");
+        assert!(narrow.contains("\"removed\":[\"Net[Listen]\"]"), "removed wrong: {narrow}");
+    }
+
     /// The `Clock` capability yields wall-clock time (ms since epoch) via `now`.
     /// Reading the clock is ambient nondeterminism, so it's capability-gated and
     /// surfaces in the footprint — not a pure builtin.

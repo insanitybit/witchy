@@ -10,3 +10,10 @@
 // or {"error":".."} if the source does not parse. Parse it with `import json`.
 pub fn footprint(source: String) -> String:
     source
+
+// Compare two sources by capability footprint, as JSON:
+//   {"widened":bool,"added":[..],"removed":[..]}   (or {"error":".."})
+// `widened` is the rights-precise block-on-widening gate: true when `new` demands
+// any capability or right that `old` did not.
+pub fn diff(old: String, new: String) -> String:
+    old

@@ -26,6 +26,7 @@ pub fn lookup(qualified: &str) -> Option<NativeFn> {
         "crypto.sha256" => Some(crypto::sha256),
         "crypto.ed25519_verify" => Some(crypto::ed25519_verify),
         "compiler.footprint" => Some(compiler::footprint),
+        "compiler.diff" => Some(compiler::diff),
         _ => None,
     }
 }
@@ -127,6 +128,33 @@ mod compiler {
                 format!("{{\"total\":{},\"entries\":[{}]}}", total, entries.join(","))
             }
             Err(e) => format!("{{\"error\":{}}}", string(&e.to_string())),
+        };
+        Ok(Value::Str(json))
+    }
+
+    /// Compare two witchy sources by capability footprint, as JSON:
+    /// `{"widened":bool,"added":[..],"removed":[..]}` — the rights-precise
+    /// block-on-widening gate (the package manager's core safety check), exposed
+    /// to witchy. `{"error":".."}` if either source does not parse.
+    pub fn diff(args: &[Value]) -> Result<Value, RuntimeError> {
+        let [Value::Str(old_src), Value::Str(new_src)] = args else {
+            return Err(type_error("compiler.diff expects (old_source, new_source) strings"));
+        };
+        let json = match (crate::parser::parse_module(old_src), crate::parser::parse_module(new_src)) {
+            (Ok(old), Ok(new)) => {
+                let old_fp = crate::capabilities::analyze(&old);
+                let new_fp = crate::capabilities::analyze(&new);
+                let d = crate::capabilities::diff(&old_fp, &new_fp);
+                let added = arr(d.added.iter().map(|(n, r)| crate::capabilities::show_cap(n, r)));
+                let removed = arr(d.removed.iter().map(|(n, r)| crate::capabilities::show_cap(n, r)));
+                format!(
+                    "{{\"widened\":{},\"added\":{},\"removed\":{}}}",
+                    d.widened(),
+                    added,
+                    removed
+                )
+            }
+            (Err(e), _) | (_, Err(e)) => format!("{{\"error\":{}}}", string(&e.to_string())),
         };
         Ok(Value::Str(json))
     }
