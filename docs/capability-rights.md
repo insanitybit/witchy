@@ -145,9 +145,9 @@ bitset is cleaner.)
   `udp_only`/`uds_only`), which didn't scale.
 - **Implicit** directional narrowing (`Typeck::coerce_arg`): a broader capability
   satisfies a narrower one wherever a value flows into a capability-typed slot —
-  call arguments, **return types** (`-> Net[Connect]` returning a full `Net`), and
-  **constructor fields** (`Client(Net[Connect])` built from a full `Net`) — no
-  `as` needed. The callee stays type-bounded to its declared rights, so widening
+  call arguments, **return types** (`-> Net[Connect]` returning a full `Net`),
+  **constructor fields** (`Client(Net[Connect])` built from a full `Net`), and
+  **actor spawn fields** — no `as` needed. The callee stays type-bounded to its declared rights, so widening
   is rejected at every position (re-widening a `Net[Connect]` to a full `Net` is
   an error — the type ceiling holds). So `as` is only needed when *naming* a
   narrowed value.

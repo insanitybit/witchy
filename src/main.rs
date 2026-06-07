@@ -4701,10 +4701,10 @@ impl Counter:
     }
 
     /// Implicit directional narrowing wherever a value flows into a capability-
-    /// typed slot — call arguments, return types, and constructor fields: a
-    /// broader capability satisfies a narrower one (a full `Net` flows into a
-    /// `Net[Connect]`) without an explicit `as`. The callee stays type-bounded to
-    /// its declared rights, so widening is rejected at every position.
+    /// typed slot — call arguments, return types, constructor fields, and actor
+    /// spawn fields: a broader capability satisfies a narrower one (a full `Net`
+    /// flows into a `Net[Connect]`) without an explicit `as`. The callee stays
+    /// type-bounded to its declared rights, so widening is rejected everywhere.
     #[test]
     fn implicit_narrowing_at_call_boundaries() {
         let ok = |src: &str| {
@@ -4741,6 +4741,8 @@ impl Counter:
         ok("fn client(net: Net) -> Net[Connect]:\n    net\nfn main(c: Console, net: Net):\n    let s = connect(client(net), \"a:1\")\n");
         // (b) a constructor field that holds a narrowed capability.
         ok("type Client:\n    Client(Net[Connect])\nfn main(c: Console, net: Net):\n    let x = Client(net)\n");
+        // (c) an actor field granted at spawn.
+        ok("actor Cl:\n    n: Net[Connect]\nimpl Cl:\n    on Go(a: String):\n        let s = connect(n, a)\nfn main(c: Console, net: Net):\n    let x = spawn Cl(net)\n");
         // Both still reject *widening* (the type ceiling holds at every position).
         err(
             "fn bad(n: Net[Connect]) -> Net:\n    n\nfn main(c: Console, net: Net):\n    bad(net as Net[Connect])\n",

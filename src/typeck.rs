@@ -1351,7 +1351,9 @@ impl Checker {
                 }
                 for (arg, fty) in args.iter().zip(&field_tys) {
                     let at = self.infer(arg)?;
-                    self.unify(fty, &at).map_err(|e| TypeError {
+                    // An actor granted a narrowed capability field accepts a
+                    // broader argument (a full `Net` into a `Net[Connect]` field).
+                    self.coerce_arg(fty, &at).map_err(|e| TypeError {
                         message: format!("spawning `{actor}`: {}", e.message),
                     })?;
                 }
