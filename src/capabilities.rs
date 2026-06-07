@@ -42,26 +42,34 @@ fn host_cap(name: &str) -> Option<&'static str> {
 fn full_rights(cap: &str) -> Rights {
     match cap {
         "Dir" => ["Read", "Write"].into_iter().collect(),
-        "Net" => ["Connect", "Listen"].into_iter().collect(),
+        // `Net` has two axes: verbs and transports. Bare `Net` is full on both.
+        "Net" => ["Connect", "Listen", "Tcp", "Udp", "Uds"].into_iter().collect(),
         _ => Rights::new(),
     }
 }
 
-/// Map a bracketed marker (`Dir[Read]`, `Net[Connect]`) to its canonical right
-/// name, or `None` if it isn't a recognized right for that capability (e.g. a
-/// future transport marker like `Tcp`, which is ignored here).
+const NET_VERBS: [&str; 2] = ["Connect", "Listen"];
+const NET_TRANSPORTS: [&str; 3] = ["Tcp", "Udp", "Uds"];
+
+/// Map a bracketed marker to its canonical right name, or `None` if it isn't a
+/// recognized right for that capability.
 fn right_marker(cap: &str, marker: &str) -> Option<&'static str> {
     match (cap, marker) {
         ("Dir", "Read") => Some("Read"),
         ("Dir", "Write") => Some("Write"),
         ("Net", "Connect") => Some("Connect"),
         ("Net", "Listen") => Some("Listen"),
+        ("Net", "Tcp") => Some("Tcp"),
+        ("Net", "Udp") => Some("Udp"),
+        ("Net", "Uds") => Some("Uds"),
         _ => None,
     }
 }
 
 /// The rights a capability-typed annotation confers: the bracketed markers if
-/// present, else (bare capability) the full set.
+/// present, else (bare capability) the full set. `Net`'s two axes default
+/// independently — an axis with no marker mentioned is full — so `Net[Connect]`
+/// keeps all transports, matching the type system.
 fn rights_from_args(cap: &'static str, args: &[Type]) -> Rights {
     if args.is_empty() {
         return full_rights(cap);
@@ -72,6 +80,14 @@ fn rights_from_args(cap: &'static str, args: &[Type]) -> Rights {
             if let Some(m) = right_marker(cap, n) {
                 r.insert(m);
             }
+        }
+    }
+    if cap == "Net" {
+        if !NET_VERBS.iter().any(|v| r.contains(v)) {
+            r.extend(NET_VERBS);
+        }
+        if !NET_TRANSPORTS.iter().any(|t| r.contains(t)) {
+            r.extend(NET_TRANSPORTS);
         }
     }
     r
@@ -258,16 +274,28 @@ pub fn diff(old: &Footprint, new: &Footprint) -> FootprintDiff {
 
 /// Render one capability with its rights for human output: a bare name when it
 /// has the full right-set (or none, like `Console`), else bracketed —
-/// `Console`, `Dir`, `Dir[Read]`, `Net[Connect, Listen]`.
+/// `Console`, `Dir`, `Dir[Read]`, `Net[Connect]`, `Net[Connect, Tcp]`.
 pub fn show_cap(name: &str, rights: &Rights) -> String {
     if rights.is_empty() || *rights == full_rights(name) {
-        name.to_string()
-    } else {
-        format!(
-            "{name}[{}]",
-            rights.iter().copied().collect::<Vec<_>>().join(", ")
-        )
+        return name.to_string();
     }
+    if name == "Net" {
+        // Two axes: omit an axis that is at its full set, so the expanded
+        // `{Connect, Tcp, Udp, Uds}` prints as `Net[Connect]`, not the verbose
+        // transport list. (Mirrors `NetRights`' Display in the type checker.)
+        let mut parts: Vec<&str> = Vec::new();
+        if !NET_VERBS.iter().all(|v| rights.contains(v)) {
+            parts.extend(NET_VERBS.iter().filter(|v| rights.contains(*v)));
+        }
+        if !NET_TRANSPORTS.iter().all(|t| rights.contains(t)) {
+            parts.extend(NET_TRANSPORTS.iter().filter(|t| rights.contains(*t)));
+        }
+        return format!("Net[{}]", parts.join(", "));
+    }
+    format!(
+        "{name}[{}]",
+        rights.iter().copied().collect::<Vec<_>>().join(", ")
+    )
 }
 
 /// Render a whole capability set as a comma-joined list, or `(none)`.
@@ -353,6 +381,10 @@ mod tests {
             .collect()
     }
 
+    // Bare `Net` is full on both axes; `Net[Connect]` keeps all transports.
+    const NET_FULL: &[&str] = &["Connect", "Listen", "Tcp", "Udp", "Uds"];
+    const NET_CONNECT: &[&str] = &["Connect", "Tcp", "Udp", "Uds"];
+
     #[test]
     fn pure_functions_have_no_footprint() {
         let fp = footprint(r#"
@@ -380,14 +412,14 @@ fn main(console: Console):
         // Private `helper` is not an entry point; the union is Console + Net.
         assert_eq!(
             fp.total,
-            cs(&[("Console", &[]), ("Net", &["Connect", "Listen"])])
+            cs(&[("Console", &[]), ("Net", NET_FULL)])
         );
         let names: Vec<&str> = fp.entries.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, vec!["serve", "main"]);
         let serve = fp.entries.iter().find(|e| e.name == "serve").unwrap();
         assert_eq!(
             serve.capabilities,
-            cs(&[("Console", &[]), ("Net", &["Connect", "Listen"])])
+            cs(&[("Console", &[]), ("Net", NET_FULL)])
         );
     }
 
@@ -404,7 +436,7 @@ pub fn serve(console: Console, net: Net) -> Int:
     0
 "#);
         let d = diff(&old, &new);
-        assert_eq!(d.added, cs(&[("Net", &["Connect", "Listen"])]));
+        assert_eq!(d.added, cs(&[("Net", NET_FULL)]));
         assert!(d.removed.is_empty());
         assert!(d.widened());
     }
@@ -437,7 +469,7 @@ pub fn serve(console: Console) -> Int:
 "#);
         let d = diff(&old, &new);
         assert!(d.added.is_empty());
-        assert_eq!(d.removed, cs(&[("Net", &["Connect", "Listen"])]));
+        assert_eq!(d.removed, cs(&[("Net", NET_FULL)]));
         assert!(!d.widened());
     }
 
@@ -453,10 +485,28 @@ pub fn serve(console: Console) -> Int:
     fn net_verbs_appear_in_the_footprint() {
         // A client audits as `Net[Connect]`; a server as `Net[Listen]`.
         let client = footprint("pub fn fetch(n: Net[Connect]) -> Int:\n    0\n");
-        assert_eq!(client.total, cs(&[("Net", &["Connect"])]));
+        assert_eq!(client.total, cs(&[("Net", NET_CONNECT)]));
         assert_eq!(show_caps(&client.total), "Net[Connect]");
         let server = footprint("pub fn serve(n: Net[Listen]) -> Int:\n    0\n");
         assert_eq!(show_caps(&server.total), "Net[Listen]");
+    }
+
+    #[test]
+    fn net_transport_appears_in_the_footprint() {
+        // A TCP-pinned client audits as `Net[Connect, Tcp]`, distinct from a
+        // transport-agnostic `Net[Connect]`.
+        let fp = footprint("pub fn dial(n: Net[Connect, Tcp]) -> Int:\n    0\n");
+        assert_eq!(fp.total, cs(&[("Net", &["Connect", "Tcp"])]));
+        assert_eq!(show_caps(&fp.total), "Net[Connect, Tcp]");
+        // Gaining a transport is a widening: a TCP-pinned client that opens up to
+        // all transports demands `Udp`/`Uds` it did not before.
+        let pinned = footprint("pub fn h(n: Net[Connect, Tcp]) -> Int:\n    0\n");
+        let open = footprint("pub fn h(n: Net[Connect]) -> Int:\n    0\n");
+        let d = diff(&pinned, &open);
+        assert_eq!(d.added, cs(&[("Net", &["Udp", "Uds"])]));
+        assert!(d.widened());
+        // The reverse (pinning to TCP) is a safe narrowing.
+        assert!(!diff(&open, &pinned).widened());
     }
 
     #[test]
@@ -465,7 +515,7 @@ pub fn serve(console: Console) -> Int:
         let fp = footprint(
             "pub fn fetch(n: Net[Connect]) -> Int:\n    0\npub fn serve(n: Net[Listen]) -> Int:\n    0\n",
         );
-        assert_eq!(fp.total, cs(&[("Net", &["Connect", "Listen"])]));
+        assert_eq!(fp.total, cs(&[("Net", NET_FULL)]));
         assert_eq!(show_caps(&fp.total), "Net");
     }
 
@@ -536,7 +586,7 @@ pub fn serve(console: Console) -> Int:
         let fp = footprint(
             "type Raw:\n    Raw(Net)\ntype Api:\n    Api(Raw)\npub fn fetch(a: Api) -> Int:\n    0\n",
         );
-        assert_eq!(fp.total, cs(&[("Net", &["Connect", "Listen"])]));
+        assert_eq!(fp.total, cs(&[("Net", NET_FULL)]));
     }
 
     #[test]
@@ -581,7 +631,7 @@ pub fn serve(console: Console) -> Int:
             "type ApiNet:\n    ApiNet(Net)\npub fn load(d: Dir) -> Int:\n    0\npub fn sync(n: ApiNet) -> Int:\n    0\n",
         );
         let d = diff(&old, &new);
-        assert_eq!(d.added, cs(&[("Net", &["Connect", "Listen"])]));
+        assert_eq!(d.added, cs(&[("Net", NET_FULL)]));
         assert!(d.widened());
     }
 

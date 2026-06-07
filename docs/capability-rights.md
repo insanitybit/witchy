@@ -150,9 +150,16 @@ bitset is cleaner.)
   (re-widening a `Net[Connect]` to a full `Net` parameter is rejected — the type
   ceiling holds). So `as` is now only needed when *naming* a narrowed value.
 
-Open follow-up: the CLI/pm footprints currently track verbs but not transports
-(they ignore the transport markers), so a `Net[…, Udp]` audits as its verb only —
-surfacing transport in the footprint is the remaining polish.
+The **CLI footprint** (`witchy caps`/`caps-diff`) surfaces transport too: a
+TCP-pinned client audits as `Net[Connect, Tcp]` (distinct from a transport-
+agnostic `Net[Connect]`), and gaining a transport (`Net[Connect, Tcp]` →
+`Net[Connect]`, which opens up to `Udp`/`Uds`) is a widening. Both axes default
+to full independently, and `show_cap` omits a full axis so the output stays terse.
+
+Open follow-up: the **package-manager** footprint (`pm/footprint.rs`) still tracks
+verbs only — teaching it transports needs the gate's blocking computed against
+`old ∪ allowed` (rather than re-differencing a delta) to avoid the per-dimension
+re-expansion inflating a verb-only delta. That's the remaining polish.
 
 ## Open questions
 
