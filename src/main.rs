@@ -1103,6 +1103,38 @@ mod example_tests {
         );
     }
 
+    /// `ed25519_verify` (a pure, total signature check — the basis for verifying
+    /// registry metadata and signed releases) accepts a genuine signature,
+    /// rejects a tampered message and malformed input, and is interpreter-only.
+    #[test]
+    fn ed25519_verify_builtin_checks_signatures() {
+        use ed25519_dalek::{Signer, SigningKey};
+        let sk = SigningKey::from_bytes(&[7u8; 32]);
+        let hex = |bs: &[u8]| -> String { bs.iter().map(|b| format!("{b:02x}")).collect() };
+        let pk = hex(sk.verifying_key().as_bytes());
+        let msg = "release: acme/widget@1.0.0";
+        let sig = hex(&sk.sign(msg.as_bytes()).to_bytes());
+
+        let prog = |pubk: &str, m: &str, s: &str| {
+            format!(
+                "fn main(console: Console):\n    print(console, if ed25519_verify(\"{pubk}\", \"{m}\", \"{s}\"): \"ok\" else: \"bad\")\n"
+            )
+        };
+        assert_eq!(interp(&prog(&pk, msg, &sig)), vec!["ok"], "valid signature must verify");
+        assert_eq!(
+            interp(&prog(&pk, "release: acme/widget@1.0.1", &sig)),
+            vec!["bad"],
+            "tampered message must fail"
+        );
+        assert_eq!(interp(&prog(&pk, msg, "00")), vec!["bad"], "malformed sig must fail, not panic");
+
+        // Interpreter-only: the WASM backend rejects it.
+        let src = "fn main(console: Console):\n    print(console, if ed25519_verify(\"a\", \"b\", \"c\"): \"y\" else: \"n\")\n";
+        let module = crate::parser::parse_module(src).expect("parse");
+        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        assert!(codegen::compile_module(&linked).is_err(), "ed25519_verify should be WASM-rejected");
+    }
+
     /// The reference interpreter and the compiled WASM backend must produce the
     /// same output for the same program — the core promise of witchy's two-tier
     /// design. This differential test exercises a spread of features and asserts

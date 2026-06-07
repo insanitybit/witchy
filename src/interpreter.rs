@@ -593,6 +593,33 @@ impl Interpreter {
                 }
                 other => err(format!("sha256 expects a String, got `{other}`")),
             },
+            // Verify an Ed25519 signature: `ed25519_verify(pubkey_hex, message,
+            // sig_hex) -> Bool`. Pure and total — malformed hex, a wrong-length
+            // key/signature, or a bad signature all yield `false`, never an error.
+            // The basis for checking registry metadata and signed releases.
+            "ed25519_verify" => match args {
+                [Value::Str(pk_hex), Value::Str(msg), Value::Str(sig_hex)] => {
+                    use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+                    let decode = |s: &str| -> Option<Vec<u8>> {
+                        if !s.len().is_multiple_of(2) {
+                            return None;
+                        }
+                        (0..s.len())
+                            .step_by(2)
+                            .map(|i| u8::from_str_radix(s.get(i..i + 2)?, 16).ok())
+                            .collect()
+                    };
+                    let ok = (|| {
+                        let pk: [u8; 32] = decode(pk_hex)?.try_into().ok()?;
+                        let vk = VerifyingKey::from_bytes(&pk).ok()?;
+                        let sig: [u8; 64] = decode(sig_hex)?.try_into().ok()?;
+                        Some(vk.verify(msg.as_bytes(), &Signature::from_bytes(&sig)).is_ok())
+                    })()
+                    .unwrap_or(false);
+                    Ok(Some(Value::Bool(ok)))
+                }
+                _ => err("ed25519_verify expects (pubkey_hex, message, sig_hex) strings"),
+            },
             "trim" => match one(args)? {
                 Value::Str(s) => Ok(Some(Value::Str(s.trim().to_string()))),
                 other => err(format!("trim expects a String, got `{other}`")),
