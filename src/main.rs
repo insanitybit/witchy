@@ -3106,6 +3106,43 @@ fn main(console: Console):
     }
 
     #[test]
+    fn math_format_float_backends_agree() {
+        // format_float renders a Float at a fixed number of places (rounded
+        // half-up) using only float arithmetic, so it works on the compiled
+        // backend where the `to_string` builtin cannot format floats.
+        let client = r#"
+import math
+fn main(console: Console):
+    print(console, math.format_float(3.14159, 2))
+    print(console, math.format_float(0.0 - 0.5, 1))
+    print(console, math.format_float(2.0, 0))
+    print(console, math.format_float(0.0, 2))
+    print(console, math.format_float(1.999, 2))
+    print(console, math.format_float(0.0 - 0.04, 1))
+    print(console, math.format_float(98.6, 1))
+"#;
+        let sources = [("math", crate::bundled_module("math").unwrap()), ("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "format_float diverged");
+        assert_eq!(compiled, vec!["3.14", "-0.5", "2", "0.00", "2.00", "0.0", "98.6"]);
+    }
+
+    /// The Fahrenheit-to-Celsius table (K&R / Go tour), reproduced in witchy. It
+    /// needs real float output — `math.format_float` makes it compile and agree
+    /// on both backends, which the float-formatting-less `to_string` could not.
+    #[test]
+    fn temperature_example_agrees_on_both_backends() {
+        let client = std::fs::read_to_string("examples/temperature.witchy").unwrap();
+        let sources = [("math", crate::bundled_module("math").unwrap()), ("main", client.as_str())];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "temperature diverged");
+        assert_eq!(compiled[0], "0F = -17.8C");
+        assert_eq!(compiled[1], "60F = 15.6C");
+    }
+
+    #[test]
     fn big_int_arithmetic_backends_agree() {
         // Compiled Int is now i64, so arithmetic beyond the old 32-bit range
         // agrees with the interpreter instead of wrapping.

@@ -186,3 +186,26 @@ pub fn fabs(x: Float) -> Float:
 
 pub fn fclamp(x: Float, lo: Float, hi: Float) -> Float:
     fmax(lo, fmin(x, hi))
+
+// Format `x` with `decimals` digits after the decimal point, rounded half-up:
+// format_float(3.14159, 2) = "3.14", format_float(-0.5, 1) = "-0.5",
+// format_float(2.0, 0) = "2". Built from float arithmetic, so unlike the
+// `to_string` builtin it works on the compiled WASM backend too (which has no
+// float formatting). Best for a fixed number of places; very large magnitudes
+// lose precision to the Float itself.
+pub fn format_float(x: Float, decimals: Int) -> String:
+    let d = if decimals < 0: 0 else: decimals
+    let scale = pow(10, d)
+    let scaled = float_to_int(fabs(x) * int_to_float(scale) + 0.5)
+    let sign = if x < 0.0 && scaled > 0: "-" else: ""
+    if d == 0:
+        sign <> int_to_string(scaled)
+    else:
+        sign <> int_to_string(scaled / scale) <> "." <> zero_pad(scaled % scale, d)
+
+// `n` as a decimal string left-padded with zeros to at least `width` digits.
+fn zero_pad(n: Int, width: Int) -> String:
+    var s = int_to_string(n)
+    while string_length(s) < width:
+        s = "0" <> s
+    s
