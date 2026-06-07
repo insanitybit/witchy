@@ -4987,6 +4987,19 @@ impl Counter:
         assert_eq!(shown("serve"), "Net[Listen]");
     }
 
+    /// `higher_order_sum` reproduces Rust by Example's "sum of squared odd numbers
+    /// under 1000" — an imperative range loop and a functional `std/list` pipeline
+    /// (map / take_while / filter / sum) that must agree, on both backends.
+    #[test]
+    fn higher_order_sum_example_agrees_on_both_backends() {
+        let client = std::fs::read_to_string("examples/higher_order_sum.witchy").unwrap();
+        let sources = [("list", crate::bundled_module("list").unwrap()), ("main", client.as_str())];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "higher_order_sum diverged");
+        assert_eq!(compiled, vec!["imperative: 5456".to_string(), "functional: 5456".to_string()]);
+    }
+
     /// `minigrep` is the CLI search tool from The Rust Programming Language ch. 12,
     /// reproduced in witchy: it takes a query and a file path as args, reads the
     /// file with a `Dir[Read]` capability, and prints the matching lines. Missing
