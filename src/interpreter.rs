@@ -1251,6 +1251,15 @@ impl Interpreter {
                 let d = crate::parser::desugar_index((**base).clone(), (**index).clone());
                 self.eval(&d, env)
             }
+            // A UFCS call lowers to `method(receiver, args)`; evaluate that.
+            Expr::MethodCall { receiver, method, args } => {
+                let d = crate::parser::desugar_method(
+                    (**receiver).clone(),
+                    method.clone(),
+                    args.clone(),
+                );
+                self.eval(&d, env)
+            }
             // `while let` lowers to a `while true` over a match; evaluate that.
             Expr::WhileLet { pattern, scrutinee, body } => {
                 let d = crate::parser::desugar_while_let(

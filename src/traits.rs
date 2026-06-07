@@ -326,6 +326,12 @@ impl Ctx<'_> {
                 self.rewrite_expr(base, scope);
                 self.rewrite_expr(index, scope);
             }
+            Expr::MethodCall { receiver, args, .. } => {
+                self.rewrite_expr(receiver, scope);
+                for a in args.iter_mut() {
+                    self.rewrite_expr(a, scope);
+                }
+            }
             Expr::WhileLet { pattern, scrutinee, body } => {
                 self.rewrite_expr(scrutinee, scope);
                 let mut s = scope.clone();
@@ -747,6 +753,12 @@ impl Mono<'_> {
             Expr::Index { base, index } => {
                 self.walk_expr(base, scope);
                 self.walk_expr(index, scope);
+            }
+            Expr::MethodCall { receiver, args, .. } => {
+                self.walk_expr(receiver, scope);
+                for a in args.iter_mut() {
+                    self.walk_expr(a, scope);
+                }
             }
             Expr::WhileLet { pattern, scrutinee, body } => {
                 self.walk_expr(scrutinee, scope);

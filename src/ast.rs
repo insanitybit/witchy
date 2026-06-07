@@ -206,6 +206,16 @@ pub enum Expr {
     Var(String),
     /// A call to a named function: `f(a, b)`.
     Call { name: String, args: Vec<Expr> },
+    /// `receiver.method(args)` — UFCS method-call sugar for `method(receiver,
+    /// args)`. Kept as a node (rather than flattened at parse time) so the
+    /// formatter can print it back; every other consumer lowers it via
+    /// `parser::desugar_method`. (Module-qualified calls like `json.decode(x)`
+    /// are plain `Call`s whose name carries the `.`, so they are unaffected.)
+    MethodCall {
+        receiver: Box<Expr>,
+        method: String,
+        args: Vec<Expr>,
+    },
     /// Application of an arbitrary expression that evaluates to a function:
     /// `make_adder(3)(4)`, `(fn(x){x})(1)`. (A bare-name call is `Call`.)
     Apply { func: Box<Expr>, args: Vec<Expr> },

@@ -1188,6 +1188,15 @@ impl Checker {
                 let d = crate::parser::desugar_index((**base).clone(), (**index).clone());
                 self.infer(&d)
             }
+            // A UFCS call lowers to `method(receiver, args)`; type it as that.
+            Expr::MethodCall { receiver, method, args } => {
+                let d = crate::parser::desugar_method(
+                    (**receiver).clone(),
+                    method.clone(),
+                    args.clone(),
+                );
+                self.infer(&d)
+            }
             // `while let` lowers to a `while true` over a match; type that.
             Expr::WhileLet { pattern, scrutinee, body } => {
                 let d = crate::parser::desugar_while_let(

@@ -732,14 +732,13 @@ impl Parser {
                         }
                         // `receiver.method(args)` — UFCS method call: sugar for
                         // `method(receiver, args)` (the method name resolves to a
-                        // same-module or imported function in the linker).
+                        // same-module or imported function in the linker). Kept as
+                        // a node so the formatter can print it back.
                         receiver => {
-                            let mut all = Vec::with_capacity(args.len() + 1);
-                            all.push(receiver);
-                            all.extend(args);
-                            e = Expr::Call {
-                                name: member,
-                                args: all,
+                            e = Expr::MethodCall {
+                                receiver: Box::new(receiver),
+                                method: member,
+                                args,
                             };
                         }
                     }
@@ -1426,6 +1425,142 @@ pub(crate) fn desugar_index(base: Expr, index: Expr) -> Expr {
     }
 }
 
+/// Lower `receiver.method(args)` to the call `method(receiver, args)` — exactly
+/// what the parser used to build inline. The linker then resolves `method` by
+/// the receiver's type just as for any call.
+pub(crate) fn desugar_method(receiver: Expr, method: String, args: Vec<Expr>) -> Expr {
+    let mut all = Vec::with_capacity(args.len() + 1);
+    all.push(receiver);
+    all.extend(args);
+    Expr::Call { name: method, args: all }
+}
+
+/// Replace every `Expr::MethodCall` in a module with its `desugar_method`
+/// lowering. The linker runs this before resolving names, so name resolution and
+/// every later stage see the same plain `Call` the parser used to produce; the
+/// formatter, which never links, keeps the node so it can print `r.m(args)`.
+pub(crate) fn lower_methods_module(m: &mut Module) {
+    for item in &mut m.items {
+        match item {
+            Item::Function(f) => lower_methods_block(&mut f.body),
+            Item::Actor(a) => {
+                for field in &mut a.fields {
+                    if let Some(init) = &mut field.init {
+                        lower_methods_expr(init);
+                    }
+                }
+                for h in &mut a.handlers {
+                    lower_methods_block(&mut h.body);
+                }
+            }
+            Item::Impl(im) => {
+                for meth in &mut im.methods {
+                    lower_methods_block(&mut meth.body);
+                }
+                for h in &mut im.handlers {
+                    lower_methods_block(&mut h.body);
+                }
+            }
+            Item::Const { value, .. } => lower_methods_expr(value),
+            Item::Type(_) | Item::Trait(_) | Item::TypeAlias { .. } => {}
+        }
+    }
+}
+
+fn lower_methods_block(b: &mut Block) {
+    for stmt in &mut b.stmts {
+        match stmt {
+            Stmt::Let { value, .. }
+            | Stmt::LetTuple { value, .. }
+            | Stmt::Assign { value, .. }
+            | Stmt::Expr(value)
+            | Stmt::Return(Some(value)) => lower_methods_expr(value),
+            Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
+        }
+    }
+}
+
+fn lower_methods_expr(e: &mut Expr) {
+    match e {
+        Expr::MethodCall { receiver, method, args } => {
+            lower_methods_expr(receiver);
+            for a in args.iter_mut() {
+                lower_methods_expr(a);
+            }
+            *e = desugar_method((**receiver).clone(), method.clone(), std::mem::take(args));
+        }
+        Expr::Int(_) | Expr::Float(_) | Expr::Duration(_) | Expr::Str(_) | Expr::Bool(_)
+        | Expr::Var(_) => {}
+        Expr::List(xs)
+        | Expr::Tuple(xs)
+        | Expr::Call { args: xs, .. }
+        | Expr::Ctor { args: xs, .. }
+        | Expr::Spawn { args: xs, .. } => {
+            for x in xs {
+                lower_methods_expr(x);
+            }
+        }
+        Expr::Apply { func, args } => {
+            lower_methods_expr(func);
+            for a in args {
+                lower_methods_expr(a);
+            }
+        }
+        Expr::Unary { expr, .. }
+        | Expr::Try(expr)
+        | Expr::As { expr, .. }
+        | Expr::Field { base: expr, .. } => lower_methods_expr(expr),
+        Expr::Index { base, index } => {
+            lower_methods_expr(base);
+            lower_methods_expr(index);
+        }
+        Expr::Range { lo, hi, .. } => {
+            lower_methods_expr(lo);
+            lower_methods_expr(hi);
+        }
+        Expr::RecordUpdate { base, fields } => {
+            lower_methods_expr(base);
+            for (_, v) in fields {
+                lower_methods_expr(v);
+            }
+        }
+        Expr::Binary { lhs, rhs, .. } => {
+            lower_methods_expr(lhs);
+            lower_methods_expr(rhs);
+        }
+        Expr::If { cond, then_block, else_block } => {
+            lower_methods_expr(cond);
+            lower_methods_block(then_block);
+            if let Some(b) = else_block {
+                lower_methods_block(b);
+            }
+        }
+        Expr::While { cond, body } => {
+            lower_methods_expr(cond);
+            lower_methods_block(body);
+        }
+        Expr::WhileLet { scrutinee, body, .. } => {
+            lower_methods_expr(scrutinee);
+            lower_methods_block(body);
+        }
+        Expr::For { iter, body, .. } => {
+            lower_methods_expr(iter);
+            lower_methods_block(body);
+        }
+        Expr::Match { scrutinee, arms } => {
+            lower_methods_expr(scrutinee);
+            for arm in arms.iter_mut() {
+                if let Some(g) = &mut arm.guard {
+                    lower_methods_expr(g);
+                }
+                lower_methods_expr(&mut arm.body);
+            }
+        }
+        Expr::Lambda { body, .. } => lower_methods_block(body),
+        Expr::Block(b) => lower_methods_block(b),
+    }
+}
+
 /// Lower `while let PAT = SCRUT: body` to `while true` over a match whose
 /// wildcard arm breaks the loop. A free function for the same reason as
 /// [`desugar_range`]: the parser keeps `Expr::WhileLet` for the formatter, and
@@ -1512,6 +1647,13 @@ fn lower_sugar_expr(e: &mut Expr) {
             lower_sugar_expr(scrutinee);
             lower_sugar_block(body);
             *e = desugar_while_let(pattern.clone(), (**scrutinee).clone(), body.clone());
+        }
+        Expr::MethodCall { receiver, method, args } => {
+            lower_sugar_expr(receiver);
+            for a in args.iter_mut() {
+                lower_sugar_expr(a);
+            }
+            *e = desugar_method((**receiver).clone(), method.clone(), std::mem::take(args));
         }
         Expr::Int(_) | Expr::Float(_) | Expr::Duration(_) | Expr::Str(_) | Expr::Bool(_)
         | Expr::Var(_) => {}

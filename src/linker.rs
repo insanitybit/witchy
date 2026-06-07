@@ -230,6 +230,14 @@ pub fn link(mut modules: Vec<(String, Module)>, entry: &str) -> Result<Module, L
         i += 1;
     }
 
+    // Lower UFCS method calls (`x.f()`) to plain calls (`f(x)`) before any
+    // resolution, so name resolution and every later stage see exactly what the
+    // parser used to produce. (The formatter never links, so it keeps the
+    // `MethodCall` nodes and can print the `.method()` form.)
+    for (_, m) in modules.iter_mut() {
+        crate::parser::lower_methods_module(m);
+    }
+
     // Reject cyclic constant/alias definitions with a clear message before
     // resolution turns them into dangling self-references.
     for (name, m) in &modules {
@@ -550,6 +558,13 @@ fn resolve_in_expr(
             resolve_in_expr(base, sig, by_base, vars);
             resolve_in_expr(index, sig, by_base, vars);
         }
+        // Lowered to a plain `Call` before resolution; recurse for safety.
+        Expr::MethodCall { receiver, args, .. } => {
+            resolve_in_expr(receiver, sig, by_base, vars);
+            for a in args.iter_mut() {
+                resolve_in_expr(a, sig, by_base, vars);
+            }
+        }
         Expr::WhileLet { scrutinee, body, .. } => {
             resolve_in_expr(scrutinee, sig, by_base, vars);
             resolve_in_block(body, sig, by_base, vars);
@@ -704,6 +719,12 @@ fn collect_bound_expr(e: &Expr, out: &mut HashSet<String>) {
             collect_bound_expr(base, out);
             collect_bound_expr(index, out);
         }
+        Expr::MethodCall { receiver, args, .. } => {
+            collect_bound_expr(receiver, out);
+            for a in args {
+                collect_bound_expr(a, out);
+            }
+        }
         Expr::WhileLet { pattern, scrutinee, body } => {
             collect_bound_expr(scrutinee, out);
             collect_pattern_vars(pattern, out);
@@ -796,6 +817,13 @@ fn rewrite_expr(
         Expr::Index { base, index } => {
             rewrite_expr(base, m, imps, fns, bound)?;
             rewrite_expr(index, m, imps, fns, bound)?;
+        }
+        // Lowered to a plain `Call` before this runs; recurse for safety.
+        Expr::MethodCall { receiver, args, .. } => {
+            rewrite_expr(receiver, m, imps, fns, bound)?;
+            for a in args {
+                rewrite_expr(a, m, imps, fns, bound)?;
+            }
         }
         Expr::WhileLet { scrutinee, body, .. } => {
             rewrite_expr(scrutinee, m, imps, fns, bound)?;

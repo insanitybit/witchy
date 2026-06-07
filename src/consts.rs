@@ -54,6 +54,12 @@ fn collect_names(e: &Expr, out: &mut Vec<String>) {
                 collect_names(x, out);
             }
         }
+        Expr::MethodCall { receiver, args, .. } => {
+            collect_names(receiver, out);
+            for a in args {
+                collect_names(a, out);
+            }
+        }
         Expr::Apply { func, args } => {
             collect_names(func, out);
             for a in args {
@@ -301,6 +307,13 @@ fn subst_expr(
         }
         Expr::Call { args, .. } | Expr::Spawn { args, .. } => {
             let mut changed = false;
+            for a in args {
+                changed |= subst_expr(a, consts, cnames, scope);
+            }
+            changed
+        }
+        Expr::MethodCall { receiver, args, .. } => {
+            let mut changed = subst_expr(receiver, consts, cnames, scope);
             for a in args {
                 changed |= subst_expr(a, consts, cnames, scope);
             }

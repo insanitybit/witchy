@@ -603,6 +603,9 @@ fn expr(e: &Expr) -> String {
         Expr::List(xs) => format!("[{}]", comma(xs)),
         Expr::Tuple(xs) => format!("({})", comma(xs)),
         Expr::Call { name, args } => format!("{name}({})", comma(args)),
+        Expr::MethodCall { receiver, method, args } => {
+            format!("{}.{method}({})", operand(receiver, POSTFIX_PREC, false), comma(args))
+        }
         Expr::Ctor { name, args } => {
             if args.is_empty() {
                 name.clone()
@@ -782,7 +785,7 @@ fn expr_prec(e: &Expr) -> u8 {
         Expr::Binary { op, .. } => binop_prec(*op),
         Expr::Range { .. } => RANGE_PREC,
         Expr::Unary { .. } => UNARY_PREC,
-        Expr::Field { .. } | Expr::Try(_) | Expr::Apply { .. } | Expr::As { .. } | Expr::Index { .. } => POSTFIX_PREC,
+        Expr::Field { .. } | Expr::Try(_) | Expr::Apply { .. } | Expr::As { .. } | Expr::Index { .. } | Expr::MethodCall { .. } => POSTFIX_PREC,
         _ => 100,
     }
 }
@@ -956,6 +959,12 @@ fn strip_lines_expr(e: &mut Expr) {
             strip_lines_expr(base);
             strip_lines_expr(index);
         }
+        Expr::MethodCall { receiver, args, .. } => {
+            strip_lines_expr(receiver);
+            for a in args {
+                strip_lines_expr(a);
+            }
+        }
         Expr::WhileLet { scrutinee, body, .. } => {
             strip_lines_expr(scrutinee);
             strip_lines_block(body);
@@ -1107,6 +1116,19 @@ mod tests {
         assert!(!out.contains("let y = 2\n    \n"), "{out}");
         // The statement after the if-block is directly adjacent (no blank).
         assert!(out.contains("        let y = 2\n    let z = 3"), "{out}");
+    }
+
+    #[test]
+    fn preserves_ufcs_method_calls() {
+        // `x.f()` used to de-sugar to `f(x)` on format; it now round-trips,
+        // including chains and a parenthesized receiver. Module-qualified calls
+        // (`json.decode(x)`) stay as-is.
+        let src = "import json\nfn main(console: Console):\n    let r = 5.double().inc()\n    let q = (2 + 3).double()\n    let d = json.decode(\"1\")\n";
+        let out = reformat(src).expect("round-trips");
+        assert!(out.contains("5.double().inc()"), "chain not preserved: {out}");
+        assert!(out.contains("(2 + 3).double()"), "paren receiver not preserved: {out}");
+        assert!(out.contains("json.decode(\"1\")"), "module call changed: {out}");
+        assert!(!out.contains("double(5)"), "UFCS de-sugared: {out}");
     }
 
     #[test]
