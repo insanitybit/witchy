@@ -189,6 +189,10 @@ impl Runtime {
         // `recv` is intrinsic: reading your *own* mailbox is not authority over
         // anyone else, so every actor may do it.
         linker.func_wrap("witchy", "recv", host_recv)?;
+        // Native-stdlib functions are pure (no authority), so they're always
+        // available — the same `crypto` module the interpreter exposes, here as a
+        // host import that bridges to the shared `native` registry.
+        linker.func_wrap("witchy", "crypto.ed25519_verify", host_ed25519_verify)?;
 
         // Ungranted capability imports are rejected here.
         let instance = linker.instantiate(&mut store, &module)?;
@@ -283,7 +287,40 @@ fn host_recv(mut caller: Caller<'_, ActorState>, ptr: i32, cap: i32) -> Result<i
     Ok(msg.len() as i32)
 }
 
+/// `crypto.ed25519_verify(pk, msg, sig) -> Bool`, bridged to the shared native
+/// registry (the same implementation the interpreter uses). Each argument is a
+/// pointer to a witchy string header (`[i32 len][bytes]`).
+fn host_ed25519_verify(
+    mut caller: Caller<'_, ActorState>,
+    pk: i32,
+    msg: i32,
+    sig: i32,
+) -> Result<i32> {
+    use crate::interpreter::Value;
+    let mem = memory_of(&mut caller)?;
+    let data = mem.data(&caller);
+    let args = [
+        Value::Str(read_wstr(data, pk)?),
+        Value::Str(read_wstr(data, msg)?),
+        Value::Str(read_wstr(data, sig)?),
+    ];
+    let f = crate::native::lookup("crypto.ed25519_verify")
+        .ok_or_else(|| Error::msg("crypto.ed25519_verify is not registered"))?;
+    match f(&args).map_err(|e| Error::msg(e.message))? {
+        Value::Bool(b) => Ok(b as i32),
+        _ => Err(Error::msg("crypto.ed25519_verify did not return a Bool")),
+    }
+}
+
 // --- small helpers for safe guest-memory access ---
+
+/// Read a witchy string value (a `[i32 len][bytes...]` header) at `ptr`.
+fn read_wstr(data: &[u8], ptr: i32) -> Result<String> {
+    let len_bytes = slice(data, ptr, 4)?;
+    let len = i32::from_le_bytes([len_bytes[0], len_bytes[1], len_bytes[2], len_bytes[3]]);
+    let bytes = slice(data, ptr + 4, len)?;
+    Ok(String::from_utf8_lossy(bytes).into_owned())
+}
 
 fn memory_of(caller: &mut Caller<'_, ActorState>) -> Result<Memory> {
     match caller.get_export("memory") {

@@ -1150,6 +1150,38 @@ mod example_tests {
         assert_eq!(link_run(&prog(&pk, msg, "00")), vec!["bad"], "malformed sig must fail, not panic");
     }
 
+    /// `crypto.ed25519_verify` runs in the *compiled WASM backend* too — bridged
+    /// into the sandbox as a host import that calls the same `native` registry
+    /// the interpreter uses, so the two tiers agree. (The native module runs at
+    /// full Rust speed on the host; the sandbox only sees this one pure import.)
+    #[test]
+    fn crypto_ed25519_verify_runs_in_the_wasm_backend() {
+        use ed25519_dalek::{Signer, SigningKey};
+        let sk = SigningKey::from_bytes(&[9u8; 32]);
+        let hex = |bs: &[u8]| -> String { bs.iter().map(|b| format!("{b:02x}")).collect() };
+        let pk = hex(sk.verifying_key().as_bytes());
+        let msg = "wasm-signed";
+        let sig = hex(&sk.sign(msg.as_bytes()).to_bytes());
+        let prog = |m: &str| {
+            format!(
+                "import crypto\nfn main(console: Console):\n    print(console, if crypto.ed25519_verify(\"{pk}\", \"{m}\", \"{sig}\"): \"ok\" else: \"bad\")\n"
+            )
+        };
+        let wasm = |src: &str| -> Vec<String> {
+            let module = parser::parse_module(src).expect("parse");
+            let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+            typeck::check(&linked).expect("typecheck");
+            let wat = codegen::compile_module(&linked).expect("compile");
+            crate::run_wat_capture(&wat).expect("wasm run")
+        };
+        // Genuine signature verifies in both backends; a tampered message fails
+        // in both — the WASM host import and the interpreter agree.
+        assert_eq!(wasm(&prog(msg)), vec!["ok"]);
+        assert_eq!(link_run(&prog(msg)), vec!["ok"]);
+        assert_eq!(wasm(&prog("tampered")), vec!["bad"]);
+        assert_eq!(link_run(&prog("tampered")), vec!["bad"]);
+    }
+
     /// The `Clock` capability yields wall-clock time (ms since epoch) via `now`.
     /// Reading the clock is ambient nondeterminism, so it's capability-gated and
     /// surfaces in the footprint — not a pure builtin.

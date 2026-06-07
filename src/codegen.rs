@@ -264,6 +264,8 @@ struct Codegen {
     uses_list_drop: bool,
     /// Whether the `starts_with`/`ends_with` string helpers are needed.
     uses_starts_with: bool,
+    /// Whether the `crypto.ed25519_verify` host import is needed.
+    uses_crypto_ed25519_verify: bool,
     uses_ends_with: bool,
     /// Whether the `split` helper is needed.
     uses_split: bool,
@@ -408,6 +410,7 @@ impl Codegen {
             uses_list_concat: false,
             uses_list_drop: false,
             uses_starts_with: false,
+            uses_crypto_ed25519_verify: false,
             uses_ends_with: false,
             uses_split: false,
             uses_substr: false,
@@ -548,7 +551,7 @@ impl Codegen {
             Expr::Call { name, .. } => match name.as_str() {
                 "int_to_string" | "to_string" | "to_upper" | "to_lower" | "trim" | "replace"
                 | "substring" => ValType::Str,
-                "starts_with" | "ends_with" | "contains" => ValType::Bool,
+                "starts_with" | "ends_with" | "contains" | "crypto.ed25519_verify" => ValType::Bool,
                 "string_length" | "char_count" | "index_of" | "length" | "float_to_int"
                 | "string_to_int" | "int_to_duration" | "duration_to_int" => ValType::Int,
                 "int_to_float" | "sqrt" => ValType::Float,
@@ -964,6 +967,11 @@ impl Codegen {
         if self.uses_send {
             // send(target_id, message_tag, arg)
             s.push_str("  (import \"witchy\" \"send\" (func $send (param i32 i32 i32)))\n");
+        }
+        if self.uses_crypto_ed25519_verify {
+            // crypto.ed25519_verify(pk_ptr, msg_ptr, sig_ptr) -> bool; each arg is
+            // a string header pointer, the result an i32 bool.
+            s.push_str("  (import \"witchy\" \"crypto.ed25519_verify\" (func $crypto_ed25519_verify (param i32 i32 i32) (result i32)))\n");
         }
         s
     }
@@ -2103,9 +2111,20 @@ impl Codegen {
 
     fn compile_call(&mut self, name: &str, args: &[Expr]) -> Result<String, CodegenError> {
         match (name, args.len()) {
-            // Native-stdlib (`crypto.*`) functions have no WASM implementation —
-            // interpreter-only, like `now`/`get_env` below (those, being String/
-            // capability-shaped, aren't filtered out by a capability param type).
+            // `crypto.ed25519_verify(pk, msg, sig) -> Bool`: a native-module
+            // function bridged into the sandbox as a host import. Each string arg
+            // is a single header pointer (the host reads `[len][bytes]`); the
+            // result is an i32 bool. The host calls the SAME `native::lookup`
+            // implementation the interpreter uses, so the backends agree.
+            ("crypto.ed25519_verify", 3) => {
+                self.uses_crypto_ed25519_verify = true;
+                let a = self.compile_expr(&args[0])?;
+                let b = self.compile_expr(&args[1])?;
+                let c = self.compile_expr(&args[2])?;
+                Ok(format!("{a}{b}{c}    call $crypto_ed25519_verify\n"))
+            }
+            // Other native-stdlib functions (e.g. `crypto.sha256`, which returns a
+            // string and so needs result allocation) aren't bridged into WASM yet.
             (n, _) if crate::native::is_native(n) => {
                 cerr(format!("`{n}` is interpreter-only (not compiled to WASM)"))
             }
