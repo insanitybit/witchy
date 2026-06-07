@@ -1,0 +1,40 @@
+// Rights-parameterized capabilities — the footprint distinguishes the *verbs* a
+// capability permits, not just its kind. A `Dir[Read]` provably cannot write; a
+// `Net[Connect]` is a client that cannot listen; `Net[Connect, Tcp]` is pinned to
+// the TCP transport. Narrowing is native: implicit at a call boundary (a full
+// `Dir` flows into a `Dir[Read]` parameter — more authority stands in for less),
+// or explicit with `as` when you want to name the narrowed handle. You can only
+// ever *drop* rights, never widen, so authority can't be laundered back up. Run
+// from the repo root:
+//   witchy examples/capability_rights.witchy
+//   witchy caps examples/capability_rights.witchy
+//     fetch  Net[Connect, Tcp]
+//     load   Dir[Read]
+//     serve  Net[Listen]
+//     main   Console, Dir
+//     total  Console, Dir, Net
+// A read-only loader. The `Dir[Read]` parameter structurally cannot `write`, so
+// this function provably only reads — and a caller may hand it a full `Dir`,
+// which narrows implicitly at the call boundary.
+pub fn load(dir: Dir[Read], name: String) -> String:
+    read(dir, name)
+
+// A TCP client. `Net[Connect, Tcp]` can dial out over TCP but cannot `listen`,
+// and is pinned to TCP (`Udp`/`Uds` are type-level markers — not implemented).
+pub fn fetch(net: Net[Connect, Tcp], addr: String) -> String:
+    recv_all(connect(net, addr))
+
+// A server. `Net[Listen]` can accept inbound connections but cannot dial out;
+// `connect(net, ..)` here would be a compile error.
+pub fn serve(net: Net[Listen], addr: String) -> Listener:
+    listen(net, addr)
+
+fn main(console: Console, root: Dir):
+    let data = subdir(subdir(root, "examples"), "data")
+    // Implicit narrowing: `load` asks for `Dir[Read]`; the full `data` capability
+    // narrows automatically at the call — no cast needed.
+    print(console, "implicit: " <> load(data, "greeting.txt"))
+    // Explicit narrowing: name a read-only handle with `as`. Passing `ro` where a
+    // full `Dir` is wanted would be a compile error.
+    let ro = data as Dir[Read]
+    print(console, "explicit: " <> load(ro, "greeting.txt"))

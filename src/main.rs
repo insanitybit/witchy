@@ -4539,6 +4539,29 @@ impl Counter:
         );
     }
 
+    /// The capability-rights showcase: it runs (exercising implicit + explicit
+    /// `as` narrowing of a `Dir` to `Dir[Read]`) and its footprint is
+    /// verb/transport-precise — the end-to-end demonstration of the feature.
+    #[test]
+    fn capability_rights_example_runs_and_audits() {
+        assert_eq!(
+            crate::execute_file("examples/capability_rights.witchy", Vec::new()).unwrap(),
+            vec![
+                "implicit: hello from a sandboxed Dir capability",
+                "explicit: hello from a sandboxed Dir capability",
+            ]
+        );
+        let src = std::fs::read_to_string("examples/capability_rights.witchy").unwrap();
+        let fp = crate::capabilities::analyze(&parser::parse_module(&src).expect("parse"));
+        let shown = |name: &str| {
+            let e = fp.entries.iter().find(|e| e.name == name).expect("entry");
+            crate::capabilities::show_caps(&e.capabilities)
+        };
+        assert_eq!(shown("load"), "Dir[Read]");
+        assert_eq!(shown("fetch"), "Net[Connect, Tcp]");
+        assert_eq!(shown("serve"), "Net[Listen]");
+    }
+
     #[test]
     fn dir_write_is_confined_to_the_subtree() {
         let tmp = std::env::temp_dir().join("witchy_dir_write_test");
