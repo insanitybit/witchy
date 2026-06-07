@@ -1,0 +1,10 @@
+// money — pure helpers for formatting integer cents as dollar amounts. A library
+// rune with no host capabilities, so depending on it grants no authority at all.
+
+import string
+
+// Format a non-negative cent amount as "$D.CC" (cents zero-padded to two digits).
+pub fn format(cents: Int) -> String:
+    let dollars = cents / 100
+    let rem = cents % 100
+    "$" <> int_to_string(dollars) <> "." <> string.pad_left(int_to_string(rem), 2, "0")

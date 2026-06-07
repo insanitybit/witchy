@@ -1023,6 +1023,24 @@ fn example_todo_workspace_runs_with_a_path_dependency() {
     assert!(s.contains("3 / 5 done"), "summary missing: {s}");
 }
 
+/// The committed `examples/projects/ledger` workspace — a bank-account *actor*
+/// (granted Console at spawn, isolated balance state, FIFO message handlers) that
+/// formats amounts via a `money` library rune (a path dependency) — builds and
+/// runs end to end. Copied into a hermetic sandbox so the repo is never touched.
+#[test]
+fn example_ledger_workspace_runs_with_actors_and_a_path_dependency() {
+    let sb = Sandbox::new("ex-ledger");
+    let srcroot = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/projects/ledger");
+    copy_tree(&srcroot, &sb.work);
+    let out = sb.run(&sb.work.join("ledger"), "dev", &["run"]);
+    assert!(out.status.success(), "run failed: {}", stderr(&out));
+    let s = stdout(&out);
+    // FIFO message order + running balance, formatted by the `money` rune.
+    assert!(s.contains("deposit  $12.50  -> balance $12.50"), "first deposit missing: {s}");
+    assert!(s.contains("withdraw $5.00  -> balance $11.25"), "withdrawal missing: {s}");
+    assert!(s.trim().ends_with("deposit  $0.99  -> balance $12.24"), "final balance wrong: {s}");
+}
+
 #[test]
 fn published_rune_cannot_have_path_dependency() {
     let sb = Sandbox::new("nopath");
