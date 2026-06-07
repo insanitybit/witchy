@@ -1,0 +1,18 @@
+// greet — build a greeting from a "key = value" config file, read with a
+// read-only Dir capability and parsed by the `kv` rune (a path dependency).
+// Error handling composes with `?`: the first missing key short-circuits to a
+// friendly message. `witchy caps` shows exactly `Console, Dir[Read]`. Run with:
+//   witchy run
+
+import kv
+
+fn main(console: Console, root: Dir[Read]):
+    match build(kv.parse(read(root, "config.kv"))):
+        Ok(message) -> print(console, message)
+        Err(e) -> print(console, "config error: " <> e)
+
+// Compose the greeting from two config keys; `?` propagates the first miss.
+fn build(pairs: List((String, String))) -> Result(String, String):
+    let greeting = kv.lookup(pairs, "greeting")?
+    let name = kv.lookup(pairs, "name")?
+    Ok(greeting <> ", " <> name <> "!")

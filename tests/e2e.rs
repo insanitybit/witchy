@@ -1083,6 +1083,33 @@ fn example_dashboard_workspace_runs_with_a_diamond_dependency() {
     assert!(stdout(&tree).contains("bars@0.1.0 (*)"), "shared base not deduplicated: {}", stdout(&tree));
 }
 
+/// The committed `examples/projects/config` workspace — a `greet` app that reads
+/// a "key = value" file (via a read-only `Dir`), parses it with the `kv` library
+/// rune (a path dependency), and composes a greeting with `Result`/`?` error
+/// handling. Runs the happy path; a `?`-propagated missing key is covered by the
+/// project's own design (and exercised manually).
+#[test]
+fn example_config_workspace_runs_with_result_error_handling() {
+    let sb = Sandbox::new("ex-config");
+    let srcroot = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/projects/config");
+    copy_tree(&srcroot, &sb.work);
+    let app = sb.work.join("greet");
+
+    let out = sb.run(&app, "dev", &["run"]);
+    assert!(out.status.success(), "run failed: {}", stderr(&out));
+    assert!(stdout(&out).trim() == "Hello, witchy!", "greeting wrong: {}", stdout(&out));
+
+    // Drop a required key: `?` short-circuits to the friendly Err message.
+    std::fs::write(app.join("config.kv"), "greeting = Hi\n").unwrap();
+    let out = sb.run(&app, "dev", &["run"]);
+    assert!(out.status.success(), "run failed: {}", stderr(&out));
+    assert!(
+        stdout(&out).contains("config error: missing config key: name"),
+        "error path wrong: {}",
+        stdout(&out)
+    );
+}
+
 #[test]
 fn published_rune_cannot_have_path_dependency() {
     let sb = Sandbox::new("nopath");
