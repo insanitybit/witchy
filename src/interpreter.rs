@@ -376,9 +376,15 @@ impl Interpreter {
                 Some(seed) => Ok(Value::SigningKey(seed)),
                 None => err("`main` requires a `SigningKey`, but the host granted none (provide `--signing-key <hex-seed-file>`)"),
             },
-            other => err(format!(
-                "`main` parameters must be capabilities (Console, Clock, Env, Dir, Net, SigningKey) or `List(String)` for command-line args; got `{other:?}`"
-            )),
+            other => {
+                let found = match other {
+                    Some(t) => format!("`{}`", crate::format::type_str(t)),
+                    None => "no type annotation".to_string(),
+                };
+                err(format!(
+                    "`main` parameters must be capabilities (Console, Clock, Env, Dir, Net, SigningKey) or `List(String)` for command-line args; got {found}"
+                ))
+            }
         }
     }
 

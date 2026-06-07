@@ -752,7 +752,7 @@ fn pattern(p: &Pattern) -> String {
     }
 }
 
-fn type_str(t: &Type) -> String {
+pub(crate) fn type_str(t: &Type) -> String {
     match t {
         Type::Named(n, args) if args.is_empty() => n.clone(),
         // Capability rights use bracket syntax (`Dir[Read]`, `Net[Connect]`);

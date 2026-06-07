@@ -282,6 +282,50 @@ fn at_loc(e: TypeError, line: u32, func: &str) -> TypeError {
     }
 }
 
+/// Whether `t` names a host capability that `main` may receive as a root
+/// authority (the rights of `Dir`/`Net` don't matter here — any are grantable).
+fn is_capability_type(t: &ast::Type) -> bool {
+    matches!(t, ast::Type::Named(n, _)
+        if matches!(n.as_str(), "Console" | "Clock" | "Env" | "Dir" | "Net" | "SigningKey"))
+}
+
+/// Whether `t` is `List(String)` — the command-line-arguments parameter `main`
+/// may declare.
+fn is_args_type(t: &ast::Type) -> bool {
+    matches!(t, ast::Type::Named(n, args)
+        if n == "List"
+            && matches!(args.as_slice(), [ast::Type::Named(s, inner)] if s == "String" && inner.is_empty()))
+}
+
+/// Validate `main`'s signature: every parameter must be a host capability or the
+/// `List(String)` args parameter, since `main` is the program's root actor and
+/// only the host's granted authority can enter there. Catches at check time what
+/// would otherwise be a runtime error when the root capabilities are minted. A
+/// module without `main` is a library and passes.
+fn check_main_signature(module: &Module) -> Result<(), TypeError> {
+    let Some(main) = module.items.iter().find_map(|it| match it {
+        Item::Function(f) if f.name == "main" => Some(f),
+        _ => None,
+    }) else {
+        return Ok(());
+    };
+    for p in &main.params {
+        if matches!(&p.ty, Some(t) if is_capability_type(t) || is_args_type(t)) {
+            continue;
+        }
+        let found = match &p.ty {
+            Some(t) => format!("has type `{}`", crate::format::type_str(t)),
+            None => "has no type annotation".to_string(),
+        };
+        return terr(format!(
+            "`main` parameter `{}` {found}, but `main` may only take host capabilities \
+             (Console, Clock, Env, Dir, Net, SigningKey) or `List(String)` for command-line args",
+            p.name
+        ));
+    }
+    Ok(())
+}
+
 /// Collect the type-parameter names (lowercase, argument-less) appearing in a
 /// type expression, in order of first appearance. Used to infer the parameters
 /// of a generic ADT from its variant field types.
@@ -1852,6 +1896,11 @@ pub fn check(module: &Module) -> Result<(), TypeError> {
         }
     }
 
+    // `main` is the root actor: its parameters are where the host's authority
+    // enters, so they must be capabilities (or the args list) — validate before
+    // diving into bodies so a malformed entry point is reported up front.
+    check_main_signature(module)?;
+
     // Pass 2: check bodies.
     for item in &module.items {
         match item {
@@ -1889,6 +1938,26 @@ fn describe_pattern(p: &Pattern) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn main_signature_is_validated_at_check_time() {
+        // A non-capability `main` parameter is a check-time error (it used to slip
+        // through `witchy check` and only fail when capabilities were minted).
+        let bad = check_str("fn main(x: Int):\n    print_int(x)\n").unwrap_err();
+        assert!(bad.contains("`main` parameter `x` has type `Int`"), "{bad}");
+        assert!(bad.contains("host capabilities"), "{bad}");
+        // The args parameter must be `List(String)`, not any other list.
+        let bad_args = check_str("fn main(args: List(Int)):\n    print_int(0)\n").unwrap_err();
+        assert!(bad_args.contains("`List(Int)`"), "{bad_args}");
+        // An untyped parameter is flagged too.
+        let untyped = check_str("fn main(x):\n    x\n").unwrap_err();
+        assert!(untyped.contains("has no type annotation"), "{untyped}");
+        // Capabilities (with or without rights) and the args list are all valid.
+        check_str("fn main(console: Console, dir: Dir[Read], args: List(String)):\n    print(console, \"ok\")\n")
+            .expect("capabilities + args is a valid main");
+        // A module without `main` is a library and passes.
+        check_str("fn helper() -> Int:\n    5\n").expect("a library is valid");
+    }
 
     #[test]
     fn unknown_stdlib_function_suggests_import() {
