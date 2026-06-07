@@ -223,6 +223,21 @@ fn new_app(sb: &Sandbox) -> PathBuf {
     sb.work.join("app")
 }
 
+/// Recursively copy the contents of `src` into `dst` (used to lift a committed
+/// example workspace into a hermetic sandbox without mutating the repo).
+fn copy_tree(src: &Path, dst: &Path) {
+    std::fs::create_dir_all(dst).unwrap();
+    for entry in std::fs::read_dir(src).unwrap() {
+        let entry = entry.unwrap();
+        let (from, to) = (entry.path(), dst.join(entry.file_name()));
+        if from.is_dir() {
+            copy_tree(&from, &to);
+        } else {
+            std::fs::copy(&from, &to).unwrap();
+        }
+    }
+}
+
 #[test]
 fn networked_registry_full_lifecycle() {
     let server = RegistryServer::start();
@@ -989,6 +1004,23 @@ fn path_dependency_builds_and_runs() {
     let out = sb.run(&app, "dev", &["run"]);
     assert!(out.status.success(), "run failed: {}", stderr(&out));
     assert!(stdout(&out).contains("hi witchy"), "got: {}", stdout(&out));
+}
+
+/// The committed `examples/projects/todo` workspace — a `todo` app that depends
+/// on a sibling `tasklib` library via a path dependency and reads its checklist
+/// with a read-only `Dir` capability — builds and runs end to end. Copied into a
+/// hermetic sandbox so the test never mutates the repo (or its lockfile).
+#[test]
+fn example_todo_workspace_runs_with_a_path_dependency() {
+    let sb = Sandbox::new("ex-todo");
+    let srcroot = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/projects/todo");
+    copy_tree(&srcroot, &sb.work);
+    let out = sb.run(&sb.work.join("todo"), "dev", &["run"]);
+    assert!(out.status.success(), "run failed: {}", stderr(&out));
+    let s = stdout(&out);
+    assert!(s.contains("[x] Decompose Dir into Read / Write"), "rendered board missing: {s}");
+    assert!(s.contains("[ ] Implement a real UDP transport"), "pending item missing: {s}");
+    assert!(s.contains("3 / 5 done"), "summary missing: {s}");
 }
 
 #[test]

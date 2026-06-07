@@ -1,0 +1,21 @@
+// todo — render a Markdown checklist from a file, built on the `tasklib` rune (a
+// local path dependency) and a *read-only* `Dir` capability. Because `main` asks
+// only for `Dir[Read]`, this program provably cannot write files or touch the
+// network — `witchy caps` reports exactly `Console` and `Dir[Read]`. Run it with:
+//   witchy run
+// and inspect its authority with:
+//   witchy caps src/todo.witchy
+
+import tasklib
+import string
+
+fn main(console: Console, root: Dir[Read]):
+    let tasks = tasklib.parse(read(root, "tasks.md"))
+    print(console, "TODO")
+    print(console, tasklib.render(tasks))
+    print(console, "")
+    let summary = string.join(
+        [int_to_string(tasklib.done_count(tasks)), "/", int_to_string(tasklib.count(tasks)), "done"],
+        " ",
+    )
+    print(console, summary)
