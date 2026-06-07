@@ -25,6 +25,7 @@ pub fn lookup(qualified: &str) -> Option<NativeFn> {
     match qualified {
         "crypto.sha256" => Some(crypto::sha256),
         "crypto.ed25519_verify" => Some(crypto::ed25519_verify),
+        "compiler.footprint" => Some(compiler::footprint),
         _ => None,
     }
 }
@@ -87,5 +88,68 @@ mod crypto {
         })()
         .unwrap_or(false);
         Ok(Value::Bool(ok))
+    }
+}
+
+/// The `compiler` module: witchy's own toolchain, exposed to witchy. This is what
+/// lets a (self-hosted) package manager compute a rune's capability footprint —
+/// the heart of the supply-chain story — from within witchy.
+mod compiler {
+    use super::{type_error, Value};
+    use crate::interpreter::RuntimeError;
+
+    /// Compute the capability footprint of witchy `source`, returned as JSON:
+    /// `{"total":[..],"entries":[{"name":..,"capabilities":[..],"brands":[..]}]}`,
+    /// or `{"error":".."}` if the source does not parse. Pairs with `std/json`.
+    pub fn footprint(args: &[Value]) -> Result<Value, RuntimeError> {
+        let [Value::Str(src)] = args else {
+            return Err(type_error("compiler.footprint expects a String"));
+        };
+        let json = match crate::parser::parse_module(src) {
+            Ok(module) => {
+                let fp = crate::capabilities::analyze(&module);
+                let total = arr(fp.total.iter().map(|(n, r)| crate::capabilities::show_cap(n, r)));
+                let entries: Vec<String> = fp
+                    .entries
+                    .iter()
+                    .map(|e| {
+                        let caps =
+                            arr(e.capabilities.iter().map(|(n, r)| crate::capabilities::show_cap(n, r)));
+                        let brands = arr(e.brands.iter().cloned());
+                        format!(
+                            "{{\"name\":{},\"capabilities\":{},\"brands\":{}}}",
+                            string(&e.name),
+                            caps,
+                            brands
+                        )
+                    })
+                    .collect();
+                format!("{{\"total\":{},\"entries\":[{}]}}", total, entries.join(","))
+            }
+            Err(e) => format!("{{\"error\":{}}}", string(&e.to_string())),
+        };
+        Ok(Value::Str(json))
+    }
+
+    /// A JSON string literal (quoted, with `"` and `\` escaped).
+    fn string(s: &str) -> String {
+        let mut out = String::with_capacity(s.len() + 2);
+        out.push('"');
+        for c in s.chars() {
+            match c {
+                '"' => out.push_str("\\\""),
+                '\\' => out.push_str("\\\\"),
+                '\n' => out.push_str("\\n"),
+                _ => out.push(c),
+            }
+        }
+        out.push('"');
+        out
+    }
+
+    /// A JSON array of strings.
+    fn arr(items: impl Iterator<Item = String>) -> String {
+        let parts: Vec<String> = items.map(|s| string(&s)).collect();
+        format!("[{}]", parts.join(","))
     }
 }

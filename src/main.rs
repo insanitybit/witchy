@@ -1189,6 +1189,29 @@ mod example_tests {
         assert_eq!(link_run(&prog("tampered")), vec!["bad"]);
     }
 
+    /// `compiler.footprint` exposes witchy's own capability analyzer to witchy
+    /// programs (the heart of a self-hosted package manager): it returns the
+    /// rights-precise footprint as JSON, which composes with `std/json`.
+    #[test]
+    fn compiler_footprint_exposes_the_analyzer() {
+        // The rights-precise footprint comes back as JSON.
+        let out = link_run(
+            "import compiler\nfn main(console: Console):\n    print(console, compiler.footprint(\"pub fn load(d: Dir[Read]) -> String:\\n    read(d, \\\"x\\\")\\n\"))\n",
+        );
+        assert!(out[0].contains("\"total\":[\"Dir[Read]\"]"), "total wrong: {}", out[0]);
+        assert!(out[0].contains("\"name\":\"load\""), "entry missing: {}", out[0]);
+        // The output is valid JSON — it round-trips through `std/json`.
+        let composed = link_run(
+            "import compiler\nimport json\nfn main(console: Console):\n    match json.decode(compiler.footprint(\"pub fn serve(n: Net) -> Int:\\n    0\\n\")):\n        Ok(doc) -> print(console, \"valid\")\n        Err(e) -> print(console, \"invalid: \" <> e)\n",
+        );
+        assert_eq!(composed, vec!["valid"]);
+        // Malformed source degrades to an error object, not a crash.
+        let bad = link_run(
+            "import compiler\nfn main(console: Console):\n    print(console, compiler.footprint(\"fn oops(\"))\n",
+        );
+        assert!(bad[0].contains("\"error\""), "expected an error object: {}", bad[0]);
+    }
+
     /// The `Clock` capability yields wall-clock time (ms since epoch) via `now`.
     /// Reading the clock is ambient nondeterminism, so it's capability-gated and
     /// surfaces in the footprint — not a pure builtin.
