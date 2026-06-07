@@ -65,6 +65,54 @@ fn dir_rights(args: &[ast::Type]) -> DirRights {
     r
 }
 
+/// The verbs a `Net` capability permits. `Connect` lets code dial out (`connect`,
+/// `restrict`); `Listen` lets it accept inbound (`listen`). Decomposing the verbs
+/// distinguishes a client from a server in the footprint. Bare `Net` is the full
+/// set; `Net[Connect]`/`Net[Listen]` narrow it. (Transport — Tcp/Udp/Uds — is a
+/// separate, not-yet-implemented dimension; only TCP exists at runtime today.)
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NetRights {
+    pub connect: bool,
+    pub listen: bool,
+}
+
+impl NetRights {
+    pub fn full() -> Self {
+        NetRights { connect: true, listen: true }
+    }
+}
+
+impl fmt::Display for NetRights {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match (self.connect, self.listen) {
+            (true, true) => write!(f, "Net"),
+            (true, false) => write!(f, "Net[Connect]"),
+            (false, true) => write!(f, "Net[Listen]"),
+            (false, false) => write!(f, "Net[]"),
+        }
+    }
+}
+
+/// Interpret a `Net`'s type arguments as its verbs. Bare `Net` (no args) is the
+/// full set; `Net[Connect]`/`Net[Listen]` narrow it. Unrecognized markers (e.g.
+/// a future transport like `Tcp`) are ignored so the syntax is forward-compatible.
+fn net_rights(args: &[ast::Type]) -> NetRights {
+    if args.is_empty() {
+        return NetRights::full();
+    }
+    let mut r = NetRights { connect: false, listen: false };
+    for a in args {
+        if let ast::Type::Named(n, _) = a {
+            match n.as_str() {
+                "Connect" => r.connect = true,
+                "Listen" => r.listen = true,
+                _ => {}
+            }
+        }
+    }
+    r
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Ty {
     Int,
@@ -78,7 +126,7 @@ pub enum Ty {
     Console,
     Subject,
     Dir(DirRights),
-    Net,
+    Net(NetRights),
     Socket,
     Listener,
     List(Box<Ty>),
@@ -103,7 +151,7 @@ impl fmt::Display for Ty {
             Ty::Console => write!(f, "Console"),
             Ty::Subject => write!(f, "Subject"),
             Ty::Dir(r) => write!(f, "{r}"),
-            Ty::Net => write!(f, "Net"),
+            Ty::Net(r) => write!(f, "{r}"),
             Ty::Socket => write!(f, "Socket"),
             Ty::Listener => write!(f, "Listener"),
             Ty::List(e) => write!(f, "List({e})"),
@@ -281,7 +329,7 @@ impl Checker {
             "Console" => Ty::Console,
             "Subject" => Ty::Subject,
             "Dir" => Ty::Dir(dir_rights(args)),
-            "Net" => Ty::Net,
+            "Net" => Ty::Net(net_rights(args)),
             "Socket" => Ty::Socket,
             "Listener" => Ty::Listener,
             "List" => {
@@ -317,7 +365,7 @@ impl Checker {
                 "Console" => Ty::Console,
                 "Subject" => Ty::Subject,
                 "Dir" => Ty::Dir(dir_rights(args)),
-                "Net" => Ty::Net,
+                "Net" => Ty::Net(net_rights(args)),
                 "Socket" => Ty::Socket,
                 "Listener" => Ty::Listener,
                 "List" => {
@@ -567,15 +615,13 @@ impl Checker {
                 Some((vec![Ty::Named("Dict".into(), vec![k, v])], Ty::Int))
             }
             // `read`/`write`/`exists`/`subdir`/`read_only`/`write_only` are handled
-            // by `check_dir_op` (their `Dir` rights are enforced per-op).
-            "connect" => Some((vec![Ty::Net, Ty::String], Ty::Socket)),
-            "restrict" => Some((vec![Ty::Net, Ty::String], Ty::Net)),
+            // by `check_dir_op`; `connect`/`listen`/`restrict`/`connect_only`/
+            // `listen_only` by `check_net_op` (their rights are enforced per-op).
             "send_line" => Some((vec![Ty::Socket, Ty::String], Ty::Nil)),
             "send_bytes" => Some((vec![Ty::Socket, Ty::String], Ty::Nil)),
             "recv_line" => Some((vec![Ty::Socket], Ty::String)),
             "recv_all" => Some((vec![Ty::Socket], Ty::String)),
             "recv_bytes" => Some((vec![Ty::Socket, Ty::Int], Ty::String)),
-            "listen" => Some((vec![Ty::Net, Ty::String], Ty::Listener)),
             "accept" => Some((vec![Ty::Listener], Ty::Socket)),
             "close" => Some((vec![Ty::Socket], Ty::Nil)),
             // User functions: instantiate generic type parameters fresh per call.
@@ -684,6 +730,87 @@ impl Checker {
                     ));
                 }
                 Ty::Dir(DirRights { read: false, write: true })
+            }
+            _ => unreachable!(),
+        };
+        Ok(Some(ret))
+    }
+
+    /// Resolve a call's first argument as a `Net` capability and yield its verbs.
+    /// An unconstrained variable defaults to the full set (bare `Net`).
+    fn net_cap_rights(&mut self, name: &str, arg: &Expr) -> Result<NetRights, TypeError> {
+        let cap = self.infer(arg)?;
+        match self.resolve(&cap) {
+            Ty::Net(r) => Ok(r),
+            Ty::Var(_) => {
+                self.unify(&cap, &Ty::Net(NetRights::full()))?;
+                Ok(NetRights::full())
+            }
+            other => terr(format!(
+                "`{name}` expects a `Net` capability but got `{other}`"
+            )),
+        }
+    }
+
+    /// Type-check a network-capability op, enforcing that the `Net`'s verbs permit
+    /// it. `connect` needs `Connect`; `listen` needs `Listen`; `restrict` is verb-
+    /// neutral address attenuation (preserves the verb set); `connect_only`/
+    /// `listen_only` are monotone attenuations that may only keep a held verb.
+    /// Returns `Ok(None)` when `name` is not a Net op.
+    fn check_net_op(&mut self, name: &str, args: &[Expr]) -> Result<Option<Ty>, TypeError> {
+        let arity = match name {
+            "connect" | "listen" | "restrict" => 2,
+            "connect_only" | "listen_only" => 1,
+            _ => return Ok(None),
+        };
+        if args.len() != arity {
+            return terr(format!(
+                "`{name}` expects {arity} argument(s) but got {}",
+                args.len()
+            ));
+        }
+        let verbs = self.net_cap_rights(name, &args[0])?;
+        // The trailing argument (an address) is a string.
+        for arg in &args[1..] {
+            let at = self.infer(arg)?;
+            self.unify(&Ty::String, &at).map_err(|e| TypeError {
+                message: format!("in call to `{name}`: {}", e.message),
+            })?;
+        }
+        let ret = match name {
+            "connect" => {
+                if !verbs.connect {
+                    return terr(format!(
+                        "`connect` needs `Connect` but the capability is `{verbs}`"
+                    ));
+                }
+                Ty::Socket
+            }
+            "listen" => {
+                if !verbs.listen {
+                    return terr(format!(
+                        "`listen` needs `Listen` but the capability is `{verbs}`"
+                    ));
+                }
+                Ty::Listener
+            }
+            // Attenuating the address set leaves the verbs intact.
+            "restrict" => Ty::Net(verbs),
+            "connect_only" => {
+                if !verbs.connect {
+                    return terr(format!(
+                        "`connect_only` cannot keep `Connect`: the capability is `{verbs}`"
+                    ));
+                }
+                Ty::Net(NetRights { connect: true, listen: false })
+            }
+            "listen_only" => {
+                if !verbs.listen {
+                    return terr(format!(
+                        "`listen_only` cannot keep `Listen`: the capability is `{verbs}`"
+                    ));
+                }
+                Ty::Net(NetRights { connect: false, listen: true })
             }
             _ => unreachable!(),
         };
@@ -867,6 +994,9 @@ impl Checker {
                     }
                 }
                 if let Some(t) = self.check_dir_op(name, args)? {
+                    return Ok(t);
+                }
+                if let Some(t) = self.check_net_op(name, args)? {
                     return Ok(t);
                 }
                 let Some((params, ret)) = self.call_sig(name) else {

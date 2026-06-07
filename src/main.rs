@@ -4650,6 +4650,53 @@ impl Counter:
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
+    /// Rights-parameterized `Net`: the verb-set in the type distinguishes a client
+    /// from a server. `Net[Connect]` cannot `listen`; `Net[Listen]` cannot
+    /// `connect`; bare `Net` is the full set (back-compat). `connect_only`/
+    /// `listen_only` are monotone attenuations the checker enforces.
+    #[test]
+    fn net_verbs_are_statically_enforced() {
+        let ok = |src: &str| {
+            assert!(
+                crate::typeck::check_str(src).is_ok(),
+                "expected ok, got: {:?}",
+                crate::typeck::check_str(src)
+            );
+        };
+        let err = |src: &str, needle: &str| {
+            let e = crate::typeck::check_str(src).expect_err("expected a type error");
+            assert!(e.contains(needle), "error `{e}` should mention `{needle}`");
+        };
+
+        // Bare `Net` grants both verbs.
+        ok("fn f(n: Net):\n    let s = connect(n, \"a:1\")\n    let l = listen(n, \"b:2\")\nfn main(c: Console, net: Net):\n    f(net)\n");
+        // `Net[Connect]` is a client — it cannot listen.
+        err(
+            "fn f(n: Net[Connect]):\n    let l = listen(n, \"b:2\")\nfn main(c: Console, net: Net):\n    f(net)\n",
+            "`listen` needs `Listen`",
+        );
+        // `Net[Listen]` is a server — it cannot dial out.
+        err(
+            "fn f(n: Net[Listen]):\n    let s = connect(n, \"a:1\")\nfn main(c: Console, net: Net):\n    f(net)\n",
+            "`connect` needs `Connect`",
+        );
+        // `connect_only` narrows to `Net[Connect]`; listening through it is rejected.
+        err(
+            "fn f(n: Net):\n    let c = connect_only(n)\n    let l = listen(c, \"b:2\")\nfn main(c: Console, net: Net):\n    f(net)\n",
+            "`listen` needs `Listen`",
+        );
+        // `listen_only` cannot resurrect a `Connect` the capability never had.
+        err(
+            "fn f(n: Net[Listen]):\n    let c = connect_only(n)\nfn main(c: Console, net: Net):\n    f(net)\n",
+            "`connect_only` cannot keep `Connect`",
+        );
+        // `restrict` is verb-neutral: it preserves the verb-set it was given.
+        err(
+            "fn f(n: Net[Connect]):\n    let r = restrict(n, \"a:1\")\n    let l = listen(r, \"b:2\")\nfn main(c: Console, net: Net):\n    f(net)\n",
+            "`listen` needs `Listen`",
+        );
+    }
+
     /// `import list` resolves to the bundled standard library (no local file),
     /// links, type-checks, and runs end to end through the CLI.
     #[test]

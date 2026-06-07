@@ -91,13 +91,26 @@ bitset is cleaner.)
   only keep a right you hold); they are the identity at runtime since rights are
   type-level only.
 
-Still **future** ticks: `Net[Connect/Listen]` + transport split, and surfacing
-the right-set in the `caps`/`caps-diff` footprint.
+**`Net` verbs are implemented** (typechecker + interpreter + parser):
+
+- Surface syntax `Net[Connect]` / `Net[Listen]` / `Net[Connect, Listen]`; bare
+  `Net` = full set (back-compat).
+- Ops gated by verb-membership in `Typeck::check_net_op`: `connect` needs
+  `Connect`, `listen` needs `Listen`. `restrict` is verb-neutral address
+  attenuation (preserves the verb-set). A `Net[Connect]` passed to `listen` is a
+  compile-time error.
+- Narrowing builtins `connect_only`/`listen_only` mirror `read_only`/`write_only`
+  (monotone, identity at runtime).
+- Unrecognized bracket markers (a future transport like `Tcp`) are parsed but
+  ignored, so the syntax is forward-compatible with the transport dimension.
+
+Still **future** ticks: the `Net` transport split (`Tcp`/`Udp`/`Uds`, TCP-only
+at runtime), and surfacing the right-set in the `caps`/`caps-diff` footprint.
 
 ## Open questions
 
 - Whether to ship `Dialer`/`Listener-grant` aliases for the common `Net` cases
-  alongside the parameterized form (deferred with the `Net` split).
+  alongside the parameterized form.
 
 ## Implementation order (non-breaking, incremental)
 

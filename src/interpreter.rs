@@ -825,6 +825,13 @@ impl Interpreter {
                 }
                 _ => err("restrict expects a Net and an address"),
             },
+            // Static attenuation of a Net capability: verbs live only in the type,
+            // so at runtime these are the identity (the checker has already proved
+            // the dropped verb was held).
+            "connect_only" | "listen_only" => match args {
+                [Value::Net(allow)] => Ok(Some(Value::Net(allow.clone()))),
+                _ => err(format!("{name} expects a Net")),
+            },
             // Connect only to an address the Net capability permits.
             "connect" => match args {
                 [Value::Net(allow), Value::Str(addr)] => {
