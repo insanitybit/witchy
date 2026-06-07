@@ -17,6 +17,7 @@
 import http
 import option
 import json
+import ascii
 
 // ---- Request accessors ----
 
@@ -315,8 +316,10 @@ fn read_headers(sock: Socket) -> List((String, String)):
     hdrs
 
 fn content_length(headers: List((String, String))) -> Int:
+    // The header is attacker-controlled; a non-numeric value must not trap
+    // `string_to_int` and take down the server — treat it as no body.
     match http.find_header(headers, "content-length"):
-        Some(v) -> string_to_int(v)
+        Some(v) -> if ascii.all_digits(v): string_to_int(v) else: 0
         None -> 0
 
 fn parse_query(q: String) -> List((String, String)):

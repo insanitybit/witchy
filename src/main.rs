@@ -2098,6 +2098,10 @@ fn main(console: Console):
     print(console, int_to_string(ascii.to_digit("4")))
     print(console, int_to_string(ascii.to_digit("z")))
     print(console, int_to_string(digit_sum("a1b2c3")))
+    print(console, to_string(ascii.all_digits("12345")))
+    print(console, to_string(ascii.all_digits("12a45")))
+    print(console, to_string(ascii.all_digits("")))
+    print(console, to_string(ascii.all_digits("0")))
 "#;
         let sources = [
             ("ascii", crate::bundled_module("ascii").unwrap()),
@@ -2109,7 +2113,10 @@ fn main(console: Console):
         assert_eq!(interpreted, compiled, "std ascii diverged");
         assert_eq!(
             compiled,
-            vec!["true", "false", "true", "false", "true", "4", "-1", "6"]
+            vec![
+                "true", "false", "true", "false", "true", "4", "-1", "6", // all_digits:
+                "true", "false", "false", "true",
+            ]
         );
     }
 
