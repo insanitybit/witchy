@@ -12,13 +12,26 @@ use crate::ast::*;
 
 const IND: &str = "    ";
 
-/// Emit every captured own-line comment with a source line before `line`, each
-/// on its own line, advancing the cursor `ci`.
-fn emit_comments_before(s: &mut String, comments: &[(u32, String)], ci: &mut usize, line: u32) {
-    while *ci < comments.len() && comments[*ci].0 < line {
-        s.push_str(&comments[*ci].1);
-        s.push('\n');
-        *ci += 1;
+/// A cursor over the source's own-line comments, emitted back in order as the
+/// printer reaches each anchor line so `witchy fmt` preserves them.
+struct Comments<'a> {
+    list: &'a [(u32, String)],
+    cursor: usize,
+}
+
+impl Comments<'_> {
+    /// Emit every comment whose source line is before `line`, indented to `depth`.
+    fn before(&mut self, s: &mut String, depth: usize, line: u32) {
+        while self.cursor < self.list.len() && self.list[self.cursor].0 < line {
+            pad(s, depth);
+            s.push_str(&self.list[self.cursor].1);
+            s.push('\n');
+            self.cursor += 1;
+        }
+    }
+
+    fn remaining(&self) -> bool {
+        self.cursor < self.list.len()
     }
 }
 
@@ -28,13 +41,14 @@ pub fn module(m: &Module, comments: &[(u32, String)]) -> String {
     // them (e.g. a linked module) fall back to emitting no comments.
     let have_lines =
         m.import_lines.len() == m.imports.len() && m.item_lines.len() == m.items.len();
-    let cs: &[(u32, String)] = if have_lines { comments } else { &[] };
-    let mut ci = 0usize;
+    let mut c = Comments {
+        list: if have_lines { comments } else { &[] },
+        cursor: 0,
+    };
 
     if !m.imports.is_empty() {
         // The comments before the first import are the file header.
-        let first = m.import_lines.first().copied().unwrap_or(u32::MAX);
-        emit_comments_before(&mut s, cs, &mut ci, first);
+        c.before(&mut s, 0, m.import_lines.first().copied().unwrap_or(u32::MAX));
         if !s.is_empty() {
             s.push('\n');
         }
@@ -49,20 +63,15 @@ pub fn module(m: &Module, comments: &[(u32, String)]) -> String {
         if !s.is_empty() {
             s.push('\n');
         }
-        let before = m.item_lines.get(idx).copied().unwrap_or(u32::MAX);
-        emit_comments_before(&mut s, cs, &mut ci, before);
-        item_str(&mut s, item);
+        c.before(&mut s, 0, m.item_lines.get(idx).copied().unwrap_or(u32::MAX));
+        item_str(&mut s, item, &mut c);
     }
 
     // Comments after the last item.
-    if ci < cs.len() && !s.is_empty() {
+    if c.remaining() && !s.is_empty() {
         s.push('\n');
     }
-    while ci < cs.len() {
-        s.push_str(&cs[ci].1);
-        s.push('\n');
-        ci += 1;
-    }
+    c.before(&mut s, 0, u32::MAX);
     s
 }
 
@@ -72,13 +81,13 @@ fn pad(s: &mut String, depth: usize) {
     }
 }
 
-fn item_str(s: &mut String, item: &Item) {
+fn item_str(s: &mut String, item: &Item, c: &mut Comments) {
     match item {
-        Item::Function(f) => function(s, f, false),
+        Item::Function(f) => function(s, f, false, c),
         Item::Type(t) => type_def(s, t),
-        Item::Trait(t) => trait_def(s, t),
-        Item::Impl(im) => impl_def(s, im),
-        Item::Actor(a) => actor_def(s, a),
+        Item::Trait(t) => trait_def(s, t, c),
+        Item::Impl(im) => impl_def(s, im, c),
+        Item::Actor(a) => actor_def(s, a, c),
         Item::Const { name, value } => {
             s.push_str("let ");
             s.push_str(name);
@@ -137,7 +146,7 @@ fn param(p: &Param) -> String {
     }
 }
 
-fn function(s: &mut String, f: &Function, indented: bool) {
+fn function(s: &mut String, f: &Function, indented: bool, c: &mut Comments) {
     let depth = if indented { 1 } else { 0 };
     pad(s, depth);
     if f.public {
@@ -146,7 +155,7 @@ fn function(s: &mut String, f: &Function, indented: bool) {
     s.push_str("fn ");
     s.push_str(&sig(&f.name, &f.params, &f.ret, &f.bounds));
     s.push_str(":\n");
-    block(s, &f.body, depth + 1);
+    block(s, &f.body, depth + 1, c);
 }
 
 fn type_def(s: &mut String, t: &TypeDef) {
@@ -182,7 +191,7 @@ fn type_def(s: &mut String, t: &TypeDef) {
     }
 }
 
-fn trait_def(s: &mut String, t: &TraitDef) {
+fn trait_def(s: &mut String, t: &TraitDef, c: &mut Comments) {
     s.push_str("trait ");
     s.push_str(&t.name);
     s.push_str(":\n");
@@ -193,14 +202,14 @@ fn trait_def(s: &mut String, t: &TraitDef) {
         match &m.default {
             Some(b) => {
                 s.push_str(":\n");
-                block(s, b, 2);
+                block(s, b, 2, c);
             }
             None => s.push('\n'),
         }
     }
 }
 
-fn impl_def(s: &mut String, im: &ImplDef) {
+fn impl_def(s: &mut String, im: &ImplDef, c: &mut Comments) {
     s.push_str("impl ");
     if let Some(t) = &im.trait_name {
         s.push_str(t);
@@ -212,14 +221,14 @@ fn impl_def(s: &mut String, im: &ImplDef) {
         if i > 0 {
             s.push('\n');
         }
-        function(s, m, true);
+        function(s, m, true, c);
     }
     for h in &im.handlers {
-        handler(s, h);
+        handler(s, h, c);
     }
 }
 
-fn actor_def(s: &mut String, a: &ActorDef) {
+fn actor_def(s: &mut String, a: &ActorDef, c: &mut Comments) {
     s.push_str("actor ");
     s.push_str(&a.name);
     s.push_str(":\n");
@@ -243,12 +252,12 @@ fn actor_def(s: &mut String, a: &ActorDef) {
         s.push_str(&a.name);
         s.push_str(":\n");
         for h in &a.handlers {
-            handler(s, h);
+            handler(s, h, c);
         }
     }
 }
 
-fn handler(s: &mut String, h: &Handler) {
+fn handler(s: &mut String, h: &Handler, c: &mut Comments) {
     pad(s, 1);
     s.push_str("on ");
     s.push_str(&h.message);
@@ -260,47 +269,51 @@ fn handler(s: &mut String, h: &Handler) {
         s.push_str(&param(p));
     }
     s.push_str("):\n");
-    block(s, &h.body, 2);
+    block(s, &h.body, 2, c);
 }
 
-fn block(s: &mut String, b: &Block, depth: usize) {
+fn block(s: &mut String, b: &Block, depth: usize, c: &mut Comments) {
     if b.stmts.is_empty() {
         // An empty block has no off-side representation; emit a no-op expression.
         pad(s, depth);
         s.push_str("0\n");
         return;
     }
-    for st in &b.stmts {
-        stmt(s, st, depth);
+    for (i, st) in b.stmts.iter().enumerate() {
+        // Own-line comments that preceded this statement in the source.
+        if let Some(line) = b.lines.get(i) {
+            c.before(s, depth, *line);
+        }
+        stmt(s, st, depth, c);
     }
 }
 
-fn stmt(s: &mut String, st: &Stmt, depth: usize) {
+fn stmt(s: &mut String, st: &Stmt, depth: usize, c: &mut Comments) {
     match st {
         Stmt::Let { name, mutable, value } => {
             pad(s, depth);
             s.push_str(if *mutable { "var " } else { "let " });
             s.push_str(name);
             s.push_str(" = ");
-            value_or_block(s, value, depth);
+            value_or_block(s, value, depth, c);
         }
         Stmt::Assign { name, value } => {
             pad(s, depth);
             s.push_str(name);
             s.push_str(" = ");
-            value_or_block(s, value, depth);
+            value_or_block(s, value, depth, c);
         }
         Stmt::LetTuple { names, value } => {
             pad(s, depth);
             s.push_str("let (");
             s.push_str(&names.join(", "));
             s.push_str(") = ");
-            value_or_block(s, value, depth);
+            value_or_block(s, value, depth, c);
         }
         Stmt::Return(Some(e)) => {
             pad(s, depth);
             s.push_str("return ");
-            value_or_block(s, e, depth);
+            value_or_block(s, e, depth, c);
         }
         Stmt::Return(None) => {
             pad(s, depth);
@@ -314,21 +327,21 @@ fn stmt(s: &mut String, st: &Stmt, depth: usize) {
             pad(s, depth);
             s.push_str("continue\n");
         }
-        Stmt::Expr(e) => block_stmt(s, e, depth),
+        Stmt::Expr(e) => block_stmt(s, e, depth, c),
     }
 }
 
 /// A statement-position expression: control-flow forms expand multi-line.
-fn block_stmt(s: &mut String, e: &Expr, depth: usize) {
+fn block_stmt(s: &mut String, e: &Expr, depth: usize, c: &mut Comments) {
     match e {
         Expr::If { .. } | Expr::Match { .. } | Expr::While { .. } | Expr::For { .. } => {
             pad(s, depth);
-            multiline(s, e, depth);
+            multiline(s, e, depth, c);
         }
-        Expr::Block(b) => block(s, b, depth),
+        Expr::Block(b) => block(s, b, depth, c),
         Expr::Lambda { params, body } => {
             pad(s, depth);
-            lambda_at(s, params, body, depth);
+            lambda_at(s, params, body, depth, c);
         }
         _ => {
             pad(s, depth);
@@ -341,13 +354,13 @@ fn block_stmt(s: &mut String, e: &Expr, depth: usize) {
 /// The right-hand side of a `let`/`=`/`return`: use a multi-line form when the
 /// value is a `match` (no inline form) or a lambda with a block body, else an
 /// inline expr.
-fn value_or_block(s: &mut String, e: &Expr, depth: usize) {
+fn value_or_block(s: &mut String, e: &Expr, depth: usize, c: &mut Comments) {
     match e {
         Expr::Match { .. } => {
-            multiline(s, e, depth);
+            multiline(s, e, depth, c);
         }
         Expr::Lambda { params, body } => {
-            lambda_at(s, params, body, depth);
+            lambda_at(s, params, body, depth, c);
         }
         _ => {
             s.push_str(&expr(e));
@@ -359,32 +372,32 @@ fn value_or_block(s: &mut String, e: &Expr, depth: usize) {
 /// Emit a control-flow expression across multiple lines. `s` is already padded to
 /// the header position for `if`/`while`/`for`; for `match` it is positioned after
 /// `= ` so we do not pre-pad.
-fn multiline(s: &mut String, e: &Expr, depth: usize) {
+fn multiline(s: &mut String, e: &Expr, depth: usize, c: &mut Comments) {
     match e {
         Expr::If { cond, then_block, else_block } => {
             s.push_str("if ");
             s.push_str(&expr(cond));
             s.push_str(":\n");
-            block(s, then_block, depth + 1);
+            block(s, then_block, depth + 1, c);
             if let Some(eb) = else_block {
                 pad(s, depth);
                 // `else if` chain: a single nested if statement.
                 if eb.stmts.len() == 1 {
                     if let Stmt::Expr(inner @ Expr::If { .. }) = &eb.stmts[0] {
                         s.push_str("else ");
-                        multiline(s, inner, depth);
+                        multiline(s, inner, depth, c);
                         return;
                     }
                 }
                 s.push_str("else:\n");
-                block(s, eb, depth + 1);
+                block(s, eb, depth + 1, c);
             }
         }
         Expr::While { cond, body } => {
             s.push_str("while ");
             s.push_str(&expr(cond));
             s.push_str(":\n");
-            block(s, body, depth + 1);
+            block(s, body, depth + 1, c);
         }
         Expr::For { var, iter, body } => {
             s.push_str("for ");
@@ -392,7 +405,7 @@ fn multiline(s: &mut String, e: &Expr, depth: usize) {
             s.push_str(" in ");
             s.push_str(&expr(iter));
             s.push_str(":\n");
-            block(s, body, depth + 1);
+            block(s, body, depth + 1, c);
         }
         Expr::Match { scrutinee, arms } => {
             // An empty wildcard arm body can only arise from desugaring an
@@ -411,7 +424,7 @@ fn multiline(s: &mut String, e: &Expr, depth: usize) {
                         s.push_str(" = ");
                         s.push_str(&expr(scrutinee));
                         s.push_str(":\n");
-                        block(s, tb, depth + 1);
+                        block(s, tb, depth + 1, c);
                         return;
                     }
                 }
@@ -427,7 +440,7 @@ fn multiline(s: &mut String, e: &Expr, depth: usize) {
                     s.push_str(&expr(g));
                 }
                 s.push_str(" ->");
-                arm_body(s, &a.body, depth + 1);
+                arm_body(s, &a.body, depth + 1, c);
             }
         }
         _ => {
@@ -441,19 +454,19 @@ fn multiline(s: &mut String, e: &Expr, depth: usize) {
 /// block after the `->`; otherwise the body stays a bare expression — a `match`
 /// continues multi-line on the same line as `->`, everything else is inline (so
 /// the re-parsed arm body has the same shape, not a `Block` wrapper).
-fn arm_body(s: &mut String, body: &Expr, depth: usize) {
+fn arm_body(s: &mut String, body: &Expr, depth: usize, c: &mut Comments) {
     match body {
         Expr::Block(b) => {
             s.push('\n');
-            block(s, b, depth + 1);
+            block(s, b, depth + 1, c);
         }
         Expr::Match { .. } => {
             s.push(' ');
-            multiline(s, body, depth);
+            multiline(s, body, depth, c);
         }
         Expr::Lambda { params, body } => {
             s.push(' ');
-            lambda_at(s, params, body, depth);
+            lambda_at(s, params, body, depth, c);
         }
         _ => {
             s.push(' ');
@@ -588,7 +601,7 @@ fn block_value(b: &Block) -> String {
 /// inline `fn(p): expr` when the body is a single inline expression, otherwise
 /// `fn(p):` followed by an indented block. `s` is positioned where the `fn`
 /// begins.
-fn lambda_at(s: &mut String, params: &[Param], body: &Block, depth: usize) {
+fn lambda_at(s: &mut String, params: &[Param], body: &Block, depth: usize, c: &mut Comments) {
     let ps: Vec<String> = params.iter().map(param).collect();
     s.push_str("fn(");
     s.push_str(&ps.join(", "));
@@ -601,7 +614,7 @@ fn lambda_at(s: &mut String, params: &[Param], body: &Block, depth: usize) {
         }
         None => {
             s.push_str(":\n");
-            block(s, body, depth + 1);
+            block(s, body, depth + 1, c);
         }
     }
 }
@@ -915,6 +928,15 @@ mod tests {
         assert!(out.contains("// doc for f\nfn f"), "{out}");
         // The header stays above the import.
         assert!(out.find("// header one").unwrap() < out.find("import string").unwrap(), "{out}");
+    }
+
+    #[test]
+    fn preserves_in_body_and_nested_comments() {
+        let src = "fn main(console: Console):\n    // before x\n    let x = 5\n    while x > 0:\n        // inside loop\n        x = x - 1\n";
+        let out = reformat(src).expect("round-trips");
+        assert!(out.contains("    // before x\n    let x = 5"), "{out}");
+        // The nested comment keeps the loop body's indentation.
+        assert!(out.contains("        // inside loop\n        x = x - 1"), "{out}");
     }
 
     #[test]
