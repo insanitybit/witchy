@@ -4567,6 +4567,30 @@ impl Counter:
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn dir_write_refuses_a_symlink_leaf() {
+        // A pre-existing symlink in the subtree must not let a write escape it.
+        let base = std::env::temp_dir().join("witchy_dir_symlink_test");
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("sandbox")).unwrap();
+        std::fs::write(base.join("secret.txt"), "ORIGINAL").unwrap();
+        std::os::unix::fs::symlink("../secret.txt", base.join("sandbox/link.txt")).unwrap();
+
+        let mods = vec![(
+            "main".to_string(),
+            parser::parse_module(
+                "fn main(console: Console, root: Dir):\n    write(subdir(root, \"sandbox\"), \"link.txt\", \"PWNED\")\n",
+            )
+            .expect("parse"),
+        )];
+        let linked = crate::linker::link(mods, "main").expect("link");
+        assert!(interpreter::run_module(linked, &base, Vec::new()).is_err());
+        // The symlink target outside the subtree is untouched.
+        assert_eq!(std::fs::read_to_string(base.join("secret.txt")).unwrap(), "ORIGINAL");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
     /// `import list` resolves to the bundled standard library (no local file),
     /// links, type-checks, and runs end to end through the CLI.
     #[test]

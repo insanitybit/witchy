@@ -1571,6 +1571,16 @@ fn resolve_write(base: &Path, rel: &str) -> Result<PathBuf, RuntimeError> {
     if !real_parent.starts_with(&real_base) {
         return err("path escapes the Dir capability (via symlink)");
     }
+    // The parent is confined, but the final component itself could be a
+    // pre-existing symlink pointing outside the subtree (unlike `read`, we can't
+    // canonicalize a not-yet-existing target). Refuse to write *through* a
+    // symlink leaf. Same canonicalize-then-use TOCTOU caveat as `resolve` — the
+    // race-free fix is the planned `openat2`/WASI-preopen substrate.
+    if let Ok(meta) = std::fs::symlink_metadata(&joined) {
+        if meta.file_type().is_symlink() {
+            return err("path escapes the Dir capability (the target is a symlink)");
+        }
+    }
     Ok(joined)
 }
 
