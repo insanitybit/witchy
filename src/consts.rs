@@ -81,6 +81,10 @@ fn collect_names(e: &Expr, out: &mut Vec<String>) {
             collect_names(base, out);
             collect_names(index, out);
         }
+        Expr::WhileLet { scrutinee, body, .. } => {
+            collect_names(scrutinee, out);
+            collect_names_block(body, out);
+        }
         Expr::If { cond, then_block, else_block } => {
             collect_names(cond, out);
             collect_names_block(then_block, out);
@@ -333,6 +337,13 @@ fn subst_expr(
             let a = subst_expr(base, consts, cnames, scope);
             let b = subst_expr(index, consts, cnames, scope);
             a || b
+        }
+        Expr::WhileLet { pattern, scrutinee, body } => {
+            let mut changed = subst_expr(scrutinee, consts, cnames, scope);
+            let mut s = scope.clone();
+            pattern_binds(pattern, &mut s);
+            changed |= subst_block(body, consts, cnames, &mut s);
+            changed
         }
         Expr::If { cond, then_block, else_block } => {
             let mut changed = subst_expr(cond, consts, cnames, scope);

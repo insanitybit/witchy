@@ -1245,6 +1245,15 @@ impl Interpreter {
                 let d = crate::parser::desugar_index((**base).clone(), (**index).clone());
                 self.eval(&d, env)
             }
+            // `while let` lowers to a `while true` over a match; evaluate that.
+            Expr::WhileLet { pattern, scrutinee, body } => {
+                let d = crate::parser::desugar_while_let(
+                    pattern.clone(),
+                    (**scrutinee).clone(),
+                    body.clone(),
+                );
+                self.eval(&d, env)
+            }
             Expr::List(items) => {
                 let vals = items
                     .iter()

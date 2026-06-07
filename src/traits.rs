@@ -326,6 +326,12 @@ impl Ctx<'_> {
                 self.rewrite_expr(base, scope);
                 self.rewrite_expr(index, scope);
             }
+            Expr::WhileLet { pattern, scrutinee, body } => {
+                self.rewrite_expr(scrutinee, scope);
+                let mut s = scope.clone();
+                bind_ctor_pattern(pattern, self.ctor_fields, &mut s);
+                self.rewrite_block(body, &mut s);
+            }
             Expr::If {
                 cond,
                 then_block,
@@ -741,6 +747,12 @@ impl Mono<'_> {
             Expr::Index { base, index } => {
                 self.walk_expr(base, scope);
                 self.walk_expr(index, scope);
+            }
+            Expr::WhileLet { pattern, scrutinee, body } => {
+                self.walk_expr(scrutinee, scope);
+                let mut s = scope.clone();
+                bind_ctor_pattern(pattern, self.ctor_fields, &mut s);
+                self.walk_block(body, &mut s);
             }
             Expr::If {
                 cond,

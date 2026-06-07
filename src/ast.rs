@@ -271,6 +271,16 @@ pub enum Expr {
         base: Box<Expr>,
         index: Box<Expr>,
     },
+    /// `while let PAT = SCRUT: body` — loop while the scrutinee keeps matching
+    /// `PAT`, binding its variables in the body each iteration. Kept as a node
+    /// (rather than desugared at parse time) so the formatter can print it back;
+    /// every other consumer lowers it via `parser::desugar_while_let` to a
+    /// `while true` over a match whose wildcard arm breaks.
+    WhileLet {
+        pattern: Pattern,
+        scrutinee: Box<Expr>,
+        body: Block,
+    },
     /// `spawn ActorName(args)` — create an actor, granting it the args as its
     /// initial (non-defaulted) fields. Evaluates to a `Subject`.
     Spawn {

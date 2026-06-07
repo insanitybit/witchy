@@ -1018,6 +1018,15 @@ impl Checker {
                 let d = crate::parser::desugar_index((**base).clone(), (**index).clone());
                 self.infer(&d)
             }
+            // `while let` lowers to a `while true` over a match; type that.
+            Expr::WhileLet { pattern, scrutinee, body } => {
+                let d = crate::parser::desugar_while_let(
+                    pattern.clone(),
+                    (**scrutinee).clone(),
+                    body.clone(),
+                );
+                self.infer(&d)
+            }
             Expr::List(items) => {
                 let elem = self.fresh();
                 for it in items {

@@ -334,7 +334,11 @@ fn stmt(s: &mut String, st: &Stmt, depth: usize, c: &mut Comments) {
 /// A statement-position expression: control-flow forms expand multi-line.
 fn block_stmt(s: &mut String, e: &Expr, depth: usize, c: &mut Comments) {
     match e {
-        Expr::If { .. } | Expr::Match { .. } | Expr::While { .. } | Expr::For { .. } => {
+        Expr::If { .. }
+        | Expr::Match { .. }
+        | Expr::While { .. }
+        | Expr::WhileLet { .. }
+        | Expr::For { .. } => {
             pad(s, depth);
             multiline(s, e, depth, c);
         }
@@ -396,6 +400,14 @@ fn multiline(s: &mut String, e: &Expr, depth: usize, c: &mut Comments) {
         Expr::While { cond, body } => {
             s.push_str("while ");
             s.push_str(&expr(cond));
+            s.push_str(":\n");
+            block(s, body, depth + 1, c);
+        }
+        Expr::WhileLet { pattern: pat, scrutinee, body } => {
+            s.push_str("while let ");
+            s.push_str(&pattern(pat));
+            s.push_str(" = ");
+            s.push_str(&expr(scrutinee));
             s.push_str(":\n");
             block(s, body, depth + 1, c);
         }
@@ -566,9 +578,11 @@ fn expr(e: &Expr) -> String {
         Expr::Spawn { actor, args } => format!("spawn {actor}({})", comma(args)),
         // No inline form — caller should have routed these multi-line. Emit a
         // best-effort block expression so output still parses.
-        Expr::Match { .. } | Expr::While { .. } | Expr::For { .. } | Expr::Block(_) => {
-            "0".to_string()
-        }
+        Expr::Match { .. }
+        | Expr::While { .. }
+        | Expr::WhileLet { .. }
+        | Expr::For { .. }
+        | Expr::Block(_) => "0".to_string(),
     }
 }
 
@@ -591,7 +605,7 @@ fn block_value_opt(b: &Block) -> Option<String> {
 /// are.
 fn inline_ok(e: &Expr) -> bool {
     match e {
-        Expr::Match { .. } | Expr::While { .. } | Expr::For { .. } | Expr::Block(_) => false,
+        Expr::Match { .. } | Expr::While { .. } | Expr::WhileLet { .. } | Expr::For { .. } | Expr::Block(_) => false,
         Expr::If { then_block, else_block, .. } => {
             block_value_opt(then_block).is_some()
                 && else_block.as_ref().is_none_or(|b| block_value_opt(b).is_some())
@@ -864,6 +878,10 @@ fn strip_lines_expr(e: &mut Expr) {
             strip_lines_expr(base);
             strip_lines_expr(index);
         }
+        Expr::WhileLet { scrutinee, body, .. } => {
+            strip_lines_expr(scrutinee);
+            strip_lines_block(body);
+        }
         Expr::Lambda { body, .. } => strip_lines_block(body),
         Expr::RecordUpdate { base, fields } => {
             strip_lines_expr(base);
@@ -967,6 +985,17 @@ mod tests {
         assert!(out.contains("xs[0]"), "{out}");
         assert!(out.contains("grid[1][0]"), "{out}");
         assert!(!out.contains("at("), "subscripts must not de-sugar to at(): {out}");
+    }
+
+    #[test]
+    fn preserves_while_let() {
+        // `while let` used to de-sugar to `while true / match / break` on format;
+        // now it round-trips and prints back as `while let PAT = SCRUT:`.
+        let src = "fn main(console: Console):\n    var o = Some(1)\n    while let Some(n) = o:\n        print(console, int_to_string(n))\n        o = None\n";
+        let out = reformat(src).expect("while let round-trips");
+        assert!(out.contains("while let Some(n) = o:"), "{out}");
+        assert!(!out.contains("while true"), "while let must not de-sugar: {out}");
+        assert!(!out.contains("match o"), "while let must not de-sugar: {out}");
     }
 
     #[test]

@@ -550,6 +550,10 @@ fn resolve_in_expr(
             resolve_in_expr(base, sig, by_base, vars);
             resolve_in_expr(index, sig, by_base, vars);
         }
+        Expr::WhileLet { scrutinee, body, .. } => {
+            resolve_in_expr(scrutinee, sig, by_base, vars);
+            resolve_in_block(body, sig, by_base, vars);
+        }
         Expr::RecordUpdate { base, fields } => {
             resolve_in_expr(base, sig, by_base, vars);
             for (_, v) in fields.iter_mut() {
@@ -700,6 +704,11 @@ fn collect_bound_expr(e: &Expr, out: &mut HashSet<String>) {
             collect_bound_expr(base, out);
             collect_bound_expr(index, out);
         }
+        Expr::WhileLet { pattern, scrutinee, body } => {
+            collect_bound_expr(scrutinee, out);
+            collect_pattern_vars(pattern, out);
+            collect_bound_block(body, out);
+        }
         Expr::Unary { expr, .. } | Expr::Try(expr) | Expr::As { expr, .. } | Expr::Field { base: expr, .. } => {
             collect_bound_expr(expr, out)
         }
@@ -787,6 +796,10 @@ fn rewrite_expr(
         Expr::Index { base, index } => {
             rewrite_expr(base, m, imps, fns, bound)?;
             rewrite_expr(index, m, imps, fns, bound)?;
+        }
+        Expr::WhileLet { scrutinee, body, .. } => {
+            rewrite_expr(scrutinee, m, imps, fns, bound)?;
+            rewrite_block(body, m, imps, fns, bound)?;
         }
         Expr::If {
             cond,

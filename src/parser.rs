@@ -812,28 +812,11 @@ impl Parser {
                     let pattern = self.pattern()?;
                     self.expect(&Tok::Eq)?;
                     let scrutinee = self.expr(0)?;
-                    let line = self.cur().line;
                     let body = self.block()?;
-                    let dispatch = Expr::Match {
+                    return Ok(Expr::WhileLet {
+                        pattern,
                         scrutinee: Box::new(scrutinee),
-                        arms: vec![
-                            MatchArm { pattern, guard: None, body: Expr::Block(body) },
-                            MatchArm {
-                                pattern: Pattern::Wildcard,
-                                guard: None,
-                                body: Expr::Block(Block {
-                                    stmts: vec![Stmt::Break],
-                                    lines: vec![line],
-                                }),
-                            },
-                        ],
-                    };
-                    return Ok(Expr::While {
-                        cond: Box::new(Expr::Bool(true)),
-                        body: Block {
-                            stmts: vec![Stmt::Expr(dispatch)],
-                            lines: vec![line],
-                        },
+                        body,
                     });
                 }
                 let cond = self.expr(0)?;
@@ -1443,6 +1426,28 @@ pub(crate) fn desugar_index(base: Expr, index: Expr) -> Expr {
     }
 }
 
+/// Lower `while let PAT = SCRUT: body` to `while true` over a match whose
+/// wildcard arm breaks the loop. A free function for the same reason as
+/// [`desugar_range`]: the parser keeps `Expr::WhileLet` for the formatter, and
+/// every other consumer lowers it here.
+pub(crate) fn desugar_while_let(pattern: Pattern, scrutinee: Expr, body: Block) -> Expr {
+    let dispatch = Expr::Match {
+        scrutinee: Box::new(scrutinee),
+        arms: vec![
+            MatchArm { pattern, guard: None, body: Expr::Block(body) },
+            MatchArm {
+                pattern: Pattern::Wildcard,
+                guard: None,
+                body: Expr::Block(Block { stmts: vec![Stmt::Break], lines: vec![0] }),
+            },
+        ],
+    };
+    Expr::While {
+        cond: Box::new(Expr::Bool(true)),
+        body: Block { stmts: vec![Stmt::Expr(dispatch)], lines: vec![0] },
+    }
+}
+
 /// Replace every sugar node the parser preserves for the formatter — `Expr::Range`
 /// and `Expr::Index` — with its lowering. Codegen runs this once up front so its
 /// multiple passes (local collection, then emission) agree on ranges' synthetic
@@ -1502,6 +1507,11 @@ fn lower_sugar_expr(e: &mut Expr) {
             lower_sugar_expr(base);
             lower_sugar_expr(index);
             *e = desugar_index((**base).clone(), (**index).clone());
+        }
+        Expr::WhileLet { pattern, scrutinee, body } => {
+            lower_sugar_expr(scrutinee);
+            lower_sugar_block(body);
+            *e = desugar_while_let(pattern.clone(), (**scrutinee).clone(), body.clone());
         }
         Expr::Int(_) | Expr::Float(_) | Expr::Duration(_) | Expr::Str(_) | Expr::Bool(_)
         | Expr::Var(_) => {}
@@ -1650,9 +1660,10 @@ fn f(o: Option(Int)) -> Int:
     }
 
     #[test]
-    fn while_let_desugars_to_while_true_match() {
-        // `while let PAT = e: body` becomes `while true` over a match whose
-        // wildcard arm breaks the loop.
+    fn while_let_parses_to_node_and_lowers_to_while_true_match() {
+        // `while let PAT = e: body` parses to `Expr::WhileLet` (kept for the
+        // formatter) and lowers to `while true` over a match whose wildcard arm
+        // breaks the loop.
         let stmts = fn_body(
             r#"
 fn f(o: Option(Int)):
@@ -1660,8 +1671,15 @@ fn f(o: Option(Int)):
         o = None
 "#,
         );
-        let Stmt::Expr(Expr::While { cond, body }) = &stmts[0] else {
-            panic!("while let should desugar to a while loop");
+        let Stmt::Expr(Expr::WhileLet { pattern, scrutinee, body }) = &stmts[0] else {
+            panic!("expected a WhileLet node, got {:?}", stmts[0]);
+        };
+        assert!(matches!(pattern, Pattern::Ctor { .. }));
+        assert_eq!(**scrutinee, Expr::Var("o".into()));
+        // Lowering produces the `while true` / match / break form.
+        let lowered = desugar_while_let(pattern.clone(), (**scrutinee).clone(), body.clone());
+        let Expr::While { cond, body } = &lowered else {
+            panic!("while let should lower to a while loop");
         };
         assert_eq!(**cond, Expr::Bool(true));
         let Stmt::Expr(Expr::Match { arms, .. }) = &body.stmts[0] else {

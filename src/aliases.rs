@@ -286,6 +286,10 @@ fn resolve_in_expr(e: &mut Expr, map: &HashMap<String, Type>) {
             resolve_in_expr(base, map);
             resolve_in_expr(index, map);
         }
+        Expr::WhileLet { scrutinee, body, .. } => {
+            resolve_in_expr(scrutinee, map);
+            resolve_in_block(body, map);
+        }
         Expr::If { cond, then_block, else_block } => {
             resolve_in_expr(cond, map);
             resolve_in_block(then_block, map);
