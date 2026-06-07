@@ -266,6 +266,8 @@ struct Codegen {
     uses_starts_with: bool,
     /// Whether the `crypto.ed25519_verify` host import is needed.
     uses_crypto_ed25519_verify: bool,
+    /// Whether the `crypto.sha256` host import + guest helper are needed.
+    uses_crypto_sha256: bool,
     uses_ends_with: bool,
     /// Whether the `split` helper is needed.
     uses_split: bool,
@@ -411,6 +413,7 @@ impl Codegen {
             uses_list_drop: false,
             uses_starts_with: false,
             uses_crypto_ed25519_verify: false,
+            uses_crypto_sha256: false,
             uses_ends_with: false,
             uses_split: false,
             uses_substr: false,
@@ -550,7 +553,7 @@ impl Codegen {
                 .unwrap_or(ValType::Other),
             Expr::Call { name, .. } => match name.as_str() {
                 "int_to_string" | "to_string" | "to_upper" | "to_lower" | "trim" | "replace"
-                | "substring" => ValType::Str,
+                | "substring" | "crypto.sha256" => ValType::Str,
                 "starts_with" | "ends_with" | "contains" | "crypto.ed25519_verify" => ValType::Bool,
                 "string_length" | "char_count" | "index_of" | "length" | "float_to_int"
                 | "string_to_int" | "int_to_duration" | "duration_to_int" => ValType::Int,
@@ -951,6 +954,7 @@ impl Codegen {
             || self.uses_replace
             || self.uses_dict
             || self.uses_dict_iter
+            || self.uses_crypto_sha256
     }
 
     fn emit_imports(&self) -> String {
@@ -972,6 +976,11 @@ impl Codegen {
             // crypto.ed25519_verify(pk_ptr, msg_ptr, sig_ptr) -> bool; each arg is
             // a string header pointer, the result an i32 bool.
             s.push_str("  (import \"witchy\" \"crypto.ed25519_verify\" (func $crypto_ed25519_verify (param i32 i32 i32) (result i32)))\n");
+        }
+        if self.uses_crypto_sha256 {
+            // crypto.sha256(in_header_ptr, out_data_ptr): the host writes 64 hex
+            // bytes at out_data_ptr (the guest pre-allocates the result string).
+            s.push_str("  (import \"witchy\" \"crypto.sha256\" (func $crypto_sha256_host (param i32 i32)))\n");
         }
         s
     }
@@ -1013,6 +1022,11 @@ impl Codegen {
         // `$substr` allocates a string slice (used by `split` and `substring`).
         if self.uses_substr {
             s.push_str(SUBSTR_WAT);
+        }
+        // `$crypto_sha256` allocates the 68-byte result string, then the host
+        // import fills its 64 hex bytes.
+        if self.uses_crypto_sha256 {
+            s.push_str(CRYPTO_SHA256_WAT);
         }
         // `$split` builds its result list with `$list_push` (emitted above via
         // `uses_list_push`, which the split call site also sets).
@@ -2123,8 +2137,15 @@ impl Codegen {
                 let c = self.compile_expr(&args[2])?;
                 Ok(format!("{a}{b}{c}    call $crypto_ed25519_verify\n"))
             }
-            // Other native-stdlib functions (e.g. `crypto.sha256`, which returns a
-            // string and so needs result allocation) aren't bridged into WASM yet.
+            // `crypto.sha256(s) -> String`: the guest helper bump-allocates the
+            // fixed 68-byte result header (`[len=64][64 hex bytes]`), then the host
+            // import fills the 64 bytes — returning a normal witchy string.
+            ("crypto.sha256", 1) => {
+                self.uses_crypto_sha256 = true;
+                let s = self.compile_expr(&args[0])?;
+                Ok(format!("{s}    call $crypto_sha256\n"))
+            }
+            // Any remaining native-stdlib functions aren't bridged into WASM yet.
             (n, _) if crate::native::is_native(n) => {
                 cerr(format!("`{n}` is interpreter-only (not compiled to WASM)"))
             }
@@ -3246,6 +3267,20 @@ const SUBSTR_WAT: &str = r#"  (func $substr (param $src i32) (param $start i32) 
       (i32.add (i32.add (local.get $src) (i32.const 4)) (local.get $start))
       (local.get $len))
     (global.set $heap (i32.add (i32.add (local.get $res) (i32.const 4)) (local.get $len)))
+    (local.get $res))
+"#;
+
+// crypto.sha256(in): allocate the fixed 68-byte result string `[len=64][64
+// bytes]`, set its length, then call the host import to fill the 64 hex bytes at
+// `res+4`. The hash length is a compile-time constant, so no size negotiation is
+// needed.
+const CRYPTO_SHA256_WAT: &str = r#"  (func $crypto_sha256 (param $in i32) (result i32)
+    (local $res i32)
+    (call $ensure (i32.const 68))
+    (local.set $res (global.get $heap))
+    (i32.store (local.get $res) (i32.const 64))
+    (call $crypto_sha256_host (local.get $in) (i32.add (local.get $res) (i32.const 4)))
+    (global.set $heap (i32.add (local.get $res) (i32.const 68)))
     (local.get $res))
 "#;
 

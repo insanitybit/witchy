@@ -193,6 +193,7 @@ impl Runtime {
         // available — the same `crypto` module the interpreter exposes, here as a
         // host import that bridges to the shared `native` registry.
         linker.func_wrap("witchy", "crypto.ed25519_verify", host_ed25519_verify)?;
+        linker.func_wrap("witchy", "crypto.sha256", host_sha256)?;
 
         // Ungranted capability imports are rejected here.
         let instance = linker.instantiate(&mut store, &module)?;
@@ -310,6 +311,26 @@ fn host_ed25519_verify(
         Value::Bool(b) => Ok(b as i32),
         _ => Err(Error::msg("crypto.ed25519_verify did not return a Bool")),
     }
+}
+
+/// `crypto.sha256(in_header_ptr, out_data_ptr)`: read the input string, compute
+/// its SHA-256 (via the shared native registry), and write the 64 hex bytes into
+/// guest memory at `out_data_ptr` (the guest pre-allocated the result string).
+fn host_sha256(mut caller: Caller<'_, ActorState>, in_ptr: i32, out_ptr: i32) -> Result<()> {
+    use crate::interpreter::Value;
+    let mem = memory_of(&mut caller)?;
+    let input = read_wstr(mem.data(&caller), in_ptr)?;
+    let f = crate::native::lookup("crypto.sha256")
+        .ok_or_else(|| Error::msg("crypto.sha256 is not registered"))?;
+    let hex = match f(&[Value::Str(input)]).map_err(|e| Error::msg(e.message))? {
+        Value::Str(s) => s,
+        _ => return Err(Error::msg("crypto.sha256 did not return a String")),
+    };
+    if hex.len() != 64 {
+        return Err(Error::msg("crypto.sha256 hex digest is not 64 bytes"));
+    }
+    mem.write(&mut caller, out_ptr as usize, hex.as_bytes())
+        .map_err(|e| Error::msg(format!("writing sha256 result into guest memory: {e}")))
 }
 
 // --- small helpers for safe guest-memory access ---

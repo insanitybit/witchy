@@ -1100,7 +1100,8 @@ mod example_tests {
 
     /// `crypto.sha256` — a native intrinsic of the `crypto` module, *not* a global
     /// builtin — matches the canonical SHA-256 vectors, requires `import crypto`,
-    /// and is rejected by the compiled backend (interpreter-only).
+    /// and computes the same digest on the interpreter and the compiled WASM
+    /// backend (the host fills the guest-allocated result string).
     #[test]
     fn crypto_sha256_matches_known_vectors() {
         let out = link_run(
@@ -1115,13 +1116,19 @@ mod example_tests {
         );
         // No global builtin: bare `sha256` (without `import crypto`) is unknown.
         assert!(typeck::check_str("fn main(c: Console):\n    print(c, sha256(\"x\"))\n").is_err());
-        // Interpreter-only: the WASM backend rejects the call.
+        // The compiled WASM backend computes the same digest (the host fills the
+        // 64-byte result the guest pre-allocated) — interpreter↔WASM parity.
         let module = parser::parse_module(
-            "import crypto\nfn main(console: Console):\n    print(console, crypto.sha256(\"x\"))\n",
+            "import crypto\nfn main(console: Console):\n    print(console, crypto.sha256(\"abc\"))\n",
         )
         .expect("parse");
         let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
-        assert!(codegen::compile_module(&linked).is_err(), "crypto.sha256 should be WASM-rejected");
+        typeck::check(&linked).expect("typecheck");
+        let wat = codegen::compile_module(&linked).expect("compile");
+        assert_eq!(
+            crate::run_wat_capture(&wat).expect("wasm run"),
+            vec!["ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"]
+        );
     }
 
     /// `crypto.ed25519_verify` — a native intrinsic of the `crypto` module — is a
