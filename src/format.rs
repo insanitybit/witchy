@@ -864,6 +864,28 @@ mod tests {
     }
 
     #[test]
+    fn formatting_is_idempotent() {
+        // Formatting already-formatted code must be a no-op: `fmt(fmt(x)) == fmt(x)`.
+        let dirs = ["std", "examples"];
+        let mut failures = Vec::new();
+        for dir in dirs {
+            for entry in std::fs::read_dir(dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.extension().and_then(|e| e.to_str()) != Some("witchy") {
+                    continue;
+                }
+                let src = std::fs::read_to_string(&path).unwrap();
+                if let Some(once) = reformat(&src) {
+                    if reformat(&once).as_deref() != Some(once.as_str()) {
+                        failures.push(path.display().to_string());
+                    }
+                }
+            }
+        }
+        assert!(failures.is_empty(), "formatting is not idempotent: {failures:?}");
+    }
+
+    #[test]
     fn block_body_lambdas_round_trip() {
         // A closure with a multi-statement body, and one whose body is a `match`,
         // now format as block-form lambdas and re-parse to the same AST.
