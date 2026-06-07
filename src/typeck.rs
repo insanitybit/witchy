@@ -727,11 +727,17 @@ impl Checker {
                     }
                 }
                 let Some((params, ret)) = self.call_sig(name) else {
-                    // If the name is an unimported stdlib function, point the way.
+                    // If the name is an unimported stdlib function, point the way;
+                    // otherwise suggest a near-miss stdlib name (a likely typo).
                     let hint = match crate::linker::std_modules_for_function(name).as_slice() {
-                        [] => String::new(),
                         [m] => format!(" — did you forget `import {m}`?"),
-                        many => format!(" — did you forget to import one of: {}?", many.join(", ")),
+                        many if !many.is_empty() => {
+                            format!(" — did you forget to import one of: {}?", many.join(", "))
+                        }
+                        _ => match crate::linker::closest_std_function(name) {
+                            Some((cand, m)) => format!(" — did you mean `{cand}` (`import {m}`)?"),
+                            None => String::new(),
+                        },
                     };
                     return terr(format!("call to unknown function `{name}`{hint}"));
                 };
@@ -1477,6 +1483,11 @@ mod tests {
         let typo = check_str("fn main(console: Console):\n    frobnicate()\n")
             .expect_err("frobnicate is unknown");
         assert!(!typo.contains("did you forget"), "{typo}");
+        assert!(!typo.contains("did you mean"), "{typo}");
+        // A near-miss of a stdlib name suggests the correction.
+        let near = check_str("fn main(console: Console):\n    let ys = mep([1], fn(x: Int): x)\n    print(console, \"ok\")\n")
+            .expect_err("mep is a typo of map");
+        assert!(near.contains("did you mean `map`"), "{near}");
     }
 
     #[test]

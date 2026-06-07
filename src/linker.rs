@@ -109,6 +109,57 @@ pub fn std_modules_for_function(fn_name: &str) -> Vec<&'static str> {
         .collect()
 }
 
+/// Every `pub fn` exported by a bundled std module, as `(function, module)`.
+fn std_pub_fns() -> Vec<(String, &'static str)> {
+    let mut out = Vec::new();
+    for m in STD_MODULES {
+        if let Some(src) = std_source(m) {
+            for line in src.lines() {
+                if let Some(rest) = line.trim_start().strip_prefix("pub fn ") {
+                    if let Some(paren) = rest.find('(') {
+                        out.push((rest[..paren].trim().to_string(), *m));
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The closest std-library function name to `name` within a small edit distance —
+/// used to suggest a likely-misspelled stdlib call. Returns `(function, module)`.
+pub fn closest_std_function(name: &str) -> Option<(String, &'static str)> {
+    let mut best: Option<(usize, String, &'static str)> = None;
+    for (cand, m) in std_pub_fns() {
+        if cand == name {
+            continue;
+        }
+        let d = levenshtein(name, &cand);
+        // Require the edit to be small relative to the name, so short names don't
+        // match everything.
+        if d <= 2 && d < name.len() && best.as_ref().is_none_or(|(bd, _, _)| d < *bd) {
+            best = Some((d, cand, m));
+        }
+    }
+    best.map(|(_, c, m)| (c, m))
+}
+
+/// Levenshtein edit distance (two-row dynamic programming).
+fn levenshtein(a: &str, b: &str) -> usize {
+    let b: Vec<char> = b.chars().collect();
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    let mut curr = vec![0; b.len() + 1];
+    for (i, ca) in a.chars().enumerate() {
+        curr[0] = i + 1;
+        for (j, &cb) in b.iter().enumerate() {
+            let cost = if ca == cb { 0 } else { 1 };
+            curr[j + 1] = (prev[j] + cost).min(prev[j + 1] + 1).min(curr[j] + 1);
+        }
+        std::mem::swap(&mut prev, &mut curr);
+    }
+    prev[b.len()]
+}
+
 pub fn std_source(name: &str) -> Option<&'static str> {
     match name {
         "list" => Some(include_str!("../std/list.witchy")),
