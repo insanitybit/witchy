@@ -4700,10 +4700,11 @@ impl Counter:
         );
     }
 
-    /// Implicit directional narrowing at call boundaries: a broader capability
-    /// satisfies a narrower parameter (a full `Net` flows into a `Net[Connect]`
-    /// param) without an explicit `as`. The callee stays type-bounded to its
-    /// declared rights, so it cannot re-pass more authority than it admits to.
+    /// Implicit directional narrowing wherever a value flows into a capability-
+    /// typed slot — call arguments, return types, and constructor fields: a
+    /// broader capability satisfies a narrower one (a full `Net` flows into a
+    /// `Net[Connect]`) without an explicit `as`. The callee stays type-bounded to
+    /// its declared rights, so widening is rejected at every position.
     #[test]
     fn implicit_narrowing_at_call_boundaries() {
         let ok = |src: &str| {
@@ -4732,6 +4733,22 @@ impl Counter:
         err(
             "fn serve(n: Net[Listen]):\n    let l = listen(n, \"b:2\")\nfn main(c: Console, net: Net):\n    serve(net as Net[Connect])\n",
             "expected `Net[Listen]`, found `Net[Connect]`",
+        );
+
+        // The same directional narrowing holds wherever a value flows into a
+        // capability-typed slot, not just call arguments:
+        // (a) a return type — return a full `Net` where `Net[Connect]` is declared,
+        ok("fn client(net: Net) -> Net[Connect]:\n    net\nfn main(c: Console, net: Net):\n    let s = connect(client(net), \"a:1\")\n");
+        // (b) a constructor field that holds a narrowed capability.
+        ok("type Client:\n    Client(Net[Connect])\nfn main(c: Console, net: Net):\n    let x = Client(net)\n");
+        // Both still reject *widening* (the type ceiling holds at every position).
+        err(
+            "fn bad(n: Net[Connect]) -> Net:\n    n\nfn main(c: Console, net: Net):\n    bad(net as Net[Connect])\n",
+            "expected `Net`, found `Net[Connect]`",
+        );
+        err(
+            "type Server:\n    Server(Net)\nfn make(n: Net[Connect]) -> Server:\n    Server(n)\nfn main(c: Console, net: Net):\n    make(net as Net[Connect])\n",
+            "expected `Net`, found `Net[Connect]`",
         );
     }
 

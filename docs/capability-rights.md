@@ -143,12 +143,14 @@ bitset is cleaner.)
   runtime (rights are type-level). This replaced the seven per-right `_only`
   builtins (`read_only`/`write_only`/`connect_only`/`listen_only`/`tcp_only`/
   `udp_only`/`uds_only`), which didn't scale.
-- **Implicit** directional narrowing at call boundaries (`Typeck::coerce_arg`): a
-  broader capability satisfies a narrower parameter — a full `Net` flows straight
-  into a `Net[Connect]` argument, no `as` needed. The callee stays type-bounded
-  to its declared rights, so it cannot re-pass more authority than it admits to
-  (re-widening a `Net[Connect]` to a full `Net` parameter is rejected — the type
-  ceiling holds). So `as` is now only needed when *naming* a narrowed value.
+- **Implicit** directional narrowing (`Typeck::coerce_arg`): a broader capability
+  satisfies a narrower one wherever a value flows into a capability-typed slot —
+  call arguments, **return types** (`-> Net[Connect]` returning a full `Net`), and
+  **constructor fields** (`Client(Net[Connect])` built from a full `Net`) — no
+  `as` needed. The callee stays type-bounded to its declared rights, so widening
+  is rejected at every position (re-widening a `Net[Connect]` to a full `Net` is
+  an error — the type ceiling holds). So `as` is only needed when *naming* a
+  narrowed value.
 
 The **CLI footprint** (`witchy caps`/`caps-diff`) surfaces transport too: a
 TCP-pinned client audits as `Net[Connect, Tcp]` (distinct from a transport-

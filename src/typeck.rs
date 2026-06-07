@@ -1166,7 +1166,9 @@ impl Checker {
                     }
                     for (arg, fty) in args.iter().zip(&fields) {
                         let at = self.infer(arg)?;
-                        self.unify(fty, &at).map_err(|e| TypeError {
+                        // A capability field accepts a broader argument (a full
+                        // `Net` into a `Net[Connect]` field), like a call boundary.
+                        self.coerce_arg(fty, &at).map_err(|e| TypeError {
                             message: format!("in constructor `{name}`: {}", e.message),
                         })?;
                     }
@@ -1632,7 +1634,10 @@ impl Checker {
             self.define(param.name.clone(), ty.clone(), param.convention != Convention::Let);
         }
         let body = self.infer_block(&func.body)?;
-        self.unify(&ret, &body).map_err(|e| TypeError {
+        // A broader capability may be returned where a narrower one is declared
+        // (`-> Net[Connect]` returning a full `Net`), mirroring call-argument
+        // narrowing; `coerce_arg` falls back to unification for everything else.
+        self.coerce_arg(&ret, &body).map_err(|e| TypeError {
             message: format!("function `{}` body: {}", func.name, e.message),
         })?;
         // Soundness: a declared type parameter must stay free (truly generic).
