@@ -311,6 +311,93 @@ fn check_unique_functions(module: &Module) -> Result<(), TypeError> {
     Ok(())
 }
 
+/// The type names the checker knows without a declaration: primitives, host
+/// capabilities, and the built-in generics. Mirrors the named arms of
+/// `to_ty_generic` plus the opaque generics the checker itself produces
+/// (`Option`/`Result`/`Dict`). Any other named type must be declared (a `type`
+/// or an actor) or be a lowercase generic parameter.
+const BUILTIN_TYPE_NAMES: &[&str] = &[
+    "Int", "Float", "Duration", "String", "Bool", "Nil", "Console", "Clock", "Env", "SigningKey",
+    "Subject", "Dir", "Net", "Socket", "Listener", "List", "Option", "Result", "Dict",
+];
+
+/// Validate that every named type in `t` is known — a builtin, a declared type,
+/// or a lowercase generic parameter — so a typo like `fn f(x: Flarb)` is a clear
+/// "unknown type" error rather than an opaque type that mis-unifies later.
+fn validate_type(t: &ast::Type, known: &HashSet<&str>) -> Result<(), TypeError> {
+    match t {
+        ast::Type::Tuple(ts) => ts.iter().try_for_each(|x| validate_type(x, known)),
+        ast::Type::Fn(params, ret) => {
+            params.iter().try_for_each(|p| validate_type(p, known))?;
+            validate_type(ret, known)
+        }
+        ast::Type::Named(n, args) => {
+            // `Dir`/`Net` carry capability *rights* (`Dir[Read]`, `Net[Connect]`)
+            // in their arguments, not types — those are checked elsewhere.
+            if n == "Dir" || n == "Net" {
+                return Ok(());
+            }
+            if known.contains(n.as_str()) {
+                args.iter().try_for_each(|a| validate_type(a, known))
+            } else if args.is_empty() && n.chars().next().is_some_and(|c| c.is_lowercase()) {
+                // A lowercase, argument-less name is a generic type parameter.
+                Ok(())
+            } else {
+                terr(format!("unknown type `{n}`"))
+            }
+        }
+    }
+}
+
+/// Reject references to undeclared types in function and actor signatures. The
+/// set of known names is the builtins plus every `type`/actor declared in the
+/// module; lowercase argument-less names are generic parameters.
+fn check_type_names(module: &Module) -> Result<(), TypeError> {
+    let mut known: HashSet<&str> = BUILTIN_TYPE_NAMES.iter().copied().collect();
+    for item in &module.items {
+        match item {
+            Item::Type(t) => {
+                known.insert(t.name.as_str());
+            }
+            Item::Actor(a) => {
+                known.insert(a.name.as_str());
+            }
+            _ => {}
+        }
+    }
+    for item in &module.items {
+        let in_ctx = |e: TypeError, ctx: &str| TypeError {
+            message: format!("in `{}`: {}", ctx.rsplit('.').next().unwrap_or(ctx), e.message),
+        };
+        match item {
+            Item::Function(f) => {
+                for p in &f.params {
+                    if let Some(t) = &p.ty {
+                        validate_type(t, &known).map_err(|e| in_ctx(e, &f.name))?;
+                    }
+                }
+                if let Some(t) = &f.ret {
+                    validate_type(t, &known).map_err(|e| in_ctx(e, &f.name))?;
+                }
+            }
+            Item::Actor(a) => {
+                for field in &a.fields {
+                    validate_type(&field.ty, &known).map_err(|e| in_ctx(e, &a.name))?;
+                }
+                for h in &a.handlers {
+                    for p in &h.params {
+                        if let Some(t) = &p.ty {
+                            validate_type(t, &known).map_err(|e| in_ctx(e, &a.name))?;
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 /// Whether `t` names a host capability that `main` may receive as a root
 /// authority (the rights of `Dir`/`Net` don't matter here — any are grantable).
 fn is_capability_type(t: &ast::Type) -> bool {
@@ -1930,6 +2017,10 @@ pub fn check(module: &Module) -> Result<(), TypeError> {
         }
     }
 
+    // Reject typo'd / undeclared type names in signatures before they become
+    // opaque types that mis-unify with a confusing message later.
+    check_type_names(module)?;
+
     // `main` is the root actor: its parameters are where the host's authority
     // enters, so they must be capabilities (or the args list) — validate before
     // diving into bodies so a malformed entry point is reported up front.
@@ -1972,6 +2063,23 @@ fn describe_pattern(p: &Pattern) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn undeclared_type_names_are_rejected() {
+        // A typo'd type used to become an opaque type that mis-unified later
+        // ("expected `Flarb`, found `Int`"); now it's a clear "unknown type".
+        let param = check_str("fn f(x: Flarb) -> Int:\n    1\n").unwrap_err();
+        assert!(param.contains("unknown type `Flarb`"), "{param}");
+        // Caught in nested positions too (this used to slip through entirely).
+        let nested = check_str("fn f(xs: List(Flarb)) -> Int:\n    1\n").unwrap_err();
+        assert!(nested.contains("unknown type `Flarb`"), "{nested}");
+        // Builtins, capability rights, generics, Option, and declared types pass.
+        check_str("fn id(x: a) -> a:\n    x\n").expect("a generic parameter is valid");
+        check_str("fn g(dir: Dir[Read], o: Option(Int)) -> Int:\n    0\n")
+            .expect("caps with rights and Option are valid");
+        check_str("type Color:\n    Red\nfn name(c: Color) -> String:\n    \"r\"\n")
+            .expect("a declared type is valid");
+    }
 
     #[test]
     fn duplicate_top_level_functions_are_rejected() {
