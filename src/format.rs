@@ -469,21 +469,23 @@ fn expr(e: &Expr) -> String {
                 format!("{name}({})", comma(args))
             }
         }
-        Expr::Apply { func, args } => format!("({})({})", expr(func), comma(args)),
-        Expr::Field { base, field } => format!("({}).{field}", expr(base)),
+        Expr::Apply { func, args } => {
+            format!("{}({})", operand(func, POSTFIX_PREC, false), comma(args))
+        }
+        Expr::Field { base, field } => format!("{}.{field}", operand(base, POSTFIX_PREC, false)),
         Expr::Unary { op, expr: inner } => {
             let o = match op {
                 UnOp::Neg => "-",
                 UnOp::Not => "!",
                 UnOp::BitNot => "~",
             };
-            format!("({o}{})", expr(inner))
+            format!("{o}{}", operand(inner, UNARY_PREC, false))
         }
         Expr::Binary { op, lhs, rhs } => {
             let p = binop_prec(*op);
             format!("{} {} {}", operand(lhs, p, false), binop(*op), operand(rhs, p, true))
         }
-        Expr::Try(inner) => format!("({})?", expr(inner)),
+        Expr::Try(inner) => format!("{}?", operand(inner, POSTFIX_PREC, false)),
         Expr::Lambda { params, body } => {
             let ps: Vec<String> = params.iter().map(param).collect();
             format!("fn({}): {}", ps.join(", "), block_value(body))
@@ -611,11 +613,19 @@ fn binop_prec(op: BinOp) -> u8 {
     }
 }
 
-/// Precedence of an expression as a binary operand. Non-binary forms either are
-/// atomic or print their own delimiters, so they never need wrapping (100).
+/// Precedence of prefix and postfix operators, both tighter than every binary
+/// operator (max 19) so they never need wrapping as a binary operand.
+const UNARY_PREC: u8 = 50;
+const POSTFIX_PREC: u8 = 90;
+
+/// Precedence of an expression for deciding whether it needs parentheses as the
+/// operand of a tighter-binding operator. Atoms and forms that print their own
+/// delimiters never need wrapping (100).
 fn expr_prec(e: &Expr) -> u8 {
     match e {
         Expr::Binary { op, .. } => binop_prec(*op),
+        Expr::Unary { .. } => UNARY_PREC,
+        Expr::Field { .. } | Expr::Try(_) | Expr::Apply { .. } => POSTFIX_PREC,
         _ => 100,
     }
 }
