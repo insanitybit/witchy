@@ -392,6 +392,16 @@ fn check_type_names(module: &Module) -> Result<(), TypeError> {
                     }
                 }
             }
+            // A type's variant field types must also be known. The type's own
+            // name (and any sibling type) is already in `known`, so recursive and
+            // mutually-recursive types check out; lowercase fields are its params.
+            Item::Type(t) => {
+                for variant in &t.variants {
+                    for field in &variant.fields {
+                        validate_type(field, &known).map_err(|e| in_ctx(e, &t.name))?;
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -2079,6 +2089,12 @@ mod tests {
             .expect("caps with rights and Option are valid");
         check_str("type Color:\n    Red\nfn name(c: Color) -> String:\n    \"r\"\n")
             .expect("a declared type is valid");
+        // A variant field referencing an unknown type is caught too.
+        let field = check_str("type Wrap:\n    Wrap(Flarb)\n").unwrap_err();
+        assert!(field.contains("unknown type `Flarb`"), "{field}");
+        // Recursive, generic, and Option-typed fields remain valid.
+        check_str("type Tree:\n    Leaf\n    Node(Tree, Int, Tree)\n").expect("recursive type is valid");
+        check_str("type Box:\n    Box(a)\n").expect("generic type is valid");
     }
 
     #[test]
