@@ -3040,6 +3040,26 @@ fn main(console: Console):
     }
 
     #[test]
+    fn every_example_type_checks() {
+        // Every shipped example must link and type-check (this also exercises
+        // import resolution and the constant/alias cycle checks). The parity test
+        // skips non-divergence errors, so without this a type error in an example
+        // could slip through CI.
+        let mut failures = Vec::new();
+        for entry in std::fs::read_dir("examples").unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().and_then(|e| e.to_str()) != Some("witchy") {
+                continue;
+            }
+            let p = path.to_str().unwrap();
+            if let Err(e) = crate::check_file(p) {
+                failures.push(format!("{p}: {e}"));
+            }
+        }
+        assert!(failures.is_empty(), "examples fail to type-check:\n{}", failures.join("\n"));
+    }
+
+    #[test]
     fn every_compilable_example_agrees_on_both_backends() {
         // Differential guard: every example that compiles to WASM must produce
         // identical output on the interpreter and the compiled backend. Examples
