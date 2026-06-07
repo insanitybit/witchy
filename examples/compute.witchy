@@ -17,8 +17,8 @@ fn fact(n: Int) -> Int:
         0 -> 1
         _ -> n * fact(n - 1)
 
-fn main() -> Int:
+fn main(console: Console):
     let a = double(21)
     let b = fib(10)
     let c = fact(5)
-    a + b + c
+    print(console, int_to_string(a + b + c))

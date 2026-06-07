@@ -1714,6 +1714,18 @@ pub fn run_module_signed(
     args: Vec<String>,
     signing_key: Option<[u8; 32]>,
 ) -> Result<Vec<String>, RuntimeError> {
+    run_module_exit(module, root, net_allow, args, signing_key).map(|(output, _)| output)
+}
+
+/// Like [`run_module_signed`], but also returns the process exit code (`main`'s
+/// `Int` return, or 0). Used by the CLI to set the process status.
+pub fn run_module_exit(
+    module: Module,
+    root: impl AsRef<Path>,
+    net_allow: Vec<String>,
+    args: Vec<String>,
+    signing_key: Option<[u8; 32]>,
+) -> Result<(Vec<String>, i32), RuntimeError> {
     // Desugar traits/impls to ordinary functions (no-op for trait-free modules)
     // so the interpreter, like codegen, only ever sees plain functions.
     let module = crate::traits::lower(module);
@@ -1756,7 +1768,7 @@ fn run_module_inner(
     net_allow: Vec<String>,
     args: Vec<String>,
     signing_key: Option<[u8; 32]>,
-) -> Result<Vec<String>, RuntimeError> {
+) -> Result<(Vec<String>, i32), RuntimeError> {
     let mut interp = Interpreter::new(module);
     interp.root = root;
     interp.net_allow = net_allow;
@@ -1781,12 +1793,19 @@ fn run_module_inner(
     interp
         .run_to_completion()
         .map_err(|e| rt_at_line(e, interp.cur_line, &interp.cur_fn))?;
-    // A program that computes a value but prints nothing (e.g. `main` returns an
-    // Int) still has something to show: surface its result.
-    if interp.output.is_empty() && !matches!(ret, Value::Nil) {
+    // `main` returning an `Int` sets the process exit code (the C/Go/Rust
+    // convention) — it is *not* printed; a program shows output via `print`.
+    let exit_code = match ret {
+        Value::Int(n) => n as i32,
+        _ => 0,
+    };
+    // A non-`Int`, non-`Nil` result (e.g. a `Float`) is still surfaced when the
+    // program printed nothing — for a compiled `main -> Float` this is the only
+    // way to show the value (the WASM backend has no float `to_string`).
+    if interp.output.is_empty() && !matches!(ret, Value::Nil | Value::Int(_)) {
         interp.output.push(format!("{ret}"));
     }
-    Ok(interp.output)
+    Ok((interp.output, exit_code))
 }
 
 /// Parse and link a multi-module program, then run it. `entry` is the module

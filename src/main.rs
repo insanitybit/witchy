@@ -326,10 +326,14 @@ fn main() -> wasmtime::Result<()> {
                 std::process::exit(1);
             }
             Some(path) => {
-                match execute_file_args(path, net_allow, prog_args, signing_key) {
-                    Ok(output) => {
+                match execute_file_exit(path, net_allow, prog_args, signing_key) {
+                    Ok((output, code)) => {
                         for line in output {
                             println!("{line}");
+                        }
+                        // `main`'s `Int` return is the process exit status.
+                        if code != 0 {
+                            std::process::exit(code);
                         }
                     }
                     Err(e) => {
@@ -700,8 +704,6 @@ fn check_file(path: &str) -> Result<(), String> {
     typeck::check(&linked).map_err(|e| e.to_string())
 }
 
-// Convenience wrapper (no command-line args) — used by the test suite; the CLI
-// run path calls `execute_file_args` directly with the program's argv.
 /// Read a 32-byte Ed25519 signing seed from a file holding 64 hex characters.
 fn load_signing_seed(path: &str) -> Result<[u8; 32], String> {
     let text = std::fs::read_to_string(path).map_err(|e| format!("cannot read `{path}`: {e}"))?;
@@ -717,20 +719,34 @@ fn load_signing_seed(path: &str) -> Result<[u8; 32], String> {
     Ok(seed)
 }
 
+// Convenience wrapper (no command-line args) — used by the test suite; the CLI
+// run path calls `execute_file_exit` to also get the process exit code.
 #[cfg_attr(not(test), allow(dead_code))]
 fn execute_file(path: &str, net_allow: Vec<String>) -> Result<Vec<String>, String> {
     execute_file_args(path, net_allow, Vec::new(), None)
 }
 
-/// Like [`execute_file`], but also passes command-line `args` to the program's
-/// `main` (a `List(String)` parameter receives them) and, if `signing_key` is
-/// set, grants the root `SigningKey` capability from that Ed25519 seed.
+/// Like [`execute_file`] but with command-line `args` and an optional signing
+/// key, discarding the process exit code (used by the test suite).
+#[cfg_attr(not(test), allow(dead_code))]
 fn execute_file_args(
     path: &str,
     net_allow: Vec<String>,
     args: Vec<String>,
     signing_key: Option<[u8; 32]>,
 ) -> Result<Vec<String>, String> {
+    execute_file_exit(path, net_allow, args, signing_key).map(|(output, _)| output)
+}
+
+/// Link, type-check, and run `path`, returning its output and the process exit
+/// code (`main`'s `Int` return, else 0). `args` populate a `List(String)`
+/// parameter; `signing_key` grants the root `SigningKey` capability.
+fn execute_file_exit(
+    path: &str,
+    net_allow: Vec<String>,
+    args: Vec<String>,
+    signing_key: Option<[u8; 32]>,
+) -> Result<(Vec<String>, i32), String> {
     use std::path::Path;
     let (linked, entry_stem) = link_file(path)?;
     typeck::check(&linked).map_err(|e| e.to_string())?;
@@ -758,12 +774,12 @@ fn execute_file_args(
                 actors.join(", ")
             )
         };
-        return Ok(vec![msg]);
+        return Ok((vec![msg], 0));
     }
 
     // The root `Dir` capability is anchored at the current directory (the same
     // root the demos use), independent of where the source file lives.
-    interpreter::run_module_signed(linked, Path::new("."), net_allow, args, signing_key)
+    interpreter::run_module_exit(linked, Path::new("."), net_allow, args, signing_key)
         .map_err(|e| e.to_string())
 }
 
@@ -4867,17 +4883,36 @@ impl Counter:
 
     /// `caps_guard` is the supply-chain gate written *in witchy*: it reads two
     /// versions of a rune, asks `compiler.diff` whether the new one widens the
-    /// footprint, and prints a BLOCK/OK verdict — the block-on-widening decision,
-    /// self-hosted (the sample upgrade adds `Listen`, so it must BLOCK).
+    /// footprint, prints a BLOCK/OK verdict, AND exits non-zero on a widening
+    /// (the sample upgrade adds `Listen`, so it BLOCKs and exits 2 — wireable into
+    /// CI). The whole gate is self-hosted.
     #[test]
     fn caps_guard_example_blocks_a_widening_in_witchy() {
-        assert_eq!(
-            crate::execute_file("examples/caps_guard.witchy", Vec::new()).unwrap(),
-            vec!["BLOCK: upgrade widens authority by Net[Listen]"]
-        );
+        let (output, code) =
+            crate::execute_file_exit("examples/caps_guard.witchy", Vec::new(), Vec::new(), None)
+                .unwrap();
+        assert_eq!(output, vec!["BLOCK: upgrade widens authority by Net[Listen]"]);
+        assert_eq!(code, 2, "a widening must exit 2");
         let src = std::fs::read_to_string("examples/caps_guard.witchy").unwrap();
         let fp = crate::capabilities::analyze(&parser::parse_module(&src).expect("parse"));
         assert_eq!(crate::capabilities::show_caps(&fp.total), "Console, Dir[Read]");
+    }
+
+    /// `main -> Int` sets the process exit code (C/Go/Rust convention) and is
+    /// *not* printed; `main` returning Nil exits 0 and shows its `print` output.
+    #[test]
+    fn main_int_return_is_the_process_exit_code() {
+        let run = |src: &str| {
+            let m = parser::parse_module(src).expect("parse");
+            let l = crate::linker::link(vec![("main".into(), m)], "main").expect("link");
+            interpreter::run_module_exit(l, ".", Vec::new(), Vec::new(), None).expect("run")
+        };
+        let (out, code) = run("fn main() -> Int:\n    7\n");
+        assert!(out.is_empty(), "an Int return must not be printed, got {out:?}");
+        assert_eq!(code, 7);
+        let (out, code) = run("fn main(console: Console):\n    print(console, \"hi\")\n");
+        assert_eq!(out, vec!["hi"]);
+        assert_eq!(code, 0);
     }
 
     #[test]

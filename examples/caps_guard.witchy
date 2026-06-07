@@ -10,10 +10,19 @@ import compiler
 import json
 import string
 
-fn main(console: Console, root: Dir[Read]):
+fn main(console: Console, root: Dir[Read]) -> Int:
     let old = read(root, "examples/data/sample_rune.witchy")
     let new = read(root, "examples/data/sample_rune_v2.witchy")
-    print(console, gate(compiler.diff(old, new)))
+    let report = compiler.diff(old, new)
+    print(console, gate(report))
+    exit_code(report)
+
+// The process exit status: 2 on a blocked widening, 1 on a malformed diff, else 0
+// — so the gate can be wired into CI (`witchy caps_guard.witchy && deploy`).
+fn exit_code(report: String) -> Int:
+    match json.decode(report):
+        Ok(doc) -> if widened(doc): 2 else: 0
+        Err(e) -> 1
 
 // Render the gate's JSON verdict for a human.
 fn gate(report: String) -> String:

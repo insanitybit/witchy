@@ -15,6 +15,6 @@ fn dist_squared(p: Point) -> Int:
 fn shift_x(p: Point, dx: Int) -> Point:
     update p: x = p.x + dx
 
-fn main() -> Int:
+fn main(console: Console):
     let p = Point(3, 4)
-    dist_squared(shift_x(p, 1))
+    print(console, int_to_string(dist_squared(shift_x(p, 1))))

@@ -2830,6 +2830,10 @@ pub fn compile_module(module: &Module) -> Result<String, CodegenError> {
     if !has_main {
         return cerr("no `main` function to compile");
     }
+    // In the sandbox there is no process to exit, so a value-returning `main`
+    // surfaces its result (an `Int` via `print_int`, a `Float` via `print_float`)
+    // — the REPL-style value display the codegen tests rely on. At the *process*
+    // boundary (the CLI/interpreter), an `Int` return is instead the exit code.
     if main_returns_int {
         cg.uses_print_int = true;
     }
