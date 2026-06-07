@@ -4927,9 +4927,10 @@ impl Counter:
     /// `coven_check` is the package manager's `check_declared`, self-hosted: it
     /// reads a rune's `witchy.toml` (`std/toml`) and its source, asks the compiler
     /// what the code demands (`compiler.footprint`), and verifies the manifest's
-    /// `[capabilities]` admits every demanded kind. The sample manifest declares
-    /// only `Console` while the code uses `Dir` + `Net`, so it flags the
-    /// under-declaration and exits 1 — wireable into CI as a supply-chain gate.
+    /// `[capabilities]` admits every demanded cap *rights-precisely*. The sample
+    /// manifest admits `Net[Connect]`, but the code demands full `Net` (it also
+    /// listens), so it flags the under-declaration and exits 1 even though the
+    /// `Net` *kind* is declared — the case a kind-level check would miss.
     #[test]
     fn coven_check_example_flags_under_declared_manifest_in_witchy() {
         let (output, code) =
@@ -4937,7 +4938,7 @@ impl Counter:
                 .unwrap();
         assert_eq!(
             output,
-            vec!["UNDER-DECLARED: code demands Dir, Net not in [capabilities]"]
+            vec!["UNDER-DECLARED: code demands Net not admitted by [capabilities]"]
         );
         assert_eq!(code, 1, "an under-declared manifest must exit 1");
         // The checker itself only reads files and prints — provably no writes/net.

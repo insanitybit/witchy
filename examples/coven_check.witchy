@@ -2,8 +2,8 @@
 // It reads a rune's witchy.toml manifest and its source (with a read-only Dir
 // capability), asks the compiler what capabilities the code actually demands
 // (`compiler.footprint`), and verifies the manifest's `[capabilities]` admits
-// them. A capability the code can use but the manifest hides is an
-// *under-declaration* — the dangerous supply-chain case. This is the package
+// them — *rights-precisely*. A capability the code can use but the manifest
+// under-admits is the dangerous supply-chain case. This is the package
 // manager's `check_declared`, self-hosted, composing std `toml` + `compiler` +
 // `json`. Run:  witchy examples/coven_check.witchy
 
@@ -13,27 +13,51 @@ import json
 import string
 
 fn main(console: Console, root: Dir[Read]) -> Int:
-    let manifest = read(root, "examples/data/under_declared.toml")
-    let source = read(root, "examples/data/sample_rune.witchy")
+    let manifest = read(root, "examples/data/rune_manifest.toml")
+    let source = read(root, "examples/data/sample_rune_v2.witchy")
     let declared = toml.get_array(manifest, "capabilities.runtime")
     let demanded = total_caps(compiler.footprint(source))
     let missing = undeclared(declared, demanded)
     if string.is_empty(missing):
-        print(console, "OK: manifest declares everything the code demands")
+        print(console, "OK: manifest admits everything the code demands")
         0
     else:
-        print(console, "UNDER-DECLARED: code demands " <> missing <> " not in [capabilities]")
+        print(console, "UNDER-DECLARED: code demands " <> missing <> " not admitted by [capabilities]")
         1
 
-// The demanded capability *kinds* not covered by the declared list, comma-joined
-// (empty when the manifest covers everything).
+// The demanded capabilities not covered by the declared set, comma-joined
+// (empty when the manifest admits everything).
 fn undeclared(declared: List(String), demanded: List(String)) -> String:
     var missing = []
     for cap in demanded:
-        let kind = base_name(cap)
-        if !has(declared, kind):
-            missing = push(missing, kind)
+        if !covered(declared, cap):
+            missing = push(missing, cap)
     string.join(missing, ", ")
+
+fn covered(declared: List(String), demanded: String) -> Bool:
+    var ok = false
+    for d in declared:
+        if covers(d, demanded):
+            ok = true
+    ok
+
+// A declared capability covers a demanded one iff they share a base kind AND the
+// declared authority is at least as broad: a bracket-free declaration ("Net")
+// admits any rights of that kind, while a bracketed one ("Net[Connect]") admits
+// a demanded cap only when its rights are a subset. So Net[Connect] does NOT
+// cover full Net — the rights-precise case kind-level checks miss.
+fn covers(declared: String, demanded: String) -> Bool:
+    if base_name(declared) != base_name(demanded):
+        false
+    else if is_full(declared):
+        true
+    else if is_full(demanded):
+        false
+    else:
+        subset(rights_of(demanded), rights_of(declared))
+
+fn is_full(cap: String) -> Bool:
+    !contains(cap, "[")
 
 // "Dir[Read]" -> "Dir"; "Console" -> "Console".
 fn base_name(cap: String) -> String:
@@ -42,6 +66,24 @@ fn base_name(cap: String) -> String:
         name
     else:
         cap
+
+// The rights inside "Kind[A, B]" as ["A", "B"].
+fn rights_of(cap: String) -> List(String):
+    let (_kind, rest) = string.split_once(cap, "[")
+    let inner = string.strip_suffix(rest, "]")
+    var out = []
+    for part in split(inner, ","):
+        let r = trim(part)
+        if !string.is_empty(r):
+            out = push(out, r)
+    out
+
+fn subset(xs: List(String), ys: List(String)) -> Bool:
+    var all_in = true
+    for x in xs:
+        if !has(ys, x):
+            all_in = false
+    all_in
 
 fn has(xs: List(String), x: String) -> Bool:
     var found = false
