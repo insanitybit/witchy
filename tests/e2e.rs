@@ -1059,6 +1059,30 @@ fn example_report_workspace_runs_with_json_and_a_path_dependency() {
     assert!(s.contains("average: 50"), "average missing: {s}");
 }
 
+/// The committed `examples/projects/dashboard` workspace — a `dashboard` app
+/// depending on two widget runes (`tasks`, `coverage`) that both depend on a
+/// shared `bars` base, forming a *diamond*. It builds and runs, and `witchy tree`
+/// shows the shared base resolved once. Copied into a hermetic sandbox.
+#[test]
+fn example_dashboard_workspace_runs_with_a_diamond_dependency() {
+    let sb = Sandbox::new("ex-dash");
+    let srcroot = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/projects/dashboard");
+    copy_tree(&srcroot, &sb.work);
+    let app = sb.work.join("dashboard");
+
+    let out = sb.run(&app, "dev", &["run"]);
+    assert!(out.status.success(), "run failed: {}", stderr(&out));
+    let s = stdout(&out);
+    assert!(s.contains("tasks    [####----]  50%"), "tasks widget missing: {s}");
+    assert!(s.contains("coverage [######--]  75%"), "coverage widget missing: {s}");
+
+    // The diamond: `bars` is reached via both `tasks` and `coverage`, but the
+    // resolver shares it — the tree marks the second occurrence with `(*)`.
+    let tree = sb.run(&app, "dev", &["tree"]);
+    assert!(tree.status.success(), "tree failed: {}", stderr(&tree));
+    assert!(stdout(&tree).contains("bars@0.1.0 (*)"), "shared base not deduplicated: {}", stdout(&tree));
+}
+
 #[test]
 fn published_rune_cannot_have_path_dependency() {
     let sb = Sandbox::new("nopath");
