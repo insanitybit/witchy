@@ -25,6 +25,8 @@ pub fn lookup(qualified: &str) -> Option<NativeFn> {
     match qualified {
         "crypto.sha256" => Some(crypto::sha256),
         "crypto.ed25519_verify" => Some(crypto::ed25519_verify),
+        "crypto.sign" => Some(crypto::sign),
+        "crypto.public_key" => Some(crypto::public_key),
         "compiler.footprint" => Some(compiler::footprint),
         "compiler.diff" => Some(compiler::diff),
         _ => None,
@@ -89,6 +91,35 @@ mod crypto {
         })()
         .unwrap_or(false);
         Ok(Value::Bool(ok))
+    }
+
+    /// Sign `message` with a `SigningKey` capability, returning the hex signature.
+    pub fn sign(args: &[Value]) -> Result<Value, RuntimeError> {
+        let [Value::SigningKey(seed), Value::Str(msg)] = args else {
+            return Err(type_error("crypto.sign expects (SigningKey, message)"));
+        };
+        use ed25519_dalek::{Signer, SigningKey};
+        let sig = SigningKey::from_bytes(seed).sign(msg.as_bytes()).to_bytes();
+        Ok(Value::Str(hex(&sig)))
+    }
+
+    /// The hex-encoded Ed25519 public key for a `SigningKey` capability — what a
+    /// verifier checks signatures against (safe to publish).
+    pub fn public_key(args: &[Value]) -> Result<Value, RuntimeError> {
+        let [Value::SigningKey(seed)] = args else {
+            return Err(type_error("crypto.public_key expects a SigningKey"));
+        };
+        use ed25519_dalek::SigningKey;
+        Ok(Value::Str(hex(SigningKey::from_bytes(seed).verifying_key().as_bytes())))
+    }
+
+    fn hex(bytes: &[u8]) -> String {
+        use std::fmt::Write;
+        let mut s = String::with_capacity(bytes.len() * 2);
+        for b in bytes {
+            let _ = write!(s, "{b:02x}");
+        }
+        s
     }
 }
 

@@ -33,6 +33,9 @@ pub enum Value {
     /// A network capability: an allow-list of permitted `host:port` destinations
     /// (wasi:sockets / cap-std-net style). Attenuable via `restrict`.
     Net(Vec<String>),
+    /// A signing capability: an Ed25519 private seed. Unforgeable — minted only by
+    /// the host (the root grant) — since the ability to sign *is* authority.
+    SigningKey([u8; 32]),
     /// A connected socket — a handle into the interpreter's socket table.
     Socket(usize),
     /// A listening server socket — a handle into the interpreter's listener
@@ -109,6 +112,7 @@ impl fmt::Display for Value {
             Value::Subject(id) => write!(f, "<actor #{id}>"),
             Value::Dir(_) => write!(f, "<dir>"),
             Value::Net(_) => write!(f, "<net>"),
+            Value::SigningKey(_) => write!(f, "<signing key>"),
             Value::Socket(id) => write!(f, "<socket #{id}>"),
             Value::Listener(id) => write!(f, "<listener #{id}>"),
             Value::Closure { params, .. } => write!(f, "<function/{}>", params.len()),
@@ -273,6 +277,9 @@ pub struct Interpreter {
     root: PathBuf,
     /// Allow-list backing the root `Net` capability.
     net_allow: Vec<String>,
+    /// Ed25519 seed backing the root `SigningKey` capability, if the host granted
+    /// one. A `main` that declares a `SigningKey` parameter requires this.
+    signing_key: Option<[u8; 32]>,
     /// Open sockets, indexed by `Value::Socket` handle.
     sockets: Vec<BufReader<TcpStream>>,
     /// Listening server sockets, indexed by `Value::Listener` handle.
@@ -342,6 +349,7 @@ impl Interpreter {
             queue: VecDeque::new(),
             root: PathBuf::from("."),
             net_allow: Vec::new(),
+            signing_key: None,
             sockets: Vec::new(),
             listeners: Vec::new(),
             record_fields,
@@ -364,8 +372,12 @@ impl Interpreter {
             Some(Type::Named(n, _)) if n == "Env" => Ok(Value::Cap(Capability::Env)),
             Some(Type::Named(n, _)) if n == "Dir" => Ok(Value::Dir(self.root.clone())),
             Some(Type::Named(n, _)) if n == "Net" => Ok(Value::Net(self.net_allow.clone())),
+            Some(Type::Named(n, _)) if n == "SigningKey" => match self.signing_key {
+                Some(seed) => Ok(Value::SigningKey(seed)),
+                None => err("`main` requires a `SigningKey`, but the host granted none (provide `--signing-key <hex-seed-file>`)"),
+            },
             other => err(format!(
-                "`main` parameters must be capabilities (Console, Clock, Env, Dir, Net) or `List(String)` for command-line args; got `{other:?}`"
+                "`main` parameters must be capabilities (Console, Clock, Env, Dir, Net, SigningKey) or `List(String)` for command-line args; got `{other:?}`"
             )),
         }
     }
@@ -1689,6 +1701,19 @@ pub fn run_module_args(
     net_allow: Vec<String>,
     args: Vec<String>,
 ) -> Result<Vec<String>, RuntimeError> {
+    run_module_signed(module, root, net_allow, args, None)
+}
+
+/// Like [`run_module_args`], but also grants the root `SigningKey` capability
+/// from `signing_key` (an Ed25519 seed) to a `main` that declares one. Signing is
+/// authority, so the key is host-provided, never constructed by the program.
+pub fn run_module_signed(
+    module: Module,
+    root: impl AsRef<Path>,
+    net_allow: Vec<String>,
+    args: Vec<String>,
+    signing_key: Option<[u8; 32]>,
+) -> Result<Vec<String>, RuntimeError> {
     // Desugar traits/impls to ordinary functions (no-op for trait-free modules)
     // so the interpreter, like codegen, only ever sees plain functions.
     let module = crate::traits::lower(module);
@@ -1700,7 +1725,7 @@ pub fn run_module_args(
     let root = root.as_ref().to_path_buf();
     let handle = std::thread::Builder::new()
         .stack_size(4 * 1024 * 1024 * 1024)
-        .spawn(move || run_module_inner(module, root, net_allow, args))
+        .spawn(move || run_module_inner(module, root, net_allow, args, signing_key))
         .map_err(|e| RuntimeError {
             message: format!("could not start the interpreter thread: {e}"),
         })?;
@@ -1730,10 +1755,12 @@ fn run_module_inner(
     root: PathBuf,
     net_allow: Vec<String>,
     args: Vec<String>,
+    signing_key: Option<[u8; 32]>,
 ) -> Result<Vec<String>, RuntimeError> {
     let mut interp = Interpreter::new(module);
     interp.root = root;
     interp.net_allow = net_allow;
+    interp.signing_key = signing_key;
     let root_args = match interp.functions.get("main").cloned() {
         Some(f) => f
             .params

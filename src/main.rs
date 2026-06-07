@@ -268,6 +268,7 @@ fn main() -> wasmtime::Result<()> {
         let mut net_allow: Vec<String> = Vec::new();
         let mut file: Option<String> = None;
         let mut prog_args: Vec<String> = Vec::new();
+        let mut signing_key: Option<[u8; 32]> = None;
         let mut args = std::env::args().skip(1);
         while let Some(arg) = args.next() {
             if file.is_some() {
@@ -281,6 +282,26 @@ fn main() -> wasmtime::Result<()> {
                     Some(host) => net_allow.push(host),
                     None => {
                         eprintln!("--net requires a <host:port> argument");
+                        std::process::exit(1);
+                    }
+                }
+            } else if arg == "--signing-key" || arg.starts_with("--signing-key=") {
+                // Grant the root `SigningKey` from a file holding a 64-hex-char
+                // (32-byte) Ed25519 seed — the host decides what key to hand over.
+                let path = match arg.strip_prefix("--signing-key=") {
+                    Some(p) => p.to_string(),
+                    None => match args.next() {
+                        Some(p) => p,
+                        None => {
+                            eprintln!("--signing-key requires a <seed-file> argument");
+                            std::process::exit(1);
+                        }
+                    },
+                };
+                match load_signing_seed(&path) {
+                    Ok(seed) => signing_key = Some(seed),
+                    Err(e) => {
+                        eprintln!("--signing-key: {e}");
                         std::process::exit(1);
                     }
                 }
@@ -305,7 +326,7 @@ fn main() -> wasmtime::Result<()> {
                 std::process::exit(1);
             }
             Some(path) => {
-                match execute_file_args(path, net_allow, prog_args) {
+                match execute_file_args(path, net_allow, prog_args, signing_key) {
                     Ok(output) => {
                         for line in output {
                             println!("{line}");
@@ -681,14 +702,35 @@ fn check_file(path: &str) -> Result<(), String> {
 
 // Convenience wrapper (no command-line args) — used by the test suite; the CLI
 // run path calls `execute_file_args` directly with the program's argv.
+/// Read a 32-byte Ed25519 signing seed from a file holding 64 hex characters.
+fn load_signing_seed(path: &str) -> Result<[u8; 32], String> {
+    let text = std::fs::read_to_string(path).map_err(|e| format!("cannot read `{path}`: {e}"))?;
+    let hex = text.trim();
+    if hex.len() != 64 {
+        return Err(format!("seed must be 64 hex chars (32 bytes), got {}", hex.len()));
+    }
+    let mut seed = [0u8; 32];
+    for (i, b) in seed.iter_mut().enumerate() {
+        *b = u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16)
+            .map_err(|_| "seed is not valid hex".to_string())?;
+    }
+    Ok(seed)
+}
+
 #[cfg_attr(not(test), allow(dead_code))]
 fn execute_file(path: &str, net_allow: Vec<String>) -> Result<Vec<String>, String> {
-    execute_file_args(path, net_allow, Vec::new())
+    execute_file_args(path, net_allow, Vec::new(), None)
 }
 
 /// Like [`execute_file`], but also passes command-line `args` to the program's
-/// `main` (a `List(String)` parameter receives them).
-fn execute_file_args(path: &str, net_allow: Vec<String>, args: Vec<String>) -> Result<Vec<String>, String> {
+/// `main` (a `List(String)` parameter receives them) and, if `signing_key` is
+/// set, grants the root `SigningKey` capability from that Ed25519 seed.
+fn execute_file_args(
+    path: &str,
+    net_allow: Vec<String>,
+    args: Vec<String>,
+    signing_key: Option<[u8; 32]>,
+) -> Result<Vec<String>, String> {
     use std::path::Path;
     let (linked, entry_stem) = link_file(path)?;
     typeck::check(&linked).map_err(|e| e.to_string())?;
@@ -721,7 +763,8 @@ fn execute_file_args(path: &str, net_allow: Vec<String>, args: Vec<String>) -> R
 
     // The root `Dir` capability is anchored at the current directory (the same
     // root the demos use), independent of where the source file lives.
-    interpreter::run_module_args(linked, Path::new("."), net_allow, args).map_err(|e| e.to_string())
+    interpreter::run_module_signed(linked, Path::new("."), net_allow, args, signing_key)
+        .map_err(|e| e.to_string())
 }
 
 /// Run a program on BOTH backends — the tree-walking interpreter and compiled
@@ -1187,6 +1230,33 @@ mod example_tests {
         assert_eq!(link_run(&prog(msg)), vec!["ok"]);
         assert_eq!(wasm(&prog("tampered")), vec!["bad"]);
         assert_eq!(link_run(&prog("tampered")), vec!["bad"]);
+    }
+
+    /// Signing round-trips entirely in witchy: a host-granted `SigningKey`
+    /// capability signs a message (`crypto.sign`), and `crypto.ed25519_verify`
+    /// against the key's public half (`crypto.public_key`) accepts it. Without a
+    /// granted key, a `SigningKey` parameter is refused, and the capability
+    /// surfaces in the footprint.
+    #[test]
+    fn crypto_signing_round_trips_in_witchy() {
+        let src = "import crypto\nfn main(console: Console, signer: SigningKey):\n    let msg = \"sign me\"\n    let sig = crypto.sign(signer, msg)\n    print(console, if crypto.ed25519_verify(crypto.public_key(signer), msg, sig): \"verified\" else: \"FAILED\")\n";
+        let module = parser::parse_module(src).expect("parse");
+        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        typeck::check(&linked).expect("typecheck");
+        let out = interpreter::run_module_signed(linked, ".", Vec::new(), Vec::new(), Some([7u8; 32]))
+            .expect("run");
+        assert_eq!(out, vec!["verified"]);
+
+        // A `SigningKey` parameter without a host-granted key is refused.
+        let m2 = parser::parse_module("fn main(console: Console, s: SigningKey):\n    print(console, \"x\")\n").expect("parse");
+        let l2 = crate::linker::link(vec![("main".into(), m2)], "main").expect("link");
+        assert!(interpreter::run_module_signed(l2, ".", Vec::new(), Vec::new(), None).is_err());
+
+        // The signing authority surfaces in the capability footprint.
+        let fp = crate::capabilities::analyze(
+            &parser::parse_module("fn main(console: Console, s: SigningKey):\n    print(console, \"x\")\n").expect("parse"),
+        );
+        assert!(fp.total.contains_key("SigningKey"), "SigningKey should appear in the footprint");
     }
 
     /// `compiler.footprint` exposes witchy's own capability analyzer to witchy

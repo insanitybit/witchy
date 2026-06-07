@@ -23,7 +23,7 @@ use crate::ast::{Item, Module, Type};
 /// The host capabilities the runtime grants at an entry point. (`Subject`, an
 /// actor handle from `spawn`, is intra-program authority, not host authority,
 /// so it isn't a supply-chain footprint concern.)
-pub const HOST_CAPABILITIES: &[&str] = &["Console", "Clock", "Env", "Dir", "Net"];
+pub const HOST_CAPABILITIES: &[&str] = &["Console", "Clock", "Env", "SigningKey", "Dir", "Net"];
 
 /// The rights (verbs) a single capability permits. Empty for `Console`, which
 /// has no sub-verbs.
@@ -659,7 +659,7 @@ impl Logger:
     fn std_module_footprints_are_pinned() {
         let pure = [
             "list", "string", "math", "option", "result", "func", "ord", "eq", "ascii", "set",
-            "show", "json", "url", "duration", "random", "regex", "crypto", "compiler",
+            "show", "json", "url", "duration", "random", "regex", "compiler",
         ];
         for name in pure {
             let src = crate::linker::std_source(name).expect("bundled module");
@@ -670,6 +670,15 @@ impl Logger:
                 fp.total
             );
         }
+        // `crypto` is pure except for `sign`/`public_key`, which take a
+        // `SigningKey` — so the module's surface demands exactly that (its hashing
+        // and verification stay capability-free).
+        let crypto = footprint(crate::linker::std_source("crypto").expect("bundled module"));
+        assert_eq!(
+            crypto.total.keys().copied().collect::<Vec<_>>(),
+            vec!["SigningKey"],
+            "crypto's only capability demand is SigningKey (for sign/public_key)",
+        );
         // The networking modules take a bare `Net` (full verbs) for now — they
         // are not yet tightened to `Net[Connect]`/`Net[Listen]`.
         let net_only = ["http", "server"];
