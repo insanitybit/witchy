@@ -118,7 +118,7 @@ USAGE:
     witchy lsp                                    run the language server
     witchy demo                                   built-in capability/runtime demonstration
 
-Package commands (add, build, publish, ...) are also available; see `witchy add --help`."
+Package commands (add, build, publish, ...) are also available."
     );
 }
 
@@ -277,6 +277,11 @@ fn main() -> wasmtime::Result<()> {
             }
         }
         match file.as_deref() {
+            // Standard help flags show the usage overview.
+            Some("--help" | "-h" | "help") => {
+                print_usage();
+                return Ok(());
+            }
             // `witchy demo` runs the built-in capability/runtime demonstration
             // below; fall through to it.
             Some("demo") => {}
