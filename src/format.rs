@@ -52,7 +52,12 @@ pub fn module(m: &Module, comments: &[(u32, String)]) -> String {
         if !s.is_empty() {
             s.push('\n');
         }
-        for imp in &m.imports {
+        for (i, imp) in m.imports.iter().enumerate() {
+            // A comment sitting between two imports stays with the import below
+            // it (rather than being relocated past the whole import block).
+            if i > 0 {
+                c.before(&mut s, 0, m.import_lines.get(i).copied().unwrap_or(u32::MAX));
+            }
             s.push_str("import ");
             s.push_str(imp);
             s.push('\n');
@@ -1008,6 +1013,20 @@ mod tests {
         assert!(out.contains("// doc for f\nfn f"), "{out}");
         // The header stays above the import.
         assert!(out.find("// header one").unwrap() < out.find("import string").unwrap(), "{out}");
+    }
+
+    #[test]
+    fn preserves_comments_between_imports() {
+        // A comment sitting between two imports used to be relocated past the whole
+        // import block (to just above the first item); it now stays in place.
+        let src = "import string\n// a note about result\nimport result\n\nfn f() -> Int:\n    1\n";
+        let out = reformat(src).expect("round-trips");
+        assert!(
+            out.contains("import string\n// a note about result\nimport result"),
+            "{out}"
+        );
+        // And it must not have drifted down to the function.
+        assert!(!out.contains("// a note about result\nfn f"), "{out}");
     }
 
     #[test]
