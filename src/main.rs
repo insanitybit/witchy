@@ -114,7 +114,7 @@ USAGE:
     witchy sandbox  <file.witchy>                 compile and run in a VM granted exactly its footprint
     witchy caps     <file.witchy>                 report the capability footprint
     witchy caps-diff <old.witchy> <new.witchy>    fail if the footprint widened
-    witchy fmt      <file.witchy>                 reformat in place
+    witchy fmt [--check] <file.witchy>            reformat in place (--check: verify only, exit 1 if not)
     witchy lsp                                    run the language server
     witchy demo                                   built-in capability/runtime demonstration
 
@@ -211,14 +211,23 @@ fn main() -> wasmtime::Result<()> {
     }
     // `witchy fmt <file>` rewrites a source file in canonical brace-free form.
     if std::env::args().nth(1).as_deref() == Some("fmt") {
-        let Some(path) = std::env::args().nth(2) else {
-            eprintln!("usage: witchy fmt <file.witchy>");
+        // `witchy fmt --check <file>` verifies formatting without rewriting (for
+        // CI): exit 0 if already canonical, 1 if it would change.
+        let check = std::env::args().nth(2).as_deref() == Some("--check");
+        let path = std::env::args().nth(if check { 3 } else { 2 });
+        let Some(path) = path else {
+            eprintln!("usage: witchy fmt [--check] <file.witchy>");
             std::process::exit(1);
         };
         match std::fs::read_to_string(&path) {
             Ok(src) => match format::reformat(&src) {
                 Some(out) => {
-                    if let Err(e) = std::fs::write(&path, out) {
+                    if check {
+                        if out != src {
+                            eprintln!("witchy fmt: `{path}` is not formatted");
+                            std::process::exit(1);
+                        }
+                    } else if let Err(e) = std::fs::write(&path, out) {
                         eprintln!("witchy fmt: {e}");
                         std::process::exit(1);
                     }
