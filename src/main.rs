@@ -1077,6 +1077,32 @@ mod example_tests {
         interpreter::run(src).expect("should run")
     }
 
+    /// The `sha256` builtin (a pure, capability-free hash — the primitive behind
+    /// content addressing) matches the canonical SHA-256 test vectors, and is
+    /// rejected by the compiled backend (interpreter-only for now).
+    #[test]
+    fn sha256_builtin_matches_known_vectors() {
+        let out = interp(
+            "fn main(console: Console):\n    print(console, sha256(\"\"))\n    print(console, sha256(\"abc\"))\n",
+        );
+        assert_eq!(
+            out,
+            vec![
+                "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+            ]
+        );
+        // String -> String, so it type-checks, but the WASM backend rejects it.
+        let src = "fn main(console: Console):\n    print(console, sha256(\"x\"))\n";
+        assert!(typeck::check_str(src).is_ok());
+        let module = crate::parser::parse_module(src).expect("parse");
+        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        assert!(
+            codegen::compile_module(&linked).is_err(),
+            "sha256 should be rejected by the WASM backend"
+        );
+    }
+
     /// The reference interpreter and the compiled WASM backend must produce the
     /// same output for the same program — the core promise of witchy's two-tier
     /// design. This differential test exercises a spread of features and asserts

@@ -2103,6 +2103,10 @@ impl Codegen {
 
     fn compile_call(&mut self, name: &str, args: &[Expr]) -> Result<String, CodegenError> {
         match (name, args.len()) {
+            // `sha256` is String -> String (so it isn't filtered out by a
+            // capability-typed parameter), but there's no WASM implementation —
+            // it's interpreter-only, like the filesystem/network builtins.
+            ("sha256", 1) => cerr("`sha256` is interpreter-only (not compiled to WASM)"),
             ("print", 2) => {
                 self.uses_print = true;
                 let msg = self.compile_expr(&args[1])?;

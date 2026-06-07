@@ -575,6 +575,24 @@ impl Interpreter {
                 Value::Str(s) => Ok(Some(Value::Str(s.to_lowercase()))),
                 other => err(format!("to_lower expects a String, got `{other}`")),
             },
+            // SHA-256 of a string's UTF-8 bytes, as 64 lowercase hex chars. A pure
+            // computation (no capability) — the primitive behind content
+            // addressing, lockfile hashes, and integrity checks.
+            "sha256" => match one(args)? {
+                Value::Str(s) => {
+                    use sha2::{Digest, Sha256};
+                    let mut h = Sha256::new();
+                    h.update(s.as_bytes());
+                    let digest = h.finalize();
+                    let mut out = String::with_capacity(64);
+                    for b in digest.as_ref() as &[u8] {
+                        use std::fmt::Write;
+                        let _ = write!(out, "{b:02x}");
+                    }
+                    Ok(Some(Value::Str(out)))
+                }
+                other => err(format!("sha256 expects a String, got `{other}`")),
+            },
             "trim" => match one(args)? {
                 Value::Str(s) => Ok(Some(Value::Str(s.trim().to_string()))),
                 other => err(format!("trim expects a String, got `{other}`")),
