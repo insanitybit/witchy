@@ -873,6 +873,33 @@ impl Checker {
         Ok(())
     }
 
+    /// Bind a call argument (`actual`) to a parameter (`expected`), allowing a
+    /// broader capability to stand in for a narrower one — implicit directional
+    /// narrowing, so a full `Net` satisfies a `Net[Connect]` parameter (more
+    /// authority can always be used where less is asked). The callee is still
+    /// type-bounded to the parameter's rights, so this stays sound: it cannot do
+    /// (or re-pass) more than its declared type permits. Everything else (Vars,
+    /// non-caps, exact caps, a too-narrow argument) falls back to unification.
+    fn coerce_arg(&mut self, expected: &Ty, actual: &Ty) -> Result<(), TypeError> {
+        let coercible = match (self.resolve(expected), self.resolve(actual)) {
+            // `want`'s rights must be a subset of what the argument `has`.
+            (Ty::Dir(want), Ty::Dir(has)) => (!want.read || has.read) && (!want.write || has.write),
+            (Ty::Net(want), Ty::Net(has)) => {
+                (!want.connect || has.connect)
+                    && (!want.listen || has.listen)
+                    && (!want.tcp || has.tcp)
+                    && (!want.udp || has.udp)
+                    && (!want.uds || has.uds)
+            }
+            _ => false,
+        };
+        if coercible {
+            Ok(())
+        } else {
+            self.unify(expected, actual)
+        }
+    }
+
     // --- inference ---
 
     fn infer_block(&mut self, block: &Block) -> Result<Ty, TypeError> {
@@ -1031,7 +1058,7 @@ impl Checker {
                             }
                             for (arg, pty) in args.iter().zip(&param_tys) {
                                 let at = self.infer(arg)?;
-                                self.unify(pty, &at).map_err(|e| TypeError {
+                                self.coerce_arg(pty, &at).map_err(|e| TypeError {
                                     message: format!("in call to `{name}`: {}", e.message),
                                 })?;
                             }
@@ -1079,7 +1106,7 @@ impl Checker {
                 }
                 for (arg, param_ty) in args.iter().zip(&params) {
                     let at = self.infer(arg)?;
-                    self.unify(param_ty, &at)
+                    self.coerce_arg(param_ty, &at)
                         .map_err(|e| TypeError { message: format!("in call to `{name}`: {}", e.message) })?;
                 }
                 // Enforce conventions: `inout` needs a mutable variable; `sink`

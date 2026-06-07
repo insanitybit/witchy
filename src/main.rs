@@ -4677,6 +4677,41 @@ impl Counter:
         );
     }
 
+    /// Implicit directional narrowing at call boundaries: a broader capability
+    /// satisfies a narrower parameter (a full `Net` flows into a `Net[Connect]`
+    /// param) without an explicit `as`. The callee stays type-bounded to its
+    /// declared rights, so it cannot re-pass more authority than it admits to.
+    #[test]
+    fn implicit_narrowing_at_call_boundaries() {
+        let ok = |src: &str| {
+            assert!(
+                crate::typeck::check_str(src).is_ok(),
+                "expected ok, got: {:?}",
+                crate::typeck::check_str(src)
+            );
+        };
+        let err = |src: &str, needle: &str| {
+            let e = crate::typeck::check_str(src).expect_err("expected a type error");
+            assert!(e.contains(needle), "error `{e}` should mention `{needle}`");
+        };
+
+        // A full `Net`/`Dir` coerces into a narrowed parameter — no `as` needed.
+        ok("fn fetch(n: Net[Connect]) -> Socket:\n    connect(n, \"a:1\")\nfn main(c: Console, net: Net):\n    let s = fetch(net)\n");
+        ok("fn dial(n: Net[Connect, Tcp]) -> Socket:\n    connect(n, \"a:1\")\nfn main(c: Console, net: Net):\n    let s = dial(net)\n");
+        ok("fn load(d: Dir[Read]) -> String:\n    read(d, \"f\")\nfn main(c: Console, root: Dir):\n    let x = load(root)\n");
+        // The type ceiling holds: a `Net[Connect]` cannot be re-widened to satisfy
+        // a full-`Net` parameter (soundness — no laundering authority back up).
+        err(
+            "fn g(m: Net):\n    let l = listen(m, \"b:2\")\nfn f(n: Net[Connect]):\n    g(n)\nfn main(c: Console, net: Net):\n    f(net)\n",
+            "expected `Net`, found `Net[Connect]`",
+        );
+        // A too-narrow argument is still rejected (Connect cannot satisfy Listen).
+        err(
+            "fn serve(n: Net[Listen]):\n    let l = listen(n, \"b:2\")\nfn main(c: Console, net: Net):\n    serve(net as Net[Connect])\n",
+            "expected `Net[Listen]`, found `Net[Connect]`",
+        );
+    }
+
     /// Rights-parameterized `Net`: the verb-set in the type distinguishes a client
     /// from a server. `Net[Connect]` cannot `listen`; `Net[Listen]` cannot
     /// `connect`; bare `Net` is the full set (back-compat). Narrowing is done with
