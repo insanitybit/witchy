@@ -542,6 +542,10 @@ fn resolve_in_expr(
             resolve_in_expr(lhs, sig, by_base, vars);
             resolve_in_expr(rhs, sig, by_base, vars);
         }
+        Expr::Range { lo, hi, .. } => {
+            resolve_in_expr(lo, sig, by_base, vars);
+            resolve_in_expr(hi, sig, by_base, vars);
+        }
         Expr::RecordUpdate { base, fields } => {
             resolve_in_expr(base, sig, by_base, vars);
             for (_, v) in fields.iter_mut() {
@@ -684,6 +688,10 @@ fn collect_bound_expr(e: &Expr, out: &mut HashSet<String>) {
             collect_bound_expr(lhs, out);
             collect_bound_expr(rhs, out);
         }
+        Expr::Range { lo, hi, .. } => {
+            collect_bound_expr(lo, out);
+            collect_bound_expr(hi, out);
+        }
         Expr::Unary { expr, .. } | Expr::Try(expr) | Expr::As { expr, .. } | Expr::Field { base: expr, .. } => {
             collect_bound_expr(expr, out)
         }
@@ -763,6 +771,10 @@ fn rewrite_expr(
         Expr::Binary { lhs, rhs, .. } => {
             rewrite_expr(lhs, m, imps, fns, bound)?;
             rewrite_expr(rhs, m, imps, fns, bound)?;
+        }
+        Expr::Range { lo, hi, .. } => {
+            rewrite_expr(lo, m, imps, fns, bound)?;
+            rewrite_expr(hi, m, imps, fns, bound)?;
         }
         Expr::If {
             cond,

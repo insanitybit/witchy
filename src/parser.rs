@@ -642,7 +642,11 @@ impl Parser {
                 lhs = desugar_pipe(lhs, rhs, self)?;
             } else if op_tok == Tok::DotDot || op_tok == Tok::DotDotEq {
                 let rhs = self.expr(r_bp)?;
-                lhs = self.desugar_range(lhs, rhs, op_tok == Tok::DotDotEq);
+                lhs = Expr::Range {
+                    lo: Box::new(lhs),
+                    hi: Box::new(rhs),
+                    inclusive: op_tok == Tok::DotDotEq,
+                };
             } else {
                 let rhs = self.expr(r_bp)?;
                 lhs = Expr::Binary {
@@ -979,53 +983,6 @@ impl Parser {
         }
         self.expect(&Tok::RBracket)?;
         Ok(Expr::List(items))
-    }
-
-    /// Desugar `lo..hi` (half-open) or `lo..=hi` (inclusive) integer ranges into
-    /// a block that builds the list: `{ var acc = []; var i = lo; let end = hi;
-    /// while i < end (or i <= end) { acc = push(acc, i); i = i + 1 }; acc }`.
-    /// `hi` is bound once so it isn't re-evaluated each iteration. Self-contained.
-    fn desugar_range(&mut self, lo: Expr, hi: Expr, inclusive: bool) -> Expr {
-        let n = self.compr_counter;
-        self.compr_counter += 1;
-        let acc = format!("__range{n}");
-        let idx = format!("__ri{n}");
-        let end = format!("__rend{n}");
-        let lt = Expr::Binary {
-            op: if inclusive { BinOp::LtEq } else { BinOp::Lt },
-            lhs: Box::new(Expr::Var(idx.clone())),
-            rhs: Box::new(Expr::Var(end.clone())),
-        };
-        let body = Block {
-            stmts: vec![
-                Stmt::Assign {
-                    name: acc.clone(),
-                    value: Expr::Call {
-                        name: "push".to_string(),
-                        args: vec![Expr::Var(acc.clone()), Expr::Var(idx.clone())],
-                    },
-                },
-                Stmt::Assign {
-                    name: idx.clone(),
-                    value: Expr::Binary {
-                        op: BinOp::Add,
-                        lhs: Box::new(Expr::Var(idx.clone())),
-                        rhs: Box::new(Expr::Int(1)),
-                    },
-                },
-            ],
-            lines: vec![0, 0],
-        };
-        Expr::Block(Block {
-            stmts: vec![
-                Stmt::Let { name: acc.clone(), mutable: true, value: Expr::List(Vec::new()) },
-                Stmt::Let { name: idx.clone(), mutable: true, value: lo },
-                Stmt::Let { name: end, mutable: false, value: hi },
-                Stmt::Expr(Expr::While { cond: Box::new(lt), body }),
-                Stmt::Expr(Expr::Var(acc)),
-            ],
-            lines: vec![0, 0, 0, 0, 0],
-        })
     }
 
     /// Desugar a list comprehension with one or more generators and filters —
@@ -1415,6 +1372,178 @@ fn compound_assign_op(t: &Tok) -> Option<BinOp> {
         Tok::SlashEq => Some(BinOp::Div),
         Tok::PercentEq => Some(BinOp::Mod),
         _ => None,
+    }
+}
+
+/// Desugar `lo..hi` (half-open) or `lo..=hi` (inclusive) integer ranges into a
+/// block that builds the list: `{ var acc = []; var i = lo; let end = hi;
+/// while i < end (or i <= end) { acc = push(acc, i); i = i + 1 }; acc }`. `hi`
+/// is bound once so it isn't re-evaluated each iteration. Self-contained.
+///
+/// A free function (not a parser method) because the parser keeps ranges as
+/// `Expr::Range` for the formatter; every other consumer (typeck, interpreter,
+/// codegen) calls this to lower them. The synthetic-name counter is a
+/// thread-local so repeated lowerings never collide.
+pub(crate) fn desugar_range(lo: Expr, hi: Expr, inclusive: bool) -> Expr {
+    thread_local! {
+        static RANGE_COUNTER: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
+    let n = RANGE_COUNTER.with(|c| {
+        let v = c.get();
+        c.set(v + 1);
+        v
+    });
+    let acc = format!("__range{n}");
+    let idx = format!("__ri{n}");
+    let end = format!("__rend{n}");
+    let lt = Expr::Binary {
+        op: if inclusive { BinOp::LtEq } else { BinOp::Lt },
+        lhs: Box::new(Expr::Var(idx.clone())),
+        rhs: Box::new(Expr::Var(end.clone())),
+    };
+    let body = Block {
+        stmts: vec![
+            Stmt::Assign {
+                name: acc.clone(),
+                value: Expr::Call {
+                    name: "push".to_string(),
+                    args: vec![Expr::Var(acc.clone()), Expr::Var(idx.clone())],
+                },
+            },
+            Stmt::Assign {
+                name: idx.clone(),
+                value: Expr::Binary {
+                    op: BinOp::Add,
+                    lhs: Box::new(Expr::Var(idx.clone())),
+                    rhs: Box::new(Expr::Int(1)),
+                },
+            },
+        ],
+        lines: vec![0, 0],
+    };
+    Expr::Block(Block {
+        stmts: vec![
+            Stmt::Let { name: acc.clone(), mutable: true, value: Expr::List(Vec::new()) },
+            Stmt::Let { name: idx.clone(), mutable: true, value: lo },
+            Stmt::Let { name: end, mutable: false, value: hi },
+            Stmt::Expr(Expr::While { cond: Box::new(lt), body }),
+            Stmt::Expr(Expr::Var(acc)),
+        ],
+        lines: vec![0, 0, 0, 0, 0],
+    })
+}
+
+/// Replace every `Expr::Range` in a module with its `desugar_range` lowering.
+/// Codegen runs this once up front so its multiple passes (local collection,
+/// then emission) agree on the synthetic loop-variable names; the formatter,
+/// which never lowers, keeps the `Range` nodes so it can print `lo..hi`.
+pub(crate) fn lower_ranges_module(m: &mut Module) {
+    for item in &mut m.items {
+        match item {
+            Item::Function(f) => lower_ranges_block(&mut f.body),
+            Item::Actor(a) => lower_ranges_actor(a),
+            Item::Impl(im) => {
+                for meth in &mut im.methods {
+                    lower_ranges_block(&mut meth.body);
+                }
+                for h in &mut im.handlers {
+                    lower_ranges_block(&mut h.body);
+                }
+            }
+            Item::Const { value, .. } => lower_ranges_expr(value),
+            Item::Type(_) | Item::Trait(_) | Item::TypeAlias { .. } => {}
+        }
+    }
+}
+
+pub(crate) fn lower_ranges_actor(a: &mut ActorDef) {
+    for f in &mut a.fields {
+        if let Some(init) = &mut f.init {
+            lower_ranges_expr(init);
+        }
+    }
+    for h in &mut a.handlers {
+        lower_ranges_block(&mut h.body);
+    }
+}
+
+fn lower_ranges_block(b: &mut Block) {
+    for stmt in &mut b.stmts {
+        match stmt {
+            Stmt::Let { value, .. }
+            | Stmt::LetTuple { value, .. }
+            | Stmt::Assign { value, .. }
+            | Stmt::Expr(value)
+            | Stmt::Return(Some(value)) => lower_ranges_expr(value),
+            Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
+        }
+    }
+}
+
+fn lower_ranges_expr(e: &mut Expr) {
+    match e {
+        Expr::Range { lo, hi, inclusive } => {
+            lower_ranges_expr(lo);
+            lower_ranges_expr(hi);
+            *e = desugar_range((**lo).clone(), (**hi).clone(), *inclusive);
+        }
+        Expr::Int(_) | Expr::Float(_) | Expr::Duration(_) | Expr::Str(_) | Expr::Bool(_)
+        | Expr::Var(_) => {}
+        Expr::List(xs)
+        | Expr::Tuple(xs)
+        | Expr::Call { args: xs, .. }
+        | Expr::Ctor { args: xs, .. }
+        | Expr::Spawn { args: xs, .. } => {
+            for x in xs {
+                lower_ranges_expr(x);
+            }
+        }
+        Expr::Apply { func, args } => {
+            lower_ranges_expr(func);
+            for a in args {
+                lower_ranges_expr(a);
+            }
+        }
+        Expr::Unary { expr, .. }
+        | Expr::Try(expr)
+        | Expr::As { expr, .. }
+        | Expr::Field { base: expr, .. } => lower_ranges_expr(expr),
+        Expr::RecordUpdate { base, fields } => {
+            lower_ranges_expr(base);
+            for (_, v) in fields {
+                lower_ranges_expr(v);
+            }
+        }
+        Expr::Binary { lhs, rhs, .. } => {
+            lower_ranges_expr(lhs);
+            lower_ranges_expr(rhs);
+        }
+        Expr::If { cond, then_block, else_block } => {
+            lower_ranges_expr(cond);
+            lower_ranges_block(then_block);
+            if let Some(b) = else_block {
+                lower_ranges_block(b);
+            }
+        }
+        Expr::While { cond, body } => {
+            lower_ranges_expr(cond);
+            lower_ranges_block(body);
+        }
+        Expr::For { iter, body, .. } => {
+            lower_ranges_expr(iter);
+            lower_ranges_block(body);
+        }
+        Expr::Match { scrutinee, arms } => {
+            lower_ranges_expr(scrutinee);
+            for arm in arms.iter_mut() {
+                if let Some(g) = &mut arm.guard {
+                    lower_ranges_expr(g);
+                }
+                lower_ranges_expr(&mut arm.body);
+            }
+        }
+        Expr::Lambda { body, .. } => lower_ranges_block(body),
+        Expr::Block(b) => lower_ranges_block(b),
     }
 }
 

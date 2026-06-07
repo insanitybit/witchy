@@ -254,6 +254,15 @@ pub enum Expr {
         iter: Box<Expr>,
         body: Block,
     },
+    /// `lo..hi` (half-open) or `lo..=hi` (inclusive) — an integer range that
+    /// evaluates to the `List(Int)` it spans. Kept as a node (rather than
+    /// desugared at parse time) so the formatter can print it back as `lo..hi`;
+    /// every other consumer lowers it via `parser::desugar_range`.
+    Range {
+        lo: Box<Expr>,
+        hi: Box<Expr>,
+        inclusive: bool,
+    },
     /// `spawn ActorName(args)` — create an actor, granting it the args as its
     /// initial (non-defaulted) fields. Evaluates to a `Subject`.
     Spawn {

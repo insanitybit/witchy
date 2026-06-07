@@ -278,6 +278,10 @@ fn resolve_in_expr(e: &mut Expr, map: &HashMap<String, Type>) {
             resolve_in_expr(lhs, map);
             resolve_in_expr(rhs, map);
         }
+        Expr::Range { lo, hi, .. } => {
+            resolve_in_expr(lo, map);
+            resolve_in_expr(hi, map);
+        }
         Expr::If { cond, then_block, else_block } => {
             resolve_in_expr(cond, map);
             resolve_in_block(then_block, map);

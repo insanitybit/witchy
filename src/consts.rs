@@ -73,6 +73,10 @@ fn collect_names(e: &Expr, out: &mut Vec<String>) {
             collect_names(lhs, out);
             collect_names(rhs, out);
         }
+        Expr::Range { lo, hi, .. } => {
+            collect_names(lo, out);
+            collect_names(hi, out);
+        }
         Expr::If { cond, then_block, else_block } => {
             collect_names(cond, out);
             collect_names_block(then_block, out);
@@ -314,6 +318,11 @@ fn subst_expr(
         Expr::Binary { lhs, rhs, .. } => {
             let a = subst_expr(lhs, consts, cnames, scope);
             let b = subst_expr(rhs, consts, cnames, scope);
+            a || b
+        }
+        Expr::Range { lo, hi, .. } => {
+            let a = subst_expr(lo, consts, cnames, scope);
+            let b = subst_expr(hi, consts, cnames, scope);
             a || b
         }
         Expr::If { cond, then_block, else_block } => {

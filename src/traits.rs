@@ -318,6 +318,10 @@ impl Ctx<'_> {
                 self.rewrite_expr(lhs, scope);
                 self.rewrite_expr(rhs, scope);
             }
+            Expr::Range { lo, hi, .. } => {
+                self.rewrite_expr(lo, scope);
+                self.rewrite_expr(hi, scope);
+            }
             Expr::If {
                 cond,
                 then_block,
@@ -725,6 +729,10 @@ impl Mono<'_> {
             Expr::Binary { lhs, rhs, .. } => {
                 self.walk_expr(lhs, scope);
                 self.walk_expr(rhs, scope);
+            }
+            Expr::Range { lo, hi, .. } => {
+                self.walk_expr(lo, scope);
+                self.walk_expr(hi, scope);
             }
             Expr::If {
                 cond,

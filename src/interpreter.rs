@@ -1235,6 +1235,11 @@ impl Interpreter {
             Expr::Float(x) => Ok(Value::Float(*x)),
             Expr::Str(s) => Ok(Value::Str(s.clone())),
             Expr::Bool(b) => Ok(Value::Bool(*b)),
+            // A range lowers to a list-building block; evaluate that.
+            Expr::Range { lo, hi, inclusive } => {
+                let d = crate::parser::desugar_range((**lo).clone(), (**hi).clone(), *inclusive);
+                self.eval(&d, env)
+            }
             Expr::List(items) => {
                 let vals = items
                     .iter()

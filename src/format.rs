@@ -536,6 +536,10 @@ fn expr(e: &Expr) -> String {
             let p = binop_prec(*op);
             format!("{} {} {}", operand(lhs, p, false), binop(*op), operand(rhs, p, true))
         }
+        Expr::Range { lo, hi, inclusive } => {
+            let op = if *inclusive { "..=" } else { ".." };
+            format!("{}{op}{}", operand(lo, RANGE_PREC, false), operand(hi, RANGE_PREC, true))
+        }
         Expr::Try(inner) => format!("{}?", operand(inner, POSTFIX_PREC, false)),
         Expr::As { expr, ty } => format!("{} as {}", operand(expr, POSTFIX_PREC, false), type_str(ty)),
         Expr::Lambda { params, body } => {
@@ -670,12 +674,18 @@ fn binop_prec(op: BinOp) -> u8 {
 const UNARY_PREC: u8 = 50;
 const POSTFIX_PREC: u8 = 90;
 
+/// Binding power of `..`/`..=` (the parser's left bp of 2), looser than every
+/// binary operator so a range operand that is itself an operator never needs
+/// parentheses, and a range used as another operator's operand always does.
+const RANGE_PREC: u8 = 2;
+
 /// Precedence of an expression for deciding whether it needs parentheses as the
 /// operand of a tighter-binding operator. Atoms and forms that print their own
 /// delimiters never need wrapping (100).
 fn expr_prec(e: &Expr) -> u8 {
     match e {
         Expr::Binary { op, .. } => binop_prec(*op),
+        Expr::Range { .. } => RANGE_PREC,
         Expr::Unary { .. } => UNARY_PREC,
         Expr::Field { .. } | Expr::Try(_) | Expr::Apply { .. } | Expr::As { .. } => POSTFIX_PREC,
         _ => 100,
@@ -843,6 +853,10 @@ fn strip_lines_expr(e: &mut Expr) {
             strip_lines_expr(lhs);
             strip_lines_expr(rhs);
         }
+        Expr::Range { lo, hi, .. } => {
+            strip_lines_expr(lo);
+            strip_lines_expr(hi);
+        }
         Expr::Lambda { body, .. } => strip_lines_block(body),
         Expr::RecordUpdate { base, fields } => {
             strip_lines_expr(base);
@@ -922,6 +936,19 @@ mod tests {
             }
         }
         assert!(failures.is_empty(), "did not round-trip: {failures:?}");
+    }
+
+    #[test]
+    fn preserves_ranges() {
+        // Ranges used to fail to format (they desugared to a synthetic block at
+        // parse time); now they round-trip and print back as `lo..hi` / `lo..=hi`,
+        // including when used as a value or with operator operands.
+        let src = "fn main(console: Console):\n    for i in 0..3:\n        print(console, int_to_string(i))\n    let xs = 1..=n\n    let ys = a + 1..b * 2\n";
+        let out = reformat(src).expect("ranges round-trip");
+        assert!(out.contains("for i in 0..3:"), "{out}");
+        assert!(out.contains("let xs = 1..=n"), "{out}");
+        // Operator operands bind tighter than `..`, so they need no parentheses.
+        assert!(out.contains("let ys = a + 1..b * 2"), "{out}");
     }
 
     #[test]

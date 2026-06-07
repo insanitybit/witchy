@@ -1283,6 +1283,9 @@ impl Codegen {
 
     fn compile_expr(&mut self, expr: &Expr) -> Result<String, CodegenError> {
         match expr {
+            Expr::Range { .. } => {
+                unreachable!("ranges are lowered to blocks before codegen (parser::lower_ranges_module)")
+            }
             Expr::Int(n) | Expr::Duration(n) => Ok(format!("    i64.const {n}\n")),
             Expr::Bool(b) => Ok(format!("    i32.const {}\n", if *b { 1 } else { 0 })),
             Expr::Str(s) => {
@@ -2596,6 +2599,9 @@ fn collect_fn_refs_block(b: &Block, out: &mut HashSet<String>) {
 
 fn collect_fn_refs_expr(e: &Expr, out: &mut HashSet<String>) {
     match e {
+        Expr::Range { .. } => {
+            unreachable!("ranges are lowered to blocks before codegen (parser::lower_ranges_module)")
+        }
         Expr::Call { name, args } => {
             out.insert(name.clone());
             for a in args {
@@ -2694,8 +2700,11 @@ fn reachable_functions(module: &Module) -> HashSet<String> {
 
 pub fn compile_module(module: &Module) -> Result<String, CodegenError> {
     // Desugar traits/impls to ordinary functions (no-op for trait-free modules)
-    // so codegen, like the interpreter, only ever sees plain functions.
-    let lowered = crate::traits::lower(module.clone());
+    // so codegen, like the interpreter, only ever sees plain functions. Then
+    // lower ranges to their list-building blocks once, so the local-collection
+    // and emission passes below agree on the synthetic loop-variable names.
+    let mut lowered = crate::traits::lower(module.clone());
+    crate::parser::lower_ranges_module(&mut lowered);
     let module = &lowered;
     let mut cg = Codegen::new();
     // Collect parameter conventions up front so call sites can resolve `inout`
@@ -2931,6 +2940,11 @@ fn compile_actor_with_tags(
     actor: &ActorDef,
     tags: &HashMap<String, u32>,
 ) -> Result<String, CodegenError> {
+    // Lower ranges first (see compile_module) so the passes below see plain
+    // blocks with consistent synthetic names.
+    let mut actor_owned = actor.clone();
+    crate::parser::lower_ranges_actor(&mut actor_owned);
+    let actor = &actor_owned;
     let mut cg = Codegen::new();
     cg.message_tags = tags.clone();
 
@@ -3913,6 +3927,9 @@ fn fv_block(block: &Block, s: &mut LambdaScan) {
 
 fn fv_expr(e: &Expr, s: &mut LambdaScan) {
     match e {
+        Expr::Range { .. } => {
+            unreachable!("ranges are lowered to blocks before codegen (parser::lower_ranges_module)")
+        }
         Expr::Var(n) => {
             s.reads.insert(n.clone());
         }
@@ -4022,6 +4039,9 @@ fn collect_let_names(block: &Block, out: &mut Vec<String>) {
 
 fn collect_let_names_expr(expr: &Expr, out: &mut Vec<String>) {
     match expr {
+        Expr::Range { .. } => {
+            unreachable!("ranges are lowered to blocks before codegen (parser::lower_ranges_module)")
+        }
         Expr::If {
             then_block,
             else_block,
@@ -4192,6 +4212,9 @@ impl Renamer {
 
     fn rename_expr(&mut self, e: &mut Expr) {
         match e {
+            Expr::Range { .. } => {
+                unreachable!("ranges are lowered to blocks before codegen (parser::lower_ranges_module)")
+            }
             Expr::Var(n) => *n = self.resolve(n),
             Expr::Int(_) | Expr::Duration(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) => {}
             // Call / Ctor / Spawn names are functions / constructors / actors,

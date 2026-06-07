@@ -1008,6 +1008,11 @@ impl Checker {
             Expr::Duration(_) => Ok(Ty::Duration),
             Expr::Str(_) => Ok(Ty::String),
             Expr::Bool(_) => Ok(Ty::Bool),
+            // A range lowers to a list-building block; type it as that block.
+            Expr::Range { lo, hi, inclusive } => {
+                let d = crate::parser::desugar_range((**lo).clone(), (**hi).clone(), *inclusive);
+                self.infer(&d)
+            }
             Expr::List(items) => {
                 let elem = self.fresh();
                 for it in items {
