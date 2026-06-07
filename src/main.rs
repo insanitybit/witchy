@@ -9,6 +9,7 @@ mod actor_system;
 mod ast;
 mod capabilities;
 mod codegen;
+mod consts;
 mod format;
 mod interpreter;
 mod lexer;
@@ -2817,6 +2818,27 @@ fn main(console: Console):
                 "90 = XC -> 90",
                 "1994 = MCMXCIV -> 1994",
                 "2024 = MMXXIV -> 2024",
+            ]
+        );
+    }
+
+    #[test]
+    fn constants_example_runs_on_wasm() {
+        // Top-level constants (including ones built from earlier constants) are
+        // inlined before both backends, producing identical output.
+        let sources = [
+            ("string", crate::bundled_module("string").unwrap()),
+            ("main", include_str!("../examples/constants.witchy")),
+        ];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "constants diverged");
+        assert_eq!(
+            compiled,
+            vec![
+                "1 hour      = 3600s",
+                "1 day       = 86400s",
+                "1d 2h 3m 4s = 93784s",
             ]
         );
     }

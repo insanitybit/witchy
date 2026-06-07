@@ -1413,8 +1413,9 @@ pub fn check(module: &Module) -> Result<(), TypeError> {
                     .collect();
                 c.actor_field_sigs.insert(a.name.clone(), field_tys);
             }
-            // Desugared to functions by `traits::lower` before this point.
-            Item::Trait(_) | Item::Impl(_) => {}
+            // Desugared to functions by `traits::lower` and constants inlined by
+            // `crate::consts` before this point.
+            Item::Trait(_) | Item::Impl(_) | Item::Const { .. } => {}
         }
     }
 
@@ -1426,7 +1427,7 @@ pub fn check(module: &Module) -> Result<(), TypeError> {
             }
             // Actor handler errors already carry actor/handler context.
             Item::Actor(a) => c.check_actor(a).map_err(|e| at_loc(e, c.cur_line, ""))?,
-            Item::Type(_) | Item::Trait(_) | Item::Impl(_) => {}
+            Item::Type(_) | Item::Trait(_) | Item::Impl(_) | Item::Const { .. } => {}
         }
     }
     Ok(())

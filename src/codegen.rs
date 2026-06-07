@@ -2679,7 +2679,7 @@ pub fn compile_module(module: &Module) -> Result<String, CodegenError> {
                 }
             }
             Item::Actor(_) => {}
-            Item::Trait(_) | Item::Impl(_) => {}
+            Item::Trait(_) | Item::Impl(_) | Item::Const { .. } => {}
         }
     }
     // Now that all record types are known, record which constructor fields are
@@ -2769,7 +2769,7 @@ pub fn compile_module(module: &Module) -> Result<String, CodegenError> {
             }
             Item::Type(_) => {}
             Item::Actor(_) => return cerr("use compile_actor_module to compile an actor"),
-            Item::Trait(_) | Item::Impl(_) => {}
+            Item::Trait(_) | Item::Impl(_) | Item::Const { .. } => {}
         }
     }
     if !has_main {

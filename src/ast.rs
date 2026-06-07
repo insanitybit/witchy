@@ -25,6 +25,10 @@ pub enum Item {
     /// Lowered to ordinary functions before type-checking/codegen (see
     /// `crate::traits`), so later stages never see this variant.
     Impl(ImplDef),
+    /// A module-level constant: `let MAX = 100`. Inlined at its use sites by
+    /// `crate::consts` before type-checking/codegen, so later stages never see
+    /// this variant.
+    Const { name: String, value: Expr },
 }
 
 /// A trait declaration: named method signatures (no bodies). The receiver is the

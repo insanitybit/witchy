@@ -76,6 +76,9 @@ fn subst_self(t: &Type, impl_type: &str) -> Type {
 /// unchanged) when there are no traits or impls, so non-trait programs — every
 /// existing one — are unaffected.
 pub fn lower(module: Module) -> Module {
+    // Inline any module-level constants first (a no-op once the linker has done
+    // so, but covers single-module paths such as `typeck::check_str`).
+    let module = crate::consts::inline(module);
     let needs_lowering = module.items.iter().any(|it| {
         matches!(it, Item::Trait(_) | Item::Impl(_))
             || matches!(it, Item::Function(f) if !f.bounds.is_empty())

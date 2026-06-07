@@ -192,9 +192,16 @@ impl Parser {
             Ok(Item::Trait(self.trait_def()?))
         } else if self.at(&Tok::Impl) {
             Ok(Item::Impl(self.impl_def()?))
+        } else if self.at(&Tok::Let) {
+            // A module-level constant: `let NAME = EXPR`. Inlined at use sites.
+            self.advance();
+            let name = self.ident()?;
+            self.expect(&Tok::Eq)?;
+            let value = self.expr(0)?;
+            Ok(Item::Const { name, value })
         } else {
             Err(self.error(format!(
-                "expected a top-level item (`fn`, `actor`, `type`, `trait`, or `impl`), found `{}`",
+                "expected a top-level item (`fn`, `actor`, `type`, `trait`, `impl`, or `let`), found `{}`",
                 self.kind()
             )))
         }
@@ -1544,6 +1551,23 @@ fn g(grid: List(List(Int))) -> Int:
         };
         assert_eq!(name, "at");
         assert!(matches!(&args[0], Expr::Call { name, .. } if name == "at"));
+    }
+
+    #[test]
+    fn top_level_let_parses_as_const() {
+        let m = parse_module(
+            r#"
+let MAX = 100
+"#,
+        )
+        .expect("top-level let should parse");
+        match &m.items[0] {
+            Item::Const { name, value } => {
+                assert_eq!(name, "MAX");
+                assert_eq!(*value, Expr::Int(100));
+            }
+            other => panic!("expected a const item, got {other:?}"),
+        }
     }
 
     #[test]

@@ -41,6 +41,13 @@ fn item_str(s: &mut String, item: &Item) {
         Item::Trait(t) => trait_def(s, t),
         Item::Impl(im) => impl_def(s, im),
         Item::Actor(a) => actor_def(s, a),
+        Item::Const { name, value } => {
+            s.push_str("let ");
+            s.push_str(name);
+            s.push_str(" = ");
+            s.push_str(&expr(value));
+            s.push('\n');
+        }
     }
 }
 
@@ -660,6 +667,7 @@ fn strip_lines_item(it: &mut Item) {
             }
         }
         Item::Type(_) => {}
+        Item::Const { value, .. } => strip_lines_expr(value),
         Item::Trait(t) => {
             for m in &mut t.methods {
                 if let Some(b) = &mut m.default {
