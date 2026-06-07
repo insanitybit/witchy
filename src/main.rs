@@ -266,9 +266,14 @@ fn main() -> wasmtime::Result<()> {
     {
         let mut net_allow: Vec<String> = Vec::new();
         let mut file: Option<String> = None;
+        let mut prog_args: Vec<String> = Vec::new();
         let mut args = std::env::args().skip(1);
         while let Some(arg) = args.next() {
-            if let Some(host) = arg.strip_prefix("--net=") {
+            if file.is_some() {
+                // Everything after the program file is the program's own argv —
+                // passed through verbatim (flags here belong to the program).
+                prog_args.push(arg);
+            } else if let Some(host) = arg.strip_prefix("--net=") {
                 net_allow.push(host.to_string());
             } else if arg == "--net" {
                 match args.next() {
@@ -278,11 +283,8 @@ fn main() -> wasmtime::Result<()> {
                         std::process::exit(1);
                     }
                 }
-            } else if file.is_none() {
-                file = Some(arg);
             } else {
-                eprintln!("unexpected argument: {arg}");
-                std::process::exit(1);
+                file = Some(arg);
             }
         }
         match file.as_deref() {
@@ -302,7 +304,7 @@ fn main() -> wasmtime::Result<()> {
                 std::process::exit(1);
             }
             Some(path) => {
-                match execute_file(path, net_allow) {
+                match execute_file_args(path, net_allow, prog_args) {
                     Ok(output) => {
                         for line in output {
                             println!("{line}");
@@ -676,7 +678,16 @@ fn check_file(path: &str) -> Result<(), String> {
     typeck::check(&linked).map_err(|e| e.to_string())
 }
 
+// Convenience wrapper (no command-line args) — used by the test suite; the CLI
+// run path calls `execute_file_args` directly with the program's argv.
+#[cfg_attr(not(test), allow(dead_code))]
 fn execute_file(path: &str, net_allow: Vec<String>) -> Result<Vec<String>, String> {
+    execute_file_args(path, net_allow, Vec::new())
+}
+
+/// Like [`execute_file`], but also passes command-line `args` to the program's
+/// `main` (a `List(String)` parameter receives them).
+fn execute_file_args(path: &str, net_allow: Vec<String>, args: Vec<String>) -> Result<Vec<String>, String> {
     use std::path::Path;
     let (linked, entry_stem) = link_file(path)?;
     typeck::check(&linked).map_err(|e| e.to_string())?;
@@ -709,7 +720,7 @@ fn execute_file(path: &str, net_allow: Vec<String>) -> Result<Vec<String>, Strin
 
     // The root `Dir` capability is anchored at the current directory (the same
     // root the demos use), independent of where the source file lives.
-    interpreter::run_module(linked, Path::new("."), net_allow).map_err(|e| e.to_string())
+    interpreter::run_module_args(linked, Path::new("."), net_allow, args).map_err(|e| e.to_string())
 }
 
 /// Run a program on BOTH backends — the tree-walking interpreter and compiled
@@ -1176,6 +1187,22 @@ mod example_tests {
                 .expect("parse"),
         );
         assert!(fp.total.contains_key("Env"), "Env should appear in the footprint");
+    }
+
+    /// `main` may declare a `List(String)` parameter to receive command-line
+    /// arguments — argv is input data, not authority, so it's an ordinary value
+    /// parameter passed by the host (here `run_module_args`), not a capability.
+    #[test]
+    fn main_receives_command_line_args() {
+        let run = |args: Vec<String>| -> Vec<String> {
+            let src = "import string\nfn main(console: Console, args: List(String)):\n    print(console, string.join(args, \",\"))\n";
+            let module = parser::parse_module(src).expect("parse");
+            let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+            typeck::check(&linked).expect("typecheck");
+            interpreter::run_module_args(linked, ".", Vec::new(), args).expect("run")
+        };
+        assert_eq!(run(vec!["a".into(), "b".into(), "c".into()]), vec!["a,b,c"]);
+        assert_eq!(run(Vec::new()), vec![""]); // empty argv -> empty list -> ""
     }
 
     /// The reference interpreter and the compiled WASM backend must produce the

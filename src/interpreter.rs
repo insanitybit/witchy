@@ -365,7 +365,7 @@ impl Interpreter {
             Some(Type::Named(n, _)) if n == "Dir" => Ok(Value::Dir(self.root.clone())),
             Some(Type::Named(n, _)) if n == "Net" => Ok(Value::Net(self.net_allow.clone())),
             other => err(format!(
-                "`main` may only declare capability parameters (Console, Clock, Env, Dir, Net); got `{other:?}`"
+                "`main` parameters must be capabilities (Console, Clock, Env, Dir, Net) or `List(String)` for command-line args; got `{other:?}`"
             )),
         }
     }
@@ -1716,6 +1716,18 @@ pub fn run_module(
     root: impl AsRef<Path>,
     net_allow: Vec<String>,
 ) -> Result<Vec<String>, RuntimeError> {
+    run_module_args(module, root, net_allow, Vec::new())
+}
+
+/// Like [`run_module`], but also hands command-line `args` to a `main` that
+/// declares a `List(String)` parameter to receive them (argv is input data, not
+/// authority, so it is an ordinary value parameter — not a capability).
+pub fn run_module_args(
+    module: Module,
+    root: impl AsRef<Path>,
+    net_allow: Vec<String>,
+    args: Vec<String>,
+) -> Result<Vec<String>, RuntimeError> {
     // Desugar traits/impls to ordinary functions (no-op for trait-free modules)
     // so the interpreter, like codegen, only ever sees plain functions.
     let module = crate::traits::lower(module);
@@ -1727,7 +1739,7 @@ pub fn run_module(
     let root = root.as_ref().to_path_buf();
     let handle = std::thread::Builder::new()
         .stack_size(4 * 1024 * 1024 * 1024)
-        .spawn(move || run_module_inner(module, root, net_allow))
+        .spawn(move || run_module_inner(module, root, net_allow, args))
         .map_err(|e| RuntimeError {
             message: format!("could not start the interpreter thread: {e}"),
         })?;
@@ -1741,10 +1753,22 @@ pub fn run_module(
     }
 }
 
+/// Whether a `main` parameter type is `List(String)` — the slot that receives the
+/// command-line arguments.
+fn is_args_param(ty: &Option<Type>) -> bool {
+    matches!(
+        ty,
+        Some(Type::Named(n, targs))
+            if n == "List"
+                && matches!(targs.as_slice(), [Type::Named(e, ea)] if e == "String" && ea.is_empty())
+    )
+}
+
 fn run_module_inner(
     module: Module,
     root: PathBuf,
     net_allow: Vec<String>,
+    args: Vec<String>,
 ) -> Result<Vec<String>, RuntimeError> {
     let mut interp = Interpreter::new(module);
     interp.root = root;
@@ -1753,7 +1777,13 @@ fn run_module_inner(
         Some(f) => f
             .params
             .iter()
-            .map(|p| interp.root_cap_for(&p.ty))
+            .map(|p| {
+                if is_args_param(&p.ty) {
+                    Ok(Value::List(args.iter().cloned().map(Value::Str).collect()))
+                } else {
+                    interp.root_cap_for(&p.ty)
+                }
+            })
             .collect::<Result<Vec<_>, _>>()?,
         None => vec![],
     };
