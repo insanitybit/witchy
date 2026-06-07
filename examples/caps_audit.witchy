@@ -1,0 +1,35 @@
+// caps_audit — a tiny capability auditor, written entirely in witchy. It reads a
+// witchy source file with a *read-only* Dir capability, asks the compiler for the
+// file's capability footprint (`compiler.footprint`, returned as JSON), parses it
+// with `std/json`, and prints the total authority the file demands. A self-hosted
+// slice of `witchy caps` — proof the toolchain is usable from within witchy. Run:
+//   witchy examples/caps_audit.witchy
+
+import compiler
+import json
+import string
+
+fn main(console: Console, root: Dir[Read]):
+    let target = "examples/data/sample_rune.witchy"
+    let report = compiler.footprint(read(root, target))
+    print(console, target <> " demands: " <> total_of(report))
+
+// Pull the "total" array out of the footprint JSON and render it.
+fn total_of(report: String) -> String:
+    match json.decode(report):
+        Ok(doc) -> render_total(doc)
+        Err(e) -> "parse error: " <> e
+
+fn render_total(doc: Json) -> String:
+    match json.get(doc, "total"):
+        Some(total) -> string.join(string_items(total), ", ")
+        None -> "(none)"
+
+// Collect a JSON array of strings into a witchy List(String).
+fn string_items(j: Json) -> List(String):
+    var out = []
+    if let Some(items) = json.as_array(j):
+        for it in items:
+            if let Some(s) = json.as_string(it):
+                out = push(out, s)
+    out

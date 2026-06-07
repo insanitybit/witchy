@@ -4753,6 +4753,22 @@ impl Counter:
         assert_eq!(shown("serve"), "Net[Listen]");
     }
 
+    /// `caps_audit` is a capability auditor written *in witchy*: it reads a source
+    /// file (`Dir[Read]`), computes its footprint via `compiler.footprint`, parses
+    /// the JSON with `std/json`, and prints the total — a self-hosted slice of
+    /// `witchy caps`, proving the toolchain is usable from within the language.
+    #[test]
+    fn caps_audit_example_audits_a_rune_in_witchy() {
+        assert_eq!(
+            crate::execute_file("examples/caps_audit.witchy", Vec::new()).unwrap(),
+            vec!["examples/data/sample_rune.witchy demands: Dir[Read], Net[Connect]"]
+        );
+        // The auditor itself only reads files and prints — provably no writes/net.
+        let src = std::fs::read_to_string("examples/caps_audit.witchy").unwrap();
+        let fp = crate::capabilities::analyze(&parser::parse_module(&src).expect("parse"));
+        assert_eq!(crate::capabilities::show_caps(&fp.total), "Console, Dir[Read]");
+    }
+
     #[test]
     fn dir_write_is_confined_to_the_subtree() {
         let tmp = std::env::temp_dir().join("witchy_dir_write_test");
