@@ -10,6 +10,7 @@
 import option
 import result
 import url
+import ascii
 
 // A response: status code, headers (name lowercased for case-insensitive
 // lookup), and body. Shared by the client and the `server` framework.
@@ -176,4 +177,9 @@ fn status_code(line: String) -> Int:
         let rest = substring(line, sp + 1, char_count(line))
         let sp2 = index_of(rest, " ")
         let code = if sp2 < 0: rest else: substring(rest, 0, sp2)
-        string_to_int(code)
+        // A malformed/non-HTTP response can carry a non-numeric code; don't let
+        // it trap `string_to_int` and crash the client — report 0 instead.
+        if ascii.all_digits(code):
+            string_to_int(code)
+        else:
+            0

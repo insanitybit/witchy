@@ -35,23 +35,10 @@ fn default_port(scheme: String) -> Int:
 // malformed authority (`host:abc`) makes `parse` return None rather than trap
 // inside `string_to_int`.
 fn parse_port(digits: String) -> Option(Int):
-    if all_digits(digits):
+    if ascii.all_digits(digits):
         Some(string_to_int(digits))
     else:
         None
-
-fn all_digits(s: String) -> Bool:
-    let n = char_count(s)
-    if n == 0:
-        false
-    else:
-        var ok = true
-        var i = 0
-        while i < n:
-            if !ascii.is_digit(substring(s, i, i + 1)):
-                ok = false
-            i = i + 1
-        ok
 
 pub fn scheme(u: Url) -> String:
     match u:

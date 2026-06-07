@@ -8006,6 +8006,53 @@ fn main(console: Console, net: Net):
         assert_eq!(out, vec!["200".to_string(), "hello".to_string()]);
     }
 
+    // A server replying with a non-numeric status code must not crash the client:
+    // `status_code` guards `string_to_int` and reports 0 for a malformed status
+    // line, so the body is still readable. Interpreter-only.
+    #[test]
+    fn std_http_tolerates_malformed_status_line() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut tmp = [0u8; 256];
+                let mut req = Vec::new();
+                while let Ok(n) = stream.read(&mut tmp) {
+                    if n == 0 {
+                        break;
+                    }
+                    req.extend_from_slice(&tmp[..n]);
+                    if req.windows(4).any(|w| w == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                // A non-numeric status code (`BAD`) — would trap string_to_int.
+                let resp = "HTTP/1.1 BAD Weird\r\nContent-Length: 2\r\nConnection: close\r\n\r\nhi";
+                let _ = stream.write_all(resp.as_bytes());
+            }
+        });
+        let program = format!(
+            r#"
+import http
+fn main(console: Console, net: Net):
+    let r = http.get(net, "127.0.0.1", {port}, "/")
+    print(console, int_to_string(http.status(r)))
+    print(console, http.body(r))
+"#
+        );
+        let mods = vec![("main".to_string(), parser::parse_module(&program).expect("parse"))];
+        let linked = crate::linker::link(mods, "main").expect("link");
+        let out = interpreter::run_module(
+            linked,
+            std::path::Path::new("."),
+            vec![format!("127.0.0.1:{port}")],
+        )
+        .expect("run");
+        server.join().ok();
+        assert_eq!(out, vec!["0".to_string(), "hi".to_string()]);
+    }
+
     // std/http POST: send a request body and read it back from a loopback echo
     // server. Interpreter-only (networking isn't compiled).
     #[test]

@@ -29,3 +29,18 @@ pub fn to_digit(c: String) -> Int:
         string_to_int(c)
     else:
         0 - 1
+
+// True when `s` is non-empty and every character is an ASCII digit — a safe
+// guard before `string_to_int`, which traps on non-numeric input.
+pub fn all_digits(s: String) -> Bool:
+    let n = char_count(s)
+    if n == 0:
+        false
+    else:
+        var ok = true
+        var i = 0
+        while i < n:
+            if !is_digit(substring(s, i, i + 1)):
+                ok = false
+            i = i + 1
+        ok
