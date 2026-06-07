@@ -337,6 +337,18 @@ pub fn serve(console: Console) -> Int:
     }
 
     #[test]
+    fn single_field_record_is_also_a_brand() {
+        // A one-field record wrapping a capability is a brand too, not just a
+        // positional newtype.
+        let fp = footprint(
+            "type ConfigDir:\n    dir: Dir\npub fn load(c: ConfigDir) -> Int:\n    0\n",
+        );
+        assert_eq!(fp.total, ["Dir"].into_iter().collect::<BTreeSet<_>>());
+        let load = fp.entries.iter().find(|e| e.name == "load").unwrap();
+        assert!(load.brands.contains("ConfigDir"));
+    }
+
+    #[test]
     fn brands_resolve_transitively() {
         // A brand of a brand of `Net` still audits as `Net`.
         let fp = footprint(

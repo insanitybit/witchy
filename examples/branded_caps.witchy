@@ -7,16 +7,22 @@
 //   witchy examples/branded_caps.witchy
 //   witchy caps examples/branded_caps.witchy     # load: Dir (refined: ConfigDir)
 
+import option
+
 // A Dir confined to the application's config directory. The only constructor is
 // `config_dir`, so a value of this type provably came through that gate.
 type ConfigDir:
     ConfigDir(Dir)
 
-// Smart constructor: narrow a granted Dir to its `data/` subtree and brand it.
-// (A real one would also verify the directory exists and return an Option.)
-// Public, so `witchy caps` lists it: it takes a raw `Dir` (no refinement).
-pub fn config_dir(root: Dir) -> ConfigDir:
-    ConfigDir(subdir(root, "data"))
+// Checked smart constructor — the *only* way to make a `ConfigDir`. It verifies
+// the `data/` subtree actually exists, returning `None` if not; so holding a
+// `ConfigDir` is runtime proof the directory is there, captured as a static
+// brand. Public, so `witchy caps` lists it: it takes a raw `Dir` (no refinement).
+pub fn config_dir(root: Dir) -> Option(ConfigDir):
+    if exists(root, "data"):
+        Some(ConfigDir(subdir(root, "data")))
+    else:
+        None
 
 // Reads only from the config dir — the signature requires the brand, and the
 // `Dir` inside is confined to that subtree, so this can touch nothing else.
@@ -26,5 +32,8 @@ pub fn load(c: ConfigDir, name: String) -> String:
         ConfigDir(dir) -> read(dir, name)
 
 fn main(console: Console, root: Dir):
-    let cfg = config_dir(subdir(root, "examples"))
-    print(console, "config says: " <> load(cfg, "greeting.txt"))
+    // `if let` only proceeds once the directory has been confirmed and branded.
+    if let Some(cfg) = config_dir(subdir(root, "examples")):
+        print(console, "config says: " <> load(cfg, "greeting.txt"))
+    else:
+        print(console, "no config directory found")
