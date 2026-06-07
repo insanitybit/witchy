@@ -140,6 +140,17 @@ pub fn link(mut modules: Vec<(String, Module)>, entry: &str) -> Result<Module, L
         i += 1;
     }
 
+    // Reject cyclic constant/alias definitions with a clear message before
+    // resolution turns them into dangling self-references.
+    for (name, m) in &modules {
+        if let Some(c) = crate::consts::find_cycle(m) {
+            return lerr(format!("module `{name}`: constant `{c}` is defined cyclically"));
+        }
+        if let Some(c) = crate::aliases::find_cycle(m) {
+            return lerr(format!("module `{name}`: type alias `{c}` is defined cyclically"));
+        }
+    }
+
     // Expand type aliases and inline top-level constants per module before
     // merging, so their use sites (and any function calls inside constant values)
     // are qualified along with the bodies they expand into — no `Item::TypeAlias`

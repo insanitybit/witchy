@@ -11,6 +11,77 @@
 use crate::ast::{Block, Expr, Function, Item, MethodSig, Module, Stmt, Type};
 use std::collections::HashMap;
 
+/// The name of a type alias defined in terms of itself (directly or through a
+/// chain), if any — so the linker can report it rather than letting the alias
+/// expand to a dangling reference. Returns the first cyclic alias found.
+pub fn find_cycle(module: &Module) -> Option<String> {
+    let mut edges: HashMap<String, Vec<String>> = HashMap::new();
+    for item in &module.items {
+        if let Item::TypeAlias { name, ty } = item {
+            let mut refs = Vec::new();
+            collect_type_names(ty, &mut refs);
+            edges.insert(name.clone(), refs);
+        }
+    }
+    // Restrict edges to other aliases, then DFS for a back edge.
+    let names: std::collections::HashSet<String> = edges.keys().cloned().collect();
+    for refs in edges.values_mut() {
+        refs.retain(|r| names.contains(r));
+    }
+    let mut state: HashMap<String, u8> = HashMap::new(); // 0=unseen,1=on-stack,2=done
+    for start in edges.keys() {
+        if let Some(c) = dfs_cycle(start, &edges, &mut state) {
+            return Some(c);
+        }
+    }
+    None
+}
+
+fn collect_type_names(t: &Type, out: &mut Vec<String>) {
+    match t {
+        Type::Named(name, args) => {
+            out.push(name.clone());
+            for a in args {
+                collect_type_names(a, out);
+            }
+        }
+        Type::Tuple(ts) => {
+            for t in ts {
+                collect_type_names(t, out);
+            }
+        }
+        Type::Fn(params, ret) => {
+            for p in params {
+                collect_type_names(p, out);
+            }
+            collect_type_names(ret, out);
+        }
+    }
+}
+
+/// DFS from `node`, returning a node that lies on a cycle if one is reachable.
+fn dfs_cycle(
+    node: &str,
+    edges: &HashMap<String, Vec<String>>,
+    state: &mut HashMap<String, u8>,
+) -> Option<String> {
+    match state.get(node) {
+        Some(2) => return None,    // already fully explored
+        Some(1) => return Some(node.to_string()), // back edge: cycle
+        _ => {}
+    }
+    state.insert(node.to_string(), 1);
+    if let Some(next) = edges.get(node) {
+        for n in next {
+            if let Some(c) = dfs_cycle(n, edges, state) {
+                return Some(c);
+            }
+        }
+    }
+    state.insert(node.to_string(), 2);
+    None
+}
+
 /// Expand every type alias and drop the alias items. A no-op without aliases.
 pub fn resolve(mut module: Module) -> Module {
     let mut map: HashMap<String, Type> = HashMap::new();
@@ -256,6 +327,14 @@ mod tests {
             .expect("function");
         assert_eq!(f.params[0].ty, Some(Type::Named("Int".into(), vec![])));
         assert_eq!(f.ret, Some(Type::Named("Int".into(), vec![])));
+    }
+
+    #[test]
+    fn find_cycle_flags_cyclic_aliases() {
+        let cyclic = crate::parser::parse_module("type A = B\ntype B = A\n").expect("parse");
+        assert!(find_cycle(&cyclic).is_some());
+        let ok = crate::parser::parse_module("type A = Int\ntype B = A\n").expect("parse");
+        assert!(find_cycle(&ok).is_none());
     }
 
     #[test]

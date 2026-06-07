@@ -11,6 +11,132 @@
 use crate::ast::{Block, Expr, Item, Module, Pattern, Stmt};
 use std::collections::{HashMap, HashSet};
 
+/// The name of a constant defined in terms of itself (directly or through a
+/// chain), if any — so the linker can report it rather than letting it expand to
+/// a dangling self-reference. Returns the first cyclic constant found.
+pub fn find_cycle(module: &Module) -> Option<String> {
+    let mut edges: HashMap<String, Vec<String>> = HashMap::new();
+    for item in &module.items {
+        if let Item::Const { name, value } = item {
+            let mut refs = Vec::new();
+            collect_names(value, &mut refs);
+            edges.insert(name.clone(), refs);
+        }
+    }
+    let names: HashSet<String> = edges.keys().cloned().collect();
+    for refs in edges.values_mut() {
+        refs.retain(|r| names.contains(r));
+    }
+    let mut state: HashMap<String, u8> = HashMap::new(); // 0=unseen,1=on-stack,2=done
+    for start in edges.keys() {
+        if let Some(c) = dfs_cycle(start, &edges, &mut state) {
+            return Some(c);
+        }
+    }
+    None
+}
+
+/// Collect every variable/constructor name an expression references (an
+/// uppercase constant reference parses as a nullary constructor, so both forms
+/// matter).
+fn collect_names(e: &Expr, out: &mut Vec<String>) {
+    match e {
+        Expr::Var(n) => out.push(n.clone()),
+        Expr::Ctor { name, args } => {
+            out.push(name.clone());
+            for a in args {
+                collect_names(a, out);
+            }
+        }
+        Expr::Int(_) | Expr::Float(_) | Expr::Duration(_) | Expr::Str(_) | Expr::Bool(_) => {}
+        Expr::List(xs) | Expr::Tuple(xs) | Expr::Call { args: xs, .. } | Expr::Spawn { args: xs, .. } => {
+            for x in xs {
+                collect_names(x, out);
+            }
+        }
+        Expr::Apply { func, args } => {
+            collect_names(func, out);
+            for a in args {
+                collect_names(a, out);
+            }
+        }
+        Expr::Unary { expr, .. } | Expr::Try(expr) | Expr::Field { base: expr, .. } => {
+            collect_names(expr, out)
+        }
+        Expr::RecordUpdate { base, fields } => {
+            collect_names(base, out);
+            for (_, v) in fields {
+                collect_names(v, out);
+            }
+        }
+        Expr::Binary { lhs, rhs, .. } => {
+            collect_names(lhs, out);
+            collect_names(rhs, out);
+        }
+        Expr::If { cond, then_block, else_block } => {
+            collect_names(cond, out);
+            collect_names_block(then_block, out);
+            if let Some(b) = else_block {
+                collect_names_block(b, out);
+            }
+        }
+        Expr::While { cond, body } => {
+            collect_names(cond, out);
+            collect_names_block(body, out);
+        }
+        Expr::For { iter, body, .. } => {
+            collect_names(iter, out);
+            collect_names_block(body, out);
+        }
+        Expr::Match { scrutinee, arms } => {
+            collect_names(scrutinee, out);
+            for arm in arms {
+                if let Some(g) = &arm.guard {
+                    collect_names(g, out);
+                }
+                collect_names(&arm.body, out);
+            }
+        }
+        Expr::Lambda { body, .. } => collect_names_block(body, out),
+        Expr::Block(b) => collect_names_block(b, out),
+    }
+}
+
+fn collect_names_block(b: &Block, out: &mut Vec<String>) {
+    for stmt in &b.stmts {
+        match stmt {
+            Stmt::Let { value, .. }
+            | Stmt::LetTuple { value, .. }
+            | Stmt::Assign { value, .. }
+            | Stmt::Expr(value)
+            | Stmt::Return(Some(value)) => collect_names(value, out),
+            Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
+        }
+    }
+}
+
+fn dfs_cycle(
+    node: &str,
+    edges: &HashMap<String, Vec<String>>,
+    state: &mut HashMap<String, u8>,
+) -> Option<String> {
+    match state.get(node) {
+        Some(2) => return None,
+        Some(1) => return Some(node.to_string()),
+        _ => {}
+    }
+    state.insert(node.to_string(), 1);
+    if let Some(next) = edges.get(node) {
+        for n in next {
+            if let Some(c) = dfs_cycle(n, edges, state) {
+                return Some(c);
+            }
+        }
+    }
+    state.insert(node.to_string(), 2);
+    None
+}
+
 /// Inline every module-level constant at its use sites and drop the constant
 /// items. A no-op for modules without constants.
 pub fn inline(mut module: Module) -> Module {
@@ -258,6 +384,16 @@ mod tests {
         let f = func_of(src, "f");
         let printed = format!("{:?}", f.body);
         assert!(!printed.contains("BASE") && !printed.contains("DOUBLE"), "{printed}");
+    }
+
+    #[test]
+    fn find_cycle_flags_cyclic_constants() {
+        let cyclic = crate::parser::parse_module("let A = B\nlet B = A\n").expect("parse");
+        assert!(find_cycle(&cyclic).is_some());
+        let self_ref = crate::parser::parse_module("let A = A + 1\n").expect("parse");
+        assert!(find_cycle(&self_ref).is_some());
+        let ok = crate::parser::parse_module("let A = 10\nlet B = A + 1\n").expect("parse");
+        assert!(find_cycle(&ok).is_none());
     }
 
     #[test]
