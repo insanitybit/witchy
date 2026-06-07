@@ -853,6 +853,34 @@ impl Interpreter {
                 }
                 _ => err("exists expects a Dir and a relative path"),
             },
+            // List the immediate entries of the Dir capability's own directory, as
+            // sorted names (deterministic — `read_dir` order is OS-dependent).
+            "list" => match args {
+                [Value::Dir(base)] => {
+                    let mut names: Vec<String> = match std::fs::read_dir(base) {
+                        Ok(entries) => entries
+                            .filter_map(|e| e.ok())
+                            .filter_map(|e| e.file_name().into_string().ok())
+                            .collect(),
+                        Err(e) => return err(format!("list failed for `{}`: {e}", base.display())),
+                    };
+                    names.sort();
+                    Ok(Some(Value::List(names.into_iter().map(Value::Str).collect())))
+                }
+                _ => err("list expects a Dir"),
+            },
+            // Create a subdirectory within the Dir capability's subtree, confined
+            // like `write` (idempotent — succeeds if it already exists).
+            "make_dir" => match args {
+                [Value::Dir(base), Value::Str(name)] => {
+                    let path = resolve_write(base, name)?;
+                    match std::fs::create_dir_all(&path) {
+                        Ok(()) => Ok(Some(Value::Nil)),
+                        Err(e) => err(format!("make_dir failed for `{}`: {e}", path.display())),
+                    }
+                }
+                _ => err("make_dir expects a Dir and a name"),
+            },
             // Network capability: attenuate a Net to a held address.
             "restrict" => match args {
                 [Value::Net(allow), Value::Str(addr)] => {

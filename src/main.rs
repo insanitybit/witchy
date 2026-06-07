@@ -4639,6 +4639,38 @@ impl Counter:
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
+    /// `list` (enumerate, sorted) and `make_dir` (create a confined subdir) — the
+    /// filesystem ops a package store/registry needs. `list` needs `Read`,
+    /// `make_dir` needs `Write`, and both stay confined to the capability's subtree.
+    #[test]
+    fn dir_list_and_make_dir_work_and_are_rights_checked() {
+        let tmp = std::env::temp_dir().join("witchy_dir_list_test");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(tmp.join("store")).unwrap();
+        std::fs::write(tmp.join("store/bravo"), "b").unwrap();
+        std::fs::write(tmp.join("store/alpha"), "a").unwrap();
+        let run = |src: &str| {
+            let mods = vec![("main".to_string(), parser::parse_module(src).expect("parse"))];
+            let linked = crate::linker::link(mods, "main").expect("link");
+            interpreter::run_module(linked, &tmp, Vec::new())
+        };
+        // `list` enumerates a subdir's entries in sorted (deterministic) order.
+        let out = run("import string\nfn main(console: Console, root: Dir):\n    print(console, string.join(list(subdir(root, \"store\")), \",\"))\n")
+            .expect("run");
+        assert_eq!(out, vec!["alpha,bravo"]);
+        // `make_dir` creates a confined subdirectory.
+        run("fn main(console: Console, root: Dir):\n    make_dir(root, \"fresh\")\n").expect("run");
+        assert!(tmp.join("fresh").is_dir(), "make_dir should have created the directory");
+        // Confinement: a `..` make_dir is refused.
+        assert!(run("fn main(console: Console, root: Dir):\n    make_dir(root, \"../escaped\")\n").is_err());
+        assert!(!tmp.parent().unwrap().join("escaped").exists(), "make_dir must not escape the subtree");
+
+        // Rights: `list` needs Read, `make_dir` needs Write.
+        assert!(typeck::check_str("fn main(c: Console, d: Dir[Write]):\n    let n = list(d)\n").is_err());
+        assert!(typeck::check_str("fn main(c: Console, d: Dir[Read]):\n    make_dir(d, \"x\")\n").is_err());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
     #[cfg(unix)]
     #[test]
     fn dir_write_refuses_a_symlink_leaf() {

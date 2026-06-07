@@ -707,12 +707,13 @@ impl Checker {
     }
 
     /// Type-check a directory-capability op, enforcing that the `Dir`'s rights
-    /// permit the verb: `read`/`exists`/`subdir` need `Read`; `write` needs
-    /// `Write`. (Narrowing is done with the `as` ascription, not per-op builtins.)
-    /// Returns `Ok(None)` when `name` is not a Dir op, so the caller falls through.
+    /// permit the verb: `read`/`exists`/`subdir`/`list` need `Read`; `write`/
+    /// `make_dir` need `Write`. (Narrowing is done with the `as` ascription, not
+    /// per-op builtins.) Returns `Ok(None)` when `name` is not a Dir op.
     fn check_dir_op(&mut self, name: &str, args: &[Expr]) -> Result<Option<Ty>, TypeError> {
         let arity = match name {
-            "read" | "exists" | "subdir" => 2,
+            "list" => 1,
+            "read" | "exists" | "subdir" | "make_dir" => 2,
             "write" => 3,
             _ => return Ok(None),
         };
@@ -753,10 +754,24 @@ impl Checker {
                 }
                 Ty::Dir(rights)
             }
+            "list" => {
+                if !rights.read {
+                    return terr(format!("`list` needs `Read` but the capability is `{rights}`"));
+                }
+                Ty::List(Box::new(Ty::String))
+            }
             "write" => {
                 if !rights.write {
                     return terr(format!(
                         "`write` needs `Write` but the capability is `{rights}`"
+                    ));
+                }
+                Ty::Nil
+            }
+            "make_dir" => {
+                if !rights.write {
+                    return terr(format!(
+                        "`make_dir` needs `Write` but the capability is `{rights}`"
                     ));
                 }
                 Ty::Nil
