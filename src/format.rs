@@ -21,11 +21,19 @@ struct Comments<'a> {
 
 impl Comments<'_> {
     /// Emit every comment whose source line is before `line`, indented to `depth`.
+    /// A blank line the author left between two comments is preserved (so comment
+    /// paragraphs stay separated).
     fn before(&mut self, s: &mut String, depth: usize, line: u32) {
+        let mut prev: Option<u32> = None;
         while self.cursor < self.list.len() && self.list[self.cursor].0 < line {
+            let cl = self.list[self.cursor].0;
+            if prev.is_some_and(|p| cl - p > 1) {
+                s.push('\n');
+            }
             pad(s, depth);
             s.push_str(&self.list[self.cursor].1);
             s.push('\n');
+            prev = Some(cl);
             self.cursor += 1;
         }
     }
@@ -1116,6 +1124,15 @@ mod tests {
         assert!(!out.contains("let y = 2\n    \n"), "{out}");
         // The statement after the if-block is directly adjacent (no blank).
         assert!(out.contains("        let y = 2\n    let z = 3"), "{out}");
+    }
+
+    #[test]
+    fn preserves_blank_between_comment_paragraphs() {
+        // A blank line separating two comment paragraphs used to be collapsed,
+        // gluing the paragraphs together; it is now kept.
+        let src = "fn main(console: Console):\n    // paragraph one\n    // still one\n\n    // paragraph two\n    print(console, \"hi\")\n";
+        let out = reformat(src).expect("round-trips");
+        assert!(out.contains("// still one\n\n    // paragraph two"), "blank between paragraphs lost: {out}");
     }
 
     #[test]
