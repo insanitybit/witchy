@@ -834,7 +834,13 @@ fn report_capabilities(path: &str) -> Result<(), String> {
         .unwrap_or(0)
         .max("total".len());
     for e in &fp.entries {
-        println!("  {:<width$}  {}", e.name, show(&e.capabilities));
+        let refined = if e.brands.is_empty() {
+            String::new()
+        } else {
+            let names: Vec<&str> = e.brands.iter().map(String::as_str).collect();
+            format!("  (refined: {})", names.join(", "))
+        };
+        println!("  {:<width$}  {}{}", e.name, show(&e.capabilities), refined);
     }
     println!("  {:<width$}  {}", "total", show(&fp.total));
     Ok(())

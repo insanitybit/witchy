@@ -11,36 +11,113 @@
 //! computable, so a dependency that *widens* its footprint (suddenly asks for
 //! `Net`) is visible and can be gated.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 
-use crate::ast::{Item, Module, Param, Type};
+use crate::ast::{Item, Module, Type};
 
 /// The host capabilities the runtime grants at an entry point. (`Subject`, an
 /// actor handle from `spawn`, is intra-program authority, not host authority,
 /// so it isn't a supply-chain footprint concern.)
 pub const HOST_CAPABILITIES: &[&str] = &["Console", "Dir", "Net"];
 
-fn capability_of(ty: &Type) -> Option<&'static str> {
-    if let Type::Named(name, _) = ty {
-        return HOST_CAPABILITIES
-            .iter()
-            .copied()
-            .find(|cap| *cap == name.as_str());
+fn host_cap(name: &str) -> Option<&'static str> {
+    HOST_CAPABILITIES.iter().copied().find(|c| *c == name)
+}
+
+/// Host capabilities reachable from a type, resolving user types through `taint`.
+/// A capability wrapped in a type — a brand like `ConfigDir(Dir)`, or any record
+/// holding one — still confers that authority on whoever receives the value, so
+/// the analyzer must see through the wrapper to stay sound.
+fn caps_in(ty: &Type, taint: &HashMap<String, BTreeSet<&'static str>>, out: &mut BTreeSet<&'static str>) {
+    match ty {
+        Type::Named(name, args) => {
+            if let Some(h) = host_cap(name) {
+                out.insert(h);
+            }
+            if let Some(caps) = taint.get(name) {
+                out.extend(caps.iter().copied());
+            }
+            for a in args {
+                caps_in(a, taint, out);
+            }
+        }
+        Type::Tuple(ts) => {
+            for t in ts {
+                caps_in(t, taint, out);
+            }
+        }
+        Type::Fn(params, ret) => {
+            for p in params {
+                caps_in(p, taint, out);
+            }
+            caps_in(ret, taint, out);
+        }
     }
-    None
 }
 
-fn param_capabilities(params: &[Param]) -> BTreeSet<&'static str> {
-    params
-        .iter()
-        .filter_map(|p| p.ty.as_ref().and_then(capability_of))
-        .collect()
+/// For each user type, the host capabilities a value of it carries (transitively
+/// through its fields). Computed to a fixpoint, since a type may be tainted by
+/// another tainted user type.
+fn taint_map(module: &Module) -> HashMap<String, BTreeSet<&'static str>> {
+    let mut map: HashMap<String, BTreeSet<&'static str>> = HashMap::new();
+    for item in &module.items {
+        if let Item::Type(t) = item {
+            map.entry(t.name.clone()).or_default();
+        }
+    }
+    loop {
+        let mut changed = false;
+        for item in &module.items {
+            let Item::Type(t) = item else { continue };
+            let mut acc = BTreeSet::new();
+            for v in &t.variants {
+                for fty in &v.fields {
+                    caps_in(fty, &map, &mut acc);
+                }
+            }
+            let slot = map.entry(t.name.clone()).or_default();
+            let before = slot.len();
+            slot.extend(acc);
+            if slot.len() != before {
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    map
 }
 
-/// One entry point and the host capabilities it requires.
+/// Single-field newtype brands (`type ConfigDir: ConfigDir(Dir)`): a one-variant,
+/// one-field type wrapping exactly one host capability (directly or via another
+/// brand). The brand name is reported as a refinement of the bare capability —
+/// authority-equivalent to it, but carrying the program's intent.
+fn brand_map(
+    module: &Module,
+    taint: &HashMap<String, BTreeSet<&'static str>>,
+) -> HashMap<String, &'static str> {
+    let mut brands = HashMap::new();
+    for item in &module.items {
+        if let Item::Type(t) = item {
+            if t.variants.len() == 1 && t.variants[0].fields.len() == 1 {
+                let mut caps = BTreeSet::new();
+                caps_in(&t.variants[0].fields[0], taint, &mut caps);
+                if caps.len() == 1 {
+                    brands.insert(t.name.clone(), *caps.iter().next().unwrap());
+                }
+            }
+        }
+    }
+    brands
+}
+
+/// One entry point: the host capabilities it requires, plus the names of any
+/// capability brands it receives them through (a display-only refinement).
 pub struct Entry {
     pub name: String,
     pub capabilities: BTreeSet<&'static str>,
+    pub brands: BTreeSet<String>,
 }
 
 /// A module's capability footprint: each entry point's requirements and the
@@ -80,29 +157,50 @@ pub fn diff(old: &Footprint, new: &Footprint) -> FootprintDiff {
 }
 
 pub fn analyze(module: &Module) -> Footprint {
+    let taint = taint_map(module);
+    let brands = brand_map(module, &taint);
     let mut entries = Vec::new();
     let mut total = BTreeSet::new();
     for item in &module.items {
-        let (name, capabilities) = match item {
-            // Public functions and `main` are how authority enters the module.
-            Item::Function(f) if f.public || f.name == "main" => {
-                (f.name.clone(), param_capabilities(&f.params))
-            }
-            // An actor's capability-typed fields without an initializer are
-            // granted at spawn.
-            Item::Actor(a) => {
-                let caps = a
-                    .fields
+        // The capability-bearing types at this entry point: a public function's
+        // (or `main`'s) parameters, or an actor's spawn-granted fields.
+        let (name, types): (String, Vec<&Type>) = match item {
+            Item::Function(f) if f.public || f.name == "main" => (
+                f.name.clone(),
+                f.params.iter().filter_map(|p| p.ty.as_ref()).collect(),
+            ),
+            Item::Actor(a) => (
+                format!("actor {}", a.name),
+                a.fields
                     .iter()
                     .filter(|fl| fl.init.is_none())
-                    .filter_map(|fl| capability_of(&fl.ty))
-                    .collect();
-                (format!("actor {}", a.name), caps)
-            }
+                    .map(|fl| &fl.ty)
+                    .collect(),
+            ),
             _ => continue,
         };
+        let mut capabilities = BTreeSet::new();
+        let mut entry_brands = BTreeSet::new();
+        for ty in types {
+            let mut caps = BTreeSet::new();
+            caps_in(ty, &taint, &mut caps);
+            if caps.is_empty() {
+                continue;
+            }
+            capabilities.extend(caps.iter().copied());
+            // A directly-named brand is recorded as a refinement.
+            if let Type::Named(n, _) = ty {
+                if brands.contains_key(n.as_str()) {
+                    entry_brands.insert(n.clone());
+                }
+            }
+        }
         total.extend(capabilities.iter().copied());
-        entries.push(Entry { name, capabilities });
+        entries.push(Entry {
+            name,
+            capabilities,
+            brands: entry_brands,
+        });
     }
     Footprint { entries, total }
 }
@@ -202,6 +300,51 @@ pub fn serve(console: Console) -> Int:
         assert!(d.added.is_empty());
         assert_eq!(d.removed, ["Net"].into_iter().collect::<BTreeSet<_>>());
         assert!(!d.widened());
+    }
+
+    #[test]
+    fn branded_capability_is_seen_through_and_refined() {
+        // A `ConfigDir(Dir)` brand still confers `Dir` authority (sound), and the
+        // brand name is reported as a refinement.
+        let fp = footprint(
+            "type ConfigDir:\n    ConfigDir(Dir)\npub fn load(c: ConfigDir) -> Int:\n    0\n",
+        );
+        assert_eq!(fp.total, ["Dir"].into_iter().collect::<BTreeSet<_>>());
+        let load = fp.entries.iter().find(|e| e.name == "load").unwrap();
+        assert!(load.capabilities.contains("Dir"));
+        assert!(load.brands.contains("ConfigDir"));
+    }
+
+    #[test]
+    fn brands_resolve_transitively() {
+        // A brand of a brand of `Net` still audits as `Net`.
+        let fp = footprint(
+            "type Raw:\n    Raw(Net)\ntype Api:\n    Api(Raw)\npub fn fetch(a: Api) -> Int:\n    0\n",
+        );
+        assert_eq!(fp.total, ["Net"].into_iter().collect::<BTreeSet<_>>());
+    }
+
+    #[test]
+    fn any_capability_carrying_type_taints() {
+        // Not just newtype brands: a record that holds a `Net` confers `Net` on a
+        // caller, so the footprint must include it.
+        let fp = footprint(
+            "type Conn:\n    host: String\n    net: Net\npub fn open(c: Conn) -> Int:\n    0\n",
+        );
+        assert!(fp.total.contains("Net"));
+    }
+
+    #[test]
+    fn a_branded_capability_cannot_hide_a_widening() {
+        // Adding a function that takes a branded `Net` is still a widening — the
+        // brand does not let a dependency slip new authority past the gate.
+        let old = footprint("pub fn load(d: Dir) -> Int:\n    0\n");
+        let new = footprint(
+            "type ApiNet:\n    ApiNet(Net)\npub fn load(d: Dir) -> Int:\n    0\npub fn sync(n: ApiNet) -> Int:\n    0\n",
+        );
+        let d = diff(&old, &new);
+        assert_eq!(d.added, ["Net"].into_iter().collect::<BTreeSet<_>>());
+        assert!(d.widened());
     }
 
     #[test]
