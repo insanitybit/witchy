@@ -58,11 +58,17 @@ pub fn check(
         contributors.insert(kind.clone(), who);
     }
 
-    // Subtract the explicitly-accepted kinds to get what remains blocking.
+    // What `new` demands beyond what's already locked or explicitly accepted.
+    // Computed directly from the real footprints (`new − (old ∪ allowed)`), never
+    // by re-differencing the rendered `agg_widening` delta — a delta string like
+    // `Net[Listen]` would re-parse with its transport axis re-expanded to full,
+    // which could spuriously block when a transport-narrowed grant was allowed.
     // Rights-aware: accepting `Net` (full) clears a blocked `Net[Listen]`.
+    let base_runtime: BTreeSet<String> = old_agg.runtime.union(allowed_runtime).cloned().collect();
+    let base_build: BTreeSet<String> = old_agg.build.union(allowed_build).cloned().collect();
     let blocking = Widening {
-        runtime: super::footprint::cap_difference(&agg_widening.runtime, allowed_runtime),
-        build: super::footprint::cap_difference(&agg_widening.build, allowed_build),
+        runtime: super::footprint::cap_difference(&new_agg.runtime, &base_runtime),
+        build: super::footprint::cap_difference(&new_agg.build, &base_build),
     };
 
     // Per-rune deltas vs each rune's own previous entry (upgrades).
@@ -174,5 +180,38 @@ mod tests {
         let allowed: BTreeSet<String> = ["Net".to_string()].into_iter().collect();
         let report = check(&new, &old, &allowed, &BTreeSet::new());
         assert!(!report.is_blocked());
+    }
+
+    #[test]
+    fn gaining_a_transport_blocks_and_bare_allow_clears_it() {
+        // Lock pins the client to TCP; the upgrade opens to all transports — a
+        // transport-precise widening (gains Udp/Uds), blocked until accepted.
+        let old = Resolution {
+            runes: vec![rune("acme/http", &["Net[Connect, Tcp]"])],
+        }
+        .to_lockfile();
+        let new = Resolution {
+            runes: vec![rune("acme/http", &["Net[Connect]"])],
+        };
+        let report = check(&new, &old, &BTreeSet::new(), &BTreeSet::new());
+        assert!(report.is_blocked());
+        assert!(
+            report.blocking.runtime.iter().any(|k| k.contains("Udp")),
+            "should block the gained transport: {:?}",
+            report.blocking.runtime
+        );
+        // Accepting the bare capability clears it.
+        let allowed: BTreeSet<String> = ["Net".to_string()].into_iter().collect();
+        assert!(!check(&new, &old, &allowed, &BTreeSet::new()).is_blocked());
+
+        // The reverse (pinning an open client back to TCP) is a free narrowing.
+        let lock_open = Resolution {
+            runes: vec![rune("acme/http", &["Net[Connect]"])],
+        }
+        .to_lockfile();
+        let pinned = Resolution {
+            runes: vec![rune("acme/http", &["Net[Connect, Tcp]"])],
+        };
+        assert!(!check(&pinned, &lock_open, &BTreeSet::new(), &BTreeSet::new()).is_blocked());
     }
 }

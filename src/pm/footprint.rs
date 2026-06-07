@@ -40,29 +40,53 @@ fn is_build_cap(name: &str) -> bool {
 // verb-aware: a `Net[Connect]` that grows to also `Listen` is a widening, while a
 // full `Net` tightened to `Net[Connect]` is a safe narrowing.
 
-/// The full right-set a *bare* capability confers. Only `Dir`/`Net` have rights.
+/// The full right-set a *bare* capability confers. Only `Dir`/`Net` have rights;
+/// `Net` has two axes (verbs + transports), both full when bare.
 fn full_rights(cap: &str) -> BTreeSet<String> {
     match cap {
         "Dir" => ["Read", "Write"].iter().map(|s| s.to_string()).collect(),
-        "Net" => ["Connect", "Listen"].iter().map(|s| s.to_string()).collect(),
+        "Net" => ["Connect", "Listen", "Tcp", "Udp", "Uds"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect(),
         _ => BTreeSet::new(),
     }
 }
 
+const NET_VERBS: [&str; 2] = ["Connect", "Listen"];
+const NET_TRANSPORTS: [&str; 3] = ["Tcp", "Udp", "Uds"];
+
 /// Map a bracket marker to its canonical right for a capability, or `None` if it
-/// isn't a recognized right (e.g. a future transport like `Tcp`, ignored here).
+/// isn't a recognized right.
 fn right_marker(cap: &str, marker: &str) -> Option<&'static str> {
     match (cap, marker) {
         ("Dir", "Read") => Some("Read"),
         ("Dir", "Write") => Some("Write"),
         ("Net", "Connect") => Some("Connect"),
         ("Net", "Listen") => Some("Listen"),
+        ("Net", "Tcp") => Some("Tcp"),
+        ("Net", "Udp") => Some("Udp"),
+        ("Net", "Uds") => Some("Uds"),
         _ => None,
     }
 }
 
+/// `Net` has two independent axes; an axis with no marker mentioned defaults to
+/// full (so `Net[Connect]` keeps all transports, matching the type system). This
+/// expansion is what makes flat set-difference compute the correct per-axis
+/// widening, so it must run on every set of `Net` markers before comparison.
+fn default_net_axes(r: &mut BTreeSet<String>) {
+    if !NET_VERBS.iter().any(|v| r.contains(*v)) {
+        r.extend(NET_VERBS.iter().map(|s| s.to_string()));
+    }
+    if !NET_TRANSPORTS.iter().any(|t| r.contains(*t)) {
+        r.extend(NET_TRANSPORTS.iter().map(|s| s.to_string()));
+    }
+}
+
 /// The rights a capability annotation confers: the recognized bracket markers if
-/// present, else (bare capability) the full set.
+/// present, else (bare capability) the full set. `Net`'s axes default to full
+/// independently.
 fn rights_from_args(cap: &str, args: &[Type]) -> BTreeSet<String> {
     if args.is_empty() {
         return full_rights(cap);
@@ -75,33 +99,50 @@ fn rights_from_args(cap: &str, args: &[Type]) -> BTreeSet<String> {
             }
         }
     }
+    if cap == "Net" {
+        default_net_axes(&mut r);
+    }
     r
 }
 
 /// Render a capability + rights as a footprint string: a bare name when it
-/// carries its full right-set (or none), else bracketed — `Net`, `Net[Listen]`.
+/// carries its full right-set (or none). `Net` is rendered axis-aware — an axis
+/// at its full set is omitted, so `{Connect, Tcp, Udp, Uds}` prints `Net[Connect]`.
 fn render_cap(name: &str, rights: &BTreeSet<String>) -> String {
     if rights.is_empty() || *rights == full_rights(name) {
-        name.to_string()
-    } else {
-        format!(
-            "{name}[{}]",
-            rights.iter().cloned().collect::<Vec<_>>().join(", ")
-        )
+        return name.to_string();
     }
+    if name == "Net" {
+        let mut parts: Vec<&str> = Vec::new();
+        if !NET_VERBS.iter().all(|v| rights.contains(*v)) {
+            parts.extend(NET_VERBS.iter().copied().filter(|v| rights.contains(*v)));
+        }
+        if !NET_TRANSPORTS.iter().all(|t| rights.contains(*t)) {
+            parts.extend(NET_TRANSPORTS.iter().copied().filter(|t| rights.contains(*t)));
+        }
+        return format!("Net[{}]", parts.join(", "));
+    }
+    format!(
+        "{name}[{}]",
+        rights.iter().cloned().collect::<Vec<_>>().join(", ")
+    )
 }
 
 /// Parse a footprint string into `(capability, rights)`. A bare name carries the
-/// full right-set; brackets list a subset.
+/// full right-set; brackets list a subset (with `Net`'s unmentioned axis filled
+/// to full, so a stored `Net[Connect]` round-trips to its true right-set).
 fn parse_cap(s: &str) -> (String, BTreeSet<String>) {
     if let Some(open) = s.find('[') {
         let name = s[..open].to_string();
         let inner = s[open + 1..].trim_end_matches(']');
-        let rights = inner
+        let mut rights: BTreeSet<String> = inner
             .split(',')
             .map(|x| x.trim().to_string())
             .filter(|x| !x.is_empty())
             .collect();
+        if name == "Net" {
+            default_net_axes(&mut rights);
+        }
         (name, rights)
     } else {
         let r = full_rights(s);
@@ -601,5 +642,21 @@ fn beacon(n: Net):
         assert!(check_declared(&f, &["Net[Connect]".into()], &[]).is_ok());
         // Declaring only the *other* verb under-declares (demands Connect, not Listen).
         assert!(check_declared(&f, &["Net[Listen]".into()], &[]).is_err());
+    }
+
+    #[test]
+    fn net_transport_is_carried_and_gaining_one_widens() {
+        // A TCP-pinned client audits as `Net[Connect, Tcp]`, distinct from a
+        // transport-agnostic `Net[Connect]`.
+        let pinned = fp("fn dial(n: Net[Connect, Tcp]) -> Int:\n    0\n");
+        assert!(pinned.runtime.contains("Net[Connect, Tcp]"));
+        // Opening the transport axis (TCP-pinned -> all transports) gains Udp/Uds.
+        let open = fp("fn dial(n: Net[Connect]) -> Int:\n    0\n");
+        let w = open.widening_over(&pinned);
+        assert!(w.runtime.iter().any(|k| k.contains("Udp")), "should gain Udp: {:?}", w.runtime);
+        // Pinning back to TCP is a safe narrowing.
+        assert!(pinned.widening_over(&open).is_empty());
+        // A bare `Net` declaration still covers a transport-pinned demand.
+        assert!(check_declared(&pinned, &["Net".into()], &[]).is_ok());
     }
 }

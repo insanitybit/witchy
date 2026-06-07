@@ -156,10 +156,18 @@ agnostic `Net[Connect]`), and gaining a transport (`Net[Connect, Tcp]` →
 `Net[Connect]`, which opens up to `Udp`/`Uds`) is a widening. Both axes default
 to full independently, and `show_cap` omits a full axis so the output stays terse.
 
-Open follow-up: the **package-manager** footprint (`pm/footprint.rs`) still tracks
-verbs only — teaching it transports needs the gate's blocking computed against
-`old ∪ allowed` (rather than re-differencing a delta) to avoid the per-dimension
-re-expansion inflating a verb-only delta. That's the remaining polish.
+The **package-manager** footprint (`pm/footprint.rs`) tracks transports too: a
+TCP-pinned dependency audits as `Net[Connect, Tcp]`, and an upgrade that opens
+the transport axis (gains `Udp`/`Uds`) is a blocked widening. The gate's blocking
+is computed as `new − (old ∪ allowed)` directly from the real footprints, never
+by re-differencing a rendered delta — otherwise a delta like `Net[Listen]` would
+re-parse with its transport axis re-expanded to full and could spuriously block.
+
+Known approximation: the footprint stores a *flat* set of axis markers, not the
+verb×transport matrix, so a union of two grants narrowed on *different* axes
+(e.g. `Net[Connect, Tcp]` + `Net[Listen, Udp]`) over-approximates to their flat
+union. This is harmless under the TCP-only runtime (a non-TCP `connect`/`listen`
+can't compile anyway), and tracking the full matrix would be overkill for it.
 
 ## Open questions
 
