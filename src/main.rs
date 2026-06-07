@@ -4548,6 +4548,25 @@ impl Counter:
         );
     }
 
+    #[test]
+    fn dir_write_is_confined_to_the_subtree() {
+        let tmp = std::env::temp_dir().join("witchy_dir_write_test");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let run = |src: &str| {
+            let mods = vec![("main".to_string(), parser::parse_module(src).expect("parse"))];
+            let linked = crate::linker::link(mods, "main").expect("link");
+            interpreter::run_module(linked, &tmp, Vec::new())
+        };
+        // Write then read back, within the confined Dir.
+        let out = run("fn main(console: Console, root: Dir):\n    write(root, \"out.txt\", \"hi\")\n    print(console, read(root, \"out.txt\"))\n")
+            .expect("run");
+        assert_eq!(out, vec!["hi"]);
+        assert_eq!(std::fs::read_to_string(tmp.join("out.txt")).unwrap(), "hi");
+        // A `..` write is refused — the capability can't escape its subtree.
+        assert!(run("fn main(console: Console, root: Dir):\n    write(root, \"../escape.txt\", \"x\")\n").is_err());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
     /// `import list` resolves to the bundled standard library (no local file),
     /// links, type-checks, and runs end to end through the CLI.
     #[test]

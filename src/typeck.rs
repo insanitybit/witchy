@@ -521,6 +521,7 @@ impl Checker {
                 Some((vec![Ty::Named("Dict".into(), vec![k, v])], Ty::Int))
             }
             "read" => Some((vec![Ty::Dir, Ty::String], Ty::String)),
+            "write" => Some((vec![Ty::Dir, Ty::String, Ty::String], Ty::Nil)),
             "exists" => Some((vec![Ty::Dir, Ty::String], Ty::Bool)),
             "subdir" => Some((vec![Ty::Dir, Ty::String], Ty::Dir)),
             "connect" => Some((vec![Ty::Net, Ty::String], Ty::Socket)),

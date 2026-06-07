@@ -785,6 +785,19 @@ impl Interpreter {
                 }
                 _ => err("read expects a Dir and a relative path"),
             },
+            // Write a file relative to a Dir capability, confined to its subtree
+            // (the target may not exist yet, so confinement is checked via its
+            // parent directory).
+            "write" => match args {
+                [Value::Dir(base), Value::Str(rel), Value::Str(contents)] => {
+                    let path = resolve_write(base, rel)?;
+                    match std::fs::write(&path, contents) {
+                        Ok(()) => Ok(Some(Value::Nil)),
+                        Err(e) => err(format!("write failed for `{}`: {e}", path.display())),
+                    }
+                }
+                _ => err("write expects a Dir, a relative path, and contents"),
+            },
             // Whether a file exists within the Dir capability's subtree — total
             // (never errors), so a path outside the subtree, or a missing file,
             // simply reads as `false`. Lets `read` callers avoid a crash.
@@ -1530,6 +1543,35 @@ fn resolve(base: &Path, rel: &str) -> Result<PathBuf, RuntimeError> {
         return err("path escapes the Dir capability (via symlink)");
     }
     Ok(real)
+}
+
+/// Like `resolve`, but for writing: the target file need not exist, so
+/// confinement is checked against its parent directory (which must exist and lie
+/// within the capability's subtree). The lexical `..`/absolute checks still apply.
+fn resolve_write(base: &Path, rel: &str) -> Result<PathBuf, RuntimeError> {
+    let p = Path::new(rel);
+    if p.is_absolute() {
+        return err("absolute paths are not allowed (a Dir capability is a subtree)");
+    }
+    for comp in p.components() {
+        match comp {
+            Component::Normal(_) | Component::CurDir => {}
+            Component::ParentDir => return err("`..` escapes the Dir capability"),
+            _ => return err("invalid path component in a Dir-relative path"),
+        }
+    }
+    let joined = base.join(rel);
+    let parent = joined.parent().unwrap_or(base);
+    let real_parent = std::fs::canonicalize(parent).map_err(|e| RuntimeError {
+        message: format!("cannot access `{}`: {e}", parent.display()),
+    })?;
+    let real_base = std::fs::canonicalize(base).map_err(|e| RuntimeError {
+        message: format!("invalid Dir base `{}`: {e}", base.display()),
+    })?;
+    if !real_parent.starts_with(&real_base) {
+        return err("path escapes the Dir capability (via symlink)");
+    }
+    Ok(joined)
 }
 
 pub fn run(src: &str) -> Result<Vec<String>, RuntimeError> {
