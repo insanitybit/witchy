@@ -280,6 +280,13 @@ fn main() -> wasmtime::Result<()> {
             // `witchy demo` runs the built-in capability/runtime demonstration
             // below; fall through to it.
             Some("demo") => {}
+            Some(path) if !std::path::Path::new(path).is_file() => {
+                // A first argument that is neither a known subcommand nor a real
+                // file is almost always a mistyped command — point at usage.
+                eprintln!("witchy: `{path}` is not a known command or readable file");
+                eprintln!("run `witchy` with no arguments for usage");
+                std::process::exit(1);
+            }
             Some(path) => {
                 match execute_file(path, net_allow) {
                     Ok(output) => {
