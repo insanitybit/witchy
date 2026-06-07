@@ -33,6 +33,68 @@ impl Comments<'_> {
     fn remaining(&self) -> bool {
         self.cursor < self.list.len()
     }
+
+    /// How many own-line comments fall strictly between source lines `lo` and
+    /// `hi`. Used to tell an author's blank line apart from a comment in the gap
+    /// between two statements.
+    fn count_between(&self, lo: u32, hi: u32) -> usize {
+        self.list.iter().filter(|(l, _)| *l > lo && *l < hi).count()
+    }
+}
+
+/// The greatest source line touched by a statement, accounting for the nested
+/// blocks of control-flow forms — so a blank *after* a multi-line statement is
+/// told apart from blank-looking gaps *within* it. `default` is the statement's
+/// own line (used when it spans none of its own nested blocks).
+fn stmt_max_line(st: &Stmt, default: u32) -> u32 {
+    match st {
+        Stmt::Let { value, .. }
+        | Stmt::Assign { value, .. }
+        | Stmt::LetTuple { value, .. }
+        | Stmt::Return(Some(value))
+        | Stmt::Expr(value) => expr_max_line(value, default),
+        _ => default,
+    }
+}
+
+fn expr_max_line(e: &Expr, default: u32) -> u32 {
+    match e {
+        Expr::If { cond, then_block, else_block } => {
+            let mut m = expr_max_line(cond, default).max(block_max_line(then_block, default));
+            if let Some(b) = else_block {
+                m = m.max(block_max_line(b, default));
+            }
+            m
+        }
+        Expr::While { cond, body } => {
+            expr_max_line(cond, default).max(block_max_line(body, default))
+        }
+        Expr::WhileLet { scrutinee, body, .. } => {
+            expr_max_line(scrutinee, default).max(block_max_line(body, default))
+        }
+        Expr::For { iter, body, .. } => {
+            expr_max_line(iter, default).max(block_max_line(body, default))
+        }
+        Expr::Match { scrutinee, arms } => {
+            let mut m = expr_max_line(scrutinee, default);
+            for a in arms {
+                m = m.max(expr_max_line(&a.body, default));
+            }
+            m
+        }
+        Expr::Block(b) => block_max_line(b, default),
+        Expr::Lambda { body, .. } => block_max_line(body, default),
+        _ => default,
+    }
+}
+
+fn block_max_line(b: &Block, default: u32) -> u32 {
+    let mut m = default;
+    for (i, st) in b.stmts.iter().enumerate() {
+        let line = b.lines.get(i).copied().unwrap_or(default);
+        m = m.max(line).max(stmt_max_line(st, line));
+    }
+    m
 }
 
 pub fn module(m: &Module, comments: &[(u32, String)]) -> String {
@@ -285,6 +347,17 @@ fn block(s: &mut String, b: &Block, depth: usize, c: &mut Comments) {
         return;
     }
     for (i, st) in b.stmts.iter().enumerate() {
+        // Preserve a single author blank line between statements: a gap of source
+        // lines larger than the comments occupying it means a blank was there.
+        if i > 0 {
+            if let (Some(&line), Some(&prev)) = (b.lines.get(i), b.lines.get(i - 1)) {
+                let prev_last = stmt_max_line(&b.stmts[i - 1], prev);
+                let gap = line.saturating_sub(prev_last).saturating_sub(1);
+                if gap as usize > c.count_between(prev_last, line) {
+                    s.push('\n');
+                }
+            }
+        }
         // Own-line comments that preceded this statement in the source.
         if let Some(line) = b.lines.get(i) {
             c.before(s, depth, *line);
@@ -1013,6 +1086,27 @@ mod tests {
         assert!(out.contains("// doc for f\nfn f"), "{out}");
         // The header stays above the import.
         assert!(out.find("// header one").unwrap() < out.find("import string").unwrap(), "{out}");
+    }
+
+    #[test]
+    fn preserves_blank_lines_between_statements() {
+        // A single author blank line between statements survives (it used to be
+        // stripped); multiple blanks collapse to one.
+        let src = "fn main(console: Console):\n    let a = 1\n\n\n    let b = 2\n    let c = 3\n";
+        let out = reformat(src).expect("round-trips");
+        assert!(out.contains("let a = 1\n\n    let b = 2"), "blank not preserved: {out}");
+        assert!(out.contains("let b = 2\n    let c = 3"), "adjacent stmts gained a blank: {out}");
+    }
+
+    #[test]
+    fn no_false_blank_after_multiline_statement() {
+        // The lines a multi-line `if`/`while` spans must not be mistaken for a
+        // blank: `print("after")` follows the block with no blank inserted.
+        let src = "fn main(console: Console):\n    if true:\n        let x = 1\n        let y = 2\n    let z = 3\n";
+        let out = reformat(src).expect("round-trips");
+        assert!(!out.contains("let y = 2\n    \n"), "{out}");
+        // The statement after the if-block is directly adjacent (no blank).
+        assert!(out.contains("        let y = 2\n    let z = 3"), "{out}");
     }
 
     #[test]
