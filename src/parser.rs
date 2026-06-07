@@ -688,6 +688,10 @@ impl Parser {
         loop {
             if self.eat(&Tok::Question) {
                 e = Expr::Try(Box::new(e));
+            } else if self.eat(&Tok::As) {
+                // `e as T` — a capability narrowing ascription.
+                let ty = self.ty()?;
+                e = Expr::As { expr: Box::new(e), ty };
             } else if self.at(&Tok::LBracket) && self.on_same_line_as_prev() {
                 // `xs[i]` — list subscript: sugar for `at(xs, i)`. Requiring the
                 // `[` on the same line as the receiver avoids swallowing a list

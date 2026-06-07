@@ -305,7 +305,7 @@ impl Ctx<'_> {
                     self.rewrite_expr(a, scope);
                 }
             }
-            Expr::Unary { expr, .. } | Expr::Try(expr) | Expr::Field { base: expr, .. } => {
+            Expr::Unary { expr, .. } | Expr::Try(expr) | Expr::As { expr, .. } | Expr::Field { base: expr, .. } => {
                 self.rewrite_expr(expr, scope)
             }
             Expr::RecordUpdate { base, fields } => {
@@ -713,7 +713,7 @@ impl Mono<'_> {
                     self.walk_expr(a, scope);
                 }
             }
-            Expr::Unary { expr, .. } | Expr::Try(expr) | Expr::Field { base: expr, .. } => {
+            Expr::Unary { expr, .. } | Expr::Try(expr) | Expr::As { expr, .. } | Expr::Field { base: expr, .. } => {
                 self.walk_expr(expr, scope)
             }
             Expr::RecordUpdate { base, fields } => {

@@ -532,7 +532,7 @@ fn resolve_in_expr(
                 resolve_in_expr(a, sig, by_base, vars);
             }
         }
-        Expr::Unary { expr, .. } | Expr::Try(expr) | Expr::Field { base: expr, .. } => {
+        Expr::Unary { expr, .. } | Expr::Try(expr) | Expr::As { expr, .. } | Expr::Field { base: expr, .. } => {
             resolve_in_expr(expr, sig, by_base, vars)
         }
         Expr::Binary { lhs, rhs, .. } => {
@@ -681,7 +681,7 @@ fn collect_bound_expr(e: &Expr, out: &mut HashSet<String>) {
             collect_bound_expr(lhs, out);
             collect_bound_expr(rhs, out);
         }
-        Expr::Unary { expr, .. } | Expr::Try(expr) | Expr::Field { base: expr, .. } => {
+        Expr::Unary { expr, .. } | Expr::Try(expr) | Expr::As { expr, .. } | Expr::Field { base: expr, .. } => {
             collect_bound_expr(expr, out)
         }
         Expr::RecordUpdate { base, fields } => {
@@ -748,7 +748,7 @@ fn rewrite_expr(
                 rewrite_expr(a, m, imps, fns, bound)?;
             }
         }
-        Expr::Unary { expr, .. } | Expr::Try(expr) | Expr::Field { base: expr, .. } => {
+        Expr::Unary { expr, .. } | Expr::Try(expr) | Expr::As { expr, .. } | Expr::Field { base: expr, .. } => {
             rewrite_expr(expr, m, imps, fns, bound)?
         }
         Expr::RecordUpdate { base, fields } => {

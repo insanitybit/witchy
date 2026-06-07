@@ -4612,28 +4612,28 @@ impl Counter:
             "fn load(d: Dir[Write]):\n    let s = read(d, \"i\")\nfn main(c: Console, root: Dir):\n    load(root)\n",
             "`read` needs `Read`",
         );
-        // `read_only` narrows to `Dir[Read]`; a later write through it is rejected.
+        // `as Dir[Read]` narrows; a later write through it is rejected.
         err(
-            "fn f(d: Dir):\n    let r = read_only(d)\n    write(r, \"o\", \"x\")\nfn main(c: Console, root: Dir):\n    f(root)\n",
+            "fn f(d: Dir):\n    let r = d as Dir[Read]\n    write(r, \"o\", \"x\")\nfn main(c: Console, root: Dir):\n    f(root)\n",
             "`write` needs `Write`",
         );
-        // `write_only` cannot resurrect a `Write` the capability never had.
+        // `as` cannot resurrect a `Write` the capability never had (not a subset).
         err(
-            "fn f(d: Dir[Read]):\n    let w = write_only(d)\nfn main(c: Console, root: Dir):\n    f(root)\n",
-            "`write_only` cannot keep `Write`",
+            "fn f(d: Dir[Read]):\n    let w = d as Dir[Write]\nfn main(c: Console, root: Dir):\n    f(root)\n",
+            "`as` can only drop rights",
         );
         // `Dir[Read, Write]` is equivalent to bare `Dir` — both verbs allowed.
         ok("fn f(d: Dir[Read, Write]):\n    write(d, \"o\", read(d, \"i\"))\nfn main(c: Console, root: Dir):\n    f(root)\n");
     }
 
-    /// `read_only` is the identity at runtime (rights live only in the type), so a
-    /// narrowed handle still reads the same confined subtree.
+    /// `as` narrowing is the identity at runtime (rights live only in the type),
+    /// so a narrowed handle still reads the same confined subtree.
     #[test]
-    fn read_only_is_identity_at_runtime() {
-        let tmp = std::env::temp_dir().join("witchy_dir_read_only_test");
+    fn as_narrowing_is_identity_at_runtime() {
+        let tmp = std::env::temp_dir().join("witchy_dir_as_narrow_test");
         std::fs::create_dir_all(&tmp).unwrap();
         std::fs::write(tmp.join("in.txt"), "narrowed").unwrap();
-        let src = "fn main(console: Console, root: Dir):\n    let r = read_only(root)\n    print(console, read(r, \"in.txt\"))\n";
+        let src = "fn main(console: Console, root: Dir):\n    let r = root as Dir[Read]\n    print(console, read(r, \"in.txt\"))\n";
         let mods = vec![("main".to_string(), parser::parse_module(src).expect("parse"))];
         let linked = crate::linker::link(mods, "main").expect("link");
         let out = interpreter::run_module(linked, &tmp, Vec::new()).expect("run");
@@ -4641,10 +4641,46 @@ impl Counter:
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
+    /// The `as` ascription narrows a capability to a subset of its rights, and is
+    /// the single native mechanism for it (replacing the per-right `_only`
+    /// builtins). It can only *drop* rights — never widen or cross capabilities.
+    #[test]
+    fn as_ascription_narrows_to_subsets_only() {
+        let ok = |src: &str| {
+            assert!(
+                crate::typeck::check_str(src).is_ok(),
+                "expected ok, got: {:?}",
+                crate::typeck::check_str(src)
+            );
+        };
+        let err = |src: &str, needle: &str| {
+            let e = crate::typeck::check_str(src).expect_err("expected a type error");
+            assert!(e.contains(needle), "error `{e}` should mention `{needle}`");
+        };
+
+        // Narrowing along each axis, and an idempotent re-ascription, type-check.
+        ok("fn main(c: Console, net: Net, root: Dir):\n    let a = net as Net[Connect]\n    let b = net as Net[Listen, Tcp]\n    let d = root as Dir[Read]\n    let e = (net as Net[Connect]) as Net[Connect]\n");
+        // Re-widening (`Net[Connect]` back to full `Net`) is rejected.
+        err(
+            "fn main(c: Console, net: Net):\n    let w = (net as Net[Connect]) as Net\n",
+            "`as` can only drop rights",
+        );
+        // `as` cannot cross capabilities (a `Net` is not a `Dir`).
+        err(
+            "fn main(c: Console, net: Net):\n    let x = net as Dir[Read]\n",
+            "cannot ascribe",
+        );
+        // The retired narrowing builtins are gone — calling one is unknown.
+        err(
+            "fn main(c: Console, net: Net):\n    let x = connect_only(net)\n",
+            "unknown function `connect_only`",
+        );
+    }
+
     /// Rights-parameterized `Net`: the verb-set in the type distinguishes a client
     /// from a server. `Net[Connect]` cannot `listen`; `Net[Listen]` cannot
-    /// `connect`; bare `Net` is the full set (back-compat). `connect_only`/
-    /// `listen_only` are monotone attenuations the checker enforces.
+    /// `connect`; bare `Net` is the full set (back-compat). Narrowing is done with
+    /// the `as` ascription, which can only drop rights.
     #[test]
     fn net_verbs_are_statically_enforced() {
         let ok = |src: &str| {
@@ -4671,15 +4707,15 @@ impl Counter:
             "fn f(n: Net[Listen]):\n    let s = connect(n, \"a:1\")\nfn main(c: Console, net: Net):\n    f(net)\n",
             "`connect` needs `Connect`",
         );
-        // `connect_only` narrows to `Net[Connect]`; listening through it is rejected.
+        // `as Net[Connect]` narrows; listening through it is rejected.
         err(
-            "fn f(n: Net):\n    let c = connect_only(n)\n    let l = listen(c, \"b:2\")\nfn main(c: Console, net: Net):\n    f(net)\n",
+            "fn f(n: Net):\n    let c = n as Net[Connect]\n    let l = listen(c, \"b:2\")\nfn main(c: Console, net: Net):\n    f(net)\n",
             "`listen` needs `Listen`",
         );
-        // `listen_only` cannot resurrect a `Connect` the capability never had.
+        // `as` cannot resurrect a `Connect` the capability never had (not a subset).
         err(
-            "fn f(n: Net[Listen]):\n    let c = connect_only(n)\nfn main(c: Console, net: Net):\n    f(net)\n",
-            "`connect_only` cannot keep `Connect`",
+            "fn f(n: Net[Listen]):\n    let c = n as Net[Connect]\nfn main(c: Console, net: Net):\n    f(net)\n",
+            "`as` can only drop rights",
         );
         // `restrict` is verb-neutral: it preserves the verb-set it was given.
         err(
@@ -4691,7 +4727,7 @@ impl Counter:
     /// The `Net` transport axis: only `Tcp` is implemented, so `connect`/`listen`
     /// require it; `Udp`/`Uds` are type-level markers that keep the taxonomy
     /// expressible. Each axis defaults to full independently (`Net[Connect]` keeps
-    /// all transports). `tcp_only`/`udp_only`/`uds_only` narrow the transport axis.
+    /// all transports). Narrowing the transport axis is done with `as`.
     #[test]
     fn net_transport_is_statically_enforced() {
         let ok = |src: &str| {
@@ -4707,23 +4743,23 @@ impl Counter:
         };
 
         // `Net[Connect]` keeps all transports (incl. Tcp), so connect works.
-        ok("fn f(n: Net[Connect]):\n    let s = connect(n, \"a:1\")\nfn main(c: Console, net: Net):\n    f(connect_only(net))\n");
+        ok("fn f(n: Net[Connect]):\n    let s = connect(n, \"a:1\")\nfn main(c: Console, net: Net):\n    f(net as Net[Connect])\n");
         // A transport narrowed away from Tcp cannot drive a (TCP-only) connect.
         err(
-            "fn f(n: Net[Connect, Udp]):\n    let s = connect(n, \"a:1\")\nfn main(c: Console, net: Net):\n    f(udp_only(connect_only(net)))\n",
+            "fn f(n: Net[Connect, Udp]):\n    let s = connect(n, \"a:1\")\nfn main(c: Console, net: Net):\n    f(net as Net[Connect, Udp])\n",
             "only implemented over `Tcp`",
         );
         err(
-            "fn f(n: Net[Listen, Uds]):\n    let l = listen(n, \"a:1\")\nfn main(c: Console, net: Net):\n    f(uds_only(listen_only(net)))\n",
+            "fn f(n: Net[Listen, Uds]):\n    let l = listen(n, \"a:1\")\nfn main(c: Console, net: Net):\n    f(net as Net[Listen, Uds])\n",
             "only implemented over `Tcp`",
         );
-        // `tcp_only` narrows the transport axis and preserves the verb; a TCP
-        // connect through the result type-checks end to end.
-        ok("fn dial(n: Net[Connect, Tcp]) -> Socket:\n    connect(n, \"a:1\")\nfn main(c: Console, net: Net):\n    let s = dial(tcp_only(connect_only(net)))\n");
-        // You cannot keep a transport the capability does not hold.
+        // `as Net[Connect, Tcp]` narrows both axes; a TCP connect through the
+        // result type-checks end to end.
+        ok("fn dial(n: Net[Connect, Tcp]) -> Socket:\n    connect(n, \"a:1\")\nfn main(c: Console, net: Net):\n    let s = dial(net as Net[Connect, Tcp])\n");
+        // You cannot keep a transport the capability does not hold (not a subset).
         err(
-            "fn f(n: Net[Connect, Tcp]):\n    let u = udp_only(n)\nfn main(c: Console, net: Net):\n    f(tcp_only(connect_only(net)))\n",
-            "`udp_only` cannot keep `Udp`",
+            "fn f(n: Net[Connect, Tcp]):\n    let u = n as Net[Connect, Udp]\nfn main(c: Console, net: Net):\n    f(net as Net[Connect, Tcp])\n",
+            "`as` can only drop rights",
         );
     }
 

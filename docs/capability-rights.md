@@ -24,11 +24,13 @@ enforcement (a read-only handle structurally cannot write).
 
 ## Static attenuation
 
-Narrowing is a typed, monotone downgrade — you can only *drop* rights:
+Narrowing is a typed, monotone downgrade — you can only *drop* rights — written
+with the `as` ascription:
 
 ```
-read_only(d: Dir[Read+Write]) -> Dir[Read]      # ok: drops Write
-connect_only(n: Net[Connect+Listen, t]) -> Net[Connect, t]
+let ro = dir as Dir[Read]          # ok: drops Write
+let c  = net as Net[Connect, Tcp]  # ok: drops Listen + Udp/Uds
+let x  = (net as Net[Connect]) as Net[Listen]   # error: not a subset
 ```
 
 You cannot widen (add a right) without a fresh grant — rights are unforgeable
@@ -87,9 +89,7 @@ bitset is cleaner.)
 - Ops are gated by right-membership in `Typeck::check_dir_op`: `read`/`exists`/
   `subdir` need `Read`, `write` needs `Write`. A `Dir[Read]` passed to `write`
   is a compile-time error.
-- Narrowing builtins `read_only`/`write_only` are monotone attenuations (you may
-  only keep a right you hold); they are the identity at runtime since rights are
-  type-level only.
+- Narrowing is done with the `as` ascription (see below), not per-right builtins.
 
 **`Net` verbs are implemented** (typechecker + interpreter + parser):
 
@@ -99,8 +99,7 @@ bitset is cleaner.)
   `Connect`, `listen` needs `Listen`. `restrict` is verb-neutral address
   attenuation (preserves the verb-set). A `Net[Connect]` passed to `listen` is a
   compile-time error.
-- Narrowing builtins `connect_only`/`listen_only` mirror `read_only`/`write_only`
-  (monotone, identity at runtime).
+- Narrowing is done with the `as` ascription (see below).
 - Unrecognized bracket markers (a future transport like `Tcp`) are parsed but
   ignored, so the syntax is forward-compatible with the transport dimension.
 
@@ -134,8 +133,19 @@ bitset is cleaner.)
 - Only TCP is implemented, so `connect`/`listen` require `Tcp`; a `Net[…, Udp]`
   passed to `connect` is a compile error ("only implemented over `Tcp`"). `Udp`/
   `Uds` thus remain type-level markers that keep the taxonomy expressible/auditable.
-- `tcp_only`/`udp_only`/`uds_only` narrow the transport axis (monotone, identity
-  at runtime), mirroring `connect_only`/`listen_only`.
+
+**Narrowing is native, via the `as` ascription** (one construct for every axis):
+
+- `cap as Type` re-types a capability to a *subset* of its rights — `net as
+  Net[Connect]`, `dir as Dir[Read]`, `net as Net[Connect, Tcp]`. Checked in
+  `Typeck::check_narrow`: the target's rights must be a subset of the source's,
+  so `as` can only *drop* rights, never widen or cross capabilities. Identity at
+  runtime (rights are type-level). This replaced the seven per-right `_only`
+  builtins (`read_only`/`write_only`/`connect_only`/`listen_only`/`tcp_only`/
+  `udp_only`/`uds_only`), which didn't scale.
+- *Planned:* implicit directional narrowing at call boundaries — passing a full
+  `Net` straight into a `Net[Connect]` parameter (a broader capability standing
+  in for a narrower one), so `as` is only needed when naming a narrowed value.
 
 Open follow-up: the CLI/pm footprints currently track verbs but not transports
 (they ignore the transport markers), so a `Net[…, Udp]` audits as its verb only —

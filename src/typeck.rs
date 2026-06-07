@@ -704,16 +704,13 @@ impl Checker {
     }
 
     /// Type-check a directory-capability op, enforcing that the `Dir`'s rights
-    /// permit the verb. `read`/`exists`/`subdir` need `Read`; `write` needs
-    /// `Write`; `read_only`/`write_only` are monotone attenuations that may only
-    /// keep a right the capability already holds. Returns `Ok(None)` when `name`
-    /// is not a Dir op, so the caller falls through to `call_sig`.
+    /// permit the verb: `read`/`exists`/`subdir` need `Read`; `write` needs
+    /// `Write`. (Narrowing is done with the `as` ascription, not per-op builtins.)
+    /// Returns `Ok(None)` when `name` is not a Dir op, so the caller falls through.
     fn check_dir_op(&mut self, name: &str, args: &[Expr]) -> Result<Option<Ty>, TypeError> {
-        // (arity, needs_read, needs_write, return-type builder)
         let arity = match name {
             "read" | "exists" | "subdir" => 2,
             "write" => 3,
-            "read_only" | "write_only" => 1,
             _ => return Ok(None),
         };
         if args.len() != arity {
@@ -761,22 +758,6 @@ impl Checker {
                 }
                 Ty::Nil
             }
-            "read_only" => {
-                if !rights.read {
-                    return terr(format!(
-                        "`read_only` cannot keep `Read`: the capability is `{rights}`"
-                    ));
-                }
-                Ty::Dir(DirRights { read: true, write: false })
-            }
-            "write_only" => {
-                if !rights.write {
-                    return terr(format!(
-                        "`write_only` cannot keep `Write`: the capability is `{rights}`"
-                    ));
-                }
-                Ty::Dir(DirRights { read: false, write: true })
-            }
             _ => unreachable!(),
         };
         Ok(Some(ret))
@@ -798,15 +779,14 @@ impl Checker {
         }
     }
 
-    /// Type-check a network-capability op, enforcing that the `Net`'s verbs permit
-    /// it. `connect` needs `Connect`; `listen` needs `Listen`; `restrict` is verb-
-    /// neutral address attenuation (preserves the verb set); `connect_only`/
-    /// `listen_only` are monotone attenuations that may only keep a held verb.
+    /// Type-check a network-capability op, enforcing the `Net`'s rights permit it:
+    /// `connect` needs `Connect` (+`Tcp`); `listen` needs `Listen` (+`Tcp`);
+    /// `restrict` is verb-neutral address attenuation (preserves the rights set).
+    /// (Narrowing is done with the `as` ascription, not per-verb builtins.)
     /// Returns `Ok(None)` when `name` is not a Net op.
     fn check_net_op(&mut self, name: &str, args: &[Expr]) -> Result<Option<Ty>, TypeError> {
         let arity = match name {
             "connect" | "listen" | "restrict" => 2,
-            "connect_only" | "listen_only" | "tcp_only" | "udp_only" | "uds_only" => 1,
             _ => return Ok(None),
         };
         if args.len() != arity {
@@ -852,52 +832,45 @@ impl Checker {
             }
             // Attenuating the address set leaves the rights (verbs + transports) intact.
             "restrict" => Ty::Net(rights),
-            "connect_only" => {
-                if !rights.connect {
-                    return terr(format!(
-                        "`connect_only` cannot keep `Connect`: the capability is `{rights}`"
-                    ));
-                }
-                // Drop the `Listen` verb; preserve the transport axis.
-                Ty::Net(NetRights { connect: true, listen: false, ..rights })
-            }
-            "listen_only" => {
-                if !rights.listen {
-                    return terr(format!(
-                        "`listen_only` cannot keep `Listen`: the capability is `{rights}`"
-                    ));
-                }
-                Ty::Net(NetRights { connect: false, listen: true, ..rights })
-            }
-            // Transport narrowing: drop to a single transport, preserving verbs.
-            // You can only keep a transport the capability already holds.
-            "tcp_only" => {
-                if !rights.tcp {
-                    return terr(format!(
-                        "`tcp_only` cannot keep `Tcp`: the capability is `{rights}`"
-                    ));
-                }
-                Ty::Net(NetRights { tcp: true, udp: false, uds: false, ..rights })
-            }
-            "udp_only" => {
-                if !rights.udp {
-                    return terr(format!(
-                        "`udp_only` cannot keep `Udp`: the capability is `{rights}`"
-                    ));
-                }
-                Ty::Net(NetRights { tcp: false, udp: true, uds: false, ..rights })
-            }
-            "uds_only" => {
-                if !rights.uds {
-                    return terr(format!(
-                        "`uds_only` cannot keep `Uds`: the capability is `{rights}`"
-                    ));
-                }
-                Ty::Net(NetRights { tcp: false, udp: false, uds: true, ..rights })
-            }
             _ => unreachable!(),
         };
         Ok(Some(ret))
+    }
+
+    /// Check a capability narrowing ascription (`src as target`): the target must
+    /// be the *same* capability with a subset of `src`'s rights. Narrowing only
+    /// drops rights — you can never ascribe a right the source doesn't hold. An
+    /// unconstrained source is pinned to the target.
+    fn check_narrow(&mut self, src: &Ty, target: &Ty) -> Result<(), TypeError> {
+        let resolved = self.resolve(src);
+        let ok = match (&resolved, target) {
+            (Ty::Dir(s), Ty::Dir(t)) => (!t.read || s.read) && (!t.write || s.write),
+            (Ty::Net(s), Ty::Net(t)) => {
+                (!t.connect || s.connect)
+                    && (!t.listen || s.listen)
+                    && (!t.tcp || s.tcp)
+                    && (!t.udp || s.udp)
+                    && (!t.uds || s.uds)
+            }
+            (Ty::Console, Ty::Console) => true,
+            // An unconstrained source: pin it to the ascribed capability.
+            (Ty::Var(_), Ty::Dir(_) | Ty::Net(_) | Ty::Console) => {
+                return self.unify(src, target).map_err(|e| TypeError {
+                    message: format!("in `as` ascription: {}", e.message),
+                });
+            }
+            _ => {
+                return terr(format!(
+                    "`as` narrows a capability to a subset of its rights; cannot ascribe `{resolved}` as `{target}`"
+                ));
+            }
+        };
+        if !ok {
+            return terr(format!(
+                "`as` can only drop rights: `{target}` is not a subset of `{resolved}`"
+            ));
+        }
+        Ok(())
     }
 
     // --- inference ---
@@ -1280,6 +1253,12 @@ impl Checker {
                     ),
                 })?;
                 Ok(value_ty)
+            }
+            Expr::As { expr, ty } => {
+                let src = self.infer(expr)?;
+                let target = self.to_ty(ty);
+                self.check_narrow(&src, &target)?;
+                Ok(target)
             }
             Expr::Binary { op, lhs, rhs } => self.infer_binary(*op, lhs, rhs),
             Expr::If {

@@ -808,13 +808,6 @@ impl Interpreter {
                 }
                 _ => err("exists expects a Dir and a relative path"),
             },
-            // Static attenuation of a Dir capability: rights live only in the type,
-            // so at runtime these are the identity (the type-checker has already
-            // proved the dropped right was held).
-            "read_only" | "write_only" => match args {
-                [Value::Dir(base)] => Ok(Some(Value::Dir(base.clone()))),
-                _ => err(format!("{name} expects a Dir")),
-            },
             // Network capability: attenuate a Net to a held address.
             "restrict" => match args {
                 [Value::Net(allow), Value::Str(addr)] => {
@@ -824,13 +817,6 @@ impl Interpreter {
                     Ok(Some(Value::Net(vec![addr.clone()])))
                 }
                 _ => err("restrict expects a Net and an address"),
-            },
-            // Static attenuation of a Net capability: verbs live only in the type,
-            // so at runtime these are the identity (the checker has already proved
-            // the dropped verb was held).
-            "connect_only" | "listen_only" | "tcp_only" | "udp_only" | "uds_only" => match args {
-                [Value::Net(allow)] => Ok(Some(Value::Net(allow.clone()))),
-                _ => err(format!("{name} expects a Net")),
             },
             // Connect only to an address the Net capability permits.
             "connect" => match args {
@@ -1292,6 +1278,9 @@ impl Interpreter {
                     other => err(format!("`?` expects a Result/Option value, got `{other}`")),
                 }
             }
+            // `e as T` narrows a capability's rights — purely type-level, so at
+            // runtime it is the identity on the underlying value.
+            Expr::As { expr, .. } => self.eval(expr, env),
             // `&&`/`||` short-circuit, so the right side isn't always evaluated.
             Expr::Binary { op: BinOp::And, lhs, rhs } => match self.eval(lhs, env)? {
                 Value::Bool(false) => Ok(Value::Bool(false)),

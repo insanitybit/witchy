@@ -265,7 +265,7 @@ fn resolve_in_expr(e: &mut Expr, map: &HashMap<String, Type>) {
                 resolve_in_expr(a, map);
             }
         }
-        Expr::Unary { expr, .. } | Expr::Try(expr) | Expr::Field { base: expr, .. } => {
+        Expr::Unary { expr, .. } | Expr::Try(expr) | Expr::As { expr, .. } | Expr::Field { base: expr, .. } => {
             resolve_in_expr(expr, map)
         }
         Expr::RecordUpdate { base, fields } => {

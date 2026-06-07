@@ -537,6 +537,7 @@ fn expr(e: &Expr) -> String {
             format!("{} {} {}", operand(lhs, p, false), binop(*op), operand(rhs, p, true))
         }
         Expr::Try(inner) => format!("{}?", operand(inner, POSTFIX_PREC, false)),
+        Expr::As { expr, ty } => format!("{} as {}", operand(expr, POSTFIX_PREC, false), type_str(ty)),
         Expr::Lambda { params, body } => {
             let ps: Vec<String> = params.iter().map(param).collect();
             format!("fn({}): {}", ps.join(", "), block_value(body))
@@ -676,7 +677,7 @@ fn expr_prec(e: &Expr) -> u8 {
     match e {
         Expr::Binary { op, .. } => binop_prec(*op),
         Expr::Unary { .. } => UNARY_PREC,
-        Expr::Field { .. } | Expr::Try(_) | Expr::Apply { .. } => POSTFIX_PREC,
+        Expr::Field { .. } | Expr::Try(_) | Expr::Apply { .. } | Expr::As { .. } => POSTFIX_PREC,
         _ => 100,
     }
 }
@@ -727,6 +728,11 @@ fn pattern(p: &Pattern) -> String {
 fn type_str(t: &Type) -> String {
     match t {
         Type::Named(n, args) if args.is_empty() => n.clone(),
+        // Capability rights use bracket syntax (`Dir[Read]`, `Net[Connect]`);
+        // ordinary generic types use parens (`List(Int)`, `Option(T)`).
+        Type::Named(n, args) if n == "Dir" || n == "Net" => {
+            format!("{n}[{}]", args.iter().map(type_str).collect::<Vec<_>>().join(", "))
+        }
         Type::Named(n, args) => {
             format!("{n}({})", args.iter().map(type_str).collect::<Vec<_>>().join(", "))
         }
@@ -830,7 +836,7 @@ fn strip_lines_expr(e: &mut Expr) {
                 strip_lines_expr(x);
             }
         }
-        Expr::Unary { expr, .. } | Expr::Try(expr) | Expr::Field { base: expr, .. } => {
+        Expr::Unary { expr, .. } | Expr::Try(expr) | Expr::As { expr, .. } | Expr::Field { base: expr, .. } => {
             strip_lines_expr(expr)
         }
         Expr::Binary { lhs, rhs, .. } => {

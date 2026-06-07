@@ -1527,6 +1527,9 @@ impl Codegen {
                 out.push_str(&format!("    call $mk{n}\n"));
                 Ok(out)
             }
+            // `e as T` narrows a capability (type-level only); capabilities are
+            // interpreter-only, so this compiles its operand unchanged.
+            Expr::As { expr, .. } => self.compile_expr(expr),
             Expr::Try(inner) => {
                 // The type checker guarantees `inner` is a Result/Option, whose
                 // success variant (Ok/Some) is tag 0 carrying one payload. So:
@@ -2568,7 +2571,7 @@ fn collect_fn_refs_expr(e: &Expr, out: &mut HashSet<String>) {
                 collect_fn_refs_expr(a, out);
             }
         }
-        Expr::Unary { expr, .. } | Expr::Try(expr) | Expr::Field { base: expr, .. } => {
+        Expr::Unary { expr, .. } | Expr::Try(expr) | Expr::As { expr, .. } | Expr::Field { base: expr, .. } => {
             collect_fn_refs_expr(expr, out)
         }
         Expr::RecordUpdate { base, fields } => {
@@ -3875,7 +3878,7 @@ fn fv_expr(e: &Expr, s: &mut LambdaScan) {
                 fv_expr(a, s);
             }
         }
-        Expr::Unary { expr, .. } | Expr::Try(expr) => fv_expr(expr, s),
+        Expr::Unary { expr, .. } | Expr::Try(expr) | Expr::As { expr, .. } => fv_expr(expr, s),
         Expr::Field { base, .. } => fv_expr(base, s),
         Expr::RecordUpdate { base, fields } => {
             fv_expr(base, s);
@@ -4008,7 +4011,7 @@ fn collect_let_names_expr(expr: &Expr, out: &mut Vec<String>) {
             collect_let_names_expr(lhs, out);
             collect_let_names_expr(rhs, out);
         }
-        Expr::Unary { expr, .. } | Expr::Try(expr) | Expr::Field { base: expr, .. } => {
+        Expr::Unary { expr, .. } | Expr::Try(expr) | Expr::As { expr, .. } | Expr::Field { base: expr, .. } => {
             collect_let_names_expr(expr, out)
         }
         Expr::RecordUpdate { base, fields } => {
@@ -4143,7 +4146,7 @@ impl Renamer {
                     self.rename_expr(a);
                 }
             }
-            Expr::Unary { expr, .. } | Expr::Try(expr) => self.rename_expr(expr),
+            Expr::Unary { expr, .. } | Expr::Try(expr) | Expr::As { expr, .. } => self.rename_expr(expr),
             // The field name is not a local.
             Expr::Field { base, .. } => self.rename_expr(base),
             Expr::RecordUpdate { base, fields } => {

@@ -227,6 +227,10 @@ pub enum Expr {
     /// `e?` — propagate a `Result`/`Option`: unwrap `Ok`/`Some` to its payload,
     /// or short-circuit, returning the `Err`/`None` from the enclosing function.
     Try(Box<Expr>),
+    /// `e as T` — a capability *narrowing* ascription: re-type a capability to a
+    /// subset of its rights (`net as Net[Connect]`). Checked statically (the
+    /// target rights must be a subset of the source's); identity at runtime.
+    As { expr: Box<Expr>, ty: Type },
     Binary { op: BinOp, lhs: Box<Expr>, rhs: Box<Expr> },
     If {
         cond: Box<Expr>,
