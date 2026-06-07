@@ -4795,6 +4795,21 @@ impl Counter:
         assert_eq!(crate::capabilities::show_caps(&fp.total), "Console, Dir[Read]");
     }
 
+    /// `caps_guard` is the supply-chain gate written *in witchy*: it reads two
+    /// versions of a rune, asks `compiler.diff` whether the new one widens the
+    /// footprint, and prints a BLOCK/OK verdict — the block-on-widening decision,
+    /// self-hosted (the sample upgrade adds `Listen`, so it must BLOCK).
+    #[test]
+    fn caps_guard_example_blocks_a_widening_in_witchy() {
+        assert_eq!(
+            crate::execute_file("examples/caps_guard.witchy", Vec::new()).unwrap(),
+            vec!["BLOCK: upgrade widens authority by Net[Listen]"]
+        );
+        let src = std::fs::read_to_string("examples/caps_guard.witchy").unwrap();
+        let fp = crate::capabilities::analyze(&parser::parse_module(&src).expect("parse"));
+        assert_eq!(crate::capabilities::show_caps(&fp.total), "Console, Dir[Read]");
+    }
+
     #[test]
     fn dir_write_is_confined_to_the_subtree() {
         let tmp = std::env::temp_dir().join("witchy_dir_write_test");

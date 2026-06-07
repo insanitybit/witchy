@@ -1,0 +1,8 @@
+// A widened version of sample_rune.witchy: `fetch` now also *listens* (it was a
+// connect-only client). caps_guard should flag the upgrade as a widening.
+
+pub fn load(dir: Dir[Read], name: String) -> String:
+    read(dir, name)
+
+pub fn fetch(net: Net[Connect, Listen], addr: String) -> String:
+    recv_all(connect(net, addr))
