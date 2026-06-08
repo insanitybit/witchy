@@ -71,6 +71,9 @@ thread_local! {
     /// use is their last (single, loop-free) use in scope — last-use elision. Lets
     /// recursive traversals pass subtrees by move instead of deep-cloning them.
     static MOVEABLE: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+    /// `Var` occurrences (AST-node pointers, as usize) the liveness pass found to
+    /// be a last use — moveable even if the binding is used more than once.
+    static MOVEABLE_OCC: RefCell<HashSet<usize>> = RefCell::new(HashSet::new());
     /// Variables holding a closure (`impl Fn`): they can't be cloned (no `Clone`),
     /// so a value position moves them. Function params of `Fn` type, and `let`s
     /// bound directly to a lambda.
@@ -207,6 +210,13 @@ fn is_moveable(name: &str) -> bool {
     MOVEABLE.with(|m| m.borrow().contains(name))
 }
 
+/// Whether THIS specific `Var` occurrence (by AST-node pointer) is a last use the
+/// liveness pass marked moveable. Lets a binding used several times still move at
+/// its final use — the per-name `is_moveable` only covers used-exactly-once.
+fn is_moveable_occ(e: &Expr) -> bool {
+    MOVEABLE_OCC.with(|m| m.borrow().contains(&(e as *const Expr as usize)))
+}
+
 /// Whether a variable must NOT be cloned. Closures are now `Rc<dyn Fn>` (cheaply
 /// cloneable), so nothing is no-clone — kept as a hook in case a future
 /// non-cloneable value type appears.
@@ -225,7 +235,7 @@ fn gen_value(e: &Expr) -> Result<String, String> {
         if is_fn_ref(v) {
             return Ok(fn_ref_value(v));
         }
-        if is_moveable(v) || is_noclone(v) {
+        if is_moveable(v) || is_moveable_occ(e) || is_noclone(v) {
             return Ok(local_ident(v));
         }
         return Ok(format!("({}).clone()", local_ident(v)));
@@ -540,7 +550,7 @@ fn needs_clone_at_call(t: &Option<Type>) -> bool {
 /// Clone an argument for value semantics only if it's a reused binding (a bare
 /// variable); a temporary is a fresh value and is moved.
 fn clone_if_var(arg: &Expr, rendered: String) -> String {
-    if matches!(arg, Expr::Var(v) if !is_moveable(v) && !is_noclone(v)) {
+    if matches!(arg, Expr::Var(v) if !is_moveable(v) && !is_noclone(v)) && !is_moveable_occ(arg) {
         format!("({rendered}).clone()")
     } else {
         rendered
@@ -820,6 +830,180 @@ fn last_use_in_stmts(stmts: &[Stmt], name: &str) -> bool {
         }
     }
     total == 1 && looped == 0
+}
+
+/// Backward-liveness analysis: returns the set of `Var` occurrences (keyed by
+/// AST-node pointer) that are a *last use* — the binding is not read again on any
+/// path afterward, and the use is not inside a loop or closure. Such a use can be
+/// MOVED rather than cloned. Keying by pointer makes the result independent of
+/// emission order (the native backend reorders some call arguments), and it is
+/// conservative by construction: branches union their live-out, loops/closures
+/// mark nothing, and shadowing only ever keeps a name live longer (never shorter)
+/// — so it can only *under*-mark. Any residual over-mark is caught by the Rust
+/// compiler as a use-after-move, never miscompiled.
+fn compute_moveable_occurrences(body: &Block) -> HashSet<usize> {
+    let mut moveable = HashSet::new();
+    let mut live = HashSet::new();
+    mv_block(body, &mut live, &mut moveable, false);
+    moveable
+}
+
+fn mv_block(b: &Block, live: &mut HashSet<String>, moveable: &mut HashSet<usize>, in_loop: bool) {
+    use crate::ast::Stmt;
+    for s in b.stmts.iter().rev() {
+        match s {
+            Stmt::Let { name, value, .. } => {
+                mv_expr(value, live, moveable, in_loop);
+                // The binding is introduced here; code before the `let` is outside
+                // its scope, so the name is no longer this binding's live-range.
+                live.remove(name);
+            }
+            Stmt::LetTuple { names, value } => {
+                mv_expr(value, live, moveable, in_loop);
+                for n in names {
+                    live.remove(n);
+                }
+            }
+            // An assignment reads `value` and writes `name`; conservatively leave
+            // `name` live (don't treat the write as ending its live-range).
+            Stmt::Assign { value, .. } => mv_expr(value, live, moveable, in_loop),
+            Stmt::Return(Some(e)) | Stmt::Yield(e) | Stmt::Expr(e) => {
+                mv_expr(e, live, moveable, in_loop)
+            }
+            Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
+        }
+    }
+}
+
+fn mv_expr(e: &Expr, live: &mut HashSet<String>, moveable: &mut HashSet<usize>, in_loop: bool) {
+    use crate::ast::Expr as E;
+    let p = |x: &Expr, l: &mut HashSet<String>, m: &mut HashSet<usize>| mv_expr(x, l, m, in_loop);
+    match e {
+        E::Var(name) => {
+            if !in_loop && !live.contains(name) {
+                moveable.insert(e as *const Expr as usize);
+            }
+            live.insert(name.clone());
+        }
+        E::Int(_) | E::Float(_) | E::Duration(_) | E::Str(_) | E::Bool(_) => {}
+        // Sequenced operands are processed in REVERSE evaluation order so that the
+        // textually-later use is seen first (and so marked live before the earlier).
+        E::Binary { lhs, rhs, .. } => {
+            p(rhs, live, moveable);
+            p(lhs, live, moveable);
+        }
+        E::Range { lo, hi, .. } => {
+            p(hi, live, moveable);
+            p(lo, live, moveable);
+        }
+        E::Index { base, index } => {
+            p(index, live, moveable);
+            p(base, live, moveable);
+        }
+        E::Call { args, .. } | E::Ctor { args, .. } | E::List(args) | E::Tuple(args)
+        | E::Spawn { args, .. } => {
+            for a in args.iter().rev() {
+                p(a, live, moveable);
+            }
+        }
+        E::MethodCall { receiver, args, .. } => {
+            for a in args.iter().rev() {
+                p(a, live, moveable);
+            }
+            p(receiver, live, moveable);
+        }
+        E::Apply { func, args } => {
+            for a in args.iter().rev() {
+                p(a, live, moveable);
+            }
+            p(func, live, moveable);
+        }
+        E::Unary { expr, .. } | E::Try(expr) | E::As { expr, .. } | E::Field { base: expr, .. } => {
+            p(expr, live, moveable)
+        }
+        E::RecordUpdate { base, fields } => {
+            for (_, v) in fields.iter().rev() {
+                p(v, live, moveable);
+            }
+            p(base, live, moveable);
+        }
+        E::Record { fields, spread, .. } => {
+            if let Some(s) = spread {
+                p(s, live, moveable);
+            }
+            for (_, v) in fields.iter().rev() {
+                p(v, live, moveable);
+            }
+        }
+        E::Block(b) => mv_block(b, live, moveable, in_loop),
+        // Branches are mutually exclusive: each gets a clone of the live-out, and
+        // the live-in is their union (plus the condition's uses).
+        E::If { cond, then_block, else_block } => {
+            let mut lt = live.clone();
+            mv_block(then_block, &mut lt, moveable, in_loop);
+            let mut le = live.clone();
+            if let Some(eb) = else_block {
+                mv_block(eb, &mut le, moveable, in_loop);
+            }
+            live.extend(lt);
+            live.extend(le);
+            p(cond, live, moveable);
+        }
+        E::Match { scrutinee, arms } => {
+            let mut union = live.clone();
+            for arm in arms {
+                let mut al = live.clone();
+                p(&arm.body, &mut al, moveable);
+                if let Some(g) = &arm.guard {
+                    p(g, &mut al, moveable);
+                }
+                let mut binds = Vec::new();
+                pattern_bindings(&arm.pattern, &mut binds);
+                for b in binds {
+                    al.remove(&b);
+                }
+                union.extend(al);
+            }
+            *live = union;
+            p(scrutinee, live, moveable);
+        }
+        // A loop body repeats: its uses are live across iterations, and nothing in
+        // it may be marked (a moved value would be gone on the next iteration).
+        E::While { cond, body } => {
+            let mut bl = live.clone();
+            mv_block(body, &mut bl, moveable, true);
+            live.extend(bl);
+            mv_expr(cond, live, moveable, true);
+        }
+        E::WhileLet { scrutinee, body, pattern } => {
+            let mut bl = live.clone();
+            mv_block(body, &mut bl, moveable, true);
+            let mut binds = Vec::new();
+            pattern_bindings(pattern, &mut binds);
+            for b in binds {
+                bl.remove(&b);
+            }
+            live.extend(bl);
+            mv_expr(scrutinee, live, moveable, true);
+        }
+        E::For { var, iter, body } => {
+            let mut bl = live.clone();
+            mv_block(body, &mut bl, moveable, true);
+            bl.remove(var);
+            live.extend(bl);
+            p(iter, live, moveable);
+        }
+        // A closure may run any number of times (or escape); its captured free
+        // variables are live at its creation, and nothing inside is marked.
+        E::Lambda { params, body } => {
+            let bound: HashSet<String> = params.iter().map(|pm| pm.name.clone()).collect();
+            let mut fvs = HashSet::new();
+            collect_free_vars(body, &bound, &mut fvs);
+            for v in fvs {
+                live.insert(v);
+            }
+        }
+    }
 }
 
 /// A lowercase type name is a type variable (`a`, `b`, `key`); the builtin and
@@ -1694,6 +1878,10 @@ fn gen_fn(f: &Function) -> Result<String, String> {
             });
         }
     }
+    // Per-occurrence last-use set (liveness): lets a binding used more than once
+    // still move at its final read. Computed on `&f.body`, the same AST emission
+    // walks, so the pointer keys line up regardless of emission's arg reordering.
+    MOVEABLE_OCC.with(|m| *m.borrow_mut() = compute_moveable_occurrences(&f.body));
     let inner = gen_block(&f.body, f.ret.is_some())?;
     if is_main {
         // Rust's `main` returns (); a witchy `Int` return is the process exit
@@ -2452,7 +2640,8 @@ fn gen_call(name: &str, args: &[Expr]) -> Result<String, String> {
                     // (call result, literal, field read — already a fresh value)
                     // is moved, as is a binding at its last use (see MOVEABLE).
                     let clone = clones.as_ref().is_some_and(|c| c.get(i) == Some(&true))
-                        && matches!(x, Expr::Var(v) if !is_moveable(v) && !is_noclone(v));
+                        && matches!(x, Expr::Var(v) if !is_moveable(v) && !is_noclone(v))
+                        && !is_moveable_occ(x);
                     Ok(if clone { format!("({s}).clone()") } else { s })
                 })
                 .collect::<Result<Vec<String>, String>>()?;

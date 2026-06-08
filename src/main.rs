@@ -1898,6 +1898,50 @@ mod example_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Occurrence-level last-use move elision (the value-usage/liveness pass): a
+    /// binding used several times is MOVED at its final read instead of cloned,
+    /// while earlier reads still clone to keep it alive. Here `s` is summed (not
+    /// its last use -> cloned) then folded (last use -> moved). The result matches
+    /// the interpreter, and the generated code shows exactly one `(s).clone()`.
+    #[test]
+    fn native_backend_last_use_move_elision() {
+        let prog = "import list\n\nfn main(console: Console):\n    let s = list.map([1, 2, 3, 4], fn(x: Int): x + 1)\n    let total = list.sum(s)\n    let combined = list.fold(s, total, fn(a: Int, b: Int): a + b)\n    print(console, int_to_string(combined))\n";
+        let pid = std::process::id();
+        let dir = std::env::temp_dir().join(format!("witchy_lastuse_{pid}"));
+        let _ = std::fs::create_dir_all(&dir);
+        let src = dir.join("prog.witchy");
+        std::fs::write(&src, prog).unwrap();
+        // Interpreter is the source of truth.
+        let (linked, _) = crate::link_file(src.to_str().unwrap()).expect("link");
+        let interp = interpreter::run_module(linked, ".", Vec::new())
+            .expect("interp run")
+            .join("\n");
+        assert_eq!(interp, "28");
+        let rust = crate::emit_rust_file(src.to_str().unwrap()).expect("transpile");
+        // `s` is read twice; only the non-final read clones — the fold (last use)
+        // moves it. So exactly one `(s).clone()` appears.
+        assert_eq!(
+            rust.matches("(s).clone()").count(),
+            1,
+            "expected exactly one clone of `s` (the non-last use): {rust}"
+        );
+        let rs = dir.join("prog.rs");
+        let bin = dir.join("prog_bin");
+        std::fs::write(&rs, &rust).unwrap();
+        if let Ok(st) = std::process::Command::new("rustc")
+            .args(["-O", "-C", "overflow-checks=off", "--edition", "2021"])
+            .arg(&rs)
+            .arg("-o")
+            .arg(&bin)
+            .status()
+        {
+            assert!(st.success(), "rustc should compile the last-use program");
+            let out = std::process::Command::new(&bin).output().expect("run");
+            assert_eq!(String::from_utf8_lossy(&out.stdout), "28\n");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Generic structural `==`: a function comparing values of a type variable
     /// gets a `PartialEq` bound (only when it actually uses `==`/`!=`).
     #[test]
