@@ -2605,11 +2605,16 @@ fn gen_call(name: &str, args: &[Expr]) -> Result<String, String> {
             clone_if_var(&args[0], arg(0)?),
             clone_if_var(&args[1], arg(1)?)
         ),
+        // Half-open character range [start, end), clamped. Walk only to `end`
+        // (skip/take) instead of collecting the WHOLE string into a Vec<char> on
+        // every call — the old form made each char access O(string length) and
+        // allocated a full char vector per call, which is brutal for parsers that
+        // scan a string one char at a time.
         "substring" if args.len() == 3 => format!(
-            "{{ let __cs: Vec<char> = ({}).chars().collect(); let __lo = (({}).max(0) as usize).min(__cs.len()); let __hi = (({}).max(0) as usize).min(__cs.len()); if __lo < __hi {{ __cs[__lo..__hi].iter().collect::<String>() }} else {{ String::new() }} }}",
-            arg(0)?,
+            "{{ let __lo = (({}).max(0)) as usize; let __hi = (({}).max(0)) as usize; if __hi > __lo {{ ({}).chars().skip(__lo).take(__hi - __lo).collect::<String>() }} else {{ String::new() }} }}",
             arg(1)?,
-            arg(2)?
+            arg(2)?,
+            arg(0)?
         ),
         "print" | "int_to_string" | "string_to_int" => {
             return Err(format!("native backend: wrong arity for `{name}`"))
