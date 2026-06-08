@@ -1431,9 +1431,17 @@ impl Checker {
             Expr::Unary { op, expr } => {
                 let t = self.infer(expr)?;
                 match op {
-                    // `move x` has the type of `x` (a use-site ownership transfer,
-                    // not a computation).
-                    UnOp::Move => Ok(t),
+                    // `move x` has the type of `x`, and consumes it: it's a
+                    // use-site ownership transfer, so any later use of the moved
+                    // variable is an error on every backend (matching native's
+                    // actual move). `infer(expr)` above already rejected moving an
+                    // already-consumed binding.
+                    UnOp::Move => {
+                        if let Expr::Var(v) = expr.as_ref() {
+                            self.consumed.insert(v.clone());
+                        }
+                        Ok(t)
+                    }
                     UnOp::Not => {
                         self.unify(&Ty::Bool, &t)?;
                         Ok(Ty::Bool)

@@ -1476,7 +1476,17 @@ pub fn transpile_module(m: &Module) -> Result<String, String> {
     // which functions take `inout` params (so calls write the result back).
     for item in &m.items {
         if let Item::Function(f) = item {
-            let clones = f.params.iter().map(|p| needs_clone_at_call(&p.ty)).collect();
+            // A `sink`/`own` parameter takes ownership, so its argument is MOVED,
+            // never cloned, at the call site. (The type checker has already marked
+            // the argument consumed, so a later use is rejected on every backend —
+            // the native move can't diverge from the interpreter.)
+            let clones = f
+                .params
+                .iter()
+                .map(|p| {
+                    p.convention != crate::ast::Convention::Sink && needs_clone_at_call(&p.ty)
+                })
+                .collect();
             FN_PARAM_CLONE.with(|map| map.borrow_mut().insert(fn_rust_name(f), clones));
             let inout: Vec<usize> = f
                 .params
