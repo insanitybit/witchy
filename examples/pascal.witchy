@@ -1,0 +1,32 @@
+// Pascal's triangle as an infinite generator: each `yield` emits a row, and the
+// next row is built from the last (sum of adjacent entries, 1s on the ends).
+// A `gen fn` carrying a `List(Int)` as state — the imperative shape, lazy result
+// (only the rows you take are built). Runs on both backends.
+
+import iter
+import string
+
+gen fn pascal() -> Iter(List(Int)):
+    var row = [1]
+    while true:
+        yield row
+        row = next_row(row)
+
+// [1] ++ [row[i] + row[i+1] for each adjacent pair] ++ [1]
+fn next_row(row: List(Int)) -> List(Int):
+    var out = [1]
+    var i = 0
+    while i + 1 < length(row):
+        out = push(out, at(row, i) + at(row, i + 1))
+        i = i + 1
+    push(out, 1)
+
+fn show_row(row: List(Int)) -> String:
+    var parts = []
+    for n in row:
+        parts = push(parts, int_to_string(n))
+    string.join(parts, " ")
+
+fn main(console: Console):
+    for row in iter.collect(iter.take(pascal(), 6)):
+        print(console, show_row(row))

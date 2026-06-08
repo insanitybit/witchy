@@ -5025,6 +5025,26 @@ impl Counter:
         assert_eq!(shown("serve"), "Net[Listen]");
     }
 
+    /// `pascal` is an infinite generator whose state is a `List(Int)` row — each
+    /// `yield` emits a row, the next built from it. Demonstrates `gen fn` carrying
+    /// non-scalar state; agrees on both backends.
+    #[test]
+    fn pascal_generator_example_agrees_on_both_backends() {
+        let client = std::fs::read_to_string("examples/pascal.witchy").unwrap();
+        let sources = [
+            ("iter", crate::bundled_module("iter").unwrap()),
+            ("string", crate::bundled_module("string").unwrap()),
+            ("main", client.as_str()),
+        ];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "pascal diverged");
+        assert_eq!(
+            compiled,
+            vec!["1", "1 1", "1 2 1", "1 3 3 1", "1 4 6 4 1", "1 5 10 10 5 1"]
+        );
+    }
+
     /// `split_first` + `drop_while` let a user write their own iterator
     /// transforms — here `dedup` (drop consecutive duplicates), composed with
     /// `unfold`. Must agree on both backends.
