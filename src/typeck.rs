@@ -1431,6 +1431,9 @@ impl Checker {
             Expr::Unary { op, expr } => {
                 let t = self.infer(expr)?;
                 match op {
+                    // `move x` has the type of `x` (a use-site ownership transfer,
+                    // not a computation).
+                    UnOp::Move => Ok(t),
                     UnOp::Not => {
                         self.unify(&Ty::Bool, &t)?;
                         Ok(Ty::Bool)

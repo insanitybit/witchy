@@ -2091,6 +2091,11 @@ fn gen_expr(e: &Expr, value: bool) -> Result<String, String> {
                 UnOp::Neg => format!("(-({inner}))"),
                 UnOp::Not => format!("(!({inner}))"),
                 UnOp::BitNot => format!("(!({inner}))"),
+                // `move x` emits the operand as-is. For a variable that's the bare
+                // name (a Rust move, no `.clone()`); since a `move` expression is
+                // not a bare `Var`, the value-position/arg cloners skip it, so the
+                // value is genuinely moved out of the caller's binding.
+                UnOp::Move => inner,
             }
         }
         Expr::Binary { op: BinOp::Concat, .. } => gen_concat(e)?,

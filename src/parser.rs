@@ -473,9 +473,12 @@ impl Parser {
     fn params(&mut self) -> Result<Vec<Param>, ParseError> {
         let mut params = Vec::new();
         while !self.at(&Tok::RParen) {
-            let convention = if self.eat(&Tok::Inout) {
+            // `var`/`inout` mutate in place and write back; `own`/`sink` consume
+            // (take ownership). `var`/`own` are the preferred spellings;
+            // `inout`/`sink` remain as Hylo-style aliases.
+            let convention = if self.eat(&Tok::Inout) || self.eat(&Tok::Var) {
                 Convention::Inout
-            } else if self.eat(&Tok::Sink) {
+            } else if self.eat(&Tok::Sink) || self.eat(&Tok::Own) {
                 Convention::Sink
             } else {
                 Convention::Let
@@ -684,6 +687,16 @@ impl Parser {
             let expr = self.prefix()?;
             return Ok(Expr::Unary {
                 op: UnOp::BitNot,
+                expr: Box::new(expr),
+            });
+        }
+        // `move x` — a use-site ownership transfer; evaluates to `x` but tells the
+        // compiler the caller is done with the binding (so it can be moved, not
+        // cloned).
+        if self.eat(&Tok::Move) {
+            let expr = self.prefix()?;
+            return Ok(Expr::Unary {
+                op: UnOp::Move,
                 expr: Box::new(expr),
             });
         }

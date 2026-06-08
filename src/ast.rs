@@ -322,6 +322,11 @@ pub enum UnOp {
     Neg,
     Not,
     BitNot,
+    /// `move x` — a use-site ownership transfer. Value-neutral (it evaluates to
+    /// its operand); on the native backend it forces a move (no clone) so the
+    /// caller relinquishes the binding. Carried as a unary op so every AST walker
+    /// that already recurses through `Unary` handles it transparently.
+    Move,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

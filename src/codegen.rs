@@ -447,7 +447,7 @@ impl Codegen {
             Expr::Unary { op, expr } => match op {
                 // `!x` is a bool (i32); negation/complement keep the operand kind.
                 UnOp::Not => Kind::I32,
-                UnOp::Neg | UnOp::BitNot => self.kind_of(expr),
+                UnOp::Neg | UnOp::BitNot | UnOp::Move => self.kind_of(expr),
             },
             Expr::Binary { op, lhs, rhs } => match op {
                 BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod | BinOp::BitAnd
@@ -533,7 +533,7 @@ impl Codegen {
             Expr::Str(_) => ValType::Str,
             Expr::Unary { op, expr } => match op {
                 UnOp::Not => ValType::Bool,
-                UnOp::Neg => self.val_type_of(expr),
+                UnOp::Neg | UnOp::Move => self.val_type_of(expr),
                 UnOp::BitNot => ValType::Int,
             },
             Expr::Binary { op, lhs, .. } => match op {
@@ -1345,6 +1345,9 @@ impl Codegen {
                 }
             }
             Expr::Unary { op, expr } => match op {
+                // `move x` is value-neutral on WASM (value semantics throughout) —
+                // just compile the operand.
+                UnOp::Move => self.compile_expr(expr),
                 UnOp::Not => Ok(format!("{}    i32.eqz\n", self.compile_expr(expr)?)),
                 UnOp::Neg => match self.kind_of(expr) {
                     Kind::F64 => Ok(format!("{}    f64.neg\n", self.compile_expr(expr)?)),

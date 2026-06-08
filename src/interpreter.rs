@@ -1354,6 +1354,10 @@ impl Interpreter {
             Expr::Unary { op, expr } => {
                 let v = self.eval(expr, env)?;
                 match (op, v) {
+                    // `move x` is value-neutral: it evaluates to its operand. The
+                    // ownership transfer it denotes only matters for the native
+                    // backend's clone elision; the interpreter just yields the value.
+                    (UnOp::Move, v) => Ok(v),
                     (UnOp::Neg, Value::Int(n)) => {
                         n.checked_neg().map(Value::Int).ok_or_else(over("-")).map_err(Flow::Err)
                     }

@@ -642,10 +642,12 @@ fn expr(e: &Expr) -> String {
         }
         Expr::Field { base, field } => format!("{}.{field}", operand(base, POSTFIX_PREC, false)),
         Expr::Unary { op, expr: inner } => {
+            // `move` is a word prefix (needs a space); the others are sigils.
             let o = match op {
                 UnOp::Neg => "-",
                 UnOp::Not => "!",
                 UnOp::BitNot => "~",
+                UnOp::Move => "move ",
             };
             format!("{o}{}", operand(inner, UNARY_PREC, false))
         }
