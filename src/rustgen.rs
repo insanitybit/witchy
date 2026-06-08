@@ -214,9 +214,9 @@ fn gen_value(e: &Expr) -> Result<String, String> {
             return Ok(fn_ref_value(v));
         }
         if is_moveable(v) || is_noclone(v) {
-            return Ok(v.clone());
+            return Ok(local_ident(v));
         }
-        return Ok(format!("({v}).clone()"));
+        return Ok(format!("({}).clone()", local_ident(v)));
     }
     gen_expr(e, true)
 }
@@ -1380,7 +1380,7 @@ fn gen_fn(f: &Function) -> Result<String, String> {
         }
         match rust_ty(ty) {
             // `mut` lets a body reassign a value parameter.
-            Some(rt) => params.push(format!("mut {}: {rt}", p.name)),
+            Some(rt) => params.push(format!("mut {}: {rt}", local_ident(&p.name))),
             // An unsupported capability param (Dir/Net/...) on main is dropped;
             // the program errors only if it actually calls that host function.
             None if is_main => {}
@@ -1567,7 +1567,7 @@ fn gen_expr(e: &Expr, value: bool) -> Result<String, String> {
         // A bare identifier that names a top-level function is a first-class
         // function value -> its Rust `w_*` item (a fn item, which is `impl Fn`).
         Expr::Var(v) if is_fn_ref(v) => fn_ref_value(v),
-        Expr::Var(v) => v.clone(),
+        Expr::Var(v) => local_ident(v),
         Expr::Unary { op, expr } => {
             let inner = gen_expr(expr, true)?;
             match op {
@@ -2254,6 +2254,28 @@ fn ident(name: &str) -> String {
     name.chars()
         .map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' })
         .collect()
+}
+
+/// Emit a witchy local name (parameter, variable) as a valid Rust identifier.
+/// Witchy spells trait-method receivers `self`, which `traits::lower` turns into
+/// an ordinary parameter of a free function — but Rust reserves `self` (and a few
+/// other words) for associated functions, so the name must be remapped. Words
+/// that can't be raw identifiers (`self`/`Self`/`crate`/`super`) are renamed;
+/// any other Rust keyword a witchy identifier might collide with becomes a raw
+/// identifier (`r#name`), preserving the name verbatim. Applied only at the
+/// point a name is printed — all move/clone analysis stays keyed on the witchy
+/// name, so emission and analysis can't drift.
+fn local_ident(name: &str) -> String {
+    match name {
+        "self" | "Self" | "crate" | "super" => format!("w_{name}"),
+        "as" | "async" | "await" | "become" | "box" | "break" | "const" | "continue"
+        | "dyn" | "else" | "enum" | "extern" | "false" | "fn" | "for" | "if" | "impl"
+        | "in" | "let" | "loop" | "macro" | "match" | "mod" | "move" | "mut" | "priv"
+        | "pub" | "ref" | "return" | "static" | "struct" | "trait" | "true" | "type"
+        | "typeof" | "unsafe" | "unsized" | "use" | "virtual" | "where" | "while"
+        | "yield" | "abstract" | "do" | "final" | "override" => format!("r#{name}"),
+        _ => name.to_string(),
+    }
 }
 
 fn rust_ty(t: &Type) -> Option<String> {

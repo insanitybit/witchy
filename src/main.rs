@@ -896,7 +896,11 @@ fn emit_wat_file(path: &str) -> Result<String, String> {
 fn emit_rust_file(path: &str) -> Result<String, String> {
     let (linked, _stem) = link_file(path)?;
     typeck::check(&linked).map_err(|e| e.to_string())?;
-    rustgen::transpile_module(&linked)
+    // Desugar traits/impls and monomorphize `where`-bounded generics into plain
+    // concrete functions — the same lowering the interpreter and WASM backends
+    // apply — so the native backend sees ordinary functions, not trait dispatch.
+    let lowered = crate::traits::lower(linked);
+    rustgen::transpile_module(&lowered)
 }
 
 /// Compile a program to a native binary via rustc/LLVM. With `out`, the binary
@@ -1924,6 +1928,53 @@ mod example_tests {
             assert_eq!(String::from_utf8_lossy(&out.stdout), "3\n2\n");
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Trait methods + `where`-bounded generics run natively, byte-identical to the
+    /// interpreter. `traits::lower` monomorphizes a bounded generic into concrete
+    /// specializations (`largest__Int`, `largest__Version`) and resolves each
+    /// trait-method call to the right impl — including trait *default* methods
+    /// (Ord's `greater` is defined in terms of `compare`) and impls for user types.
+    /// The native backend now applies that lowering and emits the receiver param
+    /// `self` as a legal Rust identifier. Exercises the three std traits: Ord
+    /// (largest), Eq (member/index_of), and Show (show_list over user types).
+    #[test]
+    fn native_backend_trait_methods() {
+        let cases = [
+            ("largest", "examples/largest.witchy", "largest number: 100\nlatest version: 2.0\n"),
+            ("equality", "examples/equality.witchy", "true\n2\nfalse\ntrue\n"),
+            ("display", "examples/display.witchy", "[1, 2, 3]\n[(0, 0), (3, 4)]\n"),
+        ];
+        for (tag, file, expected) in cases {
+            let rust = crate::emit_rust_file(file).expect("transpile trait program");
+            // A bounded generic is gone (monomorphized); the lowered, concrete
+            // specialization carries no `where` clause and no bare `self` value.
+            assert!(!rust.contains("where"), "{tag}: bounds should be discharged");
+            // The interpreter is the source of truth; native must match it.
+            let (linked, _) = crate::link_file(file).expect("link");
+            let interp = interpreter::run_module(linked, ".", Vec::new())
+                .expect("interp run")
+                .join("\n");
+            assert_eq!(format!("{interp}\n"), expected, "{tag}: interp output drifted");
+            let pid = std::process::id();
+            let dir = std::env::temp_dir().join(format!("witchy_trait_{tag}_{pid}"));
+            let _ = std::fs::create_dir_all(&dir);
+            let rs = dir.join("prog.rs");
+            let bin = dir.join("prog_bin");
+            std::fs::write(&rs, &rust).unwrap();
+            if let Ok(st) = std::process::Command::new("rustc")
+                .args(["-O", "-C", "overflow-checks=off", "--edition", "2021"])
+                .arg(&rs)
+                .arg("-o")
+                .arg(&bin)
+                .status()
+            {
+                assert!(st.success(), "{tag}: rustc should compile the lowered trait program");
+                let out = std::process::Command::new(&bin).output().expect("run");
+                assert_eq!(String::from_utf8_lossy(&out.stdout), expected, "{tag}: native output");
+            }
+            let _ = std::fs::remove_dir_all(&dir);
+        }
     }
 
     /// A `-> Nil` (unit) return type, and an enum recursive through a collection

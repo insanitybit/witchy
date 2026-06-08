@@ -689,6 +689,12 @@ impl Mono<'_> {
             self.fn_rets.insert(mangled.clone(), n.clone());
         }
         drop(subst);
+        // Monomorphization discharges the `where` bounds: every bound type
+        // variable is now a concrete type, and the trait obligation is satisfied
+        // by the impl whose method this specialization's body resolves to.
+        // Clearing them lets the (fully concrete) specialization compile on the
+        // native backend, which has no notion of an unsatisfied generic bound.
+        f.bounds = Vec::new();
         self.generated.push(f);
         mangled
     }
