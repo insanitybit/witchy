@@ -1493,6 +1493,24 @@ mod example_tests {
         assert!(rust.contains("as f64") && rust.contains("as i64"), "numeric conversions");
     }
 
+    /// Dicts map to a fast HashMap (FxHash, non-DoS); insert/get_or/has/size.
+    /// Iteration order is unspecified, so this checks order-independent results.
+    #[test]
+    fn native_backend_supports_dicts() {
+        let p = std::env::temp_dir()
+            .join(format!("witchy_native_dict_{}.witchy", std::process::id()));
+        std::fs::write(
+            &p,
+            "fn main(console: Console):\n    var d = dict_new()\n    d = insert(d, 1, 10)\n    d = insert(d, 2, 20)\n    print(console, int_to_string(get_or(d, 1, 0) + get_or(d, 2, 0) + get_or(d, 9, -1)))\n    print(console, int_to_string(size(d)))\n",
+        )
+        .expect("write source");
+        let rust = crate::emit_rust_file(p.to_str().unwrap()).expect("transpile");
+        let _ = std::fs::remove_file(&p);
+        assert!(rust.contains("FxHasher"), "expected the fast-hash dict helper");
+        assert!(rust.contains("WMap::default()"), "expected dict_new -> WMap");
+        assert!(rust.contains(".insert("), "expected dict insert");
+    }
+
     /// `for x in a..b` is a counting loop on both backends — never a materialized
     /// list — with faithful `break`/`continue`, inclusive (`..=`), empty, and
     /// nested behavior. The 100_000-iteration loop proves nothing is allocated:
