@@ -483,6 +483,129 @@ fn pattern_bindings(p: &crate::ast::Pattern, out: &mut Vec<String>) {
     }
 }
 
+/// The free variables a block captures from an enclosing scope: names used but
+/// not bound here (params/lets/loop-vars/match-bindings) and not a top-level
+/// function. Used to clone captures into a `move` closure, so it can escape
+/// while leaving the originals usable.
+fn collect_free_vars(body: &Block, bound: &HashSet<String>, out: &mut HashSet<String>) {
+    let mut local = bound.clone();
+    for stmt in &body.stmts {
+        match stmt {
+            Stmt::Let { name, value, .. } => {
+                fv_expr(value, &local, out);
+                local.insert(name.clone());
+            }
+            Stmt::LetTuple { names, value } => {
+                fv_expr(value, &local, out);
+                for n in names {
+                    local.insert(n.clone());
+                }
+            }
+            Stmt::Assign { name, value } => {
+                fv_expr(value, &local, out);
+                if !local.contains(name) && !is_fn_ref(name) {
+                    out.insert(name.clone());
+                }
+            }
+            Stmt::Return(Some(e)) | Stmt::Yield(e) | Stmt::Expr(e) => fv_expr(e, &local, out),
+            _ => {}
+        }
+    }
+}
+
+fn fv_expr(e: &Expr, bound: &HashSet<String>, out: &mut HashSet<String>) {
+    use crate::ast::Expr as E;
+    match e {
+        E::Var(v) => {
+            if !bound.contains(v) && !is_fn_ref(v) {
+                out.insert(v.clone());
+            }
+        }
+        E::Int(_) | E::Float(_) | E::Duration(_) | E::Str(_) | E::Bool(_) => {}
+        E::List(xs) | E::Tuple(xs) | E::Call { args: xs, .. } | E::Ctor { args: xs, .. }
+        | E::Spawn { args: xs, .. } => xs.iter().for_each(|x| fv_expr(x, bound, out)),
+        E::MethodCall { receiver, args, .. } => {
+            fv_expr(receiver, bound, out);
+            args.iter().for_each(|x| fv_expr(x, bound, out));
+        }
+        E::Apply { func, args } => {
+            fv_expr(func, bound, out);
+            args.iter().for_each(|x| fv_expr(x, bound, out));
+        }
+        E::Unary { expr, .. } | E::Try(expr) | E::As { expr, .. } | E::Field { base: expr, .. } => {
+            fv_expr(expr, bound, out)
+        }
+        E::Binary { lhs, rhs, .. } => {
+            fv_expr(lhs, bound, out);
+            fv_expr(rhs, bound, out);
+        }
+        E::Range { lo, hi, .. } => {
+            fv_expr(lo, bound, out);
+            fv_expr(hi, bound, out);
+        }
+        E::Index { base, index } => {
+            fv_expr(base, bound, out);
+            fv_expr(index, bound, out);
+        }
+        E::Lambda { params, body } => {
+            let mut b = bound.clone();
+            for p in params {
+                b.insert(p.name.clone());
+            }
+            collect_free_vars(body, &b, out);
+        }
+        E::Block(b) => collect_free_vars(b, bound, out),
+        E::If { cond, then_block, else_block } => {
+            fv_expr(cond, bound, out);
+            collect_free_vars(then_block, bound, out);
+            if let Some(eb) = else_block {
+                collect_free_vars(eb, bound, out);
+            }
+        }
+        E::While { cond, body } => {
+            fv_expr(cond, bound, out);
+            collect_free_vars(body, bound, out);
+        }
+        E::WhileLet { pattern, scrutinee, body } => {
+            fv_expr(scrutinee, bound, out);
+            let mut b = bound.clone();
+            let mut pb = Vec::new();
+            pattern_bindings(pattern, &mut pb);
+            b.extend(pb);
+            collect_free_vars(body, &b, out);
+        }
+        E::For { var, iter, body } => {
+            fv_expr(iter, bound, out);
+            let mut b = bound.clone();
+            b.insert(var.clone());
+            collect_free_vars(body, &b, out);
+        }
+        E::Match { scrutinee, arms } => {
+            fv_expr(scrutinee, bound, out);
+            for arm in arms {
+                let mut b = bound.clone();
+                let mut pb = Vec::new();
+                pattern_bindings(&arm.pattern, &mut pb);
+                b.extend(pb);
+                if let Some(g) = &arm.guard {
+                    fv_expr(g, &b, out);
+                }
+                fv_expr(&arm.body, &b, out);
+            }
+        }
+        E::RecordUpdate { base, fields } => {
+            fv_expr(base, bound, out);
+            fields.iter().for_each(|(_, v)| fv_expr(v, bound, out));
+        }
+        E::Record { fields, spread, .. } => {
+            fields.iter().for_each(|(_, v)| fv_expr(v, bound, out));
+            if let Some(s) = spread {
+                fv_expr(s, bound, out);
+            }
+        }
+    }
+}
+
 /// Count textual uses of `name` in an expression: `total` and, separately,
 /// `looped` — uses inside a loop or closure body (relative to here), where a
 /// move would be unsound (the use may re-execute). Over-counting (e.g. through a
@@ -1440,7 +1563,26 @@ fn gen_expr(e: &Expr, value: bool) -> Result<String, String> {
         // A lambda -> a Rust closure (parameter types inferred from the call).
         Expr::Lambda { params, body } => {
             let ps: Vec<String> = params.iter().map(|p| p.name.clone()).collect();
-            format!("|{}| {}", ps.join(", "), gen_block(body, true)?)
+            let body_str = gen_block(body, true)?;
+            // A `move` closure owns its captures, so it can escape (be returned or
+            // stored). To keep the originals usable afterward — and to preserve
+            // value semantics — each captured binding is cloned into a shadow that
+            // the closure then moves. (Closures themselves aren't `Clone`, so a
+            // captured closure is moved directly.)
+            let bound: HashSet<String> = params.iter().map(|p| p.name.clone()).collect();
+            let mut fvs = HashSet::new();
+            collect_free_vars(body, &bound, &mut fvs);
+            let mut captures: Vec<String> = fvs.into_iter().filter(|v| !is_noclone(v)).collect();
+            captures.sort();
+            let clones: String = captures
+                .iter()
+                .map(|v| format!("let {v} = ({v}).clone(); "))
+                .collect();
+            if clones.is_empty() {
+                format!("move |{}| {}", ps.join(", "), body_str)
+            } else {
+                format!("{{ {clones}move |{}| {} }}", ps.join(", "), body_str)
+            }
         }
         // Applying a function value: `f(args)`. Reused-binding args cloned.
         Expr::Apply { func, args } => {
@@ -1676,9 +1818,11 @@ fn gen_call(name: &str, args: &[Expr]) -> Result<String, String> {
         "print" | "int_to_string" | "string_to_int" => {
             return Err(format!("native backend: wrong arity for `{name}`"))
         }
-        // A call whose name is a parameter is a function-valued param (closure),
-        // called directly rather than as a top-level function.
-        _ if CUR_PARAMS.with(|s| s.borrow().contains(name)) => {
+        // A call whose name is a closure value — a function-valued parameter or a
+        // local binding (`let add5 = make_adder(5); add5(10)`) — is called
+        // directly. Anything in FN_NAMES is a top-level function (handled below);
+        // a name that's neither a builtin nor a known function is such a local.
+        _ if CUR_PARAMS.with(|s| s.borrow().contains(name)) || !is_fn_ref(name) => {
             // Reused-binding args are cloned (value semantics: `keep(x)` then
             // `push(.., x)`); temporaries are moved.
             let a: Vec<String> = args

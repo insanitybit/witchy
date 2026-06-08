@@ -1533,6 +1533,42 @@ mod example_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Escaping closures: a function may return a closure capturing its params
+    /// (`make_adder`), each capture independent; and a captured non-Copy binding
+    /// stays usable after the closure (cloned into the `move`, not moved out).
+    #[test]
+    fn native_backend_escaping_closures() {
+        let pid = std::process::id();
+        let dir = std::env::temp_dir().join(format!("witchy_clos_{pid}"));
+        let _ = std::fs::create_dir_all(&dir);
+        let src = dir.join("prog.witchy");
+        std::fs::write(
+            &src,
+            "import list\n\nfn make_adder(n: Int) -> fn(Int) -> Int:\n    fn(x: Int): x + n\n\nfn main(console: Console):\n    let add5 = make_adder(5)\n    let add10 = make_adder(10)\n    print(console, int_to_string(add5(100)))\n    print(console, int_to_string(add10(100)))\n    let prefix = \"Mr. \"\n    let g = list.map([\"A\", \"B\"], fn(n: String): f\"{prefix}{n}\")\n    print(console, f\"{g}\")\n    print(console, prefix)\n",
+        )
+        .expect("write src");
+        let rust = crate::emit_rust_file(src.to_str().unwrap()).expect("transpile");
+        assert!(rust.contains("move |"), "expected move closures");
+        let rs = dir.join("prog.rs");
+        let bin = dir.join("prog_bin");
+        std::fs::write(&rs, &rust).unwrap();
+        if let Ok(st) = std::process::Command::new("rustc")
+            .args(["-O", "--edition", "2021"])
+            .arg(&rs)
+            .arg("-o")
+            .arg(&bin)
+            .status()
+        {
+            assert!(st.success(), "rustc should compile the escaping-closure program");
+            let out = std::process::Command::new(&bin).output().expect("run");
+            assert_eq!(
+                String::from_utf8_lossy(&out.stdout),
+                "105\n110\n[Mr. A, Mr. B]\nMr. \n"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// The Clock capability: `now(clock)` returns ms since the epoch. Tested by a
     /// deterministic bound (the absolute value is wall-clock, so not diff-able).
     #[test]
