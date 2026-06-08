@@ -28,3 +28,13 @@ pub fn on_key(op: fn(b, b) -> c, key: fn(a) -> b) -> fn(a, a) -> c:
 pub fn constant(x: a) -> fn(b) -> a:
     fn(y):
         x
+
+// The first / second component of a pair — handy for the tuples `iter.zip` and
+// `iter.enumerate` produce, without writing a `match` each time.
+pub fn first(p: (a, b)) -> a:
+    match p:
+        (x, _y) -> x
+
+pub fn second(p: (a, b)) -> b:
+    match p:
+        (_x, y) -> y

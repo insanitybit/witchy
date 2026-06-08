@@ -136,6 +136,61 @@ pub fn drop(it: Iter(a), k: Int) -> Iter(a):
             Empty -> empty()
             Item(_x, rest) -> drop(rest, k - 1)
 
+// Pair each element with its index: (0, x0), (1, x1), ...
+pub fn enumerate(it: Iter(a)) -> Iter((Int, a)):
+    enumerate_from(it, 0)
+
+fn enumerate_from(it: Iter(a), i: Int) -> Iter((Int, a)):
+    Iter(fn(): enumerate_step(next(it), i))
+
+fn enumerate_step(s: Step(a), i: Int) -> Step((Int, a)):
+    match s:
+        Empty -> Empty
+        Item(x, rest) -> Item((i, x), enumerate_from(rest, i + 1))
+
+// Zip two iterators into pairs, stopping at the shorter one.
+pub fn zip(a: Iter(x), b: Iter(y)) -> Iter((x, y)):
+    Iter(fn(): zip_step(next(a), b))
+
+fn zip_step(sa: Step(x), b: Iter(y)) -> Step((x, y)):
+    match sa:
+        Empty -> Empty
+        Item(xa, resta) ->
+            match next(b):
+                Empty -> Empty
+                Item(xb, restb) -> Item((xa, xb), zip(resta, restb))
+
+// The elements of `first`, then the elements of `second`.
+pub fn chain(first: Iter(a), second: Iter(a)) -> Iter(a):
+    Iter(fn(): chain_step(next(first), second))
+
+fn chain_step(s: Step(a), second: Iter(a)) -> Step(a):
+    match s:
+        Empty -> next(second)
+        Item(x, rest) -> Item(x, chain(rest, second))
+
+// Map each element to an iterator and concatenate the results.
+pub fn flat_map(it: Iter(a), f: fn(a) -> Iter(b)) -> Iter(b):
+    Iter(fn(): flat_map_step(next(it), f))
+
+fn flat_map_step(s: Step(a), f: fn(a) -> Iter(b)) -> Step(b):
+    match s:
+        Empty -> Empty
+        Item(x, rest) -> next(chain(f(x), flat_map(rest, f)))
+
+// Call `f` on every element for its effect (drives to exhaustion). The right
+// consumer for a generator when you don't need to early-exit — no list is built.
+pub fn for_each(it: Iter(a), f: fn(a) -> Nil):
+    var cur = it
+    var more = true
+    while more:
+        match next(cur):
+            Empty ->
+                more = false
+            Item(x, rest) ->
+                f(x)
+                cur = rest
+
 // ---- consumers ----
 
 // Collect into a list (drives the iterator to exhaustion — don't call on an

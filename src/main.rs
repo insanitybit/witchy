@@ -5025,6 +5025,37 @@ impl Counter:
         assert_eq!(shown("serve"), "Net[Listen]");
     }
 
+    /// The `std/iter` adapters `enumerate`/`zip`/`chain`/`flat_map`/`for_each`
+    /// (plus `func.first`/`second` for the pairs they produce) must agree on both
+    /// backends — they compose lazily over finite and infinite iterators.
+    #[test]
+    fn std_iter_more_adapters_backends_agree() {
+        let client = r#"
+import iter
+import func
+import string
+fn main(console: Console):
+    var es = []
+    for p in iter.collect(iter.enumerate(iter.from_list(["a", "b", "c"]))):
+        es = push(es, int_to_string(func.first(p)) <> func.second(p))
+    print(console, string.join(es, " "))
+    print(console, int_to_string(iter.count(iter.zip(iter.count_from(1), iter.from_list([0, 0, 0])))))
+    print(console, int_to_string(iter.sum(iter.chain(iter.range(0, 4), iter.range(10, 13)))))
+    print(console, int_to_string(iter.sum(iter.flat_map(iter.range(1, 4), fn(n: Int): iter.from_list([n, n])))))
+    iter.for_each(iter.take(iter.count_from(100), 3), fn(n: Int): print(console, int_to_string(n)))
+"#;
+        let sources = [
+            ("iter", crate::bundled_module("iter").unwrap()),
+            ("func", crate::bundled_module("func").unwrap()),
+            ("string", crate::bundled_module("string").unwrap()),
+            ("main", client),
+        ];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "iter adapters diverged");
+        assert_eq!(compiled, vec!["0a 1b 2c", "3", "39", "12", "100", "101", "102"]);
+    }
+
     /// `gen fn` / `yield` (lowered by `crate::generators` to `std/iter`): an
     /// imperative generator that yields a sequence becomes a lazy iterator. The
     /// `generators` example (Fibonacci + Collatz, incl. an infinite generator and
