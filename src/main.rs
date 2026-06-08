@@ -1533,6 +1533,42 @@ mod example_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Showing collections in `print`/f-strings (`[a, b]`, `(a, b)`, `Some(x)`)
+    /// matches the interpreter's `Display` exactly, including nesting.
+    #[test]
+    fn native_backend_collection_display() {
+        let pid = std::process::id();
+        let dir = std::env::temp_dir().join(format!("witchy_show_{pid}"));
+        let _ = std::fs::create_dir_all(&dir);
+        let src = dir.join("prog.witchy");
+        std::fs::write(
+            &src,
+            "fn main(console: Console):\n    print(console, [1, 2, 3])\n    print(console, [\"a\", \"b\"])\n    print(console, f\"nested: {[[1, 2], [3]]}\")\n    print(console, f\"tuple: {(1, \"x\", true)}\")\n    print(console, f\"opt: {first([10, 20])}\")\n",
+        )
+        .expect("write src");
+        let rust = crate::emit_rust_file(src.to_str().unwrap()).expect("transpile");
+        assert!(rust.contains("trait WShow"), "expected the WShow formatter");
+        assert!(rust.contains(".w_show()"), "expected w_show calls");
+        let rs = dir.join("prog.rs");
+        let bin = dir.join("prog_bin");
+        std::fs::write(&rs, &rust).unwrap();
+        if let Ok(st) = std::process::Command::new("rustc")
+            .args(["-O", "--edition", "2021"])
+            .arg(&rs)
+            .arg("-o")
+            .arg(&bin)
+            .status()
+        {
+            assert!(st.success(), "rustc should compile the collection-display program");
+            let out = std::process::Command::new(&bin).output().expect("run");
+            assert_eq!(
+                String::from_utf8_lossy(&out.stdout),
+                "[1, 2, 3]\n[a, b]\nnested: [[1, 2], [3]]\ntuple: (1, x, true)\nopt: Some(10)\n"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// A named top-level function passed as a first-class value (`map(xs, dbl)`,
     /// `filter(xs, pred)`) — resolved to its Rust `w_*` item and kept reachable.
     #[test]

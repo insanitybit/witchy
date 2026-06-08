@@ -40,6 +40,9 @@ thread_local! {
     static USES_DIR: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// Set when the program uses a Net capability, so the socket helper is emitted.
     static USES_NET: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Set when a value is shown (generic `to_string`/`print`), so the `WShow`
+    /// formatter (matching the interpreter's `Display`) is emitted.
+    static USES_SHOW: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// Parameter names of the function currently being emitted. A call whose name
     /// is one of these is a function-valued parameter (a closure), called
     /// directly (`f(x)`); any other call is a top-level function (`w_f(x)`).
@@ -264,6 +267,46 @@ fn w_net_close(id: usize) {
             let _ = sock.get_ref().shutdown(std::net::Shutdown::Both);
         }
     });
+}
+"#;
+
+// `WShow` renders a value exactly as the interpreter's `Display` does — lists
+// `[a, b]`, tuples `(a, b)`, `Some(x)`/`None`, `Ok`/`Err`, strings raw — so
+// `print`/`to_string` (and f-strings) agree across backends. Dicts are omitted
+// on purpose: their iteration order is unspecified, so formatting one isn't
+// portable between backends.
+const SHOW_HELPER: &str = r#"
+trait WShow { fn w_show(&self) -> String; }
+impl WShow for i64 { fn w_show(&self) -> String { self.to_string() } }
+impl WShow for f64 { fn w_show(&self) -> String { format!("{}", self) } }
+impl WShow for bool { fn w_show(&self) -> String { self.to_string() } }
+impl WShow for String { fn w_show(&self) -> String { self.clone() } }
+impl<T: WShow> WShow for Vec<T> {
+    fn w_show(&self) -> String {
+        let mut s = String::from("[");
+        for (i, v) in self.iter().enumerate() { if i > 0 { s.push_str(", "); } s.push_str(&v.w_show()); }
+        s.push(']');
+        s
+    }
+}
+impl<T: WShow> WShow for Option<T> {
+    fn w_show(&self) -> String {
+        match self { Some(v) => format!("Some({})", v.w_show()), None => "None".to_string() }
+    }
+}
+impl<T: WShow, E: WShow> WShow for Result<T, E> {
+    fn w_show(&self) -> String {
+        match self { Ok(v) => format!("Ok({})", v.w_show()), Err(e) => format!("Err({})", e.w_show()) }
+    }
+}
+impl<A: WShow, B: WShow> WShow for (A, B) {
+    fn w_show(&self) -> String { format!("({}, {})", self.0.w_show(), self.1.w_show()) }
+}
+impl<A: WShow, B: WShow, C: WShow> WShow for (A, B, C) {
+    fn w_show(&self) -> String { format!("({}, {}, {})", self.0.w_show(), self.1.w_show(), self.2.w_show()) }
+}
+impl<A: WShow, B: WShow, C: WShow, D: WShow> WShow for (A, B, C, D) {
+    fn w_show(&self) -> String { format!("({}, {}, {}, {})", self.0.w_show(), self.1.w_show(), self.2.w_show(), self.3.w_show()) }
 }
 "#;
 
@@ -656,6 +699,7 @@ pub fn transpile_module(m: &Module) -> Result<String, String> {
     VARIANT_BOXED.with(|r| r.borrow_mut().clear());
     USES_DIR.with(|f| f.set(false));
     USES_NET.with(|f| f.set(false));
+    USES_SHOW.with(|f| f.set(false));
     FN_PARAM_CLONE.with(|map| map.borrow_mut().clear());
     FN_INOUT.with(|map| map.borrow_mut().clear());
     MOVEABLE.with(|s| s.borrow_mut().clear());
@@ -739,6 +783,9 @@ pub fn transpile_module(m: &Module) -> Result<String, String> {
     }
     if USES_NET.with(|f| f.get()) {
         prog.push_str(NET_HELPER);
+    }
+    if USES_SHOW.with(|f| f.get()) {
+        prog.push_str(SHOW_HELPER);
     }
     prog.push_str(&out);
     Ok(prog)
@@ -1301,11 +1348,20 @@ fn gen_call(name: &str, args: &[Expr]) -> Result<String, String> {
         // `print(console, x)` — drop the console; print x to stdout. Strip one
         // trailing newline to match the interpreter/wasm host (each print is one
         // line; a trailing `\n` in the value is the terminator, not a blank line).
-        "print" if args.len() == 2 => format!(
-            "println!(\"{{}}\", format!(\"{{}}\", {}).trim_end_matches('\\n'))",
-            arg(1)?
-        ),
-        "int_to_string" | "to_string" if args.len() == 1 => format!("({}).to_string()", arg(0)?),
+        "print" if args.len() == 2 => {
+            USES_SHOW.with(|f| f.set(true));
+            format!(
+                "println!(\"{{}}\", ({}).w_show().trim_end_matches('\\n'))",
+                arg(1)?
+            )
+        }
+        "int_to_string" if args.len() == 1 => format!("({}).to_string()", arg(0)?),
+        // Generic `to_string` (what f-strings desugar to) shows any value exactly
+        // as the interpreter's Display — lists, tuples, options, etc.
+        "to_string" if args.len() == 1 => {
+            USES_SHOW.with(|f| f.set(true));
+            format!("({}).w_show()", arg(0)?)
+        }
         "string_to_int" if args.len() == 1 => {
             format!("({}).parse::<i64>().unwrap()", arg(0)?)
         }
