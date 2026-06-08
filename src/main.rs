@@ -2058,6 +2058,42 @@ mod example_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Conventions apply to a method's receiver too: `let self` borrows it
+    /// (read-only), and `own self` consumes it (the value can't be used after the
+    /// call). Both run identically on interpreter and native.
+    #[test]
+    fn convention_method_receivers() {
+        // `let self` — borrow the receiver, return a fresh value (functional style).
+        let borrow_self = "type Counter:\n    Counter(Int)\nimpl Counter:\n    fn incremented(let self) -> Counter:\n        match self:\n            Counter(n) -> Counter(n + 1)\nfn main(c: Console):\n    let a = Counter(5)\n    match a.incremented():\n        Counter(n) -> print(c, int_to_string(n))\n";
+        // `own self` — consume the receiver.
+        let own_self = "import list\ntype Buffer:\n    Buffer(List(Int))\nimpl Buffer:\n    fn drain(own self) -> Int:\n        match self:\n            Buffer(xs) -> list.sum(xs)\nfn main(c: Console):\n    let buf = Buffer([1, 2, 3])\n    print(c, int_to_string(buf.drain()))\n";
+        for (tag, src, want) in [("let_self", borrow_self, "6\n"), ("own_self", own_self, "6\n")] {
+            let dir = std::env::temp_dir().join(format!("witchy_recv_{tag}_{}", std::process::id()));
+            let _ = std::fs::create_dir_all(&dir);
+            let s = dir.join("prog.witchy");
+            std::fs::write(&s, src).unwrap();
+            let (linked, _) = crate::link_file(s.to_str().unwrap()).expect("link");
+            let interp = interpreter::run_module(linked, ".", Vec::new()).expect("interp").join("\n");
+            assert_eq!(format!("{interp}\n"), want, "{tag} interp");
+            let rust = crate::emit_rust_file(s.to_str().unwrap()).expect("transpile");
+            let rs = dir.join("prog.rs");
+            let bin = dir.join("prog_bin");
+            std::fs::write(&rs, &rust).unwrap();
+            if let Ok(st) = std::process::Command::new("rustc")
+                .args(["-O", "-C", "overflow-checks=off", "--edition", "2021"])
+                .arg(&rs)
+                .arg("-o")
+                .arg(&bin)
+                .status()
+            {
+                assert!(st.success(), "{tag} should compile");
+                let out = std::process::Command::new(&bin).output().expect("run");
+                assert_eq!(String::from_utf8_lossy(&out.stdout), want, "{tag} native");
+            }
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
     /// A borrow can be forwarded BOTH ways: to another borrow parameter it passes
     /// straight through (`&T` -> `&T`, no copy), and to an owned parameter it is
     /// deref-cloned (you can't move out of a borrow). Same result on every backend.
