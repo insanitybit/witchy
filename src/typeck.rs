@@ -1282,7 +1282,7 @@ impl Checker {
                     })
                     .collect();
                 for (p, ty) in params.iter().zip(&param_tys) {
-                    self.define(p.name.clone(), ty.clone(), p.convention != Convention::Let);
+                    self.define(p.name.clone(), ty.clone(), p.convention.binds_mutable());
                 }
                 let ret = self.infer_block(body)?;
                 self.pop();
@@ -1378,7 +1378,10 @@ impl Checker {
                                     self.consumed.insert(v.clone());
                                 }
                             }
-                            Convention::Let => {}
+                            // An owned value or an immutable borrow: no call-site
+                            // obligation (a borrow's no-escape rule is enforced at
+                            // native-lowering time by Rust's borrow checker).
+                            Convention::Let | Convention::Borrow => {}
                         }
                     }
                 }
@@ -1890,7 +1893,7 @@ impl Checker {
         self.current_ret = Some(ret.clone());
         self.cur_line = 0;
         for (param, ty) in func.params.iter().zip(&params) {
-            self.define(param.name.clone(), ty.clone(), param.convention != Convention::Let);
+            self.define(param.name.clone(), ty.clone(), param.convention.binds_mutable());
         }
         let body = self.infer_block(&func.body)?;
         // A broader capability may be returned where a narrower one is declared
@@ -1932,7 +1935,7 @@ impl Checker {
                     .as_ref()
                     .map(|t| self.to_ty(t))
                     .unwrap_or_else(|| self.fresh());
-                self.define(param.name.clone(), ty, param.convention != Convention::Let);
+                self.define(param.name.clone(), ty, param.convention.binds_mutable());
             }
             self.infer_block(&handler.body).map_err(|e| TypeError {
                 message: format!("actor `{}` handler `{}`: {}", actor.name, handler.message, e.message),

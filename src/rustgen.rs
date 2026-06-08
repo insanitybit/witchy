@@ -38,6 +38,13 @@ thread_local! {
     /// (see `needs_clone_at_call`) so the caller keeps its value (witchy value
     /// semantics; Rust would otherwise move it and reject the caller's later use).
     static FN_PARAM_CLONE: RefCell<HashMap<String, Vec<bool>>> = RefCell::new(HashMap::new());
+    /// Per function (by emitted name): which parameter positions are an explicit
+    /// `let` borrow of a borrowable type, lowered to `&T`. A call site passes
+    /// `&arg` (or the var itself if it's already a borrow) instead of cloning.
+    static FN_PARAM_BORROW: RefCell<HashMap<String, Vec<bool>>> = RefCell::new(HashMap::new());
+    /// Names of the current function's `&T` borrow parameters — so a use of one
+    /// (forwarding it to another borrow, or iterating it) knows it's a reference.
+    static CUR_BORROW: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
     /// Set when the program uses a Dict, so the `WDict` runtime helper is emitted.
     static USES_DICT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// Set when the program uses a Dir capability, so the I/O helper is emitted.
@@ -208,6 +215,24 @@ fn wshow_header(name: &str, tvs: &std::collections::BTreeSet<String>) -> (String
 /// Whether a bare variable may be moved (rather than cloned) at this use.
 fn is_moveable(name: &str) -> bool {
     MOVEABLE.with(|m| m.borrow().contains(name))
+}
+
+/// Whether an explicit `let` parameter of this type lowers to a borrow (`&T`) on
+/// native. Restricted to the big heap types where a borrow avoids a real clone
+/// and reads still work through Rust's auto-deref (`String`/`List`/`Dict`);
+/// everything else stays owned.
+fn borrowable_ty(t: &Type) -> bool {
+    matches!(t, Type::Named(n, _) if n == "String" || n == "List" || n == "Dict")
+}
+
+/// Whether this parameter is an explicit-`let` borrow lowered to `&T`.
+fn is_borrow_param(p: &crate::ast::Param) -> bool {
+    p.convention == crate::ast::Convention::Borrow && p.ty.as_ref().is_some_and(borrowable_ty)
+}
+
+/// Whether `name` is one of the current function's `&T` borrow parameters.
+fn is_cur_borrow(name: &str) -> bool {
+    CUR_BORROW.with(|b| b.borrow().contains(name))
 }
 
 /// Whether THIS specific `Var` occurrence (by AST-node pointer) is a last use the
@@ -1459,6 +1484,7 @@ pub fn transpile_module(m: &Module) -> Result<String, String> {
     USES_NET.with(|f| f.set(false));
     USES_SHOW.with(|f| f.set(false));
     FN_PARAM_CLONE.with(|map| map.borrow_mut().clear());
+    FN_PARAM_BORROW.with(|map| map.borrow_mut().clear());
     FN_INOUT.with(|map| map.borrow_mut().clear());
     MOVEABLE.with(|s| s.borrow_mut().clear());
     FN_NAMES.with(|s| {
@@ -1488,6 +1514,11 @@ pub fn transpile_module(m: &Module) -> Result<String, String> {
                 })
                 .collect();
             FN_PARAM_CLONE.with(|map| map.borrow_mut().insert(fn_rust_name(f), clones));
+            // Which positions are `&T` borrows — a call site passes `&arg` there.
+            let borrows: Vec<bool> = f.params.iter().map(is_borrow_param).collect();
+            if borrows.iter().any(|b| *b) {
+                FN_PARAM_BORROW.with(|map| map.borrow_mut().insert(fn_rust_name(f), borrows));
+            }
             let inout: Vec<usize> = f
                 .params
                 .iter()
@@ -1832,7 +1863,12 @@ fn gen_fn(f: &Function) -> Result<String, String> {
             }
         }
         match rust_ty(ty) {
-            // `mut` lets a body reassign a value parameter.
+            // An explicit `let` borrow of a heap type is passed by reference
+            // (`&T`) — no clone at the call site. Otherwise `mut` lets the body
+            // reassign the owned value parameter.
+            Some(rt) if is_borrow_param(p) => {
+                params.push(format!("{}: &{rt}", local_ident(&p.name)))
+            }
             Some(rt) => params.push(format!("mut {}: {rt}", local_ident(&p.name))),
             // An unsupported capability param (Dir/Net/...) on main is dropped;
             // the program errors only if it actually calls that host function.
@@ -1872,6 +1908,12 @@ fn gen_fn(f: &Function) -> Result<String, String> {
     let generics = generic_params_eq(&tvs, block_has_eq(&f.body));
     CUR_PARAMS.with(|s| {
         *s.borrow_mut() = f.params.iter().map(|p| p.name.clone()).collect();
+    });
+    // The `&T` borrow parameters of this function — used when forwarding one to
+    // another borrow (pass the reference straight through) or iterating it.
+    CUR_BORROW.with(|b| {
+        *b.borrow_mut() =
+            f.params.iter().filter(|p| is_borrow_param(p)).map(|p| p.name.clone()).collect();
     });
     // Per-function last-use state. A param used exactly once (loop-free) can be
     // moved at that use; a closure param can't be cloned, so it's always moved.
@@ -2148,12 +2190,20 @@ fn gen_expr(e: &Expr, value: bool) -> Result<String, String> {
                 )
             }
             // Iterate a list by shared borrow (so the list survives the loop) and
-            // bind each element as a value copy, matching value semantics.
-            _ => format!(
-                "for {var}__item in &({}) {{ let {var} = ({var}__item).clone(); {} }}",
-                gen_expr(iter, true)?,
-                gen_block(body, false)?
-            ),
+            // bind each element as a value copy, matching value semantics. A
+            // borrow parameter is already `&T`, so iterate it directly (adding
+            // another `&` would make `&&Vec`, which isn't iterable).
+            _ => {
+                let it = gen_expr(iter, true)?;
+                let iter_ref = match iter.as_ref() {
+                    Expr::Var(v) if is_cur_borrow(v) => it,
+                    _ => format!("&({it})"),
+                };
+                format!(
+                    "for {var}__item in {iter_ref} {{ let {var} = ({var}__item).clone(); {} }}",
+                    gen_block(body, false)?
+                )
+            }
         },
         Expr::Block(b) => gen_block(b, value)?,
         Expr::Call { name, args } => {
@@ -2656,11 +2706,21 @@ fn gen_call(name: &str, args: &[Expr]) -> Result<String, String> {
         _ => {
             let fname = format!("w_{}", ident(name));
             let clones = FN_PARAM_CLONE.with(|m| m.borrow().get(&fname).cloned());
+            let borrows = FN_PARAM_BORROW.with(|m| m.borrow().get(&fname).cloned());
             let a: Vec<String> = args
                 .iter()
                 .enumerate()
                 .map(|(i, x)| {
                     let s = gen_expr(x, true)?;
+                    // A `let`/borrow parameter takes `&T`: pass a reference (no
+                    // clone). An argument that is itself a borrow parameter is
+                    // already `&T`, so forward it as-is.
+                    if borrows.as_ref().is_some_and(|b| b.get(i) == Some(&true)) {
+                        return Ok(match x {
+                            Expr::Var(v) if is_cur_borrow(v) => s,
+                            _ => format!("&({s})"),
+                        });
+                    }
                     // Clone only a reused binding (a bare variable); a temporary
                     // (call result, literal, field read — already a fresh value)
                     // is moved, as is a binding at its last use (see MOVEABLE).

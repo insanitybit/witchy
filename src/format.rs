@@ -210,10 +210,13 @@ fn sig(name: &str, params: &[Param], ret: &Option<Type>, bounds: &[(String, Stri
 }
 
 fn param(p: &Param) -> String {
+    // Normalize to the preferred spellings (`var`/`own`); `inout`/`sink` still
+    // parse as aliases but format to these. An explicit borrow prints `let`.
     let conv = match p.convention {
         Convention::Let => "",
-        Convention::Inout => "inout ",
-        Convention::Sink => "sink ",
+        Convention::Borrow => "let ",
+        Convention::Inout => "var ",
+        Convention::Sink => "own ",
     };
     match &p.ty {
         Some(t) => format!("{conv}{}: {}", p.name, type_str(t)),

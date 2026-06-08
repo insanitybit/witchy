@@ -144,10 +144,27 @@ pub struct Param {
 /// `sink` consumes (takes ownership / moves the value in).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Convention {
+    /// The default (no keyword): an owned value. Observably immutable to the
+    /// caller; the native backend clones collection arguments to preserve value
+    /// semantics.
     #[default]
     Let,
+    /// An explicit `let` keyword on a parameter: an immutable *borrow*. Same
+    /// observable semantics as the default, but the native backend passes it by
+    /// reference (`&T`) with no clone — an opt-in for read-only hot paths. A
+    /// borrowed parameter may not escape (be returned, stored, or mutated).
+    Borrow,
     Inout,
     Sink,
+}
+
+impl Convention {
+    /// Whether a parameter with this convention binds a *mutable* local (you may
+    /// assign it in the body). `inout` and `sink` give a mutable value; `let` and
+    /// an explicit borrow are read-only.
+    pub fn binds_mutable(self) -> bool {
+        matches!(self, Convention::Inout | Convention::Sink)
+    }
 }
 
 /// Types are parsed but not yet checked. `Named("Result", [Int, Error])`.

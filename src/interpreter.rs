@@ -408,7 +408,7 @@ impl Interpreter {
             env.define(
                 param.name.clone(),
                 value,
-                !matches!(param.convention, Convention::Let),
+                param.convention.binds_mutable(),
             );
         }
         let prev = std::mem::replace(&mut self.cur_fn, name.to_string());
@@ -444,7 +444,7 @@ impl Interpreter {
         let mut cenv = *env;
         cenv.push();
         for (p, v) in params.iter().zip(argvals) {
-            cenv.define(p.name.clone(), v, !matches!(p.convention, Convention::Let));
+            cenv.define(p.name.clone(), v, p.convention.binds_mutable());
         }
         self.depth += 1;
         if self.depth > self.depth_limit {
@@ -514,7 +514,7 @@ impl Interpreter {
             fenv.define(
                 param.name.clone(),
                 argvals[i].clone(),
-                !matches!(param.convention, Convention::Let),
+                param.convention.binds_mutable(),
             );
             if matches!(param.convention, Convention::Inout) {
                 match &args[i] {
@@ -1154,7 +1154,7 @@ impl Interpreter {
             env.define(
                 param.name.clone(),
                 value,
-                !matches!(param.convention, Convention::Let),
+                param.convention.binds_mutable(),
             );
         }
         finish(self.eval_block(&handler.body, &mut env))?;

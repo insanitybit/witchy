@@ -480,6 +480,10 @@ impl Parser {
                 Convention::Inout
             } else if self.eat(&Tok::Sink) || self.eat(&Tok::Own) {
                 Convention::Sink
+            } else if self.eat(&Tok::Let) {
+                // An explicit `let` opts into an immutable borrow (native passes it
+                // `&T`, no clone). Bare params remain owned values.
+                Convention::Borrow
             } else {
                 Convention::Let
             };
