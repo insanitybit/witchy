@@ -18,6 +18,7 @@ mod capabilities;
 mod codegen;
 mod consts;
 mod format;
+mod generators;
 mod interpreter;
 mod lexer;
 mod linker;
@@ -5022,6 +5023,53 @@ impl Counter:
         assert_eq!(shown("load"), "Dir[Read]");
         assert_eq!(shown("fetch"), "Net[Connect, Tcp]");
         assert_eq!(shown("serve"), "Net[Listen]");
+    }
+
+    /// `gen fn` / `yield` (lowered by `crate::generators` to `std/iter`): an
+    /// imperative generator that yields a sequence becomes a lazy iterator. The
+    /// `generators` example (Fibonacci + Collatz, incl. an infinite generator and
+    /// a branch inside a loop) must agree on both backends.
+    #[test]
+    fn gen_yield_generators_example_agrees_on_both_backends() {
+        let client = std::fs::read_to_string("examples/generators.witchy").unwrap();
+        let sources = [
+            ("iter", crate::bundled_module("iter").unwrap()),
+            ("string", crate::bundled_module("string").unwrap()),
+            ("main", client.as_str()),
+        ];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "generators diverged");
+        assert_eq!(
+            compiled,
+            vec![
+                "fib[0..10): 0, 1, 1, 2, 3, 5, 8, 13, 21, 34".to_string(),
+                "collatz(6): 6, 3, 10, 5, 16, 8, 4, 2, 1".to_string(),
+                "collatz(27) length: 112".to_string(),
+            ]
+        );
+    }
+
+    /// A `gen fn` lowers to a `__gen_*` helper (yield -> counter + early return)
+    /// plus a wrapper calling `iter.from_gen`, and `import iter` is injected.
+    #[test]
+    fn gen_fn_lowers_to_helper_and_wrapper() {
+        let m = parser::parse_module("gen fn nums() -> Iter(Int):\n    yield 1\n    yield 2\n")
+            .expect("parse");
+        let lowered = crate::generators::lower(m);
+        let fn_names: Vec<&str> = lowered
+            .items
+            .iter()
+            .filter_map(|it| match it {
+                crate::ast::Item::Function(f) => Some(f.name.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(fn_names.contains(&"__gen_nums"), "missing helper: {fn_names:?}");
+        assert!(fn_names.contains(&"nums"), "missing wrapper: {fn_names:?}");
+        assert!(lowered.imports.iter().any(|m| m == "iter"), "iter not imported");
+        // No `gen fn` or `yield` survives lowering.
+        assert!(lowered.items.iter().all(|it| !matches!(it, crate::ast::Item::Function(f) if f.is_gen)));
     }
 
     /// `std/iter` is the lazy pull-based iterator module (witchy's answer to

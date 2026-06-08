@@ -18,6 +18,8 @@ pub enum Tok {
     // Keywords
     Actor,
     Fn,
+    Gen,
+    Yield,
     Let,
     Var,
     On,
@@ -106,6 +108,8 @@ impl fmt::Display for Tok {
             Ident(s) => write!(f, "{s}"),
             Actor => write!(f, "actor"),
             Fn => write!(f, "fn"),
+            Gen => write!(f, "gen"),
+            Yield => write!(f, "yield"),
             Let => write!(f, "let"),
             Var => write!(f, "var"),
             On => write!(f, "on"),
@@ -470,6 +474,8 @@ impl Lexer {
         match text.as_str() {
             "actor" => Tok::Actor,
             "fn" => Tok::Fn,
+            "gen" => Tok::Gen,
+            "yield" => Tok::Yield,
             "let" => Tok::Let,
             "var" => Tok::Var,
             "on" => Tok::On,

@@ -227,6 +227,9 @@ fn function(s: &mut String, f: &Function, indented: bool, c: &mut Comments) {
     if f.public {
         s.push_str("pub ");
     }
+    if f.is_gen {
+        s.push_str("gen ");
+    }
     s.push_str("fn ");
     s.push_str(&sig(&f.name, &f.params, &f.ret, &f.bounds));
     s.push_str(":\n");
@@ -412,6 +415,11 @@ fn stmt(s: &mut String, st: &Stmt, depth: usize, c: &mut Comments) {
         Stmt::Continue => {
             pad(s, depth);
             s.push_str("continue\n");
+        }
+        Stmt::Yield(e) => {
+            pad(s, depth);
+            s.push_str("yield ");
+            value_or_block(s, e, depth, c);
         }
         Stmt::Expr(e) => block_stmt(s, e, depth, c),
     }

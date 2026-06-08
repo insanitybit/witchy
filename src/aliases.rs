@@ -230,6 +230,7 @@ fn resolve_in_block(block: &mut Block, map: &HashMap<String, Type>) {
             Stmt::Let { value, .. }
             | Stmt::LetTuple { value, .. }
             | Stmt::Assign { value, .. }
+            | Stmt::Yield(value)
             | Stmt::Expr(value) => resolve_in_expr(value, map),
             Stmt::Return(Some(e)) => resolve_in_expr(e, map),
             Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}

@@ -51,6 +51,7 @@ fn method_fn(name: String, mut params: Vec<Param>, ret: Option<Type>, body: Bloc
         ret,
         body,
         bounds: Vec::new(),
+        is_gen: false,
     }
 }
 
@@ -269,7 +270,7 @@ impl Ctx<'_> {
                 Stmt::Assign { value, .. } | Stmt::LetTuple { value, .. } => {
                     self.rewrite_expr(value, scope)
                 }
-                Stmt::Return(Some(e)) | Stmt::Expr(e) => self.rewrite_expr(e, scope),
+                Stmt::Return(Some(e)) | Stmt::Expr(e) | Stmt::Yield(e) => self.rewrite_expr(e, scope),
                 Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
             }
         }
@@ -701,7 +702,7 @@ impl Mono<'_> {
                 Stmt::Assign { value, .. } | Stmt::LetTuple { value, .. } => {
                     self.walk_expr(value, scope)
                 }
-                Stmt::Return(Some(e)) | Stmt::Expr(e) => self.walk_expr(e, scope),
+                Stmt::Return(Some(e)) | Stmt::Expr(e) | Stmt::Yield(e) => self.walk_expr(e, scope),
                 Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
             }
         }

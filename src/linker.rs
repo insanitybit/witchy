@@ -211,6 +211,14 @@ pub fn std_source(name: &str) -> Option<&'static str> {
 /// Link `modules` (each a name + parsed module) into one flat module, with
 /// `entry` the module holding `main`.
 pub fn link(mut modules: Vec<(String, Module)>, entry: &str) -> Result<Module, LinkError> {
+    // Lower `gen fn`/`yield` to ordinary functions over `std/iter` first — this
+    // adds `import iter`/`import option` to any generator module, so the std
+    // pull-in below resolves them.
+    modules = modules
+        .into_iter()
+        .map(|(n, m)| (n, crate::generators::lower(m)))
+        .collect();
+
     // Pull in any imported standard-library module not already provided (the
     // std registry is a built-in search path), transitively — so a std module
     // can import another (e.g. `list` importing `option`) and callers need not
@@ -495,7 +503,7 @@ fn resolve_in_block(
                 }
             }
             Stmt::LetTuple { value, .. } => resolve_in_expr(value, sig, by_base, vars),
-            Stmt::Return(Some(e)) | Stmt::Expr(e) => resolve_in_expr(e, sig, by_base, vars),
+            Stmt::Return(Some(e)) | Stmt::Expr(e) | Stmt::Yield(e) => resolve_in_expr(e, sig, by_base, vars),
             Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
         }
     }
@@ -631,7 +639,7 @@ fn collect_bound_block(b: &Block, out: &mut HashSet<String>) {
                 collect_bound_expr(value, out);
             }
             Stmt::Assign { value, .. } => collect_bound_expr(value, out),
-            Stmt::Return(Some(e)) | Stmt::Expr(e) => collect_bound_expr(e, out),
+            Stmt::Return(Some(e)) | Stmt::Expr(e) | Stmt::Yield(e) => collect_bound_expr(e, out),
             Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
         }
     }
@@ -757,7 +765,7 @@ fn rewrite_block(
             Stmt::Let { value, .. }
             | Stmt::Assign { value, .. }
             | Stmt::LetTuple { value, .. } => rewrite_expr(value, m, imps, fns, bound)?,
-            Stmt::Return(Some(e)) | Stmt::Expr(e) => rewrite_expr(e, m, imps, fns, bound)?,
+            Stmt::Return(Some(e)) | Stmt::Expr(e) | Stmt::Yield(e) => rewrite_expr(e, m, imps, fns, bound)?,
             Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
         }
     }

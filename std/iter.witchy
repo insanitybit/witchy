@@ -62,6 +62,22 @@ pub fn repeat(x: a) -> Iter(a):
 pub fn from_list(xs: List(a)) -> Iter(a):
     unfold(0, fn(i: Int): if i < length(xs): Some((at(xs, i), i + 1)) else: None)
 
+// Build an iterator from an index function: `f(0)`, `f(1)`, ... each `Some(x)`
+// is the next element and the first `None` ends it. This is the de-sugaring
+// target for the `gen`/`yield` syntax: a generator body becomes a function from
+// "which yield" to its value, and pulling element i re-runs it to the i-th
+// yield (so the body may use any control flow, including unbounded loops).
+pub fn from_gen(f: fn(Int) -> Option(a)) -> Iter(a):
+    from_gen_at(f, 0)
+
+fn from_gen_at(f: fn(Int) -> Option(a), i: Int) -> Iter(a):
+    Iter(fn(): from_gen_step(f, i))
+
+fn from_gen_step(f: fn(Int) -> Option(a), i: Int) -> Step(a):
+    match f(i):
+        Some(x) -> Item(x, from_gen_at(f, i + 1))
+        None -> Empty
+
 // ---- adapters (lazy) ----
 
 // Apply `f` to every element.

@@ -1220,7 +1220,7 @@ impl Interpreter {
                     }
                     return Err(Flow::Continue);
                 }
-                Stmt::Expr(e) => {
+                Stmt::Expr(e) | Stmt::Yield(e) => {
                     result = self.eval(e, env)?;
                 }
             }

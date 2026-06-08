@@ -1155,7 +1155,7 @@ impl Checker {
                     // type, so contribute a fresh var (which unifies with anything).
                     ty = self.fresh();
                 }
-                Stmt::Expr(e) => {
+                Stmt::Expr(e) | Stmt::Yield(e) => {
                     ty = self.infer(e)?;
                 }
                 // `break`/`continue` diverge (control leaves the block), so like

@@ -127,6 +127,7 @@ fn collect_names_block(b: &Block, out: &mut Vec<String>) {
             | Stmt::LetTuple { value, .. }
             | Stmt::Assign { value, .. }
             | Stmt::Expr(value)
+            | Stmt::Yield(value)
             | Stmt::Return(Some(value)) => collect_names(value, out),
             Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
         }
@@ -263,7 +264,7 @@ fn subst_stmt(
         }
         Stmt::Assign { value, .. } => subst_expr(value, consts, cnames, scope),
         Stmt::Return(Some(e)) => subst_expr(e, consts, cnames, scope),
-        Stmt::Expr(e) => subst_expr(e, consts, cnames, scope),
+        Stmt::Expr(e) | Stmt::Yield(e) => subst_expr(e, consts, cnames, scope),
         Stmt::Return(None) | Stmt::Break | Stmt::Continue => false,
     }
 }

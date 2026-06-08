@@ -818,7 +818,7 @@ impl Codegen {
                     }
                     self.infer_locals_expr(value);
                 }
-                Stmt::Return(Some(e)) | Stmt::Expr(e) => self.infer_locals_expr(e),
+                Stmt::Return(Some(e)) | Stmt::Expr(e) | Stmt::Yield(e) => self.infer_locals_expr(e),
                 Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
             }
         }
@@ -1265,7 +1265,7 @@ impl Codegen {
                     out.push_str(&format!("    br {label}\n"));
                     tail_is_value = false;
                 }
-                Stmt::Expr(e) => {
+                Stmt::Expr(e) | Stmt::Yield(e) => {
                     out.push_str(&self.compile_expr(e)?);
                     if i == last {
                         tail_is_value = true;
@@ -2591,7 +2591,7 @@ fn collect_fn_refs_block(b: &Block, out: &mut HashSet<String>) {
             Stmt::Let { value, .. } | Stmt::Assign { value, .. } | Stmt::LetTuple { value, .. } => {
                 collect_fn_refs_expr(value, out)
             }
-            Stmt::Return(Some(e)) | Stmt::Expr(e) => collect_fn_refs_expr(e, out),
+            Stmt::Return(Some(e)) | Stmt::Expr(e) | Stmt::Yield(e) => collect_fn_refs_expr(e, out),
             Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
         }
     }
@@ -3919,7 +3919,7 @@ fn fv_block(block: &Block, s: &mut LambdaScan) {
                     s.bound.insert(n.clone());
                 }
             }
-            Stmt::Return(Some(e)) | Stmt::Expr(e) => fv_expr(e, s),
+            Stmt::Return(Some(e)) | Stmt::Expr(e) | Stmt::Yield(e) => fv_expr(e, s),
             Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
         }
     }
@@ -4031,7 +4031,7 @@ fn collect_let_names(block: &Block, out: &mut Vec<String>) {
                 }
                 collect_let_names_expr(value, out);
             }
-            Stmt::Return(Some(e)) | Stmt::Expr(e) => collect_let_names_expr(e, out),
+            Stmt::Return(Some(e)) | Stmt::Expr(e) | Stmt::Yield(e) => collect_let_names_expr(e, out),
             Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
         }
     }
@@ -4205,7 +4205,7 @@ impl Renamer {
                     *n = self.declare(n);
                 }
             }
-            Stmt::Return(Some(e)) | Stmt::Expr(e) => self.rename_expr(e),
+            Stmt::Return(Some(e)) | Stmt::Expr(e) | Stmt::Yield(e) => self.rename_expr(e),
             Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
         }
     }

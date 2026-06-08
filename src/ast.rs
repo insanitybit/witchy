@@ -127,6 +127,9 @@ pub struct Function {
     /// `where a: Ord` is `("a", "Ord")`. Such a function is a generic template;
     /// `crate::traits` monomorphizes it per concrete instantiation.
     pub bounds: Vec<(String, String)>,
+    /// `gen fn` — a generator whose `yield`s build a lazy `iter.Iter`. Lowered to
+    /// ordinary functions by `crate::generators` before any later stage.
+    pub is_gen: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -188,6 +191,10 @@ pub enum Stmt {
     Break,
     /// `continue` — skip to the next iteration of the innermost enclosing loop.
     Continue,
+    /// `yield e` — produce a value from a `gen fn`. Only valid inside a generator;
+    /// `crate::generators::lower` rewrites it (and the enclosing `gen fn`) into a
+    /// lazy `iter.Iter`, so later stages never see it.
+    Yield(Expr),
     Expr(Expr),
 }
 

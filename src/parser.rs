@@ -196,7 +196,7 @@ impl Parser {
 
     fn item(&mut self) -> Result<Item, ParseError> {
         let public = self.eat(&Tok::Pub);
-        if self.at(&Tok::Fn) {
+        if self.at(&Tok::Fn) || self.at(&Tok::Gen) {
             Ok(Item::Function(self.function(public)?))
         } else if self.at(&Tok::Actor) {
             Ok(Item::Actor(self.actor_def()?))
@@ -429,6 +429,7 @@ impl Parser {
     }
 
     fn function(&mut self, public: bool) -> Result<Function, ParseError> {
+        let is_gen = self.eat(&Tok::Gen);
         self.expect(&Tok::Fn)?;
         let name = self.ident()?;
         self.expect(&Tok::LParen)?;
@@ -448,6 +449,7 @@ impl Parser {
             ret,
             body,
             bounds,
+            is_gen,
         })
     }
 
@@ -576,6 +578,10 @@ impl Parser {
         }
         if self.eat(&Tok::Continue) {
             return Ok(Stmt::Continue);
+        }
+        if self.eat(&Tok::Yield) {
+            // `yield e` — produce a value from a `gen fn`.
+            return Ok(Stmt::Yield(self.expr(0)?));
         }
         if self.at(&Tok::Let) || self.at(&Tok::Var) {
             let mutable = self.advance() == Tok::Var;
@@ -1474,6 +1480,7 @@ fn lower_methods_block(b: &mut Block) {
             | Stmt::LetTuple { value, .. }
             | Stmt::Assign { value, .. }
             | Stmt::Expr(value)
+            | Stmt::Yield(value)
             | Stmt::Return(Some(value)) => lower_methods_expr(value),
             Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
         }
@@ -1625,6 +1632,7 @@ fn lower_sugar_block(b: &mut Block) {
             | Stmt::LetTuple { value, .. }
             | Stmt::Assign { value, .. }
             | Stmt::Expr(value)
+            | Stmt::Yield(value)
             | Stmt::Return(Some(value)) => lower_sugar_expr(value),
             Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
         }
