@@ -1533,6 +1533,38 @@ mod example_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// String patterns in `match` lower to an if-else chain comparing literals;
+    /// a variable arm binds the owned `String`.
+    #[test]
+    fn native_backend_string_patterns() {
+        let pid = std::process::id();
+        let dir = std::env::temp_dir().join(format!("witchy_sp_{pid}"));
+        let _ = std::fs::create_dir_all(&dir);
+        let src = dir.join("prog.witchy");
+        std::fs::write(
+            &src,
+            "fn val(s: String) -> Int:\n    match s:\n        \"I\" -> 1\n        \"V\" -> 5\n        \"X\" -> 10\n        _ -> 0\n\nfn main(console: Console):\n    print(console, int_to_string(val(\"V\")))\n    print(console, int_to_string(val(\"X\")))\n    print(console, int_to_string(val(\"abcd\")))\n",
+        )
+        .expect("write src");
+        let rust = crate::emit_rust_file(src.to_str().unwrap()).expect("transpile");
+        assert!(rust.contains("__m == \"V\""), "expected literal comparison");
+        let rs = dir.join("prog.rs");
+        let bin = dir.join("prog_bin");
+        std::fs::write(&rs, &rust).unwrap();
+        if let Ok(st) = std::process::Command::new("rustc")
+            .args(["-O", "--edition", "2021"])
+            .arg(&rs)
+            .arg("-o")
+            .arg(&bin)
+            .status()
+        {
+            assert!(st.success(), "rustc should compile the string-pattern program");
+            let out = std::process::Command::new(&bin).output().expect("run");
+            assert_eq!(String::from_utf8_lossy(&out.stdout), "5\n10\n0\n");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// List patterns in `match` — `[]`, `[x]`, `[a, b]`, `[head, ..tail]` —
     /// lower to an if-else chain on length, matching the interpreter top-to-bottom.
     #[test]

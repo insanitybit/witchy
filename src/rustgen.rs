@@ -1452,6 +1452,12 @@ fn gen_expr(e: &Expr, value: bool) -> Result<String, String> {
             // A list match lowers to an if-else chain on the length (see helper).
             return gen_list_match(gen_value(scrutinee)?, arms, value);
         }
+        Expr::Match { scrutinee, arms }
+            if arms.iter().any(|a| matches!(a.pattern, crate::ast::Pattern::Str(_))) =>
+        {
+            // A string match lowers to an if-else chain comparing literals.
+            return gen_str_match(gen_value(scrutinee)?, arms, value);
+        }
         Expr::Match { scrutinee, arms } => {
             let mut out = format!("match {} {{\n", gen_expr(scrutinee, true)?);
             for arm in arms {
@@ -1922,6 +1928,49 @@ fn gen_list_match(scrutinee: String, arms: &[crate::ast::MatchArm], value: bool)
     }
     if !catch_all {
         out.push_str("    else { unreachable!(\"non-exhaustive list match\") }\n");
+    }
+    out.push('}');
+    Ok(out)
+}
+
+/// Lower a `match` with string patterns to an if-else chain comparing the
+/// scrutinee to each literal — exact top-to-bottom semantics, and a variable arm
+/// binds the (owned `String`) scrutinee, sidestepping `String`/`&str` mismatches.
+fn gen_str_match(scrutinee: String, arms: &[crate::ast::MatchArm], value: bool) -> Result<String, String> {
+    use crate::ast::Pattern;
+    let mut out = format!("{{ let __m = {scrutinee};\n");
+    let mut emitted_if = false;
+    let mut catch_all = false;
+    for arm in arms {
+        if arm.guard.is_some() {
+            return Err("native backend: a guard on a string pattern is not supported yet".into());
+        }
+        let body = if value { gen_value(&arm.body)? } else { gen_expr(&arm.body, false)? };
+        match &arm.pattern {
+            Pattern::Str(s) => {
+                let kw = if emitted_if { "else if" } else { "if" };
+                out.push_str(&format!("    {kw} __m == {s:?} {{ {body} }}\n"));
+                emitted_if = true;
+            }
+            Pattern::Var(n) => {
+                let prefix = if emitted_if { "else " } else { "" };
+                out.push_str(&format!("    {prefix}{{ let {n} = __m; {body} }}\n"));
+                catch_all = true;
+                break;
+            }
+            Pattern::Wildcard => {
+                let prefix = if emitted_if { "else " } else { "" };
+                out.push_str(&format!("    {prefix}{{ {body} }}\n"));
+                catch_all = true;
+                break;
+            }
+            _ => {
+                return Err("native backend: a string match's arms must be string, variable, or wildcard patterns".into())
+            }
+        }
+    }
+    if !catch_all {
+        out.push_str("    else { unreachable!(\"non-exhaustive string match\") }\n");
     }
     out.push('}');
     Ok(out)
