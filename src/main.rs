@@ -1244,6 +1244,91 @@ mod example_tests {
         assert!(wat.contains(".fib (param $n i64)"), "expected the fib function in the WAT");
     }
 
+    /// `for x in a..b` is a counting loop on both backends — never a materialized
+    /// list — with faithful `break`/`continue`, inclusive (`..=`), empty, and
+    /// nested behavior. The 100_000-iteration loop proves nothing is allocated:
+    /// `run_on_wasm` caps memory at 4 pages, so a materialized range would trap.
+    #[test]
+    fn range_for_loops_match_on_both_backends() {
+        let src = r#"fn main(console: Console):
+    var a = 0
+    for i in 0..5:
+        a = a + i
+    print(console, int_to_string(a))
+    var b = 0
+    for i in 1..=5:
+        b = b + i
+    print(console, int_to_string(b))
+    var c = 0
+    for i in 0..100:
+        if i == 10:
+            break
+        c = c + i
+    print(console, int_to_string(c))
+    var d = 0
+    for i in 0..10:
+        if i % 2 == 0:
+            continue
+        d = d + i
+    print(console, int_to_string(d))
+    var e = 0
+    for i in 5..5:
+        e = e + 1
+    for i in 5..2:
+        e = e + 1
+    print(console, int_to_string(e))
+    var f = 0
+    for i in 0..3:
+        for j in 0..3:
+            f = f + i * j
+    print(console, int_to_string(f))
+    var g = 0
+    for i in 0..100000:
+        g = g + 1
+    print(console, int_to_string(g))
+"#;
+        let expected = vec!["10", "15", "45", "25", "0", "9", "100000"];
+        assert_eq!(interp(src), expected);
+        assert_eq!(run_on_wasm(src), expected);
+    }
+
+    /// Property tests: a `for` over a random range must compute exactly the same
+    /// result as a Rust reference range, on BOTH backends (so they also agree
+    /// with each other) — across sign, inclusive/exclusive, empty, and `continue`.
+    mod range_for_properties {
+        use super::{interp, run_on_wasm};
+        use proptest::prelude::*;
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(96))]
+
+            #[test]
+            fn sum_matches_reference(lo in -300i64..300, len in 0i64..600, inclusive in any::<bool>()) {
+                let hi = lo + len;
+                let op = if inclusive { "..=" } else { ".." };
+                let src = format!(
+                    "fn main(console: Console):\n    var s = 0\n    for i in {lo}{op}{hi}:\n        s = s + i\n    print(console, int_to_string(s))\n"
+                );
+                let reference: i64 = if inclusive { (lo..=hi).sum() } else { (lo..hi).sum() };
+                let want = vec![reference.to_string()];
+                prop_assert_eq!(interp(&src), want.clone());
+                prop_assert_eq!(run_on_wasm(&src), want);
+            }
+
+            #[test]
+            fn continue_skipping_odds_matches_reference(lo in -100i64..100, len in 0i64..300) {
+                let hi = lo + len;
+                let src = format!(
+                    "fn main(console: Console):\n    var s = 0\n    for i in {lo}..{hi}:\n        if i % 2 != 0:\n            continue\n        s = s + i\n    print(console, int_to_string(s))\n"
+                );
+                let reference: i64 = (lo..hi).filter(|x| x % 2 == 0).sum();
+                let want = vec![reference.to_string()];
+                prop_assert_eq!(interp(&src), want.clone());
+                prop_assert_eq!(run_on_wasm(&src), want);
+            }
+        }
+    }
+
     /// `crypto.ed25519_verify` — a native intrinsic of the `crypto` module — is a
     /// total signature check: it accepts a genuine signature and rejects a
     /// tampered message and malformed input.

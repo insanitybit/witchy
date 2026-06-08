@@ -842,6 +842,20 @@ impl Codegen {
                 self.infer_locals(body);
             }
             Expr::For { var, iter, body } => {
+                // A range `for` counts: an i64 counter and end bound, and the
+                // loop var is the i64 Int counter. No list is materialized.
+                if let Expr::Range { lo, hi, .. } = iter.as_ref() {
+                    self.locals.insert(format!("__forctr_{var}"), Kind::I64);
+                    self.locals.insert(format!("__forend_{var}"), Kind::I64);
+                    self.locals.insert(var.clone(), Kind::I64);
+                    // The loop var is an Int, so a tuple/record built from it (e.g.
+                    // `(a, b)` in a comprehension) stores it as an i64 slot, not i32.
+                    self.local_val_types.insert(var.clone(), ValType::Int);
+                    self.infer_locals_expr(lo);
+                    self.infer_locals_expr(hi);
+                    self.infer_locals(body);
+                    return;
+                }
                 // The two scratch locals (list pointer, index) are i32; the loop
                 // var takes the element's kind (Int->i64, Float->f64, else i32).
                 self.locals.insert(format!("__forlist_{var}"), Kind::I32);
@@ -1573,6 +1587,48 @@ impl Codegen {
                      if (result i32)\n    \
                      local.get ${TRY_TMP}\n    i32.const 4\n    i32.add\n    i64.load\n    i32.wrap_i64\n    \
                      else\n    local.get ${TRY_TMP}\n    return\n    i32.const 0\n    end\n"
+                ))
+            }
+            Expr::For { var, iter, body } if matches!(iter.as_ref(), Expr::Range { .. }) => {
+                // Iterate a range by counting — never materialize a list. An i64
+                // counter and end bound live in scratch locals; each step binds
+                // the loop var to the counter, runs the body (its value dropped),
+                // then advances. `break` -> $fe (exit), `continue` -> $fc (the
+                // block around the body; falls through to the advance, so a
+                // continued iteration still advances). For an inclusive range we
+                // break when the counter reaches the end *before* incrementing,
+                // so `0..=i64::MAX` halts instead of overflowing/looping forever;
+                // exclusive ranges never reach an overflowing counter.
+                let Expr::Range { lo, hi, inclusive } = iter.as_ref() else {
+                    unreachable!("guarded by the match arm")
+                };
+                let id = self.next_label;
+                self.next_label += 1;
+                let ctr = format!("__forctr_{var}");
+                let end = format!("__forend_{var}");
+                let lo_wat = self.compile_expr(lo)?;
+                let hi_wat = self.compile_expr(hi)?;
+                let exit_cmp = if *inclusive { "i64.gt_s" } else { "i64.ge_s" };
+                let guard_max = if *inclusive {
+                    format!(
+                        "    local.get ${ctr}\n    local.get ${end}\n    i64.eq\n    br_if $fe{id}\n"
+                    )
+                } else {
+                    String::new()
+                };
+                self.loop_labels.push((format!("$fe{id}"), format!("$fc{id}")));
+                let body_wat = self.compile_block(body)?;
+                self.loop_labels.pop();
+                Ok(format!(
+                    "{lo_wat}    local.set ${ctr}\n\
+                     {hi_wat}    local.set ${end}\n    \
+                     block $fe{id}\n    loop $fl{id}\n    \
+                     local.get ${ctr}\n    local.get ${end}\n    {exit_cmp}\n    br_if $fe{id}\n    \
+                     local.get ${ctr}\n    local.set ${var}\n    \
+                     block $fc{id}\n{body_wat}    drop\n    end\n\
+                     {guard_max}    \
+                     local.get ${ctr}\n    i64.const 1\n    i64.add\n    local.set ${ctr}\n    \
+                     br $fl{id}\n    end\n    end\n    i32.const 0\n"
                 ))
             }
             Expr::For { var, iter, body } => {
@@ -2599,7 +2655,14 @@ fn collect_fn_refs_block(b: &Block, out: &mut HashSet<String>) {
 
 fn collect_fn_refs_expr(e: &Expr, out: &mut HashSet<String>) {
     match e {
-        Expr::Range { .. } | Expr::Index { .. } | Expr::WhileLet { .. } | Expr::MethodCall { .. } | Expr::Record { .. } => {
+        // A range survives only inside a `for` iterator; scan its bounds for
+        // referenced functions (e.g. `0..len(xs)`). The other sugar nodes are
+        // fully lowered before codegen.
+        Expr::Range { lo, hi, .. } => {
+            collect_fn_refs_expr(lo, out);
+            collect_fn_refs_expr(hi, out);
+        }
+        Expr::Index { .. } | Expr::WhileLet { .. } | Expr::MethodCall { .. } | Expr::Record { .. } => {
             unreachable!("range/index sugar is lowered before codegen (parser::lower_sugar_module)")
         }
         Expr::Call { name, args } => {
@@ -3929,7 +3992,14 @@ fn fv_block(block: &Block, s: &mut LambdaScan) {
 
 fn fv_expr(e: &Expr, s: &mut LambdaScan) {
     match e {
-        Expr::Range { .. } | Expr::Index { .. } | Expr::WhileLet { .. } | Expr::MethodCall { .. } | Expr::Record { .. } => {
+        // A range survives only inside a `for` iterator (its loop is lowered in
+        // codegen, not the parser); scan its bounds for free variables. The
+        // other sugar nodes are fully lowered before codegen.
+        Expr::Range { lo, hi, .. } => {
+            fv_expr(lo, s);
+            fv_expr(hi, s);
+        }
+        Expr::Index { .. } | Expr::WhileLet { .. } | Expr::MethodCall { .. } | Expr::Record { .. } => {
             unreachable!("range/index sugar is lowered before codegen (parser::lower_sugar_module)")
         }
         Expr::Var(n) => {
@@ -4041,7 +4111,14 @@ fn collect_let_names(block: &Block, out: &mut Vec<String>) {
 
 fn collect_let_names_expr(expr: &Expr, out: &mut Vec<String>) {
     match expr {
-        Expr::Range { .. } | Expr::Index { .. } | Expr::WhileLet { .. } | Expr::MethodCall { .. } | Expr::Record { .. } => {
+        // A range survives only inside a `for` iterator; recurse its bounds.
+        // (A range bound has no `let`, but a bound expression could nest one.)
+        // The other sugar nodes are fully lowered before codegen.
+        Expr::Range { lo, hi, .. } => {
+            collect_let_names_expr(lo, out);
+            collect_let_names_expr(hi, out);
+        }
+        Expr::Index { .. } | Expr::WhileLet { .. } | Expr::MethodCall { .. } | Expr::Record { .. } => {
             unreachable!("range/index sugar is lowered before codegen (parser::lower_sugar_module)")
         }
         Expr::If {
@@ -4061,8 +4138,16 @@ fn collect_let_names_expr(expr: &Expr, out: &mut Vec<String>) {
         }
         Expr::For { var, iter, body } => {
             out.push(var.clone());
-            out.push(format!("__forlist_{var}"));
-            out.push(format!("__fori_{var}"));
+            // A range `for` declares an i64 counter + end bound; a list `for`
+            // declares the list pointer + index. The kinds come from
+            // `infer_locals`; here we only name the locals so they're declared.
+            if matches!(iter.as_ref(), Expr::Range { .. }) {
+                out.push(format!("__forctr_{var}"));
+                out.push(format!("__forend_{var}"));
+            } else {
+                out.push(format!("__forlist_{var}"));
+                out.push(format!("__fori_{var}"));
+            }
             collect_let_names_expr(iter, out);
             collect_let_names(body, out);
         }
@@ -4150,11 +4235,16 @@ fn collect_pattern_vars(pat: &Pattern, out: &mut Vec<String>) {
 struct Renamer {
     scopes: Vec<HashMap<String, String>>,
     counter: u32,
+    // Every source name ever bound in this function. A WASM local has a single
+    // type, so two *disjoint* scopes that reuse a name must still get distinct
+    // locals — they can differ in kind (e.g. an i64 range loop var in one branch
+    // and an i32 tuple destructure in another).
+    seen: HashSet<String>,
 }
 
 impl Renamer {
     fn new() -> Self {
-        Self { scopes: Vec::new(), counter: 0 }
+        Self { scopes: Vec::new(), counter: 0, seen: HashSet::new() }
     }
 
     fn resolve(&self, name: &str) -> String {
@@ -4168,12 +4258,13 @@ impl Renamer {
 
     /// Bind `name` in the current scope, renaming it if it's already in scope.
     fn declare(&mut self, name: &str) -> String {
-        let shadows = self.scopes.iter().any(|s| s.contains_key(name));
-        let unique = if shadows {
+        // First use of a name keeps it; any later binding of the same name (a
+        // shadow, or a reuse in a sibling scope) gets a fresh unique local.
+        let unique = if self.seen.insert(name.to_string()) {
+            name.to_string()
+        } else {
             self.counter += 1;
             format!("{name}__shadow{}", self.counter)
-        } else {
-            name.to_string()
         };
         self.scopes
             .last_mut()
@@ -4214,7 +4305,14 @@ impl Renamer {
 
     fn rename_expr(&mut self, e: &mut Expr) {
         match e {
-            Expr::Range { .. } | Expr::Index { .. } | Expr::WhileLet { .. } | Expr::MethodCall { .. } | Expr::Record { .. } => {
+            // A range survives only inside a `for` iterator; rename vars in its
+            // bounds (e.g. a captured `n` in `0..n`). The other sugar nodes are
+            // fully lowered before codegen.
+            Expr::Range { lo, hi, .. } => {
+                self.rename_expr(lo);
+                self.rename_expr(hi);
+            }
+            Expr::Index { .. } | Expr::WhileLet { .. } | Expr::MethodCall { .. } | Expr::Record { .. } => {
                 unreachable!("range/index sugar is lowered before codegen (parser::lower_sugar_module)")
             }
             Expr::Var(n) => *n = self.resolve(n),

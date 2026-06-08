@@ -1428,6 +1428,35 @@ impl Interpreter {
                 other => err(format!("`if` condition must be a Bool, got `{other}`")),
             },
             Expr::For { var, iter, body } => {
+                // A range iterator counts directly — no list is materialized, so
+                // `for i in 0..n` is O(1) memory and O(n) time like the compiled
+                // loop. `checked_add` stops cleanly at i64::MAX, matching the
+                // compiled backend's inclusive-end guard (no overflow/wrap).
+                if let Expr::Range { lo, hi, inclusive } = iter.as_ref() {
+                    let (start, end) = match (self.eval(lo, env)?, self.eval(hi, env)?) {
+                        (Value::Int(a), Value::Int(b)) => (a, b),
+                        (a, b) => {
+                            return err(format!("`for` range bounds must be Int, got `{a}`..`{b}`"))
+                        }
+                    };
+                    let mut i = start;
+                    while if *inclusive { i <= end } else { i < end } {
+                        env.push();
+                        env.define(var.clone(), Value::Int(i), false);
+                        let r = self.eval_block(body, env);
+                        env.pop();
+                        match r {
+                            Ok(_) | Err(Flow::Continue) => {}
+                            Err(Flow::Break) => break,
+                            Err(e) => return Err(e),
+                        }
+                        match i.checked_add(1) {
+                            Some(n) => i = n,
+                            None => break,
+                        }
+                    }
+                    return Ok(Value::Nil);
+                }
                 let items = match self.eval(iter, env)? {
                     Value::List(items) => items,
                     other => return err(format!("`for` expects a List, got `{other}`")),

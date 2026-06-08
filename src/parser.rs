@@ -1724,7 +1724,15 @@ fn lower_sugar_expr(e: &mut Expr) {
             lower_sugar_block(body);
         }
         Expr::For { iter, body, .. } => {
-            lower_sugar_expr(iter);
+            // A range iterator stays a `Range`: the backends iterate it by
+            // counting (no list materialized), so lower the bounds in place but
+            // keep the node. Any other iterator (a real list) lowers normally.
+            if let Expr::Range { lo, hi, .. } = iter.as_mut() {
+                lower_sugar_expr(lo);
+                lower_sugar_expr(hi);
+            } else {
+                lower_sugar_expr(iter);
+            }
             lower_sugar_block(body);
         }
         Expr::Match { scrutinee, arms } => {
