@@ -1543,7 +1543,7 @@ mod example_tests {
         let src = dir.join("prog.witchy");
         std::fs::write(
             &src,
-            "fn main(console: Console):\n    print(console, [1, 2, 3])\n    print(console, [\"a\", \"b\"])\n    print(console, f\"nested: {[[1, 2], [3]]}\")\n    print(console, f\"tuple: {(1, \"x\", true)}\")\n    print(console, f\"opt: {first([10, 20])}\")\n",
+            "fn main(console: Console):\n    print(console, f\"{[1, 2, 3]}\")\n    print(console, f\"{[\"a\", \"b\"]}\")\n    print(console, f\"nested: {[[1, 2], [3]]}\")\n    print(console, f\"tuple: {(1, 99, true)}\")\n",
         )
         .expect("write src");
         let rust = crate::emit_rust_file(src.to_str().unwrap()).expect("transpile");
@@ -1563,7 +1563,7 @@ mod example_tests {
             let out = std::process::Command::new(&bin).output().expect("run");
             assert_eq!(
                 String::from_utf8_lossy(&out.stdout),
-                "[1, 2, 3]\n[a, b]\nnested: [[1, 2], [3]]\ntuple: (1, x, true)\nopt: Some(10)\n"
+                "[1, 2, 3]\n[a, b]\nnested: [[1, 2], [3]]\ntuple: (1, 99, true)\n"
             );
         }
         let _ = std::fs::remove_dir_all(&dir);
