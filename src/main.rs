@@ -1533,6 +1533,74 @@ mod example_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Showing user records/enums (`Point(3, 4)`, `Circle(7)`, `Dot`) matches the
+    /// interpreter, including a list of them — gated by a showability fixpoint.
+    #[test]
+    fn native_backend_record_enum_display() {
+        let pid = std::process::id();
+        let dir = std::env::temp_dir().join(format!("witchy_rshow_{pid}"));
+        let _ = std::fs::create_dir_all(&dir);
+        let src = dir.join("prog.witchy");
+        std::fs::write(
+            &src,
+            "type Point:\n    Point(Int, Int)\n\ntype Shape:\n    Circle(Int)\n    Rect(Int, Int)\n    Dot\n\nfn main(console: Console):\n    print(console, f\"{Point(3, 4)}\")\n    print(console, f\"{[Point(1, 2), Point(5, 6)]}\")\n    print(console, f\"{Circle(7)}\")\n    print(console, f\"{Rect(2, 3)}\")\n    print(console, f\"{Dot}\")\n",
+        )
+        .expect("write src");
+        let rust = crate::emit_rust_file(src.to_str().unwrap()).expect("transpile");
+        assert!(rust.contains("WShow for Point"), "expected a record WShow impl");
+        assert!(rust.contains("WShow for Shape"), "expected an enum WShow impl");
+        let rs = dir.join("prog.rs");
+        let bin = dir.join("prog_bin");
+        std::fs::write(&rs, &rust).unwrap();
+        if let Ok(st) = std::process::Command::new("rustc")
+            .args(["-O", "--edition", "2021"])
+            .arg(&rs)
+            .arg("-o")
+            .arg(&bin)
+            .status()
+        {
+            assert!(st.success(), "rustc should compile the record/enum-display program");
+            let out = std::process::Command::new(&bin).output().expect("run");
+            assert_eq!(
+                String::from_utf8_lossy(&out.stdout),
+                "Point(3, 4)\n[Point(1, 2), Point(5, 6)]\nCircle(7)\nRect(2, 3)\nDot\n"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A user type with a non-showable field (a dict) gets no `WShow` impl, but
+    /// still compiles and runs — the showability fixpoint must not break it.
+    #[test]
+    fn native_backend_unshowable_record_still_compiles() {
+        let pid = std::process::id();
+        let dir = std::env::temp_dir().join(format!("witchy_unshow_{pid}"));
+        let _ = std::fs::create_dir_all(&dir);
+        let src = dir.join("prog.witchy");
+        std::fs::write(
+            &src,
+            "type Cache:\n    Cache(Dict(String, Int), Int)\n\nfn size_of(c: Cache) -> Int:\n    match c:\n        Cache(d, n) -> n\n\nfn main(console: Console):\n    var d = dict_new()\n    d = insert(d, \"a\", 1)\n    print(console, int_to_string(size_of(Cache(d, 42))))\n",
+        )
+        .expect("write src");
+        let rust = crate::emit_rust_file(src.to_str().unwrap()).expect("transpile");
+        assert!(!rust.contains("WShow for Cache"), "a dict-holding record must not get WShow");
+        let rs = dir.join("prog.rs");
+        let bin = dir.join("prog_bin");
+        std::fs::write(&rs, &rust).unwrap();
+        if let Ok(st) = std::process::Command::new("rustc")
+            .args(["-O", "--edition", "2021"])
+            .arg(&rs)
+            .arg("-o")
+            .arg(&bin)
+            .status()
+        {
+            assert!(st.success(), "rustc should compile despite the unshowable field");
+            let out = std::process::Command::new(&bin).output().expect("run");
+            assert_eq!(String::from_utf8_lossy(&out.stdout), "42\n");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Showing collections in `print`/f-strings (`[a, b]`, `(a, b)`, `Some(x)`)
     /// matches the interpreter's `Display` exactly, including nesting.
     #[test]

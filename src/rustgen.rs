@@ -62,11 +62,82 @@ thread_local! {
     /// All top-level function names (module-qualified). A bare `Var` matching one
     /// is a first-class function value (`map(xs, dbl)`) -> the Rust `w_*` item.
     static FN_NAMES: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+    /// User record/enum types that get a `WShow` impl (all fields showable).
+    static SHOWABLE_TYPES: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
 }
 
 /// Is `name` a top-level function used here as a first-class value?
 fn is_fn_ref(name: &str) -> bool {
     FN_NAMES.with(|m| m.borrow().contains(name))
+}
+
+/// Is this user type one we can generate a `WShow` impl for? (All its fields
+/// are showable — see the fixpoint in `compute_showable_types`.)
+fn is_showable(name: &str) -> bool {
+    SHOWABLE_TYPES.with(|s| s.borrow().contains(name))
+}
+
+/// Can a value of this type be shown (does it — or will it — impl `WShow`)? A
+/// closure, dict, or capability can't; a user type is showable per `showable`
+/// (the in-progress fixpoint set); a type variable relies on its impl bound.
+fn type_showable(t: &Type, showable: &HashSet<String>) -> bool {
+    match t {
+        Type::Named(n, args) => match n.as_str() {
+            "Int" | "Float" | "Bool" | "String" | "Duration" => true,
+            "List" | "Option" => args.first().is_some_and(|a| type_showable(a, showable)),
+            "Result" => args.len() == 2 && args.iter().all(|a| type_showable(a, showable)),
+            // No `WShow` for dicts (order unspecified), closures, or capabilities.
+            "Dict" | "Console" | "Env" | "Dir" | "Net" | "Socket" | "Listener" => false,
+            other if is_type_var(other) => true,
+            other => showable.contains(other),
+        },
+        // Only the tuple arities with a `WShow` impl (see SHOW_HELPER).
+        Type::Tuple(ts) => (2..=4).contains(&ts.len()) && ts.iter().all(|a| type_showable(a, showable)),
+        Type::Fn(..) => false,
+    }
+}
+
+/// The user record/enum types for which every field is showable, so a `WShow`
+/// impl can be generated. A least-fixpoint: a type drops out if any field is
+/// unshowable or references a type that has dropped out (recursion is fine).
+fn compute_showable_types(m: &Module) -> HashSet<String> {
+    let mut fields_of: HashMap<String, Vec<Type>> = HashMap::new();
+    for item in &m.items {
+        if let Item::Type(td) = item {
+            if td.name == "Option" || td.name == "Result" {
+                continue; // built-in; handled by SHOW_HELPER
+            }
+            let fs: Vec<Type> = td.variants.iter().flat_map(|v| v.fields.iter().cloned()).collect();
+            fields_of.insert(td.name.clone(), fs);
+        }
+    }
+    let mut showable: HashSet<String> = fields_of.keys().cloned().collect();
+    loop {
+        let mut changed = false;
+        for name in showable.iter().cloned().collect::<Vec<_>>() {
+            if !fields_of[&name].iter().all(|t| type_showable(t, &showable)) {
+                showable.remove(&name);
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    showable
+}
+
+/// The `impl` generics (`<A: WShow, B: WShow>`) and type reference (`Foo<A, B>`)
+/// for a `WShow` impl on a user type with the given type variables.
+fn wshow_header(name: &str, tvs: &std::collections::BTreeSet<String>) -> (String, String) {
+    if tvs.is_empty() {
+        return (String::new(), name.to_string());
+    }
+    // `+ Clone` matches the type's own generic bound (see `generic_params`), so
+    // the impl satisfies `Foo<A>`'s requirements.
+    let bounds: Vec<String> = tvs.iter().map(|v| format!("{v}: WShow + Clone")).collect();
+    let vars: Vec<String> = tvs.iter().cloned().collect();
+    (format!("<{}>", bounds.join(", ")), format!("{name}<{}>", vars.join(", ")))
 }
 
 /// Whether a bare variable may be moved (rather than cloned) at this use.
@@ -712,6 +783,8 @@ pub fn transpile_module(m: &Module) -> Result<String, String> {
             }
         }
     });
+    let showable = compute_showable_types(m);
+    SHOWABLE_TYPES.with(|s| *s.borrow_mut() = showable);
     // Record which params are by-value collections (so calls clone them) and
     // which functions take `inout` params (so calls write the result back).
     for item in &m.items {
@@ -819,11 +892,21 @@ fn gen_record(td: &crate::ast::TypeDef) -> Option<String> {
         "#[derive(Clone)]"
     };
     let generics = generic_params(&tvs);
-    Some(format!(
-        "{derive}\nstruct {}{generics} {{\n{}\n}}\n",
-        v.name,
-        fields.join("\n")
-    ))
+    let mut out = format!("{derive}\nstruct {}{generics} {{\n{}\n}}\n", v.name, fields.join("\n"));
+    // A `WShow` impl renders the record like the interpreter: `Point(1, 2)`
+    // (positional), but only when every field is showable.
+    if is_showable(&v.name) {
+        USES_SHOW.with(|f| f.set(true));
+        let (ig, tr) = wshow_header(&v.name, &tvs);
+        let parts: Vec<String> =
+            v.field_names.iter().map(|fname| format!("self.{fname}.w_show()")).collect();
+        out.push_str(&format!(
+            "impl{ig} WShow for {tr} {{ fn w_show(&self) -> String {{ format!(\"{}({{}})\", vec![{}].join(\", \")) }} }}\n",
+            v.name,
+            parts.join(", ")
+        ));
+    }
+    Some(out)
 }
 
 /// Emit a Rust enum for a type with positional variants whose fields are all
@@ -892,11 +975,38 @@ fn gen_enum(td: &crate::ast::TypeDef) -> Option<String> {
         "#[derive(Clone)]"
     };
     let generics = generic_params(&tvs);
-    Some(format!(
-        "{derive}\nenum {}{generics} {{\n{}\n}}\n",
-        td.name,
-        variants.join(",\n")
-    ))
+    let mut out = format!("{derive}\nenum {}{generics} {{\n{}\n}}\n", td.name, variants.join(",\n"));
+    // A `WShow` impl renders each variant like the interpreter: `Leaf` /
+    // `Node(l, r)`, but only when every field is showable.
+    if is_showable(&td.name) {
+        USES_SHOW.with(|f| f.set(true));
+        let (ig, tr) = wshow_header(&td.name, &tvs);
+        let arms: Vec<String> = td
+            .variants
+            .iter()
+            .map(|v| {
+                if v.fields.is_empty() {
+                    format!("{}::{} => \"{}\".to_string()", td.name, v.name, v.name)
+                } else {
+                    let binds: Vec<String> = (0..v.fields.len()).map(|i| format!("f{i}")).collect();
+                    let parts: Vec<String> = binds.iter().map(|b| format!("{b}.w_show()")).collect();
+                    format!(
+                        "{}::{}({}) => format!(\"{}({{}})\", vec![{}].join(\", \"))",
+                        td.name,
+                        v.name,
+                        binds.join(", "),
+                        v.name,
+                        parts.join(", ")
+                    )
+                }
+            })
+            .collect();
+        out.push_str(&format!(
+            "impl{ig} WShow for {tr} {{ fn w_show(&self) -> String {{ match self {{ {} }} }} }}\n",
+            arms.join(", ")
+        ));
+    }
+    Some(out)
 }
 
 fn gen_fn(f: &Function) -> Result<String, String> {
