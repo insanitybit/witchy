@@ -1533,6 +1533,56 @@ mod example_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A `-> Nil` (unit) return type, and an enum recursive through a collection
+    /// (`JsonArray(List(Json))`) registered before its fields are computed.
+    #[test]
+    fn native_backend_nil_and_recursive_enum() {
+        let pid = std::process::id();
+        let dir = std::env::temp_dir().join(format!("witchy_nil_{pid}"));
+        let _ = std::fs::create_dir_all(&dir);
+        let src = dir.join("prog.witchy");
+        std::fs::write(
+            &src,
+            "type Tree:\n    Leaf\n    Branch(List(Tree))\n\nfn count(t: Tree) -> Int:\n    match t:\n        Leaf -> 1\n        Branch(kids) -> length(kids)\n\nfn greet(console: Console) -> Nil:\n    print(console, \"hi\")\n\nfn main(console: Console):\n    greet(console)\n    print(console, int_to_string(count(Branch([Leaf, Leaf, Leaf]))))\n",
+        )
+        .expect("write src");
+        let rust = crate::emit_rust_file(src.to_str().unwrap()).expect("transpile");
+        assert!(rust.contains("enum Tree"), "recursive-through-collection enum should register");
+        let rs = dir.join("prog.rs");
+        let bin = dir.join("prog_bin");
+        std::fs::write(&rs, &rust).unwrap();
+        if let Ok(st) = std::process::Command::new("rustc")
+            .args(["-O", "--edition", "2021"])
+            .arg(&rs)
+            .arg("-o")
+            .arg(&bin)
+            .status()
+        {
+            assert!(st.success(), "rustc should compile the Nil/recursive-enum program");
+            let out = std::process::Command::new(&bin).output().expect("run");
+            assert_eq!(String::from_utf8_lossy(&out.stdout), "hi\n3\n");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Host primitives (compiler/crypto introspection) error on native rather than
+    /// silently transpiling their stub witchy body.
+    #[test]
+    fn native_backend_host_primitive_errors() {
+        let pid = std::process::id();
+        let dir = std::env::temp_dir().join(format!("witchy_host_{pid}"));
+        let _ = std::fs::create_dir_all(&dir);
+        let src = dir.join("prog.witchy");
+        std::fs::write(
+            &src,
+            "import compiler\n\nfn main(console: Console):\n    print(console, compiler.footprint(\"fn main(): 0\"))\n",
+        )
+        .expect("write src");
+        let err = crate::emit_rust_file(src.to_str().unwrap()).unwrap_err();
+        assert!(err.contains("host primitive"), "got: {err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// `while let PAT = scrut: body` lowers to `loop { match scrut { PAT => body,
     /// _ => break } }`, re-evaluating the scrutinee each iteration.
     #[test]

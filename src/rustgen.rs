@@ -1075,6 +1075,17 @@ fn gen_enum(td: &crate::ast::TypeDef) -> Option<String> {
     if td.name == "Option" || td.name == "Result" {
         return None;
     }
+    // Struct-style variants aren't supported; bail before registering anything.
+    if td.variants.iter().any(|v| !v.field_names.is_empty()) {
+        return None;
+    }
+    // Register the name (and variant->enum map) up front, so a field referring
+    // back to this enum — directly, or through a collection like `List(Json)` —
+    // resolves while the field types are being computed below.
+    ENUM_NAMES.with(|s| s.borrow_mut().insert(td.name.clone()));
+    for v in &td.variants {
+        VARIANT_TO_ENUM.with(|m| m.borrow_mut().insert(v.name.clone(), td.name.clone()));
+    }
     // Type variables in the variants' fields become the enum's generic params.
     let mut tvs = std::collections::BTreeSet::new();
     for v in &td.variants {
@@ -1086,9 +1097,6 @@ fn gen_enum(td: &crate::ast::TypeDef) -> Option<String> {
     let self_ref = format!("{}{}", td.name, self_generics.replace(": Clone", ""));
     let mut boxed_by_variant: Vec<(String, Vec<bool>)> = Vec::new();
     for v in &td.variants {
-        if !v.field_names.is_empty() {
-            return None; // struct-style enum variant: not supported yet
-        }
         let mut tys = Vec::new();
         let mut boxed = Vec::new();
         for ty in &v.fields {
@@ -1110,15 +1118,11 @@ fn gen_enum(td: &crate::ast::TypeDef) -> Option<String> {
         }
         boxed_by_variant.push((v.name.clone(), boxed));
     }
-    for v in &td.variants {
-        VARIANT_TO_ENUM.with(|m| m.borrow_mut().insert(v.name.clone(), td.name.clone()));
-    }
     for (vn, boxed) in boxed_by_variant {
         if boxed.iter().any(|b| *b) {
             VARIANT_BOXED.with(|m| m.borrow_mut().insert(vn, boxed));
         }
     }
-    ENUM_NAMES.with(|s| s.borrow_mut().insert(td.name.clone()));
     let derive = if all_copy {
         "#[derive(Clone, Copy)]"
     } else {
@@ -1649,6 +1653,15 @@ fn gen_expr(e: &Expr, value: bool) -> Result<String, String> {
 }
 
 fn gen_call(name: &str, args: &[Expr]) -> Result<String, String> {
+    // Host primitives (compiler introspection, crypto) have stub witchy bodies
+    // intercepted by a Rust impl at runtime (see `crate::native`). A standalone
+    // native binary has no embedded compiler, so transpiling the stub would
+    // silently misbehave — error instead.
+    if crate::native::lookup(name).is_some() {
+        return Err(format!(
+            "native backend: `{name}` is a host primitive (compiler/crypto introspection), not available in a standalone native binary"
+        ));
+    }
     let arg = |i: usize| gen_expr(&args[i], true);
     Ok(match name {
         // `print(console, x)` — drop the console; print x to stdout. Strip one
@@ -2068,8 +2081,9 @@ fn rust_ty(t: &Type) -> Option<String> {
             "Bool" => Some("bool".into()),
             "String" => Some("String".into()),
             // Console/Env/Clock are no-op capability handles (a unit value passed
-            // around); their host functions reach ambient authority.
-            "Console" | "Env" | "Clock" => Some("()".into()),
+            // around); their host functions reach ambient authority. `Nil` is the
+            // unit type (e.g. an explicit `-> Nil` return).
+            "Console" | "Env" | "Clock" | "Nil" => Some("()".into()),
             // A Dir capability is a confined directory root.
             "Dir" => {
                 USES_DIR.with(|f| f.set(true));
