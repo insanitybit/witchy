@@ -1918,6 +1918,66 @@ mod example_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Security: a native binary whose `Net` capability allows only one address
+    /// must reject `connect` to every other address — at the gate, before any
+    /// socket is opened. The allowed address passes the gate (and fails later
+    /// only because nothing is listening, a different error).
+    #[test]
+    fn native_backend_net_confinement_holds() {
+        let pid = std::process::id();
+        let dir = std::env::temp_dir().join(format!("witchy_netsec_{pid}"));
+        let _ = std::fs::create_dir_all(&dir);
+        let src = dir.join("prog.witchy");
+        std::fs::write(
+            &src,
+            "fn main(net: Net, args: List(String), console: Console):\n    let s = connect(net, at(args, 0))\n    print(console, \"connected\")\n",
+        )
+        .expect("write src");
+        let rust = crate::emit_rust_file(src.to_str().unwrap()).expect("transpile");
+        let rs = dir.join("prog.rs");
+        let bin = dir.join("prog_bin");
+        std::fs::write(&rs, &rust).unwrap();
+        let Ok(st) = std::process::Command::new("rustc")
+            .args(["-O", "--edition", "2021"])
+            .arg(&rs)
+            .arg("-o")
+            .arg(&bin)
+            .status()
+        else {
+            let _ = std::fs::remove_dir_all(&dir);
+            return;
+        };
+        assert!(st.success(), "the connect program should compile");
+        // Only 127.0.0.1:9 is permitted; every other target must be denied.
+        let denied = ["127.0.0.1:8", "127.0.0.1:80", "10.0.0.1:22", "0.0.0.0:1"];
+        for target in denied {
+            let out = std::process::Command::new(&bin)
+                .arg(target)
+                .env("WITCHY_NET", "127.0.0.1:9")
+                .output()
+                .expect("run");
+            let err = String::from_utf8_lossy(&out.stderr);
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            assert!(
+                err.contains("not permitted by this Net capability"),
+                "target {target:?} should be denied at the gate"
+            );
+            assert!(!stdout.contains("connected"), "target {target:?} must not connect");
+        }
+        // The permitted address passes the gate (then fails to connect: nothing
+        // is listening — but crucially NOT with a capability denial).
+        let allowed = std::process::Command::new(&bin)
+            .arg("127.0.0.1:9")
+            .env("WITCHY_NET", "127.0.0.1:9")
+            .output()
+            .expect("run");
+        assert!(
+            !String::from_utf8_lossy(&allowed.stderr).contains("not permitted"),
+            "the allowed address must pass the capability gate"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Security: a native binary holding a `Dir` capability rooted at a directory
     /// must NEVER read a file outside that directory, for any adversarial path —
     /// the capability is a hard subtree sandbox. Plants a secret as a sibling of
