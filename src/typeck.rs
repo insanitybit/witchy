@@ -809,6 +809,16 @@ impl Checker {
                 let d = Ty::Named("Dict".into(), vec![k.clone(), v.clone()]);
                 Some((vec![d, k, v.clone()], v))
             }
+            // update(dict, key, default, f) -> dict: a single-lookup upsert. `f`
+            // maps the current value (or `default` when the key is absent) to the
+            // new value — like Go's `m[k]++` in one operation.
+            "update" => {
+                let k = self.fresh();
+                let v = self.fresh();
+                let d = Ty::Named("Dict".into(), vec![k.clone(), v.clone()]);
+                let f = Ty::Fn(vec![v.clone()], Box::new(v.clone()));
+                Some((vec![d.clone(), k, v, f], d))
+            }
             "has" => {
                 let k = self.fresh();
                 let v = self.fresh();

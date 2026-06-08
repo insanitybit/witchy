@@ -2248,6 +2248,35 @@ fn gen_call(name: &str, args: &[Expr]) -> Result<String, String> {
         "get_or" if args.len() == 3 => {
             format!("({}).get(&({})).cloned().unwrap_or({})", arg(0)?, arg(1)?, arg(2)?)
         }
+        // Single-hash upsert: `d.entry(k).or_insert(default)`, then apply the
+        // updater to the slot. A literal updater lambda is INLINED (no `Rc`
+        // allocation per call); any other function value is called. This is one
+        // hash + (for a literal lambda) zero allocation, vs the `insert(d, k,
+        // f(get_or(d, k, default)))` idiom's two hashes and a closure per call.
+        "update" if args.len() == 4 => {
+            USES_DICT.with(|f| f.set(true));
+            let dict = arg(0)?;
+            // The key goes through `gen_value`: a last-use key variable is MOVED
+            // into the map (no clone) — which the `insert(d, k, get_or(d, k, ..))`
+            // idiom never could, since it used the key twice. A reused key clones,
+            // preserving value semantics.
+            let key = gen_value(&args[1])?;
+            let default = arg(2)?;
+            let apply = match &args[3] {
+                Expr::Lambda { params, body } if params.len() == 1 => {
+                    let p = local_ident(&params[0].name);
+                    let b = gen_block(body, true)?;
+                    format!("let {p} = (*__e).clone(); *__e = {b};")
+                }
+                other => {
+                    let f = gen_value(other)?;
+                    format!("let __cur = (*__e).clone(); *__e = ({f})(__cur);")
+                }
+            };
+            format!(
+                "{{ let __k = {key}; let __def = {default}; let mut __m = {dict}; {{ let __e = __m.entry(__k).or_insert(__def); {apply} }} __m }}"
+            )
+        }
         "has" if args.len() == 2 => format!("({}).contains_key(&({}))", arg(0)?, arg(1)?),
         "remove" if args.len() == 2 => {
             format!(

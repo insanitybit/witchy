@@ -2109,6 +2109,42 @@ mod example_tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 
+    /// `update(d, k, default, f)` — the single-lookup dict upsert. The native
+    /// backend fuses it to one `d.entry(k).or_insert(default)` with the updater
+    /// inlined (no closure allocation) and the key moved (no clone), and produces
+    /// the same result as the interpreter: a missing key starts at `default`,
+    /// an existing key is mapped through `f`.
+    #[test]
+    fn native_backend_dict_update() {
+        let prog = "fn main(console: Console):\n    var d = dict_new()\n    d = update(d, \"a\", 0, fn(n: Int): n + 1)\n    d = update(d, \"a\", 0, fn(n: Int): n + 1)\n    d = update(d, \"b\", 10, fn(n: Int): n + 5)\n    print(console, int_to_string(get_or(d, \"a\", -1)))\n    print(console, int_to_string(get_or(d, \"b\", -1)))\n    print(console, int_to_string(size(d)))\n";
+        // Interpreter is the source of truth.
+        assert_eq!(interpreter::run(prog).expect("interp").join("\n"), "2\n15\n2");
+        let pid = std::process::id();
+        let dir = std::env::temp_dir().join(format!("witchy_upd_{pid}"));
+        let _ = std::fs::create_dir_all(&dir);
+        let src = dir.join("prog.witchy");
+        std::fs::write(&src, prog).unwrap();
+        let rust = crate::emit_rust_file(src.to_str().unwrap()).expect("transpile");
+        // Fused to a single entry() upsert — not the two-lookup get_or+insert idiom.
+        assert!(rust.contains(".entry("), "update should fuse to entry(): {rust}");
+        assert!(!rust.contains("get_or"), "update should not lower to get_or");
+        let rs = dir.join("prog.rs");
+        let bin = dir.join("prog_bin");
+        std::fs::write(&rs, &rust).unwrap();
+        if let Ok(st) = std::process::Command::new("rustc")
+            .args(["-O", "-C", "overflow-checks=off", "--edition", "2021"])
+            .arg(&rs)
+            .arg("-o")
+            .arg(&bin)
+            .status()
+        {
+            assert!(st.success(), "rustc should compile the dict-update program");
+            let out = std::process::Command::new(&bin).output().expect("run");
+            assert_eq!(String::from_utf8_lossy(&out.stdout), "2\n15\n2\n");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// A `-> Nil` (unit) return type, and an enum recursive through a collection
     /// (`JsonArray(List(Json))`) registered before its fields are computed.
     #[test]

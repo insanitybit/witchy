@@ -2413,6 +2413,13 @@ impl Codegen {
                     kind_convert(kk, Kind::I32)
                 ))
             }
+            // The single-lookup upsert applies a closure between a dict read and
+            // write; that mid-op closure call isn't lowered to WASM yet. The
+            // interpreter and native backends support it (native fuses it to one
+            // hash). An honest, clear limitation — never a silent divergence.
+            ("update", 4) => cerr(
+                "`update` (dict upsert) is not compiled to WASM yet; it runs on the interpreter and the native backend",
+            ),
             // remove(dict, k): a fresh map with `k` (and its value) dropped.
             ("remove", 2) => {
                 let mode = self.dict_key_mode(&args[1])?;

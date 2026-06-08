@@ -468,6 +468,28 @@ impl Interpreter {
             .iter()
             .map(|a| self.eval(a, env))
             .collect::<Result<Vec<_>, _>>()?;
+        // `update(dict, key, default, f)`: a single-lookup upsert. Handled here
+        // (not in the pure builtin table) because it applies the updater closure
+        // `f` to the current value — or `default` when the key is absent — which
+        // needs the interpreter. Arguments are evaluated exactly once (above).
+        if name == "update" && argvals.len() == 4 {
+            let Value::Dict(entries) = &argvals[0] else {
+                return err("update expects a Dict as its first argument");
+            };
+            let mut out = entries.clone();
+            let key = &argvals[1];
+            let current = out
+                .iter()
+                .find(|(ek, _)| ek == key)
+                .map(|(_, v)| v.clone())
+                .unwrap_or_else(|| argvals[2].clone());
+            let new_v = self.apply_closure(argvals[3].clone(), vec![current])?;
+            match out.iter_mut().find(|(ek, _)| ek == key) {
+                Some(slot) => slot.1 = new_v,
+                None => out.push((argvals[1].clone(), new_v)),
+            }
+            return Ok(Value::Dict(out));
+        }
         // A local variable holding a function value (a closure): apply it.
         if let Some(Value::Closure { .. }) = env.get(name) {
             let clo = env.get(name).unwrap().clone();
