@@ -1533,6 +1533,38 @@ mod example_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A list of distinct named functions unifies into `Vec<Rc<dyn Fn>>` (each
+    /// fn-reference is coerced to the trait object), then each is applied.
+    #[test]
+    fn native_backend_heterogeneous_fn_list() {
+        let pid = std::process::id();
+        let dir = std::env::temp_dir().join(format!("witchy_fnl_{pid}"));
+        let _ = std::fs::create_dir_all(&dir);
+        let src = dir.join("prog.witchy");
+        std::fs::write(
+            &src,
+            "fn double(n: Int) -> Int:\n    n * 2\n\nfn inc(n: Int) -> Int:\n    n + 1\n\nfn run_all(fns: List(fn(Int) -> Int), x: Int) -> Int:\n    var acc = x\n    for f in fns:\n        acc = f(acc)\n    acc\n\nfn main(console: Console):\n    print(console, int_to_string(run_all([double, inc], 5)))\n",
+        )
+        .expect("write src");
+        let rust = crate::emit_rust_file(src.to_str().unwrap()).expect("transpile");
+        assert!(rust.contains("Rc<dyn Fn(i64) -> i64>"), "expected fn-refs coerced to Rc<dyn Fn>");
+        let rs = dir.join("prog.rs");
+        let bin = dir.join("prog_bin");
+        std::fs::write(&rs, &rust).unwrap();
+        if let Ok(st) = std::process::Command::new("rustc")
+            .args(["-O", "--edition", "2021"])
+            .arg(&rs)
+            .arg("-o")
+            .arg(&bin)
+            .status()
+        {
+            assert!(st.success(), "rustc should compile the fn-list program");
+            let out = std::process::Command::new(&bin).output().expect("run");
+            assert_eq!(String::from_utf8_lossy(&out.stdout), "11\n");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// A `match` scrutinee reused in an arm body (after the match destructures it)
     /// is cloned, so the original stays usable — value semantics (closes bst).
     #[test]

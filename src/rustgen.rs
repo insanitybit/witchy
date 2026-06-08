@@ -16,6 +16,10 @@ use crate::ast::{BinOp, Block, Expr, Function, Item, Module, Param, Stmt, Type, 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 
+/// A concrete function signature: the Rust types of its parameters and its return
+/// type. Used to coerce a fn-reference value to a `Rc<dyn Fn(..) -> ..>`.
+type FnSig = (Vec<String>, String);
+
 thread_local! {
     /// Field names of each supported record type (single-variant, named fields,
     /// all-supported field types), keyed by constructor name. Populated up front
@@ -64,11 +68,57 @@ thread_local! {
     static FN_NAMES: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
     /// User record/enum types that get a `WShow` impl (all fields showable).
     static SHOWABLE_TYPES: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+    /// Top-level function signatures (param Rust types, return Rust type) when
+    /// fully concrete — used to coerce a fn-reference value to `Rc<dyn Fn>`.
+    /// `None` for a generic signature (a `dyn Fn` cast would have unbound vars).
+    static FN_SIGS: RefCell<HashMap<String, Option<FnSig>>> = RefCell::new(HashMap::new());
 }
 
 /// Is `name` a top-level function used here as a first-class value?
 fn is_fn_ref(name: &str) -> bool {
     FN_NAMES.with(|m| m.borrow().contains(name))
+}
+
+/// A named function used as a value: `Rc::new(w_*)`. When the function's
+/// signature is fully concrete, coerce it to `Rc<dyn Fn(..) -> ..>` through a
+/// typed `let` (so e.g. `[double, bonus]` — two distinct fn items — unify into
+/// one `Vec<Rc<dyn Fn>>`; bare `Rc::new` would keep their unique fn-item types).
+/// A function's (param Rust types, return Rust type) when fully concrete (no type
+/// variables, every type supported); `None` otherwise. Used to type a fn value
+/// as `Rc<dyn Fn>`. A generic signature is skipped (its `dyn Fn` would be open).
+fn concrete_fn_sig(f: &Function) -> Option<FnSig> {
+    let mut tvs = std::collections::BTreeSet::new();
+    for p in &f.params {
+        if let Some(t) = &p.ty {
+            collect_type_vars(t, &mut tvs);
+        }
+    }
+    if let Some(t) = &f.ret {
+        collect_type_vars(t, &mut tvs);
+    }
+    if !tvs.is_empty() {
+        return None;
+    }
+    let params: Option<Vec<String>> =
+        f.params.iter().map(|p| p.ty.as_ref().and_then(rust_ty)).collect();
+    let ret = match &f.ret {
+        Some(t) => rust_ty(t)?,
+        None => "()".to_string(),
+    };
+    Some((params?, ret))
+}
+
+fn fn_ref_value(name: &str) -> String {
+    let sig = FN_SIGS.with(|m| m.borrow().get(name).cloned()).flatten();
+    match sig {
+        Some((params, ret)) => format!(
+            "{{ let __f: std::rc::Rc<dyn Fn({}) -> {}> = std::rc::Rc::new(w_{}); __f }}",
+            params.join(", "),
+            ret,
+            ident(name)
+        ),
+        None => format!("std::rc::Rc::new(w_{})", ident(name)),
+    }
 }
 
 /// Is this user type one we can generate a `WShow` impl for? (All its fields
@@ -161,7 +211,7 @@ fn gen_value(e: &Expr) -> Result<String, String> {
         // A function value (fn item) or a closure isn't cloned; nor is a binding
         // at its last use. Everything else clones to preserve value semantics.
         if is_fn_ref(v) {
-            return Ok(format!("std::rc::Rc::new(w_{})", ident(v)));
+            return Ok(fn_ref_value(v));
         }
         if is_moveable(v) || is_noclone(v) {
             return Ok(v.clone());
@@ -1031,6 +1081,17 @@ pub fn transpile_module(m: &Module) -> Result<String, String> {
             }
         }
     }
+    // Function signatures (now that user types are registered) — for coercing a
+    // fn-reference value to `Rc<dyn Fn>`. Only fully-concrete signatures qualify.
+    FN_SIGS.with(|m2| {
+        let mut m2 = m2.borrow_mut();
+        m2.clear();
+        for item in &m.items {
+            if let Item::Function(f) = item {
+                m2.insert(f.name.clone(), concrete_fn_sig(f));
+            }
+        }
+    });
     let reached = reachable_functions(m);
     let mut saw_main = false;
     for item in &m.items {
@@ -1461,7 +1522,7 @@ fn gen_expr(e: &Expr, value: bool) -> Result<String, String> {
         Expr::Str(s) => format!("{s:?}.to_string()"),
         // A bare identifier that names a top-level function is a first-class
         // function value -> its Rust `w_*` item (a fn item, which is `impl Fn`).
-        Expr::Var(v) if is_fn_ref(v) => format!("std::rc::Rc::new(w_{})", ident(v)),
+        Expr::Var(v) if is_fn_ref(v) => fn_ref_value(v),
         Expr::Var(v) => v.clone(),
         Expr::Unary { op, expr } => {
             let inner = gen_expr(expr, true)?;
