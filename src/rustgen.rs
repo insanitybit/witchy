@@ -47,6 +47,18 @@ thread_local! {
     /// Set when a value is shown (generic `to_string`/`print`), so the `WShow`
     /// formatter (matching the interpreter's `Display`) is emitted.
     static USES_SHOW: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Set when the program declares actors, so the actor runtime is emitted and
+    /// `main` drains the mailbox after its body (the deterministic FIFO scheduler).
+    static HAS_ACTORS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Message constructor names (across all actor handlers), so a `Ctor` in
+    /// `send(target, Msg(..))` is recognized as a message, not a type constructor.
+    static MSG_NAMES: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+    /// Each actor's fields (in declaration order), so `spawn Actor(args)` builds
+    /// the struct: a field with an initializer defaults, others take spawn args.
+    static ACTOR_FIELDS: RefCell<HashMap<String, Vec<crate::ast::Field>>> = RefCell::new(HashMap::new());
+    /// True while emitting an actor handler body. `spawn` there would re-borrow the
+    /// actor registry the drain loop already holds, so it's rejected.
+    static IN_HANDLER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// Parameter names of the function currently being emitted. A call whose name
     /// is one of these is a function-valued parameter (a closure), called
     /// directly (`f(x)`); any other call is a top-level function (`w_f(x)`).
@@ -826,6 +838,25 @@ fn reachable_functions(m: &Module) -> HashSet<String> {
     }
     let mut reached = HashSet::new();
     let mut stack = vec!["main".to_string()];
+    // Actor handler bodies and field initializers are additional entry points:
+    // they run in response to messages / at spawn, not from `main`'s call graph,
+    // so any user function they call must be reached (and thus emitted) too.
+    for item in &m.items {
+        if let Item::Actor(a) = item {
+            for f in &a.fields {
+                if let Some(init) = &f.init {
+                    let mut calls = HashSet::new();
+                    collect_calls_expr(init, &mut calls);
+                    stack.extend(calls);
+                }
+            }
+            for h in &a.handlers {
+                let mut calls = HashSet::new();
+                collect_calls_block(&h.body, &mut calls);
+                stack.extend(calls);
+            }
+        }
+    }
     while let Some(n) = stack.pop() {
         if !reached.insert(n.clone()) {
             continue;
@@ -1031,6 +1062,199 @@ fn collect_type_vars(t: &Type, out: &mut std::collections::BTreeSet<String>) {
 
 /// Transpile a whole module's record/enum types and functions to a
 /// self-contained Rust program.
+/// `spawn Actor(args)` -> register a new actor instance and return its `Subject`
+/// (its index in the registry). Fields with an initializer default; the others
+/// take the positional spawn arguments in declaration order — exactly the
+/// interpreter's field-binding order.
+fn gen_spawn(actor: &str, args: &[Expr]) -> Result<String, String> {
+    if IN_HANDLER.with(|f| f.get()) {
+        return Err(format!(
+            "native backend: `spawn` inside an actor handler is not supported (it would re-enter the registry the scheduler holds); spawn `{actor}` from `main`"
+        ));
+    }
+    let fields = ACTOR_FIELDS.with(|m| m.borrow().get(actor).cloned());
+    let Some(fields) = fields else {
+        return Err(format!("native backend: cannot spawn unknown actor `{actor}`"));
+    };
+    let mut supplied = args.iter();
+    let mut parts = Vec::new();
+    for f in &fields {
+        let val = match &f.init {
+            Some(init) => gen_expr(init, true)?,
+            None => {
+                let a = supplied.next().ok_or_else(|| {
+                    format!("native backend: spawn `{actor}` is missing a value for field `{}`", f.name)
+                })?;
+                gen_value(a)?
+            }
+        };
+        parts.push(format!("{}: {val}", f.name));
+    }
+    Ok(format!("w_spawn(WActor::{actor}({actor} {{ {} }}))", parts.join(", ")))
+}
+
+/// Emit the native actor runtime for a program that declares actors, mirroring
+/// the interpreter's deterministic model: a single FIFO mailbox, run-to-
+/// completion handlers, and per-actor isolated state. Each actor becomes a Rust
+/// struct; messages a shared `WMsg` enum; instances a `WActor` enum indexed by a
+/// `Subject` (usize). `spawn` registers an instance, `send` enqueues a message,
+/// and `w_run_actors` drains the queue until quiescent. A handler seeds locals
+/// from the actor's fields (so the body's bare field references resolve), runs,
+/// then writes its mutable (`var`) fields back — exactly as the interpreter seeds
+/// an env from state and persists what changed.
+fn gen_actors(m: &Module) -> Result<String, String> {
+    let actors: Vec<&crate::ast::ActorDef> = m
+        .items
+        .iter()
+        .filter_map(|it| if let Item::Actor(a) = it { Some(a) } else { None })
+        .collect();
+    if actors.is_empty() {
+        return Ok(String::new());
+    }
+    // Each message's payload types, from the first handler that declares it.
+    let mut msgs: Vec<(String, Vec<Type>)> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    for a in &actors {
+        for h in &a.handlers {
+            if seen.insert(h.message.clone()) {
+                let tys: Vec<Type> = h.params.iter().filter_map(|p| p.ty.clone()).collect();
+                if tys.len() != h.params.len() {
+                    return Err(format!(
+                        "native backend: actor handler `{}` needs a type on every parameter",
+                        h.message
+                    ));
+                }
+                msgs.push((h.message.clone(), tys));
+            }
+        }
+    }
+    let mut out = String::new();
+    // One struct per actor.
+    for a in &actors {
+        let mut fields = Vec::new();
+        for f in &a.fields {
+            let rt = rust_ty(&f.ty).ok_or_else(|| {
+                format!("native backend: actor `{}` field `{}` has an unsupported type", a.name, f.name)
+            })?;
+            fields.push(format!("    {}: {rt},", f.name));
+        }
+        out.push_str(&format!("struct {} {{\n{}\n}}\n", a.name, fields.join("\n")));
+    }
+    // The message enum: one variant per distinct message constructor.
+    let mut variants = Vec::new();
+    for (name, tys) in &msgs {
+        if tys.is_empty() {
+            variants.push(format!("    {name}"));
+        } else {
+            let ts: Vec<String> = tys
+                .iter()
+                .map(|t| {
+                    rust_ty(t).ok_or_else(|| {
+                        format!("native backend: message `{name}` has an unsupported payload type")
+                    })
+                })
+                .collect::<Result<_, _>>()?;
+            variants.push(format!("    {name}({})", ts.join(", ")));
+        }
+    }
+    out.push_str(&format!("enum WMsg {{\n{}\n}}\n", variants.join(",\n")));
+    // The actor-instance enum, indexed by a Subject (its position in the registry).
+    let avariants: Vec<String> =
+        actors.iter().map(|a| format!("    {}({})", a.name, a.name)).collect();
+    out.push_str(&format!("enum WActor {{\n{}\n}}\n", avariants.join(",\n")));
+    // Registry + mailbox, and the spawn/send/drain primitives.
+    out.push_str(
+        "thread_local! {\n    static WACTORS: std::cell::RefCell<Vec<WActor>> = std::cell::RefCell::new(Vec::new());\n    static WQUEUE: std::cell::RefCell<std::collections::VecDeque<(usize, WMsg)>> = std::cell::RefCell::new(std::collections::VecDeque::new());\n}\n",
+    );
+    out.push_str("fn w_spawn(a: WActor) -> usize { WACTORS.with(|v| { let mut v = v.borrow_mut(); let id = v.len(); v.push(a); id }) }\n");
+    out.push_str("fn w_send(id: usize, m: WMsg) { WQUEUE.with(|q| q.borrow_mut().push_back((id, m))); }\n");
+    // The drain loop: pop a message, dispatch to the addressed actor's handler.
+    // Messages process in FIFO order, each handler running to completion.
+    let mut dispatch = String::new();
+    for a in &actors {
+        let mut arms = String::new();
+        for h in &a.handlers {
+            let binds: Vec<String> = (0..h.params.len()).map(|i| format!("p{i}")).collect();
+            let pat = if binds.is_empty() {
+                format!("WMsg::{}", h.message)
+            } else {
+                format!("WMsg::{}({})", h.message, binds.join(", "))
+            };
+            arms.push_str(&format!(
+                "                {pat} => s.handle_{}({}),\n",
+                h.message,
+                binds.join(", ")
+            ));
+        }
+        dispatch.push_str(&format!(
+            "            Some(WActor::{}(s)) => match msg {{\n{arms}                #[allow(unreachable_patterns)] _ => {{}}\n            }},\n",
+            a.name
+        ));
+    }
+    out.push_str(&format!(
+        "fn w_run_actors() {{\n    loop {{\n        let next = WQUEUE.with(|q| q.borrow_mut().pop_front());\n        let Some((id, msg)) = next else {{ break }};\n        WACTORS.with(|v| {{\n            let mut __actors = v.borrow_mut();\n            match __actors.get_mut(id) {{\n{dispatch}            None => {{}}\n            }}\n        }});\n    }}\n}}\n"
+    ));
+    // Handler methods: seed locals from state, run the body, write var fields back.
+    IN_HANDLER.with(|f| f.set(true));
+    for a in &actors {
+        for h in &a.handlers {
+            let param_names: HashSet<String> = h.params.iter().map(|p| p.name.clone()).collect();
+            // Per-handler local environment for the body emitter: params + fields
+            // are locals (not function calls); clone-on-reuse for value semantics.
+            CUR_PARAMS.with(|s| {
+                let mut s = s.borrow_mut();
+                s.clear();
+                s.extend(param_names.iter().cloned());
+                s.extend(a.fields.iter().map(|f| f.name.clone()));
+            });
+            MOVEABLE.with(|mv| mv.borrow_mut().clear());
+            NOCLONE.with(|nc| nc.borrow_mut().clear());
+            let mut params = Vec::new();
+            for p in &h.params {
+                let ty = p.ty.as_ref().ok_or_else(|| {
+                    format!("native backend: handler `{}` parameter `{}` needs a type", h.message, p.name)
+                })?;
+                let rt = rust_ty(ty).ok_or_else(|| {
+                    format!("native backend: handler `{}` parameter `{}` has an unsupported type", h.message, p.name)
+                })?;
+                params.push(format!("mut {}: {rt}", local_ident(&p.name)));
+            }
+            // Seed each field not shadowed by a parameter (params take precedence,
+            // matching the interpreter); mutable (`var`) fields are written back.
+            let mut seeds = String::new();
+            let mut writebacks = String::new();
+            for f in &a.fields {
+                if param_names.contains(&f.name) {
+                    continue;
+                }
+                let mu = if f.mutable { "mut " } else { "" };
+                seeds.push_str(&format!(
+                    "        let {mu}{} = self.{}.clone();\n",
+                    local_ident(&f.name),
+                    f.name
+                ));
+                if f.mutable {
+                    writebacks.push_str(&format!(
+                        "        self.{} = {};\n",
+                        f.name,
+                        local_ident(&f.name)
+                    ));
+                }
+            }
+            let body = gen_block(&h.body, false)?;
+            let sep = if params.is_empty() { "" } else { ", " };
+            out.push_str(&format!(
+                "impl {} {{\n    fn handle_{}(&mut self{sep}{}) {{\n{seeds}        {body};\n{writebacks}    }}\n}}\n",
+                a.name,
+                h.message,
+                params.join(", ")
+            ));
+        }
+    }
+    IN_HANDLER.with(|f| f.set(false));
+    Ok(out)
+}
+
 pub fn transpile_module(m: &Module) -> Result<String, String> {
     RECORD_FIELDS.with(|r| r.borrow_mut().clear());
     VARIANT_TO_ENUM.with(|r| r.borrow_mut().clear());
@@ -1072,6 +1296,20 @@ pub fn transpile_module(m: &Module) -> Result<String, String> {
         }
     }
     USES_DICT.with(|f| f.set(false));
+    // Actor program? Record the message names and each actor's fields up front, so
+    // `send`/`spawn` and `main`'s mailbox drain resolve while emitting bodies.
+    HAS_ACTORS.with(|f| f.set(false));
+    MSG_NAMES.with(|s| s.borrow_mut().clear());
+    ACTOR_FIELDS.with(|s| s.borrow_mut().clear());
+    for item in &m.items {
+        if let Item::Actor(a) = item {
+            HAS_ACTORS.with(|f| f.set(true));
+            ACTOR_FIELDS.with(|s| s.borrow_mut().insert(a.name.clone(), a.fields.clone()));
+            for h in &a.handlers {
+                MSG_NAMES.with(|s| s.borrow_mut().insert(h.message.clone()));
+            }
+        }
+    }
     let mut out = String::new();
     // Pre-register every user type's name, so mutually-recursive types resolve
     // when their fields are computed (e.g. std/iter's `Step`/`Iter`, which
@@ -1117,10 +1355,9 @@ pub fn transpile_module(m: &Module) -> Result<String, String> {
                 out.push('\n');
             }
             // Records are handled above; other type/trait/alias/impl decls carry
-            // no runtime code the subset references. Actors/consts aren't yet
-            // supported by the native backend.
-            Item::Type(_) | Item::Trait(_) | Item::TypeAlias { .. } | Item::Impl(_) => {}
-            Item::Actor(_) => return Err("native backend: actors are not supported".into()),
+            // no runtime code the subset references. Actors are emitted separately
+            // by `gen_actors` (structs + the mailbox runtime).
+            Item::Type(_) | Item::Trait(_) | Item::TypeAlias { .. } | Item::Impl(_) | Item::Actor(_) => {}
             Item::Const { .. } => {
                 return Err("native backend: top-level `const` is not supported yet".into())
             }
@@ -1129,6 +1366,10 @@ pub fn transpile_module(m: &Module) -> Result<String, String> {
     if !saw_main {
         return Err("native backend: program has no `main`".into());
     }
+    // Emit the actor runtime (structs + mailbox) after the functions are walked.
+    // This can itself set USES_DIR/USES_SHOW (handler bodies, capability fields),
+    // so it must run before the helper-emission checks below.
+    let actor_code = gen_actors(m)?;
     let mut prog = String::from("// generated by `witchy native` — do not edit\n");
     prog.push_str("#![allow(unused_parens, unused_mut, unused_variables, unused_assignments, dead_code, nonstandard_style)]\n");
     // The Dict / Dir runtime helpers are emitted only when actually used.
@@ -1144,6 +1385,7 @@ pub fn transpile_module(m: &Module) -> Result<String, String> {
     if USES_SHOW.with(|f| f.get()) {
         prog.push_str(SHOW_HELPER);
     }
+    prog.push_str(&actor_code);
     prog.push_str(&out);
     Ok(prog)
 }
@@ -1439,8 +1681,16 @@ fn gen_fn(f: &Function) -> Result<String, String> {
     if is_main {
         // Rust's `main` returns (); a witchy `Int` return is the process exit
         // code. Capabilities granted to main are bound as locals first.
+        // An actor program drains its mailbox after `main`'s body runs the initial
+        // spawns/sends — the deterministic FIFO scheduler, run to quiescence.
+        let has_actors = HAS_ACTORS.with(|f| f.get());
         let body = if f.ret.is_some() {
+            if has_actors {
+                return Err("native backend: an actor program's `main` must return unit (exit-code main with actors is not modeled)".into());
+            }
             format!("{{\n{cap_lets}    std::process::exit(({inner}) as i32);\n}}")
+        } else if has_actors {
+            format!("{{\n{cap_lets}{inner}\n    w_run_actors();\n}}")
         } else {
             format!("{{\n{cap_lets}{inner}\n}}")
         };
@@ -1826,6 +2076,8 @@ fn gen_expr(e: &Expr, value: bool) -> Result<String, String> {
                 format!("({})", parts.join(", "))
             }
         }
+        // `spawn Actor(args)` -> register the actor, yielding its Subject handle.
+        Expr::Spawn { actor, args } => gen_spawn(actor, args)?,
         other => {
             return Err(format!(
                 "native backend: unsupported expression `{}`",
@@ -1844,6 +2096,32 @@ fn gen_call(name: &str, args: &[Expr]) -> Result<String, String> {
         return Err(format!(
             "native backend: `{name}` is a host primitive (compiler/crypto introspection), not available in a standalone native binary"
         ));
+    }
+    // `send(target, Msg(..))` — enqueue a message to an actor's mailbox. The
+    // message is a constructor whose name is one of the actors' handlers.
+    if name == "send" && args.len() == 2 {
+        let target = gen_value(&args[0])?;
+        let (msg_name, margs) = match &args[1] {
+            Expr::Ctor { name, args } => (name.clone(), args.clone()),
+            _ => {
+                return Err(
+                    "native backend: `send` expects a message constructor, e.g. send(a, Msg(..))"
+                        .into(),
+                )
+            }
+        };
+        if !MSG_NAMES.with(|s| s.borrow().contains(&msg_name)) {
+            return Err(format!(
+                "native backend: `{msg_name}` is not an actor message (no handler declares it)"
+            ));
+        }
+        let parts: Vec<String> = margs.iter().map(gen_value).collect::<Result<_, _>>()?;
+        let payload = if parts.is_empty() {
+            format!("WMsg::{msg_name}")
+        } else {
+            format!("WMsg::{msg_name}({})", parts.join(", "))
+        };
+        return Ok(format!("w_send({target}, {payload})"));
     }
     let arg = |i: usize| gen_expr(&args[i], true);
     Ok(match name {
@@ -2298,6 +2576,9 @@ fn rust_ty(t: &Type) -> Option<String> {
             // listeners are handles into the thread-local tables (see NET_HELPER).
             "Net" => Some("Vec<String>".into()),
             "Socket" | "Listener" => Some("usize".into()),
+            // A Subject is a handle (index) into the actor registry — the
+            // authority to send an actor messages.
+            "Subject" => Some("usize".into()),
             // A list maps to a Rust Vec of its element type.
             "List" => Some(format!("Vec<{}>", rust_ty(args.first()?)?)),
             // A dict maps to a fast HashMap (see DICT_HELPER).

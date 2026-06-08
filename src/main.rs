@@ -1977,6 +1977,61 @@ mod example_tests {
         }
     }
 
+    /// Actors run natively, byte-identical to the interpreter, via the same
+    /// deterministic model: a single FIFO mailbox, run-to-completion handlers,
+    /// per-actor isolated state. `actors.witchy` checks message ordering (a relayed
+    /// message lands last) and that a handler mutates and persists `var` state;
+    /// `files.witchy` checks a capability (a confined `Dir`) carried in an actor
+    /// field and used inside a handler. The native binary drains its mailbox after
+    /// `main`, exactly as the interpreter's scheduler does.
+    #[test]
+    fn native_backend_actors() {
+        let cases = [
+            (
+                "actors",
+                "examples/actors.witchy",
+                "[1] direct message\n[2] another direct\n[3] relayed message\n",
+            ),
+            ("files", "examples/files.witchy", "hello from a sandboxed Dir capability\n"),
+        ];
+        for (tag, file, expected) in cases {
+            let rust = crate::emit_rust_file(file).expect("transpile actor program");
+            assert!(
+                rust.contains("fn w_run_actors") && rust.contains("WQUEUE"),
+                "{tag}: the actor runtime (mailbox + drain) should be emitted"
+            );
+            // The interpreter is the source of truth; native must match it.
+            let (linked, _) = crate::link_file(file).expect("link");
+            let interp = interpreter::run_module(linked, ".", Vec::new())
+                .expect("interp run")
+                .join("\n");
+            assert_eq!(format!("{interp}\n"), expected, "{tag}: interp output drifted");
+            let pid = std::process::id();
+            let dir = std::env::temp_dir().join(format!("witchy_actor_{tag}_{pid}"));
+            let _ = std::fs::create_dir_all(&dir);
+            let rs = dir.join("prog.rs");
+            let bin = dir.join("prog_bin");
+            std::fs::write(&rs, &rust).unwrap();
+            if let Ok(st) = std::process::Command::new("rustc")
+                .args(["-O", "-C", "overflow-checks=off", "--edition", "2021"])
+                .arg(&rs)
+                .arg("-o")
+                .arg(&bin)
+                .status()
+            {
+                assert!(st.success(), "{tag}: rustc should compile the actor program");
+                // files.witchy's root `Dir` is the cwd; run from the crate root so
+                // its `examples/data/greeting.txt` read resolves.
+                let out = std::process::Command::new(&bin)
+                    .current_dir(env!("CARGO_MANIFEST_DIR"))
+                    .output()
+                    .expect("run");
+                assert_eq!(String::from_utf8_lossy(&out.stdout), expected, "{tag}: native output");
+            }
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
     /// A `-> Nil` (unit) return type, and an enum recursive through a collection
     /// (`JsonArray(List(Json))`) registered before its fields are computed.
     #[test]
