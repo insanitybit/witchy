@@ -7,12 +7,13 @@ numbers are trustworthy even on a contended machine. Regenerate with
 
 | benchmark | native (s) | go (s) | ratio | faster |
 |---|---|---|---|---|
-| fib | 1.72 | 2.21 | 0.78x | witchy |
-| loop_sum | 0.48 | 11.01 | 0.04x | witchy |
-| collatz | 1.93 | 3.02 | 0.64x | witchy |
-| mandelbrot | 2.33 | 2.42 | 0.96x | witchy |
-| closure_calls | 1.04 | 1.31 | 0.79x | witchy |
-| list_sum | 2.43 | 4.99 | 0.49x | witchy |
-| dict_count | 2.78 | 14.86 | 0.19x | witchy |
-| binary_trees | 2.13 | 3.03 | 0.70x | witchy |
-| word_count | 2.36 | 3.58 | 0.66x | witchy |
+| fib | 1.62 | 2.11 | 0.77x | witchy |
+| loop_sum | 0.36 | 9.86 | 0.04x | witchy |
+| collatz | 2.02 | 3.01 | 0.67x | witchy |
+| mandelbrot | 2.11 | 2.18 | 0.97x | witchy |
+| closure_calls | 1.01 | 1.19 | 0.85x | witchy |
+| list_sum | 1.00 | 2.08 | 0.48x | witchy |
+| dict_count | 2.52 | 13.50 | 0.19x | witchy |
+| binary_trees | 2.06 | 3.14 | 0.66x | witchy |
+| word_count | 2.22 | 3.37 | 0.66x | witchy |
+| expr_eval | 1.94 | 5.47 | 0.35x | witchy |

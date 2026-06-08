@@ -20,7 +20,7 @@ cd "$(dirname "$0")"
 
 WITCHY="${WITCHY:-../target/release/witchy}"
 CPU_BENCHES=(fib loop_sum collatz mandelbrot closure_calls)
-COLL_BENCHES=(list_sum dict_count binary_trees word_count)
+COLL_BENCHES=(list_sum dict_count binary_trees word_count expr_eval)
 ALL=("${CPU_BENCHES[@]}" "${COLL_BENCHES[@]}")
 BUILD=.build
 TARGET_SECS="${TARGET_SECS:-2.0}"
