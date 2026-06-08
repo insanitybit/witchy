@@ -115,8 +115,8 @@ fn gen_stmt(s: &Stmt, tail: bool) -> Result<String, String> {
         Stmt::Continue => "continue;".into(),
         Stmt::Expr(e) if tail => gen_expr(e, true)?,
         Stmt::Expr(e) => format!("{};", gen_expr(e, false)?),
-        Stmt::LetTuple { .. } => {
-            return Err("native backend: tuple destructuring is not supported yet".into())
+        Stmt::LetTuple { names, value } => {
+            format!("let ({}) = {};", names.join(", "), gen_expr(value, true)?)
         }
         Stmt::Yield(_) => return Err("native backend: `yield` is not supported".into()),
     })
@@ -177,6 +177,18 @@ fn gen_expr(e: &Expr, value: bool) -> Result<String, String> {
         },
         Expr::Block(b) => gen_block(b, value)?,
         Expr::Call { name, args } => gen_call(name, args)?,
+        // A tuple literal: `(a, b)`. A 1-tuple needs the trailing comma.
+        Expr::Tuple(items) => {
+            let parts: Vec<String> = items
+                .iter()
+                .map(|x| gen_expr(x, true))
+                .collect::<Result<_, _>>()?;
+            if parts.len() == 1 {
+                format!("({},)", parts[0])
+            } else {
+                format!("({})", parts.join(", "))
+            }
+        }
         other => {
             return Err(format!(
                 "native backend: unsupported expression `{}`",
@@ -226,6 +238,11 @@ fn rust_ty(t: &Type) -> Option<String> {
             "String" => Some("String".into()),
             _ => None,
         },
+        // A tuple maps to a Rust tuple, supported when all elements are.
+        Type::Tuple(ts) => {
+            let parts: Option<Vec<String>> = ts.iter().map(rust_ty).collect();
+            parts.map(|p| format!("({})", p.join(", ")))
+        }
         _ => None,
     }
 }

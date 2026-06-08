@@ -1366,6 +1366,23 @@ mod example_tests {
         let _ = std::fs::remove_file(&rs);
     }
 
+    /// The native backend transpiles tuples (multi-value returns) and tuple
+    /// destructuring directly to Rust tuples.
+    #[test]
+    fn native_backend_supports_tuples() {
+        let p = std::env::temp_dir()
+            .join(format!("witchy_native_tup_{}.witchy", std::process::id()));
+        std::fs::write(
+            &p,
+            "fn divmod(a: Int, b: Int) -> (Int, Int):\n    (a / b, a % b)\nfn main(console: Console):\n    let (q, r) = divmod(17, 5)\n    print(console, int_to_string(q + r))\n",
+        )
+        .expect("write source");
+        let rust = crate::emit_rust_file(p.to_str().unwrap()).expect("transpile");
+        let _ = std::fs::remove_file(&p);
+        assert!(rust.contains("-> (i64, i64)"), "expected a tuple return type");
+        assert!(rust.contains("let (q, r) ="), "expected tuple destructuring");
+    }
+
     /// `for x in a..b` is a counting loop on both backends — never a materialized
     /// list — with faithful `break`/`continue`, inclusive (`..=`), empty, and
     /// nested behavior. The 100_000-iteration loop proves nothing is allocated:
