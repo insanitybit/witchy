@@ -251,16 +251,18 @@ fn main() -> wasmtime::Result<()> {
     // rustc/LLVM and runs it (or, with `-o`, just writes the binary).
     if std::env::args().nth(1).as_deref() == Some("native") {
         let args: Vec<String> = std::env::args().skip(2).collect();
-        let (out, path) = match args.as_slice() {
-            [o, out, path] if o == "-o" => (Some(out.clone()), Some(path.clone())),
-            [path] => (None, Some(path.clone())),
-            _ => (None, None),
+        // `-o <out> <file>` builds a binary; `<file> [args...]` builds and runs,
+        // forwarding the trailing arguments to the program (its argv).
+        let (out, path, prog_args) = match args.as_slice() {
+            [o, out, path] if o == "-o" => (Some(out.clone()), Some(path.clone()), Vec::new()),
+            [path, rest @ ..] => (None, Some(path.clone()), rest.to_vec()),
+            [] => (None, None, Vec::new()),
         };
         let Some(path) = path else {
-            eprintln!("usage: witchy native [-o <out>] <file.witchy>");
+            eprintln!("usage: witchy native [-o <out>] <file.witchy> [args...]");
             std::process::exit(1);
         };
-        match build_native(&path, out.as_deref()) {
+        match build_native(&path, out.as_deref(), &prog_args) {
             Ok(()) => {}
             Err(e) => {
                 eprintln!("{e}");
@@ -899,7 +901,7 @@ fn emit_rust_file(path: &str) -> Result<String, String> {
 
 /// Compile a program to a native binary via rustc/LLVM. With `out`, the binary
 /// is written there; otherwise it's built to a temp path and run immediately.
-fn build_native(path: &str, out: Option<&str>) -> Result<(), String> {
+fn build_native(path: &str, out: Option<&str>, prog_args: &[String]) -> Result<(), String> {
     let src = emit_rust_file(path)?;
     let stem = std::path::Path::new(path)
         .file_stem()
@@ -927,6 +929,7 @@ fn build_native(path: &str, out: Option<&str>) -> Result<(), String> {
     }
     if out.is_none() {
         let run = std::process::Command::new(&bin)
+            .args(prog_args)
             .status()
             .map_err(|e| format!("cannot run native binary: {e}"))?;
         let _ = std::fs::remove_file(&bin);
@@ -1348,6 +1351,45 @@ mod example_tests {
                 .output()
                 .expect("run");
             assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "file contents");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The Env capability (env vars), command-line args (`List(String)` main
+    /// param), and an `Int`-returning main as the process exit code.
+    #[test]
+    fn native_backend_env_args_exit_code() {
+        let pid = std::process::id();
+        let dir = std::env::temp_dir().join(format!("witchy_env_{pid}"));
+        let _ = std::fs::create_dir_all(&dir);
+        let src = dir.join("prog.witchy");
+        std::fs::write(
+            &src,
+            "fn main(env: Env, args: List(String), console: Console) -> Int:\n    print(console, f\"{length(args)} args\")\n    match get_env(env, \"WX_TEST\"):\n        Some(v) -> print(console, v)\n        None -> print(console, \"none\")\n    7\n",
+        )
+        .expect("write src");
+        let rust = crate::emit_rust_file(src.to_str().unwrap()).expect("transpile");
+        assert!(rust.contains("std::env::var("), "expected get_env");
+        assert!(rust.contains("std::env::args()"), "expected argv");
+        assert!(rust.contains("std::process::exit("), "expected exit-code main");
+        let rs = dir.join("prog.rs");
+        let bin = dir.join("prog_bin");
+        std::fs::write(&rs, &rust).unwrap();
+        if let Ok(s) = std::process::Command::new("rustc")
+            .args(["-O", "--edition", "2021"])
+            .arg(&rs)
+            .arg("-o")
+            .arg(&bin)
+            .status()
+        {
+            assert!(s.success(), "rustc should compile the Env program");
+            let out = std::process::Command::new(&bin)
+                .args(["alpha", "beta"])
+                .env("WX_TEST", "hi")
+                .output()
+                .expect("run");
+            assert_eq!(String::from_utf8_lossy(&out.stdout), "2 args\nhi\n");
+            assert_eq!(out.status.code(), Some(7), "exit code");
         }
         let _ = std::fs::remove_dir_all(&dir);
     }

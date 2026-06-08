@@ -118,10 +118,18 @@ fn w_dir_write(base: &std::path::Path, rel: &str, contents: &str) {
 /// a Dir is rooted at the current directory `.`, matching the interpreter).
 fn capability_grant(ty: &Type) -> Option<&'static str> {
     match ty {
-        Type::Named(n, _) if n == "Console" => Some("()"),
+        // Console and Env carry no data (their host fns reach ambient authority).
+        Type::Named(n, _) if n == "Console" || n == "Env" => Some("()"),
         Type::Named(n, _) if n == "Dir" => {
             USES_DIR.with(|f| f.set(true));
             Some("std::path::PathBuf::from(\".\")")
+        }
+        // `main(args: List(String))` receives the command-line arguments.
+        Type::Named(n, targs)
+            if n == "List"
+                && matches!(targs.as_slice(), [Type::Named(s, _)] if s == "String") =>
+        {
+            Some("std::env::args().skip(1).collect::<Vec<String>>()")
         }
         _ => None,
     }
@@ -144,7 +152,7 @@ fn fn_rust_name(f: &Function) -> String {
 fn needs_clone_at_call(t: &Option<Type>) -> bool {
     match t {
         Some(Type::Named(n, _)) => {
-            !matches!(n.as_str(), "Int" | "Float" | "Bool" | "Duration" | "Console")
+            !matches!(n.as_str(), "Int" | "Float" | "Bool" | "Duration" | "Console" | "Env")
         }
         Some(Type::Tuple(_)) => true,
         Some(Type::Fn(..)) | None => false,
@@ -572,14 +580,18 @@ fn gen_fn(f: &Function) -> Result<String, String> {
     CUR_PARAMS.with(|s| {
         *s.borrow_mut() = f.params.iter().map(|p| p.name.clone()).collect();
     });
-    let body = gen_block(&f.body, f.ret.is_some())?;
-    // main binds its granted capabilities (e.g. `console`) as locals first.
-    let body = if cap_lets.is_empty() {
-        body
-    } else {
-        format!("{{\n{cap_lets}{body}\n}}")
-    };
-    Ok(format!("fn {name}{generics}({}){ret} {body}\n", params.join(", ")))
+    let inner = gen_block(&f.body, f.ret.is_some())?;
+    if is_main {
+        // Rust's `main` returns (); a witchy `Int` return is the process exit
+        // code. Capabilities granted to main are bound as locals first.
+        let body = if f.ret.is_some() {
+            format!("{{\n{cap_lets}    std::process::exit(({inner}) as i32);\n}}")
+        } else {
+            format!("{{\n{cap_lets}{inner}\n}}")
+        };
+        return Ok(format!("fn main() {body}\n"));
+    }
+    Ok(format!("fn {name}{generics}({}){ret} {inner}\n", params.join(", ")))
 }
 
 /// Emit a block. In value position (`value`), the final `Expr` statement is the
@@ -828,6 +840,11 @@ fn gen_call(name: &str, args: &[Expr]) -> Result<String, String> {
             USES_DIR.with(|f| f.set(true));
             format!("w_dir_resolve(&({}), ({}).as_str())", arg(0)?, arg(1)?)
         }
+        // Env capability: `get_env(env, name) -> Option(String)` (the env arg, a
+        // unit, is dropped — the authority was the capability itself).
+        "get_env" if args.len() == 2 => {
+            format!("std::env::var(({}).as_str()).ok()", arg(1)?)
+        }
         // List builtins. `push`/`concat` consume the list and return it (so the
         // common `acc = push(acc, x)` is an O(1) in-place append, and Rust's
         // move-checking enforces value semantics on any reuse).
@@ -1037,9 +1054,9 @@ fn rust_ty(t: &Type) -> Option<String> {
             "Float" => Some("f64".into()),
             "Bool" => Some("bool".into()),
             "String" => Some("String".into()),
-            // Console is a no-op capability (output goes straight to stdout), so
-            // it carries no data — a unit value that can be passed around.
-            "Console" => Some("()".into()),
+            // Console/Env are no-op capability handles (a unit value passed
+            // around); their host functions reach ambient authority.
+            "Console" | "Env" => Some("()".into()),
             // A Dir capability is a confined directory root.
             "Dir" => {
                 USES_DIR.with(|f| f.set(true));
