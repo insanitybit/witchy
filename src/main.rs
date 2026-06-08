@@ -1635,6 +1635,14 @@ mod example_tests {
     fn native_backend_web_server_compiles() {
         let rust = crate::emit_rust_file("examples/serve_hello.witchy").expect("transpile");
         assert!(rust.contains("Rc<dyn Fn"), "expected handlers stored as Rc<dyn Fn>");
+        // The two richer web examples must transpile too: serve_api exercises
+        // tower-style middleware (`.layer`) plus the std `json` module, and
+        // serve_static a Dir-confined file handler routed over HTTP.
+        let api = crate::emit_rust_file("examples/serve_api.witchy").expect("transpile serve_api");
+        assert!(api.contains("Rc<dyn Fn"), "serve_api: handlers/layers as Rc<dyn Fn>");
+        let stat =
+            crate::emit_rust_file("examples/serve_static.witchy").expect("transpile serve_static");
+        assert!(stat.contains("w_dir_"), "serve_static: a Dir-confined read");
         let pid = std::process::id();
         let dir = std::env::temp_dir().join(format!("witchy_web_{pid}"));
         let _ = std::fs::create_dir_all(&dir);
@@ -1651,6 +1659,207 @@ mod example_tests {
             assert!(st.success(), "the web server should compile to a valid native binary");
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The web framework end-to-end on the native backend: an inline router with a
+    /// static route, a `:name` path-param route returning std-`json`, and a
+    /// tower-style `.layer` middleware. We compile it, run the binary as a real
+    /// server (allow-listed via `WITCHY_NET`), make HTTP requests over TCP, and
+    /// assert the responses — plus that the middleware actually executed (it logged
+    /// each request, which a handler structurally could not do without a Console).
+    #[test]
+    fn native_backend_web_server_end_to_end() {
+        use std::io::{Read, Write};
+        // Discover a free port, then let the generated server bind it.
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let addr = format!("127.0.0.1:{port}");
+        let pid = std::process::id();
+        let dir = std::env::temp_dir().join(format!("witchy_web_e2e_{pid}"));
+        let _ = std::fs::create_dir_all(&dir);
+        let src = dir.join("prog.witchy");
+        std::fs::write(
+            &src,
+            format!(
+                "import http\nimport server\nimport json\n\nfn logging(console: Console) -> fn(fn(Request) -> Response) -> fn(Request) -> Response:\n    fn(next: fn(Request) -> Response):\n        fn(req: Request):\n            print(console, f\"{{server.method(req)}} {{server.path(req)}}\")\n            next(req)\n\nfn home(req: Request) -> Response:\n    server.html(200, \"<h1>witchy web</h1>\")\n\nfn greet(req: Request) -> Response:\n    server.json_value(200, JsonObject([(\"hello\", JsonString(server.param(req, \"name\")))]))\n\nfn main(console: Console, net: Net):\n    let app = server.router()\n        .get(\"/\", home)\n        .get(\"/hello/:name\", greet)\n        .layer(logging(console))\n    print(console, \"ready\")\n    server.serve(net, \"{addr}\", app)\n"
+            ),
+        )
+        .expect("write src");
+        let rust = crate::emit_rust_file(src.to_str().unwrap()).expect("transpile");
+        let rs = dir.join("prog.rs");
+        let bin = dir.join("prog_bin");
+        std::fs::write(&rs, &rust).unwrap();
+        let Ok(st) = std::process::Command::new("rustc")
+            .args(["-O", "--edition", "2021"])
+            .arg(&rs)
+            .arg("-o")
+            .arg(&bin)
+            .status()
+        else {
+            // No rustc available in this environment: nothing to run.
+            let _ = std::fs::remove_dir_all(&dir);
+            return;
+        };
+        assert!(st.success(), "the web server should compile");
+        let logf = dir.join("out.log");
+        let log_handle = std::fs::File::create(&logf).unwrap();
+        let mut child = std::process::Command::new(&bin)
+            .env("WITCHY_NET", &addr)
+            .stdout(log_handle)
+            .spawn()
+            .expect("spawn server");
+        // Wait for the listener to come up.
+        let mut up = false;
+        for _ in 0..60 {
+            if std::net::TcpStream::connect(&addr).is_ok() {
+                up = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        if !up {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = std::fs::remove_dir_all(&dir);
+            panic!("server never started listening on {addr}");
+        }
+        let get = |path: &str| -> String {
+            let mut s = std::net::TcpStream::connect(&addr).unwrap();
+            s.set_read_timeout(Some(std::time::Duration::from_secs(2))).unwrap();
+            s.write_all(
+                format!("GET {path} HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n").as_bytes(),
+            )
+            .unwrap();
+            let mut buf = String::new();
+            let _ = s.read_to_string(&mut buf); // read to EOF (or the 2s timeout)
+            buf
+        };
+        let r_home = get("/");
+        let r_greet = get("/hello/witchy");
+        let _ = child.kill();
+        let _ = child.wait();
+        let logged = std::fs::read_to_string(&logf).unwrap_or_default();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            r_home.contains("200") && r_home.contains("<h1>witchy web</h1>"),
+            "GET / => {r_home}"
+        );
+        assert!(
+            r_greet.contains("{\"hello\":\"witchy\"}"),
+            "GET /hello/:name should return std-json => {r_greet}"
+        );
+        assert!(
+            logged.contains("GET /") && logged.contains("GET /hello/witchy"),
+            "the .layer middleware should have logged both requests => {logged:?}"
+        );
+    }
+
+    /// A static **file server** end-to-end, demonstrating the `Dir` capability over
+    /// HTTP (this is examples/serve_static.witchy's story, exercised in the suite).
+    /// The handler captures a `Dir` confined to the served root, so it serves files
+    /// inside that subtree but a path-traversal request (`../secret`, `../../etc/...`)
+    /// is denied — the confinement turns an escape into a 404, never a leak and never
+    /// a crash. We send raw, un-normalized request bytes over TCP so the *server*,
+    /// not a well-behaved client, is what must reject the escape.
+    #[test]
+    fn native_backend_file_server_end_to_end() {
+        use std::io::{Read, Write};
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let addr = format!("127.0.0.1:{port}");
+        let pid = std::process::id();
+        let dir = std::env::temp_dir().join(format!("witchy_fs_e2e_{pid}"));
+        let _ = std::fs::create_dir_all(&dir);
+        // The served root is a *subdirectory*; a secret sits one level above it, so
+        // a `../` escape would have to climb out of the Dir capability to reach it.
+        let served = dir.join("served");
+        std::fs::create_dir_all(&served).unwrap();
+        std::fs::write(served.join("greeting.txt"), "hello from a confined Dir").unwrap();
+        std::fs::write(dir.join("secret.txt"), "TOP SECRET").unwrap();
+        let src = dir.join("prog.witchy");
+        std::fs::write(
+            &src,
+            format!(
+                "import http\nimport server\n\nfn file_server(dir: Dir) -> fn(Request) -> Response:\n    fn(req: Request): serve_file(dir, server.param(req, \"path\"))\n\nfn serve_file(dir: Dir, p: String) -> Response:\n    if exists(dir, p):\n        server.text(200, read(dir, p))\n    else:\n        server.not_found()\n\nfn main(console: Console, net: Net, root: Dir):\n    let app = server.router()\n        .get(\"/files/*path\", file_server(root))\n    print(console, \"ready\")\n    server.serve(net, \"{addr}\", app)\n"
+            ),
+        )
+        .expect("write src");
+        let rust = crate::emit_rust_file(src.to_str().unwrap()).expect("transpile");
+        let rs = dir.join("prog.rs");
+        let bin = dir.join("prog_bin");
+        std::fs::write(&rs, &rust).unwrap();
+        let Ok(st) = std::process::Command::new("rustc")
+            .args(["-O", "--edition", "2021"])
+            .arg(&rs)
+            .arg("-o")
+            .arg(&bin)
+            .status()
+        else {
+            let _ = std::fs::remove_dir_all(&dir);
+            return;
+        };
+        assert!(st.success(), "the file server should compile");
+        // Run with the served subdir as cwd: the native `root: Dir` is the cwd, so
+        // the capability is confined to `served/` and cannot reach `secret.txt`.
+        let mut child = std::process::Command::new(&bin)
+            .current_dir(&served)
+            .env("WITCHY_NET", &addr)
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn file server");
+        let mut up = false;
+        for _ in 0..60 {
+            if std::net::TcpStream::connect(&addr).is_ok() {
+                up = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        if !up {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = std::fs::remove_dir_all(&dir);
+            panic!("file server never started listening on {addr}");
+        }
+        let get = |path: &str| -> String {
+            let mut s = std::net::TcpStream::connect(&addr).unwrap();
+            s.set_read_timeout(Some(std::time::Duration::from_secs(2))).unwrap();
+            // Raw, un-normalized bytes — the server must reject any traversal itself.
+            s.write_all(
+                format!("GET {path} HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n").as_bytes(),
+            )
+            .unwrap();
+            let mut buf = String::new();
+            let _ = s.read_to_string(&mut buf);
+            buf
+        };
+        let ok = get("/files/greeting.txt");
+        let missing = get("/files/missing.txt");
+        let escape_up = get("/files/../secret.txt");
+        let escape_abs = get("/files/../../etc/hosts");
+        let _ = child.kill();
+        let _ = child.wait();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            ok.contains("200") && ok.contains("hello from a confined Dir"),
+            "a file inside the served root should be served => {ok}"
+        );
+        assert!(missing.contains("404"), "a missing file should be a 404 => {missing}");
+        // The escapes must be denied: 404, and crucially the secret must NOT leak.
+        assert!(
+            escape_up.contains("404") && !escape_up.contains("TOP SECRET"),
+            "`../secret.txt` must be denied by the Dir capability, not leaked => {escape_up}"
+        );
+        assert!(
+            escape_abs.contains("404") && !escape_abs.to_lowercase().contains("localhost"),
+            "`../../etc/hosts` must be denied, not leaked => {escape_abs}"
+        );
     }
 
     /// Closures are `Rc<dyn Fn>`, so a closure can be reused — passed to several
