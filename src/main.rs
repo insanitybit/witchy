@@ -1533,6 +1533,49 @@ mod example_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// The rest of the Dir capability — `exists`, `make_dir`, `list` (sorted) —
+    /// confined like read/write, matching the interpreter.
+    #[test]
+    fn native_backend_dir_exists_make_list() {
+        let pid = std::process::id();
+        let dir = std::env::temp_dir().join(format!("witchy_dirops_{pid}"));
+        let data = dir.join("data");
+        let _ = std::fs::create_dir_all(&data);
+        std::fs::write(data.join("a.txt"), "x").expect("write data");
+        let src = dir.join("prog.witchy");
+        std::fs::write(
+            &src,
+            "fn main(dir: Dir, console: Console):\n    print(console, f\"{exists(dir, \"a.txt\")}\")\n    print(console, f\"{exists(dir, \"missing.txt\")}\")\n    print(console, f\"{exists(dir, \"../escape\")}\")\n    make_dir(dir, \"made\")\n    print(console, f\"{list(dir)}\")\n",
+        )
+        .expect("write src");
+        let rust = crate::emit_rust_file(src.to_str().unwrap()).expect("transpile");
+        assert!(rust.contains("w_dir_exists("), "expected exists");
+        assert!(rust.contains("w_dir_make("), "expected make_dir");
+        assert!(rust.contains("w_dir_list("), "expected list");
+        let rs = dir.join("prog.rs");
+        let bin = dir.join("prog_bin");
+        std::fs::write(&rs, &rust).unwrap();
+        if let Ok(st) = std::process::Command::new("rustc")
+            .args(["-O", "--edition", "2021"])
+            .arg(&rs)
+            .arg("-o")
+            .arg(&bin)
+            .status()
+        {
+            assert!(st.success(), "rustc should compile the Dir-ops program");
+            // Run with the data dir as cwd, so the Dir capability sees only it.
+            let out = std::process::Command::new(&bin)
+                .current_dir(&data)
+                .output()
+                .expect("run");
+            assert_eq!(
+                String::from_utf8_lossy(&out.stdout),
+                "true\nfalse\nfalse\n[a.txt, made]\n"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// The `sqrt` float primitive maps to Rust's `f64::sqrt`, matching the
     /// interpreter and wasm.
     #[test]

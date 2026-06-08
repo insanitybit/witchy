@@ -238,6 +238,32 @@ fn w_dir_read(base: &std::path::Path, rel: &str) -> String {
 fn w_dir_write(base: &std::path::Path, rel: &str, contents: &str) {
     std::fs::write(w_dir_resolve_write(base, rel), contents).unwrap_or_else(|e| panic!("write failed: {}", e));
 }
+fn w_dir_exists(base: &std::path::Path, rel: &str) -> bool {
+    use std::path::Component;
+    let p = std::path::Path::new(rel);
+    if p.is_absolute() { return false; }
+    for comp in p.components() {
+        match comp { Component::Normal(_) | Component::CurDir => {}, _ => return false }
+    }
+    let joined = base.join(rel);
+    match (std::fs::canonicalize(&joined), std::fs::canonicalize(base)) {
+        (Ok(real), Ok(real_base)) => real.starts_with(&real_base),
+        _ => false,
+    }
+}
+fn w_dir_make(base: &std::path::Path, name: &str) {
+    let p = w_dir_resolve_write(base, name);
+    std::fs::create_dir_all(&p).unwrap_or_else(|e| panic!("make_dir failed for `{}`: {}", p.display(), e));
+}
+fn w_dir_list(base: &std::path::Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(base)
+        .unwrap_or_else(|e| panic!("list failed for `{}`: {}", base.display(), e))
+        .filter_map(|e| e.ok())
+        .filter_map(|e| e.file_name().into_string().ok())
+        .collect();
+    names.sort();
+    names
+}
 "#;
 
 // The Net capability: a `Net` is an allow-list of `host:port`; sockets and
@@ -1488,6 +1514,18 @@ fn gen_call(name: &str, args: &[Expr]) -> Result<String, String> {
             USES_DIR.with(|f| f.set(true));
             format!("w_dir_resolve(&({}), ({}).as_str())", arg(0)?, arg(1)?)
         }
+        "exists" if args.len() == 2 => {
+            USES_DIR.with(|f| f.set(true));
+            format!("w_dir_exists(&({}), ({}).as_str())", arg(0)?, arg(1)?)
+        }
+        "make_dir" if args.len() == 2 => {
+            USES_DIR.with(|f| f.set(true));
+            format!("w_dir_make(&({}), ({}).as_str())", arg(0)?, arg(1)?)
+        }
+        "list" if args.len() == 1 => {
+            USES_DIR.with(|f| f.set(true));
+            format!("w_dir_list(&({}))", arg(0)?)
+        }
         // Env capability: `get_env(env, name) -> Option(String)` (the env arg, a
         // unit, is dropped — the authority was the capability itself).
         "get_env" if args.len() == 2 => {
@@ -1588,6 +1626,9 @@ fn gen_call(name: &str, args: &[Expr]) -> Result<String, String> {
         // Numeric conversions.
         "int_to_float" if args.len() == 1 => format!("(({}) as f64)", arg(0)?),
         "float_to_int" if args.len() == 1 => format!("(({}) as i64)", arg(0)?),
+        // Int and Duration share the i64 representation, so the conversions are
+        // the identity (matching the interpreter).
+        "int_to_duration" | "duration_to_int" if args.len() == 1 => format!("({})", arg(0)?),
         // `sqrt` is a primitive (it can't be written in witchy); f64 has it native,
         // matching the interpreter (`x.sqrt()`) and wasm (`f64.sqrt`).
         "sqrt" if args.len() == 1 => format!("({}).sqrt()", arg(0)?),
