@@ -1,0 +1,19 @@
+fn main(console: Console):
+    var total = 0
+    var y = -1.5
+    while y < 1.5:
+        var x = -2.0
+        while x < 1.0:
+            var zr = 0.0
+            var zi = 0.0
+            var i = 0
+            while i < 255 && zr * zr + zi * zi <= 4.0:
+                var nzr = zr * zr - zi * zi + x
+                var nzi = 2.0 * zr * zi + y
+                zr = nzr
+                zi = nzi
+                i = i + 1
+            total = total + i
+            x = x + 0.005
+        y = y + 0.005
+    print(console, int_to_string(total))

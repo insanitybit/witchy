@@ -1,0 +1,8 @@
+fn fib(n: Int) -> Int:
+    if n < 2:
+        n
+    else:
+        fib(n - 1) + fib(n - 2)
+
+fn main(console: Console):
+    print(console, int_to_string(fib(35)))

@@ -1,0 +1,7 @@
+fn main(console: Console):
+    var s = 0
+    var i = 0
+    while i < 100000000:
+        s = s + i
+        i = i + 1
+    print(console, int_to_string(s))
