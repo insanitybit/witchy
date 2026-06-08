@@ -1588,6 +1588,9 @@ fn gen_call(name: &str, args: &[Expr]) -> Result<String, String> {
         // Numeric conversions.
         "int_to_float" if args.len() == 1 => format!("(({}) as f64)", arg(0)?),
         "float_to_int" if args.len() == 1 => format!("(({}) as i64)", arg(0)?),
+        // `sqrt` is a primitive (it can't be written in witchy); f64 has it native,
+        // matching the interpreter (`x.sqrt()`) and wasm (`f64.sqrt`).
+        "sqrt" if args.len() == 1 => format!("({}).sqrt()", arg(0)?),
         // String builtins (deterministic; char-based ops match the interpreter).
         "string_length" if args.len() == 1 => format!("(({}).len() as i64)", arg(0)?),
         "char_count" if args.len() == 1 => format!("(({}).chars().count() as i64)", arg(0)?),

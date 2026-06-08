@@ -1533,6 +1533,38 @@ mod example_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// The `sqrt` float primitive maps to Rust's `f64::sqrt`, matching the
+    /// interpreter and wasm.
+    #[test]
+    fn native_backend_sqrt() {
+        let pid = std::process::id();
+        let dir = std::env::temp_dir().join(format!("witchy_sqrt_{pid}"));
+        let _ = std::fs::create_dir_all(&dir);
+        let src = dir.join("prog.witchy");
+        std::fs::write(
+            &src,
+            "fn main(console: Console):\n    print(console, to_string(sqrt(16.0)))\n    print(console, int_to_string(float_to_int(sqrt(144.0))))\n",
+        )
+        .expect("write src");
+        let rust = crate::emit_rust_file(src.to_str().unwrap()).expect("transpile");
+        assert!(rust.contains(".sqrt()"), "expected f64::sqrt");
+        let rs = dir.join("prog.rs");
+        let bin = dir.join("prog_bin");
+        std::fs::write(&rs, &rust).unwrap();
+        if let Ok(st) = std::process::Command::new("rustc")
+            .args(["-O", "--edition", "2021"])
+            .arg(&rs)
+            .arg("-o")
+            .arg(&bin)
+            .status()
+        {
+            assert!(st.success(), "rustc should compile the sqrt program");
+            let out = std::process::Command::new(&bin).output().expect("run");
+            assert_eq!(String::from_utf8_lossy(&out.stdout), "4\n12\n");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Showing user records/enums (`Point(3, 4)`, `Circle(7)`, `Dot`) matches the
     /// interpreter, including a list of them — gated by a showability fixpoint.
     #[test]
