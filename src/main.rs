@@ -1533,6 +1533,38 @@ mod example_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Value semantics for a reused binding used as a *value* (not just a call
+    /// arg): `let ys = xs` and a branch result keep the source usable afterward
+    /// (cloned, not moved). Regression guard for last-use move elision.
+    #[test]
+    fn native_backend_value_reuse() {
+        let pid = std::process::id();
+        let dir = std::env::temp_dir().join(format!("witchy_vreuse_{pid}"));
+        let _ = std::fs::create_dir_all(&dir);
+        let src = dir.join("prog.witchy");
+        std::fs::write(
+            &src,
+            "fn pick(c: Bool, s: String) -> String:\n    let head = if c:\n        s\n    else:\n        substring(s, 0, 1)\n    f\"{head}|{s}\"\n\nfn main(console: Console):\n    let xs = [1, 2, 3]\n    let ys = xs\n    print(console, f\"{length(xs)}+{length(ys)}\")\n    print(console, pick(true, \"abc\"))\n    print(console, pick(false, \"abc\"))\n",
+        )
+        .expect("write src");
+        let rust = crate::emit_rust_file(src.to_str().unwrap()).expect("transpile");
+        let rs = dir.join("prog.rs");
+        let bin = dir.join("prog_bin");
+        std::fs::write(&rs, &rust).unwrap();
+        if let Ok(st) = std::process::Command::new("rustc")
+            .args(["-O", "--edition", "2021"])
+            .arg(&rs)
+            .arg("-o")
+            .arg(&bin)
+            .status()
+        {
+            assert!(st.success(), "rustc should compile the value-reuse program");
+            let out = std::process::Command::new(&bin).output().expect("run");
+            assert_eq!(String::from_utf8_lossy(&out.stdout), "3+3\nabc|abc\na|abc\n");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Python-style f-strings: `f"...{expr}..."` interpolates (with `{{`/`}}` for
     /// literal braces), desugaring to `to_string` + concat — same result on both
     /// backends.

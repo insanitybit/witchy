@@ -52,11 +52,35 @@ thread_local! {
     /// use is their last (single, loop-free) use in scope — last-use elision. Lets
     /// recursive traversals pass subtrees by move instead of deep-cloning them.
     static MOVEABLE: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+    /// Variables holding a closure (`impl Fn`): they can't be cloned (no `Clone`),
+    /// so a value position moves them. Function params of `Fn` type, and `let`s
+    /// bound directly to a lambda.
+    static NOCLONE: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
 }
 
 /// Whether a bare variable may be moved (rather than cloned) at this use.
 fn is_moveable(name: &str) -> bool {
     MOVEABLE.with(|m| m.borrow().contains(name))
+}
+
+/// Whether a variable must NOT be cloned — a closure (`impl Fn`, which isn't
+/// `Clone`). Such a value is always moved into a value position.
+fn is_noclone(name: &str) -> bool {
+    NOCLONE.with(|m| m.borrow().contains(name))
+}
+
+/// Render an expression in a *value* position (a `let`/assign value, a block or
+/// branch tail, a constructor argument, a list/tuple element). A bare variable
+/// is cloned here — value semantics: the binding stays usable afterward — unless
+/// this is its last use (then moved) or it's a closure (which can't be cloned).
+fn gen_value(e: &Expr) -> Result<String, String> {
+    if let Expr::Var(v) = e {
+        if is_moveable(v) || is_noclone(v) {
+            return Ok(v.clone());
+        }
+        return Ok(format!("({v}).clone()"));
+    }
+    gen_expr(e, true)
 }
 
 /// witchy's `Dict` maps to a real `HashMap` with a fast, non-DoS-resistant hash
@@ -285,7 +309,7 @@ fn needs_clone_at_call(t: &Option<Type>) -> bool {
 /// Clone an argument for value semantics only if it's a reused binding (a bare
 /// variable); a temporary is a fresh value and is moved.
 fn clone_if_var(arg: &Expr, rendered: String) -> String {
-    if matches!(arg, Expr::Var(v) if !is_moveable(v)) {
+    if matches!(arg, Expr::Var(v) if !is_moveable(v) && !is_noclone(v)) {
         format!("({rendered}).clone()")
     } else {
         rendered
@@ -414,6 +438,14 @@ fn count_uses_block(b: &Block, name: &str, in_loop: bool, total: &mut usize, loo
 fn last_use_in_expr(body: &Expr, name: &str) -> bool {
     let (mut total, mut looped) = (0, 0);
     count_uses(body, name, false, &mut total, &mut looped);
+    total == 1 && looped == 0
+}
+
+/// Is `name` used exactly once (loop-free) across a whole block? Used for params,
+/// which are in scope for the entire body — a single loop-free use is the last.
+fn last_use_in_block(b: &Block, name: &str) -> bool {
+    let (mut total, mut looped) = (0, 0);
+    count_uses_block(b, name, false, &mut total, &mut looped);
     total == 1 && looped == 0
 }
 
@@ -872,6 +904,21 @@ fn gen_fn(f: &Function) -> Result<String, String> {
     CUR_PARAMS.with(|s| {
         *s.borrow_mut() = f.params.iter().map(|p| p.name.clone()).collect();
     });
+    // Per-function last-use state. A param used exactly once (loop-free) can be
+    // moved at that use; a closure param can't be cloned, so it's always moved.
+    MOVEABLE.with(|m| m.borrow_mut().clear());
+    NOCLONE.with(|m| m.borrow_mut().clear());
+    for p in &f.params {
+        if matches!(&p.ty, Some(Type::Fn(..))) {
+            NOCLONE.with(|m| {
+                m.borrow_mut().insert(p.name.clone());
+            });
+        } else if last_use_in_block(&f.body, &p.name) {
+            MOVEABLE.with(|m| {
+                m.borrow_mut().insert(p.name.clone());
+            });
+        }
+    }
     let inner = gen_block(&f.body, f.ret.is_some())?;
     if is_main {
         // Rust's `main` returns (); a witchy `Int` return is the process exit
@@ -949,10 +996,10 @@ fn gen_stmt(s: &Stmt, tail: bool) -> Result<String, String> {
     Ok(match s {
         Stmt::Let { name, mutable, value } => {
             let m = if *mutable { "mut " } else { "" };
-            format!("let {m}{name} = {};", gen_expr(value, true)?)
+            format!("let {m}{name} = {};", gen_value(value)?)
         }
-        Stmt::Assign { name, value } => format!("{name} = {};", gen_expr(value, true)?),
-        Stmt::Return(Some(e)) => format!("return {};", gen_expr(e, true)?),
+        Stmt::Assign { name, value } => format!("{name} = {};", gen_value(value)?),
+        Stmt::Return(Some(e)) => format!("return {};", gen_value(e)?),
         Stmt::Return(None) => "return;".into(),
         Stmt::Break => "break;".into(),
         Stmt::Continue => "continue;".into(),
@@ -983,10 +1030,10 @@ fn gen_stmt(s: &Stmt, tail: bool) -> Result<String, String> {
             };
             format!("{target} = {call};")
         }
-        Stmt::Expr(e) if tail => gen_expr(e, true)?,
+        Stmt::Expr(e) if tail => gen_value(e)?,
         Stmt::Expr(e) => format!("{};", gen_expr(e, false)?),
         Stmt::LetTuple { names, value } => {
-            format!("let ({}) = {};", names.join(", "), gen_expr(value, true)?)
+            format!("let ({}) = {};", names.join(", "), gen_value(value)?)
         }
         Stmt::Yield(_) => return Err("native backend: `yield` is not supported".into()),
     })
@@ -1089,7 +1136,11 @@ fn gen_expr(e: &Expr, value: bool) -> Result<String, String> {
                         }
                     });
                 }
-                let body = gen_expr(&arm.body, value)?;
+                let body = if value {
+                    gen_value(&arm.body)?
+                } else {
+                    gen_expr(&arm.body, false)?
+                };
                 for (b, was) in saved {
                     MOVEABLE.with(|m| {
                         if was {
@@ -1116,7 +1167,7 @@ fn gen_expr(e: &Expr, value: bool) -> Result<String, String> {
             if name == "None" {
                 "None".to_string()
             } else {
-                format!("{name}({})", gen_expr(&args[0], true)?)
+                format!("{name}({})", gen_value(&args[0])?)
             }
         }
         Expr::Ctor { name, args } => {
@@ -1127,7 +1178,7 @@ fn gen_expr(e: &Expr, value: bool) -> Result<String, String> {
                 let parts: Result<Vec<String>, String> = fnames
                     .iter()
                     .zip(args)
-                    .map(|(fname, a)| Ok(format!("{fname}: {}", gen_expr(a, true)?)))
+                    .map(|(fname, a)| Ok(format!("{fname}: {}", gen_value(a)?)))
                     .collect();
                 format!("{name} {{ {} }}", parts?.join(", "))
             } else if let Some(en) = VARIANT_TO_ENUM.with(|m| m.borrow().get(name).cloned()) {
@@ -1139,7 +1190,7 @@ fn gen_expr(e: &Expr, value: bool) -> Result<String, String> {
                         .iter()
                         .enumerate()
                         .map(|(i, a)| {
-                            let s = gen_expr(a, true)?;
+                            let s = gen_value(a)?;
                             // A recursive field is `Box`ed.
                             let b = boxed.as_ref().is_some_and(|v| v.get(i) == Some(&true));
                             Ok(if b { format!("Box::new({s})") } else { s })
@@ -1160,7 +1211,7 @@ fn gen_expr(e: &Expr, value: bool) -> Result<String, String> {
         Expr::RecordUpdate { base, fields } => {
             let mut out = format!("{{ let mut __r = ({}).clone();", gen_expr(base, true)?);
             for (f, v) in fields {
-                out.push_str(&format!(" __r.{f} = {};", gen_expr(v, true)?));
+                out.push_str(&format!(" __r.{f} = {};", gen_value(v)?));
             }
             out.push_str(" __r }");
             out
@@ -1188,7 +1239,7 @@ fn gen_expr(e: &Expr, value: bool) -> Result<String, String> {
         Expr::List(items) => {
             let parts: Vec<String> = items
                 .iter()
-                .map(|x| gen_expr(x, true))
+                .map(gen_value)
                 .collect::<Result<_, _>>()?;
             format!("vec![{}]", parts.join(", "))
         }
@@ -1196,7 +1247,7 @@ fn gen_expr(e: &Expr, value: bool) -> Result<String, String> {
         Expr::Tuple(items) => {
             let parts: Vec<String> = items
                 .iter()
-                .map(|x| gen_expr(x, true))
+                .map(gen_value)
                 .collect::<Result<_, _>>()?;
             if parts.len() == 1 {
                 format!("({},)", parts[0])
@@ -1405,7 +1456,7 @@ fn gen_call(name: &str, args: &[Expr]) -> Result<String, String> {
                     // (call result, literal, field read — already a fresh value)
                     // is moved, as is a binding at its last use (see MOVEABLE).
                     let clone = clones.as_ref().is_some_and(|c| c.get(i) == Some(&true))
-                        && matches!(x, Expr::Var(v) if !is_moveable(v));
+                        && matches!(x, Expr::Var(v) if !is_moveable(v) && !is_noclone(v));
                     Ok(if clone { format!("({s}).clone()") } else { s })
                 })
                 .collect::<Result<Vec<String>, String>>()?;
