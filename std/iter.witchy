@@ -127,6 +127,19 @@ fn take_while_step(s: Step(a), pred: fn(a) -> Bool) -> Step(a):
             else:
                 Empty
 
+// Skip the leading elements while `pred` holds, then yield the rest.
+pub fn drop_while(it: Iter(a), pred: fn(a) -> Bool) -> Iter(a):
+    Iter(fn(): drop_while_step(it, pred))
+
+fn drop_while_step(it: Iter(a), pred: fn(a) -> Bool) -> Step(a):
+    match next(it):
+        Empty -> Empty
+        Item(x, rest) ->
+            if pred(x):
+                drop_while_step(rest, pred)
+            else:
+                Item(x, rest)
+
 // Skip the first `k` elements.
 pub fn drop(it: Iter(a), k: Int) -> Iter(a):
     if k <= 0:
@@ -229,6 +242,15 @@ pub fn count(it: Iter(a)) -> Int:
 // Sum of an Int iterator.
 pub fn sum(it: Iter(Int)) -> Int:
     fold(it, 0, fn(acc: Int, x: Int): acc + x)
+
+// Split an iterator into its first element and the rest, or None if it is
+// empty. The building block for writing your own recursive iterator transforms
+// (e.g. a prime sieve): pair it with `unfold`, which threads the "rest" as its
+// seed.
+pub fn split_first(it: Iter(a)) -> Option((a, Iter(a))):
+    match next(it):
+        Empty -> None
+        Item(x, rest) -> Some((x, rest))
 
 // The first element satisfying `pred`, or None (stops at the first match, so it
 // is safe on an unbounded iterator if a match exists).

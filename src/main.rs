@@ -5025,6 +5025,23 @@ impl Counter:
         assert_eq!(shown("serve"), "Net[Listen]");
     }
 
+    /// `split_first` + `drop_while` let a user write their own iterator
+    /// transforms — here `dedup` (drop consecutive duplicates), composed with
+    /// `unfold`. Must agree on both backends.
+    #[test]
+    fn std_iter_split_first_dedup_backends_agree() {
+        let client = std::fs::read_to_string("examples/dedup.witchy").unwrap();
+        let sources = [
+            ("iter", crate::bundled_module("iter").unwrap()),
+            ("string", crate::bundled_module("string").unwrap()),
+            ("main", client.as_str()),
+        ];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "dedup diverged");
+        assert_eq!(compiled, vec!["1 2 3 2 4".to_string()]);
+    }
+
     /// The `std/iter` adapters `enumerate`/`zip`/`chain`/`flat_map`/`for_each`
     /// (plus `func.first`/`second` for the pairs they produce) must agree on both
     /// backends — they compose lazily over finite and infinite iterators.
