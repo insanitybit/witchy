@@ -1453,6 +1453,28 @@ mod example_tests {
         assert!(rust.contains("Some(") && rust.contains("None"), "expected Some/None");
     }
 
+    /// Lists map to `Vec<T>`: literals, `push`/`length`/`at`, and `for`-over-list,
+    /// with collection arguments cloned at the call site so value semantics hold
+    /// (the caller keeps its list after passing it).
+    #[test]
+    fn native_backend_supports_lists() {
+        let p = std::env::temp_dir()
+            .join(format!("witchy_native_list_{}.witchy", std::process::id()));
+        std::fs::write(
+            &p,
+            "fn sum(xs: List(Int)) -> Int:\n    var t = 0\n    for x in xs:\n        t = t + x\n    t\nfn main(console: Console):\n    var acc = []\n    for i in 0..4:\n        acc = push(acc, i * i)\n    print(console, int_to_string(sum(acc)))\n    print(console, int_to_string(length(acc)))\n",
+        )
+        .expect("write source");
+        let rust = crate::emit_rust_file(p.to_str().unwrap()).expect("transpile");
+        let _ = std::fs::remove_file(&p);
+        assert!(rust.contains("Vec<i64>"), "expected a Vec<i64> list type");
+        assert!(rust.contains(".push("), "expected an in-place push");
+        assert!(
+            rust.contains("(acc).clone()"),
+            "expected the list arg cloned at the call so the caller keeps it"
+        );
+    }
+
     /// `for x in a..b` is a counting loop on both backends — never a materialized
     /// list — with faithful `break`/`continue`, inclusive (`..=`), empty, and
     /// nested behavior. The 100_000-iteration loop proves nothing is allocated:
