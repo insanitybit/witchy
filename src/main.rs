@@ -2032,6 +2032,83 @@ mod example_tests {
         }
     }
 
+    /// Security: an actor's capability confinement holds in a *compiled* binary,
+    /// through the actor boundary. A `Reader` actor is handed a `Dir` attenuated to
+    /// `<base>/data` (via `subdir`), carried in an actor field, and used inside a
+    /// message handler. A granted file reads fine; a path-traversal message
+    /// (`../secret.txt`) is denied by the Dir capability — the binary exits non-zero
+    /// and the secret one directory up never leaks. The interpreter agrees (reads
+    /// the granted file, errors on the escape), so the guarantee is identical
+    /// whether interpreted or compiled — something Go's runtime cannot express.
+    #[test]
+    fn native_backend_actor_capability_confinement() {
+        let pid = std::process::id();
+        let base = std::env::temp_dir().join(format!("witchy_actorcap_{pid}"));
+        let _ = std::fs::create_dir_all(base.join("data"));
+        std::fs::write(base.join("data/greeting.txt"), "hello from a confined Dir").unwrap();
+        std::fs::write(base.join("secret.txt"), "TOP SECRET").unwrap();
+        let src = base.join("reader.witchy");
+        std::fs::write(
+            &src,
+            "actor Reader:\n    console: Console\n    dir: Dir\n\nimpl Reader:\n    on Read(name: String):\n        print(console, read(dir, name))\n\nfn main(console: Console, args: List(String), root: Dir):\n    let data = subdir(root, \"data\")\n    let r = spawn Reader(console, data)\n    send(r, Read(at(args, 0)))\n",
+        )
+        .unwrap();
+        let rust = crate::emit_rust_file(src.to_str().unwrap()).expect("transpile");
+        assert!(rust.contains("fn w_run_actors"), "actor runtime should be emitted");
+        assert!(rust.contains("escapes the Dir capability"), "Dir confinement helper expected");
+
+        // Interpreter (source of truth): reads the granted file, errors on escape.
+        let (linked, _) = crate::link_file(src.to_str().unwrap()).expect("link");
+        let interp_ok =
+            interpreter::run_module_args(linked, &base, Vec::new(), vec!["greeting.txt".into()])
+                .expect("interp granted read")
+                .join("\n");
+        assert_eq!(interp_ok, "hello from a confined Dir");
+        let (linked2, _) = crate::link_file(src.to_str().unwrap()).expect("link");
+        assert!(
+            interpreter::run_module_args(linked2, &base, Vec::new(), vec!["../secret.txt".into()])
+                .is_err(),
+            "interpreter must deny the traversal escape"
+        );
+
+        let rs = base.join("reader.rs");
+        let bin = base.join("reader_bin");
+        std::fs::write(&rs, &rust).unwrap();
+        if let Ok(st) = std::process::Command::new("rustc")
+            .args(["-O", "-C", "overflow-checks=off", "--edition", "2021"])
+            .arg(&rs)
+            .arg("-o")
+            .arg(&bin)
+            .status()
+        {
+            assert!(st.success(), "rustc should compile the actor program");
+            // Granted file: served, exit 0, byte-identical to the interpreter.
+            let ok = std::process::Command::new(&bin)
+                .arg("greeting.txt")
+                .current_dir(&base)
+                .output()
+                .expect("run granted");
+            assert!(ok.status.success(), "granted read should succeed");
+            assert_eq!(String::from_utf8_lossy(&ok.stdout), "hello from a confined Dir\n");
+            // Traversal: denied by the Dir capability — non-zero exit, no leak.
+            let esc = std::process::Command::new(&bin)
+                .arg("../secret.txt")
+                .current_dir(&base)
+                .output()
+                .expect("run escape");
+            assert!(!esc.status.success(), "the traversal escape must be denied (non-zero exit)");
+            assert!(
+                !String::from_utf8_lossy(&esc.stdout).contains("TOP SECRET"),
+                "the secret one directory up must never leak"
+            );
+            assert!(
+                String::from_utf8_lossy(&esc.stderr).contains("escapes the Dir capability"),
+                "denial should cite the Dir capability"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
     /// A `-> Nil` (unit) return type, and an enum recursive through a collection
     /// (`JsonArray(List(Json))`) registered before its fields are computed.
     #[test]
