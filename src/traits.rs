@@ -422,7 +422,7 @@ fn head_type_name(
         // `!` yields Bool; `-`/`~` preserve the operand's type (so `-5` is Int).
         Expr::Unary { op, expr } => match op {
             UnOp::Not => Some("Bool".into()),
-            UnOp::Neg | UnOp::BitNot => head_type_name(expr, scope, ctor_results, fn_rets),
+            UnOp::Neg | UnOp::BitNot | UnOp::Move => head_type_name(expr, scope, ctor_results, fn_rets),
         },
         // Comparisons/logic yield Bool; `<>` yields String; arithmetic and
         // bitwise ops have the type of their (left) operand.
