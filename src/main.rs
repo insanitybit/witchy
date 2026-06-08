@@ -1533,6 +1533,38 @@ mod example_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Closures are `Rc<dyn Fn>`, so a closure can be reused — passed to several
+    /// calls / applied repeatedly — without a move error (the refcount clones).
+    #[test]
+    fn native_backend_closure_reuse() {
+        let pid = std::process::id();
+        let dir = std::env::temp_dir().join(format!("witchy_creuse_{pid}"));
+        let _ = std::fs::create_dir_all(&dir);
+        let src = dir.join("prog.witchy");
+        std::fs::write(
+            &src,
+            "import list\n\nfn apply_twice(f: fn(Int) -> Int, x: Int) -> Int:\n    f(f(x))\n\nfn main(console: Console):\n    let add1 = fn(n: Int): n + 1\n    print(console, int_to_string(apply_twice(add1, 10)))\n    let ys = list.map([1, 2, 3], add1)\n    print(console, int_to_string(list.sum(ys)))\n",
+        )
+        .expect("write src");
+        let rust = crate::emit_rust_file(src.to_str().unwrap()).expect("transpile");
+        assert!(rust.contains("Rc<dyn Fn"), "expected Rc<dyn Fn> closures");
+        let rs = dir.join("prog.rs");
+        let bin = dir.join("prog_bin");
+        std::fs::write(&rs, &rust).unwrap();
+        if let Ok(st) = std::process::Command::new("rustc")
+            .args(["-O", "--edition", "2021"])
+            .arg(&rs)
+            .arg("-o")
+            .arg(&bin)
+            .status()
+        {
+            assert!(st.success(), "rustc should compile the closure-reuse program");
+            let out = std::process::Command::new(&bin).output().expect("run");
+            assert_eq!(String::from_utf8_lossy(&out.stdout), "12\n9\n");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Generic structural `==`: a function comparing values of a type variable
     /// gets a `PartialEq` bound (only when it actually uses `==`/`!=`).
     #[test]
@@ -1991,7 +2023,7 @@ mod example_tests {
         )
         .expect("write src");
         let rust = crate::emit_rust_file(src.to_str().unwrap()).expect("transpile");
-        assert!(rust.contains(", w_"), "expected a named fn passed as a value (`, w_*`)");
+        assert!(rust.contains("Rc::new(w_"), "expected a named fn passed as a value (`Rc::new(w_*)`)");
         let rs = dir.join("prog.rs");
         let bin = dir.join("prog_bin");
         std::fs::write(&rs, &rust).unwrap();
@@ -2249,7 +2281,7 @@ mod example_tests {
     }
 
     /// Generic higher-order functions: type variables become Rust generics,
-    /// `fn(a)->b` params become `impl Fn(..)`, lambdas become closures (with
+    /// `fn(a)->b` params become `Rc<dyn Fn(..)>`, lambdas become `Rc::new(..)` (with
     /// captures), and a call to a function-valued parameter calls it directly.
     #[test]
     fn native_backend_supports_generics_and_closures() {
@@ -2263,7 +2295,7 @@ mod example_tests {
         let rust = crate::emit_rust_file(p.to_str().unwrap()).expect("transpile");
         let _ = std::fs::remove_file(&p);
         assert!(rust.contains("<A: Clone, B: Clone>"), "expected generic params");
-        assert!(rust.contains("impl Fn(A) -> B"), "expected fn-type param");
+        assert!(rust.contains("Rc<dyn Fn(A) -> B>"), "expected fn-type param");
         assert!(rust.contains("|n|"), "expected a closure for the lambda");
         assert!(rust.contains("(f)("), "expected a direct call of the fn param");
     }
@@ -2287,7 +2319,7 @@ mod example_tests {
         let _ = std::fs::remove_dir(&dir);
         assert!(rust.contains("w_list_map"), "expected stdlib map transpiled");
         assert!(rust.contains("w_list_filter"), "expected stdlib filter transpiled");
-        assert!(rust.contains("impl Fn"), "expected fn-type params");
+        assert!(rust.contains("Rc<dyn Fn"), "expected fn-type params");
     }
 
     /// Generic user records/enums become generic Rust structs/enums, with type

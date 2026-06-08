@@ -145,10 +145,11 @@ fn is_moveable(name: &str) -> bool {
     MOVEABLE.with(|m| m.borrow().contains(name))
 }
 
-/// Whether a variable must NOT be cloned — a closure (`impl Fn`, which isn't
-/// `Clone`). Such a value is always moved into a value position.
-fn is_noclone(name: &str) -> bool {
-    NOCLONE.with(|m| m.borrow().contains(name))
+/// Whether a variable must NOT be cloned. Closures are now `Rc<dyn Fn>` (cheaply
+/// cloneable), so nothing is no-clone — kept as a hook in case a future
+/// non-cloneable value type appears.
+fn is_noclone(_name: &str) -> bool {
+    false
 }
 
 /// Render an expression in a *value* position (a `let`/assign value, a block or
@@ -160,7 +161,7 @@ fn gen_value(e: &Expr) -> Result<String, String> {
         // A function value (fn item) or a closure isn't cloned; nor is a binding
         // at its last use. Everything else clones to preserve value semantics.
         if is_fn_ref(v) {
-            return Ok(format!("w_{}", ident(v)));
+            return Ok(format!("std::rc::Rc::new(w_{})", ident(v)));
         }
         if is_moveable(v) || is_noclone(v) {
             return Ok(v.clone());
@@ -456,7 +457,10 @@ fn needs_clone_at_call(t: &Option<Type>) -> bool {
             )
         }
         Some(Type::Tuple(_)) => true,
-        Some(Type::Fn(..)) | None => false,
+        // A function is now `Rc<dyn Fn>` — cheap to clone, so a reused closure
+        // argument is cloned (the refcount) rather than moved.
+        Some(Type::Fn(..)) => true,
+        None => false,
     }
 }
 
@@ -1457,7 +1461,7 @@ fn gen_expr(e: &Expr, value: bool) -> Result<String, String> {
         Expr::Str(s) => format!("{s:?}.to_string()"),
         // A bare identifier that names a top-level function is a first-class
         // function value -> its Rust `w_*` item (a fn item, which is `impl Fn`).
-        Expr::Var(v) if is_fn_ref(v) => format!("w_{}", ident(v)),
+        Expr::Var(v) if is_fn_ref(v) => format!("std::rc::Rc::new(w_{})", ident(v)),
         Expr::Var(v) => v.clone(),
         Expr::Unary { op, expr } => {
             let inner = gen_expr(expr, true)?;
@@ -1677,10 +1681,13 @@ fn gen_expr(e: &Expr, value: bool) -> Result<String, String> {
                 .iter()
                 .map(|v| format!("let {v} = ({v}).clone(); "))
                 .collect();
+            // A lambda is wrapped in `Rc::new` so it is the uniform `Rc<dyn Fn>`
+            // closure value (cloneable, escapable). It coerces to `dyn Fn` where
+            // the slot type is known (a call argument, field, return).
             if clones.is_empty() {
-                format!("move |{}| {}", ps.join(", "), body_str)
+                format!("std::rc::Rc::new(move |{}| {})", ps.join(", "), body_str)
             } else {
-                format!("{{ {clones}move |{}| {} }}", ps.join(", "), body_str)
+                format!("std::rc::Rc::new({{ {clones}move |{}| {} }})", ps.join(", "), body_str)
             }
         }
         // Applying a function value: `f(args)`. Reused-binding args cloned.
@@ -2201,11 +2208,13 @@ fn rust_ty(t: &Type) -> Option<String> {
             let parts: Option<Vec<String>> = ts.iter().map(rust_ty).collect();
             parts.map(|p| format!("({})", p.join(", ")))
         }
-        // A function type -> a callable. `impl Fn(..) -> R` works in parameter
-        // position (the common case: a higher-order function's callback).
+        // A function type -> a reference-counted trait object, uniformly in every
+        // position (param, return, field, collection element). `Rc<dyn Fn>` is
+        // cheaply `Clone`able, so a closure can be reused (passed to several
+        // calls), stored in a value type, and escape — unlike a bare `impl Fn`.
         Type::Fn(args, ret) => {
             let ps: Option<Vec<String>> = args.iter().map(rust_ty).collect();
-            Some(format!("impl Fn({}) -> {}", ps?.join(", "), rust_ty(ret)?))
+            Some(format!("std::rc::Rc<dyn Fn({}) -> {}>", ps?.join(", "), rust_ty(ret)?))
         }
     }
 }
