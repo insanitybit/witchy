@@ -1,0 +1,12 @@
+// Closure-call benchmark: invoke a first-class function (an `Rc<dyn Fn>` on the
+// native backend) several million times in a tight loop. Measures closure-call
+// overhead (heap pointer + indirect call), the same shape Go's func values have.
+
+fn main(console: Console):
+    let f = fn(x: Int): x % 7
+    var total = 0
+    var i = 0
+    while i < 5000000:
+        total = total + f(i)
+        i = i + 1
+    print(console, int_to_string(total))
