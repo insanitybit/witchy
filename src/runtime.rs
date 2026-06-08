@@ -122,20 +122,42 @@ pub struct Runtime {
     engine: Engine,
     mailboxes: Arc<Mailboxes>,
     next_id: ActorId,
+    preempt: bool,
 }
 
 impl Runtime {
+    /// A runtime whose actors can be preempted by the scheduler advancing the
+    /// engine epoch (M4). Epoch interruption makes the JIT insert a check at
+    /// every loop backedge and call, so for run-to-completion single-program
+    /// execution prefer [`Runtime::batch`], which omits that per-iteration cost.
     pub fn new() -> Result<Self> {
+        Self::with_preemption(true)
+    }
+
+    /// A runtime for run-to-completion execution — the `sandbox`/benchmark path
+    /// and differential WASM runs. No epoch interruption, so the generated code
+    /// runs without per-backedge preemption checks (a measurable speedup on
+    /// tight loops and recursion). There is no scheduler to preempt it; the
+    /// capability sandbox (only granted host fns, capped linear memory) is still
+    /// fully in force, so this is a speed choice, not a security relaxation.
+    pub fn batch() -> Result<Self> {
+        Self::with_preemption(false)
+    }
+
+    fn with_preemption(preempt: bool) -> Result<Self> {
         let mut config = Config::new();
-        // Enable epoch-based interruption so the scheduler can preempt a
-        // runaway actor (exercised in M4). Normal runs set a deadline that is
-        // never reached.
-        config.epoch_interruption(true);
+        // Epoch-based interruption lets the scheduler preempt a runaway actor
+        // (exercised in M4). It is only worth its per-backedge cost when a
+        // scheduler will actually advance the epoch.
+        if preempt {
+            config.epoch_interruption(true);
+        }
         let engine = Engine::new(&config)?;
         Ok(Self {
             engine,
             mailboxes: Arc::new(Mailboxes::default()),
             next_id: 1,
+            preempt,
         })
     }
 
@@ -171,7 +193,10 @@ impl Runtime {
         store.limiter(|s| &mut s.limits);
         // Deadline of 1 epoch; we never advance the engine epoch during a
         // normal run, so this is never tripped. M4 advances it to preempt.
-        store.set_epoch_deadline(1);
+        // Only meaningful when the engine has epoch interruption enabled.
+        if self.preempt {
+            store.set_epoch_deadline(1);
+        }
 
         let mut linker: Linker<ActorState> = Linker::new(&self.engine);
         // --- capability wiring: only granted host functions are defined ---

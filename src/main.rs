@@ -860,7 +860,9 @@ fn run_file_sandboxed(path: &str) -> Result<Vec<String>, String> {
 /// `run` export, and return the captured output lines.
 fn run_wat_capture(wat: &str) -> Result<Vec<String>, String> {
     use crate::runtime::{Capabilities, Runtime};
-    let mut rt = Runtime::new().map_err(|e| e.to_string())?;
+    // Run-to-completion: no scheduler, so use the non-preempting engine, which
+    // omits the per-backedge epoch check and runs tight loops at full speed.
+    let mut rt = Runtime::batch().map_err(|e| e.to_string())?;
     let mut actor = rt
         .spawn(
             wat.as_bytes(),

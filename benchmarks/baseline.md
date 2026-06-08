@@ -7,7 +7,7 @@ compiled backend (WAT -> wasmtime), measured end-to-end including its
 
 | benchmark | witchy-wasm (ms) | go (ms) | vs go |
 |-----------|-----------------:|--------:|------:|
-| fib | 63.7 | 35.8 | 1.78x |
-| loop_sum | 58.7 | 41.7 | 1.41x |
-| collatz | 236.3 | 164.1 | 1.44x |
-| mandelbrot | 75.3 | 48.7 | 1.55x |
+| fib | 48.2 | 33.3 | 1.45x |
+| loop_sum | 43.5 | 38.6 | 1.13x |
+| collatz | 220.8 | 173.9 | 1.27x |
+| mandelbrot | 56.0 | 49.7 | 1.13x |
