@@ -12,9 +12,23 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use wasmtime::{
-    bail, Caller, Config, Engine, Error, Extern, Linker, Memory, Module, Result, Store,
-    StoreLimits, StoreLimitsBuilder,
+    bail, Cache, CacheConfig, Caller, Config, Engine, Error, Extern, Linker, Memory, Module,
+    Result, Store, StoreLimits, StoreLimitsBuilder,
 };
+
+/// An on-disk Cranelift compilation cache so re-running the same program skips
+/// recompiling its WAT (the ~3 ms compile cost). Keyed by wasm content +
+/// wasmtime version, so it is transparent and self-invalidating. Best-effort:
+/// returns `None` if a cache directory can't be set up.
+fn compilation_cache() -> Option<Cache> {
+    let base = std::env::var_os("XDG_CACHE_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".cache")))
+        .unwrap_or_else(std::env::temp_dir);
+    let mut cfg = CacheConfig::new();
+    cfg.with_directory(base.join("witchy").join("wasm"));
+    Cache::new(cfg).ok()
+}
 
 pub type ActorId = u32;
 
@@ -151,6 +165,11 @@ impl Runtime {
         // scheduler will actually advance the epoch.
         if preempt {
             config.epoch_interruption(true);
+        } else if let Some(cache) = compilation_cache() {
+            // The batch path re-runs the same program across invocations (a CLI
+            // re-run, a benchmark loop); caching the compile makes the second
+            // run onward skip Cranelift.
+            config.cache(Some(cache));
         }
         let engine = Engine::new(&config)?;
         Ok(Self {
