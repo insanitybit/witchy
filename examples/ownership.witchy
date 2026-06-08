@@ -1,9 +1,9 @@
-// `sink` transfers ownership. `into_label` consumes its argument, so after
-// `into_label(name)` the caller may not use `name` again — the type checker
-// rejects use-after-move. (A `var` could be reassigned to re-initialize it.)
-// `let` borrows (the default) just read, leaving the value usable.
+// `own` transfers ownership (spelled `sink` in Hylo). `into_label` consumes its
+// argument, so after `into_label(name)` the caller may not use `name` again — the
+// type checker rejects use-after-move. (A `var` could be reassigned to
+// re-initialize it.) See examples/conventions.witchy for the full set.
 
-fn into_label(sink name: String) -> String:
+fn into_label(own name: String) -> String:
     "[" <> name <> "]"
 
 fn main(console: Console):

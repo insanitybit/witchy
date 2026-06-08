@@ -1898,6 +1898,95 @@ mod example_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// The parameter conventions (`var`/`let`/`own` + `move`) behave identically
+    /// on the interpreter, WASM, and native backends — value semantics are
+    /// preserved regardless of which knob the author reaches for. `var` writes
+    /// back, `let` borrows (read-only), `own` consumes, a bare param is owned, and
+    /// `move x` transfers ownership.
+    #[test]
+    fn conventions_backends_agree() {
+        let src = "fn bump(var n: Int):\n    n = n + 1\n\nfn total(let xs: List(Int)) -> Int:\n    var s = 0\n    for x in xs:\n        s = s + x\n    s\n\nfn drain(own xs: List(Int)) -> Int:\n    length(xs)\n\nfn doubled(xs: List(Int)) -> Int:\n    at(xs, 0) * 2\n\nfn main(console: Console):\n    var c = 0\n    bump(c)\n    bump(c)\n    print(console, int_to_string(c))\n    let nums = [10, 20, 30]\n    print(console, int_to_string(total(nums)))\n    print(console, int_to_string(doubled(nums)))\n    print(console, int_to_string(length(nums)))\n    let g = [1, 2, 3, 4]\n    print(console, int_to_string(drain(move g)))\n";
+        let expected = ["2", "60", "20", "3", "4"];
+        assert_eq!(interpreter::run(src).expect("interp"), expected, "interp");
+        assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "wasm");
+        let dir = std::env::temp_dir().join(format!("witchy_conv_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let s = dir.join("prog.witchy");
+        std::fs::write(&s, src).unwrap();
+        let rust = crate::emit_rust_file(s.to_str().unwrap()).expect("transpile");
+        // The native optimizations: `let` param lowers to `&T`, with a borrowing
+        // call site; `own`/`move` move (no clone).
+        assert!(rust.contains("xs: &Vec<i64>"), "let param should borrow: {rust}");
+        assert!(rust.contains("total(&("), "let call should pass a reference: {rust}");
+        let rs = dir.join("prog.rs");
+        let bin = dir.join("prog_bin");
+        std::fs::write(&rs, &rust).unwrap();
+        if let Ok(st) = std::process::Command::new("rustc")
+            .args(["-O", "-C", "overflow-checks=off", "--edition", "2021"])
+            .arg(&rs)
+            .arg("-o")
+            .arg(&bin)
+            .status()
+        {
+            assert!(st.success(), "native conventions program should compile");
+            let out = std::process::Command::new(&bin).output().expect("run");
+            assert_eq!(String::from_utf8_lossy(&out.stdout), "2\n60\n20\n3\n4\n", "native");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Misusing the ownership conventions is rejected up front by the type checker
+    /// (so the same program fails on every backend, never just native): using a
+    /// value after it was consumed by `own`, or after `move`. A bare `let` borrow
+    /// imposes no such restriction.
+    #[test]
+    fn conventions_reuse_after_move_rejected() {
+        // Reuse after an `own` (sink) parameter consumes it.
+        let after_own = "fn drain(own xs: List(Int)) -> Int:\n    length(xs)\nfn main(c: Console):\n    let d = [1, 2, 3]\n    print(c, int_to_string(drain(d)))\n    print(c, int_to_string(length(d)))\n";
+        let e1 = typeck::check_str(after_own).expect_err("reuse after own should fail");
+        assert!(e1.to_string().contains("after it was moved"), "got: {e1:?}");
+        // Reuse after an explicit `move`.
+        let after_move = "fn drain(own xs: List(Int)) -> Int:\n    length(xs)\nfn main(c: Console):\n    let d = [1, 2, 3]\n    print(c, int_to_string(drain(move d)))\n    print(c, int_to_string(length(d)))\n";
+        assert!(
+            typeck::check_str(after_move).is_err(),
+            "reuse after move should fail"
+        );
+        // A `let` borrow does NOT consume — reuse is fine.
+        let after_borrow = "fn peek(let xs: List(Int)) -> Int:\n    length(xs)\nfn main(c: Console):\n    let d = [1, 2, 3]\n    print(c, int_to_string(peek(d)))\n    print(c, int_to_string(length(d)))\n";
+        assert!(typeck::check_str(after_borrow).is_ok(), "borrow reuse should be fine");
+    }
+
+    /// The full conventions showcase (examples/conventions.witchy) — `var`/`let`/
+    /// `own`/`move` across a function, a method (`let self`), an actor (`var`
+    /// state, `own` payload), and local bindings — runs identically on the
+    /// interpreter and native backends.
+    #[test]
+    fn conventions_showcase_runs() {
+        let expected = "count: 2\nsum: 10\ndoubled first: 2\nnums still here, length: 4\nbag total: 60\ndrained length: 3\nrunning sum: 300\nrunning sum: 306\n";
+        let (linked, _) = crate::link_file("examples/conventions.witchy").expect("link");
+        let interp =
+            interpreter::run_module(linked, ".", Vec::new()).expect("interp run").join("\n");
+        assert_eq!(format!("{interp}\n"), expected, "interp showcase");
+        let rust = crate::emit_rust_file("examples/conventions.witchy").expect("transpile");
+        let dir = std::env::temp_dir().join(format!("witchy_convshow_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let rs = dir.join("prog.rs");
+        let bin = dir.join("prog_bin");
+        std::fs::write(&rs, &rust).unwrap();
+        if let Ok(st) = std::process::Command::new("rustc")
+            .args(["-O", "-C", "overflow-checks=off", "--edition", "2021"])
+            .arg(&rs)
+            .arg("-o")
+            .arg(&bin)
+            .status()
+        {
+            assert!(st.success(), "showcase should compile natively");
+            let out = std::process::Command::new(&bin).output().expect("run");
+            assert_eq!(String::from_utf8_lossy(&out.stdout), expected, "native showcase");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Occurrence-level last-use move elision (the value-usage/liveness pass): a
     /// binding used several times is MOVED at its final read instead of cloned,
     /// while earlier reads still clone to keep it alive. Here `s` is summed (not

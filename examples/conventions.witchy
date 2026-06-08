@@ -1,0 +1,89 @@
+// Optional parameter conventions — witchy's opt-in ownership annotations, and
+// where each one earns its keep. They are *optional*: leave them off and a
+// parameter is a plain owned value (value semantics, as always). Add one to tell
+// the compiler how the value is used, and the native backend optimizes
+// accordingly — while the interpreter and WASM stay observably identical.
+//
+//   (none)   an owned value — the caller keeps its own copy.
+//   let      an immutable BORROW — read-only; native passes `&T`, never clones.
+//   var      mutate in place and write the result back to the caller.
+//   own      consume — the callee takes ownership; the caller gives it up.
+//   move x   a use-site ownership transfer: "I'm done with x, hand it over."
+//
+// Native lowering: `let` -> `&T`, `var` -> write-back, `own`/`move` -> by-value
+// move. So they are real clone elision; on the interpreter they are value-neutral.
+
+import list
+
+// --- functions -------------------------------------------------------------
+
+// `var` — mutate in place; the caller sees the new value.
+fn bump(var n: Int):
+    n = n + 1
+
+// `let` — an immutable borrow. `xs` is read (never cloned) and the caller keeps
+// it. The recursive call forwards the borrow on, so there are zero list copies.
+fn sum_from(let xs: List(Int), i: Int) -> Int:
+    if i >= length(xs):
+        0
+    else:
+        at(xs, i) + sum_from(xs, i + 1)
+
+// (no annotation) — an owned value: the callee gets its own copy to do as it
+// likes; the caller's value is untouched.
+fn doubled_first(xs: List(Int)) -> Int:
+    at(xs, 0) * 2
+
+// `own` — consume. The callee takes ownership; the caller can't use it again.
+fn drain(own xs: List(Int)) -> Int:
+    length(xs)
+
+// --- a method with a borrowed receiver -------------------------------------
+
+type Bag:
+    Bag(List(Int))
+
+impl Bag:
+    // `let self`: read the bag without taking or copying it. The borrowed
+    // contents are forwarded straight into `sum_from`.
+    fn total(let self) -> Int:
+        match self:
+            Bag(items) -> sum_from(items, 0)
+
+// --- an actor: `var` state, an `own` payload -------------------------------
+
+actor Adder:
+    console: Console
+    var sum: Int = 0          // mutable state, updated in place each message
+
+impl Adder:
+    on Add(own xs: List(Int)):    // the handler consumes the message's list
+        sum = sum + sum_from(xs, 0)
+        print(console, "running sum: " <> int_to_string(sum))
+
+fn main(console: Console):
+    // local block: `var` is a mutable binding, `let` an immutable one — the same
+    // vocabulary the parameter conventions reuse.
+    var count = 0
+    bump(count)               // `var` param: writes back into `count`
+    bump(count)
+    print(console, "count: " <> int_to_string(count))
+
+    // `let` borrow: `nums` is read by `sum_from` and still usable afterward.
+    let nums = [1, 2, 3, 4]
+    print(console, "sum: " <> int_to_string(sum_from(nums, 0)))
+    print(console, "doubled first: " <> int_to_string(doubled_first(nums)))
+    print(console, "nums still here, length: " <> int_to_string(length(nums)))
+
+    // a method whose receiver is borrowed.
+    let bag = Bag([10, 20, 30])
+    print(console, "bag total: " <> int_to_string(bag.total()))
+
+    // `own` + `move`: `gone` is moved into `drain` and cannot be used after.
+    let gone = [5, 6, 7]
+    print(console, "drained length: " <> int_to_string(drain(move gone)))
+
+    // an actor whose state is a `var`, fed `own` payloads.
+    let adder = spawn Adder(console)
+    send(adder, Add([100, 200]))
+    send(adder, Add([1, 2, 3]))
