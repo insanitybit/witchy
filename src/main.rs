@@ -1418,6 +1418,24 @@ mod example_tests {
         assert!(rust.contains(".x.clone()"), "expected field access");
     }
 
+    /// The native backend transpiles concrete (non-generic) sum types to Rust
+    /// enums, with qualified construction and constructor patterns in `match`.
+    #[test]
+    fn native_backend_supports_enums() {
+        let p = std::env::temp_dir()
+            .join(format!("witchy_native_enum_{}.witchy", std::process::id()));
+        std::fs::write(
+            &p,
+            "type Shape:\n    Circle(Int)\n    Unit\nfn area(s: Shape) -> Int:\n    match s:\n        Circle(r) -> 3 * r * r\n        Unit -> 0\nfn main(console: Console):\n    print(console, int_to_string(area(Circle(10))))\n",
+        )
+        .expect("write source");
+        let rust = crate::emit_rust_file(p.to_str().unwrap()).expect("transpile");
+        let _ = std::fs::remove_file(&p);
+        assert!(rust.contains("enum Shape {"), "expected a Rust enum");
+        assert!(rust.contains("Shape::Circle(10i64)"), "expected qualified construction");
+        assert!(rust.contains("Shape::Circle(r) =>"), "expected a qualified pattern");
+    }
+
     /// `for x in a..b` is a counting loop on both backends — never a materialized
     /// list — with faithful `break`/`continue`, inclusive (`..=`), empty, and
     /// nested behavior. The 100_000-iteration loop proves nothing is allocated:
