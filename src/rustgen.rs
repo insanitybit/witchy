@@ -204,6 +204,17 @@ fn collect_calls_expr(e: &Expr, out: &mut HashSet<String>) {
     }
 }
 
+/// Render a generic-parameter list `<A: Clone, B: Clone>` (empty if no vars).
+/// `Clone` covers value-copies (for-loop elements, call-site clones).
+fn generic_params(tvs: &std::collections::BTreeSet<String>) -> String {
+    if tvs.is_empty() {
+        String::new()
+    } else {
+        let bounded: Vec<String> = tvs.iter().map(|v| format!("{v}: Clone")).collect();
+        format!("<{}>", bounded.join(", "))
+    }
+}
+
 /// Gather the (capitalized) type variables appearing in a type.
 fn collect_type_vars(t: &Type, out: &mut std::collections::BTreeSet<String>) {
     match t {
@@ -296,14 +307,11 @@ fn gen_record(td: &crate::ast::TypeDef) -> Option<String> {
     if v.field_names.len() != v.fields.len() || v.field_names.is_empty() {
         return None;
     }
-    // Skip a generic record (type-variable fields) for now — would need params.
+    // Type variables in the fields become the struct's generic parameters.
     let mut tvs = std::collections::BTreeSet::new();
     v.fields.iter().for_each(|f| collect_type_vars(f, &mut tvs));
-    if !tvs.is_empty() {
-        return None;
-    }
     let mut fields = Vec::new();
-    let mut all_copy = true;
+    let mut all_copy = tvs.is_empty();
     for (name, ty) in v.field_names.iter().zip(&v.fields) {
         let rt = rust_ty(ty)?;
         all_copy &= matches!(ty, Type::Named(n, _) if n == "Int" || n == "Float" || n == "Bool" || n == "Duration");
@@ -317,8 +325,9 @@ fn gen_record(td: &crate::ast::TypeDef) -> Option<String> {
     } else {
         "#[derive(Clone)]"
     };
+    let generics = generic_params(&tvs);
     Some(format!(
-        "{derive}\nstruct {} {{\n{}\n}}\n",
+        "{derive}\nstruct {}{generics} {{\n{}\n}}\n",
         v.name,
         fields.join("\n")
     ))
@@ -338,17 +347,13 @@ fn gen_enum(td: &crate::ast::TypeDef) -> Option<String> {
     if td.name == "Option" || td.name == "Result" {
         return None;
     }
-    // A generic enum (type-variable fields) would need Rust generic parameters;
-    // skip for now (so a concrete use isn't blocked by an unemittable generic).
+    // Type variables in the variants' fields become the enum's generic params.
     let mut tvs = std::collections::BTreeSet::new();
     for v in &td.variants {
         v.fields.iter().for_each(|f| collect_type_vars(f, &mut tvs));
     }
-    if !tvs.is_empty() {
-        return None;
-    }
     let mut variants = Vec::new();
-    let mut all_copy = true;
+    let mut all_copy = tvs.is_empty();
     for v in &td.variants {
         if !v.field_names.is_empty() {
             return None; // struct-style enum variant: not supported yet
@@ -373,8 +378,9 @@ fn gen_enum(td: &crate::ast::TypeDef) -> Option<String> {
     } else {
         "#[derive(Clone)]"
     };
+    let generics = generic_params(&tvs);
     Some(format!(
-        "{derive}\nenum {} {{\n{}\n}}\n",
+        "{derive}\nenum {}{generics} {{\n{}\n}}\n",
         td.name,
         variants.join(",\n")
     ))
@@ -847,11 +853,19 @@ fn rust_ty(t: &Type) -> Option<String> {
                 rust_ty(args.first()?)?,
                 rust_ty(args.get(1)?)?
             )),
-            // A user record/enum type maps to its Rust struct/enum (if registered).
-            other if RECORD_FIELDS.with(|r| r.borrow().contains_key(other)) => {
-                Some(other.to_string())
+            // A user record/enum type maps to its Rust struct/enum, carrying any
+            // type arguments (`Pair(Int, String)` -> `Pair<i64, String>`).
+            other
+                if RECORD_FIELDS.with(|r| r.borrow().contains_key(other))
+                    || ENUM_NAMES.with(|s| s.borrow().contains(other)) =>
+            {
+                if args.is_empty() {
+                    Some(other.to_string())
+                } else {
+                    let a: Option<Vec<String>> = args.iter().map(rust_ty).collect();
+                    Some(format!("{other}<{}>", a?.join(", ")))
+                }
             }
-            other if ENUM_NAMES.with(|s| s.borrow().contains(other)) => Some(other.to_string()),
             // A type variable -> a Rust generic parameter.
             other if is_type_var(other) => Some(type_var_name(other)),
             _ => None,

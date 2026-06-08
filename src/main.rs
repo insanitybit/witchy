@@ -1553,6 +1553,23 @@ mod example_tests {
         assert!(rust.contains("impl Fn"), "expected fn-type params");
     }
 
+    /// Generic user records/enums become generic Rust structs/enums, with type
+    /// arguments carried on references (`Pair(a, b)` -> `Pair<A, B>`).
+    #[test]
+    fn native_backend_supports_generic_user_types() {
+        let p = std::env::temp_dir()
+            .join(format!("witchy_native_gen_{}.witchy", std::process::id()));
+        std::fs::write(
+            &p,
+            "type Pair:\n    first: a\n    second: b\nfn swap(p: Pair(a, b)) -> Pair(b, a):\n    Pair(first: p.second, second: p.first)\nfn main(console: Console):\n    let q = swap(Pair(first: 7, second: 100))\n    print(console, int_to_string(q.first + q.second))\n",
+        )
+        .expect("write source");
+        let rust = crate::emit_rust_file(p.to_str().unwrap()).expect("transpile");
+        let _ = std::fs::remove_file(&p);
+        assert!(rust.contains("struct Pair<A: Clone, B: Clone>"), "expected a generic struct");
+        assert!(rust.contains("-> Pair<B, A>"), "expected type args on the return");
+    }
+
     /// `for x in a..b` is a counting loop on both backends — never a materialized
     /// list — with faithful `break`/`continue`, inclusive (`..=`), empty, and
     /// nested behavior. The 100_000-iteration loop proves nothing is allocated:
