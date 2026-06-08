@@ -86,6 +86,16 @@ fn needs_clone_at_call(t: &Option<Type>) -> bool {
     }
 }
 
+/// Clone an argument for value semantics only if it's a reused binding (a bare
+/// variable); a temporary is a fresh value and is moved.
+fn clone_if_var(arg: &Expr, rendered: String) -> String {
+    if matches!(arg, Expr::Var(_)) {
+        format!("({rendered}).clone()")
+    } else {
+        rendered
+    }
+}
+
 /// A lowercase type name is a type variable (`a`, `b`, `key`); the builtin and
 /// user types are all capitalized.
 fn is_type_var(name: &str) -> bool {
@@ -661,11 +671,11 @@ fn gen_expr(e: &Expr, value: bool) -> Result<String, String> {
             let ps: Vec<String> = params.iter().map(|p| p.name.clone()).collect();
             format!("|{}| {}", ps.join(", "), gen_block(body, true)?)
         }
-        // Applying a function value: `f(args)`. Args cloned (value semantics).
+        // Applying a function value: `f(args)`. Reused-binding args cloned.
         Expr::Apply { func, args } => {
             let a: Vec<String> = args
                 .iter()
-                .map(|x| Ok(format!("({}).clone()", gen_expr(x, true)?)))
+                .map(|x| Ok(clone_if_var(x, gen_expr(x, true)?)))
                 .collect::<Result<Vec<String>, String>>()?;
             format!("({})({})", gen_expr(func, true)?, a.join(", "))
         }
@@ -803,12 +813,11 @@ fn gen_call(name: &str, args: &[Expr]) -> Result<String, String> {
         // A call whose name is a parameter is a function-valued param (closure),
         // called directly rather than as a top-level function.
         _ if CUR_PARAMS.with(|s| s.borrow().contains(name)) => {
-            // Closure args are cloned (value semantics: the callee gets a copy),
-            // so a value used both here and after — `keep(x)` then `push(.., x)` —
-            // isn't moved. Copy types clone for free.
+            // Reused-binding args are cloned (value semantics: `keep(x)` then
+            // `push(.., x)`); temporaries are moved.
             let a: Vec<String> = args
                 .iter()
-                .map(|x| Ok(format!("({}).clone()", gen_expr(x, true)?)))
+                .map(|x| Ok(clone_if_var(x, gen_expr(x, true)?)))
                 .collect::<Result<Vec<String>, String>>()?;
             format!("({name})({})", a.join(", "))
         }
@@ -822,8 +831,11 @@ fn gen_call(name: &str, args: &[Expr]) -> Result<String, String> {
                 .enumerate()
                 .map(|(i, x)| {
                     let s = gen_expr(x, true)?;
-                    // A by-value collection param is cloned so the caller keeps it.
-                    let clone = clones.as_ref().is_some_and(|c| c.get(i) == Some(&true));
+                    // Clone only a reused binding (a bare variable); a temporary
+                    // (call result, literal, field read — already a fresh value)
+                    // is moved. Keeps value semantics without redundant clones.
+                    let clone = clones.as_ref().is_some_and(|c| c.get(i) == Some(&true))
+                        && matches!(x, Expr::Var(_));
                     Ok(if clone { format!("({s}).clone()") } else { s })
                 })
                 .collect::<Result<Vec<String>, String>>()?;
