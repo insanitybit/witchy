@@ -1475,6 +1475,24 @@ mod example_tests {
         );
     }
 
+    /// String builtins and numeric conversions map to Rust String/str methods.
+    #[test]
+    fn native_backend_supports_strings_and_conversions() {
+        let p = std::env::temp_dir()
+            .join(format!("witchy_native_str_{}.witchy", std::process::id()));
+        std::fs::write(
+            &p,
+            "fn main(console: Console):\n    print(console, substring(\"hello\", 1, 3))\n    print(console, to_upper(\"hi\"))\n    print(console, replace(\"aXa\", \"X\", \"-\"))\n    print(console, int_to_string(float_to_int(int_to_float(7) / int_to_float(2) * 10.0)))\n",
+        )
+        .expect("write source");
+        let rust = crate::emit_rust_file(p.to_str().unwrap()).expect("transpile");
+        let _ = std::fs::remove_file(&p);
+        assert!(rust.contains(".chars()"), "substring should use chars()");
+        assert!(rust.contains(".to_uppercase()"), "to_upper -> to_uppercase");
+        assert!(rust.contains(".replace("), "replace");
+        assert!(rust.contains("as f64") && rust.contains("as i64"), "numeric conversions");
+    }
+
     /// `for x in a..b` is a counting loop on both backends — never a materialized
     /// list — with faithful `break`/`continue`, inclusive (`..=`), empty, and
     /// nested behavior. The 100_000-iteration loop proves nothing is allocated:

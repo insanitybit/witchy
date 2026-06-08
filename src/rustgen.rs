@@ -413,6 +413,46 @@ fn gen_call(name: &str, args: &[Expr]) -> Result<String, String> {
         "concat" if args.len() == 2 => {
             format!("{{ let mut __v = {}; __v.extend({}); __v }}", arg(0)?, arg(1)?)
         }
+        // Numeric conversions.
+        "int_to_float" if args.len() == 1 => format!("(({}) as f64)", arg(0)?),
+        "float_to_int" if args.len() == 1 => format!("(({}) as i64)", arg(0)?),
+        // String builtins (deterministic; char-based ops match the interpreter).
+        "string_length" if args.len() == 1 => format!("(({}).len() as i64)", arg(0)?),
+        "char_count" if args.len() == 1 => format!("(({}).chars().count() as i64)", arg(0)?),
+        "to_upper" if args.len() == 1 => format!("({}).to_uppercase()", arg(0)?),
+        "to_lower" if args.len() == 1 => format!("({}).to_lowercase()", arg(0)?),
+        "trim" if args.len() == 1 => format!("({}).trim().to_string()", arg(0)?),
+        "starts_with" if args.len() == 2 => {
+            format!("({}).starts_with(({}).as_str())", arg(0)?, arg(1)?)
+        }
+        "ends_with" if args.len() == 2 => {
+            format!("({}).ends_with(({}).as_str())", arg(0)?, arg(1)?)
+        }
+        "contains" if args.len() == 2 => {
+            format!("({}).contains(({}).as_str())", arg(0)?, arg(1)?)
+        }
+        "replace" if args.len() == 3 => format!(
+            "({}).replace(({}).as_str(), ({}).as_str())",
+            arg(0)?,
+            arg(1)?,
+            arg(2)?
+        ),
+        "split" if args.len() == 2 => format!(
+            "{{ let __s = {}; let __sep = {}; if __sep.is_empty() {{ vec![__s] }} else {{ __s.split(__sep.as_str()).map(|p| p.to_string()).collect::<Vec<String>>() }} }}",
+            arg(0)?,
+            arg(1)?
+        ),
+        "index_of" if args.len() == 2 => format!(
+            "{{ let __s = {}; let __sub = {}; __s.find(__sub.as_str()).map(|b| __s[..b].chars().count() as i64).unwrap_or(-1) }}",
+            arg(0)?,
+            arg(1)?
+        ),
+        "substring" if args.len() == 3 => format!(
+            "{{ let __cs: Vec<char> = ({}).chars().collect(); let __lo = (({}).max(0) as usize).min(__cs.len()); let __hi = (({}).max(0) as usize).min(__cs.len()); if __lo < __hi {{ __cs[__lo..__hi].iter().collect::<String>() }} else {{ String::new() }} }}",
+            arg(0)?,
+            arg(1)?,
+            arg(2)?
+        ),
         "print" | "int_to_string" | "string_to_int" => {
             return Err(format!("native backend: wrong arity for `{name}`"))
         }
