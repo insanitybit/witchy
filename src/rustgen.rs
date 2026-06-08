@@ -12,7 +12,7 @@
 //! binary). It is for trusted, performance-critical code; untrusted code should
 //! keep using the wasm `sandbox` path, where only granted host functions exist.
 
-use crate::ast::{BinOp, Block, Expr, Function, Item, Module, Stmt, Type, UnOp};
+use crate::ast::{BinOp, Block, Expr, Function, Item, Module, Param, Stmt, Type, UnOp};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 
@@ -42,6 +42,10 @@ thread_local! {
     /// is one of these is a function-valued parameter (a closure), called
     /// directly (`f(x)`); any other call is a top-level function (`w_f(x)`).
     static CUR_PARAMS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+    /// Functions with `inout` parameters: name -> the inout parameter positions.
+    /// Such a function returns its inout values; a statement-position call
+    /// reassigns the corresponding (variable) arguments — Hylo write-back.
+    static FN_INOUT: RefCell<HashMap<String, Vec<usize>>> = RefCell::new(HashMap::new());
 }
 
 /// witchy's `Dict` maps to a real `HashMap` with a fast, non-DoS-resistant hash
@@ -338,11 +342,23 @@ pub fn transpile_module(m: &Module) -> Result<String, String> {
     VARIANT_BOXED.with(|r| r.borrow_mut().clear());
     USES_DIR.with(|f| f.set(false));
     FN_PARAM_CLONE.with(|m| m.borrow_mut().clear());
-    // Record which params are by-value collections, so calls clone them.
+    FN_INOUT.with(|m| m.borrow_mut().clear());
+    // Record which params are by-value collections (so calls clone them) and
+    // which functions take `inout` params (so calls write the result back).
     for item in &m.items {
         if let Item::Function(f) = item {
             let clones = f.params.iter().map(|p| needs_clone_at_call(&p.ty)).collect();
             FN_PARAM_CLONE.with(|map| map.borrow_mut().insert(fn_rust_name(f), clones));
+            let inout: Vec<usize> = f
+                .params
+                .iter()
+                .enumerate()
+                .filter(|(_, p)| p.convention == crate::ast::Convention::Inout)
+                .map(|(i, _)| i)
+                .collect();
+            if !inout.is_empty() {
+                FN_INOUT.with(|map| map.borrow_mut().insert(f.name.clone(), inout));
+            }
         }
     }
     USES_DICT.with(|f| f.set(false));
@@ -517,17 +533,23 @@ fn gen_fn(f: &Function) -> Result<String, String> {
         ));
     }
     let is_main = f.name == "main";
+    // A function with `inout` params returns its inout values (Hylo write-back,
+    // mirrored from the wasm backend). Combining that with an ordinary return is
+    // not modeled yet — erroring keeps native from silently diverging.
+    let inout: Vec<&Param> = f
+        .params
+        .iter()
+        .filter(|p| p.convention == crate::ast::Convention::Inout)
+        .collect();
+    if !inout.is_empty() && f.ret.is_some() {
+        return Err(format!(
+            "native backend: function `{}` with both `inout` params and a return value is not supported yet",
+            f.name
+        ));
+    }
     let mut params = Vec::new();
     let mut cap_lets = String::new();
     for p in &f.params {
-        // `inout` write-back isn't modeled yet; erroring keeps native from
-        // silently diverging from the interpreter (it falls back to wasm).
-        if p.convention == crate::ast::Convention::Inout {
-            return Err(format!(
-                "native backend: `inout` parameter `{}` is not supported yet",
-                p.name
-            ));
-        }
         let ty = p
             .ty
             .as_ref()
@@ -591,6 +613,28 @@ fn gen_fn(f: &Function) -> Result<String, String> {
         };
         return Ok(format!("fn main() {body}\n"));
     }
+    if !inout.is_empty() {
+        // Return the inout params' final values (this fn has no ordinary return —
+        // enforced above). A statement-position call writes them back to its
+        // arguments; see gen_stmt.
+        let tys: Vec<String> = inout
+            .iter()
+            .map(|p| {
+                rust_ty(p.ty.as_ref().unwrap())
+                    .ok_or_else(|| format!("native backend: unsupported `inout` type for `{}`", p.name))
+            })
+            .collect::<Result<_, _>>()?;
+        let names: Vec<String> = inout.iter().map(|p| p.name.clone()).collect();
+        let (rty, rexpr) = if tys.len() == 1 {
+            (tys[0].clone(), names[0].clone())
+        } else {
+            (format!("({})", tys.join(", ")), format!("({})", names.join(", ")))
+        };
+        return Ok(format!(
+            "fn {name}{generics}({}) -> {rty} {{\n{inner};\n    {rexpr}\n}}\n",
+            params.join(", ")
+        ));
+    }
     Ok(format!("fn {name}{generics}({}){ret} {inner}\n", params.join(", ")))
 }
 
@@ -620,6 +664,33 @@ fn gen_stmt(s: &Stmt, tail: bool) -> Result<String, String> {
         Stmt::Return(None) => "return;".into(),
         Stmt::Break => "break;".into(),
         Stmt::Continue => "continue;".into(),
+        // A call to an `inout` function in statement position: write the
+        // returned value(s) back into the (variable) arguments at the inout
+        // positions. The call's witchy value is unit, so it's only valid here.
+        Stmt::Expr(Expr::Call { name, args })
+            if FN_INOUT.with(|m| m.borrow().contains_key(name)) =>
+        {
+            let pos = FN_INOUT.with(|m| m.borrow().get(name).cloned()).unwrap();
+            let mut lhs = Vec::new();
+            for &i in &pos {
+                match args.get(i) {
+                    Some(Expr::Var(v)) => lhs.push(v.clone()),
+                    _ => {
+                        return Err(format!(
+                            "native backend: `inout` argument {} to `{name}` must be a variable",
+                            i + 1
+                        ))
+                    }
+                }
+            }
+            let call = gen_call(name, args)?;
+            let target = if lhs.len() == 1 {
+                lhs[0].clone()
+            } else {
+                format!("({})", lhs.join(", "))
+            };
+            format!("{target} = {call};")
+        }
         Stmt::Expr(e) if tail => gen_expr(e, true)?,
         Stmt::Expr(e) => format!("{};", gen_expr(e, false)?),
         Stmt::LetTuple { names, value } => {
@@ -685,7 +756,17 @@ fn gen_expr(e: &Expr, value: bool) -> Result<String, String> {
             ),
         },
         Expr::Block(b) => gen_block(b, value)?,
-        Expr::Call { name, args } => gen_call(name, args)?,
+        Expr::Call { name, args } => {
+            // An `inout` call's write-back is handled only in statement position
+            // (gen_stmt). Used as a value it would yield the inout result instead
+            // of witchy's unit — reject rather than silently diverge.
+            if FN_INOUT.with(|m| m.borrow().contains_key(name)) {
+                return Err(format!(
+                    "native backend: a call to `inout` function `{name}` must be a statement"
+                ));
+            }
+            gen_call(name, args)?
+        }
         // `match` maps to a Rust match; non-exhaustive matches (no catch-all) are
         // rejected by rustc, which is safe (the program just stays wasm-only).
         Expr::Match { scrutinee, arms } => {

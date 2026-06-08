@@ -1394,6 +1394,58 @@ mod example_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// `inout` parameters (Hylo write-back): a function with inout params returns
+    /// its final values; statement-position calls reassign their arguments.
+    #[test]
+    fn native_backend_inout_writeback() {
+        let pid = std::process::id();
+        let dir = std::env::temp_dir().join(format!("witchy_inout_{pid}"));
+        let _ = std::fs::create_dir_all(&dir);
+        let src = dir.join("prog.witchy");
+        std::fs::write(
+            &src,
+            "fn bump(inout n: Int):\n    n = n + 1\n\nfn swap(inout a: Int, inout b: Int):\n    let t = a\n    a = b\n    b = t\n\nfn main(console: Console):\n    var x = 3\n    var y = 7\n    bump(x)\n    swap(x, y)\n    print(console, f\"{x} {y}\")\n",
+        )
+        .expect("write src");
+        let rust = crate::emit_rust_file(src.to_str().unwrap()).expect("transpile");
+        assert!(rust.contains("-> i64"), "expected inout fn to return its value");
+        assert!(rust.contains("= w_"), "expected a write-back assignment");
+        let rs = dir.join("prog.rs");
+        let bin = dir.join("prog_bin");
+        std::fs::write(&rs, &rust).unwrap();
+        if let Ok(s) = std::process::Command::new("rustc")
+            .args(["-O", "--edition", "2021"])
+            .arg(&rs)
+            .arg("-o")
+            .arg(&bin)
+            .status()
+        {
+            assert!(s.success(), "rustc should compile the inout program");
+            let out = std::process::Command::new(&bin).output().expect("run");
+            // x: 3 -> bump -> 4; swap(4,7) -> x=7, y=4.
+            assert_eq!(String::from_utf8_lossy(&out.stdout), "7 4\n");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An `inout` call used as a value (not a statement) must be rejected, not
+    /// silently mislowered — the call's witchy result is unit.
+    #[test]
+    fn native_backend_inout_as_value_errors() {
+        let pid = std::process::id();
+        let dir = std::env::temp_dir().join(format!("witchy_inoutv_{pid}"));
+        let _ = std::fs::create_dir_all(&dir);
+        let src = dir.join("prog.witchy");
+        std::fs::write(
+            &src,
+            "fn bump(inout n: Int):\n    n = n + 1\n\nfn main(console: Console):\n    var x = 1\n    let y = bump(x)\n    print(console, f\"{x}\")\n",
+        )
+        .expect("write src");
+        let err = crate::emit_rust_file(src.to_str().unwrap()).unwrap_err();
+        assert!(err.contains("must be a statement"), "got: {err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Python-style f-strings: `f"...{expr}..."` interpolates (with `{{`/`}}` for
     /// literal braces), desugaring to `to_string` + concat — same result on both
     /// backends.
