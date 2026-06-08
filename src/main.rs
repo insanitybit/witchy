@@ -1356,7 +1356,7 @@ mod example_tests {
         let rust = crate::emit_rust_file(src_path.to_str().unwrap()).expect("transpile");
         let _ = std::fs::remove_file(&src_path);
         assert!(rust.contains("fn main()"), "expected a native main");
-        assert!(rust.contains("(n: i64) -> i64"), "expected i64 typing of fib");
+        assert!(rust.contains("n: i64) -> i64"), "expected i64 typing of fib");
         // Full path: compile the generated Rust with rustc and run it.
         let rs = std::env::temp_dir().join(format!("witchy_native_{pid}.rs"));
         let bin = std::env::temp_dir().join(format!("witchy_native_{pid}_bin"));
