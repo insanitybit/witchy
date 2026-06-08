@@ -1587,6 +1587,24 @@ mod example_tests {
         assert!(rust.contains("__r.x = 10i64;"), "expected the updated field");
     }
 
+    /// Recursive enums (e.g. a binary tree): recursive fields are `Box`ed, boxed
+    /// at construction and moved out of the box at `match`.
+    #[test]
+    fn native_backend_supports_recursive_enums() {
+        let p = std::env::temp_dir()
+            .join(format!("witchy_native_tree_{}.witchy", std::process::id()));
+        std::fs::write(
+            &p,
+            "type Tree:\n    Leaf(Int)\n    Node(Tree, Tree)\nfn sum(t: Tree) -> Int:\n    match t:\n        Leaf(n) -> n\n        Node(l, r) -> sum(l) + sum(r)\nfn main(console: Console):\n    print(console, int_to_string(sum(Node(Leaf(1), Node(Leaf(2), Leaf(3))))))\n",
+        )
+        .expect("write source");
+        let rust = crate::emit_rust_file(p.to_str().unwrap()).expect("transpile");
+        let _ = std::fs::remove_file(&p);
+        assert!(rust.contains("Node(Box<Tree>, Box<Tree>)"), "expected boxed recursive fields");
+        assert!(rust.contains("Box::new("), "expected Box::new at construction");
+        assert!(rust.contains("let l = *l;"), "expected move-out-of-box at match");
+    }
+
     /// `for x in a..b` is a counting loop on both backends — never a materialized
     /// list — with faithful `break`/`continue`, inclusive (`..=`), empty, and
     /// nested behavior. The 100_000-iteration loop proves nothing is allocated:

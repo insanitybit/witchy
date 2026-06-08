@@ -27,10 +27,12 @@ thread_local! {
     static VARIANT_TO_ENUM: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
     /// The names of supported enum types (for `rust_ty`).
     static ENUM_NAMES: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
-    /// Per (emitted) function, whether each parameter is a by-value collection
-    /// (`List`/`String`) — those owned params are cloned at call sites so the
-    /// caller keeps its value (witchy value semantics; Rust would otherwise move
-    /// it and reject the caller's later use).
+    /// Per enum constructor, which positional fields are recursive (so `Box`ed in
+    /// Rust): wrapped with `Box::new` at construction, moved out (`*x`) at match.
+    static VARIANT_BOXED: RefCell<HashMap<String, Vec<bool>>> = RefCell::new(HashMap::new());
+    /// Per (emitted) function, whether each parameter is cloned at call sites
+    /// (see `needs_clone_at_call`) so the caller keeps its value (witchy value
+    /// semantics; Rust would otherwise move it and reject the caller's later use).
     static FN_PARAM_CLONE: RefCell<HashMap<String, Vec<bool>>> = RefCell::new(HashMap::new());
     /// Set when the program uses a Dict, so the `WDict` runtime helper is emitted.
     static USES_DICT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
@@ -68,8 +70,20 @@ fn fn_rust_name(f: &Function) -> String {
     }
 }
 
-fn is_collection(t: &Option<Type>) -> bool {
-    matches!(t, Some(Type::Named(n, _)) if n == "List" || n == "String" || n == "Dict")
+/// Whether an argument of this parameter type is cloned at the call site to
+/// preserve value semantics (the caller keeps its value). Everything except
+/// plain `Copy` scalars and function types — i.e. collections, strings, records,
+/// enums, Option/Result, tuples, and type variables — is cloned. Cloning a
+/// `Copy` type compiles to a copy, so over-cloning is harmless; closures aren't
+/// cloned (they aren't `Clone`).
+fn needs_clone_at_call(t: &Option<Type>) -> bool {
+    match t {
+        Some(Type::Named(n, _)) => {
+            !matches!(n.as_str(), "Int" | "Float" | "Bool" | "Duration")
+        }
+        Some(Type::Tuple(_)) => true,
+        Some(Type::Fn(..)) | None => false,
+    }
 }
 
 /// A lowercase type name is a type variable (`a`, `b`, `key`); the builtin and
@@ -238,11 +252,12 @@ pub fn transpile_module(m: &Module) -> Result<String, String> {
     RECORD_FIELDS.with(|r| r.borrow_mut().clear());
     VARIANT_TO_ENUM.with(|r| r.borrow_mut().clear());
     ENUM_NAMES.with(|r| r.borrow_mut().clear());
+    VARIANT_BOXED.with(|r| r.borrow_mut().clear());
     FN_PARAM_CLONE.with(|m| m.borrow_mut().clear());
     // Record which params are by-value collections, so calls clone them.
     for item in &m.items {
         if let Item::Function(f) = item {
-            let clones = f.params.iter().map(|p| is_collection(&p.ty)).collect();
+            let clones = f.params.iter().map(|p| needs_clone_at_call(&p.ty)).collect();
             FN_PARAM_CLONE.with(|map| map.borrow_mut().insert(fn_rust_name(f), clones));
         }
     }
@@ -354,13 +369,25 @@ fn gen_enum(td: &crate::ast::TypeDef) -> Option<String> {
     }
     let mut variants = Vec::new();
     let mut all_copy = tvs.is_empty();
+    let self_generics = generic_params(&tvs);
+    let self_ref = format!("{}{}", td.name, self_generics.replace(": Clone", ""));
+    let mut boxed_by_variant: Vec<(String, Vec<bool>)> = Vec::new();
     for v in &td.variants {
         if !v.field_names.is_empty() {
             return None; // struct-style enum variant: not supported yet
         }
         let mut tys = Vec::new();
+        let mut boxed = Vec::new();
         for ty in &v.fields {
+            // A directly-recursive field is `Box`ed so the enum has a finite size.
+            if matches!(ty, Type::Named(n, _) if n == &td.name) {
+                tys.push(format!("Box<{self_ref}>"));
+                boxed.push(true);
+                all_copy = false;
+                continue;
+            }
             tys.push(rust_ty(ty)?);
+            boxed.push(false);
             all_copy &= matches!(ty, Type::Named(n, _) if n == "Int" || n == "Float" || n == "Bool" || n == "Duration");
         }
         if tys.is_empty() {
@@ -368,9 +395,15 @@ fn gen_enum(td: &crate::ast::TypeDef) -> Option<String> {
         } else {
             variants.push(format!("    {}({})", v.name, tys.join(", ")));
         }
+        boxed_by_variant.push((v.name.clone(), boxed));
     }
     for v in &td.variants {
         VARIANT_TO_ENUM.with(|m| m.borrow_mut().insert(v.name.clone(), td.name.clone()));
+    }
+    for (vn, boxed) in boxed_by_variant {
+        if boxed.iter().any(|b| *b) {
+            VARIANT_BOXED.with(|m| m.borrow_mut().insert(vn, boxed));
+        }
     }
     ENUM_NAMES.with(|s| s.borrow_mut().insert(td.name.clone()));
     let derive = if all_copy {
@@ -551,11 +584,16 @@ fn gen_expr(e: &Expr, value: bool) -> Result<String, String> {
                     Some(g) => format!(" if {}", gen_expr(g, true)?),
                     None => String::new(),
                 };
-                out.push_str(&format!(
-                    "    {}{guard} => {},\n",
-                    gen_pattern(&arm.pattern)?,
-                    gen_expr(&arm.body, value)?
-                ));
+                // A `Box`ed (recursive) field binding is moved out of its box at
+                // the top of the arm, so the body sees the plain value.
+                let derefs = boxed_binding_derefs(&arm.pattern);
+                let body = gen_expr(&arm.body, value)?;
+                let body = if derefs.is_empty() {
+                    body
+                } else {
+                    format!("{{ {derefs}{body} }}")
+                };
+                out.push_str(&format!("    {}{guard} => {body},\n", gen_pattern(&arm.pattern)?));
             }
             out.push('}');
             out
@@ -585,8 +623,17 @@ fn gen_expr(e: &Expr, value: bool) -> Result<String, String> {
                 if args.is_empty() {
                     format!("{en}::{name}")
                 } else {
-                    let parts: Result<Vec<String>, String> =
-                        args.iter().map(|a| gen_expr(a, true)).collect();
+                    let boxed = VARIANT_BOXED.with(|m| m.borrow().get(name).cloned());
+                    let parts: Result<Vec<String>, String> = args
+                        .iter()
+                        .enumerate()
+                        .map(|(i, a)| {
+                            let s = gen_expr(a, true)?;
+                            // A recursive field is `Box`ed.
+                            let b = boxed.as_ref().is_some_and(|v| v.get(i) == Some(&true));
+                            Ok(if b { format!("Box::new({s})") } else { s })
+                        })
+                        .collect();
                     format!("{en}::{name}({})", parts?.join(", "))
                 }
             } else {
@@ -783,6 +830,28 @@ fn gen_call(name: &str, args: &[Expr]) -> Result<String, String> {
             format!("{fname}({})", a.join(", "))
         }
     })
+}
+
+/// For a constructor pattern with `Box`ed (recursive) fields, the `let x = *x;`
+/// statements that move each boxed binding out of its box (so the arm body uses
+/// the plain value). Only simple variable bindings are handled.
+fn boxed_binding_derefs(p: &crate::ast::Pattern) -> String {
+    use crate::ast::Pattern;
+    let Pattern::Ctor { name, args } = p else {
+        return String::new();
+    };
+    let Some(boxed) = VARIANT_BOXED.with(|m| m.borrow().get(name).cloned()) else {
+        return String::new();
+    };
+    let mut out = String::new();
+    for (i, arg) in args.iter().enumerate() {
+        if boxed.get(i) == Some(&true) {
+            if let Pattern::Var(v) = arg {
+                out.push_str(&format!("let {v} = *{v}; "));
+            }
+        }
+    }
+    out
 }
 
 fn gen_pattern(p: &crate::ast::Pattern) -> Result<String, String> {
