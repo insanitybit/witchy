@@ -1560,6 +1560,9 @@ fn gen_expr(e: &Expr, value: bool) -> Result<String, String> {
         }
         // `e?` propagates an Option/Result exactly as Rust's `?`.
         Expr::Try(inner) => format!("({})?", gen_expr(inner, true)?),
+        // `e as T` is a capability narrowing — checked statically, identity at
+        // runtime — so it lowers to the inner expression.
+        Expr::As { expr, .. } => gen_expr(expr, value)?,
         // A lambda -> a Rust closure (parameter types inferred from the call).
         Expr::Lambda { params, body } => {
             let ps: Vec<String> = params.iter().map(|p| p.name.clone()).collect();

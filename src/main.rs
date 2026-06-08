@@ -1533,6 +1533,25 @@ mod example_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A capability narrowing `e as T` is identity at runtime, so it lowers to
+    /// the inner expression (`examples/capability_rights.witchy` exercises it).
+    #[test]
+    fn native_backend_capability_narrowing_as() {
+        let pid = std::process::id();
+        let dir = std::env::temp_dir().join(format!("witchy_as_{pid}"));
+        let _ = std::fs::create_dir_all(&dir);
+        let src = dir.join("prog.witchy");
+        std::fs::write(
+            &src,
+            "fn main(dir: Dir, console: Console):\n    let ro = dir as Dir[Read]\n    print(console, \"ok\")\n",
+        )
+        .expect("write src");
+        let rust = crate::emit_rust_file(src.to_str().unwrap()).expect("transpile");
+        // `dir as Dir[Read]` becomes just `dir`, then bound — no cast emitted.
+        assert!(rust.contains("let ro = dir"), "expected `as` to lower to the inner expr: {rust}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Escaping closures: a function may return a closure capturing its params
     /// (`make_adder`), each capture independent; and a captured non-Copy binding
     /// stays usable after the closure (cloned into the `move`, not moved out).
