@@ -884,6 +884,13 @@ fn run_file_sandboxed(path: &str) -> Result<Vec<String>, String> {
 
 /// Instantiate a compiled WAT module under print/print_int authority, run its
 /// `run` export, and return the captured output lines.
+/// Linear-memory cap (64 KiB pages) for a run-to-completion program: 1 GiB.
+/// wasmtime grows memory lazily, so this is just a ceiling, not a reservation —
+/// it lets real programs (lists, strings, recursion) allocate freely while
+/// still bounding a runaway. (The tiny per-actor caps used by the scheduler are
+/// a separate, deliberate resource-limit demonstration.)
+const RUN_MEMORY_PAGES: usize = 16384;
+
 fn run_wat_capture(wat: &str) -> Result<Vec<String>, String> {
     use crate::runtime::{Capabilities, Runtime};
     // Run-to-completion: no scheduler, so use the non-preempting engine, which
@@ -898,7 +905,7 @@ fn run_wat_capture(wat: &str) -> Result<Vec<String>, String> {
                 quiet: true,
                 ..Default::default()
             },
-            4,
+            RUN_MEMORY_PAGES,
         )
         .map_err(|e| e.to_string())?;
     actor.run().map_err(|e| e.to_string())?;
