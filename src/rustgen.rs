@@ -38,6 +38,8 @@ thread_local! {
     static USES_DICT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// Set when the program uses a Dir capability, so the I/O helper is emitted.
     static USES_DIR: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Set when the program uses a Net capability, so the socket helper is emitted.
+    static USES_NET: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// Parameter names of the function currently being emitted. A call whose name
     /// is one of these is a function-valued parameter (a closure), called
     /// directly (`f(x)`); any other call is a top-level function (`w_f(x)`).
@@ -118,6 +120,107 @@ fn w_dir_write(base: &std::path::Path, rel: &str, contents: &str) {
 }
 "#;
 
+// The Net capability: a `Net` is an allow-list of `host:port`; sockets and
+// listeners are handles into thread-local tables (matching the interpreter). The
+// allow-list is read from `WITCHY_NET` (comma-separated), deny-by-default like
+// the interpreter's `--net` flags — a standalone binary's network authority.
+const NET_HELPER: &str = r#"
+thread_local! {
+    static W_SOCKETS: std::cell::RefCell<Vec<std::io::BufReader<std::net::TcpStream>>> = std::cell::RefCell::new(Vec::new());
+    static W_LISTENERS: std::cell::RefCell<Vec<std::net::TcpListener>> = std::cell::RefCell::new(Vec::new());
+}
+fn w_net_grant() -> Vec<String> {
+    std::env::var("WITCHY_NET")
+        .map(|v| v.split(',').filter(|a| !a.is_empty()).map(|a| a.to_string()).collect())
+        .unwrap_or_default()
+}
+fn w_net_restrict(allow: &[String], addr: &str) -> Vec<String> {
+    if !allow.iter().any(|a| a == addr) { panic!("restrict: `{}` is not in this Net capability", addr); }
+    vec![addr.to_string()]
+}
+fn w_net_connect(allow: &[String], addr: &str) -> usize {
+    if !allow.iter().any(|a| a == addr) { panic!("connect: `{}` is not permitted by this Net capability", addr); }
+    let stream = std::net::TcpStream::connect(addr).unwrap_or_else(|e| panic!("connect to `{}` failed: {}", addr, e));
+    W_SOCKETS.with(|s| { let mut s = s.borrow_mut(); s.push(std::io::BufReader::new(stream)); s.len() - 1 })
+}
+fn w_net_send_line(id: usize, line: &str) {
+    use std::io::Write;
+    W_SOCKETS.with(|s| {
+        let mut s = s.borrow_mut();
+        let sock = s.get_mut(id).expect("invalid socket");
+        sock.get_mut().write_all(line.as_bytes()).and_then(|_| sock.get_mut().write_all(b"\n")).unwrap_or_else(|e| panic!("send failed: {}", e));
+    });
+}
+fn w_net_send_bytes(id: usize, data: &str) {
+    use std::io::Write;
+    W_SOCKETS.with(|s| {
+        let mut s = s.borrow_mut();
+        let sock = s.get_mut(id).expect("invalid socket");
+        sock.get_mut().write_all(data.as_bytes()).unwrap_or_else(|e| panic!("send failed: {}", e));
+    });
+}
+fn w_net_recv_line(id: usize) -> String {
+    use std::io::BufRead;
+    W_SOCKETS.with(|s| {
+        let mut s = s.borrow_mut();
+        let sock = s.get_mut(id).expect("invalid socket");
+        let mut line = String::new();
+        sock.read_line(&mut line).unwrap_or_else(|e| panic!("recv failed: {}", e));
+        line.trim_end_matches('\n').to_string()
+    })
+}
+fn w_net_recv_all(id: usize) -> String {
+    use std::io::Read;
+    W_SOCKETS.with(|s| {
+        let mut s = s.borrow_mut();
+        let sock = s.get_mut(id).expect("invalid socket");
+        let mut buf = Vec::new();
+        sock.read_to_end(&mut buf).unwrap_or_else(|e| panic!("recv failed: {}", e));
+        String::from_utf8_lossy(&buf).into_owned()
+    })
+}
+fn w_net_recv_bytes(id: usize, n: i64) -> String {
+    use std::io::Read;
+    W_SOCKETS.with(|s| {
+        let mut s = s.borrow_mut();
+        let sock = s.get_mut(id).expect("invalid socket");
+        let want = n.max(0) as usize;
+        let mut buf = vec![0u8; want];
+        let mut read = 0;
+        while read < want {
+            match sock.read(&mut buf[read..]) {
+                Ok(0) => break,
+                Ok(k) => read += k,
+                Err(e) => panic!("recv failed: {}", e),
+            }
+        }
+        buf.truncate(read);
+        String::from_utf8_lossy(&buf).into_owned()
+    })
+}
+fn w_net_listen(allow: &[String], addr: &str) -> usize {
+    if !allow.iter().any(|a| a == addr) { panic!("listen: `{}` is not permitted by this Net capability", addr); }
+    let listener = std::net::TcpListener::bind(addr).unwrap_or_else(|e| panic!("listen on `{}` failed: {}", addr, e));
+    W_LISTENERS.with(|l| { let mut l = l.borrow_mut(); l.push(listener); l.len() - 1 })
+}
+fn w_net_accept(lid: usize) -> usize {
+    let stream = W_LISTENERS.with(|l| {
+        let l = l.borrow();
+        let listener = l.get(lid).expect("invalid listener");
+        listener.accept().unwrap_or_else(|e| panic!("accept failed: {}", e)).0
+    });
+    W_SOCKETS.with(|s| { let mut s = s.borrow_mut(); s.push(std::io::BufReader::new(stream)); s.len() - 1 })
+}
+fn w_net_close(id: usize) {
+    W_SOCKETS.with(|s| {
+        let s = s.borrow();
+        if let Some(sock) = s.get(id) {
+            let _ = sock.get_ref().shutdown(std::net::Shutdown::Both);
+        }
+    });
+}
+"#;
+
 /// The Rust grant for a capability parameter on `main` (Console is a no-op unit;
 /// a Dir is rooted at the current directory `.`, matching the interpreter).
 fn capability_grant(ty: &Type) -> Option<&'static str> {
@@ -127,6 +230,10 @@ fn capability_grant(ty: &Type) -> Option<&'static str> {
         Type::Named(n, _) if n == "Dir" => {
             USES_DIR.with(|f| f.set(true));
             Some("std::path::PathBuf::from(\".\")")
+        }
+        Type::Named(n, _) if n == "Net" => {
+            USES_NET.with(|f| f.set(true));
+            Some("w_net_grant()")
         }
         // `main(args: List(String))` receives the command-line arguments.
         Type::Named(n, targs)
@@ -156,7 +263,10 @@ fn fn_rust_name(f: &Function) -> String {
 fn needs_clone_at_call(t: &Option<Type>) -> bool {
     match t {
         Some(Type::Named(n, _)) => {
-            !matches!(n.as_str(), "Int" | "Float" | "Bool" | "Duration" | "Console" | "Env")
+            !matches!(
+                n.as_str(),
+                "Int" | "Float" | "Bool" | "Duration" | "Console" | "Env" | "Socket" | "Listener"
+            )
         }
         Some(Type::Tuple(_)) => true,
         Some(Type::Fn(..)) | None => false,
@@ -341,6 +451,7 @@ pub fn transpile_module(m: &Module) -> Result<String, String> {
     ENUM_NAMES.with(|r| r.borrow_mut().clear());
     VARIANT_BOXED.with(|r| r.borrow_mut().clear());
     USES_DIR.with(|f| f.set(false));
+    USES_NET.with(|f| f.set(false));
     FN_PARAM_CLONE.with(|m| m.borrow_mut().clear());
     FN_INOUT.with(|m| m.borrow_mut().clear());
     // Record which params are by-value collections (so calls clone them) and
@@ -412,6 +523,9 @@ pub fn transpile_module(m: &Module) -> Result<String, String> {
     if USES_DIR.with(|f| f.get()) {
         prog.push_str(DIR_HELPER);
     }
+    if USES_NET.with(|f| f.get()) {
+        prog.push_str(NET_HELPER);
+    }
     prog.push_str(&out);
     Ok(prog)
 }
@@ -451,13 +565,15 @@ fn gen_record(td: &crate::ast::TypeDef) -> Option<String> {
     ))
 }
 
-/// Emit a Rust enum for a multi-variant type with positional variants whose
-/// fields are all supported concrete types (so generic types like Option/Result,
-/// whose fields are type variables, are skipped — `rust_ty` returns `None`).
-/// Returns `None` (skips) for single-variant types, struct-style variants, or an
-/// unsupported field type, so a later use surfaces a clear error.
+/// Emit a Rust enum for a type with positional variants whose fields are all
+/// supported concrete types (so generic types like Option/Result, whose fields
+/// are type variables, are skipped — `rust_ty` returns `None`). A single-variant
+/// positional type (a newtype like `type Response: Response(...)`) is also
+/// handled here, as a one-variant enum (gen_record takes the named-field case).
+/// Returns `None` (skips) for struct-style variants or an unsupported field type,
+/// so a later use surfaces a clear error.
 fn gen_enum(td: &crate::ast::TypeDef) -> Option<String> {
-    if td.variants.len() < 2 {
+    if td.variants.is_empty() {
         return None;
     }
     // Option/Result map to Rust's built-ins (their constructors/patterns are
@@ -926,6 +1042,48 @@ fn gen_call(name: &str, args: &[Expr]) -> Result<String, String> {
         "get_env" if args.len() == 2 => {
             format!("std::env::var(({}).as_str()).ok()", arg(1)?)
         }
+        // Net capability: confined TCP (see NET_HELPER). The Net allow-list is
+        // borrowed; sockets/listeners are usize handles into thread-local tables.
+        "restrict" if args.len() == 2 => {
+            USES_NET.with(|f| f.set(true));
+            format!("w_net_restrict(&({}), ({}).as_str())", arg(0)?, arg(1)?)
+        }
+        "connect" if args.len() == 2 => {
+            USES_NET.with(|f| f.set(true));
+            format!("w_net_connect(&({}), ({}).as_str())", arg(0)?, arg(1)?)
+        }
+        "listen" if args.len() == 2 => {
+            USES_NET.with(|f| f.set(true));
+            format!("w_net_listen(&({}), ({}).as_str())", arg(0)?, arg(1)?)
+        }
+        "accept" if args.len() == 1 => {
+            USES_NET.with(|f| f.set(true));
+            format!("w_net_accept({})", arg(0)?)
+        }
+        "send_line" if args.len() == 2 => {
+            USES_NET.with(|f| f.set(true));
+            format!("w_net_send_line({}, ({}).as_str())", arg(0)?, arg(1)?)
+        }
+        "send_bytes" if args.len() == 2 => {
+            USES_NET.with(|f| f.set(true));
+            format!("w_net_send_bytes({}, ({}).as_str())", arg(0)?, arg(1)?)
+        }
+        "recv_line" if args.len() == 1 => {
+            USES_NET.with(|f| f.set(true));
+            format!("w_net_recv_line({})", arg(0)?)
+        }
+        "recv_all" if args.len() == 1 => {
+            USES_NET.with(|f| f.set(true));
+            format!("w_net_recv_all({})", arg(0)?)
+        }
+        "recv_bytes" if args.len() == 2 => {
+            USES_NET.with(|f| f.set(true));
+            format!("w_net_recv_bytes({}, {})", arg(0)?, arg(1)?)
+        }
+        "close" if args.len() == 1 => {
+            USES_NET.with(|f| f.set(true));
+            format!("w_net_close({})", arg(0)?)
+        }
         // List builtins. `push`/`concat` consume the list and return it (so the
         // common `acc = push(acc, x)` is an O(1) in-place append, and Rust's
         // move-checking enforces value semantics on any reuse).
@@ -1002,12 +1160,12 @@ fn gen_call(name: &str, args: &[Expr]) -> Result<String, String> {
         ),
         "split" if args.len() == 2 => format!(
             "{{ let __s = {}; let __sep = {}; if __sep.is_empty() {{ vec![__s] }} else {{ __s.split(__sep.as_str()).map(|p| p.to_string()).collect::<Vec<String>>() }} }}",
-            arg(0)?,
+            clone_if_var(&args[0], arg(0)?),
             arg(1)?
         ),
         "index_of" if args.len() == 2 => format!(
             "{{ let __s = {}; let __sub = {}; __s.find(__sub.as_str()).map(|b| __s[..b].chars().count() as i64).unwrap_or(-1) }}",
-            arg(0)?,
+            clone_if_var(&args[0], arg(0)?),
             arg(1)?
         ),
         "substring" if args.len() == 3 => format!(
@@ -1143,6 +1301,10 @@ fn rust_ty(t: &Type) -> Option<String> {
                 USES_DIR.with(|f| f.set(true));
                 Some("std::path::PathBuf".into())
             }
+            // A Net capability is an allow-list of `host:port`; sockets and
+            // listeners are handles into the thread-local tables (see NET_HELPER).
+            "Net" => Some("Vec<String>".into()),
+            "Socket" | "Listener" => Some("usize".into()),
             // A list maps to a Rust Vec of its element type.
             "List" => Some(format!("Vec<{}>", rust_ty(args.first()?)?)),
             // A dict maps to a fast HashMap (see DICT_HELPER).

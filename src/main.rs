@@ -1446,6 +1446,78 @@ mod example_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A single-variant positional type (a newtype like `type Box: Box(Int,
+    /// String)`) is registered and usable as a parameter/return type.
+    #[test]
+    fn native_backend_single_variant_type() {
+        let pid = std::process::id();
+        let dir = std::env::temp_dir().join(format!("witchy_sv_{pid}"));
+        let _ = std::fs::create_dir_all(&dir);
+        let src = dir.join("prog.witchy");
+        std::fs::write(
+            &src,
+            "type Box:\n    Box(Int, String)\n\nfn label(b: Box) -> String:\n    match b:\n        Box(n, s) -> f\"{s}={n}\"\n\nfn main(console: Console):\n    print(console, label(Box(5, \"x\")))\n",
+        )
+        .expect("write src");
+        let rust = crate::emit_rust_file(src.to_str().unwrap()).expect("transpile");
+        assert!(rust.contains("enum Box"), "single-variant type should register: {rust}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The Net capability: a confined TCP client connects to an in-process echo
+    /// server (allow-listed via `WITCHY_NET`), sends a line, and prints the echo —
+    /// byte-identical to the interpreter's socket path.
+    #[test]
+    fn native_backend_net_client() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().unwrap().to_string();
+        let server = std::thread::spawn(move || {
+            if let Ok((mut s, _)) = listener.accept() {
+                let mut buf = [0u8; 64];
+                let n = s.read(&mut buf).unwrap_or(0);
+                let _ = s.write_all(&buf[..n]);
+            }
+        });
+        let pid = std::process::id();
+        let dir = std::env::temp_dir().join(format!("witchy_net_{pid}"));
+        let _ = std::fs::create_dir_all(&dir);
+        let src = dir.join("prog.witchy");
+        std::fs::write(
+            &src,
+            format!("fn main(net: Net, console: Console):\n    let s = connect(net, \"{addr}\")\n    send_line(s, \"ping\")\n    print(console, recv_line(s))\n    close(s)\n"),
+        )
+        .expect("write src");
+        let rust = crate::emit_rust_file(src.to_str().unwrap()).expect("transpile");
+        assert!(rust.contains("w_net_connect("), "expected a confined connect");
+        assert!(rust.contains("is not permitted by this Net capability"), "expected the allow-list guard");
+        let rs = dir.join("prog.rs");
+        let bin = dir.join("prog_bin");
+        std::fs::write(&rs, &rust).unwrap();
+        let mut ran = false;
+        if let Ok(st) = std::process::Command::new("rustc")
+            .args(["-O", "--edition", "2021"])
+            .arg(&rs)
+            .arg("-o")
+            .arg(&bin)
+            .status()
+        {
+            assert!(st.success(), "rustc should compile the Net program");
+            let out = std::process::Command::new(&bin)
+                .env("WITCHY_NET", &addr)
+                .output()
+                .expect("run");
+            assert_eq!(String::from_utf8_lossy(&out.stdout), "ping\n");
+            ran = true;
+        }
+        if !ran {
+            // No rustc available: make sure the server thread isn't left blocking.
+            let _ = std::net::TcpStream::connect(&addr);
+        }
+        let _ = server.join();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Python-style f-strings: `f"...{expr}..."` interpolates (with `{{`/`}}` for
     /// literal braces), desugaring to `to_string` + concat — same result on both
     /// backends.
