@@ -1918,6 +1918,74 @@ mod example_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Security: a native binary holding a `Dir` capability rooted at a directory
+    /// must NEVER read a file outside that directory, for any adversarial path —
+    /// the capability is a hard subtree sandbox. Plants a secret as a sibling of
+    /// the root and asserts it never leaks, across many escape attempts.
+    #[test]
+    fn native_backend_dir_confinement_holds() {
+        let pid = std::process::id();
+        let base = std::env::temp_dir().join(format!("witchy_sandbox_{pid}"));
+        let root = base.join("root");
+        let _ = std::fs::create_dir_all(&root);
+        std::fs::write(root.join("ok.txt"), "in-root-ok").expect("write ok");
+        // The secret lives OUTSIDE the root (a sibling and a parent).
+        std::fs::write(base.join("secret.txt"), "TOP-SECRET").expect("write secret");
+        let src = root.join("prog.witchy");
+        std::fs::write(
+            &src,
+            "fn main(dir: Dir, args: List(String), console: Console):\n    print(console, read(dir, at(args, 0)))\n",
+        )
+        .expect("write src");
+        let rust = crate::emit_rust_file(src.to_str().unwrap()).expect("transpile");
+        let rs = root.join("prog.rs");
+        let bin = root.join("prog_bin");
+        std::fs::write(&rs, &rust).unwrap();
+        let Ok(st) = std::process::Command::new("rustc")
+            .args(["-O", "--edition", "2021"])
+            .arg(&rs)
+            .arg("-o")
+            .arg(&bin)
+            .status()
+        else {
+            let _ = std::fs::remove_dir_all(&base);
+            return; // no rustc available
+        };
+        assert!(st.success(), "the sandbox program should compile");
+        // Every one of these must be rejected (panic) — none may read the secret.
+        let escapes = [
+            "../secret.txt",
+            "../../secret.txt",
+            "ok.txt/../../secret.txt",
+            "./../secret.txt",
+            "a/b/../../../secret.txt",
+            "/etc/hosts",
+            "..",
+            "../",
+            "....//secret.txt",
+        ];
+        for path in escapes {
+            let out = std::process::Command::new(&bin)
+                .arg(path)
+                .current_dir(&root)
+                .output()
+                .expect("run");
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            assert!(
+                !stdout.contains("TOP-SECRET"),
+                "sandbox escape: path {path:?} leaked the secret"
+            );
+        }
+        // The in-root file is readable (the sandbox isn't broken, just confined).
+        let ok = std::process::Command::new(&bin)
+            .arg("ok.txt")
+            .current_dir(&root)
+            .output()
+            .expect("run");
+        assert_eq!(String::from_utf8_lossy(&ok.stdout), "in-root-ok\n");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
     /// The Clock capability: `now(clock)` returns ms since the epoch. Tested by a
     /// deterministic bound (the absolute value is wall-clock, so not diff-able).
     #[test]
