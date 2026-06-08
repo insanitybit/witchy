@@ -886,11 +886,72 @@ fn collect_calls_expr(e: &Expr, out: &mut HashSet<String>) {
 /// Render a generic-parameter list `<A: Clone, B: Clone>` (empty if no vars).
 /// `Clone` covers value-copies (for-loop elements, call-site clones).
 fn generic_params(tvs: &std::collections::BTreeSet<String>) -> String {
+    generic_params_eq(tvs, false)
+}
+
+/// `with_eq` adds a `PartialEq` bound — used for *function* generics so a generic
+/// `==`/`!=` on a type variable compiles (witchy has structural equality on any
+/// value). Type (struct/enum) generics keep just `Clone` to avoid over-
+/// constraining their other impls.
+fn generic_params_eq(tvs: &std::collections::BTreeSet<String>, with_eq: bool) -> String {
     if tvs.is_empty() {
-        String::new()
-    } else {
-        let bounded: Vec<String> = tvs.iter().map(|v| format!("{v}: Clone")).collect();
-        format!("<{}>", bounded.join(", "))
+        return String::new();
+    }
+    let bound = if with_eq { "Clone + PartialEq" } else { "Clone" };
+    let bounded: Vec<String> = tvs.iter().map(|v| format!("{v}: {bound}")).collect();
+    format!("<{}>", bounded.join(", "))
+}
+
+/// Does this function body use `==`/`!=`? If so its generic type variables get a
+/// `PartialEq` bound (a generic structural comparison needs it). Conservative:
+/// missing one just leaves a `==`-using generic unsupported, never miscompiled.
+fn block_has_eq(b: &Block) -> bool {
+    b.stmts.iter().any(|s| match s {
+        Stmt::Let { value, .. } | Stmt::Assign { value, .. } | Stmt::LetTuple { value, .. } => {
+            expr_has_eq(value)
+        }
+        Stmt::Return(Some(e)) | Stmt::Yield(e) | Stmt::Expr(e) => expr_has_eq(e),
+        _ => false,
+    })
+}
+
+fn expr_has_eq(e: &Expr) -> bool {
+    use crate::ast::Expr as E;
+    match e {
+        E::Binary { op, lhs, rhs } => {
+            matches!(op, BinOp::Eq | BinOp::NotEq) || expr_has_eq(lhs) || expr_has_eq(rhs)
+        }
+        E::List(xs) | E::Tuple(xs) | E::Call { args: xs, .. } | E::Ctor { args: xs, .. }
+        | E::Spawn { args: xs, .. } => xs.iter().any(expr_has_eq),
+        E::MethodCall { receiver, args, .. } => expr_has_eq(receiver) || args.iter().any(expr_has_eq),
+        E::Apply { func, args } => expr_has_eq(func) || args.iter().any(expr_has_eq),
+        E::Unary { expr, .. } | E::Try(expr) | E::As { expr, .. } | E::Field { base: expr, .. } => {
+            expr_has_eq(expr)
+        }
+        E::Range { lo, hi, .. } => expr_has_eq(lo) || expr_has_eq(hi),
+        E::Index { base, index } => expr_has_eq(base) || expr_has_eq(index),
+        E::Lambda { body, .. } | E::Block(body) => block_has_eq(body),
+        E::If { cond, then_block, else_block } => {
+            expr_has_eq(cond)
+                || block_has_eq(then_block)
+                || else_block.as_ref().is_some_and(block_has_eq)
+        }
+        E::While { cond, body } => expr_has_eq(cond) || block_has_eq(body),
+        E::WhileLet { scrutinee, body, .. } => expr_has_eq(scrutinee) || block_has_eq(body),
+        E::For { iter, body, .. } => expr_has_eq(iter) || block_has_eq(body),
+        E::Match { scrutinee, arms } => {
+            expr_has_eq(scrutinee)
+                || arms
+                    .iter()
+                    .any(|a| a.guard.as_ref().is_some_and(expr_has_eq) || expr_has_eq(&a.body))
+        }
+        E::RecordUpdate { base, fields } => {
+            expr_has_eq(base) || fields.iter().any(|(_, v)| expr_has_eq(v))
+        }
+        E::Record { fields, spread, .. } => {
+            fields.iter().any(|(_, v)| expr_has_eq(v)) || spread.as_deref().is_some_and(expr_has_eq)
+        }
+        _ => false,
     }
 }
 
@@ -1036,10 +1097,13 @@ fn gen_record(td: &crate::ast::TypeDef) -> Option<String> {
     RECORD_FIELDS.with(|r| {
         r.borrow_mut().insert(v.name.clone(), v.field_names.clone());
     });
+    // `PartialEq` when every field supports it (the showability set excludes
+    // closures/dicts) — so the record works with a generic `==`.
+    let eq = if is_showable(&v.name) { ", PartialEq" } else { "" };
     let derive = if all_copy {
-        "#[derive(Clone, Copy)]"
+        format!("#[derive(Clone, Copy{eq})]")
     } else {
-        "#[derive(Clone)]"
+        format!("#[derive(Clone{eq})]")
     };
     let generics = generic_params(&tvs);
     let mut out = format!("{derive}\nstruct {}{generics} {{\n{}\n}}\n", v.name, fields.join("\n"));
@@ -1123,10 +1187,11 @@ fn gen_enum(td: &crate::ast::TypeDef) -> Option<String> {
             VARIANT_BOXED.with(|m| m.borrow_mut().insert(vn, boxed));
         }
     }
+    let eq = if is_showable(&td.name) { ", PartialEq" } else { "" };
     let derive = if all_copy {
-        "#[derive(Clone, Copy)]"
+        format!("#[derive(Clone, Copy{eq})]")
     } else {
-        "#[derive(Clone)]"
+        format!("#[derive(Clone{eq})]")
     };
     let generics = generic_params(&tvs);
     let mut out = format!("{derive}\nenum {}{generics} {{\n{}\n}}\n", td.name, variants.join(",\n"));
@@ -1239,7 +1304,10 @@ fn gen_fn(f: &Function) -> Result<String, String> {
     if let Some(t) = &f.ret {
         collect_type_vars(t, &mut tvs);
     }
-    let generics = generic_params(&tvs);
+    // Function generics get a `PartialEq` bound only when the body uses `==`/`!=`
+    // (so a generic structural comparison compiles), to avoid over-constraining
+    // type variables instantiated with non-equatable types (e.g. closures).
+    let generics = generic_params_eq(&tvs, block_has_eq(&f.body));
     CUR_PARAMS.with(|s| {
         *s.borrow_mut() = f.params.iter().map(|p| p.name.clone()).collect();
     });

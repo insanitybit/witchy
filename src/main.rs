@@ -1533,6 +1533,38 @@ mod example_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Generic structural `==`: a function comparing values of a type variable
+    /// gets a `PartialEq` bound (only when it actually uses `==`/`!=`).
+    #[test]
+    fn native_backend_generic_equality() {
+        let pid = std::process::id();
+        let dir = std::env::temp_dir().join(format!("witchy_geq_{pid}"));
+        let _ = std::fs::create_dir_all(&dir);
+        let src = dir.join("prog.witchy");
+        std::fs::write(
+            &src,
+            "fn count_eq(xs: List(a), target: a) -> Int:\n    var n = 0\n    for x in xs:\n        if x == target:\n            n = n + 1\n    n\n\nfn main(console: Console):\n    print(console, int_to_string(count_eq([1, 2, 2, 3, 2], 2)))\n    print(console, int_to_string(count_eq([\"a\", \"b\", \"a\"], \"a\")))\n",
+        )
+        .expect("write src");
+        let rust = crate::emit_rust_file(src.to_str().unwrap()).expect("transpile");
+        assert!(rust.contains("PartialEq"), "expected a PartialEq bound on the generic");
+        let rs = dir.join("prog.rs");
+        let bin = dir.join("prog_bin");
+        std::fs::write(&rs, &rust).unwrap();
+        if let Ok(st) = std::process::Command::new("rustc")
+            .args(["-O", "--edition", "2021"])
+            .arg(&rs)
+            .arg("-o")
+            .arg(&bin)
+            .status()
+        {
+            assert!(st.success(), "rustc should compile the generic-equality program");
+            let out = std::process::Command::new(&bin).output().expect("run");
+            assert_eq!(String::from_utf8_lossy(&out.stdout), "3\n2\n");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// A `-> Nil` (unit) return type, and an enum recursive through a collection
     /// (`JsonArray(List(Json))`) registered before its fields are computed.
     #[test]
