@@ -1446,6 +1446,12 @@ fn gen_expr(e: &Expr, value: bool) -> Result<String, String> {
         }
         // `match` maps to a Rust match; non-exhaustive matches (no catch-all) are
         // rejected by rustc, which is safe (the program just stays wasm-only).
+        Expr::Match { scrutinee, arms }
+            if arms.iter().any(|a| matches!(a.pattern, crate::ast::Pattern::List { .. })) =>
+        {
+            // A list match lowers to an if-else chain on the length (see helper).
+            return gen_list_match(gen_value(scrutinee)?, arms, value);
+        }
         Expr::Match { scrutinee, arms } => {
             let mut out = format!("match {} {{\n", gen_expr(scrutinee, true)?);
             for arm in arms {
@@ -1860,6 +1866,67 @@ fn gen_call(name: &str, args: &[Expr]) -> Result<String, String> {
 /// For a constructor pattern with `Box`ed (recursive) fields, the `let x = *x;`
 /// statements that move each boxed binding out of its box (so the arm body uses
 /// the plain value). Only simple variable bindings are handled.
+/// Lower a `match` with list patterns to an if-else chain on the list length,
+/// binding elements by index (cloned). This gives exact top-to-bottom match
+/// semantics and avoids slice-pattern by-reference binding. Arms must be list,
+/// variable, or wildcard patterns (a list scrutinee admits no others).
+fn gen_list_match(scrutinee: String, arms: &[crate::ast::MatchArm], value: bool) -> Result<String, String> {
+    use crate::ast::Pattern;
+    let mut out = format!("{{ let __m = {scrutinee};\n");
+    let mut emitted_if = false;
+    let mut catch_all = false;
+    for arm in arms {
+        if arm.guard.is_some() {
+            return Err("native backend: a guard on a list pattern is not supported yet".into());
+        }
+        let body = if value { gen_value(&arm.body)? } else { gen_expr(&arm.body, false)? };
+        match &arm.pattern {
+            Pattern::List { elems, rest } => {
+                let mut binds = String::new();
+                for (i, e) in elems.iter().enumerate() {
+                    match e {
+                        Pattern::Var(n) => binds.push_str(&format!("let {n} = __m[{i}].clone(); ")),
+                        Pattern::Wildcard => {}
+                        _ => return Err("native backend: a nested pattern inside a list pattern is not supported yet".into()),
+                    }
+                }
+                let cond = match rest {
+                    None => format!("__m.len() == {}", elems.len()),
+                    Some(tail) => {
+                        if let Some(name) = tail {
+                            binds.push_str(&format!("let {name} = __m[{}..].to_vec(); ", elems.len()));
+                        }
+                        format!("__m.len() >= {}", elems.len())
+                    }
+                };
+                let kw = if emitted_if { "else if" } else { "if" };
+                out.push_str(&format!("    {kw} {cond} {{ {binds}{body} }}\n"));
+                emitted_if = true;
+            }
+            Pattern::Var(n) => {
+                let prefix = if emitted_if { "else " } else { "" };
+                out.push_str(&format!("    {prefix}{{ let {n} = __m; {body} }}\n"));
+                catch_all = true;
+                break;
+            }
+            Pattern::Wildcard => {
+                let prefix = if emitted_if { "else " } else { "" };
+                out.push_str(&format!("    {prefix}{{ {body} }}\n"));
+                catch_all = true;
+                break;
+            }
+            _ => {
+                return Err("native backend: a list match's arms must be list, variable, or wildcard patterns".into())
+            }
+        }
+    }
+    if !catch_all {
+        out.push_str("    else { unreachable!(\"non-exhaustive list match\") }\n");
+    }
+    out.push('}');
+    Ok(out)
+}
+
 fn boxed_binding_derefs(p: &crate::ast::Pattern) -> String {
     use crate::ast::Pattern;
     let Pattern::Ctor { name, args } = p else {

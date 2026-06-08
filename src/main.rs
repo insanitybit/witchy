@@ -1533,6 +1533,38 @@ mod example_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// List patterns in `match` — `[]`, `[x]`, `[a, b]`, `[head, ..tail]` —
+    /// lower to an if-else chain on length, matching the interpreter top-to-bottom.
+    #[test]
+    fn native_backend_list_patterns() {
+        let pid = std::process::id();
+        let dir = std::env::temp_dir().join(format!("witchy_lp_{pid}"));
+        let _ = std::fs::create_dir_all(&dir);
+        let src = dir.join("prog.witchy");
+        std::fs::write(
+            &src,
+            "fn describe(xs: List(Int)) -> Int:\n    match xs:\n        [] -> 0\n        [x] -> x\n        [a, b] -> a + b\n        [head, ..tail] -> head + length(tail)\n\nfn main(console: Console):\n    print(console, int_to_string(describe([])))\n    print(console, int_to_string(describe([7])))\n    print(console, int_to_string(describe([3, 4])))\n    print(console, int_to_string(describe([10, 1, 2, 3])))\n",
+        )
+        .expect("write src");
+        let rust = crate::emit_rust_file(src.to_str().unwrap()).expect("transpile");
+        assert!(rust.contains("__m.len()"), "expected an if-else-on-length lowering");
+        let rs = dir.join("prog.rs");
+        let bin = dir.join("prog_bin");
+        std::fs::write(&rs, &rust).unwrap();
+        if let Ok(st) = std::process::Command::new("rustc")
+            .args(["-O", "--edition", "2021"])
+            .arg(&rs)
+            .arg("-o")
+            .arg(&bin)
+            .status()
+        {
+            assert!(st.success(), "rustc should compile the list-pattern program");
+            let out = std::process::Command::new(&bin).output().expect("run");
+            assert_eq!(String::from_utf8_lossy(&out.stdout), "0\n7\n7\n13\n");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// A capability narrowing `e as T` is identity at runtime, so it lowers to
     /// the inner expression (`examples/capability_rights.witchy` exercises it).
     #[test]
