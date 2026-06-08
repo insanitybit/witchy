@@ -2145,6 +2145,47 @@ mod example_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// F-strings (and `<>` chains) flatten to a SINGLE `format!`, not one nested
+    /// `format!("{}{}", ..)` per `<>`. String literals are baked into the format
+    /// string (with `{`/`}` escaped), so `f"a{n}b{n}c"` becomes `format!("a{}b{}c",
+    /// ..)` — one allocation, not five. Output is byte-identical to the interpreter,
+    /// including literal braces, quotes, and empty pieces.
+    #[test]
+    fn native_backend_fstring_flattening() {
+        let prog = "fn main(console: Console):\n    let n = 42\n    let s = \"x\"\n    print(console, f\"a{n}b{n}c\")\n    print(console, \"lit{brace}\" <> int_to_string(n))\n    print(console, f\"q\\\"{s}\\\"\")\n    print(console, s <> \"\")\n";
+        assert_eq!(
+            interpreter::run(prog).expect("interp"),
+            vec!["a42b42c", "lit{brace}42", "q\"x\"", "x"]
+        );
+        let pid = std::process::id();
+        let dir = std::env::temp_dir().join(format!("witchy_fstr_{pid}"));
+        let _ = std::fs::create_dir_all(&dir);
+        let src = dir.join("prog.witchy");
+        std::fs::write(&src, prog).unwrap();
+        let rust = crate::emit_rust_file(src.to_str().unwrap()).expect("transpile");
+        // One flattened format! — not nested format!("{}{}", format!(..), ..).
+        assert!(rust.contains("format!(\"a{}b{}c\""), "f-string should flatten: {rust}");
+        assert!(rust.contains("lit{{brace}}"), "literal braces must be escaped: {rust}");
+        let rs = dir.join("prog.rs");
+        let bin = dir.join("prog_bin");
+        std::fs::write(&rs, &rust).unwrap();
+        if let Ok(st) = std::process::Command::new("rustc")
+            .args(["-O", "-C", "overflow-checks=off", "--edition", "2021"])
+            .arg(&rs)
+            .arg("-o")
+            .arg(&bin)
+            .status()
+        {
+            assert!(st.success(), "rustc should compile the f-string program");
+            let out = std::process::Command::new(&bin).output().expect("run");
+            assert_eq!(
+                String::from_utf8_lossy(&out.stdout),
+                "a42b42c\nlit{brace}42\nq\"x\"\nx\n"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// A `-> Nil` (unit) return type, and an enum recursive through a collection
     /// (`JsonArray(List(Json))`) registered before its fields are computed.
     #[test]

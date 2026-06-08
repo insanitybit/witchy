@@ -1805,6 +1805,57 @@ fn gen_stmt(s: &Stmt, tail: bool) -> Result<String, String> {
     })
 }
 
+/// Collect a left/right-nested `<>` concatenation chain into its flat operand
+/// list, in left-to-right order. A non-concat expression is a single operand.
+fn flatten_concat<'a>(e: &'a Expr, out: &mut Vec<&'a Expr>) {
+    if let Expr::Binary { op: BinOp::Concat, lhs, rhs } = e {
+        flatten_concat(lhs, out);
+        flatten_concat(rhs, out);
+    } else {
+        out.push(e);
+    }
+}
+
+/// Emit a `<>` concatenation as a SINGLE `format!`, instead of one nested
+/// `format!("{}{}", ..)` per `<>`. String literals are baked into the format
+/// string (no placeholder, no allocation); the other operands — always
+/// `String`-typed in witchy (a `String` value or a `to_string(..)` result) —
+/// become `{}` placeholders formatted by value. This matters because f-strings
+/// desugar to a `<>` chain (often with a trailing `<> ""`), so the naive
+/// lowering of `f"word{n}"` was five allocations of nested `format!`s and an
+/// empty-string concat; this collapses it to one `format!` call.
+fn gen_concat(e: &Expr) -> Result<String, String> {
+    let mut parts = Vec::new();
+    flatten_concat(e, &mut parts);
+    let mut fmt = String::new();
+    let mut args: Vec<String> = Vec::new();
+    for p in parts {
+        match p {
+            // A string literal: inline its text, escaping `{`/`}` so it isn't read
+            // as a placeholder (Rust-string escaping of quotes/etc. is handled by
+            // emitting the whole format string via `{:?}` below).
+            Expr::Str(s) => {
+                for c in s.chars() {
+                    match c {
+                        '{' => fmt.push_str("{{"),
+                        '}' => fmt.push_str("}}"),
+                        _ => fmt.push(c),
+                    }
+                }
+            }
+            other => {
+                fmt.push_str("{}");
+                args.push(gen_expr(other, true)?);
+            }
+        }
+    }
+    if args.is_empty() {
+        Ok(format!("{fmt:?}.to_string()"))
+    } else {
+        Ok(format!("format!({fmt:?}, {})", args.join(", ")))
+    }
+}
+
 fn gen_expr(e: &Expr, value: bool) -> Result<String, String> {
     Ok(match e {
         // Pin integer/float literals so locals infer i64/f64 (Rust would default
@@ -1826,13 +1877,11 @@ fn gen_expr(e: &Expr, value: bool) -> Result<String, String> {
                 UnOp::BitNot => format!("(!({inner}))"),
             }
         }
+        Expr::Binary { op: BinOp::Concat, .. } => gen_concat(e)?,
         Expr::Binary { op, lhs, rhs } => {
             let l = gen_expr(lhs, true)?;
             let r = gen_expr(rhs, true)?;
-            match op {
-                BinOp::Concat => format!("format!(\"{{}}{{}}\", {l}, {r})"),
-                _ => format!("({l} {} {r})", bin_op(*op)),
-            }
+            format!("({l} {} {r})", bin_op(*op))
         }
         Expr::If { cond, then_block, else_block } => {
             let c = gen_expr(cond, true)?;
