@@ -115,6 +115,7 @@ USAGE:
     witchy check    <file.witchy>                 type-check without running
     witchy parity   <file.witchy>                 run on both backends, confirm identical output
     witchy sandbox  <file.witchy>                 compile and run in a VM granted exactly its footprint
+    witchy emit-wat <file.witchy>                 print the compiled WebAssembly text (the module sandbox runs)
     witchy caps     <file.witchy>                 report the capability footprint
     witchy caps-diff <old.witchy> <new.witchy>    fail if the footprint widened
     witchy fmt [--check] <file.witchy>            reformat in place (--check: verify only, exit 1 if not)
@@ -205,6 +206,22 @@ fn main() -> wasmtime::Result<()> {
                     println!("{line}");
                 }
             }
+            Err(e) => {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
+        }
+        return Ok(());
+    }
+    // `witchy emit-wat <file>` prints the compiled WebAssembly text — the same
+    // module `sandbox` runs — for inspecting/optimizing the generated code.
+    if std::env::args().nth(1).as_deref() == Some("emit-wat") {
+        let Some(path) = std::env::args().nth(2) else {
+            eprintln!("usage: witchy emit-wat <file.witchy>");
+            std::process::exit(1);
+        };
+        match emit_wat_file(&path) {
+            Ok(wat) => print!("{wat}"),
             Err(e) => {
                 eprintln!("{e}");
                 std::process::exit(1);
@@ -824,6 +841,15 @@ fn verify_file(path: &str) -> Result<(), String> {
 /// currently links only the console (`print`) host, so it supports Console-only
 /// (or pure) programs; anything needing `Dir`/`Net` is reported, not run.
 /// Returns the program's output lines.
+/// Compile a program to WebAssembly text (WAT) and return it — the same module
+/// `sandbox` would run. For inspecting and optimizing the generated code.
+fn emit_wat_file(path: &str) -> Result<String, String> {
+    let (linked, _stem) = link_file(path)?;
+    typeck::check(&linked).map_err(|e| e.to_string())?;
+    codegen::compile_module(&linked)
+        .map_err(|e| format!("cannot compile to WASM (an interpreter-only feature?): {e}"))
+}
+
 fn run_file_sandboxed(path: &str) -> Result<Vec<String>, String> {
     let (linked, _stem) = link_file(path)?;
     typeck::check(&linked).map_err(|e| e.to_string())?;
@@ -1192,6 +1218,23 @@ mod example_tests {
             crate::run_wat_capture(&wat).expect("wasm run"),
             vec!["ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"]
         );
+    }
+
+    /// `witchy emit-wat <file>` compiles a program to WebAssembly text — the same
+    /// module `sandbox` runs — for inspecting the generated code.
+    #[test]
+    fn emit_wat_returns_the_compiled_module() {
+        let path = std::env::temp_dir().join(format!("witchy_emit_wat_{}.witchy", std::process::id()));
+        std::fs::write(
+            &path,
+            "fn fib(n: Int) -> Int:\n    if n < 2:\n        n\n    else:\n        fib(n - 1) + fib(n - 2)\nfn main(console: Console):\n    print(console, int_to_string(fib(10)))\n",
+        )
+        .expect("write temp source");
+        let wat = crate::emit_wat_file(path.to_str().unwrap()).expect("emit-wat");
+        let _ = std::fs::remove_file(&path);
+        assert!(wat.starts_with("(module"), "expected a wasm module, got: {}", &wat[..wat.len().min(40)]);
+        // The fib function is emitted, module-qualified by the file stem.
+        assert!(wat.contains(".fib (param $n i64)"), "expected the fib function in the WAT");
     }
 
     /// `crypto.ed25519_verify` — a native intrinsic of the `crypto` module — is a
