@@ -1474,9 +1474,24 @@ mod example_tests {
         let addr = listener.local_addr().unwrap().to_string();
         let server = std::thread::spawn(move || {
             if let Ok((mut s, _)) = listener.accept() {
-                let mut buf = [0u8; 64];
-                let n = s.read(&mut buf).unwrap_or(0);
-                let _ = s.write_all(&buf[..n]);
+                // Read the whole line, echo it, then hold the connection open
+                // until the client closes — so it never sees a premature reset.
+                let mut buf = Vec::new();
+                let mut tmp = [0u8; 64];
+                loop {
+                    match s.read(&mut tmp) {
+                        Ok(0) | Err(_) => break,
+                        Ok(k) => {
+                            buf.extend_from_slice(&tmp[..k]);
+                            if buf.contains(&b'\n') {
+                                break;
+                            }
+                        }
+                    }
+                }
+                let _ = s.write_all(&buf);
+                let _ = s.flush();
+                let _ = s.read(&mut tmp);
             }
         });
         let pid = std::process::id();

@@ -19,7 +19,9 @@ cd "$(dirname "$0")"
 
 WITCHY="${WITCHY:-../target/release/witchy}"
 CPU_BENCHES=(fib loop_sum collatz mandelbrot)
-COLL_BENCHES=(list_sum dict_count)
+# Collection / allocation benchmarks run on native + go only (the interpreter's
+# immutable collections are O(n^2), and binary_trees blows its step budget).
+COLL_BENCHES=(list_sum dict_count binary_trees)
 ALL_BENCHES=("${CPU_BENCHES[@]}" "${COLL_BENCHES[@]}")
 WARMUP="${WARMUP:-2}"
 RUNS="${RUNS:-8}"

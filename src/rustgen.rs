@@ -48,6 +48,15 @@ thread_local! {
     /// Such a function returns its inout values; a statement-position call
     /// reassigns the corresponding (variable) arguments — Hylo write-back.
     static FN_INOUT: RefCell<HashMap<String, Vec<usize>>> = RefCell::new(HashMap::new());
+    /// Bindings whose value may be *moved* (not cloned) at their use, because the
+    /// use is their last (single, loop-free) use in scope — last-use elision. Lets
+    /// recursive traversals pass subtrees by move instead of deep-cloning them.
+    static MOVEABLE: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+}
+
+/// Whether a bare variable may be moved (rather than cloned) at this use.
+fn is_moveable(name: &str) -> bool {
+    MOVEABLE.with(|m| m.borrow().contains(name))
 }
 
 /// witchy's `Dict` maps to a real `HashMap` with a fast, non-DoS-resistant hash
@@ -276,11 +285,155 @@ fn needs_clone_at_call(t: &Option<Type>) -> bool {
 /// Clone an argument for value semantics only if it's a reused binding (a bare
 /// variable); a temporary is a fresh value and is moved.
 fn clone_if_var(arg: &Expr, rendered: String) -> String {
-    if matches!(arg, Expr::Var(_)) {
+    if matches!(arg, Expr::Var(v) if !is_moveable(v)) {
         format!("({rendered}).clone()")
     } else {
         rendered
     }
+}
+
+/// The variable names a pattern binds (so they can be considered for last-use
+/// move elision in the arm body). Wildcards/literals bind nothing.
+fn pattern_bindings(p: &crate::ast::Pattern, out: &mut Vec<String>) {
+    use crate::ast::Pattern;
+    match p {
+        Pattern::Var(n) => out.push(n.clone()),
+        Pattern::Ctor { args, .. } | Pattern::Tuple(args) => {
+            args.iter().for_each(|a| pattern_bindings(a, out))
+        }
+        _ => {}
+    }
+}
+
+/// Count textual uses of `name` in an expression: `total` and, separately,
+/// `looped` — uses inside a loop or closure body (relative to here), where a
+/// move would be unsound (the use may re-execute). Over-counting (e.g. through a
+/// shadowing rebind) is safe: it only keeps the conservative clone.
+fn count_uses(e: &Expr, name: &str, in_loop: bool, total: &mut usize, looped: &mut usize) {
+    use crate::ast::Expr as E;
+    let go = |x: &Expr, l: bool, t: &mut usize, lp: &mut usize| count_uses(x, name, l, t, lp);
+    match e {
+        E::Var(v) => {
+            if v == name {
+                *total += 1;
+                if in_loop {
+                    *looped += 1;
+                }
+            }
+        }
+        E::Int(_) | E::Float(_) | E::Duration(_) | E::Str(_) | E::Bool(_) | E::Spawn { .. } => {}
+        E::List(xs) | E::Tuple(xs) => xs.iter().for_each(|x| go(x, in_loop, total, looped)),
+        E::Call { args, .. } | E::Ctor { args, .. } => {
+            args.iter().for_each(|x| go(x, in_loop, total, looped))
+        }
+        E::MethodCall { receiver, args, .. } => {
+            go(receiver, in_loop, total, looped);
+            args.iter().for_each(|x| go(x, in_loop, total, looped));
+        }
+        E::Apply { func, args } => {
+            go(func, in_loop, total, looped);
+            args.iter().for_each(|x| go(x, in_loop, total, looped));
+        }
+        E::Unary { expr, .. } | E::Try(expr) | E::As { expr, .. } | E::Field { base: expr, .. } => {
+            go(expr, in_loop, total, looped)
+        }
+        E::Binary { lhs, rhs, .. } => {
+            go(lhs, in_loop, total, looped);
+            go(rhs, in_loop, total, looped);
+        }
+        E::Range { lo, hi, .. } => {
+            go(lo, in_loop, total, looped);
+            go(hi, in_loop, total, looped);
+        }
+        E::Index { base, index } => {
+            go(base, in_loop, total, looped);
+            go(index, in_loop, total, looped);
+        }
+        // A closure body may run any number of times (or escape): treat its uses
+        // as looped so captured variables are cloned, not moved.
+        E::Lambda { body, .. } => count_uses_block(body, name, true, total, looped),
+        E::Block(b) => count_uses_block(b, name, in_loop, total, looped),
+        E::If { cond, then_block, else_block } => {
+            go(cond, in_loop, total, looped);
+            count_uses_block(then_block, name, in_loop, total, looped);
+            if let Some(eb) = else_block {
+                count_uses_block(eb, name, in_loop, total, looped);
+            }
+        }
+        E::Match { scrutinee, arms } => {
+            go(scrutinee, in_loop, total, looped);
+            for a in arms {
+                if let Some(g) = &a.guard {
+                    go(g, in_loop, total, looped);
+                }
+                go(&a.body, in_loop, total, looped);
+            }
+        }
+        E::While { cond, body } => {
+            go(cond, true, total, looped);
+            count_uses_block(body, name, true, total, looped);
+        }
+        E::For { iter, body, .. } => {
+            go(iter, in_loop, total, looped);
+            count_uses_block(body, name, true, total, looped);
+        }
+        E::WhileLet { scrutinee, body, .. } => {
+            go(scrutinee, true, total, looped);
+            count_uses_block(body, name, true, total, looped);
+        }
+        E::RecordUpdate { base, fields } => {
+            go(base, in_loop, total, looped);
+            fields.iter().for_each(|(_, x)| go(x, in_loop, total, looped));
+        }
+        E::Record { fields, spread, .. } => {
+            fields.iter().for_each(|(_, x)| go(x, in_loop, total, looped));
+            if let Some(s) = spread {
+                go(s, in_loop, total, looped);
+            }
+        }
+    }
+}
+
+fn count_uses_block(b: &Block, name: &str, in_loop: bool, total: &mut usize, looped: &mut usize) {
+    use crate::ast::Stmt;
+    for s in &b.stmts {
+        match s {
+            Stmt::Let { value, .. } | Stmt::Assign { value, .. } | Stmt::LetTuple { value, .. } => {
+                count_uses(value, name, in_loop, total, looped)
+            }
+            Stmt::Return(Some(e)) | Stmt::Yield(e) | Stmt::Expr(e) => {
+                count_uses(e, name, in_loop, total, looped)
+            }
+            Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
+        }
+    }
+}
+
+/// Is `name` used exactly once, and not inside a loop/closure, within `body`?
+/// Such a use is the binding's last dynamic use, so its value can be moved.
+fn last_use_in_expr(body: &Expr, name: &str) -> bool {
+    let (mut total, mut looped) = (0, 0);
+    count_uses(body, name, false, &mut total, &mut looped);
+    total == 1 && looped == 0
+}
+
+/// Same, over the remaining statements of a block — a `let` used exactly once
+/// (loop-free) afterward can be moved at that use. (`stmts` is the slice after
+/// the binding, so all uses there are genuinely later.)
+fn last_use_in_stmts(stmts: &[Stmt], name: &str) -> bool {
+    let (mut total, mut looped) = (0, 0);
+    for s in stmts {
+        match s {
+            Stmt::Let { value, .. } | Stmt::Assign { value, .. } | Stmt::LetTuple { value, .. } => {
+                count_uses(value, name, false, &mut total, &mut looped)
+            }
+            Stmt::Return(Some(e)) | Stmt::Yield(e) | Stmt::Expr(e) => {
+                count_uses(e, name, false, &mut total, &mut looped)
+            }
+            Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
+        }
+    }
+    total == 1 && looped == 0
 }
 
 /// A lowercase type name is a type variable (`a`, `b`, `key`); the builtin and
@@ -454,6 +607,7 @@ pub fn transpile_module(m: &Module) -> Result<String, String> {
     USES_NET.with(|f| f.set(false));
     FN_PARAM_CLONE.with(|m| m.borrow_mut().clear());
     FN_INOUT.with(|m| m.borrow_mut().clear());
+    MOVEABLE.with(|m| m.borrow_mut().clear());
     // Record which params are by-value collections (so calls clone them) and
     // which functions take `inout` params (so calls write the result back).
     for item in &m.items {
@@ -759,11 +913,33 @@ fn gen_fn(f: &Function) -> Result<String, String> {
 fn gen_block(b: &Block, value: bool) -> Result<String, String> {
     let mut out = String::from("{\n");
     let n = b.stmts.len();
+    let mut added: Vec<(String, bool)> = Vec::new();
     for (i, s) in b.stmts.iter().enumerate() {
+        // A `let` used exactly once (loop-free) in the rest of this block can be
+        // moved at that use instead of cloned — last-use elision (see MOVEABLE).
+        if let Stmt::Let { name, .. } = s {
+            if last_use_in_stmts(&b.stmts[i + 1..], name) {
+                let was = MOVEABLE.with(|m| m.borrow().contains(name));
+                added.push((name.clone(), was));
+                MOVEABLE.with(|m| {
+                    m.borrow_mut().insert(name.clone());
+                });
+            }
+        }
         let tail = value && i + 1 == n;
         out.push_str("    ");
         out.push_str(&gen_stmt(s, tail)?);
         out.push('\n');
+    }
+    // Restore MOVEABLE to its prior state for the names this block introduced.
+    for (name, was) in added.into_iter().rev() {
+        MOVEABLE.with(|m| {
+            if was {
+                m.borrow_mut().insert(name);
+            } else {
+                m.borrow_mut().remove(&name);
+            }
+        });
     }
     out.push('}');
     Ok(out)
@@ -895,7 +1071,34 @@ fn gen_expr(e: &Expr, value: bool) -> Result<String, String> {
                 // A `Box`ed (recursive) field binding is moved out of its box at
                 // the top of the arm, so the body sees the plain value.
                 let derefs = boxed_binding_derefs(&arm.pattern);
+                // A pattern binding used exactly once (loop-free) in the arm may
+                // be moved at that use instead of cloned — so a recursive match
+                // (`Node(l, r) -> check(l) + check(r)`) passes subtrees by move.
+                let mut binds = Vec::new();
+                pattern_bindings(&arm.pattern, &mut binds);
+                let mut saved = Vec::new();
+                for b in &binds {
+                    let was = MOVEABLE.with(|m| m.borrow().contains(b));
+                    saved.push((b.clone(), was));
+                    let moveable = last_use_in_expr(&arm.body, b);
+                    MOVEABLE.with(|m| {
+                        if moveable {
+                            m.borrow_mut().insert(b.clone());
+                        } else {
+                            m.borrow_mut().remove(b);
+                        }
+                    });
+                }
                 let body = gen_expr(&arm.body, value)?;
+                for (b, was) in saved {
+                    MOVEABLE.with(|m| {
+                        if was {
+                            m.borrow_mut().insert(b);
+                        } else {
+                            m.borrow_mut().remove(&b);
+                        }
+                    });
+                }
                 let body = if derefs.is_empty() {
                     body
                 } else {
@@ -1200,9 +1403,9 @@ fn gen_call(name: &str, args: &[Expr]) -> Result<String, String> {
                     let s = gen_expr(x, true)?;
                     // Clone only a reused binding (a bare variable); a temporary
                     // (call result, literal, field read — already a fresh value)
-                    // is moved. Keeps value semantics without redundant clones.
+                    // is moved, as is a binding at its last use (see MOVEABLE).
                     let clone = clones.as_ref().is_some_and(|c| c.get(i) == Some(&true))
-                        && matches!(x, Expr::Var(_));
+                        && matches!(x, Expr::Var(v) if !is_moveable(v));
                     Ok(if clone { format!("({s}).clone()") } else { s })
                 })
                 .collect::<Result<Vec<String>, String>>()?;

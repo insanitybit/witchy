@@ -10,9 +10,10 @@ sizes. Regenerate with `./run.sh`.
 
 | benchmark | witchy-native (ms) | witchy-wasm (ms) | go (ms) | vs go |
 |-----------|-------------------:|-----------------:|--------:|------:|
-| fib | 19.3 | 37.5 | 32.7 | 0.59x |
-| loop_sum | 5.9 | 33.3 | 54.2 | 0.11x |
-| collatz | 131.1 | 238.4 | 179.1 | 0.73x |
-| mandelbrot | 78.2 | 76.5 | 71.4 | 1.09x |
-| list_sum | 32.8 | — | 33.1 | 0.99x |
-| dict_count | 17.4 | — | 47.5 | 0.37x |
+| fib | 29.0 | 47.6 | 27.4 | 1.06x |
+| loop_sum | 4.2 | 36.9 | 41.2 | 0.10x |
+| collatz | 167.6 | 395.4 | 226.1 | 0.74x |
+| mandelbrot | 47.9 | 61.1 | 49.2 | 0.97x |
+| list_sum | 11.7 | — | 16.1 | 0.72x |
+| dict_count | 11.4 | — | 45.7 | 0.25x |
+| binary_trees | 274.4 | — | 251.4 | 1.09x |
