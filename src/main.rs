@@ -1533,6 +1533,38 @@ mod example_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A named top-level function passed as a first-class value (`map(xs, dbl)`,
+    /// `filter(xs, pred)`) — resolved to its Rust `w_*` item and kept reachable.
+    #[test]
+    fn native_backend_named_function_value() {
+        let pid = std::process::id();
+        let dir = std::env::temp_dir().join(format!("witchy_fnval_{pid}"));
+        let _ = std::fs::create_dir_all(&dir);
+        let src = dir.join("prog.witchy");
+        std::fs::write(
+            &src,
+            "import list\n\nfn double(x: Int) -> Int:\n    x * 2\n\nfn is_big(x: Int) -> Bool:\n    x > 3\n\nfn main(console: Console):\n    let xs = [1, 2, 3, 4]\n    print(console, int_to_string(list.sum(list.map(xs, double))))\n    print(console, int_to_string(length(list.filter(xs, is_big))))\n",
+        )
+        .expect("write src");
+        let rust = crate::emit_rust_file(src.to_str().unwrap()).expect("transpile");
+        assert!(rust.contains(", w_"), "expected a named fn passed as a value (`, w_*`)");
+        let rs = dir.join("prog.rs");
+        let bin = dir.join("prog_bin");
+        std::fs::write(&rs, &rust).unwrap();
+        if let Ok(st) = std::process::Command::new("rustc")
+            .args(["-O", "--edition", "2021"])
+            .arg(&rs)
+            .arg("-o")
+            .arg(&bin)
+            .status()
+        {
+            assert!(st.success(), "rustc should compile the fn-value program");
+            let out = std::process::Command::new(&bin).output().expect("run");
+            assert_eq!(String::from_utf8_lossy(&out.stdout), "20\n1\n");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Value semantics for a reused binding used as a *value* (not just a call
     /// arg): `let ys = xs` and a branch result keep the source usable afterward
     /// (cloned, not moved). Regression guard for last-use move elision.

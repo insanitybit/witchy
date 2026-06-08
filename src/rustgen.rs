@@ -56,6 +56,14 @@ thread_local! {
     /// so a value position moves them. Function params of `Fn` type, and `let`s
     /// bound directly to a lambda.
     static NOCLONE: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+    /// All top-level function names (module-qualified). A bare `Var` matching one
+    /// is a first-class function value (`map(xs, dbl)`) -> the Rust `w_*` item.
+    static FN_NAMES: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+}
+
+/// Is `name` a top-level function used here as a first-class value?
+fn is_fn_ref(name: &str) -> bool {
+    FN_NAMES.with(|m| m.borrow().contains(name))
 }
 
 /// Whether a bare variable may be moved (rather than cloned) at this use.
@@ -75,6 +83,11 @@ fn is_noclone(name: &str) -> bool {
 /// this is its last use (then moved) or it's a closure (which can't be cloned).
 fn gen_value(e: &Expr) -> Result<String, String> {
     if let Expr::Var(v) = e {
+        // A function value (fn item) or a closure isn't cloned; nor is a binding
+        // at its last use. Everything else clones to preserve value semantics.
+        if is_fn_ref(v) {
+            return Ok(format!("w_{}", ident(v)));
+        }
         if is_moveable(v) || is_noclone(v) {
             return Ok(v.clone());
         }
@@ -595,8 +608,14 @@ fn collect_calls_expr(e: &Expr, out: &mut HashSet<String>) {
                 collect_calls_expr(s, out);
             }
         }
-        Expr::Int(_) | Expr::Float(_) | Expr::Duration(_) | Expr::Str(_) | Expr::Bool(_)
-        | Expr::Var(_) => {}
+        // A bare identifier may be a first-class function value (`map(xs, dbl)`);
+        // collect it so a function referenced only as a value is still reachable.
+        // Over-approximates (locals too), which is harmless — non-functions match
+        // no definition.
+        Expr::Var(v) => {
+            out.insert(v.clone());
+        }
+        Expr::Int(_) | Expr::Float(_) | Expr::Duration(_) | Expr::Str(_) | Expr::Bool(_) => {}
     }
 }
 
@@ -637,9 +656,18 @@ pub fn transpile_module(m: &Module) -> Result<String, String> {
     VARIANT_BOXED.with(|r| r.borrow_mut().clear());
     USES_DIR.with(|f| f.set(false));
     USES_NET.with(|f| f.set(false));
-    FN_PARAM_CLONE.with(|m| m.borrow_mut().clear());
-    FN_INOUT.with(|m| m.borrow_mut().clear());
-    MOVEABLE.with(|m| m.borrow_mut().clear());
+    FN_PARAM_CLONE.with(|map| map.borrow_mut().clear());
+    FN_INOUT.with(|map| map.borrow_mut().clear());
+    MOVEABLE.with(|s| s.borrow_mut().clear());
+    FN_NAMES.with(|s| {
+        let mut s = s.borrow_mut();
+        s.clear();
+        for item in &m.items {
+            if let Item::Function(f) = item {
+                s.insert(f.name.clone());
+            }
+        }
+    });
     // Record which params are by-value collections (so calls clone them) and
     // which functions take `inout` params (so calls write the result back).
     for item in &m.items {
@@ -1048,6 +1076,9 @@ fn gen_expr(e: &Expr, value: bool) -> Result<String, String> {
         Expr::Float(x) => format!("{x:?}f64"),
         Expr::Bool(b) => b.to_string(),
         Expr::Str(s) => format!("{s:?}.to_string()"),
+        // A bare identifier that names a top-level function is a first-class
+        // function value -> its Rust `w_*` item (a fn item, which is `impl Fn`).
+        Expr::Var(v) if is_fn_ref(v) => format!("w_{}", ident(v)),
         Expr::Var(v) => v.clone(),
         Expr::Unary { op, expr } => {
             let inner = gen_expr(expr, true)?;
