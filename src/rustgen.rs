@@ -34,6 +34,10 @@ thread_local! {
     static FN_PARAM_CLONE: RefCell<HashMap<String, Vec<bool>>> = RefCell::new(HashMap::new());
     /// Set when the program uses a Dict, so the `WDict` runtime helper is emitted.
     static USES_DICT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Parameter names of the function currently being emitted. A call whose name
+    /// is one of these is a function-valued parameter (a closure), called
+    /// directly (`f(x)`); any other call is a top-level function (`w_f(x)`).
+    static CUR_PARAMS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
 }
 
 /// witchy's `Dict` maps to a real `HashMap` with a fast, non-DoS-resistant hash
@@ -66,6 +70,38 @@ fn fn_rust_name(f: &Function) -> String {
 
 fn is_collection(t: &Option<Type>) -> bool {
     matches!(t, Some(Type::Named(n, _)) if n == "List" || n == "String" || n == "Dict")
+}
+
+/// A lowercase type name is a type variable (`a`, `b`, `key`); the builtin and
+/// user types are all capitalized.
+fn is_type_var(name: &str) -> bool {
+    name.chars().next().is_some_and(|c| c.is_ascii_lowercase())
+}
+
+/// A type variable's Rust generic-parameter name (capitalize the first letter).
+fn type_var_name(name: &str) -> String {
+    let mut cs = name.chars();
+    match cs.next() {
+        Some(c) => c.to_ascii_uppercase().to_string() + cs.as_str(),
+        None => name.to_string(),
+    }
+}
+
+/// Gather the (capitalized) type variables appearing in a type.
+fn collect_type_vars(t: &Type, out: &mut std::collections::BTreeSet<String>) {
+    match t {
+        Type::Named(n, args) => {
+            if is_type_var(n) {
+                out.insert(type_var_name(n));
+            }
+            args.iter().for_each(|a| collect_type_vars(a, out));
+        }
+        Type::Tuple(ts) => ts.iter().for_each(|t| collect_type_vars(t, out)),
+        Type::Fn(args, ret) => {
+            args.iter().for_each(|a| collect_type_vars(a, out));
+            collect_type_vars(ret, out);
+        }
+    }
 }
 
 /// Transpile a whole module's record/enum types and functions to a
@@ -240,8 +276,29 @@ fn gen_fn(f: &Function) -> Result<String, String> {
         }
         None => String::new(),
     };
+    // Type variables in the signature become Rust generic parameters. (Bound
+    // `Clone` so for-loop element copies and call-site collection clones work;
+    // a fn-type param already lowered to `impl Fn(..)` adds its own hidden one.)
+    let mut tvs = std::collections::BTreeSet::new();
+    for p in &f.params {
+        if let Some(t) = &p.ty {
+            collect_type_vars(t, &mut tvs);
+        }
+    }
+    if let Some(t) = &f.ret {
+        collect_type_vars(t, &mut tvs);
+    }
+    let generics = if tvs.is_empty() {
+        String::new()
+    } else {
+        let bounded: Vec<String> = tvs.iter().map(|v| format!("{v}: Clone")).collect();
+        format!("<{}>", bounded.join(", "))
+    };
+    CUR_PARAMS.with(|s| {
+        *s.borrow_mut() = f.params.iter().map(|p| p.name.clone()).collect();
+    });
     let body = gen_block(&f.body, f.ret.is_some())?;
-    Ok(format!("fn {name}({}){ret} {body}\n", params.join(", ")))
+    Ok(format!("fn {name}{generics}({}){ret} {body}\n", params.join(", ")))
 }
 
 /// Emit a block. In value position (`value`), the final `Expr` statement is the
@@ -393,6 +450,19 @@ fn gen_expr(e: &Expr, value: bool) -> Result<String, String> {
         Expr::Field { base, field } => format!("({}).{field}.clone()", gen_expr(base, true)?),
         // `e?` propagates an Option/Result exactly as Rust's `?`.
         Expr::Try(inner) => format!("({})?", gen_expr(inner, true)?),
+        // A lambda -> a Rust closure (parameter types inferred from the call).
+        Expr::Lambda { params, body } => {
+            let ps: Vec<String> = params.iter().map(|p| p.name.clone()).collect();
+            format!("|{}| {}", ps.join(", "), gen_block(body, true)?)
+        }
+        // Applying a function value: `f(args)`.
+        Expr::Apply { func, args } => {
+            let a: Vec<String> = args
+                .iter()
+                .map(|x| gen_expr(x, true))
+                .collect::<Result<_, _>>()?;
+            format!("({})({})", gen_expr(func, true)?, a.join(", "))
+        }
         // A list literal -> a Rust `vec![..]` (element type inferred by rustc).
         Expr::List(items) => {
             let parts: Vec<String> = items
@@ -524,6 +594,15 @@ fn gen_call(name: &str, args: &[Expr]) -> Result<String, String> {
         "print" | "int_to_string" | "string_to_int" => {
             return Err(format!("native backend: wrong arity for `{name}`"))
         }
+        // A call whose name is a parameter is a function-valued param (closure),
+        // called directly rather than as a top-level function.
+        _ if CUR_PARAMS.with(|s| s.borrow().contains(name)) => {
+            let a: Vec<String> = args
+                .iter()
+                .map(|x| gen_expr(x, true))
+                .collect::<Result<_, _>>()?;
+            format!("({name})({})", a.join(", "))
+        }
         // Any other call is a user function (capability/builtin calls outside the
         // subset will surface as an undefined `w_*` at rustc time, which is loud).
         _ => {
@@ -627,6 +706,8 @@ fn rust_ty(t: &Type) -> Option<String> {
                 Some(other.to_string())
             }
             other if ENUM_NAMES.with(|s| s.borrow().contains(other)) => Some(other.to_string()),
+            // A type variable -> a Rust generic parameter.
+            other if is_type_var(other) => Some(type_var_name(other)),
             _ => None,
         },
         // A tuple maps to a Rust tuple, supported when all elements are.
@@ -634,7 +715,12 @@ fn rust_ty(t: &Type) -> Option<String> {
             let parts: Option<Vec<String>> = ts.iter().map(rust_ty).collect();
             parts.map(|p| format!("({})", p.join(", ")))
         }
-        _ => None,
+        // A function type -> a callable. `impl Fn(..) -> R` works in parameter
+        // position (the common case: a higher-order function's callback).
+        Type::Fn(args, ret) => {
+            let ps: Option<Vec<String>> = args.iter().map(rust_ty).collect();
+            Some(format!("impl Fn({}) -> {}", ps?.join(", "), rust_ty(ret)?))
+        }
     }
 }
 

@@ -1511,6 +1511,26 @@ mod example_tests {
         assert!(rust.contains(".insert("), "expected dict insert");
     }
 
+    /// Generic higher-order functions: type variables become Rust generics,
+    /// `fn(a)->b` params become `impl Fn(..)`, lambdas become closures (with
+    /// captures), and a call to a function-valued parameter calls it directly.
+    #[test]
+    fn native_backend_supports_generics_and_closures() {
+        let p = std::env::temp_dir()
+            .join(format!("witchy_native_hof_{}.witchy", std::process::id()));
+        std::fs::write(
+            &p,
+            "fn my_map(xs: List(a), f: fn(a) -> b) -> List(b):\n    var acc = []\n    for x in xs:\n        acc = push(acc, f(x))\n    acc\nfn main(console: Console):\n    let bias = 10\n    let ys = my_map([1, 2, 3], fn(n): n + bias)\n    var s = 0\n    for y in ys:\n        s = s + y\n    print(console, int_to_string(s))\n",
+        )
+        .expect("write source");
+        let rust = crate::emit_rust_file(p.to_str().unwrap()).expect("transpile");
+        let _ = std::fs::remove_file(&p);
+        assert!(rust.contains("<A: Clone, B: Clone>"), "expected generic params");
+        assert!(rust.contains("impl Fn(A) -> B"), "expected fn-type param");
+        assert!(rust.contains("|n|"), "expected a closure for the lambda");
+        assert!(rust.contains("(f)(x)"), "expected a direct call of the fn param");
+    }
+
     /// `for x in a..b` is a counting loop on both backends — never a materialized
     /// list — with faithful `break`/`continue`, inclusive (`..=`), empty, and
     /// nested behavior. The 100_000-iteration loop proves nothing is allocated:
