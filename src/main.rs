@@ -2145,6 +2145,55 @@ mod example_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// `update`'s two native code paths the basic test doesn't hit: a named
+    /// function passed as the updater (the `(f)(current)` branch, not the inlined
+    /// lambda), and a non-Copy value type — a `List` value, exercising the
+    /// clone-current-value path and a `vec![]` default. Both match the interpreter.
+    #[test]
+    fn native_backend_dict_update_variants() {
+        let cases = [
+            (
+                "fnref",
+                "fn inc(n: Int) -> Int:\n    n + 1\n\nfn main(console: Console):\n    var d = dict_new()\n    d = update(d, \"a\", 0, inc)\n    d = update(d, \"a\", 0, inc)\n    print(console, int_to_string(get_or(d, \"a\", -1)))\n",
+                "2\n",
+            ),
+            (
+                "listval",
+                "import list\n\nfn main(console: Console):\n    var d = dict_new()\n    let kx = \"x\"\n    d = update(d, kx, [], fn(xs: List(Int)): push(xs, 1))\n    d = update(d, kx, [], fn(xs: List(Int)): push(xs, 2))\n    let vx = get_or(d, kx, [])\n    print(console, f\"{vx}\")\n",
+                "[1, 2]\n",
+            ),
+        ];
+        for (tag, prog, expected) in cases {
+            let pid = std::process::id();
+            let dir = std::env::temp_dir().join(format!("witchy_updv_{tag}_{pid}"));
+            let _ = std::fs::create_dir_all(&dir);
+            let src = dir.join("prog.witchy");
+            std::fs::write(&src, prog).unwrap();
+            // Interpreter is the source of truth.
+            let (linked, _) = crate::link_file(src.to_str().unwrap()).expect("link");
+            let interp = interpreter::run_module(linked, ".", Vec::new())
+                .expect("interp run")
+                .join("\n");
+            assert_eq!(format!("{interp}\n"), expected, "{tag}: interp output");
+            let rust = crate::emit_rust_file(src.to_str().unwrap()).expect("transpile");
+            let rs = dir.join("prog.rs");
+            let bin = dir.join("prog_bin");
+            std::fs::write(&rs, &rust).unwrap();
+            if let Ok(st) = std::process::Command::new("rustc")
+                .args(["-O", "-C", "overflow-checks=off", "--edition", "2021"])
+                .arg(&rs)
+                .arg("-o")
+                .arg(&bin)
+                .status()
+            {
+                assert!(st.success(), "{tag}: rustc should compile the update program");
+                let out = std::process::Command::new(&bin).output().expect("run");
+                assert_eq!(String::from_utf8_lossy(&out.stdout), expected, "{tag}: native output");
+            }
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
     /// F-strings (and `<>` chains) flatten to a SINGLE `format!`, not one nested
     /// `format!("{}{}", ..)` per `<>`. String literals are baked into the format
     /// string (with `{`/`}` escaped), so `f"a{n}b{n}c"` becomes `format!("a{}b{}c",
