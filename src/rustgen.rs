@@ -597,6 +597,16 @@ fn gen_expr(e: &Expr, value: bool) -> Result<String, String> {
         }
         // Field read yields a value copy (clone), preserving value semantics.
         Expr::Field { base, field } => format!("({}).{field}.clone()", gen_expr(base, true)?),
+        // Record update `Point(x: 5, ..p)`: clone the base (so it's unchanged),
+        // reassign the named fields, return it. No struct-type name needed.
+        Expr::RecordUpdate { base, fields } => {
+            let mut out = format!("{{ let mut __r = ({}).clone();", gen_expr(base, true)?);
+            for (f, v) in fields {
+                out.push_str(&format!(" __r.{f} = {};", gen_expr(v, true)?));
+            }
+            out.push_str(" __r }");
+            out
+        }
         // `e?` propagates an Option/Result exactly as Rust's `?`.
         Expr::Try(inner) => format!("({})?", gen_expr(inner, true)?),
         // A lambda -> a Rust closure (parameter types inferred from the call).

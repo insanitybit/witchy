@@ -1570,6 +1570,23 @@ mod example_tests {
         assert!(rust.contains("-> Pair<B, A>"), "expected type args on the return");
     }
 
+    /// Record update (`Point(x: 5, ..p)`) clones the base and reassigns the named
+    /// fields, leaving the original untouched.
+    #[test]
+    fn native_backend_supports_record_update() {
+        let p = std::env::temp_dir()
+            .join(format!("witchy_native_upd_{}.witchy", std::process::id()));
+        std::fs::write(
+            &p,
+            "type Point:\n    x: Int\n    y: Int\nfn main(console: Console):\n    let a = Point(x: 1, y: 2)\n    let b = Point(x: 10, ..a)\n    print(console, int_to_string(a.x + b.x + b.y))\n",
+        )
+        .expect("write source");
+        let rust = crate::emit_rust_file(p.to_str().unwrap()).expect("transpile");
+        let _ = std::fs::remove_file(&p);
+        assert!(rust.contains("let mut __r = (a).clone();"), "expected clone-then-update");
+        assert!(rust.contains("__r.x = 10i64;"), "expected the updated field");
+    }
+
     /// `for x in a..b` is a counting loop on both backends — never a materialized
     /// list — with faithful `break`/`continue`, inclusive (`..=`), empty, and
     /// nested behavior. The 100_000-iteration loop proves nothing is allocated:
