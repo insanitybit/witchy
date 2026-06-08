@@ -1533,6 +1533,38 @@ mod example_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// `while let PAT = scrut: body` lowers to `loop { match scrut { PAT => body,
+    /// _ => break } }`, re-evaluating the scrutinee each iteration.
+    #[test]
+    fn native_backend_while_let() {
+        let pid = std::process::id();
+        let dir = std::env::temp_dir().join(format!("witchy_wl_{pid}"));
+        let _ = std::fs::create_dir_all(&dir);
+        let src = dir.join("prog.witchy");
+        std::fs::write(
+            &src,
+            "fn uncons(xs: List(Int)) -> Option((Int, List(Int))):\n    match xs:\n        [] -> None\n        [head, ..tail] -> Some((head, tail))\n\nfn main(console: Console):\n    var stack = [1, 2, 3, 4]\n    var sum = 0\n    while let Some((top, rest)) = uncons(stack):\n        sum = sum + top\n        stack = rest\n    print(console, int_to_string(sum))\n",
+        )
+        .expect("write src");
+        let rust = crate::emit_rust_file(src.to_str().unwrap()).expect("transpile");
+        assert!(rust.contains("loop { match"), "expected while-let to lower to loop+match");
+        let rs = dir.join("prog.rs");
+        let bin = dir.join("prog_bin");
+        std::fs::write(&rs, &rust).unwrap();
+        if let Ok(st) = std::process::Command::new("rustc")
+            .args(["-O", "--edition", "2021"])
+            .arg(&rs)
+            .arg("-o")
+            .arg(&bin)
+            .status()
+        {
+            assert!(st.success(), "rustc should compile the while-let program");
+            let out = std::process::Command::new(&bin).output().expect("run");
+            assert_eq!(String::from_utf8_lossy(&out.stdout), "10\n");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// String patterns in `match` lower to an if-else chain comparing literals;
     /// a variable arm binds the owned `String`.
     #[test]

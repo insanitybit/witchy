@@ -1414,6 +1414,18 @@ fn gen_expr(e: &Expr, value: bool) -> Result<String, String> {
         Expr::While { cond, body } => {
             format!("while {} {}", gen_expr(cond, true)?, gen_block(body, false)?)
         }
+        // `while let PAT = scrut: body` — loop while the scrutinee keeps matching.
+        // Lowered to `loop { match scrut { PAT => body, _ => break } }`; the
+        // scrutinee is re-evaluated each iteration.
+        Expr::WhileLet { pattern, scrutinee, body } => {
+            let derefs = boxed_binding_derefs(pattern);
+            format!(
+                "loop {{ match {} {{ {} => {{ {derefs}{} }} _ => break, }} }}",
+                gen_expr(scrutinee, true)?,
+                gen_pattern(pattern)?,
+                gen_block(body, false)?
+            )
+        }
         Expr::For { var, iter, body } => match iter.as_ref() {
             Expr::Range { lo, hi, inclusive } => {
                 let op = if *inclusive { "..=" } else { ".." };
