@@ -1,0 +1,2 @@
+fn main(console: Console, root: Dir[Read]):
+    print(console, read(root, "secret.txt"))

@@ -7652,6 +7652,119 @@ fn main(console: Console):
         assert_eq!(crate::capabilities::show_caps(&fp.total), "Console, Dir[Read]");
     }
 
+    /// `projects/pm` is the package manager itself, written in witchy. `pm audit`
+    /// prints the capability footprint a source file demands — the self-hosted
+    /// `witchy caps`, dispatched from a real CLI (`args: List(String)`).
+    #[test]
+    fn pm_audits_a_files_footprint() {
+        let (out, code) = crate::execute_file_exit(
+            "projects/pm/src/pm.witchy",
+            Vec::new(),
+            vec!["audit".into(), "examples/data/sample_rune.witchy".into()],
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            out,
+            vec!["examples/data/sample_rune.witchy demands: Dir[Read], Net[Connect]"]
+        );
+        assert_eq!(code, 0);
+        // pm reads AND writes project files (scaffolding) and prints — nothing else.
+        // `compiler.*` is a host introspection intrinsic, not a runtime capability.
+        let src = std::fs::read_to_string("projects/pm/src/pm.witchy").unwrap();
+        let fp = crate::capabilities::analyze(&parser::parse_module(&src).expect("parse"));
+        assert_eq!(crate::capabilities::show_caps(&fp.total), "Console, Dir");
+    }
+
+    /// `pm guard <old> <new>` is the supply-chain gate: it asks `compiler.diff`
+    /// whether the upgrade widens authority and exits 2 on a widening (wireable
+    /// into CI). The sample upgrade adds `Listen`, so it BLOCKs.
+    #[test]
+    fn pm_guard_blocks_a_widening() {
+        let (out, code) = crate::execute_file_exit(
+            "projects/pm/src/pm.witchy",
+            Vec::new(),
+            vec![
+                "guard".into(),
+                "examples/data/sample_rune.witchy".into(),
+                "examples/data/sample_rune_v2.witchy".into(),
+            ],
+            None,
+        )
+        .unwrap();
+        assert_eq!(out, vec!["BLOCK: upgrade widens authority by Net[Listen]"]);
+        assert_eq!(code, 2, "a widening must exit 2");
+    }
+
+    /// `pm check <dir>` recomputes a rune's footprint from source and fails if the
+    /// manifest's `[capabilities]` does not admit it — rights-precisely. The
+    /// `leaky` fixture declares only `Console` but its code reads files, so the
+    /// undeclared `Dir[Read]` is caught and the gate exits 2.
+    #[test]
+    fn pm_check_blocks_an_under_declared_rune() {
+        let (out, code) = crate::execute_file_exit(
+            "projects/pm/src/pm.witchy",
+            Vec::new(),
+            vec!["check".into(), "projects/pm/tests/fixtures/leaky".into()],
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            out,
+            vec!["BLOCK: code demands authority not admitted by [capabilities]: Dir[Read]"]
+        );
+        assert_eq!(code, 2, "an under-declared rune must exit 2");
+    }
+
+    /// pm passes its *own* `check`: its manifest declares exactly `Console, Dir`,
+    /// which is what the code demands — the package manager is consistent with
+    /// itself, proving the self-hosted gate is honest.
+    #[test]
+    fn pm_passes_its_own_check() {
+        let (out, code) = crate::execute_file_exit(
+            "projects/pm/src/pm.witchy",
+            Vec::new(),
+            vec!["check".into(), "projects/pm".into()],
+            None,
+        )
+        .unwrap();
+        assert_eq!(out, vec!["OK: declared footprint admits the code, nothing unused"]);
+        assert_eq!(code, 0);
+    }
+
+    /// `pm new <name>` scaffolds a runnable rune (manifest + src stub) using the
+    /// *write* Dir capability, confined to the workspace root. The scaffold is
+    /// real: the generated rune both passes its own `check` and runs.
+    #[test]
+    fn pm_new_scaffolds_a_runnable_rune() {
+        let tmp = std::env::temp_dir().join("witchy_pm_new_test");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        let (linked, _stem) = crate::link_file("projects/pm/src/pm.witchy").expect("link");
+        typeck::check(&linked).expect("typeck");
+        let (out, code) = interpreter::run_module_exit(
+            linked,
+            &tmp,
+            Vec::new(),
+            vec!["new".into(), "widget".into()],
+            None,
+        )
+        .expect("run");
+        assert_eq!(code, 0);
+        assert!(out.iter().any(|l| l.contains("created rune `widget`")));
+
+        let manifest = std::fs::read_to_string(tmp.join("widget/witchy.toml"))
+            .expect("manifest was written");
+        assert!(manifest.contains("name = \"widget\""));
+        assert!(manifest.contains("runtime = [\"Console\"]"));
+        let src = std::fs::read_to_string(tmp.join("widget/src/widget.witchy"))
+            .expect("src stub was written");
+        assert!(src.contains("hello from widget"));
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
     /// `main -> Int` sets the process exit code (C/Go/Rust convention) and is
     /// *not* printed; `main` returning Nil exits 0 and shows its `print` output.
     #[test]

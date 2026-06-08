@@ -1,0 +1,305 @@
+// pm — the witchy package manager, written in witchy. It reads `witchy.toml`
+// manifests, audits a rune's capability footprint, checks that the declared
+// footprint *admits* what the code actually demands (rights-precisely), and
+// guards an upgrade against any widening of authority. The capability work goes
+// through `compiler` (a host introspection intrinsic), so pm runs on the
+// interpreter — the way a build tool is allowed to. It is the package manager's
+// heart, self-hosted.
+//
+//   witchy projects/pm/src/pm.witchy <command> [args]
+//
+// Commands:
+//   info  <dir>          summarize a rune (name, version, declared vs. actual caps)
+//   audit <file>         print the capability footprint a source file demands
+//   check <dir>          verify the manifest's declared footprint admits the code
+//   guard <old> <new>    BLOCK if <new> widens the footprint of <old>
+//   new   <name>         scaffold a new rune (manifest + src stub)
+//   help                 show this message
+
+import compiler
+import json
+import string
+import toml
+
+fn main(console: Console, args: List(String), root: Dir) -> Int:
+    let cmd = arg(args, 0)
+    if cmd == "info":
+        cmd_info(console, root, arg(args, 1))
+        0
+    else if cmd == "audit":
+        cmd_audit(console, root, arg(args, 1))
+        0
+    else if cmd == "check":
+        cmd_check(console, root, arg(args, 1))
+    else if cmd == "guard":
+        cmd_guard(console, root, arg(args, 1), arg(args, 2))
+    else if cmd == "new":
+        cmd_new(console, root, arg(args, 1))
+        0
+    else if cmd == "" || cmd == "help":
+        usage(console)
+        0
+    else:
+        unknown(console, cmd)
+
+// --- info: a one-screen summary of a rune -----------------------------------
+
+fn cmd_info(console: Console, root: Dir, dir: String):
+    if string.is_empty(dir):
+        print(console, "usage: pm info <dir>")
+    else:
+        let manifest = read(root, join_path(dir, "witchy.toml"))
+        print(console, "name:     " <> field(manifest, "rune.name"))
+        print(console, "version:  " <> field(manifest, "rune.version"))
+        print(console, "declared: " <> string.join(declared_caps(manifest), ", "))
+        print(console, "actual:   " <> string.join(rune_footprint(root, dir), ", "))
+
+// --- audit: the footprint a single file demands -----------------------------
+
+fn cmd_audit(console: Console, root: Dir, file: String):
+    if string.is_empty(file):
+        print(console, "usage: pm audit <file>")
+    else:
+        let report = compiler.footprint(read(root, file))
+        print(console, file <> " demands: " <> string.join(footprint_total(report), ", "))
+
+// --- check: declared footprint must admit the actual footprint ---------------
+// The manifest's declared caps are *not trusted*: pm recomputes the footprint
+// from source and fails if the code reaches for authority the manifest never
+// admits — rights-precisely, so a declared `Net[Connect]` does NOT admit a
+// demanded full `Net` (the under-declaration a supply-chain attacker relies on).
+
+fn cmd_check(console: Console, root: Dir, dir: String) -> Int:
+    if string.is_empty(dir):
+        print(console, "usage: pm check <dir>")
+        1
+    else:
+        let manifest = read(root, join_path(dir, "witchy.toml"))
+        let declared = declared_caps(manifest)
+        let demanded = rune_footprint(root, dir)
+        let undeclared = uncovered(declared, demanded)
+        let unused = unused_caps(declared, demanded)
+        report_check(console, undeclared, unused)
+
+fn report_check(console: Console, undeclared: List(String), unused: List(String)) -> Int:
+    if !string.is_empty(string.join(undeclared, ", ")):
+        print(console, "BLOCK: code demands authority not admitted by [capabilities]: " <> string.join(undeclared, ", "))
+        2
+    else:
+        if !string.is_empty(string.join(unused, ", ")):
+            print(console, "OK (lint): declared but unused: " <> string.join(unused, ", "))
+        else:
+            print(console, "OK: declared footprint admits the code, nothing unused")
+        0
+
+// Demanded capabilities no declared capability admits.
+fn uncovered(declared: List(String), demanded: List(String)) -> List(String):
+    var missing = []
+    for cap in demanded:
+        if !covered(declared, cap):
+            missing = push(missing, cap)
+    missing
+
+// Declared capabilities that admit nothing the code demands.
+fn unused_caps(declared: List(String), demanded: List(String)) -> List(String):
+    var extra = []
+    for d in declared:
+        if !admits_any(d, demanded):
+            extra = push(extra, d)
+    extra
+
+fn admits_any(declared: String, demanded: List(String)) -> Bool:
+    var any = false
+    for c in demanded:
+        if covers(declared, c):
+            any = true
+    any
+
+// --- guard: block an upgrade that widens authority --------------------------
+
+fn cmd_guard(console: Console, root: Dir, old: String, new: String) -> Int:
+    if string.is_empty(old) || string.is_empty(new):
+        print(console, "usage: pm guard <old-file> <new-file>")
+        1
+    else:
+        let report = compiler.diff(read(root, old), read(root, new))
+        print(console, verdict(report))
+        exit_for(report)
+
+fn verdict(report: String) -> String:
+    match json.decode(report):
+        Ok(doc) -> if widened(doc): "BLOCK: upgrade widens authority by " <> added(doc) else: "OK: no new authority"
+        Err(e) -> "error: " <> e
+
+fn exit_for(report: String) -> Int:
+    match json.decode(report):
+        Ok(doc) -> if widened(doc): 2 else: 0
+        Err(e) -> 1
+
+// --- new: scaffold a rune ----------------------------------------------------
+
+fn cmd_new(console: Console, root: Dir, name: String):
+    if string.is_empty(name):
+        print(console, "usage: pm new <name>")
+    else:
+        make_dir(root, name)
+        make_dir(root, join_path(name, "src"))
+        write(root, join_path(name, "witchy.toml"), manifest_stub(name))
+        write(root, join_path(join_path(name, "src"), name <> ".witchy"), src_stub(name))
+        print(console, "created rune `" <> name <> "`:")
+        print(console, "  " <> join_path(name, "witchy.toml"))
+        print(console, "  " <> join_path(join_path(name, "src"), name <> ".witchy"))
+
+fn manifest_stub(let name: String) -> String:
+    "[rune]\nname = \"" <> name <> "\"\nversion = \"0.1.0\"\n\n[capabilities]\nruntime = [\"Console\"]\n\n[dependencies]\n"
+
+fn src_stub(let name: String) -> String:
+    "fn main(console: Console):\n    print(console, \"hello from " <> name <> "\")\n"
+
+// --- footprint helpers -------------------------------------------------------
+
+// The capabilities the rune's source actually demands. The source is the first
+// `.witchy` under <dir>/src — found by listing, so the file name need not match
+// the rune name.
+fn rune_footprint(root: Dir, dir: String) -> List(String):
+    let src = subdir(root, join_path(dir, "src"))
+    match first_witchy(list(src)):
+        Some(file) -> footprint_total(compiler.footprint(read(src, file)))
+        None -> []
+
+fn first_witchy(let files: List(String)) -> Option(String):
+    var found = None
+    for f in files:
+        if is_none(found) && ends_with(f, ".witchy"):
+            found = Some(f)
+    found
+
+// Pull the "total" array out of a footprint JSON report.
+fn footprint_total(let report: String) -> List(String):
+    match json.decode(report):
+        Ok(doc) -> string_items(json.get(doc, "total"))
+        Err(e) -> []
+
+fn declared_caps(let manifest: String) -> List(String):
+    toml.get_array(manifest, "capabilities.runtime")
+
+fn field(let manifest: String, path: String) -> String:
+    match toml.get(manifest, path):
+        Some(v) -> v
+        None -> "(none)"
+
+// --- rights-precise capability covering (shared with coven_check) ------------
+// A declared capability covers a demanded one iff they share a base kind AND the
+// declared authority is at least as broad: a bracket-free declaration ("Net")
+// admits any rights of that kind, while a bracketed one ("Net[Connect]") admits
+// a demanded cap only when its rights are a subset. So Net[Connect] does NOT
+// cover full Net — the rights-precise case a kind-level check misses.
+
+fn covered(declared: List(String), demanded: String) -> Bool:
+    var ok = false
+    for d in declared:
+        if covers(d, demanded):
+            ok = true
+    ok
+
+fn covers(declared: String, demanded: String) -> Bool:
+    if base_name(declared) != base_name(demanded):
+        false
+    else if is_full(declared):
+        true
+    else if is_full(demanded):
+        false
+    else:
+        subset(rights_of(demanded), rights_of(declared))
+
+fn is_full(cap: String) -> Bool:
+    !contains(cap, "[")
+
+// "Dir[Read]" -> "Dir"; "Console" -> "Console".
+fn base_name(cap: String) -> String:
+    if contains(cap, "["):
+        let (name, _rest) = string.split_once(cap, "[")
+        name
+    else:
+        cap
+
+// The rights inside "Kind[A, B]" as ["A", "B"].
+fn rights_of(cap: String) -> List(String):
+    let (_kind, rest) = string.split_once(cap, "[")
+    let inner = string.strip_suffix(rest, "]")
+    var out = []
+    for part in split(inner, ","):
+        let r = trim(part)
+        if !string.is_empty(r):
+            out = push(out, r)
+    out
+
+fn subset(xs: List(String), ys: List(String)) -> Bool:
+    var all_in = true
+    for x in xs:
+        if !has(ys, x):
+            all_in = false
+    all_in
+
+// --- compiler.diff JSON helpers ---------------------------------------------
+
+fn widened(doc: Json) -> Bool:
+    match json.get(doc, "widened"):
+        Some(w) -> bool_or(w, false)
+        None -> false
+
+fn bool_or(j: Json, default: Bool) -> Bool:
+    match json.as_bool(j):
+        Some(b) -> b
+        None -> default
+
+fn added(doc: Json) -> String:
+    string.join(string_items(json.get(doc, "added")), ", ")
+
+// --- JSON array → List(String) ----------------------------------------------
+
+fn string_items(field: Option(Json)) -> List(String):
+    var out = []
+    if let Some(j) = field:
+        if let Some(items) = json.as_array(j):
+            for it in items:
+                if let Some(s) = json.as_string(it):
+                    out = push(out, s)
+    out
+
+// --- small generic helpers ---------------------------------------------------
+
+fn arg(let args: List(String), i: Int) -> String:
+    if i < length(args):
+        at(args, i)
+    else:
+        ""
+
+fn has(let xs: List(String), x: String) -> Bool:
+    var found = false
+    for it in xs:
+        if it == x:
+            found = true
+    found
+
+fn join_path(let a: String, b: String) -> String:
+    a <> "/" <> b
+
+fn is_none(o: Option(String)) -> Bool:
+    match o:
+        Some(_) -> false
+        None -> true
+
+fn usage(console: Console):
+    print(console, "pm — the witchy package manager")
+    print(console, "usage: pm <command> [args]")
+    print(console, "  info  <dir>         summarize a rune")
+    print(console, "  audit <file>        footprint a source file demands")
+    print(console, "  check <dir>         declared footprint must admit the code")
+    print(console, "  guard <old> <new>   BLOCK if <new> widens authority")
+    print(console, "  new   <name>        scaffold a new rune")
+
+fn unknown(console: Console, cmd: String) -> Int:
+    print(console, "unknown command: " <> cmd)
+    usage(console)
+    1

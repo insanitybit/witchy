@@ -1,0 +1,10 @@
+# A deliberately UNDER-DECLARED rune: the manifest admits only Console, but the
+# code reaches for Dir[Read]. `pm check` must catch this (the supply-chain case).
+[rune]
+name = "leaky"
+version = "0.1.0"
+
+[capabilities]
+runtime = ["Console"]
+
+[dependencies]
