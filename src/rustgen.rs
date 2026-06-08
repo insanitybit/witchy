@@ -2501,12 +2501,13 @@ fn gen_call(name: &str, args: &[Expr]) -> Result<String, String> {
         }
         "insert" if args.len() == 3 => {
             USES_DICT.with(|f| f.set(true));
-            // Evaluate key+value (which may read the dict) and copy them BEFORE
-            // moving the dict in — matching the interpreter cloning k and v.
+            // Evaluate key+value (which may read the dict) BEFORE moving the dict
+            // in. `gen_value` moves a last-use argument and clones a reused one, so
+            // value semantics hold while a fresh key/value is moved in, not copied.
             format!(
-                "{{ let __k = ({}).clone(); let __val = ({}).clone(); let mut __m = {}; __m.insert(__k, __val); __m }}",
-                arg(1)?,
-                arg(2)?,
+                "{{ let __k = {}; let __val = {}; let mut __m = {}; __m.insert(__k, __val); __m }}",
+                gen_value(&args[1])?,
+                gen_value(&args[2])?,
                 arg(0)?
             )
         }
@@ -2545,8 +2546,8 @@ fn gen_call(name: &str, args: &[Expr]) -> Result<String, String> {
         "has" if args.len() == 2 => format!("({}).contains_key(&({}))", arg(0)?, arg(1)?),
         "remove" if args.len() == 2 => {
             format!(
-                "{{ let __k = ({}).clone(); let mut __m = {}; __m.remove(&__k); __m }}",
-                arg(1)?,
+                "{{ let __k = {}; let mut __m = {}; __m.remove(&__k); __m }}",
+                gen_value(&args[1])?,
                 arg(0)?
             )
         }
