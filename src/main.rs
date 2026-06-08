@@ -1383,6 +1383,23 @@ mod example_tests {
         assert!(rust.contains("let (q, r) ="), "expected tuple destructuring");
     }
 
+    /// The native backend transpiles `match` on scalar patterns, with guards, to
+    /// a Rust match expression.
+    #[test]
+    fn native_backend_supports_match() {
+        let p = std::env::temp_dir()
+            .join(format!("witchy_native_match_{}.witchy", std::process::id()));
+        std::fs::write(
+            &p,
+            "fn sign(n: Int) -> Int:\n    match n:\n        0 -> 0\n        x if x < 0 -> -1\n        _ -> 1\nfn main(console: Console):\n    print(console, int_to_string(sign(-5)))\n",
+        )
+        .expect("write source");
+        let rust = crate::emit_rust_file(p.to_str().unwrap()).expect("transpile");
+        let _ = std::fs::remove_file(&p);
+        assert!(rust.contains("match n {"), "expected a Rust match");
+        assert!(rust.contains("if (x < 0i64) =>"), "expected a match guard");
+    }
+
     /// `for x in a..b` is a counting loop on both backends — never a materialized
     /// list — with faithful `break`/`continue`, inclusive (`..=`), empty, and
     /// nested behavior. The 100_000-iteration loop proves nothing is allocated:

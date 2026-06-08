@@ -177,6 +177,24 @@ fn gen_expr(e: &Expr, value: bool) -> Result<String, String> {
         },
         Expr::Block(b) => gen_block(b, value)?,
         Expr::Call { name, args } => gen_call(name, args)?,
+        // `match` maps to a Rust match; non-exhaustive matches (no catch-all) are
+        // rejected by rustc, which is safe (the program just stays wasm-only).
+        Expr::Match { scrutinee, arms } => {
+            let mut out = format!("match {} {{\n", gen_expr(scrutinee, true)?);
+            for arm in arms {
+                let guard = match &arm.guard {
+                    Some(g) => format!(" if {}", gen_expr(g, true)?),
+                    None => String::new(),
+                };
+                out.push_str(&format!(
+                    "    {}{guard} => {},\n",
+                    gen_pattern(&arm.pattern)?,
+                    gen_expr(&arm.body, value)?
+                ));
+            }
+            out.push('}');
+            out
+        }
         // A tuple literal: `(a, b)`. A 1-tuple needs the trailing comma.
         Expr::Tuple(items) => {
             let parts: Vec<String> = items
@@ -217,6 +235,31 @@ fn gen_call(name: &str, args: &[Expr]) -> Result<String, String> {
                 .map(|i| gen_expr(&args[i], true))
                 .collect::<Result<_, _>>()?;
             format!("w_{}({})", ident(name), a.join(", "))
+        }
+    })
+}
+
+fn gen_pattern(p: &crate::ast::Pattern) -> Result<String, String> {
+    use crate::ast::Pattern;
+    Ok(match p {
+        Pattern::Wildcard => "_".into(),
+        Pattern::Var(n) => n.clone(),
+        Pattern::Int(n) => format!("{n}"),
+        Pattern::Bool(b) => b.to_string(),
+        Pattern::Tuple(ps) => {
+            let parts: Vec<String> = ps.iter().map(gen_pattern).collect::<Result<_, _>>()?;
+            format!("({})", parts.join(", "))
+        }
+        Pattern::Str(_) => {
+            return Err("native backend: string patterns in `match` are not supported yet".into())
+        }
+        Pattern::Ctor { .. } => {
+            return Err(
+                "native backend: constructor patterns (enums/records) are not supported yet".into(),
+            )
+        }
+        Pattern::List { .. } => {
+            return Err("native backend: list patterns in `match` are not supported yet".into())
         }
     })
 }
