@@ -2600,6 +2600,10 @@ fn gen_call(name: &str, args: &[Expr]) -> Result<String, String> {
             clone_if_var(&args[0], arg(0)?),
             clone_if_var(&args[1], arg(1)?)
         ),
+        // The characters of a string, each a single-char String, in one O(n) pass.
+        "string_chars" if args.len() == 1 => {
+            format!("({}).chars().map(|c| c.to_string()).collect::<Vec<String>>()", arg(0)?)
+        }
         "index_of" if args.len() == 2 => format!(
             "{{ let __s = {}; let __sub = {}; __s.find(__sub.as_str()).map(|b| __s[..b].chars().count() as i64).unwrap_or(-1) }}",
             clone_if_var(&args[0], arg(0)?),

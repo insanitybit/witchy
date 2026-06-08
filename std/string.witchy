@@ -85,15 +85,12 @@ pub fn is_empty(s: String) -> Bool:
     string_length(s) == 0
 
 // The string's characters as a list of single-character strings, counted by
-// Unicode scalar: `to_chars("café")` is `["c", "a", "f", "é"]`.
+// Unicode scalar: `to_chars("café")` is `["c", "a", "f", "é"]`. Backed by the
+// `string_chars` primitive, which builds the list in a single pass (rather than
+// the O(n²) of a `char_at` loop, where each index walks the string from the
+// start), so callers can then index characters in O(1).
 pub fn to_chars(s: String) -> List(String):
-    var out = []
-    var i = 0
-    let n = char_count(s)
-    while i < n:
-        out = push(out, char_at(s, i))
-        i = i + 1
-    out
+    string_chars(s)
 
 // The string with its characters in reverse order. Counted by Unicode scalar
 // (via `char_count`/`substring`), so multi-byte characters stay intact:

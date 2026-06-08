@@ -271,6 +271,9 @@ struct Codegen {
     uses_ends_with: bool,
     /// Whether the `split` helper is needed.
     uses_split: bool,
+    /// Whether the `$str_chars` helper (string -> list of single-char strings)
+    /// is needed.
+    uses_str_chars: bool,
     /// Whether the `$substr` allocator is needed (split, substring).
     uses_substr: bool,
     /// Whether the `$find_byte` substring search is needed (contains, index_of).
@@ -416,6 +419,7 @@ impl Codegen {
             uses_crypto_sha256: false,
             uses_ends_with: false,
             uses_split: false,
+            uses_str_chars: false,
             uses_substr: false,
             uses_find_byte: false,
             uses_index_of: false,
@@ -964,6 +968,7 @@ impl Codegen {
             || self.uses_list_concat
             || self.uses_list_drop
             || self.uses_split
+            || self.uses_str_chars
             || self.uses_substr
             || self.uses_replace
             || self.uses_dict
@@ -1046,6 +1051,12 @@ impl Codegen {
         // `uses_list_push`, which the split call site also sets).
         if self.uses_split {
             s.push_str(SPLIT_WAT);
+        }
+        // `$str_chars` builds a list of single-char strings; it uses `$byte_to_char`
+        // (char count), `$str_substring` (each char), and `$list_push` — all forced
+        // on by the call site.
+        if self.uses_str_chars {
+            s.push_str(STR_CHARS_WAT);
         }
         // Substring search (`contains`/`index_of`) and char-indexed slicing.
         if self.uses_find_byte {
@@ -2309,6 +2320,18 @@ impl Codegen {
                 let s = self.compile_expr(&args[0])?;
                 let sep = self.compile_expr(&args[1])?;
                 Ok(format!("{s}{sep}    call $split\n"))
+            }
+            // string_chars(s): list of single-character strings. Built by walking
+            // the chars via `$str_substring`; reuses the existing char-correct
+            // helpers (no new UTF-8 logic).
+            ("string_chars", 1) => {
+                self.uses_str_chars = true;
+                self.uses_byte_to_char = true; // counts chars
+                self.uses_substring = true; // emits $char_to_byte + $str_substring
+                self.uses_substr = true; // $str_substring allocates each char
+                self.uses_list_push = true; // result list built with it
+                let s = self.compile_expr(&args[0])?;
+                Ok(format!("{s}    call $str_chars\n"))
             }
             // contains(s, sub): does `sub` occur in `s`? (UTF-8-safe byte match.)
             ("contains", 2) => {
@@ -3692,6 +3715,29 @@ const SPLIT_WAT: &str = r#"  (func $split (param $s i32) (param $sep i32) (resul
     (local.set $result
       (call $list_push (local.get $result)
         (i64.extend_i32_u (call $substr (local.get $s) (local.get $start) (i32.sub (local.get $slen) (local.get $start))))))
+    (local.get $result))
+"#;
+
+// str_chars(s): a list of the characters of `s`, each a single-char string.
+// Counts chars via `$byte_to_char` of the byte length, then pushes each
+// `$str_substring(s, i, i+1)`. Reuses the char-correct helpers (no new UTF-8
+// decoding); builds the result list the same way `$split` does.
+const STR_CHARS_WAT: &str = r#"  (func $str_chars (param $s i32) (result i32)
+    (local $n i32) (local $i i32) (local $result i32)
+    (local.set $n (call $byte_to_char (local.get $s) (i32.load (local.get $s))))
+    (call $ensure (i32.const 4))
+    (local.set $result (global.get $heap))
+    (i32.store (local.get $result) (i32.const 0))
+    (global.set $heap (i32.add (local.get $result) (i32.const 4)))
+    (local.set $i (i32.const 0))
+    (block $done
+      (loop $l
+        (br_if $done (i32.ge_s (local.get $i) (local.get $n)))
+        (local.set $result
+          (call $list_push (local.get $result)
+            (i64.extend_i32_u (call $str_substring (local.get $s) (local.get $i) (i32.add (local.get $i) (i32.const 1))))))
+        (local.set $i (i32.add (local.get $i) (i32.const 1)))
+        (br $l)))
     (local.get $result))
 "#;
 

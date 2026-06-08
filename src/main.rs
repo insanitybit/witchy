@@ -4405,6 +4405,41 @@ fn main(console: Console):
         );
     }
 
+    /// `string_chars` (the O(n) string -> List(String) primitive behind a fast
+    /// `to_chars`) agrees across the interpreter, WASM, and native backends —
+    /// including a multi-byte (UTF-8) character. Counted by Unicode scalar.
+    #[test]
+    fn string_chars_backends_agree() {
+        let src = "fn main(console: Console):\n    let cs = string_chars(\"café\")\n    print(console, int_to_string(length(cs)))\n    print(console, at(cs, 0))\n    print(console, at(cs, 3))\n";
+        let expected = vec!["4".to_string(), "c".to_string(), "é".to_string()];
+        // Interpreter (source of truth).
+        assert_eq!(interpreter::run(src).expect("interp"), expected);
+        // WASM.
+        assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "wasm diverged");
+        // Native.
+        let pid = std::process::id();
+        let dir = std::env::temp_dir().join(format!("witchy_strchars_{pid}"));
+        let _ = std::fs::create_dir_all(&dir);
+        let s = dir.join("prog.witchy");
+        std::fs::write(&s, src).unwrap();
+        let rust = crate::emit_rust_file(s.to_str().unwrap()).expect("transpile");
+        let rs = dir.join("prog.rs");
+        let bin = dir.join("prog_bin");
+        std::fs::write(&rs, &rust).unwrap();
+        if let Ok(st) = std::process::Command::new("rustc")
+            .args(["-O", "-C", "overflow-checks=off", "--edition", "2021"])
+            .arg(&rs)
+            .arg("-o")
+            .arg(&bin)
+            .status()
+        {
+            assert!(st.success(), "rustc should compile the string_chars program");
+            let out = std::process::Command::new(&bin).output().expect("run");
+            assert_eq!(String::from_utf8_lossy(&out.stdout), "4\nc\né\n", "native diverged");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn json_as_object_backends_agree() {
         // as_object exposes an object's key/value pairs for iteration when the

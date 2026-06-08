@@ -753,6 +753,10 @@ impl Checker {
                 vec![Ty::String, Ty::String],
                 Ty::List(Box::new(Ty::String)),
             )),
+            // The characters of a string, each as a single-char String — built in
+            // one O(n) pass (unlike a char_at loop), so callers can index chars in
+            // O(1). The primitive behind a fast `std/string.to_chars`.
+            "string_chars" => Some((vec![Ty::String], Ty::List(Box::new(Ty::String)))),
             "replace" => Some((vec![Ty::String, Ty::String, Ty::String], Ty::String)),
             "substring" => Some((vec![Ty::String, Ty::Int, Ty::Int], Ty::String)),
             "int_to_float" => Some((vec![Ty::Int], Ty::Float)),

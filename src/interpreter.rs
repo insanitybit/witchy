@@ -654,6 +654,13 @@ impl Interpreter {
                 }
                 _ => err("split expects two Strings"),
             },
+            // The characters of a string, each as a single-char String (one pass).
+            "string_chars" => match one(args)? {
+                Value::Str(s) => {
+                    Ok(Some(Value::List(s.chars().map(|c| Value::Str(c.to_string())).collect())))
+                }
+                _ => err("string_chars expects a String"),
+            },
             "replace" => match args {
                 [Value::Str(s), Value::Str(from), Value::Str(to)] => {
                     Ok(Some(Value::Str(s.replace(from.as_str(), to.as_str()))))
