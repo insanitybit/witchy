@@ -1314,6 +1314,44 @@ mod example_tests {
         );
     }
 
+    /// The native `Dir` capability: confined file I/O. Reads a file via a
+    /// cwd-rooted Dir, compiled and run in a temp directory.
+    #[test]
+    fn native_backend_dir_capability() {
+        let pid = std::process::id();
+        let dir = std::env::temp_dir().join(format!("witchy_dir_{pid}"));
+        let _ = std::fs::create_dir_all(&dir);
+        std::fs::write(dir.join("data.txt"), "file contents").expect("write data");
+        let src = dir.join("prog.witchy");
+        std::fs::write(
+            &src,
+            "fn main(dir: Dir, console: Console):\n    print(console, read(dir, \"data.txt\"))\n",
+        )
+        .expect("write src");
+        let rust = crate::emit_rust_file(src.to_str().unwrap()).expect("transpile");
+        assert!(rust.contains("w_dir_read(&"), "expected a confined read");
+        assert!(rust.contains("escapes the Dir capability"), "expected the confinement helper");
+        // Compile + run in the temp dir (the Dir is rooted at the cwd).
+        let rs = dir.join("prog.rs");
+        let bin = dir.join("prog_bin");
+        std::fs::write(&rs, &rust).unwrap();
+        if let Ok(s) = std::process::Command::new("rustc")
+            .args(["-O", "--edition", "2021"])
+            .arg(&rs)
+            .arg("-o")
+            .arg(&bin)
+            .status()
+        {
+            assert!(s.success(), "rustc should compile the Dir program");
+            let out = std::process::Command::new(&bin)
+                .current_dir(&dir)
+                .output()
+                .expect("run");
+            assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "file contents");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Python-style f-strings: `f"...{expr}..."` interpolates (with `{{`/`}}` for
     /// literal braces), desugaring to `to_string` + concat — same result on both
     /// backends.
