@@ -1987,6 +1987,110 @@ mod example_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// `let` borrows extend past `List` to the other heap types: a `String`
+    /// parameter (the recursive-parser shape that motivated this — char ops on a
+    /// borrowed string, no clone) and a `Dict`. Native emits `&String` / `&WMap`
+    /// and the output matches every backend.
+    #[test]
+    fn convention_string_and_dict_borrow() {
+        let dir = std::env::temp_dir().join(format!("witchy_sdb_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let rust_of = |src: &str| -> String {
+            let s = dir.join("prog.witchy");
+            std::fs::write(&s, src).unwrap();
+            crate::emit_rust_file(s.to_str().unwrap()).expect("transpile")
+        };
+
+        let strs = "fn first_char(let s: String) -> String:\n    if char_count(s) > 0:\n        substring(s, 0, 1)\n    else:\n        \"\"\nfn main(c: Console):\n    let txt = \"héllo\"\n    print(c, first_char(txt))\n    print(c, int_to_string(char_count(txt)))\n";
+        assert_eq!(interpreter::run(strs).expect("interp str"), ["h", "5"]);
+        assert_eq!(run_linked_on_wasm(&[("main", strs)], "main"), ["h", "5"], "wasm str");
+        assert!(rust_of(strs).contains("s: &String"), "String borrow should be &String");
+
+        let dict = "fn lookup(let d: Dict(String, Int)) -> Int:\n    get_or(d, \"a\", -1)\nfn main(c: Console):\n    var m = dict_new()\n    m = insert(m, \"a\", 42)\n    print(c, int_to_string(lookup(m)))\n    print(c, int_to_string(size(m)))\n";
+        assert_eq!(interpreter::run(dict).expect("interp dict"), ["42", "1"]);
+        assert!(rust_of(dict).contains("d: &WMap"), "Dict borrow should be &WMap");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `move` works in every value position (let value, list element, call
+    /// argument), forcing a move; the moved binding can't be reused (rejected by
+    /// the type checker, uniformly).
+    #[test]
+    fn convention_move_value_positions() {
+        let prog = "fn main(console: Console):\n    let a = [1, 2, 3]\n    let b = move a\n    print(console, int_to_string(length(b)))\n";
+        assert_eq!(interpreter::run(prog).expect("interp"), ["3"]);
+        assert_eq!(run_linked_on_wasm(&[("main", prog)], "main"), ["3"], "wasm");
+        // Reuse after move is rejected everywhere.
+        let reuse = "fn main(console: Console):\n    let a = [1, 2, 3]\n    let b = move a\n    print(console, int_to_string(length(b) + length(a)))\n";
+        assert!(typeck::check_str(reuse).is_err(), "reuse after move must fail");
+    }
+
+    /// A borrow can't escape: returning a `let` parameter transpiles, but Rust's
+    /// borrow checker rejects it at compile time (the opt-in contract — drop `let`
+    /// or use `own`). A non-escaping borrow compiles fine.
+    #[test]
+    fn convention_borrow_cannot_escape() {
+        let dir = std::env::temp_dir().join(format!("witchy_escape_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let rustc_ok = |src: &str| -> bool {
+            let s = dir.join("prog.witchy");
+            std::fs::write(&s, src).unwrap();
+            let rust = crate::emit_rust_file(s.to_str().unwrap()).expect("transpile");
+            let rs = dir.join("prog.rs");
+            std::fs::write(&rs, &rust).unwrap();
+            match std::process::Command::new("rustc")
+                .args(["--edition", "2021", "--emit", "metadata"])
+                .arg(&rs)
+                .arg("-o")
+                .arg(dir.join("prog.meta"))
+                .output()
+            {
+                Ok(o) => o.status.success(),
+                Err(_) => return true, // no rustc: treat as inconclusive (skip)
+            }
+        };
+        // Returning a borrowed parameter escapes it — rejected by rustc.
+        let escapes = "fn id(let xs: List(Int)) -> List(Int):\n    xs\nfn main(c: Console):\n    print(c, int_to_string(length(id([1, 2, 3]))))\n";
+        assert!(!rustc_ok(escapes), "a borrowed param that escapes should not compile");
+        // Reading it (no escape) compiles fine.
+        let reads = "fn count(let xs: List(Int)) -> Int:\n    length(xs)\nfn main(c: Console):\n    print(c, int_to_string(count([1, 2, 3])))\n";
+        assert!(rustc_ok(reads), "a read-only borrow should compile");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A borrow can be forwarded BOTH ways: to another borrow parameter it passes
+    /// straight through (`&T` -> `&T`, no copy), and to an owned parameter it is
+    /// deref-cloned (you can't move out of a borrow). Same result on every backend.
+    #[test]
+    fn convention_borrow_forwarding() {
+        let src = "fn owned_first(xs: List(Int)) -> Int:\n    at(xs, 0) * 2\n\nfn borrowed_len(let ys: List(Int)) -> Int:\n    length(ys)\n\nfn report(let xs: List(Int)) -> Int:\n    borrowed_len(xs) + owned_first(xs)\n\nfn main(c: Console):\n    let data = [5, 6, 7]\n    print(c, int_to_string(report(data)))\n    print(c, int_to_string(length(data)))\n";
+        assert_eq!(interpreter::run(src).expect("interp"), ["13", "3"]);
+        assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), ["13", "3"], "wasm");
+        let dir = std::env::temp_dir().join(format!("witchy_fwd_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let s = dir.join("prog.witchy");
+        std::fs::write(&s, src).unwrap();
+        let rust = crate::emit_rust_file(s.to_str().unwrap()).expect("transpile");
+        // borrow -> borrow forwards `xs`; borrow -> owned deref-clones `(*xs)`.
+        assert!(rust.contains("borrowed_len(xs)"), "borrow->borrow passes the ref: {rust}");
+        assert!(rust.contains("owned_first((*xs).clone())"), "borrow->owned deref-clones: {rust}");
+        let rs = dir.join("prog.rs");
+        let bin = dir.join("prog_bin");
+        std::fs::write(&rs, &rust).unwrap();
+        if let Ok(st) = std::process::Command::new("rustc")
+            .args(["-O", "-C", "overflow-checks=off", "--edition", "2021"])
+            .arg(&rs)
+            .arg("-o")
+            .arg(&bin)
+            .status()
+        {
+            assert!(st.success(), "forwarding program should compile");
+            let out = std::process::Command::new(&bin).output().expect("run");
+            assert_eq!(String::from_utf8_lossy(&out.stdout), "13\n3\n", "native");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Occurrence-level last-use move elision (the value-usage/liveness pass): a
     /// binding used several times is MOVED at its final read instead of cloned,
     /// while earlier reads still clone to keep it alive. Here `s` is summed (not

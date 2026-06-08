@@ -2721,6 +2721,12 @@ fn gen_call(name: &str, args: &[Expr]) -> Result<String, String> {
                             _ => format!("&({s})"),
                         });
                     }
+                    // Forwarding a borrow (`&T`) to an OWNED parameter needs an
+                    // owned value — and you can't move out of a borrow, so it is
+                    // deref-cloned.
+                    if matches!(x, Expr::Var(v) if is_cur_borrow(v)) {
+                        return Ok(format!("(*{s}).clone()"));
+                    }
                     // Clone only a reused binding (a bare variable); a temporary
                     // (call result, literal, field read — already a fresh value)
                     // is moved, as is a binding at its last use (see MOVEABLE).
