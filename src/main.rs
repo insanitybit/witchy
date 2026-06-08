@@ -1436,6 +1436,23 @@ mod example_tests {
         assert!(rust.contains("Shape::Circle(r) =>"), "expected a qualified pattern");
     }
 
+    /// Option/Result and the `?` operator map onto Rust's built-in Option/Result.
+    #[test]
+    fn native_backend_supports_option_result_and_try() {
+        let p = std::env::temp_dir()
+            .join(format!("witchy_native_opt_{}.witchy", std::process::id()));
+        std::fs::write(
+            &p,
+            "fn safe_div(a: Int, b: Int) -> Option(Int):\n    if b == 0:\n        None\n    else:\n        Some(a / b)\nfn chain(a: Int, b: Int) -> Option(Int):\n    let x = safe_div(a, b)?\n    Some(x + 1)\nfn main(console: Console):\n    match chain(10, 2):\n        Some(v) -> print(console, int_to_string(v))\n        None -> print(console, \"none\")\n",
+        )
+        .expect("write source");
+        let rust = crate::emit_rust_file(p.to_str().unwrap()).expect("transpile");
+        let _ = std::fs::remove_file(&p);
+        assert!(rust.contains("-> Option<i64>"), "expected Option<i64> typing");
+        assert!(rust.contains(")?"), "expected the `?` operator");
+        assert!(rust.contains("Some(") && rust.contains("None"), "expected Some/None");
+    }
+
     /// `for x in a..b` is a counting loop on both backends — never a materialized
     /// list — with faithful `break`/`continue`, inclusive (`..=`), empty, and
     /// nested behavior. The 100_000-iteration loop proves nothing is allocated:

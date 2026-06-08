@@ -300,6 +300,14 @@ fn gen_expr(e: &Expr, value: bool) -> Result<String, String> {
         }
         // Record construction (a positional `Ctor` after `records::lower`) ->
         // a named Rust struct literal, using the registered field order.
+        // Built-in Option/Result constructors map straight to Rust's.
+        Expr::Ctor { name, args } if matches!((name.as_str(), args.len()), ("None", 0) | ("Some", 1) | ("Ok", 1) | ("Err", 1)) => {
+            if name == "None" {
+                "None".to_string()
+            } else {
+                format!("{name}({})", gen_expr(&args[0], true)?)
+            }
+        }
         Expr::Ctor { name, args } => {
             if let Some(fnames) = RECORD_FIELDS.with(|r| r.borrow().get(name).cloned()) {
                 if fnames.len() != args.len() {
@@ -327,6 +335,8 @@ fn gen_expr(e: &Expr, value: bool) -> Result<String, String> {
         }
         // Field read yields a value copy (clone), preserving value semantics.
         Expr::Field { base, field } => format!("({}).{field}.clone()", gen_expr(base, true)?),
+        // `e?` propagates an Option/Result exactly as Rust's `?`.
+        Expr::Try(inner) => format!("({})?", gen_expr(inner, true)?),
         // A tuple literal: `(a, b)`. A 1-tuple needs the trailing comma.
         Expr::Tuple(items) => {
             let parts: Vec<String> = items
@@ -385,12 +395,22 @@ fn gen_pattern(p: &crate::ast::Pattern) -> Result<String, String> {
         Pattern::Str(_) => {
             return Err("native backend: string patterns in `match` are not supported yet".into())
         }
+        // Built-in Option/Result patterns map straight to Rust's.
+        Pattern::Ctor { name, args }
+            if matches!((name.as_str(), args.len()), ("None", 0) | ("Some", 1) | ("Ok", 1) | ("Err", 1)) =>
+        {
+            if name == "None" {
+                "None".to_string()
+            } else {
+                format!("{name}({})", gen_pattern(&args[0])?)
+            }
+        }
         Pattern::Ctor { name, args } => {
             let en = VARIANT_TO_ENUM
                 .with(|m| m.borrow().get(name).cloned())
                 .ok_or_else(|| {
                     format!(
-                        "native backend: constructor pattern `{name}` (generic types like Option/Result aren't supported yet)"
+                        "native backend: constructor pattern `{name}` (a generic user type's variants aren't supported yet)"
                     )
                 })?;
             if args.is_empty() {
@@ -416,11 +436,18 @@ fn ident(name: &str) -> String {
 
 fn rust_ty(t: &Type) -> Option<String> {
     match t {
-        Type::Named(n, _) => match n.as_str() {
+        Type::Named(n, args) => match n.as_str() {
             "Int" | "Duration" => Some("i64".into()),
             "Float" => Some("f64".into()),
             "Bool" => Some("bool".into()),
             "String" => Some("String".into()),
+            // Option/Result map onto Rust's, with their element types.
+            "Option" => Some(format!("Option<{}>", rust_ty(args.first()?)?)),
+            "Result" => Some(format!(
+                "Result<{}, {}>",
+                rust_ty(args.first()?)?,
+                rust_ty(args.get(1)?)?
+            )),
             // A user record/enum type maps to its Rust struct/enum (if registered).
             other if RECORD_FIELDS.with(|r| r.borrow().contains_key(other)) => {
                 Some(other.to_string())
