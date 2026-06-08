@@ -2166,6 +2166,9 @@ mod example_tests {
         // One flattened format! — not nested format!("{}{}", format!(..), ..).
         assert!(rust.contains("format!(\"a{}b{}c\""), "f-string should flatten: {rust}");
         assert!(rust.contains("lit{{brace}}"), "literal braces must be escaped: {rust}");
+        // Interpolated values format directly through the WDisplay wrapper (writing
+        // into the result buffer), not via an intermediate `w_show()` String.
+        assert!(rust.contains("WDisplay(&"), "interpolation should use WDisplay: {rust}");
         let rs = dir.join("prog.rs");
         let bin = dir.join("prog_bin");
         std::fs::write(&rs, &rust).unwrap();

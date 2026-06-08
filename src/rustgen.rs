@@ -436,37 +436,48 @@ fn w_net_close(id: usize) {
 // on purpose: their iteration order is unspecified, so formatting one isn't
 // portable between backends.
 const SHOW_HELPER: &str = r#"
-trait WShow { fn w_show(&self) -> String; }
-impl WShow for i64 { fn w_show(&self) -> String { self.to_string() } }
-impl WShow for f64 { fn w_show(&self) -> String { format!("{}", self) } }
-impl WShow for bool { fn w_show(&self) -> String { self.to_string() } }
-impl WShow for String { fn w_show(&self) -> String { self.clone() } }
+// `w_fmt` writes a value into a formatter directly (no intermediate String); it
+// is the primitive. `w_show()` (a provided method) builds a String from it for
+// `print`/standalone `to_string`. f-string interpolation formats values through
+// the `WDisplay` wrapper, so the whole string is built in ONE allocation rather
+// than one per interpolated value.
+trait WShow {
+    fn w_fmt(&self, __f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result;
+    fn w_show(&self) -> String { format!("{}", WDisplay(self)) }
+}
+struct WDisplay<'a, T: WShow + ?Sized>(&'a T);
+impl<'a, T: WShow + ?Sized> std::fmt::Display for WDisplay<'a, T> {
+    fn fmt(&self, __f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { self.0.w_fmt(__f) }
+}
+impl WShow for i64 { fn w_fmt(&self, __f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { write!(__f, "{}", self) } }
+impl WShow for f64 { fn w_fmt(&self, __f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { write!(__f, "{}", self) } }
+impl WShow for bool { fn w_fmt(&self, __f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { write!(__f, "{}", self) } }
+impl WShow for String { fn w_fmt(&self, __f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { write!(__f, "{}", self) } }
 impl<T: WShow> WShow for Vec<T> {
-    fn w_show(&self) -> String {
-        let mut s = String::from("[");
-        for (i, v) in self.iter().enumerate() { if i > 0 { s.push_str(", "); } s.push_str(&v.w_show()); }
-        s.push(']');
-        s
+    fn w_fmt(&self, __f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(__f, "[")?;
+        for (i, v) in self.iter().enumerate() { if i > 0 { write!(__f, ", ")?; } v.w_fmt(__f)?; }
+        write!(__f, "]")
     }
 }
 impl<T: WShow> WShow for Option<T> {
-    fn w_show(&self) -> String {
-        match self { Some(v) => format!("Some({})", v.w_show()), None => "None".to_string() }
+    fn w_fmt(&self, __f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self { Some(v) => { write!(__f, "Some(")?; v.w_fmt(__f)?; write!(__f, ")") } None => write!(__f, "None") }
     }
 }
 impl<T: WShow, E: WShow> WShow for Result<T, E> {
-    fn w_show(&self) -> String {
-        match self { Ok(v) => format!("Ok({})", v.w_show()), Err(e) => format!("Err({})", e.w_show()) }
+    fn w_fmt(&self, __f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self { Ok(v) => { write!(__f, "Ok(")?; v.w_fmt(__f)?; write!(__f, ")") } Err(e) => { write!(__f, "Err(")?; e.w_fmt(__f)?; write!(__f, ")") } }
     }
 }
 impl<A: WShow, B: WShow> WShow for (A, B) {
-    fn w_show(&self) -> String { format!("({}, {})", self.0.w_show(), self.1.w_show()) }
+    fn w_fmt(&self, __f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { write!(__f, "(")?; self.0.w_fmt(__f)?; write!(__f, ", ")?; self.1.w_fmt(__f)?; write!(__f, ")") }
 }
 impl<A: WShow, B: WShow, C: WShow> WShow for (A, B, C) {
-    fn w_show(&self) -> String { format!("({}, {}, {})", self.0.w_show(), self.1.w_show(), self.2.w_show()) }
+    fn w_fmt(&self, __f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { write!(__f, "(")?; self.0.w_fmt(__f)?; write!(__f, ", ")?; self.1.w_fmt(__f)?; write!(__f, ", ")?; self.2.w_fmt(__f)?; write!(__f, ")") }
 }
 impl<A: WShow, B: WShow, C: WShow, D: WShow> WShow for (A, B, C, D) {
-    fn w_show(&self) -> String { format!("({}, {}, {}, {})", self.0.w_show(), self.1.w_show(), self.2.w_show(), self.3.w_show()) }
+    fn w_fmt(&self, __f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { write!(__f, "(")?; self.0.w_fmt(__f)?; write!(__f, ", ")?; self.1.w_fmt(__f)?; write!(__f, ", ")?; self.2.w_fmt(__f)?; write!(__f, ", ")?; self.3.w_fmt(__f)?; write!(__f, ")") }
 }
 "#;
 
@@ -1459,12 +1470,18 @@ fn gen_record(td: &crate::ast::TypeDef) -> Option<String> {
     if is_showable(&v.name) {
         USES_SHOW.with(|f| f.set(true));
         let (ig, tr) = wshow_header(&v.name, &tvs);
-        let parts: Vec<String> =
-            v.field_names.iter().map(|fname| format!("self.{fname}.w_show()")).collect();
+        // `Name(a, b)` written field-by-field into the formatter (no intermediate
+        // Strings) — same bytes as the interpreter's positional Display.
+        let mut body = format!("write!(__f, \"{}(\")?; ", v.name);
+        for (i, fname) in v.field_names.iter().enumerate() {
+            if i > 0 {
+                body.push_str("write!(__f, \", \")?; ");
+            }
+            body.push_str(&format!("self.{fname}.w_fmt(__f)?; "));
+        }
+        body.push_str("write!(__f, \")\")");
         out.push_str(&format!(
-            "impl{ig} WShow for {tr} {{ fn w_show(&self) -> String {{ format!(\"{}({{}})\", vec![{}].join(\", \")) }} }}\n",
-            v.name,
-            parts.join(", ")
+            "impl{ig} WShow for {tr} {{ fn w_fmt(&self, __f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {{ {body} }} }}\n"
         ));
     }
     Some(out)
@@ -1556,23 +1573,23 @@ fn gen_enum(td: &crate::ast::TypeDef) -> Option<String> {
             .iter()
             .map(|v| {
                 if v.fields.is_empty() {
-                    format!("{}::{} => \"{}\".to_string()", td.name, v.name, v.name)
+                    format!("{}::{} => write!(__f, \"{}\")", td.name, v.name, v.name)
                 } else {
                     let binds: Vec<String> = (0..v.fields.len()).map(|i| format!("f{i}")).collect();
-                    let parts: Vec<String> = binds.iter().map(|b| format!("{b}.w_show()")).collect();
-                    format!(
-                        "{}::{}({}) => format!(\"{}({{}})\", vec![{}].join(\", \"))",
-                        td.name,
-                        v.name,
-                        binds.join(", "),
-                        v.name,
-                        parts.join(", ")
-                    )
+                    let mut body = format!("write!(__f, \"{}(\")?; ", v.name);
+                    for (i, b) in binds.iter().enumerate() {
+                        if i > 0 {
+                            body.push_str("write!(__f, \", \")?; ");
+                        }
+                        body.push_str(&format!("{b}.w_fmt(__f)?; "));
+                    }
+                    body.push_str("write!(__f, \")\")");
+                    format!("{}::{}({}) => {{ {body} }}", td.name, v.name, binds.join(", "))
                 }
             })
             .collect();
         out.push_str(&format!(
-            "impl{ig} WShow for {tr} {{ fn w_show(&self) -> String {{ match self {{ {} }} }} }}\n",
+            "impl{ig} WShow for {tr} {{ fn w_fmt(&self, __f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {{ match self {{ {} }} }} }}\n",
             arms.join(", ")
         ));
     }
@@ -1842,6 +1859,17 @@ fn gen_concat(e: &Expr) -> Result<String, String> {
                         _ => fmt.push(c),
                     }
                 }
+            }
+            // A show-call operand (`to_string(x)` — what f-strings desugar `{x}`
+            // to — or `int_to_string(x)`): format the value directly through the
+            // `WDisplay` wrapper instead of `w_show()`/`.to_string()`, so it writes
+            // into the result buffer rather than allocating an intermediate String.
+            Expr::Call { name, args: cargs }
+                if cargs.len() == 1 && (name == "to_string" || name == "int_to_string") =>
+            {
+                USES_SHOW.with(|f| f.set(true));
+                fmt.push_str("{}");
+                args.push(format!("WDisplay(&({}))", gen_expr(&cargs[0], true)?));
             }
             other => {
                 fmt.push_str("{}");
