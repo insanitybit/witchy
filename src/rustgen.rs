@@ -87,6 +87,123 @@ fn type_var_name(name: &str) -> String {
     }
 }
 
+/// The set of functions reachable from `main` (transitively). Only these are
+/// transpiled, so an imported stdlib module's *unused* functions — which may use
+/// constructs outside the native subset — never reach codegen.
+fn reachable_functions(m: &Module) -> HashSet<String> {
+    let mut bodies: HashMap<&str, &Block> = HashMap::new();
+    for item in &m.items {
+        if let Item::Function(f) = item {
+            bodies.insert(f.name.as_str(), &f.body);
+        }
+    }
+    let mut reached = HashSet::new();
+    let mut stack = vec!["main".to_string()];
+    while let Some(n) = stack.pop() {
+        if !reached.insert(n.clone()) {
+            continue;
+        }
+        if let Some(b) = bodies.get(n.as_str()) {
+            let mut calls = HashSet::new();
+            collect_calls_block(b, &mut calls);
+            stack.extend(calls);
+        }
+    }
+    reached
+}
+
+fn collect_calls_block(b: &Block, out: &mut HashSet<String>) {
+    for s in &b.stmts {
+        match s {
+            Stmt::Let { value, .. }
+            | Stmt::Assign { value, .. }
+            | Stmt::LetTuple { value, .. }
+            | Stmt::Expr(value)
+            | Stmt::Return(Some(value))
+            | Stmt::Yield(value) => collect_calls_expr(value, out),
+            Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
+        }
+    }
+}
+
+fn collect_calls_expr(e: &Expr, out: &mut HashSet<String>) {
+    match e {
+        Expr::Call { name, args } => {
+            out.insert(name.clone());
+            args.iter().for_each(|a| collect_calls_expr(a, out));
+        }
+        Expr::Ctor { args, .. } | Expr::List(args) | Expr::Tuple(args) | Expr::Spawn { args, .. } => {
+            args.iter().for_each(|a| collect_calls_expr(a, out))
+        }
+        Expr::MethodCall { receiver, args, .. } => {
+            collect_calls_expr(receiver, out);
+            args.iter().for_each(|a| collect_calls_expr(a, out));
+        }
+        Expr::Apply { func, args } => {
+            collect_calls_expr(func, out);
+            args.iter().for_each(|a| collect_calls_expr(a, out));
+        }
+        Expr::Unary { expr, .. }
+        | Expr::Field { base: expr, .. }
+        | Expr::Try(expr)
+        | Expr::As { expr, .. } => collect_calls_expr(expr, out),
+        Expr::Binary { lhs, rhs, .. } => {
+            collect_calls_expr(lhs, out);
+            collect_calls_expr(rhs, out);
+        }
+        Expr::Range { lo, hi, .. } => {
+            collect_calls_expr(lo, out);
+            collect_calls_expr(hi, out);
+        }
+        Expr::Index { base, index } => {
+            collect_calls_expr(base, out);
+            collect_calls_expr(index, out);
+        }
+        Expr::If { cond, then_block, else_block } => {
+            collect_calls_expr(cond, out);
+            collect_calls_block(then_block, out);
+            if let Some(b) = else_block {
+                collect_calls_block(b, out);
+            }
+        }
+        Expr::While { cond, body } => {
+            collect_calls_expr(cond, out);
+            collect_calls_block(body, out);
+        }
+        Expr::WhileLet { scrutinee, body, .. } => {
+            collect_calls_expr(scrutinee, out);
+            collect_calls_block(body, out);
+        }
+        Expr::For { iter, body, .. } => {
+            collect_calls_expr(iter, out);
+            collect_calls_block(body, out);
+        }
+        Expr::Match { scrutinee, arms } => {
+            collect_calls_expr(scrutinee, out);
+            for arm in arms {
+                if let Some(g) = &arm.guard {
+                    collect_calls_expr(g, out);
+                }
+                collect_calls_expr(&arm.body, out);
+            }
+        }
+        Expr::Block(b) => collect_calls_block(b, out),
+        Expr::Lambda { body, .. } => collect_calls_block(body, out),
+        Expr::RecordUpdate { base, fields } => {
+            collect_calls_expr(base, out);
+            fields.iter().for_each(|(_, v)| collect_calls_expr(v, out));
+        }
+        Expr::Record { fields, spread, .. } => {
+            fields.iter().for_each(|(_, v)| collect_calls_expr(v, out));
+            if let Some(s) = spread {
+                collect_calls_expr(s, out);
+            }
+        }
+        Expr::Int(_) | Expr::Float(_) | Expr::Duration(_) | Expr::Str(_) | Expr::Bool(_)
+        | Expr::Var(_) => {}
+    }
+}
+
 /// Gather the (capitalized) type variables appearing in a type.
 fn collect_type_vars(t: &Type, out: &mut std::collections::BTreeSet<String>) {
     match t {
@@ -131,10 +248,16 @@ pub fn transpile_module(m: &Module) -> Result<String, String> {
             }
         }
     }
+    let reached = reachable_functions(m);
     let mut saw_main = false;
     for item in &m.items {
         match item {
             Item::Function(f) => {
+                // Only transpile functions reachable from main — so an imported
+                // module's unused functions (possibly outside the subset) don't.
+                if !reached.contains(&f.name) {
+                    continue;
+                }
                 if f.name == "main" {
                     saw_main = true;
                 }
@@ -173,6 +296,12 @@ fn gen_record(td: &crate::ast::TypeDef) -> Option<String> {
     if v.field_names.len() != v.fields.len() || v.field_names.is_empty() {
         return None;
     }
+    // Skip a generic record (type-variable fields) for now — would need params.
+    let mut tvs = std::collections::BTreeSet::new();
+    v.fields.iter().for_each(|f| collect_type_vars(f, &mut tvs));
+    if !tvs.is_empty() {
+        return None;
+    }
     let mut fields = Vec::new();
     let mut all_copy = true;
     for (name, ty) in v.field_names.iter().zip(&v.fields) {
@@ -202,6 +331,20 @@ fn gen_record(td: &crate::ast::TypeDef) -> Option<String> {
 /// unsupported field type, so a later use surfaces a clear error.
 fn gen_enum(td: &crate::ast::TypeDef) -> Option<String> {
     if td.variants.len() < 2 {
+        return None;
+    }
+    // Option/Result map to Rust's built-ins (their constructors/patterns are
+    // special-cased), so don't emit a clashing user enum.
+    if td.name == "Option" || td.name == "Result" {
+        return None;
+    }
+    // A generic enum (type-variable fields) would need Rust generic parameters;
+    // skip for now (so a concrete use isn't blocked by an unemittable generic).
+    let mut tvs = std::collections::BTreeSet::new();
+    for v in &td.variants {
+        v.fields.iter().for_each(|f| collect_type_vars(f, &mut tvs));
+    }
+    if !tvs.is_empty() {
         return None;
     }
     let mut variants = Vec::new();
@@ -455,12 +598,12 @@ fn gen_expr(e: &Expr, value: bool) -> Result<String, String> {
             let ps: Vec<String> = params.iter().map(|p| p.name.clone()).collect();
             format!("|{}| {}", ps.join(", "), gen_block(body, true)?)
         }
-        // Applying a function value: `f(args)`.
+        // Applying a function value: `f(args)`. Args cloned (value semantics).
         Expr::Apply { func, args } => {
             let a: Vec<String> = args
                 .iter()
-                .map(|x| gen_expr(x, true))
-                .collect::<Result<_, _>>()?;
+                .map(|x| Ok(format!("({}).clone()", gen_expr(x, true)?)))
+                .collect::<Result<Vec<String>, String>>()?;
             format!("({})({})", gen_expr(func, true)?, a.join(", "))
         }
         // A list literal -> a Rust `vec![..]` (element type inferred by rustc).
@@ -597,10 +740,13 @@ fn gen_call(name: &str, args: &[Expr]) -> Result<String, String> {
         // A call whose name is a parameter is a function-valued param (closure),
         // called directly rather than as a top-level function.
         _ if CUR_PARAMS.with(|s| s.borrow().contains(name)) => {
+            // Closure args are cloned (value semantics: the callee gets a copy),
+            // so a value used both here and after — `keep(x)` then `push(.., x)` —
+            // isn't moved. Copy types clone for free.
             let a: Vec<String> = args
                 .iter()
-                .map(|x| gen_expr(x, true))
-                .collect::<Result<_, _>>()?;
+                .map(|x| Ok(format!("({}).clone()", gen_expr(x, true)?)))
+                .collect::<Result<Vec<String>, String>>()?;
             format!("({name})({})", a.join(", "))
         }
         // Any other call is a user function (capability/builtin calls outside the

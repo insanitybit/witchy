@@ -1528,7 +1528,29 @@ mod example_tests {
         assert!(rust.contains("<A: Clone, B: Clone>"), "expected generic params");
         assert!(rust.contains("impl Fn(A) -> B"), "expected fn-type param");
         assert!(rust.contains("|n|"), "expected a closure for the lambda");
-        assert!(rust.contains("(f)(x)"), "expected a direct call of the fn param");
+        assert!(rust.contains("(f)("), "expected a direct call of the fn param");
+    }
+
+    /// A program using the stdlib higher-order functions (`list.map`/`filter`/
+    /// `fold`) transpiles: only the reached generic functions are emitted (so an
+    /// imported module's unused, out-of-subset functions don't block it).
+    #[test]
+    fn native_backend_supports_stdlib_higher_order() {
+        // A fresh subdir, so no sibling `list.witchy` shadows the std module.
+        let dir = std::env::temp_dir().join(format!("witchy_hof_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("main.witchy");
+        std::fs::write(
+            &path,
+            "import list\nfn main(console: Console):\n    let evens = list.filter([1, 2, 3, 4], fn(n): n % 2 == 0)\n    print(console, int_to_string(list.fold(list.map(evens, fn(n): n * 10), 0, fn(a, x): a + x)))\n",
+        )
+        .expect("write source");
+        let rust = crate::emit_rust_file(path.to_str().unwrap()).expect("transpile");
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir(&dir);
+        assert!(rust.contains("w_list_map"), "expected stdlib map transpiled");
+        assert!(rust.contains("w_list_filter"), "expected stdlib filter transpiled");
+        assert!(rust.contains("impl Fn"), "expected fn-type params");
     }
 
     /// `for x in a..b` is a counting loop on both backends — never a materialized
