@@ -1533,6 +1533,39 @@ mod example_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Lazy iterators (std/iter): the mutually-recursive `Step`/`Iter` types
+    /// (Iter holds a closure returning Step) compile; an infinite `count_from`
+    /// composed with map/take/collect terminates correctly.
+    #[test]
+    fn native_backend_lazy_iterators() {
+        let pid = std::process::id();
+        let dir = std::env::temp_dir().join(format!("witchy_iter_{pid}"));
+        let _ = std::fs::create_dir_all(&dir);
+        let src = dir.join("prog.witchy");
+        std::fs::write(
+            &src,
+            "import iter\n\nfn main(console: Console):\n    let squares = iter.collect(iter.take(iter.map(iter.count_from(1), fn(n: Int): n * n), 4))\n    print(console, f\"{squares}\")\n",
+        )
+        .expect("write src");
+        let rust = crate::emit_rust_file(src.to_str().unwrap()).expect("transpile");
+        assert!(rust.contains("enum Step") && rust.contains("enum Iter"), "expected Step/Iter emitted");
+        let rs = dir.join("prog.rs");
+        let bin = dir.join("prog_bin");
+        std::fs::write(&rs, &rust).unwrap();
+        if let Ok(st) = std::process::Command::new("rustc")
+            .args(["-O", "--edition", "2021"])
+            .arg(&rs)
+            .arg("-o")
+            .arg(&bin)
+            .status()
+        {
+            assert!(st.success(), "rustc should compile the lazy-iterator program");
+            let out = std::process::Command::new(&bin).output().expect("run");
+            assert_eq!(String::from_utf8_lossy(&out.stdout), "[1, 4, 9, 16]\n");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// A list of distinct named functions unifies into `Vec<Rc<dyn Fn>>` (each
     /// fn-reference is coerced to the trait object), then each is applied.
     #[test]
@@ -2381,7 +2414,7 @@ mod example_tests {
         .expect("write source");
         let rust = crate::emit_rust_file(p.to_str().unwrap()).expect("transpile");
         let _ = std::fs::remove_file(&p);
-        assert!(rust.contains("<A: Clone, B: Clone>"), "expected generic params");
+        assert!(rust.contains("<A: Clone + 'static, B: Clone + 'static>"), "expected generic params");
         assert!(rust.contains("Rc<dyn Fn(A) -> B>"), "expected fn-type param");
         assert!(rust.contains("|n|"), "expected a closure for the lambda");
         assert!(rust.contains("(f)("), "expected a direct call of the fn param");
@@ -2422,7 +2455,7 @@ mod example_tests {
         .expect("write source");
         let rust = crate::emit_rust_file(p.to_str().unwrap()).expect("transpile");
         let _ = std::fs::remove_file(&p);
-        assert!(rust.contains("struct Pair<A: Clone, B: Clone>"), "expected a generic struct");
+        assert!(rust.contains("struct Pair<A: Clone + 'static, B: Clone + 'static>"), "expected a generic struct");
         assert!(rust.contains("-> Pair<B, A>"), "expected type args on the return");
     }
 

@@ -183,9 +183,9 @@ fn wshow_header(name: &str, tvs: &std::collections::BTreeSet<String>) -> (String
     if tvs.is_empty() {
         return (String::new(), name.to_string());
     }
-    // `+ Clone` matches the type's own generic bound (see `generic_params`), so
-    // the impl satisfies `Foo<A>`'s requirements.
-    let bounds: Vec<String> = tvs.iter().map(|v| format!("{v}: WShow + Clone")).collect();
+    // `+ Clone + 'static` matches the type's own generic bound (see
+    // `generic_params`), so the impl satisfies `Foo<A>`'s requirements.
+    let bounds: Vec<String> = tvs.iter().map(|v| format!("{v}: WShow + Clone + 'static")).collect();
     let vars: Vec<String> = tvs.iter().cloned().collect();
     (format!("<{}>", bounds.join(", ")), format!("{name}<{}>", vars.join(", ")))
 }
@@ -951,7 +951,10 @@ fn generic_params_eq(tvs: &std::collections::BTreeSet<String>, with_eq: bool) ->
     if tvs.is_empty() {
         return String::new();
     }
-    let bound = if with_eq { "Clone + PartialEq" } else { "Clone" };
+    // `'static` because a value of the type variable may be captured into an
+    // `Rc<dyn Fn>` (which is `+ 'static`); every witchy value is owned, so this
+    // always holds.
+    let bound = if with_eq { "Clone + PartialEq + 'static" } else { "Clone + 'static" };
     let bounded: Vec<String> = tvs.iter().map(|v| format!("{v}: {bound}")).collect();
     format!("<{}>", bounded.join(", "))
 }
@@ -1070,6 +1073,11 @@ pub fn transpile_module(m: &Module) -> Result<String, String> {
     }
     USES_DICT.with(|f| f.set(false));
     let mut out = String::new();
+    // Pre-register every user type's name, so mutually-recursive types resolve
+    // when their fields are computed (e.g. std/iter's `Step`/`Iter`, which
+    // reference each other — the cycle is finite because it passes through an
+    // `Rc<dyn Fn>`).
+    register_type_names(m);
     // First pass: emit a Rust struct/enum for each supported user type and
     // register it, so later constructors/patterns/params resolve.
     for item in &m.items {
@@ -1138,6 +1146,38 @@ pub fn transpile_module(m: &Module) -> Result<String, String> {
     }
     prog.push_str(&out);
     Ok(prog)
+}
+
+/// Register every user type's NAME (records in RECORD_FIELDS, enums in
+/// ENUM_NAMES/VARIANT_TO_ENUM) before any field types are computed — mirroring
+/// the record-vs-enum decision in `gen_record`/`gen_enum` — so a field that
+/// refers to another (or a mutually-recursive) type resolves. The emit pass then
+/// fills in the rest (boxing, FN_FIELDS, the Rust definition).
+fn register_type_names(m: &Module) {
+    for item in &m.items {
+        let Item::Type(td) = item else { continue };
+        // A record: exactly one variant with named fields.
+        if let [v] = td.variants.as_slice() {
+            if v.field_names.len() == v.fields.len() && !v.field_names.is_empty() {
+                RECORD_FIELDS.with(|r| {
+                    r.borrow_mut().insert(v.name.clone(), v.field_names.clone());
+                });
+                continue;
+            }
+        }
+        // Otherwise an enum (positional variants), unless it's a built-in or
+        // struct-style — matching `gen_enum`'s guards.
+        if td.name == "Option" || td.name == "Result" || td.variants.is_empty() {
+            continue;
+        }
+        if td.variants.iter().any(|v| !v.field_names.is_empty()) {
+            continue;
+        }
+        ENUM_NAMES.with(|s| s.borrow_mut().insert(td.name.clone()));
+        for v in &td.variants {
+            VARIANT_TO_ENUM.with(|m2| m2.borrow_mut().insert(v.name.clone(), td.name.clone()));
+        }
+    }
 }
 
 /// Emit a Rust struct for a single-variant, named-field record whose fields are
@@ -1222,8 +1262,12 @@ fn gen_enum(td: &crate::ast::TypeDef) -> Option<String> {
     }
     let mut variants = Vec::new();
     let mut all_copy = tvs.is_empty();
-    let self_generics = generic_params(&tvs);
-    let self_ref = format!("{}{}", td.name, self_generics.replace(": Clone", ""));
+    // `Foo<A, B>` (bare type-var names, no bounds) — for a recursive `Box<Self>`.
+    let self_ref = if tvs.is_empty() {
+        td.name.clone()
+    } else {
+        format!("{}<{}>", td.name, tvs.iter().cloned().collect::<Vec<_>>().join(", "))
+    };
     let mut boxed_by_variant: Vec<(String, Vec<bool>)> = Vec::new();
     for v in &td.variants {
         let mut tys = Vec::new();
