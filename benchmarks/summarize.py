@@ -19,10 +19,9 @@ def main(benches):
                 data = json.load(f)["results"]
         except FileNotFoundError:
             continue
-        # hyperfine records results in run.sh's order: native, wasm, go, [interp].
-        means = [r["mean"] for r in data]
-        labels = ["witchy-native", "witchy-wasm", "go", "witchy-interp"][: len(means)]
-        d = dict(zip(labels, means))
+        # Map by the hyperfine command label (`-n NAME`), so a benchmark that
+        # omits a backend (e.g. collection benchmarks skip wasm) is handled.
+        d = {r["command"]: r["mean"] for r in data}
         rows.append((b, d))
 
     lines = []
@@ -31,20 +30,22 @@ def main(benches):
     lines.append("Wall-clock mean (ms) per run, lower is better. **witchy-native** is the")
     lines.append("native backend (witchy -> Rust -> rustc/LLVM); **witchy-wasm** is the")
     lines.append("compiled backend (WAT -> wasmtime, with an on-disk compile cache). Both")
-    lines.append("are measured as prebuilt binaries, like Go. The `vs go` columns are")
-    lines.append("witchy / go (lower is better; **< 1.00 means witchy beats Go**).")
-    lines.append("Regenerate with `./run.sh`.")
+    lines.append("are measured as prebuilt binaries, like Go. `vs go` is witchy-native / go")
+    lines.append("(lower is better; **< 1.00 means witchy beats Go**). Collection benchmarks")
+    lines.append("(list/dict) skip wasm — its immutable `push`/dict ops are O(n^2) at these")
+    lines.append("sizes. Regenerate with `./run.sh`.")
     lines.append("")
-    lines.append("| benchmark | witchy-native (ms) | witchy-wasm (ms) | go (ms) | native vs go | wasm vs go |")
-    lines.append("|-----------|-------------------:|-----------------:|--------:|-------------:|-----------:|")
+    lines.append("| benchmark | witchy-native (ms) | witchy-wasm (ms) | go (ms) | vs go |")
+    lines.append("|-----------|-------------------:|-----------------:|--------:|------:|")
+
+    def fmt(d, key):
+        return f"{d[key] * 1000:.1f}" if key in d else "—"
+
     for b, d in rows:
-        native = d.get("witchy-native", float("nan")) * 1000
-        wasm = d.get("witchy-wasm", float("nan")) * 1000
-        go = d.get("go", float("nan")) * 1000
-        nratio = native / go if go else float("nan")
-        wratio = wasm / go if go else float("nan")
+        go = d.get("go")
+        nratio = f"{d['witchy-native'] / go:.2f}x" if go and "witchy-native" in d else "—"
         lines.append(
-            f"| {b} | {native:.1f} | {wasm:.1f} | {go:.1f} | {nratio:.2f}x | {wratio:.2f}x |"
+            f"| {b} | {fmt(d, 'witchy-native')} | {fmt(d, 'witchy-wasm')} | {fmt(d, 'go')} | {nratio} |"
         )
     out = "\n".join(lines) + "\n"
     with open("baseline.md", "w") as f:
