@@ -1,0 +1,171 @@
+// std/iter — lazy, pull-based iterators: the witchy take on Rust's Iterator,
+// minus the part Rust most regrets. Because witchy values are "data" (no
+// borrowing), there is no lending-iterator / GAT complexity: an `Iter(a)` is
+// just a thunk that produces the next `Step`. Adapters (`map`/`filter`/
+// `take_while`/...) are lazy and compose without building intermediate lists;
+// consumers (`collect`/`fold`/`find`/`count`) drive the pulling. Infinite
+// iterators are fine (`count_from`, `repeat`) as long as something bounds them
+// (`take`/`take_while`/`find`). Pure and capability-free; runs on both backends.
+// (The planned `gen`/`yield` syntax will de-sugar to these constructors.)
+
+import option
+
+// One pull: either exhausted, or a value plus the rest of the iterator.
+type Step:
+    Empty
+    Item(a, Iter(a))
+
+// An iterator is a thunk producing its next Step. Pull it with `next`.
+type Iter:
+    Iter(fn() -> Step(a))
+
+fn next(it: Iter(a)) -> Step(a):
+    match it:
+        Iter(thunk) -> thunk()
+
+// ---- constructors ----
+
+// The empty iterator.
+pub fn empty() -> Iter(a):
+    Iter(fn(): Empty)
+
+// One element, then done.
+pub fn once(x: a) -> Iter(a):
+    Iter(fn(): Item(x, empty()))
+
+// Build an iterator from a `seed` by repeatedly applying `f`, which returns
+// `Some((value, next_seed))` to yield a value or `None` to stop. The general
+// generator primitive — count/fibonacci/range are all unfolds.
+pub fn unfold(seed: s, f: fn(s) -> Option((a, s))) -> Iter(a):
+    Iter(fn(): unfold_step(seed, f))
+
+fn unfold_step(seed: s, f: fn(s) -> Option((a, s))) -> Step(a):
+    match f(seed):
+        Some(pair) ->
+            match pair:
+                (x, nxt) -> Item(x, unfold(nxt, f))
+        None -> Empty
+
+// The integers n, n+1, n+2, ... (infinite).
+pub fn count_from(n: Int) -> Iter(Int):
+    unfold(n, fn(i: Int): Some((i, i + 1)))
+
+// The half-open integer range [lo, hi).
+pub fn range(lo: Int, hi: Int) -> Iter(Int):
+    unfold(lo, fn(i: Int): if i < hi: Some((i, i + 1)) else: None)
+
+// `x` forever (infinite).
+pub fn repeat(x: a) -> Iter(a):
+    Iter(fn(): Item(x, repeat(x)))
+
+// A list's elements, in order.
+pub fn from_list(xs: List(a)) -> Iter(a):
+    unfold(0, fn(i: Int): if i < length(xs): Some((at(xs, i), i + 1)) else: None)
+
+// ---- adapters (lazy) ----
+
+// Apply `f` to every element.
+pub fn map(it: Iter(a), f: fn(a) -> b) -> Iter(b):
+    Iter(fn(): map_step(next(it), f))
+
+fn map_step(s: Step(a), f: fn(a) -> b) -> Step(b):
+    match s:
+        Empty -> Empty
+        Item(x, rest) -> Item(f(x), map(rest, f))
+
+// Keep only the elements for which `keep` holds.
+pub fn filter(it: Iter(a), keep: fn(a) -> Bool) -> Iter(a):
+    Iter(fn(): filter_step(next(it), keep))
+
+fn filter_step(s: Step(a), keep: fn(a) -> Bool) -> Step(a):
+    match s:
+        Empty -> Empty
+        Item(x, rest) ->
+            if keep(x):
+                Item(x, filter(rest, keep))
+            else:
+                filter_step(next(rest), keep)
+
+// The first `k` elements (fewer if the iterator is shorter).
+pub fn take(it: Iter(a), k: Int) -> Iter(a):
+    Iter(fn(): take_step(it, k))
+
+fn take_step(it: Iter(a), k: Int) -> Step(a):
+    if k <= 0:
+        Empty
+    else:
+        match next(it):
+            Empty -> Empty
+            Item(x, rest) -> Item(x, take(rest, k - 1))
+
+// Elements up to (not including) the first one failing `pred`.
+pub fn take_while(it: Iter(a), pred: fn(a) -> Bool) -> Iter(a):
+    Iter(fn(): take_while_step(next(it), pred))
+
+fn take_while_step(s: Step(a), pred: fn(a) -> Bool) -> Step(a):
+    match s:
+        Empty -> Empty
+        Item(x, rest) ->
+            if pred(x):
+                Item(x, take_while(rest, pred))
+            else:
+                Empty
+
+// Skip the first `k` elements.
+pub fn drop(it: Iter(a), k: Int) -> Iter(a):
+    if k <= 0:
+        it
+    else:
+        match next(it):
+            Empty -> empty()
+            Item(_x, rest) -> drop(rest, k - 1)
+
+// ---- consumers ----
+
+// Collect into a list (drives the iterator to exhaustion — don't call on an
+// unbounded one).
+pub fn collect(it: Iter(a)) -> List(a):
+    var out = []
+    var cur = it
+    var more = true
+    while more:
+        match next(cur):
+            Empty ->
+                more = false
+            Item(x, rest) ->
+                out = push(out, x)
+                cur = rest
+    out
+
+// Left fold over the elements.
+pub fn fold(it: Iter(a), init: b, f: fn(b, a) -> b) -> b:
+    var acc = init
+    var cur = it
+    var more = true
+    while more:
+        match next(cur):
+            Empty ->
+                more = false
+            Item(x, rest) ->
+                acc = f(acc, x)
+                cur = rest
+    acc
+
+// Number of elements (drives to exhaustion).
+pub fn count(it: Iter(a)) -> Int:
+    fold(it, 0, fn(n: Int, _x): n + 1)
+
+// Sum of an Int iterator.
+pub fn sum(it: Iter(Int)) -> Int:
+    fold(it, 0, fn(acc: Int, x: Int): acc + x)
+
+// The first element satisfying `pred`, or None (stops at the first match, so it
+// is safe on an unbounded iterator if a match exists).
+pub fn find(it: Iter(a), pred: fn(a) -> Bool) -> Option(a):
+    match next(it):
+        Empty -> None
+        Item(x, rest) ->
+            if pred(x):
+                Some(x)
+            else:
+                find(rest, pred)

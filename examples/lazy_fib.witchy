@@ -1,0 +1,39 @@
+// Lazy infinite sequences with std/iter — witchy's answer to Rust's `Iterator`
+// adapter chains (and the kind of thing Go uses channels/generators for).
+// `fibs()` is an *infinite* iterator built with `unfold`; the consumers below
+// bound it, so only the demanded prefix is ever computed. Runs on both backends
+// — witchy's value semantics mean there's no lending-iterator complexity.
+
+import iter
+import string
+
+// The Fibonacci numbers 0, 1, 1, 2, 3, 5, 8, ... as an infinite iterator.
+// `unfold` threads the pair (current, next) as its state, yielding `current`.
+fn fibs() -> Iter(Int):
+    iter.unfold((0, 1), fn(p: (Int, Int)): fib_step(p))
+
+fn fib_step(p: (Int, Int)) -> Option((Int, (Int, Int))):
+    match p:
+        (a, b) -> Some((a, (b, a + b)))
+
+fn show(xs: List(Int)) -> String:
+    var parts = []
+    for x in xs:
+        parts = push(parts, int_to_string(x))
+    string.join(parts, ", ")
+
+fn main(console: Console):
+    // The first 10 Fibonacci numbers (take, then collect into a list).
+    print(console, "first 10: " <> show(iter.collect(iter.take(fibs(), 10))))
+
+    // The sum of the even Fibonacci numbers below 1000 — take_while / filter /
+    // sum, all lazy over the infinite stream.
+    let small = iter.take_while(fibs(), fn(n: Int): n < 1000)
+    let evens = iter.filter(small, fn(n: Int): n % 2 == 0)
+    print(console, "even fib sum < 1000: " <> int_to_string(iter.sum(evens)))
+
+    // The first Fibonacci number past 1000 — found by scanning an infinite
+    // iterator that stops at the first match.
+    match iter.find(fibs(), fn(n: Int): n > 1000):
+        Some(n) -> print(console, "first fib > 1000: " <> int_to_string(n))
+        None -> print(console, "none")
