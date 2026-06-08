@@ -1400,6 +1400,24 @@ mod example_tests {
         assert!(rust.contains("if (x < 0i64) =>"), "expected a match guard");
     }
 
+    /// The native backend transpiles record types to Rust structs — declaration,
+    /// construction, and field access.
+    #[test]
+    fn native_backend_supports_records() {
+        let p = std::env::temp_dir()
+            .join(format!("witchy_native_rec_{}.witchy", std::process::id()));
+        std::fs::write(
+            &p,
+            "type Point:\n    x: Int\n    y: Int\nfn main(console: Console):\n    let p = Point(x: 3, y: 4)\n    print(console, int_to_string(p.x + p.y))\n",
+        )
+        .expect("write source");
+        let rust = crate::emit_rust_file(p.to_str().unwrap()).expect("transpile");
+        let _ = std::fs::remove_file(&p);
+        assert!(rust.contains("struct Point {"), "expected a Rust struct");
+        assert!(rust.contains("Point { x:"), "expected struct construction");
+        assert!(rust.contains(".x.clone()"), "expected field access");
+    }
+
     /// `for x in a..b` is a counting loop on both backends — never a materialized
     /// list — with faithful `break`/`continue`, inclusive (`..=`), empty, and
     /// nested behavior. The 100_000-iteration loop proves nothing is allocated:
