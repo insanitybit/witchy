@@ -1533,6 +1533,38 @@ mod example_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// The Clock capability: `now(clock)` returns ms since the epoch. Tested by a
+    /// deterministic bound (the absolute value is wall-clock, so not diff-able).
+    #[test]
+    fn native_backend_clock_now() {
+        let pid = std::process::id();
+        let dir = std::env::temp_dir().join(format!("witchy_clock_{pid}"));
+        let _ = std::fs::create_dir_all(&dir);
+        let src = dir.join("prog.witchy");
+        std::fs::write(
+            &src,
+            "fn main(clock: Clock, console: Console):\n    print(console, f\"{now(clock) > 1000000000000}\")\n",
+        )
+        .expect("write src");
+        let rust = crate::emit_rust_file(src.to_str().unwrap()).expect("transpile");
+        assert!(rust.contains("SystemTime::now()"), "expected the clock read");
+        let rs = dir.join("prog.rs");
+        let bin = dir.join("prog_bin");
+        std::fs::write(&rs, &rust).unwrap();
+        if let Ok(st) = std::process::Command::new("rustc")
+            .args(["-O", "--edition", "2021"])
+            .arg(&rs)
+            .arg("-o")
+            .arg(&bin)
+            .status()
+        {
+            assert!(st.success(), "rustc should compile the clock program");
+            let out = std::process::Command::new(&bin).output().expect("run");
+            assert_eq!(String::from_utf8_lossy(&out.stdout), "true\n");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// The rest of the Dir capability — `exists`, `make_dir`, `list` (sorted) —
     /// confined like read/write, matching the interpreter.
     #[test]

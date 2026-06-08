@@ -411,8 +411,8 @@ impl<A: WShow, B: WShow, C: WShow, D: WShow> WShow for (A, B, C, D) {
 /// a Dir is rooted at the current directory `.`, matching the interpreter).
 fn capability_grant(ty: &Type) -> Option<&'static str> {
     match ty {
-        // Console and Env carry no data (their host fns reach ambient authority).
-        Type::Named(n, _) if n == "Console" || n == "Env" => Some("()"),
+        // Console/Env/Clock carry no data (their host fns reach ambient authority).
+        Type::Named(n, _) if n == "Console" || n == "Env" || n == "Clock" => Some("()"),
         Type::Named(n, _) if n == "Dir" => {
             USES_DIR.with(|f| f.set(true));
             Some("std::path::PathBuf::from(\".\")")
@@ -451,7 +451,8 @@ fn needs_clone_at_call(t: &Option<Type>) -> bool {
         Some(Type::Named(n, _)) => {
             !matches!(
                 n.as_str(),
-                "Int" | "Float" | "Bool" | "Duration" | "Console" | "Env" | "Socket" | "Listener"
+                "Int" | "Float" | "Bool" | "Duration" | "Console" | "Env" | "Clock" | "Socket"
+                    | "Listener"
             )
         }
         Some(Type::Tuple(_)) => true,
@@ -1629,6 +1630,9 @@ fn gen_call(name: &str, args: &[Expr]) -> Result<String, String> {
         // Int and Duration share the i64 representation, so the conversions are
         // the identity (matching the interpreter).
         "int_to_duration" | "duration_to_int" if args.len() == 1 => format!("({})", arg(0)?),
+        // Clock capability: `now(clock) -> Int`, milliseconds since the Unix
+        // epoch (the clock arg, a unit, is dropped — the authority was the cap).
+        "now" if args.len() == 1 => "std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)".to_string(),
         // `sqrt` is a primitive (it can't be written in witchy); f64 has it native,
         // matching the interpreter (`x.sqrt()`) and wasm (`f64.sqrt`).
         "sqrt" if args.len() == 1 => format!("({}).sqrt()", arg(0)?),
@@ -1788,9 +1792,9 @@ fn rust_ty(t: &Type) -> Option<String> {
             "Float" => Some("f64".into()),
             "Bool" => Some("bool".into()),
             "String" => Some("String".into()),
-            // Console/Env are no-op capability handles (a unit value passed
+            // Console/Env/Clock are no-op capability handles (a unit value passed
             // around); their host functions reach ambient authority.
-            "Console" | "Env" => Some("()".into()),
+            "Console" | "Env" | "Clock" => Some("()".into()),
             // A Dir capability is a confined directory root.
             "Dir" => {
                 USES_DIR.with(|f| f.set(true));
