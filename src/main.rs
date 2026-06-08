@@ -1533,6 +1533,30 @@ mod example_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// The capability-secure web framework (examples/serve_hello.witchy) compiles
+    /// natively: handlers are stored as `Rc<dyn Fn>` in a router and dispatched.
+    #[test]
+    fn native_backend_web_server_compiles() {
+        let rust = crate::emit_rust_file("examples/serve_hello.witchy").expect("transpile");
+        assert!(rust.contains("Rc<dyn Fn"), "expected handlers stored as Rc<dyn Fn>");
+        let pid = std::process::id();
+        let dir = std::env::temp_dir().join(format!("witchy_web_{pid}"));
+        let _ = std::fs::create_dir_all(&dir);
+        let rs = dir.join("prog.rs");
+        let bin = dir.join("prog_bin");
+        std::fs::write(&rs, &rust).unwrap();
+        if let Ok(st) = std::process::Command::new("rustc")
+            .args(["-O", "--edition", "2021"])
+            .arg(&rs)
+            .arg("-o")
+            .arg(&bin)
+            .status()
+        {
+            assert!(st.success(), "the web server should compile to a valid native binary");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Closures are `Rc<dyn Fn>`, so a closure can be reused — passed to several
     /// calls / applied repeatedly — without a move error (the refcount clones).
     #[test]

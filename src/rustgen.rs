@@ -1917,12 +1917,12 @@ fn gen_call(name: &str, args: &[Expr]) -> Result<String, String> {
         "split" if args.len() == 2 => format!(
             "{{ let __s = {}; let __sep = {}; if __sep.is_empty() {{ vec![__s] }} else {{ __s.split(__sep.as_str()).map(|p| p.to_string()).collect::<Vec<String>>() }} }}",
             clone_if_var(&args[0], arg(0)?),
-            arg(1)?
+            clone_if_var(&args[1], arg(1)?)
         ),
         "index_of" if args.len() == 2 => format!(
             "{{ let __s = {}; let __sub = {}; __s.find(__sub.as_str()).map(|b| __s[..b].chars().count() as i64).unwrap_or(-1) }}",
             clone_if_var(&args[0], arg(0)?),
-            arg(1)?
+            clone_if_var(&args[1], arg(1)?)
         ),
         "substring" if args.len() == 3 => format!(
             "{{ let __cs: Vec<char> = ({}).chars().collect(); let __lo = (({}).max(0) as usize).min(__cs.len()); let __hi = (({}).max(0) as usize).min(__cs.len()); if __lo < __hi {{ __cs[__lo..__hi].iter().collect::<String>() }} else {{ String::new() }} }}",
