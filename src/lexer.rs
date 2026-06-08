@@ -277,7 +277,16 @@ impl Lexer {
             // A string literal may expand into several tokens (interpolation),
             // so it pushes directly; everything else yields a single token.
             if c == '"' {
-                for kind in self.string()? {
+                for kind in self.string(false)? {
+                    out.push(Token { kind, line, col });
+                }
+                continue;
+            }
+            // `f"..."` is an f-string: `{expr}` interpolates (Python style),
+            // `{{`/`}}` are literal braces.
+            if c == 'f' && self.peek2() == Some('"') {
+                self.bump(); // consume the `f`
+                for kind in self.string(true)? {
                     out.push(Token { kind, line, col });
                 }
                 continue;
@@ -506,7 +515,7 @@ impl Lexer {
     /// `( lit0 <> to_string(expr0) <> lit1 <> ... )`, so the parser needs no
     /// special handling and interpolation works in both backends (`to_string` +
     /// concat). Write `\$` for a literal `$`.
-    fn string(&mut self) -> Result<Vec<Tok>, LexError> {
+    fn string(&mut self, fstring: bool) -> Result<Vec<Tok>, LexError> {
         self.bump(); // opening quote
         let mut text = String::new();
         let mut out: Vec<Tok> = Vec::new();
@@ -532,29 +541,25 @@ impl Lexer {
                         }
                     }
                 }
-                Some('$') if self.peek() == Some('{') => {
-                    self.bump(); // consume '{'
-                    // Close off the preceding literal segment.
-                    if interpolated {
-                        out.push(Tok::Concat);
+                // f-string: `{expr}` interpolates; `{{`/`}}` are literal braces.
+                Some('{') if fstring => {
+                    if self.peek() == Some('{') {
+                        self.bump();
+                        text.push('{');
                     } else {
-                        out.push(Tok::LParen);
-                        interpolated = true;
+                        self.emit_interpolation(&mut out, &mut text, &mut interpolated)?;
                     }
-                    out.push(Tok::Str(std::mem::take(&mut text)));
-                    // `<> to_string( <embedded expression> )`
-                    let src = self.interp_source()?;
-                    let expr_toks = Lexer::new(&src).tokenize()?;
-                    out.push(Tok::Concat);
-                    out.push(Tok::Ident("to_string".into()));
-                    out.push(Tok::LParen);
-                    for t in expr_toks {
-                        if t.kind == Tok::Eof {
-                            break;
-                        }
-                        out.push(t.kind);
+                }
+                Some('}') if fstring => {
+                    if self.peek() == Some('}') {
+                        self.bump();
                     }
-                    out.push(Tok::RParen);
+                    text.push('}');
+                }
+                // plain string: `${expr}` interpolates.
+                Some('$') if !fstring && self.peek() == Some('{') => {
+                    self.bump(); // consume '{'
+                    self.emit_interpolation(&mut out, &mut text, &mut interpolated)?;
                 }
                 Some(c) => text.push(c),
             }
@@ -567,6 +572,37 @@ impl Lexer {
         } else {
             Ok(vec![Tok::Str(text)])
         }
+    }
+
+    /// Emit one interpolation segment `<> to_string( <expr> )` (the opening brace
+    /// already consumed): close off the preceding literal, then read and tokenize
+    /// the embedded expression up to its matching `}`.
+    fn emit_interpolation(
+        &mut self,
+        out: &mut Vec<Tok>,
+        text: &mut String,
+        interpolated: &mut bool,
+    ) -> Result<(), LexError> {
+        if *interpolated {
+            out.push(Tok::Concat);
+        } else {
+            out.push(Tok::LParen);
+            *interpolated = true;
+        }
+        out.push(Tok::Str(std::mem::take(text)));
+        let src = self.interp_source()?;
+        let expr_toks = Lexer::new(&src).tokenize()?;
+        out.push(Tok::Concat);
+        out.push(Tok::Ident("to_string".into()));
+        out.push(Tok::LParen);
+        for t in expr_toks {
+            if t.kind == Tok::Eof {
+                break;
+            }
+            out.push(t.kind);
+        }
+        out.push(Tok::RParen);
+        Ok(())
     }
 
     /// Read the source of a `${ ... }` interpolation (the opening `${` already

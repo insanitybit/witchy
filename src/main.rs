@@ -1314,6 +1314,16 @@ mod example_tests {
         );
     }
 
+    /// Python-style f-strings: `f"...{expr}..."` interpolates (with `{{`/`}}` for
+    /// literal braces), desugaring to `to_string` + concat — same result on both
+    /// backends.
+    #[test]
+    fn f_strings_interpolate() {
+        let src = "fn main(console: Console):\n    let name = \"world\"\n    let n = 6\n    print(console, f\"hi {name} #{n * 7}\")\n    print(console, f\"{{braces}}\")\n";
+        assert_eq!(interp(src), vec!["hi world #42", "{braces}"]);
+        assert_eq!(run_on_wasm(src), vec!["hi world #42", "{braces}"]);
+    }
+
     /// `witchy emit-wat <file>` compiles a program to WebAssembly text — the same
     /// module `sandbox` runs — for inspecting the generated code.
     #[test]

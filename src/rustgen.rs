@@ -713,7 +713,7 @@ fn gen_call(name: &str, args: &[Expr]) -> Result<String, String> {
     Ok(match name {
         // `print(console, x)` — the console capability is dropped; print to stdout.
         "print" if args.len() == 2 => format!("println!(\"{{}}\", {})", arg(1)?),
-        "int_to_string" if args.len() == 1 => format!("({}).to_string()", arg(0)?),
+        "int_to_string" | "to_string" if args.len() == 1 => format!("({}).to_string()", arg(0)?),
         "string_to_int" if args.len() == 1 => {
             format!("({}).parse::<i64>().unwrap()", arg(0)?)
         }
