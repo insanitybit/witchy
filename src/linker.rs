@@ -219,6 +219,14 @@ pub fn link(mut modules: Vec<(String, Module)>, entry: &str) -> Result<Module, L
         .map(|(n, m)| (n, crate::generators::lower(m)))
         .collect();
 
+    // Lower named-field record construction (`Point(x: 1, ..p)`) to positional
+    // constructors / record updates, so later stages never see `Expr::Record`.
+    modules = modules
+        .into_iter()
+        .map(|(n, m)| crate::records::lower(m).map(|m| (n, m)))
+        .collect::<Result<_, _>>()
+        .map_err(|message| LinkError { message })?;
+
     // Pull in any imported standard-library module not already provided (the
     // std registry is a built-in search path), transitively — so a std module
     // can import another (e.g. `list` importing `option`) and callers need not
@@ -585,6 +593,14 @@ fn resolve_in_expr(
                 resolve_in_expr(v, sig, by_base, vars);
             }
         }
+        Expr::Record { fields, spread, .. } => {
+            for (_, v) in fields.iter_mut() {
+                resolve_in_expr(v, sig, by_base, vars);
+            }
+            if let Some(s) = spread {
+                resolve_in_expr(s, sig, by_base, vars);
+            }
+        }
         Expr::If { cond, then_block, else_block } => {
             resolve_in_expr(cond, sig, by_base, vars);
             resolve_in_block(then_block, sig, by_base, vars);
@@ -749,6 +765,14 @@ fn collect_bound_expr(e: &Expr, out: &mut HashSet<String>) {
                 collect_bound_expr(v, out);
             }
         }
+        Expr::Record { fields, spread, .. } => {
+            for (_, v) in fields {
+                collect_bound_expr(v, out);
+            }
+            if let Some(s) = spread {
+                collect_bound_expr(s, out);
+            }
+        }
         Expr::Var(_) | Expr::Int(_) | Expr::Duration(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) => {}
     }
 }
@@ -814,6 +838,14 @@ fn rewrite_expr(
             rewrite_expr(base, m, imps, fns, bound)?;
             for (_, value) in fields {
                 rewrite_expr(value, m, imps, fns, bound)?;
+            }
+        }
+        Expr::Record { fields, spread, .. } => {
+            for (_, value) in fields {
+                rewrite_expr(value, m, imps, fns, bound)?;
+            }
+            if let Some(s) = spread {
+                rewrite_expr(s, m, imps, fns, bound)?;
             }
         }
         Expr::Binary { lhs, rhs, .. } => {

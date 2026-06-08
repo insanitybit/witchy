@@ -26,6 +26,7 @@ mod lsp;
 mod native;
 mod parser;
 mod pm;
+mod records;
 mod runtime;
 mod traits;
 mod typeck;
@@ -1465,7 +1466,7 @@ type Point:
 
 fn main(console: Console):
     let p = Point(3, 4)
-    let q = update p: x = ((p).x + 10)
+    let q = Point(x: ((p).x + 10), ..p)
     print(console, int_to_string(((q).x * (q).y)))
 "#,
             ),
@@ -2177,9 +2178,9 @@ type Point:
 
 fn main(console: Console):
     let p = Point(1, 2)
-    let q = update p: x = ((p).x + 10)
+    let q = Point(x: ((p).x + 10), ..p)
     print(console, int_to_string(((q).x + (q).y)))
-    let r = update p: x = 5 y = 6
+    let r = Point(x: 5, y: 6, ..p)
     print(console, int_to_string(((r).x + (r).y)))
 "#;
         assert_eq!(interp(client), vec!["13", "11"]);
@@ -4712,7 +4713,7 @@ fn make(a: Int, b: Int) -> Point:
     Point(a, b)
 
 fn shift(p: Point, dx: Int) -> Point:
-    update p: x = ((p).x + dx)
+    Point(x: ((p).x + dx), ..p)
 
 fn main() -> Int:
     let p = make(3, 4)
@@ -6163,7 +6164,7 @@ fn main(console: Console):
     let l = Line(Point(1, 2), Point(3, 4))
     print(console, int_to_string(((l).from).x))
     print(console, int_to_string(((l).to).y))
-    let l2 = update l: from = Point(10, 20)
+    let l2 = Line(from: Point(10, 20), ..l)
     print(console, int_to_string(((l2).from).x))
     print(console, int_to_string(((l2).to).y))
     print(console, int_to_string(((l).from).x))
@@ -6503,14 +6504,14 @@ type Line:
 
 fn main(console: Console):
     let l = Line(Point(1, 2), Point(3, 4))
-    let p2 = update (l).from: x = 100
+    let p2 = Point(x: 100, ..(l).from)
     print(console, int_to_string((p2).x))
     print(console, int_to_string((p2).y))
     let cond = true
-    let p3 = update if cond: (l).from else: (l).to: y = 99
+    let p3 = Point(y: 99, ..(if cond: (l).from else: (l).to))
     print(console, int_to_string((p3).x))
     print(console, int_to_string((p3).y))
-    let l2 = update l: from = update (l).to: x = 7
+    let l2 = Line(from: Point(x: 7, ..(l).to), ..l)
     print(console, int_to_string(((l2).from).x))
     print(console, int_to_string(((l2).from).y))
 "#;
@@ -8712,7 +8713,7 @@ type Outer:
 fn main(console: Console):
     let o = Outer("x", Inner(42))
     print(console, int_to_string(((o).inner).v))
-    let o2 = update o: inner = Inner((((o).inner).v + 1))
+    let o2 = Outer(inner: Inner((((o).inner).v + 1)), ..o)
     print(console, int_to_string(((o2).inner).v))
     print(console, (o).name)
     print(console, int_to_string(((o).inner).v))

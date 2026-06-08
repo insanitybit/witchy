@@ -75,6 +75,14 @@ fn collect_names(e: &Expr, out: &mut Vec<String>) {
                 collect_names(v, out);
             }
         }
+        Expr::Record { fields, spread, .. } => {
+            for (_, v) in fields {
+                collect_names(v, out);
+            }
+            if let Some(s) = spread {
+                collect_names(s, out);
+            }
+        }
         Expr::Binary { lhs, rhs, .. } => {
             collect_names(lhs, out);
             collect_names(rhs, out);
@@ -334,6 +342,16 @@ fn subst_expr(
             let mut changed = subst_expr(base, consts, cnames, scope);
             for (_, v) in fields {
                 changed |= subst_expr(v, consts, cnames, scope);
+            }
+            changed
+        }
+        Expr::Record { fields, spread, .. } => {
+            let mut changed = false;
+            for (_, v) in fields {
+                changed |= subst_expr(v, consts, cnames, scope);
+            }
+            if let Some(s) = spread {
+                changed |= subst_expr(s, consts, cnames, scope);
             }
             changed
         }

@@ -629,6 +629,14 @@ fn expr(e: &Expr) -> String {
                 format!("{name}({})", comma(args))
             }
         }
+        Expr::Record { name, fields, spread } => {
+            let mut parts: Vec<String> =
+                fields.iter().map(|(f, v)| format!("{f}: {}", expr(v))).collect();
+            if let Some(s) = spread {
+                parts.push(format!("..{}", expr(s)));
+            }
+            format!("{name}({})", parts.join(", "))
+        }
         Expr::Apply { func, args } => {
             format!("{}({})", operand(func, POSTFIX_PREC, false), comma(args))
         }
@@ -990,6 +998,14 @@ fn strip_lines_expr(e: &mut Expr) {
             strip_lines_expr(base);
             for (_, v) in fields {
                 strip_lines_expr(v);
+            }
+        }
+        Expr::Record { fields, spread, .. } => {
+            for (_, v) in fields {
+                strip_lines_expr(v);
+            }
+            if let Some(s) = spread {
+                strip_lines_expr(s);
             }
         }
         Expr::If { cond, then_block, else_block } => {

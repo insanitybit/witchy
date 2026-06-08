@@ -1260,6 +1260,11 @@ impl Interpreter {
                 );
                 self.eval(&d, env)
             }
+            // Named-field record construction is lowered by `crate::records`
+            // before evaluation.
+            Expr::Record { .. } => {
+                unreachable!("Expr::Record is lowered by crate::records before the interpreter")
+            }
             // `while let` lowers to a `while true` over a match; evaluate that.
             Expr::WhileLet { pattern, scrutinee, body } => {
                 let d = crate::parser::desugar_while_let(
@@ -1760,8 +1765,10 @@ pub fn run_module_exit(
     args: Vec<String>,
     signing_key: Option<[u8; 32]>,
 ) -> Result<(Vec<String>, i32), RuntimeError> {
-    // Desugar traits/impls to ordinary functions (no-op for trait-free modules)
-    // so the interpreter, like codegen, only ever sees plain functions.
+    // Lower named-field record construction, then traits/impls — so the
+    // interpreter only ever sees plain constructors and functions. (Both are
+    // no-ops once the linker has done them, for the linked CLI path.)
+    let module = crate::records::lower(module).map_err(|message| RuntimeError { message })?;
     let module = crate::traits::lower(module);
     // Run the tree-walker on a thread with a large stack. The interpreter
     // recurses in Rust for nested calls, so deep (but bounded) recursion would
@@ -3173,7 +3180,7 @@ type Point:
 
 fn main(console: Console):
     let p = Point(1, 2)
-    let q = update p: x = 10 y = ((p).y + 1)
+    let q = Point(x: 10, y: ((p).y + 1), ..p)
     print(console, (int_to_string((p).x) <> int_to_string((p).y)))
     print(console, (int_to_string((q).x) <> int_to_string((q).y)))
 "#;

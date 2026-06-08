@@ -854,43 +854,6 @@ impl Parser {
                 let body = self.colon_or_block()?;
                 Ok(Expr::Lambda { params, body })
             }
-            Tok::Update => {
-                // A copy with overrides. Brace-free inline `update e: f = v g = w`
-                // (fields are `name = value`, whitespace-separated), the indented
-                // form `update e:` + `name = value` lines (via layout), or the
-                // legacy `update e { f: v, ... }` block.
-                self.advance();
-                let base = self.expr(0)?;
-                let mut fields = Vec::new();
-                if self.eat(&Tok::Colon) {
-                    while matches!(self.kind(), Tok::Ident(_))
-                        && matches!(
-                            self.toks.get(self.pos + 1).map(|t| &t.kind),
-                            Some(Tok::Eq)
-                        )
-                    {
-                        let name = self.ident()?;
-                        self.expect(&Tok::Eq)?;
-                        fields.push((name, self.expr(0)?));
-                    }
-                } else {
-                    self.expect(&Tok::LBrace)?;
-                    while !self.at(&Tok::RBrace) && !self.at(&Tok::Eof) {
-                        let name = self.ident()?;
-                        // Field separator is `=` (new) or `:` (legacy brace form).
-                        if !self.eat(&Tok::Eq) {
-                            self.expect(&Tok::Colon)?;
-                        }
-                        fields.push((name, self.expr(0)?));
-                        self.eat(&Tok::Comma);
-                    }
-                    self.expect(&Tok::RBrace)?;
-                }
-                Ok(Expr::RecordUpdate {
-                    base: Box::new(base),
-                    fields,
-                })
-            }
             Tok::Match => self.match_expr(),
             Tok::Spawn => {
                 self.advance();
@@ -912,6 +875,40 @@ impl Parser {
 
     /// Resolve a bare name into a variable, call, constructor, or a qualified
     /// call `module.func(args)`.
+    /// Whether the `(` ahead opens named-field record args — the first inner
+    /// token is `..` (spread) or an identifier immediately followed by `:`.
+    fn peek_named_record(&self) -> bool {
+        match self.toks.get(self.pos + 1).map(|t| &t.kind) {
+            Some(Tok::DotDot) => true,
+            Some(Tok::Ident(_)) => {
+                matches!(self.toks.get(self.pos + 2).map(|t| &t.kind), Some(Tok::Colon))
+            }
+            _ => false,
+        }
+    }
+
+    /// `Name(field: value, ..., ..base?)` — named-field construction, optionally
+    /// ending with a `..base` spread.
+    fn record_literal(&mut self, name: String) -> Result<Expr, ParseError> {
+        self.expect(&Tok::LParen)?;
+        let mut fields = Vec::new();
+        let mut spread = None;
+        while !self.at(&Tok::RParen) {
+            if self.eat(&Tok::DotDot) {
+                spread = Some(Box::new(self.expr(0)?));
+                break; // a spread is the last element
+            }
+            let field = self.ident()?;
+            self.expect(&Tok::Colon)?;
+            fields.push((field, self.expr(0)?));
+            if !self.eat(&Tok::Comma) {
+                break;
+            }
+        }
+        self.expect(&Tok::RParen)?;
+        Ok(Expr::Record { name, fields, spread })
+    }
+
     fn name_application(&mut self, name: String) -> Result<Expr, ParseError> {
         // Note: a trailing `.member` (module-qualified call or field access) is
         // handled by `postfix`, which wraps this.
@@ -923,6 +920,11 @@ impl Parser {
             && *self.kind() == Tok::LParen
             && self.cur().line > self.toks[self.pos.saturating_sub(1)].line;
         if self.at(&Tok::LParen) && !paren_starts_next_arm {
+            // `Point(x: 1, y: 2)` / `Point(x: 5, ..p)` — named-field record
+            // construction (only for constructors, i.e. uppercase names).
+            if is_ctor && self.peek_named_record() {
+                return self.record_literal(name);
+            }
             let args = self.call_args()?;
             if is_ctor {
                 Ok(Expr::Ctor { name, args })
@@ -1531,6 +1533,14 @@ fn lower_methods_expr(e: &mut Expr) {
                 lower_methods_expr(v);
             }
         }
+        Expr::Record { fields, spread, .. } => {
+            for (_, v) in fields {
+                lower_methods_expr(v);
+            }
+            if let Some(s) = spread {
+                lower_methods_expr(s);
+            }
+        }
         Expr::Binary { lhs, rhs, .. } => {
             lower_methods_expr(lhs);
             lower_methods_expr(rhs);
@@ -1688,6 +1698,14 @@ fn lower_sugar_expr(e: &mut Expr) {
             lower_sugar_expr(base);
             for (_, v) in fields {
                 lower_sugar_expr(v);
+            }
+        }
+        Expr::Record { fields, spread, .. } => {
+            for (_, v) in fields {
+                lower_sugar_expr(v);
+            }
+            if let Some(s) = spread {
+                lower_sugar_expr(s);
             }
         }
         Expr::Binary { lhs, rhs, .. } => {

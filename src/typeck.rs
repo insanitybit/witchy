@@ -1197,6 +1197,11 @@ impl Checker {
                 );
                 self.infer(&d)
             }
+            // Named-field record construction is lowered by `crate::records`
+            // before type-checking.
+            Expr::Record { .. } => {
+                unreachable!("Expr::Record is lowered by crate::records before typeck")
+            }
             // `while let` lowers to a `while true` over a match; type that.
             Expr::WhileLet { pattern, scrutinee, body } => {
                 let d = crate::parser::desugar_while_let(
@@ -1919,9 +1924,13 @@ pub fn check(module: &Module) -> Result<(), TypeError> {
     // mistaken for duplicates) and source lines are still available.
     check_unique_functions(module)?;
 
+    // Lower named-field record construction (a no-op once the linker has done so,
+    // but covers single-module paths like `check_str`).
+    let recs = crate::records::lower(module.clone()).map_err(|message| TypeError { message })?;
+
     // Trait/impl declarations are desugared to ordinary functions first, so the
     // checker only ever sees plain functions (a no-op for trait-free modules).
-    let lowered = crate::traits::lower(module.clone());
+    let lowered = crate::traits::lower(recs);
     let module = &lowered;
     let mut c = Checker {
         fn_sigs: HashMap::new(),
@@ -2491,7 +2500,7 @@ type Point:
     y: Int
 
 fn bump(p: Point) -> Point:
-    update p: x = ((p).x + 1)
+    Point(x: ((p).x + 1), ..p)
 "#;
         assert!(check_str(src).is_ok(), "{:?}", check_str(src));
     }
@@ -2504,7 +2513,7 @@ type Point:
     y: Int
 
 fn bad(p: Point) -> Point:
-    update p: x = "no"
+    Point(x: "no", ..p)
 "#;
         assert!(check_str(src).is_err());
     }
@@ -2517,9 +2526,26 @@ type Point:
     y: Int
 
 fn bad(p: Point) -> Point:
-    update p: z = 1
+    Point(z: 1, ..p)
 "#;
         assert!(check_str(src).is_err());
+    }
+
+    #[test]
+    fn named_field_record_construction() {
+        // Full named construction in any order is accepted (it lowers to the
+        // positional constructor); positional construction still works too.
+        let ok = "type Point:\n    x: Int\n    y: Int\nfn a() -> Point:\n    Point(y: 2, x: 1)\nfn b() -> Point:\n    Point(3, 4)\n";
+        assert!(check_str(ok).is_ok(), "{:?}", check_str(ok));
+        // A missing field (no spread to supply it) is rejected.
+        let miss = check_str("type Point:\n    x: Int\n    y: Int\nfn a() -> Point:\n    Point(x: 1)\n").unwrap_err();
+        assert!(miss.contains("missing field `y`"), "{miss}");
+        // An unknown field name is rejected.
+        let unknown = check_str("type Point:\n    x: Int\nfn a(p: Point) -> Point:\n    Point(nope: 1, ..p)\n").unwrap_err();
+        assert!(unknown.contains("no field `nope`"), "{unknown}");
+        // A name that isn't a record type is rejected.
+        let notrec = check_str("fn a() -> Int:\n    Nope(x: 1)\n").unwrap_err();
+        assert!(notrec.contains("not a record type"), "{notrec}");
     }
 
     #[test]

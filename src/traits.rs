@@ -315,6 +315,14 @@ impl Ctx<'_> {
                     self.rewrite_expr(v, scope);
                 }
             }
+            Expr::Record { fields, spread, .. } => {
+                for (_, v) in fields.iter_mut() {
+                    self.rewrite_expr(v, scope);
+                }
+                if let Some(s) = spread {
+                    self.rewrite_expr(s, scope);
+                }
+            }
             Expr::Binary { lhs, rhs, .. } => {
                 self.rewrite_expr(lhs, scope);
                 self.rewrite_expr(rhs, scope);
@@ -741,6 +749,14 @@ impl Mono<'_> {
                 self.walk_expr(base, scope);
                 for (_, v) in fields.iter_mut() {
                     self.walk_expr(v, scope);
+                }
+            }
+            Expr::Record { fields, spread, .. } => {
+                for (_, v) in fields.iter_mut() {
+                    self.walk_expr(v, scope);
+                }
+                if let Some(s) = spread {
+                    self.walk_expr(s, scope);
                 }
             }
             Expr::Binary { lhs, rhs, .. } => {

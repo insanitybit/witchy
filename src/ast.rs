@@ -235,11 +235,22 @@ pub enum Expr {
     /// An anonymous function (closure): `fn(x: Int) { x + 1 }`. Captures the
     /// environment it is created in.
     Lambda { params: Vec<Param>, body: Block },
-    /// Record update: `update p { x: 5 }` — a new record like `p` with the named
-    /// fields replaced. `p` is not mutated.
+    /// Record update: a new record like `p` with the named fields replaced. `p`
+    /// is not mutated. Produced by lowering an `Expr::Record` whose `spread` is
+    /// set (`Point(x: 5, ..p)`); no longer has surface syntax of its own.
     RecordUpdate {
         base: Box<Expr>,
         fields: Vec<(String, Expr)>,
+    },
+    /// Named-field record construction: `Point(x: 1, y: 2)`, optionally with a
+    /// spread base `Point(x: 5, ..p)` (fields not named come from `p`). Kept as a
+    /// node so the formatter can print it; `crate::records` lowers it to a
+    /// positional `Ctor` (no spread) or a `RecordUpdate` (spread) using the
+    /// type's declared field order, so later stages never see it.
+    Record {
+        name: String,
+        fields: Vec<(String, Expr)>,
+        spread: Option<Box<Expr>>,
     },
     /// `e?` — propagate a `Result`/`Option`: unwrap `Ok`/`Some` to its payload,
     /// or short-circuit, returning the `Err`/`None` from the enclosing function.

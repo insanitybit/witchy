@@ -10,10 +10,10 @@ type Point:
 fn dist_squared(p: Point) -> Int:
     p.x * p.x + p.y * p.y
 
-// `update` also compiles: a new heap record is built, copying the base's slots
-// and substituting the overrides.
+// A spread `Point(x: …, ..p)` also compiles: a new heap record is built, copying
+// the base `p`'s slots and substituting the named overrides.
 fn shift_x(p: Point, dx: Int) -> Point:
-    update p: x = p.x + dx
+    Point(x: p.x + dx, ..p)
 
 fn main(console: Console):
     let p = Point(3, 4)

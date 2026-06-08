@@ -281,6 +281,14 @@ fn resolve_in_expr(e: &mut Expr, map: &HashMap<String, Type>) {
                 resolve_in_expr(v, map);
             }
         }
+        Expr::Record { fields, spread, .. } => {
+            for (_, v) in fields {
+                resolve_in_expr(v, map);
+            }
+            if let Some(s) = spread {
+                resolve_in_expr(s, map);
+            }
+        }
         Expr::Binary { lhs, rhs, .. } => {
             resolve_in_expr(lhs, map);
             resolve_in_expr(rhs, map);

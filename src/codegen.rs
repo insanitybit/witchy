@@ -1283,7 +1283,7 @@ impl Codegen {
 
     fn compile_expr(&mut self, expr: &Expr) -> Result<String, CodegenError> {
         match expr {
-            Expr::Range { .. } | Expr::Index { .. } | Expr::WhileLet { .. } | Expr::MethodCall { .. } => {
+            Expr::Range { .. } | Expr::Index { .. } | Expr::WhileLet { .. } | Expr::MethodCall { .. } | Expr::Record { .. } => {
                 unreachable!("range/index sugar is lowered before codegen (parser::lower_sugar_module)")
             }
             Expr::Int(n) | Expr::Duration(n) => Ok(format!("    i64.const {n}\n")),
@@ -2599,7 +2599,7 @@ fn collect_fn_refs_block(b: &Block, out: &mut HashSet<String>) {
 
 fn collect_fn_refs_expr(e: &Expr, out: &mut HashSet<String>) {
     match e {
-        Expr::Range { .. } | Expr::Index { .. } | Expr::WhileLet { .. } | Expr::MethodCall { .. } => {
+        Expr::Range { .. } | Expr::Index { .. } | Expr::WhileLet { .. } | Expr::MethodCall { .. } | Expr::Record { .. } => {
             unreachable!("range/index sugar is lowered before codegen (parser::lower_sugar_module)")
         }
         Expr::Call { name, args } => {
@@ -2703,7 +2703,9 @@ pub fn compile_module(module: &Module) -> Result<String, CodegenError> {
     // so codegen, like the interpreter, only ever sees plain functions. Then
     // lower ranges to their list-building blocks once, so the local-collection
     // and emission passes below agree on the synthetic loop-variable names.
-    let mut lowered = crate::traits::lower(module.clone());
+    let recs = crate::records::lower(module.clone())
+        .map_err(|message| CodegenError { message })?;
+    let mut lowered = crate::traits::lower(recs);
     crate::parser::lower_sugar_module(&mut lowered);
     let module = &lowered;
     let mut cg = Codegen::new();
@@ -3927,7 +3929,7 @@ fn fv_block(block: &Block, s: &mut LambdaScan) {
 
 fn fv_expr(e: &Expr, s: &mut LambdaScan) {
     match e {
-        Expr::Range { .. } | Expr::Index { .. } | Expr::WhileLet { .. } | Expr::MethodCall { .. } => {
+        Expr::Range { .. } | Expr::Index { .. } | Expr::WhileLet { .. } | Expr::MethodCall { .. } | Expr::Record { .. } => {
             unreachable!("range/index sugar is lowered before codegen (parser::lower_sugar_module)")
         }
         Expr::Var(n) => {
@@ -4039,7 +4041,7 @@ fn collect_let_names(block: &Block, out: &mut Vec<String>) {
 
 fn collect_let_names_expr(expr: &Expr, out: &mut Vec<String>) {
     match expr {
-        Expr::Range { .. } | Expr::Index { .. } | Expr::WhileLet { .. } | Expr::MethodCall { .. } => {
+        Expr::Range { .. } | Expr::Index { .. } | Expr::WhileLet { .. } | Expr::MethodCall { .. } | Expr::Record { .. } => {
             unreachable!("range/index sugar is lowered before codegen (parser::lower_sugar_module)")
         }
         Expr::If {
@@ -4212,7 +4214,7 @@ impl Renamer {
 
     fn rename_expr(&mut self, e: &mut Expr) {
         match e {
-            Expr::Range { .. } | Expr::Index { .. } | Expr::WhileLet { .. } | Expr::MethodCall { .. } => {
+            Expr::Range { .. } | Expr::Index { .. } | Expr::WhileLet { .. } | Expr::MethodCall { .. } | Expr::Record { .. } => {
                 unreachable!("range/index sugar is lowered before codegen (parser::lower_sugar_module)")
             }
             Expr::Var(n) => *n = self.resolve(n),

@@ -1,19 +1,21 @@
-// `update r: field = value` makes a new record like `r` with some fields
-// replaced — it never mutates `r` (records are immutable values). Field values
-// can reference the original record.
+// Named-field construction and the spread `..base`. `Account(name: "x", ..a)`
+// makes a new record like `a` with some fields replaced — it never mutates `a`
+// (records are immutable values), and the field values can reference `a`.
+// Fields may be given in any order, and a bare `Account(name: …, balance: …)`
+// (no spread) constructs from scratch.
 
 type Account:
     name: String
     balance: Int
 
 fn deposit(a: Account, amount: Int) -> Account:
-    update a: balance = a.balance + amount
+    Account(balance: a.balance + amount, ..a)
 
 fn rename(a: Account, name: String) -> Account:
-    update a: name = name
+    Account(name: name, ..a)
 
 fn main(console: Console):
-    let acc = Account("alice", 100)
+    let acc = Account(name: "alice", balance: 100)
     let acc2 = deposit(acc, 50)
     let acc3 = rename(acc2, "alice smith")
 
