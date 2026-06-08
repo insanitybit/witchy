@@ -1533,6 +1533,37 @@ mod example_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A `match` scrutinee reused in an arm body (after the match destructures it)
+    /// is cloned, so the original stays usable — value semantics (closes bst).
+    #[test]
+    fn native_backend_match_scrutinee_reuse() {
+        let pid = std::process::id();
+        let dir = std::env::temp_dir().join(format!("witchy_scr_{pid}"));
+        let _ = std::fs::create_dir_all(&dir);
+        let src = dir.join("prog.witchy");
+        std::fs::write(
+            &src,
+            "type Tree:\n    Leaf\n    Node(Tree, Int, Tree)\n\nfn count(t: Tree) -> Int:\n    match t:\n        Leaf -> 1\n        Node(l, v, r) -> 1 + count(l) + count(r)\n\nfn root_plus_count(t: Tree) -> Int:\n    match t:\n        Leaf -> 0\n        Node(l, v, r) -> v + count(t)\n\nfn main(console: Console):\n    let t = Node(Node(Leaf, 1, Leaf), 5, Node(Leaf, 2, Leaf))\n    print(console, int_to_string(root_plus_count(t)))\n",
+        )
+        .expect("write src");
+        let rust = crate::emit_rust_file(src.to_str().unwrap()).expect("transpile");
+        let rs = dir.join("prog.rs");
+        let bin = dir.join("prog_bin");
+        std::fs::write(&rs, &rust).unwrap();
+        if let Ok(st) = std::process::Command::new("rustc")
+            .args(["-O", "--edition", "2021"])
+            .arg(&rs)
+            .arg("-o")
+            .arg(&bin)
+            .status()
+        {
+            assert!(st.success(), "rustc should compile the scrutinee-reuse program");
+            let out = std::process::Command::new(&bin).output().expect("run");
+            assert_eq!(String::from_utf8_lossy(&out.stdout), "12\n");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// The capability-secure web framework (examples/serve_hello.witchy) compiles
     /// natively: handlers are stored as `Rc<dyn Fn>` in a router and dispatched.
     #[test]

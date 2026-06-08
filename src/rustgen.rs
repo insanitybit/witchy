@@ -1547,7 +1547,10 @@ fn gen_expr(e: &Expr, value: bool) -> Result<String, String> {
             return gen_str_match(gen_value(scrutinee)?, arms, value);
         }
         Expr::Match { scrutinee, arms } => {
-            let mut out = format!("match {} {{\n", gen_expr(scrutinee, true)?);
+            // The scrutinee goes through `gen_value`: a variable reused in an arm
+            // body is cloned (so destructuring it — moving boxed fields out —
+            // leaves the original usable), while a last-use scrutinee is moved.
+            let mut out = format!("match {} {{\n", gen_value(scrutinee)?);
             for arm in arms {
                 let guard = match &arm.guard {
                     Some(g) => format!(" if {}", gen_expr(g, true)?),
