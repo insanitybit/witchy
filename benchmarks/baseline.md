@@ -1,15 +1,15 @@
 # witchy performance baseline
 
-Wall-clock mean (ms) per run, lower is better. witchy-wasm is the
-compiled backend (WAT -> wasmtime), measured end-to-end. Cranelift
-compilation is cached on disk across runs, so a warm run (what the
-harness measures) pays only the frontend + execution, like Go's
-prebuilt binary. `vs go` is witchy-wasm / go (lower is better; < 1.00
-means witchy beats Go). Regenerate with `./run.sh`.
+Wall-clock mean (ms) per run, lower is better. **witchy-native** is the
+native backend (witchy -> Rust -> rustc/LLVM); **witchy-wasm** is the
+compiled backend (WAT -> wasmtime, with an on-disk compile cache). Both
+are measured as prebuilt binaries, like Go. The `vs go` columns are
+witchy / go (lower is better; **< 1.00 means witchy beats Go**).
+Regenerate with `./run.sh`.
 
-| benchmark | witchy-wasm (ms) | go (ms) | vs go |
-|-----------|-----------------:|--------:|------:|
-| fib | 58.7 | 49.5 | 1.19x |
-| loop_sum | 38.2 | 34.8 | 1.10x |
-| collatz | 213.6 | 171.9 | 1.24x |
-| mandelbrot | 53.1 | 47.2 | 1.12x |
+| benchmark | witchy-native (ms) | witchy-wasm (ms) | go (ms) | native vs go | wasm vs go |
+|-----------|-------------------:|-----------------:|--------:|-------------:|-----------:|
+| fib | 22.9 | 50.8 | 29.5 | 0.78x | 1.72x |
+| loop_sum | 7.6 | 42.8 | 37.8 | 0.20x | 1.13x |
+| collatz | 120.7 | 217.3 | 172.0 | 0.70x | 1.26x |
+| mandelbrot | 48.0 | 53.2 | 62.4 | 0.77x | 0.85x |

@@ -28,6 +28,7 @@ mod parser;
 mod pm;
 mod records;
 mod runtime;
+mod rustgen;
 mod traits;
 mod typeck;
 
@@ -115,7 +116,9 @@ USAGE:
     witchy check    <file.witchy>                 type-check without running
     witchy parity   <file.witchy>                 run on both backends, confirm identical output
     witchy sandbox  <file.witchy>                 compile and run in a VM granted exactly its footprint
+    witchy native [-o out] <file.witchy>          compile to a native binary via rustc/LLVM, then run it
     witchy emit-wat <file.witchy>                 print the compiled WebAssembly text (the module sandbox runs)
+    witchy emit-rust <file.witchy>                print the native (Rust) transpilation
     witchy caps     <file.witchy>                 report the capability footprint
     witchy caps-diff <old.witchy> <new.witchy>    fail if the footprint widened
     witchy fmt [--check] <file.witchy>            reformat in place (--check: verify only, exit 1 if not)
@@ -222,6 +225,43 @@ fn main() -> wasmtime::Result<()> {
         };
         match emit_wat_file(&path) {
             Ok(wat) => print!("{wat}"),
+            Err(e) => {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
+        }
+        return Ok(());
+    }
+    // `witchy emit-rust <file>` prints the native (Rust) transpilation.
+    if std::env::args().nth(1).as_deref() == Some("emit-rust") {
+        let Some(path) = std::env::args().nth(2) else {
+            eprintln!("usage: witchy emit-rust <file.witchy>");
+            std::process::exit(1);
+        };
+        match emit_rust_file(&path) {
+            Ok(src) => print!("{src}"),
+            Err(e) => {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
+        }
+        return Ok(());
+    }
+    // `witchy native [-o out] <file>` compiles a program to a native binary via
+    // rustc/LLVM and runs it (or, with `-o`, just writes the binary).
+    if std::env::args().nth(1).as_deref() == Some("native") {
+        let args: Vec<String> = std::env::args().skip(2).collect();
+        let (out, path) = match args.as_slice() {
+            [o, out, path] if o == "-o" => (Some(out.clone()), Some(path.clone())),
+            [path] => (None, Some(path.clone())),
+            _ => (None, None),
+        };
+        let Some(path) = path else {
+            eprintln!("usage: witchy native [-o <out>] <file.witchy>");
+            std::process::exit(1);
+        };
+        match build_native(&path, out.as_deref()) {
+            Ok(()) => {}
             Err(e) => {
                 eprintln!("{e}");
                 std::process::exit(1);
@@ -850,6 +890,53 @@ fn emit_wat_file(path: &str) -> Result<String, String> {
         .map_err(|e| format!("cannot compile to WASM (an interpreter-only feature?): {e}"))
 }
 
+/// Transpile a program to native Rust source (the input to the native backend).
+fn emit_rust_file(path: &str) -> Result<String, String> {
+    let (linked, _stem) = link_file(path)?;
+    typeck::check(&linked).map_err(|e| e.to_string())?;
+    rustgen::transpile_module(&linked)
+}
+
+/// Compile a program to a native binary via rustc/LLVM. With `out`, the binary
+/// is written there; otherwise it's built to a temp path and run immediately.
+fn build_native(path: &str, out: Option<&str>) -> Result<(), String> {
+    let src = emit_rust_file(path)?;
+    let stem = std::path::Path::new(path)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("prog");
+    let tmp = std::env::temp_dir().join(format!("witchy_native_{}_{stem}", std::process::id()));
+    let rs = tmp.with_extension("rs");
+    std::fs::write(&rs, &src).map_err(|e| format!("cannot write `{}`: {e}", rs.display()))?;
+    let bin = match out {
+        Some(o) => std::path::PathBuf::from(o),
+        None => tmp.clone(),
+    };
+    // -O is LLVM's optimizer; overflow-checks off matches the wasm backend's
+    // wrapping i64 arithmetic (and avoids debug-mode overflow panics).
+    let status = std::process::Command::new("rustc")
+        .args(["-O", "-C", "overflow-checks=off", "--edition", "2021"])
+        .arg(&rs)
+        .arg("-o")
+        .arg(&bin)
+        .status()
+        .map_err(|e| format!("cannot run rustc (is it installed?): {e}"))?;
+    let _ = std::fs::remove_file(&rs);
+    if !status.success() {
+        return Err("native backend: rustc failed to compile the generated Rust".into());
+    }
+    if out.is_none() {
+        let run = std::process::Command::new(&bin)
+            .status()
+            .map_err(|e| format!("cannot run native binary: {e}"))?;
+        let _ = std::fs::remove_file(&bin);
+        if !run.success() {
+            std::process::exit(run.code().unwrap_or(1));
+        }
+    }
+    Ok(())
+}
+
 fn run_file_sandboxed(path: &str) -> Result<Vec<String>, String> {
     let (linked, _stem) = link_file(path)?;
     typeck::check(&linked).map_err(|e| e.to_string())?;
@@ -1242,6 +1329,41 @@ mod example_tests {
         assert!(wat.starts_with("(module"), "expected a wasm module, got: {}", &wat[..wat.len().min(40)]);
         // The fib function is emitted, module-qualified by the file stem.
         assert!(wat.contains(".fib (param $n i64)"), "expected the fib function in the WAT");
+    }
+
+    /// The native backend transpiles the compute subset to Rust; transpile a
+    /// recursive-fib program and (when rustc is available) compile + run it,
+    /// confirming the native binary matches the interpreter (fib(20) = 6765).
+    #[test]
+    fn native_backend_transpiles_and_runs() {
+        let pid = std::process::id();
+        let src_path = std::env::temp_dir().join(format!("witchy_native_{pid}.witchy"));
+        std::fs::write(
+            &src_path,
+            "fn fib(n: Int) -> Int:\n    if n < 2:\n        n\n    else:\n        fib(n - 1) + fib(n - 2)\nfn main(console: Console):\n    print(console, int_to_string(fib(20)))\n",
+        )
+        .expect("write source");
+        let rust = crate::emit_rust_file(src_path.to_str().unwrap()).expect("transpile");
+        let _ = std::fs::remove_file(&src_path);
+        assert!(rust.contains("fn main()"), "expected a native main");
+        assert!(rust.contains("(n: i64) -> i64"), "expected i64 typing of fib");
+        // Full path: compile the generated Rust with rustc and run it.
+        let rs = std::env::temp_dir().join(format!("witchy_native_{pid}.rs"));
+        let bin = std::env::temp_dir().join(format!("witchy_native_{pid}_bin"));
+        std::fs::write(&rs, &rust).expect("write rust");
+        let compiled = std::process::Command::new("rustc")
+            .args(["-O", "--edition", "2021"])
+            .arg(&rs)
+            .arg("-o")
+            .arg(&bin)
+            .status();
+        if let Ok(s) = compiled {
+            assert!(s.success(), "rustc should compile the generated Rust");
+            let out = std::process::Command::new(&bin).output().expect("run native");
+            assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "6765");
+            let _ = std::fs::remove_file(&bin);
+        }
+        let _ = std::fs::remove_file(&rs);
     }
 
     /// `for x in a..b` is a counting loop on both backends — never a materialized

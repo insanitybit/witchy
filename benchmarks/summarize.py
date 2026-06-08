@@ -19,38 +19,33 @@ def main(benches):
                 data = json.load(f)["results"]
         except FileNotFoundError:
             continue
-        # hyperfine records results in run.sh's command order: wasm, go, [interp].
+        # hyperfine records results in run.sh's order: native, wasm, go, [interp].
         means = [r["mean"] for r in data]
-        labels = ["witchy-wasm", "go", "witchy-interp"][: len(means)]
+        labels = ["witchy-native", "witchy-wasm", "go", "witchy-interp"][: len(means)]
         d = dict(zip(labels, means))
         rows.append((b, d))
 
     lines = []
     lines.append("# witchy performance baseline")
     lines.append("")
-    lines.append("Wall-clock mean (ms) per run, lower is better. witchy-wasm is the")
-    lines.append("compiled backend (WAT -> wasmtime), measured end-to-end. Cranelift")
-    lines.append("compilation is cached on disk across runs, so a warm run (what the")
-    lines.append("harness measures) pays only the frontend + execution, like Go's")
-    lines.append("prebuilt binary. `vs go` is witchy-wasm / go (lower is better; < 1.00")
-    lines.append("means witchy beats Go). Regenerate with `./run.sh`.")
+    lines.append("Wall-clock mean (ms) per run, lower is better. **witchy-native** is the")
+    lines.append("native backend (witchy -> Rust -> rustc/LLVM); **witchy-wasm** is the")
+    lines.append("compiled backend (WAT -> wasmtime, with an on-disk compile cache). Both")
+    lines.append("are measured as prebuilt binaries, like Go. The `vs go` columns are")
+    lines.append("witchy / go (lower is better; **< 1.00 means witchy beats Go**).")
+    lines.append("Regenerate with `./run.sh`.")
     lines.append("")
-    has_interp = any("witchy-interp" in d for _, d in rows)
-    if has_interp:
-        lines.append("| benchmark | witchy-wasm (ms) | go (ms) | witchy-interp (ms) | vs go |")
-        lines.append("|-----------|-----------------:|--------:|-------------------:|------:|")
-    else:
-        lines.append("| benchmark | witchy-wasm (ms) | go (ms) | vs go |")
-        lines.append("|-----------|-----------------:|--------:|------:|")
+    lines.append("| benchmark | witchy-native (ms) | witchy-wasm (ms) | go (ms) | native vs go | wasm vs go |")
+    lines.append("|-----------|-------------------:|-----------------:|--------:|-------------:|-----------:|")
     for b, d in rows:
+        native = d.get("witchy-native", float("nan")) * 1000
         wasm = d.get("witchy-wasm", float("nan")) * 1000
         go = d.get("go", float("nan")) * 1000
-        ratio = wasm / go if go else float("nan")
-        if has_interp:
-            interp = d.get("witchy-interp", float("nan")) * 1000
-            lines.append(f"| {b} | {wasm:.1f} | {go:.1f} | {interp:.1f} | {ratio:.2f}x |")
-        else:
-            lines.append(f"| {b} | {wasm:.1f} | {go:.1f} | {ratio:.2f}x |")
+        nratio = native / go if go else float("nan")
+        wratio = wasm / go if go else float("nan")
+        lines.append(
+            f"| {b} | {native:.1f} | {wasm:.1f} | {go:.1f} | {nratio:.2f}x | {wratio:.2f}x |"
+        )
     out = "\n".join(lines) + "\n"
     with open("baseline.md", "w") as f:
         f.write(out)
