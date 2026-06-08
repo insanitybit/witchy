@@ -2206,11 +2206,11 @@ fn gen_call(name: &str, args: &[Expr]) -> Result<String, String> {
         // trailing newline to match the interpreter/wasm host (each print is one
         // line; a trailing `\n` in the value is the terminator, not a blank line).
         "print" if args.len() == 2 => {
-            USES_SHOW.with(|f| f.set(true));
-            format!(
-                "println!(\"{{}}\", ({}).w_show().trim_end_matches('\\n'))",
-                arg(1)?
-            )
+            // print's argument is always String-typed (the type checker requires
+            // `String`), so format it directly — `trim_end_matches` borrows it (no
+            // clone, unlike the old `w_show()`), stripping a host-style trailing
+            // newline so each print is one line (matching interp/wasm).
+            format!("println!(\"{{}}\", ({}).trim_end_matches('\\n'))", arg(1)?)
         }
         "int_to_string" if args.len() == 1 => format!("({}).to_string()", arg(0)?),
         // Generic `to_string` (what f-strings desugar to) shows any value exactly

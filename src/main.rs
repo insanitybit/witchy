@@ -2708,7 +2708,9 @@ mod example_tests {
         .expect("write src");
         let rust = crate::emit_rust_file(src.to_str().unwrap()).expect("transpile");
         assert!(rust.contains("trait WShow"), "expected the WShow formatter");
-        assert!(rust.contains(".w_show()"), "expected w_show calls");
+        // Interpolated values format directly through WDisplay (writing into the
+        // result buffer), not via an intermediate w_show() String.
+        assert!(rust.contains("WDisplay(&"), "expected the WDisplay formatter path");
         let rs = dir.join("prog.rs");
         let bin = dir.join("prog_bin");
         std::fs::write(&rs, &rust).unwrap();
