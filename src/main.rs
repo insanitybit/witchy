@@ -4444,6 +4444,26 @@ fn yn(b: Bool) -> String:
         assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
     }
 
+    /// Dict `update` (single-lookup upsert) must agree on both backends, including
+    /// nested updates and a big-`Int` value. WASM lowers it to a `$dict_update`
+    /// helper that reads the current value (or default), applies the closure via
+    /// `call_indirect`, and reinserts — equivalent to the interpreter's
+    /// `insert(d, k, f(get_or(d, k, default)))`. (Regression for the
+    /// interpreter-only dict-upsert gap.)
+    #[test]
+    fn dict_update_upsert_agrees_on_both_backends() {
+        let src = "fn main(console: Console):\n    let d = insert(insert(dict_new(), \"a\", 1), \"b\", 2)\n    let d2 = update(d, \"a\", 0, fn(x: Int): x + 10)\n    let d3 = update(d2, \"c\", 100, fn(x: Int): x + 1)\n    print(console, int_to_string(get_or(d3, \"a\", -1)))\n    print(console, int_to_string(get_or(d3, \"b\", -1)))\n    print(console, int_to_string(get_or(d3, \"c\", -1)))\n    print(console, int_to_string(size(d3)))\n    let counts = update(update(dict_new(), \"hit\", 0, fn(n: Int): n + 1), \"hit\", 0, fn(n: Int): n + 1)\n    print(console, int_to_string(get_or(counts, \"hit\", -1)))\n";
+        let want = vec![
+            "11".to_string(),
+            "2".to_string(),
+            "101".to_string(),
+            "3".to_string(),
+            "2".to_string(),
+        ];
+        assert_eq!(interp(src), want.clone(), "interpreter");
+        assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
+    }
+
     /// `to_string` on a `Float` must produce the same text on both backends.
     /// WASM has no float formatter in hand-written WAT, so codegen calls a
     /// `float_to_str` host import that formats with Rust `Display` — byte-for-byte

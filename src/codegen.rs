@@ -366,6 +366,9 @@ struct Codegen {
     /// `$dict_pairs`) are needed. These don't compare keys, so they need neither
     /// `$key_eq` nor `$str_eq`.
     uses_dict_iter: bool,
+    /// Whether the `$dict_update` upsert helper is needed (also implies
+    /// `uses_dict`, since it calls `$dict_get_or` + `$dict_insert`).
+    uses_dict_update: bool,
     /// Record type name -> ordered fields as `(name, named-type)`, where the
     /// second is the field's type name when it is a `Named` type (so nested
     /// records can be chained, `a.b.c`). For compiling `value.field`.
@@ -534,6 +537,7 @@ impl Codegen {
             uses_crypto_ed25519_verify: false,
             uses_crypto_sha256: false,
             uses_float_to_str: false,
+            uses_dict_update: false,
             uses_ends_with: false,
             uses_split: false,
             uses_str_chars: false,
@@ -1581,6 +1585,11 @@ impl Codegen {
             s.push_str(DICT_GET_OR_WAT);
             s.push_str(DICT_HAS_WAT);
             s.push_str(DICT_REMOVE_WAT);
+        }
+        // `$dict_update` calls `$dict_get_or` + `$dict_insert` (emitted above via
+        // `uses_dict`, which the update call site forces on) and the closure ABI.
+        if self.uses_dict_update {
+            s.push_str(DICT_UPDATE_WAT);
         }
         if self.uses_dict_iter {
             s.push_str(DICT_KEYS_WAT);
@@ -3022,13 +3031,31 @@ impl Codegen {
                     to_slot(kk)
                 ))
             }
-            // The single-lookup upsert applies a closure between a dict read and
-            // write; that mid-op closure call isn't lowered to WASM yet. The
-            // interpreter and native backends support it (native fuses it to one
-            // hash). An honest, clear limitation — never a silent divergence.
-            ("update", 4) => cerr(
-                "`update` (dict upsert) is not compiled to WASM yet; it runs on the interpreter and the native backend",
-            ),
+            // The single-lookup upsert: read the current value (or `default` when
+            // absent), apply the updater closure, and reinsert. The `$dict_update`
+            // helper takes all four pieces (each evaluated once at the call site)
+            // and runs the read + `call_indirect` + write in its own frame, so the
+            // mid-op closure call composes with the existing closure ABI. Matches
+            // the interpreter's `insert(d, k, f(get_or(d, k, default)))` exactly.
+            ("update", 4) => {
+                let mode = self.dict_key_mode(&args[1])?;
+                self.uses_dict = true;
+                self.uses_str_eq = true; // `$key_eq` references `$str_eq`
+                self.uses_dict_update = true;
+                self.clos_arities.insert(1); // `$clos1` type + the function table
+                let kk = self.kind_of(&args[1]);
+                let dk = self.kind_of(&args[2]);
+                let d = self.compile_expr(&args[0])?;
+                let k = self.compile_expr(&args[1])?;
+                let default = self.compile_expr(&args[2])?;
+                let f = self.compile_expr(&args[3])?;
+                // Stack: dict, key slot, default slot, mode, closure ptr.
+                Ok(format!(
+                    "{d}{k}{}{default}{}    i32.const {mode}\n{f}    call $dict_update\n",
+                    to_slot(kk),
+                    to_slot(dk),
+                ))
+            }
             // remove(dict, k): a fresh map with `k` (and its value) dropped.
             ("remove", 2) => {
                 let mode = self.dict_key_mode(&args[1])?;
@@ -4292,6 +4319,22 @@ const DICT_REMOVE_WAT: &str = r#"  (func $dict_remove (param $d i32) (param $k i
     (i32.store (local.get $new) (local.get $n))
     (global.set $heap (i32.add (i32.add (local.get $new) (i32.const 4)) (i32.mul (local.get $n) (i32.const 16))))
     (local.get $new))
+"#;
+
+// update(d, k, default, f): the upsert. Read the current value (or `default` if
+// `k` is absent) as a universal i64 slot, apply the updater closure `f` to it
+// (env = the closure pointer, code index = its first word), then reinsert under
+// `k`. Equivalent to `insert(d, k, f(get_or(d, k, default)))`, but the closure
+// call lives in this helper's own frame so call-site arg evaluation stays
+// single-shot and nests cleanly.
+const DICT_UPDATE_WAT: &str = r#"  (func $dict_update (param $d i32) (param $k i64) (param $default i64) (param $mode i32) (param $clos i32) (result i32)
+    (local $new i64)
+    (local.set $new
+      (call_indirect (type $clos1)
+        (local.get $clos)
+        (call $dict_get_or (local.get $d) (local.get $k) (local.get $default) (local.get $mode))
+        (i32.load (local.get $clos))))
+    (call $dict_insert (local.get $d) (local.get $k) (local.get $new) (local.get $mode)))
 "#;
 
 // keys(d) / values(d): a fresh List (8-byte i64 slots) of the keys (or values),
