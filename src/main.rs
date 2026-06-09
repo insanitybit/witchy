@@ -896,19 +896,35 @@ fn verify_file(path: &str) -> Result<(), String> {
     // Compile first (borrows `linked`), then run the interpreter (consumes it).
     let wat = codegen::compile_module(&linked)
         .map_err(|e| format!("cannot compile to WASM (an interpreter-only feature?): {e}"))?;
-    let interp =
-        interpreter::run_module(linked, Path::new("."), Vec::new()).map_err(|e| e.to_string())?;
-    let compiled = run_wat_capture(&wat)?;
-    if interp == compiled {
-        println!(
-            "\u{2713} {path}: interpreter and compiled WASM agree ({} line(s) of output)",
-            interp.len()
-        );
-        Ok(())
-    } else {
-        Err(format!(
-            "\u{2717} {path}: the two backends DIVERGE\n  interpreter: {interp:?}\n  compiled:    {compiled:?}"
-        ))
+    // Run BOTH backends regardless of either failing: a program that errors on
+    // one backend but produces a value on the other is itself a divergence (a
+    // trap and a clean result are not the same behavior), so we must not return
+    // early on the interpreter's error before observing what WASM does.
+    let interp = interpreter::run_module(linked, Path::new("."), Vec::new()).map_err(|e| e.to_string());
+    let compiled = run_wat_capture(&wat);
+    match (interp, compiled) {
+        (Ok(i), Ok(c)) if i == c => {
+            println!(
+                "\u{2713} {path}: interpreter and compiled WASM agree ({} line(s) of output)",
+                i.len()
+            );
+            Ok(())
+        }
+        (Ok(i), Ok(c)) => Err(format!(
+            "\u{2717} {path}: the two backends DIVERGE\n  interpreter: {i:?}\n  compiled:    {c:?}"
+        )),
+        // Both fail: they agree on rejecting this input (the messages differ — a
+        // readable interpreter error vs. a WASM trap — but the behavior matches).
+        (Err(_), Err(_)) => {
+            println!("\u{2713} {path}: interpreter and compiled WASM agree (both error)");
+            Ok(())
+        }
+        (Ok(i), Err(c)) => Err(format!(
+            "\u{2717} {path}: the two backends DIVERGE\n  interpreter: Ok({i:?})\n  compiled:    Err({c})"
+        )),
+        (Err(i), Ok(c)) => Err(format!(
+            "\u{2717} {path}: the two backends DIVERGE\n  interpreter: Err({i})\n  compiled:    Ok({c:?})"
+        )),
     }
 }
 
