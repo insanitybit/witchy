@@ -4027,6 +4027,23 @@ fn yn(b: Bool) -> String:
         assert_eq!(crate::capabilities::show_caps(&fp.total), "Console");
     }
 
+    /// `examples/rpn.witchy` — a stack-machine reverse-Polish calculator — folds
+    /// tokens through an operand stack and reports underflow / division-by-zero
+    /// through `Result`. Pure (Console), both backends.
+    #[test]
+    fn rpn_example_evaluates_postfix_with_a_stack() {
+        assert_eq!(
+            crate::execute_file("examples/rpn.witchy", Vec::new()).unwrap(),
+            vec![
+                "3 4 +               => 7",
+                "5 1 2 + 4 * + 3 -   => 14",
+                "10 2 /              => 5",
+                "1 0 /               => error: division by zero",
+                "1 +                 => error: stack underflow at `+`",
+            ]
+        );
+    }
+
     /// `examples/maze.witchy` — BFS shortest path through a grid maze, with a
     /// `prev` Dict for path reconstruction. Pure (Console); interpreter-hosted.
     #[test]
