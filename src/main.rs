@@ -4370,6 +4370,32 @@ fn yn(b: Bool) -> String:
         assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
     }
 
+    /// An *unbounded* generic function that compares its type-variable values
+    /// (`x == target`) must compare String CONTENT on WASM, not pointers. The
+    /// WASM backend monomorphizes the call on the concrete element type
+    /// (`count_eq__String`), so `==` lowers to `$str_eq`. The strings are built at
+    /// runtime (distinct pointers, equal content) so a pointer compare would give
+    /// the wrong count. (Regression for the generic-`==`-on-non-primitives gap.)
+    #[test]
+    fn wasm_monomorphizes_generic_equality_on_strings() {
+        let src = "fn count_eq(xs: List(a), target: a) -> Int:\n    var n = 0\n    for x in xs:\n        if x == target:\n            n = n + 1\n    n\n\nfn b(s: String) -> String:\n    s <> \"\"\n\nfn main(console: Console):\n    print(console, int_to_string(count_eq([b(\"aa\"), b(\"bb\"), b(\"aa\")], b(\"aa\"))))\n";
+        let want = vec!["2".to_string()];
+        assert_eq!(interp(src), want.clone(), "interpreter");
+        assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
+    }
+
+    /// A large `Int` carried through an *unbounded* generic function must keep its
+    /// 64 bits on WASM. The generic i32 ABI truncated it; the WASM backend now
+    /// monomorphizes the call on `Int` (`fill__Int`), so the i64 survives.
+    /// (Regression for the big-int-through-generic gap.)
+    #[test]
+    fn wasm_monomorphizes_big_int_through_generic() {
+        let src = "fn fill(x: a, n: Int) -> List(a):\n    var out = []\n    var i = 0\n    while i < n:\n        out = push(out, x)\n        i = i + 1\n    out\n\nfn main(console: Console):\n    let xs = fill(5000000000, 2)\n    print(console, int_to_string(at(xs, 0)))\n";
+        let want = vec!["5000000000".to_string()];
+        assert_eq!(interp(src), want.clone(), "interpreter");
+        assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
+    }
+
     /// `float_to_int` on a non-finite or out-of-range Float must saturate the same
     /// way on both backends. The interpreter uses Rust's `as i64` (NaN -> 0,
     /// +inf -> i64::MAX, -inf -> i64::MIN, out-of-range clamps); WASM used the

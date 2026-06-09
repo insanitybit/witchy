@@ -2836,7 +2836,7 @@ pub fn compile_module(module: &Module) -> Result<String, CodegenError> {
     // and emission passes below agree on the synthetic loop-variable names.
     let recs = crate::records::lower(module.clone())
         .map_err(|message| CodegenError { message })?;
-    let mut lowered = crate::traits::lower(recs);
+    let mut lowered = crate::traits::lower_for_wasm(recs);
     crate::parser::lower_sugar_module(&mut lowered);
     let module = &lowered;
     let mut cg = Codegen::new();
