@@ -660,7 +660,7 @@ impl Logger:
         let pure = [
             "list", "string", "math", "option", "result", "func", "ord", "eq", "ascii", "set",
             "show", "json", "url", "duration", "random", "regex", "compiler", "toml", "semver",
-            "rights",
+            "rights", "dict",
         ];
         for name in pure {
             let src = crate::linker::std_source(name).expect("bundled module");

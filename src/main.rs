@@ -3764,6 +3764,41 @@ fn yes(b: Bool) -> String:
         );
     }
 
+    /// `std/dict` adds the compositional layer over the builtin Dict: a `get`
+    /// returning `Option`, `from_pairs`, and the `map_values`/`filter`/`merge`
+    /// transforms — verified against the builtin `size`/`get_or`.
+    #[test]
+    fn dict_module_higher_level_operations() {
+        let src = r#"import dict
+import string
+
+fn main(console: Console):
+    let d = dict.from_pairs([("a", 1), ("b", 2), ("c", 3)])
+    print(console, int_to_string(size(d)))
+    print(console, oi(dict.get(d, "b")))
+    print(console, oi(dict.get(d, "z")))
+    let m = dict.merge(d, dict.from_pairs([("b", 20), ("d", 4)]))
+    print(console, int_to_string(get_or(m, "b", 0)) <> "," <> int_to_string(get_or(m, "d", 0)))
+    let tens = dict.map_values(d, fn(v: Int): v * 10)
+    print(console, oi(dict.get(tens, "c")))
+    let evens = dict.filter(d, fn(k: String, v: Int): v % 2 == 0)
+    print(console, int_to_string(size(evens)))
+    print(console, bs(dict.is_empty(dict.empty())))
+
+fn oi(o: Option(Int)) -> String:
+    match o:
+        Some(n) -> int_to_string(n)
+        None -> "none"
+
+fn bs(b: Bool) -> String:
+    if b: "yes" else: "no"
+"#;
+        assert_eq!(
+            link_run(src),
+            vec!["3", "2", "none", "20,4", "30", "1", "yes"]
+        );
+    }
+
     /// `std/json` typed field accessors: `get_string`/`get_int`/`get_strings`/
     /// `index_string` compose `get`/`index` with the `as_*` coercions — collapsing
     /// the common "read a typed field" pattern, and yielding `[]` for an absent
