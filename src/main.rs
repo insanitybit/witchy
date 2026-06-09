@@ -4027,6 +4027,19 @@ fn yn(b: Bool) -> String:
         assert_eq!(crate::capabilities::show_caps(&fp.total), "Console");
     }
 
+    /// `examples/brainfuck.witchy` — a full brainfuck interpreter — runs the
+    /// canonical "Hello World!" program and a second that prints 'A', building
+    /// output by indexing a printable-ASCII literal (no chr/ord builtin). The
+    /// instruction dispatch compares `at(code, pc)` against operator literals,
+    /// so it's another both-backends guard for content comparison.
+    #[test]
+    fn brainfuck_example_runs_hello_world() {
+        assert_eq!(
+            crate::execute_file("examples/brainfuck.witchy", Vec::new()).unwrap(),
+            vec!["Hello World!", "A"]
+        );
+    }
+
     /// `examples/diff.witchy` — an LCS line diff — fills the longest-common-
     /// subsequence table and backtracks into unchanged/removed/added lines. The
     /// backtrack compares `at(old, i) == at(new, j)` (two `List(String)` element

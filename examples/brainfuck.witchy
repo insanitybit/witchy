@@ -1,0 +1,107 @@
+// brainfuck — a complete interpreter for the eight-instruction language. The
+// tape is a list of integer cells with a moving data pointer; `[` / `]` are
+// matched by scanning with a depth counter (no precomputed jump table). Output
+// builds a string: a cell value is turned into a character by indexing a literal
+// of printable ASCII (index = value - 32), since the language has no chr/ord
+// builtin. Pure (Console only); identical on both backends. Run:
+//   witchy examples/brainfuck.witchy
+
+import string
+
+fn main(console: Console):
+    // The canonical "Hello World!" program.
+    print(console, run("++++++++[>++++[>++>+++>+++>+<<<<-]>+>+>->>+[<]<-]>>.>---.+++++++..+++.>>.<-.<.+++.------.--------.>>+.>++."))
+    // 8 * 8 = 64, then +1 = 65 = 'A'.
+    print(console, run("++++++++[>++++++++<-]>+."))
+
+fn run(program: String) -> String:
+    let code = string.to_chars(program)
+    let n = length(code)
+    var tape = zeros(256)
+    var ptr = 0
+    var pc = 0
+    var out = ""
+    while pc < n:
+        let op = at(code, pc)
+        if op == ">":
+            ptr = ptr + 1
+        else if op == "<":
+            ptr = ptr - 1
+        else if op == "+":
+            tape = set(tape, ptr, at(tape, ptr) + 1)
+        else if op == "-":
+            tape = set(tape, ptr, at(tape, ptr) - 1)
+        else if op == ".":
+            out = out <> chr(at(tape, ptr))
+        else if op == "[":
+            if at(tape, ptr) == 0:
+                pc = match_forward(code, pc)
+        else if op == "]":
+            if at(tape, ptr) != 0:
+                pc = match_back(code, pc)
+        pc = pc + 1
+    out
+
+// Index of the `]` matching the `[` at `pos` (depth-balanced forward scan).
+fn match_forward(code: List(String), pos: Int) -> Int:
+    let n = length(code)
+    var depth = 0
+    var k = pos
+    var result = pos
+    var done = false
+    while k < n && !done:
+        let c = at(code, k)
+        if c == "[":
+            depth = depth + 1
+        else if c == "]":
+            depth = depth - 1
+            if depth == 0:
+                result = k
+                done = true
+        k = k + 1
+    result
+
+// Index of the `[` matching the `]` at `pos` (depth-balanced backward scan).
+fn match_back(code: List(String), pos: Int) -> Int:
+    var depth = 0
+    var k = pos
+    var result = pos
+    var done = false
+    while k >= 0 && !done:
+        let c = at(code, k)
+        if c == "]":
+            depth = depth + 1
+        else if c == "[":
+            depth = depth - 1
+            if depth == 0:
+                result = k
+                done = true
+        k = k - 1
+    result
+
+// A printable-ASCII byte (32..126) as its character; anything else is dropped.
+fn chr(value: Int) -> String:
+    if value < 32 || value > 126:
+        ""
+    else:
+        let printable = " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~"
+        at(string.to_chars(printable), value - 32)
+
+fn set(xs: List(Int), index: Int, value: Int) -> List(Int):
+    var out = []
+    var k = 0
+    for x in xs:
+        if k == index:
+            out = push(out, value)
+        else:
+            out = push(out, x)
+        k = k + 1
+    out
+
+fn zeros(n: Int) -> List(Int):
+    var out = []
+    var k = 0
+    while k < n:
+        out = push(out, 0)
+        k = k + 1
+    out
