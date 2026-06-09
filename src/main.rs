@@ -3986,6 +3986,25 @@ fn yn(b: Bool) -> String:
         );
     }
 
+    /// The `examples/time_and_encoding.witchy` showcase runs: a formatted civil
+    /// date and base64/hex of a multibyte-UTF-8 payload, round-tripped — its
+    /// footprint is just Console.
+    #[test]
+    fn time_and_encoding_example_runs() {
+        assert_eq!(
+            crate::execute_file("examples/time_and_encoding.witchy", Vec::new()).unwrap(),
+            vec![
+                "date:    2026-05-28T20:26:40Z (Thursday)",
+                "base64:  d2l0Y2h5IPCfp5k=",
+                "hex:     77697463687920f09fa799",
+                "decoded: witchy 🧙",
+            ]
+        );
+        let src = std::fs::read_to_string("examples/time_and_encoding.witchy").unwrap();
+        let fp = crate::capabilities::analyze(&parser::parse_module(&src).expect("parse"));
+        assert_eq!(crate::capabilities::show_caps(&fp.total), "Console");
+    }
+
     /// `std/time` computes the civil UTC date from a unix timestamp (Hinnant's
     /// days<->civil algorithm), cross-checked against Python's datetime: leap
     /// years, weekday, an exact round-trip, and a pre-1970 timestamp (floor

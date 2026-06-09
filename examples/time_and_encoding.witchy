@@ -1,0 +1,15 @@
+// time_and_encoding — a tiny showcase of the std `time` and `encoding` modules:
+// turn a unix timestamp into a civil UTC date, and base64/hex a short payload
+// with a decode round-trip. Pure (its footprint is just Console). Run:
+//   witchy examples/time_and_encoding.witchy
+
+import time
+import encoding
+
+fn main(console: Console):
+    let d = time.from_unix(1780000000)
+    print(console, "date:    " <> time.iso8601(d) <> " (" <> time.weekday_name(d) <> ")")
+    let payload = "witchy 🧙"
+    print(console, "base64:  " <> encoding.base64_encode(payload))
+    print(console, "hex:     " <> encoding.hex_encode(payload))
+    print(console, "decoded: " <> encoding.base64_decode(encoding.base64_encode(payload)))
