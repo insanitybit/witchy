@@ -7,6 +7,7 @@
 // maps to wasi:sockets, a future step).
 
 // `header` returns Option; `get_url` returns Result; `url` parses URL strings.
+
 import option
 import result
 import url
@@ -60,10 +61,8 @@ pub fn request_with(net: Net, method: String, host: String, port: Int, path: Str
     for h in headers:
         let (k, v) = h
         head = head <> k <> ": " <> v <> "\r\n"
-    let req = head
-        <> "Content-Length: " <> int_to_string(string_length(body)) <> "\r\n"
-        <> "Connection: close\r\n\r\n"
-        <> body
+    let req = head <> "Content-Length: " <> int_to_string(string_length(body)) <> "\r\n" <> "Connection: close\r\n\r\n" <> body
+
     send_bytes(sock, req)
     parse_response(recv_all(sock))
 
@@ -83,12 +82,16 @@ pub fn build(method: String, url: String) -> RequestBuilder:
 
 pub fn get_request(url: String) -> RequestBuilder:
     build("GET", url)
+
 pub fn post_request(url: String) -> RequestBuilder:
     build("POST", url)
+
 pub fn put_request(url: String) -> RequestBuilder:
     build("PUT", url)
+
 pub fn delete_request(url: String) -> RequestBuilder:
     build("DELETE", url)
+
 pub fn patch_request(url: String) -> RequestBuilder:
     build("PATCH", url)
 

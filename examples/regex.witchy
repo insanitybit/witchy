@@ -15,17 +15,7 @@ fn main(console: Console):
         print(console, shown <> verdict(matches(pattern, text)))
 
 fn cases() -> List((String, String)):
-    [
-        ("abc", "abc"),
-        ("a.c", "axc"),
-        ("a.c", "ac"),
-        ("a*b", "aaab"),
-        ("a*b", "b"),
-        ("^hello", "hello world"),
-        ("world$", "hello world"),
-        ("^a.*z$", "abcz"),
-        ("^a.*z$", "abc"),
-    ]
+    [("abc", "abc"), ("a.c", "axc"), ("a.c", "ac"), ("a*b", "aaab"), ("a*b", "b"), ("^hello", "hello world"), ("world$", "hello world"), ("^a.*z$", "abcz"), ("^a.*z$", "abc")]
 
 fn matches(pattern: String, text: String) -> Bool:
     let re = string.to_chars(pattern)
@@ -69,4 +59,7 @@ fn match_star(c: String, re: List(String), ri: Int, s: List(String), si: Int) ->
     done
 
 fn verdict(matched: Bool) -> String:
-    if matched: "match" else: "no match"
+    if matched:
+        "match"
+    else:
+        "no match"

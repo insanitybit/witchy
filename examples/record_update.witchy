@@ -3,7 +3,6 @@
 // (records are immutable values), and the field values can reference `a`.
 // Fields may be given in any order, and a bare `Account(name: …, balance: …)`
 // (no spread) constructs from scratch.
-
 type Account:
     name: String
     balance: Int

@@ -1,7 +1,6 @@
 // Records are product types with named fields. They're constructed positionally
 // (`Point(2, 3)`) and read by name (`p.x`). Like every value in witchy they are
 // plain capability-free data.
-
 type Point:
     x: Int
     y: Int

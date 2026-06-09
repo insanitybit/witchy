@@ -10,7 +10,6 @@ import string
 import option
 
 // ---- Construction from a count of one unit ----
-
 pub fn millis(n: Int) -> Duration:
     int_to_duration(n)
 
@@ -31,10 +30,9 @@ pub fn weeks(n: Int) -> Duration:
 
 // Build a duration from hours, minutes, and seconds.
 pub fn from_hms(h: Int, m: Int, s: Int) -> Duration:
-    int_to_duration(((h * 3600) + (m * 60) + s) * 1000)
+    int_to_duration((h * 3600 + m * 60 + s) * 1000)
 
 // ---- Total conversions (whole units, truncated toward zero) ----
-
 pub fn to_millis(d: Duration) -> Int:
     duration_to_int(d)
 
@@ -77,11 +75,11 @@ pub fn part_hours(d: Duration) -> Int:
 
 // The minutes component (0..59).
 pub fn part_minutes(d: Duration) -> Int:
-    (duration_to_int(d) / 60000) % 60
+    duration_to_int(d) / 60000 % 60
 
 // The seconds component (0..59).
 pub fn part_seconds(d: Duration) -> Int:
-    (duration_to_int(d) / 1000) % 60
+    duration_to_int(d) / 1000 % 60
 
 // The milliseconds component (0..999).
 pub fn part_millis(d: Duration) -> Int:
@@ -180,8 +178,7 @@ pub fn parse(s: String) -> Option(Duration):
             None
         else:
             Some(int_to_duration(cur))
+    else if seen_unit:
+        Some(int_to_duration(total))
     else:
-        if seen_unit:
-            Some(int_to_duration(total))
-        else:
-            None
+        None

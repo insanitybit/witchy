@@ -3,7 +3,6 @@
 // function. The function must itself return a matching Result/Option, so the
 // error type is checked end to end. Result is an ordinary generic type here,
 // not a built-in.
-
 type Result:
     Ok(a)
     Err(e)

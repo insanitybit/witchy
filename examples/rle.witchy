@@ -49,4 +49,7 @@ fn render(s: String) -> String:
     "\"" <> s <> "\""
 
 fn yes_no(ok: Bool) -> String:
-    if ok: "ok" else: "FAILED"
+    if ok:
+        "ok"
+    else:
+        "FAILED"

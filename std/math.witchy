@@ -1,7 +1,6 @@
 // The witchy standard math library: small integer helpers, pure and
 // capability-free. (Comparison can't be generic without type classes, so these
 // are Int-specific.)
-
 pub fn min(a: Int, b: Int) -> Int:
     if a < b:
         a
@@ -48,7 +47,7 @@ pub fn ceil_div(a: Int, b: Int) -> Int:
     if a >= 0:
         (a + b - 1) / b
     else:
-        0 - ((0 - a) / b)
+        0 - (0 - a) / b
 
 // Division rounded to the nearest integer (ties away from zero), for a positive
 // `b`: `round_div(7, 2)` is 4, `round_div(5, 3)` is 2, `round_div(-7, 2)` is -4.
@@ -56,7 +55,7 @@ pub fn round_div(a: Int, b: Int) -> Int:
     if a >= 0:
         (a + b / 2) / b
     else:
-        0 - ((0 - a + b / 2) / b)
+        0 - (0 - a + b / 2) / b
 
 // Greatest common divisor (Euclid's algorithm).
 pub fn gcd(a: Int, b: Int) -> Int:
@@ -165,7 +164,6 @@ pub fn to_binary(n: Int) -> String:
     to_base(n, 2)
 
 // --- Float versions (Int comparison can't be reused for Float) ---
-
 pub fn fmin(a: Float, b: Float) -> Float:
     if a < b:
         a

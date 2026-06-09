@@ -1,7 +1,6 @@
 // Records + lists + for-in + Result/`?` together. `total` folds balances over a
 // list; `debit` returns a Result, and `?` in `pay_both` short-circuits the whole
 // computation on the first overdraft.
-
 type Account:
     name: String
     balance: Int

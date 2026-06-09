@@ -1,7 +1,6 @@
 // FizzBuzz, showcasing the new iteration and arithmetic: a `while` loop with a
 // mutable counter, `%` (modulo), and `if`/`else if`. The Console is threaded in
 // from main (the root actor) — fizzbuzz can only print because it was handed it.
-
 fn fizzbuzz(console: Console, n: Int):
     var i = 1
     while i <= n:

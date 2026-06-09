@@ -3,6 +3,7 @@
 // Pure and capability-free, like every std module.
 
 // For the `ok`/`err` conversions to Option.
+
 import option
 
 type Result:

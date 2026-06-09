@@ -14,8 +14,6 @@ fn main(console: Console, root: Dir[Read]):
     print(console, "TODO")
     print(console, tasklib.render(tasks))
     print(console, "")
-    let summary = string.join(
-        [int_to_string(tasklib.done_count(tasks)), "/", int_to_string(tasklib.count(tasks)), "done"],
-        " ",
-    )
+    let summary = string.join([int_to_string(tasklib.done_count(tasks)), "/", int_to_string(tasklib.count(tasks)), "done"], " ")
+
     print(console, summary)

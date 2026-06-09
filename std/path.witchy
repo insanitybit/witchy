@@ -40,7 +40,10 @@ pub fn dir(p: String) -> String:
         ""
     else:
         let (head, _b) = string.rsplit_once(t, "/")
-        if string.is_empty(head): "/" else: head
+        if string.is_empty(head):
+            "/"
+        else:
+            head
 
 // The extension after the final `.` in the base name ("a/b.tar.gz" -> "gz"), or
 // "" when there is none. A dotfile base (".bashrc") has no extension.
@@ -68,7 +71,7 @@ pub fn normalize(p: String) -> String:
     let absolute = is_abs(p)
     var stack = []
     for seg in split(p, "/"):
-        if seg == ".." :
+        if seg == "..":
             if length(stack) > 0 && last(stack) != "..":
                 stack = drop_last(stack)
             else if !absolute:
@@ -84,7 +87,6 @@ pub fn normalize(p: String) -> String:
         joined
 
 // --- internals ---------------------------------------------------------------
-
 fn trim_slashes(p: String) -> String:
     var t = p
     while char_count(t) > 1 && ends_with(t, "/"):
@@ -92,7 +94,10 @@ fn trim_slashes(p: String) -> String:
     t
 
 fn last(xs: List(String)) -> String:
-    if length(xs) == 0: "" else: at(xs, length(xs) - 1)
+    if length(xs) == 0:
+        ""
+    else:
+        at(xs, length(xs) - 1)
 
 fn drop_last(xs: List(String)) -> List(String):
     var out = []

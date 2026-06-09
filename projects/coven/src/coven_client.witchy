@@ -65,21 +65,11 @@ fn verify_signed_doc(text: String, rootpub: String) -> String:
         Err(e) -> "decode-err"
 
 // --- request bodies ----------------------------------------------------------
-
 fn publish_body(manifest: String, files: List((String, String)), uploaded_by: String) -> String:
-    json.encode(JsonObject([
-        ("manifest_toml", JsonString(manifest)),
-        ("source", JsonObject([("files", JsonArray(file_pairs(files)))])),
-        ("uploaded_by", JsonString(uploaded_by)),
-    ]))
+    json.encode(JsonObject([("manifest_toml", JsonString(manifest)), ("source", JsonObject([("files", JsonArray(file_pairs(files)))])), ("uploaded_by", JsonString(uploaded_by))]))
 
 fn promote_body(name: String, version: String, factor: String, promoter: String) -> String:
-    json.encode(JsonObject([
-        ("name", JsonString(name)),
-        ("version", JsonString(version)),
-        ("second_factor", JsonString(factor)),
-        ("promoted_by", JsonString(promoter)),
-    ]))
+    json.encode(JsonObject([("name", JsonString(name)), ("version", JsonString(version)), ("second_factor", JsonString(factor)), ("promoted_by", JsonString(promoter))]))
 
 fn file_pairs(files: List((String, String))) -> List(Json):
     var out = []
@@ -89,7 +79,6 @@ fn file_pairs(files: List((String, String))) -> List(Json):
     out
 
 // --- fixtures ----------------------------------------------------------------
-
 fn money_toml() -> String:
     "[rune]\nname = \"acme/money\"\nversion = \"1.0.0\"\n"
 
@@ -109,7 +98,6 @@ fn leak_files() -> List((String, String)):
     [("witchy.toml", leak_toml()), ("src/leak.witchy", "fn main(c: Console, net: Net):\n    let s = connect(net, \"example.com:80\")\n    print(c, \"x\")\n")]
 
 // --- response parsing --------------------------------------------------------
-
 fn hostport(addr: String) -> (String, Int):
     let (host, portstr) = string.split_once(addr, ":")
     (host, string_to_int(portstr))

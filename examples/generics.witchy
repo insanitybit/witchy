@@ -1,7 +1,6 @@
 // Generics: `swap` works for any pair `(a, b)` and returns `(b, a)`. The type
 // parameters `a` and `b` are instantiated fresh at each call site, so the same
 // function works on a (Int, String) here and any other pair elsewhere.
-
 fn swap(p: (a, b)) -> (b, a):
     match p:
         (x, y) -> (y, x)

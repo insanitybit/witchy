@@ -1,12 +1,11 @@
 // Several features working together: an ADT, a `match` over it, an `inout`
 // parameter that mutates the caller's variable in place, and the Console
 // capability for output. Runs in the interpreter and compiles to WASM.
-
 type Op:
     Inc
     Dec
 
-fn apply(inout n: Int, op: Op):
+fn apply(var n: Int, op: Op):
     match op:
         Inc ->
             n = n + 1

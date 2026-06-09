@@ -11,7 +11,9 @@
 import string
 
 type Celsius = Int
+
 type Fahrenheit = Int
+
 type Readings = List(Celsius)
 
 fn to_fahrenheit(c: Celsius) -> Fahrenheit:

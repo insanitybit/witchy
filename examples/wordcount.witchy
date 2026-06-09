@@ -2,7 +2,6 @@
 // empty map; `get_or` reads with a default; `insert` returns a new map with a
 // key updated (dicts are immutable values, like lists). Keys are compared by
 // value, so the same word lands in the same bucket.
-
 fn main(console: Console):
     let text = "the cat the dog the bird"
     let words = split(text, " ")

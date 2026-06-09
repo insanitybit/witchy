@@ -4,7 +4,6 @@
 // monomorphizes such a generic per concrete type, so trait code stays fast and
 // compiles to WASM identically to the interpreter. Pure (Console only). Run:
 //   witchy examples/traits.witchy
-
 trait Shape:
     fn area(self) -> Int
     fn name(self) -> String
@@ -22,6 +21,7 @@ impl Shape for Square:
     fn area(self) -> Int:
         match self:
             Square(side) -> side * side
+
     fn name(self) -> String:
         "square"
 
@@ -29,6 +29,7 @@ impl Shape for Rect:
     fn area(self) -> Int:
         match self:
             Rect(w, h) -> w * h
+
     fn name(self) -> String:
         "rectangle"
 
@@ -36,6 +37,7 @@ impl Shape for RightTriangle:
     fn area(self) -> Int:
         match self:
             RightTriangle(base, height) -> base * height / 2
+
     fn name(self) -> String:
         "right triangle"
 

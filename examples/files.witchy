@@ -1,8 +1,3 @@
-// A filesystem capability at the actor level (cap-std style). `main` is the root
-// actor: the host grants it the root Dir. It attenuates that to examples/data and
-// hands the narrower Dir to a Reader actor, which reads a file using *its* granted
-// capability — and cannot reach anything outside the directory it was given.
-
 actor Reader:
     console: Console
     dir: Dir

@@ -29,7 +29,10 @@ pub fn parse(s: String) -> Option(Url):
                 None -> None
 
 fn default_port(scheme: String) -> Int:
-    if scheme == "https": 443 else: 80
+    if scheme == "https":
+        443
+    else:
+        80
 
 // The `:port` digits as an Int, or None when empty or non-numeric — so a
 // malformed authority (`host:abc`) makes `parse` return None rather than trap

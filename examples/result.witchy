@@ -3,7 +3,6 @@
 // the value, `e` the error), and the checker tracks them per use, so `Ok(1)`
 // and `Ok("x")` have different `Result` types. Write `Result(Int, String)` to
 // pin them.
-
 type Result:
     Ok(a)
     Err(e)

@@ -19,7 +19,6 @@ type Req:
     Any
 
 // --- constructors + accessors ------------------------------------------------
-
 pub fn version(major: Int, minor: Int, patch: Int) -> Version:
     Version(major, minor, patch)
 
@@ -98,7 +97,6 @@ pub fn gte(a: Version, b: Version) -> Bool:
     compare(a, b) >= 0
 
 // --- constraints -------------------------------------------------------------
-
 pub fn parse_req(s: String) -> Result(Req, String):
     let t = string.trim(s)
     if t == "*":

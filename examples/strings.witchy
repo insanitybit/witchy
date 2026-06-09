@@ -2,7 +2,6 @@
 // concatenates via a bump allocator, and `print` lowers to the host capability
 // (ptr, len). Granted the `print` capability the module runs; denied it, the
 // module cannot instantiate.
-
 fn shout(name: String) -> String:
     "hello, " <> name
 

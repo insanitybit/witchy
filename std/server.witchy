@@ -20,7 +20,6 @@ import json
 import ascii
 
 // ---- Request accessors ----
-
 pub fn method(req: Request) -> String:
     match req:
         Request(m, _p, _pa, _q, _h, _b) -> m
@@ -70,7 +69,6 @@ fn lookup_or(pairs: List((String, String)), name: String, default: String) -> St
     default
 
 // ---- Response constructors (an axum `IntoResponse` in spirit) ----
-
 pub fn text(code: Int, b: String) -> Response:
     Response(code, [("content-type", "text/plain; charset=utf-8")], b)
 
@@ -89,7 +87,6 @@ pub fn status_only(code: Int) -> Response:
     Response(code, [], "")
 
 // ---- Status-named constructors (axum `StatusCode` ergonomics) ----
-
 pub fn ok(b: String) -> Response:
     text(200, b)
 
@@ -154,14 +151,19 @@ pub fn route(r: Router, m: String, p: String, h: fn(Request) -> Response) -> Rou
 
 pub fn get(r: Router, p: String, h: fn(Request) -> Response) -> Router:
     route(r, "GET", p, h)
+
 pub fn post(r: Router, p: String, h: fn(Request) -> Response) -> Router:
     route(r, "POST", p, h)
+
 pub fn put(r: Router, p: String, h: fn(Request) -> Response) -> Router:
     route(r, "PUT", p, h)
+
 pub fn delete(r: Router, p: String, h: fn(Request) -> Response) -> Router:
     route(r, "DELETE", p, h)
+
 pub fn patch(r: Router, p: String, h: fn(Request) -> Response) -> Router:
     route(r, "PATCH", p, h)
+
 pub fn head(r: Router, p: String, h: fn(Request) -> Response) -> Router:
     route(r, "HEAD", p, h)
 
@@ -188,7 +190,6 @@ pub fn layer(r: Router, mw: fn(fn(Request) -> Response) -> fn(Request) -> Respon
         Router(routes, layers) -> Router(routes, push(layers, mw))
 
 // ---- Dispatch + path matching ----
-
 fn dispatch(routes: List(Route)) -> fn(Request) -> Response:
     fn(req: Request): dispatch_one(routes, req)
 
@@ -255,18 +256,16 @@ fn match_segs(pat: List(String), segs: List(String), acc: List((String, String))
         let ps = at(pat, 0)
         if starts_with(ps, "*"):
             Some(push(acc, (substring(ps, 1, char_count(ps)), join_segs(segs))))
+        else if length(segs) == 0:
+            None
         else:
-            if length(segs) == 0:
-                None
+            let seg = at(segs, 0)
+            if starts_with(ps, ":"):
+                match_segs(rest(pat), rest(segs), push(acc, (substring(ps, 1, char_count(ps)), seg)))
+            else if ps == seg:
+                match_segs(rest(pat), rest(segs), acc)
             else:
-                let seg = at(segs, 0)
-                if starts_with(ps, ":"):
-                    match_segs(rest(pat), rest(segs), push(acc, (substring(ps, 1, char_count(ps)), seg)))
-                else:
-                    if ps == seg:
-                        match_segs(rest(pat), rest(segs), acc)
-                    else:
-                        None
+                None
 
 fn rest(xs: List(a)) -> List(a):
     var out = []
@@ -288,7 +287,6 @@ fn join_segs(xs: List(String)) -> String:
     out
 
 // ---- Request parsing from the socket ----
-
 fn read_request(sock: Socket) -> Request:
     let request_line = recv_line(sock)
     let m = first_word(request_line)
@@ -337,7 +335,10 @@ fn parse_query(q: String) -> List((String, String)):
 
 fn first_word(s: String) -> String:
     let sp = index_of(s, " ")
-    if sp < 0: s else: substring(s, 0, sp)
+    if sp < 0:
+        s
+    else:
+        substring(s, 0, sp)
 
 fn second_word(s: String) -> String:
     let sp = index_of(s, " ")
@@ -346,18 +347,26 @@ fn second_word(s: String) -> String:
     else:
         let r = substring(s, sp + 1, char_count(s))
         let sp2 = index_of(r, " ")
-        if sp2 < 0: r else: substring(r, 0, sp2)
+        if sp2 < 0:
+            r
+        else:
+            substring(r, 0, sp2)
 
 fn before(s: String, sep: String) -> String:
     let i = index_of(s, sep)
-    if i < 0: s else: substring(s, 0, i)
+    if i < 0:
+        s
+    else:
+        substring(s, 0, i)
 
 fn after(s: String, sep: String) -> String:
     let i = index_of(s, sep)
-    if i < 0: "" else: substring(s, i + char_count(sep), char_count(s))
+    if i < 0:
+        ""
+    else:
+        substring(s, i + char_count(sep), char_count(s))
 
 // ---- Rendering + the serve loop ----
-
 fn render_response(resp: Response) -> String:
     match resp:
         Response(code, headers, b) ->
@@ -370,18 +379,30 @@ fn render_response(resp: Response) -> String:
             out <> b
 
 fn reason(code: Int) -> String:
-    if code == 200: "OK"
-    else: if code == 201: "Created"
-    else: if code == 202: "Accepted"
-    else: if code == 204: "No Content"
-    else: if code == 303: "See Other"
-    else: if code == 400: "Bad Request"
-    else: if code == 401: "Unauthorized"
-    else: if code == 403: "Forbidden"
-    else: if code == 404: "Not Found"
-    else: if code == 405: "Method Not Allowed"
-    else: if code == 500: "Internal Server Error"
-    else: "Status"
+    if code == 200:
+        "OK"
+    else if code == 201:
+        "Created"
+    else if code == 202:
+        "Accepted"
+    else if code == 204:
+        "No Content"
+    else if code == 303:
+        "See Other"
+    else if code == 400:
+        "Bad Request"
+    else if code == 401:
+        "Unauthorized"
+    else if code == 403:
+        "Forbidden"
+    else if code == 404:
+        "Not Found"
+    else if code == 405:
+        "Method Not Allowed"
+    else if code == 500:
+        "Internal Server Error"
+    else:
+        "Status"
 
 fn handler_of(app: Router) -> fn(Request) -> Response:
     match app:

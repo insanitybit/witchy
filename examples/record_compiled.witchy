@@ -2,7 +2,6 @@
 // `p.x` loads a field by its offset. This whole program compiles to a WASM
 // module and runs on the witchy runtime — records, not just sum-type matches,
 // now work in the compiled backend.
-
 type Point:
     x: Int
     y: Int

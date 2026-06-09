@@ -63,7 +63,6 @@ fn main(console: Console, args: List(String), root: Dir, net: Net) -> Int:
         unknown(console, cmd)
 
 // --- info: a one-screen summary of a rune -----------------------------------
-
 fn cmd_info(console: Console, root: Dir, dir: String):
     if string.is_empty(dir):
         print(console, "usage: pm info <dir>")
@@ -75,7 +74,6 @@ fn cmd_info(console: Console, root: Dir, dir: String):
         print(console, "actual:   " <> string.join(rune_footprint(root, dir), ", "))
 
 // --- audit: the footprint a single file demands -----------------------------
-
 fn cmd_audit(console: Console, root: Dir, file: String):
     if string.is_empty(file):
         print(console, "usage: pm audit <file>")
@@ -88,7 +86,6 @@ fn cmd_audit(console: Console, root: Dir, file: String):
 // from source and fails if the code reaches for authority the manifest never
 // admits — rights-precisely, so a declared `Net[Connect]` does NOT admit a
 // demanded full `Net` (the under-declaration a supply-chain attacker relies on).
-
 fn cmd_check(console: Console, root: Dir, dir: String) -> Int:
     if string.is_empty(dir):
         print(console, "usage: pm check <dir>")
@@ -128,7 +125,6 @@ fn admits_any(declared: String, demanded: List(String)) -> Bool:
     any
 
 // --- guard: block an upgrade that widens authority --------------------------
-
 fn cmd_guard(console: Console, root: Dir, old: String, new: String) -> Int:
     if string.is_empty(old) || string.is_empty(new):
         print(console, "usage: pm guard <old-file> <new-file>")
@@ -149,7 +145,6 @@ fn exit_for(report: String) -> Int:
         Err(e) -> 1
 
 // --- deps: list a rune's dependencies ---------------------------------------
-
 fn cmd_deps(console: Console, root: Dir, dir: String):
     if string.is_empty(dir):
         print(console, "usage: pm deps <dir>")
@@ -176,7 +171,6 @@ fn version_source(let inline: String) -> String:
 // --- lock: pin every dependency by content hash ------------------------------
 // The lockfile is regenerated from source, so it can never disagree with the
 // bytes on disk: `lock` writes the hashes, `verify` recomputes and compares.
-
 fn cmd_lock(console: Console, root: Dir, dir: String) -> Int:
     if string.is_empty(dir):
         print(console, "usage: pm lock <dir>")
@@ -186,7 +180,7 @@ fn cmd_lock(console: Console, root: Dir, dir: String) -> Int:
         let n = length(toml.table(manifest, "dependencies"))
         let lockpath = join_path(dir, "witchy.lock")
         write(root, lockpath, generate_lock(root, dir))
-        print(console, f"locked {n} dependencies -> {lockpath}")
+        print(console, "locked " <> to_string(n) <> " dependencies -> " <> to_string(lockpath) <> "")
         0
 
 // --- verify: every locked hash must still match its source ------------------
@@ -194,7 +188,6 @@ fn cmd_lock(console: Console, root: Dir, dir: String) -> Int:
 // content hash, so it validates *any* witchy.lock — including one coven wrote.
 // A mismatch (or a missing entry) means the pinned bytes no longer match disk:
 // tampering or a stale lock. Exits 2 on any discrepancy.
-
 fn cmd_verify(console: Console, root: Dir, dir: String) -> Int:
     if string.is_empty(dir):
         print(console, "usage: pm verify <dir>")
@@ -250,7 +243,6 @@ fn entry_hash(block: String) -> String:
 // recorded baseline doesn't already admit — the upgrade/tamper that quietly
 // widens authority. Capabilities listed after <dir> are accepted (like
 // `--allow-cap`), folding into the baseline so an intended widening passes.
-
 fn cmd_gate(console: Console, root: Dir, args: List(String)) -> Int:
     let dir = arg(args, 1)
     if string.is_empty(dir):
@@ -393,7 +385,6 @@ fn drop_last(xs: List(String)) -> List(String):
 // as the visited-set: a rune already carrying its coven.json is never re-fetched,
 // which makes a diamond or a dependency cycle terminate. This command needs the
 // network.
-
 fn cmd_add(console: Console, net: Net, root: Dir, args: List(String)) -> Int:
     let name = arg(args, 1)
     let req = arg(args, 2)
@@ -533,7 +524,6 @@ fn recorded_hash(text: String) -> String:
 // A rune fetched by `add` carries its signed coven.json. Given the registry's
 // root public key (TOFU-pinned), re-verify it with no network: the record must
 // be validly signed, and the on-disk source must still hash to the signed hash.
-
 fn cmd_verify_rune(console: Console, root: Dir, dir: String, rootpub: String) -> Int:
     if string.is_empty(dir) || string.is_empty(rootpub):
         print(console, "usage: pm verify-rune <vendored-rune-dir> <registry-root-pubkey-hex>")
@@ -548,7 +538,6 @@ fn cmd_verify_rune(console: Console, root: Dir, dir: String, rootpub: String) ->
 // Walk every rune under <dir> that carries a coven.json and re-verify it (the
 // same signature + content check as verify-rune). A CI gate over an entire
 // vendored dependency graph; exits 2 if any rune fails.
-
 fn cmd_verify_vendor(console: Console, root: Dir, dir: String, rootpub: String) -> Int:
     if string.is_empty(dir) || string.is_empty(rootpub):
         print(console, "usage: pm verify-vendor <vendor-dir> <registry-root-pubkey-hex>")
@@ -589,6 +578,7 @@ fn report_rune_verify(console: Console, root: Dir, dir: String, rootpub: String,
         match json.decode(record):
             Ok(doc) -> print(console, "OK: " <> jget(doc, "name") <> "@" <> jget(doc, "version") <> " verified (signature + content), no network")
             Err(e) -> print(console, "OK: verified")
+
         0
 
 // Verify a registry record is signed by the root key over its canonical payload
@@ -602,7 +592,6 @@ fn record_payload(doc: Json) -> String:
     "coven-v1\nname=" <> jget(doc, "name") <> "\nversion=" <> jget(doc, "version") <> "\nstate=" <> jget(doc, "state") <> "\nhash=" <> jget(doc, "hash") <> "\nrt=" <> string.join(json.get_strings(doc, "runtime_footprint"), ",") <> "\nbuild=\nuploaded_by=" <> jget(doc, "uploaded_by") <> "\npromoted_by=" <> jget(doc, "promoted_by") <> "\nfactor=" <> jget(doc, "second_factor") <> "\nprovenance=" <> jget(doc, "provenance")
 
 // --- registry/url helpers ----------------------------------------------------
-
 fn hostport(addr: String) -> (String, Int):
     let (host, portstr) = string.split_once(addr, ":")
     (host, string_to_int(portstr))
@@ -633,7 +622,6 @@ fn json_index_str(j: Json, i: Int) -> String:
         None -> ""
 
 // --- new: scaffold a rune ----------------------------------------------------
-
 fn cmd_new(console: Console, root: Dir, name: String):
     if string.is_empty(name):
         print(console, "usage: pm new <name>")
@@ -685,7 +673,6 @@ fn field(let manifest: String, path: String) -> String:
         None -> "(none)"
 
 // --- compiler.diff JSON helpers ---------------------------------------------
-
 fn widened(doc: Json) -> Bool:
     match json.get(doc, "widened"):
         Some(w) -> bool_or(w, false)
@@ -700,7 +687,6 @@ fn added(doc: Json) -> String:
     string.join(json.get_strings(doc, "added"), ", ")
 
 // --- small generic helpers ---------------------------------------------------
-
 fn arg(let args: List(String), i: Int) -> String:
     if i < length(args):
         at(args, i)

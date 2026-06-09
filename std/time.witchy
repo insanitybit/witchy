@@ -5,7 +5,6 @@
 // civil year/month/day/hour/minute/second and formats them. The conversions use
 // the standard days<->civil algorithm (proleptic Gregorian), correct for any CE
 // date and for negative timestamps (before 1970) via floor division.
-
 type DateTime:
     DateTime(Int, Int, Int, Int, Int, Int)
 
@@ -40,16 +39,15 @@ pub fn from_unix(secs: Int) -> DateTime:
     let days = floor_div(secs, 86400)
     let sod = secs - days * 86400
     let (y, mo, da) = civil_from_days(days)
-    DateTime(y, mo, da, sod / 3600, (sod / 60) % 60, sod % 60)
+    DateTime(y, mo, da, sod / 3600, sod / 60 % 60, sod % 60)
 
 // The unix timestamp for a DateTime (its inverse).
 pub fn to_unix(d: DateTime) -> Int:
     days_from_civil(year(d), month(d), day(d)) * 86400 + hour(d) * 3600 + minute(d) * 60 + second(d)
 
 // --- calendar facts ----------------------------------------------------------
-
 pub fn is_leap(y: Int) -> Bool:
-    (y % 4 == 0 && y % 100 != 0) || y % 400 == 0
+    y % 4 == 0 && y % 100 != 0 || y % 400 == 0
 
 // Day of week: 0 = Sunday … 6 = Saturday.
 pub fn weekday(d: DateTime) -> Int:
@@ -105,7 +103,7 @@ fn days_from_civil(y: Int, mo: Int, da: Int) -> Int:
 // lands on the right day. Witchy's `/` truncates toward zero.
 fn floor_div(a: Int, b: Int) -> Int:
     let q = a / b
-    if a % b != 0 && (a % b < 0) != (b < 0):
+    if a % b != 0 && a % b < 0 != (b < 0):
         q - 1
     else:
         q
@@ -113,13 +111,23 @@ fn floor_div(a: Int, b: Int) -> Int:
 // Non-negative modulo.
 fn pmod(a: Int, b: Int) -> Int:
     let m = a % b
-    if m < 0: m + b else: m
+    if m < 0:
+        m + b
+    else:
+        m
 
 fn pad2(n: Int) -> String:
-    if n < 10: "0" <> int_to_string(n) else: int_to_string(n)
+    if n < 10:
+        "0" <> int_to_string(n)
+    else:
+        int_to_string(n)
 
 fn pad4(n: Int) -> String:
-    if n < 10: "000" <> int_to_string(n)
-    else if n < 100: "00" <> int_to_string(n)
-    else if n < 1000: "0" <> int_to_string(n)
-    else: int_to_string(n)
+    if n < 10:
+        "000" <> int_to_string(n)
+    else if n < 100:
+        "00" <> int_to_string(n)
+    else if n < 1000:
+        "0" <> int_to_string(n)
+    else:
+        int_to_string(n)

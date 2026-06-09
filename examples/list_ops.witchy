@@ -1,7 +1,6 @@
 // With first-class functions and `push` (which returns a new list with an
 // element appended), the usual list combinators are just ordinary witchy
 // functions — `map` and `filter` are generic over the element types.
-
 fn range(n: Int) -> List(Int):
     var out = []
     var i = 0

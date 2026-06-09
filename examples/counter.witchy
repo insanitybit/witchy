@@ -1,9 +1,3 @@
-// A stateful actor compiled to its OWN WebAssembly VM and run on the witchy
-// runtime. `count` lives in a WASM global (its private, isolated state); the
-// Console capability is granted at spawn (linked as the host `print`). Each Tick
-// increments the state and prints it, so state persists across messages — and
-// without the capability the compiled module cannot even instantiate.
-
 actor Counter:
     console: Console
     var count: Int = 0

@@ -1,6 +1,5 @@
 // `return` exits a function early — handy for guard clauses and for bailing out
 // of a loop once you've found an answer.
-
 fn classify(n: Int) -> String:
     if n < 0:
         return "negative"

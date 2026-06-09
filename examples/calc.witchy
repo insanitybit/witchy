@@ -49,7 +49,6 @@ fn render(result: Result(Int, String)) -> String:
         Err(message) -> "error: " <> message
 
 // --- lexer -------------------------------------------------------------------
-
 fn tokenize(source: String) -> Result(List(Token), String):
     let chars = string.to_chars(source)
     let n = length(chars)
@@ -79,16 +78,22 @@ fn tokenize(source: String) -> Result(List(Token), String):
         Err(failure)
 
 fn symbol(c: String) -> Option(Token):
-    if c == "+": Some(Plus)
-    else if c == "-": Some(Minus)
-    else if c == "*": Some(Star)
-    else if c == "/": Some(Slash)
-    else if c == "(": Some(LParen)
-    else if c == ")": Some(RParen)
-    else: None
+    if c == "+":
+        Some(Plus)
+    else if c == "-":
+        Some(Minus)
+    else if c == "*":
+        Some(Star)
+    else if c == "/":
+        Some(Slash)
+    else if c == "(":
+        Some(LParen)
+    else if c == ")":
+        Some(RParen)
+    else:
+        None
 
 // --- parser (recursive descent, precedence-climbing) -------------------------
-
 fn parse(tokens: List(Token)) -> Result(Expr, String):
     match parse_expr(tokens, 0):
         Ok2(tree, pos) -> if pos == length(tokens): Ok(tree) else: Err("unexpected trailing input")
@@ -147,10 +152,12 @@ fn close_group(inner: Expr, tokens: List(Token), pos: Int) -> Parse:
         _ -> Bad("expected `)`")
 
 fn peek(tokens: List(Token), pos: Int) -> Option(Token):
-    if pos < length(tokens): Some(at(tokens, pos)) else: None
+    if pos < length(tokens):
+        Some(at(tokens, pos))
+    else:
+        None
 
 // --- evaluator ---------------------------------------------------------------
-
 fn eval(tree: Expr) -> Result(Int, String):
     match tree:
         Lit(value) -> Ok(value)
@@ -167,8 +174,13 @@ fn arith(left: Result(Int, String), right: Result(Int, String), op: String) -> R
         Err(message) -> Err(message)
 
 fn apply(op: String, x: Int, y: Int) -> Result(Int, String):
-    if op == "+": Ok(x + y)
-    else if op == "-": Ok(x - y)
-    else if op == "*": Ok(x * y)
-    else if y == 0: Err("division by zero")
-    else: Ok(x / y)
+    if op == "+":
+        Ok(x + y)
+    else if op == "-":
+        Ok(x - y)
+    else if op == "*":
+        Ok(x * y)
+    else if y == 0:
+        Err("division by zero")
+    else:
+        Ok(x / y)

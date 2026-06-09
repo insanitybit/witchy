@@ -33,11 +33,7 @@ fn glider(size: Int) -> List(List(Bool)):
 //                                   ..#
 //                                   ###
 fn glider_cell(r: Int, c: Int) -> Bool:
-    (r == 0 && c == 1)
-        || (r == 1 && c == 2)
-        || (r == 2 && c == 0)
-        || (r == 2 && c == 1)
-        || (r == 2 && c == 2)
+    r == 0 && c == 1 || r == 1 && c == 2 || r == 2 && c == 0 || r == 2 && c == 1 || r == 2 && c == 2
 
 // Advance the board one generation.
 fn step(grid: List(List(Bool))) -> List(List(Bool)):
@@ -86,6 +82,6 @@ fn render(grid: List(List(Bool))) -> String:
     for row in grid:
         var line = ""
         for live in row:
-            line = line <> (if live: "#" else: ".")
+            line = line <> if live: "#" else: "."
         lines = push(lines, line)
     string.join(lines, "\n")

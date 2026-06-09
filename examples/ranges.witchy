@@ -12,20 +12,20 @@ import string
 // Classify an HTTP status code by its class (inclusive ranges).
 fn http_class(code: Int) -> String:
     match code:
-        200..=299 -> "success"
-        300..=399 -> "redirect"
-        400..=499 -> "client error"
-        500..=599 -> "server error"
+        _range0 if _range0 >= 200 && _range0 <= 299 -> "success"
+        _range1 if _range1 >= 300 && _range1 <= 399 -> "redirect"
+        _range2 if _range2 >= 400 && _range2 <= 499 -> "client error"
+        _range3 if _range3 >= 500 && _range3 <= 599 -> "server error"
         _ -> "unknown"
 
 // A letter grade from a 0–100 score (exclusive upper bounds tile the line).
 fn grade(score: Int) -> String:
     match score:
-        90..=100 -> "A"
-        80..90 -> "B"
-        70..80 -> "C"
-        60..70 -> "D"
-        0..60 -> "F"
+        _range4 if _range4 >= 90 && _range4 <= 100 -> "A"
+        _range5 if _range5 >= 80 && _range5 < 90 -> "B"
+        _range6 if _range6 >= 70 && _range6 < 80 -> "C"
+        _range7 if _range7 >= 60 && _range7 < 70 -> "D"
+        _range8 if _range8 >= 0 && _range8 < 60 -> "F"
         _ -> "invalid"
 
 fn main(console: Console):

@@ -5,7 +5,6 @@
 // `less`/`greater`/`equal` (and the `_equal` variants) then come for free. Pure
 // and capability-free, like every std module. `Self` in a method signature
 // stands for the implementing type.
-
 trait Ord:
     fn compare(self, other: Self) -> Int
     fn less(self, other: Self) -> Bool:
@@ -23,21 +22,19 @@ impl Ord for Int:
     fn compare(self, other: Self) -> Int:
         if self < other:
             -1
+        else if self > other:
+            1
         else:
-            if self > other:
-                1
-            else:
-                0
+            0
 
 impl Ord for Float:
     fn compare(self, other: Self) -> Int:
         if self < other:
             -1
+        else if self > other:
+            1
         else:
-            if self > other:
-                1
-            else:
-                0
+            0
 
 // Lexicographic ordering by code point — the same order `<` gives on strings,
 // and content-correct in compiled code (both backends compare bytes, not
@@ -46,14 +43,12 @@ impl Ord for String:
     fn compare(self, other: Self) -> Int:
         if self < other:
             -1
+        else if self > other:
+            1
         else:
-            if self > other:
-                1
-            else:
-                0
+            0
 
 // Generic helpers over any `Ord` type — usable as `ord.max_of(a, b)`, etc.
-
 pub fn max_of(x: a, y: a) -> a where a: Ord:
     if greater(x, y):
         x
@@ -70,11 +65,10 @@ pub fn min_of(x: a, y: a) -> a where a: Ord:
 pub fn clamp(x: a, lo: a, hi: a) -> a where a: Ord:
     if less(x, lo):
         lo
+    else if greater(x, hi):
+        hi
     else:
-        if greater(x, hi):
-            hi
-        else:
-            x
+        x
 
 // The largest element of `xs`, or `default` when `xs` is empty.
 pub fn maximum(xs: List(a), default: a) -> a where a: Ord:
@@ -99,13 +93,12 @@ fn insert_ord(sorted: List(a), x: a) -> List(a) where a: Ord:
     for y in sorted:
         if placed:
             out = push(out, y)
+        else if less(x, y):
+            out = push(out, x)
+            out = push(out, y)
+            placed = true
         else:
-            if less(x, y):
-                out = push(out, x)
-                out = push(out, y)
-                placed = true
-            else:
-                out = push(out, y)
+            out = push(out, y)
     if placed:
         out
     else:

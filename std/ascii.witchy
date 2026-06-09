@@ -4,7 +4,6 @@
 // standard string ordering, so every function here is correct on both the
 // interpreter and the compiled backend. The rough equivalent of Go's `unicode`
 // helpers for the ASCII subset.
-
 pub fn is_digit(c: String) -> Bool:
     "0" <= c && c <= "9"
 

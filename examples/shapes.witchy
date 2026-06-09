@@ -1,7 +1,6 @@
 // Algebraic data types compiled to WebAssembly: each constructor becomes a heap
 // record [tag][fields...], and `match` loads the tag and binds the fields. This
 // compiles and runs on the witchy runtime, capability-gated like everything else.
-
 type Shape:
     Circle(Int)
     Square(Int)

@@ -1,7 +1,6 @@
 // List patterns destructure a list by shape: `[]` is empty, `[only]` is exactly
 // one element, and `[head, ..tail]` splits off the front (binding the rest as a
 // list). This makes recursive list processing natural — no indexing.
-
 fn sum(xs: List(Int)) -> Int:
     match xs:
         [] -> 0

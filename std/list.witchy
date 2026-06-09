@@ -5,6 +5,7 @@
 
 // `Option` powers the total lookups below (head/last/get/find): a missing
 // element is `None`, never an out-of-bounds trap.
+
 import option
 
 // [0, 1, ..., n-1].
@@ -35,12 +36,11 @@ pub fn range_step(start: Int, stop: Int, step: Int) -> List(Int):
         while i < stop:
             out = push(out, i)
             i = i + step
-    else:
-        if step < 0:
-            var i = start
-            while i > stop:
-                out = push(out, i)
-                i = i + step
+    else if step < 0:
+        var i = start
+        while i > stop:
+            out = push(out, i)
+            i = i + step
     out
 
 // Apply `f` to every element, collecting the results.

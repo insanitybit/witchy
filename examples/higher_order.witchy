@@ -1,7 +1,6 @@
 // First-class functions. A function can be passed as an argument, returned from
 // another function (capturing variables — a closure), and applied. `reduce`
 // folds a list with a caller-supplied function.
-
 fn apply(f: fn(Int) -> Int, x: Int) -> Int:
     f(x)
 

@@ -8,17 +8,8 @@
 import string
 
 fn main(console: Console):
-    let puzzle = [
-        [5, 3, 0, 0, 7, 0, 0, 0, 0],
-        [6, 0, 0, 1, 9, 5, 0, 0, 0],
-        [0, 9, 8, 0, 0, 0, 0, 6, 0],
-        [8, 0, 0, 0, 6, 0, 0, 0, 3],
-        [4, 0, 0, 8, 0, 3, 0, 0, 1],
-        [7, 0, 0, 0, 2, 0, 0, 0, 6],
-        [0, 6, 0, 0, 0, 0, 2, 8, 0],
-        [0, 0, 0, 4, 1, 9, 0, 0, 5],
-        [0, 0, 0, 0, 8, 0, 0, 7, 9],
-    ]
+    let puzzle = [[5, 3, 0, 0, 7, 0, 0, 0, 0], [6, 0, 0, 1, 9, 5, 0, 0, 0], [0, 9, 8, 0, 0, 0, 0, 6, 0], [8, 0, 0, 0, 6, 0, 0, 0, 3], [4, 0, 0, 8, 0, 3, 0, 0, 1], [7, 0, 0, 0, 2, 0, 0, 0, 6], [0, 6, 0, 0, 0, 0, 2, 8, 0], [0, 0, 0, 4, 1, 9, 0, 0, 5], [0, 0, 0, 0, 8, 0, 0, 7, 9]]
+
     print(console, "puzzle:")
     print(console, render(puzzle))
     match solve(puzzle):
@@ -78,8 +69,8 @@ fn in_col(board: List(List(Int)), c: Int, n: Int) -> Bool:
     hit
 
 fn in_box(board: List(List(Int)), r: Int, c: Int, n: Int) -> Bool:
-    let r0 = (r / 3) * 3
-    let c0 = (c / 3) * 3
+    let r0 = r / 3 * 3
+    let c0 = c / 3 * 3
     var hit = false
     var i = 0
     while i < 3:

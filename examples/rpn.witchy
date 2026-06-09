@@ -49,11 +49,19 @@ fn apply_operator(stack: List(Int), op: String) -> Outcome:
             Err(message) -> Failure(message)
 
 fn compute(op: String, a: Int, b: Int) -> Result(Int, String):
-    if op == "+": Ok(a + b)
-    else if op == "-": Ok(a - b)
-    else if op == "*": Ok(a * b)
-    else if op == "/": if b == 0: Err("division by zero") else: Ok(a / b)
-    else: Err("unknown token `" <> op <> "`")
+    if op == "+":
+        Ok(a + b)
+    else if op == "-":
+        Ok(a - b)
+    else if op == "*":
+        Ok(a * b)
+    else if op == "/":
+        if b == 0:
+            Err("division by zero")
+        else:
+            Ok(a / b)
+    else:
+        Err("unknown token `" <> op <> "`")
 
 fn finish(outcome: Outcome) -> Result(Int, String):
     match outcome:

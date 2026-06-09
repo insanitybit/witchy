@@ -4,7 +4,6 @@
 // every solution for the 8x8 board and render the first one found (column-order
 // DFS). Pure (Console only); identical interpreted and compiled. Run:
 //   witchy examples/queens.witchy
-
 fn main(console: Console):
     let n = 8
     print(console, int_to_string(n) <> "-queens solutions: " <> int_to_string(count(n, [])))

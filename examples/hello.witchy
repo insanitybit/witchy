@@ -1,7 +1,6 @@
 // A taste of witchy: pure functions, pattern matching, pipelines, and
 // capability-gated effects. `print` requires a Console capability, which only
 // `main` is granted — pure helpers like `double` and `classify` need none.
-
 fn double(n: Int) -> Int:
     n * 2
 

@@ -6,8 +6,4 @@ import string
 
 // "tasks    [####----]  50%"
 pub fn summary(done: Int, total: Int) -> String:
-    string.pad_right("tasks", 9, " ")
-        <> bars.bar(done, total, 8)
-        <> " "
-        <> string.pad_left(int_to_string(bars.pct(done, total)), 3, " ")
-        <> "%"
+    string.pad_right("tasks", 9, " ") <> bars.bar(done, total, 8) <> " " <> string.pad_left(int_to_string(bars.pct(done, total)), 3, " ") <> "%"

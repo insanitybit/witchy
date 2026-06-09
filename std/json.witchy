@@ -186,8 +186,7 @@ fn parse_lit(s: String, i: Int, word: String, value: Json) -> Result((Json, Int)
         Err("invalid literal at " <> int_to_string(i))
 
 fn is_digit(c: String) -> Bool:
-    c == "0" || c == "1" || c == "2" || c == "3" || c == "4"
-        || c == "5" || c == "6" || c == "7" || c == "8" || c == "9"
+    c == "0" || c == "1" || c == "2" || c == "3" || c == "4" || c == "5" || c == "6" || c == "7" || c == "8" || c == "9"
 
 fn parse_number(s: String, i: Int) -> Result((Json, Int), String):
     let n = char_count(s)
@@ -394,7 +393,6 @@ pub fn as_object(j: Json) -> Option(List((String, Json))):
 // --- typed field accessors (get a key, then coerce) --------------------------
 // `get` composed with each `as_*` — the common case of reading a typed field out
 // of an object without spelling the two steps every time.
-
 pub fn get_string(j: Json, key: String) -> Option(String):
     match get(j, key):
         Some(v) -> as_string(v)

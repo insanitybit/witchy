@@ -6,6 +6,8 @@ ASCII character predicates over single-character strings (such as those `string.
 
 #### `fn is_digit(c: String) -> Bool`
 
+ASCII character predicates over single-character strings (such as those `string.char_at` returns). Pure and capability-free, like every std module. Classification is by code point in the ASCII range; the comparisons use the standard string ordering, so every function here is correct on both the interpreter and the compiled backend. The rough equivalent of Go's `unicode` helpers for the ASCII subset.
+
 #### `fn is_upper(c: String) -> Bool`
 
 #### `fn is_lower(c: String) -> Bool`
@@ -132,6 +134,8 @@ Pure helpers for the built-in `Duration` type — a length of time, written as a
 
 #### `fn millis(n: Int) -> Duration`
 
+---- Construction from a count of one unit ----
+
 #### `fn seconds(n: Int) -> Duration`
 
 #### `fn minutes(n: Int) -> Duration`
@@ -147,6 +151,8 @@ Pure helpers for the built-in `Duration` type — a length of time, written as a
 Build a duration from hours, minutes, and seconds.
 
 #### `fn to_millis(d: Duration) -> Int`
+
+---- Total conversions (whole units, truncated toward zero) ----
 
 #### `fn to_seconds(d: Duration) -> Int`
 
@@ -560,6 +566,8 @@ The element at index `i` of a JSON array.
 
 #### `fn get_string(j: Json, key: String) -> Option(String)`
 
+--- typed field accessors (get a key, then coerce) -------------------------- `get` composed with each `as_*` — the common case of reading a typed field out of an object without spelling the two steps every time.
+
 #### `fn get_int(j: Json, key: String) -> Option(Int)`
 
 #### `fn get_bool(j: Json, key: String) -> Option(Bool)`
@@ -818,6 +826,8 @@ The witchy standard math library: small integer helpers, pure and capability-fre
 
 #### `fn min(a: Int, b: Int) -> Int`
 
+The witchy standard math library: small integer helpers, pure and capability-free. (Comparison can't be generic without type classes, so these are Int-specific.)
+
 #### `fn max(a: Int, b: Int) -> Int`
 
 #### `fn abs(n: Int) -> Int`
@@ -887,6 +897,8 @@ Render `n` in `base` (2..16) with lowercase digits; a negative `n` gets a leadin
 `n` in binary (e.g. 5 -> "101").
 
 #### `fn fmin(a: Float, b: Float) -> Float`
+
+--- Float versions (Int comparison can't be reused for Float) ---
 
 #### `fn fmax(a: Float, b: Float) -> Float`
 
@@ -970,6 +982,8 @@ Collect a list of Options into an Option of the list: `Some` of every value in o
 The witchy standard `Ord` trait: a total ordering. `compare(a, b)` returns a negative number, zero, or a positive number when `a` is respectively less than, equal to, or greater than `b`. Built-in impls cover `Int` and `Float`; implement `Ord` for your own types to make them comparable — the derived `less`/`greater`/`equal` (and the `_equal` variants) then come for free. Pure and capability-free, like every std module. `Self` in a method signature stands for the implementing type.
 
 #### `fn max_of(x: a, y: a) -> a`
+
+Generic helpers over any `Ord` type — usable as `ord.max_of(a, b)`, etc.
 
 #### `fn min_of(x: a, y: a) -> a`
 
@@ -1182,6 +1196,8 @@ A version constraint (requirement).
 
 #### `fn version(major: Int, minor: Int, patch: Int) -> Version`
 
+--- constructors + accessors ------------------------------------------------
+
 #### `fn major(v: Version) -> Int`
 
 #### `fn minor(v: Version) -> Int`
@@ -1209,6 +1225,8 @@ Parse `major.minor.patch` (missing trailing components default to 0). Errors on 
 #### `fn gte(a: Version, b: Version) -> Bool`
 
 #### `fn parse_req(s: String) -> Result(Req, String)`
+
+--- constraints -------------------------------------------------------------
 
 #### `fn matches(req: Req, v: Version) -> Bool`
 
@@ -1240,6 +1258,8 @@ A router: its routes plus the middleware layers wrapping the whole dispatch.
 
 #### `fn method(req: Request) -> String`
 
+---- Request accessors ----
+
 #### `fn path(req: Request) -> String`
 
 #### `fn param(req: Request, name: String) -> String`
@@ -1270,6 +1290,8 @@ A single form field, or "" if absent.
 
 #### `fn text(code: Int, b: String) -> Response`
 
+---- Response constructors (an axum `IntoResponse` in spirit) ----
+
 #### `fn html(code: Int, b: String) -> Response`
 
 #### `fn json(code: Int, b: String) -> Response`
@@ -1283,6 +1305,8 @@ A JSON response from a `Json` value — encodes it for you.
 #### `fn status_only(code: Int) -> Response`
 
 #### `fn ok(b: String) -> Response`
+
+---- Status-named constructors (axum `StatusCode` ergonomics) ----
 
 #### `fn created(b: String) -> Response`
 
@@ -1492,6 +1516,10 @@ time — civil (UTC) date/time from a unix timestamp.
 
 #### `type DateTime`
 
+time — civil (UTC) date/time from a unix timestamp.
+
+`std/duration` models *spans*; this module models *points* on the calendar. Given seconds since the unix epoch (1970-01-01T00:00:00Z), it computes the civil year/month/day/hour/minute/second and formats them. The conversions use the standard days<->civil algorithm (proleptic Gregorian), correct for any CE date and for negative timestamps (before 1970) via floor division.
+
 - `DateTime(Int, Int, Int, Int, Int, Int)`
 
 #### `fn year(d: DateTime) -> Int`
@@ -1515,6 +1543,8 @@ The civil UTC date/time at `secs` seconds since the unix epoch.
 The unix timestamp for a DateTime (its inverse).
 
 #### `fn is_leap(y: Int) -> Bool`
+
+--- calendar facts ----------------------------------------------------------
 
 #### `fn weekday(d: DateTime) -> Int`
 

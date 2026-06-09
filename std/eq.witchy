@@ -7,11 +7,13 @@
 // `eq`-based equality is content-correct everywhere. Built-in impls cover Int,
 // Bool, and String; implement `Eq` for your own types to use these. `Self` is
 // the implementing type.
-
 trait Eq:
     fn eq(self, other: Self) -> Bool
     fn ne(self, other: Self) -> Bool:
-        if eq(self, other): false else: true
+        if eq(self, other):
+            false
+        else:
+            true
 
 impl Eq for Int:
     fn eq(self, other: Self) -> Bool:

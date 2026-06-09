@@ -1,7 +1,6 @@
 // Tuples give multiple return values and destructuring. `divmod` returns a
 // (quotient, remainder) pair, and main destructures it with `let (q, r) = ...`.
 // (An interpreter feature for now; tuples aren't compiled to WASM yet.)
-
 fn divmod(a: Int, b: Int) -> (Int, Int):
     (a / b, a % b)
 

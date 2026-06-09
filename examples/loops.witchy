@@ -1,6 +1,5 @@
 // `for x in list` binds each element of a list in turn. Combined with a mutable
 // `var`, it accumulates: here it sums a list of ints and joins a list of words.
-
 fn main(console: Console):
     let nums = [4, 8, 15, 16, 23, 42]
     var sum = 0

@@ -27,7 +27,7 @@ pub fn seed(s: Int) -> Rng:
 pub fn next(r: Rng) -> (Int, Rng):
     match r:
         Rng(state) ->
-            let n = (state * 16807) % modulus()
+            let n = state * 16807 % modulus()
             (n, Rng(n))
 
 // A pseudo-random Int in [0, bound) (bound must be positive) and the next state.

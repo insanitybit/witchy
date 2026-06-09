@@ -29,17 +29,8 @@ fn main(console: Console, net: Net, root: Dir, key: SigningKey, clock: Clock, ar
     let issuers = parse_issuers(args)
     fs.ensure_dir(root, "registry")
     let store = subdir(root, "registry")
-    let app = server.router()
-        .get("/coven/rootpub", h_rootpub(key))
-        .get("/coven/index", h_index(store))
-        .get("/coven/versions", h_versions(store))
-        .get("/coven/record", h_record(store))
-        .get("/coven/source", h_source(store))
-        .get("/coven/snapshot", h_snapshot(store, key, clock))
-        .get("/coven/timestamp", h_timestamp(store, key, clock))
-        .post("/coven/publish", h_publish(store, key, clock, issuers))
-        .post("/coven/promote", h_promote(store, key, clock, issuers))
-        .post("/coven/yank", h_yank(store, key, clock))
+    let app = server.router().get("/coven/rootpub", h_rootpub(key)).get("/coven/index", h_index(store)).get("/coven/versions", h_versions(store)).get("/coven/record", h_record(store)).get("/coven/source", h_source(store)).get("/coven/snapshot", h_snapshot(store, key, clock)).get("/coven/timestamp", h_timestamp(store, key, clock)).post("/coven/publish", h_publish(store, key, clock, issuers)).post("/coven/promote", h_promote(store, key, clock, issuers)).post("/coven/yank", h_yank(store, key, clock))
+
     print(console, "coven serving at http://" <> addr <> "  (root key " <> crypto.public_key(key) <> "; " <> int_to_string(length(issuers)) <> " trusted issuer(s))")
     server.serve(net, addr, app)
 
@@ -54,19 +45,14 @@ fn parse_issuers(args: List(String)) -> List((String, String)):
     out
 
 // --- GET /coven/rootpub : the registry's root public key (hex) ---------------
-
 fn h_rootpub(key: SigningKey) -> fn(Request) -> Response:
-    fn(req: Request):
-        server.text(200, crypto.public_key(key))
+    fn(req: Request): server.text(200, crypto.public_key(key))
 
 // --- GET /coven/index : every published rune name ----------------------------
-
 fn h_index(store: Dir) -> fn(Request) -> Response:
-    fn(req: Request):
-        server.json(200, json.encode(JsonObject([("names", JsonArray(strs_json(all_names(store))))])))
+    fn(req: Request): server.json(200, json.encode(JsonObject([("names", JsonArray(strs_json(all_names(store))))])))
 
 // --- GET /coven/versions?name= : every version record of a rune --------------
-
 fn h_versions(store: Dir) -> fn(Request) -> Response:
     fn(req: Request):
         let name = unwire(server.query(req, "name"))
@@ -77,7 +63,6 @@ fn h_versions(store: Dir) -> fn(Request) -> Response:
         server.json(200, json.encode(JsonObject([("records", JsonArray(recs))])))
 
 // --- GET /coven/record?name=&version= : one signed record --------------------
-
 fn h_record(store: Dir) -> fn(Request) -> Response:
     fn(req: Request):
         let name = unwire(server.query(req, "name"))
@@ -88,7 +73,6 @@ fn h_record(store: Dir) -> fn(Request) -> Response:
             err_json(404, name <> "@" <> version <> " not found in registry")
 
 // --- GET /coven/source?name=&version= : the rune source, hash-verified -------
-
 fn h_source(store: Dir) -> fn(Request) -> Response:
     fn(req: Request):
         let name = unwire(server.query(req, "name"))
@@ -114,7 +98,6 @@ fn source_response(store: Dir, name: String, version: String) -> Response:
 // Server-side enforcement: recompute the footprint from source, reject an
 // under-declared manifest, content-address the bytes, and land the version
 // STAGED (not resolvable until promoted). Re-publishing a version is refused.
-
 fn h_publish(store: Dir, key: SigningKey, clock: Clock, issuers: List((String, String))) -> fn(Request) -> Response:
     fn(req: Request):
         match server.json_body(req):
@@ -156,7 +139,6 @@ fn publish_checked(store: Dir, key: SigningKey, clock: Clock, manifest: String, 
         server.json(200, rec)
 
 // --- POST /coven/promote : second-factor release (separation of duties) ------
-
 fn h_promote(store: Dir, key: SigningKey, clock: Clock, issuers: List((String, String))) -> fn(Request) -> Response:
     fn(req: Request):
         match server.json_body(req):
@@ -200,7 +182,6 @@ fn promote_checked(store: Dir, key: SigningKey, clock: Clock, name: String, vers
         server.json(200, json.encode(JsonObject([("record", parse_or_null(rec)), ("separation_of_duties", JsonBool(true)), ("delta_runtime", JsonArray(strs_json(delta)))])))
 
 // --- POST /coven/yank : exclude from new resolutions -------------------------
-
 fn h_yank(store: Dir, key: SigningKey, clock: Clock) -> fn(Request) -> Response:
     fn(req: Request):
         match server.json_body(req):
@@ -230,7 +211,6 @@ fn do_yank(store: Dir, key: SigningKey, clock: Clock, doc: Json) -> Response:
 // short-lived signed pointer to it — its expiry detects freeze). Both are signed
 // by the registry root key over canonical JSON byte-identical to the Rust roles,
 // so they verify under crate::pm::tuf::verify_signed.
-
 fn h_snapshot(store: Dir, key: SigningKey, clock: Clock) -> fn(Request) -> Response:
     fn(req: Request):
         if !exists(store, "snapshot.json"):
@@ -440,14 +420,7 @@ fn issuer_key(issuers: List((String, String)), iss: String) -> Option(String):
 // serialization (fields in struct order, `extra` sorted), so an issuer signature
 // made by the Rust minter verifies here.
 fn claims_canonical(claims: Json) -> String:
-    json.encode(JsonObject([
-        ("iss", JsonString(jstr(claims, "iss"))),
-        ("sub", JsonString(jstr(claims, "sub"))),
-        ("aud", JsonString(jstr(claims, "aud"))),
-        ("exp", JsonInt(jint(claims, "exp"))),
-        ("iat", JsonInt(jint(claims, "iat"))),
-        ("extra", JsonObject(sorted_extra(claims))),
-    ]))
+    json.encode(JsonObject([("iss", JsonString(jstr(claims, "iss"))), ("sub", JsonString(jstr(claims, "sub"))), ("aud", JsonString(jstr(claims, "aud"))), ("exp", JsonInt(jint(claims, "exp"))), ("iat", JsonInt(jint(claims, "iat"))), ("extra", JsonObject(sorted_extra(claims)))]))
 
 fn sorted_extra(claims: Json) -> List((String, Json)):
     var out = []
@@ -475,30 +448,15 @@ fn insert_json_pair(sorted: List((String, Json)), item: (String, Json)) -> List(
 // The canonical, signed view of a record — every security-relevant field except
 // the signature. Byte-identical to src/pm/registry.rs::Record::signing_payload,
 // so a witchy-signed record verifies under the Rust ed25519 verifier.
-
 fn signing_payload(name: String, version: String, state: String, hash: String, rt: List(String), uploaded_by: String, promoted_by: String, factor: String, provenance: String) -> String:
     "coven-v1\nname=" <> name <> "\nversion=" <> version <> "\nstate=" <> state <> "\nhash=" <> hash <> "\nrt=" <> string.join(rt, ",") <> "\nbuild=\nuploaded_by=" <> uploaded_by <> "\npromoted_by=" <> promoted_by <> "\nfactor=" <> factor <> "\nprovenance=" <> provenance
 
 // Build + sign a record, returning its coven.json text.
 fn sign_record(key: SigningKey, name: String, version: String, state: String, hash: String, rt: List(String), uploaded_by: String, promoted_by: String, factor: String, provenance: String) -> String:
     let sig = crypto.sign(key, signing_payload(name, version, state, hash, rt, uploaded_by, promoted_by, factor, provenance))
-    json.encode(JsonObject([
-        ("name", JsonString(name)),
-        ("version", JsonString(version)),
-        ("state", JsonString(state)),
-        ("hash", JsonString(hash)),
-        ("runtime_footprint", JsonArray(strs_json(rt))),
-        ("build_footprint", JsonArray([])),
-        ("determinism", JsonString("guaranteed")),
-        ("uploaded_by", JsonString(uploaded_by)),
-        ("promoted_by", opt_json(promoted_by)),
-        ("second_factor", opt_json(factor)),
-        ("provenance", opt_json(provenance)),
-        ("sig", JsonString(sig)),
-    ]))
+    json.encode(JsonObject([("name", JsonString(name)), ("version", JsonString(version)), ("state", JsonString(state)), ("hash", JsonString(hash)), ("runtime_footprint", JsonArray(strs_json(rt))), ("build_footprint", JsonArray([])), ("determinism", JsonString("guaranteed")), ("uploaded_by", JsonString(uploaded_by)), ("promoted_by", opt_json(promoted_by)), ("second_factor", opt_json(factor)), ("provenance", opt_json(provenance)), ("sig", JsonString(sig))]))
 
 // --- the store: content addressing + source IO -------------------------------
-
 fn meta_path(name: String, version: String) -> String:
     name <> "/" <> version <> "/coven.json"
 
@@ -538,7 +496,6 @@ fn content_hash(files: List((String, String))) -> String:
 // --- server-side footprint recomputation -------------------------------------
 // The capabilities the uploaded source actually demands — union over its modules,
 // computed here via the compiler, never taken on faith from the uploader.
-
 fn computed_footprint(files: List((String, String))) -> List(String):
     var out = []
     for f in files:
@@ -557,7 +514,6 @@ fn footprint_total(report: String) -> List(String):
         Err(e) -> []
 
 // --- versions / names walking ------------------------------------------------
-
 fn versions_of(store: Dir, name: String) -> List(String):
     if exists(store, name):
         list(subdir(store, name))
@@ -587,7 +543,6 @@ fn latest_released_footprint(store: Dir, name: String, version: String) -> List(
     []
 
 // --- reading record fields ---------------------------------------------------
-
 fn record_field(store: Dir, name: String, version: String, field: String) -> String:
     match read_record(store, name, version):
         Some(text) -> match json.decode(text):
@@ -604,7 +559,6 @@ fn record_array(store: Dir, name: String, version: String, field: String) -> Lis
 
 // --- request source parsing --------------------------------------------------
 // The wire source is {"source":{"files":[[path,text],...]}} (matches SourceDto).
-
 fn parse_source(doc: Json) -> List((String, String)):
     var out = []
     if let Some(src) = json.get(doc, "source"):
@@ -625,7 +579,6 @@ fn json_index_str(j: Json, i: Int) -> String:
         None -> ""
 
 // --- JSON helpers ------------------------------------------------------------
-
 fn jstr(doc: Json, key: String) -> String:
     match json.get(doc, key):
         Some(j) -> match json.as_string(j):
@@ -699,17 +652,22 @@ fn is_digit(ch: String) -> Bool:
     ch == "0" || ch == "1" || ch == "2" || ch == "3" || ch == "4" || ch == "5" || ch == "6" || ch == "7" || ch == "8" || ch == "9"
 
 // --- small path + list helpers -----------------------------------------------
-
 fn toml_field(manifest: String, path: String) -> String:
     match toml.get(manifest, path):
         Some(v) -> v
         None -> ""
 
 fn nonempty(s: String, default: String) -> String:
-    if string.is_empty(s): default else: s
+    if string.is_empty(s):
+        default
+    else:
+        s
 
 fn add_unique(xs: List(String), x: String) -> List(String):
-    if member(xs, x): xs else: push(xs, x)
+    if member(xs, x):
+        xs
+    else:
+        push(xs, x)
 
 fn member(xs: List(String), x: String) -> Bool:
     var found = false

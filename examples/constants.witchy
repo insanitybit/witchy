@@ -10,9 +10,13 @@
 import string
 
 let SECONDS_PER_MINUTE = 60
+
 let MINUTES_PER_HOUR = 60
+
 let SECONDS_PER_HOUR = SECONDS_PER_MINUTE * MINUTES_PER_HOUR
+
 let HOURS_PER_DAY = 24
+
 let SECONDS_PER_DAY = SECONDS_PER_HOUR * HOURS_PER_DAY
 
 fn to_seconds(days: Int, hours: Int, minutes: Int, seconds: Int) -> Int:

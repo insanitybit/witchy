@@ -9,14 +9,8 @@ import string
 
 fn main(console: Console):
     let nodes = ["boot", "config", "db", "cache", "api", "web"]
-    let edges = [
-        ("boot", "config"),
-        ("config", "db"),
-        ("config", "cache"),
-        ("db", "api"),
-        ("cache", "api"),
-        ("api", "web"),
-    ]
+    let edges = [("boot", "config"), ("config", "db"), ("config", "cache"), ("db", "api"), ("cache", "api"), ("api", "web")]
+
     print(console, "build order: " <> show(toposort(nodes, edges)))
 
     let cyclic = ["egg", "chicken"]

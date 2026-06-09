@@ -1,10 +1,3 @@
-// ledger — a bank-account actor. `Account` is granted a Console capability at
-// spawn (so it may print) and keeps its balance as isolated private state;
-// deposits and withdrawals arrive as messages, processed run-to-completion in
-// FIFO order. Amounts are formatted by the `money` rune (a local path
-// dependency). `witchy caps` shows the whole program needs only `Console`. Run:
-//   witchy run
-
 import money
 
 actor Account:

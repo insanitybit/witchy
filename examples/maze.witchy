@@ -9,15 +9,8 @@ import string
 import dict
 
 fn main(console: Console):
-    let maze = [
-        "#########",
-        "#S#   # #",
-        "# # # # #",
-        "#   #   #",
-        "### ### #",
-        "#     #E#",
-        "#########",
-    ]
+    let maze = ["#########", "#S#   # #", "# # # # #", "#   #   #", "### ### #", "#     #E#", "#########"]
+
     let width = char_count(at(maze, 0))
     let start = find(maze, "S", width)
     let goal = find(maze, "E", width)

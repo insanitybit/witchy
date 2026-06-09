@@ -4,7 +4,6 @@
 // copied into the record at creation, and a call through a `fn(...)` value
 // lowers to `call_indirect` on the code index. So closures — including ones that
 // capture their environment — cross the compiled boundary now.
-
 fn apply(f: fn(Int) -> Int, x: Int) -> Int:
     f(x)
 

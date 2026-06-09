@@ -2,7 +2,6 @@
 // printed through the `print_int` capability, which the runtime links as a host
 // function ONLY when granted. Without the grant, the compiled module cannot even
 // instantiate — capability security enforced by the WASM sandbox itself.
-
 fn double(n: Int) -> Int:
     n * 2
 

@@ -26,9 +26,7 @@ fn greet(req: Request) -> Response:
     server.json_value(200, JsonObject([("hello", JsonString(server.param(req, "name")))]))
 
 fn main(console: Console, net: Net):
-    let app = server.router()
-        .get("/", home)
-        .get("/hello/:name", greet)
-        .layer(logging(console))
+    let app = server.router().get("/", home).get("/hello/:name", greet).layer(logging(console))
+
     print(console, "serving on 127.0.0.1:8080")
     server.serve(net, "127.0.0.1:8080", app)
