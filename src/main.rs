@@ -4027,6 +4027,18 @@ fn yn(b: Bool) -> String:
         assert_eq!(crate::capabilities::show_caps(&fp.total), "Console");
     }
 
+    /// `examples/anagram.witchy` — groups words that are letter-rearrangements
+    /// of each other by a sorted-character signature, bucketing with a parallel
+    /// signatures/groups list (no Dict). Exercises sorting characters (string
+    /// `<`) and signature equality (string `==`) on both backends.
+    #[test]
+    fn anagram_example_groups_by_sorted_signature() {
+        assert_eq!(
+            crate::execute_file("examples/anagram.witchy", Vec::new()).unwrap(),
+            vec!["listen, silent, enlist", "cat, act, tac", "dog, god"]
+        );
+    }
+
     /// `examples/stats.witchy` — summary statistics over a `List(Float)` —
     /// computes count/mean/variance/stddev/min/max, rendering with
     /// math.format_float. Floats live in the list and flow through arithmetic and
