@@ -3764,6 +3764,36 @@ fn yes(b: Bool) -> String:
         );
     }
 
+    /// `std/time` computes the civil UTC date from a unix timestamp (Hinnant's
+    /// days<->civil algorithm), cross-checked against Python's datetime: leap
+    /// years, weekday, an exact round-trip, and a pre-1970 timestamp (floor
+    /// division, so the day is right).
+    #[test]
+    fn time_module_civil_date_from_unix() {
+        let src = r#"import time
+
+fn main(console: Console):
+    print(console, time.iso8601(time.from_unix(1780000000)))
+    print(console, time.weekday_name(time.from_unix(0)) <> " " <> time.iso8601(time.from_unix(0)))
+    print(console, time.iso8601(time.from_unix(-86401)))
+    print(console, yn(time.is_leap(2000)) <> yn(time.is_leap(1900)) <> yn(time.is_leap(2024)))
+    print(console, yn(time.to_unix(time.from_unix(1780000000)) == 1780000000))
+
+fn yn(b: Bool) -> String:
+    if b: "y" else: "n"
+"#;
+        assert_eq!(
+            link_run(src),
+            vec![
+                "2026-05-28T20:26:40Z",
+                "Thursday 1970-01-01T00:00:00Z",
+                "1969-12-30T23:59:59Z",
+                "yny",
+                "y",
+            ]
+        );
+    }
+
     /// `std/csv` round-trips RFC-4180-ish CSV: quoted fields with embedded commas,
     /// doubled quotes (`""`), proper re-quoting on encode, and header records.
     #[test]

@@ -1,0 +1,125 @@
+// time — civil (UTC) date/time from a unix timestamp.
+//
+// `std/duration` models *spans*; this module models *points* on the calendar.
+// Given seconds since the unix epoch (1970-01-01T00:00:00Z), it computes the
+// civil year/month/day/hour/minute/second and formats them. The conversions use
+// the standard days<->civil algorithm (proleptic Gregorian), correct for any CE
+// date and for negative timestamps (before 1970) via floor division.
+
+type DateTime:
+    DateTime(Int, Int, Int, Int, Int, Int)
+
+pub fn year(d: DateTime) -> Int:
+    match d:
+        DateTime(y, _mo, _da, _h, _mi, _s) -> y
+
+pub fn month(d: DateTime) -> Int:
+    match d:
+        DateTime(_y, mo, _da, _h, _mi, _s) -> mo
+
+pub fn day(d: DateTime) -> Int:
+    match d:
+        DateTime(_y, _mo, da, _h, _mi, _s) -> da
+
+pub fn hour(d: DateTime) -> Int:
+    match d:
+        DateTime(_y, _mo, _da, h, _mi, _s) -> h
+
+pub fn minute(d: DateTime) -> Int:
+    match d:
+        DateTime(_y, _mo, _da, _h, mi, _s) -> mi
+
+pub fn second(d: DateTime) -> Int:
+    match d:
+        DateTime(_y, _mo, _da, _h, _mi, s) -> s
+
+// --- construction ------------------------------------------------------------
+
+// The civil UTC date/time at `secs` seconds since the unix epoch.
+pub fn from_unix(secs: Int) -> DateTime:
+    let days = floor_div(secs, 86400)
+    let sod = secs - days * 86400
+    let (y, mo, da) = civil_from_days(days)
+    DateTime(y, mo, da, sod / 3600, (sod / 60) % 60, sod % 60)
+
+// The unix timestamp for a DateTime (its inverse).
+pub fn to_unix(d: DateTime) -> Int:
+    days_from_civil(year(d), month(d), day(d)) * 86400 + hour(d) * 3600 + minute(d) * 60 + second(d)
+
+// --- calendar facts ----------------------------------------------------------
+
+pub fn is_leap(y: Int) -> Bool:
+    (y % 4 == 0 && y % 100 != 0) || y % 400 == 0
+
+// Day of week: 0 = Sunday … 6 = Saturday.
+pub fn weekday(d: DateTime) -> Int:
+    pmod(days_from_civil(year(d), month(d), day(d)) + 4, 7)
+
+pub fn weekday_name(d: DateTime) -> String:
+    at(["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"], weekday(d))
+
+pub fn month_name(d: DateTime) -> String:
+    at(["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"], month(d) - 1)
+
+// --- formatting --------------------------------------------------------------
+
+// `YYYY-MM-DD`.
+pub fn date_string(d: DateTime) -> String:
+    pad4(year(d)) <> "-" <> pad2(month(d)) <> "-" <> pad2(day(d))
+
+// `HH:MM:SS`.
+pub fn time_string(d: DateTime) -> String:
+    pad2(hour(d)) <> ":" <> pad2(minute(d)) <> ":" <> pad2(second(d))
+
+// RFC 3339 / ISO 8601 in UTC, e.g. `2026-06-08T22:30:00Z`.
+pub fn iso8601(d: DateTime) -> String:
+    date_string(d) <> "T" <> time_string(d) <> "Z"
+
+// --- internals ---------------------------------------------------------------
+
+// Days since 1970-01-01 -> (year, month [1..12], day [1..31]). Hinnant's
+// algorithm; valid for any z >= 0 (all CE dates).
+fn civil_from_days(days: Int) -> (Int, Int, Int):
+    let z = days + 719468
+    let era = z / 146097
+    let doe = z - era * 146097
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365
+    let y = yoe + era * 400
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100)
+    let mp = (5 * doy + 2) / 153
+    let da = doy - (153 * mp + 2) / 5 + 1
+    let mo = if mp < 10: mp + 3 else: mp - 9
+    (if mo <= 2: y + 1 else: y, mo, da)
+
+// The inverse: (year, month, day) -> days since 1970-01-01.
+fn days_from_civil(y: Int, mo: Int, da: Int) -> Int:
+    let y2 = if mo <= 2: y - 1 else: y
+    let era = floor_div(y2, 400)
+    let yoe = y2 - era * 400
+    let mp = if mo > 2: mo - 3 else: mo + 9
+    let doy = (153 * mp + 2) / 5 + da - 1
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy
+    era * 146097 + doe - 719468
+
+// Floor division (rounds toward negative infinity) — so a pre-1970 timestamp
+// lands on the right day. Witchy's `/` truncates toward zero.
+fn floor_div(a: Int, b: Int) -> Int:
+    let q = a / b
+    if a % b != 0 && (a % b < 0) != (b < 0):
+        q - 1
+    else:
+        q
+
+// Non-negative modulo.
+fn pmod(a: Int, b: Int) -> Int:
+    let m = a % b
+    if m < 0: m + b else: m
+
+fn pad2(n: Int) -> String:
+    if n < 10: "0" <> int_to_string(n) else: int_to_string(n)
+
+fn pad4(n: Int) -> String:
+    if n < 10: "000" <> int_to_string(n)
+    else if n < 100: "00" <> int_to_string(n)
+    else if n < 1000: "0" <> int_to_string(n)
+    else: int_to_string(n)
