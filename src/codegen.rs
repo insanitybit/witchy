@@ -273,6 +273,11 @@ struct Codegen {
     /// it returns (e.g. a monomorphized `zip__Int__Int`), so `at(f(...), i)` /
     /// `for t in f(...)` destructure the tuple at the right widths.
     fn_ret_list_elem_tuple_slots: HashMap<String, Vec<ValType>>,
+    /// Function name -> per-tuple-slot list-element value type (Some when that
+    /// slot is a `List(<scalar>)`), for a tuple-returning fn like `unzip` whose
+    /// result is `(List(T), List(U))` — so `let (xs, ys) = unzip(...)` then
+    /// `at(xs, i)` recovers an Int element as i64.
+    fn_ret_tuple_slot_list_elem: HashMap<String, Vec<Option<ValType>>>,
     /// Message name -> tag, shared across a program's actors so the host can
     /// route a compiled `send` to the target actor's handler.
     message_tags: HashMap<String, u32>,
@@ -446,6 +451,7 @@ impl Codegen {
             fn_ret_closure_kind: HashMap::new(),
             fn_ret_tuple_slots: HashMap::new(),
             fn_ret_list_elem_tuple_slots: HashMap::new(),
+            fn_ret_tuple_slot_list_elem: HashMap::new(),
             message_tags: HashMap::new(),
             uses_send: false,
             record_fields: HashMap::new(),
@@ -1142,6 +1148,18 @@ impl Codegen {
                     for (n, vt) in names.iter().zip(&vts) {
                         self.local_val_types.insert(n.clone(), *vt);
                         self.locals.insert(n.clone(), valtype_kind(*vt));
+                    }
+                    // `let (xs, ys) = f(...)` where f returns `(List(T), List(U))`:
+                    // record each destructured list var's element type, so a later
+                    // `at(xs, i)` recovers an Int element as i64.
+                    if let Expr::Call { name: fname, .. } = value {
+                        if let Some(elems) = self.fn_ret_tuple_slot_list_elem.get(fname) {
+                            for (n, elem) in names.iter().zip(elems) {
+                                if let Some(vt) = elem {
+                                    self.local_list_elem_valtype.insert(n.clone(), *vt);
+                                }
+                            }
+                        }
                     }
                     self.infer_locals_expr(value);
                 }
@@ -3241,6 +3259,24 @@ pub fn compile_module(module: &Module) -> Result<String, CodegenError> {
                 if let Some(Type::Tuple(slots)) = &f.ret {
                     cg.fn_ret_tuple_slots
                         .insert(f.name.clone(), slots.iter().map(ty_to_valtype).collect());
+                    // Per slot, the element type if the slot is `List(<scalar>)`
+                    // (e.g. unzip's `(List(Int), List(Int))`), so a destructure
+                    // binds each list var's element type.
+                    let elems: Vec<Option<ValType>> = slots
+                        .iter()
+                        .map(|t| match t {
+                            Type::Named(n, a) if n == "List" => a.first().and_then(|e| {
+                                match ty_to_valtype(e) {
+                                    ValType::Other => None,
+                                    vt => Some(vt),
+                                }
+                            }),
+                            _ => None,
+                        })
+                        .collect();
+                    if elems.iter().any(|e| e.is_some()) {
+                        cg.fn_ret_tuple_slot_list_elem.insert(f.name.clone(), elems);
+                    }
                 }
             }
             Item::Type(t) => {

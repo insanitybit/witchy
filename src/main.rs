@@ -4496,6 +4496,17 @@ fn yn(b: Bool) -> String:
         assert_eq!(run_on_wasm(src), vec!["9000000000"], "WASM");
     }
 
+    /// A generic function over `List((a, b))` (the `zip`/`unzip` shape) must keep
+    /// big Ints. Monomorphization resolves `a`/`b` from the argument list's
+    /// element tuple, the inner `let (x, y) = p` destructures at i64, and the
+    /// `List(a)` return carries the element type. (The deepest nesting case.)
+    #[test]
+    fn wasm_big_int_through_list_of_tuples_generic() {
+        let src = "fn firsts(ps: List((a, b))) -> List(a):\n    var out = []\n    for p in ps:\n        let (x, y) = p\n        out = push(out, x)\n    out\n\nfn main(console: Console):\n    print(console, int_to_string(at(firsts([(9000000000, 1)]), 0)))\n";
+        assert_eq!(interp(src), vec!["9000000000"], "interpreter");
+        assert_eq!(run_on_wasm(src), vec!["9000000000"], "WASM");
+    }
+
     /// A large `Int` carried as an `Option`/`Result` success payload must keep its
     /// 64 bits on WASM, through both `?` and a `match`. The payload field is a type
     /// variable (generic i32 ABI), so codegen would truncate; it now tracks the

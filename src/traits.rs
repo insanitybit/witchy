@@ -721,6 +721,19 @@ impl Mono<'_> {
         head_type_name(e, scope, self.ctor_results, &self.fn_rets)
     }
 
+    /// The concrete type of field `pos` of the element TUPLE of a list argument,
+    /// where the argument is a list literal of tuples (e.g. `unzip([(big, 1)])`).
+    fn list_elem_tuple_field_type(&self, arg: &Expr, pos: usize, scope: &Scope) -> Option<String> {
+        if let Expr::List(items) = arg {
+            if let Some(Expr::Tuple(fields)) = items.first() {
+                if let Some(e) = fields.get(pos) {
+                    return self.type_name(e, scope);
+                }
+            }
+        }
+        None
+    }
+
     /// The return type name of a function-valued argument: a lambda's body type
     /// (its parameters seeded into scope) or a named function's return type.
     /// Resolves a `fn(...) -> b` parameter's `b` for monomorphization.
@@ -774,6 +787,20 @@ impl Mono<'_> {
                         {
                             found = Some(elem.to_string());
                             break;
+                        }
+                    }
+                    // `xs: List((.., var, ..))` (e.g. `unzip`): resolve `var` from
+                    // the argument list's element tuple at `var`'s position.
+                    Some(Type::Named(n, a)) if n == "List" => {
+                        if let Some(Type::Tuple(slots)) = a.first() {
+                            if let Some(pos) = slots.iter().position(
+                                |t| matches!(t, Type::Named(vn, va) if *vn == var && va.is_empty()),
+                            ) {
+                                if let Some(tn) = self.list_elem_tuple_field_type(arg, pos, scope) {
+                                    found = Some(tn);
+                                    break;
+                                }
+                            }
                         }
                     }
                     // `f: fn(...) -> var` (e.g. `map`'s mapper, whose result is the
