@@ -1262,3 +1262,170 @@ fn witchy_coven_full_lifecycle_self_hosted() {
         "TUF timestamp must verify: {lines:?}"
     );
 }
+
+/// Trusted publishing against the **witchy** coven: a token minted by the Rust
+/// `coven-mint-token` verifies in the self-hosted registry (proving the witchy
+/// canonical-claims reconstruction is byte-identical to serde). The verified
+/// `sub` becomes the recorded uploader — a client-asserted identity is ignored —
+/// and a publish with no token is refused 401.
+#[test]
+fn witchy_coven_trusted_publishing_verifies_a_rust_minted_token() {
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let coven_src = format!("{manifest_dir}/projects/coven/src/coven.witchy");
+
+    // Mint a trusted issuer + a publish token (the Rust IdP CLI).
+    let idp = unique("witchy-coven-idp");
+    let gen_out = Command::new(BIN)
+        .args(["coven-gen-issuer", "--out", idp.to_str().unwrap()])
+        .output()
+        .expect("gen issuer");
+    let pubhex = String::from_utf8_lossy(&gen_out.stdout)
+        .lines()
+        .next()
+        .unwrap()
+        .trim()
+        .to_string();
+    let sub = "repo:acme/money:ref:refs/heads/main";
+    let mint = Command::new(BIN)
+        .args([
+            "coven-mint-token",
+            "--issuer-key",
+            idp.to_str().unwrap(),
+            "--issuer",
+            "gha",
+            "--sub",
+            sub,
+            "--claim",
+            "repository=acme/money",
+            "--claim",
+            "workflow_ref=rel.yml",
+        ])
+        .output()
+        .expect("mint token");
+    let token = String::from_utf8_lossy(&mint.stdout).trim().to_string();
+
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let addr = format!("127.0.0.1:{port}");
+    let store = unique("witchy-coven-trusted-store");
+    let seed = store.join("root.seed");
+    std::fs::write(
+        &seed,
+        "0000000000000000000000000000000000000000000000000000000000000001",
+    )
+    .unwrap();
+
+    let mut server = Command::new(BIN)
+        .args([
+            "--net",
+            &addr,
+            "--signing-key",
+            seed.to_str().unwrap(),
+            &coven_src,
+            &addr,
+            &format!("gha={pubhex}"),
+        ])
+        .current_dir(&store)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn witchy coven (trusted)");
+
+    let mut up = false;
+    for _ in 0..80 {
+        if std::net::TcpStream::connect(&addr).is_ok() {
+            up = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    if !up {
+        let _ = server.kill();
+        let _ = server.wait();
+        panic!("witchy coven (trusted) never started on {addr}");
+    }
+
+    let manifest = "[rune]\nname = \"acme/money\"\nversion = \"1.0.0\"\n";
+    let module = "fn dollars(n: Int) -> Int:\n    n * 100\n";
+    let source = format!(
+        "{{\"files\":[[\"witchy.toml\",{}],[\"src/money.witchy\",{}]]}}",
+        json_str(manifest),
+        json_str(module)
+    );
+    // Publish WITH the trusted token -> 200, uploader derived from claims.sub.
+    let with_token = format!(
+        "{{\"manifest_toml\":{},\"source\":{source},\"id_token\":{token}}}",
+        json_str(manifest)
+    );
+    let (status, body) = http_post(&addr, "/coven/publish", &with_token);
+    // Publish a second version WITHOUT a token but asserting an uploader -> 401.
+    let manifest2 = "[rune]\nname = \"acme/money\"\nversion = \"2.0.0\"\n";
+    let source2 = format!(
+        "{{\"files\":[[\"witchy.toml\",{}],[\"src/money.witchy\",{}]]}}",
+        json_str(manifest2),
+        json_str(module)
+    );
+    let without = format!(
+        "{{\"manifest_toml\":{},\"source\":{source2},\"uploaded_by\":\"sneaky\"}}",
+        json_str(manifest2)
+    );
+    let (status_notoken, _) = http_post(&addr, "/coven/publish", &without);
+
+    let _ = server.kill();
+    let _ = server.wait();
+    let _ = std::fs::remove_dir_all(&store);
+    let _ = std::fs::remove_dir_all(&idp);
+
+    assert_eq!(status, 200, "trusted publish should succeed: {body}");
+    assert!(
+        body.contains(&format!("\"uploaded_by\":\"{sub}\"")),
+        "uploader must come from the verified token sub, got: {body}"
+    );
+    assert_eq!(
+        status_notoken, 401,
+        "a publish without a token to a trusted registry must be refused"
+    );
+}
+
+/// Minimal HTTP/1.1 POST over a raw TCP socket (the test client). Returns
+/// (status code, body).
+fn http_post(addr: &str, path: &str, body: &str) -> (u16, String) {
+    use std::io::{Read, Write};
+    let mut s = std::net::TcpStream::connect(addr).unwrap();
+    s.set_read_timeout(Some(std::time::Duration::from_secs(3))).unwrap();
+    let req = format!(
+        "POST {path} HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.as_bytes().len()
+    );
+    s.write_all(req.as_bytes()).unwrap();
+    let mut buf = String::new();
+    let _ = s.read_to_string(&mut buf);
+    let status = buf
+        .split_whitespace()
+        .nth(1)
+        .and_then(|c| c.parse::<u16>().ok())
+        .unwrap_or(0);
+    let body = buf.split("\r\n\r\n").nth(1).unwrap_or("").to_string();
+    (status, body)
+}
+
+/// JSON-encode a string (quoted, with `"`, `\`, and newlines escaped).
+fn json_str(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            _ => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}

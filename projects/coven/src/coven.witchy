@@ -21,6 +21,10 @@ import string
 
 fn main(console: Console, net: Net, root: Dir, key: SigningKey, clock: Clock, args: List(String)):
     let addr = if length(args) > 0: at(args, 0) else: "127.0.0.1:8787"
+    // Trailing args are trusted issuers as `issuer=pubkeyhex` (a JWKS stand-in).
+    // With at least one, publish/promote require a short-lived identity token
+    // (trusted publishing); with none, the registry is anonymous (local mode).
+    let issuers = parse_issuers(args)
     ensure_dir(root, "registry")
     let store = subdir(root, "registry")
     let app = server.router()
@@ -31,11 +35,21 @@ fn main(console: Console, net: Net, root: Dir, key: SigningKey, clock: Clock, ar
         .get("/coven/source", h_source(store))
         .get("/coven/snapshot", h_snapshot(store, key, clock))
         .get("/coven/timestamp", h_timestamp(store, key, clock))
-        .post("/coven/publish", h_publish(store, key, clock))
-        .post("/coven/promote", h_promote(store, key, clock))
+        .post("/coven/publish", h_publish(store, key, clock, issuers))
+        .post("/coven/promote", h_promote(store, key, clock, issuers))
         .post("/coven/yank", h_yank(store, key, clock))
-    print(console, "coven serving at http://" <> addr <> "  (root key " <> crypto.public_key(key) <> ")")
+    print(console, "coven serving at http://" <> addr <> "  (root key " <> crypto.public_key(key) <> "; " <> int_to_string(length(issuers)) <> " trusted issuer(s))")
     server.serve(net, addr, app)
+
+// Parse trailing `issuer=pubkeyhex` args into (issuer, pubkey) pairs.
+fn parse_issuers(args: List(String)) -> List((String, String)):
+    var out = []
+    var i = 0
+    for a in args:
+        if i > 0 && contains(a, "="):
+            out = push(out, string.split_once(a, "="))
+        i = i + 1
+    out
 
 // --- GET /coven/rootpub : the registry's root public key (hex) ---------------
 
@@ -99,15 +113,14 @@ fn source_response(store: Dir, name: String, version: String) -> Response:
 // under-declared manifest, content-address the bytes, and land the version
 // STAGED (not resolvable until promoted). Re-publishing a version is refused.
 
-fn h_publish(store: Dir, key: SigningKey, clock: Clock) -> fn(Request) -> Response:
+fn h_publish(store: Dir, key: SigningKey, clock: Clock, issuers: List((String, String))) -> fn(Request) -> Response:
     fn(req: Request):
         match server.json_body(req):
-            Ok(doc) -> do_publish(store, key, clock, doc)
+            Ok(doc) -> do_publish(store, key, clock, issuers, doc)
             Err(e) -> err_json(400, "bad request body: " <> e)
 
-fn do_publish(store: Dir, key: SigningKey, clock: Clock, doc: Json) -> Response:
+fn do_publish(store: Dir, key: SigningKey, clock: Clock, issuers: List((String, String)), doc: Json) -> Response:
     let manifest = jstr(doc, "manifest_toml")
-    let uploaded_by = nonempty(jstr(doc, "uploaded_by"), "anonymous")
     let files = parse_source(doc)
     let name = toml_field(manifest, "rune.name")
     let version = toml_field(manifest, "rune.version")
@@ -118,7 +131,11 @@ fn do_publish(store: Dir, key: SigningKey, clock: Clock, doc: Json) -> Response:
     else if exists(store, meta_path(name, version)):
         err_json(409, name <> "@" <> version <> " already published — versions are immutable, bump the version")
     else:
-        publish_checked(store, key, clock, manifest, name, version, uploaded_by, files)
+        // Trusted publishing: the publisher identity comes from a verified
+        // identity token, never from a client-asserted field.
+        match publisher_identity(issuers, doc, now(clock) / 1000):
+            Ok(uploaded_by) -> publish_checked(store, key, clock, manifest, name, version, uploaded_by, files)
+            Err(e) -> err_json(401, e)
 
 fn publish_checked(store: Dir, key: SigningKey, clock: Clock, manifest: String, name: String, version: String, uploaded_by: String, files: List((String, String))) -> Response:
     let computed = computed_footprint(files)
@@ -137,22 +154,27 @@ fn publish_checked(store: Dir, key: SigningKey, clock: Clock, manifest: String, 
 
 // --- POST /coven/promote : second-factor release (separation of duties) ------
 
-fn h_promote(store: Dir, key: SigningKey, clock: Clock) -> fn(Request) -> Response:
+fn h_promote(store: Dir, key: SigningKey, clock: Clock, issuers: List((String, String))) -> fn(Request) -> Response:
     fn(req: Request):
         match server.json_body(req):
-            Ok(doc) -> do_promote(store, key, clock, doc)
+            Ok(doc) -> do_promote(store, key, clock, issuers, doc)
             Err(e) -> err_json(400, "bad request body: " <> e)
 
-fn do_promote(store: Dir, key: SigningKey, clock: Clock, doc: Json) -> Response:
+fn do_promote(store: Dir, key: SigningKey, clock: Clock, issuers: List((String, String)), doc: Json) -> Response:
     let name = unwire(jstr(doc, "name"))
     let version = jstr(doc, "version")
     let factor = jstr(doc, "second_factor")
-    let promoter = jstr(doc, "promoted_by")
     if !exists(store, meta_path(name, version)):
         err_json(404, name <> "@" <> version <> " not found")
     else if string.is_empty(factor):
         err_json(400, "promotion requires a second factor (the out-of-band 2FA event) — refusing to release")
-    else if string.is_empty(promoter):
+    else:
+        match promoter_identity(issuers, doc, now(clock) / 1000):
+            Ok(promoter) -> promote_authenticated(store, key, clock, name, version, factor, promoter)
+            Err(e) -> err_json(401, e)
+
+fn promote_authenticated(store: Dir, key: SigningKey, clock: Clock, name: String, version: String, factor: String, promoter: String) -> Response:
+    if string.is_empty(promoter):
         err_json(400, "promotion requires an authenticated promoter identity")
     else:
         promote_checked(store, key, clock, name, version, factor, promoter)
@@ -281,6 +303,100 @@ fn jint(doc: Json, key: String) -> Int:
             Some(n) -> n
             None -> 0
         None -> 0
+
+// --- trusted publishing: OIDC-style identity tokens --------------------------
+// Long-lived API tokens are the most-stolen supply-chain credential, so coven
+// does not use them. A publisher instead proves identity with a short-lived
+// identity token: an Ed25519-signed claims envelope from a trusted issuer (a CI
+// provider's IdP, or a human SSO). The registry verifies it against the issuer's
+// pinned key, the audience, and the expiry, and derives the identity from the
+// *verified* claims — the client cannot assert who it is. A token minted by the
+// Rust `coven-mint-token` verifies here unchanged (canonical claims match serde).
+
+// The verified publisher identity (claims.sub). Anonymous (no trusted issuers):
+// fall back to the client-asserted `uploaded_by` for local use.
+fn publisher_identity(issuers: List((String, String)), doc: Json, now: Int) -> Result(String, String):
+    if length(issuers) == 0:
+        Ok(nonempty(jstr(doc, "uploaded_by"), "anonymous"))
+    else:
+        token_sub(issuers, doc, now, "publishing to a trusted registry requires a short-lived identity token (long-lived API tokens are not accepted)")
+
+fn promoter_identity(issuers: List((String, String)), doc: Json, now: Int) -> Result(String, String):
+    if length(issuers) == 0:
+        Ok(jstr(doc, "promoted_by"))
+    else:
+        token_sub(issuers, doc, now, "promoting on a trusted registry requires a short-lived identity token")
+
+fn token_sub(issuers: List((String, String)), doc: Json, now: Int, missing: String) -> Result(String, String):
+    match json.get(doc, "id_token"):
+        Some(token) -> match verify_token(issuers, token, now):
+            Ok(claims) -> Ok(jstr(claims, "sub"))
+            Err(e) -> Err(e)
+        None -> Err(missing)
+
+// Verify an identity token: signature against the trusted issuer's pinned key,
+// audience equals this registry, and not expired. Returns the verified claims.
+fn verify_token(issuers: List((String, String)), token: Json, now: Int) -> Result(Json, String):
+    match json.get(token, "claims"):
+        Some(claims) -> check_token(issuers, claims, jstr(token, "sig"), now)
+        None -> Err("malformed identity token (no claims)")
+
+fn check_token(issuers: List((String, String)), claims: Json, sig: String, now: Int) -> Result(Json, String):
+    let iss = jstr(claims, "iss")
+    match issuer_key(issuers, iss):
+        Some(pubkey) ->
+            if !crypto.ed25519_verify(pubkey, claims_canonical(claims), sig):
+                Err("identity token signature is invalid (untrusted or forged)")
+            else if jstr(claims, "aud") != "coven-registry":
+                Err("identity token audience is not `coven-registry` (wrong registry / replay)")
+            else if jint(claims, "exp") <= now:
+                Err("identity token has expired")
+            else:
+                Ok(claims)
+        None -> Err("issuer `" <> iss <> "` is not trusted by this registry")
+
+fn issuer_key(issuers: List((String, String)), iss: String) -> Option(String):
+    var found = None
+    for entry in issuers:
+        let (i, pubkey) = entry
+        if i == iss:
+            found = Some(pubkey)
+    found
+
+// The canonical bytes of a claims set — byte-identical to serde's Claims
+// serialization (fields in struct order, `extra` sorted), so an issuer signature
+// made by the Rust minter verifies here.
+fn claims_canonical(claims: Json) -> String:
+    json.encode(JsonObject([
+        ("iss", JsonString(jstr(claims, "iss"))),
+        ("sub", JsonString(jstr(claims, "sub"))),
+        ("aud", JsonString(jstr(claims, "aud"))),
+        ("exp", JsonInt(jint(claims, "exp"))),
+        ("iat", JsonInt(jint(claims, "iat"))),
+        ("extra", JsonObject(sorted_extra(claims))),
+    ]))
+
+fn sorted_extra(claims: Json) -> List((String, Json)):
+    var out = []
+    if let Some(ex) = json.get(claims, "extra"):
+        if let Some(pairs) = json.as_object(ex):
+            for p in pairs:
+                out = insert_json_pair(out, p)
+    out
+
+fn insert_json_pair(sorted: List((String, Json)), item: (String, Json)) -> List((String, Json)):
+    let (ik, _iv) = item
+    var res = []
+    var placed = false
+    for q in sorted:
+        let (qk, _qv) = q
+        if !placed && ik < qk:
+            res = push(res, item)
+            placed = true
+        res = push(res, q)
+    if !placed:
+        res = push(res, item)
+    res
 
 // --- record signing ----------------------------------------------------------
 // The canonical, signed view of a record — every security-relevant field except
