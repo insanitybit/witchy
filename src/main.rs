@@ -4524,6 +4524,16 @@ fn yn(b: Bool) -> String:
         assert_eq!(run_on_wasm(loops), vec!["9000000000"], "WASM (loops/param)");
     }
 
+    /// A big `Int` in a tuple at the bottom of NESTED lists (`[[(big, 1)]]`)
+    /// survives: the `(depth, bottom)` nesting allows a tuple bottom, so peeling
+    /// to the inner list then destructuring the tuple recovers the Int as i64.
+    #[test]
+    fn wasm_big_int_in_nested_list_of_tuples() {
+        let src = "fn main(console: Console):\n    for inner in [[(9000000000, 1)]]:\n        for t in inner:\n            let (a, b) = t\n            print(console, int_to_string(a))\n";
+        assert_eq!(interp(src), vec!["9000000000"], "interpreter");
+        assert_eq!(run_on_wasm(src), vec!["9000000000"], "WASM");
+    }
+
     /// A large `Int` carried as an `Option`/`Result` success payload must keep its
     /// 64 bits on WASM, through both `?` and a `match`. The payload field is a type
     /// variable (generic i32 ABI), so codegen would truncate; it now tracks the

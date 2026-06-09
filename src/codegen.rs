@@ -146,6 +146,17 @@ enum ValType {
     Other,
 }
 
+/// The element a nested list ultimately bottoms out at: a scalar, or a tuple with
+/// the given slot value types. Paired with a nesting depth (`List(Int)` is depth
+/// 1 over `Scalar(Int)`; `List(List((Int,Int)))` is depth 2 over
+/// `Tuple([Int,Int])`), it lets `at`/`for` peel one list level at a time and
+/// recover the bottom element at the right width, at any depth.
+#[derive(Clone, PartialEq, Eq)]
+enum NestBottom {
+    Scalar(ValType),
+    Tuple(Vec<ValType>),
+}
+
 /// The common kind two numeric operands/branches promote to: f64 if either is
 /// Float, else i64 if either is i64 (a concrete Int), else i32.
 fn promote_kind(a: Kind, b: Kind) -> Kind {
@@ -210,16 +221,19 @@ fn ty_to_valtype(t: &Type) -> ValType {
 /// element — `List(Int)` is `(1, Int)`, `List(List(Int))` is `(2, Int)`. `None`
 /// for non-list or non-scalar-bottomed types. Lets a `List(List(Int))` parameter
 /// drive nested-`at` recovery.
-fn ty_list_nesting(t: &Type) -> Option<(usize, ValType)> {
+fn ty_list_nesting(t: &Type) -> Option<(usize, NestBottom)> {
     if let Type::Named(n, args) = t {
         if n == "List" {
             return match args.first() {
                 Some(inner @ Type::Named(in_n, _)) if in_n == "List" => {
-                    ty_list_nesting(inner).map(|(d, s)| (d + 1, s))
+                    ty_list_nesting(inner).map(|(d, b)| (d + 1, b))
+                }
+                Some(Type::Tuple(slots)) => {
+                    Some((1, NestBottom::Tuple(slots.iter().map(ty_to_valtype).collect())))
                 }
                 Some(elem) => match ty_to_valtype(elem) {
                     ValType::Other => None,
-                    s => Some((1, s)),
+                    s => Some((1, NestBottom::Scalar(s))),
                 },
                 None => None,
             };
@@ -402,11 +416,12 @@ struct Codegen {
     /// List-of-lists variable -> the INNER list's scalar element type, so
     /// `at(at(xs, i), j)` recovers an Int as i64 (two levels of nesting).
     local_list_elem_list_valtype: HashMap<String, ValType>,
-    /// Nested-list variable -> `(depth, scalar)`: the variable is a list nested
-    /// `depth` times over a scalar element (`List(Int)` is depth 1,
-    /// `List(List(Int))` depth 2, ...). Lets `at` peel one level at a time so an
-    /// Int at ANY nesting depth recovers as i64.
-    local_list_nesting: HashMap<String, (usize, ValType)>,
+    /// Nested-list variable -> `(depth, bottom)`: the variable is a list nested
+    /// `depth` times over a scalar or tuple bottom (`List(Int)` is depth 1 over
+    /// `Scalar(Int)`; `List(List((Int,Int)))` is depth 2 over `Tuple([Int,Int])`).
+    /// Lets `at`/`for` peel one level at a time so the bottom element recovers at
+    /// the right width, at ANY nesting depth.
+    local_list_nesting: HashMap<String, (usize, NestBottom)>,
     /// Function name -> the record type of the elements of its `List(_)` return,
     /// so `for x in f(...) { x.field }` resolves x's record type.
     fn_ret_list_elem: HashMap<String, String>,
@@ -967,29 +982,43 @@ impl Codegen {
             Expr::Call { name, .. } => self.fn_ret_list_elem_tuple_slots.get(name).cloned(),
             _ => None,
         }
+        // Fall back to a tracked depth-1 tuple-bottom nesting (e.g. a loop var
+        // bound to the inner list of a list-of-lists-of-tuples).
+        .or_else(|| match self.list_nesting(list) {
+            Some((1, NestBottom::Tuple(slots))) => Some(slots),
+            _ => None,
+        })
     }
 
     /// `(depth, scalar)` for a list-valued expression that is a uniform nested
     /// list over a scalar element: a tracked variable, a list literal, or
     /// `at(L, i)` (which peels one level off `L`). `None` when not a uniform
     /// nested-scalar list. Lets `at` recover an Int element at any nesting depth.
-    fn list_nesting(&self, e: &Expr) -> Option<(usize, ValType)> {
+    fn list_nesting(&self, e: &Expr) -> Option<(usize, NestBottom)> {
         match e {
-            Expr::Var(v) => {
-                if let Some(n) = self.local_list_nesting.get(v) {
-                    Some(*n)
-                } else if let Some(s) = self.local_list_elem_list_valtype.get(v) {
-                    Some((2, *s))
-                } else if let Some(s) = self.local_list_elem_valtype.get(v) {
-                    Some((1, *s))
-                } else {
-                    None
-                }
-            }
+            Expr::Var(v) => self
+                .local_list_nesting
+                .get(v)
+                .cloned()
+                .or_else(|| {
+                    self.local_list_elem_list_valtype
+                        .get(v)
+                        .map(|s| (2, NestBottom::Scalar(*s)))
+                })
+                .or_else(|| {
+                    self.local_list_elem_tuple
+                        .get(v)
+                        .map(|slots| (1, NestBottom::Tuple(slots.clone())))
+                })
+                .or_else(|| {
+                    self.local_list_elem_valtype
+                        .get(v)
+                        .map(|s| (1, NestBottom::Scalar(*s)))
+                }),
             Expr::List(_) => self.literal_nesting(e),
             Expr::Call { name, args } if name == "at" && args.len() == 2 => {
                 match self.list_nesting(&args[0]) {
-                    Some((d, s)) if d >= 2 => Some((d - 1, s)),
+                    Some((d, b)) if d >= 2 => Some((d - 1, b)),
                     _ => None,
                 }
             }
@@ -997,17 +1026,21 @@ impl Codegen {
         }
     }
 
-    /// `(depth, scalar)` of a list LITERAL, computed recursively from its first
-    /// element: a scalar gives depth 1; a nested list adds a level.
-    fn literal_nesting(&self, e: &Expr) -> Option<(usize, ValType)> {
+    /// `(depth, bottom)` of a list LITERAL, computed recursively from its first
+    /// element: a nested list adds a level; a tuple or scalar is the bottom.
+    fn literal_nesting(&self, e: &Expr) -> Option<(usize, NestBottom)> {
         if let Expr::List(items) = e {
             match items.first() {
                 Some(inner @ Expr::List(_)) => {
-                    self.literal_nesting(inner).map(|(d, s)| (d + 1, s))
+                    self.literal_nesting(inner).map(|(d, b)| (d + 1, b))
                 }
+                Some(Expr::Tuple(slots)) => Some((
+                    1,
+                    NestBottom::Tuple(slots.iter().map(|x| self.val_type_of(x)).collect()),
+                )),
                 Some(first) => match self.val_type_of(first) {
                     ValType::Other => None,
-                    s => Some((1, s)),
+                    s => Some((1, NestBottom::Scalar(s))),
                 },
                 None => None,
             }
@@ -1039,7 +1072,7 @@ impl Codegen {
             // Peeling via `list_nesting` handles any nesting depth.
             Expr::Call { name, args } if name == "at" && args.len() == 2 => {
                 match self.list_nesting(iter) {
-                    Some((1, s)) => s,
+                    Some((1, NestBottom::Scalar(s))) => s,
                     _ => ValType::Other,
                 }
             }
@@ -1056,9 +1089,9 @@ impl Codegen {
             Expr::Var(v) => {
                 if let Some(s) = self.local_list_elem_valtype.get(v) {
                     *s
-                } else if let Some((1, s)) = self.local_list_nesting.get(v).copied() {
+                } else if let Some((1, NestBottom::Scalar(s))) = self.local_list_nesting.get(v) {
                     // A nested-list var that is now a depth-1 list of a scalar.
-                    s
+                    *s
                 } else {
                     ValType::Other
                 }
@@ -1148,13 +1181,12 @@ impl Codegen {
                     if let Some(slots) = self.list_elem_tuple_slots(value) {
                         self.local_list_elem_tuple.insert(name.clone(), slots);
                     }
-                    // A list literal nested over a scalar records its
-                    // `(depth, scalar)`, so `at(at(... name ...))` recovers an Int
-                    // element at any nesting depth.
-                    if matches!(value, Expr::List(_)) {
-                        if let Some(n) = self.literal_nesting(value) {
-                            self.local_list_nesting.insert(name.clone(), n);
-                        }
+                    // A binding to a nested list records its `(depth, bottom)` (a
+                    // literal, a peeled `at(...)`, or another nested-list var), so
+                    // `at`/`for` through `name` recover the bottom element at any
+                    // depth.
+                    if let Some(n) = self.list_nesting(value) {
+                        self.local_list_nesting.insert(name.clone(), n);
                     }
                     // A binding to a `List(Record)` (literal, a `List(Record)`-
                     // returning call, or another such variable) records its
@@ -1296,9 +1328,9 @@ impl Codegen {
                 // Iterating a nested list: the loop var is itself a list one level
                 // shallower, so an inner `for x in var` / `at(var, i)` recovers the
                 // scalar element at any depth.
-                if let Some((d, s)) = self.list_nesting(iter) {
+                if let Some((d, b)) = self.list_nesting(iter) {
                     if d >= 2 {
-                        self.local_list_nesting.insert(var.clone(), (d - 1, s));
+                        self.local_list_nesting.insert(var.clone(), (d - 1, b));
                     }
                 }
                 self.infer_locals_expr(iter);
