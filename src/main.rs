@@ -932,12 +932,15 @@ fn execute_file_exit(
 /// WebAssembly — and confirm they produce identical output. Witchy's
 /// dual-backend equivalence is normally an internal test invariant; `witchy
 /// verify` surfaces it as a guarantee you can check on your own code.
+/// A failed in-language test: its (qualified) name and the abort message.
+type TestFailure = (String, String);
+
 /// Discover and run the tests in a source file: every ZERO-parameter function
 /// named `test_*`, each invoked through a synthesized `main` in a fresh
 /// interpreter. A test passes by returning and fails by aborting (which
 /// `std/testing`'s assertions do, with a message). Tests take no capabilities,
 /// so a suite provably has no effects. Returns the failures as (name, message).
-fn run_tests_in_file(path: &str) -> Result<(Vec<String>, Vec<(String, String)>), String> {
+fn run_tests_in_file(path: &str) -> Result<(Vec<String>, Vec<TestFailure>), String> {
     use std::path::Path;
     let (linked, _stem) = link_file(path)?;
     typeck::check(&linked).map_err(|e| e.to_string())?;
