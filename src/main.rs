@@ -4027,6 +4027,29 @@ fn yn(b: Bool) -> String:
         assert_eq!(crate::capabilities::show_caps(&fp.total), "Console");
     }
 
+    /// `examples/matrix.witchy` — integer matrices — multiplies a 2x3 by a 3x2,
+    /// transposes, and prints an identity, all with right-aligned columns. A
+    /// `List(List(Int))` workout (nested `at`) that agrees on both backends.
+    #[test]
+    fn matrix_example_multiplies_and_transposes() {
+        assert_eq!(
+            crate::execute_file("examples/matrix.witchy", Vec::new()).unwrap(),
+            vec![
+                "A x B =",
+                "[  58  64 ]",
+                "[ 139 154 ]",
+                "transpose(A) =",
+                "[ 1 4 ]",
+                "[ 2 5 ]",
+                "[ 3 6 ]",
+                "identity(3) =",
+                "[ 1 0 0 ]",
+                "[ 0 1 0 ]",
+                "[ 0 0 1 ]",
+            ]
+        );
+    }
+
     /// `examples/brainfuck.witchy` — a full brainfuck interpreter — runs the
     /// canonical "Hello World!" program and a second that prints 'A', building
     /// output by indexing a printable-ASCII literal (no chr/ord builtin). The
