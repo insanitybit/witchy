@@ -439,25 +439,84 @@ fn released_versions(body: String) -> List(Version):
                             out = push(out, v)
     out
 
+// Fetch a version, verifying the full trust chain before writing anything: the
+// registry's record must be validly signed by its root key, and the fetched
+// source must hash to that signed hash. An untrusted mirror cannot swap the
+// bytes — content addressing + the signature, not the transport, are trusted.
 fn fetch_source(console: Console, net: Net, root: Dir, host: String, port: Int, name: String, version: String, dest: String) -> Int:
+    let rootpub = http.body(http.get(net, host, port, "/coven/rootpub"))
+    let record = http.get(net, host, port, "/coven/record?name=" <> wire(name) <> "&version=" <> version)
+    if http.status(record) != 200:
+        print(console, "registry has no record for " <> name <> "@" <> version)
+        1
+    else if !record_signature_valid(rootpub, http.body(record)):
+        print(console, "BLOCK: registry record for " <> name <> "@" <> version <> " has an invalid signature — refusing to trust it")
+        1
+    else:
+        fetch_verified(console, net, root, host, port, name, version, dest, recorded_hash(http.body(record)))
+
+fn fetch_verified(console: Console, net: Net, root: Dir, host: String, port: Int, name: String, version: String, dest: String, recorded: String) -> Int:
     let resp = http.get(net, host, port, "/coven/source?name=" <> wire(name) <> "&version=" <> version)
     if http.status(resp) != 200:
         print(console, "registry has no source for " <> name <> "@" <> version)
         1
     else:
-        let base = join_path(dest, basename(name))
-        write_files(root, base, http.body(resp))
-        print(console, "added " <> name <> "@" <> version <> " -> " <> base)
-        0
+        let files = source_files(http.body(resp))
+        if content_hash(files) != recorded:
+            print(console, "BLOCK: integrity failure — fetched source for " <> name <> "@" <> version <> " does not match the signed hash (tampered mirror?)")
+            1
+        else:
+            let base = join_path(dest, basename(name))
+            for f in files:
+                let (path, text) = f
+                let full = join_path(base, path)
+                ensure_dir(root, parent_dir(full))
+                write(root, full, text)
+            print(console, "added " <> name <> "@" <> version <> " -> " <> base)
+            0
 
-fn write_files(root: Dir, base: String, body: String):
+fn source_files(body: String) -> List((String, String)):
+    var out = []
     if let Ok(doc) = json.decode(body):
         if let Some(files) = json.get(doc, "files"):
             if let Some(items) = json.as_array(files):
                 for entry in items:
-                    let full = join_path(base, json_index_str(entry, 0))
-                    ensure_dir(root, parent_dir(full))
-                    write(root, full, json_index_str(entry, 1))
+                    out = push(out, (json_index_str(entry, 0), json_index_str(entry, 1)))
+    out
+
+// The content address of an in-memory rune source (matches coven / crypto.rune_hash).
+fn content_hash(files: List((String, String))) -> String:
+    var paths = []
+    var texts = []
+    for f in files:
+        let (p, t) = f
+        paths = push(paths, p)
+        texts = push(texts, t)
+    crypto.rune_hash(paths, texts)
+
+fn recorded_hash(text: String) -> String:
+    match json.decode(text):
+        Ok(doc) -> jget(doc, "hash")
+        Err(e) -> ""
+
+// Verify a registry record is signed by the root key over its canonical payload
+// (byte-identical to coven's Record signing payload).
+fn record_signature_valid(rootpub: String, text: String) -> Bool:
+    match json.decode(text):
+        Ok(doc) -> crypto.ed25519_verify(rootpub, record_payload(doc), jget(doc, "sig"))
+        Err(e) -> false
+
+fn record_payload(doc: Json) -> String:
+    "coven-v1\nname=" <> jget(doc, "name") <> "\nversion=" <> jget(doc, "version") <> "\nstate=" <> jget(doc, "state") <> "\nhash=" <> jget(doc, "hash") <> "\nrt=" <> string.join(footprint_of(doc), ",") <> "\nbuild=\nuploaded_by=" <> jget(doc, "uploaded_by") <> "\npromoted_by=" <> jget(doc, "promoted_by") <> "\nfactor=" <> jget(doc, "second_factor") <> "\nprovenance=" <> jget(doc, "provenance")
+
+fn footprint_of(doc: Json) -> List(String):
+    var out = []
+    if let Some(arr) = json.get(doc, "runtime_footprint"):
+        if let Some(items) = json.as_array(arr):
+            for it in items:
+                if let Some(s) = json.as_string(it):
+                    out = push(out, s)
+    out
 
 // --- registry/url helpers ----------------------------------------------------
 
