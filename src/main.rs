@@ -4880,18 +4880,46 @@ fn yn(b: Bool) -> String:
         assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
     }
 
-    /// A generic-payload ADT (`Option`) and a `Dict` can't be structurally compared
-    /// on WASM yet, so `==` on them is a LOUD codegen error — never a silent
+    /// `Option` `==` is structural on both backends: a single-parameter generic
+    /// ADT is instantiated at the comparison site from a constructor literal
+    /// (sound for both operands — the type checker guarantees they share a
+    /// type). Dict `==` compares entries pairwise in insertion order, exactly
+    /// like the interpreter. (Closes the former loud-error gaps.)
+    #[test]
+    fn option_and_dict_equality_agree_on_both_backends() {
+        let src = "import option\n\nfn main(console: Console):\n    print(console, to_string(Some(5) == Some(5)))\n    print(console, to_string(Some(5) == Some(6)))\n    print(console, to_string(Some(5) == None))\n    print(console, to_string(None == None))\n    print(console, to_string(Some(\"a\") == Some(\"a\")))\n    print(console, to_string(Some(\"a\") == Some(\"b\")))\n    let a = insert(insert(dict_new(), \"k\", 1), \"j\", 2)\n    let b = insert(insert(dict_new(), \"k\", 1), \"j\", 2)\n    let c = insert(insert(dict_new(), \"k\", 1), \"j\", 9)\n    let rev = insert(insert(dict_new(), \"j\", 2), \"k\", 1)\n    print(console, to_string(a == b))\n    print(console, to_string(a == c))\n    print(console, to_string(a == rev))\n";
+        let want = vec![
+            "true".to_string(),
+            "false".to_string(),
+            "false".to_string(),
+            "true".to_string(),
+            "true".to_string(),
+            "false".to_string(),
+            "true".to_string(),  // identical insert order + contents
+            "false".to_string(), // differing value
+            "false".to_string(), // same pairs, different insertion order
+        ];
+        let module = parser::parse_module(src).expect("parse");
+        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        typeck::check(&linked).expect("typecheck");
+        let wat = codegen::compile_module(&linked).expect("compile");
+        assert_eq!(link_run(src), want.clone(), "interpreter (linked)");
+        assert_eq!(crate::run_wat_capture(&wat).expect("wasm"), want, "compiled WASM must agree");
+    }
+
+    /// A MULTI-parameter generic ADT (`Result`, whose Ok and Err payloads are
+    /// different type variables) still can't be instantiated from one
+    /// constructor, so `==` on it stays a LOUD codegen error — never a silent
     /// pointer compare. (Guards the boundary of structural-equality support.)
     #[test]
     fn unsupported_compound_equality_is_a_loud_error_not_silent() {
-        let opt = "import option\n\nfn main(console: Console):\n    print(console, to_string(Some(5) == Some(5)))\n";
-        let om = parser::parse_module(opt).expect("parse");
-        let linked = crate::linker::link(vec![("main".into(), om)], "main").expect("link");
-        assert!(codegen::compile_module(&linked).is_err(), "Option `==` must be a loud codegen error");
-        let dict = "fn main(console: Console):\n    let a = insert(dict_new(), \"k\", 1)\n    let b = insert(dict_new(), \"k\", 1)\n    print(console, to_string(a == b))\n";
-        let dm = parser::parse_module(dict).expect("parse");
-        assert!(codegen::compile_module(&dm).is_err(), "Dict `==` must be a loud codegen error");
+        let res = "import result\n\nfn main(console: Console):\n    print(console, to_string(Ok(5) == Err(\"x\")))\n";
+        let rm = parser::parse_module(res).expect("parse");
+        let linked = crate::linker::link(vec![("main".into(), rm)], "main").expect("link");
+        assert!(
+            codegen::compile_module(&linked).is_err(),
+            "Result `==` must be a loud codegen error"
+        );
     }
 
     /// Ordering a NaN must FAIL on both backends, not silently return IEEE false

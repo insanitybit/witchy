@@ -174,6 +174,15 @@ enum EqShape {
     Record(String),
     /// A sum type (its variants and their field types come from `adt_variants`).
     Adt(String),
+    /// A generic sum type INSTANTIATED at the comparison site: the resolved
+    /// field shapes per variant (by tag). `Some(5) == opt` carries
+    /// `AdtInst("Option", [[Bits], []])` — sound for both operands because the
+    /// type checker guarantees `==` operands share a type.
+    AdtInst(String, Vec<Vec<EqShape>>),
+    /// A Dict with resolved key and value shapes. Equality is insertion-order-
+    /// sensitive over the `[count][key slot][value slot]...` entries — exactly
+    /// the interpreter's pairwise `Vec<(K, V)>` comparison.
+    Dict(Box<EqShape>, Box<EqShape>),
 }
 
 impl EqShape {
@@ -192,7 +201,12 @@ impl EqShape {
     fn is_compound(&self) -> bool {
         matches!(
             self,
-            EqShape::List(_) | EqShape::Tuple(_) | EqShape::Record(_) | EqShape::Adt(_)
+            EqShape::List(_)
+                | EqShape::Tuple(_)
+                | EqShape::Record(_)
+                | EqShape::Adt(_)
+                | EqShape::AdtInst(..)
+                | EqShape::Dict(..)
         )
     }
 
@@ -208,6 +222,14 @@ impl EqShape {
             }
             EqShape::Record(name) => format!("rec_{name}"),
             EqShape::Adt(name) => format!("adt_{name}"),
+            EqShape::AdtInst(name, variants) => {
+                let vs: Vec<String> = variants
+                    .iter()
+                    .map(|fs| fs.iter().map(|f| f.id()).collect::<Vec<_>>().join("_"))
+                    .collect();
+                format!("adti_{name}_{}_", vs.join("__"))
+            }
+            EqShape::Dict(k, v) => format!("dict_{}_{}", k.id(), v.id()),
         }
     }
 }
@@ -3126,15 +3148,81 @@ impl Codegen {
                     .map(EqShape::Tuple);
             }
         }
+        // A Dict with tracked key/value scalar types (a let-bound dict, or an
+        // `insert(...)` chain) compares entry-wise in insertion order.
+        if let Expr::Var(v) = e {
+            if let (Some(k), Some(val)) = (
+                self.local_dict_key_valtype.get(v).copied(),
+                self.local_dict_value_valtype.get(v).copied(),
+            ) {
+                return Some(EqShape::Dict(
+                    Box::new(EqShape::scalar(k)?),
+                    Box::new(EqShape::scalar(val)?),
+                ));
+            }
+        }
+        if let Expr::Call { name, args } = e {
+            if name == "insert" && args.len() == 3 {
+                return Some(EqShape::Dict(
+                    Box::new(EqShape::scalar(self.val_type_of(&args[1]))?),
+                    Box::new(self.eq_operand_shape(&args[2])?),
+                ));
+            }
+        }
         if let Some(rec) = self.record_type_of(e) {
             return Some(EqShape::Record(rec));
         }
-        // A constructor of a sum type (`Some(..)`, `Red`, ...). Resolved to its
-        // owning type; whether its fields are structurally comparable is decided
-        // when the helper is generated (a generic payload is a loud error there).
-        if let Expr::Ctor { name, .. } = e {
-            if let Some(tyname) = self.ctor_type_name.get(name) {
-                return Some(EqShape::Adt(tyname.clone()));
+        // A constructor of a sum type (`Some(..)`, `Red`, ...). A monomorphic
+        // type resolves by name; a SINGLE-parameter generic (Option-like) is
+        // instantiated from this constructor's argument — sound for both
+        // operands, because the type checker guarantees `==` operands share a
+        // type. A nullary constructor of a generic type (None) pins nothing,
+        // and any placeholder is sound at this site: the variant carrying the
+        // type variable can only match at runtime when this operand is NOT that
+        // variant, so its field comparison never executes here. Multi-parameter
+        // generics (Result) fall back to the by-name shape, whose unresolvable
+        // fields are a loud error when the helper is generated.
+        if let Expr::Ctor { name, args } = e {
+            if let Some(tyname) = self.ctor_type_name.get(name).cloned() {
+                let variants = self.adt_variants.get(&tyname).cloned()?;
+                let mut vars: Vec<String> = Vec::new();
+                for fs in &variants {
+                    for f in fs {
+                        if let Some(v) = bare_type_var(f) {
+                            if !vars.contains(&v) {
+                                vars.push(v);
+                            }
+                        }
+                    }
+                }
+                if vars.len() == 1 {
+                    let (tag, _) = *self.ctors.get(name)?;
+                    let my_fields = variants.get(tag as usize)?;
+                    let mut payload: Option<EqShape> = None;
+                    for (i, f) in my_fields.iter().enumerate() {
+                        if bare_type_var(f).is_some() {
+                            payload = self.eq_operand_shape(args.get(i)?);
+                            break;
+                        }
+                    }
+                    let payload = payload.unwrap_or(EqShape::Bits);
+                    let inst: Vec<Vec<EqShape>> = variants
+                        .iter()
+                        .map(|fs| {
+                            fs.iter()
+                                .map(|f| {
+                                    if bare_type_var(f).is_some() {
+                                        Some(payload.clone())
+                                    } else {
+                                        self.eq_shape_of_type(f)
+                                    }
+                                })
+                                .collect::<Option<Vec<_>>>()
+                        })
+                        .collect::<Option<Vec<_>>>()?;
+                    return Some(EqShape::AdtInst(tyname, inst));
+                }
+                return Some(EqShape::Adt(tyname));
             }
         }
         None
@@ -3311,6 +3399,63 @@ impl Codegen {
                      (local $t i32)\n    \
                      (if (i32.ne (i32.load (local.get $a)) (i32.load (local.get $b))) (then (return (i32.const 0))))\n    \
                      (local.set $t (i32.load (local.get $a)))\n{arms}    \
+                     (i32.const 1))\n"
+                )
+            }
+            EqShape::AdtInst(_, variant_shapes) => {
+                // Like `Adt`, but the per-variant field shapes were resolved at
+                // the comparison site (a generic payload instantiated there).
+                let mut arms = String::new();
+                for (tag, fields) in variant_shapes.iter().enumerate() {
+                    if fields.is_empty() {
+                        continue;
+                    }
+                    let mut checks = String::new();
+                    for (i, fshape) in fields.iter().enumerate() {
+                        let off = 4 + 8 * i;
+                        let cmp = self.slot_cmp(
+                            fshape,
+                            &format!("(i32.add (local.get $a) (i32.const {off}))"),
+                            &format!("(i32.add (local.get $b) (i32.const {off}))"),
+                        )?;
+                        checks.push_str(&format!("      (if (i32.eqz {cmp}) (then (return (i32.const 0))))\n"));
+                    }
+                    arms.push_str(&format!(
+                        "    (if (i32.eq (local.get $t) (i32.const {tag})) (then\n{checks}      (return (i32.const 1))))\n"
+                    ));
+                }
+                format!(
+                    "  (func ${name} (param $a i32) (param $b i32) (result i32)\n    \
+                     (local $t i32)\n    \
+                     (if (i32.ne (i32.load (local.get $a)) (i32.load (local.get $b))) (then (return (i32.const 0))))\n    \
+                     (local.set $t (i32.load (local.get $a)))\n{arms}    \
+                     (i32.const 1))\n"
+                )
+            }
+            EqShape::Dict(k, v) => {
+                // A dict is `[count][16-byte entries: key slot, value slot]`.
+                // Insertion-order-sensitive pairwise comparison, matching the
+                // interpreter's Vec<(K, V)> equality.
+                let kcmp = self.slot_cmp(
+                    k,
+                    "(i32.add (i32.add (local.get $a) (i32.const 4)) (i32.mul (local.get $i) (i32.const 16)))",
+                    "(i32.add (i32.add (local.get $b) (i32.const 4)) (i32.mul (local.get $i) (i32.const 16)))",
+                )?;
+                let vcmp = self.slot_cmp(
+                    v,
+                    "(i32.add (i32.add (local.get $a) (i32.const 12)) (i32.mul (local.get $i) (i32.const 16)))",
+                    "(i32.add (i32.add (local.get $b) (i32.const 12)) (i32.mul (local.get $i) (i32.const 16)))",
+                )?;
+                format!(
+                    "  (func ${name} (param $a i32) (param $b i32) (result i32)\n    \
+                     (local $n i32) (local $i i32)\n    \
+                     (if (i32.ne (i32.load (local.get $a)) (i32.load (local.get $b))) (then (return (i32.const 0))))\n    \
+                     (local.set $n (i32.load (local.get $a)))\n    \
+                     (block $done (loop $l\n      \
+                     (br_if $done (i32.ge_s (local.get $i) (local.get $n)))\n      \
+                     (if (i32.eqz {kcmp}) (then (return (i32.const 0))))\n      \
+                     (if (i32.eqz {vcmp}) (then (return (i32.const 0))))\n      \
+                     (local.set $i (i32.add (local.get $i) (i32.const 1)))\n      (br $l)))\n    \
                      (i32.const 1))\n"
                 )
             }
