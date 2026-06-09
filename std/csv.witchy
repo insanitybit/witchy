@@ -1,0 +1,100 @@
+// csv — comma-separated values, parse and encode (RFC 4180-ish).
+//
+// Fields are separated by commas and rows by newlines. A field that contains a
+// comma, a quote, or a newline is wrapped in double quotes, and a literal quote
+// inside such a field is doubled (`""`). The parser is a small character state
+// machine, so embedded commas/newlines/quotes round-trip through `encode`.
+
+import string
+import dict
+
+// Parse CSV text into rows of fields. A trailing newline is ignored; `\r\n` and
+// `\n` line endings both work.
+pub fn parse(text: String) -> List(List(String)):
+    let chars = string.to_chars(text)
+    let n = length(chars)
+    var rows = []
+    var row = []
+    var field = ""
+    var in_quotes = false
+    var i = 0
+    while i < n:
+        let ch = at(chars, i)
+        if in_quotes:
+            if ch == "\"":
+                if i + 1 < n && at(chars, i + 1) == "\"":
+                    field = field <> "\""
+                    i = i + 2
+                else:
+                    in_quotes = false
+                    i = i + 1
+            else:
+                field = field <> ch
+                i = i + 1
+        else if ch == "\"":
+            in_quotes = true
+            i = i + 1
+        else if ch == ",":
+            row = push(row, field)
+            field = ""
+            i = i + 1
+        else if ch == "\n":
+            row = push(row, field)
+            rows = push(rows, row)
+            row = []
+            field = ""
+            i = i + 1
+        else if ch == "\r":
+            i = i + 1
+        else:
+            field = field <> ch
+            i = i + 1
+    // Flush a final row that had no trailing newline.
+    if !string.is_empty(field) || length(row) > 0:
+        rows = push(rows, push(row, field))
+    rows
+
+// Encode rows back to CSV text (each row newline-terminated), quoting any field
+// that needs it.
+pub fn encode(rows: List(List(String))) -> String:
+    var out = ""
+    for row in rows:
+        out = out <> encode_row(row) <> "\n"
+    out
+
+fn encode_row(row: List(String)) -> String:
+    var parts = []
+    for f in row:
+        parts = push(parts, encode_field(f))
+    string.join(parts, ",")
+
+fn encode_field(f: String) -> String:
+    if needs_quoting(f):
+        "\"" <> string.join(split(f, "\""), "\"\"") <> "\""
+    else:
+        f
+
+fn needs_quoting(f: String) -> Bool:
+    contains(f, ",") || contains(f, "\"") || contains(f, "\n") || contains(f, "\r")
+
+// Parse with the first row as a header: each remaining row becomes a Dict keyed
+// by the header columns (a short row's missing columns read as "").
+pub fn parse_records(text: String) -> List(Dict(String, String)):
+    var out = []
+    var i = 0
+    var header = []
+    for row in parse(text):
+        if i == 0:
+            header = row
+        else:
+            out = push(out, zip_record(header, row))
+        i = i + 1
+    out
+
+fn zip_record(header: List(String), row: List(String)) -> Dict(String, String):
+    var d = dict_new()
+    var i = 0
+    for col in header:
+        d = insert(d, col, if i < length(row): at(row, i) else: "")
+        i = i + 1
+    d

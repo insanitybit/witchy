@@ -3764,6 +3764,34 @@ fn yes(b: Bool) -> String:
         );
     }
 
+    /// `std/csv` round-trips RFC-4180-ish CSV: quoted fields with embedded commas,
+    /// doubled quotes (`""`), proper re-quoting on encode, and header records.
+    #[test]
+    fn csv_module_parses_quotes_and_encodes() {
+        let src = r#"import csv
+import string
+
+fn main(console: Console):
+    let text = "name,city\nAda,\"London, UK\"\nGrace,\"NY\"\"C\"\"\"\n"
+    let rows = csv.parse(text)
+    print(console, int_to_string(length(rows)))
+    print(console, at(at(rows, 1), 1))
+    print(console, at(at(rows, 2), 1))
+    let enc = csv.encode([["a", "b,c"], ["d\"e", "f"]])
+    print(console, bs(enc == "a,\"b,c\"\n\"d\"\"e\",f\n"))
+    print(console, bs(csv.encode(csv.parse(enc)) == enc))
+    let recs = csv.parse_records(text)
+    print(console, int_to_string(length(recs)) <> ":" <> get_or(at(recs, 0), "city", "?"))
+
+fn bs(b: Bool) -> String:
+    if b: "y" else: "n"
+"#;
+        assert_eq!(
+            link_run(src),
+            vec!["3", "London, UK", "NY\"C\"", "y", "y", "2:London, UK"]
+        );
+    }
+
     /// `std/dict` adds the compositional layer over the builtin Dict: a `get`
     /// returning `Option`, `from_pairs`, and the `map_values`/`filter`/`merge`
     /// transforms — verified against the builtin `size`/`get_or`.
