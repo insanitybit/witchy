@@ -218,7 +218,10 @@ struct SavedScope {
     list_elem_vt: HashMap<String, ValType>,
     list_elem_tuple: HashMap<String, Vec<ValType>>,
     tuple_slots: HashMap<String, Vec<ValType>>,
+    payload_vt: HashMap<String, ValType>,
+    fn_ret_kind: HashMap<String, Kind>,
     ret: Kind,
+    ret_slot: bool,
     inout: bool,
 }
 
@@ -374,6 +377,14 @@ struct Codegen {
     fn_ret_list_of_fn_arg: HashMap<String, usize>,
     /// Return kind of the function currently being compiled (for `return`).
     cur_fn_ret_kind: Kind,
+    /// When true (compiling a lambda body), a `return`/tail value is stored into
+    /// the universal i64 slot (the closure-result ABI) rather than narrowed to a
+    /// fixed kind, so a closure returning a big `Int` keeps its 64 bits.
+    cur_fn_ret_slot: bool,
+    /// Param/local name -> the WASM kind a function-typed value returns, so a
+    /// closure call `f(x)` recovers the result at the right width (an `Int`-
+    /// returning closure as i64, not the generic i32).
+    local_fn_ret_kind: HashMap<String, Kind>,
     /// Whether the current function has any `inout` parameters.
     cur_fn_inout: bool,
     /// Lifted lambda functions, indexed by their table slot: a `fn(...) {...}`
@@ -432,6 +443,8 @@ impl Codegen {
             fn_ret_list_of_list_arg: HashMap::new(),
             fn_ret_list_of_fn_arg: HashMap::new(),
             cur_fn_ret_kind: Kind::I32,
+            cur_fn_ret_slot: false,
+            local_fn_ret_kind: HashMap::new(),
             cur_fn_inout: false,
             uses_list_push: false,
             uses_list_concat: false,
@@ -516,6 +529,11 @@ impl Codegen {
                 | "string_to_int" | "int_to_duration" | "duration_to_int" => Kind::I64,
                 "at" => self.elem_kind_of_list_arg(e),
                 "to_string" | "int_to_string" | "print" => Kind::I32,
+                // A closure-local called by name returns the universal i64 slot,
+                // recovered at its tracked return kind (see the call emission).
+                other if self.local_fn_ret_kind.contains_key(other) => {
+                    self.local_fn_ret_kind[other]
+                }
                 other => self.fn_ret.get(other).copied().unwrap_or(Kind::I32),
             },
             // `inner?` yields the Ok/Some payload; recover it at the payload's
@@ -524,7 +542,20 @@ impl Codegen {
                 .match_payload_valtype(inner)
                 .map(valtype_kind)
                 .unwrap_or(Kind::I32),
+            // A closure call `f(x)` returns the universal i64 slot; recover it at
+            // the closure's declared return kind (an Int-returning closure as i64).
+            Expr::Apply { func, .. } => self.apply_ret_kind(func),
             _ => Kind::I32, // Bool, Str, List, Ctor, Spawn
+        }
+    }
+
+    /// The WASM kind a closure-valued expression returns: a function-typed
+    /// variable's tracked return kind, a lambda's body kind, else i32.
+    fn apply_ret_kind(&self, func: &Expr) -> Kind {
+        match func {
+            Expr::Var(f) => self.local_fn_ret_kind.get(f).copied().unwrap_or(Kind::I32),
+            Expr::Lambda { body, .. } => self.block_kind(body),
+            _ => Kind::I32,
         }
     }
 
@@ -1235,11 +1266,17 @@ impl Codegen {
         self.local_list_elem_tuple.clear();
         self.local_tuple_slots.clear();
         self.local_payload_valtype.clear();
+        self.local_fn_ret_kind.clear();
         for p in &f.params {
             let k = p.ty.as_ref().map(ty_kind).unwrap_or(Kind::I32);
             self.locals.insert(p.name.clone(), k);
             if let Some(t) = &p.ty {
                 self.local_val_types.insert(p.name.clone(), ty_to_valtype(t));
+            }
+            // A function-typed parameter (`f: fn(...) -> RET`): remember RET's kind
+            // so a closure call `f(x)` recovers the result at the right width.
+            if let Some(Type::Fn(_, ret)) = &p.ty {
+                self.local_fn_ret_kind.insert(p.name.clone(), ty_kind(ret));
             }
             match &p.ty {
                 // A record-typed parameter lets `p.field` resolve.
@@ -1376,12 +1413,14 @@ impl Codegen {
                     let value = match opt {
                         Some(e) => {
                             let ek = self.kind_of(e);
-                            format!(
-                                "{}{}",
-                                self.compile_expr(e)?,
-                                kind_convert(ek, self.cur_fn_ret_kind)
-                            )
+                            let conv = if self.cur_fn_ret_slot {
+                                to_slot(ek).to_string()
+                            } else {
+                                kind_convert(ek, self.cur_fn_ret_kind).to_string()
+                            };
+                            format!("{}{conv}", self.compile_expr(e)?)
                         }
+                        None if self.cur_fn_ret_slot => "    i64.const 0\n".to_string(),
                         None => format!("    {}.const 0\n", wasm_ty(self.cur_fn_ret_kind)),
                     };
                     out.push_str(&value);
@@ -1670,8 +1709,11 @@ impl Codegen {
                 }
                 self.apply_level = level;
                 self.clos_arities.insert(n);
+                // The call returns the universal i64 slot; recover it at the
+                // closure's return kind.
+                let recover = from_slot(self.apply_ret_kind(func));
                 Ok(format!(
-                    "{fcode}    local.set ${tmp}\n    local.get ${tmp}\n{argcode}    local.get ${tmp}\n    i32.load\n    call_indirect (type $clos{n})\n"
+                    "{fcode}    local.set ${tmp}\n    local.get ${tmp}\n{argcode}    local.get ${tmp}\n    i32.load\n    call_indirect (type $clos{n})\n{recover}"
                 ))
             }
             Expr::Call { name, args } => self.compile_call(name, args),
@@ -2207,15 +2249,18 @@ impl Codegen {
             }
         }
         self.infer_locals(body);
-        // The closure result is the i32 generic ABI; the body's tail value is
-        // narrowed to it.
-        self.cur_fn_ret_kind = Kind::I32;
+        // The closure result is the universal i64 slot: the body's tail value (and
+        // any `return`) is stored via `to_slot`, and each `Apply` recovers it at
+        // the closure's return kind. This keeps a big `Int` return from truncating
+        // to the old i32 closure-result ABI. (Params stay i32.)
+        self.cur_fn_ret_kind = Kind::I64;
+        self.cur_fn_ret_slot = true;
 
         let mut header = format!("  (func $__lam{index} (param ${ENV_PARAM} i32) ");
         for p in params {
             header.push_str(&format!("(param ${} i32) ", p.name));
         }
-        header.push_str("(result i32)\n");
+        header.push_str("(result i64)\n");
         // Locals: captured values, then `let` bindings, then scratch. Captures
         // are declared even when they shadow nothing, since the prologue stores
         // into them.
@@ -2252,8 +2297,8 @@ impl Codegen {
         let saved_apply_level = self.apply_level;
         self.apply_level = 0;
         let body_wat = self.compile_block(body)?;
-        // Narrow the body's tail value to the i32 closure-result ABI.
-        let body_wat = format!("{body_wat}{}", kind_convert(self.block_kind(body), Kind::I32));
+        // Store the body's tail value into the universal i64 closure-result slot.
+        let body_wat = format!("{body_wat}{}", to_slot(self.block_kind(body)));
         self.apply_level = saved_apply_level;
         self.lambdas[index] = format!("{header}{prologue}{body_wat}  )\n");
         self.clos_arities.insert(params.len());
@@ -2289,7 +2334,10 @@ impl Codegen {
             list_elem_vt: std::mem::take(&mut self.local_list_elem_valtype),
             list_elem_tuple: std::mem::take(&mut self.local_list_elem_tuple),
             tuple_slots: std::mem::take(&mut self.local_tuple_slots),
+            payload_vt: std::mem::take(&mut self.local_payload_valtype),
+            fn_ret_kind: std::mem::take(&mut self.local_fn_ret_kind),
             ret: self.cur_fn_ret_kind,
+            ret_slot: self.cur_fn_ret_slot,
             inout: self.cur_fn_inout,
         }
     }
@@ -2304,7 +2352,10 @@ impl Codegen {
         self.local_list_elem_valtype = s.list_elem_vt;
         self.local_list_elem_tuple = s.list_elem_tuple;
         self.local_tuple_slots = s.tuple_slots;
+        self.local_payload_valtype = s.payload_vt;
+        self.local_fn_ret_kind = s.fn_ret_kind;
         self.cur_fn_ret_kind = s.ret;
+        self.cur_fn_ret_slot = s.ret_slot;
         self.cur_fn_inout = s.inout;
     }
 
@@ -2692,6 +2743,10 @@ impl Codegen {
                     }
                     out.push_str(&format!("    local.get ${name}\n    i32.load\n"));
                     out.push_str(&format!("    call_indirect (type $clos{n})\n"));
+                    // The call returns the universal i64 slot; recover at the
+                    // closure's return kind (matches `kind_of` for this call).
+                    let rk = self.local_fn_ret_kind.get(name).copied().unwrap_or(Kind::I32);
+                    out.push_str(from_slot(rk));
                     self.clos_arities.insert(n);
                     return Ok(out);
                 }
@@ -3101,7 +3156,7 @@ pub fn compile_module(module: &Module) -> Result<String, CodegenError> {
     for n in &arities {
         // One leading param for the closure environment, then the call's args.
         let params = "(param i32) ".repeat(*n + 1);
-        wat.push_str(&format!("  (type $clos{n} (func {params}(result i32)))\n"));
+        wat.push_str(&format!("  (type $clos{n} (func {params}(result i64)))\n"));
     }
     wat.push_str(&cg.emit_imports());
     wat.push_str("  (memory (export \"memory\") 1)\n");
@@ -3296,7 +3351,7 @@ fn compile_actor_with_tags(
     for n in &arities {
         // One leading param for the closure environment, then the call's args.
         let params = "(param i32) ".repeat(*n + 1);
-        wat.push_str(&format!("  (type $clos{n} (func {params}(result i32)))\n"));
+        wat.push_str(&format!("  (type $clos{n} (func {params}(result i64)))\n"));
     }
     wat.push_str(&cg.emit_imports());
     wat.push_str("  (memory (export \"memory\") 1)\n");
