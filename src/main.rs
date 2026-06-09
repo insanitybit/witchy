@@ -4027,6 +4027,29 @@ fn yn(b: Bool) -> String:
         assert_eq!(crate::capabilities::show_caps(&fp.total), "Console");
     }
 
+    /// `examples/life.witchy` — Conway's Game of Life over a `List(List(Bool))` —
+    /// evolves a glider through its phases by the B3/S23 rule. Pure (Console),
+    /// nested-list heavy, and identical on both backends.
+    #[test]
+    fn life_example_evolves_a_glider() {
+        let out = crate::execute_file("examples/life.witchy", Vec::new())
+            .unwrap()
+            .join("\n");
+        // Generation 0 is the seeded glider.
+        assert!(
+            out.contains("generation 0:\n.#......\n..#.....\n###....."),
+            "seed glider: {out}"
+        );
+        // After 3 steps it has drifted down-and-right into its next phase.
+        assert!(
+            out.contains("generation 3:\n........\n.#......\n..##....\n.##....."),
+            "evolved glider: {out}"
+        );
+        let src = std::fs::read_to_string("examples/life.witchy").unwrap();
+        let fp = crate::capabilities::analyze(&parser::parse_module(&src).expect("parse"));
+        assert_eq!(crate::capabilities::show_caps(&fp.total), "Console");
+    }
+
     /// Regression (found by `examples/calc.witchy` via the both-backends invariant):
     /// comparing a String whose type isn't locally tracked — a List(String)
     /// element via `at` — to a literal must be a *structural* `$str_eq` on the
