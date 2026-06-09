@@ -3637,6 +3637,20 @@ mod example_tests {
                 );
                 prop_assert_eq!(link_run(&src), vec!["y".to_string()]);
             }
+
+            /// Run-length decode is the inverse of encode (the `examples/rle`
+            /// algorithm, exercising string.to_chars/repeat + ascii.is_digit/
+            /// to_digit). Restricted to digit-free input: the count-prefix format
+            /// is only unambiguous when the data carries no digits, so this both
+            /// asserts the round-trip and documents that boundary.
+            #[test]
+            fn rle_round_trips_over_digit_free_text(s in "[a-zA-Z ]{0,40}") {
+                let src = format!(
+                    "import string\nimport ascii\n\nfn encode(t: String) -> String:\n    let cs = string.to_chars(t)\n    let n = length(cs)\n    var out = \"\"\n    var i = 0\n    while i < n:\n        let c = at(cs, i)\n        var k = 0\n        while i < n && at(cs, i) == c:\n            k = k + 1\n            i = i + 1\n        out = out <> int_to_string(k) <> c\n    out\n\nfn decode(e: String) -> String:\n    let cs = string.to_chars(e)\n    let n = length(cs)\n    var out = \"\"\n    var i = 0\n    while i < n:\n        var k = 0\n        while i < n && ascii.is_digit(at(cs, i)):\n            k = k * 10 + ascii.to_digit(at(cs, i))\n            i = i + 1\n        if i < n:\n            out = out <> string.repeat(at(cs, i), k)\n            i = i + 1\n    out\n\nfn yn(b: Bool) -> String:\n    if b: \"y\" else: \"n\"\n\nfn main(console: Console):\n    let s = \"{}\"\n    print(console, yn(decode(encode(s)) == s))\n",
+                    esc(&s)
+                );
+                prop_assert_eq!(link_run(&src), vec!["y".to_string()]);
+            }
         }
     }
 
