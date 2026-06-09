@@ -47,6 +47,8 @@ fn main(console: Console, args: List(String), root: Dir, net: Net) -> Int:
         cmd_verify(console, root, arg(args, 1))
     else if cmd == "gate":
         cmd_gate(console, root, args)
+    else if cmd == "verify-rune":
+        cmd_verify_rune(console, root, arg(args, 1), arg(args, 2))
     else if cmd == "new":
         cmd_new(console, root, arg(args, 1))
         0
@@ -514,6 +516,34 @@ fn recorded_hash(text: String) -> String:
         Ok(doc) -> jget(doc, "hash")
         Err(e) -> ""
 
+// --- verify-rune: offline re-verification of a vendored rune -----------------
+// A rune fetched by `add` carries its signed coven.json. Given the registry's
+// root public key (TOFU-pinned), re-verify it with no network: the record must
+// be validly signed, and the on-disk source must still hash to the signed hash.
+
+fn cmd_verify_rune(console: Console, root: Dir, dir: String, rootpub: String) -> Int:
+    if string.is_empty(dir) || string.is_empty(rootpub):
+        print(console, "usage: pm verify-rune <vendored-rune-dir> <registry-root-pubkey-hex>")
+        1
+    else if !exists(root, join_path(dir, "coven.json")):
+        print(console, "no coven.json in " <> dir <> " — not a rune fetched with provenance")
+        1
+    else:
+        report_rune_verify(console, root, dir, rootpub, read(root, join_path(dir, "coven.json")))
+
+fn report_rune_verify(console: Console, root: Dir, dir: String, rootpub: String, record: String) -> Int:
+    if !record_signature_valid(rootpub, record):
+        print(console, "BLOCK: " <> dir <> "/coven.json is not validly signed by that root key — refusing")
+        2
+    else if rune_hash(root, dir) != recorded_hash(record):
+        print(console, "BLOCK: " <> dir <> " source no longer matches its signed hash (tampered)")
+        2
+    else:
+        match json.decode(record):
+            Ok(doc) -> print(console, "OK: " <> jget(doc, "name") <> "@" <> jget(doc, "version") <> " verified (signature + content), no network")
+            Err(e) -> print(console, "OK: verified")
+        0
+
 // Verify a registry record is signed by the root key over its canonical payload
 // (byte-identical to coven's Record signing payload).
 fn record_signature_valid(rootpub: String, text: String) -> Bool:
@@ -743,6 +773,7 @@ fn usage(console: Console):
     print(console, "  verify <dir>        witchy.lock must match the dependency sources")
     print(console, "  gate  <dir> [cap..] BLOCK if deps demand authority beyond the lock")
     print(console, "  add <name> <req> <coven> <dest>  resolve + fetch a rune from a registry")
+    print(console, "  verify-rune <dir> <rootpub>  re-verify a vendored rune offline (coven.json)")
     print(console, "  new   <name>        scaffold a new rune")
 
 fn unknown(console: Console, cmd: String) -> Int:

@@ -1572,6 +1572,17 @@ fn witchy_pm_add_resolves_and_fetches_from_coven() {
     // The signed record is kept next to the source for offline re-verification.
     let provenance = std::fs::read_to_string(dest.join("vendor/money/coven.json"))
         .unwrap_or_default();
+
+    // The registry is now dead — `verify-rune` re-verifies the vendored rune with
+    // no network, using its coven.json and the pinned registry root key.
+    let rootpub = "4cb5abf6ad79fbf5abbccafcc269d85cd2651ed4b885b5869f241aedf0a5ba29";
+    let verify = Command::new(BIN)
+        .args([pm_src.as_str(), "verify-rune", "vendor/money", rootpub])
+        .current_dir(&dest)
+        .output()
+        .expect("run pm verify-rune");
+    let verify_out = String::from_utf8_lossy(&verify.stdout).to_string();
+
     let _ = std::fs::remove_dir_all(&store);
     let _ = std::fs::remove_dir_all(&dest);
 
@@ -1588,5 +1599,9 @@ fn witchy_pm_add_resolves_and_fetches_from_coven() {
     assert!(
         provenance.contains("\"version\":\"1.5.0\"") && provenance.contains("\"sig\":"),
         "the vendored rune must carry its signed coven.json record: {provenance:?}"
+    );
+    assert!(
+        verify.status.success() && verify_out.contains("acme/money@1.5.0 verified"),
+        "offline verify-rune must re-verify the vendored rune: {verify_out:?}"
     );
 }
