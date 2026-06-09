@@ -340,6 +340,11 @@ struct Codegen {
     /// Function name -> the record type of the elements of its `List(_)` return,
     /// so `for x in f(...) { x.field }` resolves x's record type.
     fn_ret_list_elem: HashMap<String, String>,
+    /// Functions declared `-> List(<scalar>)` (String/Int/Bool/Float), so a
+    /// `let xs = f(...)` records xs's element value type and `at(xs, i)` /
+    /// `for x in xs` carry it. Without this an `at(...)`-produced String would
+    /// be `Other` and `==` would pointer-compare instead of using `$str_eq`.
+    fn_ret_list_elem_valtype: HashMap<String, ValType>,
     /// Function name -> the argument index whose list element type is the payload
     /// of its `Option(a)`/`Result(a, _)` return (the shape `fn(List(a),..)->
     /// Option(a)`, as in list.find/head/min_by). Lets `match f(xs) { Some(r) ->
@@ -406,6 +411,7 @@ impl Codegen {
             fn_ret_records: HashMap::new(),
             fn_ret_result_record: HashMap::new(),
             fn_ret_list_elem: HashMap::new(),
+            fn_ret_list_elem_valtype: HashMap::new(),
             fn_ret_option_of_list_arg: HashMap::new(),
             fn_ret_list_of_list_arg: HashMap::new(),
             fn_ret_list_of_fn_arg: HashMap::new(),
@@ -555,6 +561,11 @@ impl Codegen {
                 .first()
                 .map(|a| self.val_type_of(&a.body))
                 .unwrap_or(ValType::Other),
+            // `at(xs, i)` has the list's element type, so a String element
+            // compares by content (`$str_eq`) rather than by pointer.
+            Expr::Call { name, args } if name == "at" && !args.is_empty() => {
+                self.elem_val_type_of(&args[0])
+            }
             Expr::Call { name, .. } => match name.as_str() {
                 "int_to_string" | "to_string" | "to_upper" | "to_lower" | "trim" | "replace"
                 | "substring" | "crypto.sha256" => ValType::Str,
@@ -730,7 +741,18 @@ impl Codegen {
 
     fn elem_val_type_of(&self, iter: &Expr) -> ValType {
         match iter {
-            Expr::Call { name, .. } if name == "split" => ValType::Str,
+            // Builtins that yield `List(String)` regardless of input.
+            Expr::Call { name, .. }
+                if name == "split" || name == "to_chars" || name == "string_chars" =>
+            {
+                ValType::Str
+            }
+            // A function declared `-> List(<scalar>)` carries its element type.
+            Expr::Call { name, .. } => self
+                .fn_ret_list_elem_valtype
+                .get(name)
+                .copied()
+                .unwrap_or(ValType::Other),
             Expr::List(items) => items
                 .first()
                 .map(|e| self.val_type_of(e))
@@ -2880,6 +2902,15 @@ pub fn compile_module(module: &Module) -> Result<String, CodegenError> {
                     if let Some(Type::Named(elem, _)) = args.first() {
                         if cg.record_fields.contains_key(elem) {
                             cg.fn_ret_list_elem.insert(f.name.clone(), elem.clone());
+                        }
+                    }
+                    // `List(String)` etc.: record the scalar element value type so
+                    // `at(f(...), i)` is typed (e.g. a String element compares by
+                    // content). Skips `Other` (generic / non-scalar elements).
+                    if let Some(elem) = args.first() {
+                        let evt = ty_to_valtype(elem);
+                        if evt != ValType::Other {
+                            cg.fn_ret_list_elem_valtype.insert(f.name.clone(), evt);
                         }
                     }
                 } else if let Some(Type::Named(payload, _)) = args.first() {

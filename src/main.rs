@@ -4159,6 +4159,38 @@ fn yn(b: Bool) -> String:
         assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
     }
 
+    /// Comparing two `at(list, i)` results — where neither operand is a literal —
+    /// must compare String *content* on WASM, not pointers. The list holds two
+    /// runtime-built (concatenated) strings with equal content but distinct heap
+    /// addresses, so a pointer comparison would wrongly report "ne". Codegen now
+    /// carries a `List(String)`'s element value type to `at(...)`, so `==` lowers
+    /// to `$str_eq`. (Regression for the run-length-encoding parity divergence.)
+    #[test]
+    fn wasm_string_eq_on_two_at_results_compares_content() {
+        let src = "fn main(console: Console):\n    let a = \"x\" <> \"y\"\n    let b = \"x\" <> \"y\"\n    let xs = [a, b, \"zz\"]\n    print(console, if at(xs, 0) == at(xs, 1): \"eq\" else: \"ne\")\n    print(console, if at(xs, 0) == at(xs, 2): \"eq\" else: \"ne\")\n";
+        let want = vec!["eq".to_string(), "ne".to_string()];
+        assert_eq!(interp(src), want.clone(), "interpreter");
+        assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
+    }
+
+    /// `examples/rle.witchy` — run-length encoding and its inverse — collapses
+    /// runs to "<count><char>" and expands them back, verifying decode∘encode is
+    /// the identity. Pure string processing; identical on both backends. (Its
+    /// run-counting loop is what exposed the two-`at`-results comparison gap.)
+    #[test]
+    fn rle_example_round_trips_runs() {
+        assert_eq!(
+            crate::execute_file("examples/rle.witchy", Vec::new()).unwrap(),
+            vec![
+                "\"aaabbbbc\" -> \"3a4b1c\"  roundtrip ok",
+                "\"wwwwww\" -> \"6w\"  roundtrip ok",
+                "\"abcdef\" -> \"1a1b1c1d1e1f\"  roundtrip ok",
+                "\"mississippi\" -> \"1m1i2s1i2s1i2p1i\"  roundtrip ok",
+                "\"\" -> \"\"  roundtrip ok",
+            ]
+        );
+    }
+
     /// `std/time` computes the civil UTC date from a unix timestamp (Hinnant's
     /// days<->civil algorithm), cross-checked against Python's datetime: leap
     /// years, weekday, an exact round-trip, and a pre-1970 timestamp (floor
