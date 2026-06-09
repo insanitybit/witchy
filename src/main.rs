@@ -4027,6 +4027,25 @@ fn yn(b: Bool) -> String:
         assert_eq!(crate::capabilities::show_caps(&fp.total), "Console");
     }
 
+    /// `examples/jq.witchy` — a JSON query tool — walks a dotted path (object keys
+    /// and numeric array indices) into a decoded document and renders the value.
+    /// Pure (Console), both backends.
+    #[test]
+    fn jq_example_queries_json_by_path() {
+        assert_eq!(
+            crate::execute_file("examples/jq.witchy", Vec::new()).unwrap(),
+            vec![
+                "user.name       => \"Ada\"",
+                "user.roles      => [\"admin\",\"dev\"]",
+                "user.roles.0    => \"admin\"",
+                "user.roles.1    => \"dev\"",
+                "count           => 42",
+                "active          => true",
+                "user.missing    => (no such path)",
+            ]
+        );
+    }
+
     /// `examples/rpn.witchy` — a stack-machine reverse-Polish calculator — folds
     /// tokens through an operand stack and reports underflow / division-by-zero
     /// through `Result`. Pure (Console), both backends.
