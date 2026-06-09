@@ -1705,7 +1705,8 @@ impl Codegen {
                 for a in args {
                     let ak = self.kind_of(a);
                     argcode.push_str(&self.compile_expr(a)?);
-                    argcode.push_str(kind_convert(ak, Kind::I32));
+                    // Pass each arg in the universal i64 slot (the closure ABI).
+                    argcode.push_str(to_slot(ak));
                 }
                 self.apply_level = level;
                 self.clos_arities.insert(n);
@@ -2237,15 +2238,27 @@ impl Codegen {
         }
         // Captured names are locals of the lifted function; carry over their
         // record / list-element types so field and loop resolution still work.
-        for (name, _, rec, list_elem, _kind) in &cap_info {
-            // Inside the lambda a capture uses the i32 generic ABI (an Int
-            // capture is narrowed), matching params and result.
-            self.locals.insert(name.clone(), Kind::I32);
+        for (name, _, rec, list_elem, kind) in &cap_info {
+            // A capture keeps its real kind (an Int capture stays i64): it is
+            // stored into and recovered from the env record's universal i64 slot.
+            self.locals.insert(name.clone(), *kind);
             if let Some(r) = rec {
                 self.local_records.insert(name.clone(), r.clone());
             }
             if let Some(e) = list_elem {
                 self.local_list_elem.insert(name.clone(), e.clone());
+            }
+        }
+        // Lambda parameters: type them so the body uses the right width (an Int
+        // param is i64), and track a fn-typed param's return kind.
+        for p in params {
+            let k = p.ty.as_ref().map(ty_kind).unwrap_or(Kind::I32);
+            self.locals.insert(p.name.clone(), k);
+            if let Some(t) = &p.ty {
+                self.local_val_types.insert(p.name.clone(), ty_to_valtype(t));
+            }
+            if let Some(Type::Fn(_, ret)) = &p.ty {
+                self.local_fn_ret_kind.insert(p.name.clone(), ty_kind(ret));
             }
         }
         self.infer_locals(body);
@@ -2256,16 +2269,20 @@ impl Codegen {
         self.cur_fn_ret_kind = Kind::I64;
         self.cur_fn_ret_slot = true;
 
+        // Value params arrive in the universal i64 slot (the closure-call ABI);
+        // a prologue recovers each into its named local at the right width.
         let mut header = format!("  (func $__lam{index} (param ${ENV_PARAM} i32) ");
         for p in params {
-            header.push_str(&format!("(param ${} i32) ", p.name));
+            header.push_str(&format!("(param $__lp_{} i64) ", p.name));
         }
         header.push_str("(result i64)\n");
-        // Locals: captured values, then `let` bindings, then scratch. Captures
-        // are declared even when they shadow nothing, since the prologue stores
-        // into them.
-        for (name, _, _, _, _) in &cap_info {
-            header.push_str(&format!("    (local ${name} i32)\n"));
+        // Locals: params, captured values, `let` bindings, then scratch.
+        for p in params {
+            let k = self.locals.get(&p.name).copied().unwrap_or(Kind::I32);
+            header.push_str(&format!("    (local ${} {})\n", p.name, wasm_ty(k)));
+        }
+        for (name, _, _, _, kind) in &cap_info {
+            header.push_str(&format!("    (local ${name} {})\n", wasm_ty(*kind)));
         }
         let mut lets = Vec::new();
         collect_let_names(body, &mut lets);
@@ -2285,11 +2302,21 @@ impl Codegen {
         // 8-byte slot at offset 4 + 8*j, past the i32 code-index header), then
         // recover its kind from the universal i64 slot rep.
         let mut prologue = String::new();
-        for (j, (name, _, _, _, _)) in cap_info.iter().enumerate() {
+        // Recover each value param from its i64 slot into the named local.
+        for p in params {
+            let k = self.locals.get(&p.name).copied().unwrap_or(Kind::I32);
+            prologue.push_str(&format!(
+                "    local.get $__lp_{}\n{}    local.set ${}\n",
+                p.name,
+                from_slot(k),
+                p.name
+            ));
+        }
+        for (j, (name, _, _, _, kind)) in cap_info.iter().enumerate() {
             let offset = 4 + 8 * j;
             prologue.push_str(&format!(
                 "    local.get ${ENV_PARAM}\n    i32.const {offset}\n    i32.add\n    i64.load\n{}    local.set ${name}\n",
-                from_slot(Kind::I32)
+                from_slot(*kind)
             ));
         }
 
@@ -2739,7 +2766,8 @@ impl Codegen {
                     for arg in args {
                         let ak = self.kind_of(arg);
                         out.push_str(&self.compile_expr(arg)?);
-                        out.push_str(kind_convert(ak, Kind::I32));
+                        // Pass each arg in the universal i64 slot (the closure ABI).
+                        out.push_str(to_slot(ak));
                     }
                     out.push_str(&format!("    local.get ${name}\n    i32.load\n"));
                     out.push_str(&format!("    call_indirect (type $clos{n})\n"));
@@ -3155,7 +3183,7 @@ pub fn compile_module(module: &Module) -> Result<String, CodegenError> {
     arities.sort_unstable();
     for n in &arities {
         // One leading param for the closure environment, then the call's args.
-        let params = "(param i32) ".repeat(*n + 1);
+        let params = format!("(param i32) {}", "(param i64) ".repeat(*n));
         wat.push_str(&format!("  (type $clos{n} (func {params}(result i64)))\n"));
     }
     wat.push_str(&cg.emit_imports());
@@ -3350,7 +3378,7 @@ fn compile_actor_with_tags(
     arities.sort_unstable();
     for n in &arities {
         // One leading param for the closure environment, then the call's args.
-        let params = "(param i32) ".repeat(*n + 1);
+        let params = format!("(param i32) {}", "(param i64) ".repeat(*n));
         wat.push_str(&format!("  (type $clos{n} (func {params}(result i64)))\n"));
     }
     wat.push_str(&cg.emit_imports());

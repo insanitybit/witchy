@@ -4408,6 +4408,22 @@ fn yn(b: Bool) -> String:
         assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
     }
 
+    /// A large `Int` passed AS a closure argument, and one CAPTURED by a closure,
+    /// must keep their 64 bits on WASM. Closure params and captures use the i64
+    /// universal slot (recovered at their kind in the lambda prologue), matching
+    /// the result ABI. (Regression for big-Int-through-closure arg/capture.)
+    #[test]
+    fn wasm_big_int_closure_arg_and_capture() {
+        // Argument: 5000000000 passed to the closure, + 1.
+        let arg = "fn apply(f: fn(Int) -> Int, x: Int) -> Int:\n    f(x)\n\nfn main(console: Console):\n    print(console, int_to_string(apply(fn(k: Int): k + 1, 5000000000)))\n";
+        assert_eq!(interp(arg), vec!["5000000001"], "interpreter (arg)");
+        assert_eq!(run_on_wasm(arg), vec!["5000000001"], "WASM (arg)");
+        // Capture: a big Int captured by the closure, recovered from the env.
+        let cap = "fn apply(f: fn(Int) -> Int, x: Int) -> Int:\n    f(x)\n\nfn main(console: Console):\n    let big = 5000000000\n    print(console, int_to_string(apply(fn(x: Int): x + big, 1)))\n";
+        assert_eq!(interp(cap), vec!["5000000001"], "interpreter (capture)");
+        assert_eq!(run_on_wasm(cap), vec!["5000000001"], "WASM (capture)");
+    }
+
     /// A large `Int` carried as an `Option`/`Result` success payload must keep its
     /// 64 bits on WASM, through both `?` and a `match`. The payload field is a type
     /// variable (generic i32 ABI), so codegen would truncate; it now tracks the
