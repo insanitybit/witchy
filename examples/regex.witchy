@@ -1,0 +1,72 @@
+// regex — a tiny regular-expression matcher in the style of Kernighan & Pike.
+// It supports literal characters, `.` (any one character), `*` (zero or more of
+// the preceding character), and the `^` / `$` anchors. The match is recursive:
+// `match_here` consumes the pattern and text together; `match_star` handles the
+// zero-or-more repetition. Every comparison is between two `at(..)` characters,
+// so it's a thorough both-backends exercise of content comparison. Pure (Console
+// only); identical interpreted and compiled. Run:  witchy examples/regex.witchy
+
+import string
+
+fn main(console: Console):
+    for probe in cases():
+        let (pattern, text) = probe
+        let shown = string.pad_right("/" <> pattern <> "/", 10, " ") <> string.pad_right("\"" <> text <> "\"", 16, " ")
+        print(console, shown <> verdict(matches(pattern, text)))
+
+fn cases() -> List((String, String)):
+    [
+        ("abc", "abc"),
+        ("a.c", "axc"),
+        ("a.c", "ac"),
+        ("a*b", "aaab"),
+        ("a*b", "b"),
+        ("^hello", "hello world"),
+        ("world$", "hello world"),
+        ("^a.*z$", "abcz"),
+        ("^a.*z$", "abc"),
+    ]
+
+fn matches(pattern: String, text: String) -> Bool:
+    let re = string.to_chars(pattern)
+    let s = string.to_chars(text)
+    if length(re) > 0 && at(re, 0) == "^":
+        match_here(re, 1, s, 0)
+    else:
+        match_anywhere(re, s)
+
+// The unanchored case: try to match starting at each position in the text.
+fn match_anywhere(re: List(String), s: List(String)) -> Bool:
+    var start = 0
+    var found = match_here(re, 0, s, 0)
+    while !found && start < length(s):
+        start = start + 1
+        if match_here(re, 0, s, start):
+            found = true
+    found
+
+// Does the pattern from `ri` match the text from `si`?
+fn match_here(re: List(String), ri: Int, s: List(String), si: Int) -> Bool:
+    if ri >= length(re):
+        true
+    else if ri + 1 < length(re) && at(re, ri + 1) == "*":
+        match_star(at(re, ri), re, ri + 2, s, si)
+    else if at(re, ri) == "$" && ri + 1 == length(re):
+        si >= length(s)
+    else if si < length(s) && (at(re, ri) == "." || at(re, ri) == at(s, si)):
+        match_here(re, ri + 1, s, si + 1)
+    else:
+        false
+
+// Match zero or more of `c`, then the rest of the pattern — fewest reps first.
+fn match_star(c: String, re: List(String), ri: Int, s: List(String), si: Int) -> Bool:
+    var i = si
+    var done = match_here(re, ri, s, i)
+    while !done && i < length(s) && (c == "." || at(s, i) == c):
+        i = i + 1
+        if match_here(re, ri, s, i):
+            done = true
+    done
+
+fn verdict(matched: Bool) -> String:
+    if matched: "match" else: "no match"

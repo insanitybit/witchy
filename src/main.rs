@@ -4027,6 +4027,28 @@ fn yn(b: Bool) -> String:
         assert_eq!(crate::capabilities::show_caps(&fp.total), "Console");
     }
 
+    /// `examples/regex.witchy` — a tiny K&P-style regex matcher (literals, `.`,
+    /// `*`, `^`, `$`) — matches a battery of pattern/text pairs. Every step is a
+    /// two-`at(..)` character comparison, so it stresses content comparison on
+    /// both backends.
+    #[test]
+    fn regex_example_matches_literals_dot_star_anchors() {
+        assert_eq!(
+            crate::execute_file("examples/regex.witchy", Vec::new()).unwrap(),
+            vec![
+                "/abc/     \"abc\"           match",
+                "/a.c/     \"axc\"           match",
+                "/a.c/     \"ac\"            no match",
+                "/a*b/     \"aaab\"          match",
+                "/a*b/     \"b\"             match",
+                "/^hello/  \"hello world\"   match",
+                "/world$/  \"hello world\"   match",
+                "/^a.*z$/  \"abcz\"          match",
+                "/^a.*z$/  \"abc\"           no match",
+            ]
+        );
+    }
+
     /// `examples/matrix.witchy` — integer matrices — multiplies a 2x3 by a 3x2,
     /// transposes, and prints an identity, all with right-aligned columns. A
     /// `List(List(Int))` workout (nested `at`) that agrees on both backends.
