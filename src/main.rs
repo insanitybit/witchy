@@ -4027,6 +4027,23 @@ fn yn(b: Bool) -> String:
         assert_eq!(crate::capabilities::show_caps(&fp.total), "Console");
     }
 
+    /// `examples/sudoku.witchy` — a backtracking solver over immutable boards —
+    /// solves the canonical puzzle to its unique solution. Pure (Console),
+    /// recursion + Option-backtracking heavy.
+    #[test]
+    fn sudoku_example_solves_by_backtracking() {
+        let out = crate::execute_file("examples/sudoku.witchy", Vec::new())
+            .unwrap()
+            .join("\n");
+        assert!(
+            out.contains("solved:\n534678912\n672195348\n198342567\n859761423"),
+            "unique solution: {out}"
+        );
+        let src = std::fs::read_to_string("examples/sudoku.witchy").unwrap();
+        let fp = crate::capabilities::analyze(&parser::parse_module(&src).expect("parse"));
+        assert_eq!(crate::capabilities::show_caps(&fp.total), "Console");
+    }
+
     /// `examples/life.witchy` — Conway's Game of Life over a `List(List(Bool))` —
     /// evolves a glider through its phases by the B3/S23 rule. Pure (Console),
     /// nested-list heavy, and identical on both backends.
