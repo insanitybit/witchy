@@ -4507,6 +4507,23 @@ fn yn(b: Bool) -> String:
         assert_eq!(run_on_wasm(src), vec!["9000000000"], "WASM");
     }
 
+    /// A big `Int` at ARBITRARY list-nesting depth must survive — via a chain of
+    /// `at`, nested `for` loops, and a nested-list parameter. Codegen tracks a
+    /// list's `(depth, scalar)` nesting (literal, variable, or declared type) and
+    /// peels one level per `at`/loop, so the scalar is recovered as i64 at any
+    /// depth. (Closes the recursive nested-collection class.)
+    #[test]
+    fn wasm_big_int_at_arbitrary_list_depth() {
+        // Depth-4 `at` chain (literal).
+        let chain = "fn main(console: Console):\n    let xs = [[[[9000000000]]]]\n    print(console, int_to_string(at(at(at(at(xs, 0), 0), 0), 0)))\n";
+        assert_eq!(interp(chain), vec!["9000000000"], "interpreter (at-chain)");
+        assert_eq!(run_on_wasm(chain), vec!["9000000000"], "WASM (at-chain)");
+        // Depth-3 nested loops through a nested-list parameter.
+        let loops = "fn total(c: List(List(List(Int)))) -> Int:\n    var s = 0\n    for plane in c:\n        for row in plane:\n            for x in row:\n                s = s + x\n    s\n\nfn main(console: Console):\n    print(console, int_to_string(total([[[9000000000]]])))\n";
+        assert_eq!(interp(loops), vec!["9000000000"], "interpreter (loops/param)");
+        assert_eq!(run_on_wasm(loops), vec!["9000000000"], "WASM (loops/param)");
+    }
+
     /// A large `Int` carried as an `Option`/`Result` success payload must keep its
     /// 64 bits on WASM, through both `?` and a `match`. The payload field is a type
     /// variable (generic i32 ABI), so codegen would truncate; it now tracks the

@@ -206,6 +206,28 @@ fn ty_to_valtype(t: &Type) -> ValType {
     }
 }
 
+/// `(depth, scalar)` for a (possibly nested) `List(...)` type over a scalar
+/// element — `List(Int)` is `(1, Int)`, `List(List(Int))` is `(2, Int)`. `None`
+/// for non-list or non-scalar-bottomed types. Lets a `List(List(Int))` parameter
+/// drive nested-`at` recovery.
+fn ty_list_nesting(t: &Type) -> Option<(usize, ValType)> {
+    if let Type::Named(n, args) = t {
+        if n == "List" {
+            return match args.first() {
+                Some(inner @ Type::Named(in_n, _)) if in_n == "List" => {
+                    ty_list_nesting(inner).map(|(d, s)| (d + 1, s))
+                }
+                Some(elem) => match ty_to_valtype(elem) {
+                    ValType::Other => None,
+                    s => Some((1, s)),
+                },
+                None => None,
+            };
+        }
+    }
+    None
+}
+
 /// A function's local-type tables, taken out while a nested lambda body compiles
 /// and restored afterward. Bundled so `swap_out_scope`/`restore_scope` pass one
 /// value instead of a long argument list.
@@ -380,6 +402,11 @@ struct Codegen {
     /// List-of-lists variable -> the INNER list's scalar element type, so
     /// `at(at(xs, i), j)` recovers an Int as i64 (two levels of nesting).
     local_list_elem_list_valtype: HashMap<String, ValType>,
+    /// Nested-list variable -> `(depth, scalar)`: the variable is a list nested
+    /// `depth` times over a scalar element (`List(Int)` is depth 1,
+    /// `List(List(Int))` depth 2, ...). Lets `at` peel one level at a time so an
+    /// Int at ANY nesting depth recovers as i64.
+    local_list_nesting: HashMap<String, (usize, ValType)>,
     /// Function name -> the record type of the elements of its `List(_)` return,
     /// so `for x in f(...) { x.field }` resolves x's record type.
     fn_ret_list_elem: HashMap<String, String>,
@@ -470,6 +497,7 @@ impl Codegen {
             local_dict_value_valtype: HashMap::new(),
             local_dict_key_valtype: HashMap::new(),
             local_list_elem_list_valtype: HashMap::new(),
+            local_list_nesting: HashMap::new(),
             fn_ret_list_elem: HashMap::new(),
             fn_ret_list_elem_valtype: HashMap::new(),
             fn_ret_option_of_list_arg: HashMap::new(),
@@ -941,6 +969,53 @@ impl Codegen {
         }
     }
 
+    /// `(depth, scalar)` for a list-valued expression that is a uniform nested
+    /// list over a scalar element: a tracked variable, a list literal, or
+    /// `at(L, i)` (which peels one level off `L`). `None` when not a uniform
+    /// nested-scalar list. Lets `at` recover an Int element at any nesting depth.
+    fn list_nesting(&self, e: &Expr) -> Option<(usize, ValType)> {
+        match e {
+            Expr::Var(v) => {
+                if let Some(n) = self.local_list_nesting.get(v) {
+                    Some(*n)
+                } else if let Some(s) = self.local_list_elem_list_valtype.get(v) {
+                    Some((2, *s))
+                } else if let Some(s) = self.local_list_elem_valtype.get(v) {
+                    Some((1, *s))
+                } else {
+                    None
+                }
+            }
+            Expr::List(_) => self.literal_nesting(e),
+            Expr::Call { name, args } if name == "at" && args.len() == 2 => {
+                match self.list_nesting(&args[0]) {
+                    Some((d, s)) if d >= 2 => Some((d - 1, s)),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// `(depth, scalar)` of a list LITERAL, computed recursively from its first
+    /// element: a scalar gives depth 1; a nested list adds a level.
+    fn literal_nesting(&self, e: &Expr) -> Option<(usize, ValType)> {
+        if let Expr::List(items) = e {
+            match items.first() {
+                Some(inner @ Expr::List(_)) => {
+                    self.literal_nesting(inner).map(|(d, s)| (d + 1, s))
+                }
+                Some(first) => match self.val_type_of(first) {
+                    ValType::Other => None,
+                    s => Some((1, s)),
+                },
+                None => None,
+            }
+        } else {
+            None
+        }
+    }
+
     fn elem_val_type_of(&self, iter: &Expr) -> ValType {
         match iter {
             // Builtins that yield `List(String)` regardless of input.
@@ -959,16 +1034,15 @@ impl Codegen {
                     .unwrap_or(ValType::Other),
                 _ => ValType::Other,
             },
-            // `at(xs, i)` on a list-of-lists yields the inner list, whose element
-            // type is tracked — so `at(at(xs, i), j)` recovers an Int as i64.
-            Expr::Call { name, args } if name == "at" && args.len() == 2 => match &args[0] {
-                Expr::Var(xs) => self
-                    .local_list_elem_list_valtype
-                    .get(xs)
-                    .copied()
-                    .unwrap_or(ValType::Other),
-                _ => ValType::Other,
-            },
+            // `at(L, i)` where `L` is itself a (possibly deeply) nested list: the
+            // element is a scalar exactly when the at-result is a depth-1 list.
+            // Peeling via `list_nesting` handles any nesting depth.
+            Expr::Call { name, args } if name == "at" && args.len() == 2 => {
+                match self.list_nesting(iter) {
+                    Some((1, s)) => s,
+                    _ => ValType::Other,
+                }
+            }
             // A function declared `-> List(<scalar>)` carries its element type.
             Expr::Call { name, .. } => self
                 .fn_ret_list_elem_valtype
@@ -979,11 +1053,16 @@ impl Codegen {
                 .first()
                 .map(|e| self.val_type_of(e))
                 .unwrap_or(ValType::Other),
-            Expr::Var(v) => self
-                .local_list_elem_valtype
-                .get(v)
-                .copied()
-                .unwrap_or(ValType::Other),
+            Expr::Var(v) => {
+                if let Some(s) = self.local_list_elem_valtype.get(v) {
+                    *s
+                } else if let Some((1, s)) = self.local_list_nesting.get(v).copied() {
+                    // A nested-list var that is now a depth-1 list of a scalar.
+                    s
+                } else {
+                    ValType::Other
+                }
+            }
             _ => ValType::Other,
         }
     }
@@ -1069,16 +1148,12 @@ impl Codegen {
                     if let Some(slots) = self.list_elem_tuple_slots(value) {
                         self.local_list_elem_tuple.insert(name.clone(), slots);
                     }
-                    // A list literal of lists: record the inner element's scalar
-                    // type, so `at(at(name, i), j)` recovers it.
-                    if let Expr::List(items) = value {
-                        if let Some(Expr::List(inner)) = items.first() {
-                            if let Some(e) = inner.first() {
-                                let vt = self.val_type_of(e);
-                                if vt != ValType::Other {
-                                    self.local_list_elem_list_valtype.insert(name.clone(), vt);
-                                }
-                            }
+                    // A list literal nested over a scalar records its
+                    // `(depth, scalar)`, so `at(at(... name ...))` recovers an Int
+                    // element at any nesting depth.
+                    if matches!(value, Expr::List(_)) {
+                        if let Some(n) = self.literal_nesting(value) {
+                            self.local_list_nesting.insert(name.clone(), n);
                         }
                     }
                     // A binding to a `List(Record)` (literal, a `List(Record)`-
@@ -1217,6 +1292,14 @@ impl Codegen {
                 // bindings (and `k == key` use string, not pointer, comparison).
                 if let Some(slots) = self.list_elem_tuple_slots(iter) {
                     self.local_tuple_slots.insert(var.clone(), slots);
+                }
+                // Iterating a nested list: the loop var is itself a list one level
+                // shallower, so an inner `for x in var` / `at(var, i)` recovers the
+                // scalar element at any depth.
+                if let Some((d, s)) = self.list_nesting(iter) {
+                    if d >= 2 {
+                        self.local_list_nesting.insert(var.clone(), (d - 1, s));
+                    }
                 }
                 self.infer_locals_expr(iter);
                 self.infer_locals(body);
@@ -1484,6 +1567,7 @@ impl Codegen {
         self.local_dict_value_valtype.clear();
         self.local_dict_key_valtype.clear();
         self.local_list_elem_list_valtype.clear();
+        self.local_list_nesting.clear();
         self.local_fn_ret_kind.clear();
         for p in &f.params {
             let k = p.ty.as_ref().map(ty_kind).unwrap_or(Kind::I32);
@@ -1495,6 +1579,13 @@ impl Codegen {
             // so a closure call `f(x)` recovers the result at the right width.
             if let Some(Type::Fn(_, ret)) = &p.ty {
                 self.local_fn_ret_kind.insert(p.name.clone(), ty_kind(ret));
+            }
+            // A nested-list parameter (`m: List(List(Int))`): record its
+            // `(depth, scalar)` so `at(at(m, i), j)` recovers an Int as i64.
+            if let Some(n) = p.ty.as_ref().and_then(ty_list_nesting) {
+                if n.0 >= 2 {
+                    self.local_list_nesting.insert(p.name.clone(), n);
+                }
             }
             match &p.ty {
                 // A record-typed parameter lets `p.field` resolve.
