@@ -4833,6 +4833,14 @@ impl LambdaScan {
 /// patterns, nested lambda params). The bound set is an over-approximation
 /// (binders apply to the whole body), sound for these checks on all but
 /// pathological shadowing.
+/// Names a lambda assigns but does not bind internally — i.e. writes to a
+/// captured/outer variable. By-value capture cannot propagate these out, so every
+/// backend rejects them; the type checker calls this so the rejection is uniform
+/// (and identical to what codegen would detect) rather than backend-specific.
+pub(crate) fn lambda_outer_assigns(params: &[Param], body: &Block) -> Vec<String> {
+    scan_lambda(params, body).assigns_outer()
+}
+
 fn scan_lambda(params: &[Param], body: &Block) -> LambdaScan {
     let mut s = LambdaScan::default();
     for p in params {
