@@ -4460,6 +4460,30 @@ fn yn(b: Bool) -> String:
         assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
     }
 
+    /// Ordering a NaN must FAIL on both backends, not silently return IEEE false
+    /// on WASM. The interpreter errors ("cannot compare NaN"); the compiled
+    /// `<`/`<=`/`>`/`>=` on floats route through a NaN-trapping helper. Equality
+    /// (`==`) is IEEE on both (NaN == NaN is false) and still agrees. Ordinary
+    /// float ordering is unchanged. (Regression for a silent NaN-ordering
+    /// divergence.)
+    #[test]
+    fn nan_ordering_errors_on_both_backends() {
+        for cmp in ["nan < 1.0", "nan > 1.0", "nan <= nan", "nan >= 0.0"] {
+            let src = format!(
+                "fn main(console: Console):\n    let nan = 0.0 / 0.0\n    print(console, to_string({cmp}))\n"
+            );
+            let module = parser::parse_module(&src).expect("parse");
+            let wat = codegen::compile_module(&module).expect("compile");
+            assert!(interpreter::run(&src).is_err(), "interpreter must error on `{cmp}`");
+            assert!(crate::run_wat_capture(&wat).is_err(), "WASM must trap on `{cmp}`");
+        }
+        // Ordinary float ordering and NaN equality still agree.
+        let ok = "fn main(console: Console):\n    let nan = 0.0 / 0.0\n    print(console, to_string(1.5 < 2.5))\n    print(console, to_string(2.5 <= 2.5))\n    print(console, to_string(nan == nan))\n";
+        let want = vec!["true".to_string(), "true".to_string(), "false".to_string()];
+        assert_eq!(interp(ok), want.clone(), "interpreter");
+        assert_eq!(run_on_wasm(ok), want, "compiled WASM must agree");
+    }
+
     /// `string_to_int` of a value that overflows i64 must FAIL on both backends,
     /// not silently wrap on WASM. The compiled `$str_to_int` now traps once the
     /// running magnitude would exceed the sign-appropriate i64 bound (2^63-1, or

@@ -338,6 +338,10 @@ struct Codegen {
     /// Whether the `encoding` host import + `$encoding` guest helper are needed
     /// (hex/base64 encode/decode, all `String -> String`).
     uses_encoding: bool,
+    /// Whether the NaN-trapping float ordering helpers (`$f_lt`/`$f_le`/`$f_gt`/
+    /// `$f_ge`) are needed. Ordering a NaN is a runtime error on the interpreter,
+    /// so the compiled comparisons trap rather than silently returning IEEE false.
+    uses_float_ord: bool,
     uses_ends_with: bool,
     /// Whether the `split` helper is needed.
     uses_split: bool,
@@ -550,6 +554,7 @@ impl Codegen {
             uses_crypto_sha256: false,
             uses_float_to_str: false,
             uses_encoding: false,
+            uses_float_ord: false,
             uses_dict_update: false,
             uses_ends_with: false,
             uses_split: false,
@@ -1565,6 +1570,9 @@ impl Codegen {
         if self.uses_encoding {
             s.push_str(ENCODING_WAT);
         }
+        if self.uses_float_ord {
+            s.push_str(FLOAT_ORD_WAT);
+        }
         // `$split` builds its result list with `$list_push` (emitted above via
         // `uses_list_push`, which the split call site also sets).
         if self.uses_split {
@@ -2007,30 +2015,37 @@ impl Codegen {
                     BinOp::Mod => format!("{p}.rem_s"),
                     BinOp::Eq => format!("{p}.eq"),
                     BinOp::NotEq => format!("{p}.ne"),
+                    // Float ordering goes through a NaN-trapping helper (the
+                    // interpreter errors on a NaN comparison); integer ordering is
+                    // a plain signed compare.
                     BinOp::Lt => {
                         if float {
-                            "f64.lt".to_string()
+                            self.uses_float_ord = true;
+                            "call $f_lt".to_string()
                         } else {
                             format!("{p}.lt_s")
                         }
                     }
                     BinOp::LtEq => {
                         if float {
-                            "f64.le".to_string()
+                            self.uses_float_ord = true;
+                            "call $f_le".to_string()
                         } else {
                             format!("{p}.le_s")
                         }
                     }
                     BinOp::Gt => {
                         if float {
-                            "f64.gt".to_string()
+                            self.uses_float_ord = true;
+                            "call $f_gt".to_string()
                         } else {
                             format!("{p}.gt_s")
                         }
                     }
                     BinOp::GtEq => {
                         if float {
-                            "f64.ge".to_string()
+                            self.uses_float_ord = true;
+                            "call $f_ge".to_string()
                         } else {
                             format!("{p}.ge_s")
                         }
@@ -4188,6 +4203,27 @@ const ENCODING_WAT: &str = r#"  (func $encoding (param $op i32) (param $in i32) 
     (i32.store (local.get $res) (local.get $n))
     (global.set $heap (i32.add (i32.add (local.get $res) (i32.const 4)) (local.get $n)))
     (local.get $res))
+"#;
+
+// Float ordering with the interpreter's NaN semantics: comparing a NaN is a
+// runtime error (NaN has no order), so each helper traps when either operand is
+// NaN (`x != x`), otherwise it performs the IEEE comparison. Equality (`==`/`!=`)
+// needs no helper — IEEE false/true for NaN already matches the interpreter.
+const FLOAT_ORD_WAT: &str = r#"  (func $f_nan_guard (param $a f64) (param $b f64)
+    (if (i32.or (f64.ne (local.get $a) (local.get $a)) (f64.ne (local.get $b) (local.get $b)))
+      (then (unreachable))))
+  (func $f_lt (param $a f64) (param $b f64) (result i32)
+    (call $f_nan_guard (local.get $a) (local.get $b))
+    (f64.lt (local.get $a) (local.get $b)))
+  (func $f_le (param $a f64) (param $b f64) (result i32)
+    (call $f_nan_guard (local.get $a) (local.get $b))
+    (f64.le (local.get $a) (local.get $b)))
+  (func $f_gt (param $a f64) (param $b f64) (result i32)
+    (call $f_nan_guard (local.get $a) (local.get $b))
+    (f64.gt (local.get $a) (local.get $b)))
+  (func $f_ge (param $a f64) (param $b f64) (result i32)
+    (call $f_nan_guard (local.get $a) (local.get $b))
+    (f64.ge (local.get $a) (local.get $b)))
 "#;
 
 const CRYPTO_SHA256_WAT: &str = r#"  (func $crypto_sha256 (param $in i32) (result i32)
