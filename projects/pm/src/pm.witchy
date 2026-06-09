@@ -20,6 +20,7 @@ import compiler
 import crypto
 import http
 import json
+import rights
 import semver
 import string
 import toml
@@ -93,7 +94,7 @@ fn cmd_check(console: Console, root: Dir, dir: String) -> Int:
         let manifest = read(root, join_path(dir, "witchy.toml"))
         let declared = declared_caps(manifest)
         let demanded = rune_footprint(root, dir)
-        let undeclared = uncovered(declared, demanded)
+        let undeclared = rights.uncovered(declared, demanded)
         let unused = unused_caps(declared, demanded)
         report_check(console, undeclared, unused)
 
@@ -108,14 +109,6 @@ fn report_check(console: Console, undeclared: List(String), unused: List(String)
             print(console, "OK: declared footprint admits the code, nothing unused")
         0
 
-// Demanded capabilities no declared capability admits.
-fn uncovered(declared: List(String), demanded: List(String)) -> List(String):
-    var missing = []
-    for cap in demanded:
-        if !covered(declared, cap):
-            missing = push(missing, cap)
-    missing
-
 // Declared capabilities that admit nothing the code demands.
 fn unused_caps(declared: List(String), demanded: List(String)) -> List(String):
     var extra = []
@@ -127,7 +120,7 @@ fn unused_caps(declared: List(String), demanded: List(String)) -> List(String):
 fn admits_any(declared: String, demanded: List(String)) -> Bool:
     var any = false
     for c in demanded:
-        if covers(declared, c):
+        if rights.covers(declared, c):
             any = true
     any
 
@@ -268,7 +261,7 @@ fn cmd_gate(console: Console, root: Dir, args: List(String)) -> Int:
         let lock = read(root, join_path(dir, "witchy.lock"))
         let baseline = union_all(lock_baseline(lock), allowed_from(args, 2))
         let demanded = resolution_footprint(root, dir, manifest)
-        report_gate(console, root, dir, manifest, uncovered(baseline, demanded))
+        report_gate(console, root, dir, manifest, rights.uncovered(baseline, demanded))
 
 fn report_gate(console: Console, root: Dir, dir: String, manifest: String, widened: List(String)) -> Int:
     if length(widened) == 0:
@@ -305,7 +298,7 @@ fn gate_contributors(root: Dir, dir: String, manifest: String, cap: String) -> L
     for pair in toml.table(manifest, "dependencies"):
         let (name, inline) = pair
         if let Some(rel) = toml.inline_get(inline, "path"):
-            if covered(rune_footprint(root, normalize_path(join_path(dir, rel))), cap):
+            if rights.covered(rune_footprint(root, normalize_path(join_path(dir, rel))), cap):
                 who = push(who, name)
     who
 
@@ -658,59 +651,6 @@ fn field(let manifest: String, path: String) -> String:
     match toml.get(manifest, path):
         Some(v) -> v
         None -> "(none)"
-
-// --- rights-precise capability covering (shared with coven_check) ------------
-// A declared capability covers a demanded one iff they share a base kind AND the
-// declared authority is at least as broad: a bracket-free declaration ("Net")
-// admits any rights of that kind, while a bracketed one ("Net[Connect]") admits
-// a demanded cap only when its rights are a subset. So Net[Connect] does NOT
-// cover full Net — the rights-precise case a kind-level check misses.
-
-fn covered(declared: List(String), demanded: String) -> Bool:
-    var ok = false
-    for d in declared:
-        if covers(d, demanded):
-            ok = true
-    ok
-
-fn covers(declared: String, demanded: String) -> Bool:
-    if base_name(declared) != base_name(demanded):
-        false
-    else if is_full(declared):
-        true
-    else if is_full(demanded):
-        false
-    else:
-        subset(rights_of(demanded), rights_of(declared))
-
-fn is_full(cap: String) -> Bool:
-    !contains(cap, "[")
-
-// "Dir[Read]" -> "Dir"; "Console" -> "Console".
-fn base_name(cap: String) -> String:
-    if contains(cap, "["):
-        let (name, _rest) = string.split_once(cap, "[")
-        name
-    else:
-        cap
-
-// The rights inside "Kind[A, B]" as ["A", "B"].
-fn rights_of(cap: String) -> List(String):
-    let (_kind, rest) = string.split_once(cap, "[")
-    let inner = string.strip_suffix(rest, "]")
-    var out = []
-    for part in split(inner, ","):
-        let r = trim(part)
-        if !string.is_empty(r):
-            out = push(out, r)
-    out
-
-fn subset(xs: List(String), ys: List(String)) -> Bool:
-    var all_in = true
-    for x in xs:
-        if !has(ys, x):
-            all_in = false
-    all_in
 
 // --- compiler.diff JSON helpers ---------------------------------------------
 

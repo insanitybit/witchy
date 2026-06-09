@@ -18,6 +18,7 @@ import compiler
 import crypto
 import toml
 import string
+import rights
 
 fn main(console: Console, net: Net, root: Dir, key: SigningKey, clock: Clock, args: List(String)):
     let addr = if length(args) > 0: at(args, 0) else: "127.0.0.1:8787"
@@ -141,7 +142,7 @@ fn do_publish(store: Dir, key: SigningKey, clock: Clock, issuers: List((String, 
 fn publish_checked(store: Dir, key: SigningKey, clock: Clock, manifest: String, name: String, version: String, uploaded_by: String, files: List((String, String))) -> Response:
     let computed = computed_footprint(files)
     let declared = toml.get_array(manifest, "capabilities.runtime")
-    let gap = uncovered(declared, computed)
+    let gap = rights.uncovered(declared, computed)
     if !string.is_empty(string.join(gap, ", ")):
         err_json(400, "declared [capabilities] does not cover what the source demands (" <> string.join(gap, ", ") <> ") — coven recomputes and will not publish an under-declared rune")
     else:
@@ -194,7 +195,7 @@ fn promote_checked(store: Dir, key: SigningKey, clock: Clock, name: String, vers
         let rec = sign_record(key, name, version, "released", hash, rt, uploaded_by, promoter, factor, provenance)
         write(store, meta_path(name, version), rec)
         rebuild_metadata(store, key, clock)
-        let delta = uncovered(latest_released_footprint(store, name, version), rt)
+        let delta = rights.uncovered(latest_released_footprint(store, name, version), rt)
         server.json(200, json.encode(JsonObject([("record", parse_or_null(rec)), ("separation_of_duties", JsonBool(true)), ("delta_runtime", JsonArray(strs_json(delta)))])))
 
 // --- POST /coven/yank : exclude from new resolutions -------------------------
@@ -750,55 +751,5 @@ fn member(xs: List(String), x: String) -> Bool:
             found = true
     found
 
-// --- rights-precise capability covering (shared with the pm / coven_check) ---
-
-fn uncovered(declared: List(String), demanded: List(String)) -> List(String):
-    var missing = []
-    for cap in demanded:
-        if !covered(declared, cap):
-            missing = push(missing, cap)
-    missing
-
-fn covered(declared: List(String), demanded: String) -> Bool:
-    var ok = false
-    for d in declared:
-        if covers(d, demanded):
-            ok = true
-    ok
-
-fn covers(declared: String, demanded: String) -> Bool:
-    if base_name(declared) != base_name(demanded):
-        false
-    else if is_full(declared):
-        true
-    else if is_full(demanded):
-        false
-    else:
-        subset(rights_of(demanded), rights_of(declared))
-
-fn is_full(cap: String) -> Bool:
-    !contains(cap, "[")
-
-fn base_name(cap: String) -> String:
-    if contains(cap, "["):
-        let (name, _rest) = string.split_once(cap, "[")
-        name
-    else:
-        cap
-
-fn rights_of(cap: String) -> List(String):
-    let (_kind, rest) = string.split_once(cap, "[")
-    let inner = string.strip_suffix(rest, "]")
-    var out = []
-    for part in split(inner, ","):
-        let r = trim(part)
-        if !string.is_empty(r):
-            out = push(out, r)
-    out
-
-fn subset(xs: List(String), ys: List(String)) -> Bool:
-    var all_in = true
-    for x in xs:
-        if !member(ys, x):
-            all_in = false
-    all_in
+// Rights-precise capability covering lives in std/rights (shared with the pm and
+// coven_check) — see `rights.uncovered` at the call sites above.

@@ -3764,6 +3764,32 @@ fn yes(b: Bool) -> String:
         );
     }
 
+    /// `std/rights` matches capability strings rights-precisely (the logic the pm
+    /// check/gate and coven's publish enforcement share): a bare kind covers any
+    /// rights of that kind, a bracketed one only a subset — so `Net[Connect]` does
+    /// NOT cover full `Net`.
+    #[test]
+    fn rights_module_covers_capabilities_rights_precisely() {
+        let src = r#"import rights
+import string
+
+fn main(console: Console):
+    print(console, yes(rights.covers("Net", "Net[Listen]")))
+    print(console, yes(rights.covers("Net[Connect]", "Net")))
+    print(console, yes(rights.covers("Net[Connect, Tcp]", "Net[Connect]")))
+    print(console, yes(rights.covers("Dir", "Console")))
+    print(console, yes(rights.covered(["Console", "Dir[Read]"], "Dir[Read]")))
+    print(console, string.join(rights.uncovered(["Net[Connect]"], ["Net", "Console"]), "|"))
+
+fn yes(b: Bool) -> String:
+    if b: "y" else: "n"
+"#;
+        assert_eq!(
+            link_run(src),
+            vec!["y", "n", "y", "n", "y", "Net|Console"]
+        );
+    }
+
     /// The `Clock` capability yields wall-clock time (ms since epoch) via `now`.
     /// Reading the clock is ambient nondeterminism, so it's capability-gated and
     /// surfaces in the footprint — not a pure builtin.

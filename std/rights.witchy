@@ -1,0 +1,76 @@
+// rights — rights-precise reasoning over capability footprints.
+//
+// A capability is rendered the way the compiler's footprint prints it: "Console",
+// "Dir[Read]", "Net[Connect, Tcp]". A *declared* capability covers a *demanded*
+// one when they share a base kind AND the declared authority is at least as
+// broad: a bare "Net" admits any rights of that kind, while "Net[Connect]" admits
+// only a subset — so Net[Connect] does NOT cover full Net. This rights-precision
+// is what the package manager's declared-vs-actual check and the block-on-widening
+// gate both rely on, so it lives in one tested place.
+
+import string
+
+// Whether `declared` covers `demanded` (same kind, broad enough rights).
+pub fn covers(declared: String, demanded: String) -> Bool:
+    if base_name(declared) != base_name(demanded):
+        false
+    else if is_full(declared):
+        true
+    else if is_full(demanded):
+        false
+    else:
+        subset(rights_of(demanded), rights_of(declared))
+
+// Whether any capability in `declared` covers `demanded`.
+pub fn covered(declared: List(String), demanded: String) -> Bool:
+    var ok = false
+    for d in declared:
+        if covers(d, demanded):
+            ok = true
+    ok
+
+// The demanded capabilities no declared capability covers — the gap a gate blocks
+// on (an under-declaration, or a widening of authority). Empty means admitted.
+pub fn uncovered(declared: List(String), demanded: List(String)) -> List(String):
+    var missing = []
+    for cap in demanded:
+        if !covered(declared, cap):
+            missing = push(missing, cap)
+    missing
+
+// A bracket-free capability ("Net") is the full authority of its kind.
+pub fn is_full(cap: String) -> Bool:
+    !contains(cap, "[")
+
+// The base kind: "Dir[Read]" -> "Dir"; "Console" -> "Console".
+pub fn base_name(cap: String) -> String:
+    if contains(cap, "["):
+        let (name, _rest) = string.split_once(cap, "[")
+        name
+    else:
+        cap
+
+// The rights inside "Kind[A, B]" as ["A", "B"] (trimmed, blanks dropped).
+pub fn rights_of(cap: String) -> List(String):
+    let (_kind, rest) = string.split_once(cap, "[")
+    let inner = string.strip_suffix(rest, "]")
+    var out = []
+    for part in split(inner, ","):
+        let r = trim(part)
+        if !string.is_empty(r):
+            out = push(out, r)
+    out
+
+fn subset(xs: List(String), ys: List(String)) -> Bool:
+    var all_in = true
+    for x in xs:
+        if !member(ys, x):
+            all_in = false
+    all_in
+
+fn member(ys: List(String), x: String) -> Bool:
+    var found = false
+    for y in ys:
+        if y == x:
+            found = true
+    found
