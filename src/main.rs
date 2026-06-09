@@ -4424,6 +4424,26 @@ fn yn(b: Bool) -> String:
         assert_eq!(run_on_wasm(cap), vec!["5000000001"], "WASM (capture)");
     }
 
+    /// `to_string` on a `Float` must produce the same text on both backends.
+    /// WASM has no float formatter in hand-written WAT, so codegen calls a
+    /// `float_to_str` host import that formats with Rust `Display` — byte-for-byte
+    /// the interpreter's format. (Regression for the interpreter-only float
+    /// `to_string` gap.)
+    #[test]
+    fn float_to_string_agrees_on_both_backends() {
+        let src = "fn main(console: Console):\n    print(console, to_string(3.5))\n    print(console, to_string(2.0))\n    print(console, to_string(0.0 - 1.0 / 3.0))\n    print(console, to_string(0.1 + 0.2))\n    print(console, to_string(1000000.0))\n    print(console, to_string(0.0))\n";
+        let want = vec![
+            "3.5".to_string(),
+            "2".to_string(),
+            "-0.3333333333333333".to_string(),
+            "0.30000000000000004".to_string(),
+            "1000000".to_string(),
+            "0".to_string(),
+        ];
+        assert_eq!(interp(src), want.clone(), "interpreter");
+        assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
+    }
+
     /// A closure RETURNED from a function and bound to a `let` (currying) must
     /// keep a big `Int` result on WASM: the binding records the closure's
     /// call-return kind (from the `-> fn(...) -> RET` declaration), so the later

@@ -238,6 +238,9 @@ impl Runtime {
         // host import that bridges to the shared `native` registry.
         linker.func_wrap("witchy", "crypto.ed25519_verify", host_ed25519_verify)?;
         linker.func_wrap("witchy", "crypto.sha256", host_sha256)?;
+        // Float -> string formatting is pure; done in the host so it is byte-
+        // identical to the interpreter's `Display` (no float formatter in WAT).
+        linker.func_wrap("witchy", "float_to_str", host_float_to_str)?;
 
         // Ungranted capability imports are rejected here.
         let instance = linker.instantiate(&mut store, &module)?;
@@ -360,6 +363,18 @@ fn host_ed25519_verify(
 /// `crypto.sha256(in_header_ptr, out_data_ptr)`: read the input string, compute
 /// its SHA-256 (via the shared native registry), and write the 64 hex bytes into
 /// guest memory at `out_data_ptr` (the guest pre-allocated the result string).
+/// Format an f64 with Rust's `Display` (matching the interpreter's float
+/// `to_string`), write the bytes at `out_ptr`, and return the byte length. The
+/// guest reserves a generous buffer; an f64's decimal form never exceeds it.
+fn host_float_to_str(mut caller: Caller<'_, ActorState>, x: f64, out_ptr: i32) -> Result<i32> {
+    let s = format!("{x}");
+    let bytes = s.into_bytes();
+    let mem = memory_of(&mut caller)?;
+    mem.write(&mut caller, out_ptr as usize, &bytes)
+        .map_err(|e| Error::msg(format!("writing float string into guest memory: {e}")))?;
+    Ok(bytes.len() as i32)
+}
+
 fn host_sha256(mut caller: Caller<'_, ActorState>, in_ptr: i32, out_ptr: i32) -> Result<()> {
     use crate::interpreter::Value;
     let mem = memory_of(&mut caller)?;

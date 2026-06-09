@@ -329,6 +329,9 @@ struct Codegen {
     uses_crypto_ed25519_verify: bool,
     /// Whether the `crypto.sha256` host import + guest helper are needed.
     uses_crypto_sha256: bool,
+    /// Whether the `float_to_str` host import + guest helper are needed (float
+    /// `to_string`).
+    uses_float_to_str: bool,
     uses_ends_with: bool,
     /// Whether the `split` helper is needed.
     uses_split: bool,
@@ -530,6 +533,7 @@ impl Codegen {
             uses_starts_with: false,
             uses_crypto_ed25519_verify: false,
             uses_crypto_sha256: false,
+            uses_float_to_str: false,
             uses_ends_with: false,
             uses_split: false,
             uses_str_chars: false,
@@ -1445,6 +1449,7 @@ impl Codegen {
             || self.uses_dict
             || self.uses_dict_iter
             || self.uses_crypto_sha256
+            || self.uses_float_to_str
     }
 
     fn emit_imports(&self) -> String {
@@ -1471,6 +1476,11 @@ impl Codegen {
             // crypto.sha256(in_header_ptr, out_data_ptr): the host writes 64 hex
             // bytes at out_data_ptr (the guest pre-allocates the result string).
             s.push_str("  (import \"witchy\" \"crypto.sha256\" (func $crypto_sha256_host (param i32 i32)))\n");
+        }
+        if self.uses_float_to_str {
+            // float_to_str(x, out_data_ptr) -> byte length: the host formats `x`
+            // (Rust Display) into the guest's pre-allocated buffer.
+            s.push_str("  (import \"witchy\" \"float_to_str\" (func $float_to_str_host (param f64 i32) (result i32)))\n");
         }
         s
     }
@@ -1520,6 +1530,9 @@ impl Codegen {
         // import fills its 64 hex bytes.
         if self.uses_crypto_sha256 {
             s.push_str(CRYPTO_SHA256_WAT);
+        }
+        if self.uses_float_to_str {
+            s.push_str(FLOAT_TO_STR_WAT);
         }
         // `$split` builds its result list with `$list_push` (emitted above via
         // `uses_list_push`, which the split call site also sets).
@@ -2807,7 +2820,12 @@ impl Codegen {
                     ))
                 }
                 ValType::Float => {
-                    cerr("to_string on a Float is not compiled to WASM yet (no float formatting)")
+                    // Format in the host (Rust `Display`), byte-identical to the
+                    // interpreter; no float formatter in hand-written WAT.
+                    self.uses_float_to_str = true;
+                    let ak = self.kind_of(&args[0]);
+                    let arg = self.compile_expr(&args[0])?;
+                    Ok(format!("{arg}{}    call $float_to_str\n", kind_convert(ak, Kind::F64)))
                 }
                 ValType::Other => cerr(
                     "to_string could not determine the value's type for WASM; convert it explicitly (e.g. int_to_string)",
@@ -4039,6 +4057,19 @@ const SUBSTR_WAT: &str = r#"  (func $substr (param $src i32) (param $start i32) 
 // bytes]`, set its length, then call the host import to fill the 64 hex bytes at
 // `res+4`. The hash length is a compile-time constant, so no size negotiation is
 // needed.
+// float_to_str(x): a fresh string of `x` formatted by the host (Rust Display).
+// Reserve a generous body buffer (an f64's decimal form is well under 512
+// bytes), let the host write into it and return the length, then set the header.
+const FLOAT_TO_STR_WAT: &str = r#"  (func $float_to_str (param $x f64) (result i32)
+    (local $res i32) (local $n i32)
+    (call $ensure (i32.const 516))
+    (local.set $res (global.get $heap))
+    (local.set $n (call $float_to_str_host (local.get $x) (i32.add (local.get $res) (i32.const 4))))
+    (i32.store (local.get $res) (local.get $n))
+    (global.set $heap (i32.add (i32.add (local.get $res) (i32.const 4)) (local.get $n)))
+    (local.get $res))
+"#;
+
 const CRYPTO_SHA256_WAT: &str = r#"  (func $crypto_sha256 (param $in i32) (result i32)
     (local $res i32)
     (call $ensure (i32.const 68))
