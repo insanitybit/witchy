@@ -8017,6 +8017,41 @@ fn main(console: Console):
         );
     }
 
+    /// The witchy coven's TUF snapshot + timestamp roles (rollback + freeze
+    /// protection) must also verify under the *Rust* TUF verifier — proving the
+    /// canonical JSON the witchy server signs is byte-identical to serde's, so
+    /// the whole signed-metadata chain interoperates. These were produced by
+    /// `projects/coven/src/coven.witchy` publishing `acme/money@1.0.0` with the
+    /// fixed seed `..01`.
+    #[test]
+    fn coven_witchy_tuf_metadata_verifies_under_the_rust_verifier() {
+        use crate::pm::tuf::{verify_signed, Signed, Snapshot, Timestamp};
+        let rootpub = "4cb5abf6ad79fbf5abbccafcc269d85cd2651ed4b885b5869f241aedf0a5ba29";
+        let snap_json = r#"{"signed":{"version":1,"created":1780965897,"targets":{"acme/money@1.0.0":"sha256:427b88bebaa96a14bbd7531ad2d4b8fd992aba05cbee3ef7beedf47226da7ee6"}},"sig":"af8f2d97d3fa25d029188687f1dc1cf1b18b86c0ac2999dd342cb649429971119b2326ae6d47638f6aafb44137adabac7f3a31b724dfb7ab99f228e4e4d0270f"}"#;
+        let snap: Signed<Snapshot> =
+            serde_json::from_str(snap_json).expect("deserialize witchy snapshot");
+        assert!(
+            verify_signed(rootpub, &snap),
+            "a witchy TUF snapshot must verify under the Rust verifier"
+        );
+
+        let ts_json = r#"{"signed":{"snapshot_version":1,"snapshot_hash":"sha256:851ea55f915edb8b5726a9351b1ff88e3a2f4b6a03d63825f2a6d3f2d54863df","expires":1781052297},"sig":"e2d615d5ed749f0335133bae15b420518c318e8930e522b4a855d6b0d1037c1d8a2af98fccf70104335c3358c081a7e4e8bb929c85bcc3c0aae3a8f7d0031d0d"}"#;
+        let ts: Signed<Timestamp> =
+            serde_json::from_str(ts_json).expect("deserialize witchy timestamp");
+        assert!(
+            verify_signed(rootpub, &ts),
+            "a witchy TUF timestamp must verify under the Rust verifier"
+        );
+
+        // Rollback tamper: bumping the snapshot version breaks the signature.
+        let mut bad = snap;
+        bad.signed.version = 99;
+        assert!(
+            !verify_signed(rootpub, &bad),
+            "a tampered snapshot version must break the signature"
+        );
+    }
+
     /// `main -> Int` sets the process exit code (C/Go/Rust convention) and is
     /// *not* printed; `main` returning Nil exits 0 and shows its `print` output.
     #[test]

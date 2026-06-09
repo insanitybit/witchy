@@ -1251,4 +1251,14 @@ fn witchy_coven_full_lifecycle_self_hosted() {
         lines.iter().any(|l| l.starts_with("index:200") && l.contains("acme/money")),
         "index: {lines:?}"
     );
+    // TUF roles: the snapshot + timestamp are served and their signatures verify
+    // against the registry root key (rollback + freeze protection, self-hosted).
+    assert!(
+        lines.contains(&"snapshot:200 verified=true"),
+        "TUF snapshot must verify: {lines:?}"
+    );
+    assert!(
+        lines.contains(&"timestamp:200 verified=true"),
+        "TUF timestamp must verify: {lines:?}"
+    );
 }

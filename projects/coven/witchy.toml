@@ -9,6 +9,6 @@ name = "coven"
 version = "0.1.0"
 
 [capabilities]
-runtime = ["Console", "Net", "Dir", "SigningKey"]
+runtime = ["Console", "Net", "Dir", "SigningKey", "Clock"]
 
 [dependencies]

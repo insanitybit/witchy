@@ -7,6 +7,7 @@
 
 import http
 import json
+import crypto
 import string
 
 fn main(console: Console, net: Net, args: List(String)):
@@ -44,6 +45,24 @@ fn main(console: Console, net: Net, args: List(String)):
 
     let idx = http.get(net, host, port, "/coven/index")
     print(console, "index:" <> int_to_string(http.status(idx)) <> " " <> http.body(idx))
+
+    // TUF roles: the snapshot pins every target (rollback protection) and the
+    // timestamp points at it with an expiry (freeze protection). Verify the
+    // snapshot's signature against the registry's published root key.
+    let rootpub = http.body(http.get(net, host, port, "/coven/rootpub"))
+    let snap = http.get(net, host, port, "/coven/snapshot")
+    print(console, "snapshot:" <> int_to_string(http.status(snap)) <> " verified=" <> verify_signed_doc(http.body(snap), rootpub))
+    let ts = http.get(net, host, port, "/coven/timestamp")
+    print(console, "timestamp:" <> int_to_string(http.status(ts)) <> " verified=" <> verify_signed_doc(http.body(ts), rootpub))
+
+// Verify a signed TUF role: re-encode its `signed` payload canonically and check
+// the ed25519 signature against the registry root key.
+fn verify_signed_doc(text: String, rootpub: String) -> String:
+    match json.decode(text):
+        Ok(doc) -> match json.get(doc, "signed"):
+            Some(signed) -> if crypto.ed25519_verify(rootpub, json.encode(signed), field(text, "sig")): "true" else: "false"
+            None -> "no-signed"
+        Err(e) -> "decode-err"
 
 // --- request bodies ----------------------------------------------------------
 
