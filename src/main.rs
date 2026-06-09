@@ -4027,6 +4027,28 @@ fn yn(b: Bool) -> String:
         assert_eq!(crate::capabilities::show_caps(&fp.total), "Console");
     }
 
+    /// `examples/queens.witchy` — N-queens by backtracking — counts all 92
+    /// solutions for the 8x8 board and renders the first (column-order DFS). Deep
+    /// recursion with an early-exit search; agrees on both backends.
+    #[test]
+    fn queens_example_counts_and_renders_first_board() {
+        assert_eq!(
+            crate::execute_file("examples/queens.witchy", Vec::new()).unwrap(),
+            vec![
+                "8-queens solutions: 92",
+                "first solution:",
+                "Q.......",
+                "....Q...",
+                ".......Q",
+                ".....Q..",
+                "..Q.....",
+                "......Q.",
+                ".Q......",
+                "...Q....",
+            ]
+        );
+    }
+
     /// `examples/anagram.witchy` — groups words that are letter-rearrangements
     /// of each other by a sorted-character signature, bucketing with a parallel
     /// signatures/groups list (no Dict). Exercises sorting characters (string
