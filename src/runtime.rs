@@ -67,6 +67,9 @@ pub struct Capabilities {
     pub net_connect: bool,
     /// May bind and accept (`listen`/`accept`) on allowlisted addresses.
     pub net_listen: bool,
+    /// The program's command-line arguments (`main(args: List(String))`).
+    /// Pure input chosen by the host, not authority.
+    pub args: Vec<String>,
 }
 
 impl Capabilities {
@@ -291,7 +294,6 @@ impl Runtime {
             linker.func_wrap("witchy", "dir_exists", host_dir_exists)?;
             linker.func_wrap("witchy", "dir_is_dir", host_dir_is_dir)?;
             linker.func_wrap("witchy", "dir_list_size", host_dir_list_size)?;
-            linker.func_wrap("witchy", "dir_list_write", host_dir_list_write)?;
         }
         if caps.dir_root.is_some() && caps.dir_write {
             linker.func_wrap("witchy", "dir_write", host_dir_write)?;
@@ -317,9 +319,13 @@ impl Runtime {
             linker.func_wrap("witchy", "net_recv_bytes_len", host_net_recv_bytes_len)?;
             linker.func_wrap("witchy", "net_close", host_net_close)?;
         }
-        // `fill_pending` only writes out data already staged by a granted size
-        // call — it carries no authority of its own, so it is always available.
+        // `fill_pending` / `write_pending_list` only write out data already
+        // staged by a granted size call — no authority of their own, so they are
+        // always available. `args_size` stages the host-chosen argv (pure
+        // input, not authority), so it is always available too.
         linker.func_wrap("witchy", "fill_pending", host_fill_pending)?;
+        linker.func_wrap("witchy", "write_pending_list", host_write_pending_list)?;
+        linker.func_wrap("witchy", "args_size", host_args_size)?;
         // `recv` is intrinsic: reading your *own* mailbox is not authority over
         // anyone else, so every actor may do it.
         linker.func_wrap("witchy", "recv", host_recv)?;
@@ -648,15 +654,25 @@ fn host_dir_list_size(mut caller: Caller<'_, ActorState>, h: i32) -> Result<i32>
     Ok(size as i32)
 }
 
-/// `dir_list_write(base_ptr)`: lay the staged listing out at `base_ptr` in the
-/// guest's own list format — `[count][count x i64 slots][string objects...]`,
-/// each slot holding the absolute guest pointer of its `[len][bytes]` string.
-fn host_dir_list_write(mut caller: Caller<'_, ActorState>, base_ptr: i32) -> Result<()> {
+/// `args_size() -> bytes`: stage the host-provided argv and report the byte
+/// size of its `List(String)` structure (laid out by `write_pending_list`).
+fn host_args_size(mut caller: Caller<'_, ActorState>) -> Result<i32> {
+    let args = caller.data().caps.args.clone();
+    let size = 4 + 8 * args.len() + args.iter().map(|a| 4 + a.len()).sum::<usize>();
+    caller.data_mut().pending_list = Some(args);
+    Ok(size as i32)
+}
+
+/// `write_pending_list(base_ptr)`: lay the staged string list out at `base_ptr`
+/// in the guest's own list format — `[count][count x i64 slots][string
+/// objects...]`, each slot holding the absolute guest pointer of its
+/// `[len][bytes]` string. Authority-free: it only writes already-staged data.
+fn host_write_pending_list(mut caller: Caller<'_, ActorState>, base_ptr: i32) -> Result<()> {
     let names = caller
         .data_mut()
         .pending_list
         .take()
-        .ok_or_else(|| Error::msg("dir_list_write called with nothing staged"))?;
+        .ok_or_else(|| Error::msg("write_pending_list called with nothing staged"))?;
     let n = names.len();
     let mut buf = Vec::with_capacity(4 + 8 * n + names.iter().map(|s| 4 + s.len()).sum::<usize>());
     buf.extend_from_slice(&(n as i32).to_le_bytes());

@@ -116,7 +116,8 @@ USAGE:
     witchy [--net <host:port>]... <file.witchy>   run a program
     witchy check    <file.witchy>                 type-check without running
     witchy parity   <file.witchy>                 run on both backends, confirm identical output
-    witchy sandbox  <file.witchy>                 compile and run in a VM granted exactly its footprint
+    witchy sandbox [--dir <root>] [--net <addr>]... <file.witchy> [args...]
+                                                  compile and run in a VM granted exactly its footprint
     witchy native [-o out] <file.witchy>          compile to a native binary via rustc/LLVM, then run it
     witchy emit-wat <file.witchy>                 print the compiled WebAssembly text (the module sandbox runs)
     witchy emit-rust <file.witchy>                print the native (Rust) transpilation
@@ -230,17 +231,49 @@ fn main() -> wasmtime::Result<()> {
         }
         return Ok(());
     }
-    // `witchy sandbox <file>` compiles the program to WASM and runs it in the
-    // capability-sandboxed VM, granted exactly its declared footprint.
+    // `witchy sandbox [--dir <root>] [--net <host:port>]... <file> [args...]`
+    // compiles the program to WASM and runs it in the capability-sandboxed VM,
+    // granted exactly its computed footprint. `--dir` picks the subtree backing
+    // a granted Dir (default `.`); each `--net` allowlists an address.
     if std::env::args().nth(1).as_deref() == Some("sandbox") {
-        let Some(path) = std::env::args().nth(2) else {
-            eprintln!("usage: witchy sandbox <file.witchy>");
+        let mut dir_root: Option<std::path::PathBuf> = None;
+        let mut net_allow: Vec<String> = Vec::new();
+        let mut path: Option<String> = None;
+        let mut prog_args: Vec<String> = Vec::new();
+        let mut argv = std::env::args().skip(2);
+        while let Some(a) = argv.next() {
+            match a.as_str() {
+                "--dir" if path.is_none() => match argv.next() {
+                    Some(root) => dir_root = Some(std::path::PathBuf::from(root)),
+                    None => {
+                        eprintln!("--dir needs a directory");
+                        std::process::exit(1);
+                    }
+                },
+                "--net" if path.is_none() => match argv.next() {
+                    Some(addr) => net_allow.push(addr),
+                    None => {
+                        eprintln!("--net needs a host:port");
+                        std::process::exit(1);
+                    }
+                },
+                _ if path.is_none() => path = Some(a),
+                _ => prog_args.push(a),
+            }
+        }
+        let Some(path) = path else {
+            eprintln!("usage: witchy sandbox [--dir <root>] [--net <host:port>]... <file.witchy> [args...]");
             std::process::exit(1);
         };
-        match run_file_sandboxed(&path) {
-            Ok(lines) => {
+        match run_file_sandboxed(&path, dir_root, net_allow, prog_args) {
+            Ok((lines, exit_code)) => {
                 for line in lines {
                     println!("{line}");
+                }
+                if let Some(code) = exit_code {
+                    if code != 0 {
+                        std::process::exit(code);
+                    }
                 }
             }
             Err(e) => {
@@ -900,8 +933,20 @@ fn verify_file(path: &str) -> Result<(), String> {
     // one backend but produces a value on the other is itself a divergence (a
     // trap and a clean result are not the same behavior), so we must not return
     // early on the interpreter's error before observing what WASM does.
+    // The compiled run export surfaces an Int-returning `main` as a final
+    // print_int line (the sandbox/CLI turn it into the process exit code); the
+    // interpreter's output has no such line, so drop it before comparing.
+    let main_returns_int = linked.items.iter().any(|it| {
+        matches!(it, ast::Item::Function(f) if f.name == "main"
+            && matches!(&f.ret, Some(ast::Type::Named(n, _)) if n == "Int"))
+    });
     let interp = interpreter::run_module(linked, Path::new("."), Vec::new()).map_err(|e| e.to_string());
-    let compiled = run_wat_capture(&wat);
+    let compiled = run_wat_capture(&wat).map(|mut lines| {
+        if main_returns_int {
+            lines.pop();
+        }
+        lines
+    });
     match (interp, compiled) {
         (Ok(i), Ok(c)) if i == c => {
             println!(
@@ -994,7 +1039,18 @@ fn build_native(path: &str, out: Option<&str>, prog_args: &[String]) -> Result<(
     Ok(())
 }
 
-fn run_file_sandboxed(path: &str) -> Result<Vec<String>, String> {
+/// Compile a program and run it in the WASM VM granted EXACTLY its computed
+/// footprint: each capability kind in the footprint maps to its host-import
+/// family, with `Dir`/`Net` rights narrowing which operations are linked. The
+/// `Dir` root and `Net` allowlist are host policy (the `--dir`/`--net` flags);
+/// the program's footprint decides whether they are granted at all.
+fn run_file_sandboxed(
+    path: &str,
+    dir_root: Option<std::path::PathBuf>,
+    net_allow: Vec<String>,
+    args: Vec<String>,
+) -> Result<(Vec<String>, Option<i32>), String> {
+    use crate::runtime::{Capabilities, Runtime};
     let (linked, _stem) = link_file(path)?;
     typeck::check(&linked).map_err(|e| e.to_string())?;
     let has_main = linked
@@ -1005,16 +1061,9 @@ fn run_file_sandboxed(path: &str) -> Result<Vec<String>, String> {
         return Err(format!("`{path}` has no `main` to run"));
     }
     let footprint = capabilities::analyze(&linked);
-    let unsupported: Vec<&str> = footprint
-        .total
-        .keys()
-        .copied()
-        .filter(|c| *c != "Console")
-        .collect();
-    if !unsupported.is_empty() {
+    if footprint.total.contains_key("SigningKey") {
         return Err(format!(
-            "the compiled sandbox supports Console-only programs for now; `{path}` also needs {}",
-            unsupported.join(", ")
+            "`{path}` needs SigningKey, which the WASM sandbox does not provide yet (interpreter/native only)"
         ));
     }
     let wat = codegen::compile_module(&linked)
@@ -1023,7 +1072,50 @@ fn run_file_sandboxed(path: &str) -> Result<Vec<String>, String> {
         "sandboxing `{path}` \u{2014} granted exactly: {}",
         capabilities::show_caps(&footprint.total)
     );
-    run_wat_capture(&wat)
+    // Quiet: the captured lines are printed once by the caller (and an
+    // Int-returning `main` surfaces its value as the LAST line, which the
+    // caller turns into the process exit code, like the interpreter CLI).
+    let mut caps = Capabilities {
+        print: true,
+        print_int: true,
+        quiet: true,
+        args,
+        ..Default::default()
+    };
+    if footprint.total.contains_key("Clock") {
+        caps.clock = true;
+    }
+    if footprint.total.contains_key("Env") {
+        caps.env = true;
+    }
+    if let Some(rights) = footprint.total.get("Dir") {
+        caps.dir_root = Some(dir_root.unwrap_or_else(|| std::path::PathBuf::from(".")));
+        caps.dir_read = rights.contains("Read");
+        caps.dir_write = rights.contains("Write");
+    }
+    if let Some(rights) = footprint.total.get("Net") {
+        caps.net_allow = Some(net_allow);
+        caps.net_connect = rights.contains("Connect");
+        caps.net_listen = rights.contains("Listen");
+    }
+    let mut rt = Runtime::batch().map_err(|e| e.to_string())?;
+    let mut actor = rt
+        .spawn(wat.as_bytes(), caps, RUN_MEMORY_PAGES)
+        .map_err(|e| e.to_string())?;
+    actor.run().map_err(|e| e.to_string())?;
+    let mut lines = actor.output();
+    // At the process boundary an Int-returning `main` is the exit code (the
+    // run export surfaces it as the final print_int line; pop and convert).
+    let main_returns_int = linked.items.iter().any(|it| {
+        matches!(it, ast::Item::Function(f) if f.name == "main"
+            && matches!(&f.ret, Some(ast::Type::Named(n, _)) if n == "Int"))
+    });
+    let exit_code = if main_returns_int {
+        lines.pop().and_then(|s| s.parse::<i32>().ok())
+    } else {
+        None
+    };
+    Ok((lines, exit_code))
 }
 
 /// Instantiate a compiled WAT module under print/print_int authority, run its
@@ -7545,8 +7637,39 @@ fn main(console: Console):
             "fn main(console: Console):\n    print(console, int_to_string(6 * 7))\n",
         )
         .unwrap();
-        let out = crate::run_file_sandboxed(path.to_str().unwrap()).expect("sandbox run");
+        let (out, exit) =
+            crate::run_file_sandboxed(path.to_str().unwrap(), None, Vec::new(), Vec::new())
+                .expect("sandbox run");
         assert_eq!(out, vec!["42"]);
+        assert_eq!(exit, None, "a Nil-returning main has no exit code");
+    }
+
+    /// The sandbox grants exactly the computed footprint: a program combining
+    /// argv, Env, and a read-only Dir (minigrep's shape) runs confined, and its
+    /// Int-returning `main` becomes the exit code rather than an output line.
+    #[test]
+    fn sandbox_grants_full_footprint() {
+        let root = std::env::temp_dir().join(format!("witchy_sandbox_fp_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("data.txt"), "needle in here\nnothing\n").unwrap();
+        let src_path = root.join("prog.witchy");
+        std::fs::write(
+            &src_path,
+            "import option\nimport string\n\nfn main(console: Console, env: Env, dir: Dir[Read], args: List(String)) -> Int:\n    let path = at(args, 0)\n    let label = match get_env(env, \"WITCHY_SANDBOX_LABEL\"):\n        Some(v) -> v\n        None -> \"unlabeled\"\n    for line in string.lines(read(dir, path)):\n        if contains(line, \"needle\"):\n            print(console, label <> \": \" <> line)\n    0\n",
+        )
+        .unwrap();
+        unsafe { std::env::set_var("WITCHY_SANDBOX_LABEL", "found") };
+        let (out, exit) = crate::run_file_sandboxed(
+            src_path.to_str().unwrap(),
+            Some(root.clone()),
+            Vec::new(),
+            vec!["data.txt".to_string()],
+        )
+        .expect("sandbox run");
+        assert_eq!(out, vec!["found: needle in here"]);
+        assert_eq!(exit, Some(0), "Int-returning main becomes the exit code");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

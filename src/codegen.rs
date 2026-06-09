@@ -411,6 +411,9 @@ struct Codegen {
     /// ("connect"/"restrict" under Connect; "listen"/"accept" under Listen;
     /// socket I/O under either).
     used_net_ops: std::collections::BTreeSet<&'static str>,
+    /// Whether `main` declares an argv parameter (`args: List(String)`); the
+    /// run export then builds the host-provided list via `$build_args`.
+    uses_args: bool,
     uses_ends_with: bool,
     /// Whether the `split` helper is needed.
     uses_split: bool,
@@ -646,6 +649,7 @@ impl Codegen {
             uses_get_env: false,
             used_dir_ops: std::collections::BTreeSet::new(),
             used_net_ops: std::collections::BTreeSet::new(),
+            uses_args: false,
             uses_dict_update: false,
             uses_ends_with: false,
             uses_split: false,
@@ -1577,6 +1581,7 @@ impl Codegen {
             || self.used_net_ops.contains("recv_line")
             || self.used_net_ops.contains("recv_all")
             || self.used_net_ops.contains("recv_bytes")
+            || self.uses_args
     }
 
     fn emit_imports(&self) -> String {
@@ -1643,7 +1648,12 @@ impl Codegen {
         }
         if self.used_dir_ops.contains("list") {
             s.push_str("  (import \"witchy\" \"dir_list_size\" (func $dir_list_size_host (param i32) (result i32)))\n");
-            s.push_str("  (import \"witchy\" \"dir_list_write\" (func $dir_list_write_host (param i32)))\n");
+        }
+        if self.uses_args {
+            s.push_str("  (import \"witchy\" \"args_size\" (func $args_size_host (result i32)))\n");
+        }
+        if self.used_dir_ops.contains("list") || self.uses_args {
+            s.push_str("  (import \"witchy\" \"write_pending_list\" (func $write_pending_list_host (param i32)))\n");
         }
         if self.used_dir_ops.contains("write") {
             s.push_str("  (import \"witchy\" \"dir_write\" (func $dir_write_host (param i32 i32 i32)))\n");
@@ -1767,6 +1777,9 @@ impl Codegen {
         }
         if self.used_net_ops.contains("recv_bytes") {
             s.push_str(NET_RECV_BYTES_WAT);
+        }
+        if self.uses_args {
+            s.push_str(BUILD_ARGS_WAT);
         }
         if self.uses_float_ord {
             s.push_str(FLOAT_ORD_WAT);
@@ -4235,6 +4248,7 @@ pub fn compile_module(module: &Module) -> Result<String, CodegenError> {
     }
     let mut func_wat = String::new();
     let mut main_params = 0usize;
+    let mut main_param_is_args: Vec<bool> = Vec::new();
     let mut main_returns_int = false;
     let mut main_returns_float = false;
     let mut has_main = false;
@@ -4250,21 +4264,16 @@ pub fn compile_module(module: &Module) -> Result<String, CodegenError> {
                     main_returns_int = matches!(&f.ret, Some(Type::Named(n, _)) if n == "Int");
                     main_returns_float = matches!(&f.ret, Some(Type::Named(n, _)) if n == "Float");
                     // Capability parameters are type-level only (the authority is
-                    // the linked host imports), so any number compile — each gets
-                    // a dummy slot in the `run` export. An argv parameter would
-                    // need the host to materialize a real List(String); until the
-                    // sandbox provides one, reject it loudly rather than hand the
-                    // program a dangling pointer.
+                    // the linked host imports), so each gets a dummy slot in the
+                    // `run` export — which happens to be handle 0, the granted
+                    // root, for the handle-backed Dir/Net. An argv parameter is
+                    // materialized by `$build_args` from the host-provided list.
                     for p in &f.params {
-                        match &p.ty {
-                            Some(t) if crate::typeck::is_capability_type(t) => {}
-                            Some(t) if crate::typeck::is_args_type(t) => {
-                                return cerr(
-                                    "`main(args: List(String))` is not provided by the WASM sandbox yet — argv is interpreter/native-only",
-                                );
-                            }
-                            _ => {}
+                        let is_args = matches!(&p.ty, Some(t) if crate::typeck::is_args_type(t));
+                        if is_args {
+                            cg.uses_args = true;
                         }
+                        main_param_is_args.push(is_args);
                     }
                 }
                 if reachable.contains(&f.name) {
@@ -4328,8 +4337,14 @@ pub fn compile_module(module: &Module) -> Result<String, CodegenError> {
     }
 
     wat.push_str("  (func (export \"run\")\n");
-    for _ in 0..main_params {
-        wat.push_str("    i32.const 0\n");
+    for i in 0..main_params {
+        if main_param_is_args.get(i).copied().unwrap_or(false) {
+            // The argv parameter: a real List(String) built from the host.
+            wat.push_str("    call $build_args\n");
+        } else {
+            // A capability parameter: type-level only; 0 is the root handle.
+            wat.push_str("    i32.const 0\n");
+        }
     }
     wat.push_str("    call $main\n");
     if main_returns_int {
@@ -4858,7 +4873,20 @@ const DIR_LIST_WAT: &str = r#"  (func $dir_list (param $h i32) (result i32)
     (local.set $size (call $dir_list_size_host (local.get $h)))
     (call $ensure (local.get $size))
     (local.set $res (global.get $heap))
-    (call $dir_list_write_host (local.get $res))
+    (call $write_pending_list_host (local.get $res))
+    (global.set $heap (i32.add (local.get $res) (local.get $size)))
+    (local.get $res))
+"#;
+
+// build_args(): the host-provided argv as a List(String), built exactly like a
+// directory listing — the host stages it at `args_size` and lays the complete
+// structure out via `write_pending_list`.
+const BUILD_ARGS_WAT: &str = r#"  (func $build_args (result i32)
+    (local $size i32) (local $res i32)
+    (local.set $size (call $args_size_host))
+    (call $ensure (local.get $size))
+    (local.set $res (global.get $heap))
+    (call $write_pending_list_host (local.get $res))
     (global.set $heap (i32.add (local.get $res) (local.get $size)))
     (local.get $res))
 "#;
