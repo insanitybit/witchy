@@ -4027,6 +4027,20 @@ fn yn(b: Bool) -> String:
         assert_eq!(crate::capabilities::show_caps(&fp.total), "Console");
     }
 
+    /// `examples/maze.witchy` — BFS shortest path through a grid maze, with a
+    /// `prev` Dict for path reconstruction. Pure (Console); interpreter-hosted.
+    #[test]
+    fn maze_example_finds_shortest_path_by_bfs() {
+        let out = crate::execute_file("examples/maze.witchy", Vec::new())
+            .unwrap()
+            .join("\n");
+        assert!(out.contains("shortest path: 14 steps"), "distance: {out}");
+        assert!(
+            out.contains("#S#***# #") && out.contains("### ###*#"),
+            "route marked: {out}"
+        );
+    }
+
     /// `examples/traits.witchy` — defines a custom `Shape` trait, implements it for
     /// three types, and dispatches generically (`where s: Shape`). Monomorphized,
     /// so it runs identically on both backends.
