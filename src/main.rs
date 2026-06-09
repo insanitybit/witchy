@@ -4027,6 +4027,23 @@ fn yn(b: Bool) -> String:
         assert_eq!(crate::capabilities::show_caps(&fp.total), "Console");
     }
 
+    /// `examples/wrap.witchy` — greedy word wrapping — packs space-separated
+    /// words onto lines within a column width, breaking before overflow, and
+    /// frames each padded line. Pure string handling; agrees on both backends.
+    #[test]
+    fn wrap_example_greedily_wraps_to_width() {
+        assert_eq!(
+            crate::execute_file("examples/wrap.witchy", Vec::new()).unwrap(),
+            vec![
+                "wrapped to 20 columns:",
+                "| The quick brown fox  |",
+                "| jumps over the lazy  |",
+                "| dog and then keeps   |",
+                "| on running far away  |",
+            ]
+        );
+    }
+
     /// `examples/dijkstra.witchy` — single-source shortest paths in a weighted
     /// directed graph — settles the nearest node, relaxes edges, then prints
     /// every distance and one reconstructed path. Returns a tuple of parallel
