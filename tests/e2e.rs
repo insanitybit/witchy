@@ -1569,6 +1569,9 @@ fn witchy_pm_add_resolves_and_fetches_from_coven() {
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();
     let materialized = std::fs::read_to_string(dest.join("vendor/money/src/money.witchy"))
         .unwrap_or_default();
+    // The signed record is kept next to the source for offline re-verification.
+    let provenance = std::fs::read_to_string(dest.join("vendor/money/coven.json"))
+        .unwrap_or_default();
     let _ = std::fs::remove_dir_all(&store);
     let _ = std::fs::remove_dir_all(&dest);
 
@@ -1581,5 +1584,9 @@ fn witchy_pm_add_resolves_and_fetches_from_coven() {
     assert!(
         materialized.contains("\"1.5.0\""),
         "the fetched source must be 1.5.0, got: {materialized:?}"
+    );
+    assert!(
+        provenance.contains("\"version\":\"1.5.0\"") && provenance.contains("\"sig\":"),
+        "the vendored rune must carry its signed coven.json record: {provenance:?}"
     );
 }

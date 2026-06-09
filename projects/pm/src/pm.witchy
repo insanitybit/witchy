@@ -465,16 +465,16 @@ fn fetch_source(console: Console, net: Net, root: Dir, host: String, port: Int, 
         print(console, "BLOCK: registry record for " <> name <> "@" <> version <> " has an invalid signature — refusing to trust it")
         1
     else:
-        fetch_verified(console, net, root, host, port, name, version, dest, recorded_hash(http.body(record)))
+        fetch_verified(console, net, root, host, port, name, version, dest, http.body(record))
 
-fn fetch_verified(console: Console, net: Net, root: Dir, host: String, port: Int, name: String, version: String, dest: String, recorded: String) -> Int:
+fn fetch_verified(console: Console, net: Net, root: Dir, host: String, port: Int, name: String, version: String, dest: String, record: String) -> Int:
     let resp = http.get(net, host, port, "/coven/source?name=" <> wire(name) <> "&version=" <> version)
     if http.status(resp) != 200:
         print(console, "registry has no source for " <> name <> "@" <> version)
         1
     else:
         let files = source_files(http.body(resp))
-        if content_hash(files) != recorded:
+        if content_hash(files) != recorded_hash(record):
             print(console, "BLOCK: integrity failure — fetched source for " <> name <> "@" <> version <> " does not match the signed hash (tampered mirror?)")
             1
         else:
@@ -484,6 +484,9 @@ fn fetch_verified(console: Console, net: Net, root: Dir, host: String, port: Int
                 let full = join_path(base, path)
                 ensure_dir(root, parent_dir(full))
                 write(root, full, text)
+            // Keep the signed record next to the source, so the vendored rune
+            // carries its own provenance and can be re-verified offline.
+            write(root, join_path(base, "coven.json"), record)
             print(console, "added " <> name <> "@" <> version <> " -> " <> base)
             0
 
