@@ -332,6 +332,9 @@ struct Codegen {
     /// Whether the `float_to_str` host import + guest helper are needed (float
     /// `to_string`).
     uses_float_to_str: bool,
+    /// Whether the `encoding` host import + `$encoding` guest helper are needed
+    /// (hex/base64 encode/decode, all `String -> String`).
+    uses_encoding: bool,
     uses_ends_with: bool,
     /// Whether the `split` helper is needed.
     uses_split: bool,
@@ -537,6 +540,7 @@ impl Codegen {
             uses_crypto_ed25519_verify: false,
             uses_crypto_sha256: false,
             uses_float_to_str: false,
+            uses_encoding: false,
             uses_dict_update: false,
             uses_ends_with: false,
             uses_split: false,
@@ -1454,6 +1458,7 @@ impl Codegen {
             || self.uses_dict_iter
             || self.uses_crypto_sha256
             || self.uses_float_to_str
+            || self.uses_encoding
     }
 
     fn emit_imports(&self) -> String {
@@ -1485,6 +1490,12 @@ impl Codegen {
             // float_to_str(x, out_data_ptr) -> byte length: the host formats `x`
             // (Rust Display) into the guest's pre-allocated buffer.
             s.push_str("  (import \"witchy\" \"float_to_str\" (func $float_to_str_host (param f64 i32) (result i32)))\n");
+        }
+        if self.uses_encoding {
+            // encoding(op, in_header_ptr, out_data_ptr) -> byte length. op selects
+            // hex/base64 encode/decode; the host runs the same native transform the
+            // interpreter does and writes the result into the guest's buffer.
+            s.push_str("  (import \"witchy\" \"encoding\" (func $encoding_host (param i32 i32 i32) (result i32)))\n");
         }
         s
     }
@@ -1537,6 +1548,9 @@ impl Codegen {
         }
         if self.uses_float_to_str {
             s.push_str(FLOAT_TO_STR_WAT);
+        }
+        if self.uses_encoding {
+            s.push_str(ENCODING_WAT);
         }
         // `$split` builds its result list with `$list_push` (emitted above via
         // `uses_list_push`, which the split call site also sets).
@@ -2771,6 +2785,15 @@ impl Codegen {
         }
     }
 
+    /// Compile an `encoding.*` call (op-coded hex/base64 transform) to a call to
+    /// the `$encoding` guest helper: push the op, then the string-argument
+    /// pointer, then call.
+    fn compile_encoding(&mut self, op: u32, arg: &Expr) -> Result<String, CodegenError> {
+        self.uses_encoding = true;
+        let s = self.compile_expr(arg)?;
+        Ok(format!("    i32.const {op}\n{s}    call $encoding\n"))
+    }
+
     fn compile_call(&mut self, name: &str, args: &[Expr]) -> Result<String, CodegenError> {
         match (name, args.len()) {
             // `crypto.ed25519_verify(pk, msg, sig) -> Bool`: a native-module
@@ -2793,6 +2816,14 @@ impl Codegen {
                 let s = self.compile_expr(&args[0])?;
                 Ok(format!("{s}    call $crypto_sha256\n"))
             }
+            // The `encoding` module's hex/base64 transforms (all `String ->
+            // String`) bridge to the SAME native registry the interpreter uses, via
+            // a host import. `op` selects the transform; the guest reserves the
+            // result buffer, the host fills it and returns the length.
+            ("encoding.hex_encode", 1) => self.compile_encoding(0, &args[0]),
+            ("encoding.hex_decode", 1) => self.compile_encoding(1, &args[0]),
+            ("encoding.base64_encode", 1) => self.compile_encoding(2, &args[0]),
+            ("encoding.base64_decode", 1) => self.compile_encoding(3, &args[0]),
             // Any remaining native-stdlib functions aren't bridged into WASM yet.
             (n, _) if crate::native::is_native(n) => {
                 cerr(format!("`{n}` is interpreter-only (not compiled to WASM)"))
@@ -4094,6 +4125,21 @@ const FLOAT_TO_STR_WAT: &str = r#"  (func $float_to_str (param $x f64) (result i
     (call $ensure (i32.const 516))
     (local.set $res (global.get $heap))
     (local.set $n (call $float_to_str_host (local.get $x) (i32.add (local.get $res) (i32.const 4))))
+    (i32.store (local.get $res) (local.get $n))
+    (global.set $heap (i32.add (i32.add (local.get $res) (i32.const 4)) (local.get $n)))
+    (local.get $res))
+"#;
+
+// encoding(op, in): a fresh string holding the hex/base64 transform of `in`,
+// computed by the host. Every output is at most 2x the input bytes (hex_encode
+// is exactly 2x; base64_encode ~1.33x; both decodes shrink), so reserve
+// `2*len + slack` for the body, let the host fill it and return the length, then
+// set the header.
+const ENCODING_WAT: &str = r#"  (func $encoding (param $op i32) (param $in i32) (result i32)
+    (local $res i32) (local $n i32)
+    (call $ensure (i32.add (i32.mul (i32.load (local.get $in)) (i32.const 2)) (i32.const 20)))
+    (local.set $res (global.get $heap))
+    (local.set $n (call $encoding_host (local.get $op) (local.get $in) (i32.add (local.get $res) (i32.const 4))))
     (i32.store (local.get $res) (local.get $n))
     (global.set $heap (i32.add (i32.add (local.get $res) (i32.const 4)) (local.get $n)))
     (local.get $res))

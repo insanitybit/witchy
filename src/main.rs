@@ -4444,6 +4444,30 @@ fn yn(b: Bool) -> String:
         assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
     }
 
+    /// The `encoding` module (hex/base64) must agree on both backends. WASM
+    /// bridges each `String -> String` transform to the same native registry the
+    /// interpreter uses (a host import), so output is byte-for-byte identical.
+    /// (Regression for the interpreter-only encoding-module gap.)
+    #[test]
+    fn encoding_module_agrees_on_both_backends() {
+        let src = "import encoding\n\nfn main(console: Console):\n    let p = \"Hello, witchy!\"\n    let b = encoding.base64_encode(p)\n    print(console, b)\n    print(console, encoding.base64_decode(b))\n    let h = encoding.hex_encode(p)\n    print(console, h)\n    print(console, encoding.hex_decode(h))\n    print(console, encoding.base64_encode(\"foo\"))\n";
+        let want = vec![
+            "SGVsbG8sIHdpdGNoeSE=".to_string(),
+            "Hello, witchy!".to_string(),
+            "48656c6c6f2c2077697463687921".to_string(),
+            "Hello, witchy!".to_string(),
+            "Zm9v".to_string(),
+        ];
+        // `import encoding` is a native module: link to register its signatures,
+        // then run each backend on the linked module.
+        let module = parser::parse_module(src).expect("parse");
+        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        typeck::check(&linked).expect("typecheck");
+        let wat = codegen::compile_module(&linked).expect("compile");
+        assert_eq!(link_run(src), want.clone(), "interpreter (linked)");
+        assert_eq!(crate::run_wat_capture(&wat).expect("wasm run"), want, "compiled WASM must agree");
+    }
+
     /// Dict `update` (single-lookup upsert) must agree on both backends, including
     /// nested updates and a big-`Int` value. WASM lowers it to a `$dict_update`
     /// helper that reads the current value (or default), applies the closure via

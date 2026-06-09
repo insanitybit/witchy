@@ -241,6 +241,9 @@ impl Runtime {
         // Float -> string formatting is pure; done in the host so it is byte-
         // identical to the interpreter's `Display` (no float formatter in WAT).
         linker.func_wrap("witchy", "float_to_str", host_float_to_str)?;
+        // hex/base64 transforms are pure; bridged to the same native registry the
+        // interpreter uses (byte-for-byte parity, no byte-level work in WAT).
+        linker.func_wrap("witchy", "encoding", host_encoding)?;
 
         // Ungranted capability imports are rejected here.
         let instance = linker.instantiate(&mut store, &module)?;
@@ -390,6 +393,35 @@ fn host_sha256(mut caller: Caller<'_, ActorState>, in_ptr: i32, out_ptr: i32) ->
     }
     mem.write(&mut caller, out_ptr as usize, hex.as_bytes())
         .map_err(|e| Error::msg(format!("writing sha256 result into guest memory: {e}")))
+}
+
+/// `encoding.*(op, in_header_ptr, out_data_ptr) -> byte length`: read the input
+/// string, run the selected hex/base64 transform through the shared native
+/// registry (the same implementation the interpreter uses, so the backends agree
+/// byte-for-byte), write the result bytes at `out_data_ptr`, and return their
+/// length. The guest reserves a sufficient buffer (`2*len + slack`) beforehand.
+/// `op`: 0 = hex_encode, 1 = hex_decode, 2 = base64_encode, 3 = base64_decode.
+fn host_encoding(mut caller: Caller<'_, ActorState>, op: i32, in_ptr: i32, out_ptr: i32) -> Result<i32> {
+    use crate::interpreter::Value;
+    let name = match op {
+        0 => "encoding.hex_encode",
+        1 => "encoding.hex_decode",
+        2 => "encoding.base64_encode",
+        3 => "encoding.base64_decode",
+        _ => return Err(Error::msg(format!("unknown encoding op {op}"))),
+    };
+    let mem = memory_of(&mut caller)?;
+    let input = read_wstr(mem.data(&caller), in_ptr)?;
+    let f = crate::native::lookup(name)
+        .ok_or_else(|| Error::msg(format!("{name} is not registered")))?;
+    let out = match f(&[Value::Str(input)]).map_err(|e| Error::msg(e.message))? {
+        Value::Str(s) => s,
+        _ => return Err(Error::msg(format!("{name} did not return a String"))),
+    };
+    let bytes = out.as_bytes();
+    mem.write(&mut caller, out_ptr as usize, bytes)
+        .map_err(|e| Error::msg(format!("writing {name} result into guest memory: {e}")))?;
+    Ok(bytes.len() as i32)
 }
 
 // --- small helpers for safe guest-memory access ---
