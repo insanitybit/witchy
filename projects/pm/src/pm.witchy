@@ -51,6 +51,8 @@ fn main(console: Console, args: List(String), root: Dir, net: Net) -> Int:
         cmd_gate(console, root, args)
     else if cmd == "verify-rune":
         cmd_verify_rune(console, root, arg(args, 1), arg(args, 2))
+    else if cmd == "verify-vendor":
+        cmd_verify_vendor(console, root, arg(args, 1), arg(args, 2))
     else if cmd == "new":
         cmd_new(console, root, arg(args, 1))
         0
@@ -542,6 +544,40 @@ fn cmd_verify_rune(console: Console, root: Dir, dir: String, rootpub: String) ->
     else:
         report_rune_verify(console, root, dir, rootpub, read(root, join_path(dir, "coven.json")))
 
+// --- verify-vendor: re-verify a whole vendored tree offline ------------------
+// Walk every rune under <dir> that carries a coven.json and re-verify it (the
+// same signature + content check as verify-rune). A CI gate over an entire
+// vendored dependency graph; exits 2 if any rune fails.
+
+fn cmd_verify_vendor(console: Console, root: Dir, dir: String, rootpub: String) -> Int:
+    if string.is_empty(dir) || string.is_empty(rootpub):
+        print(console, "usage: pm verify-vendor <vendor-dir> <registry-root-pubkey-hex>")
+        1
+    else if !exists(root, dir):
+        print(console, "no such directory: " <> dir)
+        1
+    else:
+        var total = 0
+        var failed = 0
+        for entry in list(subdir(root, dir)):
+            let rune_dir = join_path(dir, entry)
+            if exists(root, join_path(rune_dir, "coven.json")):
+                total = total + 1
+                if report_rune_verify(console, root, rune_dir, rootpub, read(root, join_path(rune_dir, "coven.json"))) != 0:
+                    failed = failed + 1
+        verdict_vendor(console, total, failed)
+
+fn verdict_vendor(console: Console, total: Int, failed: Int) -> Int:
+    if total == 0:
+        print(console, "no vendored runes (no coven.json) found")
+        1
+    else if failed == 0:
+        print(console, "OK: all " <> int_to_string(total) <> " vendored runes verified")
+        0
+    else:
+        print(console, "BLOCK: " <> int_to_string(failed) <> " of " <> int_to_string(total) <> " vendored runes failed verification")
+        2
+
 fn report_rune_verify(console: Console, root: Dir, dir: String, rootpub: String, record: String) -> Int:
     if !record_signature_valid(rootpub, record):
         print(console, "BLOCK: " <> dir <> "/coven.json is not validly signed by that root key — refusing")
@@ -699,6 +735,7 @@ fn usage(console: Console):
     print(console, "  gate  <dir> [cap..] BLOCK if deps demand authority beyond the lock")
     print(console, "  add <name> <req> <coven> <dest>  resolve + fetch a rune and its deps")
     print(console, "  verify-rune <dir> <rootpub>  re-verify a vendored rune offline (coven.json)")
+    print(console, "  verify-vendor <dir> <rootpub>  re-verify every vendored rune offline")
     print(console, "  new   <name>        scaffold a new rune")
 
 fn unknown(console: Console, cmd: String) -> Int:

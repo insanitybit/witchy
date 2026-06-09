@@ -1812,6 +1812,16 @@ fn witchy_pm_add_resolves_transitive_dependencies() {
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();
     let app_present = dest.join("vendor/app/coven.json").exists();
     let util_present = dest.join("vendor/util/coven.json").exists();
+
+    // The whole vendored tree re-verifies offline (the registry is now down).
+    let rootpub = "4cb5abf6ad79fbf5abbccafcc269d85cd2651ed4b885b5869f241aedf0a5ba29";
+    let vverify = Command::new(BIN)
+        .args([pm_src.as_str(), "verify-vendor", "vendor", rootpub])
+        .current_dir(&dest)
+        .output()
+        .expect("run pm verify-vendor");
+    let vverify_out = String::from_utf8_lossy(&vverify.stdout).to_string();
+
     let _ = std::fs::remove_dir_all(&store);
     let _ = std::fs::remove_dir_all(&dest);
 
@@ -1825,4 +1835,8 @@ fn witchy_pm_add_resolves_transitive_dependencies() {
         "the transitive dep util must be fetched: {stdout:?}"
     );
     assert!(app_present && util_present, "both runes must carry provenance");
+    assert!(
+        vverify.status.success() && vverify_out.contains("all 2 vendored runes verified"),
+        "verify-vendor must re-verify the whole tree offline: {vverify_out:?}"
+    );
 }
