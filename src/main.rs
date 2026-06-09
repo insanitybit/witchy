@@ -4448,6 +4448,20 @@ fn yn(b: Bool) -> String:
         assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
     }
 
+    /// A `Dict` value (and key) keeps its 64 bits on WASM: the Dict now stores
+    /// 16-byte entries with i64 key and i64 value slots, and `get_or` recovers the
+    /// value at the default's kind. A big-Int value round-trips; a String value
+    /// (a pointer in the low bits) still works. (Regression for big-Int-Dict.)
+    #[test]
+    fn wasm_dict_keeps_big_int_values() {
+        let big = "fn main(console: Console):\n    var d = dict_new()\n    d = insert(d, \"k\", 9000000000)\n    print(console, int_to_string(get_or(d, \"k\", 0)))\n";
+        assert_eq!(interp(big), vec!["9000000000"], "interpreter");
+        assert_eq!(run_on_wasm(big), vec!["9000000000"], "WASM");
+        let s = "fn main(console: Console):\n    var d = dict_new()\n    d = insert(d, \"a\", \"hello\")\n    print(console, get_or(d, \"a\", \"none\"))\n";
+        assert_eq!(interp(s), vec!["hello"], "interpreter (string value)");
+        assert_eq!(run_on_wasm(s), vec!["hello"], "WASM (string value)");
+    }
+
     /// A large `Int` carried as an `Option`/`Result` success payload must keep its
     /// 64 bits on WASM, through both `?` and a `match`. The payload field is a type
     /// variable (generic i32 ABI), so codegen would truncate; it now tracks the

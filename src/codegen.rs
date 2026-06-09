@@ -533,6 +533,11 @@ impl Codegen {
             Expr::Match { arms, .. } => arms
                 .iter()
                 .fold(Kind::I32, |acc, a| promote_kind(acc, self.kind_of(&a.body))),
+            // `get_or(d, k, default)` returns the dict's value at the default's
+            // kind (the i64 value slot is recovered to it at the call site).
+            Expr::Call { name, args } if name == "get_or" && args.len() == 3 => {
+                self.kind_of(&args[2])
+            }
             Expr::Call { name, .. } => match name.as_str() {
                 "int_to_float" => Kind::F64,
                 "float_to_int" | "string_length" | "char_count" | "index_of" | "length"
@@ -2653,10 +2658,11 @@ impl Codegen {
                 let d = self.compile_expr(&args[0])?;
                 let k = self.compile_expr(&args[1])?;
                 let v = self.compile_expr(&args[2])?;
+                // Key and value go into the dict's universal i64 slots.
                 Ok(format!(
                     "{d}{k}{}{v}{}    i32.const {mode}\n    call $dict_insert\n",
-                    kind_convert(kk, Kind::I32),
-                    kind_convert(vk, Kind::I32)
+                    to_slot(kk),
+                    to_slot(vk)
                 ))
             }
             ("get_or", 3) => {
@@ -2668,10 +2674,13 @@ impl Codegen {
                 let d = self.compile_expr(&args[0])?;
                 let k = self.compile_expr(&args[1])?;
                 let default = self.compile_expr(&args[2])?;
+                // Key + default go in as i64 slots; the i64 result is recovered at
+                // the value kind (the default's kind, which shares the value type).
                 Ok(format!(
-                    "{d}{k}{}{default}{}    i32.const {mode}\n    call $dict_get_or\n",
-                    kind_convert(kk, Kind::I32),
-                    kind_convert(dk, Kind::I32)
+                    "{d}{k}{}{default}{}    i32.const {mode}\n    call $dict_get_or\n{}",
+                    to_slot(kk),
+                    to_slot(dk),
+                    from_slot(dk)
                 ))
             }
             ("has", 2) => {
@@ -2683,7 +2692,7 @@ impl Codegen {
                 let k = self.compile_expr(&args[1])?;
                 Ok(format!(
                     "{d}{k}{}    i32.const {mode}\n    call $dict_has\n",
-                    kind_convert(kk, Kind::I32)
+                    to_slot(kk)
                 ))
             }
             // The single-lookup upsert applies a closure between a dict read and
@@ -2703,7 +2712,7 @@ impl Codegen {
                 let k = self.compile_expr(&args[1])?;
                 Ok(format!(
                     "{d}{k}{}    i32.const {mode}\n    call $dict_remove\n",
-                    kind_convert(kk, Kind::I32)
+                    to_slot(kk)
                 ))
             }
             // size(dict): the entry count is the map's header word.
@@ -3786,47 +3795,51 @@ const DICT_NEW_WAT: &str = r#"  (func $dict_new (result i32)
     (local.get $p))
 "#;
 
-const KEY_EQ_WAT: &str = r#"  (func $key_eq (param $a i32) (param $b i32) (param $mode i32) (result i32)
+// A Dict is `[count:i32]` then `count` entries of 16 bytes each: an i64 key slot
+// (at entry+0) and an i64 value slot (at entry+8), entry i at base + 4 + i*16.
+// Keys and values use the universal i64 slot (a String/list key/value is a
+// pointer in the low 32 bits), so a big `Int` key or value keeps its 64 bits.
+const KEY_EQ_WAT: &str = r#"  (func $key_eq (param $a i64) (param $b i64) (param $mode i32) (result i32)
     (if (result i32) (i32.eqz (local.get $mode))
-      (then (i32.eq (local.get $a) (local.get $b)))
-      (else (call $str_eq (local.get $a) (local.get $b)))))
+      (then (i64.eq (local.get $a) (local.get $b)))
+      (else (call $str_eq (i32.wrap_i64 (local.get $a)) (i32.wrap_i64 (local.get $b))))))
 "#;
 
 // insert(d, k, v): a fresh map like `d` with `k` set to `v` — the matching
 // entry's value replaced, or `(k, v)` appended (count+1) if `k` is absent.
-const DICT_INSERT_WAT: &str = r#"  (func $dict_insert (param $d i32) (param $k i32) (param $v i32) (param $mode i32) (result i32)
+const DICT_INSERT_WAT: &str = r#"  (func $dict_insert (param $d i32) (param $k i64) (param $v i64) (param $mode i32) (result i32)
     (local $count i32) (local $i i32) (local $found i32) (local $new i32) (local $bytes i32)
     (local.set $count (i32.load (local.get $d)))
-    (call $ensure (i32.add (i32.const 12) (i32.mul (local.get $count) (i32.const 8))))
+    (call $ensure (i32.add (i32.const 20) (i32.mul (local.get $count) (i32.const 16))))
     (local.set $found (i32.const -1))
     (local.set $i (i32.const 0))
     (block $fdone
       (loop $f
         (br_if $fdone (i32.ge_s (local.get $i) (local.get $count)))
         (if (call $key_eq
-              (i32.load (i32.add (i32.add (local.get $d) (i32.const 4)) (i32.mul (local.get $i) (i32.const 8))))
+              (i64.load (i32.add (i32.add (local.get $d) (i32.const 4)) (i32.mul (local.get $i) (i32.const 16))))
               (local.get $k) (local.get $mode))
           (then (local.set $found (local.get $i)) (br $fdone)))
         (local.set $i (i32.add (local.get $i) (i32.const 1)))
         (br $f)))
-    (local.set $bytes (i32.add (i32.const 4) (i32.mul (local.get $count) (i32.const 8))))
+    (local.set $bytes (i32.add (i32.const 4) (i32.mul (local.get $count) (i32.const 16))))
     (local.set $new (global.get $heap))
     (memory.copy (local.get $new) (local.get $d) (local.get $bytes))
     (if (result i32) (i32.ge_s (local.get $found) (i32.const 0))
       (then
-        (i32.store (i32.add (i32.add (local.get $new) (i32.const 8)) (i32.mul (local.get $found) (i32.const 8))) (local.get $v))
+        (i64.store (i32.add (i32.add (local.get $new) (i32.const 12)) (i32.mul (local.get $found) (i32.const 16))) (local.get $v))
         (global.set $heap (i32.add (local.get $new) (local.get $bytes)))
         (local.get $new))
       (else
         (i32.store (local.get $new) (i32.add (local.get $count) (i32.const 1)))
-        (i32.store (i32.add (local.get $new) (local.get $bytes)) (local.get $k))
-        (i32.store (i32.add (i32.add (local.get $new) (local.get $bytes)) (i32.const 4)) (local.get $v))
-        (global.set $heap (i32.add (i32.add (local.get $new) (local.get $bytes)) (i32.const 8)))
+        (i64.store (i32.add (local.get $new) (local.get $bytes)) (local.get $k))
+        (i64.store (i32.add (i32.add (local.get $new) (local.get $bytes)) (i32.const 8)) (local.get $v))
+        (global.set $heap (i32.add (i32.add (local.get $new) (local.get $bytes)) (i32.const 16)))
         (local.get $new))))
 "#;
 
 // get_or(d, k, default): the value for `k`, or `default` if absent.
-const DICT_GET_OR_WAT: &str = r#"  (func $dict_get_or (param $d i32) (param $k i32) (param $default i32) (param $mode i32) (result i32)
+const DICT_GET_OR_WAT: &str = r#"  (func $dict_get_or (param $d i32) (param $k i64) (param $default i64) (param $mode i32) (result i64)
     (local $count i32) (local $i i32)
     (local.set $count (i32.load (local.get $d)))
     (local.set $i (i32.const 0))
@@ -3834,16 +3847,16 @@ const DICT_GET_OR_WAT: &str = r#"  (func $dict_get_or (param $d i32) (param $k i
       (loop $l
         (br_if $done (i32.ge_s (local.get $i) (local.get $count)))
         (if (call $key_eq
-              (i32.load (i32.add (i32.add (local.get $d) (i32.const 4)) (i32.mul (local.get $i) (i32.const 8))))
+              (i64.load (i32.add (i32.add (local.get $d) (i32.const 4)) (i32.mul (local.get $i) (i32.const 16))))
               (local.get $k) (local.get $mode))
-          (then (return (i32.load (i32.add (i32.add (local.get $d) (i32.const 8)) (i32.mul (local.get $i) (i32.const 8)))))))
+          (then (return (i64.load (i32.add (i32.add (local.get $d) (i32.const 12)) (i32.mul (local.get $i) (i32.const 16)))))))
         (local.set $i (i32.add (local.get $i) (i32.const 1)))
         (br $l)))
     (local.get $default))
 "#;
 
 // has(d, k): whether `k` is present.
-const DICT_HAS_WAT: &str = r#"  (func $dict_has (param $d i32) (param $k i32) (param $mode i32) (result i32)
+const DICT_HAS_WAT: &str = r#"  (func $dict_has (param $d i32) (param $k i64) (param $mode i32) (result i32)
     (local $count i32) (local $i i32)
     (local.set $count (i32.load (local.get $d)))
     (local.set $i (i32.const 0))
@@ -3851,7 +3864,7 @@ const DICT_HAS_WAT: &str = r#"  (func $dict_has (param $d i32) (param $k i32) (p
       (loop $l
         (br_if $done (i32.ge_s (local.get $i) (local.get $count)))
         (if (call $key_eq
-              (i32.load (i32.add (i32.add (local.get $d) (i32.const 4)) (i32.mul (local.get $i) (i32.const 8))))
+              (i64.load (i32.add (i32.add (local.get $d) (i32.const 4)) (i32.mul (local.get $i) (i32.const 16))))
               (local.get $k) (local.get $mode))
           (then (return (i32.const 1))))
         (local.set $i (i32.add (local.get $i) (i32.const 1)))
@@ -3861,10 +3874,10 @@ const DICT_HAS_WAT: &str = r#"  (func $dict_has (param $d i32) (param $k i32) (p
 
 // remove(d, k): a fresh map with the entry for `k` dropped (unchanged if
 // absent). Copies every entry whose key isn't `k` into a new map.
-const DICT_REMOVE_WAT: &str = r#"  (func $dict_remove (param $d i32) (param $k i32) (param $mode i32) (result i32)
+const DICT_REMOVE_WAT: &str = r#"  (func $dict_remove (param $d i32) (param $k i64) (param $mode i32) (result i32)
     (local $count i32) (local $i i32) (local $new i32) (local $n i32)
     (local.set $count (i32.load (local.get $d)))
-    (call $ensure (i32.add (i32.const 4) (i32.mul (local.get $count) (i32.const 8))))
+    (call $ensure (i32.add (i32.const 4) (i32.mul (local.get $count) (i32.const 16))))
     (local.set $new (global.get $heap))
     (local.set $i (i32.const 0))
     (local.set $n (i32.const 0))
@@ -3872,22 +3885,23 @@ const DICT_REMOVE_WAT: &str = r#"  (func $dict_remove (param $d i32) (param $k i
       (loop $l
         (br_if $done (i32.ge_s (local.get $i) (local.get $count)))
         (if (i32.eqz (call $key_eq
-              (i32.load (i32.add (i32.add (local.get $d) (i32.const 4)) (i32.mul (local.get $i) (i32.const 8))))
+              (i64.load (i32.add (i32.add (local.get $d) (i32.const 4)) (i32.mul (local.get $i) (i32.const 16))))
               (local.get $k) (local.get $mode)))
           (then
-            (i32.store (i32.add (i32.add (local.get $new) (i32.const 4)) (i32.mul (local.get $n) (i32.const 8)))
-              (i32.load (i32.add (i32.add (local.get $d) (i32.const 4)) (i32.mul (local.get $i) (i32.const 8)))))
-            (i32.store (i32.add (i32.add (local.get $new) (i32.const 8)) (i32.mul (local.get $n) (i32.const 8)))
-              (i32.load (i32.add (i32.add (local.get $d) (i32.const 8)) (i32.mul (local.get $i) (i32.const 8)))))
+            (i64.store (i32.add (i32.add (local.get $new) (i32.const 4)) (i32.mul (local.get $n) (i32.const 16)))
+              (i64.load (i32.add (i32.add (local.get $d) (i32.const 4)) (i32.mul (local.get $i) (i32.const 16)))))
+            (i64.store (i32.add (i32.add (local.get $new) (i32.const 12)) (i32.mul (local.get $n) (i32.const 16)))
+              (i64.load (i32.add (i32.add (local.get $d) (i32.const 12)) (i32.mul (local.get $i) (i32.const 16)))))
             (local.set $n (i32.add (local.get $n) (i32.const 1)))))
         (local.set $i (i32.add (local.get $i) (i32.const 1)))
         (br $l)))
     (i32.store (local.get $new) (local.get $n))
-    (global.set $heap (i32.add (i32.add (local.get $new) (i32.const 4)) (i32.mul (local.get $n) (i32.const 8))))
+    (global.set $heap (i32.add (i32.add (local.get $new) (i32.const 4)) (i32.mul (local.get $n) (i32.const 16))))
     (local.get $new))
 "#;
 
-// keys(d) / values(d): a fresh List of the keys (or values), in insertion order.
+// keys(d) / values(d): a fresh List (8-byte i64 slots) of the keys (or values),
+// in insertion order — copied straight across (both are i64 slots already).
 const DICT_KEYS_WAT: &str = r#"  (func $dict_keys (param $d i32) (result i32)
     (local $count i32) (local $i i32) (local $new i32)
     (local.set $count (i32.load (local.get $d)))
@@ -3900,7 +3914,7 @@ const DICT_KEYS_WAT: &str = r#"  (func $dict_keys (param $d i32) (result i32)
         (br_if $done (i32.ge_s (local.get $i) (local.get $count)))
         (i64.store
           (i32.add (i32.add (local.get $new) (i32.const 4)) (i32.mul (local.get $i) (i32.const 8)))
-          (i64.extend_i32_u (i32.load (i32.add (i32.add (local.get $d) (i32.const 4)) (i32.mul (local.get $i) (i32.const 8))))))
+          (i64.load (i32.add (i32.add (local.get $d) (i32.const 4)) (i32.mul (local.get $i) (i32.const 16)))))
         (local.set $i (i32.add (local.get $i) (i32.const 1)))
         (br $l)))
     (global.set $heap (i32.add (i32.add (local.get $new) (i32.const 4)) (i32.mul (local.get $count) (i32.const 8))))
@@ -3919,7 +3933,7 @@ const DICT_VALUES_WAT: &str = r#"  (func $dict_values (param $d i32) (result i32
         (br_if $done (i32.ge_s (local.get $i) (local.get $count)))
         (i64.store
           (i32.add (i32.add (local.get $new) (i32.const 4)) (i32.mul (local.get $i) (i32.const 8)))
-          (i64.extend_i32_u (i32.load (i32.add (i32.add (local.get $d) (i32.const 8)) (i32.mul (local.get $i) (i32.const 8))))))
+          (i64.load (i32.add (i32.add (local.get $d) (i32.const 12)) (i32.mul (local.get $i) (i32.const 16)))))
         (local.set $i (i32.add (local.get $i) (i32.const 1)))
         (br $l)))
     (global.set $heap (i32.add (i32.add (local.get $new) (i32.const 4)) (i32.mul (local.get $count) (i32.const 8))))
@@ -3943,9 +3957,9 @@ const DICT_PAIRS_WAT: &str = r#"  (func $dict_pairs (param $d i32) (result i32)
         (local.set $tup (global.get $heap))
         (i32.store (local.get $tup) (i32.const 0))
         (i64.store (i32.add (local.get $tup) (i32.const 4))
-          (i64.extend_i32_u (i32.load (i32.add (i32.add (local.get $d) (i32.const 4)) (i32.mul (local.get $i) (i32.const 8))))))
+          (i64.load (i32.add (i32.add (local.get $d) (i32.const 4)) (i32.mul (local.get $i) (i32.const 16)))))
         (i64.store (i32.add (local.get $tup) (i32.const 12))
-          (i64.extend_i32_u (i32.load (i32.add (i32.add (local.get $d) (i32.const 8)) (i32.mul (local.get $i) (i32.const 8))))))
+          (i64.load (i32.add (i32.add (local.get $d) (i32.const 12)) (i32.mul (local.get $i) (i32.const 16)))))
         (global.set $heap (i32.add (local.get $tup) (i32.const 20)))
         (i64.store
           (i32.add (i32.add (local.get $list) (i32.const 4)) (i32.mul (local.get $i) (i32.const 8)))
