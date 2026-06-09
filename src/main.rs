@@ -4027,6 +4027,26 @@ fn yn(b: Bool) -> String:
         assert_eq!(crate::capabilities::show_caps(&fp.total), "Console");
     }
 
+    /// `examples/stats.witchy` — summary statistics over a `List(Float)` —
+    /// computes count/mean/variance/stddev/min/max, rendering with
+    /// math.format_float. Floats live in the list and flow through arithmetic and
+    /// sqrt; a guard that floats-in-collections + fixed-decimal formatting agree
+    /// on both backends.
+    #[test]
+    fn stats_example_summarizes_a_float_list() {
+        assert_eq!(
+            crate::execute_file("examples/stats.witchy", Vec::new()).unwrap(),
+            vec![
+                "count    8",
+                "mean     5.00",
+                "variance 4.00",
+                "stddev   2.00",
+                "min      2.00",
+                "max      9.00",
+            ]
+        );
+    }
+
     /// `examples/regex.witchy` — a tiny K&P-style regex matcher (literals, `.`,
     /// `*`, `^`, `$`) — matches a battery of pattern/text pairs. Every step is a
     /// two-`at(..)` character comparison, so it stresses content comparison on
