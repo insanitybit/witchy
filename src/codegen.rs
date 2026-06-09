@@ -269,6 +269,10 @@ struct Codegen {
     /// `let (a, b) = f(...)` destructures at the right widths (an Int slot as
     /// i64, not the generic i32).
     fn_ret_tuple_slots: HashMap<String, Vec<ValType>>,
+    /// Function name -> the slot types of the TUPLE ELEMENTS of the `List((..))`
+    /// it returns (e.g. a monomorphized `zip__Int__Int`), so `at(f(...), i)` /
+    /// `for t in f(...)` destructure the tuple at the right widths.
+    fn_ret_list_elem_tuple_slots: HashMap<String, Vec<ValType>>,
     /// Message name -> tag, shared across a program's actors so the host can
     /// route a compiled `send` to the target actor's handler.
     message_tags: HashMap<String, u32>,
@@ -441,6 +445,7 @@ impl Codegen {
             fn_ret: HashMap::new(),
             fn_ret_closure_kind: HashMap::new(),
             fn_ret_tuple_slots: HashMap::new(),
+            fn_ret_list_elem_tuple_slots: HashMap::new(),
             message_tags: HashMap::new(),
             uses_send: false,
             record_fields: HashMap::new(),
@@ -924,6 +929,8 @@ impl Codegen {
                 }
                 None
             }
+            // A function returning `List((..))` (e.g. a monomorphized `zip`).
+            Expr::Call { name, .. } => self.fn_ret_list_elem_tuple_slots.get(name).cloned(),
             _ => None,
         }
     }
@@ -1049,25 +1056,23 @@ impl Codegen {
                     // A list literal of tuples records its element-tuple slot types,
                     // so `at(name, i)` then `let (a, b) = ...` destructures at the
                     // right widths.
+                    // A binding to a list whose elements are tuples (a literal of
+                    // tuples, `pairs(d)`, or a `List((..))`-returning call like a
+                    // monomorphized `zip`) records the element-tuple slot types, so
+                    // `at(name, i)` / `for t in name` destructure at i64 for Int.
+                    if let Some(slots) = self.list_elem_tuple_slots(value) {
+                        self.local_list_elem_tuple.insert(name.clone(), slots);
+                    }
+                    // A list literal of lists: record the inner element's scalar
+                    // type, so `at(at(name, i), j)` recovers it.
                     if let Expr::List(items) = value {
-                        match items.first() {
-                            Some(Expr::Tuple(slots)) => {
-                                self.local_list_elem_tuple.insert(
-                                    name.clone(),
-                                    slots.iter().map(|e| self.val_type_of(e)).collect(),
-                                );
-                            }
-                            // A list literal of lists: record the inner element's
-                            // scalar type, so `at(at(name, i), j)` recovers it.
-                            Some(Expr::List(inner)) => {
-                                if let Some(e) = inner.first() {
-                                    let vt = self.val_type_of(e);
-                                    if vt != ValType::Other {
-                                        self.local_list_elem_list_valtype.insert(name.clone(), vt);
-                                    }
+                        if let Some(Expr::List(inner)) = items.first() {
+                            if let Some(e) = inner.first() {
+                                let vt = self.val_type_of(e);
+                                if vt != ValType::Other {
+                                    self.local_list_elem_list_valtype.insert(name.clone(), vt);
                                 }
                             }
-                            _ => {}
                         }
                     }
                     // A binding to a `List(Record)` (literal, a `List(Record)`-
@@ -3304,6 +3309,12 @@ pub fn compile_module(module: &Module) -> Result<String, CodegenError> {
                         let evt = ty_to_valtype(elem);
                         if evt != ValType::Other {
                             cg.fn_ret_list_elem_valtype.insert(f.name.clone(), evt);
+                        }
+                        // `List((T, U))` (e.g. zip): record the element tuple's
+                        // slot types so a destructure of `at(f(...), i)` is typed.
+                        if let Type::Tuple(slots) = elem {
+                            cg.fn_ret_list_elem_tuple_slots
+                                .insert(f.name.clone(), slots.iter().map(ty_to_valtype).collect());
                         }
                     }
                 } else if let Some(payload) = args.first() {
