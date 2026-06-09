@@ -529,16 +529,32 @@ impl Codegen {
     }
 
     /// The WASM kind of the element produced by `at(list, i)`: the list's tracked
-    /// element kind, or the universal i64 when unknown (slots are i64, so a
-    /// generic element is recovered as i64 without truncation).
+    /// element kind, or i32 (the generic ABI) when unknown. The `at` *emission*
+    /// uses the same `list_elem_kind`, so the typed-expression kind and the loaded
+    /// width always agree.
     fn elem_kind_of_list_arg(&self, e: &Expr) -> Kind {
         if let Expr::Call { name, args } = e {
             if name == "at" {
-                if let Some(Expr::Var(v)) = args.first() {
-                    if let Some(vt) = self.local_list_elem_valtype.get(v) {
-                        return valtype_kind(*vt);
-                    }
+                if let Some(arg) = args.first() {
+                    return self.list_elem_kind(arg);
                 }
+            }
+        }
+        Kind::I32
+    }
+
+    /// The WASM kind of the elements of a list expression, where determinable: a
+    /// list variable, list literal, or a `-> List(T)` call (e.g. a monomorphized
+    /// `fill__Int`). Used by both `at`'s type and its load, so an Int element of a
+    /// call-result list is recovered as i64 rather than truncated to i32.
+    fn list_elem_kind(&self, list: &Expr) -> Kind {
+        let vt = self.elem_val_type_of(list);
+        if vt != ValType::Other {
+            return valtype_kind(vt);
+        }
+        if let Expr::Var(v) = list {
+            if let Some(vt) = self.local_list_elem_valtype.get(v) {
+                return valtype_kind(*vt);
             }
         }
         Kind::I32
@@ -2603,14 +2619,10 @@ impl Codegen {
             // i64 Int, wrapped to an i32 address offset), then recover the
             // element's kind from the universal i64 slot rep.
             ("at", 2) => {
-                let ek = if let Expr::Var(v) = &args[0] {
-                    self.local_list_elem_valtype
-                        .get(v)
-                        .map(|vt| valtype_kind(*vt))
-                        .unwrap_or(Kind::I32)
-                } else {
-                    Kind::I32
-                };
+                // Recover the element at its kind, via the SAME `list_elem_kind`
+                // that types the `at` expression — otherwise codegen would expect
+                // one width and load another.
+                let ek = self.list_elem_kind(&args[0]);
                 // The index is normally an i64 Int, but a tuple-destructured Int
                 // can already be narrowed to i32; convert to the i32 address kind.
                 let ik = self.kind_of(&args[1]);
