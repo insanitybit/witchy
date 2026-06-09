@@ -2316,7 +2316,11 @@ impl Codegen {
                 Ok(format!("{}    f64.convert_i64_s\n", self.compile_expr(&args[0])?))
             }
             ("float_to_int", 1) => {
-                Ok(format!("{}    i64.trunc_f64_s\n", self.compile_expr(&args[0])?))
+                // Saturating (non-trapping) truncation to match the interpreter's
+                // Rust `as i64`: NaN -> 0, +inf -> i64::MAX, -inf -> i64::MIN, and
+                // out-of-range floats clamp. Plain `i64.trunc_f64_s` would instead
+                // trap on those, diverging from the interpreter.
+                Ok(format!("{}    i64.trunc_sat_f64_s\n", self.compile_expr(&args[0])?))
             }
             // Duration <-> Int(ms) is a no-op at runtime (both are i64).
             ("int_to_duration", 1) | ("duration_to_int", 1) => self.compile_expr(&args[0]),

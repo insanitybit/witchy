@@ -4370,6 +4370,24 @@ fn yn(b: Bool) -> String:
         assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
     }
 
+    /// `float_to_int` on a non-finite or out-of-range Float must saturate the same
+    /// way on both backends. The interpreter uses Rust's `as i64` (NaN -> 0,
+    /// +inf -> i64::MAX, -inf -> i64::MIN, out-of-range clamps); WASM used the
+    /// trapping `i64.trunc_f64_s` and would crash on those, so it now uses the
+    /// saturating `i64.trunc_sat_f64_s`.
+    #[test]
+    fn wasm_float_to_int_saturates_like_the_interpreter() {
+        let src = "fn main(console: Console):\n    print(console, int_to_string(float_to_int(1.0 / 0.0)))\n    print(console, int_to_string(float_to_int(0.0 - 1.0 / 0.0)))\n    print(console, int_to_string(float_to_int(0.0 / 0.0)))\n    print(console, int_to_string(float_to_int(0.0 - 3.9)))\n";
+        let want = vec![
+            "9223372036854775807".to_string(),
+            "-9223372036854775808".to_string(),
+            "0".to_string(),
+            "-3".to_string(),
+        ];
+        assert_eq!(interp(src), want.clone(), "interpreter");
+        assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
+    }
+
     /// `examples/rle.witchy` — run-length encoding and its inverse — collapses
     /// runs to "<count><char>" and expands them back, verifying decode∘encode is
     /// the identity. Pure string processing; identical on both backends. (Its
