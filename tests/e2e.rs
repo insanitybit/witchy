@@ -1304,6 +1304,26 @@ fn witchy_coven_trusted_publishing_verifies_a_rust_minted_token() {
         .expect("mint token");
     let token = String::from_utf8_lossy(&mint.stdout).trim().to_string();
 
+    // A token from the SAME trusted issuer but a DIFFERENT repository — used to
+    // check the namespace squat defense (the bound policy must reject it).
+    let evil = Command::new(BIN)
+        .args([
+            "coven-mint-token",
+            "--issuer-key",
+            idp.to_str().unwrap(),
+            "--issuer",
+            "gha",
+            "--sub",
+            "repo:evil/x:ref:refs/heads/main",
+            "--claim",
+            "repository=evil/x",
+            "--claim",
+            "workflow_ref=rel.yml",
+        ])
+        .output()
+        .expect("mint evil token");
+    let evil_token = String::from_utf8_lossy(&evil.stdout).trim().to_string();
+
     let port = std::net::TcpListener::bind("127.0.0.1:0")
         .unwrap()
         .local_addr()
@@ -1374,6 +1394,20 @@ fn witchy_coven_trusted_publishing_verifies_a_rust_minted_token() {
     );
     let (status_notoken, _) = http_post(&addr, "/coven/publish", &without);
 
+    // Namespace squat: a token from a different repository (same issuer) tries to
+    // publish into the bound `acme` namespace -> the policy must refuse it (403).
+    let manifest3 = "[rune]\nname = \"acme/money\"\nversion = \"3.0.0\"\n";
+    let source3 = format!(
+        "{{\"files\":[[\"witchy.toml\",{}],[\"src/money.witchy\",{}]]}}",
+        json_str(manifest3),
+        json_str(module)
+    );
+    let squat = format!(
+        "{{\"manifest_toml\":{},\"source\":{source3},\"id_token\":{evil_token}}}",
+        json_str(manifest3)
+    );
+    let (status_squat, squat_body) = http_post(&addr, "/coven/publish", &squat);
+
     let _ = server.kill();
     let _ = server.wait();
     let _ = std::fs::remove_dir_all(&store);
@@ -1387,6 +1421,10 @@ fn witchy_coven_trusted_publishing_verifies_a_rust_minted_token() {
     assert_eq!(
         status_notoken, 401,
         "a publish without a token to a trusted registry must be refused"
+    );
+    assert_eq!(
+        status_squat, 403,
+        "a token from a different repository must be refused by the bound namespace policy: {squat_body}"
     );
 }
 

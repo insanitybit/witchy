@@ -132,10 +132,11 @@ fn do_publish(store: Dir, key: SigningKey, clock: Clock, issuers: List((String, 
         err_json(409, name <> "@" <> version <> " already published — versions are immutable, bump the version")
     else:
         // Trusted publishing: the publisher identity comes from a verified
-        // identity token, never from a client-asserted field.
-        match publisher_identity(issuers, doc, now(clock) / 1000):
+        // identity token (401) and must satisfy the namespace's bound policy
+        // (403) — never from a client-asserted field.
+        match authorized_publisher(store, issuers, doc, now(clock) / 1000, name):
             Ok(uploaded_by) -> publish_checked(store, key, clock, manifest, name, version, uploaded_by, files)
-            Err(e) -> err_json(401, e)
+            Err(fail) -> fail_response(fail)
 
 fn publish_checked(store: Dir, key: SigningKey, clock: Clock, manifest: String, name: String, version: String, uploaded_by: String, files: List((String, String))) -> Response:
     let computed = computed_footprint(files)
@@ -169,9 +170,9 @@ fn do_promote(store: Dir, key: SigningKey, clock: Clock, issuers: List((String, 
     else if string.is_empty(factor):
         err_json(400, "promotion requires a second factor (the out-of-band 2FA event) — refusing to release")
     else:
-        match promoter_identity(issuers, doc, now(clock) / 1000):
+        match authorized_promoter(store, issuers, doc, now(clock) / 1000, name):
             Ok(promoter) -> promote_authenticated(store, key, clock, name, version, factor, promoter)
-            Err(e) -> err_json(401, e)
+            Err(fail) -> fail_response(fail)
 
 fn promote_authenticated(store: Dir, key: SigningKey, clock: Clock, name: String, version: String, factor: String, promoter: String) -> Response:
     if string.is_empty(promoter):
@@ -313,26 +314,96 @@ fn jint(doc: Json, key: String) -> Int:
 // *verified* claims — the client cannot assert who it is. A token minted by the
 // Rust `coven-mint-token` verifies here unchanged (canonical claims match serde).
 
-// The verified publisher identity (claims.sub). Anonymous (no trusted issuers):
-// fall back to the client-asserted `uploaded_by` for local use.
-fn publisher_identity(issuers: List((String, String)), doc: Json, now: Int) -> Result(String, String):
+// The authorized publisher identity (claims.sub). Anonymous (no trusted issuers):
+// fall back to the client-asserted `uploaded_by` for local use. Trusted: the
+// token must verify (401) AND satisfy the namespace's bound policy (403). The
+// first trusted publish to a namespace *binds* its policy (issuer + repository +
+// workflow_ref); later publishes must match — defeating namespace squatting.
+fn authorized_publisher(store: Dir, issuers: List((String, String)), doc: Json, now: Int, name: String) -> Result(String, (Int, String)):
     if length(issuers) == 0:
         Ok(nonempty(jstr(doc, "uploaded_by"), "anonymous"))
     else:
-        token_sub(issuers, doc, now, "publishing to a trusted registry requires a short-lived identity token (long-lived API tokens are not accepted)")
+        match verified_claims(issuers, doc, now, "publishing to a trusted registry requires a short-lived identity token (long-lived API tokens are not accepted)"):
+            Ok(claims) -> authorize_publish(store, name, claims)
+            Err(fail) -> Err(fail)
 
-fn promoter_identity(issuers: List((String, String)), doc: Json, now: Int) -> Result(String, String):
+fn authorize_publish(store: Dir, name: String, claims: Json) -> Result(String, (Int, String)):
+    let ns = namespace_of(name)
+    let pubfile = "_policy/" <> ns <> "/publisher.json"
+    if !exists(store, pubfile):
+        ensure_dir(store, "_policy/" <> ns)
+        write(store, pubfile, json.encode(JsonObject([("issuer", JsonString(jstr(claims, "iss"))), ("repository", JsonString(claim(claims, "repository"))), ("workflow_ref", JsonString(claim(claims, "workflow_ref")))])))
+        Ok(jstr(claims, "sub"))
+    else:
+        enforce_publish_policy(parse_or_null(read(store, pubfile)), claims, ns)
+
+fn enforce_publish_policy(policy: Json, claims: Json, ns: String) -> Result(String, (Int, String)):
+    if jstr(policy, "issuer") != jstr(claims, "iss"):
+        Err((403, "namespace `" <> ns <> "` trusts issuer `" <> jstr(policy, "issuer") <> "`, not `" <> jstr(claims, "iss") <> "`"))
+    else if jstr(policy, "repository") != claim(claims, "repository"):
+        Err((403, "identity not authorized to publish to `" <> ns <> "`: repository `" <> claim(claims, "repository") <> "` does not match the bound `" <> jstr(policy, "repository") <> "`"))
+    else if jstr(policy, "workflow_ref") != claim(claims, "workflow_ref"):
+        Err((403, "identity not authorized to publish to `" <> ns <> "`: workflow_ref does not match the bound policy"))
+    else:
+        Ok(jstr(claims, "sub"))
+
+// The authorized promoter identity. Trusted: the token must verify (401) and be a
+// registered maintainer of the namespace (403). The first promoter becomes a
+// maintainer (TOFU); machines stage, humans release.
+fn authorized_promoter(store: Dir, issuers: List((String, String)), doc: Json, now: Int, name: String) -> Result(String, (Int, String)):
     if length(issuers) == 0:
         Ok(jstr(doc, "promoted_by"))
     else:
-        token_sub(issuers, doc, now, "promoting on a trusted registry requires a short-lived identity token")
+        match verified_claims(issuers, doc, now, "promoting on a trusted registry requires a short-lived identity token"):
+            Ok(claims) -> authorize_promote(store, name, claims)
+            Err(fail) -> Err(fail)
 
-fn token_sub(issuers: List((String, String)), doc: Json, now: Int, missing: String) -> Result(String, String):
+fn authorize_promote(store: Dir, name: String, claims: Json) -> Result(String, (Int, String)):
+    let ns = namespace_of(name)
+    let mfile = "_policy/" <> ns <> "/maintainers.json"
+    let id = jstr(claims, "iss") <> "|" <> jstr(claims, "sub")
+    if !exists(store, mfile):
+        ensure_dir(store, "_policy/" <> ns)
+        write(store, mfile, json.encode(JsonArray([JsonString(id)])))
+        Ok(jstr(claims, "sub"))
+    else if member(string_array(read(store, mfile)), id):
+        Ok(jstr(claims, "sub"))
+    else:
+        Err((403, "`" <> jstr(claims, "sub") <> "` is not a maintainer of namespace `" <> ns <> "`"))
+
+// Verify a request's identity token, yielding its claims or a (401, reason).
+fn verified_claims(issuers: List((String, String)), doc: Json, now: Int, missing: String) -> Result(Json, (Int, String)):
     match json.get(doc, "id_token"):
         Some(token) -> match verify_token(issuers, token, now):
-            Ok(claims) -> Ok(jstr(claims, "sub"))
-            Err(e) -> Err(e)
-        None -> Err(missing)
+            Ok(claims) -> Ok(claims)
+            Err(e) -> Err((401, e))
+        None -> Err((401, missing))
+
+fn fail_response(fail: (Int, String)) -> Response:
+    let (code, msg) = fail
+    err_json(code, msg)
+
+// A provider claim (from `extra`), or "".
+fn claim(claims: Json, key: String) -> String:
+    match json.get(claims, "extra"):
+        Some(ex) -> jstr(ex, key)
+        None -> ""
+
+fn namespace_of(name: String) -> String:
+    if contains(name, "/"):
+        let (ns, _rest) = string.split_once(name, "/")
+        ns
+    else:
+        name
+
+fn string_array(text: String) -> List(String):
+    var out = []
+    if let Ok(doc) = json.decode(text):
+        if let Some(items) = json.as_array(doc):
+            for it in items:
+                if let Some(s) = json.as_string(it):
+                    out = push(out, s)
+    out
 
 // Verify an identity token: signature against the trusted issuer's pinned key,
 // audience equals this registry, and not expired. Returns the verified claims.
@@ -498,12 +569,12 @@ fn read_record(store: Dir, name: String, version: String) -> Option(String):
         None
 
 // Every published rune name (namespace/name) — the store is two levels deep.
-// The signed TUF metadata (`*.json`) lives alongside the namespace dirs at the
-// store root, so skip it.
+// The signed TUF metadata (`*.json`) and the `_policy` trust state live alongside
+// the namespace dirs at the store root, so skip them.
 fn all_names(store: Dir) -> List(String):
     var out = []
     for ns in list(store):
-        if !ends_with(ns, ".json"):
+        if !ends_with(ns, ".json") && !starts_with(ns, "_"):
             for nm in list(subdir(store, ns)):
                 out = push(out, ns <> "/" <> nm)
     out
