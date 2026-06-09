@@ -3764,6 +3764,37 @@ fn yes(b: Bool) -> String:
         );
     }
 
+    /// `std/json` typed field accessors: `get_string`/`get_int`/`get_strings`/
+    /// `index_string` compose `get`/`index` with the `as_*` coercions — collapsing
+    /// the common "read a typed field" pattern, and yielding `[]` for an absent
+    /// string array.
+    #[test]
+    fn json_module_typed_field_accessors() {
+        let src = r#"import json
+import string
+
+fn main(console: Console):
+    match json.decode("{\"name\":\"acme\",\"n\":7,\"caps\":[\"Net\",\"Console\"],\"arr\":[\"a\",\"b\"]}"):
+        Ok(d) ->
+            print(console, opt(json.get_string(d, "name")))
+            print(console, oi(json.get_int(d, "n")))
+            print(console, string.join(json.get_strings(d, "caps"), ","))
+            print(console, "[" <> string.join(json.get_strings(d, "absent"), ",") <> "]")
+        Err(e) -> print(console, "err")
+
+fn opt(o: Option(String)) -> String:
+    match o:
+        Some(s) -> s
+        None -> "(none)"
+
+fn oi(o: Option(Int)) -> String:
+    match o:
+        Some(n) -> int_to_string(n)
+        None -> "?"
+"#;
+        assert_eq!(link_run(src), vec!["acme", "7", "Net,Console", "[]"]);
+    }
+
     /// `std/fs` parent_dir + (with a real Dir) the recursive collect — exercised
     /// here for the pure part to confirm the module's functions resolve on import.
     #[test]

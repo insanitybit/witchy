@@ -391,6 +391,48 @@ pub fn as_object(j: Json) -> Option(List((String, Json))):
         JsonObject(pairs) -> Some(pairs)
         _ -> None
 
+// --- typed field accessors (get a key, then coerce) --------------------------
+// `get` composed with each `as_*` — the common case of reading a typed field out
+// of an object without spelling the two steps every time.
+
+pub fn get_string(j: Json, key: String) -> Option(String):
+    match get(j, key):
+        Some(v) -> as_string(v)
+        None -> None
+
+pub fn get_int(j: Json, key: String) -> Option(Int):
+    match get(j, key):
+        Some(v) -> as_int(v)
+        None -> None
+
+pub fn get_bool(j: Json, key: String) -> Option(Bool):
+    match get(j, key):
+        Some(v) -> as_bool(v)
+        None -> None
+
+// The string array at `key` as a `List(String)`, dropping any non-string element;
+// `[]` when the key is absent or not an array. Collapses the very common
+// "decode an object's array-of-strings field" pattern into one call.
+pub fn get_strings(j: Json, key: String) -> List(String):
+    match get(j, key):
+        Some(arr) -> strings(arr)
+        None -> []
+
+// A JSON array value as a `List(String)` (non-strings dropped).
+pub fn strings(j: Json) -> List(String):
+    var out = []
+    if let Some(items) = as_array(j):
+        for it in items:
+            if let Some(s) = as_string(it):
+                out = push(out, s)
+    out
+
+// The string at index `i` of a JSON array, when it is a string.
+pub fn index_string(j: Json, i: Int) -> Option(String):
+    match index(j, i):
+        Some(v) -> as_string(v)
+        None -> None
+
 // Follow a dotted path of object keys, e.g. `get_path(resp, "user.name")`. Any
 // missing key (or a non-object along the way) yields `None`.
 pub fn get_path(j: Json, path: String) -> Option(Json):

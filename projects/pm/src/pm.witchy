@@ -531,16 +531,7 @@ fn record_signature_valid(rootpub: String, text: String) -> Bool:
         Err(e) -> false
 
 fn record_payload(doc: Json) -> String:
-    "coven-v1\nname=" <> jget(doc, "name") <> "\nversion=" <> jget(doc, "version") <> "\nstate=" <> jget(doc, "state") <> "\nhash=" <> jget(doc, "hash") <> "\nrt=" <> string.join(footprint_of(doc), ",") <> "\nbuild=\nuploaded_by=" <> jget(doc, "uploaded_by") <> "\npromoted_by=" <> jget(doc, "promoted_by") <> "\nfactor=" <> jget(doc, "second_factor") <> "\nprovenance=" <> jget(doc, "provenance")
-
-fn footprint_of(doc: Json) -> List(String):
-    var out = []
-    if let Some(arr) = json.get(doc, "runtime_footprint"):
-        if let Some(items) = json.as_array(arr):
-            for it in items:
-                if let Some(s) = json.as_string(it):
-                    out = push(out, s)
-    out
+    "coven-v1\nname=" <> jget(doc, "name") <> "\nversion=" <> jget(doc, "version") <> "\nstate=" <> jget(doc, "state") <> "\nhash=" <> jget(doc, "hash") <> "\nrt=" <> string.join(json.get_strings(doc, "runtime_footprint"), ",") <> "\nbuild=\nuploaded_by=" <> jget(doc, "uploaded_by") <> "\npromoted_by=" <> jget(doc, "promoted_by") <> "\nfactor=" <> jget(doc, "second_factor") <> "\nprovenance=" <> jget(doc, "provenance")
 
 // --- registry/url helpers ----------------------------------------------------
 
@@ -614,7 +605,7 @@ fn first_witchy(let files: List(String)) -> Option(String):
 // Pull the "total" array out of a footprint JSON report.
 fn footprint_total(let report: String) -> List(String):
     match json.decode(report):
-        Ok(doc) -> string_items(json.get(doc, "total"))
+        Ok(doc) -> json.get_strings(doc, "total")
         Err(e) -> []
 
 fn declared_caps(let manifest: String) -> List(String):
@@ -638,18 +629,7 @@ fn bool_or(j: Json, default: Bool) -> Bool:
         None -> default
 
 fn added(doc: Json) -> String:
-    string.join(string_items(json.get(doc, "added")), ", ")
-
-// --- JSON array → List(String) ----------------------------------------------
-
-fn string_items(field: Option(Json)) -> List(String):
-    var out = []
-    if let Some(j) = field:
-        if let Some(items) = json.as_array(j):
-            for it in items:
-                if let Some(s) = json.as_string(it):
-                    out = push(out, s)
-    out
+    string.join(json.get_strings(doc, "added"), ", ")
 
 // --- small generic helpers ---------------------------------------------------
 

@@ -273,7 +273,7 @@ fn all_target_digests(store: Dir) -> List((String, Json)):
 // digest the snapshot pins, so a record swapped to an older state stops matching.
 fn record_signing_payload(text: String) -> String:
     match json.decode(text):
-        Ok(doc) -> signing_payload(jstr(doc, "name"), jstr(doc, "version"), jstr(doc, "state"), jstr(doc, "hash"), jarr(doc, "runtime_footprint"), jstr(doc, "uploaded_by"), jstr(doc, "promoted_by"), jstr(doc, "second_factor"), jstr(doc, "provenance"))
+        Ok(doc) -> signing_payload(jstr(doc, "name"), jstr(doc, "version"), jstr(doc, "state"), jstr(doc, "hash"), json.get_strings(doc, "runtime_footprint"), jstr(doc, "uploaded_by"), jstr(doc, "promoted_by"), jstr(doc, "second_factor"), jstr(doc, "provenance"))
         Err(e) -> ""
 
 fn current_snapshot_version(store: Dir) -> Int:
@@ -553,7 +553,7 @@ fn is_src_module(path: String) -> Bool:
 
 fn footprint_total(report: String) -> List(String):
     match json.decode(report):
-        Ok(doc) -> jarr(doc, "total")
+        Ok(doc) -> json.get_strings(doc, "total")
         Err(e) -> []
 
 // --- versions / names walking ------------------------------------------------
@@ -598,7 +598,7 @@ fn record_field(store: Dir, name: String, version: String, field: String) -> Str
 fn record_array(store: Dir, name: String, version: String, field: String) -> List(String):
     match read_record(store, name, version):
         Some(text) -> match json.decode(text):
-            Ok(doc) -> jarr(doc, field)
+            Ok(doc) -> json.get_strings(doc, field)
             Err(e) -> []
         None -> []
 
@@ -632,15 +632,6 @@ fn jstr(doc: Json, key: String) -> String:
             Some(s) -> s
             None -> ""
         None -> ""
-
-fn jarr(doc: Json, key: String) -> List(String):
-    var out = []
-    if let Some(j) = json.get(doc, key):
-        if let Some(items) = json.as_array(j):
-            for it in items:
-                if let Some(s) = json.as_string(it):
-                    out = push(out, s)
-    out
 
 fn strs_json(xs: List(String)) -> List(Json):
     var out = []
