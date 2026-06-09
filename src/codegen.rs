@@ -402,6 +402,11 @@ struct Codegen {
     /// Whether the `env_len`/`env_fill` host imports + `$get_env` guest helper
     /// are needed (`Env` capability).
     uses_get_env: bool,
+    /// Which `Dir` operations the program uses ("read"/"write"/"exists"/
+    /// "is_dir"/"list"/"subdir"/"make_dir"). Each pulls in exactly its own host
+    /// import, so a read-only program never imports a write op (and therefore
+    /// instantiates under a read-only grant).
+    used_dir_ops: std::collections::BTreeSet<&'static str>,
     uses_ends_with: bool,
     /// Whether the `split` helper is needed.
     uses_split: bool,
@@ -635,6 +640,7 @@ impl Codegen {
             uses_float_ord: false,
             uses_now: false,
             uses_get_env: false,
+            used_dir_ops: std::collections::BTreeSet::new(),
             uses_dict_update: false,
             uses_ends_with: false,
             uses_split: false,
@@ -840,8 +846,8 @@ impl Codegen {
             }
             Expr::Call { name, .. } => match name.as_str() {
                 "int_to_string" | "to_string" | "to_upper" | "to_lower" | "trim" | "replace"
-                | "substring" | "crypto.sha256" => ValType::Str,
-                "starts_with" | "ends_with" | "contains" | "has"
+                | "substring" | "crypto.sha256" | "read" => ValType::Str,
+                "starts_with" | "ends_with" | "contains" | "has" | "exists" | "is_dir"
                 | "crypto.ed25519_verify" => ValType::Bool,
                 "string_length" | "char_count" | "index_of" | "length" | "size" | "float_to_int"
                 | "string_to_int" | "int_to_duration" | "duration_to_int" | "now" => ValType::Int,
@@ -1162,9 +1168,13 @@ impl Codegen {
 
     fn elem_val_type_of(&self, iter: &Expr) -> ValType {
         match iter {
-            // Builtins that yield `List(String)` regardless of input.
+            // Builtins that yield `List(String)` regardless of input. (`list` is
+            // the Dir directory listing.)
             Expr::Call { name, .. }
-                if name == "split" || name == "to_chars" || name == "string_chars" =>
+                if name == "split"
+                    || name == "to_chars"
+                    || name == "string_chars"
+                    || name == "list" =>
             {
                 ValType::Str
             }
@@ -1556,6 +1566,8 @@ impl Codegen {
             || self.uses_float_to_str
             || self.uses_encoding
             || self.uses_get_env
+            || self.used_dir_ops.contains("read")
+            || self.used_dir_ops.contains("list")
     }
 
     fn emit_imports(&self) -> String {
@@ -1604,6 +1616,34 @@ impl Codegen {
             // writes the bytes. Capability-gated on an Env grant.
             s.push_str("  (import \"witchy\" \"env_len\" (func $env_len_host (param i32) (result i32)))\n");
             s.push_str("  (import \"witchy\" \"env_fill\" (func $env_fill_host (param i32 i32)))\n");
+        }
+        // The Dir family: a guest Dir value is an i32 handle into the host's
+        // path table; each operation is its own capability-gated import, so the
+        // module's import list IS its filesystem footprint.
+        if self.used_dir_ops.contains("subdir") {
+            s.push_str("  (import \"witchy\" \"dir_subdir\" (func $dir_subdir_host (param i32 i32) (result i32)))\n");
+        }
+        if self.used_dir_ops.contains("read") {
+            s.push_str("  (import \"witchy\" \"dir_read_len\" (func $dir_read_len_host (param i32 i32) (result i32)))\n");
+        }
+        if self.used_dir_ops.contains("read") {
+            s.push_str("  (import \"witchy\" \"fill_pending\" (func $fill_pending_host (param i32)))\n");
+        }
+        if self.used_dir_ops.contains("exists") {
+            s.push_str("  (import \"witchy\" \"dir_exists\" (func $dir_exists_host (param i32 i32) (result i32)))\n");
+        }
+        if self.used_dir_ops.contains("is_dir") {
+            s.push_str("  (import \"witchy\" \"dir_is_dir\" (func $dir_is_dir_host (param i32 i32) (result i32)))\n");
+        }
+        if self.used_dir_ops.contains("list") {
+            s.push_str("  (import \"witchy\" \"dir_list_size\" (func $dir_list_size_host (param i32) (result i32)))\n");
+            s.push_str("  (import \"witchy\" \"dir_list_write\" (func $dir_list_write_host (param i32)))\n");
+        }
+        if self.used_dir_ops.contains("write") {
+            s.push_str("  (import \"witchy\" \"dir_write\" (func $dir_write_host (param i32 i32 i32)))\n");
+        }
+        if self.used_dir_ops.contains("make_dir") {
+            s.push_str("  (import \"witchy\" \"dir_make_dir\" (func $dir_make_dir_host (param i32 i32)))\n");
         }
         s
     }
@@ -1665,6 +1705,12 @@ impl Codegen {
         }
         if self.uses_get_env {
             s.push_str(GET_ENV_WAT);
+        }
+        if self.used_dir_ops.contains("read") {
+            s.push_str(DIR_READ_WAT);
+        }
+        if self.used_dir_ops.contains("list") {
+            s.push_str(DIR_LIST_WAT);
         }
         if self.uses_float_ord {
             s.push_str(FLOAT_ORD_WAT);
@@ -3615,9 +3661,50 @@ impl Codegen {
                 ))
             }
             ("spawn", _) => cerr("`spawn` is not compiled to WASM yet (host-driven)"),
-            ("read", _) | ("exists", _) | ("is_dir", _) | ("subdir", _) => cerr(
-                "filesystem capabilities are not compiled to WASM yet (interpreter only; maps to WASI preopens)",
-            ),
+            // --- the Dir capability family. A Dir value is an i32 handle into
+            // the host's confined path table; each op is its own gated import. ---
+            ("subdir", 2) => {
+                self.used_dir_ops.insert("subdir");
+                let d = self.compile_expr(&args[0])?;
+                let name = self.compile_expr(&args[1])?;
+                Ok(format!("{d}{name}    call $dir_subdir_host\n"))
+            }
+            ("read", 2) => {
+                self.used_dir_ops.insert("read");
+                let d = self.compile_expr(&args[0])?;
+                let rel = self.compile_expr(&args[1])?;
+                Ok(format!("{d}{rel}    call $dir_read\n"))
+            }
+            ("exists", 2) => {
+                self.used_dir_ops.insert("exists");
+                let d = self.compile_expr(&args[0])?;
+                let rel = self.compile_expr(&args[1])?;
+                Ok(format!("{d}{rel}    call $dir_exists_host\n"))
+            }
+            ("is_dir", 2) => {
+                self.used_dir_ops.insert("is_dir");
+                let d = self.compile_expr(&args[0])?;
+                let rel = self.compile_expr(&args[1])?;
+                Ok(format!("{d}{rel}    call $dir_is_dir_host\n"))
+            }
+            ("list", 1) => {
+                self.used_dir_ops.insert("list");
+                let d = self.compile_expr(&args[0])?;
+                Ok(format!("{d}    call $dir_list\n"))
+            }
+            ("write", 3) => {
+                self.used_dir_ops.insert("write");
+                let d = self.compile_expr(&args[0])?;
+                let rel = self.compile_expr(&args[1])?;
+                let contents = self.compile_expr(&args[2])?;
+                Ok(format!("{d}{rel}{contents}    call $dir_write_host\n    i32.const 0\n"))
+            }
+            ("make_dir", 2) => {
+                self.used_dir_ops.insert("make_dir");
+                let d = self.compile_expr(&args[0])?;
+                let name = self.compile_expr(&args[1])?;
+                Ok(format!("{d}{name}    call $dir_make_dir_host\n    i32.const 0\n"))
+            }
             ("connect", _) | ("restrict", _) | ("send_line", _) | ("recv_line", _)
             | ("recv_all", _) | ("send_bytes", _) | ("recv_bytes", _) | ("listen", _)
             | ("accept", _) | ("close", _) => cerr(
@@ -4644,6 +4731,34 @@ const GET_ENV_WAT: &str = r#"  (func $get_env (param $name i32) (result i32)
     (i32.store (local.get $res) (i32.const 0))
     (i64.store (i32.add (local.get $res) (i32.const 4)) (i64.extend_i32_s (local.get $str)))
     (global.set $heap (i32.add (local.get $res) (i32.const 12)))
+    (local.get $res))
+"#;
+
+// read(dir, rel): a fresh string of the confined file's contents. The host
+// reads and stages the file at the `dir_read_len` call (no read/fill race),
+// the guest allocates `[len][bytes]`, and `fill_pending` writes the bytes.
+const DIR_READ_WAT: &str = r#"  (func $dir_read (param $h i32) (param $rel i32) (result i32)
+    (local $len i32) (local $res i32)
+    (local.set $len (call $dir_read_len_host (local.get $h) (local.get $rel)))
+    (call $ensure (i32.add (local.get $len) (i32.const 4)))
+    (local.set $res (global.get $heap))
+    (i32.store (local.get $res) (local.get $len))
+    (call $fill_pending_host (i32.add (local.get $res) (i32.const 4)))
+    (global.set $heap (i32.add (i32.add (local.get $res) (i32.const 4)) (local.get $len)))
+    (local.get $res))
+"#;
+
+// list(dir): a List(String) of the directory's sorted entry names. The host
+// stages the listing at `dir_list_size` and then lays the COMPLETE list
+// structure out at the reserved base (header, slots, string objects) — the
+// guest only reserves and bumps.
+const DIR_LIST_WAT: &str = r#"  (func $dir_list (param $h i32) (result i32)
+    (local $size i32) (local $res i32)
+    (local.set $size (call $dir_list_size_host (local.get $h)))
+    (call $ensure (local.get $size))
+    (local.set $res (global.get $heap))
+    (call $dir_list_write_host (local.get $res))
+    (global.set $heap (i32.add (local.get $res) (local.get $size)))
     (local.get $res))
 "#;
 

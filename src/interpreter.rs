@@ -1721,7 +1721,7 @@ fn compare(l: &Value, r: &Value) -> Result<std::cmp::Ordering, RuntimeError> {
 /// Note: canonicalize-then-use is mildly TOCTOU; the race-free fix is
 /// syscall-level confinement (openat2/O_NOFOLLOW, i.e. the cap-std crate), which
 /// is what the planned WASI-preopen substrate gives us.
-fn resolve(base: &Path, rel: &str) -> Result<PathBuf, RuntimeError> {
+pub(crate) fn resolve(base: &Path, rel: &str) -> Result<PathBuf, RuntimeError> {
     let p = Path::new(rel);
     if p.is_absolute() {
         return err("absolute paths are not allowed (a Dir capability is a subtree)");
@@ -1749,7 +1749,7 @@ fn resolve(base: &Path, rel: &str) -> Result<PathBuf, RuntimeError> {
 /// Like `resolve`, but for writing: the target file need not exist, so
 /// confinement is checked against its parent directory (which must exist and lie
 /// within the capability's subtree). The lexical `..`/absolute checks still apply.
-fn resolve_write(base: &Path, rel: &str) -> Result<PathBuf, RuntimeError> {
+pub(crate) fn resolve_write(base: &Path, rel: &str) -> Result<PathBuf, RuntimeError> {
     let p = Path::new(rel);
     if p.is_absolute() {
         return err("absolute paths are not allowed (a Dir capability is a subtree)");

@@ -1053,6 +1053,9 @@ fn run_wat_capture(wat: &str) -> Result<Vec<String>, String> {
                 quiet: true,
                 clock: true,
                 env: true,
+                dir_root: Some(std::path::PathBuf::from(".")),
+                dir_read: true,
+                dir_write: true,
                 ..Default::default()
             },
             RUN_MEMORY_PAGES,
@@ -4491,6 +4494,119 @@ fn yn(b: Bool) -> String:
         assert_eq!(run_on_wasm(clock_src), vec!["plausible"], "compiled WASM");
     }
 
+    /// The full Dir family compiles to capability-gated host imports and agrees
+    /// with the interpreter: read/exists/is_dir/subdir/write/make_dir/list all
+    /// round-trip in a confined temp directory, and escape attempts (`..`,
+    /// absolute paths) FAIL on both backends.
+    #[test]
+    fn dir_capability_compiles_to_wasm_and_confines() {
+        use crate::runtime::{Capabilities, Runtime};
+        let root = std::env::temp_dir().join(format!("witchy_wasm_dir_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("sub")).expect("mkdir");
+        std::fs::write(root.join("a.txt"), "alpha").expect("seed a");
+        std::fs::write(root.join("sub/b.txt"), "beta").expect("seed b");
+
+        let src = "fn main(console: Console, dir: Dir):\n    print(console, read(dir, \"a.txt\"))\n    print(console, to_string(exists(dir, \"a.txt\")))\n    print(console, to_string(exists(dir, \"missing.txt\")))\n    let sub = subdir(dir, \"sub\")\n    print(console, read(sub, \"b.txt\"))\n    write(dir, \"out.txt\", \"written\")\n    print(console, read(dir, \"out.txt\"))\n    make_dir(dir, \"made\")\n    print(console, to_string(is_dir(dir, \"made\")))\n    for name in list(dir):\n        print(console, \"entry: \" <> name)\n";
+        let want = vec![
+            "alpha".to_string(),
+            "true".to_string(),
+            "false".to_string(),
+            "beta".to_string(),
+            "written".to_string(),
+            "true".to_string(),
+            "entry: a.txt".to_string(),
+            "entry: made".to_string(),
+            "entry: out.txt".to_string(),
+            "entry: sub".to_string(),
+        ];
+        let interp_out = interpreter::run_in(src, &root).expect("interp");
+        assert_eq!(interp_out, want, "interpreter");
+        let module = parser::parse_module(src).expect("parse");
+        let wat = codegen::compile_module(&module).expect("compile");
+        let mut rt = Runtime::batch().expect("runtime");
+        let mut actor = rt
+            .spawn(
+                wat.as_bytes(),
+                Capabilities {
+                    print: true,
+                    quiet: true,
+                    dir_root: Some(root.clone()),
+                    dir_read: true,
+                    dir_write: true,
+                    ..Default::default()
+                },
+                64,
+            )
+            .expect("spawn");
+        actor.run().expect("run");
+        assert_eq!(actor.output(), want, "compiled WASM must agree");
+
+        for bad in ["../outside.txt", "/etc/hosts"] {
+            let esc = format!(
+                "fn main(console: Console, dir: Dir):\n    print(console, read(dir, \"{bad}\"))\n"
+            );
+            assert!(interpreter::run_in(&esc, &root).is_err(), "interp must reject `{bad}`");
+            let m = parser::parse_module(&esc).expect("parse");
+            let w = codegen::compile_module(&m).expect("compile");
+            let mut rt = Runtime::batch().expect("runtime");
+            let mut a = rt
+                .spawn(
+                    w.as_bytes(),
+                    Capabilities {
+                        print: true,
+                        quiet: true,
+                        dir_root: Some(root.clone()),
+                        dir_read: true,
+                        dir_write: true,
+                        ..Default::default()
+                    },
+                    64,
+                )
+                .expect("spawn");
+            assert!(a.run().is_err(), "WASM must trap on `{bad}`");
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Rights are enforced at the GRANT: a module that imports a write operation
+    /// cannot even instantiate under a read-only Dir grant, and any Dir import
+    /// fails with no grant at all.
+    #[test]
+    fn dir_rights_enforced_at_instantiation() {
+        use crate::runtime::{Capabilities, Runtime};
+        let root = std::env::temp_dir().join(format!("witchy_wasm_dir_rights_{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("mkdir");
+        let writer = "fn main(console: Console, dir: Dir):\n    write(dir, \"x.txt\", \"data\")\n    print(console, \"wrote\")\n";
+        let module = parser::parse_module(writer).expect("parse");
+        let wat = codegen::compile_module(&module).expect("compile");
+        let mut rt = Runtime::batch().expect("runtime");
+        let denied = rt.spawn(
+            wat.as_bytes(),
+            Capabilities {
+                print: true,
+                quiet: true,
+                dir_root: Some(root.clone()),
+                dir_read: true,
+                dir_write: false,
+                ..Default::default()
+            },
+            64,
+        );
+        assert!(denied.is_err(), "write import must not instantiate under a read-only grant");
+        let reader = "fn main(console: Console, dir: Dir):\n    print(console, read(dir, \"x.txt\"))\n";
+        let m = parser::parse_module(reader).expect("parse");
+        let w = codegen::compile_module(&m).expect("compile");
+        let mut rt = Runtime::batch().expect("runtime");
+        let denied = rt.spawn(
+            w.as_bytes(),
+            Capabilities { print: true, quiet: true, ..Default::default() },
+            64,
+        );
+        assert!(denied.is_err(), "Dir import must not instantiate without a Dir grant");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// The enforcement half: a module that imports `now`/`env_*` but was NOT
     /// granted Clock/Env must fail at instantiation — the host function simply
     /// is not linked, so the authority is structurally absent.
@@ -7534,6 +7650,9 @@ fn main(console: Console):
                     print_int: true,
                     clock: true,
                     env: true,
+                    dir_root: Some(std::path::PathBuf::from(".")),
+                    dir_read: true,
+                    dir_write: true,
                     ..Default::default()
                 },
                 4,
@@ -7565,6 +7684,9 @@ fn main(console: Console):
                     print_int: true,
                     clock: true,
                     env: true,
+                    dir_root: Some(std::path::PathBuf::from(".")),
+                    dir_read: true,
+                    dir_write: true,
                     ..Default::default()
                 },
                 4,

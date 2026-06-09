@@ -35,7 +35,7 @@ pub type ActorId = u32;
 /// The set of capabilities granted to an actor at spawn time. Each `true` flag
 /// causes the corresponding host function to be linked into the actor's VM.
 /// Everything defaults to denied.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct Capabilities {
     /// May write to the host's stdout via `witchy.print`.
     pub print: bool,
@@ -51,6 +51,14 @@ pub struct Capabilities {
     /// May read process environment variables via `witchy.env_*` (an `Env`
     /// capability).
     pub env: bool,
+    /// The directory subtree backing the root `Dir` capability (handle 0).
+    /// `None` denies the filesystem entirely; the `dir_read`/`dir_write` flags
+    /// pick which operation families are linked within it.
+    pub dir_root: Option<std::path::PathBuf>,
+    /// May read within `dir_root` (read/exists/is_dir/list/subdir).
+    pub dir_read: bool,
+    /// May write within `dir_root` (write/make_dir).
+    pub dir_write: bool,
 }
 
 impl Capabilities {
@@ -99,6 +107,16 @@ pub struct ActorState {
     /// Everything the actor has printed (via the `print`/`print_int`
     /// capabilities), so the host can observe a compiled program's output.
     output: Arc<Mutex<Vec<String>>>,
+    /// The `Dir` capability handle table: index 0 is the granted root, and each
+    /// `subdir` mints a new confined entry. Guest code only ever holds the i32
+    /// index — the paths live host-side, so a module cannot forge a directory.
+    dirs: Vec<std::path::PathBuf>,
+    /// A host->guest transfer staged by a size-probing call (`dir_read_len`,
+    /// `dir_list_size`) and consumed by the matching fill call, so the data is
+    /// computed once with no time-of-check/time-of-use gap between the calls.
+    pending: Option<Vec<u8>>,
+    /// A staged directory listing (`dir_list_size` -> `dir_list_write`).
+    pending_list: Option<Vec<String>>,
 }
 
 /// A spawned actor: an isolated VM plus the entrypoint we can drive.
@@ -204,13 +222,17 @@ impl Runtime {
         let limits = StoreLimitsBuilder::new()
             .memory_size(memory_pages_max * 64 * 1024)
             .build();
+        let dirs = caps.dir_root.iter().cloned().collect();
         let state = ActorState {
             id,
-            caps,
+            caps: caps.clone(),
             mailbox,
             mailboxes: Arc::clone(&self.mailboxes),
             limits,
             output: Arc::new(Mutex::new(Vec::new())),
+            dirs,
+            pending: None,
+            pending_list: None,
         };
 
         let mut store = Store::new(&self.engine, state);
@@ -241,6 +263,21 @@ impl Runtime {
         if caps.env {
             linker.func_wrap("witchy", "env_len", host_env_len)?;
             linker.func_wrap("witchy", "env_fill", host_env_fill)?;
+        }
+        // The Dir family is linked per RIGHT, so a module compiled against a
+        // write operation cannot even instantiate under a read-only grant.
+        if caps.dir_root.is_some() && caps.dir_read {
+            linker.func_wrap("witchy", "dir_subdir", host_dir_subdir)?;
+            linker.func_wrap("witchy", "dir_read_len", host_dir_read_len)?;
+            linker.func_wrap("witchy", "dir_exists", host_dir_exists)?;
+            linker.func_wrap("witchy", "dir_is_dir", host_dir_is_dir)?;
+            linker.func_wrap("witchy", "dir_list_size", host_dir_list_size)?;
+            linker.func_wrap("witchy", "dir_list_write", host_dir_list_write)?;
+            linker.func_wrap("witchy", "fill_pending", host_fill_pending)?;
+        }
+        if caps.dir_root.is_some() && caps.dir_write {
+            linker.func_wrap("witchy", "dir_write", host_dir_write)?;
+            linker.func_wrap("witchy", "dir_make_dir", host_dir_make_dir)?;
         }
         // `recv` is intrinsic: reading your *own* mailbox is not authority over
         // anyone else, so every actor may do it.
@@ -468,6 +505,162 @@ fn host_env_fill(mut caller: Caller<'_, ActorState>, name_ptr: i32, out_ptr: i32
     let value = std::env::var(&name).unwrap_or_default();
     mem.write(&mut caller, out_ptr as usize, value.as_bytes())
         .map_err(|e| Error::msg(format!("writing env value into guest memory: {e}")))
+}
+
+// --- the Dir capability family ---
+//
+// A guest `Dir` value is an i32 HANDLE into the actor's host-side path table
+// (`ActorState::dirs`); the paths never enter guest memory, so a module cannot
+// forge or widen one. Handle 0 is the granted root. Every operation resolves
+// through the SAME `resolve`/`resolve_write` confinement the interpreter uses
+// (lexical `..`/absolute rejection + symlink-aware canonicalization), so the
+// two backends agree on exactly which paths are reachable.
+
+/// Look up a Dir handle's base path (trap on a forged/out-of-range handle).
+fn dir_base(caller: &Caller<'_, ActorState>, h: i32) -> Result<std::path::PathBuf> {
+    caller
+        .data()
+        .dirs
+        .get(h as usize)
+        .cloned()
+        .ok_or_else(|| Error::msg(format!("invalid Dir handle {h}")))
+}
+
+fn confine(r: std::result::Result<std::path::PathBuf, crate::interpreter::RuntimeError>) -> Result<std::path::PathBuf> {
+    r.map_err(|e| Error::msg(e.message))
+}
+
+/// `dir_subdir(h, name) -> handle`: attenuate to a confined subdirectory,
+/// minting a new handle.
+fn host_dir_subdir(mut caller: Caller<'_, ActorState>, h: i32, name_ptr: i32) -> Result<i32> {
+    let mem = memory_of(&mut caller)?;
+    let name = read_wstr(mem.data(&caller), name_ptr)?;
+    let base = dir_base(&caller, h)?;
+    let sub = confine(crate::interpreter::resolve(&base, &name))?;
+    let dirs = &mut caller.data_mut().dirs;
+    dirs.push(sub);
+    Ok((dirs.len() - 1) as i32)
+}
+
+/// `dir_read_len(h, rel) -> byte length`: read the confined file NOW, stage its
+/// bytes, and report the length; the guest allocates and calls `fill_pending`.
+/// A failed read traps — the interpreter errors on it too.
+fn host_dir_read_len(mut caller: Caller<'_, ActorState>, h: i32, rel_ptr: i32) -> Result<i32> {
+    let mem = memory_of(&mut caller)?;
+    let rel = read_wstr(mem.data(&caller), rel_ptr)?;
+    let base = dir_base(&caller, h)?;
+    let path = confine(crate::interpreter::resolve(&base, &rel))?;
+    let contents = std::fs::read_to_string(&path)
+        .map_err(|e| Error::msg(format!("read failed for `{}`: {e}", path.display())))?;
+    let len = contents.len() as i32;
+    caller.data_mut().pending = Some(contents.into_bytes());
+    Ok(len)
+}
+
+/// `fill_pending(out_ptr)`: write the bytes staged by the matching size call.
+fn host_fill_pending(mut caller: Caller<'_, ActorState>, out_ptr: i32) -> Result<()> {
+    let bytes = caller
+        .data_mut()
+        .pending
+        .take()
+        .ok_or_else(|| Error::msg("fill_pending called with nothing staged"))?;
+    let mem = memory_of(&mut caller)?;
+    mem.write(&mut caller, out_ptr as usize, &bytes)
+        .map_err(|e| Error::msg(format!("writing staged data into guest memory: {e}")))
+}
+
+/// `dir_exists(h, rel) -> bool`: total — an escaping or missing path is `false`.
+fn host_dir_exists(mut caller: Caller<'_, ActorState>, h: i32, rel_ptr: i32) -> Result<i32> {
+    let mem = memory_of(&mut caller)?;
+    let rel = read_wstr(mem.data(&caller), rel_ptr)?;
+    let base = dir_base(&caller, h)?;
+    let ok = crate::interpreter::resolve(&base, &rel)
+        .map(|p| p.exists())
+        .unwrap_or(false);
+    Ok(ok as i32)
+}
+
+/// `dir_is_dir(h, rel) -> bool`: total, like `dir_exists`.
+fn host_dir_is_dir(mut caller: Caller<'_, ActorState>, h: i32, rel_ptr: i32) -> Result<i32> {
+    let mem = memory_of(&mut caller)?;
+    let rel = read_wstr(mem.data(&caller), rel_ptr)?;
+    let base = dir_base(&caller, h)?;
+    let ok = crate::interpreter::resolve(&base, &rel)
+        .map(|p| p.is_dir())
+        .unwrap_or(false);
+    Ok(ok as i32)
+}
+
+/// `dir_list_size(h) -> bytes`: read the directory NOW (sorted names, matching
+/// the interpreter), stage the listing, and report the total byte size of the
+/// witchy `List(String)` structure the guest must reserve.
+fn host_dir_list_size(mut caller: Caller<'_, ActorState>, h: i32) -> Result<i32> {
+    let base = dir_base(&caller, h)?;
+    let mut names: Vec<String> = std::fs::read_dir(&base)
+        .map_err(|e| Error::msg(format!("list failed for `{}`: {e}", base.display())))?
+        .filter_map(|e| e.ok())
+        .filter_map(|e| e.file_name().into_string().ok())
+        .collect();
+    names.sort();
+    let size = 4 + 8 * names.len() + names.iter().map(|n| 4 + n.len()).sum::<usize>();
+    caller.data_mut().pending_list = Some(names);
+    Ok(size as i32)
+}
+
+/// `dir_list_write(base_ptr)`: lay the staged listing out at `base_ptr` in the
+/// guest's own list format — `[count][count x i64 slots][string objects...]`,
+/// each slot holding the absolute guest pointer of its `[len][bytes]` string.
+fn host_dir_list_write(mut caller: Caller<'_, ActorState>, base_ptr: i32) -> Result<()> {
+    let names = caller
+        .data_mut()
+        .pending_list
+        .take()
+        .ok_or_else(|| Error::msg("dir_list_write called with nothing staged"))?;
+    let n = names.len();
+    let mut buf = Vec::with_capacity(4 + 8 * n + names.iter().map(|s| 4 + s.len()).sum::<usize>());
+    buf.extend_from_slice(&(n as i32).to_le_bytes());
+    let strings_start = base_ptr as i64 + 4 + 8 * n as i64;
+    let mut offset = 0i64;
+    for name in &names {
+        let ptr = strings_start + offset;
+        buf.extend_from_slice(&ptr.to_le_bytes());
+        offset += 4 + name.len() as i64;
+    }
+    for name in &names {
+        buf.extend_from_slice(&(name.len() as i32).to_le_bytes());
+        buf.extend_from_slice(name.as_bytes());
+    }
+    let mem = memory_of(&mut caller)?;
+    mem.write(&mut caller, base_ptr as usize, &buf)
+        .map_err(|e| Error::msg(format!("writing directory listing into guest memory: {e}")))
+}
+
+/// `dir_write(h, rel, contents)`: write a confined file (trap on failure or
+/// escape — the interpreter errors on both).
+fn host_dir_write(
+    mut caller: Caller<'_, ActorState>,
+    h: i32,
+    rel_ptr: i32,
+    contents_ptr: i32,
+) -> Result<()> {
+    let mem = memory_of(&mut caller)?;
+    let data = mem.data(&caller);
+    let rel = read_wstr(data, rel_ptr)?;
+    let contents = read_wstr(data, contents_ptr)?;
+    let base = dir_base(&caller, h)?;
+    let path = confine(crate::interpreter::resolve_write(&base, &rel))?;
+    std::fs::write(&path, contents)
+        .map_err(|e| Error::msg(format!("write failed for `{}`: {e}", path.display())))
+}
+
+/// `dir_make_dir(h, name)`: create a confined subdirectory (idempotent).
+fn host_dir_make_dir(mut caller: Caller<'_, ActorState>, h: i32, name_ptr: i32) -> Result<()> {
+    let mem = memory_of(&mut caller)?;
+    let name = read_wstr(mem.data(&caller), name_ptr)?;
+    let base = dir_base(&caller, h)?;
+    let path = confine(crate::interpreter::resolve_write(&base, &name))?;
+    std::fs::create_dir_all(&path)
+        .map_err(|e| Error::msg(format!("make_dir failed for `{}`: {e}", path.display())))
 }
 
 // --- small helpers for safe guest-memory access ---
