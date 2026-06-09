@@ -3688,6 +3688,42 @@ fn opt(o: Option(String)) -> String:
         );
     }
 
+    /// `toml.table`/`keys`/`inline_get` enumerate a table whose keys aren't known
+    /// ahead of time (`[dependencies]`, whose values are inline tables), and
+    /// `array_tables` walks a `[[rune]]` array-of-tables (a `witchy.lock`) — the
+    /// manifest+lock shapes a self-hosted package manager reads but `get` cannot.
+    #[test]
+    fn toml_module_enumerates_tables_and_arrays() {
+        let src = r#"import toml
+import string
+
+fn main(console: Console):
+    let m = "[rune]\nname = \"ledger\"\n\n[dependencies]\n\"money\" = { path = \"../money\" }\n\"acme/util\" = { path = \"../util\", version = \"1.2\" }\n"
+    print(console, string.join(toml.keys(m, "dependencies"), "|"))
+    print(console, opt(toml.inline_get("{ path = \"../money\" }", "path")))
+    print(console, opt(toml.inline_get("{ path = \"../util\", version = \"1.2\" }", "version")))
+    let lock = "[[rune]]\nname = \"money\"\nhash = \"sha256:aa\"\n\n[[rune]]\nname = \"util\"\nhash = \"sha256:bb\"\n"
+    var names = []
+    for block in toml.array_tables(lock, "rune"):
+        names = push(names, opt(toml.get(block, "name")) <> "=" <> opt(toml.get(block, "hash")))
+    print(console, string.join(names, "|"))
+
+fn opt(o: Option(String)) -> String:
+    match o:
+        Some(s) -> s
+        None -> "(none)"
+"#;
+        assert_eq!(
+            link_run(src),
+            vec![
+                "money|acme/util",
+                "../money",
+                "1.2",
+                "money=sha256:aa|util=sha256:bb"
+            ]
+        );
+    }
+
     /// The `Clock` capability yields wall-clock time (ms since epoch) via `now`.
     /// Reading the clock is ambient nondeterminism, so it's capability-gated and
     /// surfaces in the footprint — not a pure builtin.
@@ -7763,6 +7799,123 @@ fn main(console: Console):
         assert!(src.contains("hello from widget"));
 
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// `pm deps <dir>` lists a rune's dependencies and their source — read
+    /// straight from `[dependencies]`'s inline tables (`toml.table`/`inline_get`).
+    #[test]
+    fn pm_lists_dependencies() {
+        let (out, code) = crate::execute_file_exit(
+            "projects/pm/src/pm.witchy",
+            Vec::new(),
+            vec!["deps".into(), "examples/projects/ledger/ledger".into()],
+            None,
+        )
+        .unwrap();
+        assert_eq!(out, vec!["money -> path:../money"]);
+        assert_eq!(code, 0);
+    }
+
+    /// The interop milestone: `pm verify` recomputes each dependency's content
+    /// hash and checks it against the *committed, coven-generated* `witchy.lock`.
+    /// It passes — the self-hosted pm's hashing is byte-identical to coven's
+    /// store, so a witchy-checked lock and a coven-written one agree.
+    #[test]
+    fn pm_verify_validates_a_coven_generated_lockfile() {
+        let (out, code) = crate::execute_file_exit(
+            "projects/pm/src/pm.witchy",
+            Vec::new(),
+            vec!["verify".into(), "examples/projects/ledger/ledger".into()],
+            None,
+        )
+        .unwrap();
+        assert_eq!(out, vec!["OK: every locked hash matches the dependency sources"]);
+        assert_eq!(code, 0);
+    }
+
+    /// `pm lock` pins dependencies by content hash; `pm verify` accepts the result
+    /// and then catches a later edit to a dependency's source (the tamper / stale
+    /// case) — exiting 2. Run end to end against a freshly scaffolded workspace.
+    #[test]
+    fn pm_lock_then_verify_detects_tampering() {
+        let tmp = std::env::temp_dir().join(format!("witchy_pm_lock_test_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(tmp.join("app/src")).unwrap();
+        std::fs::create_dir_all(tmp.join("lib/src")).unwrap();
+        std::fs::write(
+            tmp.join("app/witchy.toml"),
+            "[rune]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"lib\" = { path = \"../lib\" }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            tmp.join("app/src/app.witchy"),
+            "fn main(console: Console):\n    print(console, \"hi\")\n",
+        )
+        .unwrap();
+        std::fs::write(
+            tmp.join("lib/witchy.toml"),
+            "[rune]\nname = \"lib\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            tmp.join("lib/src/lib.witchy"),
+            "fn f(s: String) -> String:\n    s\n",
+        )
+        .unwrap();
+
+        let run_pm = |args: Vec<String>| -> (Vec<String>, i32) {
+            let (linked, _stem) = crate::link_file("projects/pm/src/pm.witchy").expect("link");
+            typeck::check(&linked).expect("typeck");
+            interpreter::run_module_exit(linked, &tmp, Vec::new(), args, None).expect("run")
+        };
+
+        // lock pins lib by content hash — the hash must match coven's store.
+        let (out, code) = run_pm(vec!["lock".into(), "app".into()]);
+        assert_eq!(code, 0, "lock failed: {out:?}");
+        let lock = std::fs::read_to_string(tmp.join("app/witchy.lock")).unwrap();
+        let store_hash = crate::pm::store::RuneSource::read_dir(&tmp.join("lib"))
+            .unwrap()
+            .hash();
+        assert!(
+            lock.contains(&store_hash),
+            "lockfile {lock:?} must pin the store hash {store_hash}"
+        );
+
+        // A fresh lock verifies clean.
+        let (out, code) = run_pm(vec!["verify".into(), "app".into()]);
+        assert_eq!(out, vec!["OK: every locked hash matches the dependency sources"]);
+        assert_eq!(code, 0);
+
+        // Edit lib's source: the pinned hash no longer matches — verify must BLOCK.
+        std::fs::write(
+            tmp.join("lib/src/lib.witchy"),
+            "fn f(s: String) -> String:\n    s <> s\n",
+        )
+        .unwrap();
+        let (out, code) = run_pm(vec!["verify".into(), "app".into()]);
+        assert_eq!(out, vec!["BLOCK: lock no longer matches source for: lib"]);
+        assert_eq!(code, 2, "a tampered dependency must exit 2");
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// The `crypto.rune_hash` native primitive (the witchy-facing content address)
+    /// is byte-identical to coven's store hashing — the guarantee that makes the
+    /// self-hosted `lock`/`verify` interoperate with the Rust toolchain.
+    #[test]
+    fn rune_hash_native_matches_the_store_byte_for_byte() {
+        use crate::interpreter::Value;
+        let dir = std::path::Path::new("examples/projects/ledger/money");
+        let src = crate::pm::store::RuneSource::read_dir(dir).unwrap();
+        let paths: Vec<Value> = src.files.iter().map(|(p, _)| Value::Str(p.clone())).collect();
+        let contents: Vec<Value> = src
+            .files
+            .iter()
+            .map(|(_, b)| Value::Str(String::from_utf8_lossy(b).into_owned()))
+            .collect();
+        let f = crate::native::lookup("crypto.rune_hash").expect("native rune_hash");
+        let got = f(&[Value::List(paths), Value::List(contents)]).unwrap();
+        assert_eq!(got, Value::Str(src.hash()));
     }
 
     /// `main -> Int` sets the process exit code (C/Go/Rust convention) and is

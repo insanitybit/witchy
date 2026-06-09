@@ -11,6 +11,14 @@
 pub fn sha256(data: String) -> String:
     data
 
+// The canonical content hash of a rune's source tree, as `sha256:<hex>`. Pass
+// parallel lists — one entry per file (`witchy.toml` plus each `src/**/*.witchy`):
+// `paths[i]` is the relative path, `contents[i]` its text. Entries are sorted and
+// length-prefixed before hashing, so the result is the rune's stable content
+// address — the package manager's tamper-evident identity.
+pub fn rune_hash(paths: List(String), contents: List(String)) -> String:
+    ""
+
 // Verify an Ed25519 signature. `public_key` and `signature` are hex-encoded;
 // `message` is the raw string. Total: malformed input or a bad signature yields
 // `false`, never an error.

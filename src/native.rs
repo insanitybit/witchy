@@ -24,6 +24,7 @@ pub type NativeFn = fn(&[Value]) -> Result<Value, RuntimeError>;
 pub fn lookup(qualified: &str) -> Option<NativeFn> {
     match qualified {
         "crypto.sha256" => Some(crypto::sha256),
+        "crypto.rune_hash" => Some(crypto::rune_hash),
         "crypto.ed25519_verify" => Some(crypto::ed25519_verify),
         "crypto.sign" => Some(crypto::sign),
         "crypto.public_key" => Some(crypto::public_key),
@@ -63,6 +64,65 @@ mod crypto {
             let _ = write!(out, "{b:02x}");
         }
         Ok(Value::Str(out))
+    }
+
+    /// The canonical content hash of a rune's source tree — the package manager's
+    /// content address. `paths` and `contents` are parallel lists, one entry per
+    /// file (`witchy.toml` plus each `src/**/*.witchy`). Entries are sorted by
+    /// path and each content is LF-normalized, then SHA-256'd with a u64 length
+    /// prefix on *every* field so no concatenation is ambiguous — byte-identical
+    /// to the store's hashing (`src/pm/store.rs`). Returns `sha256:<hex>`.
+    pub fn rune_hash(args: &[Value]) -> Result<Value, RuntimeError> {
+        let [Value::List(paths), Value::List(contents)] = args else {
+            return Err(type_error(
+                "crypto.rune_hash expects (List(String), List(String))",
+            ));
+        };
+        if paths.len() != contents.len() {
+            return Err(type_error(
+                "crypto.rune_hash: paths and contents differ in length",
+            ));
+        }
+        let mut files: Vec<(&str, Vec<u8>)> = Vec::with_capacity(paths.len());
+        for (p, c) in paths.iter().zip(contents.iter()) {
+            let (Value::Str(path), Value::Str(content)) = (p, c) else {
+                return Err(type_error("crypto.rune_hash: entries must be strings"));
+            };
+            files.push((path.as_str(), normalize_lf(content.as_bytes())));
+        }
+        files.sort_by(|a, b| a.0.cmp(b.0));
+        use sha2::{Digest, Sha256};
+        let mut h = Sha256::new();
+        for (path, bytes) in &files {
+            h.update((path.len() as u64).to_le_bytes());
+            h.update(path.as_bytes());
+            h.update((bytes.len() as u64).to_le_bytes());
+            h.update(bytes);
+        }
+        let digest = h.finalize();
+        let mut out = String::with_capacity(7 + 64);
+        out.push_str("sha256:");
+        for b in digest.as_ref() as &[u8] {
+            use std::fmt::Write;
+            let _ = write!(out, "{b:02x}");
+        }
+        Ok(Value::Str(out))
+    }
+
+    /// LF-normalize so a CRLF checkout hashes identically (matches the store).
+    fn normalize_lf(bytes: &[u8]) -> Vec<u8> {
+        let mut out = Vec::with_capacity(bytes.len());
+        let mut i = 0;
+        while i < bytes.len() {
+            if bytes[i] == b'\r' && i + 1 < bytes.len() && bytes[i + 1] == b'\n' {
+                out.push(b'\n');
+                i += 2;
+            } else {
+                out.push(bytes[i]);
+                i += 1;
+            }
+        }
+        out
     }
 
     /// Verify an Ed25519 signature. `public_key`/`signature` are hex; `message`

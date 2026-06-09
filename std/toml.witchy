@@ -20,6 +20,84 @@ pub fn get_array(text: String, path: String) -> List(String):
         Some(raw) -> parse_array(raw)
         None -> []
 
+// Every `key = value` pair defined directly under `[section]`, in file order.
+// Keys are unquoted (`"acme/money"` -> `acme/money`); values are raw (trimmed,
+// still quoted/inline) — feed an inline-table value to `inline_get`. Use this to
+// enumerate a table whose keys you don't know ahead of time, like `[dependencies]`.
+pub fn table(text: String, section: String) -> List((String, String)):
+    var in_section = section == ""
+    var out = []
+    for line in string.lines(text):
+        let t = string.trim(line)
+        if is_header(t):
+            in_section = header_name(t) == section
+        else if in_section:
+            if let Some(pair) = key_value(t):
+                out = push(out, pair)
+    out
+
+// Each `[[name]]` array-of-tables entry as its own block of body text — the lines
+// after one `[[name]]` header up to the next header. Feed a block to `get` /
+// `get_array` to read its fields. Use this to walk a `witchy.lock`'s `[[rune]]`
+// entries, which `table`/`get` (single-table) cannot enumerate.
+pub fn array_tables(text: String, name: String) -> List(String):
+    let marker = "[[" <> name <> "]]"
+    var blocks = []
+    var current = ""
+    var collecting = false
+    for line in string.lines(text):
+        let t = string.trim(line)
+        if t == marker:
+            if collecting:
+                blocks = push(blocks, current)
+            current = ""
+            collecting = true
+        else if is_header(t):
+            if collecting:
+                blocks = push(blocks, current)
+            current = ""
+            collecting = false
+        else if collecting:
+            current = current <> line <> "\n"
+    if collecting:
+        blocks = push(blocks, current)
+    blocks
+
+// Just the keys of `[section]` (unquoted), in file order.
+pub fn keys(text: String, section: String) -> List(String):
+    var out = []
+    for pair in table(text, section):
+        let (k, _v) = pair
+        out = push(out, k)
+    out
+
+// Read `key` from an inline table value like `{ path = "../money", version = "1" }`.
+// Returns the unquoted value, or None if the key is absent.
+pub fn inline_get(inline: String, key: String) -> Option(String):
+    let body = string.strip_suffix(string.strip_prefix(string.trim(inline), "{"), "}")
+    var found = None
+    for part in split(body, ","):
+        if let Some((k, v)) = key_value(string.trim(part)):
+            if k == key:
+                found = Some(unquote(v))
+    found
+
+// If `line` is `key = value` (and not a comment), return (unquoted key, raw value).
+fn key_value(line: String) -> Option((String, String)):
+    if starts_with(line, "#") || !contains(line, "="):
+        None
+    else:
+        let (k, v) = string.split_once(line, "=")
+        Some((unquote_key(string.trim(k)), string.trim(v)))
+
+// A bare key is itself; a quoted key has its surrounding quotes stripped (so a
+// scoped name like `"acme/money"` reads back as `acme/money`).
+fn unquote_key(k: String) -> String:
+    if starts_with(k, "\"") && ends_with(k, "\""):
+        string.strip_suffix(string.strip_prefix(k, "\""), "\"")
+    else:
+        k
+
 // The raw (trimmed, still-quoted) value for `path`, scanning section by section.
 fn lookup(text: String, path: String) -> Option(String):
     let (section, key) = split_path(path)

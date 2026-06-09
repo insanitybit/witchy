@@ -17,6 +17,7 @@
 //   help                 show this message
 
 import compiler
+import crypto
 import json
 import string
 import toml
@@ -33,6 +34,13 @@ fn main(console: Console, args: List(String), root: Dir) -> Int:
         cmd_check(console, root, arg(args, 1))
     else if cmd == "guard":
         cmd_guard(console, root, arg(args, 1), arg(args, 2))
+    else if cmd == "deps":
+        cmd_deps(console, root, arg(args, 1))
+        0
+    else if cmd == "lock":
+        cmd_lock(console, root, arg(args, 1))
+    else if cmd == "verify":
+        cmd_verify(console, root, arg(args, 1))
     else if cmd == "new":
         cmd_new(console, root, arg(args, 1))
         0
@@ -135,6 +143,164 @@ fn exit_for(report: String) -> Int:
     match json.decode(report):
         Ok(doc) -> if widened(doc): 2 else: 0
         Err(e) -> 1
+
+// --- deps: list a rune's dependencies ---------------------------------------
+
+fn cmd_deps(console: Console, root: Dir, dir: String):
+    if string.is_empty(dir):
+        print(console, "usage: pm deps <dir>")
+    else:
+        let manifest = read(root, join_path(dir, "witchy.toml"))
+        let deps = toml.table(manifest, "dependencies")
+        if length(deps) == 0:
+            print(console, "(no dependencies)")
+        else:
+            for pair in deps:
+                let (name, inline) = pair
+                print(console, name <> " -> " <> dep_source(inline))
+
+fn dep_source(let inline: String) -> String:
+    match toml.inline_get(inline, "path"):
+        Some(p) -> "path:" <> p
+        None -> version_source(inline)
+
+fn version_source(let inline: String) -> String:
+    match toml.inline_get(inline, "version"):
+        Some(v) -> "version:" <> v
+        None -> "(unspecified)"
+
+// --- lock: pin every dependency by content hash ------------------------------
+// The lockfile is regenerated from source, so it can never disagree with the
+// bytes on disk: `lock` writes the hashes, `verify` recomputes and compares.
+
+fn cmd_lock(console: Console, root: Dir, dir: String) -> Int:
+    if string.is_empty(dir):
+        print(console, "usage: pm lock <dir>")
+        1
+    else:
+        let manifest = read(root, join_path(dir, "witchy.toml"))
+        let n = length(toml.table(manifest, "dependencies"))
+        let lockpath = join_path(dir, "witchy.lock")
+        write(root, lockpath, generate_lock(root, dir))
+        print(console, f"locked {n} dependencies -> {lockpath}")
+        0
+
+// --- verify: every locked hash must still match its source ------------------
+// Parses the lockfile's `[[rune]]` entries and recomputes each path dependency's
+// content hash, so it validates *any* witchy.lock — including one coven wrote.
+// A mismatch (or a missing entry) means the pinned bytes no longer match disk:
+// tampering or a stale lock. Exits 2 on any discrepancy.
+
+fn cmd_verify(console: Console, root: Dir, dir: String) -> Int:
+    if string.is_empty(dir):
+        print(console, "usage: pm verify <dir>")
+        1
+    else if !exists(root, join_path(dir, "witchy.lock")):
+        print(console, "no witchy.lock — run `pm lock " <> dir <> "` first")
+        1
+    else:
+        let lock = read(root, join_path(dir, "witchy.lock"))
+        let manifest = read(root, join_path(dir, "witchy.toml"))
+        report_verify(console, hash_mismatches(root, dir, manifest, lock))
+
+fn report_verify(console: Console, bad: List(String)) -> Int:
+    if length(bad) == 0:
+        print(console, "OK: every locked hash matches the dependency sources")
+        0
+    else:
+        print(console, "BLOCK: lock no longer matches source for: " <> string.join(bad, ", "))
+        2
+
+// The path-dependency names whose recomputed hash differs from the lockfile's.
+fn hash_mismatches(root: Dir, dir: String, manifest: String, lock: String) -> List(String):
+    var bad = []
+    for pair in toml.table(manifest, "dependencies"):
+        let (name, inline) = pair
+        if let Some(rel) = toml.inline_get(inline, "path"):
+            let dep_dir = normalize_path(join_path(dir, rel))
+            if rune_hash(root, dep_dir) != locked_hash(lock, name):
+                bad = push(bad, name)
+    bad
+
+// The `hash` field of the `[[rune]]` entry named `name`, or "(absent)".
+fn locked_hash(lock: String, name: String) -> String:
+    var found = "(absent)"
+    for block in toml.array_tables(lock, "rune"):
+        if entry_name(block) == name:
+            found = entry_hash(block)
+    found
+
+fn entry_name(block: String) -> String:
+    match toml.get(block, "name"):
+        Some(n) -> n
+        None -> ""
+
+fn entry_hash(block: String) -> String:
+    match toml.get(block, "hash"):
+        Some(h) -> h
+        None -> "(no-hash)"
+
+// The canonical lockfile text for a rune: a `[[rune]]` block per dependency,
+// pinning its resolved version, source, content hash, and runtime footprint.
+fn generate_lock(root: Dir, dir: String) -> String:
+    let manifest = read(root, join_path(dir, "witchy.toml"))
+    var out = "# witchy.lock — generated by `pm lock`. Pins every dependency by content\n# hash. Regenerate with `pm lock`; verify with `pm verify`. Do not edit by hand.\n"
+    for pair in toml.table(manifest, "dependencies"):
+        let (name, inline) = pair
+        out = out <> lock_entry(root, dir, name, inline)
+    out
+
+fn lock_entry(root: Dir, dir: String, name: String, inline: String) -> String:
+    match toml.inline_get(inline, "path"):
+        Some(rel) -> path_entry(root, dir, name, rel)
+        None -> "\n[[rune]]\nname = \"" <> name <> "\"\nsource = \"coven\"\n# unresolved: registry deps need coven (pm publish/fetch)\n"
+
+fn path_entry(root: Dir, dir: String, name: String, rel: String) -> String:
+    let dep_dir = normalize_path(join_path(dir, rel))
+    let dep_manifest = read(root, join_path(dep_dir, "witchy.toml"))
+    let version = field(dep_manifest, "rune.version")
+    let hash = rune_hash(root, dep_dir)
+    let fp = footprint_toml(rune_footprint(root, dep_dir))
+    "\n[[rune]]\nname = \"" <> name <> "\"\nversion = \"" <> version <> "\"\nsource = \"path:" <> rel <> "\"\nhash = \"" <> hash <> "\"\nruntime_footprint = [" <> fp <> "]\n"
+
+// The rune's content address: the canonical hash over `witchy.toml` plus every
+// `src/*.witchy`, matching coven's store byte-for-byte (so a witchy-checked lock
+// agrees with a coven-generated one).
+fn rune_hash(root: Dir, dir: String) -> String:
+    let src = subdir(root, join_path(dir, "src"))
+    var paths = ["witchy.toml"]
+    var contents = [read(root, join_path(dir, "witchy.toml"))]
+    for f in list(src):
+        paths = push(paths, "src/" <> f)
+        contents = push(contents, read(src, f))
+    crypto.rune_hash(paths, contents)
+
+fn footprint_toml(caps: List(String)) -> String:
+    var parts = []
+    for c in caps:
+        parts = push(parts, "\"" <> c <> "\"")
+    string.join(parts, ", ")
+
+// Collapse `a/b/../c` to `a/c`, dropping `.` and empty segments — the confined
+// Dir capability rejects `..`, so a relative dep path must be resolved first.
+fn normalize_path(let p: String) -> String:
+    var stack = []
+    for seg in split(p, "/"):
+        if seg == "..":
+            stack = drop_last(stack)
+        else if seg != "" && seg != ".":
+            stack = push(stack, seg)
+    string.join(stack, "/")
+
+fn drop_last(xs: List(String)) -> List(String):
+    var out = []
+    let last = length(xs) - 1
+    var i = 0
+    for x in xs:
+        if i < last:
+            out = push(out, x)
+        i = i + 1
+    out
 
 // --- new: scaffold a rune ----------------------------------------------------
 
@@ -297,6 +463,9 @@ fn usage(console: Console):
     print(console, "  audit <file>        footprint a source file demands")
     print(console, "  check <dir>         declared footprint must admit the code")
     print(console, "  guard <old> <new>   BLOCK if <new> widens authority")
+    print(console, "  deps  <dir>         list a rune's dependencies")
+    print(console, "  lock  <dir>         pin dependencies by content hash -> witchy.lock")
+    print(console, "  verify <dir>        witchy.lock must match the dependency sources")
     print(console, "  new   <name>        scaffold a new rune")
 
 fn unknown(console: Console, cmd: String) -> Int:
