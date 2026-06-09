@@ -1368,9 +1368,9 @@ impl Interpreter {
                     // ownership transfer it denotes only matters for the native
                     // backend's clone elision; the interpreter just yields the value.
                     (UnOp::Move, v) => Ok(v),
-                    (UnOp::Neg, Value::Int(n)) => {
-                        n.checked_neg().map(Value::Int).ok_or_else(over("-")).map_err(Flow::Err)
-                    }
+                    // Negation wraps (matching the WASM backend's `0 - x`): so
+                    // `-INT_MIN` is `INT_MIN`, not a host panic / divergence.
+                    (UnOp::Neg, Value::Int(n)) => Ok(Value::Int(n.wrapping_neg())),
                     (UnOp::Neg, Value::Float(x)) => Ok(Value::Float(-x)),
                     (UnOp::Neg, other) => err(format!("cannot negate `{other}`")),
                     (UnOp::Not, Value::Bool(b)) => Ok(Value::Bool(!b)),
@@ -1625,12 +1625,14 @@ fn eval_binary(op: BinOp, l: Value, r: Value) -> Result<Value, RuntimeError> {
     use BinOp::*;
     use Value::{Float, Int, Str};
     match op {
-        // Int arithmetic is checked: overflow yields a runtime error rather than
-        // panicking the host (a program must never crash the interpreter).
+        // Int arithmetic WRAPS on overflow — well-defined two's-complement i64,
+        // identical to the WASM backend's `i64.add/sub/mul` (so the two backends
+        // agree exactly). It never panics the host. Division still errors on the
+        // two cases WASM's `i64.div_s` traps on: divide-by-zero and INT_MIN / -1.
         Add | Sub | Mul | Div => match (op, l, r) {
-            (Add, Int(a), Int(b)) => a.checked_add(b).map(Int).ok_or_else(over("+")),
-            (Sub, Int(a), Int(b)) => a.checked_sub(b).map(Int).ok_or_else(over("-")),
-            (Mul, Int(a), Int(b)) => a.checked_mul(b).map(Int).ok_or_else(over("*")),
+            (Add, Int(a), Int(b)) => Ok(Int(a.wrapping_add(b))),
+            (Sub, Int(a), Int(b)) => Ok(Int(a.wrapping_sub(b))),
+            (Mul, Int(a), Int(b)) => Ok(Int(a.wrapping_mul(b))),
             (Div, Int(_), Int(0)) => err("division by zero"),
             (Div, Int(a), Int(b)) => a.checked_div(b).map(Int).ok_or_else(over("/")),
             (Add, Float(a), Float(b)) => Ok(Float(a + b)),
@@ -1641,7 +1643,7 @@ fn eval_binary(op: BinOp, l: Value, r: Value) -> Result<Value, RuntimeError> {
         },
         Mod => match (l, r) {
             (Int(_), Int(0)) => err("modulo by zero"),
-            (Int(a), Int(b)) => a.checked_rem(b).map(Int).ok_or_else(over("%")),
+            (Int(a), Int(b)) => Ok(Int(a.wrapping_rem(b))),
             (a, b) => err(format!("`%` expects two Ints, got `{a}` and `{b}`")),
         },
         BitAnd => match (l, r) {
@@ -3020,26 +3022,27 @@ fn main(console: Console):
     }
 
     #[test]
-    fn integer_overflow_is_a_graceful_error_not_a_panic() {
-        // Multiplication that overflows i64 must return an error, never panic.
+    fn integer_overflow_wraps_like_the_wasm_backend() {
+        // Multiplication that overflows i64 WRAPS (two's complement), identical to
+        // the WASM backend's `i64.mul`, never panicking the host.
         let src = r#"
 fn main(console: Console):
     let big = 9999999999
     print(console, int_to_string((big * big)))
 "#;
-        let e = run(src).unwrap_err();
-        assert!(e.message.contains("overflow"), "got: {}", e.message);
+        assert_eq!(run(src).unwrap(), vec!["7766279611452241921"]);
     }
 
     #[test]
-    fn negating_int_min_does_not_panic() {
-        // -(i64::MIN) overflows via unary negation; it must be a graceful error.
+    fn negating_int_min_wraps_not_panics() {
+        // -(i64::MIN) wraps back to i64::MIN (matching the WASM backend), never a
+        // host panic.
         let src = r#"
 fn main(console: Console):
     let lo = ((0 - 9223372036854775807) - 1)
     print(console, int_to_string((-lo)))
 "#;
-        assert!(run(src).is_err());
+        assert_eq!(run(src).unwrap(), vec!["-9223372036854775808"]);
     }
 
     #[test]
