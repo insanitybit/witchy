@@ -1,0 +1,124 @@
+// coven_client — a self-hosted client that drives a coven registry over HTTP, to
+// exercise the registry end-to-end: publish (stage), record, promote (release),
+// separation-of-duties, server-side footprint enforcement (under-declaration is
+// refused), and source fetch. It speaks the same JSON wire protocol as the Rust
+// client. Run against a coven server:
+//   witchy --net 127.0.0.1:8787 projects/coven/src/coven_client.witchy 127.0.0.1:8787
+
+import http
+import json
+import string
+
+fn main(console: Console, net: Net, args: List(String)):
+    let addr = if length(args) > 0: at(args, 0) else: "127.0.0.1:8787"
+    let (host, port) = hostport(addr)
+
+    let rp = http.get(net, host, port, "/coven/rootpub")
+    print(console, "rootpub:" <> int_to_string(http.status(rp)))
+
+    // publish acme/money@1.0.0 (a pure library — no capabilities)
+    let pub1 = http.post(net, host, port, "/coven/publish", publish_body(money_toml(), money_files(), "ci-bot"))
+    print(console, "publish:" <> int_to_string(http.status(pub1)) <> " state=" <> field(http.body(pub1), "state"))
+
+    let rec = http.get(net, host, port, "/coven/record?name=acme~money&version=1.0.0")
+    print(console, "record:" <> int_to_string(http.status(rec)) <> " state=" <> field(http.body(rec), "state"))
+
+    // promote with a DISTINCT identity (separation of duties holds) -> released
+    let prom = http.post(net, host, port, "/coven/promote", promote_body("acme~money", "1.0.0", "webauthn", "release-human"))
+    print(console, "promote:" <> int_to_string(http.status(prom)) <> " state=" <> nested_state(http.body(prom)) <> " sod=" <> nested_bool(http.body(prom)))
+
+    // publish v2, then attempt to promote it as the SAME identity that uploaded
+    // it — separation of duties must refuse (403).
+    let pub2 = http.post(net, host, port, "/coven/publish", publish_body(money_toml_v2(), money_files_v2(), "ci-bot"))
+    print(console, "publish2:" <> int_to_string(http.status(pub2)))
+    let sod = http.post(net, host, port, "/coven/promote", promote_body("acme~money", "2.0.0", "webauthn", "ci-bot"))
+    print(console, "selfpromote:" <> int_to_string(http.status(sod)))
+
+    // an under-declared rune: the code demands Net but the manifest declares
+    // nothing — the server recomputes the footprint and refuses (400).
+    let leak = http.post(net, host, port, "/coven/publish", publish_body(leak_toml(), leak_files(), "attacker"))
+    print(console, "underdeclared:" <> int_to_string(http.status(leak)))
+
+    let src = http.get(net, host, port, "/coven/source?name=acme~money&version=1.0.0")
+    print(console, "source:" <> int_to_string(http.status(src)))
+
+    let idx = http.get(net, host, port, "/coven/index")
+    print(console, "index:" <> int_to_string(http.status(idx)) <> " " <> http.body(idx))
+
+// --- request bodies ----------------------------------------------------------
+
+fn publish_body(manifest: String, files: List((String, String)), uploaded_by: String) -> String:
+    json.encode(JsonObject([
+        ("manifest_toml", JsonString(manifest)),
+        ("source", JsonObject([("files", JsonArray(file_pairs(files)))])),
+        ("uploaded_by", JsonString(uploaded_by)),
+    ]))
+
+fn promote_body(name: String, version: String, factor: String, promoter: String) -> String:
+    json.encode(JsonObject([
+        ("name", JsonString(name)),
+        ("version", JsonString(version)),
+        ("second_factor", JsonString(factor)),
+        ("promoted_by", JsonString(promoter)),
+    ]))
+
+fn file_pairs(files: List((String, String))) -> List(Json):
+    var out = []
+    for f in files:
+        let (path, text) = f
+        out = push(out, JsonArray([JsonString(path), JsonString(text)]))
+    out
+
+// --- fixtures ----------------------------------------------------------------
+
+fn money_toml() -> String:
+    "[rune]\nname = \"acme/money\"\nversion = \"1.0.0\"\n"
+
+fn money_files() -> List((String, String)):
+    [("witchy.toml", money_toml()), ("src/money.witchy", "fn dollars(n: Int) -> Int:\n    n * 100\n")]
+
+fn money_toml_v2() -> String:
+    "[rune]\nname = \"acme/money\"\nversion = \"2.0.0\"\n"
+
+fn money_files_v2() -> List((String, String)):
+    [("witchy.toml", money_toml_v2()), ("src/money.witchy", "fn dollars(n: Int) -> Int:\n    n * 100\n")]
+
+fn leak_toml() -> String:
+    "[rune]\nname = \"acme/leak\"\nversion = \"1.0.0\"\n"
+
+fn leak_files() -> List((String, String)):
+    [("witchy.toml", leak_toml()), ("src/leak.witchy", "fn main(c: Console, net: Net):\n    let s = connect(net, \"example.com:80\")\n    print(c, \"x\")\n")]
+
+// --- response parsing --------------------------------------------------------
+
+fn hostport(addr: String) -> (String, Int):
+    let (host, portstr) = string.split_once(addr, ":")
+    (host, string_to_int(portstr))
+
+fn field(text: String, key: String) -> String:
+    match json.decode(text):
+        Ok(doc) -> jstr(doc, key)
+        Err(e) -> "?"
+
+fn nested_state(text: String) -> String:
+    match json.decode(text):
+        Ok(doc) -> match json.get(doc, "record"):
+            Some(rec) -> jstr(rec, "state")
+            None -> "?"
+        Err(e) -> "?"
+
+fn nested_bool(text: String) -> String:
+    match json.decode(text):
+        Ok(doc) -> match json.get(doc, "separation_of_duties"):
+            Some(b) -> match json.as_bool(b):
+                Some(v) -> if v: "true" else: "false"
+                None -> "?"
+            None -> "?"
+        Err(e) -> "?"
+
+fn jstr(doc: Json, key: String) -> String:
+    match json.get(doc, key):
+        Some(j) -> match json.as_string(j):
+            Some(s) -> s
+            None -> ""
+        None -> ""

@@ -1153,3 +1153,102 @@ fn build_rejects_underdeclared_capabilities() {
     assert!(!out.status.success(), "under-declared caps must fail build");
     assert!(stderr(&out).contains("under-declare"), "stderr: {}", stderr(&out));
 }
+
+/// The **self-hosted** registry path: spawn the witchy coven server
+/// (`projects/coven/src/coven.witchy`, interpreter-hosted — it uses
+/// `compiler.footprint`) and drive it with the witchy coven client over real
+/// HTTP. This exercises the whole registry in witchy: two-phase publish,
+/// separation of duties (a self-promote is refused 403), server-side footprint
+/// recomputation (an under-declared rune is refused 400), and source fetch.
+#[test]
+fn witchy_coven_full_lifecycle_self_hosted() {
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let coven_src = format!("{manifest_dir}/projects/coven/src/coven.witchy");
+    let client_src = format!("{manifest_dir}/projects/coven/src/coven_client.witchy");
+
+    // Pre-pick a free port (the server must bind the same addr we pass to --net).
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let addr = format!("127.0.0.1:{port}");
+
+    let store = unique("witchy-coven-store");
+    let seed = store.join("root.seed");
+    std::fs::write(
+        &seed,
+        "0000000000000000000000000000000000000000000000000000000000000001",
+    )
+    .unwrap();
+
+    let mut server = Command::new(BIN)
+        .args([
+            "--net",
+            &addr,
+            "--signing-key",
+            seed.to_str().unwrap(),
+            &coven_src,
+            &addr,
+        ])
+        .current_dir(&store)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn witchy coven server");
+
+    // Wait for the listener to come up.
+    let mut up = false;
+    for _ in 0..80 {
+        if std::net::TcpStream::connect(&addr).is_ok() {
+            up = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    if !up {
+        let _ = server.kill();
+        let _ = server.wait();
+        let _ = std::fs::remove_dir_all(&store);
+        panic!("witchy coven server never started listening on {addr}");
+    }
+
+    // Drive the lifecycle with the self-hosted client.
+    let out = Command::new(BIN)
+        .args(["--net", &addr, &client_src, &addr])
+        .output()
+        .expect("run witchy coven client");
+
+    let _ = server.kill();
+    let _ = server.wait();
+    let _ = std::fs::remove_dir_all(&store);
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert!(
+        out.status.success(),
+        "client failed: status={:?} stdout={stdout:?} stderr={:?}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(lines.contains(&"rootpub:200"), "rootpub: {lines:?}");
+    assert!(lines.contains(&"publish:200 state=staged"), "publish: {lines:?}");
+    assert!(lines.contains(&"record:200 state=staged"), "record: {lines:?}");
+    assert!(
+        lines.contains(&"promote:200 state=released sod=true"),
+        "promote w/ separation of duties: {lines:?}"
+    );
+    assert!(
+        lines.contains(&"selfpromote:403"),
+        "a self-promote must be refused 403: {lines:?}"
+    );
+    assert!(
+        lines.contains(&"underdeclared:400"),
+        "an under-declared rune must be refused 400: {lines:?}"
+    );
+    assert!(lines.contains(&"source:200"), "source: {lines:?}");
+    assert!(
+        lines.iter().any(|l| l.starts_with("index:200") && l.contains("acme/money")),
+        "index: {lines:?}"
+    );
+}
