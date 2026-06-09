@@ -114,7 +114,12 @@ fn to_slot(k: Kind) -> &'static str {
     match k {
         Kind::I64 => "",
         Kind::F64 => "    i64.reinterpret_f64\n",
-        Kind::I32 => "    i64.extend_i32_u\n",
+        // Sign-extend (matching `kind_convert`'s i32->i64): a generic slot may
+        // carry a negative `Int` that entered through the i32 ABI, and a concrete
+        // `Int` reader loads the slot as i64 directly — zero-extension turned -1
+        // into 4294967295. Pointers and Bools are always < 2^31 (high bit clear),
+        // so sign-extension leaves them unchanged.
+        Kind::I32 => "    i64.extend_i32_s\n",
     }
 }
 

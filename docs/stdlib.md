@@ -788,6 +788,14 @@ Split `xs` into consecutive sublists of length `n` (the final one may be shorter
 
 The elements in the half-open index range [start, end), clamped to bounds. `slice(xs, 1, 3)` of [a,b,c,d] is [b,c].
 
+#### `fn set_at(xs: List(a), index: Int, value: a) -> List(a)`
+
+A copy of `xs` with the element at `index` replaced by `value`. An out-of- range index leaves the list unchanged. (Lists are immutable, so this returns a new list rather than mutating in place.)
+
+#### `fn update_at(xs: List(a), index: Int, f: fn(a) -> a) -> List(a)`
+
+A copy of `xs` with the function `f` applied to the element at `index`. An out-of-range index leaves the list unchanged.
+
 #### `fn windows(xs: List(a), n: Int) -> List(List(a))`
 
 All contiguous sublists of length `n` (a sliding window of step 1). Empty when `n < 1` or longer than the list. `windows([1,2,3,4], 2)` is `[[1,2],[2,3],[3,4]]`.

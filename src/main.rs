@@ -4355,6 +4355,21 @@ fn yn(b: Bool) -> String:
         assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
     }
 
+    /// A negative `Int` that enters a list through a *generic* function (the
+    /// element type is a type variable, so it crosses the i32 generic ABI) and is
+    /// then read back through *concrete* `List(Int)` code must keep its sign on
+    /// WASM. `to_slot` used to zero-extend, turning -1 into 4294967295 when a
+    /// concrete reader loaded the i64 slot; it now sign-extends (pointers/Bools
+    /// are < 2^31, so they're unaffected). Regression for the generic-list bug
+    /// found via `list.repeat(-1, n)`.
+    #[test]
+    fn wasm_negative_int_survives_the_generic_list_abi() {
+        let src = "fn fill(x: a, n: Int) -> List(a):\n    var out = []\n    var i = 0\n    while i < n:\n        out = push(out, x)\n        i = i + 1\n    out\n\nfn show(xs: List(Int)) -> String:\n    var out = \"\"\n    for v in xs:\n        out = out <> int_to_string(v) <> \" \"\n    out\n\nfn main(console: Console):\n    print(console, show(fill(-1, 3)))\n";
+        let want = vec!["-1 -1 -1 ".to_string()];
+        assert_eq!(interp(src), want.clone(), "interpreter");
+        assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
+    }
+
     /// `examples/rle.witchy` — run-length encoding and its inverse — collapses
     /// runs to "<count><char>" and expands them back, verifying decode∘encode is
     /// the identity. Pure string processing; identical on both backends. (Its

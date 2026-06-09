@@ -506,6 +506,33 @@ pub fn slice(xs: List(a), start: Int, end: Int) -> List(a):
         i = i + 1
     out
 
+// A copy of `xs` with the element at `index` replaced by `value`. An out-of-
+// range index leaves the list unchanged. (Lists are immutable, so this returns
+// a new list rather than mutating in place.)
+pub fn set_at(xs: List(a), index: Int, value: a) -> List(a):
+    var out = []
+    var i = 0
+    for x in xs:
+        if i == index:
+            out = push(out, value)
+        else:
+            out = push(out, x)
+        i = i + 1
+    out
+
+// A copy of `xs` with the function `f` applied to the element at `index`. An
+// out-of-range index leaves the list unchanged.
+pub fn update_at(xs: List(a), index: Int, f: fn(a) -> a) -> List(a):
+    var out = []
+    var i = 0
+    for x in xs:
+        if i == index:
+            out = push(out, f(x))
+        else:
+            out = push(out, x)
+        i = i + 1
+    out
+
 // All contiguous sublists of length `n` (a sliding window of step 1). Empty
 // when `n < 1` or longer than the list. `windows([1,2,3,4], 2)` is
 // `[[1,2],[2,3],[3,4]]`.
