@@ -4485,6 +4485,38 @@ fn yn(b: Bool) -> String:
         assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
     }
 
+    /// Structural `==` on sum types: nullary enums and concrete-field variants
+    /// compare by tag (then by the matched variant's fields) on both backends.
+    /// (Regression for the silent ADT pointer-compare divergence.)
+    #[test]
+    fn adt_structural_equality_agrees_on_both_backends() {
+        let src = "type Color:\n    Red\n    Green\n    Blue\ntype Shape:\n    Circle(Int)\n    Square(Int)\nfn main(console: Console):\n    print(console, to_string(Red == Red))\n    print(console, to_string(Red == Blue))\n    print(console, to_string(Circle(3) == Circle(3)))\n    print(console, to_string(Circle(3) == Circle(4)))\n    print(console, to_string(Circle(3) == Square(3)))\n    print(console, to_string([Red, Green] == [Red, Green]))\n";
+        let want = vec![
+            "true".to_string(),
+            "false".to_string(),
+            "true".to_string(),
+            "false".to_string(),
+            "false".to_string(),
+            "true".to_string(),
+        ];
+        assert_eq!(interp(src), want.clone(), "interpreter");
+        assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
+    }
+
+    /// A generic-payload ADT (`Option`) and a `Dict` can't be structurally compared
+    /// on WASM yet, so `==` on them is a LOUD codegen error — never a silent
+    /// pointer compare. (Guards the boundary of structural-equality support.)
+    #[test]
+    fn unsupported_compound_equality_is_a_loud_error_not_silent() {
+        let opt = "import option\n\nfn main(console: Console):\n    print(console, to_string(Some(5) == Some(5)))\n";
+        let om = parser::parse_module(opt).expect("parse");
+        let linked = crate::linker::link(vec![("main".into(), om)], "main").expect("link");
+        assert!(codegen::compile_module(&linked).is_err(), "Option `==` must be a loud codegen error");
+        let dict = "fn main(console: Console):\n    let a = insert(dict_new(), \"k\", 1)\n    let b = insert(dict_new(), \"k\", 1)\n    print(console, to_string(a == b))\n";
+        let dm = parser::parse_module(dict).expect("parse");
+        assert!(codegen::compile_module(&dm).is_err(), "Dict `==` must be a loud codegen error");
+    }
+
     /// Ordering a NaN must FAIL on both backends, not silently return IEEE false
     /// on WASM. The interpreter errors ("cannot compare NaN"); the compiled
     /// `<`/`<=`/`>`/`>=` on floats route through a NaN-trapping helper. Equality

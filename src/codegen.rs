@@ -172,6 +172,8 @@ enum EqShape {
     List(Box<EqShape>),
     Tuple(Vec<EqShape>),
     Record(String),
+    /// A sum type (its variants and their field types come from `adt_variants`).
+    Adt(String),
 }
 
 impl EqShape {
@@ -188,7 +190,10 @@ impl EqShape {
     /// Whether this is a heap-pointer compound (needs a generated helper) rather
     /// than a slot-level scalar.
     fn is_compound(&self) -> bool {
-        matches!(self, EqShape::List(_) | EqShape::Tuple(_) | EqShape::Record(_))
+        matches!(
+            self,
+            EqShape::List(_) | EqShape::Tuple(_) | EqShape::Record(_) | EqShape::Adt(_)
+        )
     }
 
     /// A stable identifier used to name and memoize the per-shape eq helper.
@@ -202,6 +207,7 @@ impl EqShape {
                 format!("tup_{}_", fs.iter().map(|f| f.id()).collect::<Vec<_>>().join("_"))
             }
             EqShape::Record(name) => format!("rec_{name}"),
+            EqShape::Adt(name) => format!("adt_{name}"),
         }
     }
 }
@@ -436,6 +442,13 @@ struct Codegen {
     /// can derive an `EqShape` for `List`/`Tuple`/nested-record fields (which the
     /// name-only `record_fields` can't represent).
     record_field_types: HashMap<String, Vec<Type>>,
+    /// ADT/record type name -> each variant's field types, indexed by tag, for
+    /// structural `==` on sum types (`Color`, `Shape`, ...). Generic variant
+    /// fields (a type variable) make a type unresolvable here -> a loud error.
+    adt_variants: HashMap<String, Vec<Vec<Type>>>,
+    /// Constructor name -> its owning type name (so a `Ctor` operand of `==` can
+    /// find its variant set).
+    ctor_type_name: HashMap<String, String>,
     /// Variables (params / let-bound constructors) known to hold a record of a
     /// given type, so `var.field` can resolve a field index.
     local_records: HashMap<String, String>,
@@ -577,6 +590,8 @@ impl Codegen {
             uses_send: false,
             record_fields: HashMap::new(),
             record_field_types: HashMap::new(),
+            adt_variants: HashMap::new(),
+            ctor_type_name: HashMap::new(),
             local_records: HashMap::new(),
             local_list_elem: HashMap::new(),
             local_payload_records: HashMap::new(),
@@ -2069,6 +2084,16 @@ impl Codegen {
                         }
                     }
                 }
+                // A `Dict` operand would otherwise compare heap pointers; structural
+                // dict equality (order-sensitive over key/value slots) isn't compiled
+                // yet, so reject it loudly rather than diverge silently.
+                if matches!(op, BinOp::Eq | BinOp::NotEq)
+                    && (self.is_dict_operand(lhs) || self.is_dict_operand(rhs))
+                {
+                    return cerr(
+                        "`==` on a Dict is not yet compiled to WASM (structural dict equality) — compare `pairs(d)` or specific keys instead",
+                    );
+                }
                 // Promote both operands to a common kind so a concrete i64 Int
                 // and an i32 (generic/narrowed) operand don't clash: f64 if either
                 // is Float, else i64 if either is i64, else i32. Comparisons still
@@ -2964,13 +2989,40 @@ impl Codegen {
                     .map(EqShape::Tuple);
             }
         }
-        self.record_type_of(e).map(EqShape::Record)
+        if let Some(rec) = self.record_type_of(e) {
+            return Some(EqShape::Record(rec));
+        }
+        // A constructor of a sum type (`Some(..)`, `Red`, ...). Resolved to its
+        // owning type; whether its fields are structurally comparable is decided
+        // when the helper is generated (a generic payload is a loud error there).
+        if let Expr::Ctor { name, .. } = e {
+            if let Some(tyname) = self.ctor_type_name.get(name) {
+                return Some(EqShape::Adt(tyname.clone()));
+            }
+        }
+        None
     }
 
     /// The shape of a value used as a tuple element / general operand: a compound
     /// shape if resolvable, else its scalar value type.
     fn eq_operand_shape(&self, e: &Expr) -> Option<EqShape> {
         self.eq_shape_of(e).or_else(|| EqShape::scalar(self.val_type_of(e)))
+    }
+
+    /// Whether an expression is statically known to be a `Dict` (a tracked dict
+    /// local, or a dict-producing builtin call), so `==` can reject it instead of
+    /// comparing pointers.
+    fn is_dict_operand(&self, e: &Expr) -> bool {
+        match e {
+            Expr::Var(v) => {
+                self.local_dict_key_valtype.contains_key(v)
+                    || self.local_dict_value_valtype.contains_key(v)
+            }
+            Expr::Call { name, .. } => {
+                matches!(name.as_str(), "dict_new" | "insert" | "remove" | "update")
+            }
+            _ => false,
+        }
     }
 
     /// The structural-equality shape of a declared type. Scalars, strings, lists,
@@ -2987,6 +3039,7 @@ impl Codegen {
                     self.eq_shape_of_type(inner).map(|s| EqShape::List(Box::new(s)))
                 }),
                 t if self.record_fields.contains_key(t) => Some(EqShape::Record(t.to_string())),
+                t if self.adt_variants.contains_key(t) => Some(EqShape::Adt(t.to_string())),
                 _ => None,
             },
             Type::Tuple(items) => items
@@ -3083,6 +3136,46 @@ impl Codegen {
                     checks.push_str(&format!("    (if (i32.eqz {cmp}) (then (return (i32.const 0))))\n"));
                 }
                 format!("  (func ${name} (param $a i32) (param $b i32) (result i32)\n{checks}    (i32.const 1))\n")
+            }
+            EqShape::Adt(tyname) => {
+                let variants = self
+                    .adt_variants
+                    .get(tyname)
+                    .cloned()
+                    .ok_or_else(|| CodegenError { message: format!("unknown type `{tyname}` in `==`") })?;
+                // Tags differ -> not equal. Otherwise dispatch on the (shared) tag
+                // to compare that variant's fields; nullary variants need no check.
+                let mut arms = String::new();
+                for (tag, fields) in variants.iter().enumerate() {
+                    if fields.is_empty() {
+                        continue;
+                    }
+                    let mut checks = String::new();
+                    for (i, fty) in fields.iter().enumerate() {
+                        let off = 4 + 8 * i;
+                        let fshape = self.eq_shape_of_type(fty).ok_or_else(|| CodegenError {
+                            message: format!(
+                                "`==` on `{tyname}` needs comparable fields; a field of variant {tag} is not structurally compared on WASM (e.g. a generic payload like `Option`/`Result`) — match on it or use the `Eq` trait"
+                            ),
+                        })?;
+                        let cmp = self.slot_cmp(
+                            &fshape,
+                            &format!("(i32.add (local.get $a) (i32.const {off}))"),
+                            &format!("(i32.add (local.get $b) (i32.const {off}))"),
+                        )?;
+                        checks.push_str(&format!("      (if (i32.eqz {cmp}) (then (return (i32.const 0))))\n"));
+                    }
+                    arms.push_str(&format!(
+                        "    (if (i32.eq (local.get $t) (i32.const {tag})) (then\n{checks}      (return (i32.const 1))))\n"
+                    ));
+                }
+                format!(
+                    "  (func ${name} (param $a i32) (param $b i32) (result i32)\n    \
+                     (local $t i32)\n    \
+                     (if (i32.ne (i32.load (local.get $a)) (i32.load (local.get $b))) (then (return (i32.const 0))))\n    \
+                     (local.set $t (i32.load (local.get $a)))\n{arms}    \
+                     (i32.const 1))\n"
+                )
             }
             _ => unreachable!("scalar shapes have no helper"),
         };
@@ -3801,7 +3894,10 @@ pub fn compile_module(module: &Module) -> Result<String, CodegenError> {
                 }
             }
             Item::Type(t) => {
+                cg.adt_variants
+                    .insert(t.name.clone(), t.variants.iter().map(|v| v.fields.clone()).collect());
                 for (tag, variant) in t.variants.iter().enumerate() {
+                    cg.ctor_type_name.insert(variant.name.clone(), t.name.clone());
                     cg.ctors
                         .insert(variant.name.clone(), (tag as u32, variant.fields.len()));
                     if !variant.field_names.is_empty() {
