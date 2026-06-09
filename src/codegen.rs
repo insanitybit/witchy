@@ -2748,14 +2748,16 @@ impl Codegen {
     }
 
     /// The `$key_eq` comparison mode for a Dict key expression: 0 for Int/Bool
-    /// (i32 equality), 1 for String (`$str_eq`). Other key types are rejected.
+    /// (i64 bit equality), 1 for String (`$str_eq`), 2 for Float (`f64.eq` on the
+    /// reinterpreted slot — matches the interpreter's `==`, so -0.0 == 0.0 and
+    /// NaN != NaN). Other key types are rejected.
     fn dict_key_mode(&self, key: &Expr) -> Result<u32, CodegenError> {
         match self.val_type_of(key) {
             ValType::Int | ValType::Bool => Ok(0),
             ValType::Str => Ok(1),
-            ValType::Float => cerr("a Dict with Float keys is not compiled to WASM yet"),
+            ValType::Float => Ok(2),
             ValType::Other => cerr(
-                "could not determine the Dict key type for WASM; use Int or String keys (annotate if needed)",
+                "could not determine the Dict key type for WASM; use Int, Float, or String keys (annotate if needed)",
             ),
         }
     }
@@ -4192,7 +4194,9 @@ const DICT_NEW_WAT: &str = r#"  (func $dict_new (result i32)
 const KEY_EQ_WAT: &str = r#"  (func $key_eq (param $a i64) (param $b i64) (param $mode i32) (result i32)
     (if (result i32) (i32.eqz (local.get $mode))
       (then (i64.eq (local.get $a) (local.get $b)))
-      (else (call $str_eq (i32.wrap_i64 (local.get $a)) (i32.wrap_i64 (local.get $b))))))
+      (else (if (result i32) (i32.eq (local.get $mode) (i32.const 1))
+        (then (call $str_eq (i32.wrap_i64 (local.get $a)) (i32.wrap_i64 (local.get $b))))
+        (else (f64.eq (f64.reinterpret_i64 (local.get $a)) (f64.reinterpret_i64 (local.get $b))))))))
 "#;
 
 // insert(d, k, v): a fresh map like `d` with `k` set to `v` — the matching

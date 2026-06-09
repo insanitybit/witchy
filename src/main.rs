@@ -4424,6 +4424,26 @@ fn yn(b: Bool) -> String:
         assert_eq!(run_on_wasm(cap), vec!["5000000001"], "WASM (capture)");
     }
 
+    /// A Dict keyed by `Float` must look up the same on both backends. Float keys
+    /// go into the universal i64 slot as their bit pattern; `$key_eq` mode 2
+    /// reinterprets and compares with `f64.eq`, matching the interpreter's `==`
+    /// (insertion-order, value equality). (Regression for the interpreter-only
+    /// Float-key gap.)
+    #[test]
+    fn dict_float_keys_agree_on_both_backends() {
+        let src = "fn main(console: Console):\n    let d = insert(insert(insert(dict_new(), 1.5, \"a\"), 2.5, \"b\"), 1.5, \"c\")\n    print(console, get_or(d, 1.5, \"?\"))\n    print(console, get_or(d, 2.5, \"?\"))\n    print(console, get_or(d, 9.9, \"?\"))\n    print(console, int_to_string(size(d)))\n    let e = remove(d, 1.5)\n    print(console, get_or(e, 1.5, \"gone\"))\n    print(console, int_to_string(size(e)))\n";
+        let want = vec![
+            "c".to_string(),
+            "b".to_string(),
+            "?".to_string(),
+            "2".to_string(),
+            "gone".to_string(),
+            "1".to_string(),
+        ];
+        assert_eq!(interp(src), want.clone(), "interpreter");
+        assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
+    }
+
     /// `to_string` on a `Float` must produce the same text on both backends.
     /// WASM has no float formatter in hand-written WAT, so codegen calls a
     /// `float_to_str` host import that formats with Rust `Display` — byte-for-byte
