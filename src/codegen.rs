@@ -1389,11 +1389,15 @@ impl Codegen {
                 // String comparison is structural / lexicographic, not by pointer.
                 // Concrete String operands (per their value type) use $str_eq /
                 // $str_cmp; values of unknown type (e.g. a generic `a`) fall back
-                // to i32 comparison, as before.
+                // to i32 comparison, as before. We check BOTH operands — the type
+                // checker guarantees they share a type, so a literal on either
+                // side (e.g. `at(to_chars(s), i) == " "`, where the element type
+                // isn't tracked locally) is enough to pick structural equality.
                 if matches!(
                     op,
                     BinOp::Eq | BinOp::NotEq | BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq
-                ) && self.val_type_of(lhs) == ValType::Str
+                ) && (self.val_type_of(lhs) == ValType::Str
+                    || self.val_type_of(rhs) == ValType::Str)
                 {
                     let l = self.compile_expr(lhs)?;
                     let r = self.compile_expr(rhs)?;

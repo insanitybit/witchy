@@ -4005,6 +4005,40 @@ fn yn(b: Bool) -> String:
         assert_eq!(crate::capabilities::show_caps(&fp.total), "Console");
     }
 
+    /// `examples/calc.witchy` — a recursive-descent arithmetic evaluator — honors
+    /// operator precedence and left-associativity, and reports division-by-zero
+    /// and parse errors through `Result`. A pure (Console-only) tour of recursive
+    /// enums + pattern matching.
+    #[test]
+    fn calc_example_evaluates_with_precedence_and_errors() {
+        assert_eq!(
+            crate::execute_file("examples/calc.witchy", Vec::new()).unwrap(),
+            vec![
+                "2 + 3 * 4       => 14",
+                "(2 + 3) * 4     => 20",
+                "100 - 2 - 3     => 95",
+                "2 * (10 - 1)    => 18",
+                "8 / (4 - 4)     => error: division by zero",
+                "2 * (3 +        => error: unexpected end of input",
+            ]
+        );
+        let src = std::fs::read_to_string("examples/calc.witchy").unwrap();
+        let fp = crate::capabilities::analyze(&parser::parse_module(&src).expect("parse"));
+        assert_eq!(crate::capabilities::show_caps(&fp.total), "Console");
+    }
+
+    /// Regression (found by `examples/calc.witchy` via the both-backends invariant):
+    /// comparing a String whose type isn't locally tracked — a List(String)
+    /// element via `at` — to a literal must be a *structural* `$str_eq` on the
+    /// WASM backend, not a pointer compare, with the literal on either side.
+    #[test]
+    fn wasm_string_eq_uses_str_eq_when_literal_on_either_side() {
+        let src = "fn main(console: Console):\n    let cs = [\"a\", \" \", \"z\"]\n    print(console, if at(cs, 1) == \" \": \"eq\" else: \"ne\")\n    print(console, if \"a\" == at(cs, 0): \"eq\" else: \"ne\")\n    print(console, if at(cs, 0) == \"z\": \"eq\" else: \"ne\")\n";
+        let want = vec!["eq".to_string(), "eq".to_string(), "ne".to_string()];
+        assert_eq!(interp(src), want.clone(), "interpreter");
+        assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
+    }
+
     /// `std/time` computes the civil UTC date from a unix timestamp (Hinnant's
     /// days<->civil algorithm), cross-checked against Python's datetime: leap
     /// years, weekday, an exact round-trip, and a pre-1970 timestamp (floor

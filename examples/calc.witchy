@@ -1,0 +1,174 @@
+// calc — a tiny arithmetic evaluator: tokenize a string, parse it with operator
+// precedence (recursive descent), and evaluate the tree. A compact tour of
+// witchy's data side: recursive enums (`Token`, `Expr`), exhaustive pattern
+// matching, recursion, and `Result`-typed error handling — all pure (its
+// footprint is just `Console`). Run:  witchy examples/calc.witchy
+
+import string
+import ascii
+
+type Token:
+    Num(Int)
+    Plus
+    Minus
+    Star
+    Slash
+    LParen
+    RParen
+
+type Expr:
+    Lit(Int)
+    Add(Expr, Expr)
+    Sub(Expr, Expr)
+    Mul(Expr, Expr)
+    Div(Expr, Expr)
+
+// A parse step: a sub-tree and the position after it, or an error.
+type Parse:
+    Ok2(Expr, Int)
+    Bad(String)
+
+fn main(console: Console):
+    for source in ["2 + 3 * 4", "(2 + 3) * 4", "100 - 2 - 3", "2 * (10 - 1)", "8 / (4 - 4)", "2 * (3 +"]:
+        print(console, string.pad_right(source, 16, " ") <> "=> " <> run(source))
+
+// Evaluate a source string end to end, rendering the result or the first error.
+fn run(source: String) -> String:
+    match tokenize(source):
+        Ok(tokens) -> run_tokens(tokens)
+        Err(message) -> "error: " <> message
+
+fn run_tokens(tokens: List(Token)) -> String:
+    match parse(tokens):
+        Ok(tree) -> render(eval(tree))
+        Err(message) -> "error: " <> message
+
+fn render(result: Result(Int, String)) -> String:
+    match result:
+        Ok(value) -> int_to_string(value)
+        Err(message) -> "error: " <> message
+
+// --- lexer -------------------------------------------------------------------
+
+fn tokenize(source: String) -> Result(List(Token), String):
+    let chars = string.to_chars(source)
+    let n = length(chars)
+    var tokens = []
+    var failure = ""
+    var i = 0
+    while i < n && string.is_empty(failure):
+        let c = at(chars, i)
+        if c == " ":
+            i = i + 1
+        else if ascii.is_digit(c):
+            var value = 0
+            while i < n && ascii.is_digit(at(chars, i)):
+                value = value * 10 + ascii.to_digit(at(chars, i))
+                i = i + 1
+            tokens = push(tokens, Num(value))
+        else:
+            match symbol(c):
+                Some(tok) ->
+                    tokens = push(tokens, tok)
+                    i = i + 1
+                None ->
+                    failure = "unexpected character `" <> c <> "`"
+    if string.is_empty(failure):
+        Ok(tokens)
+    else:
+        Err(failure)
+
+fn symbol(c: String) -> Option(Token):
+    if c == "+": Some(Plus)
+    else if c == "-": Some(Minus)
+    else if c == "*": Some(Star)
+    else if c == "/": Some(Slash)
+    else if c == "(": Some(LParen)
+    else if c == ")": Some(RParen)
+    else: None
+
+// --- parser (recursive descent, precedence-climbing) -------------------------
+
+fn parse(tokens: List(Token)) -> Result(Expr, String):
+    match parse_expr(tokens, 0):
+        Ok2(tree, pos) -> if pos == length(tokens): Ok(tree) else: Err("unexpected trailing input")
+        Bad(message) -> Err(message)
+
+// expr := term (('+' | '-') term)*   (lowest precedence, left-associative)
+fn parse_expr(tokens: List(Token), pos: Int) -> Parse:
+    match parse_term(tokens, pos):
+        Ok2(left, next) -> expr_tail(tokens, left, next)
+        Bad(message) -> Bad(message)
+
+fn expr_tail(tokens: List(Token), left: Expr, pos: Int) -> Parse:
+    match peek(tokens, pos):
+        Some(Plus) -> fold_expr(tokens, left, pos + 1, true)
+        Some(Minus) -> fold_expr(tokens, left, pos + 1, false)
+        _ -> Ok2(left, pos)
+
+fn fold_expr(tokens: List(Token), left: Expr, pos: Int, adding: Bool) -> Parse:
+    match parse_term(tokens, pos):
+        Ok2(right, next) -> expr_tail(tokens, if adding: Add(left, right) else: Sub(left, right), next)
+        Bad(message) -> Bad(message)
+
+// term := factor (('*' | '/') factor)*
+fn parse_term(tokens: List(Token), pos: Int) -> Parse:
+    match parse_factor(tokens, pos):
+        Ok2(left, next) -> term_tail(tokens, left, next)
+        Bad(message) -> Bad(message)
+
+fn term_tail(tokens: List(Token), left: Expr, pos: Int) -> Parse:
+    match peek(tokens, pos):
+        Some(Star) -> fold_term(tokens, left, pos + 1, true)
+        Some(Slash) -> fold_term(tokens, left, pos + 1, false)
+        _ -> Ok2(left, pos)
+
+fn fold_term(tokens: List(Token), left: Expr, pos: Int, multiplying: Bool) -> Parse:
+    match parse_factor(tokens, pos):
+        Ok2(right, next) -> term_tail(tokens, if multiplying: Mul(left, right) else: Div(left, right), next)
+        Bad(message) -> Bad(message)
+
+// factor := Num | '(' expr ')'
+fn parse_factor(tokens: List(Token), pos: Int) -> Parse:
+    match peek(tokens, pos):
+        Some(Num(value)) -> Ok2(Lit(value), pos + 1)
+        Some(LParen) -> parse_group(tokens, pos + 1)
+        Some(_other) -> Bad("expected a number or `(`")
+        None -> Bad("unexpected end of input")
+
+fn parse_group(tokens: List(Token), pos: Int) -> Parse:
+    match parse_expr(tokens, pos):
+        Ok2(inner, next) -> close_group(inner, tokens, next)
+        Bad(message) -> Bad(message)
+
+fn close_group(inner: Expr, tokens: List(Token), pos: Int) -> Parse:
+    match peek(tokens, pos):
+        Some(RParen) -> Ok2(inner, pos + 1)
+        _ -> Bad("expected `)`")
+
+fn peek(tokens: List(Token), pos: Int) -> Option(Token):
+    if pos < length(tokens): Some(at(tokens, pos)) else: None
+
+// --- evaluator ---------------------------------------------------------------
+
+fn eval(tree: Expr) -> Result(Int, String):
+    match tree:
+        Lit(value) -> Ok(value)
+        Add(a, b) -> arith(eval(a), eval(b), "+")
+        Sub(a, b) -> arith(eval(a), eval(b), "-")
+        Mul(a, b) -> arith(eval(a), eval(b), "*")
+        Div(a, b) -> arith(eval(a), eval(b), "/")
+
+fn arith(left: Result(Int, String), right: Result(Int, String), op: String) -> Result(Int, String):
+    match left:
+        Ok(x) -> match right:
+            Ok(y) -> apply(op, x, y)
+            Err(message) -> Err(message)
+        Err(message) -> Err(message)
+
+fn apply(op: String, x: Int, y: Int) -> Result(Int, String):
+    if op == "+": Ok(x + y)
+    else if op == "-": Ok(x - y)
+    else if op == "*": Ok(x * y)
+    else if y == 0: Err("division by zero")
+    else: Ok(x / y)
