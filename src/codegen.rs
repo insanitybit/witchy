@@ -261,6 +261,10 @@ struct Codegen {
     locals: HashMap<String, Kind>,
     /// Declared return kind per function, for resolving call-result kinds.
     fn_ret: HashMap<String, Kind>,
+    /// Function name -> the return kind of the CLOSURE it returns, for a function
+    /// declared `-> fn(...) -> RET`. Lets `let f = make(...)` then `f(x)` recover
+    /// the closure's result at the right width.
+    fn_ret_closure_kind: HashMap<String, Kind>,
     /// Message name -> tag, shared across a program's actors so the host can
     /// route a compiled `send` to the target actor's handler.
     message_tags: HashMap<String, u32>,
@@ -422,6 +426,7 @@ impl Codegen {
             uses_print_float: false,
             locals: HashMap::new(),
             fn_ret: HashMap::new(),
+            fn_ret_closure_kind: HashMap::new(),
             message_tags: HashMap::new(),
             uses_send: false,
             record_fields: HashMap::new(),
@@ -556,6 +561,18 @@ impl Codegen {
             Expr::Var(f) => self.local_fn_ret_kind.get(f).copied().unwrap_or(Kind::I32),
             Expr::Lambda { body, .. } => self.block_kind(body),
             _ => Kind::I32,
+        }
+    }
+
+    /// The call-return kind of a closure VALUE, when determinable: a lambda
+    /// literal's body kind, a call to a `-> fn(...) -> RET` function, or another
+    /// closure-bound variable. Used to track `let f = <closure>` for later `f(x)`.
+    fn closure_ret_kind_of(&self, value: &Expr) -> Option<Kind> {
+        match value {
+            Expr::Lambda { body, .. } => Some(self.block_kind(body)),
+            Expr::Call { name, .. } => self.fn_ret_closure_kind.get(name).copied(),
+            Expr::Var(v) => self.local_fn_ret_kind.get(v).copied(),
+            _ => None,
         }
     }
 
@@ -892,6 +909,11 @@ impl Codegen {
                     // `n` at the right width.
                     if let Some(pvt) = self.match_payload_valtype(value) {
                         self.local_payload_valtype.insert(name.clone(), pvt);
+                    }
+                    // A binding to a closure value records its call-return kind, so
+                    // `let f = make(...)` then `f(x)` recovers the result width.
+                    if let Some(rk) = self.closure_ret_kind_of(value) {
+                        self.local_fn_ret_kind.insert(name.clone(), rk);
                     }
                     // A binding to a tuple literal records its element slot value
                     // types, so a later `let (a, b) = name` types `a`/`b` (and
@@ -3025,6 +3047,12 @@ pub fn compile_module(module: &Module) -> Result<String, CodegenError> {
                 cg.fn_ret.insert(f.name.clone(), ret);
                 if let Some(t) = &f.ret {
                     cg.fn_ret_valtype.insert(f.name.clone(), ty_to_valtype(t));
+                }
+                // A function returning a closure (`-> fn(...) -> RET`): record the
+                // closure's return kind so a `let f = make(...)` then `f(x)` call
+                // recovers the result at the right width.
+                if let Some(Type::Fn(_, cret)) = &f.ret {
+                    cg.fn_ret_closure_kind.insert(f.name.clone(), ty_kind(cret));
                 }
             }
             Item::Type(t) => {

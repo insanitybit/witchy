@@ -4424,6 +4424,18 @@ fn yn(b: Bool) -> String:
         assert_eq!(run_on_wasm(cap), vec!["5000000001"], "WASM (capture)");
     }
 
+    /// A closure RETURNED from a function and bound to a `let` (currying) must
+    /// keep a big `Int` result on WASM: the binding records the closure's
+    /// call-return kind (from the `-> fn(...) -> RET` declaration), so the later
+    /// `f(x)` recovers at i64. (Regression for the let-bound-closure-return gap.)
+    #[test]
+    fn wasm_big_int_through_curried_closure() {
+        let src = "fn make(big: Int) -> fn(Int) -> Int:\n    fn(x: Int): x + big\n\nfn main(console: Console):\n    let f = make(5000000000)\n    print(console, int_to_string(f(1)))\n";
+        let want = vec!["5000000001".to_string()];
+        assert_eq!(interp(src), want.clone(), "interpreter");
+        assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
+    }
+
     /// A large `Int` carried as an `Option`/`Result` success payload must keep its
     /// 64 bits on WASM, through both `?` and a `match`. The payload field is a type
     /// variable (generic i32 ABI), so codegen would truncate; it now tracks the
