@@ -70,6 +70,10 @@ pub struct Capabilities {
     /// The program's command-line arguments (`main(args: List(String))`).
     /// Pure input chosen by the host, not authority.
     pub args: Vec<String>,
+    /// The Ed25519 seed backing the root `SigningKey` capability. The key
+    /// material stays host-side; the guest only ever sees signatures and the
+    /// public key.
+    pub signing_key: Option<[u8; 32]>,
 }
 
 impl Capabilities {
@@ -318,6 +322,12 @@ impl Runtime {
             linker.func_wrap("witchy", "net_recv_all_len", host_net_recv_all_len)?;
             linker.func_wrap("witchy", "net_recv_bytes_len", host_net_recv_bytes_len)?;
             linker.func_wrap("witchy", "net_close", host_net_close)?;
+        }
+        // The SigningKey capability: the seed never enters guest memory — the
+        // host signs and reports the public key on the guest's behalf.
+        if caps.signing_key.is_some() {
+            linker.func_wrap("witchy", "crypto.sign", host_crypto_sign)?;
+            linker.func_wrap("witchy", "crypto.public_key", host_crypto_public_key)?;
         }
         // `fill_pending` / `write_pending_list` only write out data already
         // staged by a granted size call — no authority of their own, so they are
@@ -886,6 +896,49 @@ fn host_net_close(mut caller: Caller<'_, ActorState>, sid: i32) -> Result<()> {
         let _ = sock.get_mut().shutdown(std::net::Shutdown::Both);
     }
     Ok(())
+}
+
+/// `crypto.sign(msg_ptr, out_data_ptr)`: sign the message with the GRANTED key
+/// (host-side seed) and write the 128 hex signature bytes into the guest's
+/// pre-allocated string — through the same native registry the interpreter
+/// uses, so the output is byte-identical.
+fn host_crypto_sign(mut caller: Caller<'_, ActorState>, msg_ptr: i32, out_ptr: i32) -> Result<()> {
+    use crate::interpreter::Value;
+    let seed = caller
+        .data()
+        .caps
+        .signing_key
+        .ok_or_else(|| Error::msg("crypto.sign: no SigningKey granted"))?;
+    let mem = memory_of(&mut caller)?;
+    let msg = read_wstr(mem.data(&caller), msg_ptr)?;
+    let f = crate::native::lookup("crypto.sign")
+        .ok_or_else(|| Error::msg("crypto.sign is not registered"))?;
+    let sig = match f(&[Value::SigningKey(seed), Value::Str(msg)]).map_err(|e| Error::msg(e.message))? {
+        Value::Str(s) => s,
+        _ => return Err(Error::msg("crypto.sign did not return a String")),
+    };
+    mem.write(&mut caller, out_ptr as usize, sig.as_bytes())
+        .map_err(|e| Error::msg(format!("writing signature into guest memory: {e}")))
+}
+
+/// `crypto.public_key(out_data_ptr)`: write the granted key's 64 hex public-key
+/// bytes (safe to publish) into the guest's pre-allocated string.
+fn host_crypto_public_key(mut caller: Caller<'_, ActorState>, out_ptr: i32) -> Result<()> {
+    use crate::interpreter::Value;
+    let seed = caller
+        .data()
+        .caps
+        .signing_key
+        .ok_or_else(|| Error::msg("crypto.public_key: no SigningKey granted"))?;
+    let f = crate::native::lookup("crypto.public_key")
+        .ok_or_else(|| Error::msg("crypto.public_key is not registered"))?;
+    let pk = match f(&[Value::SigningKey(seed)]).map_err(|e| Error::msg(e.message))? {
+        Value::Str(s) => s,
+        _ => return Err(Error::msg("crypto.public_key did not return a String")),
+    };
+    let mem = memory_of(&mut caller)?;
+    mem.write(&mut caller, out_ptr as usize, pk.as_bytes())
+        .map_err(|e| Error::msg(format!("writing public key into guest memory: {e}")))
 }
 
 // --- small helpers for safe guest-memory access ---

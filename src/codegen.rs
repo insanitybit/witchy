@@ -436,6 +436,11 @@ struct Codegen {
     /// Whether `main` declares an argv parameter (`args: List(String)`); the
     /// run export then builds the host-provided list via `$build_args`.
     uses_args: bool,
+    /// Whether the `crypto.sign` host import + guest helper are needed
+    /// (`SigningKey` capability).
+    uses_crypto_sign: bool,
+    /// Whether the `crypto.public_key` host import + guest helper are needed.
+    uses_crypto_public_key: bool,
     uses_ends_with: bool,
     /// Whether the `split` helper is needed.
     uses_split: bool,
@@ -672,6 +677,8 @@ impl Codegen {
             used_dir_ops: std::collections::BTreeSet::new(),
             used_net_ops: std::collections::BTreeSet::new(),
             uses_args: false,
+            uses_crypto_sign: false,
+            uses_crypto_public_key: false,
             uses_dict_update: false,
             uses_ends_with: false,
             uses_split: false,
@@ -877,8 +884,8 @@ impl Codegen {
             }
             Expr::Call { name, .. } => match name.as_str() {
                 "int_to_string" | "to_string" | "to_upper" | "to_lower" | "trim" | "replace"
-                | "substring" | "crypto.sha256" | "read" | "recv_line" | "recv_all"
-                | "recv_bytes" => ValType::Str,
+                | "substring" | "crypto.sha256" | "crypto.sign" | "crypto.public_key" | "read"
+                | "recv_line" | "recv_all" | "recv_bytes" => ValType::Str,
                 "starts_with" | "ends_with" | "contains" | "has" | "exists" | "is_dir"
                 | "crypto.ed25519_verify" => ValType::Bool,
                 "string_length" | "char_count" | "index_of" | "length" | "size" | "float_to_int"
@@ -1604,6 +1611,8 @@ impl Codegen {
             || self.used_net_ops.contains("recv_all")
             || self.used_net_ops.contains("recv_bytes")
             || self.uses_args
+            || self.uses_crypto_sign
+            || self.uses_crypto_public_key
     }
 
     fn emit_imports(&self) -> String {
@@ -1646,6 +1655,15 @@ impl Codegen {
             // now() -> epoch milliseconds. Capability-gated: linked only when the
             // actor holds a Clock grant; an ungranted module fails instantiation.
             s.push_str("  (import \"witchy\" \"now\" (func $now_host (result i64)))\n");
+        }
+        if self.uses_crypto_sign {
+            // crypto.sign(msg_ptr, out_data_ptr): the host signs with the GRANTED
+            // key and writes the 128 hex signature bytes. SigningKey-gated.
+            s.push_str("  (import \"witchy\" \"crypto.sign\" (func $crypto_sign_host (param i32 i32)))\n");
+        }
+        if self.uses_crypto_public_key {
+            // crypto.public_key(out_data_ptr): the granted key's 64 hex public bytes.
+            s.push_str("  (import \"witchy\" \"crypto.public_key\" (func $crypto_public_key_host (param i32)))\n");
         }
         if self.uses_get_env {
             // env_len(name) -> value byte length or -1 (unset); env_fill(name, out)
@@ -1802,6 +1820,12 @@ impl Codegen {
         }
         if self.uses_args {
             s.push_str(BUILD_ARGS_WAT);
+        }
+        if self.uses_crypto_sign {
+            s.push_str(CRYPTO_SIGN_WAT);
+        }
+        if self.uses_crypto_public_key {
+            s.push_str(CRYPTO_PUBLIC_KEY_WAT);
         }
         if self.uses_float_ord {
             s.push_str(FLOAT_ORD_WAT);
@@ -3496,6 +3520,18 @@ impl Codegen {
                 let s = self.compile_expr(&args[0])?;
                 Ok(format!("{s}    call $crypto_sha256\n"))
             }
+            // `crypto.sign(key, msg)` / `crypto.public_key(key)`: the SigningKey
+            // argument is type-level only — the granted host key IS the key, so
+            // only the message travels. Fixed-size results (128/64 hex bytes).
+            ("crypto.sign", 2) => {
+                self.uses_crypto_sign = true;
+                let msg = self.compile_expr(&args[1])?;
+                Ok(format!("{msg}    call $crypto_sign\n"))
+            }
+            ("crypto.public_key", 1) => {
+                self.uses_crypto_public_key = true;
+                Ok("    call $crypto_public_key\n".to_string())
+            }
             // The `encoding` module's hex/base64 transforms (all `String ->
             // String`) bridge to the SAME native registry the interpreter uses, via
             // a host import. `op` selects the transform; the guest reserves the
@@ -5026,6 +5062,29 @@ const DIR_LIST_WAT: &str = r#"  (func $dir_list (param $h i32) (result i32)
     (local.set $res (global.get $heap))
     (call $write_pending_list_host (local.get $res))
     (global.set $heap (i32.add (local.get $res) (local.get $size)))
+    (local.get $res))
+"#;
+
+// crypto.sign(msg) / crypto.public_key(): fixed-size hex strings (128 / 64
+// bytes) filled by the host with the GRANTED key — the seed never enters guest
+// memory.
+const CRYPTO_SIGN_WAT: &str = r#"  (func $crypto_sign (param $msg i32) (result i32)
+    (local $res i32)
+    (call $ensure (i32.const 132))
+    (local.set $res (global.get $heap))
+    (i32.store (local.get $res) (i32.const 128))
+    (call $crypto_sign_host (local.get $msg) (i32.add (local.get $res) (i32.const 4)))
+    (global.set $heap (i32.add (local.get $res) (i32.const 132)))
+    (local.get $res))
+"#;
+
+const CRYPTO_PUBLIC_KEY_WAT: &str = r#"  (func $crypto_public_key (result i32)
+    (local $res i32)
+    (call $ensure (i32.const 68))
+    (local.set $res (global.get $heap))
+    (i32.store (local.get $res) (i32.const 64))
+    (call $crypto_public_key_host (i32.add (local.get $res) (i32.const 4)))
+    (global.set $heap (i32.add (local.get $res) (i32.const 68)))
     (local.get $res))
 "#;
 

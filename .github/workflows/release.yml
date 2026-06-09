@@ -1,0 +1,45 @@
+name: Release
+
+# Build witchy binaries when a version tag is pushed. Artifacts attach to the
+# GitHub release for the tag; nothing is published anywhere else.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: macos-latest
+            target: aarch64-apple-darwin
+          - os: macos-latest
+            target: x86_64-apple-darwin
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+      - name: Build release binary
+        run: cargo build --release --target ${{ matrix.target }}
+      - name: Run the test suite
+        run: cargo test --release
+      - name: Package
+        run: |
+          mkdir -p dist
+          cp "target/${{ matrix.target }}/release/witchy" dist/
+          cp README.md LICENSE-MIT LICENSE-APACHE dist/
+          tar -C dist -czf "witchy-${{ matrix.target }}.tar.gz" .
+      - name: Attach to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: witchy-${{ matrix.target }}.tar.gz

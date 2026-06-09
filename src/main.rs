@@ -255,6 +255,7 @@ fn main() -> wasmtime::Result<()> {
     if std::env::args().nth(1).as_deref() == Some("sandbox") {
         let mut dir_root: Option<std::path::PathBuf> = None;
         let mut net_allow: Vec<String> = Vec::new();
+        let mut signing_key: Option<[u8; 32]> = None;
         let mut path: Option<String> = None;
         let mut prog_args: Vec<String> = Vec::new();
         let mut argv = std::env::args().skip(2);
@@ -274,15 +275,28 @@ fn main() -> wasmtime::Result<()> {
                         std::process::exit(1);
                     }
                 },
+                "--signing-key" if path.is_none() => match argv.next() {
+                    Some(file) => match load_signing_seed(&file) {
+                        Ok(seed) => signing_key = Some(seed),
+                        Err(e) => {
+                            eprintln!("--signing-key: {e}");
+                            std::process::exit(1);
+                        }
+                    },
+                    None => {
+                        eprintln!("--signing-key needs a <seed-file>");
+                        std::process::exit(1);
+                    }
+                },
                 _ if path.is_none() => path = Some(a),
                 _ => prog_args.push(a),
             }
         }
         let Some(path) = path else {
-            eprintln!("usage: witchy sandbox [--dir <root>] [--net <host:port>]... <file.witchy> [args...]");
+            eprintln!("usage: witchy sandbox [--dir <root>] [--net <host:port>]... [--signing-key <seed-file>] <file.witchy> [args...]");
             std::process::exit(1);
         };
-        match run_file_sandboxed(&path, dir_root, net_allow, prog_args) {
+        match run_file_sandboxed(&path, dir_root, net_allow, prog_args, signing_key) {
             Ok((lines, exit_code)) => {
                 for line in lines {
                     println!("{line}");
@@ -1164,6 +1178,7 @@ fn run_file_sandboxed(
     dir_root: Option<std::path::PathBuf>,
     net_allow: Vec<String>,
     args: Vec<String>,
+    signing_key: Option<[u8; 32]>,
 ) -> Result<(Vec<String>, Option<i32>), String> {
     use crate::runtime::{Capabilities, Runtime};
     let (linked, _stem) = link_file(path)?;
@@ -1176,9 +1191,9 @@ fn run_file_sandboxed(
         return Err(format!("`{path}` has no `main` to run"));
     }
     let footprint = capabilities::analyze(&linked);
-    if footprint.total.contains_key("SigningKey") {
+    if footprint.total.contains_key("SigningKey") && signing_key.is_none() {
         return Err(format!(
-            "`{path}` needs SigningKey, which the WASM sandbox does not provide yet (interpreter/native only)"
+            "`{path}` needs a SigningKey, but the host granted none (provide `--signing-key <seed-file>`)"
         ));
     }
     let wat = codegen::compile_module(&linked)
@@ -1212,6 +1227,9 @@ fn run_file_sandboxed(
         caps.net_allow = Some(net_allow);
         caps.net_connect = rights.contains("Connect");
         caps.net_listen = rights.contains("Listen");
+    }
+    if footprint.total.contains_key("SigningKey") {
+        caps.signing_key = signing_key;
     }
     let mut rt = Runtime::batch().map_err(|e| e.to_string())?;
     let mut actor = rt
@@ -4679,6 +4697,50 @@ fn yn(b: Bool) -> String:
         assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
     }
 
+    /// The SigningKey capability is enforced in the WASM sandbox: with the same
+    /// seed granted, sign/public_key/verify produce byte-identical results on
+    /// both backends (Ed25519 is deterministic), and a module importing the
+    /// signing ops cannot instantiate without the grant — the seed never enters
+    /// guest memory.
+    #[test]
+    fn signing_key_compiles_to_wasm_and_is_gated() {
+        use crate::runtime::{Capabilities, Runtime};
+        let src = "import crypto\nfn main(console: Console, signer: SigningKey):\n    let msg = \"sign me\"\n    let sig = crypto.sign(signer, msg)\n    print(console, crypto.public_key(signer))\n    print(console, sig)\n    print(console, if crypto.ed25519_verify(crypto.public_key(signer), msg, sig): \"verified\" else: \"FAILED\")\n";
+        let module = parser::parse_module(src).expect("parse");
+        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        typeck::check(&linked).expect("typecheck");
+        let seed = [7u8; 32];
+        let interp_out =
+            interpreter::run_module_signed(linked.clone(), ".", Vec::new(), Vec::new(), Some(seed))
+                .expect("interp");
+        assert_eq!(interp_out[2], "verified");
+        let wat = codegen::compile_module(&linked).expect("compile");
+        let mut rt = Runtime::batch().expect("runtime");
+        let mut actor = rt
+            .spawn(
+                wat.as_bytes(),
+                Capabilities {
+                    print: true,
+                    quiet: true,
+                    signing_key: Some(seed),
+                    ..Default::default()
+                },
+                64,
+            )
+            .expect("spawn");
+        actor.run().expect("run");
+        assert_eq!(actor.output(), interp_out, "signature + pubkey must be byte-identical");
+
+        // Ungranted: the imports are absent, so instantiation fails.
+        let mut rt = Runtime::batch().expect("runtime");
+        let denied = rt.spawn(
+            wat.as_bytes(),
+            Capabilities { print: true, quiet: true, ..Default::default() },
+            64,
+        );
+        assert!(denied.is_err(), "signing imports must not instantiate without the grant");
+    }
+
     /// The in-language test framework: `witchy test` discovers zero-parameter
     /// `test_*` functions, a test passes by returning and fails by aborting
     /// (std/testing's assertions report a message). Capability-free by
@@ -7817,7 +7879,7 @@ fn main(console: Console):
         )
         .unwrap();
         let (out, exit) =
-            crate::run_file_sandboxed(path.to_str().unwrap(), None, Vec::new(), Vec::new())
+            crate::run_file_sandboxed(path.to_str().unwrap(), None, Vec::new(), Vec::new(), None)
                 .expect("sandbox run");
         assert_eq!(out, vec!["42"]);
         assert_eq!(exit, None, "a Nil-returning main has no exit code");
@@ -7844,6 +7906,7 @@ fn main(console: Console):
             Some(root.clone()),
             Vec::new(),
             vec!["data.txt".to_string()],
+            None,
         )
         .expect("sandbox run");
         assert_eq!(out, vec!["found: needle in here"]);
