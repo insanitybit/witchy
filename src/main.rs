@@ -4460,6 +4460,38 @@ fn yn(b: Bool) -> String:
         assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
     }
 
+    /// `string_to_int` of a value that overflows i64 must FAIL on both backends,
+    /// not silently wrap on WASM. The compiled `$str_to_int` now traps once the
+    /// running magnitude would exceed the sign-appropriate i64 bound (2^63-1, or
+    /// 2^63 for a negative), matching Rust's checked parse. The exact boundaries
+    /// (i64::MAX / i64::MIN) still parse. (Regression for a silent overflow-wrap
+    /// divergence.)
+    #[test]
+    fn string_to_int_overflow_errors_on_both_backends() {
+        let err_cases = [
+            "99999999999999999999999",
+            "9223372036854775808",  // i64::MAX + 1
+            "-9223372036854775809", // i64::MIN - 1
+        ];
+        for v in err_cases {
+            let src = format!(
+                "fn main(console: Console):\n    print(console, int_to_string(string_to_int(\"{v}\")))\n"
+            );
+            let module = parser::parse_module(&src).expect("parse");
+            let wat = codegen::compile_module(&module).expect("compile");
+            assert!(interpreter::run(&src).is_err(), "interpreter must error on `{v}`");
+            assert!(crate::run_wat_capture(&wat).is_err(), "WASM must trap on `{v}`");
+        }
+        // The exact i64 boundaries parse identically on both backends.
+        let ok = "fn main(console: Console):\n    print(console, int_to_string(string_to_int(\"9223372036854775807\")))\n    print(console, int_to_string(string_to_int(\"-9223372036854775808\")))\n";
+        let want = vec![
+            "9223372036854775807".to_string(),
+            "-9223372036854775808".to_string(),
+        ];
+        assert_eq!(interp(ok), want.clone(), "interpreter");
+        assert_eq!(run_on_wasm(ok), want, "compiled WASM must agree");
+    }
+
     /// Indexing a list out of bounds must FAIL on both backends, not silently
     /// read adjacent heap on WASM. The compiled `$list_at` bounds-checks and traps
     /// (like division-by-zero), matching the interpreter's "index out of bounds"

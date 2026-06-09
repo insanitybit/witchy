@@ -4661,7 +4661,7 @@ const STR_SUBSTRING_WAT: &str = r#"  (func $str_substring (param $s i32) (param 
 // the interpreter's parse error (rather than silently parsing a prefix). The
 // safe wrapper `std/string.parse_int` pre-validates, so it never reaches a trap.
 const STR_TO_INT_WAT: &str = r#"  (func $str_to_int (param $s i32) (result i64)
-    (local $len i32) (local $i i32) (local $b i32) (local $acc i64) (local $neg i32) (local $got i32)
+    (local $len i32) (local $i i32) (local $b i32) (local $acc i64) (local $neg i32) (local $got i32) (local $limit i64)
     (local.set $len (i32.load (local.get $s)))
     (local.set $i (i32.const 0))
     (local.set $acc (i64.const 0))
@@ -4687,6 +4687,12 @@ const STR_TO_INT_WAT: &str = r#"  (func $str_to_int (param $s i32) (result i64)
           (then (local.set $neg (i32.const 1)) (local.set $i (i32.add (local.get $i) (i32.const 1))))
           (else (if (i32.eq (local.get $b) (i32.const 43))
             (then (local.set $i (i32.add (local.get $i) (i32.const 1)))))))))
+    ;; Magnitude bound (unsigned): 2^63 for a negative value (|i64::MIN|), else
+    ;; 2^63 - 1 (i64::MAX). The digit loop traps past it, matching Rust's checked
+    ;; parse rather than silently wrapping.
+    (local.set $limit (if (result i64) (local.get $neg)
+      (then (i64.const -9223372036854775808))
+      (else (i64.const 9223372036854775807))))
     (block $digdone
       (loop $dig
         (br_if $digdone (i32.ge_s (local.get $i) (local.get $len)))
@@ -4694,6 +4700,13 @@ const STR_TO_INT_WAT: &str = r#"  (func $str_to_int (param $s i32) (result i64)
         (br_if $digdone (i32.or
           (i32.lt_u (local.get $b) (i32.const 48))
           (i32.gt_u (local.get $b) (i32.const 57))))
+        ;; Overflow if acc*10 + d would exceed `limit` (unsigned magnitude), i.e.
+        ;; acc > (limit - d) / 10.
+        (if (i64.gt_u (local.get $acc)
+              (i64.div_u
+                (i64.sub (local.get $limit) (i64.extend_i32_u (i32.sub (local.get $b) (i32.const 48))))
+                (i64.const 10)))
+          (then (unreachable)))
         (local.set $acc (i64.add (i64.mul (local.get $acc) (i64.const 10))
           (i64.extend_i32_u (i32.sub (local.get $b) (i32.const 48)))))
         (local.set $got (i32.const 1))
