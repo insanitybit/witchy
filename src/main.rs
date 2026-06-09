@@ -4460,6 +4460,31 @@ fn yn(b: Bool) -> String:
         assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
     }
 
+    /// Structural `==`/`!=` on compound values (lists, nested lists, tuples,
+    /// records, lists of records) must agree on both backends. WASM previously
+    /// compared heap POINTERS, so two equal-but-distinct values compared unequal;
+    /// codegen now derives the operands' `EqShape` and routes through generated
+    /// per-shape structural-equality helpers. (Regression for the silent
+    /// compound-`==` pointer-compare divergence.)
+    #[test]
+    fn structural_equality_agrees_on_both_backends() {
+        let src = "type Pt:\n    x: Int\n    y: Int\ntype Bag:\n    items: List(Int)\nfn main(console: Console):\n    print(console, to_string([1, 2, 3] == [1, 2, 3]))\n    print(console, to_string([1, 2, 3] == [1, 9, 3]))\n    print(console, to_string([[1], [2]] == [[1], [2]]))\n    print(console, to_string((1, \"a\") == (1, \"a\")))\n    print(console, to_string((1, \"a\") != (1, \"b\")))\n    print(console, to_string(Pt(1, 2) == Pt(1, 2)))\n    print(console, to_string(Pt(1, 2) == Pt(3, 4)))\n    print(console, to_string([Pt(1, 2)] == [Pt(1, 2)]))\n    print(console, to_string(Bag([1, 2]) == Bag([1, 2])))\n    print(console, to_string([\"a\", \"b\"] == [\"a\", \"b\"]))\n";
+        let want = vec![
+            "true".to_string(),  // [1,2,3] == [1,2,3]
+            "false".to_string(), // [1,2,3] == [1,9,3]
+            "true".to_string(),  // nested lists
+            "true".to_string(),  // tuple ==
+            "true".to_string(),  // tuple != (differs)
+            "true".to_string(),  // record ==
+            "false".to_string(), // record == (differs)
+            "true".to_string(),  // list of records
+            "true".to_string(),  // record with a List field
+            "true".to_string(),  // list of strings
+        ];
+        assert_eq!(interp(src), want.clone(), "interpreter");
+        assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
+    }
+
     /// Ordering a NaN must FAIL on both backends, not silently return IEEE false
     /// on WASM. The interpreter errors ("cannot compare NaN"); the compiled
     /// `<`/`<=`/`>`/`>=` on floats route through a NaN-trapping helper. Equality

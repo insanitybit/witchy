@@ -157,6 +157,55 @@ enum NestBottom {
     Tuple(Vec<ValType>),
 }
 
+/// The structural shape of a value for content equality on WASM. Because runtime
+/// slots are untyped, `==` on a compound must be specialized to the static shape:
+/// `Bits` compares the raw i64 slot (Int/Bool/Duration), `Float` reinterprets and
+/// uses `f64.eq`, `Str` calls `$str_eq` on the slot's string pointer, and the
+/// compound variants recurse element/field-wise through generated helpers. A
+/// shape codegen cannot resolve yields a loud error, never a silent pointer
+/// compare.
+#[derive(Clone, PartialEq, Eq)]
+enum EqShape {
+    Bits,
+    Float,
+    Str,
+    List(Box<EqShape>),
+    Tuple(Vec<EqShape>),
+    Record(String),
+}
+
+impl EqShape {
+    /// The scalar shape for a `ValType`, or `None` for `Other` (unresolvable).
+    fn scalar(vt: ValType) -> Option<EqShape> {
+        match vt {
+            ValType::Int | ValType::Bool => Some(EqShape::Bits),
+            ValType::Float => Some(EqShape::Float),
+            ValType::Str => Some(EqShape::Str),
+            ValType::Other => None,
+        }
+    }
+
+    /// Whether this is a heap-pointer compound (needs a generated helper) rather
+    /// than a slot-level scalar.
+    fn is_compound(&self) -> bool {
+        matches!(self, EqShape::List(_) | EqShape::Tuple(_) | EqShape::Record(_))
+    }
+
+    /// A stable identifier used to name and memoize the per-shape eq helper.
+    fn id(&self) -> String {
+        match self {
+            EqShape::Bits => "bits".into(),
+            EqShape::Float => "f64".into(),
+            EqShape::Str => "str".into(),
+            EqShape::List(e) => format!("list_{}", e.id()),
+            EqShape::Tuple(fs) => {
+                format!("tup_{}_", fs.iter().map(|f| f.id()).collect::<Vec<_>>().join("_"))
+            }
+            EqShape::Record(name) => format!("rec_{name}"),
+        }
+    }
+}
+
 /// The common kind two numeric operands/branches promote to: f64 if either is
 /// Float, else i64 if either is i64 (a concrete Int), else i32.
 fn promote_kind(a: Kind, b: Kind) -> Kind {
@@ -383,6 +432,10 @@ struct Codegen {
     /// second is the field's type name when it is a `Named` type (so nested
     /// records can be chained, `a.b.c`). For compiling `value.field`.
     record_fields: HashMap<String, Vec<(String, Option<String>)>>,
+    /// Record type name -> the full AST type of each field, so structural `==`
+    /// can derive an `EqShape` for `List`/`Tuple`/nested-record fields (which the
+    /// name-only `record_fields` can't represent).
+    record_field_types: HashMap<String, Vec<Type>>,
     /// Variables (params / let-bound constructors) known to hold a record of a
     /// given type, so `var.field` can resolve a field index.
     local_records: HashMap<String, String>,
@@ -481,6 +534,10 @@ struct Codegen {
     /// expression compiles to a function `$__lam{i}` here and evaluates to the
     /// index `i`. A `call_indirect` through the function table then invokes it.
     lambdas: Vec<String>,
+    /// Generated per-shape structural-equality helper functions, keyed by
+    /// `EqShape::id` so each shape is emitted once. A `BTreeMap` keeps emission
+    /// order deterministic.
+    eq_helpers: std::collections::BTreeMap<String, String>,
     /// Closure arities for which a `(type $clos{n})` signature is needed (all
     /// i32 params, i32 result), used by `call_indirect`.
     clos_arities: HashSet<usize>,
@@ -519,6 +576,7 @@ impl Codegen {
             message_tags: HashMap::new(),
             uses_send: false,
             record_fields: HashMap::new(),
+            record_field_types: HashMap::new(),
             local_records: HashMap::new(),
             local_list_elem: HashMap::new(),
             local_payload_records: HashMap::new(),
@@ -572,6 +630,7 @@ impl Codegen {
             uses_dict: false,
             uses_dict_iter: false,
             lambdas: Vec::new(),
+            eq_helpers: std::collections::BTreeMap::new(),
             clos_arities: HashSet::new(),
             apply_level: 0,
             loop_labels: Vec::new(),
@@ -1984,6 +2043,32 @@ impl Codegen {
                         }
                     }
                 }
+                // Compound (`List`/`Tuple`/record) operands: a bare `i32.eq` would
+                // compare heap pointers, not contents. Equality is done with a
+                // structural helper specialized to the operands' shape; ordering a
+                // compound is a runtime error on the interpreter, so reject it.
+                if let Some(shape) = self.eq_shape_of(lhs).or_else(|| self.eq_shape_of(rhs)) {
+                    if shape.is_compound() {
+                        match op {
+                            BinOp::Eq | BinOp::NotEq => {
+                                let h = self.ensure_eq_helper(&shape)?;
+                                let l = self.compile_expr(lhs)?;
+                                let r = self.compile_expr(rhs)?;
+                                let eq = format!("{l}{r}    call ${h}\n");
+                                return Ok(if matches!(op, BinOp::NotEq) {
+                                    format!("{eq}    i32.eqz\n")
+                                } else {
+                                    eq
+                                });
+                            }
+                            _ => {
+                                return cerr(
+                                    "ordering (`<`/`<=`/`>`/`>=`) is not defined for compound values (lists, tuples, records) — the interpreter errors on it too",
+                                );
+                            }
+                        }
+                    }
+                }
                 // Promote both operands to a common kind so a concrete i64 Int
                 // and an i32 (generic/narrowed) operand don't clash: f64 if either
                 // is Float, else i64 if either is i64, else i32. Comparisons still
@@ -2827,6 +2912,184 @@ impl Codegen {
         }
     }
 
+    /// The structural-equality shape of an expression, where codegen can resolve
+    /// it. `None` means the shape is unknown (then compound `==` errors loudly
+    /// rather than comparing pointers). Lists (any depth) come from the nesting
+    /// tracker, tuples from literals or tracked tuple locals, records from
+    /// `record_type_of`.
+    fn eq_shape_of(&self, e: &Expr) -> Option<EqShape> {
+        // A list literal: the element shape comes from the first element (which
+        // recurses, so nested lists / lists of tuples or records resolve). An
+        // empty literal never compares elements, so any element shape is safe.
+        if let Expr::List(items) = e {
+            let elem = match items.first() {
+                Some(first) => self.eq_operand_shape(first)?,
+                None => EqShape::Bits,
+            };
+            return Some(EqShape::List(Box::new(elem)));
+        }
+        // A list-typed value (variable / `at(...)`): scalar or tuple bottoms come
+        // from the nesting tracker; a list of records from `local_list_elem`.
+        if let Some((depth, bottom)) = self.list_nesting(e) {
+            let mut shape = match bottom {
+                NestBottom::Scalar(vt) => EqShape::scalar(vt)?,
+                NestBottom::Tuple(vts) => EqShape::Tuple(
+                    vts.into_iter().map(EqShape::scalar).collect::<Option<Vec<_>>>()?,
+                ),
+            };
+            for _ in 0..depth {
+                shape = EqShape::List(Box::new(shape));
+            }
+            return Some(shape);
+        }
+        if let Expr::Var(v) = e {
+            if let Some(rec) = self.local_list_elem.get(v) {
+                return Some(EqShape::List(Box::new(EqShape::Record(rec.clone()))));
+            }
+        }
+        if let Expr::Tuple(items) = e {
+            return items
+                .iter()
+                .map(|x| self.eq_operand_shape(x))
+                .collect::<Option<Vec<_>>>()
+                .map(EqShape::Tuple);
+        }
+        if let Expr::Var(v) = e {
+            if let Some(slots) = self.local_tuple_slots.get(v) {
+                return slots
+                    .iter()
+                    .copied()
+                    .map(EqShape::scalar)
+                    .collect::<Option<Vec<_>>>()
+                    .map(EqShape::Tuple);
+            }
+        }
+        self.record_type_of(e).map(EqShape::Record)
+    }
+
+    /// The shape of a value used as a tuple element / general operand: a compound
+    /// shape if resolvable, else its scalar value type.
+    fn eq_operand_shape(&self, e: &Expr) -> Option<EqShape> {
+        self.eq_shape_of(e).or_else(|| EqShape::scalar(self.val_type_of(e)))
+    }
+
+    /// The structural-equality shape of a declared type. Scalars, strings, lists,
+    /// tuples, and (nested) record types resolve; `Dict`, function types, and
+    /// generic type variables do not (they yield `None`, a loud error at the use
+    /// site rather than a silent pointer compare).
+    fn eq_shape_of_type(&self, ty: &Type) -> Option<EqShape> {
+        match ty {
+            Type::Named(n, args) => match n.as_str() {
+                "Int" | "Bool" | "Duration" => Some(EqShape::Bits),
+                "Float" => Some(EqShape::Float),
+                "String" => Some(EqShape::Str),
+                "List" => args.first().and_then(|inner| {
+                    self.eq_shape_of_type(inner).map(|s| EqShape::List(Box::new(s)))
+                }),
+                t if self.record_fields.contains_key(t) => Some(EqShape::Record(t.to_string())),
+                _ => None,
+            },
+            Type::Tuple(items) => items
+                .iter()
+                .map(|t| self.eq_shape_of_type(t))
+                .collect::<Option<Vec<_>>>()
+                .map(EqShape::Tuple),
+            Type::Fn(..) => None,
+        }
+    }
+
+    /// An S-expression yielding an i32 bool: are the two 8-byte slots at the given
+    /// addresses equal under `shape`? Scalars compare inline; compounds load the
+    /// slot's heap pointer and call that shape's generated helper.
+    fn slot_cmp(&mut self, shape: &EqShape, aa: &str, bb: &str) -> Result<String, CodegenError> {
+        Ok(match shape {
+            EqShape::Bits => format!("(i64.eq (i64.load {aa}) (i64.load {bb}))"),
+            EqShape::Float => format!(
+                "(f64.eq (f64.reinterpret_i64 (i64.load {aa})) (f64.reinterpret_i64 (i64.load {bb})))"
+            ),
+            EqShape::Str => {
+                self.uses_str_eq = true;
+                format!("(call $str_eq (i32.load {aa}) (i32.load {bb}))")
+            }
+            compound => {
+                let h = self.ensure_eq_helper(compound)?;
+                format!("(call ${h} (i32.load {aa}) (i32.load {bb}))")
+            }
+        })
+    }
+
+    /// Ensure a structural-equality helper exists for a compound `shape`, emitting
+    /// it (and any helpers it depends on) once, and return its function name. The
+    /// slot reserves its name before generating the body so a recursive record
+    /// type (e.g. a tree) refers to the same helper without looping.
+    fn ensure_eq_helper(&mut self, shape: &EqShape) -> Result<String, CodegenError> {
+        let name = format!("eq_{}", shape.id());
+        if self.eq_helpers.contains_key(&name) {
+            return Ok(name);
+        }
+        self.eq_helpers.insert(name.clone(), String::new()); // reserve (break cycles)
+        let body = match shape {
+            EqShape::List(elem) => {
+                let cmp = self.slot_cmp(
+                    elem,
+                    "(i32.add (i32.add (local.get $a) (i32.const 4)) (i32.mul (local.get $i) (i32.const 8)))",
+                    "(i32.add (i32.add (local.get $b) (i32.const 4)) (i32.mul (local.get $i) (i32.const 8)))",
+                )?;
+                format!(
+                    "  (func ${name} (param $a i32) (param $b i32) (result i32)\n    \
+                     (local $n i32) (local $i i32)\n    \
+                     (if (i32.ne (i32.load (local.get $a)) (i32.load (local.get $b))) (then (return (i32.const 0))))\n    \
+                     (local.set $n (i32.load (local.get $a)))\n    \
+                     (block $done (loop $l\n      \
+                     (br_if $done (i32.ge_s (local.get $i) (local.get $n)))\n      \
+                     (if (i32.eqz {cmp}) (then (return (i32.const 0))))\n      \
+                     (local.set $i (i32.add (local.get $i) (i32.const 1)))\n      (br $l)))\n    \
+                     (i32.const 1))\n"
+                )
+            }
+            EqShape::Tuple(fields) => {
+                let mut checks = String::new();
+                for (i, f) in fields.iter().enumerate() {
+                    let off = 4 + 8 * i;
+                    let cmp = self.slot_cmp(
+                        f,
+                        &format!("(i32.add (local.get $a) (i32.const {off}))"),
+                        &format!("(i32.add (local.get $b) (i32.const {off}))"),
+                    )?;
+                    checks.push_str(&format!("    (if (i32.eqz {cmp}) (then (return (i32.const 0))))\n"));
+                }
+                format!("  (func ${name} (param $a i32) (param $b i32) (result i32)\n{checks}    (i32.const 1))\n")
+            }
+            EqShape::Record(tyname) => {
+                let fields = self
+                    .record_field_types
+                    .get(tyname)
+                    .cloned()
+                    .ok_or_else(|| CodegenError { message: format!("unknown record `{tyname}` in `==`") })?;
+                let mut checks = String::new();
+                for (i, fty) in fields.iter().enumerate() {
+                    let off = 4 + 8 * i;
+                    let fshape = self.eq_shape_of_type(fty).ok_or_else(|| CodegenError {
+                        message: format!(
+                            "`==` on `{tyname}` needs a comparable field type; field {} is not yet structurally compared on WASM — compare the fields directly or use the `Eq` trait",
+                            i + 1
+                        ),
+                    })?;
+                    let cmp = self.slot_cmp(
+                        &fshape,
+                        &format!("(i32.add (local.get $a) (i32.const {off}))"),
+                        &format!("(i32.add (local.get $b) (i32.const {off}))"),
+                    )?;
+                    checks.push_str(&format!("    (if (i32.eqz {cmp}) (then (return (i32.const 0))))\n"));
+                }
+                format!("  (func ${name} (param $a i32) (param $b i32) (result i32)\n{checks}    (i32.const 1))\n")
+            }
+            _ => unreachable!("scalar shapes have no helper"),
+        };
+        self.eq_helpers.insert(name.clone(), body);
+        Ok(name)
+    }
+
     /// Compile an `encoding.*` call (op-coded hex/base64 transform) to a call to
     /// the `$encoding` guest helper: push the op, then the string-argument
     /// pointer, then call.
@@ -3555,6 +3818,7 @@ pub fn compile_module(module: &Module) -> Result<String, CodegenError> {
                             })
                             .collect();
                         cg.record_fields.insert(t.name.clone(), fields);
+                        cg.record_field_types.insert(t.name.clone(), variant.fields.clone());
                     }
                 }
             }
@@ -3725,6 +3989,9 @@ pub fn compile_module(module: &Module) -> Result<String, CodegenError> {
     wat.push_str(&func_wat);
     for lam in &cg.lambdas {
         wat.push_str(lam);
+    }
+    for body in cg.eq_helpers.values() {
+        wat.push_str(body);
     }
 
     wat.push_str("  (func (export \"run\")\n");
@@ -3922,6 +4189,9 @@ fn compile_actor_with_tags(
     }
     for lam in &cg.lambdas {
         wat.push_str(lam);
+    }
+    for body in cg.eq_helpers.values() {
+        wat.push_str(body);
     }
     wat.push_str(")\n");
     Ok(wat)
