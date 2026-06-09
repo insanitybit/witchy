@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: Build, lint, test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: cargo build --all-targets
+      - name: Clippy (deny warnings)
+        run: cargo clippy --all-targets -- -D warnings
+      - name: Unit + integration tests
+        run: cargo test
+
+  parity:
+    name: Backend parity sweep
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build release binary
+        run: cargo build --release
+      - name: Differential check every runnable example on both backends
+        run: |
+          fail=0
+          for f in examples/*.witchy; do
+            out=$(./target/release/witchy parity "$f" 2>&1) || true
+            if echo "$out" | grep -qi "DIVERGE"; then
+              echo "DIVERGENCE: $f"
+              echo "$out"
+              fail=1
+            fi
+          done
+          exit $fail
+
+  fmt:
+    name: Formatting check (std + examples)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build release binary
+        run: cargo build --release
+      - name: witchy fmt --check
+        run: |
+          fail=0
+          for f in std/*.witchy examples/*.witchy; do
+            if ! ./target/release/witchy fmt --check "$f" >/dev/null 2>&1; then
+              echo "needs formatting: $f"
+              fail=1
+            fi
+          done
+          exit $fail

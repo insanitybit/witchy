@@ -2,6 +2,11 @@
 name = "witchy"
 version = "0.1.0"
 edition = "2024"
+description = "A capability-secure language with twin interpreter and WASM backends: a program's authority is a typed, auditable, enforceable artifact"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/insanitybit/witchy"
+keywords = ["language", "capability-security", "wasm", "sandbox", "supply-chain"]
+categories = ["compilers", "development-tools"]
 
 [dependencies]
 wasmtime = "45.0.0"
