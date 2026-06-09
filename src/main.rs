@@ -7992,6 +7992,31 @@ fn main(console: Console):
         assert_eq!(got, Value::Str(src.hash()));
     }
 
+    /// coven, the registry, is self-hosted in witchy (`projects/coven`). A record
+    /// it signs must verify under the *Rust* registry verifier — proving the
+    /// witchy coven's canonical signing payload is byte-identical to
+    /// `Record::signing_payload` and its ed25519 signature interoperates with the
+    /// Rust toolchain. This record was produced by `projects/coven/src/coven.witchy`
+    /// signing `acme/money@1.0.0` with the fixed seed `..01` (deterministic: the
+    /// provenance carries no timestamp).
+    #[test]
+    fn coven_witchy_signed_record_verifies_under_the_rust_verifier() {
+        // The registry root public key for the seed = 31×0x00 then 0x01.
+        let rootpub = "4cb5abf6ad79fbf5abbccafcc269d85cd2651ed4b885b5869f241aedf0a5ba29";
+        let record_json = r#"{"name":"acme/money","version":"1.0.0","state":"staged","hash":"sha256:000690f7a340df21196bf7dfa8447e0fb5877a4afd84c79529b292067d288fd6","runtime_footprint":[],"build_footprint":[],"determinism":"guaranteed","uploaded_by":"ci-bot","promoted_by":null,"second_factor":null,"provenance":"uploader=ci-bot|hash=sha256:000690f7a340df21196bf7dfa8447e0fb5877a4afd84c79529b292067d288fd6","sig":"62fc6ef3541f9a5154e0ad519497aaf6c1d54112c66f732d39665814c8eca6bd1bd024d77b44993945a8c359b7f3a815a107f60e612676987dbad96042ff0006"}"#;
+        let record: crate::pm::registry::Record =
+            serde_json::from_str(record_json).expect("deserialize witchy-coven record");
+        crate::pm::registry::verify_record_with(rootpub, &record)
+            .expect("a witchy-signed coven record must verify under the Rust verifier");
+        // Tamper with a signed field: the signature must now fail (payload changed).
+        let mut tampered = record.clone();
+        tampered.runtime_footprint = vec!["Net".to_string()];
+        assert!(
+            crate::pm::registry::verify_record_with(rootpub, &tampered).is_err(),
+            "a tampered footprint must break the signature"
+        );
+    }
+
     /// `main -> Int` sets the process exit code (C/Go/Rust convention) and is
     /// *not* printed; `main` returning Nil exits 0 and shows its `print` output.
     #[test]

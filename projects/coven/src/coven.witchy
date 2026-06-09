@@ -1,0 +1,515 @@
+// coven — the witchy package registry, written in witchy. A faithful, self-hosted
+// port of the Rust registry (src/pm/registry.rs): content-addressed, immutable,
+// and signed. It recomputes every rune's capability footprint from source
+// (server-side enforcement — uploaded metadata is never trusted), enforces the
+// two-phase publish lifecycle (publish stages; a second-factor promote releases),
+// and re-signs each record's canonical payload with the registry root key on
+// every state transition. The signing payload is byte-identical to the Rust
+// registry's, so a record signed here verifies against the Rust client.
+//
+//   witchy --net 127.0.0.1:8787 --signing-key <seed> projects/coven/src/coven.witchy 127.0.0.1:8787
+//
+// Layout under the store: <namespace>/<name>/<version>/{coven.json, rune/<files>}.
+
+import http
+import server
+import json
+import compiler
+import crypto
+import toml
+import string
+
+fn main(console: Console, net: Net, root: Dir, key: SigningKey, args: List(String)):
+    let addr = if length(args) > 0: at(args, 0) else: "127.0.0.1:8787"
+    ensure_dir(root, "registry")
+    let store = subdir(root, "registry")
+    let app = server.router()
+        .get("/coven/rootpub", h_rootpub(key))
+        .get("/coven/index", h_index(store))
+        .get("/coven/versions", h_versions(store))
+        .get("/coven/record", h_record(store))
+        .get("/coven/source", h_source(store))
+        .post("/coven/publish", h_publish(store, key))
+        .post("/coven/promote", h_promote(store, key))
+        .post("/coven/yank", h_yank(store, key))
+    print(console, "coven serving at http://" <> addr <> "  (root key " <> crypto.public_key(key) <> ")")
+    server.serve(net, addr, app)
+
+// --- GET /coven/rootpub : the registry's root public key (hex) ---------------
+
+fn h_rootpub(key: SigningKey) -> fn(Request) -> Response:
+    fn(req: Request):
+        server.text(200, crypto.public_key(key))
+
+// --- GET /coven/index : every published rune name ----------------------------
+
+fn h_index(store: Dir) -> fn(Request) -> Response:
+    fn(req: Request):
+        server.json(200, json.encode(JsonObject([("names", JsonArray(strs_json(all_names(store))))])))
+
+// --- GET /coven/versions?name= : every version record of a rune --------------
+
+fn h_versions(store: Dir) -> fn(Request) -> Response:
+    fn(req: Request):
+        let name = unwire(server.query(req, "name"))
+        var recs = []
+        for v in versions_of(store, name):
+            if let Some(r) = read_record(store, name, v):
+                recs = push(recs, parse_or_null(r))
+        server.json(200, json.encode(JsonObject([("records", JsonArray(recs))])))
+
+// --- GET /coven/record?name=&version= : one signed record --------------------
+
+fn h_record(store: Dir) -> fn(Request) -> Response:
+    fn(req: Request):
+        let name = unwire(server.query(req, "name"))
+        let version = server.query(req, "version")
+        if exists(store, meta_path(name, version)):
+            server.json(200, read(store, meta_path(name, version)))
+        else:
+            err_json(404, name <> "@" <> version <> " not found in registry")
+
+// --- GET /coven/source?name=&version= : the rune source, hash-verified -------
+
+fn h_source(store: Dir) -> fn(Request) -> Response:
+    fn(req: Request):
+        let name = unwire(server.query(req, "name"))
+        let version = server.query(req, "version")
+        if !exists(store, meta_path(name, version)):
+            err_json(404, name <> "@" <> version <> " not found")
+        else:
+            source_response(store, name, version)
+
+fn source_response(store: Dir, name: String, version: String) -> Response:
+    let files = read_source(store, name, version)
+    let recorded = record_field(store, name, version, "hash")
+    if content_hash(files) != recorded:
+        err_json(500, "integrity failure: source no longer matches the signed hash")
+    else:
+        var pairs = []
+        for f in files:
+            let (path, text) = f
+            pairs = push(pairs, JsonArray([JsonString(path), JsonString(text)]))
+        server.json(200, json.encode(JsonObject([("files", JsonArray(pairs))])))
+
+// --- POST /coven/publish : stage a new immutable version ---------------------
+// Server-side enforcement: recompute the footprint from source, reject an
+// under-declared manifest, content-address the bytes, and land the version
+// STAGED (not resolvable until promoted). Re-publishing a version is refused.
+
+fn h_publish(store: Dir, key: SigningKey) -> fn(Request) -> Response:
+    fn(req: Request):
+        match server.json_body(req):
+            Ok(doc) -> do_publish(store, key, doc)
+            Err(e) -> err_json(400, "bad request body: " <> e)
+
+fn do_publish(store: Dir, key: SigningKey, doc: Json) -> Response:
+    let manifest = jstr(doc, "manifest_toml")
+    let uploaded_by = nonempty(jstr(doc, "uploaded_by"), "anonymous")
+    let files = parse_source(doc)
+    let name = toml_field(manifest, "rune.name")
+    let version = toml_field(manifest, "rune.version")
+    if !valid_name(name):
+        err_json(400, "invalid rune name `" <> name <> "` (need lowercase `namespace/name`, no traversal)")
+    else if !valid_version(version):
+        err_json(400, "invalid version `" <> version <> "`")
+    else if exists(store, meta_path(name, version)):
+        err_json(409, name <> "@" <> version <> " already published — versions are immutable, bump the version")
+    else:
+        publish_checked(store, key, manifest, name, version, uploaded_by, files)
+
+fn publish_checked(store: Dir, key: SigningKey, manifest: String, name: String, version: String, uploaded_by: String, files: List((String, String))) -> Response:
+    let computed = computed_footprint(files)
+    let declared = toml.get_array(manifest, "capabilities.runtime")
+    let gap = uncovered(declared, computed)
+    if !string.is_empty(string.join(gap, ", ")):
+        err_json(400, "declared [capabilities] does not cover what the source demands (" <> string.join(gap, ", ") <> ") — coven recomputes and will not publish an under-declared rune")
+    else:
+        let hash = content_hash(files)
+        store_source(store, name, version, files)
+        let provenance = "uploader=" <> uploaded_by <> "|hash=" <> hash
+        let rec = sign_record(key, name, version, "staged", hash, computed, uploaded_by, "", "", provenance)
+        write(store, meta_path(name, version), rec)
+        server.json(200, rec)
+
+// --- POST /coven/promote : second-factor release (separation of duties) ------
+
+fn h_promote(store: Dir, key: SigningKey) -> fn(Request) -> Response:
+    fn(req: Request):
+        match server.json_body(req):
+            Ok(doc) -> do_promote(store, key, doc)
+            Err(e) -> err_json(400, "bad request body: " <> e)
+
+fn do_promote(store: Dir, key: SigningKey, doc: Json) -> Response:
+    let name = unwire(jstr(doc, "name"))
+    let version = jstr(doc, "version")
+    let factor = jstr(doc, "second_factor")
+    let promoter = jstr(doc, "promoted_by")
+    if !exists(store, meta_path(name, version)):
+        err_json(404, name <> "@" <> version <> " not found")
+    else if string.is_empty(factor):
+        err_json(400, "promotion requires a second factor (the out-of-band 2FA event) — refusing to release")
+    else if string.is_empty(promoter):
+        err_json(400, "promotion requires an authenticated promoter identity")
+    else:
+        promote_checked(store, key, name, version, factor, promoter)
+
+fn promote_checked(store: Dir, key: SigningKey, name: String, version: String, factor: String, promoter: String) -> Response:
+    let state = record_field(store, name, version, "state")
+    if state != "staged":
+        err_json(400, name <> "@" <> version <> " is " <> state <> "; only a staged version can be promoted")
+    else if promoter == record_field(store, name, version, "uploaded_by"):
+        err_json(403, "separation of duties: the identity that published a version may not promote it")
+    else:
+        let hash = record_field(store, name, version, "hash")
+        let rt = record_array(store, name, version, "runtime_footprint")
+        let uploaded_by = record_field(store, name, version, "uploaded_by")
+        let provenance = record_field(store, name, version, "provenance")
+        let rec = sign_record(key, name, version, "released", hash, rt, uploaded_by, promoter, factor, provenance)
+        write(store, meta_path(name, version), rec)
+        let delta = uncovered(latest_released_footprint(store, name, version), rt)
+        server.json(200, json.encode(JsonObject([("record", parse_or_null(rec)), ("separation_of_duties", JsonBool(true)), ("delta_runtime", JsonArray(strs_json(delta)))])))
+
+// --- POST /coven/yank : exclude from new resolutions -------------------------
+
+fn h_yank(store: Dir, key: SigningKey) -> fn(Request) -> Response:
+    fn(req: Request):
+        match server.json_body(req):
+            Ok(doc) -> do_yank(store, key, doc)
+            Err(e) -> err_json(400, "bad request body: " <> e)
+
+fn do_yank(store: Dir, key: SigningKey, doc: Json) -> Response:
+    let name = unwire(jstr(doc, "name"))
+    let version = jstr(doc, "version")
+    if !exists(store, meta_path(name, version)):
+        err_json(404, name <> "@" <> version <> " not found")
+    else:
+        let hash = record_field(store, name, version, "hash")
+        let rt = record_array(store, name, version, "runtime_footprint")
+        let uploaded_by = record_field(store, name, version, "uploaded_by")
+        let promoted_by = record_field(store, name, version, "promoted_by")
+        let factor = record_field(store, name, version, "second_factor")
+        let provenance = record_field(store, name, version, "provenance")
+        let rec = sign_record(key, name, version, "yanked", hash, rt, uploaded_by, promoted_by, factor, provenance)
+        write(store, meta_path(name, version), rec)
+        server.json(200, json.encode(JsonObject([("ok", JsonBool(true))])))
+
+// --- record signing ----------------------------------------------------------
+// The canonical, signed view of a record — every security-relevant field except
+// the signature. Byte-identical to src/pm/registry.rs::Record::signing_payload,
+// so a witchy-signed record verifies under the Rust ed25519 verifier.
+
+fn signing_payload(name: String, version: String, state: String, hash: String, rt: List(String), uploaded_by: String, promoted_by: String, factor: String, provenance: String) -> String:
+    "coven-v1\nname=" <> name <> "\nversion=" <> version <> "\nstate=" <> state <> "\nhash=" <> hash <> "\nrt=" <> string.join(rt, ",") <> "\nbuild=\nuploaded_by=" <> uploaded_by <> "\npromoted_by=" <> promoted_by <> "\nfactor=" <> factor <> "\nprovenance=" <> provenance
+
+// Build + sign a record, returning its coven.json text.
+fn sign_record(key: SigningKey, name: String, version: String, state: String, hash: String, rt: List(String), uploaded_by: String, promoted_by: String, factor: String, provenance: String) -> String:
+    let sig = crypto.sign(key, signing_payload(name, version, state, hash, rt, uploaded_by, promoted_by, factor, provenance))
+    json.encode(JsonObject([
+        ("name", JsonString(name)),
+        ("version", JsonString(version)),
+        ("state", JsonString(state)),
+        ("hash", JsonString(hash)),
+        ("runtime_footprint", JsonArray(strs_json(rt))),
+        ("build_footprint", JsonArray([])),
+        ("determinism", JsonString("guaranteed")),
+        ("uploaded_by", JsonString(uploaded_by)),
+        ("promoted_by", opt_json(promoted_by)),
+        ("second_factor", opt_json(factor)),
+        ("provenance", opt_json(provenance)),
+        ("sig", JsonString(sig)),
+    ]))
+
+// --- the store: content addressing + source IO -------------------------------
+
+fn meta_path(name: String, version: String) -> String:
+    name <> "/" <> version <> "/coven.json"
+
+fn rune_path(name: String, version: String, rel: String) -> String:
+    name <> "/" <> version <> "/rune/" <> rel
+
+// Write every source file under <name>/<version>/rune/, creating dirs as needed.
+fn store_source(store: Dir, name: String, version: String, files: List((String, String))):
+    for f in files:
+        let (rel, text) = f
+        let full = rune_path(name, version, rel)
+        ensure_dir(store, parent_dir(full))
+        write(store, full, text)
+
+// Read the stored source back as (relpath, text) pairs: witchy.toml + src/*.witchy.
+fn read_source(store: Dir, name: String, version: String) -> List((String, String)):
+    var out = []
+    let base = name <> "/" <> version <> "/rune"
+    if exists(store, base <> "/witchy.toml"):
+        out = push(out, ("witchy.toml", read(store, base <> "/witchy.toml")))
+    if exists(store, base <> "/src"):
+        for f in list(subdir(store, base <> "/src")):
+            out = push(out, ("src/" <> f, read(store, base <> "/src/" <> f)))
+    out
+
+// The content address of a rune's source — coven's store hash (matches
+// crypto.rune_hash / src/pm/store.rs).
+fn content_hash(files: List((String, String))) -> String:
+    var paths = []
+    var texts = []
+    for f in files:
+        let (p, t) = f
+        paths = push(paths, p)
+        texts = push(texts, t)
+    crypto.rune_hash(paths, texts)
+
+// --- server-side footprint recomputation -------------------------------------
+// The capabilities the uploaded source actually demands — union over its modules,
+// computed here via the compiler, never taken on faith from the uploader.
+
+fn computed_footprint(files: List((String, String))) -> List(String):
+    var out = []
+    for f in files:
+        let (path, text) = f
+        if is_src_module(path):
+            for cap in footprint_total(compiler.footprint(text)):
+                out = add_unique(out, cap)
+    out
+
+fn is_src_module(path: String) -> Bool:
+    starts_with(path, "src/") && ends_with(path, ".witchy")
+
+fn footprint_total(report: String) -> List(String):
+    match json.decode(report):
+        Ok(doc) -> jarr(doc, "total")
+        Err(e) -> []
+
+// --- versions / names walking ------------------------------------------------
+
+fn versions_of(store: Dir, name: String) -> List(String):
+    if exists(store, name):
+        list(subdir(store, name))
+    else:
+        []
+
+fn read_record(store: Dir, name: String, version: String) -> Option(String):
+    if exists(store, meta_path(name, version)):
+        Some(read(store, meta_path(name, version)))
+    else:
+        None
+
+// Every published rune name (namespace/name) — the store is two levels deep.
+fn all_names(store: Dir) -> List(String):
+    var out = []
+    for ns in list(store):
+        if exists(store, ns <> "/"):
+            for nm in list(subdir(store, ns)):
+                out = push(out, ns <> "/" <> nm)
+    out
+
+// The latest released version's footprint (for the promote delta) — Phase A keeps
+// it simple: the empty baseline, so the delta is everything the release exposes.
+fn latest_released_footprint(store: Dir, name: String, version: String) -> List(String):
+    []
+
+// --- reading record fields ---------------------------------------------------
+
+fn record_field(store: Dir, name: String, version: String, field: String) -> String:
+    match read_record(store, name, version):
+        Some(text) -> match json.decode(text):
+            Ok(doc) -> jstr(doc, field)
+            Err(e) -> ""
+        None -> ""
+
+fn record_array(store: Dir, name: String, version: String, field: String) -> List(String):
+    match read_record(store, name, version):
+        Some(text) -> match json.decode(text):
+            Ok(doc) -> jarr(doc, field)
+            Err(e) -> []
+        None -> []
+
+// --- request source parsing --------------------------------------------------
+// The wire source is {"source":{"files":[[path,text],...]}} (matches SourceDto).
+
+fn parse_source(doc: Json) -> List((String, String)):
+    var out = []
+    if let Some(src) = json.get(doc, "source"):
+        if let Some(arr) = json.get(src, "files"):
+            if let Some(items) = json.as_array(arr):
+                for it in items:
+                    out = push(out, file_pair(it))
+    out
+
+fn file_pair(it: Json) -> (String, String):
+    (json_index_str(it, 0), json_index_str(it, 1))
+
+fn json_index_str(j: Json, i: Int) -> String:
+    match json.index(j, i):
+        Some(v) -> match json.as_string(v):
+            Some(s) -> s
+            None -> ""
+        None -> ""
+
+// --- JSON helpers ------------------------------------------------------------
+
+fn jstr(doc: Json, key: String) -> String:
+    match json.get(doc, key):
+        Some(j) -> match json.as_string(j):
+            Some(s) -> s
+            None -> ""
+        None -> ""
+
+fn jarr(doc: Json, key: String) -> List(String):
+    var out = []
+    if let Some(j) = json.get(doc, key):
+        if let Some(items) = json.as_array(j):
+            for it in items:
+                if let Some(s) = json.as_string(it):
+                    out = push(out, s)
+    out
+
+fn strs_json(xs: List(String)) -> List(Json):
+    var out = []
+    for x in xs:
+        out = push(out, JsonString(x))
+    out
+
+fn opt_json(s: String) -> Json:
+    if string.is_empty(s):
+        JsonNull
+    else:
+        JsonString(s)
+
+fn parse_or_null(text: String) -> Json:
+    match json.decode(text):
+        Ok(doc) -> doc
+        Err(e) -> JsonNull
+
+fn err_json(code: Int, msg: String) -> Response:
+    server.json(code, json.encode(JsonObject([("error", JsonString(msg))])))
+
+// --- name encoding + validation ----------------------------------------------
+
+// Rune names contain `/`; the wire encodes it as `~` for use in a query value.
+fn unwire(n: String) -> String:
+    string.join(split(n, "~"), "/")
+
+// `namespace/name`, lowercase, exactly one `/`, no `..` traversal.
+fn valid_name(name: String) -> Bool:
+    if contains(name, "..") || starts_with(name, "/"):
+        false
+    else:
+        match split_once_opt(name, "/"):
+            Some(parts) ->
+                let (ns, nm) = parts
+                !string.is_empty(ns) && !string.is_empty(nm) && !contains(nm, "/")
+            None -> false
+
+fn split_once_opt(s: String, sep: String) -> Option((String, String)):
+    if contains(s, sep):
+        Some(string.split_once(s, sep))
+    else:
+        None
+
+// A version is strict `major.minor.patch` — digits and dots only (no traversal).
+fn valid_version(version: String) -> Bool:
+    let parts = split(version, ".")
+    if length(parts) != 3:
+        false
+    else:
+        var ok = true
+        for p in parts:
+            if string.is_empty(p) || !all_digits(p):
+                ok = false
+        ok
+
+fn all_digits(s: String) -> Bool:
+    var ok = !string.is_empty(s)
+    for ch in string.to_chars(s):
+        if !is_digit(ch):
+            ok = false
+    ok
+
+fn is_digit(ch: String) -> Bool:
+    ch == "0" || ch == "1" || ch == "2" || ch == "3" || ch == "4" || ch == "5" || ch == "6" || ch == "7" || ch == "8" || ch == "9"
+
+// --- small path + list helpers -----------------------------------------------
+
+// Create each level of `path` (the confined Dir's make_dir is non-recursive).
+fn ensure_dir(root: Dir, path: String):
+    var acc = ""
+    for seg in split(path, "/"):
+        if seg != "":
+            acc = if string.is_empty(acc): seg else: acc <> "/" <> seg
+            if !exists(root, acc):
+                make_dir(root, acc)
+
+fn parent_dir(path: String) -> String:
+    let (head, _tail) = string.rsplit_once(path, "/")
+    head
+
+fn toml_field(manifest: String, path: String) -> String:
+    match toml.get(manifest, path):
+        Some(v) -> v
+        None -> ""
+
+fn nonempty(s: String, default: String) -> String:
+    if string.is_empty(s): default else: s
+
+fn add_unique(xs: List(String), x: String) -> List(String):
+    if member(xs, x): xs else: push(xs, x)
+
+fn member(xs: List(String), x: String) -> Bool:
+    var found = false
+    for it in xs:
+        if it == x:
+            found = true
+    found
+
+// --- rights-precise capability covering (shared with the pm / coven_check) ---
+
+fn uncovered(declared: List(String), demanded: List(String)) -> List(String):
+    var missing = []
+    for cap in demanded:
+        if !covered(declared, cap):
+            missing = push(missing, cap)
+    missing
+
+fn covered(declared: List(String), demanded: String) -> Bool:
+    var ok = false
+    for d in declared:
+        if covers(d, demanded):
+            ok = true
+    ok
+
+fn covers(declared: String, demanded: String) -> Bool:
+    if base_name(declared) != base_name(demanded):
+        false
+    else if is_full(declared):
+        true
+    else if is_full(demanded):
+        false
+    else:
+        subset(rights_of(demanded), rights_of(declared))
+
+fn is_full(cap: String) -> Bool:
+    !contains(cap, "[")
+
+fn base_name(cap: String) -> String:
+    if contains(cap, "["):
+        let (name, _rest) = string.split_once(cap, "[")
+        name
+    else:
+        cap
+
+fn rights_of(cap: String) -> List(String):
+    let (_kind, rest) = string.split_once(cap, "[")
+    let inner = string.strip_suffix(rest, "]")
+    var out = []
+    for part in split(inner, ","):
+        let r = trim(part)
+        if !string.is_empty(r):
+            out = push(out, r)
+    out
+
+fn subset(xs: List(String), ys: List(String)) -> Bool:
+    var all_in = true
+    for x in xs:
+        if !member(ys, x):
+            all_in = false
+    all_in
