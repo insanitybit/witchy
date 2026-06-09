@@ -19,7 +19,11 @@ pub fn run() -> LspResult {
     // Full-text document sync (1) is all we need: the client resends the whole
     // buffer on every edit, which we re-check from scratch. Everything else
     // stays at the protocol defaults.
-    let _ = connection.initialize(json!({ "textDocumentSync": 1 }))?;
+    let _ = connection.initialize(json!({
+        "textDocumentSync": 1,
+        "completionProvider": {},
+        "hoverProvider": true,
+    }))?;
     main_loop(&connection)?;
     io_threads.join()?;
     Ok(())
@@ -33,12 +37,176 @@ fn main_loop(connection: &Connection) -> LspResult {
                 if connection.handle_shutdown(&req)? {
                     return Ok(());
                 }
+                let result = match req.method.as_str() {
+                    "textDocument/completion" => Some(completion_response(&docs, &req.params)),
+                    "textDocument/hover" => Some(hover_response(&docs, &req.params)),
+                    _ => None,
+                };
+                if let Some(result) = result {
+                    let _ = connection.sender.send(Message::Response(lsp_server::Response {
+                        id: req.id,
+                        result: Some(result),
+                        error: None,
+                    }));
+                }
             }
             Message::Notification(not) => handle_notification(connection, &mut docs, &not),
             Message::Response(_) => {}
         }
     }
     Ok(())
+}
+
+// --- completion -------------------------------------------------------------
+
+const KEYWORDS: &[&str] = &[
+    "fn", "let", "var", "if", "else", "match", "for", "in", "while", "return", "break",
+    "continue", "type", "trait", "impl", "actor", "on", "import", "pub", "inout", "sink",
+    "own", "move", "spawn", "where", "as", "true", "false",
+];
+
+const BUILTINS: &[&str] = &[
+    "print", "now", "get_env", "read", "write", "exists", "is_dir", "list", "subdir",
+    "make_dir", "connect", "listen", "accept", "send_line", "send_bytes", "recv_line",
+    "recv_all", "recv_bytes", "close", "restrict", "send", "length", "at", "push", "concat",
+    "dict_new", "insert", "get_or", "has", "remove", "update", "keys", "values", "pairs",
+    "size", "to_string", "int_to_string", "string_length", "char_count", "index_of", "split",
+    "string_chars", "replace", "substring", "to_upper", "to_lower", "trim", "starts_with",
+    "ends_with", "contains", "int_to_float", "float_to_int", "int_to_duration",
+    "duration_to_int", "sqrt", "string_to_int", "fail",
+];
+
+/// Completion items: keywords, builtins, this document's functions, and the
+/// `pub fn`s of every imported module (offered as `module.name`).
+fn completion_response(docs: &HashMap<String, String>, params: &Value) -> Value {
+    let Some(text) = params["textDocument"]["uri"].as_str().and_then(|u| docs.get(u)) else {
+        return json!([]);
+    };
+    let mut items: Vec<Value> = Vec::new();
+    for k in KEYWORDS {
+        items.push(json!({ "label": k, "kind": 14 })); // Keyword
+    }
+    for b in BUILTINS {
+        items.push(json!({ "label": b, "kind": 3 })); // Function
+    }
+    for line in text.lines() {
+        let t = line.trim_start();
+        if let Some(rest) = t.strip_prefix("pub fn ").or_else(|| t.strip_prefix("fn ")) {
+            if let Some(name) = rest.split('(').next() {
+                items.push(json!({ "label": name.trim(), "kind": 3 }));
+            }
+        }
+        if let Some(module) = t.strip_prefix("import ") {
+            let module = module.trim();
+            items.push(json!({ "label": module, "kind": 9 })); // Module
+            if let Some(src) = crate::linker::std_source(module) {
+                for ml in src.lines() {
+                    if let Some(rest) = ml.trim_start().strip_prefix("pub fn ") {
+                        if let Some(name) = rest.split('(').next() {
+                            items.push(json!({
+                                "label": format!("{module}.{}", name.trim()),
+                                "kind": 3,
+                            }));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    json!(items)
+}
+
+// --- hover ------------------------------------------------------------------
+
+/// Hover: the signature line and the contiguous `//` doc block above it, for a
+/// function defined in this document or in an imported std module (qualified
+/// `module.name` or bare).
+fn hover_response(docs: &HashMap<String, String>, params: &Value) -> Value {
+    let Some(text) = params["textDocument"]["uri"].as_str().and_then(|u| docs.get(u)) else {
+        return Value::Null;
+    };
+    let (line, character) = (
+        params["position"]["line"].as_u64().unwrap_or(0) as usize,
+        params["position"]["character"].as_u64().unwrap_or(0) as usize,
+    );
+    let Some(word) = word_at(text, line, character) else {
+        return Value::Null;
+    };
+    // Where to look: `mod.name` looks in the imported module, a bare name in
+    // this document, then in every imported module.
+    let mut sources: Vec<(&str, String)> = Vec::new();
+    let bare = match word.split_once('.') {
+        Some((module, name)) => {
+            if let Some(src) = crate::linker::std_source(module) {
+                sources.push((src, format!("{module}.")));
+            }
+            name.to_string()
+        }
+        None => {
+            sources.push((text.as_str(), String::new()));
+            for l in text.lines() {
+                if let Some(module) = l.trim_start().strip_prefix("import ") {
+                    if let Some(src) = crate::linker::std_source(module.trim()) {
+                        sources.push((src, format!("{}.", module.trim())));
+                    }
+                }
+            }
+            word.clone()
+        }
+    };
+    for (src, prefix) in sources {
+        if let Some(doc) = signature_doc(src, &bare) {
+            let contents = format!("```witchy\n{}{}\n```\n{}", prefix, doc.0, doc.1);
+            return json!({ "contents": { "kind": "markdown", "value": contents } });
+        }
+    }
+    Value::Null
+}
+
+/// The identifier (allowing `.` for module-qualified names) covering `character`
+/// on `line`.
+fn word_at(text: &str, line: usize, character: usize) -> Option<String> {
+    let l = text.lines().nth(line)?;
+    let bytes = l.as_bytes();
+    let is_word = |b: u8| b.is_ascii_alphanumeric() || b == b'_' || b == b'.';
+    let mut start = character.min(bytes.len());
+    while start > 0 && is_word(bytes[start - 1]) {
+        start -= 1;
+    }
+    let mut end = character.min(bytes.len());
+    while end < bytes.len() && is_word(bytes[end]) {
+        end += 1;
+    }
+    if start == end {
+        return None;
+    }
+    Some(l[start..end].trim_matches('.').to_string())
+}
+
+/// Find `fn <name>(` in `src` and return (signature line, preceding `//` block).
+fn signature_doc(src: &str, name: &str) -> Option<(String, String)> {
+    let lines: Vec<&str> = src.lines().collect();
+    for (i, l) in lines.iter().enumerate() {
+        let t = l.trim_start();
+        let sig = t
+            .strip_prefix("pub fn ")
+            .or_else(|| t.strip_prefix("fn "))
+            .filter(|rest| rest.split('(').next().map(str::trim) == Some(name));
+        if sig.is_some() {
+            let mut doc_lines: Vec<&str> = Vec::new();
+            for j in (0..i).rev() {
+                let dt = lines[j].trim_start();
+                if let Some(c) = dt.strip_prefix("//") {
+                    doc_lines.push(c.trim());
+                } else {
+                    break;
+                }
+            }
+            doc_lines.reverse();
+            return Some((t.trim_end_matches(':').to_string(), doc_lines.join("\n")));
+        }
+    }
+    None
 }
 
 fn handle_notification(
@@ -228,6 +396,67 @@ mod tests {
 
     fn diags(text: &str) -> Vec<Value> {
         compute_diagnostics("file:///tmp/main.witchy", text)
+    }
+
+    #[test]
+    fn completion_includes_keywords_builtins_and_module_fns() {
+        let mut docs = HashMap::new();
+        let src = "import string\n\nfn helper(n: Int) -> Int:\n    n\n\nfn main(console: Console):\n    print(console, \"x\")\n";
+        docs.insert("file:///t.witchy".to_string(), src.to_string());
+        let items = completion_response(
+            &docs,
+            &json!({ "textDocument": { "uri": "file:///t.witchy" } }),
+        );
+        let labels: Vec<String> = items
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| i["label"].as_str().unwrap().to_string())
+            .collect();
+        assert!(labels.contains(&"match".to_string()), "keywords offered");
+        assert!(labels.contains(&"print".to_string()), "builtins offered");
+        assert!(labels.contains(&"helper".to_string()), "document fns offered");
+        assert!(
+            labels.iter().any(|l| l.starts_with("string.")),
+            "imported module fns offered: {labels:?}"
+        );
+    }
+
+    #[test]
+    fn hover_shows_signature_and_doc() {
+        let mut docs = HashMap::new();
+        let src = "// Doubles a number.\n// Twice the input.\nfn double(n: Int) -> Int:\n    n * 2\n\nfn main(console: Console):\n    print(console, int_to_string(double(3)))\n";
+        docs.insert("file:///t.witchy".to_string(), src.to_string());
+        // Hover over `double` in the call on line 6 (0-based), col 35.
+        let col = src.lines().nth(6).unwrap().find("double").unwrap() as u64;
+        let resp = hover_response(
+            &docs,
+            &json!({
+                "textDocument": { "uri": "file:///t.witchy" },
+                "position": { "line": 6, "character": col },
+            }),
+        );
+        let contents = resp["contents"]["value"].as_str().expect("hover text");
+        assert!(contents.contains("fn double(n: Int) -> Int"), "{contents}");
+        assert!(contents.contains("Doubles a number."), "{contents}");
+    }
+
+    #[test]
+    fn hover_resolves_imported_module_functions() {
+        let mut docs = HashMap::new();
+        let src = "import string\n\nfn main(console: Console):\n    print(console, string.repeat(\"ab\", 2))\n";
+        docs.insert("file:///t.witchy".to_string(), src.to_string());
+        let line = 3u64;
+        let col = src.lines().nth(3).unwrap().find("repeat").unwrap() as u64;
+        let resp = hover_response(
+            &docs,
+            &json!({
+                "textDocument": { "uri": "file:///t.witchy" },
+                "position": { "line": line, "character": col },
+            }),
+        );
+        let contents = resp["contents"]["value"].as_str().expect("hover text");
+        assert!(contents.contains("repeat"), "{contents}");
     }
 
     #[test]
