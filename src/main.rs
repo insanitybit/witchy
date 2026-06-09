@@ -4396,6 +4396,19 @@ fn yn(b: Bool) -> String:
         assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
     }
 
+    /// A large `Int` carried as an `Option`/`Result` success payload must keep its
+    /// 64 bits on WASM, through both `?` and a `match`. The payload field is a type
+    /// variable (generic i32 ABI), so codegen would truncate; it now tracks the
+    /// declared scalar payload type and recovers `Some`/`Ok` values (and `?`
+    /// results) at i64. (Regression for the big-Int-through-Option/Result gap.)
+    #[test]
+    fn wasm_big_int_through_result_payload_and_try() {
+        let src = "type Result:\n    Ok(a)\n    Err(e)\n\nfn fetch() -> Result(Int, String):\n    Ok(5000000000)\n\nfn chain() -> Result(Int, String):\n    let x = (fetch())?\n    Ok((x + 1))\n\nfn main(console: Console):\n    match chain():\n        Ok(v) -> print(console, int_to_string(v))\n        Err(e) -> print(console, e)\n";
+        let want = vec!["5000000001".to_string()];
+        assert_eq!(interp(src), want.clone(), "interpreter");
+        assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
+    }
+
     /// `float_to_int` on a non-finite or out-of-range Float must saturate the same
     /// way on both backends. The interpreter uses Rust's `as i64` (NaN -> 0,
     /// +inf -> i64::MAX, -inf -> i64::MIN, out-of-range clamps); WASM used the

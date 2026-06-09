@@ -342,6 +342,15 @@ struct Codegen {
     /// Function name -> the record type that is the success payload of its
     /// Result/Option return, so `let q = f(...)?` binds `q` to that record.
     fn_ret_result_record: HashMap<String, String>,
+    /// Function name -> the SCALAR value type of the success payload of its
+    /// `Option(T)`/`Result(T, _)` return (e.g. `Int` for `parse_int`), so a
+    /// `match f(...) { Some(n) -> ... }` and `f(...)?` recover the payload at the
+    /// right width (an Int payload as i64, not the generic i32 that truncates a
+    /// big value).
+    fn_ret_result_valtype: HashMap<String, ValType>,
+    /// Variable -> the scalar payload value type of an `Option`/`Result` it holds
+    /// (the `let o = f(...)` analog of `fn_ret_result_valtype`).
+    local_payload_valtype: HashMap<String, ValType>,
     /// Function name -> the record type of the elements of its `List(_)` return,
     /// so `for x in f(...) { x.field }` resolves x's record type.
     fn_ret_list_elem: HashMap<String, String>,
@@ -415,6 +424,8 @@ impl Codegen {
             fn_ret_valtype: HashMap::new(),
             fn_ret_records: HashMap::new(),
             fn_ret_result_record: HashMap::new(),
+            fn_ret_result_valtype: HashMap::new(),
+            local_payload_valtype: HashMap::new(),
             fn_ret_list_elem: HashMap::new(),
             fn_ret_list_elem_valtype: HashMap::new(),
             fn_ret_option_of_list_arg: HashMap::new(),
@@ -507,6 +518,12 @@ impl Codegen {
                 "to_string" | "int_to_string" | "print" => Kind::I32,
                 other => self.fn_ret.get(other).copied().unwrap_or(Kind::I32),
             },
+            // `inner?` yields the Ok/Some payload; recover it at the payload's
+            // kind (an Int payload as i64) so a big value isn't truncated.
+            Expr::Try(inner) => self
+                .match_payload_valtype(inner)
+                .map(valtype_kind)
+                .unwrap_or(Kind::I32),
             _ => Kind::I32, // Bool, Str, List, Ctor, Spawn
         }
     }
@@ -580,6 +597,9 @@ impl Codegen {
                 "int_to_float" | "sqrt" => ValType::Float,
                 other => self.fn_ret_valtype.get(other).copied().unwrap_or(ValType::Other),
             },
+            // `inner?` yields the Ok/Some payload's value type, so `to_string` of
+            // a `?`-unwrapped value renders correctly and `==` picks `$str_eq`.
+            Expr::Try(inner) => self.match_payload_valtype(inner).unwrap_or(ValType::Other),
             _ => ValType::Other,
         }
     }
@@ -673,6 +693,25 @@ impl Codegen {
             }
             Expr::Ctor { name, args } if (name == "Some" || name == "Ok") && args.len() == 1 => {
                 self.record_type_of(&args[0])
+            }
+            _ => None,
+        }
+    }
+
+    /// The SCALAR value type of an `Option`/`Result` scrutinee's `Some`/`Ok`
+    /// payload, where codegen can determine it: a variable bound to such a value,
+    /// a call to a function declared `-> Option(T)`/`Result(T, _)`, or a literal
+    /// `Some(x)`/`Ok(x)`. Lets `match` and `?` recover the payload at the right
+    /// width so a big `Int` payload isn't truncated to the generic i32.
+    fn match_payload_valtype(&self, scrutinee: &Expr) -> Option<ValType> {
+        match scrutinee {
+            Expr::Var(v) => self.local_payload_valtype.get(v).copied(),
+            Expr::Call { name, .. } => self.fn_ret_result_valtype.get(name).copied(),
+            Expr::Ctor { name, args } if (name == "Some" || name == "Ok") && args.len() == 1 => {
+                match self.val_type_of(&args[0]) {
+                    ValType::Other => None,
+                    vt => Some(vt),
+                }
             }
             _ => None,
         }
@@ -787,6 +826,12 @@ impl Codegen {
         for stmt in &block.stmts {
             match stmt {
                 Stmt::Let { name, value, .. } => {
+                    // Infer the value's nested bindings FIRST (e.g. a `match`'s
+                    // Some/Ok payload vars), so this binding's own kind/type —
+                    // computed from `value` below — sees them. Otherwise
+                    // `let ok = match f() { Some(n) -> n ... }` would type `ok` as
+                    // i32 (n not yet known to be i64) while the match emits i64.
+                    self.infer_locals_expr(value);
                     let k = self.kind_of(value);
                     self.locals.insert(name.clone(), k);
                     let vt = self.val_type_of(value);
@@ -794,6 +839,12 @@ impl Codegen {
                     let evt = self.elem_val_type_of(value);
                     if evt != ValType::Other {
                         self.local_list_elem_valtype.insert(name.clone(), evt);
+                    }
+                    // A binding to an `Option`/`Result` of a scalar records the
+                    // payload's value type, so `match name { Some(n) -> n }` binds
+                    // `n` at the right width.
+                    if let Some(pvt) = self.match_payload_valtype(value) {
+                        self.local_payload_valtype.insert(name.clone(), pvt);
                     }
                     // A binding to a tuple literal records its element slot value
                     // types, so a later `let (a, b) = name` types `a`/`b` (and
@@ -820,7 +871,6 @@ impl Codegen {
                     if let Some(ty) = self.record_type_of(value) {
                         self.local_records.insert(name.clone(), ty);
                     }
-                    self.infer_locals_expr(value);
                 }
                 Stmt::Assign { value, .. } => self.infer_locals_expr(value),
                 Stmt::LetTuple { names, value } => {
@@ -933,6 +983,19 @@ impl Codegen {
                             if (name == "Some" || name == "Ok") && args.len() == 1 {
                                 if let Pattern::Var(v) = &args[0] {
                                     self.local_records.insert(v.clone(), rec.clone());
+                                }
+                            }
+                        }
+                    }
+                    // `Some(n)`/`Ok(n)` over an Option/Result of a SCALAR binds `n`
+                    // at the payload's kind (an `Int` payload as i64, not the
+                    // default i32 that would truncate a big value).
+                    if let Some(pvt) = self.match_payload_valtype(scrutinee) {
+                        if let Pattern::Ctor { name, args } = &arm.pattern {
+                            if (name == "Some" || name == "Ok") && args.len() == 1 {
+                                if let Pattern::Var(v) = &args[0] {
+                                    self.locals.insert(v.clone(), valtype_kind(pvt));
+                                    self.local_val_types.insert(v.clone(), pvt);
                                 }
                             }
                         }
@@ -1155,6 +1218,7 @@ impl Codegen {
         self.local_list_elem_valtype.clear();
         self.local_list_elem_tuple.clear();
         self.local_tuple_slots.clear();
+        self.local_payload_valtype.clear();
         for p in &f.params {
             let k = p.ty.as_ref().map(ty_kind).unwrap_or(Kind::I32);
             self.locals.insert(p.name.clone(), k);
@@ -1622,16 +1686,30 @@ impl Codegen {
                 if self.cur_fn_inout {
                     return cerr("`?` is not compiled for functions with `inout` parameters");
                 }
-                // The payload occupies the first 8-byte slot (at +4). It is
-                // recovered as an i32 pointer — `?` payloads are overwhelmingly
-                // records/tuples/strings; an Int payload narrows to 32 bits.
+                // The payload occupies the first 8-byte slot (at +4), stored in the
+                // universal i64 rep. Recover it at the payload's kind: an Int
+                // payload stays i64 (no truncation), a pointer payload wraps to
+                // i32. The success branch yields that kind; the error branch
+                // early-returns the whole value, then a typed zero satisfies the
+                // block's result type (dead after `return`).
+                let payload_kind = self
+                    .match_payload_valtype(inner)
+                    .map(valtype_kind)
+                    .unwrap_or(Kind::I32);
+                let result_ty = wasm_ty(payload_kind);
+                let recover = from_slot(payload_kind);
+                let zero = match payload_kind {
+                    Kind::I64 => "i64.const 0",
+                    Kind::F64 => "f64.const 0",
+                    Kind::I32 => "i32.const 0",
+                };
                 let v = self.compile_expr(inner)?;
                 Ok(format!(
                     "{v}    local.set ${TRY_TMP}\n    \
                      local.get ${TRY_TMP}\n    i32.load\n    i32.eqz\n    \
-                     if (result i32)\n    \
-                     local.get ${TRY_TMP}\n    i32.const 4\n    i32.add\n    i64.load\n    i32.wrap_i64\n    \
-                     else\n    local.get ${TRY_TMP}\n    return\n    i32.const 0\n    end\n"
+                     if (result {result_ty})\n    \
+                     local.get ${TRY_TMP}\n    i32.const 4\n    i32.add\n    i64.load\n{recover}    \
+                     else\n    local.get ${TRY_TMP}\n    return\n    {zero}\n    end\n"
                 ))
             }
             Expr::For { var, iter, body } if matches!(iter.as_ref(), Expr::Range { .. }) => {
@@ -2922,11 +3000,23 @@ pub fn compile_module(module: &Module) -> Result<String, CodegenError> {
                             cg.fn_ret_list_elem_valtype.insert(f.name.clone(), evt);
                         }
                     }
-                } else if let Some(Type::Named(payload, _)) = args.first() {
+                } else if let Some(payload) = args.first() {
                     // e.g. `Result(Account, _)` / `Option(Account)`: `?` yields it.
-                    if cg.record_fields.contains_key(payload) {
-                        cg.fn_ret_result_record
-                            .insert(f.name.clone(), payload.clone());
+                    if let Type::Named(rec, _) = payload {
+                        if cg.record_fields.contains_key(rec) {
+                            cg.fn_ret_result_record.insert(f.name.clone(), rec.clone());
+                        }
+                    }
+                    // A scalar success payload (e.g. `Option(Int)` from parse_int,
+                    // or a user `R(Int, _)`): record it so a `match`/`?` recovers
+                    // the Some/Ok value at the right width instead of truncating a
+                    // big Int to the generic i32. The success payload is the first
+                    // type argument (true for Option/Result and result-like sum
+                    // types); only ever consulted at a Some/Ok/`?` site, so a
+                    // non-result type's first arg is harmless.
+                    let pvt = ty_to_valtype(payload);
+                    if pvt != ValType::Other {
+                        cg.fn_ret_result_valtype.insert(f.name.clone(), pvt);
                     }
                 }
             }
