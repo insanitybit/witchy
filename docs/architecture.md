@@ -104,9 +104,14 @@ class) are out of scope.
 
 Tracked honestly rather than hidden:
 
-- `SigningKey` is interpreter/native-only (not yet a sandbox host import).
-- `Result` (multi-parameter generic) `==` is a compile error, not structural.
+- `Result` (multi-parameter generic) `==` is a compile error, not structural —
+  instantiating both payload types needs type information codegen doesn't
+  carry yet. (Single-parameter generics like `Option` compare structurally.)
 - `spawn` inside compiled programs is host-driven (the demo scheduler), not a
-  guest-callable import yet.
-- The LSP is diagnostics-only (no completion/hover/navigation).
+  guest-callable import yet: messages between compiled actor VMs currently
+  carry scalar fields only, and guest-initiated spawn needs a cross-VM value
+  marshaling ABI. Loud compile error, never a silent difference; the
+  interpreter runs the full actor model.
+- The LSP has diagnostics, completion, and hover — no go-to-definition or
+  rename yet.
 - No GC (see the memory model above).
