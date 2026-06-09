@@ -4027,6 +4027,20 @@ fn yn(b: Bool) -> String:
         assert_eq!(crate::capabilities::show_caps(&fp.total), "Console");
     }
 
+    /// `examples/toposort.witchy` — Kahn's topological sort over a dependency
+    /// graph — produces a valid build order and reports a cycle. Pure (Console),
+    /// list-based (no Dict), both backends.
+    #[test]
+    fn toposort_example_orders_and_detects_cycles() {
+        assert_eq!(
+            crate::execute_file("examples/toposort.witchy", Vec::new()).unwrap(),
+            vec![
+                "build order: boot -> config -> db -> cache -> api -> web",
+                "cyclic:      error: cycle among egg, chicken",
+            ]
+        );
+    }
+
     /// `examples/jq.witchy` — a JSON query tool — walks a dotted path (object keys
     /// and numeric array indices) into a decoded document and renders the value.
     /// Pure (Console), both backends.
