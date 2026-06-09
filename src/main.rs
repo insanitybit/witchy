@@ -4027,6 +4027,26 @@ fn yn(b: Bool) -> String:
         assert_eq!(crate::capabilities::show_caps(&fp.total), "Console");
     }
 
+    /// `examples/dijkstra.witchy` — single-source shortest paths in a weighted
+    /// directed graph — settles the nearest node, relaxes edges, then prints
+    /// every distance and one reconstructed path. Returns a tuple of parallel
+    /// arrays, so it also covers tuple-return + `let (a, b) =` on both backends.
+    #[test]
+    fn dijkstra_example_finds_shortest_paths() {
+        assert_eq!(
+            crate::execute_file("examples/dijkstra.witchy", Vec::new()).unwrap(),
+            vec![
+                "shortest distances from A:",
+                "  A = 0",
+                "  B = 3",
+                "  C = 1",
+                "  D = 4",
+                "  E = 7",
+                "path to E: A -> C -> B -> D -> E",
+            ]
+        );
+    }
+
     /// `examples/queens.witchy` — N-queens by backtracking — counts all 92
     /// solutions for the 8x8 board and renders the first (column-order DFS). Deep
     /// recursion with an early-exit search; agrees on both backends.
