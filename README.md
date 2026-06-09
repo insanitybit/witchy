@@ -89,8 +89,16 @@ Dependency code never executes at build time.
 The package manager and registry are **self-hosted**: `projects/pm` and
 `projects/coven` are witchy programs, exercised end-to-end by the test suite.
 
-See [docs/package-manager.md](docs/package-manager.md) for the full design and
-threat model.
+Try the whole lifecycle locally — server, trusted publish, 2FA promote,
+verified consumption — with one command:
+
+```sh
+./scripts/local-registry-demo.sh
+```
+
+See [docs/local-registry.md](docs/local-registry.md) for the step-by-step
+version, and [docs/package-manager.md](docs/package-manager.md) for the full
+design and threat model.
 
 ## Install
 
