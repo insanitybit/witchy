@@ -362,6 +362,9 @@ struct Codegen {
     /// Variable -> the scalar payload value type of an `Option`/`Result` it holds
     /// (the `let o = f(...)` analog of `fn_ret_result_valtype`).
     local_payload_valtype: HashMap<String, ValType>,
+    /// Dict variable -> its value's scalar type (from the `insert` that built it),
+    /// so `for v in values(d)` / `at(values(d), i)` recover an Int value as i64.
+    local_dict_value_valtype: HashMap<String, ValType>,
     /// Function name -> the record type of the elements of its `List(_)` return,
     /// so `for x in f(...) { x.field }` resolves x's record type.
     fn_ret_list_elem: HashMap<String, String>,
@@ -447,6 +450,7 @@ impl Codegen {
             fn_ret_result_record: HashMap::new(),
             fn_ret_result_valtype: HashMap::new(),
             local_payload_valtype: HashMap::new(),
+            local_dict_value_valtype: HashMap::new(),
             fn_ret_list_elem: HashMap::new(),
             fn_ret_list_elem_valtype: HashMap::new(),
             fn_ret_option_of_list_arg: HashMap::new(),
@@ -772,6 +776,21 @@ impl Codegen {
         }
     }
 
+    /// The scalar value type a Dict holds, where determinable: an `insert(d, k,
+    /// v)` gives it from `v`; a Dict variable carries its tracked type.
+    fn dict_value_valtype_of(&self, value: &Expr) -> Option<ValType> {
+        match value {
+            Expr::Call { name, args } if name == "insert" && args.len() == 3 => {
+                match self.val_type_of(&args[2]) {
+                    ValType::Other => None,
+                    vt => Some(vt),
+                }
+            }
+            Expr::Var(v) => self.local_dict_value_valtype.get(v).copied(),
+            _ => None,
+        }
+    }
+
     /// The SCALAR value type of an `Option`/`Result` scrutinee's `Some`/`Ok`
     /// payload, where codegen can determine it: a variable bound to such a value,
     /// a call to a function declared `-> Option(T)`/`Result(T, _)`, or a literal
@@ -865,6 +884,16 @@ impl Codegen {
             {
                 ValType::Str
             }
+            // `values(d)` yields a list of the Dict's values; carry their type so
+            // `for v in values(d)` recovers an Int value as i64.
+            Expr::Call { name, args } if name == "values" && args.len() == 1 => match &args[0] {
+                Expr::Var(d) => self
+                    .local_dict_value_valtype
+                    .get(d)
+                    .copied()
+                    .unwrap_or(ValType::Other),
+                _ => ValType::Other,
+            },
             // A function declared `-> List(<scalar>)` carries its element type.
             Expr::Call { name, .. } => self
                 .fn_ret_list_elem_valtype
@@ -920,6 +949,12 @@ impl Codegen {
                     if let Some(pvt) = self.match_payload_valtype(value) {
                         self.local_payload_valtype.insert(name.clone(), pvt);
                     }
+                    // A binding to an `insert(...)` (or another Dict var) records
+                    // the Dict's value type, so `values(d)`/`for v in values(d)`
+                    // recover an Int value as i64.
+                    if let Some(vvt) = self.dict_value_valtype_of(value) {
+                        self.local_dict_value_valtype.insert(name.clone(), vvt);
+                    }
                     // A binding to a closure value records its call-return kind, so
                     // `let f = make(...)` then `f(x)` recovers the result width.
                     if let Some(rk) = self.closure_ret_kind_of(value) {
@@ -957,7 +992,13 @@ impl Codegen {
                         self.local_records.insert(name.clone(), ty);
                     }
                 }
-                Stmt::Assign { value, .. } => self.infer_locals_expr(value),
+                Stmt::Assign { name, value } => {
+                    // `d = insert(d, k, v)` carries the Dict's value type forward.
+                    if let Some(vvt) = self.dict_value_valtype_of(value) {
+                        self.local_dict_value_valtype.insert(name.clone(), vvt);
+                    }
+                    self.infer_locals_expr(value);
+                }
                 Stmt::LetTuple { names, value } => {
                     // The value type of each binding: from a tuple literal's
                     // elements, or a tuple-typed variable's tracked slot types,
@@ -1311,6 +1352,7 @@ impl Codegen {
         self.local_list_elem_tuple.clear();
         self.local_tuple_slots.clear();
         self.local_payload_valtype.clear();
+        self.local_dict_value_valtype.clear();
         self.local_fn_ret_kind.clear();
         for p in &f.params {
             let k = p.ty.as_ref().map(ty_kind).unwrap_or(Kind::I32);

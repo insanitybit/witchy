@@ -4462,6 +4462,16 @@ fn yn(b: Bool) -> String:
         assert_eq!(run_on_wasm(s), vec!["hello"], "WASM (string value)");
     }
 
+    /// Iterating a `Dict`'s `values()` (or binding the list) must keep big-Int
+    /// values 64-bit: codegen tracks the Dict's value type from `insert` and
+    /// carries it to `values(d)`, so the loop variable is i64.
+    #[test]
+    fn wasm_dict_values_iteration_keeps_big_ints() {
+        let src = "fn main(console: Console):\n    var d = dict_new()\n    d = insert(d, \"k\", 9000000000)\n    var s = 0\n    for v in values(d):\n        s = s + v\n    print(console, int_to_string(s))\n";
+        assert_eq!(interp(src), vec!["9000000000"], "interpreter");
+        assert_eq!(run_on_wasm(src), vec!["9000000000"], "WASM");
+    }
+
     /// A large `Int` carried as an `Option`/`Result` success payload must keep its
     /// 64 bits on WASM, through both `?` and a `match`. The payload field is a type
     /// variable (generic i32 ABI), so codegen would truncate; it now tracks the
