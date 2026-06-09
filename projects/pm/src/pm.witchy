@@ -18,6 +18,7 @@
 
 import compiler
 import crypto
+import fs
 import http
 import json
 import rights
@@ -351,24 +352,9 @@ fn path_entry(root: Dir, dir: String, name: String, rel: String) -> String:
 // witchy-checked lock agrees with a coven-generated one).
 fn rune_hash(root: Dir, dir: String) -> String:
     var files = [("witchy.toml", read(root, join_path(dir, "witchy.toml")))]
-    for f in collect_src(root, join_path(dir, "src"), "src"):
+    for f in fs.collect_files(root, join_path(dir, "src"), "src", ".witchy"):
         files = push(files, f)
     content_hash(files)
-
-// Recursively collect every `.witchy` module under `path` as (relpath, text),
-// with `rel` the path relative to the rune root (so a nested `src/x/y.witchy`
-// keeps its full relative path — required to match the Rust store's hashing).
-fn collect_src(root: Dir, path: String, rel: String) -> List((String, String)):
-    var out = []
-    if exists(root, path):
-        for entry in list(subdir(root, path)):
-            let child = path <> "/" <> entry
-            if is_dir(root, child):
-                for f in collect_src(root, child, rel <> "/" <> entry):
-                    out = push(out, f)
-            else if ends_with(entry, ".witchy"):
-                out = push(out, (rel <> "/" <> entry, read(root, child)))
-    out
 
 fn footprint_toml(caps: List(String)) -> String:
     var parts = []
@@ -477,7 +463,7 @@ fn fetch_verified(console: Console, net: Net, root: Dir, host: String, port: Int
             for f in files:
                 let (path, text) = f
                 let full = join_path(base, path)
-                ensure_dir(root, parent_dir(full))
+                fs.ensure_dir(root, fs.parent_dir(full))
                 write(root, full, text)
             // Keep the signed record next to the source, so the vendored rune
             // carries its own provenance and can be re-verified offline.
@@ -586,19 +572,6 @@ fn json_index_str(j: Json, i: Int) -> String:
             Some(s) -> s
             None -> ""
         None -> ""
-
-// Create each level of `path` (make_dir is non-recursive).
-fn ensure_dir(root: Dir, path: String):
-    var acc = ""
-    for seg in split(path, "/"):
-        if seg != "":
-            acc = if string.is_empty(acc): seg else: acc <> "/" <> seg
-            if !exists(root, acc):
-                make_dir(root, acc)
-
-fn parent_dir(path: String) -> String:
-    let (head, _tail) = string.rsplit_once(path, "/")
-    head
 
 // --- new: scaffold a rune ----------------------------------------------------
 

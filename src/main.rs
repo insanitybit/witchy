@@ -3764,6 +3764,14 @@ fn yes(b: Bool) -> String:
         );
     }
 
+    /// `std/fs` parent_dir + (with a real Dir) the recursive collect — exercised
+    /// here for the pure part to confirm the module's functions resolve on import.
+    #[test]
+    fn fs_module_parent_dir_resolves() {
+        let src = "import fs\nfn main(console: Console):\n    print(console, fs.parent_dir(\"a/b/c\"))\n    print(console, fs.parent_dir(\"top\"))\n";
+        assert_eq!(link_run(src), vec!["a/b", ""]);
+    }
+
     /// `std/rights` matches capability strings rights-precisely (the logic the pm
     /// check/gate and coven's publish enforcement share): a bare kind covers any
     /// rights of that kind, a bracketed one only a subset — so `Net[Connect]` does

@@ -96,7 +96,7 @@ type FnTable = HashMap<String, HashSet<String>>;
 pub const STD_MODULES: &[&str] = &[
     "list", "string", "math", "result", "option", "func", "ord", "eq", "ascii", "set", "server",
     "show", "http", "json", "url", "duration", "random", "regex", "crypto", "compiler", "toml",
-    "iter", "semver", "rights",
+    "iter", "semver", "rights", "fs",
 ];
 
 /// The bundled std modules that export a `pub fn` of the given name — used to
@@ -206,6 +206,7 @@ pub fn std_source(name: &str) -> Option<&'static str> {
         "iter" => Some(include_str!("../std/iter.witchy")),
         "semver" => Some(include_str!("../std/semver.witchy")),
         "rights" => Some(include_str!("../std/rights.witchy")),
+        "fs" => Some(include_str!("../std/fs.witchy")),
         _ => None,
     }
 }

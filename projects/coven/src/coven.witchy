@@ -16,6 +16,7 @@ import server
 import json
 import compiler
 import crypto
+import fs
 import toml
 import string
 import rights
@@ -26,7 +27,7 @@ fn main(console: Console, net: Net, root: Dir, key: SigningKey, clock: Clock, ar
     // With at least one, publish/promote require a short-lived identity token
     // (trusted publishing); with none, the registry is anonymous (local mode).
     let issuers = parse_issuers(args)
-    ensure_dir(root, "registry")
+    fs.ensure_dir(root, "registry")
     let store = subdir(root, "registry")
     let app = server.router()
         .get("/coven/rootpub", h_rootpub(key))
@@ -332,7 +333,7 @@ fn authorize_publish(store: Dir, name: String, claims: Json) -> Result(String, (
     let ns = namespace_of(name)
     let pubfile = "_policy/" <> ns <> "/publisher.json"
     if !exists(store, pubfile):
-        ensure_dir(store, "_policy/" <> ns)
+        fs.ensure_dir(store, "_policy/" <> ns)
         write(store, pubfile, json.encode(JsonObject([("issuer", JsonString(jstr(claims, "iss"))), ("repository", JsonString(claim(claims, "repository"))), ("workflow_ref", JsonString(claim(claims, "workflow_ref")))])))
         Ok(jstr(claims, "sub"))
     else:
@@ -364,7 +365,7 @@ fn authorize_promote(store: Dir, name: String, claims: Json) -> Result(String, (
     let mfile = "_policy/" <> ns <> "/maintainers.json"
     let id = jstr(claims, "iss") <> "|" <> jstr(claims, "sub")
     if !exists(store, mfile):
-        ensure_dir(store, "_policy/" <> ns)
+        fs.ensure_dir(store, "_policy/" <> ns)
         write(store, mfile, json.encode(JsonArray([JsonString(id)])))
         Ok(jstr(claims, "sub"))
     else if member(string_array(read(store, mfile)), id):
@@ -509,7 +510,7 @@ fn store_source(store: Dir, name: String, version: String, files: List((String, 
     for f in files:
         let (rel, text) = f
         let full = rune_path(name, version, rel)
-        ensure_dir(store, parent_dir(full))
+        fs.ensure_dir(store, fs.parent_dir(full))
         write(store, full, text)
 
 // Read the stored source back as (relpath, text) pairs: witchy.toml + every
@@ -519,20 +520,8 @@ fn read_source(store: Dir, name: String, version: String) -> List((String, Strin
     let base = name <> "/" <> version <> "/rune"
     if exists(store, base <> "/witchy.toml"):
         out = push(out, ("witchy.toml", read(store, base <> "/witchy.toml")))
-    for f in collect_src(store, base <> "/src", "src"):
+    for f in fs.collect_files(store, base <> "/src", "src", ".witchy"):
         out = push(out, f)
-    out
-
-fn collect_src(store: Dir, path: String, rel: String) -> List((String, String)):
-    var out = []
-    if exists(store, path):
-        for entry in list(subdir(store, path)):
-            let child = path <> "/" <> entry
-            if is_dir(store, child):
-                for f in collect_src(store, child, rel <> "/" <> entry):
-                    out = push(out, f)
-            else if ends_with(entry, ".witchy"):
-                out = push(out, (rel <> "/" <> entry, read(store, child)))
     out
 
 // The content address of a rune's source — coven's store hash (matches
@@ -719,19 +708,6 @@ fn is_digit(ch: String) -> Bool:
     ch == "0" || ch == "1" || ch == "2" || ch == "3" || ch == "4" || ch == "5" || ch == "6" || ch == "7" || ch == "8" || ch == "9"
 
 // --- small path + list helpers -----------------------------------------------
-
-// Create each level of `path` (the confined Dir's make_dir is non-recursive).
-fn ensure_dir(root: Dir, path: String):
-    var acc = ""
-    for seg in split(path, "/"):
-        if seg != "":
-            acc = if string.is_empty(acc): seg else: acc <> "/" <> seg
-            if !exists(root, acc):
-                make_dir(root, acc)
-
-fn parent_dir(path: String) -> String:
-    let (head, _tail) = string.rsplit_once(path, "/")
-    head
 
 fn toml_field(manifest: String, path: String) -> String:
     match toml.get(manifest, path):

@@ -1,0 +1,39 @@
+// fs — small directory helpers over the `Dir` capability. Each function's
+// authority is exactly the `Dir` the caller passes: `collect_files`/`parent_dir`
+// need only read, `ensure_dir` needs write. Nothing here widens a capability —
+// the confinement of the `Dir` you hand in is preserved.
+
+import string
+
+// Create each level of `path` under `root` (the confined `Dir`'s `make_dir` is
+// not recursive). Idempotent. Needs a writable `Dir`.
+pub fn ensure_dir(root: Dir, path: String):
+    var acc = ""
+    for seg in split(path, "/"):
+        if seg != "":
+            acc = if string.is_empty(acc): seg else: acc <> "/" <> seg
+            if !exists(root, acc):
+                make_dir(root, acc)
+
+// The parent component of a relative path: "a/b/c" -> "a/b"; "a" -> "".
+pub fn parent_dir(path: String) -> String:
+    if contains(path, "/"):
+        let (head, _tail) = string.rsplit_once(path, "/")
+        head
+    else:
+        ""
+
+// Recursively collect every file under `path` whose name ends with `ext`, as
+// (relpath, contents) pairs. `rel` is prefixed to each result path (so a nested
+// `a/b.witchy` keeps its full relative path). Needs a readable `Dir`.
+pub fn collect_files(root: Dir, path: String, rel: String, ext: String) -> List((String, String)):
+    var out = []
+    if exists(root, path):
+        for entry in list(subdir(root, path)):
+            let child = path <> "/" <> entry
+            if is_dir(root, child):
+                for f in collect_files(root, child, rel <> "/" <> entry, ext):
+                    out = push(out, f)
+            else if ends_with(entry, ext):
+                out = push(out, (rel <> "/" <> entry, read(root, child)))
+    out
