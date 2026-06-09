@@ -1149,6 +1149,29 @@ fn example_wordfreq_workspace_ranks_words() {
     );
 }
 
+/// The committed `examples/projects/convert` workspace — a `convert` app that
+/// reads `input.csv` and WRITES `output.json` through one read-write Dir
+/// capability, converting with the `convertlib` rune (std `csv` + `json`). The
+/// first example project to exercise Dir *Write*: it asserts the file the app
+/// produced — header column order preserved, integers as JSON numbers.
+#[test]
+fn example_convert_workspace_writes_json_via_dir_write() {
+    let sb = Sandbox::new("ex-convert");
+    let srcroot = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/projects/convert");
+    copy_tree(&srcroot, &sb.work);
+    let app = sb.work.join("convert");
+    let out = sb.run(&app, "dev", &["run"]);
+    assert!(out.status.success(), "run failed: {}", stderr(&out));
+    assert!(stdout(&out).contains("wrote output.json"), "stdout: {}", stdout(&out));
+    let written = std::fs::read_to_string(app.join("output.json")).expect("app must write output.json");
+    assert!(written.trim_start().starts_with('['), "must be a JSON array: {written}");
+    assert!(written.contains("\"name\": \"Ada\""), "name field: {written}");
+    // An integer column becomes an unquoted JSON number, not a string.
+    assert!(written.contains("\"age\": 36"), "age must be a number: {written}");
+    assert!(written.contains("\"city\": \"London\""), "city field: {written}");
+    assert!(written.contains("Grace") && written.contains("NYC"), "second row: {written}");
+}
+
 #[test]
 fn published_rune_cannot_have_path_dependency() {
     let sb = Sandbox::new("nopath");

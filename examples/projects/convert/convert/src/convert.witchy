@@ -1,0 +1,12 @@
+// convert — a CSV-to-JSON file converter. It reads `input.csv` and writes
+// `output.json` through one read-write Dir capability, doing the conversion with
+// the `convertlib` rune (a path dependency using std `csv` + `json`). Its
+// footprint is exactly `Console, Dir` (Read + Write). Run with:  witchy run
+
+import convertlib
+
+fn main(console: Console, root: Dir):
+    let csv_text = read(root, "input.csv")
+    let json_text = convertlib.csv_to_json(csv_text)
+    write(root, "output.json", json_text)
+    print(console, "wrote output.json (" <> int_to_string(string_length(json_text)) <> " bytes)")

@@ -1,0 +1,38 @@
+// convertlib — turn CSV text into a JSON array of objects. A pure library rune
+// (a path dependency of `convert`) showcasing std `csv` + `json`: it parses the
+// rows, keys each data row by the header (preserving column order), and builds
+// real Json values — integers stay numbers, everything else is a string — then
+// pretty-prints them.
+
+import csv
+import json
+import string
+
+// CSV (with a header row) as pretty-printed JSON: one object per data row.
+pub fn csv_to_json(csv_text: String) -> String:
+    let rows = csv.parse(csv_text)
+    if length(rows) == 0:
+        "[]"
+    else:
+        let header = at(rows, 0)
+        var objects = []
+        var i = 1
+        while i < length(rows):
+            objects = push(objects, row_object(header, at(rows, i)))
+            i = i + 1
+        json.encode_pretty(JsonArray(objects))
+
+// One JSON object, pairing each header column with this row's value.
+fn row_object(header: List(String), row: List(String)) -> Json:
+    var fields = []
+    var c = 0
+    while c < length(header):
+        fields = push(fields, (at(header, c), to_json_value(at(row, c))))
+        c = c + 1
+    JsonObject(fields)
+
+// An integer-looking field becomes a JSON number; anything else a JSON string.
+fn to_json_value(value: String) -> Json:
+    match string.parse_int(value):
+        Some(n) -> JsonInt(n)
+        None -> JsonString(value)
