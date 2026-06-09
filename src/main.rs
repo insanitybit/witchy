@@ -4444,6 +4444,25 @@ fn yn(b: Bool) -> String:
         assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
     }
 
+    /// `to_string` of a builtin call result (`has` -> Bool, `size` -> Int) must
+    /// compile and render the same on both backends — codegen knows these
+    /// builtins' value types, so it picks the right formatter instead of erroring
+    /// with "could not determine the value's type". (Regression for the
+    /// call-result val-type gap that previously forced `int_to_string`/explicit
+    /// conversion.)
+    #[test]
+    fn to_string_of_builtin_call_results_agrees() {
+        let src = "fn main(console: Console):\n    let d = insert(insert(dict_new(), \"a\", 1), \"b\", 2)\n    print(console, to_string(has(d, \"a\")))\n    print(console, to_string(has(d, \"z\")))\n    print(console, to_string(size(d)))\n    print(console, to_string(contains(\"hello\", \"ell\")))\n";
+        let want = vec![
+            "true".to_string(),
+            "false".to_string(),
+            "2".to_string(),
+            "true".to_string(),
+        ];
+        assert_eq!(interp(src), want.clone(), "interpreter");
+        assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
+    }
+
     /// An early `return` inside an `inout` function must agree on both backends.
     /// An inout function yields multiple results (the declared return plus one per
     /// inout param), so an early return reproduces that epilogue: it pushes each

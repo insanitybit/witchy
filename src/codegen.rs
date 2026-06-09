@@ -752,8 +752,9 @@ impl Codegen {
             Expr::Call { name, .. } => match name.as_str() {
                 "int_to_string" | "to_string" | "to_upper" | "to_lower" | "trim" | "replace"
                 | "substring" | "crypto.sha256" => ValType::Str,
-                "starts_with" | "ends_with" | "contains" | "crypto.ed25519_verify" => ValType::Bool,
-                "string_length" | "char_count" | "index_of" | "length" | "float_to_int"
+                "starts_with" | "ends_with" | "contains" | "has"
+                | "crypto.ed25519_verify" => ValType::Bool,
+                "string_length" | "char_count" | "index_of" | "length" | "size" | "float_to_int"
                 | "string_to_int" | "int_to_duration" | "duration_to_int" => ValType::Int,
                 "int_to_float" | "sqrt" => ValType::Float,
                 other => self.fn_ret_valtype.get(other).copied().unwrap_or(ValType::Other),
