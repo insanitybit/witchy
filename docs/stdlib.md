@@ -288,6 +288,24 @@ The first / second component of a pair — handy for the tuples `iter.zip` and `
 
 HTTP types and a small HTTP/1.1 *client* over the `Net` capability — the witchy answer to a slice of Go's net/http (and reqwest's shape). Pure transport built on the capability-gated socket primitives: a module handed a `Net` restricted to some hosts can reach only those, and one handed no `Net` can't reach the network at all. The `server` module builds on the shared `Request`/`Response` types here. Interpreter-only for now (compiled networking maps to wasi:sockets, a future step).
 
+#### `type Response`
+
+A response: status code, headers (name lowercased for case-insensitive lookup), and body. Shared by the client and the `server` framework.
+
+- `Response(Int, List((String, String)), String)`
+
+#### `type Request`
+
+A parsed request the server hands to a handler: method, raw path, the path params the router captured (`:id`), the parsed query string, the (lowercased) headers, and the body.
+
+- `Request(String, String, List((String, String)), List((String, String)), List((String, String)), String)`
+
+#### `type RequestBuilder`
+
+An outgoing request being assembled: method, full URL, headers, and body. Build it up with `|>` and finish with `send`.
+
+- `RequestBuilder(String, String, List((String, String)), String)`
+
 #### `fn get(net: Net, host: String, port: Int, path: String) -> Response`
 
 Perform a GET request to `host:port` for `path`, returning the response.
@@ -365,6 +383,19 @@ Look up a header by its (already-lowercased) name. Shared with `server`.
 ## `iter`
 
 std/iter — lazy, pull-based iterators: the witchy take on Rust's Iterator, minus the part Rust most regrets. Because witchy values are "data" (no borrowing), there is no lending-iterator / GAT complexity: an `Iter(a)` is just a thunk that produces the next `Step`. Adapters (`map`/`filter`/ `take_while`/...) are lazy and compose without building intermediate lists; consumers (`collect`/`fold`/`find`/`count`) drive the pulling. Infinite iterators are fine (`count_from`, `repeat`) as long as something bounds them (`take`/`take_while`/`find`). Pure and capability-free; runs on both backends. (The planned `gen`/`yield` syntax will de-sugar to these constructors.)
+
+#### `type Step`
+
+One pull: either exhausted, or a value plus the rest of the iterator.
+
+- `Empty`
+- `Item(a, Iter(a))`
+
+#### `type Iter`
+
+An iterator is a thunk producing its next Step. Pull it with `next`.
+
+- `Iter(fn() -> Step(a))`
 
 #### `fn empty() -> Iter(a)`
 
@@ -469,6 +500,15 @@ The first element satisfying `pred`, or None (stops at the first match, so it is
 ## `json`
 
 A JSON library — the witchy take on Go's encoding/json. This slice is the value type and the encoder (serialization); the decoder (parsing) follows. Pure and capability-free, so — unlike networking — it compiles to WASM like the rest of the data std.
+
+#### `type Json`
+
+- `JsonNull`
+- `JsonBool(Bool)`
+- `JsonInt(Int)`
+- `JsonString(String)`
+- `JsonArray(List(Json))`
+- `JsonObject(List((String, Json)))`
 
 #### `fn encode(j: Json) -> String`
 
@@ -854,6 +894,11 @@ Format `x` with `decimals` digits after the decimal point, rounded half-up: form
 
 The witchy standard `Option` type and helpers. `import option` brings the type into scope (so the `?` operator works) and gives the usual combinators. Pure and capability-free.
 
+#### `type Option`
+
+- `Some(a)`
+- `None`
+
 #### `fn is_some(o: Option(a)) -> Bool`
 
 #### `fn unwrap_or(o: Option(a), default: a) -> a`
@@ -974,6 +1019,10 @@ Collapse `.` and `..` segments and redundant slashes. A relative path that backs
 
 A small, deterministic pseudo-random generator: the Park-Miller "minimal standard" LCG, `state' = state * 16807 mod (2^31 - 1)`. The intermediate fits in i64 (no overflow), so it is content-correct on both backends. State is threaded explicitly — the same seed always replays the same sequence, which is what you want for tests, sampling, and games. NOT for cryptography. Pure and capability-free.
 
+#### `type Rng`
+
+- `Rng(Int)`
+
 #### `fn seed(s: Int) -> Rng`
 
 A generator from seed `s` (any Int is mapped into the valid range 1..modulus).
@@ -1005,6 +1054,11 @@ True if `pattern` matches anywhere in `text` (anchored to the start when the pat
 ## `result`
 
 The witchy standard `Result` type and helpers. `import result` brings the type into scope (so the `?` operator works) and gives the usual combinators. Pure and capability-free, like every std module.
+
+#### `type Result`
+
+- `Ok(a)`
+- `Err(e)`
 
 #### `fn is_ok(r: Result(a, e)) -> Bool`
 
@@ -1104,6 +1158,20 @@ semver — semantic versions and constraints, for dependency resolution.
 
 Intentionally minimal (matching the package manager's needs): `major.minor.patch` versions and the `^`, `~`, exact, `>=`, and `*` constraints — enough for deterministic resolution without a full SemVer grammar. A missing component parses as 0 (`1.2` is `1.2.0`); a non-numeric component is an error.
 
+#### `type Version`
+
+- `Version(Int, Int, Int)`
+
+#### `type Req`
+
+A version constraint (requirement).
+
+- `Caret(Version)`
+- `Tilde(Version)`
+- `Exact(Version)`
+- `AtLeast(Version)`
+- `Any`
+
 #### `fn version(major: Int, minor: Int, patch: Int) -> Version`
 
 #### `fn major(v: Version) -> Int`
@@ -1149,6 +1217,18 @@ The witchy web framework — a slice of axum/tower over the `Net` capability, bu
 A handler is a pure `fn(Request) -> Response`: it has NO capability parameters, so it is *structurally* unable to touch the network, filesystem, or console. To give a handler authority (a logger, a store, an outbound client), capture it in the closure — capture IS dependency injection. `serve` holds the `Net` to listen and never hands it to a handler, so even a mounted third-party handler can only compute over the request; it cannot phone home.
 
   let app = server.router()       |> server.get("/", home)       |> server.get("/users/:id", show)       |> server.layer(logging(console))   server.serve(net, "127.0.0.1:8080", app)
+
+#### `type Route`
+
+One route: HTTP method, a path pattern (`:param` captures a segment, `*rest` captures the remainder), and the handler.
+
+- `Route(String, String, fn(Request) -> Response)`
+
+#### `type Router`
+
+A router: its routes plus the middleware layers wrapping the whole dispatch.
+
+- `Router(List(Route), List(fn(fn(Request) -> Response) -> fn(Request) -> Response))`
 
 #### `fn method(req: Request) -> String`
 
@@ -1402,6 +1482,10 @@ time — civil (UTC) date/time from a unix timestamp.
 
 `std/duration` models *spans*; this module models *points* on the calendar. Given seconds since the unix epoch (1970-01-01T00:00:00Z), it computes the civil year/month/day/hour/minute/second and formats them. The conversions use the standard days<->civil algorithm (proleptic Gregorian), correct for any CE date and for negative timestamps (before 1970) via floor division.
 
+#### `type DateTime`
+
+- `DateTime(Int, Int, Int, Int, Int, Int)`
+
 #### `fn year(d: DateTime) -> Int`
 
 #### `fn month(d: DateTime) -> Int`
@@ -1475,6 +1559,10 @@ Read `key` from an inline table value like `{ path = "../money", version = "1" }
 ## `url`
 
 Minimal URL parsing — the witchy slice of Go's net/url. Pure and capability-free, so it compiles to WASM. Handles `scheme://host[:port][/path]`; the port defaults by scheme (443 for https, else 80) and the path to "/".
+
+#### `type Url`
+
+- `Url(String, String, Int, String)`
 
 #### `fn parse(s: String) -> Option(Url)`
 

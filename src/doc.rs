@@ -7,7 +7,7 @@
 
 use std::fmt::Write;
 
-use crate::ast::{Item, Param, Type};
+use crate::ast::{Item, Param, Type, Variant};
 use crate::format::type_str;
 
 /// Render Markdown documentation for one module (named `module_name`) from its
@@ -24,6 +24,20 @@ pub fn render(module_name: &str, source: &str) -> Result<String, String> {
     }
 
     let mut any = false;
+    // Types first — they are the vocabulary the functions are written in.
+    for item in &module.items {
+        let Item::Type(t) = item else { continue };
+        any = true;
+        let _ = writeln!(out, "#### `type {}`\n", t.name);
+        let doc = doc_above(&lines, &format!("type {}:", t.name));
+        if !doc.is_empty() {
+            let _ = writeln!(out, "{doc}\n");
+        }
+        for v in &t.variants {
+            let _ = writeln!(out, "- `{}`", variant_str(v));
+        }
+        let _ = writeln!(out);
+    }
     for item in &module.items {
         let Item::Function(f) = item else { continue };
         if !f.public {
@@ -31,15 +45,32 @@ pub fn render(module_name: &str, source: &str) -> Result<String, String> {
         }
         any = true;
         let _ = writeln!(out, "#### `{}`\n", signature(&f.name, &f.params, &f.ret));
-        let doc = doc_above(&lines, &f.name);
+        let doc = doc_above(&lines, &format!("pub fn {}(", f.name));
         if !doc.is_empty() {
             let _ = writeln!(out, "{doc}\n");
         }
     }
     if !any {
-        let _ = writeln!(out, "_No public functions._\n");
+        let _ = writeln!(out, "_No public API._\n");
     }
     Ok(out)
+}
+
+fn variant_str(v: &Variant) -> String {
+    if !v.field_names.is_empty() {
+        let fs: Vec<String> = v
+            .field_names
+            .iter()
+            .zip(&v.fields)
+            .map(|(n, t)| format!("{n}: {}", type_str(t)))
+            .collect();
+        format!("{} {{ {} }}", v.name, fs.join(", "))
+    } else if v.fields.is_empty() {
+        v.name.clone()
+    } else {
+        let fs: Vec<String> = v.fields.iter().map(type_str).collect();
+        format!("{}({})", v.name, fs.join(", "))
+    }
 }
 
 fn signature(name: &str, params: &[Param], ret: &Option<Type>) -> String {
@@ -69,12 +100,12 @@ fn leading_comment(lines: &[&str]) -> String {
     join_comment(block.into_iter())
 }
 
-/// The `//` block immediately above the `pub fn <name>(` line, if any.
-fn doc_above(lines: &[&str], name: &str) -> String {
-    let needle = format!("pub fn {name}(");
+/// The `//` block immediately above the first line starting with `marker`
+/// (e.g. `pub fn name(` or `type Name:`), if any.
+fn doc_above(lines: &[&str], marker: &str) -> String {
     let Some(i) = lines
         .iter()
-        .position(|l| l.trim_start().starts_with(&needle))
+        .position(|l| l.trim_start().starts_with(marker))
     else {
         return String::new();
     };
