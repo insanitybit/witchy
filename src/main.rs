@@ -17,6 +17,7 @@ mod ast;
 mod capabilities;
 mod codegen;
 mod consts;
+mod doc;
 mod format;
 mod generators;
 mod interpreter;
@@ -130,6 +131,39 @@ Package commands (add, build, publish, ...) are also available."
 }
 
 fn main() -> wasmtime::Result<()> {
+    // `witchy doc <file>...` prints Markdown API docs (one section per file) to
+    // stdout — public functions, their signatures, and their doc comments.
+    if std::env::args().nth(1).as_deref() == Some("doc") {
+        use std::path::Path;
+        let files: Vec<String> = std::env::args().skip(2).collect();
+        if files.is_empty() {
+            eprintln!("usage: witchy doc <file.witchy>...");
+            std::process::exit(2);
+        }
+        let mut out = String::from("# API reference\n\n");
+        for f in &files {
+            let stem = Path::new(f)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or(f);
+            let src = match std::fs::read_to_string(f) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("cannot read `{f}`: {e}");
+                    std::process::exit(1);
+                }
+            };
+            match doc::render(stem, &src) {
+                Ok(md) => out.push_str(&md),
+                Err(e) => {
+                    eprintln!("{f}: {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        print!("{out}");
+        return Ok(());
+    }
     // `witchy caps <file>` reports the program's host-capability footprint.
     if std::env::args().nth(1).as_deref() == Some("caps") {
         let Some(path) = std::env::args().nth(2) else {
