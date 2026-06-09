@@ -1,0 +1,16 @@
+// sales — a small revenue report. It reads a CSV of sales with a read-only Dir
+// capability, aggregates per-product revenue with the `salelib` rune (a path
+// dependency, which uses std `csv` + `dict`), and prints a sorted summary. Its
+// footprint is exactly `Console, Dir[Read]`. Run with:  witchy run
+
+import salelib
+import dict
+import list
+import string
+
+fn main(console: Console, root: Dir[Read]):
+    let totals = salelib.revenue_by_product(read(root, "sales.csv"))
+    print(console, "Revenue by product:")
+    for product in list.sort_by(keys(totals), fn(a: String, b: String): a < b):
+        print(console, "  " <> string.pad_right(product, 16, " ") <> "$" <> int_to_string(get_or(totals, product, 0)))
+    print(console, "Total: $" <> int_to_string(salelib.grand_total(totals)))

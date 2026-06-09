@@ -1110,6 +1110,25 @@ fn example_config_workspace_runs_with_result_error_handling() {
     );
 }
 
+/// The committed `examples/projects/sales` workspace — a `sales` app that reads a
+/// CSV of sales (via a read-only `Dir`) and aggregates per-product revenue with
+/// the `salelib` rune (a path dependency using std `csv` + `dict`). It builds and
+/// runs, parsing a quoted field with an embedded comma and folding into a Dict.
+#[test]
+fn example_sales_workspace_aggregates_csv_with_dict() {
+    let sb = Sandbox::new("ex-sales");
+    let srcroot = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/projects/sales");
+    copy_tree(&srcroot, &sb.work);
+    let out = sb.run(&sb.work.join("sales"), "dev", &["run"]);
+    assert!(out.status.success(), "run failed: {}", stderr(&out));
+    let s = stdout(&out);
+    assert!(s.contains("gadget          $125"), "gadget total: {s}");
+    // The CSV field "gizmo, deluxe" is quoted; its embedded comma survives parsing.
+    assert!(s.contains("gizmo, deluxe   $200"), "quoted-field product: {s}");
+    assert!(s.contains("widget          $150"), "widget total: {s}");
+    assert!(s.contains("Total: $475"), "grand total: {s}");
+}
+
 #[test]
 fn published_rune_cannot_have_path_dependency() {
     let sb = Sandbox::new("nopath");
