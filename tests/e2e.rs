@@ -1605,3 +1605,114 @@ fn witchy_pm_add_resolves_and_fetches_from_coven() {
         "offline verify-rune must re-verify the vendored rune: {verify_out:?}"
     );
 }
+
+/// Self-hosted yank: the witchy coven marks a version yanked and the witchy pm's
+/// resolver skips it. With 1.0.0 and 2.0.0 both released, `*` resolves to 2.0.0;
+/// after 2.0.0 is yanked, `*` falls back to 1.0.0 — a yanked version is excluded
+/// from new resolutions (existing locks would still pin it).
+#[test]
+fn witchy_coven_yank_excludes_from_resolution() {
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let coven_src = format!("{manifest_dir}/projects/coven/src/coven.witchy");
+    let pm_src = format!("{manifest_dir}/projects/pm/src/pm.witchy");
+
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let addr = format!("127.0.0.1:{port}");
+    let store = unique("witchy-yank-store");
+    let seed = store.join("root.seed");
+    std::fs::write(
+        &seed,
+        "0000000000000000000000000000000000000000000000000000000000000001",
+    )
+    .unwrap();
+
+    let mut server = Command::new(BIN)
+        .args([
+            "--net",
+            &addr,
+            "--signing-key",
+            seed.to_str().unwrap(),
+            &coven_src,
+            &addr,
+        ])
+        .current_dir(&store)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn witchy coven");
+    let mut up = false;
+    for _ in 0..80 {
+        if std::net::TcpStream::connect(&addr).is_ok() {
+            up = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    if !up {
+        let _ = server.kill();
+        let _ = server.wait();
+        panic!("witchy coven never started on {addr}");
+    }
+
+    let module = "fn ver() -> String:\n    \"x\"\n";
+    let publish = |version: &str| {
+        let manifest = format!("[rune]\nname = \"acme/money\"\nversion = \"{version}\"\n");
+        let source = format!(
+            "{{\"files\":[[\"witchy.toml\",{}],[\"src/money.witchy\",{}]]}}",
+            json_str(&manifest),
+            json_str(module)
+        );
+        let body = format!(
+            "{{\"manifest_toml\":{},\"source\":{source},\"uploaded_by\":\"ci\"}}",
+            json_str(&manifest)
+        );
+        http_post(&addr, "/coven/publish", &body)
+    };
+    let promote = |version: &str| {
+        let body = format!(
+            "{{\"name\":\"acme~money\",\"version\":\"{version}\",\"second_factor\":\"webauthn\",\"promoted_by\":\"human\"}}"
+        );
+        http_post(&addr, "/coven/promote", &body)
+    };
+    for v in ["1.0.0", "2.0.0"] {
+        assert_eq!(publish(v).0, 200, "publish {v}");
+        assert_eq!(promote(v).0, 200, "promote {v}");
+    }
+
+    let add_star = || {
+        let dest = unique("witchy-yank-dest");
+        let out = Command::new(BIN)
+            .args(["--net", &addr, &pm_src, "add", "acme/money", "*", &addr, "vendor"])
+            .current_dir(&dest)
+            .output()
+            .expect("run pm add");
+        let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+        let _ = std::fs::remove_dir_all(&dest);
+        stdout
+    };
+
+    // Both released: `*` resolves to the highest, 2.0.0.
+    let before = add_star();
+    // Yank 2.0.0, then `*` must fall back to 1.0.0.
+    let (yank_status, yank_body) =
+        http_post(&addr, "/coven/yank", "{\"name\":\"acme~money\",\"version\":\"2.0.0\"}");
+    let after = add_star();
+
+    let _ = server.kill();
+    let _ = server.wait();
+    let _ = std::fs::remove_dir_all(&store);
+
+    assert!(
+        before.contains("added acme/money@2.0.0"),
+        "before yank, * resolves to 2.0.0: {before:?}"
+    );
+    assert_eq!(yank_status, 200, "yank should succeed: {yank_body}");
+    assert!(
+        after.contains("added acme/money@1.0.0"),
+        "after yank, * falls back to 1.0.0: {after:?}"
+    );
+}

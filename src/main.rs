@@ -7922,6 +7922,31 @@ fn main(console: Console):
         assert_eq!(code, 0);
     }
 
+    /// `pm info <dir>` summarizes a rune: name, version, declared vs. recomputed
+    /// footprint. Run on the pm itself — its declared `[capabilities]` exactly
+    /// match what the code demands (Console, Dir, Net), the self-consistency the
+    /// `check` gate enforces.
+    #[test]
+    fn pm_info_summarizes_a_rune() {
+        let (out, code) = crate::execute_file_exit(
+            "projects/pm/src/pm.witchy",
+            Vec::new(),
+            vec!["info".into(), "projects/pm".into()],
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            out,
+            vec![
+                "name:     pm",
+                "version:  0.1.0",
+                "declared: Console, Dir, Net",
+                "actual:   Console, Dir, Net",
+            ]
+        );
+        assert_eq!(code, 0);
+    }
+
     /// The interop milestone: `pm verify` recomputes each dependency's content
     /// hash and checks it against the *committed, coven-generated* `witchy.lock`.
     /// It passes — the self-hosted pm's hashing is byte-identical to coven's
