@@ -3724,6 +3724,46 @@ fn opt(o: Option(String)) -> String:
         );
     }
 
+    /// `std/semver` (pure witchy) parses `major.minor.patch`, matches the `^`/`~`/
+    /// exact/`>=`/`*` constraints (rights matching the Rust resolver's semver),
+    /// and picks the highest satisfying version — what dependency resolution needs.
+    #[test]
+    fn semver_module_parses_and_matches_constraints() {
+        let src = r#"import semver
+
+fn main(console: Console):
+    print(console, yes(req_matches("^1.2.0", "1.9.9")))
+    print(console, yes(req_matches("^1.2.0", "2.0.0")))
+    print(console, yes(req_matches("^0.4.0", "0.5.0")))
+    print(console, yes(req_matches("~1.2.0", "1.2.9")))
+    print(console, yes(req_matches("~1.2.0", "1.3.0")))
+    print(console, yes(req_matches(">=1.0.0", "3.0.0")))
+    print(console, best_of("^1.2.0"))
+
+fn req_matches(r: String, v: String) -> Bool:
+    match semver.parse_req(r):
+        Ok(req) -> match semver.parse(v):
+            Ok(ver) -> semver.matches(req, ver)
+            Err(e) -> false
+        Err(e) -> false
+
+fn best_of(r: String) -> String:
+    let vs = [semver.version(1, 0, 0), semver.version(1, 2, 0), semver.version(1, 9, 9), semver.version(2, 0, 0)]
+    match semver.parse_req(r):
+        Ok(req) -> match semver.best(vs, req):
+            Some(v) -> semver.to_string(v)
+            None -> "(none)"
+        Err(e) -> "err"
+
+fn yes(b: Bool) -> String:
+    if b: "y" else: "n"
+"#;
+        assert_eq!(
+            link_run(src),
+            vec!["y", "n", "n", "y", "n", "y", "1.9.9"]
+        );
+    }
+
     /// The `Clock` capability yields wall-clock time (ms since epoch) via `now`.
     /// Reading the clock is ambient nondeterminism, so it's capability-gated and
     /// surfaces in the footprint — not a pure builtin.

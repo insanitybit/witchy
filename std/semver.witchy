@@ -1,0 +1,167 @@
+// semver — semantic versions and constraints, for dependency resolution.
+//
+// Intentionally minimal (matching the package manager's needs): `major.minor.patch`
+// versions and the `^`, `~`, exact, `>=`, and `*` constraints — enough for
+// deterministic resolution without a full SemVer grammar. A missing component
+// parses as 0 (`1.2` is `1.2.0`); a non-numeric component is an error.
+
+import string
+
+type Version:
+    Version(Int, Int, Int)
+
+// A version constraint (requirement).
+type Req:
+    Caret(Version)
+    Tilde(Version)
+    Exact(Version)
+    AtLeast(Version)
+    Any
+
+// --- constructors + accessors ------------------------------------------------
+
+pub fn version(major: Int, minor: Int, patch: Int) -> Version:
+    Version(major, minor, patch)
+
+pub fn major(v: Version) -> Int:
+    match v:
+        Version(a, _b, _c) -> a
+
+pub fn minor(v: Version) -> Int:
+    match v:
+        Version(_a, b, _c) -> b
+
+pub fn patch(v: Version) -> Int:
+    match v:
+        Version(_a, _b, c) -> c
+
+// --- parsing + rendering -----------------------------------------------------
+
+// Parse `major.minor.patch` (missing trailing components default to 0). Errors on
+// a non-numeric component or more than three components.
+pub fn parse(s: String) -> Result(Version, String):
+    let parts = split(string.trim(s), ".")
+    if length(parts) == 0 || length(parts) > 3:
+        Err("bad version `" <> s <> "`: expected major.minor.patch")
+    else:
+        match component(parts, 0):
+            Ok(a) -> match component(parts, 1):
+                Ok(b) -> match component(parts, 2):
+                    Ok(c) -> Ok(Version(a, b, c))
+                    Err(e) -> Err(e)
+                Err(e) -> Err(e)
+            Err(e) -> Err(e)
+
+fn component(parts: List(String), i: Int) -> Result(Int, String):
+    if i >= length(parts):
+        Ok(0)
+    else:
+        match string.parse_int(at(parts, i)):
+            Some(n) -> Ok(n)
+            None -> Err("bad version component `" <> at(parts, i) <> "`")
+
+pub fn to_string(v: Version) -> String:
+    int_to_string(major(v)) <> "." <> int_to_string(minor(v)) <> "." <> int_to_string(patch(v))
+
+// --- ordering ----------------------------------------------------------------
+
+// -1 if a < b, 0 if equal, 1 if a > b — comparing major, then minor, then patch.
+pub fn compare(a: Version, b: Version) -> Int:
+    if major(a) != major(b):
+        sign(major(a) - major(b))
+    else if minor(a) != minor(b):
+        sign(minor(a) - minor(b))
+    else:
+        sign(patch(a) - patch(b))
+
+fn sign(n: Int) -> Int:
+    if n < 0:
+        -1
+    else if n > 0:
+        1
+    else:
+        0
+
+pub fn eq(a: Version, b: Version) -> Bool:
+    compare(a, b) == 0
+
+pub fn lt(a: Version, b: Version) -> Bool:
+    compare(a, b) < 0
+
+pub fn lte(a: Version, b: Version) -> Bool:
+    compare(a, b) <= 0
+
+pub fn gt(a: Version, b: Version) -> Bool:
+    compare(a, b) > 0
+
+pub fn gte(a: Version, b: Version) -> Bool:
+    compare(a, b) >= 0
+
+// --- constraints -------------------------------------------------------------
+
+pub fn parse_req(s: String) -> Result(Req, String):
+    let t = string.trim(s)
+    if t == "*":
+        Ok(Any)
+    else if starts_with(t, "^"):
+        wrap_caret(parse(string.drop(t, 1)))
+    else if starts_with(t, "~"):
+        wrap_tilde(parse(string.drop(t, 1)))
+    else if starts_with(t, ">="):
+        wrap_atleast(parse(string.drop(t, 2)))
+    else:
+        wrap_exact(parse(t))
+
+fn wrap_caret(r: Result(Version, String)) -> Result(Req, String):
+    match r:
+        Ok(v) -> Ok(Caret(v))
+        Err(e) -> Err(e)
+
+fn wrap_tilde(r: Result(Version, String)) -> Result(Req, String):
+    match r:
+        Ok(v) -> Ok(Tilde(v))
+        Err(e) -> Err(e)
+
+fn wrap_atleast(r: Result(Version, String)) -> Result(Req, String):
+    match r:
+        Ok(v) -> Ok(AtLeast(v))
+        Err(e) -> Err(e)
+
+fn wrap_exact(r: Result(Version, String)) -> Result(Req, String):
+    match r:
+        Ok(v) -> Ok(Exact(v))
+        Err(e) -> Err(e)
+
+// Whether `v` satisfies the constraint `req`.
+pub fn matches(req: Req, v: Version) -> Bool:
+    match req:
+        Any -> true
+        Exact(r) -> eq(v, r)
+        AtLeast(r) -> gte(v, r)
+        Tilde(r) -> major(v) == major(r) && minor(v) == minor(r) && patch(v) >= patch(r)
+        Caret(r) -> caret_matches(r, v)
+
+// `^x.y.z` is compatible up to the next bump of the left-most non-zero component:
+// ^1.2.3 stays in 1.x, ^0.4.0 stays in 0.4.x, ^0.0.3 is exactly 0.0.3.
+fn caret_matches(r: Version, v: Version) -> Bool:
+    if lt(v, r):
+        false
+    else if major(r) > 0:
+        major(v) == major(r)
+    else if minor(r) > 0:
+        major(v) == 0 && minor(v) == minor(r)
+    else:
+        major(v) == 0 && minor(v) == 0 && patch(v) == patch(r)
+
+// The highest version in `versions` that satisfies `req`, or None if none do.
+pub fn best(versions: List(Version), req: Req) -> Option(Version):
+    var chosen = None
+    for v in versions:
+        if matches(req, v) && higher_than(v, chosen):
+            chosen = Some(v)
+    chosen
+
+fn higher_than(v: Version, current: Option(Version)) -> Bool:
+    match current:
+        Some(c) -> gt(v, c)
+        None -> true
