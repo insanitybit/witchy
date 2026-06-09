@@ -3523,6 +3523,12 @@ impl Codegen {
                 let name = self.compile_expr(&args[1])?;
                 Ok(format!("{name}    call $get_env\n"))
             }
+            // `fail(msg)`: a deliberate, loud abort — the interpreter raises the
+            // message as a runtime error; compiled code traps. (Both fail.)
+            ("fail", 1) => {
+                let msg = self.compile_expr(&args[0])?;
+                Ok(format!("{msg}    drop\n    unreachable\n"))
+            }
             ("print", 2) => {
                 self.uses_print = true;
                 let msg = self.compile_expr(&args[1])?;

@@ -1,0 +1,38 @@
+// The witchy test support module. `witchy test <file>` discovers every
+// zero-parameter function named `test_*`, runs each one, and reports it as
+// passing unless it aborts — which these assertions do, with a message, via
+// the `fail` primitive. Tests are pure functions: they take no capabilities,
+// so a test suite provably has no effects.
+//
+//   import testing
+//
+//   fn test_addition():
+//       testing.assert_eq(int_to_string(2 + 2), "4")
+//
+//   fn test_truth():
+//       testing.assert(1 < 2, "one is less than two")
+
+// Abort the test with `msg` unless `cond` holds.
+pub fn assert(cond: Bool, msg: String):
+    if !cond:
+        fail("assertion failed: " <> msg)
+
+// Abort unless the two strings are equal, showing both. Convert values with
+// `to_string`/`int_to_string` at the call site — the message stays readable.
+pub fn assert_eq(got: String, want: String):
+    if got != want:
+        fail("assertion failed: got `" <> got <> "`, want `" <> want <> "`")
+
+// Abort if the two strings ARE equal.
+pub fn assert_ne(got: String, other: String):
+    if got == other:
+        fail("assertion failed: `" <> got <> "` should differ from `" <> other <> "`")
+
+// Abort unless the two Ints are equal, showing both.
+pub fn assert_int_eq(got: Int, want: Int):
+    if got != want:
+        fail("assertion failed: got " <> int_to_string(got) <> ", want " <> int_to_string(want))
+
+// Unconditional failure with a message (e.g. an unreachable branch).
+pub fn fail_with(msg: String):
+    fail(msg)

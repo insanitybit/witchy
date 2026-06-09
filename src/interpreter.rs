@@ -628,6 +628,12 @@ impl Interpreter {
                 Value::Str(s) => Ok(Some(Value::Str(s.to_ascii_lowercase()))),
                 other => err(format!("to_lower expects a String, got `{other}`")),
             },
+            // Abort with a message — the error-raising primitive behind
+            // `std/testing`'s assertions (a deliberate, loud failure).
+            "fail" => match one(args)? {
+                Value::Str(msg) => Err(RuntimeError { message: msg.clone() }),
+                other => err(format!("fail expects a String message, got `{other}`")),
+            },
             "trim" => match one(args)? {
                 // ASCII whitespace only — exactly the byte set the WASM `$is_ws`
                 // helper strips (space, tab, LF, VT, FF, CR). Rust's `str::trim`

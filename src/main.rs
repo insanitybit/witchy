@@ -116,6 +116,7 @@ USAGE:
     witchy [--net <host:port>]... <file.witchy>   run a program
     witchy check    <file.witchy>                 type-check without running
     witchy parity   <file.witchy>                 run on both backends, confirm identical output
+    witchy test     <file.witchy|dir>             run in-language tests (zero-param `test_*` functions)
     witchy sandbox [--dir <root>] [--net <addr>]... <file.witchy> [args...]
                                                   compile and run in a VM granted exactly its footprint
     witchy native [-o out] <file.witchy>          compile to a native binary via rustc/LLVM, then run it
@@ -215,6 +216,22 @@ fn main() -> wasmtime::Result<()> {
             }
         }
         return Ok(());
+    }
+    // `witchy test <file|dir>` runs in-language tests: zero-parameter `test_*`
+    // functions, passing unless they abort (std/testing's assertions).
+    if std::env::args().nth(1).as_deref() == Some("test") {
+        let Some(path) = std::env::args().nth(2) else {
+            eprintln!("usage: witchy test <file.witchy|dir>");
+            std::process::exit(1);
+        };
+        match run_tests(&path) {
+            Ok(true) => return Ok(()),
+            Ok(false) => std::process::exit(1),
+            Err(e) => {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
+        }
     }
     // `witchy parity <file>` runs the program on both the interpreter and the
     // compiled WASM backend and confirms they produce identical output. (Named
@@ -915,6 +932,101 @@ fn execute_file_exit(
 /// WebAssembly — and confirm they produce identical output. Witchy's
 /// dual-backend equivalence is normally an internal test invariant; `witchy
 /// verify` surfaces it as a guarantee you can check on your own code.
+/// Discover and run the tests in a source file: every ZERO-parameter function
+/// named `test_*`, each invoked through a synthesized `main` in a fresh
+/// interpreter. A test passes by returning and fails by aborting (which
+/// `std/testing`'s assertions do, with a message). Tests take no capabilities,
+/// so a suite provably has no effects. Returns the failures as (name, message).
+fn run_tests_in_file(path: &str) -> Result<(Vec<String>, Vec<(String, String)>), String> {
+    use std::path::Path;
+    let (linked, _stem) = link_file(path)?;
+    typeck::check(&linked).map_err(|e| e.to_string())?;
+    // Post-link names are module-qualified (`suite.test_x`); match on the bare
+    // name, call the qualified one.
+    let tests: Vec<String> = linked
+        .items
+        .iter()
+        .filter_map(|it| match it {
+            ast::Item::Function(f)
+                if f.name.rsplit('.').next().unwrap_or(&f.name).starts_with("test_")
+                    && f.params.is_empty() =>
+            {
+                Some(f.name.clone())
+            }
+            _ => None,
+        })
+        .collect();
+    let root = Path::new(path).parent().unwrap_or(Path::new("."));
+    let mut passed = Vec::new();
+    let mut failed = Vec::new();
+    for test in tests {
+        // Synthesize `fn main(): <test>()` (replacing any real main) and run.
+        // The test name is already linker-qualified (`suite.test_x`), which the
+        // parser would read as a method call — so parse a placeholder and patch
+        // the call name in the AST.
+        let mut m = linked.clone();
+        m.items
+            .retain(|it| !matches!(it, ast::Item::Function(f) if f.name == "main"));
+        let mut driver = parser::parse_module("fn main():\n    witchy_test_target()\n")
+            .map_err(|e| e.to_string())?;
+        for it in &mut driver.items {
+            if let ast::Item::Function(f) = it {
+                if let Some(ast::Stmt::Expr(ast::Expr::Call { name, .. })) = f.body.stmts.first_mut()
+                {
+                    *name = test.clone();
+                }
+            }
+        }
+        m.items.extend(driver.items);
+        match interpreter::run_module(m, root, Vec::new()) {
+            Ok(_) => passed.push(test),
+            Err(e) => failed.push((test, e.message)),
+        }
+    }
+    Ok((passed, failed))
+}
+
+/// `witchy test <file|dir>`: run in-language tests, print a cargo-style
+/// report, and return whether everything passed.
+fn run_tests(path: &str) -> Result<bool, String> {
+    let mut files: Vec<String> = Vec::new();
+    let meta = std::fs::metadata(path).map_err(|e| format!("cannot read `{path}`: {e}"))?;
+    if meta.is_dir() {
+        let mut entries: Vec<_> = std::fs::read_dir(path)
+            .map_err(|e| format!("cannot read `{path}`: {e}"))?
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("witchy"))
+            .collect();
+        entries.sort();
+        files.extend(entries.into_iter().filter_map(|p| p.to_str().map(String::from)));
+    } else {
+        files.push(path.to_string());
+    }
+    let mut total_pass = 0usize;
+    let mut total_fail = 0usize;
+    for file in &files {
+        let (passed, failed) = run_tests_in_file(file)?;
+        if passed.is_empty() && failed.is_empty() {
+            continue;
+        }
+        println!("running {} test(s) in {file}", passed.len() + failed.len());
+        for name in &passed {
+            println!("test {name} ... ok");
+        }
+        for (name, msg) in &failed {
+            println!("test {name} ... FAILED: {msg}");
+        }
+        total_pass += passed.len();
+        total_fail += failed.len();
+    }
+    println!(
+        "\ntest result: {}. {total_pass} passed; {total_fail} failed",
+        if total_fail == 0 { "ok" } else { "FAILED" }
+    );
+    Ok(total_fail == 0)
+}
+
 fn verify_file(path: &str) -> Result<(), String> {
     use std::path::Path;
     let (linked, _stem) = link_file(path)?;
@@ -4562,6 +4674,42 @@ fn yn(b: Bool) -> String:
         ];
         assert_eq!(interp(src), want.clone(), "interpreter");
         assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
+    }
+
+    /// The in-language test framework: `witchy test` discovers zero-parameter
+    /// `test_*` functions, a test passes by returning and fails by aborting
+    /// (std/testing's assertions report a message). Capability-free by
+    /// construction.
+    #[test]
+    fn in_language_test_framework_runs_and_reports() {
+        let path = std::env::temp_dir().join(format!("witchy_testfw_{}.witchy", std::process::id()));
+        std::fs::write(
+            &path,
+            "import testing\n\nfn double(n: Int) -> Int:\n    n * 2\n\nfn test_double():\n    testing.assert_int_eq(double(21), 42)\n\nfn test_strings():\n    testing.assert_eq(\"a\" <> \"b\", \"ab\")\n    testing.assert_ne(\"a\", \"b\")\n\nfn test_broken():\n    testing.assert(1 > 2, \"deliberately wrong\")\n",
+        )
+        .unwrap();
+        let (passed, failed) = crate::run_tests_in_file(path.to_str().unwrap()).expect("run");
+        assert_eq!(passed.len(), 2, "two passing tests: {passed:?}");
+        assert_eq!(failed.len(), 1, "one failing test: {failed:?}");
+        assert!(failed[0].0.ends_with("test_broken"));
+        assert!(
+            failed[0].1.contains("deliberately wrong"),
+            "failure carries the assertion message: {}",
+            failed[0].1
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// `fail` is the loud abort on BOTH backends: a runtime error in the
+    /// interpreter, a trap in compiled code.
+    #[test]
+    fn fail_aborts_on_both_backends() {
+        let src = "fn main(console: Console):\n    print(console, \"before\")\n    fail(\"boom\")\n    print(console, \"after\")\n";
+        let err = interpreter::run(src).expect_err("interpreter must abort");
+        assert!(err.message.contains("boom"));
+        let module = parser::parse_module(src).expect("parse");
+        let wat = codegen::compile_module(&module).expect("compile");
+        assert!(crate::run_wat_capture(&wat).is_err(), "WASM must trap on fail()");
     }
 
     /// `now` (Clock) and `get_env` (Env) compile to capability-gated host

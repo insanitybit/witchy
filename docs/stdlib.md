@@ -1508,6 +1508,36 @@ Remove trailing whitespace.
 
 Remove leading and trailing whitespace.
 
+## `testing`
+
+The witchy test support module. `witchy test <file>` discovers every zero-parameter function named `test_*`, runs each one, and reports it as passing unless it aborts — which these assertions do, with a message, via the `fail` primitive. Tests are pure functions: they take no capabilities, so a test suite provably has no effects.
+
+  import testing
+
+  fn test_addition():       testing.assert_eq(int_to_string(2 + 2), "4")
+
+  fn test_truth():       testing.assert(1 < 2, "one is less than two")
+
+#### `fn assert(cond: Bool, msg: String)`
+
+Abort the test with `msg` unless `cond` holds.
+
+#### `fn assert_eq(got: String, want: String)`
+
+Abort unless the two strings are equal, showing both. Convert values with `to_string`/`int_to_string` at the call site — the message stays readable.
+
+#### `fn assert_ne(got: String, other: String)`
+
+Abort if the two strings ARE equal.
+
+#### `fn assert_int_eq(got: Int, want: Int)`
+
+Abort unless the two Ints are equal, showing both.
+
+#### `fn fail_with(msg: String)`
+
+Unconditional failure with a message (e.g. an unreachable branch).
+
 ## `time`
 
 time — civil (UTC) date/time from a unix timestamp.

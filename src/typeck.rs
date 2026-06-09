@@ -745,6 +745,8 @@ impl Checker {
             "string_length" => Some((vec![Ty::String], Ty::Int)),
             "char_count" => Some((vec![Ty::String], Ty::Int)),
             "to_upper" | "to_lower" | "trim" => Some((vec![Ty::String], Ty::String)),
+            // Abort with a message (the primitive behind std/testing).
+            "fail" => Some((vec![Ty::String], Ty::Nil)),
             "starts_with" | "contains" | "ends_with" => {
                 Some((vec![Ty::String, Ty::String], Ty::Bool))
             }
