@@ -3592,6 +3592,17 @@ mod example_tests {
                 );
                 prop_assert_eq!(link_run(&src), vec![v]);
             }
+
+            /// `path.normalize` is idempotent — normalizing an already-normal path
+            /// changes nothing — over arbitrary `.`/`..`/segment soup.
+            #[test]
+            fn path_normalize_is_idempotent(p in "[a-c./]{0,24}") {
+                let src = format!(
+                    "import path\nfn main(console: Console):\n    let once = path.normalize(\"{}\")\n    print(console, yn(path.normalize(once) == once))\n\nfn yn(b: Bool) -> String:\n    if b: \"y\" else: \"n\"\n",
+                    esc(&p)
+                );
+                prop_assert_eq!(link_run(&src), vec!["y".to_string()]);
+            }
         }
     }
 
@@ -3853,6 +3864,34 @@ fn yes(b: Bool) -> String:
         assert_eq!(
             link_run(src),
             vec!["y", "n", "n", "y", "n", "y", "1.9.9"]
+        );
+    }
+
+    /// `std/path` does pure '/'-path surgery: base/dir/ext/stem, join (an absolute
+    /// right-hand side replaces), and normalize (collapsing `.`/`..`, never
+    /// escaping an absolute root, keeping leading `..` when relative).
+    #[test]
+    fn path_module_components_and_normalize() {
+        let src = r#"import path
+
+fn main(console: Console):
+    print(console, path.base("a/b/c.txt") <> "|" <> path.dir("a/b/c.txt"))
+    print(console, path.ext("a/b.tar.gz") <> "|" <> path.stem("a/b.tar.gz"))
+    print(console, "[" <> path.ext(".bashrc") <> "]|" <> path.base("a/b/"))
+    print(console, path.join("a/b", "c") <> "|" <> path.join("a", "/x"))
+    print(console, path.normalize("a/./b/../c/") <> "|" <> path.normalize("/a/b/../../../x"))
+    print(console, path.normalize("../a/../../b"))
+"#;
+        assert_eq!(
+            link_run(src),
+            vec![
+                "c.txt|a/b",
+                "gz|b.tar",
+                "[]|b",
+                "a/b/c|/x",
+                "a/c|/x",
+                "../../b",
+            ]
         );
     }
 

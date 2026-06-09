@@ -1,0 +1,105 @@
+// path — pure manipulation of '/'-separated path strings.
+//
+// This is string surgery only — it never touches the filesystem (that is the
+// `Dir` capability, wrapped by `std/fs`). Splitting, joining, the base/dir/ext
+// components, and a `normalize` that collapses `.` and `..`.
+
+import string
+
+// Whether `p` is absolute (rooted at `/`).
+pub fn is_abs(p: String) -> Bool:
+    starts_with(p, "/")
+
+// Join two path pieces with a single `/`. An empty piece is ignored; an absolute
+// `b` replaces `a`.
+pub fn join(a: String, b: String) -> String:
+    if string.is_empty(a) || is_abs(b):
+        b
+    else if string.is_empty(b):
+        a
+    else if ends_with(a, "/"):
+        a <> b
+    else:
+        a <> "/" <> b
+
+// The final component: "a/b/c.txt" -> "c.txt", "a/b/" -> "b", "/" -> "/".
+pub fn base(p: String) -> String:
+    let t = trim_slashes(p)
+    if string.is_empty(t):
+        "/"
+    else if contains(t, "/"):
+        let (_head, b) = string.rsplit_once(t, "/")
+        b
+    else:
+        t
+
+// Everything before the final component: "a/b/c" -> "a/b", "c" -> "", "/x" -> "/".
+pub fn dir(p: String) -> String:
+    let t = trim_slashes(p)
+    if !contains(t, "/"):
+        ""
+    else:
+        let (head, _b) = string.rsplit_once(t, "/")
+        if string.is_empty(head): "/" else: head
+
+// The extension after the final `.` in the base name ("a/b.tar.gz" -> "gz"), or
+// "" when there is none. A dotfile base (".bashrc") has no extension.
+pub fn ext(p: String) -> String:
+    let b = base(p)
+    let i = string.last_index_of(b, ".")
+    if i > 0:
+        substring(b, i + 1, char_count(b))
+    else:
+        ""
+
+// The base name without its extension (".bashrc" -> ".bashrc"; "a.b.c" -> "a.b").
+pub fn stem(p: String) -> String:
+    let b = base(p)
+    let e = ext(p)
+    if string.is_empty(e):
+        b
+    else:
+        string.strip_suffix(b, "." <> e)
+
+// Collapse `.` and `..` segments and redundant slashes. A relative path that
+// backs out past its start keeps the leading `..`s; an absolute one cannot escape
+// its root. An empty result is "." (relative) or "/" (absolute).
+pub fn normalize(p: String) -> String:
+    let absolute = is_abs(p)
+    var stack = []
+    for seg in split(p, "/"):
+        if seg == ".." :
+            if length(stack) > 0 && last(stack) != "..":
+                stack = drop_last(stack)
+            else if !absolute:
+                stack = push(stack, "..")
+        else if seg != "" && seg != ".":
+            stack = push(stack, seg)
+    let joined = string.join(stack, "/")
+    if absolute:
+        "/" <> joined
+    else if string.is_empty(joined):
+        "."
+    else:
+        joined
+
+// --- internals ---------------------------------------------------------------
+
+fn trim_slashes(p: String) -> String:
+    var t = p
+    while char_count(t) > 1 && ends_with(t, "/"):
+        t = string.strip_suffix(t, "/")
+    t
+
+fn last(xs: List(String)) -> String:
+    if length(xs) == 0: "" else: at(xs, length(xs) - 1)
+
+fn drop_last(xs: List(String)) -> List(String):
+    var out = []
+    let keep = length(xs) - 1
+    var i = 0
+    for x in xs:
+        if i < keep:
+            out = push(out, x)
+        i = i + 1
+    out
