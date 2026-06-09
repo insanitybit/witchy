@@ -365,6 +365,9 @@ struct Codegen {
     /// Dict variable -> its value's scalar type (from the `insert` that built it),
     /// so `for v in values(d)` / `at(values(d), i)` recover an Int value as i64.
     local_dict_value_valtype: HashMap<String, ValType>,
+    /// Dict variable -> its key's scalar type, so `pairs(d)` destructures the
+    /// `(key, value)` tuple at the right widths (an Int key as i64).
+    local_dict_key_valtype: HashMap<String, ValType>,
     /// Function name -> the record type of the elements of its `List(_)` return,
     /// so `for x in f(...) { x.field }` resolves x's record type.
     fn_ret_list_elem: HashMap<String, String>,
@@ -451,6 +454,7 @@ impl Codegen {
             fn_ret_result_valtype: HashMap::new(),
             local_payload_valtype: HashMap::new(),
             local_dict_value_valtype: HashMap::new(),
+            local_dict_key_valtype: HashMap::new(),
             fn_ret_list_elem: HashMap::new(),
             fn_ret_list_elem_valtype: HashMap::new(),
             fn_ret_option_of_list_arg: HashMap::new(),
@@ -791,6 +795,21 @@ impl Codegen {
         }
     }
 
+    /// The scalar KEY type a Dict holds (the `insert`'s key, or a Dict variable's
+    /// tracked key type), so `pairs(d)` destructures the key slot correctly.
+    fn dict_key_valtype_of(&self, value: &Expr) -> Option<ValType> {
+        match value {
+            Expr::Call { name, args } if name == "insert" && args.len() == 3 => {
+                match self.val_type_of(&args[1]) {
+                    ValType::Other => None,
+                    vt => Some(vt),
+                }
+            }
+            Expr::Var(v) => self.local_dict_key_valtype.get(v).copied(),
+            _ => None,
+        }
+    }
+
     /// The SCALAR value type of an `Option`/`Result` scrutinee's `Some`/`Ok`
     /// payload, where codegen can determine it: a variable bound to such a value,
     /// a call to a function declared `-> Option(T)`/`Result(T, _)`, or a literal
@@ -889,6 +908,18 @@ impl Codegen {
                 }
                 _ => None,
             },
+            // `pairs(d)` yields `(key, value)` tuples; their slot types are the
+            // Dict's tracked key and value types.
+            Expr::Call { name, args } if name == "pairs" && args.len() == 1 => {
+                if let Expr::Var(d) = &args[0] {
+                    let k = self.local_dict_key_valtype.get(d).copied().unwrap_or(ValType::Other);
+                    let v = self.local_dict_value_valtype.get(d).copied().unwrap_or(ValType::Other);
+                    if k != ValType::Other || v != ValType::Other {
+                        return Some(vec![k, v]);
+                    }
+                }
+                None
+            }
             _ => None,
         }
     }
@@ -972,6 +1003,9 @@ impl Codegen {
                     if let Some(vvt) = self.dict_value_valtype_of(value) {
                         self.local_dict_value_valtype.insert(name.clone(), vvt);
                     }
+                    if let Some(kvt) = self.dict_key_valtype_of(value) {
+                        self.local_dict_key_valtype.insert(name.clone(), kvt);
+                    }
                     // A binding to a closure value records its call-return kind, so
                     // `let f = make(...)` then `f(x)` recovers the result width.
                     if let Some(rk) = self.closure_ret_kind_of(value) {
@@ -1029,9 +1063,12 @@ impl Codegen {
                     }
                 }
                 Stmt::Assign { name, value } => {
-                    // `d = insert(d, k, v)` carries the Dict's value type forward.
+                    // `d = insert(d, k, v)` carries the Dict's key/value types forward.
                     if let Some(vvt) = self.dict_value_valtype_of(value) {
                         self.local_dict_value_valtype.insert(name.clone(), vvt);
+                    }
+                    if let Some(kvt) = self.dict_key_valtype_of(value) {
+                        self.local_dict_key_valtype.insert(name.clone(), kvt);
                     }
                     self.infer_locals_expr(value);
                 }
@@ -1395,6 +1432,7 @@ impl Codegen {
         self.local_tuple_slots.clear();
         self.local_payload_valtype.clear();
         self.local_dict_value_valtype.clear();
+        self.local_dict_key_valtype.clear();
         self.local_fn_ret_kind.clear();
         for p in &f.params {
             let k = p.ty.as_ref().map(ty_kind).unwrap_or(Kind::I32);
