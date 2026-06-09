@@ -4444,6 +4444,43 @@ fn yn(b: Bool) -> String:
         assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
     }
 
+    /// An early `return` inside an `inout` function must agree on both backends.
+    /// An inout function yields multiple results (the declared return plus one per
+    /// inout param), so an early return reproduces that epilogue: it pushes each
+    /// inout param's current value before returning. (Regression for the
+    /// interpreter-only return-in-inout gap.)
+    #[test]
+    fn return_in_inout_fn_agrees_on_both_backends() {
+        let src = "fn clamp(inout n: Int):\n    if (n > 10):\n        n = 10\n        return\n    n = n + 1\n\nfn main(console: Console):\n    var a = 5\n    clamp(a)\n    print(console, int_to_string(a))\n    var b = 50\n    clamp(b)\n    print(console, int_to_string(b))\n";
+        let want = vec!["6".to_string(), "10".to_string()];
+        assert_eq!(interp(src), want.clone(), "interpreter");
+        assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
+    }
+
+    /// The `?` operator inside an `inout` function must agree on both backends.
+    /// `?` early-returns the Err, and (like the interpreter's `Flow::Return`) the
+    /// inout param is still written back at its value on the error path — so WASM
+    /// pushes the inout params before the `?`-return too. (Regression for the
+    /// interpreter-only `?`-in-inout gap.)
+    #[test]
+    fn try_in_inout_fn_agrees_on_both_backends() {
+        let src = "import result\n\nfn step(inout n: Int, r: Result(Int, String)) -> Result(Int, String):\n    n = n + 100\n    let got = r?\n    n = n + got\n    Ok(n)\n\nfn describe(r: Result(Int, String)) -> String:\n    match r:\n        Ok(v) -> \"ok:\" <> int_to_string(v)\n        Err(e) -> \"err:\" <> e\n\nfn main(console: Console):\n    var a = 1\n    let ok = step(a, Ok(5))\n    print(console, int_to_string(a))\n    print(console, describe(ok))\n    var b = 1\n    let bad = step(b, Err(\"nope\"))\n    print(console, int_to_string(b))\n    print(console, describe(bad))\n";
+        let want = vec![
+            "106".to_string(),
+            "ok:106".to_string(),
+            "101".to_string(),
+            "err:nope".to_string(),
+        ];
+        // `import result` brings the Result type's Ok/Err constructors into scope
+        // for codegen, so link first, then run each backend on the linked module.
+        let module = parser::parse_module(src).expect("parse");
+        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        typeck::check(&linked).expect("typecheck");
+        let wat = codegen::compile_module(&linked).expect("compile");
+        assert_eq!(link_run(src), want.clone(), "interpreter (linked)");
+        assert_eq!(crate::run_wat_capture(&wat).expect("wasm run"), want, "compiled WASM must agree");
+    }
+
     /// The `encoding` module (hex/base64) must agree on both backends. WASM
     /// bridges each `String -> String` transform to the same native registry the
     /// interpreter uses (a host import), so output is byte-for-byte identical.

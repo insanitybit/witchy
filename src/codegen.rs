@@ -259,6 +259,7 @@ struct SavedScope {
     ret: Kind,
     ret_slot: bool,
     inout: bool,
+    inout_params: Vec<String>,
 }
 
 struct Codegen {
@@ -466,6 +467,10 @@ struct Codegen {
     local_fn_ret_kind: HashMap<String, Kind>,
     /// Whether the current function has any `inout` parameters.
     cur_fn_inout: bool,
+    /// The current function's `inout` parameter names, in declaration order. An
+    /// early `return`/`?` must push these (after the primary result) so the
+    /// multi-result epilogue is reproduced on every exit path.
+    cur_fn_inout_params: Vec<String>,
     /// Lifted lambda functions, indexed by their table slot: a `fn(...) {...}`
     /// expression compiles to a function `$__lam{i}` here and evaluates to the
     /// index `i`. A `call_indirect` through the function table then invokes it.
@@ -533,6 +538,7 @@ impl Codegen {
             cur_fn_ret_slot: false,
             local_fn_ret_kind: HashMap::new(),
             cur_fn_inout: false,
+            cur_fn_inout_params: Vec::new(),
             uses_list_push: false,
             uses_list_concat: false,
             uses_list_drop: false,
@@ -1709,6 +1715,12 @@ impl Codegen {
         };
         self.cur_fn_ret_kind = ret_kind;
         self.cur_fn_inout = f.params.iter().any(|p| p.convention == Convention::Inout);
+        self.cur_fn_inout_params = f
+            .params
+            .iter()
+            .filter(|p| p.convention == Convention::Inout)
+            .map(|p| p.name.clone())
+            .collect();
         header.push_str(&format!("(result {}", wasm_ty(ret_kind)));
         for p in &f.params {
             if p.convention == Convention::Inout {
@@ -1739,13 +1751,20 @@ impl Codegen {
         // i32 body returned from an `-> Int` function is widened, etc.).
         let body = format!("{body}{}", kind_convert(self.block_kind(&renamed), ret_kind));
         // Move-out: append each `inout` parameter's final value (declaration order).
-        let mut epilogue = String::new();
-        for p in &f.params {
-            if p.convention == Convention::Inout {
-                epilogue.push_str(&format!("    local.get ${}\n", p.name));
-            }
-        }
+        let epilogue = self.inout_epilogue();
         Ok(format!("{header}{body}{epilogue}  )\n"))
+    }
+
+    /// The move-out epilogue for an `inout` function: push each inout param's
+    /// current value (declaration order) so the function yields its declared
+    /// result followed by one result per inout param. Empty for non-inout
+    /// functions. Used both at the function tail and before every early exit.
+    fn inout_epilogue(&self) -> String {
+        let mut s = String::new();
+        for name in &self.cur_fn_inout_params {
+            s.push_str(&format!("    local.get ${name}\n"));
+        }
+        s
     }
 
     fn compile_block(&mut self, block: &Block) -> Result<String, CodegenError> {
@@ -1789,11 +1808,6 @@ impl Codegen {
                     tail_is_value = false;
                 }
                 Stmt::Return(opt) => {
-                    // `inout` functions return extra results; an early return
-                    // would have to reproduce them, so disallow that combination.
-                    if self.cur_fn_inout {
-                        return cerr("`return` is not compiled for functions with `inout` parameters");
-                    }
                     let value = match opt {
                         Some(e) => {
                             let ek = self.kind_of(e);
@@ -1808,6 +1822,9 @@ impl Codegen {
                         None => format!("    {}.const 0\n", wasm_ty(self.cur_fn_ret_kind)),
                     };
                     out.push_str(&value);
+                    // `inout` functions return extra results (one per inout param);
+                    // reproduce the epilogue here so an early return is well-formed.
+                    out.push_str(&self.inout_epilogue());
                     out.push_str("    return\n");
                     // Anything after a `return` in this block is unreachable.
                     tail_is_value = false;
@@ -2126,9 +2143,6 @@ impl Codegen {
                 // success variant (Ok/Some) is tag 0 carrying one payload. So:
                 // if tag==0, take the payload; otherwise early-return the whole
                 // value (the Err/None) — which needs the function's `return`.
-                if self.cur_fn_inout {
-                    return cerr("`?` is not compiled for functions with `inout` parameters");
-                }
                 // The payload occupies the first 8-byte slot (at +4), stored in the
                 // universal i64 rep. Recover it at the payload's kind: an Int
                 // payload stays i64 (no truncation), a pointer payload wraps to
@@ -2147,12 +2161,15 @@ impl Codegen {
                     Kind::I32 => "i32.const 0",
                 };
                 let v = self.compile_expr(inner)?;
+                // In an `inout` function the early return must also push each inout
+                // param (after the error value) to match the multi-result epilogue.
+                let epilogue = self.inout_epilogue();
                 Ok(format!(
                     "{v}    local.set ${TRY_TMP}\n    \
                      local.get ${TRY_TMP}\n    i32.load\n    i32.eqz\n    \
                      if (result {result_ty})\n    \
                      local.get ${TRY_TMP}\n    i32.const 4\n    i32.add\n    i64.load\n{recover}    \
-                     else\n    local.get ${TRY_TMP}\n    return\n    {zero}\n    end\n"
+                     else\n    local.get ${TRY_TMP}\n{epilogue}    return\n    {zero}\n    end\n"
                 ))
             }
             Expr::For { var, iter, body } if matches!(iter.as_ref(), Expr::Range { .. }) => {
@@ -2585,6 +2602,7 @@ impl Codegen {
         // captured locals, and any lets).
         let saved = self.swap_out_scope();
         self.cur_fn_inout = false;
+        self.cur_fn_inout_params = Vec::new();
 
         for p in params {
             // Closures use the i32 generic ABI for every parameter (an Int arg
@@ -2750,6 +2768,7 @@ impl Codegen {
             ret: self.cur_fn_ret_kind,
             ret_slot: self.cur_fn_ret_slot,
             inout: self.cur_fn_inout,
+            inout_params: std::mem::take(&mut self.cur_fn_inout_params),
         }
     }
 
@@ -2768,6 +2787,7 @@ impl Codegen {
         self.cur_fn_ret_kind = s.ret;
         self.cur_fn_ret_slot = s.ret_slot;
         self.cur_fn_inout = s.inout;
+        self.cur_fn_inout_params = s.inout_params;
     }
 
     /// The `$key_eq` comparison mode for a Dict key expression: 0 for Int/Bool
