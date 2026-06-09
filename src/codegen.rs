@@ -397,6 +397,11 @@ struct Codegen {
     /// `$f_ge`) are needed. Ordering a NaN is a runtime error on the interpreter,
     /// so the compiled comparisons trap rather than silently returning IEEE false.
     uses_float_ord: bool,
+    /// Whether the `now` host import is needed (`Clock` capability).
+    uses_now: bool,
+    /// Whether the `env_len`/`env_fill` host imports + `$get_env` guest helper
+    /// are needed (`Env` capability).
+    uses_get_env: bool,
     uses_ends_with: bool,
     /// Whether the `split` helper is needed.
     uses_split: bool,
@@ -628,6 +633,8 @@ impl Codegen {
             uses_float_to_str: false,
             uses_encoding: false,
             uses_float_ord: false,
+            uses_now: false,
+            uses_get_env: false,
             uses_dict_update: false,
             uses_ends_with: false,
             uses_split: false,
@@ -710,7 +717,7 @@ impl Codegen {
             Expr::Call { name, .. } => match name.as_str() {
                 "int_to_float" => Kind::F64,
                 "float_to_int" | "string_length" | "char_count" | "index_of" | "length"
-                | "string_to_int" | "int_to_duration" | "duration_to_int" => Kind::I64,
+                | "string_to_int" | "int_to_duration" | "duration_to_int" | "now" => Kind::I64,
                 "at" => self.elem_kind_of_list_arg(e),
                 "to_string" | "int_to_string" | "print" => Kind::I32,
                 // A closure-local called by name returns the universal i64 slot,
@@ -837,7 +844,7 @@ impl Codegen {
                 "starts_with" | "ends_with" | "contains" | "has"
                 | "crypto.ed25519_verify" => ValType::Bool,
                 "string_length" | "char_count" | "index_of" | "length" | "size" | "float_to_int"
-                | "string_to_int" | "int_to_duration" | "duration_to_int" => ValType::Int,
+                | "string_to_int" | "int_to_duration" | "duration_to_int" | "now" => ValType::Int,
                 "int_to_float" | "sqrt" => ValType::Float,
                 other => self.fn_ret_valtype.get(other).copied().unwrap_or(ValType::Other),
             },
@@ -1548,6 +1555,7 @@ impl Codegen {
             || self.uses_crypto_sha256
             || self.uses_float_to_str
             || self.uses_encoding
+            || self.uses_get_env
     }
 
     fn emit_imports(&self) -> String {
@@ -1585,6 +1593,17 @@ impl Codegen {
             // hex/base64 encode/decode; the host runs the same native transform the
             // interpreter does and writes the result into the guest's buffer.
             s.push_str("  (import \"witchy\" \"encoding\" (func $encoding_host (param i32 i32 i32) (result i32)))\n");
+        }
+        if self.uses_now {
+            // now() -> epoch milliseconds. Capability-gated: linked only when the
+            // actor holds a Clock grant; an ungranted module fails instantiation.
+            s.push_str("  (import \"witchy\" \"now\" (func $now_host (result i64)))\n");
+        }
+        if self.uses_get_env {
+            // env_len(name) -> value byte length or -1 (unset); env_fill(name, out)
+            // writes the bytes. Capability-gated on an Env grant.
+            s.push_str("  (import \"witchy\" \"env_len\" (func $env_len_host (param i32) (result i32)))\n");
+            s.push_str("  (import \"witchy\" \"env_fill\" (func $env_fill_host (param i32 i32)))\n");
         }
         s
     }
@@ -1643,6 +1662,9 @@ impl Codegen {
         }
         if self.uses_encoding {
             s.push_str(ENCODING_WAT);
+        }
+        if self.uses_get_env {
+            s.push_str(GET_ENV_WAT);
         }
         if self.uses_float_ord {
             s.push_str(FLOAT_ORD_WAT);
@@ -3226,8 +3248,21 @@ impl Codegen {
             (n, _) if crate::native::is_native(n) => {
                 cerr(format!("`{n}` is interpreter-only (not compiled to WASM)"))
             }
-            ("now", 1) => cerr("`now` (Clock) is interpreter-only (not compiled to WASM)"),
-            ("get_env", 2) => cerr("`get_env` (Env) is interpreter-only (not compiled to WASM)"),
+            // `now(clock)`: the Clock capability argument is type-level only (like
+            // print's Console); the host import is the authority, linked only when
+            // the actor holds a Clock grant.
+            ("now", 1) => {
+                self.uses_now = true;
+                Ok("    call $now_host\n".to_string())
+            }
+            // `get_env(env, name) -> Option(String)`: the guest helper sizes a
+            // buffer from `env_len`, fills it with `env_fill`, and builds the
+            // Some/None record — all under an Env grant.
+            ("get_env", 2) => {
+                self.uses_get_env = true;
+                let name = self.compile_expr(&args[1])?;
+                Ok(format!("{name}    call $get_env\n"))
+            }
             ("print", 2) => {
                 self.uses_print = true;
                 let msg = self.compile_expr(&args[1])?;
@@ -4026,8 +4061,22 @@ pub fn compile_module(module: &Module) -> Result<String, CodegenError> {
                     main_params = f.params.len();
                     main_returns_int = matches!(&f.ret, Some(Type::Named(n, _)) if n == "Int");
                     main_returns_float = matches!(&f.ret, Some(Type::Named(n, _)) if n == "Float");
-                    if main_params > 1 {
-                        return cerr("codegen `main` may take at most one (capability) argument");
+                    // Capability parameters are type-level only (the authority is
+                    // the linked host imports), so any number compile — each gets
+                    // a dummy slot in the `run` export. An argv parameter would
+                    // need the host to materialize a real List(String); until the
+                    // sandbox provides one, reject it loudly rather than hand the
+                    // program a dangling pointer.
+                    for p in &f.params {
+                        match &p.ty {
+                            Some(t) if crate::typeck::is_capability_type(t) => {}
+                            Some(t) if crate::typeck::is_args_type(t) => {
+                                return cerr(
+                                    "`main(args: List(String))` is not provided by the WASM sandbox yet — argv is interpreter/native-only",
+                                );
+                            }
+                            _ => {}
+                        }
                     }
                 }
                 if reachable.contains(&f.name) {
@@ -4568,6 +4617,33 @@ const ENCODING_WAT: &str = r#"  (func $encoding (param $op i32) (param $in i32) 
     (local.set $n (call $encoding_host (local.get $op) (local.get $in) (i32.add (local.get $res) (i32.const 4))))
     (i32.store (local.get $res) (local.get $n))
     (global.set $heap (i32.add (i32.add (local.get $res) (i32.const 4)) (local.get $n)))
+    (local.get $res))
+"#;
+
+// get_env(name): an Option(String). `env_len` reports the value's byte length
+// (or -1 when unset), the guest allocates the string and `env_fill` writes the
+// bytes; the result is a Some record ([tag=0][string-ptr slot]) or a bare None
+// ([tag=1]) — the same tags `std/option` declares.
+const GET_ENV_WAT: &str = r#"  (func $get_env (param $name i32) (result i32)
+    (local $len i32) (local $str i32) (local $res i32)
+    (local.set $len (call $env_len_host (local.get $name)))
+    (if (i32.lt_s (local.get $len) (i32.const 0))
+      (then
+        (call $ensure (i32.const 4))
+        (local.set $res (global.get $heap))
+        (i32.store (local.get $res) (i32.const 1))
+        (global.set $heap (i32.add (local.get $res) (i32.const 4)))
+        (return (local.get $res))))
+    (call $ensure (i32.add (local.get $len) (i32.const 4)))
+    (local.set $str (global.get $heap))
+    (i32.store (local.get $str) (local.get $len))
+    (call $env_fill_host (local.get $name) (i32.add (local.get $str) (i32.const 4)))
+    (global.set $heap (i32.add (i32.add (local.get $str) (i32.const 4)) (local.get $len)))
+    (call $ensure (i32.const 12))
+    (local.set $res (global.get $heap))
+    (i32.store (local.get $res) (i32.const 0))
+    (i64.store (i32.add (local.get $res) (i32.const 4)) (i64.extend_i32_s (local.get $str)))
+    (global.set $heap (i32.add (local.get $res) (i32.const 12)))
     (local.get $res))
 "#;
 

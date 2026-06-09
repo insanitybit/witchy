@@ -410,14 +410,14 @@ fn check_type_names(module: &Module) -> Result<(), TypeError> {
 
 /// Whether `t` names a host capability that `main` may receive as a root
 /// authority (the rights of `Dir`/`Net` don't matter here — any are grantable).
-fn is_capability_type(t: &ast::Type) -> bool {
+pub(crate) fn is_capability_type(t: &ast::Type) -> bool {
     matches!(t, ast::Type::Named(n, _)
         if matches!(n.as_str(), "Console" | "Clock" | "Env" | "Dir" | "Net" | "SigningKey"))
 }
 
 /// Whether `t` is `List(String)` — the command-line-arguments parameter `main`
 /// may declare.
-fn is_args_type(t: &ast::Type) -> bool {
+pub(crate) fn is_args_type(t: &ast::Type) -> bool {
     matches!(t, ast::Type::Named(n, args)
         if n == "List"
             && matches!(args.as_slice(), [ast::Type::Named(s, inner)] if s == "String" && inner.is_empty()))

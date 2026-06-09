@@ -451,7 +451,7 @@ fn main() -> wasmtime::Result<()> {
     println!("== M2: capability gating ==");
 
     // Granted the `print` capability — works.
-    let mut greeter = rt.spawn(GREETER, Capabilities { print: true, send: false, print_int: false, quiet: false }, 4)?;
+    let mut greeter = rt.spawn(GREETER, Capabilities { print: true, ..Default::default() }, 4)?;
     greeter.run()?;
 
     // Granted nothing — must fail to instantiate because `witchy.print` is not
@@ -464,11 +464,11 @@ fn main() -> wasmtime::Result<()> {
     println!("\n== M3: message passing across isolated VMs ==");
 
     // Logger can print + recv, but cannot send.
-    let mut logger = rt.spawn(LOGGER, Capabilities { print: true, send: false, print_int: false, quiet: false }, 4)?;
+    let mut logger = rt.spawn(LOGGER, Capabilities { print: true, ..Default::default() }, 4)?;
     // Sender can only send.
     let mut sender = rt.spawn(
         sender_src(logger.id),
-        Capabilities { print: false, send: true, print_int: false, quiet: false },
+        Capabilities { send: true, ..Default::default() },
         4,
     )?;
 
@@ -1043,10 +1043,16 @@ fn run_wat_capture(wat: &str) -> Result<Vec<String>, String> {
     let mut actor = rt
         .spawn(
             wat.as_bytes(),
+            // The dev/differential path mirrors the interpreter's automatic
+            // grants: output plus the read-only ambient capabilities (Clock/Env)
+            // a `main` may declare. The `sandbox` command is the strict path
+            // that grants exactly the computed footprint.
             Capabilities {
                 print: true,
                 print_int: true,
                 quiet: true,
+                clock: true,
+                env: true,
                 ..Default::default()
             },
             RUN_MEMORY_PAGES,
@@ -4460,6 +4466,55 @@ fn yn(b: Bool) -> String:
         assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
     }
 
+    /// `now` (Clock) and `get_env` (Env) compile to capability-gated host
+    /// imports. `get_env` is deterministic given the process env, so both
+    /// backends must agree exactly; `now` is wall-clock, so each backend is
+    /// checked for plausibility instead. Also exercises a multi-capability
+    /// `main` (Console + Env / Console + Clock), which codegen now accepts.
+    #[test]
+    fn clock_and_env_compile_to_wasm_and_agree() {
+        // SAFETY-free env set: std::env::set_var is fine in a single-threaded
+        // test context; the var is namespaced to this test.
+        unsafe { std::env::set_var("WITCHY_E2E_ENV_VAR", "from the host") };
+        let env_src = "import option\n\nfn main(console: Console, env: Env):\n    match get_env(env, \"WITCHY_E2E_ENV_VAR\"):\n        Some(v) -> print(console, \"got: \" <> v)\n        None -> print(console, \"unset\")\n    match get_env(env, \"WITCHY_E2E_DEFINITELY_UNSET\"):\n        Some(v) -> print(console, \"got: \" <> v)\n        None -> print(console, \"unset\")\n";
+        let want = vec!["got: from the host".to_string(), "unset".to_string()];
+        let module = parser::parse_module(env_src).expect("parse");
+        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        typeck::check(&linked).expect("typecheck");
+        let wat = codegen::compile_module(&linked).expect("compile");
+        assert_eq!(link_run(env_src), want.clone(), "interpreter");
+        assert_eq!(crate::run_wat_capture(&wat).expect("wasm"), want, "compiled WASM must agree");
+
+        // The clock: both backends must yield a plausible epoch-milliseconds.
+        let clock_src = "fn main(console: Console, clock: Clock):\n    print(console, if now(clock) > 1500000000000: \"plausible\" else: \"implausible\")\n";
+        assert_eq!(interp(clock_src), vec!["plausible"], "interpreter");
+        assert_eq!(run_on_wasm(clock_src), vec!["plausible"], "compiled WASM");
+    }
+
+    /// The enforcement half: a module that imports `now`/`env_*` but was NOT
+    /// granted Clock/Env must fail at instantiation — the host function simply
+    /// is not linked, so the authority is structurally absent.
+    #[test]
+    fn ungranted_clock_and_env_fail_to_instantiate() {
+        use crate::runtime::{Capabilities, Runtime};
+        let srcs = [
+            "fn main(console: Console, clock: Clock):\n    print(console, int_to_string(now(clock)))\n",
+            "import option\n\nfn main(console: Console, env: Env):\n    match get_env(env, \"X\"):\n        Some(v) -> print(console, v)\n        None -> print(console, \"unset\")\n",
+        ];
+        for src in srcs {
+            let module = parser::parse_module(src).expect("parse");
+            let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+            let wat = codegen::compile_module(&linked).expect("compile");
+            let mut rt = Runtime::batch().expect("runtime");
+            let denied = rt.spawn(
+                wat.as_bytes(),
+                Capabilities { print: true, ..Default::default() },
+                4,
+            );
+            assert!(denied.is_err(), "ungranted Clock/Env import must fail to instantiate");
+        }
+    }
+
     /// Structural `==`/`!=` on compound values (lists, nested lists, tuples,
     /// records, lists of records) must agree on both backends. WASM previously
     /// compared heap POINTERS, so two equal-but-distinct values compared unequal;
@@ -7472,9 +7527,13 @@ fn main(console: Console):
         let mut actor = rt
             .spawn(
                 wat.as_bytes(),
+                // Mirror the interpreter's automatic grants (output + the
+                // read-only ambient Clock/Env), like `run_wat_capture`.
                 Capabilities {
                     print: true,
                     print_int: true,
+                    clock: true,
+                    env: true,
                     ..Default::default()
                 },
                 4,
@@ -7499,9 +7558,13 @@ fn main(console: Console):
         let mut actor = rt
             .spawn(
                 wat.as_bytes(),
+                // Mirror the interpreter's automatic grants (output + the
+                // read-only ambient Clock/Env), like `run_wat_capture`.
                 Capabilities {
                     print: true,
                     print_int: true,
+                    clock: true,
+                    env: true,
                     ..Default::default()
                 },
                 4,

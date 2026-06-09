@@ -46,6 +46,11 @@ pub struct Capabilities {
     /// Capture output without echoing it to stdout (used by `witchy parity`,
     /// which compares the captured lines rather than showing them).
     pub quiet: bool,
+    /// May read the wall clock via `witchy.now` (a `Clock` capability).
+    pub clock: bool,
+    /// May read process environment variables via `witchy.env_*` (an `Env`
+    /// capability).
+    pub env: bool,
 }
 
 impl Capabilities {
@@ -229,6 +234,13 @@ impl Runtime {
             linker.func_wrap("witchy", "print_int", host_print_int)?;
             // Same "print a computed result" facility, for a Float-returning main.
             linker.func_wrap("witchy", "print_float", host_print_float)?;
+        }
+        if caps.clock {
+            linker.func_wrap("witchy", "now", host_now)?;
+        }
+        if caps.env {
+            linker.func_wrap("witchy", "env_len", host_env_len)?;
+            linker.func_wrap("witchy", "env_fill", host_env_fill)?;
         }
         // `recv` is intrinsic: reading your *own* mailbox is not authority over
         // anyone else, so every actor may do it.
@@ -424,6 +436,40 @@ fn host_encoding(mut caller: Caller<'_, ActorState>, op: i32, in_ptr: i32, out_p
     Ok(bytes.len() as i32)
 }
 
+/// `now() -> Int`: wall-clock milliseconds since the Unix epoch — the same value
+/// the interpreter's `now(Clock)` produces. Linked only when the actor was
+/// granted a `Clock` capability.
+fn host_now(_caller: Caller<'_, ActorState>) -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+/// `env_len(name_ptr) -> Int`: the byte length of the named environment
+/// variable's value, or -1 when unset (or not valid Unicode — matching the
+/// interpreter's `std::env::var`, which errors on both). The guest sizes its
+/// buffer from this, then calls `env_fill`. Linked only under an `Env` grant.
+fn host_env_len(mut caller: Caller<'_, ActorState>, name_ptr: i32) -> Result<i32> {
+    let mem = memory_of(&mut caller)?;
+    let name = read_wstr(mem.data(&caller), name_ptr)?;
+    match std::env::var(&name) {
+        Ok(v) => Ok(v.len() as i32),
+        Err(_) => Ok(-1),
+    }
+}
+
+/// `env_fill(name_ptr, out_ptr)`: write the named environment variable's value
+/// bytes into guest memory at `out_ptr` (the guest pre-allocated `env_len`
+/// bytes). Linked only under an `Env` grant.
+fn host_env_fill(mut caller: Caller<'_, ActorState>, name_ptr: i32, out_ptr: i32) -> Result<()> {
+    let mem = memory_of(&mut caller)?;
+    let name = read_wstr(mem.data(&caller), name_ptr)?;
+    let value = std::env::var(&name).unwrap_or_default();
+    mem.write(&mut caller, out_ptr as usize, value.as_bytes())
+        .map_err(|e| Error::msg(format!("writing env value into guest memory: {e}")))
+}
+
 // --- small helpers for safe guest-memory access ---
 
 /// Read a witchy string value (a `[i32 len][bytes...]` header) at `ptr`.
@@ -511,7 +557,7 @@ mod tests {
     fn granted_capability_instantiates() {
         let mut rt = Runtime::new().unwrap();
         let mut actor = rt
-            .spawn(IMPORTS_PRINT, Capabilities { print: true, send: false, print_int: false, quiet: false }, 4)
+            .spawn(IMPORTS_PRINT, Capabilities { print: true, ..Default::default() }, 4)
             .unwrap();
         actor.run().unwrap();
     }
@@ -522,10 +568,10 @@ mod tests {
     fn message_passing_delivers_across_isolated_vms() {
         let mut rt = Runtime::new().unwrap();
         let mut receiver = rt
-            .spawn(RECEIVER, Capabilities { print: false, send: false, print_int: false, quiet: false }, 4)
+            .spawn(RECEIVER, Capabilities::none(), 4)
             .unwrap();
         let mut sender = rt
-            .spawn(sender(receiver.id, 5), Capabilities { print: false, send: true, print_int: false, quiet: false }, 4)
+            .spawn(sender(receiver.id, 5), Capabilities { send: true, ..Default::default() }, 4)
             .unwrap();
 
         sender.run().unwrap();
@@ -545,7 +591,7 @@ mod tests {
     fn send_to_unknown_actor_traps() {
         let mut rt = Runtime::new().unwrap();
         let mut sender = rt
-            .spawn(sender(9999, 5), Capabilities { print: false, send: true, print_int: false, quiet: false }, 4)
+            .spawn(sender(9999, 5), Capabilities { send: true, ..Default::default() }, 4)
             .unwrap();
         assert!(sender.run().is_err(), "sending to a nonexistent actor must fail");
     }
