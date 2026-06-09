@@ -4460,6 +4460,30 @@ fn yn(b: Bool) -> String:
         assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
     }
 
+    /// Indexing a list out of bounds must FAIL on both backends, not silently
+    /// read adjacent heap on WASM. The compiled `$list_at` bounds-checks and traps
+    /// (like division-by-zero), matching the interpreter's "index out of bounds"
+    /// error. In-bounds indexing still agrees. (Regression for a silent OOB-read
+    /// divergence.)
+    #[test]
+    fn list_index_out_of_bounds_errors_on_both_backends() {
+        let oob = "fn main(console: Console):\n    let xs = [1, 2, 3]\n    print(console, int_to_string(at(xs, 5)))\n";
+        let module = parser::parse_module(oob).expect("parse");
+        let wat = codegen::compile_module(&module).expect("compile");
+        assert!(interpreter::run(oob).is_err(), "interpreter must error on OOB index");
+        assert!(crate::run_wat_capture(&wat).is_err(), "WASM must trap on OOB index");
+        // A negative index likewise traps (it used to read backwards into the heap).
+        let neg = "fn main(console: Console):\n    let xs = [1, 2, 3]\n    print(console, int_to_string(at(xs, 0 - 1)))\n";
+        let nmod = parser::parse_module(neg).expect("parse");
+        let nwat = codegen::compile_module(&nmod).expect("compile");
+        assert!(interpreter::run(neg).is_err(), "interpreter must error on negative index");
+        assert!(crate::run_wat_capture(&nwat).is_err(), "WASM must trap on negative index");
+        // In-bounds indexing still agrees.
+        let ok = "fn main(console: Console):\n    let xs = [10, 20, 30]\n    print(console, int_to_string(at(xs, 2)))\n";
+        assert_eq!(interp(ok), vec!["30".to_string()], "interpreter");
+        assert_eq!(run_on_wasm(ok), vec!["30".to_string()], "compiled WASM must agree");
+    }
+
     /// `trim` must strip exactly the same whitespace on both backends. The WASM
     /// `$is_ws` helper handles the 6 ASCII whitespace bytes (incl. VT/FF); Rust's
     /// `str::trim` would also strip Unicode whitespace (e.g. NBSP), which WASM does

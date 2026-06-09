@@ -320,6 +320,8 @@ struct Codegen {
     message_tags: HashMap<String, u32>,
     /// Whether the inter-actor `send` import is needed.
     uses_send: bool,
+    /// Whether the bounds-checked `$list_at` helper is needed (list indexing).
+    uses_list_at: bool,
     /// Whether the list `push`/`concat`/`drop` runtime helpers are needed.
     uses_list_push: bool,
     uses_list_concat: bool,
@@ -539,6 +541,7 @@ impl Codegen {
             local_fn_ret_kind: HashMap::new(),
             cur_fn_inout: false,
             cur_fn_inout_params: Vec::new(),
+            uses_list_at: false,
             uses_list_push: false,
             uses_list_concat: false,
             uses_list_drop: false,
@@ -1525,6 +1528,9 @@ impl Codegen {
         if self.need_heap() {
             s.push_str(ENSURE_WAT);
             s.push_str(CONCAT_WAT);
+        }
+        if self.uses_list_at {
+            s.push_str(LIST_AT_WAT);
         }
         if self.uses_list_push {
             s.push_str(LIST_PUSH_WAT);
@@ -3161,8 +3167,12 @@ impl Codegen {
                 let ik = self.kind_of(&args[1]);
                 let list = self.compile_expr(&args[0])?;
                 let idx = self.compile_expr(&args[1])?;
+                // `$list_at` bounds-checks and traps on an out-of-range index,
+                // matching the interpreter's "index out of bounds" error (instead
+                // of silently reading adjacent heap, which returned 0 or garbage).
+                self.uses_list_at = true;
                 Ok(format!(
-                    "{list}    i32.const 4\n    i32.add\n{idx}{}    i32.const 8\n    i32.mul\n    i32.add\n    i64.load\n{}",
+                    "{list}{idx}{}    call $list_at\n{}",
                     kind_convert(ik, Kind::I32),
                     from_slot(ek)
                 ))
@@ -4018,6 +4028,20 @@ const CONCAT_WAT: &str = r#"  (func $concat (param $a i32) (param $b i32) (resul
     local.get $res i32.const 4 i32.add local.get $alen i32.add local.get $blen i32.add
     global.set $heap
     local.get $res)
+"#;
+
+// at(list, i): the i-th element slot, bounds-checked. A list is `[len:i32]` then
+// `len` 8-byte slots, so element i is at `list + 4 + 8*i`. An out-of-range index
+// (negative or >= len) traps — matching the interpreter's "index out of bounds"
+// error instead of silently reading adjacent heap.
+const LIST_AT_WAT: &str = r#"  (func $list_at (param $list i32) (param $i i32) (result i64)
+    (if (i32.or
+          (i32.lt_s (local.get $i) (i32.const 0))
+          (i32.ge_s (local.get $i) (i32.load (local.get $list))))
+      (then (unreachable)))
+    (i64.load
+      (i32.add (i32.add (local.get $list) (i32.const 4))
+               (i32.mul (local.get $i) (i32.const 8)))))
 "#;
 
 // push(list, x): a fresh list `[len+1][elems...][x]`. Elements are 4-byte i32s,
