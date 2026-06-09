@@ -7,8 +7,9 @@ name = "pm"
 version = "0.1.0"
 
 # Declared footprint — a reviewable contract; the toolchain recomputes and would
-# error on mismatch. The pm reads/writes project files (Dir) and prints (Console).
+# error on mismatch. The pm reads/writes project files (Dir), prints (Console),
+# and `add` fetches runes from a registry (Net).
 [capabilities]
-runtime = ["Console", "Dir"]
+runtime = ["Console", "Dir", "Net"]
 
 [dependencies]

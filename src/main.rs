@@ -7745,11 +7745,12 @@ fn main(console: Console):
             vec!["examples/data/sample_rune.witchy demands: Dir[Read], Net[Connect]"]
         );
         assert_eq!(code, 0);
-        // pm reads AND writes project files (scaffolding) and prints — nothing else.
-        // `compiler.*` is a host introspection intrinsic, not a runtime capability.
+        // pm reads/writes project files, prints, and `add` fetches over the
+        // network — Console, Dir, Net. `compiler.*` is a host introspection
+        // intrinsic, not a runtime capability.
         let src = std::fs::read_to_string("projects/pm/src/pm.witchy").unwrap();
         let fp = crate::capabilities::analyze(&parser::parse_module(&src).expect("parse"));
-        assert_eq!(crate::capabilities::show_caps(&fp.total), "Console, Dir");
+        assert_eq!(crate::capabilities::show_caps(&fp.total), "Console, Dir, Net");
     }
 
     /// `pm guard <old> <new>` is the supply-chain gate: it asks `compiler.diff`

@@ -1467,3 +1467,119 @@ fn json_str(s: &str) -> String {
     out.push('"');
     out
 }
+
+/// The full self-hosted resolution path: the witchy pm `add` resolves a version
+/// requirement against the witchy coven (`std/semver` over `/coven/versions`),
+/// fetches the chosen version's source, and materializes it. Only *released*
+/// versions resolve — a staged version is invisible to `add`.
+#[test]
+fn witchy_pm_add_resolves_and_fetches_from_coven() {
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let coven_src = format!("{manifest_dir}/projects/coven/src/coven.witchy");
+    let pm_src = format!("{manifest_dir}/projects/pm/src/pm.witchy");
+
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let addr = format!("127.0.0.1:{port}");
+    let store = unique("witchy-pmadd-store");
+    let seed = store.join("root.seed");
+    std::fs::write(
+        &seed,
+        "0000000000000000000000000000000000000000000000000000000000000001",
+    )
+    .unwrap();
+
+    let mut server = Command::new(BIN)
+        .args([
+            "--net",
+            &addr,
+            "--signing-key",
+            seed.to_str().unwrap(),
+            &coven_src,
+            &addr,
+        ])
+        .current_dir(&store)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn witchy coven");
+    let mut up = false;
+    for _ in 0..80 {
+        if std::net::TcpStream::connect(&addr).is_ok() {
+            up = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    if !up {
+        let _ = server.kill();
+        let _ = server.wait();
+        panic!("witchy coven never started on {addr}");
+    }
+
+    // Publish + promote 1.0.0 and 1.5.0; publish 2.0.0 but leave it STAGED.
+    let publish = |version: &str| {
+        let manifest = format!("[rune]\nname = \"acme/money\"\nversion = \"{version}\"\n");
+        let module = format!("fn ver() -> String:\n    \"{version}\"\n");
+        let source = format!(
+            "{{\"files\":[[\"witchy.toml\",{}],[\"src/money.witchy\",{}]]}}",
+            json_str(&manifest),
+            json_str(&module)
+        );
+        let body = format!(
+            "{{\"manifest_toml\":{},\"source\":{source},\"uploaded_by\":\"ci\"}}",
+            json_str(&manifest)
+        );
+        http_post(&addr, "/coven/publish", &body)
+    };
+    let promote = |version: &str| {
+        let body = format!(
+            "{{\"name\":\"acme~money\",\"version\":\"{version}\",\"second_factor\":\"webauthn\",\"promoted_by\":\"human\"}}"
+        );
+        http_post(&addr, "/coven/promote", &body)
+    };
+    for v in ["1.0.0", "1.5.0"] {
+        assert_eq!(publish(v).0, 200, "publish {v}");
+        assert_eq!(promote(v).0, 200, "promote {v}");
+    }
+    assert_eq!(publish("2.0.0").0, 200, "publish 2.0.0 (staged)");
+
+    // `pm add acme/money "*" <addr> vendor` (cwd = dest, so the Dir is confined).
+    let dest = unique("witchy-pmadd-dest");
+    let out = Command::new(BIN)
+        .args([
+            "--net",
+            &addr,
+            &pm_src,
+            "add",
+            "acme/money",
+            "*",
+            &addr,
+            "vendor",
+        ])
+        .current_dir(&dest)
+        .output()
+        .expect("run pm add");
+
+    let _ = server.kill();
+    let _ = server.wait();
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    let materialized = std::fs::read_to_string(dest.join("vendor/money/src/money.witchy"))
+        .unwrap_or_default();
+    let _ = std::fs::remove_dir_all(&store);
+    let _ = std::fs::remove_dir_all(&dest);
+
+    // `*` resolves to 1.5.0 — the highest RELEASED version (2.0.0 is staged).
+    assert!(
+        stdout.contains("added acme/money@1.5.0 -> vendor/money"),
+        "pm add should resolve the highest released version: {stdout:?} / {:?}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        materialized.contains("\"1.5.0\""),
+        "the fetched source must be 1.5.0, got: {materialized:?}"
+    );
+}

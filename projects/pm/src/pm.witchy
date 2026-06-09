@@ -18,15 +18,19 @@
 
 import compiler
 import crypto
+import http
 import json
+import semver
 import string
 import toml
 
-fn main(console: Console, args: List(String), root: Dir) -> Int:
+fn main(console: Console, args: List(String), root: Dir, net: Net) -> Int:
     let cmd = arg(args, 0)
     if cmd == "info":
         cmd_info(console, root, arg(args, 1))
         0
+    else if cmd == "add":
+        cmd_add(console, net, root, args)
     else if cmd == "audit":
         cmd_audit(console, root, arg(args, 1))
         0
@@ -386,6 +390,119 @@ fn drop_last(xs: List(String)) -> List(String):
         i = i + 1
     out
 
+// --- add: resolve + fetch a rune from a coven registry -----------------------
+// Resolves a version requirement against the registry's released versions
+// (std/semver), fetches the chosen version's source, and materializes it. This
+// is the one pm command that needs the network.
+
+fn cmd_add(console: Console, net: Net, root: Dir, args: List(String)) -> Int:
+    let name = arg(args, 1)
+    let req = arg(args, 2)
+    let addr = arg(args, 3)
+    let dest = arg(args, 4)
+    if string.is_empty(name) || string.is_empty(req) || string.is_empty(addr) || string.is_empty(dest):
+        print(console, "usage: pm add <name> <req> <coven-host:port> <dest-dir>")
+        1
+    else:
+        let (host, port) = hostport(addr)
+        let versions = http.get(net, host, port, "/coven/versions?name=" <> wire(name))
+        if http.status(versions) != 200:
+            print(console, "registry error fetching versions for " <> name)
+            1
+        else:
+            match pick_version(http.body(versions), req):
+                Ok(chosen) -> fetch_source(console, net, root, host, port, name, chosen, dest)
+                Err(e) ->
+                    print(console, e)
+                    1
+
+// The highest released version satisfying `req`, or an explanatory error.
+fn pick_version(body: String, req: String) -> Result(String, String):
+    match semver.parse_req(req):
+        Ok(r) -> choose(released_versions(body), r, req)
+        Err(e) -> Err("bad requirement `" <> req <> "`: " <> e)
+
+fn choose(versions: List(Version), r: Req, req: String) -> Result(String, String):
+    match semver.best(versions, r):
+        Some(v) -> Ok(semver.to_string(v))
+        None -> Err("no released version satisfies `" <> req <> "`")
+
+// The released versions in a /coven/versions response, parsed.
+fn released_versions(body: String) -> List(Version):
+    var out = []
+    if let Ok(doc) = json.decode(body):
+        if let Some(records) = json.get(doc, "records"):
+            if let Some(items) = json.as_array(records):
+                for rec in items:
+                    if jget(rec, "state") == "released":
+                        if let Ok(v) = semver.parse(jget(rec, "version")):
+                            out = push(out, v)
+    out
+
+fn fetch_source(console: Console, net: Net, root: Dir, host: String, port: Int, name: String, version: String, dest: String) -> Int:
+    let resp = http.get(net, host, port, "/coven/source?name=" <> wire(name) <> "&version=" <> version)
+    if http.status(resp) != 200:
+        print(console, "registry has no source for " <> name <> "@" <> version)
+        1
+    else:
+        let base = join_path(dest, basename(name))
+        write_files(root, base, http.body(resp))
+        print(console, "added " <> name <> "@" <> version <> " -> " <> base)
+        0
+
+fn write_files(root: Dir, base: String, body: String):
+    if let Ok(doc) = json.decode(body):
+        if let Some(files) = json.get(doc, "files"):
+            if let Some(items) = json.as_array(files):
+                for entry in items:
+                    let full = join_path(base, json_index_str(entry, 0))
+                    ensure_dir(root, parent_dir(full))
+                    write(root, full, json_index_str(entry, 1))
+
+// --- registry/url helpers ----------------------------------------------------
+
+fn hostport(addr: String) -> (String, Int):
+    let (host, portstr) = string.split_once(addr, ":")
+    (host, string_to_int(portstr))
+
+// Rune names contain `/`; the wire encodes it as `~` for a query value.
+fn wire(name: String) -> String:
+    string.join(split(name, "/"), "~")
+
+fn basename(name: String) -> String:
+    if contains(name, "/"):
+        let (_ns, base) = string.rsplit_once(name, "/")
+        base
+    else:
+        name
+
+fn jget(doc: Json, key: String) -> String:
+    match json.get(doc, key):
+        Some(j) -> match json.as_string(j):
+            Some(s) -> s
+            None -> ""
+        None -> ""
+
+fn json_index_str(j: Json, i: Int) -> String:
+    match json.index(j, i):
+        Some(v) -> match json.as_string(v):
+            Some(s) -> s
+            None -> ""
+        None -> ""
+
+// Create each level of `path` (make_dir is non-recursive).
+fn ensure_dir(root: Dir, path: String):
+    var acc = ""
+    for seg in split(path, "/"):
+        if seg != "":
+            acc = if string.is_empty(acc): seg else: acc <> "/" <> seg
+            if !exists(root, acc):
+                make_dir(root, acc)
+
+fn parent_dir(path: String) -> String:
+    let (head, _tail) = string.rsplit_once(path, "/")
+    head
+
 // --- new: scaffold a rune ----------------------------------------------------
 
 fn cmd_new(console: Console, root: Dir, name: String):
@@ -551,6 +668,7 @@ fn usage(console: Console):
     print(console, "  lock  <dir>         pin dependencies by content hash -> witchy.lock")
     print(console, "  verify <dir>        witchy.lock must match the dependency sources")
     print(console, "  gate  <dir> [cap..] BLOCK if deps demand authority beyond the lock")
+    print(console, "  add <name> <req> <coven> <dest>  resolve + fetch a rune from a registry")
     print(console, "  new   <name>        scaffold a new rune")
 
 fn unknown(console: Console, cmd: String) -> Int:
