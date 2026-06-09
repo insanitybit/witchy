@@ -511,15 +511,27 @@ fn store_source(store: Dir, name: String, version: String, files: List((String, 
         ensure_dir(store, parent_dir(full))
         write(store, full, text)
 
-// Read the stored source back as (relpath, text) pairs: witchy.toml + src/*.witchy.
+// Read the stored source back as (relpath, text) pairs: witchy.toml + every
+// `src/**/*.witchy` (recursively, so a nested module keeps its full path).
 fn read_source(store: Dir, name: String, version: String) -> List((String, String)):
     var out = []
     let base = name <> "/" <> version <> "/rune"
     if exists(store, base <> "/witchy.toml"):
         out = push(out, ("witchy.toml", read(store, base <> "/witchy.toml")))
-    if exists(store, base <> "/src"):
-        for f in list(subdir(store, base <> "/src")):
-            out = push(out, ("src/" <> f, read(store, base <> "/src/" <> f)))
+    for f in collect_src(store, base <> "/src", "src"):
+        out = push(out, f)
+    out
+
+fn collect_src(store: Dir, path: String, rel: String) -> List((String, String)):
+    var out = []
+    if exists(store, path):
+        for entry in list(subdir(store, path)):
+            let child = path <> "/" <> entry
+            if is_dir(store, child):
+                for f in collect_src(store, child, rel <> "/" <> entry):
+                    out = push(out, f)
+            else if ends_with(entry, ".witchy"):
+                out = push(out, (rel <> "/" <> entry, read(store, child)))
     out
 
 // The content address of a rune's source — coven's store hash (matches

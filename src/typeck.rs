@@ -908,7 +908,7 @@ impl Checker {
     fn check_dir_op(&mut self, name: &str, args: &[Expr]) -> Result<Option<Ty>, TypeError> {
         let arity = match name {
             "list" => 1,
-            "read" | "exists" | "subdir" | "make_dir" => 2,
+            "read" | "exists" | "is_dir" | "subdir" | "make_dir" => 2,
             "write" => 3,
             _ => return Ok(None),
         };
@@ -937,6 +937,14 @@ impl Checker {
                 if !rights.read {
                     return terr(format!(
                         "`exists` needs `Read` but the capability is `{rights}`"
+                    ));
+                }
+                Ty::Bool
+            }
+            "is_dir" => {
+                if !rights.read {
+                    return terr(format!(
+                        "`is_dir` needs `Read` but the capability is `{rights}`"
                     ));
                 }
                 Ty::Bool

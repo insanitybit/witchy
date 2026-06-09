@@ -352,16 +352,28 @@ fn path_entry(root: Dir, dir: String, name: String, rel: String) -> String:
     "\n[[rune]]\nname = \"" <> name <> "\"\nversion = \"" <> version <> "\"\nsource = \"path:" <> rel <> "\"\nhash = \"" <> hash <> "\"\nruntime_footprint = [" <> fp <> "]\n"
 
 // The rune's content address: the canonical hash over `witchy.toml` plus every
-// `src/*.witchy`, matching coven's store byte-for-byte (so a witchy-checked lock
-// agrees with a coven-generated one).
+// `src/**/*.witchy` (recursively), matching coven's store byte-for-byte (so a
+// witchy-checked lock agrees with a coven-generated one).
 fn rune_hash(root: Dir, dir: String) -> String:
-    let src = subdir(root, join_path(dir, "src"))
-    var paths = ["witchy.toml"]
-    var contents = [read(root, join_path(dir, "witchy.toml"))]
-    for f in list(src):
-        paths = push(paths, "src/" <> f)
-        contents = push(contents, read(src, f))
-    crypto.rune_hash(paths, contents)
+    var files = [("witchy.toml", read(root, join_path(dir, "witchy.toml")))]
+    for f in collect_src(root, join_path(dir, "src"), "src"):
+        files = push(files, f)
+    content_hash(files)
+
+// Recursively collect every `.witchy` module under `path` as (relpath, text),
+// with `rel` the path relative to the rune root (so a nested `src/x/y.witchy`
+// keeps its full relative path — required to match the Rust store's hashing).
+fn collect_src(root: Dir, path: String, rel: String) -> List((String, String)):
+    var out = []
+    if exists(root, path):
+        for entry in list(subdir(root, path)):
+            let child = path <> "/" <> entry
+            if is_dir(root, child):
+                for f in collect_src(root, child, rel <> "/" <> entry):
+                    out = push(out, f)
+            else if ends_with(entry, ".witchy"):
+                out = push(out, (rel <> "/" <> entry, read(root, child)))
+    out
 
 fn footprint_toml(caps: List(String)) -> String:
     var parts = []

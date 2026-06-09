@@ -2541,7 +2541,7 @@ impl Codegen {
                 ))
             }
             ("spawn", _) => cerr("`spawn` is not compiled to WASM yet (host-driven)"),
-            ("read", _) | ("exists", _) | ("subdir", _) => cerr(
+            ("read", _) | ("exists", _) | ("is_dir", _) | ("subdir", _) => cerr(
                 "filesystem capabilities are not compiled to WASM yet (interpreter only; maps to WASI preopens)",
             ),
             ("connect", _) | ("restrict", _) | ("send_line", _) | ("recv_line", _)

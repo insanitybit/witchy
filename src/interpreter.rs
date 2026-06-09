@@ -865,6 +865,16 @@ impl Interpreter {
                 }
                 _ => err("exists expects a Dir and a relative path"),
             },
+            // Whether a path within the Dir capability's subtree is a directory —
+            // total (a path outside the subtree or a non-dir reads as `false`), so
+            // a caller can walk `src/**` without tripping over a file.
+            "is_dir" => match args {
+                [Value::Dir(base), Value::Str(rel)] => {
+                    let ok = resolve(base, rel).map(|p| p.is_dir()).unwrap_or(false);
+                    Ok(Some(Value::Bool(ok)))
+                }
+                _ => err("is_dir expects a Dir and a relative path"),
+            },
             // List the immediate entries of the Dir capability's own directory, as
             // sorted names (deterministic — `read_dir` order is OS-dependent).
             "list" => match args {

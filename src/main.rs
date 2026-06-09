@@ -8014,6 +8014,63 @@ fn main(console: Console):
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
+    /// The pm hashes a rune with a *nested* `src/` tree (`src/sub/extra.witchy`)
+    /// to the same content address as the Rust store — proving its recursive
+    /// walk (via the `is_dir` builtin) matches `RuneSource::read_dir`.
+    #[test]
+    fn pm_lock_hashes_nested_src_like_the_store() {
+        let tmp = std::env::temp_dir().join(format!("witchy_pm_nested_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(tmp.join("app/src")).unwrap();
+        std::fs::create_dir_all(tmp.join("lib/src/sub")).unwrap();
+        std::fs::write(
+            tmp.join("app/witchy.toml"),
+            "[rune]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"lib\" = { path = \"../lib\" }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            tmp.join("app/src/app.witchy"),
+            "fn main(console: Console):\n    print(console, \"hi\")\n",
+        )
+        .unwrap();
+        std::fs::write(
+            tmp.join("lib/witchy.toml"),
+            "[rune]\nname = \"lib\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            tmp.join("lib/src/lib.witchy"),
+            "fn f(s: String) -> String:\n    s\n",
+        )
+        .unwrap();
+        std::fs::write(
+            tmp.join("lib/src/sub/extra.witchy"),
+            "fn g() -> Int:\n    7\n",
+        )
+        .unwrap();
+
+        let (linked, _stem) = crate::link_file("projects/pm/src/pm.witchy").expect("link");
+        typeck::check(&linked).expect("typeck");
+        let (out, code) = interpreter::run_module_exit(
+            linked,
+            &tmp,
+            Vec::new(),
+            vec!["lock".into(), "app".into()],
+            None,
+        )
+        .expect("run");
+        assert_eq!(code, 0, "lock failed: {out:?}");
+        let lock = std::fs::read_to_string(tmp.join("app/witchy.lock")).unwrap();
+        let store_hash = crate::pm::store::RuneSource::read_dir(&tmp.join("lib"))
+            .unwrap()
+            .hash();
+        assert!(
+            lock.contains(&store_hash),
+            "nested-src lock hash must match the store hash {store_hash}: {lock:?}"
+        );
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
     /// The `crypto.rune_hash` native primitive (the witchy-facing content address)
     /// is byte-identical to coven's store hashing — the guarantee that makes the
     /// self-hosted `lock`/`verify` interoperate with the Rust toolchain.
