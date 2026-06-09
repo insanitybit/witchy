@@ -4444,6 +4444,25 @@ fn yn(b: Bool) -> String:
         assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
     }
 
+    /// `trim` must strip exactly the same whitespace on both backends. The WASM
+    /// `$is_ws` helper handles the 6 ASCII whitespace bytes (incl. VT/FF); Rust's
+    /// `str::trim` would also strip Unicode whitespace (e.g. NBSP), which WASM does
+    /// not — so the interpreter is pinned to the ASCII set. Here a NBSP (U+00A0)
+    /// must survive on BOTH backends, while VT/FF are stripped by both. (Regression
+    /// for a silent Unicode-whitespace trim divergence.)
+    #[test]
+    fn trim_whitespace_set_agrees_on_both_backends() {
+        // "  \t\n hi \r\x0b" -> "hi"; "\x0c x \x0c" -> "x"; NBSP stays around 'y'.
+        let src = "fn main(console: Console):\n    print(console, \"[\" <> trim(\"  \\t\\n hi \\r\u{0b}\") <> \"]\")\n    print(console, \"[\" <> trim(\"\u{0c} x \u{0c}\") <> \"]\")\n    print(console, \"[\" <> trim(\"\u{a0}y\u{a0}\") <> \"]\")\n";
+        let want = vec![
+            "[hi]".to_string(),
+            "[x]".to_string(),
+            "[\u{a0}y\u{a0}]".to_string(),
+        ];
+        assert_eq!(interp(src), want.clone(), "interpreter");
+        assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
+    }
+
     /// `to_string` of a builtin call result (`has` -> Bool, `size` -> Int) must
     /// compile and render the same on both backends — codegen knows these
     /// builtins' value types, so it picks the right formatter instead of erroring

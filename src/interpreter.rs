@@ -629,7 +629,16 @@ impl Interpreter {
                 other => err(format!("to_lower expects a String, got `{other}`")),
             },
             "trim" => match one(args)? {
-                Value::Str(s) => Ok(Some(Value::Str(s.trim().to_string()))),
+                // ASCII whitespace only — exactly the byte set the WASM `$is_ws`
+                // helper strips (space, tab, LF, VT, FF, CR). Rust's `str::trim`
+                // would additionally strip Unicode whitespace (NBSP, …), which the
+                // compiled backend does not, so we pin both to this set to keep the
+                // backends in agreement (consistent with ASCII `to_upper`/`to_lower`).
+                Value::Str(s) => {
+                    let trimmed =
+                        s.trim_matches(|c: char| matches!(c, ' ' | '\t' | '\n' | '\x0b' | '\x0c' | '\r'));
+                    Ok(Some(Value::Str(trimmed.to_string())))
+                }
                 other => err(format!("trim expects a String, got `{other}`")),
             },
             "starts_with" => match args {
