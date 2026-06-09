@@ -59,6 +59,14 @@ pub struct Capabilities {
     pub dir_read: bool,
     /// May write within `dir_root` (write/make_dir).
     pub dir_write: bool,
+    /// The `host:port` allowlist backing the root `Net` capability (handle 0).
+    /// `None` denies the network entirely; the verb flags below pick which
+    /// operation families are linked within it.
+    pub net_allow: Option<Vec<String>>,
+    /// May dial out (`connect`/`restrict`) to allowlisted addresses.
+    pub net_connect: bool,
+    /// May bind and accept (`listen`/`accept`) on allowlisted addresses.
+    pub net_listen: bool,
 }
 
 impl Capabilities {
@@ -112,11 +120,18 @@ pub struct ActorState {
     /// index — the paths live host-side, so a module cannot forge a directory.
     dirs: Vec<std::path::PathBuf>,
     /// A host->guest transfer staged by a size-probing call (`dir_read_len`,
-    /// `dir_list_size`) and consumed by the matching fill call, so the data is
-    /// computed once with no time-of-check/time-of-use gap between the calls.
+    /// `net_recv_*_len`, ...) and consumed by the matching `fill_pending`, so
+    /// the data is read once with no time-of-check/time-of-use gap.
     pending: Option<Vec<u8>>,
     /// A staged directory listing (`dir_list_size` -> `dir_list_write`).
     pending_list: Option<Vec<String>>,
+    /// The `Net` capability handle table: index 0 is the granted allowlist,
+    /// and each `restrict` mints a narrower entry — host-side, unforgeable.
+    nets: Vec<Vec<String>>,
+    /// Open sockets, indexed by the guest's i32 Socket handles.
+    sockets: Vec<std::io::BufReader<std::net::TcpStream>>,
+    /// Listening server sockets, indexed by the guest's i32 Listener handles.
+    listeners: Vec<std::net::TcpListener>,
 }
 
 /// A spawned actor: an isolated VM plus the entrypoint we can drive.
@@ -223,6 +238,7 @@ impl Runtime {
             .memory_size(memory_pages_max * 64 * 1024)
             .build();
         let dirs = caps.dir_root.iter().cloned().collect();
+        let nets = caps.net_allow.iter().cloned().collect();
         let state = ActorState {
             id,
             caps: caps.clone(),
@@ -233,6 +249,9 @@ impl Runtime {
             dirs,
             pending: None,
             pending_list: None,
+            nets,
+            sockets: Vec::new(),
+            listeners: Vec::new(),
         };
 
         let mut store = Store::new(&self.engine, state);
@@ -273,12 +292,34 @@ impl Runtime {
             linker.func_wrap("witchy", "dir_is_dir", host_dir_is_dir)?;
             linker.func_wrap("witchy", "dir_list_size", host_dir_list_size)?;
             linker.func_wrap("witchy", "dir_list_write", host_dir_list_write)?;
-            linker.func_wrap("witchy", "fill_pending", host_fill_pending)?;
         }
         if caps.dir_root.is_some() && caps.dir_write {
             linker.func_wrap("witchy", "dir_write", host_dir_write)?;
             linker.func_wrap("witchy", "dir_make_dir", host_dir_make_dir)?;
         }
+        // The Net family, linked per VERB right. Socket I/O carries no authority
+        // of its own (a socket is only obtainable through a granted connect or
+        // accept), so it is linked under either verb.
+        let net = caps.net_allow.is_some();
+        if net && caps.net_connect {
+            linker.func_wrap("witchy", "net_restrict", host_net_restrict)?;
+            linker.func_wrap("witchy", "net_connect", host_net_connect)?;
+        }
+        if net && caps.net_listen {
+            linker.func_wrap("witchy", "net_listen", host_net_listen)?;
+            linker.func_wrap("witchy", "net_accept", host_net_accept)?;
+        }
+        if net && (caps.net_connect || caps.net_listen) {
+            linker.func_wrap("witchy", "net_send_line", host_net_send_line)?;
+            linker.func_wrap("witchy", "net_send_bytes", host_net_send_bytes)?;
+            linker.func_wrap("witchy", "net_recv_line_len", host_net_recv_line_len)?;
+            linker.func_wrap("witchy", "net_recv_all_len", host_net_recv_all_len)?;
+            linker.func_wrap("witchy", "net_recv_bytes_len", host_net_recv_bytes_len)?;
+            linker.func_wrap("witchy", "net_close", host_net_close)?;
+        }
+        // `fill_pending` only writes out data already staged by a granted size
+        // call — it carries no authority of its own, so it is always available.
+        linker.func_wrap("witchy", "fill_pending", host_fill_pending)?;
         // `recv` is intrinsic: reading your *own* mailbox is not authority over
         // anyone else, so every actor may do it.
         linker.func_wrap("witchy", "recv", host_recv)?;
@@ -661,6 +702,174 @@ fn host_dir_make_dir(mut caller: Caller<'_, ActorState>, h: i32, name_ptr: i32) 
     let path = confine(crate::interpreter::resolve_write(&base, &name))?;
     std::fs::create_dir_all(&path)
         .map_err(|e| Error::msg(format!("make_dir failed for `{}`: {e}", path.display())))
+}
+
+// --- the Net capability family ---
+//
+// Same shape as Dir: a guest `Net` is an i32 handle into the actor's host-side
+// allowlist table (`restrict` mints narrower entries); `Socket`/`Listener` are
+// handles into host-side connection tables. The allowlist check is the SAME
+// exact-match rule the interpreter applies, so the backends agree on which
+// addresses are reachable.
+
+fn net_allow(caller: &Caller<'_, ActorState>, h: i32) -> Result<Vec<String>> {
+    caller
+        .data()
+        .nets
+        .get(h as usize)
+        .cloned()
+        .ok_or_else(|| Error::msg(format!("invalid Net handle {h}")))
+}
+
+/// `net_restrict(h, addr) -> handle`: attenuate to a single allowlisted address.
+fn host_net_restrict(mut caller: Caller<'_, ActorState>, h: i32, addr_ptr: i32) -> Result<i32> {
+    let mem = memory_of(&mut caller)?;
+    let addr = read_wstr(mem.data(&caller), addr_ptr)?;
+    let allow = net_allow(&caller, h)?;
+    if !allow.contains(&addr) {
+        bail!("restrict: `{addr}` is not in this Net capability");
+    }
+    let nets = &mut caller.data_mut().nets;
+    nets.push(vec![addr]);
+    Ok((nets.len() - 1) as i32)
+}
+
+/// `net_connect(h, addr) -> Socket handle`: dial an allowlisted address.
+fn host_net_connect(mut caller: Caller<'_, ActorState>, h: i32, addr_ptr: i32) -> Result<i32> {
+    let mem = memory_of(&mut caller)?;
+    let addr = read_wstr(mem.data(&caller), addr_ptr)?;
+    let allow = net_allow(&caller, h)?;
+    if !allow.contains(&addr) {
+        bail!("connect: `{addr}` is not permitted by this Net capability");
+    }
+    let stream = std::net::TcpStream::connect(&addr)
+        .map_err(|e| Error::msg(format!("connect to `{addr}` failed: {e}")))?;
+    let sockets = &mut caller.data_mut().sockets;
+    sockets.push(std::io::BufReader::new(stream));
+    Ok((sockets.len() - 1) as i32)
+}
+
+/// `net_listen(h, addr) -> Listener handle`: bind an allowlisted address.
+fn host_net_listen(mut caller: Caller<'_, ActorState>, h: i32, addr_ptr: i32) -> Result<i32> {
+    let mem = memory_of(&mut caller)?;
+    let addr = read_wstr(mem.data(&caller), addr_ptr)?;
+    let allow = net_allow(&caller, h)?;
+    if !allow.contains(&addr) {
+        bail!("listen: `{addr}` is not permitted by this Net capability");
+    }
+    let listener = std::net::TcpListener::bind(&addr)
+        .map_err(|e| Error::msg(format!("listen on `{addr}` failed: {e}")))?;
+    let listeners = &mut caller.data_mut().listeners;
+    listeners.push(listener);
+    Ok((listeners.len() - 1) as i32)
+}
+
+/// `net_accept(listener) -> Socket handle`: block for a client connection.
+fn host_net_accept(mut caller: Caller<'_, ActorState>, lid: i32) -> Result<i32> {
+    let state = caller.data_mut();
+    let listener = state
+        .listeners
+        .get(lid as usize)
+        .ok_or_else(|| Error::msg("invalid listener"))?;
+    let (stream, _peer) = listener
+        .accept()
+        .map_err(|e| Error::msg(format!("accept failed: {e}")))?;
+    state.sockets.push(std::io::BufReader::new(stream));
+    Ok((state.sockets.len() - 1) as i32)
+}
+
+fn socket_of(
+    state: &mut ActorState,
+    sid: i32,
+) -> Result<&mut std::io::BufReader<std::net::TcpStream>> {
+    state
+        .sockets
+        .get_mut(sid as usize)
+        .ok_or_else(|| Error::msg("invalid socket"))
+}
+
+/// `net_send_line(sock, s)`: write the string and a trailing newline.
+fn host_net_send_line(mut caller: Caller<'_, ActorState>, sid: i32, line_ptr: i32) -> Result<()> {
+    use std::io::Write;
+    let mem = memory_of(&mut caller)?;
+    let line = read_wstr(mem.data(&caller), line_ptr)?;
+    let sock = socket_of(caller.data_mut(), sid)?;
+    sock.get_mut()
+        .write_all(line.as_bytes())
+        .and_then(|_| sock.get_mut().write_all(b"\n"))
+        .map_err(|e| Error::msg(format!("send failed: {e}")))
+}
+
+/// `net_send_bytes(sock, s)`: write the exact bytes, no framing added.
+fn host_net_send_bytes(mut caller: Caller<'_, ActorState>, sid: i32, ptr: i32) -> Result<()> {
+    use std::io::Write;
+    let mem = memory_of(&mut caller)?;
+    let s = read_wstr(mem.data(&caller), ptr)?;
+    let sock = socket_of(caller.data_mut(), sid)?;
+    sock.get_mut()
+        .write_all(s.as_bytes())
+        .map_err(|e| Error::msg(format!("send failed: {e}")))
+}
+
+/// `net_recv_line_len(sock) -> len`: read one line NOW (newline trimmed, like
+/// the interpreter), stage it, and report its length for `fill_pending`.
+fn host_net_recv_line_len(mut caller: Caller<'_, ActorState>, sid: i32) -> Result<i32> {
+    use std::io::BufRead;
+    let state = caller.data_mut();
+    let sock = socket_of(state, sid)?;
+    let mut line = String::new();
+    sock.read_line(&mut line)
+        .map_err(|e| Error::msg(format!("recv failed: {e}")))?;
+    let trimmed = line.trim_end_matches('\n').to_string();
+    let len = trimmed.len() as i32;
+    state.pending = Some(trimmed.into_bytes());
+    Ok(len)
+}
+
+/// `net_recv_all_len(sock) -> len`: read to EOF NOW (lossy UTF-8, like the
+/// interpreter), stage it, and report its length.
+fn host_net_recv_all_len(mut caller: Caller<'_, ActorState>, sid: i32) -> Result<i32> {
+    use std::io::Read;
+    let state = caller.data_mut();
+    let sock = socket_of(state, sid)?;
+    let mut buf = Vec::new();
+    sock.read_to_end(&mut buf)
+        .map_err(|e| Error::msg(format!("recv failed: {e}")))?;
+    let s = String::from_utf8_lossy(&buf).into_owned();
+    let len = s.len() as i32;
+    state.pending = Some(s.into_bytes());
+    Ok(len)
+}
+
+/// `net_recv_bytes_len(sock, n) -> len`: read exactly `n` bytes (fewer only on
+/// early EOF, matching the interpreter), stage them lossily, report the length.
+fn host_net_recv_bytes_len(mut caller: Caller<'_, ActorState>, sid: i32, n: i64) -> Result<i32> {
+    use std::io::Read;
+    let state = caller.data_mut();
+    let sock = socket_of(state, sid)?;
+    let want = n.max(0) as usize;
+    let mut buf = vec![0u8; want];
+    let mut read = 0;
+    while read < want {
+        match sock.read(&mut buf[read..]) {
+            Ok(0) => break,
+            Ok(k) => read += k,
+            Err(e) => bail!("recv failed: {e}"),
+        }
+    }
+    buf.truncate(read);
+    let s = String::from_utf8_lossy(&buf).into_owned();
+    let len = s.len() as i32;
+    state.pending = Some(s.into_bytes());
+    Ok(len)
+}
+
+/// `net_close(sock)`: shut the connection down (idempotent).
+fn host_net_close(mut caller: Caller<'_, ActorState>, sid: i32) -> Result<()> {
+    if let Some(sock) = caller.data_mut().sockets.get_mut(sid as usize) {
+        let _ = sock.get_mut().shutdown(std::net::Shutdown::Both);
+    }
+    Ok(())
 }
 
 // --- small helpers for safe guest-memory access ---

@@ -1056,6 +1056,9 @@ fn run_wat_capture(wat: &str) -> Result<Vec<String>, String> {
                 dir_root: Some(std::path::PathBuf::from(".")),
                 dir_read: true,
                 dir_write: true,
+                net_allow: Some(Vec::new()),
+                net_connect: true,
+                net_listen: true,
                 ..Default::default()
             },
             RUN_MEMORY_PAGES,
@@ -4569,6 +4572,117 @@ fn yn(b: Bool) -> String:
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// The Net family compiles to capability-gated host imports and agrees with
+    /// the interpreter: a client connects to an allowlisted loopback server,
+    /// exchanges a line on both backends, and a non-allowlisted address FAILS
+    /// on both.
+    #[test]
+    fn net_capability_compiles_to_wasm_and_confines() {
+        use crate::runtime::{Capabilities, Runtime};
+        use std::io::{BufRead, Write};
+        let server = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = format!("127.0.0.1:{}", server.local_addr().unwrap().port());
+        // One echo exchange per backend run.
+        let handle = std::thread::spawn(move || {
+            for _ in 0..2 {
+                let (stream, _) = server.accept().expect("accept");
+                let mut reader = std::io::BufReader::new(stream);
+                let mut line = String::new();
+                reader.read_line(&mut line).expect("read");
+                let reply = format!("echo: {}\n", line.trim_end());
+                reader.get_mut().write_all(reply.as_bytes()).expect("write");
+            }
+        });
+
+        let src = format!(
+            "fn main(console: Console, net: Net):\n    let sock = connect(net, \"{addr}\")\n    send_line(sock, \"hello\")\n    print(console, recv_line(sock))\n    close(sock)\n"
+        );
+        let want = vec!["echo: hello".to_string()];
+        assert_eq!(
+            interpreter::run_with(&src, ".", vec![addr.clone()]).expect("interp"),
+            want,
+            "interpreter"
+        );
+        let module = parser::parse_module(&src).expect("parse");
+        let wat = codegen::compile_module(&module).expect("compile");
+        let mut rt = Runtime::batch().expect("runtime");
+        let mut actor = rt
+            .spawn(
+                wat.as_bytes(),
+                Capabilities {
+                    print: true,
+                    quiet: true,
+                    net_allow: Some(vec![addr.clone()]),
+                    net_connect: true,
+                    ..Default::default()
+                },
+                64,
+            )
+            .expect("spawn");
+        actor.run().expect("run");
+        assert_eq!(actor.output(), want, "compiled WASM must agree");
+        handle.join().expect("server thread");
+
+        // A non-allowlisted address fails on BOTH backends.
+        let bad = "fn main(console: Console, net: Net):\n    let sock = connect(net, \"127.0.0.1:1\")\n    print(console, \"connected\")\n";
+        assert!(
+            interpreter::run_with(bad, ".", vec![addr.clone()]).is_err(),
+            "interp must reject a non-allowlisted address"
+        );
+        let m = parser::parse_module(bad).expect("parse");
+        let w = codegen::compile_module(&m).expect("compile");
+        let mut rt = Runtime::batch().expect("runtime");
+        let mut a = rt
+            .spawn(
+                w.as_bytes(),
+                Capabilities {
+                    print: true,
+                    quiet: true,
+                    net_allow: Some(vec![addr]),
+                    net_connect: true,
+                    ..Default::default()
+                },
+                64,
+            )
+            .expect("spawn");
+        assert!(a.run().is_err(), "WASM must trap on a non-allowlisted address");
+    }
+
+    /// Net verbs are enforced at the GRANT: a listening module cannot
+    /// instantiate under a connect-only grant, and any net import fails with no
+    /// grant at all.
+    #[test]
+    fn net_rights_enforced_at_instantiation() {
+        use crate::runtime::{Capabilities, Runtime};
+        let listener_src = "fn main(console: Console, net: Net):\n    let l = listen(net, \"127.0.0.1:39999\")\n    print(console, \"listening\")\n";
+        let m = parser::parse_module(listener_src).expect("parse");
+        let w = codegen::compile_module(&m).expect("compile");
+        let mut rt = Runtime::batch().expect("runtime");
+        let denied = rt.spawn(
+            w.as_bytes(),
+            Capabilities {
+                print: true,
+                quiet: true,
+                net_allow: Some(vec!["127.0.0.1:39999".into()]),
+                net_connect: true,
+                net_listen: false,
+                ..Default::default()
+            },
+            64,
+        );
+        assert!(denied.is_err(), "listen import must not instantiate under connect-only");
+        let client = "fn main(console: Console, net: Net):\n    let s = connect(net, \"127.0.0.1:1\")\n    print(console, \"x\")\n";
+        let m = parser::parse_module(client).expect("parse");
+        let w = codegen::compile_module(&m).expect("compile");
+        let mut rt = Runtime::batch().expect("runtime");
+        let denied = rt.spawn(
+            w.as_bytes(),
+            Capabilities { print: true, quiet: true, ..Default::default() },
+            64,
+        );
+        assert!(denied.is_err(), "net import must not instantiate without a Net grant");
+    }
+
     /// Rights are enforced at the GRANT: a module that imports a write operation
     /// cannot even instantiate under a read-only Dir grant, and any Dir import
     /// fails with no grant at all.
@@ -7653,6 +7767,9 @@ fn main(console: Console):
                     dir_root: Some(std::path::PathBuf::from(".")),
                     dir_read: true,
                     dir_write: true,
+                    net_allow: Some(Vec::new()),
+                    net_connect: true,
+                    net_listen: true,
                     ..Default::default()
                 },
                 4,
@@ -7687,6 +7804,9 @@ fn main(console: Console):
                     dir_root: Some(std::path::PathBuf::from(".")),
                     dir_read: true,
                     dir_write: true,
+                    net_allow: Some(Vec::new()),
+                    net_connect: true,
+                    net_listen: true,
                     ..Default::default()
                 },
                 4,

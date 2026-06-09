@@ -407,6 +407,10 @@ struct Codegen {
     /// import, so a read-only program never imports a write op (and therefore
     /// instantiates under a read-only grant).
     used_dir_ops: std::collections::BTreeSet<&'static str>,
+    /// Which `Net` operations the program uses, gated per verb the same way
+    /// ("connect"/"restrict" under Connect; "listen"/"accept" under Listen;
+    /// socket I/O under either).
+    used_net_ops: std::collections::BTreeSet<&'static str>,
     uses_ends_with: bool,
     /// Whether the `split` helper is needed.
     uses_split: bool,
@@ -641,6 +645,7 @@ impl Codegen {
             uses_now: false,
             uses_get_env: false,
             used_dir_ops: std::collections::BTreeSet::new(),
+            used_net_ops: std::collections::BTreeSet::new(),
             uses_dict_update: false,
             uses_ends_with: false,
             uses_split: false,
@@ -846,7 +851,8 @@ impl Codegen {
             }
             Expr::Call { name, .. } => match name.as_str() {
                 "int_to_string" | "to_string" | "to_upper" | "to_lower" | "trim" | "replace"
-                | "substring" | "crypto.sha256" | "read" => ValType::Str,
+                | "substring" | "crypto.sha256" | "read" | "recv_line" | "recv_all"
+                | "recv_bytes" => ValType::Str,
                 "starts_with" | "ends_with" | "contains" | "has" | "exists" | "is_dir"
                 | "crypto.ed25519_verify" => ValType::Bool,
                 "string_length" | "char_count" | "index_of" | "length" | "size" | "float_to_int"
@@ -1568,6 +1574,9 @@ impl Codegen {
             || self.uses_get_env
             || self.used_dir_ops.contains("read")
             || self.used_dir_ops.contains("list")
+            || self.used_net_ops.contains("recv_line")
+            || self.used_net_ops.contains("recv_all")
+            || self.used_net_ops.contains("recv_bytes")
     }
 
     fn emit_imports(&self) -> String {
@@ -1626,9 +1635,6 @@ impl Codegen {
         if self.used_dir_ops.contains("read") {
             s.push_str("  (import \"witchy\" \"dir_read_len\" (func $dir_read_len_host (param i32 i32) (result i32)))\n");
         }
-        if self.used_dir_ops.contains("read") {
-            s.push_str("  (import \"witchy\" \"fill_pending\" (func $fill_pending_host (param i32)))\n");
-        }
         if self.used_dir_ops.contains("exists") {
             s.push_str("  (import \"witchy\" \"dir_exists\" (func $dir_exists_host (param i32 i32) (result i32)))\n");
         }
@@ -1644,6 +1650,47 @@ impl Codegen {
         }
         if self.used_dir_ops.contains("make_dir") {
             s.push_str("  (import \"witchy\" \"dir_make_dir\" (func $dir_make_dir_host (param i32 i32)))\n");
+        }
+        // The Net family: a guest Net/Socket/Listener is an i32 handle into the
+        // host's tables; the import list is the program's network footprint.
+        if self.used_net_ops.contains("restrict") {
+            s.push_str("  (import \"witchy\" \"net_restrict\" (func $net_restrict_host (param i32 i32) (result i32)))\n");
+        }
+        if self.used_net_ops.contains("connect") {
+            s.push_str("  (import \"witchy\" \"net_connect\" (func $net_connect_host (param i32 i32) (result i32)))\n");
+        }
+        if self.used_net_ops.contains("listen") {
+            s.push_str("  (import \"witchy\" \"net_listen\" (func $net_listen_host (param i32 i32) (result i32)))\n");
+        }
+        if self.used_net_ops.contains("accept") {
+            s.push_str("  (import \"witchy\" \"net_accept\" (func $net_accept_host (param i32) (result i32)))\n");
+        }
+        if self.used_net_ops.contains("send_line") {
+            s.push_str("  (import \"witchy\" \"net_send_line\" (func $net_send_line_host (param i32 i32)))\n");
+        }
+        if self.used_net_ops.contains("send_bytes") {
+            s.push_str("  (import \"witchy\" \"net_send_bytes\" (func $net_send_bytes_host (param i32 i32)))\n");
+        }
+        if self.used_net_ops.contains("recv_line") {
+            s.push_str("  (import \"witchy\" \"net_recv_line_len\" (func $net_recv_line_len_host (param i32) (result i32)))\n");
+        }
+        if self.used_net_ops.contains("recv_all") {
+            s.push_str("  (import \"witchy\" \"net_recv_all_len\" (func $net_recv_all_len_host (param i32) (result i32)))\n");
+        }
+        if self.used_net_ops.contains("recv_bytes") {
+            s.push_str("  (import \"witchy\" \"net_recv_bytes_len\" (func $net_recv_bytes_len_host (param i32 i64) (result i32)))\n");
+        }
+        if self.used_net_ops.contains("close") {
+            s.push_str("  (import \"witchy\" \"net_close\" (func $net_close_host (param i32)))\n");
+        }
+        // `fill_pending` is the shared, authority-free transfer primitive for
+        // every staged read (Dir read, Net recv) — emitted once.
+        if self.used_dir_ops.contains("read")
+            || self.used_net_ops.contains("recv_line")
+            || self.used_net_ops.contains("recv_all")
+            || self.used_net_ops.contains("recv_bytes")
+        {
+            s.push_str("  (import \"witchy\" \"fill_pending\" (func $fill_pending_host (param i32)))\n");
         }
         s
     }
@@ -1711,6 +1758,15 @@ impl Codegen {
         }
         if self.used_dir_ops.contains("list") {
             s.push_str(DIR_LIST_WAT);
+        }
+        if self.used_net_ops.contains("recv_line") {
+            s.push_str(NET_RECV_LINE_WAT);
+        }
+        if self.used_net_ops.contains("recv_all") {
+            s.push_str(NET_RECV_ALL_WAT);
+        }
+        if self.used_net_ops.contains("recv_bytes") {
+            s.push_str(NET_RECV_BYTES_WAT);
         }
         if self.uses_float_ord {
             s.push_str(FLOAT_ORD_WAT);
@@ -3705,11 +3761,56 @@ impl Codegen {
                 let name = self.compile_expr(&args[1])?;
                 Ok(format!("{d}{name}    call $dir_make_dir_host\n    i32.const 0\n"))
             }
-            ("connect", _) | ("restrict", _) | ("send_line", _) | ("recv_line", _)
-            | ("recv_all", _) | ("send_bytes", _) | ("recv_bytes", _) | ("listen", _)
-            | ("accept", _) | ("close", _) => cerr(
-                "network capabilities are not compiled to WASM yet (interpreter only; maps to wasi:sockets)",
-            ),
+            // --- the Net capability family. Net/Socket/Listener values are i32
+            // handles into the host's tables; each op is its own gated import. ---
+            ("restrict", 2) | ("connect", 2) | ("listen", 2) => {
+                let op: &'static str = match name {
+                    "restrict" => "restrict",
+                    "connect" => "connect",
+                    _ => "listen",
+                };
+                self.used_net_ops.insert(op);
+                let net = self.compile_expr(&args[0])?;
+                let addr = self.compile_expr(&args[1])?;
+                Ok(format!("{net}{addr}    call $net_{op}_host\n"))
+            }
+            ("accept", 1) => {
+                self.used_net_ops.insert("accept");
+                let l = self.compile_expr(&args[0])?;
+                Ok(format!("{l}    call $net_accept_host\n"))
+            }
+            ("send_line", 2) | ("send_bytes", 2) => {
+                let op: &'static str = if name == "send_line" { "send_line" } else { "send_bytes" };
+                self.used_net_ops.insert(op);
+                let sock = self.compile_expr(&args[0])?;
+                let payload = self.compile_expr(&args[1])?;
+                Ok(format!("{sock}{payload}    call $net_{op}_host\n    i32.const 0\n"))
+            }
+            ("recv_line", 1) => {
+                self.used_net_ops.insert("recv_line");
+                let sock = self.compile_expr(&args[0])?;
+                Ok(format!("{sock}    call $net_recv_line\n"))
+            }
+            ("recv_all", 1) => {
+                self.used_net_ops.insert("recv_all");
+                let sock = self.compile_expr(&args[0])?;
+                Ok(format!("{sock}    call $net_recv_all\n"))
+            }
+            ("recv_bytes", 2) => {
+                self.used_net_ops.insert("recv_bytes");
+                let nk = self.kind_of(&args[1]);
+                let sock = self.compile_expr(&args[0])?;
+                let n = self.compile_expr(&args[1])?;
+                Ok(format!(
+                    "{sock}{n}{}    call $net_recv_bytes\n",
+                    kind_convert(nk, Kind::I64)
+                ))
+            }
+            ("close", 1) => {
+                self.used_net_ops.insert("close");
+                let sock = self.compile_expr(&args[0])?;
+                Ok(format!("{sock}    call $net_close_host\n    i32.const 0\n"))
+            }
             _ => {
                 // A function-valued local (a closure param/binding) holds a
                 // pointer to a `[code_index][caps..]` record. Call it through the
@@ -4759,6 +4860,43 @@ const DIR_LIST_WAT: &str = r#"  (func $dir_list (param $h i32) (result i32)
     (local.set $res (global.get $heap))
     (call $dir_list_write_host (local.get $res))
     (global.set $heap (i32.add (local.get $res) (local.get $size)))
+    (local.get $res))
+"#;
+
+// recv_line / recv_all / recv_bytes: a fresh string of staged socket data. The
+// host performs the read at the `_len` call and stages the bytes (newline
+// trimming / lossy UTF-8 exactly as the interpreter does); the guest allocates
+// `[len][bytes]` and `fill_pending` writes them.
+const NET_RECV_LINE_WAT: &str = r#"  (func $net_recv_line (param $s i32) (result i32)
+    (local $len i32) (local $res i32)
+    (local.set $len (call $net_recv_line_len_host (local.get $s)))
+    (call $ensure (i32.add (local.get $len) (i32.const 4)))
+    (local.set $res (global.get $heap))
+    (i32.store (local.get $res) (local.get $len))
+    (call $fill_pending_host (i32.add (local.get $res) (i32.const 4)))
+    (global.set $heap (i32.add (i32.add (local.get $res) (i32.const 4)) (local.get $len)))
+    (local.get $res))
+"#;
+
+const NET_RECV_ALL_WAT: &str = r#"  (func $net_recv_all (param $s i32) (result i32)
+    (local $len i32) (local $res i32)
+    (local.set $len (call $net_recv_all_len_host (local.get $s)))
+    (call $ensure (i32.add (local.get $len) (i32.const 4)))
+    (local.set $res (global.get $heap))
+    (i32.store (local.get $res) (local.get $len))
+    (call $fill_pending_host (i32.add (local.get $res) (i32.const 4)))
+    (global.set $heap (i32.add (i32.add (local.get $res) (i32.const 4)) (local.get $len)))
+    (local.get $res))
+"#;
+
+const NET_RECV_BYTES_WAT: &str = r#"  (func $net_recv_bytes (param $s i32) (param $n i64) (result i32)
+    (local $len i32) (local $res i32)
+    (local.set $len (call $net_recv_bytes_len_host (local.get $s) (local.get $n)))
+    (call $ensure (i32.add (local.get $len) (i32.const 4)))
+    (local.set $res (global.get $heap))
+    (i32.store (local.get $res) (local.get $len))
+    (call $fill_pending_host (i32.add (local.get $res) (i32.const 4)))
+    (global.set $heap (i32.add (i32.add (local.get $res) (i32.const 4)) (local.get $len)))
     (local.get $res))
 "#;
 
