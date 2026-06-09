@@ -2329,12 +2329,12 @@ impl Codegen {
             // string_to_int(s): parse a well-formed decimal integer — optional
             // surrounding ASCII whitespace, an optional sign, then digits. The
             // interpreter trims and rejects malformed input; the compiled parser
-            // is best-effort on the same valid inputs (sharing the i32 caveat),
-            // so the backends agree on any in-range integer string.
+            // matches the interpreter's `trim().parse::<i64>()` (i64 accumulation,
+            // strict: traps on junk / no digits), so the backends agree.
             ("string_to_int", 1) => {
                 self.uses_str_to_int = true;
                 let s = self.compile_expr(&args[0])?;
-                Ok(format!("{s}    call $str_to_int\n    i64.extend_i32_s\n"))
+                Ok(format!("{s}    call $str_to_int\n"))
             }
             // Prefix/suffix tests over the string's bytes (`[len][bytes]`).
             ("starts_with", 2) => {
@@ -3875,15 +3875,19 @@ const STR_SUBSTRING_WAT: &str = r#"  (func $str_substring (param $s i32) (param 
       (else (call $substr (local.get $s) (local.get $lo) (i32.sub (local.get $hi) (local.get $lo))))))
 "#;
 
-// str_to_int(s): parse a decimal integer from `s` — leading ASCII whitespace,
-// an optional +/- sign, then digits (parsing stops at the first non-digit).
-// Mirrors the interpreter's `trim().parse()` on well-formed inputs.
-const STR_TO_INT_WAT: &str = r#"  (func $str_to_int (param $s i32) (result i32)
-    (local $len i32) (local $i i32) (local $b i32) (local $acc i32) (local $neg i32)
+// str_to_int(s): parse a decimal integer from `s`, mirroring the interpreter's
+// `s.trim().parse::<i64>()`: skip leading/trailing ASCII whitespace, accept an
+// optional +/- sign then one or more digits, and accumulate in i64. Anything
+// else — no digits, or leftover non-whitespace after the number — traps, matching
+// the interpreter's parse error (rather than silently parsing a prefix). The
+// safe wrapper `std/string.parse_int` pre-validates, so it never reaches a trap.
+const STR_TO_INT_WAT: &str = r#"  (func $str_to_int (param $s i32) (result i64)
+    (local $len i32) (local $i i32) (local $b i32) (local $acc i64) (local $neg i32) (local $got i32)
     (local.set $len (i32.load (local.get $s)))
     (local.set $i (i32.const 0))
-    (local.set $acc (i32.const 0))
+    (local.set $acc (i64.const 0))
     (local.set $neg (i32.const 0))
+    (local.set $got (i32.const 0))
     (block $wsdone
       (loop $ws
         (br_if $wsdone (i32.ge_s (local.get $i) (local.get $len)))
@@ -3911,12 +3915,28 @@ const STR_TO_INT_WAT: &str = r#"  (func $str_to_int (param $s i32) (result i32)
         (br_if $digdone (i32.or
           (i32.lt_u (local.get $b) (i32.const 48))
           (i32.gt_u (local.get $b) (i32.const 57))))
-        (local.set $acc (i32.add (i32.mul (local.get $acc) (i32.const 10))
-          (i32.sub (local.get $b) (i32.const 48))))
+        (local.set $acc (i64.add (i64.mul (local.get $acc) (i64.const 10))
+          (i64.extend_i32_u (i32.sub (local.get $b) (i32.const 48)))))
+        (local.set $got (i32.const 1))
         (local.set $i (i32.add (local.get $i) (i32.const 1)))
         (br $dig)))
-    (if (result i32) (local.get $neg)
-      (then (i32.sub (i32.const 0) (local.get $acc)))
+    (block $twsdone
+      (loop $tws
+        (br_if $twsdone (i32.ge_s (local.get $i) (local.get $len)))
+        (local.set $b (i32.load8_u (i32.add (i32.add (local.get $s) (i32.const 4)) (local.get $i))))
+        (br_if $twsdone (i32.eqz (i32.or
+          (i32.eq (local.get $b) (i32.const 32))
+          (i32.or (i32.eq (local.get $b) (i32.const 9))
+          (i32.or (i32.eq (local.get $b) (i32.const 10))
+          (i32.or (i32.eq (local.get $b) (i32.const 13))
+          (i32.or (i32.eq (local.get $b) (i32.const 11))
+                  (i32.eq (local.get $b) (i32.const 12)))))))))
+        (local.set $i (i32.add (local.get $i) (i32.const 1)))
+        (br $tws)))
+    (if (i32.or (i32.eqz (local.get $got)) (i32.lt_s (local.get $i) (local.get $len)))
+      (then (unreachable)))
+    (if (result i64) (local.get $neg)
+      (then (i64.sub (i64.const 0) (local.get $acc)))
       (else (local.get $acc))))
 "#;
 

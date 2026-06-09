@@ -4388,6 +4388,22 @@ fn yn(b: Bool) -> String:
         assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
     }
 
+    /// `string_to_int` must accumulate in i64 (matching the interpreter's
+    /// `parse::<i64>()`) and trim surrounding whitespace. WASM used to parse into
+    /// i32, so a value past 2^31 (e.g. 5000000000) silently truncated to a wrong
+    /// number; it now agrees on both backends.
+    #[test]
+    fn wasm_string_to_int_uses_i64_and_trims() {
+        let src = "fn main(console: Console):\n    print(console, int_to_string(string_to_int(\"5000000000\")))\n    print(console, int_to_string(string_to_int(\"-7000000000\")))\n    print(console, int_to_string(string_to_int(\"  42  \")))\n";
+        let want = vec![
+            "5000000000".to_string(),
+            "-7000000000".to_string(),
+            "42".to_string(),
+        ];
+        assert_eq!(interp(src), want.clone(), "interpreter");
+        assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
+    }
+
     /// `examples/rle.witchy` — run-length encoding and its inverse — collapses
     /// runs to "<count><char>" and expands them back, verifying decode∘encode is
     /// the identity. Pure string processing; identical on both backends. (Its
