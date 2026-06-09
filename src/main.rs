@@ -4027,6 +4027,25 @@ fn yn(b: Bool) -> String:
         assert_eq!(crate::capabilities::show_caps(&fp.total), "Console");
     }
 
+    /// `examples/diff.witchy` — an LCS line diff — fills the longest-common-
+    /// subsequence table and backtracks into unchanged/removed/added lines. The
+    /// backtrack compares `at(old, i) == at(new, j)` (two `List(String)` element
+    /// reads), so it also guards content comparison on both backends.
+    #[test]
+    fn diff_example_emits_lcs_line_diff() {
+        assert_eq!(
+            crate::execute_file("examples/diff.witchy", Vec::new()).unwrap(),
+            vec![
+                "  apple",
+                "- banana",
+                "  cherry",
+                "  date",
+                "+ elderberry",
+                "  fig",
+            ]
+        );
+    }
+
     /// `examples/toposort.witchy` — Kahn's topological sort over a dependency
     /// graph — produces a valid build order and reports a cycle. Pure (Console),
     /// list-based (no Dict), both backends.
