@@ -4472,6 +4472,20 @@ fn yn(b: Bool) -> String:
         assert_eq!(run_on_wasm(src), vec!["9000000000"], "WASM");
     }
 
+    /// A big `Int` in a tuple ELEMENT of a list must survive being read back —
+    /// `at(list_of_tuples, i)` then destructured, and `for t in list_of_tuples`.
+    /// Codegen tracks a list's element-tuple slot types (literal or variable) and
+    /// applies them to the `at`/loop tuple destructure. (Two-level nesting.)
+    #[test]
+    fn wasm_big_int_in_list_of_tuples() {
+        let direct = "fn main(console: Console):\n    let (a, b) = at([(9000000000, 1)], 0)\n    print(console, int_to_string(a))\n    print(console, int_to_string(b))\n";
+        assert_eq!(interp(direct), vec!["9000000000", "1"], "interpreter (direct)");
+        assert_eq!(run_on_wasm(direct), vec!["9000000000", "1"], "WASM (direct)");
+        let loop_src = "fn main(console: Console):\n    for t in [(9000000000, 1)]:\n        let (a, b) = t\n        print(console, int_to_string(a))\n";
+        assert_eq!(interp(loop_src), vec!["9000000000"], "interpreter (loop)");
+        assert_eq!(run_on_wasm(loop_src), vec!["9000000000"], "WASM (loop)");
+    }
+
     /// A large `Int` carried as an `Option`/`Result` success payload must keep its
     /// 64 bits on WASM, through both `?` and a `match`. The payload field is a type
     /// variable (generic i32 ABI), so codegen would truncate; it now tracks the

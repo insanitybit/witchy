@@ -876,6 +876,23 @@ impl Codegen {
         }
     }
 
+    /// The element-tuple slot value types of a list expression, where the
+    /// element is a tuple: a list variable (tracked) or a list literal of tuples.
+    /// Lets `at(list_of_tuples, i)` and `for t in list_of_tuples` recover the
+    /// tuple's slots at the right widths (an Int slot as i64).
+    fn list_elem_tuple_slots(&self, list: &Expr) -> Option<Vec<ValType>> {
+        match list {
+            Expr::Var(v) => self.local_list_elem_tuple.get(v).cloned(),
+            Expr::List(items) => match items.first() {
+                Some(Expr::Tuple(slots)) => {
+                    Some(slots.iter().map(|e| self.val_type_of(e)).collect())
+                }
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
     fn elem_val_type_of(&self, iter: &Expr) -> ValType {
         match iter {
             // Builtins that yield `List(String)` regardless of input.
@@ -966,11 +983,30 @@ impl Codegen {
                     if let Expr::Tuple(items) = value {
                         self.local_tuple_slots
                             .insert(name.clone(), items.iter().map(|e| self.val_type_of(e)).collect());
-                    } else if let Expr::Call { name: fname, .. } = value {
-                        // A binding to a tuple-returning call records its slot value
-                        // types, so `let (a, b) = name` destructures at i64 for Int.
-                        if let Some(slots) = self.fn_ret_tuple_slots.get(fname) {
+                    } else if let Expr::Call { name: fname, args } = value {
+                        if fname == "at" && args.len() == 2 {
+                            // `at(list_of_tuples, i)`: the result tuple's slots are
+                            // the list's element-tuple slot types.
+                            if let Expr::Var(list) = &args[0] {
+                                if let Some(slots) = self.local_list_elem_tuple.get(list).cloned() {
+                                    self.local_tuple_slots.insert(name.clone(), slots);
+                                }
+                            }
+                        } else if let Some(slots) = self.fn_ret_tuple_slots.get(fname) {
+                            // A binding to a tuple-returning call records its slots,
+                            // so `let (a, b) = name` destructures at i64 for Int.
                             self.local_tuple_slots.insert(name.clone(), slots.clone());
+                        }
+                    }
+                    // A list literal of tuples records its element-tuple slot types,
+                    // so `at(name, i)` then `let (a, b) = ...` destructures at the
+                    // right widths.
+                    if let Expr::List(items) = value {
+                        if let Some(Expr::Tuple(slots)) = items.first() {
+                            self.local_list_elem_tuple.insert(
+                                name.clone(),
+                                slots.iter().map(|e| self.val_type_of(e)).collect(),
+                            );
                         }
                     }
                     // A binding to a `List(Record)` (literal, a `List(Record)`-
@@ -1016,13 +1052,21 @@ impl Codegen {
                             .filter(|s| s.len() == names.len())
                             .cloned()
                             .unwrap_or_else(|| vec![ValType::Other; names.len()])
-                    } else if let Expr::Call { name: fname, .. } = value {
-                        // A tuple-returning call: destructure at its slot types.
-                        self.fn_ret_tuple_slots
-                            .get(fname)
-                            .filter(|s| s.len() == names.len())
-                            .cloned()
-                            .unwrap_or_else(|| vec![ValType::Other; names.len()])
+                    } else if let Expr::Call { name: fname, args } = value {
+                        if fname == "at" && args.len() == 2 {
+                            // `let (a, b) = at(list_of_tuples, i)`: the element-tuple
+                            // slot types of the list (variable or literal).
+                            self.list_elem_tuple_slots(&args[0])
+                                .filter(|s| s.len() == names.len())
+                                .unwrap_or_else(|| vec![ValType::Other; names.len()])
+                        } else {
+                            // A tuple-returning call: destructure at its slot types.
+                            self.fn_ret_tuple_slots
+                                .get(fname)
+                                .filter(|s| s.len() == names.len())
+                                .cloned()
+                                .unwrap_or_else(|| vec![ValType::Other; names.len()])
+                        }
                     } else {
                         vec![ValType::Other; names.len()]
                     };
@@ -1084,10 +1128,8 @@ impl Codegen {
                 // Iterating a list of tuples: the loop var is a tuple with the
                 // element's slot types, so a `let (k, v) = p` inside can type its
                 // bindings (and `k == key` use string, not pointer, comparison).
-                if let Expr::Var(x) = iter.as_ref() {
-                    if let Some(slots) = self.local_list_elem_tuple.get(x).cloned() {
-                        self.local_tuple_slots.insert(var.clone(), slots);
-                    }
+                if let Some(slots) = self.list_elem_tuple_slots(iter) {
+                    self.local_tuple_slots.insert(var.clone(), slots);
                 }
                 self.infer_locals_expr(iter);
                 self.infer_locals(body);
