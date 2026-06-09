@@ -6,10 +6,20 @@
 cargo build                 # debug build of the `witchy` CLI
 cargo test                  # ~870 unit + integration tests (must stay green)
 cargo clippy -- -D warnings # lint gate (CI enforces)
+./scripts/e2e-full.sh       # the from-scratch acceptance test (see below)
 ```
 
 The end-to-end package-manager tests (`tests/e2e.rs`) drive the real binary
 through scaffold/publish/add/build/run against hermetic per-test registries.
+
+`scripts/e2e-full.sh` is the whole-system acceptance run: it builds from
+scratch, then asserts one program produces identical output on all three
+backends, exercises the formatter, the in-language test framework, capability
+auditing (`caps`/`caps-diff`), sandbox enforcement (confinement + allowlist
+refusals), a complete registry lifecycle (trusted publish → staged → 2FA
+promote → verified add → the capability-widening gate → namespace binding), a
+multi-rune example project, and doc extraction — ~30 asserted checks.
+`--quick` skips the `cargo test` stage (CI runs it as its own job).
 
 ## The one rule: parity
 

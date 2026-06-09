@@ -47,6 +47,16 @@ jobs:
           done
           exit $fail
 
+  acceptance:
+    name: From-scratch acceptance (e2e-full)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Run the acceptance script (test suites run in their own job)
+        run: ./scripts/e2e-full.sh --quick
+
   fmt:
     name: Formatting check (std + examples)
     runs-on: ubuntu-latest
