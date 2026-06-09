@@ -4486,6 +4486,16 @@ fn yn(b: Bool) -> String:
         assert_eq!(run_on_wasm(loop_src), vec!["9000000000"], "WASM (loop)");
     }
 
+    /// A big `Int` in a nested list (`at(at(xs, i), j)`) must survive. Codegen
+    /// tracks a list-of-lists' inner element type so the inner `at` recovers it
+    /// as i64. (Two levels of list nesting — e.g. a matrix row/column.)
+    #[test]
+    fn wasm_big_int_in_nested_list() {
+        let src = "fn main(console: Console):\n    let m = [[1, 9000000000], [3, 4]]\n    print(console, int_to_string(at(at(m, 0), 1)))\n";
+        assert_eq!(interp(src), vec!["9000000000"], "interpreter");
+        assert_eq!(run_on_wasm(src), vec!["9000000000"], "WASM");
+    }
+
     /// A large `Int` carried as an `Option`/`Result` success payload must keep its
     /// 64 bits on WASM, through both `?` and a `match`. The payload field is a type
     /// variable (generic i32 ABI), so codegen would truncate; it now tracks the

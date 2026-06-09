@@ -368,6 +368,9 @@ struct Codegen {
     /// Dict variable -> its key's scalar type, so `pairs(d)` destructures the
     /// `(key, value)` tuple at the right widths (an Int key as i64).
     local_dict_key_valtype: HashMap<String, ValType>,
+    /// List-of-lists variable -> the INNER list's scalar element type, so
+    /// `at(at(xs, i), j)` recovers an Int as i64 (two levels of nesting).
+    local_list_elem_list_valtype: HashMap<String, ValType>,
     /// Function name -> the record type of the elements of its `List(_)` return,
     /// so `for x in f(...) { x.field }` resolves x's record type.
     fn_ret_list_elem: HashMap<String, String>,
@@ -455,6 +458,7 @@ impl Codegen {
             local_payload_valtype: HashMap::new(),
             local_dict_value_valtype: HashMap::new(),
             local_dict_key_valtype: HashMap::new(),
+            local_list_elem_list_valtype: HashMap::new(),
             fn_ret_list_elem: HashMap::new(),
             fn_ret_list_elem_valtype: HashMap::new(),
             fn_ret_option_of_list_arg: HashMap::new(),
@@ -942,6 +946,16 @@ impl Codegen {
                     .unwrap_or(ValType::Other),
                 _ => ValType::Other,
             },
+            // `at(xs, i)` on a list-of-lists yields the inner list, whose element
+            // type is tracked — so `at(at(xs, i), j)` recovers an Int as i64.
+            Expr::Call { name, args } if name == "at" && args.len() == 2 => match &args[0] {
+                Expr::Var(xs) => self
+                    .local_list_elem_list_valtype
+                    .get(xs)
+                    .copied()
+                    .unwrap_or(ValType::Other),
+                _ => ValType::Other,
+            },
             // A function declared `-> List(<scalar>)` carries its element type.
             Expr::Call { name, .. } => self
                 .fn_ret_list_elem_valtype
@@ -1036,11 +1050,24 @@ impl Codegen {
                     // so `at(name, i)` then `let (a, b) = ...` destructures at the
                     // right widths.
                     if let Expr::List(items) = value {
-                        if let Some(Expr::Tuple(slots)) = items.first() {
-                            self.local_list_elem_tuple.insert(
-                                name.clone(),
-                                slots.iter().map(|e| self.val_type_of(e)).collect(),
-                            );
+                        match items.first() {
+                            Some(Expr::Tuple(slots)) => {
+                                self.local_list_elem_tuple.insert(
+                                    name.clone(),
+                                    slots.iter().map(|e| self.val_type_of(e)).collect(),
+                                );
+                            }
+                            // A list literal of lists: record the inner element's
+                            // scalar type, so `at(at(name, i), j)` recovers it.
+                            Some(Expr::List(inner)) => {
+                                if let Some(e) = inner.first() {
+                                    let vt = self.val_type_of(e);
+                                    if vt != ValType::Other {
+                                        self.local_list_elem_list_valtype.insert(name.clone(), vt);
+                                    }
+                                }
+                            }
+                            _ => {}
                         }
                     }
                     // A binding to a `List(Record)` (literal, a `List(Record)`-
@@ -1433,6 +1460,7 @@ impl Codegen {
         self.local_payload_valtype.clear();
         self.local_dict_value_valtype.clear();
         self.local_dict_key_valtype.clear();
+        self.local_list_elem_list_valtype.clear();
         self.local_fn_ret_kind.clear();
         for p in &f.params {
             let k = p.ty.as_ref().map(ty_kind).unwrap_or(Kind::I32);
