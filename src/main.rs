@@ -4436,6 +4436,18 @@ fn yn(b: Bool) -> String:
         assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
     }
 
+    /// A big `Int` destructured from a tuple RETURNED by a (monomorphized)
+    /// generic function must keep its 64 bits. The tuple slots carry i64; codegen
+    /// now tracks a tuple-returning function's slot types so `let (a, b) = f(...)`
+    /// (direct or via a `let`) reads each at the right width.
+    #[test]
+    fn wasm_big_int_from_returned_tuple() {
+        let src = "fn pair(x: a, y: a) -> (a, a):\n    (x, y)\n\nfn main(console: Console):\n    let (p, q) = pair(9000000000, 1)\n    print(console, int_to_string(p))\n    print(console, int_to_string(q))\n";
+        let want = vec!["9000000000".to_string(), "1".to_string()];
+        assert_eq!(interp(src), want.clone(), "interpreter");
+        assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
+    }
+
     /// A large `Int` carried as an `Option`/`Result` success payload must keep its
     /// 64 bits on WASM, through both `?` and a `match`. The payload field is a type
     /// variable (generic i32 ABI), so codegen would truncate; it now tracks the

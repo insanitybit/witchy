@@ -265,6 +265,10 @@ struct Codegen {
     /// declared `-> fn(...) -> RET`. Lets `let f = make(...)` then `f(x)` recover
     /// the closure's result at the right width.
     fn_ret_closure_kind: HashMap<String, Kind>,
+    /// Function name -> the element value types of the tuple it returns, so a
+    /// `let (a, b) = f(...)` destructures at the right widths (an Int slot as
+    /// i64, not the generic i32).
+    fn_ret_tuple_slots: HashMap<String, Vec<ValType>>,
     /// Message name -> tag, shared across a program's actors so the host can
     /// route a compiled `send` to the target actor's handler.
     message_tags: HashMap<String, u32>,
@@ -427,6 +431,7 @@ impl Codegen {
             locals: HashMap::new(),
             fn_ret: HashMap::new(),
             fn_ret_closure_kind: HashMap::new(),
+            fn_ret_tuple_slots: HashMap::new(),
             message_tags: HashMap::new(),
             uses_send: false,
             record_fields: HashMap::new(),
@@ -921,6 +926,12 @@ impl Codegen {
                     if let Expr::Tuple(items) = value {
                         self.local_tuple_slots
                             .insert(name.clone(), items.iter().map(|e| self.val_type_of(e)).collect());
+                    } else if let Expr::Call { name: fname, .. } = value {
+                        // A binding to a tuple-returning call records its slot value
+                        // types, so `let (a, b) = name` destructures at i64 for Int.
+                        if let Some(slots) = self.fn_ret_tuple_slots.get(fname) {
+                            self.local_tuple_slots.insert(name.clone(), slots.clone());
+                        }
                     }
                     // A binding to a `List(Record)` (literal, a `List(Record)`-
                     // returning call, or another such variable) records its
@@ -956,6 +967,13 @@ impl Codegen {
                     } else if let Expr::Var(p) = value {
                         self.local_tuple_slots
                             .get(p)
+                            .filter(|s| s.len() == names.len())
+                            .cloned()
+                            .unwrap_or_else(|| vec![ValType::Other; names.len()])
+                    } else if let Expr::Call { name: fname, .. } = value {
+                        // A tuple-returning call: destructure at its slot types.
+                        self.fn_ret_tuple_slots
+                            .get(fname)
                             .filter(|s| s.len() == names.len())
                             .cloned()
                             .unwrap_or_else(|| vec![ValType::Other; names.len()])
@@ -3053,6 +3071,12 @@ pub fn compile_module(module: &Module) -> Result<String, CodegenError> {
                 // recovers the result at the right width.
                 if let Some(Type::Fn(_, cret)) = &f.ret {
                     cg.fn_ret_closure_kind.insert(f.name.clone(), ty_kind(cret));
+                }
+                // A function returning a tuple: record its slot value types so a
+                // `let (a, b) = f(...)` destructures each at the right width.
+                if let Some(Type::Tuple(slots)) = &f.ret {
+                    cg.fn_ret_tuple_slots
+                        .insert(f.name.clone(), slots.iter().map(ty_to_valtype).collect());
                 }
             }
             Item::Type(t) => {
