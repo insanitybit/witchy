@@ -4027,6 +4027,22 @@ fn yn(b: Bool) -> String:
         assert_eq!(crate::capabilities::show_caps(&fp.total), "Console");
     }
 
+    /// `examples/traits.witchy` — defines a custom `Shape` trait, implements it for
+    /// three types, and dispatches generically (`where s: Shape`). Monomorphized,
+    /// so it runs identically on both backends.
+    #[test]
+    fn traits_example_dispatches_a_custom_trait() {
+        assert_eq!(
+            crate::execute_file("examples/traits.witchy", Vec::new()).unwrap(),
+            vec![
+                "square with area 25",
+                "rectangle with area 12",
+                "right triangle with area 12",
+                "total of three squares: 29",
+            ]
+        );
+    }
+
     /// `examples/sudoku.witchy` — a backtracking solver over immutable boards —
     /// solves the canonical puzzle to its unique solution. Pure (Console),
     /// recursion + Option-backtracking heavy.
