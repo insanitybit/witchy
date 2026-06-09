@@ -721,6 +721,26 @@ impl Mono<'_> {
         head_type_name(e, scope, self.ctor_results, &self.fn_rets)
     }
 
+    /// The return type name of a function-valued argument: a lambda's body type
+    /// (its parameters seeded into scope) or a named function's return type.
+    /// Resolves a `fn(...) -> b` parameter's `b` for monomorphization.
+    fn closure_ret_type(&self, arg: &Expr, scope: &Scope) -> Option<String> {
+        match arg {
+            Expr::Lambda { params, body } => {
+                let mut s = scope.clone();
+                seed_params(params, &mut s);
+                match body.stmts.last() {
+                    Some(Stmt::Expr(e)) | Some(Stmt::Return(Some(e))) => {
+                        head_type_name(e, &s, self.ctor_results, &self.fn_rets)
+                    }
+                    _ => None,
+                }
+            }
+            Expr::Var(f) => self.fn_rets.get(f).cloned(),
+            _ => None,
+        }
+    }
+
     fn resolve_type_args(
         &self,
         template: &Function,
@@ -753,6 +773,17 @@ impl Mono<'_> {
                             .and_then(list_elem)
                         {
                             found = Some(elem.to_string());
+                            break;
+                        }
+                    }
+                    // `f: fn(...) -> var` (e.g. `map`'s mapper, whose result is the
+                    // element type of the returned list): take `var` from the
+                    // closure argument's return type.
+                    Some(Type::Fn(_, ret))
+                        if matches!(ret.as_ref(), Type::Named(vn, va) if *vn == var && va.is_empty()) =>
+                    {
+                        if let Some(tn) = self.closure_ret_type(arg, scope) {
+                            found = Some(tn);
                             break;
                         }
                     }

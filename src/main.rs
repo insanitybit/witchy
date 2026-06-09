@@ -4396,6 +4396,18 @@ fn yn(b: Bool) -> String:
         assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
     }
 
+    /// A large `Int` RETURNED from a closure must keep its 64 bits on WASM.
+    /// Closures use the i64 universal-slot result ABI, and a higher-order call
+    /// recovers the result at the closure's return kind (here `fn(Int) -> Int`).
+    /// (Regression for the big-Int-through-closure-return gap.)
+    #[test]
+    fn wasm_big_int_returned_from_closure() {
+        let src = "fn apply(f: fn(Int) -> Int, x: Int) -> Int:\n    f(x)\n\nfn main(console: Console):\n    print(console, int_to_string(apply(fn(k: Int): k * 5000000000, 2)))\n";
+        let want = vec!["10000000000".to_string()];
+        assert_eq!(interp(src), want.clone(), "interpreter");
+        assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
+    }
+
     /// A large `Int` carried as an `Option`/`Result` success payload must keep its
     /// 64 bits on WASM, through both `?` and a `match`. The payload field is a type
     /// variable (generic i32 ABI), so codegen would truncate; it now tracks the
