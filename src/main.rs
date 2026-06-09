@@ -7899,6 +7899,80 @@ fn main(console: Console):
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
+    /// `pm gate` is the supply-chain gate: after a dependency is locked, an edit
+    /// to its source that *widens* its capability footprint is BLOCKed (exit 2),
+    /// with the new authority attributed to the rune that introduced it.
+    /// Explicitly accepting those caps (like `--allow-cap`) folds them into the
+    /// baseline and clears the block.
+    #[test]
+    fn pm_gate_blocks_a_dependency_that_widens_authority() {
+        let tmp = std::env::temp_dir().join(format!("witchy_pm_gate_test_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(tmp.join("app/src")).unwrap();
+        std::fs::create_dir_all(tmp.join("lib/src")).unwrap();
+        std::fs::write(
+            tmp.join("app/witchy.toml"),
+            "[rune]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"lib\" = { path = \"../lib\" }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            tmp.join("app/src/app.witchy"),
+            "fn main(console: Console):\n    print(console, \"hi\")\n",
+        )
+        .unwrap();
+        std::fs::write(
+            tmp.join("lib/witchy.toml"),
+            "[rune]\nname = \"lib\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        // lib starts pure: no capabilities.
+        std::fs::write(
+            tmp.join("lib/src/lib.witchy"),
+            "fn f(s: String) -> String:\n    s\n",
+        )
+        .unwrap();
+
+        let run_pm = |args: Vec<String>| -> (Vec<String>, i32) {
+            let (linked, _stem) = crate::link_file("projects/pm/src/pm.witchy").expect("link");
+            typeck::check(&linked).expect("typeck");
+            interpreter::run_module_exit(linked, &tmp, Vec::new(), args, None).expect("run")
+        };
+
+        run_pm(vec!["lock".into(), "app".into()]);
+        let (out, code) = run_pm(vec!["gate".into(), "app".into()]);
+        assert_eq!(out, vec!["OK: dependencies demand no authority beyond witchy.lock"]);
+        assert_eq!(code, 0);
+
+        // lib's source widens to demand Console + Net — gate must BLOCK and name lib.
+        std::fs::write(
+            tmp.join("lib/src/lib.witchy"),
+            "fn main(console: Console, net: Net):\n    let s = connect(net, \"example.com:80\")\n    print(console, \"connected\")\n",
+        )
+        .unwrap();
+        let (out, code) = run_pm(vec!["gate".into(), "app".into()]);
+        assert_eq!(
+            out,
+            vec![
+                "BLOCK: dependencies demand new authority: Console, Net",
+                "  Console <- lib",
+                "  Net <- lib",
+            ]
+        );
+        assert_eq!(code, 2, "a widening dependency must exit 2");
+
+        // Accepting both new caps clears the gate.
+        let (out, code) = run_pm(vec![
+            "gate".into(),
+            "app".into(),
+            "Console".into(),
+            "Net".into(),
+        ]);
+        assert_eq!(out, vec!["OK: dependencies demand no authority beyond witchy.lock"]);
+        assert_eq!(code, 0);
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
     /// The `crypto.rune_hash` native primitive (the witchy-facing content address)
     /// is byte-identical to coven's store hashing — the guarantee that makes the
     /// self-hosted `lock`/`verify` interoperate with the Rust toolchain.
