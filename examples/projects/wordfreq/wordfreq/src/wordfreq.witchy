@@ -1,0 +1,14 @@
+// wordfreq — print the most common words in a text file. It reads the file with
+// a read-only Dir capability and ranks words with the `wordlib` rune (a path
+// dependency using std `string`/`ascii`/`dict`/`list`). Its footprint is exactly
+// `Console, Dir[Read]`. Run with:  witchy run
+
+import wordlib
+import string
+
+fn main(console: Console, root: Dir[Read]):
+    let text = read(root, "sample.txt")
+    print(console, "Top words:")
+    for entry in wordlib.top_words(text, 5):
+        let (word, count) = entry
+        print(console, "  " <> string.pad_right(word, 10, " ") <> int_to_string(count))

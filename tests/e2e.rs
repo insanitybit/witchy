@@ -1129,6 +1129,26 @@ fn example_sales_workspace_aggregates_csv_with_dict() {
     assert!(s.contains("Total: $475"), "grand total: {s}");
 }
 
+/// The committed `examples/projects/wordfreq` workspace — a `wordfreq` app that
+/// reads a text file (via a read-only `Dir`) and ranks the most common words with
+/// the `wordlib` rune (a path dependency using std `string`/`ascii`/`dict`/
+/// `list`). It builds and runs, normalizing case + punctuation and breaking
+/// count ties alphabetically for a deterministic top-5. Whitespace is collapsed
+/// so the assertion checks content and order, not the column padding.
+#[test]
+fn example_wordfreq_workspace_ranks_words() {
+    let sb = Sandbox::new("ex-wordfreq");
+    let srcroot = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/projects/wordfreq");
+    copy_tree(&srcroot, &sb.work);
+    let out = sb.run(&sb.work.join("wordfreq"), "dev", &["run"]);
+    assert!(out.status.success(), "run failed: {}", stderr(&out));
+    let collapsed = stdout(&out).split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(
+        collapsed.contains("Top words: the 6 fox 4 dog 3 quick 3 brown 2"),
+        "ranking wrong: {collapsed}"
+    );
+}
+
 #[test]
 fn published_rune_cannot_have_path_dependency() {
     let sb = Sandbox::new("nopath");

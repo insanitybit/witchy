@@ -1,0 +1,3 @@
+The quick brown fox jumps over the lazy dog.
+The dog barks, and the fox runs. The fox is quick!
+A quick brown fox; the lazy dog sleeps.
