@@ -30,6 +30,10 @@ pub fn lookup(qualified: &str) -> Option<NativeFn> {
         "crypto.public_key" => Some(crypto::public_key),
         "compiler.footprint" => Some(compiler::footprint),
         "compiler.diff" => Some(compiler::diff),
+        "encoding.hex_encode" => Some(encoding::hex_encode),
+        "encoding.hex_decode" => Some(encoding::hex_decode),
+        "encoding.base64_encode" => Some(encoding::base64_encode),
+        "encoding.base64_decode" => Some(encoding::base64_decode),
         _ => None,
     }
 }
@@ -270,5 +274,94 @@ mod compiler {
     fn arr(items: impl Iterator<Item = String>) -> String {
         let parts: Vec<String> = items.map(|s| string(&s)).collect();
         format!("[{}]", parts.join(","))
+    }
+}
+
+/// The `encoding` module: hex and base64, over a string's UTF-8 bytes. These need
+/// byte-level access witchy strings don't expose, so (like `crypto`) they are
+/// native. Decoding is lenient — it returns the bytes it could decode as a UTF-8
+/// string (lossy for non-text payloads), never an error.
+mod encoding {
+    use super::{type_error, Value};
+    use crate::interpreter::RuntimeError;
+
+    /// Lowercase hex of the input's UTF-8 bytes.
+    pub fn hex_encode(args: &[Value]) -> Result<Value, RuntimeError> {
+        let [Value::Str(s)] = args else {
+            return Err(type_error("encoding.hex_encode expects a String"));
+        };
+        use std::fmt::Write;
+        let mut out = String::with_capacity(s.len() * 2);
+        for b in s.as_bytes() {
+            let _ = write!(out, "{b:02x}");
+        }
+        Ok(Value::Str(out))
+    }
+
+    /// Decode a hex string back to text (lossy UTF-8). Whitespace is skipped; an
+    /// odd or non-hex tail is ignored.
+    pub fn hex_decode(args: &[Value]) -> Result<Value, RuntimeError> {
+        let [Value::Str(s)] = args else {
+            return Err(type_error("encoding.hex_decode expects a String"));
+        };
+        let digits: Vec<u8> = s.bytes().filter(|b| !b.is_ascii_whitespace()).collect();
+        let mut bytes = Vec::with_capacity(digits.len() / 2);
+        for pair in digits.chunks_exact(2) {
+            let hi = (pair[0] as char).to_digit(16);
+            let lo = (pair[1] as char).to_digit(16);
+            match (hi, lo) {
+                (Some(h), Some(l)) => bytes.push((h * 16 + l) as u8),
+                _ => break,
+            }
+        }
+        Ok(Value::Str(String::from_utf8_lossy(&bytes).into_owned()))
+    }
+
+    const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+    /// Standard base64 (with `=` padding) of the input's UTF-8 bytes.
+    pub fn base64_encode(args: &[Value]) -> Result<Value, RuntimeError> {
+        let [Value::Str(s)] = args else {
+            return Err(type_error("encoding.base64_encode expects a String"));
+        };
+        let bytes = s.as_bytes();
+        let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+        for chunk in bytes.chunks(3) {
+            let b0 = chunk[0] as u32;
+            let b1 = *chunk.get(1).unwrap_or(&0) as u32;
+            let b2 = *chunk.get(2).unwrap_or(&0) as u32;
+            let n = (b0 << 16) | (b1 << 8) | b2;
+            out.push(B64[(n >> 18 & 63) as usize] as char);
+            out.push(B64[(n >> 12 & 63) as usize] as char);
+            out.push(if chunk.len() > 1 { B64[(n >> 6 & 63) as usize] as char } else { '=' });
+            out.push(if chunk.len() > 2 { B64[(n & 63) as usize] as char } else { '=' });
+        }
+        Ok(Value::Str(out))
+    }
+
+    /// Decode standard base64 back to text (lossy UTF-8). Padding and whitespace
+    /// are tolerated; a non-alphabet byte stops decoding.
+    pub fn base64_decode(args: &[Value]) -> Result<Value, RuntimeError> {
+        let [Value::Str(s)] = args else {
+            return Err(type_error("encoding.base64_decode expects a String"));
+        };
+        let mut acc: u32 = 0;
+        let mut nbits = 0;
+        let mut bytes = Vec::new();
+        for c in s.bytes() {
+            if c == b'=' || c.is_ascii_whitespace() {
+                continue;
+            }
+            let Some(v) = B64.iter().position(|&x| x == c) else {
+                break;
+            };
+            acc = (acc << 6) | v as u32;
+            nbits += 6;
+            if nbits >= 8 {
+                nbits -= 8;
+                bytes.push((acc >> nbits & 0xff) as u8);
+            }
+        }
+        Ok(Value::Str(String::from_utf8_lossy(&bytes).into_owned()))
     }
 }

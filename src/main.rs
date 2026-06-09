@@ -3764,6 +3764,30 @@ fn yes(b: Bool) -> String:
         );
     }
 
+    /// `std/encoding` — hex + base64 over UTF-8 bytes (native, like crypto),
+    /// matching the standard vectors incl. padding, and round-tripping multibyte
+    /// UTF-8.
+    #[test]
+    fn encoding_module_hex_and_base64() {
+        let src = r#"import encoding
+
+fn main(console: Console):
+    print(console, encoding.hex_encode("hello"))
+    print(console, encoding.hex_decode("68656c6c6f"))
+    print(console, encoding.base64_encode("Man"))
+    print(console, encoding.base64_encode("Ma"))
+    print(console, encoding.base64_decode("aGVsbG8="))
+    print(console, yn(encoding.base64_decode(encoding.base64_encode("witchy! 🧙")) == "witchy! 🧙"))
+
+fn yn(b: Bool) -> String:
+    if b: "y" else: "n"
+"#;
+        assert_eq!(
+            link_run(src),
+            vec!["68656c6c6f", "hello", "TWFu", "TWE=", "hello", "y"]
+        );
+    }
+
     /// `std/time` computes the civil UTC date from a unix timestamp (Hinnant's
     /// days<->civil algorithm), cross-checked against Python's datetime: leap
     /// years, weekday, an exact round-trip, and a pre-1970 timestamp (floor
