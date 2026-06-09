@@ -383,10 +383,14 @@ fn drop_last(xs: List(String)) -> List(String):
         i = i + 1
     out
 
-// --- add: resolve + fetch a rune from a coven registry -----------------------
+// --- add: resolve + fetch a rune (and its deps) from a coven registry --------
 // Resolves a version requirement against the registry's released versions
-// (std/semver), fetches the chosen version's source, and materializes it. This
-// is the one pm command that needs the network.
+// (std/semver), fetches the chosen version's source (verifying its signed
+// record + content hash), materializes it, and then resolves the fetched rune's
+// own version dependencies transitively. The vendored tree under <dest> doubles
+// as the visited-set: a rune already carrying its coven.json is never re-fetched,
+// which makes a diamond or a dependency cycle terminate. This command needs the
+// network.
 
 fn cmd_add(console: Console, net: Net, root: Dir, args: List(String)) -> Int:
     let name = arg(args, 1)
@@ -398,16 +402,44 @@ fn cmd_add(console: Console, net: Net, root: Dir, args: List(String)) -> Int:
         1
     else:
         let (host, port) = hostport(addr)
+        add_rune(console, net, root, host, port, name, req, dest)
+
+// Resolve + fetch one rune and its transitive deps. Already-vendored runes (their
+// coven.json is present) are skipped — the dedup + cycle break.
+fn add_rune(console: Console, net: Net, root: Dir, host: String, port: Int, name: String, req: String, dest: String) -> Int:
+    if exists(root, join_path(join_path(dest, basename(name)), "coven.json")):
+        0
+    else:
         let versions = http.get(net, host, port, "/coven/versions?name=" <> wire(name))
         if http.status(versions) != 200:
             print(console, "registry error fetching versions for " <> name)
             1
         else:
             match pick_version(http.body(versions), req):
-                Ok(chosen) -> fetch_source(console, net, root, host, port, name, chosen, dest)
+                Ok(chosen) -> fetch_then_deps(console, net, root, host, port, name, chosen, dest)
                 Err(e) ->
-                    print(console, e)
+                    print(console, name <> ": " <> e)
                     1
+
+// Fetch a resolved version, then recurse into the version deps its manifest
+// declares. The exit code is the first failure (0 if the whole tree resolves).
+fn fetch_then_deps(console: Console, net: Net, root: Dir, host: String, port: Int, name: String, version: String, dest: String) -> Int:
+    let code = fetch_source(console, net, root, host, port, name, version, dest)
+    if code != 0:
+        code
+    else:
+        add_deps(console, net, root, host, port, name, dest)
+
+fn add_deps(console: Console, net: Net, root: Dir, host: String, port: Int, name: String, dest: String) -> Int:
+    let manifest = read(root, join_path(join_path(dest, basename(name)), "witchy.toml"))
+    var code = 0
+    for pair in toml.table(manifest, "dependencies"):
+        let (depname, inline) = pair
+        if let Some(depreq) = toml.inline_get(inline, "version"):
+            let sub = add_rune(console, net, root, host, port, depname, depreq, dest)
+            if sub != 0:
+                code = sub
+    code
 
 // The highest released version satisfying `req`, or an explanatory error.
 fn pick_version(body: String, req: String) -> Result(String, String):
@@ -665,7 +697,7 @@ fn usage(console: Console):
     print(console, "  lock  <dir>         pin dependencies by content hash -> witchy.lock")
     print(console, "  verify <dir>        witchy.lock must match the dependency sources")
     print(console, "  gate  <dir> [cap..] BLOCK if deps demand authority beyond the lock")
-    print(console, "  add <name> <req> <coven> <dest>  resolve + fetch a rune from a registry")
+    print(console, "  add <name> <req> <coven> <dest>  resolve + fetch a rune and its deps")
     print(console, "  verify-rune <dir> <rootpub>  re-verify a vendored rune offline (coven.json)")
     print(console, "  new   <name>        scaffold a new rune")
 

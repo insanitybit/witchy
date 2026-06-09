@@ -1716,3 +1716,113 @@ fn witchy_coven_yank_excludes_from_resolution() {
         "after yank, * falls back to 1.0.0: {after:?}"
     );
 }
+
+/// Transitive resolution, self-hosted: publishing `acme/app` whose manifest
+/// declares a version dependency on `acme/util`, then `pm add acme/app` fetches
+/// BOTH — app and, by following app's `[dependencies]`, util. Each node is
+/// integrity-verified and carries its coven.json.
+#[test]
+fn witchy_pm_add_resolves_transitive_dependencies() {
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let coven_src = format!("{manifest_dir}/projects/coven/src/coven.witchy");
+    let pm_src = format!("{manifest_dir}/projects/pm/src/pm.witchy");
+
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let addr = format!("127.0.0.1:{port}");
+    let store = unique("witchy-trans-store");
+    let seed = store.join("root.seed");
+    std::fs::write(
+        &seed,
+        "0000000000000000000000000000000000000000000000000000000000000001",
+    )
+    .unwrap();
+
+    let mut server = Command::new(BIN)
+        .args([
+            "--net",
+            &addr,
+            "--signing-key",
+            seed.to_str().unwrap(),
+            &coven_src,
+            &addr,
+        ])
+        .current_dir(&store)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn witchy coven");
+    let mut up = false;
+    for _ in 0..80 {
+        if std::net::TcpStream::connect(&addr).is_ok() {
+            up = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    if !up {
+        let _ = server.kill();
+        let _ = server.wait();
+        panic!("witchy coven never started on {addr}");
+    }
+
+    let publish = |name: &str, stem: &str, manifest: &str, module: &str| {
+        let source = format!(
+            "{{\"files\":[[\"witchy.toml\",{}],[\"src/{stem}.witchy\",{}]]}}",
+            json_str(manifest),
+            json_str(module)
+        );
+        let body = format!(
+            "{{\"manifest_toml\":{},\"source\":{source},\"uploaded_by\":\"ci\"}}",
+            json_str(manifest)
+        );
+        assert_eq!(http_post(&addr, "/coven/publish", &body).0, 200, "publish {name}");
+        let promote = format!(
+            "{{\"name\":\"{}\",\"version\":\"1.0.0\",\"second_factor\":\"webauthn\",\"promoted_by\":\"human\"}}",
+            name.replace('/', "~")
+        );
+        assert_eq!(http_post(&addr, "/coven/promote", &promote).0, 200, "promote {name}");
+    };
+
+    publish(
+        "acme/util",
+        "util",
+        "[rune]\nname = \"acme/util\"\nversion = \"1.0.0\"\n",
+        "fn id(s: String) -> String:\n    s\n",
+    );
+    publish(
+        "acme/app",
+        "app",
+        "[rune]\nname = \"acme/app\"\nversion = \"1.0.0\"\n\n[dependencies]\n\"acme/util\" = { version = \"^1.0.0\" }\n",
+        "fn run() -> String:\n    \"app\"\n",
+    );
+
+    let dest = unique("witchy-trans-dest");
+    let out = Command::new(BIN)
+        .args(["--net", &addr, &pm_src, "add", "acme/app", "*", &addr, "vendor"])
+        .current_dir(&dest)
+        .output()
+        .expect("run pm add");
+
+    let _ = server.kill();
+    let _ = server.wait();
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    let app_present = dest.join("vendor/app/coven.json").exists();
+    let util_present = dest.join("vendor/util/coven.json").exists();
+    let _ = std::fs::remove_dir_all(&store);
+    let _ = std::fs::remove_dir_all(&dest);
+
+    assert!(
+        stdout.contains("added acme/app@1.0.0"),
+        "app must be fetched: {stdout:?} / {:?}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        stdout.contains("added acme/util@1.0.0"),
+        "the transitive dep util must be fetched: {stdout:?}"
+    );
+    assert!(app_present && util_present, "both runes must carry provenance");
+}
