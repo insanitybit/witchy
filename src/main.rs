@@ -4534,6 +4534,16 @@ fn yn(b: Bool) -> String:
         assert_eq!(run_on_wasm(src), vec!["9000000000"], "WASM");
     }
 
+    /// `to_upper`/`to_lower` now compile to WASM (ASCII case mapping), matching
+    /// the interpreter's ASCII fold byte-for-byte — no longer interpreter-only.
+    #[test]
+    fn wasm_ascii_case_mapping() {
+        let src = "fn main(console: Console):\n    print(console, to_upper(\"Hi, World! 9z\"))\n    print(console, to_lower(\"Hi, World! 9A\"))\n";
+        let want = vec!["HI, WORLD! 9Z".to_string(), "hi, world! 9a".to_string()];
+        assert_eq!(interp(src), want.clone(), "interpreter");
+        assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
+    }
+
     /// A large `Int` carried as an `Option`/`Result` success payload must keep its
     /// 64 bits on WASM, through both `?` and a `match`. The payload field is a type
     /// variable (generic i32 ABI), so codegen would truncate; it now tracks the

@@ -617,12 +617,15 @@ impl Interpreter {
                 Value::Str(s) => Ok(Some(Value::Int(s.chars().count() as i64))),
                 other => err(format!("char_count expects a String, got `{other}`")),
             },
+            // ASCII case mapping (a-z <-> A-Z); non-ASCII bytes are unchanged.
+            // Deliberately ASCII-only so the WASM backend can match it byte-for-
+            // byte (full Unicode case folding would need large tables).
             "to_upper" => match one(args)? {
-                Value::Str(s) => Ok(Some(Value::Str(s.to_uppercase()))),
+                Value::Str(s) => Ok(Some(Value::Str(s.to_ascii_uppercase()))),
                 other => err(format!("to_upper expects a String, got `{other}`")),
             },
             "to_lower" => match one(args)? {
-                Value::Str(s) => Ok(Some(Value::Str(s.to_lowercase()))),
+                Value::Str(s) => Ok(Some(Value::Str(s.to_ascii_lowercase()))),
                 other => err(format!("to_lower expects a String, got `{other}`")),
             },
             "trim" => match one(args)? {

@@ -337,6 +337,8 @@ struct Codegen {
     uses_str_chars: bool,
     /// Whether the `$substr` allocator is needed (split, substring).
     uses_substr: bool,
+    /// Whether the `$ascii_case` helper (ASCII upper/lower-casing) is needed.
+    uses_ascii_case: bool,
     /// Whether the `$find_byte` substring search is needed (contains, index_of).
     uses_find_byte: bool,
     /// Whether the char-indexed `index_of` wrapper (+ `$byte_to_char`) is needed.
@@ -532,6 +534,7 @@ impl Codegen {
             uses_split: false,
             uses_str_chars: false,
             uses_substr: false,
+            uses_ascii_case: false,
             uses_find_byte: false,
             uses_index_of: false,
             uses_byte_to_char: false,
@@ -1437,6 +1440,7 @@ impl Codegen {
             || self.uses_split
             || self.uses_str_chars
             || self.uses_substr
+            || self.uses_ascii_case
             || self.uses_replace
             || self.uses_dict
             || self.uses_dict_iter
@@ -1508,6 +1512,9 @@ impl Codegen {
         // `$substr` allocates a string slice (used by `split` and `substring`).
         if self.uses_substr {
             s.push_str(SUBSTR_WAT);
+        }
+        if self.uses_ascii_case {
+            s.push_str(ASCII_CASE_WAT);
         }
         // `$crypto_sha256` allocates the 68-byte result string, then the host
         // import fills its 64 hex bytes.
@@ -2934,9 +2941,13 @@ impl Codegen {
                 let s = self.compile_expr(&args[0])?;
                 Ok(format!("{s}    call $trim\n"))
             }
-            ("to_upper", _) | ("to_lower", _) => cerr(
-                "to_upper/to_lower run in the interpreter; WASM Unicode case mapping is future",
-            ),
+            // ASCII case mapping, matching the interpreter's ASCII fold.
+            ("to_upper", 1) | ("to_lower", 1) => {
+                self.uses_ascii_case = true;
+                let up = if name == "to_upper" { 1 } else { 0 };
+                let s = self.compile_expr(&args[0])?;
+                Ok(format!("{s}    i32.const {up}\n    call $ascii_case\n"))
+            }
             // --- Dict (immutable association map) ---
             ("dict_new", 0) => {
                 self.uses_dict = true;
@@ -3983,6 +3994,34 @@ const STARTS_WITH_WAT: &str = r#"  (func $starts_with (param $s i32) (param $p i
 "#;
 
 // substr(src, start, len): a fresh string `[len][src bytes start..start+len]`.
+// ascii_case(s, up): a fresh string with each ASCII letter cased (`up`=1 ->
+// upper, 0 -> lower); other bytes are copied unchanged. Matches the
+// interpreter's `to_ascii_uppercase`/`to_ascii_lowercase` byte-for-byte.
+const ASCII_CASE_WAT: &str = r#"  (func $ascii_case (param $s i32) (param $up i32) (result i32)
+    (local $len i32) (local $i i32) (local $res i32) (local $b i32)
+    (local.set $len (i32.load (local.get $s)))
+    (call $ensure (i32.add (i32.const 4) (local.get $len)))
+    (local.set $res (global.get $heap))
+    (i32.store (local.get $res) (local.get $len))
+    (local.set $i (i32.const 0))
+    (block $done
+      (loop $l
+        (br_if $done (i32.ge_s (local.get $i) (local.get $len)))
+        (local.set $b (i32.load8_u (i32.add (i32.add (local.get $s) (i32.const 4)) (local.get $i))))
+        (if (local.get $up)
+          (then
+            (if (i32.and (i32.ge_u (local.get $b) (i32.const 97)) (i32.le_u (local.get $b) (i32.const 122)))
+              (then (local.set $b (i32.sub (local.get $b) (i32.const 32))))))
+          (else
+            (if (i32.and (i32.ge_u (local.get $b) (i32.const 65)) (i32.le_u (local.get $b) (i32.const 90)))
+              (then (local.set $b (i32.add (local.get $b) (i32.const 32)))))))
+        (i32.store8 (i32.add (i32.add (local.get $res) (i32.const 4)) (local.get $i)) (local.get $b))
+        (local.set $i (i32.add (local.get $i) (i32.const 1)))
+        (br $l)))
+    (global.set $heap (i32.add (i32.add (local.get $res) (i32.const 4)) (local.get $len)))
+    (local.get $res))
+"#;
+
 const SUBSTR_WAT: &str = r#"  (func $substr (param $src i32) (param $start i32) (param $len i32) (result i32)
     (local $res i32)
     (call $ensure (i32.add (i32.const 4) (local.get $len)))
