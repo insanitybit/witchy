@@ -499,6 +499,10 @@ struct Checker {
     record_fields: HashMap<String, RecordInfo>,
     adt_variants: HashMap<String, Vec<String>>,
     actor_field_sigs: HashMap<String, Vec<Ty>>,
+    /// Message name -> the declared handler parameter-type lists, across every
+    /// actor (`on Log(line: String)` registers `Log -> [[Some(String)]]`).
+    /// `send(subject, Msg(...))` is validated against these.
+    actor_handler_sigs: HashMap<String, Vec<Vec<Option<ast::Type>>>>,
     fn_conventions: HashMap<String, Vec<Convention>>,
     /// Per-function type parameters (name, var id), from lowercase type names in
     /// signatures. Generalized: instantiated fresh at each call site.
@@ -684,6 +688,13 @@ impl Checker {
         match (&a, &b) {
             (Ty::Var(x), Ty::Var(y)) if x == y => Ok(()),
             (Ty::Var(x), other) | (other, Ty::Var(x)) => {
+                // Occurs check: binding x := T where x appears inside T would
+                // build an infinite type (e.g. unifying `a` with `List(a)`).
+                if self.occurs(*x, other) {
+                    return terr(format!(
+                        "cannot construct the infinite type: a type variable occurs within `{other}`"
+                    ));
+                }
                 self.subst.insert(*x, other.clone());
                 Ok(())
             }
@@ -708,6 +719,21 @@ impl Checker {
             }
             _ if a == b => Ok(()),
             _ => terr(format!("expected `{a}`, found `{b}`")),
+        }
+    }
+
+    /// Whether type variable `x` occurs anywhere inside `t` (after resolving
+    /// intermediate variables) — the standard infinite-type guard.
+    fn occurs(&self, x: u32, t: &Ty) -> bool {
+        match self.resolve(t) {
+            Ty::Var(y) => x == y,
+            Ty::List(inner) => self.occurs(x, &inner),
+            Ty::Tuple(items) => items.iter().any(|i| self.occurs(x, i)),
+            Ty::Named(_, args) => args.iter().any(|a| self.occurs(x, a)),
+            Ty::Fn(params, ret) => {
+                params.iter().any(|p| self.occurs(x, p)) || self.occurs(x, &ret)
+            }
+            _ => false,
         }
     }
 
@@ -885,6 +911,61 @@ impl Checker {
                 None => None,
             },
         }
+    }
+
+    /// Validate `send(subject, Msg(args...))`: the message constructor must be a
+    /// handler some actor declares (`on Msg(...)`), with a matching argument
+    /// count; when exactly one declared signature matches the arity, each
+    /// argument is checked against its annotated parameter type. (Previously the
+    /// message was a fresh type variable — field-count and type mistakes only
+    /// surfaced at runtime.)
+    fn check_send(&mut self, args: &[Expr]) -> Result<Ty, TypeError> {
+        let subj = self.infer(&args[0])?;
+        self.unify(&subj, &Ty::Subject).map_err(|e| TypeError {
+            message: format!("in call to `send`: {}", e.message),
+        })?;
+        if let Expr::Ctor { name, args: margs } = &args[1] {
+            if let Some(sigs) = self.actor_handler_sigs.get(name).cloned() {
+                let matching: Vec<&Vec<Option<ast::Type>>> =
+                    sigs.iter().filter(|s| s.len() == margs.len()).collect();
+                if matching.is_empty() {
+                    let arities: Vec<String> =
+                        sigs.iter().map(|s| s.len().to_string()).collect();
+                    return terr(format!(
+                        "message `{name}` takes {} argument(s), but {} were sent",
+                        arities.join(" or "),
+                        margs.len()
+                    ));
+                }
+                if let [sig] = matching.as_slice() {
+                    let sig = (*sig).clone();
+                    for (a, pt) in margs.iter().zip(&sig) {
+                        let at = self.infer(a)?;
+                        if let Some(t) = pt {
+                            let want = self.to_ty(t);
+                            self.unify(&want, &at).map_err(|e| TypeError {
+                                message: format!("in message `{name}`: {}", e.message),
+                            })?;
+                        }
+                    }
+                } else {
+                    for a in margs {
+                        self.infer(a)?;
+                    }
+                }
+            } else if !self.actor_handler_sigs.is_empty() {
+                return terr(format!(
+                    "no actor declares a handler `on {name}(...)` — the message would never be delivered"
+                ));
+            } else {
+                for a in margs {
+                    self.infer(a)?;
+                }
+            }
+        } else {
+            self.infer(&args[1])?;
+        }
+        Ok(Ty::Nil)
     }
 
     /// Resolve a call's first argument as a `Dir` capability and yield its rights.
@@ -1349,6 +1430,9 @@ impl Checker {
                 }
                 if let Some(t) = self.check_net_op(name, args)? {
                     return Ok(t);
+                }
+                if name == "send" && args.len() == 2 {
+                    return self.check_send(args);
                 }
                 let Some((params, ret)) = self.call_sig(name) else {
                     // If the name is an unimported stdlib function, point the way;
@@ -1990,6 +2074,7 @@ pub fn check(module: &Module) -> Result<(), TypeError> {
         record_fields: HashMap::new(),
         adt_variants: HashMap::new(),
         actor_field_sigs: HashMap::new(),
+        actor_handler_sigs: HashMap::new(),
         fn_typarams: HashMap::new(),
         subst: HashMap::new(),
         next_var: 0,
@@ -2088,6 +2173,12 @@ pub fn check(module: &Module) -> Result<(), TypeError> {
                     .map(|f| c.to_ty(&f.ty))
                     .collect();
                 c.actor_field_sigs.insert(a.name.clone(), field_tys);
+                for h in &a.handlers {
+                    c.actor_handler_sigs
+                        .entry(h.message.clone())
+                        .or_default()
+                        .push(h.params.iter().map(|p| p.ty.clone()).collect());
+                }
             }
             // Desugared to functions by `traits::lower` and constants inlined by
             // `crate::consts` before this point.
@@ -2178,6 +2269,46 @@ mod tests {
         // not duplicates — they must still type-check.
         let methods = "type A:\n    A\ntype B:\n    B\nimpl A:\n    fn tag(self) -> Int:\n        1\nimpl B:\n    fn tag(self) -> Int:\n        2\n";
         check_str(methods).expect("same-named methods on different types are not duplicates");
+    }
+
+    #[test]
+    fn occurs_check_rejects_infinite_types() {
+        // Unifying `a` with `List(a)` (the classic omega shape) must be a clear
+        // check-time error, not an infinite type silently bound in the subst.
+        let omega = "fn omega(x: a) -> a:\n    omega([x])\n";
+        let err = check_str(omega).expect_err("infinite type must be rejected");
+        assert!(err.contains("infinite type"), "got: {err}");
+        // A legitimate generic that nests its argument in a list is fine when
+        // the return type grows with it.
+        check_str("fn wrap(x: a) -> List(a):\n    [x]\n").expect("wrap is valid");
+    }
+
+    #[test]
+    fn send_messages_are_validated_against_handlers() {
+        let actor = "actor Logger:\n    console: Console\n\n    on Log(line: String):\n        print(console, line)\n\n";
+        // A well-formed send checks.
+        check_str(&format!(
+            "{actor}fn main(console: Console):\n    let logger = spawn Logger(console)\n    send(logger, Log(\"ok\"))\n"
+        ))
+        .expect("a well-typed message is fine");
+        // Wrong argument type.
+        let ty = check_str(&format!(
+            "{actor}fn main(console: Console):\n    let logger = spawn Logger(console)\n    send(logger, Log(42))\n"
+        ))
+        .expect_err("an Int into a String handler param must fail");
+        assert!(ty.contains("expected `String`"), "got: {ty}");
+        // Wrong arity.
+        let arity = check_str(&format!(
+            "{actor}fn main(console: Console):\n    let logger = spawn Logger(console)\n    send(logger, Log(\"a\", \"b\"))\n"
+        ))
+        .expect_err("a 2-argument Log must fail");
+        assert!(arity.contains("takes 1 argument"), "got: {arity}");
+        // A message no actor handles.
+        let unknown = check_str(&format!(
+            "{actor}fn main(console: Console):\n    let logger = spawn Logger(console)\n    send(logger, Logg(\"a\"))\n"
+        ))
+        .expect_err("an unhandled message name must fail");
+        assert!(unknown.contains("no actor declares a handler"), "got: {unknown}");
     }
 
     #[test]
