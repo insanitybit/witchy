@@ -3503,6 +3503,98 @@ mod example_tests {
         }
     }
 
+    /// Property tests over the standard library: invariants that must hold for
+    /// *any* input — encode/decode round-trips, calendar inverses, semver
+    /// rendering — checked by generating the input, running it through the witchy
+    /// stdlib, and comparing to a Rust reference. These catch edge cases (empty
+    /// strings, embedded quotes/newlines, negative timestamps) unit tests miss.
+    mod stdlib_properties {
+        use super::link_run;
+        use proptest::prelude::*;
+
+        /// Escape a Rust string into the body of a witchy `"..."` literal.
+        fn esc(s: &str) -> String {
+            let mut out = String::new();
+            for c in s.chars() {
+                match c {
+                    '\\' => out.push_str("\\\\"),
+                    '"' => out.push_str("\\\""),
+                    '\n' => out.push_str("\\n"),
+                    '\r' => out.push_str("\\r"),
+                    '\t' => out.push_str("\\t"),
+                    _ => out.push(c),
+                }
+            }
+            out
+        }
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(64))]
+
+            /// `encoding.hex_encode` equals the byte-wise lowercase hex reference.
+            #[test]
+            fn hex_encode_matches_reference(s in "[ -#%-z|~]{0,40}") {
+                let src = format!(
+                    "import encoding\nfn main(console: Console):\n    print(console, encoding.hex_encode(\"{}\"))\n",
+                    esc(&s)
+                );
+                let reference: String = s.bytes().map(|b| format!("{b:02x}")).collect();
+                prop_assert_eq!(link_run(&src), vec![reference]);
+            }
+
+            /// base64 decode is the inverse of encode, for any printable ASCII.
+            #[test]
+            fn base64_roundtrips(s in "[ -#%-z|~]{0,48}") {
+                let src = format!(
+                    "import encoding\nfn main(console: Console):\n    let s = \"{}\"\n    print(console, yn(encoding.base64_decode(encoding.base64_encode(s)) == s))\n\nfn yn(b: Bool) -> String:\n    if b: \"y\" else: \"n\"\n",
+                    esc(&s)
+                );
+                prop_assert_eq!(link_run(&src), vec!["y".to_string()]);
+            }
+
+            /// hex decode is the inverse of encode.
+            #[test]
+            fn hex_roundtrips(s in "[ -#%-z|~]{0,48}") {
+                let src = format!(
+                    "import encoding\nfn main(console: Console):\n    let s = \"{}\"\n    print(console, yn(encoding.hex_decode(encoding.hex_encode(s)) == s))\n\nfn yn(b: Bool) -> String:\n    if b: \"y\" else: \"n\"\n",
+                    esc(&s)
+                );
+                prop_assert_eq!(link_run(&src), vec!["y".to_string()]);
+            }
+
+            /// `time.to_unix` is the exact inverse of `time.from_unix`, across the
+            /// CE range and negative (pre-1970) timestamps.
+            #[test]
+            fn time_unix_roundtrips(n in -62135596800i64..=253402300799i64) {
+                let src = format!(
+                    "import time\nfn main(console: Console):\n    print(console, yn(time.to_unix(time.from_unix({n})) == {n}))\n\nfn yn(b: Bool) -> String:\n    if b: \"y\" else: \"n\"\n"
+                );
+                prop_assert_eq!(link_run(&src), vec!["y".to_string()]);
+            }
+
+            /// A single CSV field round-trips through encode/parse — including
+            /// embedded commas, quotes, and newlines (the cases that need quoting).
+            #[test]
+            fn csv_field_roundtrips(s in "[a-zA-Z0-9 ,\"\n]{0,24}") {
+                let src = format!(
+                    "import csv\nfn main(console: Console):\n    let s = \"{}\"\n    let rows = csv.parse(csv.encode([[s]]))\n    print(console, yn(length(rows) == 1 && length(at(rows, 0)) == 1 && at(at(rows, 0), 0) == s))\n\nfn yn(b: Bool) -> String:\n    if b: \"y\" else: \"n\"\n",
+                    esc(&s)
+                );
+                prop_assert_eq!(link_run(&src), vec!["y".to_string()]);
+            }
+
+            /// `semver.to_string` after `parse` reproduces the canonical version.
+            #[test]
+            fn semver_roundtrips(a in 0i64..2000, b in 0i64..2000, c in 0i64..2000) {
+                let v = format!("{a}.{b}.{c}");
+                let src = format!(
+                    "import semver\nfn main(console: Console):\n    match semver.parse(\"{v}\"):\n        Ok(x) -> print(console, semver.to_string(x))\n        Err(e) -> print(console, \"err\")\n"
+                );
+                prop_assert_eq!(link_run(&src), vec![v]);
+            }
+        }
+    }
+
     /// `crypto.ed25519_verify` — a native intrinsic of the `crypto` module — is a
     /// total signature check: it accepts a genuine signature and rejects a
     /// tampered message and malformed input.
