@@ -3929,6 +3929,39 @@ fn main(console: Console):
         );
     }
 
+    /// The committed `docs/stdlib.md` must match what `witchy doc` generates from
+    /// the std sources — so a std module change that isn't re-documented fails
+    /// loudly. Regenerate with: `witchy doc std/*.witchy > docs/stdlib.md`.
+    #[test]
+    fn stdlib_docs_are_current() {
+        let mut files: Vec<std::path::PathBuf> = std::fs::read_dir("std")
+            .expect("read std/")
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("witchy"))
+            .collect();
+        files.sort();
+        let mut generated = String::from("# API reference\n\n");
+        for f in &files {
+            let stem = f.file_stem().and_then(|s| s.to_str()).unwrap();
+            let src = std::fs::read_to_string(f).unwrap();
+            generated.push_str(&crate::doc::render(stem, &src).expect("render"));
+        }
+        let committed = std::fs::read_to_string("docs/stdlib.md").expect("read docs/stdlib.md");
+        for (i, (g, c)) in generated.lines().zip(committed.lines()).enumerate() {
+            assert_eq!(
+                g,
+                c,
+                "docs/stdlib.md is stale at line {} — regenerate with `witchy doc std/*.witchy > docs/stdlib.md`",
+                i + 1
+            );
+        }
+        assert_eq!(
+            generated.lines().count(),
+            committed.lines().count(),
+            "docs/stdlib.md length differs — regenerate with `witchy doc std/*.witchy > docs/stdlib.md`"
+        );
+    }
+
     /// `std/encoding` — hex + base64 over UTF-8 bytes (native, like crypto),
     /// matching the standard vectors incl. padding, and round-tripping multibyte
     /// UTF-8.
