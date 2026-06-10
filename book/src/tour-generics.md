@@ -95,6 +95,8 @@ same function applies. The standard `eq`, `ord`, and `show` modules provide
 these traits along with generic algorithms built on them (`eq.member`,
 `ord.max`, and so on).
 
-That's the language. Everything so far has been pure — capability-free code that
-computes and returns values. Now we get to the part witchy exists for: what
-happens when a program needs to actually *do* something.
+That rounds out the type system. One more pure-language idea remains before we
+reach the heart of witchy — describing sequences that are computed on demand
+rather than all at once.
+
+Next: generators and iterators.

@@ -85,4 +85,7 @@ A capability system is a strong tool, not a magic one. Worth stating plainly:
 
 What you get, within those boundaries, is the thing most systems can't offer at
 all: the ability to run code whose blast radius is written in its type and
-enforced by the machine. Let's use it to build something.
+enforced by the machine. There's one more place that boundary matters — between
+the concurrent parts of a running program.
+
+Next: concurrency with actors.
