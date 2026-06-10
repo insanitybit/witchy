@@ -1037,12 +1037,42 @@ impl Interpreter {
                 }
                 _ => err("get_build_env expects a BuildEnv and a variable name"),
             },
-            // Build-time network/exec are gated behind a sandbox + grant model that
-            // isn't wired up yet (Phase 2b/3); a build step may type-check against
-            // them but they refuse to run for now.
+            // Fetch over HTTP at build time — but only from a host on the BuildNet
+            // grant's allow-list (`host:port` form, exact match — the same shape as
+            // the runtime Net allow-list). Returns the response body. The fetched
+            // bytes are data, not authority: anything the build step *generates*
+            // from them is re-audited against the locked footprint, and
+            // BuildNet/BuildExec use marks the build `pinned-only` for determinism.
             "fetch_build" => match args {
-                [Value::Build(BuildCap::Net(_)), Value::Str(_), Value::Str(_)] => {
-                    err("fetch_build (build-time network) is not yet implemented")
+                [Value::Build(BuildCap::Net(allow)), Value::Str(host), Value::Str(path)] => {
+                    if !allow.iter().any(|h| h == host) {
+                        return err(format!(
+                            "fetch_build: `{host}` is not in this BuildNet grant's allow-list"
+                        ));
+                    }
+                    use std::io::{Read, Write};
+                    let mut sock = std::net::TcpStream::connect(host.as_str()).map_err(|e| {
+                        RuntimeError {
+                            message: format!("fetch_build: cannot connect to `{host}`: {e}"),
+                        }
+                    })?;
+                    let hostname = host.split(':').next().unwrap_or(host);
+                    let req = format!(
+                        "GET {path} HTTP/1.1\r\nHost: {hostname}\r\nConnection: close\r\n\r\n"
+                    );
+                    sock.write_all(req.as_bytes()).map_err(|e| RuntimeError {
+                        message: format!("fetch_build: sending to `{host}`: {e}"),
+                    })?;
+                    let mut raw = Vec::new();
+                    sock.read_to_end(&mut raw).map_err(|e| RuntimeError {
+                        message: format!("fetch_build: reading from `{host}`: {e}"),
+                    })?;
+                    let text = String::from_utf8_lossy(&raw);
+                    let body = match text.split_once("\r\n\r\n") {
+                        Some((_, b)) => b.to_string(),
+                        None => text.into_owned(),
+                    };
+                    Ok(Some(Value::Str(body)))
                 }
                 _ => err("fetch_build expects a BuildNet, a host, and a path"),
             },
@@ -2280,6 +2310,59 @@ fn main(console: Console):
         };
         let err = run_build_step(denied, g2).expect_err("an unlisted key must be refused");
         assert!(err.message.contains("not in this BuildEnv grant's allow-list"), "{}", err.message);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn build_net_fetches_only_allow_listed_hosts() {
+        // A local one-shot HTTP listener stands in for "the network": the build
+        // step may fetch from it only because the grant allow-lists exactly that
+        // host:port; any other destination is refused before a packet moves.
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        let server = std::thread::spawn(move || {
+            let (mut sock, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 1024];
+            let _ = sock.read(&mut buf);
+            let body = "schema-v1";
+            let _ = sock.write_all(
+                format!("HTTP/1.1 200 OK\r\ncontent-length: {}\r\n\r\n{body}", body.len())
+                    .as_bytes(),
+            );
+        });
+
+        let dir = std::env::temp_dir().join(format!("witchy_build_net_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let module = crate::parser::parse_module(
+            &format!(
+                "fn build(out: BuildOut, dl: BuildNet):\n    write_out(out, \"got.txt\", fetch_build(dl, \"{addr}\", \"/schema\"))\n"
+            ),
+        )
+        .unwrap();
+        let grants = BuildGrants {
+            out_dir: dir.join("out"),
+            net_hosts: vec![addr.clone()],
+            ..Default::default()
+        };
+        run_build_step(module, grants).expect("allow-listed fetch runs");
+        assert_eq!(std::fs::read_to_string(dir.join("out/got.txt")).unwrap(), "schema-v1");
+        server.join().unwrap();
+
+        // A host NOT on the allow-list is refused — even one that exists.
+        let m2 = crate::parser::parse_module(
+            &format!(
+                "fn build(out: BuildOut, dl: BuildNet):\n    write_out(out, \"x\", fetch_build(dl, \"{addr}\", \"/\"))\n"
+            ),
+        )
+        .unwrap();
+        let g2 = BuildGrants {
+            out_dir: dir.join("out2"),
+            net_hosts: vec!["allowed.example:80".to_string()],
+            ..Default::default()
+        };
+        let e = run_build_step(m2, g2).expect_err("an un-allow-listed host must be refused");
+        assert!(e.message.contains("not in this BuildNet grant's allow-list"), "{}", e.message);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

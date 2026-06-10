@@ -1,10 +1,10 @@
 # Implementation Plan: Build-Time Execution as a Capability
 
-Status: **plan, not yet implemented.** This is the roadmap for building the
-build-time half of the capability model. The *design* already exists in
-[package-manager.md](package-manager.md) §4 (the footprint model) and §7.1
-(build-time execution as a capability); this document turns that design into a
-phased, code-grounded implementation plan.
+Status: **largely implemented** — Phases 1, 2a, auto-run, and 3 are live (see
+the per-phase notes below); the WASM-sandbox execution path and build-output
+caching remain. The *design* lives in [package-manager.md](package-manager.md)
+§4 (the footprint model) and §7.1 (build-time execution as a capability); this
+document tracks the implementation against it.
 
 ## Why this, and the reframing
 
@@ -37,14 +37,17 @@ uniquely defends, beyond what types already enforce.
 - **Five build capability types**, a parallel set to the runtime caps, each
   attenuable cap-std style:
   - `BuildOut` — write generated source into this rune's own confined output
-    sandbox. The only cap granted automatically.
+    sandbox. Needs no naming once execution is accepted — but execution itself
+    is default-deny (the grants section must exist).
   - `BuildRead` — read specific project files/dirs (rights/scope like `Dir`).
   - `BuildEnv` — read specific named env vars.
   - `BuildNet` — fetch from an explicit host allow-list.
   - `BuildExec` — invoke a specific named external tool (most sensitive; outputs
     hashed into the lock).
 - **Per-rune grants in the consuming `witchy.toml`** under
-  `[build.grants."ns/name"]`; safe by default (only `BuildOut` without a grant).
+  `[build.grants."ns/name"]`; default-deny on execution itself — a rune that
+  ships a build step is refused until the section exists (an empty section
+  permits only `BuildOut`).
 - **The gate (§10) extends to the build axis**: an upgrade whose build step newly
   demands a build cap is blocked until `--allow-build-cap` + a grant.
 
@@ -119,8 +122,9 @@ generated modules may not shadow std.
 mints the build caps for the `build` entrypoint from confined grants (a `BuildOut`
 output dir, an optional `BuildRead` root, `BuildEnv` key allow-list, `BuildExec`
 tool allow-list) and runs it; the build host builtins are confined via the same
-`resolve`/`resolve_write` machinery as runtime Dir ops (`fetch_build` refuses for
-now). `witchy build-step <file> [--out][--read][--env][--exec]` exercises one
+`resolve`/`resolve_write` machinery as runtime Dir ops; `fetch_build` performs
+allow-listed `host:port` HTTP fetches (un-listed hosts refused before a packet
+moves). `witchy build-step <file> [--out][--read][--env][--exec]` exercises one
 directly.
 
 *Auto-run done:* `witchy build`/`run` exclude a dependency's `build` module from
@@ -128,7 +132,7 @@ the consumer link (so two runes shipping one can't collide), execute it under th
 manifest grants into `<project>/build-out/<rune>/`, link the generated `.witchy`
 modules in under the usual std-shadowing/collision guards, and apply the
 audit-before-and-after gate above. Remaining 2b: the WASM-sandbox execution path
-(zero-ambient `Linker`) for the hard isolation guarantee, `BuildNet`, build-output
+(zero-ambient `Linker`) for the hard isolation guarantee, build-output
 caching (§7.2; today steps re-run per build), and multiple `read` roots.
 
 **Runtime (`src/runtime.rs`)**

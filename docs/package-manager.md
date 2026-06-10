@@ -279,7 +279,7 @@ rebuilds are deterministic; provenance ties bytes to public source history.
 > generated source joins the link — and the rune's footprint is **recomputed
 > over shipped + generated source and gated against the locked baseline**, so
 > generated code cannot smuggle in authority. Pending: the zero-ambient
-> WASM-sandbox execution path, `BuildNet`, and build-output caching (§7.2).
+> WASM-sandbox execution path and build-output caching (§7.2); `BuildNet` is live (allow-listed `host:port` HTTP fetches).
 
 Assume consumer-side build execution *will* eventually be required (generating
 witchy source from a schema, etc.). Model it now so that when it lands it is
