@@ -22,6 +22,8 @@
 - [Concurrency with Actors](tour-actors.md)
 - [Project: A Confined Log Scanner](project.md)
 - [Sharing Code: Runes and the Registry](packages.md)
+  - [The Manifest, the Lockfile, and the CLI](packages-cli.md)
+  - [Build Steps: `build.witchy`](packages-build.md)
 - [Under the Hood: Three Backends, One Meaning](backends.md)
 - [Testing](testing.md)
 

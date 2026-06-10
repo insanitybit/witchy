@@ -741,7 +741,13 @@ fn print_block(_name: &str, spec: &str, report: &super::gate::GateReport) {
         println!("  (upgrade) {rune} would additionally demand {}", render_widening(w));
     }
     println!("\nNo authority is granted yet — this is a conscious choice you must make.");
-    print!("To accept, re-run:  witchy add {spec}");
+    // `spec` is the argument to re-run: `add <spec>` from `witchy add`, or the
+    // bare `update` command itself.
+    if spec == "update" {
+        print!("To accept, re-run:  witchy update");
+    } else {
+        print!("To accept, re-run:  witchy add {spec}");
+    }
     for k in &allow_runtime {
         print!(" --allow-cap {k}");
     }
