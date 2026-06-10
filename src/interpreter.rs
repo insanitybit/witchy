@@ -1862,26 +1862,42 @@ pub fn run_module_exit(
     // no-ops once the linker has done them, for the linked CLI path.)
     let module = crate::records::lower(module).map_err(|message| RuntimeError { message })?;
     let module = crate::traits::lower(module);
-    // Run the tree-walker on a thread with a large stack. The interpreter
-    // recurses in Rust for nested calls, so deep (but bounded) recursion would
-    // otherwise overflow the default stack and *abort the host*. The big stack
-    // accommodates legitimate depth; `depth_limit` is the graceful guard against
-    // runaway recursion well before this stack is exhausted.
     let root = root.as_ref().to_path_buf();
+    run_on_deep_stack(move || run_module_inner(module, root, net_allow, args, signing_key))
+}
+
+/// Run the tree-walker on a thread with a large stack. The interpreter recurses
+/// in Rust for nested calls, so deep (but bounded) recursion would otherwise
+/// overflow the default stack and *abort the host*. The big stack accommodates
+/// legitimate depth; `depth_limit` is the graceful guard against runaway
+/// recursion well before this stack is exhausted. `join` contains any panic, so
+/// even an unforeseen one becomes a graceful error rather than aborting the host.
+#[cfg(not(target_arch = "wasm32"))]
+fn run_on_deep_stack(
+    f: impl FnOnce() -> Result<(Vec<String>, i32), RuntimeError> + Send + 'static,
+) -> Result<(Vec<String>, i32), RuntimeError> {
     let handle = std::thread::Builder::new()
         .stack_size(4 * 1024 * 1024 * 1024)
-        .spawn(move || run_module_inner(module, root, net_allow, args, signing_key))
+        .spawn(f)
         .map_err(|e| RuntimeError {
             message: format!("could not start the interpreter thread: {e}"),
         })?;
-    // `join` contains any panic from the evaluator thread, so even an unforeseen
-    // panic becomes a graceful error here instead of taking down the host.
     match handle.join() {
         Ok(result) => result,
         Err(_) => Err(RuntimeError {
             message: "internal error: the interpreter thread panicked".into(),
         }),
     }
+}
+
+/// wasm32 (the browser playground) has neither threads nor a 4 GiB stack, so we
+/// run the evaluator inline. The host stack is small, so very deep recursion can
+/// trap the module — `depth_limit` still guards the common cases.
+#[cfg(target_arch = "wasm32")]
+fn run_on_deep_stack(
+    f: impl FnOnce() -> Result<(Vec<String>, i32), RuntimeError>,
+) -> Result<(Vec<String>, i32), RuntimeError> {
+    f()
 }
 
 /// Whether a `main` parameter type is `List(String)` — the slot that receives the
@@ -2185,14 +2201,12 @@ fn main(console: Console, net: Net):
         server.join().ok();
 
         // Denied: connecting to an address not in the allow-list.
-        let denied = format!(
-            r#"
+        let denied = r#"
 fn main(console: Console, net: Net):
     let s = connect(net, "10.255.255.1:80")
     send_line(s, "x")
-"#
-        );
-        assert!(run_with(&denied, ".", vec![addr.clone()]).is_err());
+"#;
+        assert!(run_with(denied, ".", vec![addr.clone()]).is_err());
 
         // Denied: cannot attenuate to an address not already held.
         let bad_restrict = r#"

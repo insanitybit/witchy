@@ -8,16 +8,41 @@ repository = "https://github.com/insanitybit/witchy"
 keywords = ["language", "capability-security", "wasm", "sandbox", "supply-chain"]
 categories = ["compilers", "development-tools"]
 
+[lib]
+name = "witchy"
+# rlib: linked by the `witchy` binary. cdylib: the wasm module for the
+# in-browser playground (`cargo build --lib --no-default-features
+# --target wasm32-unknown-unknown`).
+crate-type = ["rlib", "cdylib"]
+
+[[bin]]
+name = "witchy"
+path = "src/main.rs"
+required-features = ["native"]
+
+[features]
+# The full native toolchain (wasmtime sandbox, package manager, LSP). On by
+# default; the wasm playground builds the library alone with it OFF.
+default = ["native"]
+native = ["dep:wasmtime", "dep:lsp-server", "dep:serde_json", "dep:serde", "dep:toml", "dep:tiny_http", "dep:getrandom"]
+
 [dependencies]
-wasmtime = "45.0.0"
-lsp-server = "0.7.9"
-serde_json = "1"
-toml = "1.1.2"
+# Pure-Rust deps the interpreter library needs on every target (incl. wasm).
 sha2 = "0.11.0"
-serde = { version = "1.0.228", features = ["derive"] }
 ed25519-dalek = "2.2.0"
-getrandom = "0.4.2"
-tiny_http = "0.12.0"
+# Native-only deps (the sandbox/PM/LSP layers); excluded from the wasm build.
+wasmtime = { version = "45.0.0", optional = true }
+lsp-server = { version = "0.7.9", optional = true }
+serde_json = { version = "1", optional = true }
+toml = { version = "1.1.2", optional = true }
+serde = { version = "1.0.228", features = ["derive"], optional = true }
+tiny_http = { version = "0.12.0", optional = true }
+getrandom = { version = "0.4.2", optional = true }   # pm key generation (native)
+
+# ed25519-dalek pulls getrandom transitively; the browser target needs its JS
+# backend to link (our crypto is seed-only, so it is never actually called).
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.2", features = ["js"] }
 
 [dev-dependencies]
 proptest = "1.11.0"

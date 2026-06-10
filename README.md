@@ -130,6 +130,20 @@ witchy lsp                                    run the language server
 witchy new/add/build/run/publish/...          package-manager commands
 ```
 
+## Playground
+
+The witchy interpreter compiles to WebAssembly, so it runs **in the browser**
+with no server. Build the page and open it:
+
+```sh
+./scripts/build-playground.sh
+python3 -m http.server -d web 8000   # then visit http://localhost:8000
+```
+
+`web/` is a static page (`index.html` + `playground.js`) that loads the
+interpreter module and runs snippets client-side; it ships with the language
+reference's examples preloaded.
+
 ## Learn more
 
 - **[Language reference](docs/language.md)** — the full syntax and semantics.

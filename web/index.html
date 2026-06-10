@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>witchy playground</title>
+    <style>
+      :root {
+        --bg: #1b1d23;
+        --panel: #24272f;
+        --ink: #e6e6e6;
+        --muted: #9aa0ab;
+        --accent: #b48ead;
+        --ok: #a3be8c;
+        --err: #bf616a;
+        --mono: ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--ink);
+        font: 15px/1.5 system-ui, -apple-system, sans-serif;
+      }
+      header {
+        padding: 18px 24px;
+        border-bottom: 1px solid #000;
+        display: flex;
+        align-items: baseline;
+        gap: 16px;
+        flex-wrap: wrap;
+      }
+      header h1 { margin: 0; font-size: 20px; }
+      header h1 .glyph { color: var(--accent); }
+      header p { margin: 0; color: var(--muted); font-size: 13px; }
+      header a { color: var(--accent); }
+      main {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 1px;
+        background: #000;
+        height: calc(100vh - 132px);
+      }
+      .pane { background: var(--panel); display: flex; flex-direction: column; min-width: 0; }
+      .pane .label {
+        padding: 8px 16px;
+        font-size: 12px;
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        border-bottom: 1px solid #000;
+      }
+      #editor {
+        flex: 1;
+        border: 0;
+        resize: none;
+        background: transparent;
+        color: var(--ink);
+        font-family: var(--mono);
+        font-size: 14px;
+        padding: 16px;
+        outline: none;
+        tab-size: 4;
+      }
+      #output {
+        flex: 1;
+        margin: 0;
+        padding: 16px;
+        font-family: var(--mono);
+        font-size: 14px;
+        white-space: pre-wrap;
+        overflow: auto;
+      }
+      #output.ok { color: var(--ok); }
+      #output.err { color: var(--err); }
+      .toolbar {
+        padding: 10px 24px;
+        border-top: 1px solid #000;
+        display: flex;
+        gap: 12px;
+        align-items: center;
+      }
+      select, button {
+        font: inherit;
+        background: var(--panel);
+        color: var(--ink);
+        border: 1px solid #000;
+        border-radius: 6px;
+        padding: 7px 12px;
+      }
+      button {
+        background: var(--accent);
+        color: #1b1d23;
+        font-weight: 600;
+        cursor: pointer;
+        border: 0;
+      }
+      button:disabled { opacity: 0.5; cursor: progress; }
+      .spacer { flex: 1; }
+      .note { color: var(--muted); font-size: 12px; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1><span class="glyph">✦</span> witchy playground</h1>
+      <p>
+        The actual witchy interpreter, compiled to WebAssembly and running
+        entirely in your browser — no server. See the
+        <a href="https://github.com/insanitybit/witchy/blob/master/docs/language.md">language reference</a>.
+      </p>
+    </header>
+
+    <main>
+      <section class="pane">
+        <div class="label">program</div>
+        <textarea id="editor" spellcheck="false" autocomplete="off"></textarea>
+      </section>
+      <section class="pane">
+        <div class="label">output</div>
+        <pre id="output"></pre>
+      </section>
+    </main>
+
+    <div class="toolbar">
+      <label class="note" for="examples">example:</label>
+      <select id="examples"></select>
+      <div class="spacer"></div>
+      <span class="note">runs on both the interpreter and WASM in the real toolchain — here you get the interpreter</span>
+      <button id="run" disabled>loading interpreter…</button>
+    </div>
+
+    <script src="playground.js"></script>
+  </body>
+</html>

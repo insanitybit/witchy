@@ -1498,7 +1498,7 @@ fn http_post(addr: &str, path: &str, body: &str) -> (u16, String) {
     s.set_read_timeout(Some(std::time::Duration::from_secs(3))).unwrap();
     let req = format!(
         "POST {path} HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-        body.as_bytes().len()
+        body.len()
     );
     s.write_all(req.as_bytes()).unwrap();
     let mut buf = String::new();

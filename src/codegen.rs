@@ -6592,8 +6592,7 @@ fn main() -> Int:
             .unwrap()
             .call(&mut store, ())
             .unwrap();
-        let out = captured.lock().unwrap().clone();
-        out
+        captured.lock().unwrap().clone()
     }
 
     #[test]

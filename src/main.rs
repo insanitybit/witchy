@@ -9,7 +9,7 @@
 // conditionals" lints would rewrite explicit `if { if let ... }` nesting into
 // `let`-chains without re-indenting, hurting readability; the nested form is an
 // intentional style choice here.
-#![allow(clippy::collapsible_if, clippy::collapsible_match)]
+#![allow(clippy::collapsible_if, clippy::collapsible_match, clippy::items_after_test_module)]
 
 mod actor_system;
 mod aliases;
@@ -2333,7 +2333,7 @@ mod example_tests {
                 .output()
             {
                 Ok(o) => o.status.success(),
-                Err(_) => return true, // no rustc: treat as inconclusive (skip)
+                Err(_) => true, // no rustc: treat as inconclusive (skip)
             }
         };
         // Returning a borrowed parameter escapes it — rejected by rustc.
@@ -13295,7 +13295,7 @@ fn main(console: Console, net: Net):
             let body = text.split("\r\n\r\n").nth(1).unwrap_or("").to_string();
             let resp = format!(
                 "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                body.as_bytes().len(),
+                body.len(),
                 body
             );
             let _ = stream.write_all(resp.as_bytes());
