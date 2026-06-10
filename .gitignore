@@ -2,3 +2,4 @@
 /benchmarks/.build
 /web/witchy.wasm
 .playwright-mcp/
+/book-html

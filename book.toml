@@ -1,0 +1,23 @@
+# NOTE: build-dir is deliberately NOT "book" — mdbook *cleans its output dir*
+# before rendering, and our source lives in book/src, so a colliding output dir
+# would delete the book. Output goes to ./book-html (gitignored).
+[book]
+title = "The witchy Book"
+authors = ["Colin O'Brien"]
+description = "A guide to witchy: a capability-secure language where a program's authority is a typed, auditable, enforceable artifact."
+src = "book/src"
+language = "en"
+
+[build]
+build-dir = "book-html"
+
+[output.html]
+default-theme = "ayu"
+preferred-dark-theme = "ayu"
+git-repository-url = "https://github.com/insanitybit/witchy"
+edit-url-template = "https://github.com/insanitybit/witchy/edit/master/{path}"
+additional-css = ["book/witchy.css"]
+
+[output.html.fold]
+enable = true
+level = 1

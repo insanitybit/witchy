@@ -1,0 +1,154 @@
+# Data: Records and Enums
+
+One keyword, `type`, defines all of witchy's user types. It covers three shapes
+that other languages give separate syntax: records (structs), enums, and tagged
+unions (sum types).
+
+## Records
+
+A record is a single shape with named fields:
+
+```witchy
+type Account:
+    name: String
+    balance: Int
+
+fn main(console: Console):
+    let a = Account("ada", 100)                 // positional
+    let b = Account(name: "bob", balance: 5)    // by name
+    print(console, a.name)                       // field access
+    print(console, int_to_string(b.balance))
+```
+
+```text
+ada
+5
+```
+
+Records are immutable. To "change" a field you make a fresh record; the spread
+form `..base` fills in the fields you don't override:
+
+```witchy
+type Account:
+    name: String
+    balance: Int
+
+fn deposit(a: Account, amount: Int) -> Account:
+    Account(balance: a.balance + amount, ..a)
+
+fn main(console: Console):
+    let a = Account("ada", 100)
+    let richer = deposit(a, 50)
+    print(console, int_to_string(richer.balance))
+    print(console, int_to_string(a.balance))      // the original is untouched
+```
+
+```text
+150
+100
+```
+
+## Enums and sum types
+
+List the variants. They can be nullary (a plain enum) or carry data (a sum
+type):
+
+```witchy
+type Direction:
+    North
+    South
+    East
+    West
+
+type Shape:
+    Circle(Int)
+    Rectangle(Int, Int)
+
+fn area(s: Shape) -> Int:
+    match s:
+        Circle(r) -> 3 * r * r
+        Rectangle(w, h) -> w * h
+
+fn main(console: Console):
+    print(console, to_string(North == North))
+    print(console, int_to_string(area(Circle(2))))
+    print(console, int_to_string(area(Rectangle(3, 4))))
+```
+
+```text
+true
+12
+12
+```
+
+## `match` is exhaustive
+
+`match` destructures a value and *must* cover every case — leave one out and the
+compiler tells you which, by name. This is what makes adding a variant safe:
+every `match` that needs updating becomes a compile error.
+
+```witchy
+type Event:
+    Click(Int, Int)
+    Key(String)
+    Close
+
+fn describe(e: Event) -> String:
+    match e:
+        Click(x, y) -> "click at " <> int_to_string(x) <> "," <> int_to_string(y)
+        Key(k) -> "key " <> k
+        Close -> "close"
+
+fn main(console: Console):
+    print(console, describe(Click(3, 9)))
+    print(console, describe(Key("Enter")))
+    print(console, describe(Close))
+```
+
+```text
+click at 3,9
+key Enter
+close
+```
+
+Patterns nest, and they can match literals, bind variables, ignore with `_`,
+destructure lists (`[]`, `[first, ..rest]`), and add a guard condition:
+
+```witchy
+fn head(xs: List(Int)) -> String:
+    match xs:
+        [] -> "empty"
+        [only] -> "one: " <> int_to_string(only)
+        [first, ..rest] -> "first " <> int_to_string(first) <> " then " <> int_to_string(length(rest))
+
+fn sign(n: Int) -> String:
+    match n:
+        0 -> "zero"
+        m if m > 0 -> "positive"
+        _ -> "negative"
+
+fn main(console: Console):
+    print(console, head([]))
+    print(console, head([7]))
+    print(console, head([1, 2, 3]))
+    print(console, sign(0))
+    print(console, sign(4))
+    print(console, sign(0 - 1))
+```
+
+```text
+empty
+one: 7
+first 1 then 2
+zero
+positive
+negative
+```
+
+A guarded arm (`m if m > 0`) doesn't count toward exhaustiveness — the checker
+knows the guard might not hold, so it still expects the cases below it. Aim a
+`match` at a value with an unhandled variant and witchy won't compile it; that's
+the feature, not an annoyance.
+
+With records and enums in hand, we can talk about the witchy way to handle
+things going wrong.
