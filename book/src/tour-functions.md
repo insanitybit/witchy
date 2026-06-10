@@ -200,4 +200,9 @@ by default, `let` to borrow, `own`/`move` to transfer, `inout`/`var` to mutate t
 caller's variable in place. There's no aliasing and no garbage-collector surprise
 — who may change what is part of every function's type.
 
+These conventions are also witchy's **performance knobs** on the native backend
+(clone vs. borrow vs. move): see
+[Appendix: Performance — the Ownership Knobs](appendix-performance.md) for
+exactly what each one compiles to and when to reach for it.
+
 Next: defining your own types.

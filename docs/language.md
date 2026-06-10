@@ -272,12 +272,13 @@ an occurs check).
 
 **Parameter conventions** (Hylo-style value semantics):
 
-| Convention | Meaning |
-|---|---|
-| (default / `let`) | immutable view; the native backend passes a borrow (no clone) |
-| `inout` | the callee mutates and the caller's `var` is **written back** — even on early `return`/`?` |
-| `sink` / `own` | ownership transfer; using the source afterwards is a check-time error |
-| `move e` | explicitly transfer a binding at a call site |
+| Convention | Meaning | Native backend lowering |
+|---|---|---|
+| (default) | owned, observably immutable value | collection-typed arguments are **cloned at the call** to preserve value semantics (scalars/capabilities are `Copy` — free) |
+| `let` | immutable **borrow**; may not escape (be returned, stored, or mutated) | passed as **`&T` — no clone**; the opt-in for read-only hot paths |
+| `inout` | the callee mutates and the caller's `var` is **written back** — even on early `return`/`?` | mutable write-back; no copy-out |
+| `sink` / `own` | ownership transfer; using the source afterwards is a check-time error | the value is **moved — no clone**; the callee may consume buffers in place |
+| `move e` | explicitly transfer a binding at a call site | marks the move; pairs with `sink`/`own` |
 
 ```witchy
 fn bump(inout n: Int):
