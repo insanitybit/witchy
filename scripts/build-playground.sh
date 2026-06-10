@@ -8,17 +8,21 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-# Prefer the rustup toolchain: a Homebrew rustc can't supply the wasm std, and
-# `rustup run stable` pins it regardless of what's first on PATH.
+# Prefer the rustup toolchain: a Homebrew rustc can't supply the wasm std
+# ("can't find crate for `core`"). `rustup run stable cargo` is not enough on its
+# own — if a Homebrew cargo/rustc is first on PATH, cargo still reaches for it and
+# fails. Force the toolchain's own bin dir to the front of PATH and clear any
+# RUSTC/RUSTFLAGS override so the wasm-capable rustc is the one that runs.
 if command -v rustup >/dev/null; then
     rustup target add wasm32-unknown-unknown >/dev/null 2>&1 || true
-    CARGO=(rustup run stable cargo)
+    TC_BIN="$(dirname "$(rustup which --toolchain stable rustc)")"
+    RUN=(env -u RUSTC -u RUSTFLAGS "PATH=$TC_BIN:$PATH" cargo)
 else
-    CARGO=(cargo)
+    RUN=(cargo)
 fi
 
 echo "building the witchy interpreter for wasm32-unknown-unknown..."
-"${CARGO[@]}" build --release --lib --no-default-features --target wasm32-unknown-unknown
+"${RUN[@]}" build --release --lib --no-default-features --target wasm32-unknown-unknown
 
 WASM="target/wasm32-unknown-unknown/release/witchy.wasm"
 mkdir -p web

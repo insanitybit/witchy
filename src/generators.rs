@@ -102,7 +102,7 @@ fn lower_gen(f: Function) -> (Function, Function) {
         name: helper_name.clone(),
         params: helper_params,
         ret: elem.as_ref().map(|a| Type::Named("Option".to_string(), vec![a.clone()])),
-        body: Block { stmts, lines: Vec::new() },
+        body: Block { stmts, lines: Vec::new(), restrict: None },
         bounds: f.bounds.clone(),
         is_gen: false,
     };
@@ -123,6 +123,7 @@ fn lower_gen(f: Function) -> (Function, Function) {
         body: Block {
             stmts: vec![Stmt::Expr(Expr::Call { name: helper_name, args: forwarded })],
             lines: vec![0],
+            restrict: None,
         },
     };
     let wrapper = Function {
@@ -136,6 +137,7 @@ fn lower_gen(f: Function) -> (Function, Function) {
                 args: vec![thunk],
             })],
             lines: vec![0],
+            restrict: None,
         },
         bounds: f.bounds,
         is_gen: false,
@@ -164,6 +166,7 @@ fn rewrite_block(b: Block) -> Block {
                             args: vec![e],
                         }))],
                         lines: vec![0],
+                        restrict: None,
                     },
                     else_block: None,
                 };
@@ -191,7 +194,7 @@ fn rewrite_block(b: Block) -> Block {
             other => out.push(other),
         }
     }
-    Block { stmts: out, lines: b.lines }
+    Block { stmts: out, lines: b.lines, restrict: b.restrict }
 }
 
 /// Rewrite the nested blocks of an expression's control-flow forms so yields

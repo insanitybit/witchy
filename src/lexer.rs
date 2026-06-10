@@ -46,6 +46,8 @@ pub enum Tok {
     Impl,
     Where,
     As,
+    Retain,
+    Without,
 
     // Grouping / punctuation
     LParen,
@@ -136,6 +138,8 @@ impl fmt::Display for Tok {
             Impl => write!(f, "impl"),
             Where => write!(f, "where"),
             As => write!(f, "as"),
+            Retain => write!(f, "retain"),
+            Without => write!(f, "without"),
             LParen => write!(f, "("),
             RParen => write!(f, ")"),
             LBrace => write!(f, "{{"),
@@ -511,6 +515,8 @@ impl Lexer {
             "impl" => Tok::Impl,
             "where" => Tok::Where,
             "as" => Tok::As,
+            "retain" => Tok::Retain,
+            "without" => Tok::Without,
             "_" => Tok::Underscore,
             _ => Tok::Ident(text),
         }

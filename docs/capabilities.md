@@ -73,6 +73,32 @@ Brands go further: wrap a capability in your own type to encode *policy*
 analyzer sees through wrappers, so brands add discipline without hiding
 authority. See `examples/branded_caps.witchy`.
 
+## Block firewalls: `retain` / `without`
+
+The patterns above attenuate along *calls*. A `retain`/`without` block attenuates
+along *scope*: it carves out a region where some capabilities simply aren't in
+scope, no matter what the enclosing function holds — and the type checker
+enforces it.
+
+```witchy
+fn main(console: Console, clock: Clock):
+    without clock:
+        // `clock` is walled off here; `now(clock)` would not compile.
+        print(console, "this region provably does not read the clock")
+
+    retain console:
+        // Only `console` survives; every other capability is dropped.
+        print(console, "this region can print and nothing else")
+
+    print(console, int_to_string(now(clock)))   // outside, clock is back
+```
+
+`retain:` with no names is a complete sandbox — no authority survives, so the
+block is pure computation. The guarantee is sealed against the future: if `main`
+later gains a `Net` parameter, the `retain console:` block above still cannot
+reach it, because it was never named. A block's authority is fixed by what it
+asks for, not by what its scope accumulates.
+
 ## Auditing
 
 ```sh

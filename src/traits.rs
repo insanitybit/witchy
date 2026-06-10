@@ -707,7 +707,7 @@ impl Mono<'_> {
             let params = self.generated[i].params.clone();
             let mut body = std::mem::replace(
                 &mut self.generated[i].body,
-                Block { stmts: Vec::new(), lines: Vec::new() },
+                Block { stmts: Vec::new(), lines: Vec::new(), restrict: None },
             );
             let mut s = Scope::new();
             seed_params(&params, &mut s);

@@ -90,6 +90,54 @@ sees the `Dir` inside it, so the wrapping adds discipline without hiding
 authority. The `examples/branded_caps.witchy` program in the repository walks
 through this; the key idea is that capabilities compose with your domain types.
 
+## Block firewalls: `retain` and `without`
+
+Everything above attenuates along *calls* — you weaken a handle as you pass it
+on. Sometimes you want to weaken authority along *scope* instead: to carve out a
+region of a function where some capability simply isn't available, regardless of
+what the surrounding code holds. That is what `retain` and `without` do.
+
+A `without` block drops the named capabilities for the length of the block:
+
+```witchy
+fn main(console: Console, clock: Clock):
+    without clock:
+        // `clock` is walled off in here — `now(clock)` would not compile.
+        print(console, "this section provably does not read the clock")
+    print(console, int_to_string(now(clock)))   // outside, clock is back
+```
+
+A `retain` block is the mirror image: it keeps *only* what you name and drops
+everything else. Writing `retain:` with no names at all seals the block
+completely — no capability survives, so the region is pure computation:
+
+```witchy
+fn main(console: Console, clock: Clock):
+    retain console:
+        // Only `console` survives; `clock` is gone, even though `main` holds it.
+        print(console, "this section can print and nothing else")
+    retain:
+        // Fully sealed: no authority in scope, so this does provably no I/O.
+        let sum = 2 + 2
+    print(console, int_to_string(now(clock)))
+```
+
+### Why this is more than a comment
+
+The firewall is enforced by the type checker, and — crucially — it is sealed
+against the *future*. If someone later adds a `Net` parameter to `main`, the code
+inside a `retain console:` block still cannot touch the network: the network was
+never named, so it is never let in. A block's authority is fixed by what it asks
+for, not by whatever its enclosing scope happens to accumulate over time. That is
+a local, durable guarantee that a slice of a function does no more than the
+handful of things you allowed — the same "exactly this power and no more" promise
+as parameter-level attenuation, but for a region of code rather than a call.
+
+Re-binding a dropped name inside the block is still allowed: `without console:`
+followed by `let console = ...` legitimately shadows the firewall, because a
+fresh value is not the forbidden capability — and inside the block you have no
+way to *name* the dropped one to smuggle it back.
+
 ## The supply-chain payoff
 
 Because rights are part of the footprint, `witchy caps` reports them precisely:

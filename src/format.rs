@@ -353,7 +353,38 @@ fn handler(s: &mut String, h: &Handler, c: &mut Comments) {
     block(s, &h.body, 2, c);
 }
 
+/// Write a `retain`/`without` firewall header (`without a, b:`) with no leading
+/// pad or trailing newline — the caller positions it (padded on its own line in
+/// statement position, or inline after `= ` in value position).
+fn restrict_header(s: &mut String, r: &CapRestrict) {
+    s.push_str(match r.mode {
+        RestrictMode::Retain => "retain",
+        RestrictMode::Without => "without",
+    });
+    if !r.names.is_empty() {
+        s.push(' ');
+        s.push_str(&r.names.join(", "));
+    }
+    s.push(':');
+}
+
 fn block(s: &mut String, b: &Block, depth: usize, c: &mut Comments) {
+    // A `retain`/`without` firewall renders its header at this depth and indents
+    // its body one level deeper; an ordinary block renders its statements here.
+    if let Some(r) = &b.restrict {
+        pad(s, depth);
+        restrict_header(s, r);
+        s.push('\n');
+        block_stmts(s, b, depth + 1, c);
+    } else {
+        block_stmts(s, b, depth, c);
+    }
+}
+
+/// Render just a block's statements at `depth`, ignoring any `restrict` header
+/// (the caller emits that). Factored out so a value-position firewall can place
+/// the header inline after `= ` and then reuse this for the body.
+fn block_stmts(s: &mut String, b: &Block, depth: usize, c: &mut Comments) {
     if b.stmts.is_empty() {
         // An empty block has no off-side representation; emit a no-op expression.
         pad(s, depth);
@@ -462,6 +493,13 @@ fn value_or_block(s: &mut String, e: &Expr, depth: usize, c: &mut Comments) {
         }
         Expr::Lambda { params, body } => {
             lambda_at(s, params, body, depth, c);
+        }
+        // A `retain`/`without` block used as a value (`let x = without c: ...`):
+        // the header follows `= ` on this line, the body indents below.
+        Expr::Block(b) if b.restrict.is_some() => {
+            restrict_header(s, b.restrict.as_ref().unwrap());
+            s.push('\n');
+            block_stmts(s, b, depth + 1, c);
         }
         _ => {
             s.push_str(&expr(e));
@@ -700,6 +738,11 @@ fn expr(e: &Expr) -> String {
 /// `None` if the block has no faithful inline form (multiple statements, or a
 /// single expression that itself needs multiple lines).
 fn block_value_opt(b: &Block) -> Option<String> {
+    // A firewalled block has no inline form: the `retain`/`without` header must
+    // survive, so it always renders multi-line.
+    if b.restrict.is_some() {
+        return None;
+    }
     if b.stmts.len() == 1 {
         if let Stmt::Expr(e) = &b.stmts[0] {
             if inline_ok(e) {
@@ -1085,6 +1128,17 @@ mod tests {
             }
         }
         assert!(failures.is_empty(), "did not round-trip: {failures:?}");
+    }
+
+    #[test]
+    fn preserves_capability_firewalls() {
+        // `retain`/`without` blocks must round-trip to an equal AST (so the
+        // restriction survives a reformat) and print their header back verbatim.
+        let src = "fn main(console: Console, clock: Clock):\n    without clock:\n        print(console, \"a\")\n    retain console:\n        print(console, \"b\")\n    retain:\n        0\n";
+        let out = reformat(src).expect("firewalls round-trip to an equal AST");
+        assert!(out.contains("without clock:"), "{out}");
+        assert!(out.contains("retain console:"), "{out}");
+        assert!(out.contains("retain:"), "{out}");
     }
 
     #[test]

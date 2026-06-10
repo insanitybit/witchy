@@ -2157,6 +2157,7 @@ impl Codegen {
                             args,
                         })],
                         lines: vec![0],
+                        restrict: None,
                     };
                     self.compile_lambda(&params, &body)
                 } else {

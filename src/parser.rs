@@ -567,7 +567,7 @@ impl Parser {
             stmts.push(self.stmt()?);
         }
         self.expect(&Tok::RBrace)?;
-        Ok(Block { stmts, lines })
+        Ok(Block { stmts, lines, restrict: None })
     }
 
     fn stmt(&mut self) -> Result<Stmt, ParseError> {
@@ -872,6 +872,8 @@ impl Parser {
                 Ok(Expr::Lambda { params, body })
             }
             Tok::Match => self.match_expr(),
+            Tok::Retain => self.restrict_block(RestrictMode::Retain),
+            Tok::Without => self.restrict_block(RestrictMode::Without),
             Tok::Spawn => {
                 self.advance();
                 let actor = self.ident()?;
@@ -1028,7 +1030,7 @@ impl Parser {
         };
         // Wrap from the innermost clause outward.
         for clause in clauses.into_iter().rev() {
-            let body = Block { stmts: vec![inner], lines: vec![0] };
+            let body = Block { stmts: vec![inner], lines: vec![0], restrict: None };
             inner = match clause {
                 Clause::If(cond) => Stmt::Expr(Expr::If {
                     cond: Box::new(cond),
@@ -1053,7 +1055,32 @@ impl Parser {
                 Stmt::Expr(Expr::Var(acc)),
             ],
             lines: vec![0, 0, 0],
+            restrict: None,
         }))
+    }
+
+    /// Parse a `retain a, b:` / `without a, b:` capability-firewall block. The
+    /// keyword is already the current token. The names list may be empty (e.g.
+    /// `retain:` drops every capability, fully sandboxing the block); a trailing
+    /// comma is allowed. The body is an ordinary indented block; the restriction
+    /// rides along on `Block.restrict` and is enforced by the type checker.
+    fn restrict_block(&mut self, mode: RestrictMode) -> Result<Expr, ParseError> {
+        self.advance(); // `retain` / `without`
+        let mut names = Vec::new();
+        if !self.at(&Tok::LBrace) {
+            loop {
+                names.push(self.ident()?);
+                if !self.eat(&Tok::Comma) {
+                    break;
+                }
+                if self.at(&Tok::LBrace) {
+                    break; // trailing comma
+                }
+            }
+        }
+        let mut block = self.block()?;
+        block.restrict = Some(CapRestrict { mode, names });
+        Ok(Expr::Block(block))
     }
 
     /// A block body that may be written brace-free as `: expr` (a single
@@ -1067,6 +1094,7 @@ impl Parser {
             Ok(Block {
                 stmts: vec![Stmt::Expr(e)],
                 lines: vec![line],
+                restrict: None,
             })
         } else {
             self.block()
@@ -1084,7 +1112,7 @@ impl Parser {
             let then_block = self.colon_or_block()?;
             let fallback = match self.else_block()? {
                 Some(eb) => Expr::Block(eb),
-                None => Expr::Block(Block { stmts: vec![], lines: vec![] }),
+                None => Expr::Block(Block { stmts: vec![], lines: vec![], restrict: None }),
             };
             return Ok(Expr::Match {
                 scrutinee: Box::new(scrutinee),
@@ -1113,6 +1141,7 @@ impl Parser {
                 Ok(Some(Block {
                     stmts: vec![Stmt::Expr(self.if_expr()?)],
                     lines: vec![line],
+                    restrict: None,
                 }))
             } else {
                 Ok(Some(self.colon_or_block()?))
@@ -1427,6 +1456,7 @@ pub(crate) fn desugar_range(lo: Expr, hi: Expr, inclusive: bool) -> Expr {
             },
         ],
         lines: vec![0, 0],
+        restrict: None,
     };
     Expr::Block(Block {
         stmts: vec![
@@ -1437,6 +1467,7 @@ pub(crate) fn desugar_range(lo: Expr, hi: Expr, inclusive: bool) -> Expr {
             Stmt::Expr(Expr::Var(acc)),
         ],
         lines: vec![0, 0, 0, 0, 0],
+        restrict: None,
     })
 }
 
@@ -1607,13 +1638,13 @@ pub(crate) fn desugar_while_let(pattern: Pattern, scrutinee: Expr, body: Block) 
             MatchArm {
                 pattern: Pattern::Wildcard,
                 guard: None,
-                body: Expr::Block(Block { stmts: vec![Stmt::Break], lines: vec![0] }),
+                body: Expr::Block(Block { stmts: vec![Stmt::Break], lines: vec![0], restrict: None }),
             },
         ],
     };
     Expr::While {
         cond: Box::new(Expr::Bool(true)),
-        body: Block { stmts: vec![Stmt::Expr(dispatch)], lines: vec![0] },
+        body: Block { stmts: vec![Stmt::Expr(dispatch)], lines: vec![0], restrict: None },
     }
 }
 
@@ -1809,6 +1840,47 @@ fn add(a: Int, b: Int) -> Int:
         assert_eq!(f.name, "add");
         assert_eq!(f.params.len(), 2);
         assert_eq!(f.ret, Some(Type::Named("Int".into(), vec![])));
+    }
+
+    #[test]
+    fn parses_retain_and_without_firewalls() {
+        // `without a, b:` and `retain a:` open an ordinary block carrying a
+        // `CapRestrict` on `Block.restrict`.
+        let stmts = fn_body(
+            "fn main(console: Console, clock: Clock):\n    without clock:\n        print(console, \"x\")\n",
+        );
+        let Stmt::Expr(Expr::Block(b)) = &stmts[0] else {
+            panic!("expected a block statement, got {:?}", stmts[0]);
+        };
+        assert_eq!(
+            b.restrict,
+            Some(CapRestrict { mode: RestrictMode::Without, names: vec!["clock".into()] })
+        );
+
+        let stmts = fn_body(
+            "fn main(console: Console, clock: Clock):\n    retain console, clock:\n        print(console, \"x\")\n",
+        );
+        let Stmt::Expr(Expr::Block(b)) = &stmts[0] else {
+            panic!("expected a block statement");
+        };
+        assert_eq!(
+            b.restrict,
+            Some(CapRestrict {
+                mode: RestrictMode::Retain,
+                names: vec!["console".into(), "clock".into()],
+            })
+        );
+
+        // `retain:` with no names parses to an empty name list (a full sandbox).
+        let stmts =
+            fn_body("fn main(console: Console):\n    retain:\n        print(console, \"x\")\n");
+        let Stmt::Expr(Expr::Block(b)) = &stmts[0] else {
+            panic!("expected a block statement");
+        };
+        assert_eq!(
+            b.restrict,
+            Some(CapRestrict { mode: RestrictMode::Retain, names: vec![] })
+        );
     }
 
     #[test]

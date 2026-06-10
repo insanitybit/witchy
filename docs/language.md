@@ -196,6 +196,13 @@ fn main(console: Console):
 exits early (and works in `inout` functions — the written-back parameters are
 still delivered).
 
+A `retain a, b:` / `without a, b:` block is a capability firewall: inside it,
+only the named capabilities stay in scope (`retain`) or the named ones are
+dropped (`without`). It is a compile-time scoping restriction — the checker hides
+the bindings, every backend runs the block normally — that seals a region of code
+against capabilities the surrounding scope holds (or later gains). `retain:` with
+no names drops all of them. See `docs/capabilities.md`.
+
 ```witchy
 import option
 

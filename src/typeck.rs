@@ -16,7 +16,8 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 use crate::ast::{
-    self, ActorDef, Block, Convention, Expr, Function, Item, MatchArm, Module, Pattern, Stmt, UnOp,
+    self, ActorDef, Block, CapRestrict, Convention, Expr, Function, Item, MatchArm, Module, Pattern,
+    RestrictMode, Stmt, UnOp,
 };
 
 /// The operations a `Dir` capability permits. Decomposing the capability by
@@ -511,6 +512,12 @@ struct Checker {
     next_var: u32,
     /// Each binding carries its type and whether it is mutable.
     scopes: Vec<HashMap<String, (Ty, bool)>>,
+    /// Parallel to `scopes`: names hidden in each frame by a `retain`/`without`
+    /// capability firewall. A lookup that reaches a hidden name in a frame stops
+    /// as if the name were unbound, even if an outer frame still defines it — so a
+    /// block can be sealed against capabilities its callers might hold. An inner
+    /// re-binding (a fresh `let`) shadows the tombstone normally.
+    hidden: Vec<HashSet<String>>,
     /// Bindings that have been consumed (moved out via a `sink` parameter) and
     /// may not be used again until reassigned. Flow-sensitive within a body.
     consumed: HashSet<String>,
@@ -740,26 +747,126 @@ impl Checker {
     // --- scope helpers ---
     fn push(&mut self) {
         self.scopes.push(HashMap::new());
+        self.hidden.push(HashSet::new());
     }
     fn pop(&mut self) {
         self.scopes.pop();
+        self.hidden.pop();
     }
     fn define(&mut self, name: String, ty: Ty, mutable: bool) {
+        // A fresh binding un-hides the name in this frame: re-declaring a name
+        // that an outer firewall dropped is a legitimate shadow, not a leak.
+        if let Some(h) = self.hidden.last_mut() {
+            h.remove(&name);
+        }
         self.scopes.last_mut().unwrap().insert(name, (ty, mutable));
     }
+    /// Walk frames inner→outer, returning the binding at the first frame that
+    /// either defines or *hides* the name. Hiding wins (returns `None`) even when
+    /// an outer frame still defines the name — that is the firewall.
+    fn resolve_binding(&self, name: &str) -> Option<&(Ty, bool)> {
+        for (vars, hidden) in self.scopes.iter().rev().zip(self.hidden.iter().rev()) {
+            if let Some(b) = vars.get(name) {
+                return Some(b);
+            }
+            if hidden.contains(name) {
+                return None;
+            }
+        }
+        None
+    }
     fn lookup(&self, name: &str) -> Option<Ty> {
-        self.scopes
-            .iter()
-            .rev()
-            .find_map(|s| s.get(name))
-            .map(|(t, _)| t.clone())
+        self.resolve_binding(name).map(|(t, _)| t.clone())
     }
     fn is_mutable(&self, name: &str) -> Option<bool> {
-        self.scopes
-            .iter()
-            .rev()
-            .find_map(|s| s.get(name))
-            .map(|(_, m)| *m)
+        self.resolve_binding(name).map(|(_, m)| *m)
+    }
+    /// True if `name` is currently hidden by a firewall frame that no closer
+    /// frame re-binds — used only to give a precise diagnostic (the name is in
+    /// scope, just walled off) instead of a bare "unbound variable".
+    fn is_firewalled(&self, name: &str) -> bool {
+        for (vars, hidden) in self.scopes.iter().rev().zip(self.hidden.iter().rev()) {
+            if vars.contains_key(name) {
+                return false;
+            }
+            if hidden.contains(name) {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Is `t` one of the capability types (the unforgeable authority values)?
+    fn is_capability(&self, t: &Ty) -> bool {
+        matches!(
+            self.resolve(t),
+            Ty::Console
+                | Ty::Clock
+                | Ty::Env
+                | Ty::SigningKey
+                | Ty::Subject
+                | Ty::Dir(_)
+                | Ty::Net(_)
+                | Ty::Socket
+                | Ty::Listener
+        )
+    }
+
+    /// Names currently bound to a capability and still visible (not already
+    /// firewalled by an enclosing block). Inner bindings shadow outer ones.
+    fn visible_capabilities(&self) -> Vec<String> {
+        let mut seen = HashSet::new();
+        let mut caps = Vec::new();
+        for scope in self.scopes.iter().rev() {
+            for name in scope.keys() {
+                if !seen.insert(name.clone()) {
+                    continue;
+                }
+                if let Some(t) = self.lookup(name) {
+                    if self.is_capability(&t) {
+                        caps.push(name.clone());
+                    }
+                }
+            }
+        }
+        caps
+    }
+
+    /// Apply a `retain`/`without` firewall to the current (just-pushed) block
+    /// frame: record the dropped capability names in the frame's hidden-set so
+    /// later lookups inside the block treat them as unbound. Every named
+    /// capability must actually be a visible capability — naming a non-capability
+    /// or an out-of-scope name is an error, since it almost certainly means the
+    /// author misremembered what authority the block holds.
+    fn apply_restrict(&mut self, r: &CapRestrict) -> Result<(), TypeError> {
+        let visible = self.visible_capabilities();
+        let visible_set: HashSet<&str> = visible.iter().map(String::as_str).collect();
+        for name in &r.names {
+            if !visible_set.contains(name.as_str()) {
+                let (kw, verb) = match r.mode {
+                    RestrictMode::Retain => ("retain", "retain"),
+                    RestrictMode::Without => ("without", "drop"),
+                };
+                let msg = if self.lookup(name).is_some() {
+                    format!("`{name}` is not a capability, so it can't appear in a `{kw}` block")
+                } else {
+                    format!("no capability `{name}` is in scope to {verb} here")
+                };
+                return terr(msg);
+            }
+        }
+        let to_hide: Vec<String> = match r.mode {
+            RestrictMode::Without => r.names.clone(),
+            RestrictMode::Retain => {
+                let keep: HashSet<&str> = r.names.iter().map(String::as_str).collect();
+                visible.into_iter().filter(|c| !keep.contains(c.as_str())).collect()
+            }
+        };
+        let frame = self.hidden.last_mut().unwrap();
+        for n in to_hide {
+            frame.insert(n);
+        }
+        Ok(())
     }
 
     fn call_sig(&mut self, name: &str) -> Option<(Vec<Ty>, Ty)> {
@@ -1208,6 +1315,12 @@ impl Checker {
 
     fn infer_block(&mut self, block: &Block) -> Result<Ty, TypeError> {
         self.push();
+        if let Some(r) = &block.restrict {
+            if let Err(e) = self.apply_restrict(r) {
+                self.pop();
+                return Err(e);
+            }
+        }
         let mut ty = Ty::Nil;
         for (i, stmt) in block.stmts.iter().enumerate() {
             if let Some(line) = block.lines.get(i) {
@@ -1360,6 +1473,11 @@ impl Checker {
                         .collect();
                     let (params, ret) = self.instantiate(&params, &ret, &typarams);
                     return Ok(Ty::Fn(params, Box::new(ret)));
+                }
+                if self.is_firewalled(name) {
+                    return terr(format!(
+                        "`{name}` is walled off in this block by a `retain`/`without` and can't be used here"
+                    ));
                 }
                 terr(format!("unbound variable `{name}`"))
             }
@@ -1995,6 +2113,7 @@ impl Checker {
     fn check_function(&mut self, func: &Function) -> Result<(), TypeError> {
         let (params, ret) = self.fn_sigs.get(&func.name).cloned().unwrap();
         self.scopes = vec![HashMap::new()];
+        self.hidden = vec![HashSet::new()];
         self.consumed.clear();
         self.current_ret = Some(ret.clone());
         self.cur_line = 0;
@@ -2027,6 +2146,7 @@ impl Checker {
     fn check_actor(&mut self, actor: &ActorDef) -> Result<(), TypeError> {
         for handler in &actor.handlers {
             self.scopes = vec![HashMap::new()];
+            self.hidden = vec![HashSet::new()];
             self.consumed.clear();
             self.current_ret = None;
             self.cur_line = 0;
@@ -2079,6 +2199,7 @@ pub fn check(module: &Module) -> Result<(), TypeError> {
         subst: HashMap::new(),
         next_var: 0,
         scopes: vec![HashMap::new()],
+        hidden: vec![HashSet::new()],
         consumed: HashSet::new(),
         current_ret: None,
         cur_line: 0,
@@ -2254,6 +2375,62 @@ mod tests {
         // Recursive, generic, and Option-typed fields remain valid.
         check_str("type Tree:\n    Leaf\n    Node(Tree, Int, Tree)\n").expect("recursive type is valid");
         check_str("type Box:\n    Box(a)\n").expect("generic type is valid");
+    }
+
+    #[test]
+    fn capability_firewall_drops_and_retains() {
+        // `without c:` drops `c` inside the block — using it is an error, but the
+        // sibling capability is untouched.
+        let drop_clock =
+            "fn main(console: Console, clock: Clock):\n    without clock:\n        print(console, \"ok\")\n";
+        check_str(drop_clock).expect("console still usable when only clock is dropped");
+        let use_dropped =
+            "fn main(console: Console, clock: Clock):\n    without clock:\n        let t = now(clock)\n        print(console, int_to_string(t))\n";
+        let err = check_str(use_dropped).expect_err("using a dropped capability must fail");
+        assert!(err.contains("walled off"), "got: {err}");
+
+        // `retain c:` keeps only `c`; every other capability is hidden.
+        let retain_console =
+            "fn main(console: Console, clock: Clock):\n    retain console:\n        print(console, \"ok\")\n";
+        check_str(retain_console).expect("the retained capability is usable");
+        let retain_drops_rest =
+            "fn main(console: Console, clock: Clock):\n    retain console:\n        let t = now(clock)\n        print(console, int_to_string(t))\n";
+        let err = check_str(retain_drops_rest).expect_err("a non-retained capability must be hidden");
+        assert!(err.contains("walled off"), "got: {err}");
+
+        // `retain:` with no names is a full sandbox — even `console` is gone.
+        let sandbox = "fn main(console: Console):\n    retain:\n        print(console, \"nope\")\n";
+        let err = check_str(sandbox).expect_err("an empty retain drops every capability");
+        assert!(err.contains("walled off"), "got: {err}");
+    }
+
+    #[test]
+    fn capability_firewall_validates_its_names() {
+        // Naming a non-capability binding is rejected — it almost certainly means
+        // the author misremembered what authority the block holds.
+        let not_cap = "fn main(console: Console):\n    let x = 5\n    without x:\n        print(console, \"hi\")\n";
+        let err = check_str(not_cap).expect_err("a non-capability can't be firewalled");
+        assert!(err.contains("not a capability"), "got: {err}");
+        // Naming something not in scope at all is rejected too.
+        let absent = "fn main(console: Console):\n    without clock:\n        print(console, \"hi\")\n";
+        let err = check_str(absent).expect_err("an out-of-scope name can't be firewalled");
+        assert!(err.contains("no capability `clock` is in scope"), "got: {err}");
+    }
+
+    #[test]
+    fn capability_firewall_is_sealed_against_outer_caps() {
+        // The point of the firewall: a `retain` block sees exactly the named
+        // capabilities even though the outer scope holds more. Adding `clock` to
+        // `main` must NOT make it reachable inside `retain console`.
+        let src =
+            "fn main(console: Console, clock: Clock):\n    retain console:\n        now(clock)\n        print(console, \"x\")\n";
+        let err = check_str(src).expect_err("retain must seal the block from outer clock");
+        assert!(err.contains("walled off"), "got: {err}");
+        // A nested re-binding legitimately shadows the firewall: re-using the name
+        // for a fresh value is fine (you still can't reach the dropped capability).
+        let shadow =
+            "fn use_int(n: Int):\n    fail(int_to_string(n))\nfn main(console: Console):\n    without console:\n        let console = 42\n        use_int(console)\n";
+        check_str(shadow).expect("re-binding a dropped name to a fresh value is allowed");
     }
 
     #[test]

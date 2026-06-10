@@ -221,13 +221,45 @@ fn load(dir: Dir[Read], name: String) -> String:
 fn main(console: Console, dir: Dir[Read]):
     print(console, load(dir, "x"))
 `,
+  "Capability firewall": `import list
+
+// retain / without carve a region where only the capabilities you name remain
+// in scope — a compile-time guarantee that a slice of code does no more than the
+// authority it asks for, even if the surrounding scope holds more.
+
+fn is_valid(name: String) -> Bool:
+    let n = string_length(name)
+    n > 0 && n <= 12
+
+fn main(console: Console):
+    let names = ["ada", "", "grace", "this_name_is_too_long"]
+
+    // 'console' is dropped here: nothing in this block can print. The kept list
+    // crosses the firewall as the block's value. (Try adding a print — it won't
+    // compile.)
+    let kept = without console:
+        list.filter(names, fn(n: String): is_valid(n))
+
+    print(console, "kept " <> int_to_string(length(kept)) <> " of " <> int_to_string(length(names)))
+    for n in kept:
+        print(console, "  ok: " <> n)
+
+    // 'retain:' with no names drops EVERY capability — pure computation only.
+    let total = retain:
+        var sum = 0
+        for n in kept:
+            sum = sum + string_length(n)
+        sum
+    print(console, "total chars: " <> int_to_string(total))
+`,
 };
 
 // --- syntax highlighting (dependency-free; mirrors book/witchy-hljs.js) ------
 
 const KEYWORDS = new Set(
   ("fn let var if else match for in while return break continue type trait " +
-    "impl actor on import pub inout sink own move spawn where as gen yield")
+    "impl actor on import pub inout sink own move spawn where as gen yield " +
+    "retain without")
     .split(" "),
 );
 const LITERALS = new Set(["true", "false"]);

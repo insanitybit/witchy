@@ -42,6 +42,7 @@ has the precise semantics; this is the cheat sheet.
 | `actor` / `on` / `spawn` | concurrency: actor type, message handler, spawn |
 | `gen` / `yield` | a generator function that yields a lazy `Iter` |
 | `as` | capability rights narrowing |
+| `retain` / `without` | block capability firewall: keep only / drop the named capabilities |
 | `true` / `false` | boolean literals |
 
 ## Literals
