@@ -193,6 +193,49 @@ fn main() -> wasmtime::Result<()> {
             }
         }
     }
+    // `witchy build-step <file> [--out <dir>] [--read <dir>] [--env <KEY>]...`
+    // runs a rune's `build` entrypoint under confined grants and reports the
+    // source it generated. The build step can only use the build capabilities it
+    // is granted here (it cannot forge a runtime cap), so this is the build-time
+    // half of the capability model, exercised in isolation.
+    if std::env::args().nth(1).as_deref() == Some("build-step") {
+        let mut out_dir: Option<std::path::PathBuf> = None;
+        let mut read_root: Option<std::path::PathBuf> = None;
+        let mut env_keys: Vec<String> = Vec::new();
+        let mut path: Option<String> = None;
+        let mut argv = std::env::args().skip(2);
+        while let Some(a) = argv.next() {
+            match a.as_str() {
+                "--out" => out_dir = argv.next().map(std::path::PathBuf::from),
+                "--read" => read_root = argv.next().map(std::path::PathBuf::from),
+                "--env" => {
+                    if let Some(k) = argv.next() {
+                        env_keys.push(k);
+                    }
+                }
+                _ if path.is_none() => path = Some(a),
+                _ => {}
+            }
+        }
+        let Some(path) = path else {
+            eprintln!("usage: witchy build-step <file.witchy> [--out <dir>] [--read <dir>] [--env <KEY>]...");
+            std::process::exit(1);
+        };
+        match run_build_step_file(&path, out_dir, read_root, env_keys) {
+            Ok(files) if files.is_empty() => println!("{path}: no `build` entrypoint, or it generated no files"),
+            Ok(files) => {
+                println!("build step generated {} file(s):", files.len());
+                for f in files {
+                    println!("  {f}");
+                }
+            }
+            Err(e) => {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
+        }
+        return Ok(());
+    }
     // `witchy lsp` starts the language server (stdio), used by editor extensions.
     if std::env::args().nth(1).as_deref() == Some("lsp") {
         if let Err(e) = lsp::run() {
@@ -1302,6 +1345,26 @@ fn analyze_file(path: &str) -> Result<capabilities::Footprint, String> {
     let src = std::fs::read_to_string(path).map_err(|e| format!("cannot read `{path}`: {e}"))?;
     let module = parser::parse_module(&src).map_err(|e| e.to_string())?;
     Ok(capabilities::analyze(&module))
+}
+
+/// Parse, link, type-check, and run a file's `build` entrypoint under confined
+/// grants, returning the names of the files it generated. The output directory
+/// defaults to `./build-out`.
+fn run_build_step_file(
+    path: &str,
+    out_dir: Option<std::path::PathBuf>,
+    read_root: Option<std::path::PathBuf>,
+    env_keys: Vec<String>,
+) -> Result<Vec<String>, String> {
+    let (linked, _) = link_file(path)?;
+    typeck::check(&linked).map_err(|e| e.to_string())?;
+    let grants = interpreter::BuildGrants {
+        out_dir: out_dir.unwrap_or_else(|| std::path::PathBuf::from("build-out")),
+        read_root,
+        env_keys,
+        ..Default::default()
+    };
+    interpreter::run_build_step(linked, grants).map_err(|e| e.message)
 }
 
 /// Print the host-capability footprint of a single source file: which of

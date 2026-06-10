@@ -103,6 +103,17 @@ computed (Phase 1), execution still pending.
 
 Make the `build` step actually run, confined.
 
+*Phase 2a done (interpreter path):* `interpreter::run_build_step(module, BuildGrants)`
+mints the build caps for the `build` entrypoint from confined grants (a `BuildOut`
+output dir, an optional `BuildRead` root, `BuildEnv` key allow-list) and runs it;
+the build host builtins `write_out`/`read_build`/`get_build_env` are confined via
+the same `resolve`/`resolve_write` machinery as runtime Dir ops (`fetch_build`/
+`run_tool` refuse for now). `witchy build-step <file> [--out][--read][--env]`
+exercises it. The build step's authority is exactly its minted grants — it cannot
+forge a runtime cap (the type checker forbids it). Remaining 2b: the WASM-sandbox
+path (zero-ambient `Linker`) for the hard isolation guarantee, plus `BuildNet`/
+`BuildExec` host fns and wiring generated source into the consumer's compile.
+
 **Runtime (`src/runtime.rs`)**
 - Extend `Capabilities` with the build-time grants and add build host functions,
   linked into the per-actor `Linker` exactly like the runtime host fns. Start

@@ -51,7 +51,27 @@ pub enum Value {
     /// An immutable associative map, kept as insertion-ordered key/value pairs
     /// (keys compared by value equality). `Dict(K, V)` in the type system.
     Dict(Vec<(Value, Value)>),
+    /// A build-time capability, minted only for a rune's `build` entrypoint and
+    /// carrying its confined grant (an output/read directory, or an allow-list).
+    /// The build sandbox is where these enter — never `main`.
+    Build(BuildCap),
     Nil,
+}
+
+/// A build-time capability instance, carrying the attenuated grant the build
+/// driver minted it with. Kind-only in the type system; the specifics live here.
+#[derive(Debug, Clone, PartialEq)]
+pub enum BuildCap {
+    /// Write generated source into this confined output directory.
+    Out(PathBuf),
+    /// Read project files confined to this directory subtree.
+    Read(PathBuf),
+    /// Read environment variables, restricted to this allow-list of names.
+    Env(Vec<String>),
+    /// Fetch from this allow-list of hosts. (Execution deferred to a later phase.)
+    Net(Vec<String>),
+    /// Invoke external tools, restricted to this allow-list. (Deferred.)
+    Exec(Vec<String>),
 }
 
 /// Capabilities are unforgeable: no witchy expression can construct one. They
@@ -115,6 +135,7 @@ impl fmt::Display for Value {
             Value::SigningKey(_) => write!(f, "<signing key>"),
             Value::Socket(id) => write!(f, "<socket #{id}>"),
             Value::Listener(id) => write!(f, "<listener #{id}>"),
+            Value::Build(_) => write!(f, "<build capability>"),
             Value::Closure { params, .. } => write!(f, "<function/{}>", params.len()),
             Value::Dict(entries) => {
                 write!(f, "{{")?;
@@ -383,6 +404,40 @@ impl Interpreter {
                 };
                 err(format!(
                     "`main` parameters must be capabilities (Console, Clock, Env, Dir, Net, SigningKey) or `List(String)` for command-line args; got {found}"
+                ))
+            }
+        }
+    }
+
+    /// Mint a build-time capability for a `build` parameter, from the confined
+    /// grants the build driver was handed. This is where build-time authority
+    /// enters — never `main`. A demanded cap with no matching grant is an error
+    /// (safe by default: only `BuildOut` is supplied unconditionally).
+    fn mint_build_cap(&self, ty: &Option<Type>, grants: &BuildGrants) -> Result<Value, RuntimeError> {
+        match ty {
+            Some(Type::Named(n, _)) if n == "BuildOut" => {
+                Ok(Value::Build(BuildCap::Out(grants.out_dir.clone())))
+            }
+            Some(Type::Named(n, _)) if n == "BuildRead" => match &grants.read_root {
+                Some(r) => Ok(Value::Build(BuildCap::Read(r.clone()))),
+                None => err("build step demands `BuildRead` but no read grant was provided"),
+            },
+            Some(Type::Named(n, _)) if n == "BuildEnv" => {
+                Ok(Value::Build(BuildCap::Env(grants.env_keys.clone())))
+            }
+            Some(Type::Named(n, _)) if n == "BuildNet" => {
+                Ok(Value::Build(BuildCap::Net(grants.net_hosts.clone())))
+            }
+            Some(Type::Named(n, _)) if n == "BuildExec" => {
+                Ok(Value::Build(BuildCap::Exec(grants.exec_tools.clone())))
+            }
+            other => {
+                let found = match other {
+                    Some(t) => format!("`{}`", crate::format::type_str(t)),
+                    None => "no type annotation".to_string(),
+                };
+                err(format!(
+                    "`build` parameters must be build capabilities (BuildOut, BuildRead, BuildEnv, BuildNet, BuildExec); got {found}"
                 ))
             }
         }
@@ -943,6 +998,59 @@ impl Interpreter {
                     Err(_) => Value::Ctor { name: "None".into(), fields: Vec::new() },
                 })),
                 _ => err("get_env expects an Env and a variable name"),
+            },
+            // --- build-time host operations (only reachable from a `build` step) ---
+            // Write generated source into the confined per-rune output sandbox.
+            "write_out" => match args {
+                [Value::Build(BuildCap::Out(base)), Value::Str(rel), Value::Str(contents)] => {
+                    let path = resolve_write(base, rel)?;
+                    match std::fs::write(&path, contents) {
+                        Ok(()) => Ok(Some(Value::Nil)),
+                        Err(e) => err(format!("write_out failed for `{}`: {e}", path.display())),
+                    }
+                }
+                _ => err("write_out expects a BuildOut, a relative path, and contents"),
+            },
+            // Read a project file confined to the BuildRead grant's subtree.
+            "read_build" => match args {
+                [Value::Build(BuildCap::Read(base)), Value::Str(rel)] => {
+                    let path = resolve(base, rel)?;
+                    match std::fs::read_to_string(&path) {
+                        Ok(contents) => Ok(Some(Value::Str(contents))),
+                        Err(e) => err(format!("read_build failed for `{}`: {e}", path.display())),
+                    }
+                }
+                _ => err("read_build expects a BuildRead and a relative path"),
+            },
+            // Read a named env var, but only one on the BuildEnv allow-list.
+            "get_build_env" => match args {
+                [Value::Build(BuildCap::Env(allow)), Value::Str(name)] => {
+                    if !allow.iter().any(|k| k == name) {
+                        return err(format!(
+                            "get_build_env: `{name}` is not in this BuildEnv grant's allow-list"
+                        ));
+                    }
+                    Ok(Some(match std::env::var(name) {
+                        Ok(v) => Value::Ctor { name: "Some".into(), fields: vec![Value::Str(v)] },
+                        Err(_) => Value::Ctor { name: "None".into(), fields: Vec::new() },
+                    }))
+                }
+                _ => err("get_build_env expects a BuildEnv and a variable name"),
+            },
+            // Build-time network/exec are gated behind a sandbox + grant model that
+            // isn't wired up yet (Phase 2b/3); a build step may type-check against
+            // them but they refuse to run for now.
+            "fetch_build" => match args {
+                [Value::Build(BuildCap::Net(_)), Value::Str(_), Value::Str(_)] => {
+                    err("fetch_build (build-time network) is not yet implemented")
+                }
+                _ => err("fetch_build expects a BuildNet, a host, and a path"),
+            },
+            "run_tool" => match args {
+                [Value::Build(BuildCap::Exec(_)), Value::Str(_), Value::Str(_)] => {
+                    err("run_tool (build-time exec) is not yet implemented")
+                }
+                _ => err("run_tool expects a BuildExec, a tool name, and input"),
             },
             // Network capability: attenuate a Net to a held address.
             "restrict" => match args {
@@ -1957,6 +2065,54 @@ fn run_module_inner(
     Ok((interp.output, exit_code))
 }
 
+/// The attenuated grants a build step runs under: a confined output directory
+/// (always present — it is `BuildOut`), an optional confined read root, and
+/// allow-lists for the env/net/exec caps. Safe by default — anything not granted
+/// here cannot be minted, so a build step demanding it fails before running.
+#[derive(Debug, Clone, Default)]
+pub struct BuildGrants {
+    pub out_dir: PathBuf,
+    pub read_root: Option<PathBuf>,
+    pub env_keys: Vec<String>,
+    pub net_hosts: Vec<String>,
+    pub exec_tools: Vec<String>,
+}
+
+/// Run a rune's `build` entrypoint under `grants`, on the interpreter, and return
+/// the (sorted) names of the files it generated into `grants.out_dir`. The build
+/// step's authority is exactly the build capabilities minted here: it cannot forge
+/// a runtime capability (the type checker forbids a build step from taking one),
+/// so even without the WASM sandbox it can only touch what these confined grants
+/// permit. A module with no `build` entrypoint generates nothing.
+pub fn run_build_step(module: Module, grants: BuildGrants) -> Result<Vec<String>, RuntimeError> {
+    std::fs::create_dir_all(&grants.out_dir)
+        .map_err(|e| RuntimeError { message: format!("build: cannot create output dir: {e}") })?;
+    // Find the entrypoint before moving the module in — `build_entrypoint` is
+    // robust to the linker's `mod.build` qualification.
+    let Some(build) = crate::typeck::build_entrypoint(&module).cloned() else {
+        return Ok(Vec::new());
+    };
+    let mut interp = Interpreter::new(module);
+    let argv = build
+        .params
+        .iter()
+        .map(|p| interp.mint_build_cap(&p.ty, &grants))
+        .collect::<Result<Vec<_>, _>>()?;
+    interp
+        .call(&build.name, argv)
+        .map_err(|e| rt_at_line(e, interp.cur_line, &interp.cur_fn))?;
+    interp
+        .run_to_completion()
+        .map_err(|e| rt_at_line(e, interp.cur_line, &interp.cur_fn))?;
+    let mut generated: Vec<String> = std::fs::read_dir(&grants.out_dir)
+        .map_err(|e| RuntimeError { message: format!("build: cannot read output dir: {e}") })?
+        .flatten()
+        .filter_map(|e| e.file_name().into_string().ok())
+        .collect();
+    generated.sort();
+    Ok(generated)
+}
+
 /// Parse and link a multi-module program, then run it. `entry` is the module
 /// holding `main`. Importing a module grants no authority — only `main`'s root
 /// capabilities (and what it passes on) flow in.
@@ -1985,6 +2141,56 @@ fn main(console: Console):
 "#)
             .unwrap();
         assert_eq!(out, vec!["7"]);
+    }
+
+    #[test]
+    fn build_step_generates_source_through_confined_caps() {
+        // A build step reads a schema (BuildRead) and writes generated source
+        // (BuildOut). Its authority is exactly the confined grants minted here.
+        let dir = std::env::temp_dir().join(format!("witchy_build_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let src_root = dir.join("proj");
+        let out_dir = dir.join("out");
+        std::fs::create_dir_all(&src_root).unwrap();
+        std::fs::write(src_root.join("api.proto"), "service Foo").unwrap();
+
+        let module = crate::parser::parse_module(
+            "fn build(out: BuildOut, schema: BuildRead):\n    write_out(out, \"api.witchy\", \"// generated from: \" <> read_build(schema, \"api.proto\"))\n",
+        )
+        .expect("parse");
+        let grants = BuildGrants {
+            out_dir: out_dir.clone(),
+            read_root: Some(src_root.clone()),
+            ..Default::default()
+        };
+        let generated = run_build_step(module, grants).expect("build step runs");
+        assert_eq!(generated, vec!["api.witchy".to_string()]);
+        let body = std::fs::read_to_string(out_dir.join("api.witchy")).unwrap();
+        assert_eq!(body, "// generated from: service Foo");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn build_step_cannot_escape_or_demand_ungranted_caps() {
+        let dir = std::env::temp_dir().join(format!("witchy_build_esc_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        // BuildRead demanded but not granted ⇒ refused before running.
+        let m = crate::parser::parse_module(
+            "fn build(out: BuildOut, schema: BuildRead):\n    write_out(out, \"x\", read_build(schema, \"a\"))\n",
+        )
+        .unwrap();
+        let g = BuildGrants { out_dir: dir.join("out"), ..Default::default() };
+        let err = run_build_step(m, g).expect_err("ungranted BuildRead must be refused");
+        assert!(err.message.contains("no read grant"), "{}", err.message);
+        // A confined BuildOut cannot write outside its sandbox.
+        let m2 = crate::parser::parse_module(
+            "fn build(out: BuildOut):\n    write_out(out, \"../escape.txt\", \"nope\")\n",
+        )
+        .unwrap();
+        let g2 = BuildGrants { out_dir: dir.join("out2"), ..Default::default() };
+        let err = run_build_step(m2, g2).expect_err("a `..` write must be refused");
+        assert!(err.message.contains("escapes the Dir capability"), "{}", err.message);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
