@@ -4784,9 +4784,21 @@ fn yn(b: Bool) -> String:
                 // demo scheduler), so the single-module run below doesn't apply —
                 // such examples are still fully parse + type-checked above.
                 let has_actor = linked.items.iter().any(|it| matches!(it, ast::Item::Actor(_)));
+                // A `main` that declares an argv parameter (`args: List(String)`)
+                // is type-checked but not run here: argv isn't a capability (so the
+                // footprint still looks "Console-only"), yet the interpreter and
+                // WASM run paths don't share an argv source, so comparing their
+                // output is meaningless. Same rationale as the actor skip above.
+                let reads_argv = linked.items.iter().any(|it| {
+                    matches!(it, ast::Item::Function(f) if f.name == "main"
+                        && f.params.iter().any(|p| matches!(&p.ty,
+                            Some(ast::Type::Named(n, args)) if n == "List"
+                                && matches!(args.first(),
+                                    Some(ast::Type::Named(s, _)) if s == "String"))))
+                });
                 let footprint = crate::capabilities::analyze(&linked);
                 let console_only = footprint.total.keys().all(|k| *k == "Console");
-                if has_main && console_only && !has_actor {
+                if has_main && console_only && !has_actor && !reads_argv {
                     let wat = codegen::compile_module(&linked)
                         .unwrap_or_else(|e| panic!("{context} fails to compile to WASM: {e}"));
                     let interp =

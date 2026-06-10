@@ -27,4 +27,5 @@
 ---
 
 [Appendix: Operators and Keywords](appendix-operators.md)
+[Appendix: Recipes](appendix-recipes.md)
 [Appendix: The Standard Library](appendix-stdlib.md)
