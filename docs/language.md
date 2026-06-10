@@ -349,6 +349,34 @@ fn main(console: Console):
 The std `Eq`/`Ord`/`Show` traits (`import eq`, ...) provide bounded generic
 algorithms (`eq.member`, `ord.max`, ...).
 
+**`impl Trait` arguments.** When a parameter is generic only so it can carry a
+trait bound, `impl Trait` says so directly — `x: impl Loud` is sugar for a fresh
+type variable plus a `where` bound:
+
+```witchy
+trait Loud:
+    fn shout(self) -> String
+
+type Dog:
+    Dog
+
+impl Loud for Dog:
+    fn shout(self) -> String:
+        "WOOF"
+
+fn announce(console: Console, x: impl Loud):    // == `x: a` ... `where a: Loud`
+    print(console, shout(x))
+
+fn main(console: Console):
+    announce(console, Dog)
+```
+
+Each `impl Trait` parameter introduces its own type variable, so two of them are
+two independent types. It is argument-position only (not a return type), and it
+composes with an explicit `where` clause. The std library uses it for
+`show.say(console, x: impl Show)` — a `Show`-accepting `print`, so you write
+`say(console, value)` instead of converting by hand.
+
 ## 9. Errors, `Option`/`Result`, and failure
 
 witchy has no exceptions. Expected failure is a value:

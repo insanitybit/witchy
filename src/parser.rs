@@ -81,6 +81,10 @@ struct Parser {
     /// Imported module names, so `mod.func(...)` (module-qualified call) can be
     /// told apart from `value.method(...)` (UFCS method call) after `.`.
     imports: std::collections::HashSet<String>,
+    /// `impl Trait` parameter bounds collected while parsing one function's
+    /// params — `fn f(x: impl Show)` desugars to a fresh type var plus a
+    /// `where`-style bound, reusing the whole trait/monomorphization path.
+    pending_impl_bounds: Vec<(String, String)>,
 }
 
 impl Parser {
@@ -91,6 +95,7 @@ impl Parser {
             in_match_arm: false,
             compr_counter: 0,
             imports: std::collections::HashSet::new(),
+            pending_impl_bounds: Vec::new(),
         }
     }
 
@@ -433,6 +438,7 @@ impl Parser {
         self.expect(&Tok::Fn)?;
         let name = self.ident()?;
         self.expect(&Tok::LParen)?;
+        self.pending_impl_bounds.clear();
         let params = self.params()?;
         self.expect(&Tok::RParen)?;
         let ret = if self.eat(&Tok::RArrow) {
@@ -440,7 +446,10 @@ impl Parser {
         } else {
             None
         };
-        let bounds = self.where_clause()?;
+        // `impl Trait` params contribute bounds just like a `where` clause; merge
+        // them (a function may use both).
+        let mut bounds = std::mem::take(&mut self.pending_impl_bounds);
+        bounds.extend(self.where_clause()?);
         let body = self.block()?;
         Ok(Function {
             public,
@@ -489,7 +498,18 @@ impl Parser {
             };
             let name = self.ident()?;
             let ty = if self.eat(&Tok::Colon) {
-                Some(self.ty()?)
+                // `x: impl Trait` — desugar to a fresh per-param type variable plus
+                // a trait bound, so it reuses the whole generics path. Each `impl`
+                // param gets its own variable (distinct types are allowed).
+                if self.at(&Tok::Impl) {
+                    self.advance();
+                    let trait_name = self.ident()?;
+                    let var = format!("impltrait_{}", self.pending_impl_bounds.len());
+                    self.pending_impl_bounds.push((var.clone(), trait_name));
+                    Some(Type::Named(var, Vec::new()))
+                } else {
+                    Some(self.ty()?)
+                }
             } else {
                 None
             };
@@ -1840,6 +1860,31 @@ fn add(a: Int, b: Int) -> Int:
         assert_eq!(f.name, "add");
         assert_eq!(f.params.len(), 2);
         assert_eq!(f.ret, Some(Type::Named("Int".into(), vec![])));
+    }
+
+    #[test]
+    fn impl_trait_param_desugars_to_a_bound() {
+        // `fn f(x: impl Show)` becomes a fresh type-var param plus a `Show` bound,
+        // so it reuses the whole generics path; two `impl` params get distinct vars.
+        let m = parse_module("fn f(x: impl Show, y: impl Ord) -> Int:\n    0\n").unwrap();
+        let Item::Function(f) = &m.items[0] else { panic!("expected a function") };
+        // Distinct synthetic type vars, in order.
+        let p0 = match &f.params[0].ty {
+            Some(Type::Named(v, a)) if a.is_empty() => v.clone(),
+            other => panic!("expected a type var, got {other:?}"),
+        };
+        let p1 = match &f.params[1].ty {
+            Some(Type::Named(v, a)) if a.is_empty() => v.clone(),
+            other => panic!("expected a type var, got {other:?}"),
+        };
+        assert_ne!(p0, p1, "each impl-Trait param gets its own type variable");
+        assert!(f.bounds.contains(&(p0, "Show".to_string())));
+        assert!(f.bounds.contains(&(p1, "Ord".to_string())));
+        // It coexists with an explicit `where`.
+        let m2 = parse_module("fn g(x: impl Show, y: a) -> Int where a: Ord:\n    0\n").unwrap();
+        let Item::Function(g) = &m2.items[0] else { panic!() };
+        assert!(g.bounds.iter().any(|(_, t)| t == "Show"));
+        assert!(g.bounds.contains(&("a".to_string(), "Ord".to_string())));
     }
 
     #[test]

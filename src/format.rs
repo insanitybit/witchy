@@ -181,6 +181,10 @@ fn item_str(s: &mut String, item: &Item, c: &mut Comments) {
 }
 
 fn sig(name: &str, params: &[Param], ret: &Option<Type>, bounds: &[(String, String)]) -> String {
+    // `impl Trait` params are stored desugared (a fresh `impltrait_N` type var
+    // plus a bound). Render them back to `impl Trait` and omit those bounds from
+    // the `where` clause, so the surface syntax round-trips through `witchy fmt`.
+    let is_impl_var = |v: &str| v.starts_with("impltrait_");
     let mut h = String::new();
     h.push_str(name);
     h.push('(');
@@ -188,16 +192,27 @@ fn sig(name: &str, params: &[Param], ret: &Option<Type>, bounds: &[(String, Stri
         if i > 0 {
             h.push_str(", ");
         }
-        h.push_str(&param(p));
+        match &p.ty {
+            Some(Type::Named(v, args)) if args.is_empty() && is_impl_var(v) => {
+                let trait_name = bounds
+                    .iter()
+                    .find(|(bv, _)| bv == v)
+                    .map(|(_, t)| t.as_str())
+                    .unwrap_or("?");
+                h.push_str(&format!("{}: impl {trait_name}", p.name));
+            }
+            _ => h.push_str(&param(p)),
+        }
     }
     h.push(')');
     if let Some(r) = ret {
         h.push_str(" -> ");
         h.push_str(&type_str(r));
     }
-    if !bounds.is_empty() {
+    let visible: Vec<&(String, String)> = bounds.iter().filter(|(v, _)| !is_impl_var(v)).collect();
+    if !visible.is_empty() {
         h.push_str(" where ");
-        for (i, (v, t)) in bounds.iter().enumerate() {
+        for (i, (v, t)) in visible.iter().enumerate() {
             if i > 0 {
                 h.push_str(", ");
             }

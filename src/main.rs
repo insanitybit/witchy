@@ -8772,12 +8772,61 @@ fn main(console: Console):
     }
 
     #[test]
-    fn to_string_on_undetermined_type_is_rejected() {
-        // A value type codegen can't pin down (here a list) errors clearly rather
-        // than silently mis-rendering.
+    fn to_string_on_compound_renders_on_wasm() {
+        // A compound (list/tuple/record/ADT/dict, any nesting) renders byte-
+        // identically to the interpreter via a generated per-shape helper — so
+        // `to_string`/`${...}` work on WASM, not just the interpreter.
         let src = r#"
+type Shape:
+    Circle(Int)
+    Dot
+
 fn main(console: Console):
     print(console, to_string([1, 2, 3]))
+    print(console, "${[[1, 2], [3]]}")
+    print(console, "${(1, "two", true)}")
+    print(console, "${[Circle(2), Dot]}")
+    let d = insert(insert(dict_new(), "a", 1), "b", 2)
+    print(console, "${d}")
+    let tc = ([1, 2], (3, 4))          // a let-bound tuple whose slots are compound
+    print(console, "${tc}")
+"#;
+        assert_eq!(
+            run_on_wasm(src),
+            vec![
+                "[1, 2, 3]",
+                "[[1, 2], [3]]",
+                "(1, two, true)",
+                "[Circle(2), Dot]",
+                "{a: 1, b: 2}",
+                "([1, 2], (3, 4))",
+            ]
+        );
+    }
+
+    /// `==` on a compound whose *slots are themselves compound* must agree on
+    /// both backends, whether the operands are `let`-bound or parameters. WASM
+    /// previously returned `None` for the shape of such a binding and fell back to
+    /// a pointer compare — a SILENT divergence (interpreter `true`, compiled
+    /// `false`). The shape is now captured from the binding/declared type.
+    #[test]
+    fn nested_compound_equality_agrees_on_both_backends() {
+        let src = "fn same(a: (List(Int), List(Int)), b: (List(Int), List(Int))) -> Bool:\n    a == b\nfn main(console: Console):\n    let v = ([1, 2], (3, 4))\n    let w = ([1, 2], (3, 4))\n    print(console, to_string(v == w))\n    print(console, to_string(same(([1], [2]), ([1], [2]))))\n    print(console, to_string(same(([1], [2]), ([1], [9]))))\n";
+        let want = vec!["true".to_string(), "true".to_string(), "false".to_string()];
+        assert_eq!(interp(src), want.clone(), "interpreter");
+        assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
+    }
+
+    #[test]
+    fn to_string_on_undetermined_type_is_rejected() {
+        // A shape codegen genuinely cannot pin down (a bare generic type
+        // variable) errors clearly rather than silently mis-rendering.
+        let src = r#"
+fn render(t: (a, a)) -> String:
+    to_string(t)
+
+fn main(console: Console):
+    print(console, render((1, 2)))
 "#;
         let module = parser::parse_module(src).expect("parse");
         let err = codegen::compile_module(&module).expect_err("should reject");

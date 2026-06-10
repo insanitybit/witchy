@@ -1,7 +1,9 @@
 // The witchy standard `Show` trait: render a value as a `String`. Built-in impls
 // cover `Int`, `Bool`, and `String`; implement `Show` for your own types to give
-// them a readable form (which the built-in `to_string` cannot do for user
-// types). Pure and capability-free, like every std module.
+// them a *custom* readable form. (The built-in `to_string` already renders any
+// value structurally — `Point(1, 2)`, `[Circle(2), Dot]` — on every backend;
+// reach for `Show` when you want a different rendering than that default.) Pure
+// and capability-free, like every std module.
 
 import string
 
@@ -23,11 +25,19 @@ impl Show for String:
     fn show(self) -> String:
         self
 
-// Render a list as "[a, b, c]" using the element type's Show impl — so it works
-// for lists of YOUR types too, which the built-in to_string cannot render.
-// Correct on both backends (the Show dispatch is monomorphized per element type).
+// Render a list as "[a, b, c]" using each element's Show impl — reach for this
+// when your element type has a *custom* `Show` you want applied (the built-in
+// `to_string` renders lists structurally on every backend already). Correct on
+// both backends (the Show dispatch is monomorphized per element type).
 pub fn show_list(xs: List(a)) -> String where a: Show:
     var parts = []
     for x in xs:
         parts = push(parts, show(x))
     "[" <> string.join(parts, ", ") <> "]"
+
+// Print any `Show` value without converting it by hand — `say(console, 42)`,
+// `say(console, point)`. The Show-accepting `print` you reach for instead of
+// `print(console, int_to_string(n))`. (A thin wrapper kept out of the `print`
+// builtin so a builtin never depends on a std trait.)
+pub fn say(console: Console, x: impl Show):
+    print(console, show(x))

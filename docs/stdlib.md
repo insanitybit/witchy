@@ -228,19 +228,19 @@ The witchy standard `Eq` trait: equality that is correct on both backends.
 
 The `==` operator works for every type in the interpreter, but in COMPILED code a generic `==` on a non-primitive type (a String or record reached through a type variable) falls back to pointer comparison. An `Eq` impl is a concrete function, and the bounded generics below are monomorphized, so `eq`-based equality is content-correct everywhere. Built-in impls cover Int, Bool, and String; implement `Eq` for your own types to use these. `Self` is the implementing type.
 
-#### `fn member(xs: List(a), x: a) -> Bool`
+#### `fn member(xs: List(a), x: a) -> Bool where a: Eq`
 
 Whether `x` is in `xs`, by the element type's Eq impl — correct on both backends, unlike a generic `==`-based search.
 
-#### `fn index_of(xs: List(a), x: a) -> Int`
+#### `fn index_of(xs: List(a), x: a) -> Int where a: Eq`
 
 The index of the first element equal to `x`, or -1 if absent.
 
-#### `fn count(xs: List(a), x: a) -> Int`
+#### `fn count(xs: List(a), x: a) -> Int where a: Eq`
 
 How many elements equal `x` (by the element type's Eq). Correct on both backends, unlike a generic `==` count over non-primitive elements.
 
-#### `fn unique(xs: List(a)) -> List(a)`
+#### `fn unique(xs: List(a)) -> List(a) where a: Eq`
 
 The list with duplicates removed, keeping the first occurrence of each element (by the element type's Eq), in original order. The content-correct counterpart to `list.unique`, which compares pointers in compiled code and so fails to dedupe runtime-built strings and records.
 
@@ -981,25 +981,25 @@ Collect a list of Options into an Option of the list: `Some` of every value in o
 
 The witchy standard `Ord` trait: a total ordering. `compare(a, b)` returns a negative number, zero, or a positive number when `a` is respectively less than, equal to, or greater than `b`. Built-in impls cover `Int` and `Float`; implement `Ord` for your own types to make them comparable — the derived `less`/`greater`/`equal` (and the `_equal` variants) then come for free. Pure and capability-free, like every std module. `Self` in a method signature stands for the implementing type.
 
-#### `fn max_of(x: a, y: a) -> a`
+#### `fn max_of(x: a, y: a) -> a where a: Ord`
 
 Generic helpers over any `Ord` type — usable as `ord.max_of(a, b)`, etc.
 
-#### `fn min_of(x: a, y: a) -> a`
+#### `fn min_of(x: a, y: a) -> a where a: Ord`
 
-#### `fn clamp(x: a, lo: a, hi: a) -> a`
+#### `fn clamp(x: a, lo: a, hi: a) -> a where a: Ord`
 
 `x` confined to the range [lo, hi].
 
-#### `fn maximum(xs: List(a), default: a) -> a`
+#### `fn maximum(xs: List(a), default: a) -> a where a: Ord`
 
 The largest element of `xs`, or `default` when `xs` is empty.
 
-#### `fn minimum(xs: List(a), default: a) -> a`
+#### `fn minimum(xs: List(a), default: a) -> a where a: Ord`
 
 The smallest element of `xs`, or `default` when `xs` is empty.
 
-#### `fn sort(xs: List(a)) -> List(a)`
+#### `fn sort(xs: List(a)) -> List(a) where a: Ord`
 
 Sort any list of an `Ord` type ascending — a stable insertion sort that dispatches through the element type's `Ord` impl, so it is content-correct on both backends (Int, Float, String, or your own `Ord` types) without a caller-supplied comparator. For Ints, `list.sort` is the lighter default.
 
@@ -1376,37 +1376,41 @@ Serve exactly `n` requests then return — for tests and one-shot servers.
 
 Set operations over lists, treating a list as a set of distinct elements compared by the element type's Eq impl. Pure and capability-free. Like the eq-based searches, these are content-correct on both backends — so they work for lists of runtime-built strings and your own Eq types, not just interned literals. (witchy has no separate hashed Set type; a deduplicated list IS the set, which keeps element order deterministic.)
 
-#### `fn union(xs: List(a), ys: List(a)) -> List(a)`
+#### `fn union(xs: List(a), ys: List(a)) -> List(a) where a: Eq`
 
 Elements appearing in either list, de-duplicated, xs-order then new ys.
 
-#### `fn intersection(xs: List(a), ys: List(a)) -> List(a)`
+#### `fn intersection(xs: List(a), ys: List(a)) -> List(a) where a: Eq`
 
 Elements appearing in BOTH lists, de-duplicated, in xs order.
 
-#### `fn difference(xs: List(a), ys: List(a)) -> List(a)`
+#### `fn difference(xs: List(a), ys: List(a)) -> List(a) where a: Eq`
 
 Elements in xs but NOT in ys, de-duplicated, in xs order.
 
-#### `fn is_subset(xs: List(a), ys: List(a)) -> Bool`
+#### `fn is_subset(xs: List(a), ys: List(a)) -> Bool where a: Eq`
 
 Whether every element of xs appears in ys.
 
-#### `fn symmetric_difference(xs: List(a), ys: List(a)) -> List(a)`
+#### `fn symmetric_difference(xs: List(a), ys: List(a)) -> List(a) where a: Eq`
 
 Elements in exactly one of the two lists (xs-only first, then ys-only), de-duplicated — the set XOR.
 
-#### `fn is_disjoint(xs: List(a), ys: List(a)) -> Bool`
+#### `fn is_disjoint(xs: List(a), ys: List(a)) -> Bool where a: Eq`
 
 Whether the two lists share no elements at all.
 
 ## `show`
 
-The witchy standard `Show` trait: render a value as a `String`. Built-in impls cover `Int`, `Bool`, and `String`; implement `Show` for your own types to give them a readable form (which the built-in `to_string` cannot do for user types). Pure and capability-free, like every std module.
+The witchy standard `Show` trait: render a value as a `String`. Built-in impls cover `Int`, `Bool`, and `String`; implement `Show` for your own types to give them a *custom* readable form. (The built-in `to_string` already renders any value structurally — `Point(1, 2)`, `[Circle(2), Dot]` — on every backend; reach for `Show` when you want a different rendering than that default.) Pure and capability-free, like every std module.
 
-#### `fn show_list(xs: List(a)) -> String`
+#### `fn show_list(xs: List(a)) -> String where a: Show`
 
-Render a list as "[a, b, c]" using the element type's Show impl — so it works for lists of YOUR types too, which the built-in to_string cannot render. Correct on both backends (the Show dispatch is monomorphized per element type).
+Render a list as "[a, b, c]" using each element's Show impl — reach for this when your element type has a *custom* `Show` you want applied (the built-in `to_string` renders lists structurally on every backend already). Correct on both backends (the Show dispatch is monomorphized per element type).
+
+#### `fn say(console: Console, x: impl Show)`
+
+Print any `Show` value without converting it by hand — `say(console, 42)`, `say(console, point)`. The Show-accepting `print` you reach for instead of `print(console, int_to_string(n))`. (A thin wrapper kept out of the `print` builtin so a builtin never depends on a std trait.)
 
 ## `string`
 

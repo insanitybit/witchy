@@ -44,7 +44,7 @@ pub fn render(module_name: &str, source: &str) -> Result<String, String> {
             continue;
         }
         any = true;
-        let _ = writeln!(out, "#### `{}`\n", signature(&f.name, &f.params, &f.ret));
+        let _ = writeln!(out, "#### `{}`\n", signature(&f.name, &f.params, &f.ret, &f.bounds));
         let doc = doc_above(&lines, &format!("pub fn {}(", f.name));
         if !doc.is_empty() {
             let _ = writeln!(out, "{doc}\n");
@@ -73,17 +73,41 @@ fn variant_str(v: &Variant) -> String {
     }
 }
 
-fn signature(name: &str, params: &[Param], ret: &Option<Type>) -> String {
-    let ps: Vec<String> = params.iter().map(param_str).collect();
+fn signature(name: &str, params: &[Param], ret: &Option<Type>, bounds: &[(String, String)]) -> String {
+    let ps: Vec<String> = params.iter().map(|p| param_str(p, bounds)).collect();
     let r = ret
         .as_ref()
         .map(|t| format!(" -> {}", type_str(t)))
         .unwrap_or_default();
-    format!("fn {name}({}){r}", ps.join(", "))
+    // `where` bounds, minus the synthetic `impl Trait` ones (rendered inline on
+    // the param), matching `witchy fmt`.
+    let visible: Vec<&(String, String)> =
+        bounds.iter().filter(|(v, _)| !is_impl_var(v)).collect();
+    let w = if visible.is_empty() {
+        String::new()
+    } else {
+        let bs: Vec<String> = visible.iter().map(|(v, t)| format!("{v}: {t}")).collect();
+        format!(" where {}", bs.join(", "))
+    };
+    format!("fn {name}({}){r}{w}", ps.join(", "))
 }
 
-fn param_str(p: &Param) -> String {
+fn is_impl_var(v: &str) -> bool {
+    v.starts_with("impltrait_")
+}
+
+fn param_str(p: &Param, bounds: &[(String, String)]) -> String {
     match &p.ty {
+        // An `impl Trait` param is stored desugared (a fresh `impltrait_N` type
+        // var plus a bound); render it back to the surface `impl Trait`.
+        Some(Type::Named(v, args)) if args.is_empty() && is_impl_var(v) => {
+            let trait_name = bounds
+                .iter()
+                .find(|(bv, _)| bv == v)
+                .map(|(_, t)| t.as_str())
+                .unwrap_or("?");
+            format!("{}: impl {trait_name}", p.name)
+        }
         Some(t) => format!("{}: {}", p.name, type_str(t)),
         None => p.name.clone(),
     }

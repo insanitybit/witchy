@@ -157,16 +157,21 @@ enum NestBottom {
     Tuple(Vec<ValType>),
 }
 
-/// The structural shape of a value for content equality on WASM. Because runtime
-/// slots are untyped, `==` on a compound must be specialized to the static shape:
-/// `Bits` compares the raw i64 slot (Int/Bool/Duration), `Float` reinterprets and
-/// uses `f64.eq`, `Str` calls `$str_eq` on the slot's string pointer, and the
-/// compound variants recurse element/field-wise through generated helpers. A
-/// shape codegen cannot resolve yields a loud error, never a silent pointer
-/// compare.
+/// The structural shape of a value, used both for content equality and for
+/// `to_string` rendering on WASM. Because runtime slots are untyped, an op on a
+/// compound must be specialized to the static shape: `Int`/`Bool` both compare
+/// the raw i64 slot (and `Duration` rides along as `Int`) but render differently
+/// ("42" vs "true"); `Float` reinterprets and uses `f64.eq`; `Str` calls
+/// `$str_eq` on the slot's string pointer; and the compound variants recurse
+/// element/field-wise through generated helpers. A shape codegen cannot resolve
+/// yields a loud error, never a silent pointer compare or a mis-render.
 #[derive(Clone, PartialEq, Eq)]
 enum EqShape {
-    Bits,
+    // `Int` and `Bool` compare identically (`i64.eq`) but RENDER differently
+    // (`to_string`: "42" vs "true"), so they are kept distinct rather than a
+    // single `Bits`.
+    Int,
+    Bool,
     Float,
     Str,
     List(Box<EqShape>),
@@ -189,7 +194,8 @@ impl EqShape {
     /// The scalar shape for a `ValType`, or `None` for `Other` (unresolvable).
     fn scalar(vt: ValType) -> Option<EqShape> {
         match vt {
-            ValType::Int | ValType::Bool => Some(EqShape::Bits),
+            ValType::Int => Some(EqShape::Int),
+            ValType::Bool => Some(EqShape::Bool),
             ValType::Float => Some(EqShape::Float),
             ValType::Str => Some(EqShape::Str),
             ValType::Other => None,
@@ -213,7 +219,8 @@ impl EqShape {
     /// A stable identifier used to name and memoize the per-shape eq helper.
     fn id(&self) -> String {
         match self {
-            EqShape::Bits => "bits".into(),
+            EqShape::Int => "int".into(),
+            EqShape::Bool => "bool".into(),
             EqShape::Float => "f64".into(),
             EqShape::Str => "str".into(),
             EqShape::List(e) => format!("list_{}", e.id()),
@@ -331,6 +338,7 @@ struct SavedScope {
     list_elem_vt: HashMap<String, ValType>,
     list_elem_tuple: HashMap<String, Vec<ValType>>,
     tuple_slots: HashMap<String, Vec<ValType>>,
+    shape: HashMap<String, EqShape>,
     payload_vt: HashMap<String, ValType>,
     fn_ret_kind: HashMap<String, Kind>,
     ret: Kind,
@@ -520,6 +528,13 @@ struct Codegen {
     /// over a list of tuples), so `let (k, v) = p` gives `k`/`v` their types and
     /// `k == key` compiles to string (not pointer) comparison.
     local_tuple_slots: HashMap<String, Vec<ValType>>,
+    /// The fully-resolved structural shape of a `let`-bound compound (captured
+    /// from its RHS at binding time). Consulted as a `Var` fast-path in
+    /// `eq_shape_of` so a tuple/list whose *slots are themselves compound*
+    /// (`let v = ([1,2], (3,4))`) resolves — which the scalar-only
+    /// `local_tuple_slots` path cannot. Closes the gap for both `==` and
+    /// `to_string`.
+    local_shape: HashMap<String, EqShape>,
     /// Function name -> the value type it returns, so `to_string(f(...))` can be
     /// rendered. Populated from return-type annotations.
     fn_ret_valtype: HashMap<String, ValType>,
@@ -598,6 +613,14 @@ struct Codegen {
     /// `EqShape::id` so each shape is emitted once. A `BTreeMap` keeps emission
     /// order deterministic.
     eq_helpers: std::collections::BTreeMap<String, String>,
+    /// Generated per-shape `to_string` renderers, keyed by `EqShape::id` (a
+    /// `ts_` prefix on the function name). Parallels `eq_helpers`: each compound
+    /// shape that flows into `to_string` (or string interpolation) gets one
+    /// renderer, emitted once, that builds the interpreter-identical string.
+    ts_helpers: std::collections::BTreeMap<String, String>,
+    /// Constructor names per sum type, indexed by tag — so a `to_string` ADT
+    /// renderer can emit `Some(5)` / `None` (the `eq` path never needs names).
+    adt_variant_names: HashMap<String, Vec<String>>,
     /// Closure arities for which a `(type $clos{n})` signature is needed (all
     /// i32 params, i32 result), used by `call_indirect`.
     clos_arities: HashSet<usize>,
@@ -646,6 +669,7 @@ impl Codegen {
             local_list_elem_valtype: HashMap::new(),
             local_list_elem_tuple: HashMap::new(),
             local_tuple_slots: HashMap::new(),
+            local_shape: HashMap::new(),
             fn_ret_valtype: HashMap::new(),
             fn_ret_records: HashMap::new(),
             fn_ret_result_record: HashMap::new(),
@@ -701,6 +725,8 @@ impl Codegen {
             uses_dict_iter: false,
             lambdas: Vec::new(),
             eq_helpers: std::collections::BTreeMap::new(),
+            ts_helpers: std::collections::BTreeMap::new(),
+            adt_variant_names: HashMap::new(),
             clos_arities: HashSet::new(),
             apply_level: 0,
             loop_labels: Vec::new(),
@@ -1387,6 +1413,15 @@ impl Codegen {
                     if let Some(ty) = self.record_type_of(value) {
                         self.local_records.insert(name.clone(), ty);
                     }
+                    // Capture the binding's fully-resolved compound shape (from the
+                    // RHS), so `eq_shape_of(Var)` resolves a tuple/list whose slots
+                    // are themselves compound — which the scalar-only slot tables
+                    // cannot. Authoritative: it is exactly `eq_shape_of(rhs)`.
+                    if let Some(shape) = self.eq_operand_shape(value) {
+                        if shape.is_compound() {
+                            self.local_shape.insert(name.clone(), shape);
+                        }
+                    }
                 }
                 Stmt::Assign { name, value } => {
                     // `d = insert(d, k, v)` carries the Dict's key/value types forward.
@@ -1949,6 +1984,7 @@ impl Codegen {
         self.local_list_elem_valtype.clear();
         self.local_list_elem_tuple.clear();
         self.local_tuple_slots.clear();
+        self.local_shape.clear();
         self.local_payload_valtype.clear();
         self.local_dict_value_valtype.clear();
         self.local_dict_key_valtype.clear();
@@ -2001,6 +2037,15 @@ impl Codegen {
                     }
                 }
                 _ => {}
+            }
+            // A compound-typed parameter resolves its full structural shape from
+            // the declared type (authoritative), so `to_string(p)` / `p == q`
+            // work even when the slots are themselves compound. Bare type
+            // variables resolve to nothing, preserving the loud error.
+            if let Some(shape) = p.ty.as_ref().and_then(|t| self.eq_shape_of_type(t)) {
+                if shape.is_compound() {
+                    self.local_shape.insert(p.name.clone(), shape);
+                }
             }
         }
         // Rename shadowing bindings to unique names so function-wide locals
@@ -3112,6 +3157,7 @@ impl Codegen {
             list_elem_vt: std::mem::take(&mut self.local_list_elem_valtype),
             list_elem_tuple: std::mem::take(&mut self.local_list_elem_tuple),
             tuple_slots: std::mem::take(&mut self.local_tuple_slots),
+            shape: std::mem::take(&mut self.local_shape),
             payload_vt: std::mem::take(&mut self.local_payload_valtype),
             fn_ret_kind: std::mem::take(&mut self.local_fn_ret_kind),
             ret: self.cur_fn_ret_kind,
@@ -3131,6 +3177,7 @@ impl Codegen {
         self.local_list_elem_valtype = s.list_elem_vt;
         self.local_list_elem_tuple = s.list_elem_tuple;
         self.local_tuple_slots = s.tuple_slots;
+        self.local_shape = s.shape;
         self.local_payload_valtype = s.payload_vt;
         self.local_fn_ret_kind = s.fn_ret_kind;
         self.cur_fn_ret_kind = s.ret;
@@ -3160,13 +3207,23 @@ impl Codegen {
     /// tracker, tuples from literals or tracked tuple locals, records from
     /// `record_type_of`.
     fn eq_shape_of(&self, e: &Expr) -> Option<EqShape> {
+        // A `let`-bound compound whose shape was captured at binding time (the
+        // authoritative resolution of its RHS) — resolves slots-of-compounds the
+        // scalar slot tables miss.
+        if let Expr::Var(v) = e {
+            if let Some(s) = self.local_shape.get(v) {
+                return Some(s.clone());
+            }
+        }
         // A list literal: the element shape comes from the first element (which
         // recurses, so nested lists / lists of tuples or records resolve). An
         // empty literal never compares elements, so any element shape is safe.
         if let Expr::List(items) = e {
             let elem = match items.first() {
+                // An empty literal never accesses an element (eq compares length
+                // first; to_string renders "[]"), so any scalar default is safe.
                 Some(first) => self.eq_operand_shape(first)?,
-                None => EqShape::Bits,
+                None => EqShape::Int,
             };
             return Some(EqShape::List(Box::new(elem)));
         }
@@ -3263,7 +3320,7 @@ impl Codegen {
                             break;
                         }
                     }
-                    let payload = payload.unwrap_or(EqShape::Bits);
+                    let payload = payload.unwrap_or(EqShape::Int);
                     let inst: Vec<Vec<EqShape>> = variants
                         .iter()
                         .map(|fs| {
@@ -3315,7 +3372,8 @@ impl Codegen {
     fn eq_shape_of_type(&self, ty: &Type) -> Option<EqShape> {
         match ty {
             Type::Named(n, args) => match n.as_str() {
-                "Int" | "Bool" | "Duration" => Some(EqShape::Bits),
+                "Int" | "Duration" => Some(EqShape::Int),
+                "Bool" => Some(EqShape::Bool),
                 "Float" => Some(EqShape::Float),
                 "String" => Some(EqShape::Str),
                 "List" => args.first().and_then(|inner| {
@@ -3339,7 +3397,7 @@ impl Codegen {
     /// slot's heap pointer and call that shape's generated helper.
     fn slot_cmp(&mut self, shape: &EqShape, aa: &str, bb: &str) -> Result<String, CodegenError> {
         Ok(match shape {
-            EqShape::Bits => format!("(i64.eq (i64.load {aa}) (i64.load {bb}))"),
+            EqShape::Int | EqShape::Bool => format!("(i64.eq (i64.load {aa}) (i64.load {bb}))"),
             EqShape::Float => format!(
                 "(f64.eq (f64.reinterpret_i64 (i64.load {aa})) (f64.reinterpret_i64 (i64.load {bb})))"
             ),
@@ -3523,6 +3581,248 @@ impl Codegen {
         Ok(name)
     }
 
+    /// Render the value in an 8-byte slot at `addr` (a WAT i32 address
+    /// expression) to a String pointer, byte-identical to the interpreter's
+    /// `Display`. Scalars format inline; compounds load the slot's pointer and
+    /// call the per-shape `to_string` helper.
+    fn render_slot(&mut self, shape: &EqShape, addr: &str) -> Result<String, CodegenError> {
+        Ok(match shape {
+            EqShape::Int => {
+                self.uses_int_to_string = true;
+                format!("(call $int_to_string (i64.load {addr}))")
+            }
+            EqShape::Bool => {
+                let t = self.intern("true");
+                let f = self.intern("false");
+                format!("(select (i32.const {t}) (i32.const {f}) (i32.wrap_i64 (i64.load {addr})))")
+            }
+            EqShape::Float => {
+                self.uses_float_to_str = true;
+                format!("(call $float_to_str (f64.reinterpret_i64 (i64.load {addr})))")
+            }
+            // A string slot already holds the string pointer; render unquoted, as
+            // the interpreter's Display does inside a compound (`[a, b]`).
+            EqShape::Str => format!("(i32.load {addr})"),
+            compound => {
+                let h = self.ensure_ts_helper(compound)?;
+                format!("(call ${h} (i32.load {addr}))")
+            }
+        })
+    }
+
+    /// Ensure a `to_string` renderer exists for compound `shape`, emitting it
+    /// (and any nested-shape renderers it needs) once, and return its function
+    /// name. The reserve-before-body trick mirrors `ensure_eq_helper`, so a
+    /// recursive type refers to the same helper without looping.
+    fn ensure_ts_helper(&mut self, shape: &EqShape) -> Result<String, CodegenError> {
+        self.uses_concat = true;
+        let name = format!("ts_{}", shape.id());
+        if self.ts_helpers.contains_key(&name) {
+            return Ok(name);
+        }
+        self.ts_helpers.insert(name.clone(), String::new()); // reserve (break cycles)
+        let body = match shape {
+            EqShape::List(elem) => {
+                let open = self.intern("[");
+                let close = self.intern("]");
+                let comma = self.intern(", ");
+                let render = self.render_slot(
+                    elem,
+                    "(i32.add (i32.add (local.get $p) (i32.const 4)) (i32.mul (local.get $i) (i32.const 8)))",
+                )?;
+                format!(
+                    "  (func ${name} (param $p i32) (result i32)\n    \
+                     (local $n i32) (local $i i32) (local $acc i32)\n    \
+                     (local.set $n (i32.load (local.get $p)))\n    \
+                     (local.set $acc (i32.const {open}))\n    \
+                     (block $done (loop $l\n      \
+                     (br_if $done (i32.ge_s (local.get $i) (local.get $n)))\n      \
+                     (if (i32.gt_s (local.get $i) (i32.const 0)) (then (local.set $acc (call $concat (local.get $acc) (i32.const {comma})))))\n      \
+                     (local.set $acc (call $concat (local.get $acc) {render}))\n      \
+                     (local.set $i (i32.add (local.get $i) (i32.const 1)))\n      (br $l)))\n    \
+                     (call $concat (local.get $acc) (i32.const {close})))\n"
+                )
+            }
+            EqShape::Tuple(fields) => {
+                let open = self.intern("(");
+                let close = self.intern(")");
+                let comma = self.intern(", ");
+                let mut parts = String::new();
+                for (i, f) in fields.iter().enumerate() {
+                    let off = 4 + 8 * i;
+                    let render =
+                        self.render_slot(f, &format!("(i32.add (local.get $p) (i32.const {off}))"))?;
+                    if i > 0 {
+                        parts.push_str(&format!(
+                            "    (local.set $acc (call $concat (local.get $acc) (i32.const {comma})))\n"
+                        ));
+                    }
+                    parts.push_str(&format!(
+                        "    (local.set $acc (call $concat (local.get $acc) {render}))\n"
+                    ));
+                }
+                format!(
+                    "  (func ${name} (param $p i32) (result i32)\n    \
+                     (local $acc i32)\n    \
+                     (local.set $acc (i32.const {open}))\n{parts}    \
+                     (call $concat (local.get $acc) (i32.const {close})))\n"
+                )
+            }
+            EqShape::Record(tyname) => {
+                // A record renders as `Name(f1, f2, ...)`, exactly like the
+                // single ctor it lowers to at runtime.
+                let fields = self.record_field_types.get(tyname).cloned().ok_or_else(|| {
+                    CodegenError { message: format!("unknown record `{tyname}` in `to_string`") }
+                })?;
+                let header = self.intern(&format!("{tyname}("));
+                let close = self.intern(")");
+                let comma = self.intern(", ");
+                let mut parts = String::new();
+                for (i, fty) in fields.iter().enumerate() {
+                    let off = 4 + 8 * i;
+                    let fshape = self.eq_shape_of_type(fty).ok_or_else(|| CodegenError {
+                        message: format!(
+                            "`to_string` on `{tyname}` needs a renderable field type; field {} is not yet structurally rendered on WASM — implement `Show` for `{tyname}` or interpolate the fields directly",
+                            i + 1
+                        ),
+                    })?;
+                    let render = self
+                        .render_slot(&fshape, &format!("(i32.add (local.get $p) (i32.const {off}))"))?;
+                    if i > 0 {
+                        parts.push_str(&format!(
+                            "    (local.set $acc (call $concat (local.get $acc) (i32.const {comma})))\n"
+                        ));
+                    }
+                    parts.push_str(&format!(
+                        "    (local.set $acc (call $concat (local.get $acc) {render}))\n"
+                    ));
+                }
+                format!(
+                    "  (func ${name} (param $p i32) (result i32)\n    \
+                     (local $acc i32)\n    \
+                     (local.set $acc (i32.const {header}))\n{parts}    \
+                     (call $concat (local.get $acc) (i32.const {close})))\n"
+                )
+            }
+            EqShape::Adt(tyname) => {
+                let variants = self.adt_variants.get(tyname).cloned().ok_or_else(|| {
+                    CodegenError { message: format!("unknown type `{tyname}` in `to_string`") }
+                })?;
+                let names = self.adt_variant_names.get(tyname).cloned().ok_or_else(|| {
+                    CodegenError { message: format!("unknown type `{tyname}` in `to_string`") }
+                })?;
+                let resolved: Vec<Vec<EqShape>> = variants
+                    .iter()
+                    .enumerate()
+                    .map(|(tag, fields)| {
+                        fields
+                            .iter()
+                            .map(|fty| {
+                                self.eq_shape_of_type(fty).ok_or_else(|| CodegenError {
+                                    message: format!(
+                                        "`to_string` on `{tyname}` needs renderable fields; a field of variant `{}` is generic on WASM — implement `Show` for `{tyname}` or match and interpolate the fields",
+                                        names.get(tag).map(|s| s.as_str()).unwrap_or("?")
+                                    ),
+                                })
+                            })
+                            .collect::<Result<Vec<_>, _>>()
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                self.ts_adt_body(&name, &names, &resolved)?
+            }
+            EqShape::AdtInst(tyname, variant_shapes) => {
+                let names = self.adt_variant_names.get(tyname).cloned().ok_or_else(|| {
+                    CodegenError { message: format!("unknown type `{tyname}` in `to_string`") }
+                })?;
+                self.ts_adt_body(&name, &names, variant_shapes)?
+            }
+            EqShape::Dict(k, v) => {
+                // A dict renders as `{k: v, ...}` over its `[count][key slot,
+                // value slot]...` entries, matching the interpreter's order.
+                let open = self.intern("{");
+                let close = self.intern("}");
+                let comma = self.intern(", ");
+                let colon = self.intern(": ");
+                let krender = self.render_slot(
+                    k,
+                    "(i32.add (i32.add (local.get $p) (i32.const 4)) (i32.mul (local.get $i) (i32.const 16)))",
+                )?;
+                let vrender = self.render_slot(
+                    v,
+                    "(i32.add (i32.add (local.get $p) (i32.const 12)) (i32.mul (local.get $i) (i32.const 16)))",
+                )?;
+                format!(
+                    "  (func ${name} (param $p i32) (result i32)\n    \
+                     (local $n i32) (local $i i32) (local $acc i32)\n    \
+                     (local.set $n (i32.load (local.get $p)))\n    \
+                     (local.set $acc (i32.const {open}))\n    \
+                     (block $done (loop $l\n      \
+                     (br_if $done (i32.ge_s (local.get $i) (local.get $n)))\n      \
+                     (if (i32.gt_s (local.get $i) (i32.const 0)) (then (local.set $acc (call $concat (local.get $acc) (i32.const {comma})))))\n      \
+                     (local.set $acc (call $concat (local.get $acc) {krender}))\n      \
+                     (local.set $acc (call $concat (local.get $acc) (i32.const {colon})))\n      \
+                     (local.set $acc (call $concat (local.get $acc) {vrender}))\n      \
+                     (local.set $i (i32.add (local.get $i) (i32.const 1)))\n      (br $l)))\n    \
+                     (call $concat (local.get $acc) (i32.const {close})))\n"
+                )
+            }
+            _ => unreachable!("scalar shapes are rendered inline, not via a helper"),
+        };
+        self.ts_helpers.insert(name.clone(), body);
+        Ok(name)
+    }
+
+    /// Build a sum-type `to_string` renderer body: dispatch on the tag (slot 0)
+    /// to `Name` (nullary) or `Name(f1, f2, ...)`. Shared by `Adt` (field shapes
+    /// from the declaration) and `AdtInst` (shapes resolved at the use site).
+    fn ts_adt_body(
+        &mut self,
+        name: &str,
+        ctor_names: &[String],
+        variant_shapes: &[Vec<EqShape>],
+    ) -> Result<String, CodegenError> {
+        let open = self.intern("(");
+        let close = self.intern(")");
+        let comma = self.intern(", ");
+        let mut arms = String::new();
+        for (tag, fields) in variant_shapes.iter().enumerate() {
+            let label = self.intern(ctor_names.get(tag).map(|s| s.as_str()).unwrap_or("?"));
+            if fields.is_empty() {
+                arms.push_str(&format!(
+                    "    (if (i32.eq (local.get $t) (i32.const {tag})) (then (return (i32.const {label}))))\n"
+                ));
+                continue;
+            }
+            let mut parts = String::new();
+            parts.push_str(&format!("      (local.set $acc (i32.const {label}))\n"));
+            parts.push_str(&format!(
+                "      (local.set $acc (call $concat (local.get $acc) (i32.const {open})))\n"
+            ));
+            for (i, fshape) in fields.iter().enumerate() {
+                let off = 4 + 8 * i;
+                let render =
+                    self.render_slot(fshape, &format!("(i32.add (local.get $p) (i32.const {off}))"))?;
+                if i > 0 {
+                    parts.push_str(&format!(
+                        "      (local.set $acc (call $concat (local.get $acc) (i32.const {comma})))\n"
+                    ));
+                }
+                parts.push_str(&format!(
+                    "      (local.set $acc (call $concat (local.get $acc) {render}))\n"
+                ));
+            }
+            arms.push_str(&format!(
+                "    (if (i32.eq (local.get $t) (i32.const {tag})) (then\n{parts}      (return (call $concat (local.get $acc) (i32.const {close})))))\n"
+            ));
+        }
+        Ok(format!(
+            "  (func ${name} (param $p i32) (result i32)\n    \
+             (local $t i32) (local $acc i32)\n    \
+             (local.set $t (i32.load (local.get $p)))\n{arms}    \
+             (unreachable))\n"
+        ))
+    }
+
     /// Compile an `encoding.*` call (op-coded hex/base64 transform) to a call to
     /// the `$encoding` guest helper: push the op, then the string-argument
     /// pointer, then call.
@@ -3638,9 +3938,20 @@ impl Codegen {
                     let arg = self.compile_expr(&args[0])?;
                     Ok(format!("{arg}{}    call $float_to_str\n", kind_convert(ak, Kind::F64)))
                 }
-                ValType::Other => cerr(
-                    "to_string could not determine the value's type for WASM; convert it explicitly (e.g. int_to_string)",
-                ),
+                // A compound (list/tuple/record/ADT/dict) renders via a generated
+                // per-shape helper, byte-identical to the interpreter's Display —
+                // so `"${xs}"` works on WASM too. Shapes the structural machinery
+                // can't resolve (a generic payload) still error loudly.
+                ValType::Other => match self.eq_shape_of(&args[0]) {
+                    Some(shape) if shape.is_compound() => {
+                        let h = self.ensure_ts_helper(&shape)?;
+                        let arg = self.compile_expr(&args[0])?;
+                        Ok(format!("{arg}    call ${h}\n"))
+                    }
+                    _ => cerr(
+                        "to_string could not determine the value's type for WASM; convert it explicitly (e.g. int_to_string) or implement `Show`",
+                    ),
+                },
             },
             // The string record's header is its byte length (i32) -> Int (i64).
             ("string_length", 1) => {
@@ -4369,6 +4680,8 @@ pub fn compile_module(module: &Module) -> Result<String, CodegenError> {
             Item::Type(t) => {
                 cg.adt_variants
                     .insert(t.name.clone(), t.variants.iter().map(|v| v.fields.clone()).collect());
+                cg.adt_variant_names
+                    .insert(t.name.clone(), t.variants.iter().map(|v| v.name.clone()).collect());
                 for (tag, variant) in t.variants.iter().enumerate() {
                     cg.ctor_type_name.insert(variant.name.clone(), t.name.clone());
                     cg.ctors
@@ -4570,6 +4883,9 @@ pub fn compile_module(module: &Module) -> Result<String, CodegenError> {
         wat.push_str(lam);
     }
     for body in cg.eq_helpers.values() {
+        wat.push_str(body);
+    }
+    for body in cg.ts_helpers.values() {
         wat.push_str(body);
     }
 
@@ -4798,6 +5114,9 @@ fn compile_actor_with_tags(
         wat.push_str(lam);
     }
     for body in cg.eq_helpers.values() {
+        wat.push_str(body);
+    }
+    for body in cg.ts_helpers.values() {
         wat.push_str(body);
     }
     wat.push_str(")\n");

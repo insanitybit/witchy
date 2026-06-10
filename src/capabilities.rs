@@ -746,7 +746,7 @@ impl Logger:
     fn std_module_footprints_are_pinned() {
         let pure = [
             "list", "string", "math", "option", "result", "func", "ord", "eq", "ascii", "set",
-            "show", "json", "url", "duration", "random", "regex", "compiler", "toml", "semver",
+            "json", "url", "duration", "random", "regex", "compiler", "toml", "semver",
             "rights", "dict", "csv", "time", "encoding", "path",
         ];
         for name in pure {
@@ -766,6 +766,15 @@ impl Logger:
             crypto.total.keys().copied().collect::<Vec<_>>(),
             vec!["Secret"],
             "crypto's only capability demand is Secret (for sign/public_key)",
+        );
+        // `show` is pure except for `say` (the Show-accepting `print`), which
+        // takes a `Console` — so the module's surface demands exactly that (the
+        // `Show` trait, its impls, and `show_list` stay capability-free).
+        let show = footprint(crate::linker::std_source("show").expect("bundled module"));
+        assert_eq!(
+            show.total.keys().copied().collect::<Vec<_>>(),
+            vec!["Console"],
+            "show's only capability demand is Console (for say)",
         );
         // The networking modules take a bare `Net` (full verbs) for now — they
         // are not yet tightened to `Net[Connect]`/`Net[Listen]`.
