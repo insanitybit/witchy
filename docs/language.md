@@ -48,7 +48,7 @@ types and constructors. A lowercase, argument-less name in type position
 | `3.5`, `0.5` | `Float` | IEEE-754 double; `to_string` renders the shortest round-trip form |
 | `true` / `false` | `Bool` | |
 | `"hi\n"` | `String` | UTF-8; escapes `\n \t \r \0 \\ \" \$` |
-| `"sum: ${a + b}"` | `String` | interpolation — `${expr}` splices `to_string(expr)` |
+| `"sum: ${a + b}"` | `String` | interpolation — `${expr}` renders *any* value (see below) |
 | `30s`, `250ms`, `5m`, `2h`/`2hr`, `1d`, `1w` | `Duration` | a distinct type carried as milliseconds; not mixable with bare `Int` |
 | `[1, 2, 3]` | `List(Int)` | immutable |
 | `(1, "a")` | tuple | fixed arity, mixed types |
@@ -58,11 +58,21 @@ fn main(console: Console):
     let a = 6
     let b = 7
     print(console, "sum: ${a + b}")          // string interpolation
-    print(console, to_string(1500ms < 2s))   // durations are a distinct type
+    print(console, "${1500ms < 2s}")         // durations are a distinct type
     let pair = (1, "a")                       // a tuple
     let (n, s) = pair
     print(console, "${n}${s}")
 ```
+
+**Rendering values to strings.** Reach for interpolation first: `"${x}"` renders
+*any* value — scalars, record fields, lists, tuples, records, sum types, dicts,
+and any nesting — identically on all three backends. You rarely need to call
+`to_string`/`int_to_string` by hand; they are what `${…}` desugars to. To print
+one value, `print(console, "${x}")`, or `say(console, x)` — the `Show`-accepting
+`print` from `import show`, for any `Show` value (the built-in scalars and your
+own types). The **`Show` trait** (`fn show(self) -> String`) is the trait-method
+route: implement it to give a type a *custom* rendering (interpolation already
+gives every value a structural default like `Point(1, 2)`).
 
 ## 2. Types
 

@@ -5335,6 +5335,16 @@ fn yn(b: Bool) -> String:
         assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
     }
 
+    /// Interpolating a record field — `"${p.x}"` (scalar) and `"${p.tags}"`
+    /// (compound) — renders on WASM, including inside a custom `Show` impl. A
+    /// field access previously resolved to no value type, so `to_string` of it
+    /// errored on the compiled backend even though the field's type is known.
+    #[test]
+    fn record_field_interpolation_renders_on_wasm() {
+        let src = "type Post:\n    title: String\n    views: Int\n    tags: List(Int)\nfn main(console: Console):\n    let p = Post(\"hi\", 9, [1, 2, 3])\n    print(console, \"${p.title} (${p.views}): ${p.tags}\")\n";
+        assert_eq!(run_on_wasm(src), vec!["hi (9): [1, 2, 3]".to_string()]);
+    }
+
     /// `Option` `==` is structural on both backends: a single-parameter generic
     /// ADT is instantiated at the comparison site from a constructor literal
     /// (sound for both operands — the type checker guarantees they share a

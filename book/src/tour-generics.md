@@ -95,6 +95,45 @@ same function applies. The standard `eq`, `ord`, and `show` modules provide
 these traits along with generic algorithms built on them (`eq.member`,
 `ord.max`, and so on).
 
+## `impl Trait` and rendering with `Show`
+
+When a parameter is generic *only* to carry a bound, write `x: impl Trait` — it
+is exactly a fresh type variable plus a `where` bound, so it reuses everything
+above. The `Show` trait (`fn show(self) -> String`) is the idiomatic case:
+implement it to give a type a custom rendering, and take `impl Show` wherever you
+want to accept "anything renderable".
+
+```witchy
+import show
+
+type Temp:
+    celsius: Int
+
+impl Show for Temp:
+    fn show(self) -> String:
+        "${self.celsius} deg C"          // a custom rendering for Temp
+
+fn announce(console: Console, label: String, x: impl Show):
+    print(console, "${label}: ${show(x)}")
+
+fn main(console: Console):
+    announce(console, "now", Temp(21))   // uses Temp's Show
+    announce(console, "count", 42)       // and Int's
+    show.say(console, Temp(5))           // `say` = the Show-accepting `print`
+```
+
+```text
+now: 21 deg C
+count: 42
+5 deg C
+```
+
+`say(console, x)` is the `Show`-accepting `print` — reach for it instead of
+`print(console, to_string(x))`. Note the division of labor: interpolation and the
+built-in `to_string` already render *every* value structurally (including bare
+lists, tuples, and dicts, which can't carry a `Show` impl); `Show` is for giving
+*your own* types a rendering you choose.
+
 That rounds out the type system. One more pure-language idea remains before we
 reach the heart of witchy — describing sequences that are computed on demand
 rather than all at once.

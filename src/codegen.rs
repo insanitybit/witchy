@@ -932,6 +932,11 @@ impl Codegen {
             // `inner?` yields the Ok/Some payload's value type, so `to_string` of
             // a `?`-unwrapped value renders correctly and `==` picks `$str_eq`.
             Expr::Try(inner) => self.match_payload_valtype(inner).unwrap_or(ValType::Other),
+            // A record field access (`p.x`): the field's declared value type — so
+            // `"${p.x}"` / `to_string(p.x)` and `==` on a field resolve.
+            Expr::Field { base, field } => {
+                self.field_type_of(base, field).map(|t| ty_to_valtype(&t)).unwrap_or(ValType::Other)
+            }
             _ => ValType::Other,
         }
     }
@@ -994,6 +999,16 @@ impl Codegen {
             Some(Stmt::Expr(e)) => self.record_type_of(e),
             _ => None,
         }
+    }
+
+    /// The declared type of `base.field`, where `base`'s record type is known —
+    /// so a field access resolves its value type (`to_string(p.x)`) and its
+    /// structural shape (`to_string(p.tags)`), not just whether it is a record.
+    fn field_type_of(&self, base: &Expr, field: &str) -> Option<Type> {
+        let rec = self.record_type_of(base)?;
+        let names = self.record_fields.get(&rec)?;
+        let idx = names.iter().position(|(n, _)| n == field)?;
+        self.record_field_types.get(&rec)?.get(idx).cloned()
     }
 
     /// The element value type of a list-producing expression, where codegen can
@@ -3213,6 +3228,13 @@ impl Codegen {
         if let Expr::Var(v) = e {
             if let Some(s) = self.local_shape.get(v) {
                 return Some(s.clone());
+            }
+        }
+        // A record field access (`p.tags`): resolve from the field's declared
+        // type, so `to_string`/`==` on a compound field works.
+        if let Expr::Field { base, field } = e {
+            if let Some(shape) = self.field_type_of(base, field).and_then(|t| self.eq_shape_of_type(&t)) {
+                return Some(shape);
             }
         }
         // A list literal: the element shape comes from the first element (which

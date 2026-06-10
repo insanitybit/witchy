@@ -51,10 +51,13 @@ hello, world
 n is 3, doubled 6
 ```
 
-`${expr}` is sugar for `to_string(expr)`. Strings are UTF-8 and the common
-operations (`string_length`, `char_count`, `split`, `contains`, …) live in the
-`string` module and as builtins; the [stdlib reference](appendix-stdlib.md) has
-the full list.
+`${expr}` renders *any* value — scalars, lists, tuples, records, sum types,
+dicts, and any nesting — identically on all three backends (it is sugar for the
+built-in `to_string`). So you rarely call `to_string`/`int_to_string` by hand;
+reach for `"${x}"`. Strings are UTF-8 and the common operations
+(`string_length`, `char_count`, `split`, `contains`, …) live in the `string`
+module and as builtins; the [stdlib reference](appendix-stdlib.md) has the full
+list.
 
 ## Conversions
 
@@ -116,10 +119,12 @@ fn main(console: Console):
 
 A couple of practical notes you'll bump into:
 
-- `to_string` works on scalars, but rendering a whole *list* or *tuple* to a
-  string is interpreter-only, so portable code builds the string itself —
-  that's why `show` above maps `int_to_string` over the list and joins. You'll
-  see this idiom a lot.
+- Interpolation renders compounds directly on every backend — `"${xs}"` prints
+  `[1, 2, 3]`, `"${pair}"` prints `(1, one)`, and a dict prints `{ada: 36}`. The
+  hand-rolled `show` above isn't *needed* to print a list anymore; it's there
+  when you want a **custom** format (here, space-separated and unbracketed)
+  instead of that structural default. For a type of your own, implement the
+  `Show` trait to give it a custom rendering (see [Generics](tour-generics.md)).
 - Builtins like `int_to_string` aren't first-class function values, so to pass
   one to `list.map` you wrap it in a lambda: `fn(n: Int): int_to_string(n)`.
 
