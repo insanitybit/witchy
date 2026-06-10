@@ -1327,6 +1327,14 @@ fn report_capabilities(path: &str) -> Result<(), String> {
         println!("  {:<width$}  {}{}", e.name, show(&e.capabilities), refined);
     }
     println!("  {:<width$}  {}", "total", show(&fp.total));
+    // The build axis (only when the rune ships a `build` step). Runtime authority
+    // is enforced by the type system; the build footprint is the supply-chain
+    // signal — what a rune's build step is allowed to do, outside the consumer's
+    // type-checked call graph.
+    if !fp.build.is_empty() {
+        println!("Build-time footprint of {path}:");
+        println!("  {:<width$}  {}", "build", show(&fp.build));
+    }
     Ok(())
 }
 
@@ -1345,6 +1353,12 @@ fn report_capability_diff(old_path: &str, new_path: &str) -> Result<bool, String
     println!("  new total:  {}", capabilities::show_caps(&new.total));
     println!("  added:      {}", capabilities::show_caps(&d.added));
     println!("  removed:    {}", capabilities::show_caps(&d.removed));
+    if !old.build.is_empty() || !new.build.is_empty() {
+        println!("  build old:  {}", capabilities::show_caps(&old.build));
+        println!("  build new:  {}", capabilities::show_caps(&new.build));
+        println!("  build +:    {}", capabilities::show_caps(&d.build_added));
+        println!("  build -:    {}", capabilities::show_caps(&d.build_removed));
+    }
     let join = |s: &std::collections::BTreeSet<String>| {
         if s.is_empty() {
             "(none)".to_string()
@@ -1359,20 +1373,37 @@ fn report_capability_diff(old_path: &str, new_path: &str) -> Result<bool, String
             join(&d.refinements_gained)
         );
     }
-    if d.widened() {
+    let mut flagged = false;
+    if d.build_widened() {
+        // The high-signal supply-chain event: build-time execution is outside the
+        // consumer's type-checked call graph, so a new build cap is the thing the
+        // gate must catch.
+        println!(
+            "BUILD WIDENING: the newer version's build step demands new build-time authority ({}). \
+             It cannot run until you grant it (`--allow-build-cap` + a `[build.grants]` entry).",
+            capabilities::show_caps(&d.build_added)
+        );
+        flagged = true;
+    }
+    if !d.added.is_empty() {
         println!(
             "WIDENING: the newer version demands new host authority ({}). Review before trusting.",
             capabilities::show_caps(&d.added)
         );
-    } else if !d.refinements_dropped.is_empty() {
-        // Same host authority, but a brand was dropped — a confined capability
-        // loosened to its bare form. Not a widening, but an intent change.
-        println!(
-            "OK on authority, but a refinement was dropped ({}): a confined capability loosened to its bare form. Worth a look.",
-            join(&d.refinements_dropped)
-        );
-    } else {
-        println!("OK: no widening — the newer version demands no new host authority.");
+        flagged = true;
+    }
+    if !flagged {
+        if !d.refinements_dropped.is_empty() {
+            // Same authority on both axes, but a brand was dropped — a confined
+            // capability loosened to its bare form. Not a widening, but an intent
+            // change worth surfacing.
+            println!(
+                "OK on authority, but a refinement was dropped ({}): a confined capability loosened to its bare form. Worth a look.",
+                join(&d.refinements_dropped)
+            );
+        } else {
+            println!("OK: no widening — the newer version demands no new authority on either axis.");
+        }
     }
     Ok(d.widened())
 }

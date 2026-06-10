@@ -50,10 +50,16 @@ uniquely defends, beyond what types already enforce.
 
 ---
 
-## Phase 1 — Static build footprint + the `build` entrypoint + caps reframe
+## Phase 1 — Static build footprint + the `build` entrypoint + caps reframe ✅ DONE
 
 Compiler-only; no execution. Self-contained, fully testable, and unblocks the
 rest. This is "audit, reframed around build-time" with nothing actually running.
+
+*Implemented:* the five build cap types + `is_build_capability_type` +
+`check_build_signature` + `build_entrypoint` (typeck); two-axis `Footprint`/
+`FootprintDiff` with `build`/`build_added`/`build_widened` (capabilities.rs);
+`witchy caps` prints a "Build-time footprint" section and `caps-diff` flags
+"BUILD WIDENING" and exits non-zero (main.rs); tests in both modules.
 
 **Type system (`src/typeck.rs`)**
 - Add `BuildOut`, `BuildRead(DirRights)`, `BuildEnv`, `BuildNet(NetRights)`,
@@ -159,22 +165,30 @@ Make the framing match the model.
 
 ---
 
-## Open decisions to settle before Phase 1
+## Resolved decisions
 
-1. **Rights shape for `BuildEnv`/`BuildExec`.** A named-string-set rights type
-   (e.g. `BuildEnv["TARGET","HOST"]`, `BuildExec["protoc"]`) vs. a coarse kind
-   with the names living only in the manifest grant. The footprint gates on *kind*
-   (§4.4), so names can live in the grant; carrying them in the type is nicer for
-   reading a signature but adds type-system surface. Leaning: kind in the type,
-   names in the grant, to keep the type system small.
-2. **Build entrypoint discovery.** `src/build.witchy` with `fn build(...)` (chosen
-   here) vs. a `[build] entry = "..."` manifest key. File convention is simpler
-   and matches `main`'s "it's just a function" feel.
-3. **Output-sandbox location** for `BuildOut` (per-rune dir under the store/target)
-   and how generated source is namespaced so two runes' build outputs can't
-   collide — reuse the existing confinement (`resolve_write`) rooted per rune.
-4. **Caching key** details for §7.2 reproducibility (input hash composition).
-
-These are refinements, not forks — §7.1 fixes the model. Recommend resolving #1–#2
-at the start of Phase 1 (they shape the type-system additions) and #3–#4 at
-Phase 2.
+1. **Build-cap rights: kind in the type, names in the grant, names advisory in the
+   rune manifest.** The five build caps are **nullary nominal types** — no name
+   lists in the type system. Three layers: the *type* carries the kind (sound,
+   unfakeable; §4.4 gates on kind); the *consumer grant* in `witchy.toml` carries
+   the enforced names (`exec = ["protoc"]`), which the sandbox host functions bind
+   to; the rune's own `[build] requires` is *advisory* metadata for the
+   footprint/promotion UX ("wants to exec `protoc`"). Rejected names-in-type
+   (`BuildExec["protoc"]`): consistent with `Dir[Read]` but pushes arbitrary
+   string literals into type-rights position for a benefit the grant layer must
+   enforce anyway. `BuildRead` is likewise nullary — its confined directory is the
+   grant, not the type.
+2. **Entrypoint: `fn build(out: BuildOut, ...)` in `src/build.witchy`.** Reserved
+   filename, mirrors "the run entry is `fn main`." For the *static* analysis
+   (Phase 1, which operates on the linked module and can't see file identity), the
+   build entrypoint is the top-level `fn build` whose first parameter is
+   `BuildOut`; the file convention governs which source the Phase-2 driver
+   compiles and runs.
+3. **Output sandbox: per-rune confined dir under the build cache,**
+   `<store>/build-out/<ns/name>@<ver>-<inputhash>/`, written via the existing
+   `resolve_write` confinement, namespaced per rune, linked into the consumer's
+   compile as that rune's own generated `src/`.
+4. **Cache key = hash of** (rune source + `build.witchy`) ⊕ build-footprint ⊕
+   grants-in-effect ⊕ `build_inputs` (content hashes of any `BuildExec`/`BuildNet`
+   outputs). Deterministic steps rebuild for free; impure ones pinned by output
+   hash (§7.2).

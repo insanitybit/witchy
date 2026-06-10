@@ -179,6 +179,15 @@ pub enum Ty {
     Net(NetRights),
     Socket,
     Listener,
+    /// Build-time capabilities — a parallel set to the runtime caps, granted only
+    /// to a rune's `build` entrypoint and enforced in a zero-ambient build
+    /// sandbox. Kind-only (the specific tool/host/dir/var is the consumer's grant,
+    /// not the type); see docs/build-time-execution-plan.md.
+    BuildOut,
+    BuildRead,
+    BuildEnv,
+    BuildNet,
+    BuildExec,
     List(Box<Ty>),
     Tuple(Vec<Ty>),
     /// A user-declared type, possibly with type arguments: `Option(Int)`,
@@ -207,6 +216,11 @@ impl fmt::Display for Ty {
             Ty::Net(r) => write!(f, "{r}"),
             Ty::Socket => write!(f, "Socket"),
             Ty::Listener => write!(f, "Listener"),
+            Ty::BuildOut => write!(f, "BuildOut"),
+            Ty::BuildRead => write!(f, "BuildRead"),
+            Ty::BuildEnv => write!(f, "BuildEnv"),
+            Ty::BuildNet => write!(f, "BuildNet"),
+            Ty::BuildExec => write!(f, "BuildExec"),
             Ty::List(e) => write!(f, "List({e})"),
             Ty::Tuple(ts) => {
                 write!(f, "(")?;
@@ -320,6 +334,7 @@ fn check_unique_functions(module: &Module) -> Result<(), TypeError> {
 const BUILTIN_TYPE_NAMES: &[&str] = &[
     "Int", "Float", "Duration", "String", "Bool", "Nil", "Console", "Clock", "Env", "SigningKey",
     "Subject", "Dir", "Net", "Socket", "Listener", "List", "Option", "Result", "Dict",
+    "BuildOut", "BuildRead", "BuildEnv", "BuildNet", "BuildExec",
 ];
 
 /// Validate that every named type in `t` is known — a builtin, a declared type,
@@ -416,6 +431,14 @@ pub(crate) fn is_capability_type(t: &ast::Type) -> bool {
         if matches!(n.as_str(), "Console" | "Clock" | "Env" | "Dir" | "Net" | "SigningKey"))
 }
 
+/// Whether `t` is a *build-time* capability — the parallel set granted only to a
+/// rune's `build` entrypoint, never to `main`. Kept distinct from the runtime
+/// capabilities on purpose: the two axes are granted and gated separately.
+pub(crate) fn is_build_capability_type(t: &ast::Type) -> bool {
+    matches!(t, ast::Type::Named(n, _)
+        if matches!(n.as_str(), "BuildOut" | "BuildRead" | "BuildEnv" | "BuildNet" | "BuildExec"))
+}
+
 /// Whether `t` is `List(String)` — the command-line-arguments parameter `main`
 /// may declare.
 pub(crate) fn is_args_type(t: &ast::Type) -> bool {
@@ -451,6 +474,50 @@ fn check_main_signature(module: &Module) -> Result<(), TypeError> {
         ));
     }
     Ok(())
+}
+
+/// Validate a rune's build entrypoint. The build step is the top-level `fn build`
+/// whose first parameter is `BuildOut`; it runs in a zero-ambient build sandbox,
+/// so it may take *only* build-time capabilities — a runtime capability (or
+/// anything else) in its signature is an error. A `build` function that does not
+/// take `BuildOut` is treated as an ordinary function, not the entrypoint, so
+/// existing code that happens to define `fn build(...)` is unaffected.
+fn check_build_signature(module: &Module) -> Result<(), TypeError> {
+    let Some(build) = build_entrypoint(module) else {
+        return Ok(());
+    };
+    for p in &build.params {
+        if matches!(&p.ty, Some(t) if is_build_capability_type(t)) {
+            continue;
+        }
+        let found = match &p.ty {
+            Some(t) => format!("has type `{}`", crate::format::type_str(t)),
+            None => "has no type annotation".to_string(),
+        };
+        return terr(format!(
+            "`build` parameter `{}` {found}, but a build step may only take build-time \
+             capabilities (BuildOut, BuildRead, BuildEnv, BuildNet, BuildExec)",
+            p.name
+        ));
+    }
+    Ok(())
+}
+
+/// The rune's build entrypoint, if any: a top-level `fn build` whose first
+/// parameter is a `BuildOut`. Returns `None` for a `build` function that isn't
+/// shaped like an entrypoint (so it's just an ordinary function).
+pub(crate) fn build_entrypoint(module: &Module) -> Option<&Function> {
+    module.items.iter().find_map(|it| match it {
+        // The linker qualifies non-`main` functions as `mod.name`, so match on the
+        // unqualified tail.
+        Item::Function(f)
+            if f.name.rsplit('.').next() == Some("build")
+                && matches!(f.params.first(), Some(p) if matches!(&p.ty, Some(t) if is_build_capability_type(t))) =>
+        {
+            Some(f)
+        }
+        _ => None,
+    })
 }
 
 /// Collect the type-parameter names (lowercase, argument-less) appearing in a
@@ -568,6 +635,11 @@ impl Checker {
             "Net" => Ty::Net(net_rights(args)),
             "Socket" => Ty::Socket,
             "Listener" => Ty::Listener,
+            "BuildOut" => Ty::BuildOut,
+            "BuildRead" => Ty::BuildRead,
+            "BuildEnv" => Ty::BuildEnv,
+            "BuildNet" => Ty::BuildNet,
+            "BuildExec" => Ty::BuildExec,
             "List" => {
                 let elem = match args.first() {
                     Some(a) => self.to_ty(a),
@@ -607,6 +679,11 @@ impl Checker {
                 "Net" => Ty::Net(net_rights(args)),
                 "Socket" => Ty::Socket,
                 "Listener" => Ty::Listener,
+                "BuildOut" => Ty::BuildOut,
+                "BuildRead" => Ty::BuildRead,
+                "BuildEnv" => Ty::BuildEnv,
+                "BuildNet" => Ty::BuildNet,
+                "BuildExec" => Ty::BuildExec,
                 "List" => {
                     let elem = match args.first() {
                         Some(a) => self.to_ty_generic(a, vars),
@@ -809,6 +886,11 @@ impl Checker {
                 | Ty::Net(_)
                 | Ty::Socket
                 | Ty::Listener
+                | Ty::BuildOut
+                | Ty::BuildRead
+                | Ty::BuildEnv
+                | Ty::BuildNet
+                | Ty::BuildExec
         )
     }
 
@@ -874,6 +956,16 @@ impl Checker {
             "print" => Some((vec![Ty::Console, Ty::String], Ty::Nil)),
             "now" => Some((vec![Ty::Clock], Ty::Int)),
             "get_env" => Some((vec![Ty::Env, Ty::String], Ty::Named("Option".into(), vec![Ty::String]))),
+            // Build-time host operations (the build sandbox provides these). Each
+            // consumes a build capability; the specific tool/dir/host/var is the
+            // consumer's grant, not part of the type.
+            "write_out" => Some((vec![Ty::BuildOut, Ty::String, Ty::String], Ty::Nil)),
+            "read_build" => Some((vec![Ty::BuildRead, Ty::String], Ty::String)),
+            "get_build_env" => {
+                Some((vec![Ty::BuildEnv, Ty::String], Ty::Named("Option".into(), vec![Ty::String])))
+            }
+            "fetch_build" => Some((vec![Ty::BuildNet, Ty::String, Ty::String], Ty::String)),
+            "run_tool" => Some((vec![Ty::BuildExec, Ty::String, Ty::String], Ty::String)),
             "int_to_string" => Some((vec![Ty::Int], Ty::String)),
             "string_length" => Some((vec![Ty::String], Ty::Int)),
             "char_count" => Some((vec![Ty::String], Ty::Int)),
@@ -2315,6 +2407,9 @@ pub fn check(module: &Module) -> Result<(), TypeError> {
     // enters, so they must be capabilities (or the args list) — validate before
     // diving into bodies so a malformed entry point is reported up front.
     check_main_signature(module)?;
+    // A rune's `build` entrypoint is the root of the build sandbox; its parameters
+    // are where build-time authority enters, so they must be build capabilities.
+    check_build_signature(module)?;
 
     // Pass 2: check bodies.
     for item in &module.items {
@@ -2402,6 +2497,26 @@ mod tests {
         let sandbox = "fn main(console: Console):\n    retain:\n        print(console, \"nope\")\n";
         let err = check_str(sandbox).expect_err("an empty retain drops every capability");
         assert!(err.contains("walled off"), "got: {err}");
+    }
+
+    #[test]
+    fn build_entrypoint_takes_only_build_capabilities() {
+        // A valid build step: build caps only.
+        check_str("fn build(out: BuildOut, schema: BuildRead):\n    write_out(out, \"x.witchy\", read_build(schema, \"a.proto\"))\n")
+            .expect("a build step taking build caps is valid");
+        // A runtime capability in `build` is rejected — the build sandbox grants
+        // only build-time authority.
+        let err = check_str("fn build(out: BuildOut, net: Net):\n    write_out(out, \"x\", \"y\")\n")
+            .expect_err("a runtime cap in build must be rejected");
+        assert!(err.contains("build step may only take build-time capabilities"), "{err}");
+        // And `main` may not take a build capability.
+        let err = check_str("fn main(console: Console, out: BuildOut):\n    print(console, \"no\")\n")
+            .expect_err("a build cap in main must be rejected");
+        assert!(err.contains("`main` may only take host capabilities"), "{err}");
+        // A `build` function with no build cap is an ordinary function, not the
+        // entrypoint, so it isn't subject to the build-signature rule.
+        check_str("fn build(x: Int) -> Int:\n    x + 1\n")
+            .expect("a plain `build` function is not the build entrypoint");
     }
 
     #[test]

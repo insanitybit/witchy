@@ -25,6 +25,13 @@ use crate::ast::{Item, Module, Type};
 /// so it isn't a supply-chain footprint concern.)
 pub const HOST_CAPABILITIES: &[&str] = &["Console", "Clock", "Env", "SigningKey", "Dir", "Net"];
 
+/// The build-time capabilities a rune's `build` entrypoint may demand — the
+/// parallel set to the runtime host caps, tracked on a separate axis. Kind-only
+/// (the specific tool/dir/host/var is the consumer's grant, not the type), so
+/// they carry no rights. See docs/build-time-execution-plan.md.
+pub const BUILD_CAPABILITIES: &[&str] =
+    &["BuildOut", "BuildRead", "BuildEnv", "BuildNet", "BuildExec"];
+
 /// The rights (verbs) a single capability permits. Empty for `Console`, which
 /// has no sub-verbs.
 pub type Rights = BTreeSet<&'static str>;
@@ -35,6 +42,31 @@ pub type CapSet = BTreeMap<&'static str, Rights>;
 
 fn host_cap(name: &str) -> Option<&'static str> {
     HOST_CAPABILITIES.iter().copied().find(|c| *c == name)
+}
+
+fn build_cap(name: &str) -> Option<&'static str> {
+    BUILD_CAPABILITIES.iter().copied().find(|c| *c == name)
+}
+
+/// Build-time capability kinds reachable from a type (no rights — kind-only).
+/// Used only over the `build` entrypoint's parameters; recurses through tuples/
+/// generics for soundness even though a build cap is normally a direct param.
+fn build_caps_in(ty: &Type, out: &mut CapSet) {
+    match ty {
+        Type::Named(name, args) => {
+            if let Some(b) = build_cap(name) {
+                out.entry(b).or_default();
+            }
+            for a in args {
+                build_caps_in(a, out);
+            }
+        }
+        Type::Tuple(ts) => ts.iter().for_each(|t| build_caps_in(t, out)),
+        Type::Fn(params, ret) => {
+            params.iter().for_each(|p| build_caps_in(p, out));
+            build_caps_in(ret, out);
+        }
+    }
 }
 
 /// The full right-set for a capability — what a *bare* `Dir`/`Net` (no brackets)
@@ -207,6 +239,10 @@ pub struct Footprint {
     /// union of every entry's brands. Authority-equivalent to their host caps,
     /// but a finer-grained record of *intent*.
     pub brands: BTreeSet<String>,
+    /// The **build-time** footprint: the build capabilities the rune's `build`
+    /// entrypoint demands (empty if it ships no build step). A separate axis from
+    /// the runtime `total` — they are granted and gated independently.
+    pub build: CapSet,
 }
 
 /// What changed between two versions of a module's footprint. `added` is a
@@ -223,6 +259,11 @@ pub struct Footprint {
 pub struct FootprintDiff {
     pub added: CapSet,
     pub removed: CapSet,
+    /// Build-axis changes, tracked independently of the runtime axis. A
+    /// `build_added` is a build-time widening — "this version now wants to `exec`
+    /// / reach the network at build time" — gated separately (`--allow-build-cap`).
+    pub build_added: CapSet,
+    pub build_removed: CapSet,
     pub refinements_dropped: BTreeSet<String>,
     pub refinements_gained: BTreeSet<String>,
 }
@@ -234,7 +275,13 @@ impl FootprintDiff {
     /// reviewed decision, never something a version bump slips in. Brand changes
     /// are intentional refinements, not authority, so they never trip this.
     pub fn widened(&self) -> bool {
-        !self.added.is_empty()
+        !self.added.is_empty() || !self.build_added.is_empty()
+    }
+
+    /// Whether the *build* axis specifically widened — the consuming project must
+    /// grant the new build capability (and pass `--allow-build-cap`) to proceed.
+    pub fn build_widened(&self) -> bool {
+        !self.build_added.is_empty()
     }
 }
 
@@ -267,6 +314,8 @@ pub fn diff(old: &Footprint, new: &Footprint) -> FootprintDiff {
     FootprintDiff {
         added: cap_delta(&new.total, &old.total),
         removed: cap_delta(&old.total, &new.total),
+        build_added: cap_delta(&new.build, &old.build),
+        build_removed: cap_delta(&old.build, &new.build),
         refinements_dropped: old.brands.difference(&new.brands).cloned().collect(),
         refinements_gained: new.brands.difference(&old.brands).cloned().collect(),
     }
@@ -357,10 +406,20 @@ pub fn analyze(module: &Module) -> Footprint {
         });
     }
     let brands = entries.iter().flat_map(|e| e.brands.iter().cloned()).collect();
+    // The build axis: the build capabilities the `build` entrypoint demands,
+    // computed identically over its signature (§4.1). Build caps can only appear
+    // there (the signature checks enforce it), so this never overlaps `total`.
+    let mut build = CapSet::new();
+    if let Some(b) = crate::typeck::build_entrypoint(module) {
+        for ty in b.params.iter().filter_map(|p| p.ty.as_ref()) {
+            build_caps_in(ty, &mut build);
+        }
+    }
     Footprint {
         entries,
         total,
         brands,
+        build,
     }
 }
 
@@ -394,6 +453,34 @@ pub fn add(a: Int, b: Int) -> Int:
         assert!(fp.total.is_empty());
         assert_eq!(fp.entries.len(), 1);
         assert!(fp.entries[0].capabilities.is_empty());
+        assert!(fp.build.is_empty(), "no build step ⇒ empty build footprint");
+    }
+
+    #[test]
+    fn build_footprint_is_the_union_of_the_build_entrypoints_caps() {
+        // The build axis is the `build` entrypoint's build caps; it is separate
+        // from the runtime axis (here empty — a pure codegen rune).
+        let fp = footprint(
+            "fn build(out: BuildOut, schema: BuildRead, cc: BuildExec):\n    write_out(out, \"x.witchy\", read_build(schema, \"a.proto\"))\n",
+        );
+        assert!(fp.total.is_empty(), "runtime footprint is empty for a pure build step");
+        assert_eq!(
+            fp.build,
+            cs(&[("BuildOut", &[]), ("BuildRead", &[]), ("BuildExec", &[])])
+        );
+    }
+
+    #[test]
+    fn a_build_axis_widening_is_flagged_independently_of_runtime() {
+        let old = footprint("fn build(out: BuildOut, schema: BuildRead):\n    write_out(out, \"x\", read_build(schema, \"a\"))\n");
+        let new = footprint("fn build(out: BuildOut, schema: BuildRead, dl: BuildNet):\n    write_out(out, \"x\", fetch_build(dl, \"h\", \"/a\"))\n");
+        let d = diff(&old, &new);
+        assert!(d.build_widened(), "a new build cap is a build-axis widening");
+        assert!(d.widened(), "build widening counts as an overall widening (gates)");
+        assert_eq!(d.build_added, cs(&[("BuildNet", &[])]));
+        assert!(d.added.is_empty(), "the runtime axis did not widen");
+        // The reverse is a safe narrowing.
+        assert!(!diff(&new, &old).build_widened());
     }
 
     #[test]
