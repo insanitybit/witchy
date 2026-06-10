@@ -1,0 +1,24 @@
+import iter
+
+gen fn readings(seed: Int) -> Iter(Int):
+    var x = seed
+    while true:
+        x = (x * 33 + 1) % 97
+        yield x
+
+actor Monitor:
+    console: Console
+    var high: Int = 0
+
+impl Monitor:
+    on Reading(value: Int):
+        if value > high:
+            high = value
+        print(console, "reading " <> int_to_string(value) <> "  (high " <> int_to_string(high) <> ")")
+
+fn main(console: Console):
+    let monitor = spawn Monitor(console)
+
+    let sample = iter.collect(iter.take(readings(1), 6))
+    for r in sample:
+        send(monitor, Reading(r))

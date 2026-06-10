@@ -37,6 +37,37 @@ function runWitchy(source) {
 // Examples — the same shapes the language reference verifies, so the playground
 // demonstrates exactly what the docs promise.
 const EXAMPLES = {
+  "Actors + generators + caps": `import iter
+
+// A PURE generator — no capability parameters, so it provably can't print, read
+// a file, or touch the network. It can only compute: a stream of sensor
+// readings from a little linear-congruential walk.
+gen fn readings(seed: Int) -> Iter(Int):
+    var x = seed
+    while true:
+        x = (x * 33 + 1) % 97
+        yield x
+
+// An actor that DOES hold authority: the Console it was granted at spawn. It
+// tracks the highest reading and reports each one. Only this actor can print,
+// because only it was given a Console — the generator above never could.
+actor Monitor:
+    console: Console
+    var high: Int = 0
+
+    on Reading(value: Int):
+        if value > high:
+            high = value
+        print(console, "reading " <> int_to_string(value) <> "  (high " <> int_to_string(high) <> ")")
+
+fn main(console: Console):
+    // Authority enters here, at main. We hand it to the actor at spawn.
+    let monitor = spawn Monitor(console)
+    // Take a finite prefix of the infinite generator, then feed the actor.
+    let sample = iter.collect(iter.take(readings(1), 6))
+    for r in sample:
+        send(monitor, Reading(r))
+`,
   "Primes": `import list
 import string
 
@@ -309,7 +340,7 @@ function init() {
     sync();
   };
   picker.addEventListener("change", () => load(picker.value));
-  load("Primes");
+  load("Actors + generators + caps");
 
   const run = () => {
     if (!wasm) {
