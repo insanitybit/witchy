@@ -147,6 +147,57 @@ fn main(console: Console):
 This is witchy's version of mutable references, but it's explicit at both the
 definition (`inout n`) and — because the variable is visibly handed over — the
 call. There's no aliasing to reason about: `bump` has the only handle to `n`
-while it runs.
+while it runs. (`var n` on a parameter means exactly the same thing as `inout n`,
+if you prefer that spelling.)
+
+## Ownership: borrow and transfer
+
+Every parameter has an *ownership convention* that says what the function may do
+with its argument. The default — no keyword — is an **owned, immutable value**:
+the function reads it but the caller sees no change. Annotate it `let` to make it
+an explicit **borrow**: same read-only meaning, but the compiler guarantees it
+doesn't escape the call and the native backend passes it without copying — a free
+win for read-only parameters on a hot path.
+
+```witchy
+fn sum(let xs: List(Int), i: Int) -> Int:
+    if i >= length(xs):
+        0
+    else:
+        at(xs, i) + sum(xs, i + 1)
+
+fn main(console: Console):
+    let xs = [1, 2, 3, 4]
+    print(console, int_to_string(sum(xs, 0)))
+    print(console, int_to_string(length(xs)))   // xs is untouched
+```
+
+```text
+10
+4
+```
+
+To *take* a value — so the caller can no longer use it — mark the parameter `own`
+(its synonym is `sink`). Spell the hand-off `move` at the call site; afterwards,
+touching the original is a compile error, not a dangling reference:
+
+```witchy
+fn into_label(own name: String) -> String:
+    "[" <> name <> "]"
+
+fn main(console: Console):
+    let name = "witchy"
+    print(console, into_label(move name))
+    // print(console, name)   // <- compile error: `name` was moved
+```
+
+```text
+[witchy]
+```
+
+So the whole model is four choices, all visible in the signature: owned-immutable
+by default, `let` to borrow, `own`/`move` to transfer, `inout`/`var` to mutate the
+caller's variable in place. There's no aliasing and no garbage-collector surprise
+— who may change what is part of every function's type.
 
 Next: defining your own types.
