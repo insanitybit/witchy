@@ -2248,6 +2248,42 @@ fn main(console: Console):
     }
 
     #[test]
+    fn build_env_reads_only_named_variables() {
+        // A build step never sees the whole environment: `BuildEnv` carries an
+        // allow-list of *named* keys, and reading anything else is refused —
+        // even a variable that exists in the process env.
+        let dir = std::env::temp_dir().join(format!("witchy_build_env_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        unsafe { std::env::set_var("WITCHY_BUILD_ALLOWED", "yes") };
+        unsafe { std::env::set_var("WITCHY_BUILD_SECRET", "leak?") };
+        let granted = crate::parser::parse_module(
+            "import option\nfn build(out: BuildOut, env: BuildEnv):\n    let v = match get_build_env(env, \"WITCHY_BUILD_ALLOWED\"):\n        Some(x) -> x\n        None -> \"unset\"\n    write_out(out, \"g.txt\", v)\n",
+        )
+        .unwrap();
+        let g = BuildGrants {
+            out_dir: dir.join("out"),
+            env_keys: vec!["WITCHY_BUILD_ALLOWED".to_string()],
+            ..Default::default()
+        };
+        run_build_step(granted, g).expect("a named key reads fine");
+        assert_eq!(std::fs::read_to_string(dir.join("out/g.txt")).unwrap(), "yes");
+
+        // The same grant cannot read a key it didn't name.
+        let denied = crate::parser::parse_module(
+            "import option\nfn build(out: BuildOut, env: BuildEnv):\n    let v = match get_build_env(env, \"WITCHY_BUILD_SECRET\"):\n        Some(x) -> x\n        None -> \"unset\"\n    write_out(out, \"g.txt\", v)\n",
+        )
+        .unwrap();
+        let g2 = BuildGrants {
+            out_dir: dir.join("out2"),
+            env_keys: vec!["WITCHY_BUILD_ALLOWED".to_string()],
+            ..Default::default()
+        };
+        let err = run_build_step(denied, g2).expect_err("an unlisted key must be refused");
+        assert!(err.message.contains("not in this BuildEnv grant's allow-list"), "{}", err.message);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn build_exec_runs_only_allow_listed_tools() {
         // `cat` echoes its stdin, so the generated file is exactly the input —
         // deterministic. The grant allow-lists `cat`; anything else is refused.

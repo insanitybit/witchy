@@ -1006,6 +1006,71 @@ fn path_dependency_builds_and_runs() {
     assert!(stdout(&out).contains("hi witchy"), "got: {}", stdout(&out));
 }
 
+/// Build-time execution is **default-deny, twice over** — even for a "safe" build
+/// step that demands only the confined `BuildOut` sandbox. (1) `add` runs the
+/// widening gate: the appearance of any build-axis kind must be accepted with
+/// `--allow-build-cap`. (2) `build` then still refuses to accept the *existence*
+/// of a build step until the consumer writes a `[build.grants."name"]` section —
+/// you consent to any code execution before you consent to safe code execution.
+/// An empty section is that consent (it permits only `BuildOut`).
+#[test]
+fn build_steps_are_default_deny_even_when_safe() {
+    let sb = Sandbox::new("builddeny");
+    let app = new_app(&sb);
+
+    let lib = sb.work.join("safegen");
+    std::fs::create_dir_all(lib.join("src")).unwrap();
+    std::fs::write(lib.join("witchy.toml"), "[rune]\nname = \"safegen\"\nversion = \"0.1.0\"\n").unwrap();
+    std::fs::write(
+        lib.join("src/safegen.witchy"),
+        "pub fn shout(s: String) -> String:\n    \"HEY \" <> s\n",
+    )
+    .unwrap();
+    // A BuildOut-only build step: writes into its confined sandbox, nothing else.
+    std::fs::write(
+        lib.join("src/build.witchy"),
+        "fn build(out: BuildOut):\n    write_out(out, \"gen.witchy\", \"// generated\")\n",
+    )
+    .unwrap();
+
+    // Layer 1 — the gate: even BuildOut appearing on the build axis is a
+    // widening that `add` blocks until explicitly accepted.
+    let out = sb.run(&app, "dev", &["add", "safegen", "--path", "../safegen"]);
+    assert!(!out.status.success(), "add must gate on the new build-axis kind");
+    let blocked = format!("{}{}", stdout(&out), stderr(&out));
+    assert!(blocked.contains("BuildOut"), "the gate should name BuildOut: {blocked}");
+    let out = sb.run(
+        &app,
+        "dev",
+        &["add", "safegen", "--path", "../safegen", "--allow-build-cap", "BuildOut"],
+    );
+    assert!(out.status.success(), "accepting the kind should let add proceed: {}", stderr(&out));
+
+    // Layer 2 — execution consent: the build still refuses while no
+    // [build.grants."safegen"] section exists at all.
+    let out = sb.run(&app, "dev", &["build"]);
+    assert!(!out.status.success(), "a build step must be denied without a grants section");
+    assert!(
+        stderr(&out).contains("build-time code execution is denied by default"),
+        "denial should say why: {}",
+        stderr(&out)
+    );
+
+    // The empty section is the explicit consent — it grants only BuildOut.
+    let manifest = std::fs::read_to_string(app.join("witchy.toml")).unwrap();
+    std::fs::write(
+        app.join("witchy.toml"),
+        format!("{manifest}\n[build.grants.\"safegen\"]\n"),
+    )
+    .unwrap();
+    let out = sb.run(&app, "dev", &["build"]);
+    assert!(
+        out.status.success(),
+        "an empty grants section accepts a BuildOut-only step: {}",
+        stderr(&out)
+    );
+}
+
 /// The committed `examples/projects/todo` workspace — a `todo` app that depends
 /// on a sibling `tasklib` library via a path dependency and reads its checklist
 /// with a read-only `Dir` capability — builds and runs end to end. Copied into a

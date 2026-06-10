@@ -138,9 +138,21 @@ Dir read), `BuildEnv` (named keys only), `BuildNet` (host allow-list), `BuildExe
 
 ---
 
-## Phase 3 — Manifest grants + lock + the gate
+## Phase 3 — Manifest grants + lock + the gate ✅ LARGELY DONE
 
 Wire the safe-by-default grant model and the widening gate.
+
+*Status correction (audit):* most of this phase **already existed** in the PM —
+it was built to the §7.1 spec ahead of the language types, and Phase 1's types
+made it bite. Verified working end to end: `[build.grants."name"]` parsing with
+`read`/`exec`/`net`/`env` allow-lists; `witchy.lock` recording per-rune
+`runtime_footprint` + `build_footprint` + `determinism` + content hash; the
+`add`/`update` gate blocking on build-axis widening with `--allow-build-cap`;
+`witchy audit`/`why-cap` reporting both axes. Added on top: **default-deny on
+execution itself** — a rune that ships a build step at all is refused until the
+grants section exists (an empty section accepts execution with only `BuildOut`).
+Still pending here: coven surfacing the build footprint at the promotion
+checkpoint, and staging cooldowns.
 
 **Manifest (`src/pm/` + `witchy.toml` parsing)**
 - Parse `[build.grants."ns/name"]` granting attenuated build caps to a specific

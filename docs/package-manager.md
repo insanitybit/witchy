@@ -261,14 +261,19 @@ rebuilds are deterministic; provenance ties bytes to public source history.
 
 ### 7.1 Build-time execution as a capability (the model for "when it's needed")
 
-> **Implementation status.** Partly built — see
+> **Implementation status.** Largely built — see
 > [build-time-execution-plan.md](build-time-execution-plan.md). Done: the five
 > build capability *types*, the `build` entrypoint and its signature check, the
 > two-axis footprint (`witchy caps`/`caps-diff` report and gate the build axis),
-> and confined build *execution* on the interpreter (`witchy build-step`, with
-> `BuildOut`/`BuildRead`/`BuildEnv`/`BuildExec` enforced). Pending: the
-> zero-ambient WASM-sandbox execution path, `BuildNet`, and the `witchy.toml`
-> grant + lockfile + registry integration described below.
+> confined build *execution* on the interpreter (`witchy build-step`, with
+> `BuildOut`/`BuildRead`/`BuildEnv`/`BuildExec` allow-lists enforced), **and** the
+> consumer-side model below: `[build.grants."name"]` in `witchy.toml`,
+> `build_footprint` recorded in the lockfile, the `add`/`update` gate blocking on
+> build-axis widening (`--allow-build-cap`), and **default-deny on execution
+> itself** — a rune that ships a build step at all is refused until the grants
+> section exists. Pending: the zero-ambient WASM-sandbox execution path,
+> `BuildNet`, auto-running build steps during `witchy build`, and staging
+> cooldowns (§8).
 
 Assume consumer-side build execution *will* eventually be required (generating
 witchy source from a schema, etc.). Model it now so that when it lands it is
@@ -300,12 +305,15 @@ statically computed, lockfile-pinned, explicitly granted per-rune, and gated.
 - **Static reasoning.** The toolchain computes the **build footprint** from the
   `build(...)` entrypoint's typed parameters — exactly like §4, on the build
   axis. A sound upper bound on what the build step can do.
-- **Explicit per-rune grants (safe by default).** A build step gets **nothing**
-  beyond `BuildOut` unless the *consuming project* grants it in `witchy.toml`
-  (`[build.grants."ns/name"]`, §5), naming the rune and the attenuated
-  capability. Adding a rune whose build step *demands* an ungranted capability
-  **fails the build** and surfaces the demand — you must consciously grant it to
-  *that specific rune*. A malicious rune that "needs network at build time" stops
+- **Explicit per-rune grants (default-deny, including execution itself).** A
+  rune that ships a build step *at all* is refused until the consuming project
+  writes a `[build.grants."ns/name"]` section (§5) — you consent to **any** code
+  execution before you consent to *safe* code execution. An empty section is
+  that consent and permits only the confined `BuildOut` sandbox; every further
+  capability must be named in it (`read`/`exec`/`net`/`env` allow-lists — env
+  access is per-*named-variable*, never the whole environment). Adding a rune
+  whose build step *demands* an ungranted capability **fails the build** and
+  surfaces the demand. A malicious rune that "needs network at build time" stops
   cold.
 - **Lockfile-pinned + gated.** The lock records each rune's `build_footprint`
   (demanded) and the grants in effect. The build runs only if grant ⊇ demand.

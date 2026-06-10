@@ -476,9 +476,9 @@ fn build(out: BuildOut, schema: BuildRead, cc: BuildExec):
 
 | Capability | Grants | Operations |
 |---|---|---|
-| `BuildOut` | write generated source into this rune's confined output sandbox (the only cap granted automatically) | `write_out(out, name, contents)` |
+| `BuildOut` | write generated source into this rune's confined output sandbox (needs no naming once the consumer accepts the build step — execution itself is default-deny) | `write_out(out, name, contents)` |
 | `BuildRead` | read project files, confined to a granted subtree | `read_build(r, name) -> String` |
-| `BuildEnv` | read *named* env vars on an allow-list | `get_build_env(e, key) -> Option(String)` |
+| `BuildEnv` | read env vars — only keys *named* in the grant, never the whole environment | `get_build_env(e, key) -> Option(String)` |
 | `BuildNet` | fetch from an allow-list of hosts (not yet implemented) | `fetch_build(n, host, path) -> String` |
 | `BuildExec` | invoke a *named* external tool on an allow-list | `run_tool(x, tool, stdin) -> String` |
 

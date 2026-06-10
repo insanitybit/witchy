@@ -264,11 +264,15 @@ Editor support: a [Zed extension](editors/zed) with tree-sitter highlighting and
 Witchy is a young language (pre-1.0). The capability model, the three backends
 and their parity discipline, the formatter, the LSP, and the package-manager
 core are implemented and tested (1,100+ tests). The build-time capability system
-is partially built: the build footprint is computed and gated (`witchy caps` /
-`caps-diff`, both axes) and build steps run confined on the interpreter
-(`witchy build-step`); still pending are the zero-ambient WASM-sandbox execution
-path, `BuildNet`, and the per-rune `[build.grants]` manifest/lockfile/registry
-integration (see [docs/build-time-execution-plan.md](docs/build-time-execution-plan.md)).
+is largely built: the build footprint is computed and gated (`witchy caps` /
+`caps-diff`, both axes), build steps run confined (`witchy build-step`), the
+lockfile records both footprints per rune, the `add`/`update` gate blocks
+build-axis widening (`--allow-build-cap`), and **execution itself is
+default-deny** — a dependency that ships a build step is refused until you write
+its `[build.grants]` section (an empty section accepts only the confined
+`BuildOut` sandbox). Still pending: the zero-ambient WASM-sandbox execution
+path, `BuildNet`, auto-running build steps during `witchy build`, and staging
+cooldowns (see [docs/build-time-execution-plan.md](docs/build-time-execution-plan.md)).
 Also not yet done: a hosted public registry and performance work. See
 [docs/architecture.md](docs/architecture.md) for the honest limitations list,
 including the WASM memory model.

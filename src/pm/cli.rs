@@ -450,24 +450,33 @@ fn assemble(root_dir: &Path, env: &CovenEnv) -> PmResult<Assembled> {
     };
 
     // §7.1: a dependency's build step may run only with the build-time
-    // capabilities the consuming project explicitly granted it. Enforce
-    // grant ⊇ demand (BuildOut is always implicitly granted; everything else
-    // must be named in [build.grants]).
+    // capabilities the consuming project explicitly granted it. Two layers,
+    // both default-deny:
+    //  1. EXECUTION itself. A rune that ships a build step at all — even a
+    //     "safe", BuildOut-only one — must be explicitly accepted: you consent
+    //     to *any* code execution before you consent to safe code execution.
+    //     The acceptance is the presence of a [build.grants."name"] section
+    //     (an empty section grants only the confined BuildOut sandbox).
+    //  2. CAPABILITIES. Whatever the step demands beyond BuildOut must be
+    //     named in that section (read/exec/net/env).
     for r in &resolution.runes {
         if r.footprint.build.is_empty() {
             continue;
         }
-        let granted = manifest
-            .build
-            .grants
-            .get(&r.name)
-            .map(|g| g.granted_kinds())
-            .unwrap_or_else(|| ["BuildOut".to_string()].into_iter().collect());
+        let Some(grant) = manifest.build.grants.get(&r.name) else {
+            return err(format!(
+                "`{}` ships a build step, and build-time code execution is denied by default.\n  \
+                 Add a [build.grants.\"{}\"] section to accept it — an empty section permits only \
+                 the confined output sandbox (BuildOut); name read/exec/net/env kinds to grant more.",
+                r.name, r.name
+            ));
+        };
+        let granted = grant.granted_kinds();
         let missing: Vec<String> = r.footprint.build.difference(&granted).cloned().collect();
         if !missing.is_empty() {
             return err(format!(
                 "`{}` build step demands build capabilities you have not granted: {}.\n  \
-                 Add a [build.grants.\"{}\"] entry authorizing them (read/exec/net/env).",
+                 Add them to [build.grants.\"{}\"] (read/exec/net/env).",
                 r.name,
                 missing.join(", "),
                 r.name

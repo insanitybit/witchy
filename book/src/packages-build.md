@@ -30,28 +30,40 @@ writes generated `.witchy` into a confined output sandbox, which then flows into
 the ordinary parse → link → type-check pipeline.
 
 The five build capabilities, kind-only in the type (the *specifics* — which
-directory, which tool — live in the consumer's grant):
+directory, which tool, which variable — live in the consumer's grant):
 
 | Capability | Grants | Operation |
 |---|---|---|
-| `BuildOut` | write into this rune's own confined output sandbox — the only cap granted automatically | `write_out(out, name, contents)` |
+| `BuildOut` | write into this rune's own confined output sandbox — needs no naming once execution is accepted | `write_out(out, name, contents)` |
 | `BuildRead` | read project files, confined to a granted subtree | `read_build(r, name)` |
-| `BuildEnv` | read *named* env vars on an allow-list | `get_build_env(e, key)` |
+| `BuildEnv` | read env vars — but **only the keys named** in the grant, never the whole environment | `get_build_env(e, key)` |
 | `BuildNet` | fetch from an allow-list of hosts | `fetch_build(n, host, path)` |
 | `BuildExec` | invoke a *named* external tool (`protoc`…) — the most sensitive | `run_tool(x, tool, stdin)` |
 
-## Safe by default: the grant
+## Default deny — for *execution itself*
 
 Suppose `app` depends on `genlib`, and `genlib` ships the build step above. The
-moment you build, the tool refuses — *before anything runs*:
+first refusal isn't about which capabilities it wants — it's about the fact that
+it wants to run code at all:
+
+```text
+error: `genlib` ships a build step, and build-time code execution is denied by default.
+  Add a [build.grants."genlib"] section to accept it — an empty section permits only
+  the confined output sandbox (BuildOut); name read/exec/net/env kinds to grant more.
+```
+
+You consent to *any* code execution before you consent to *safe* code execution.
+Even a build step that demands nothing beyond its own confined `BuildOut` sandbox
+is refused until you write the section — an **empty** `[build.grants."genlib"]`
+is that consent, and it permits only `BuildOut`. With the section present, the
+second layer kicks in: every kind beyond `BuildOut` must be named.
 
 ```text
 error: `genlib` build step demands build capabilities you have not granted: BuildExec.
-  Add a [build.grants."genlib"] entry authorizing them (read/exec/net/env).
+  Add them to [build.grants."genlib"] (read/exec/net/env).
 ```
 
-`BuildOut` was granted automatically (it can only write into `genlib`'s own
-sandbox); `BuildExec` was not. You authorize it — *that rune, that tool*:
+So you authorize it — *that rune, that tool*:
 
 ```toml
 [build.grants."genlib"]
@@ -62,6 +74,10 @@ exec = ["protoc"]
 build OK: `app` (1 dependency resolved, linked + type-checked)
   dependency tree max authority: build[BuildExec, BuildOut]
 ```
+
+(For env vars the same shape applies: `env = ["TARGET"]` lets the step read
+`TARGET` and nothing else — `get_build_env` refuses any key the grant doesn't
+name, even if it exists in your environment.)
 
 ## Gated against the future: the widening
 
@@ -79,7 +95,9 @@ No authority is granted yet — this is a conscious choice you must make.
 To accept, re-run:  witchy update --allow-build-cap BuildNet
 ```
 
-Accepting records the new footprint in the lock as your reviewed baseline. And
+Accepting records the new footprint in the lock as your reviewed baseline.
+(`witchy add` runs the same gate when a dependency *first* introduces a
+build-axis kind — even `BuildOut` alone must be `--allow-build-cap`'d in.) And
 note the **two independent layers**: even after `--allow-build-cap BuildNet`,
 the build *still* refuses until you also add `net = [...]` to the
 `[build.grants."genlib"]` entry — the gate is "I have seen and accepted this

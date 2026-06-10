@@ -31,8 +31,10 @@ Three sections matter:
   `examples/projects/` are all wired this way).
 - **`[build.grants."<name>"]`** — the *build-time authority* you, the consumer,
   explicitly hand to one specific dependency's build step: `read`/`exec`/`net`/
-  `env` allow-lists. Absent kinds are **denied**. This is the subject of the
-  next chapter.
+  `env` allow-lists. **Default deny applies to execution itself**: a dependency
+  that ships a build step at all is refused until this section exists (an empty
+  section accepts execution with only the confined `BuildOut` sandbox), and
+  absent kinds are denied. This is the subject of the next chapter.
 
 ## The lockfile: `witchy.lock`
 
@@ -78,7 +80,7 @@ Commit the lockfile. Same lock ⇒ same bytes, same authority, offline.
 | Command | What it does |
 |---|---|
 | `witchy new <name>` / `init` | scaffold a rune (namespaced names like `acme/lib` work) |
-| `witchy add <name> <req> [addr]` | resolve + add a dependency — **gated** on widening |
+| `witchy add <pkg>[@version] [--path <p>]` | resolve + add a dependency — **gated** on widening (either axis) |
 | `witchy build` | resolve, verify hashes, link, type-check; writes/uses the lock |
 | `witchy run` | `build`, then run the app rune |
 | `witchy update [--allow-cap K] [--allow-build-cap K]` | re-resolve; **blocked** if the tree's footprint would widen on either axis until you accept |
