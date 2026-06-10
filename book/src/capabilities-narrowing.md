@@ -155,6 +155,6 @@ And `witchy caps-diff old.witchy new.witchy` understands them. A change from
 *listens*" — and fails the gate, even though both are "uses the network." The
 supply-chain signal is verb-precise, not just kind-precise.
 
-So far this is all static — the type checker is keeping your code honest. The
-last section turns it into a runtime guarantee strong enough to run code you
-don't trust.
+So far a capability is something you *have* and pass along, perhaps narrowed.
+But authority can also be *conditional* — held only sometimes, or in one of
+several shapes. That's next.

@@ -17,6 +17,7 @@
 - [Capabilities: The Heart of witchy](capabilities.md)
   - [Authority as a Value](capabilities-authority.md)
   - [Narrowing and Attenuation](capabilities-narrowing.md)
+  - [Optional and Conditional Capabilities](capabilities-optional.md)
   - [The Sandbox](capabilities-sandbox.md)
 - [Concurrency with Actors](tour-actors.md)
 - [Project: A Confined Log Scanner](project.md)
