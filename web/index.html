@@ -50,18 +50,51 @@
         letter-spacing: 0.06em;
         border-bottom: 1px solid #000;
       }
-      #editor {
+      /* The editor is a transparent <textarea> layered exactly over a
+         highlighted <pre>, so you type into the textarea but see the colors. The
+         two MUST share identical typography for the caret to line up. */
+      .editor-wrap {
         flex: 1;
+        position: relative;
+        overflow: hidden;
+      }
+      #editor,
+      #editor-hl {
+        margin: 0;
         border: 0;
-        resize: none;
-        background: transparent;
-        color: var(--ink);
+        padding: 16px;
         font-family: var(--mono);
         font-size: 14px;
-        padding: 16px;
-        outline: none;
+        line-height: 1.5;
         tab-size: 4;
+        white-space: pre;
+        overflow: auto;
+        position: absolute;
+        inset: 0;
+        box-sizing: border-box;
       }
+      #editor-hl {
+        pointer-events: none;
+        color: var(--ink);
+        z-index: 1;
+      }
+      #editor {
+        background: transparent;
+        color: transparent;
+        caret-color: var(--ink);
+        resize: none;
+        outline: none;
+        z-index: 2;
+      }
+      /* token colors (a small Nord-ish palette) */
+      .t-kw { color: #81a1c1; }
+      .t-builtin { color: #88c0d0; }
+      .t-type { color: #ebcb8b; }
+      .t-str { color: #a3be8c; }
+      .t-num { color: #b48ead; }
+      .t-comment { color: #616e88; font-style: italic; }
+      .t-lit { color: #d08770; }
+      .t-subst { color: #d8dee9; }
       #output {
         flex: 1;
         margin: 0;
@@ -113,7 +146,10 @@
     <main>
       <section class="pane">
         <div class="label">program</div>
-        <textarea id="editor" spellcheck="false" autocomplete="off"></textarea>
+        <div class="editor-wrap">
+          <pre id="editor-hl" aria-hidden="true"></pre>
+          <textarea id="editor" spellcheck="false" autocomplete="off" autocapitalize="off" wrap="off"></textarea>
+        </div>
       </section>
       <section class="pane">
         <div class="label">output</div>

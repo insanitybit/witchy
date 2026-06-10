@@ -37,8 +37,80 @@ function runWitchy(source) {
 // Examples — the same shapes the language reference verifies, so the playground
 // demonstrates exactly what the docs promise.
 const EXAMPLES = {
-  "Hello": `fn main(console: Console):
-    print(console, "hello, witchy")
+  "Primes": `import list
+import string
+
+// Trial division — small and clear.
+fn is_prime(n: Int) -> Bool:
+    if n < 2:
+        false
+    else:
+        var d = 2
+        var prime = true
+        while d * d <= n:
+            if n % d == 0:
+                prime = false
+            d = d + 1
+        prime
+
+fn show(xs: List(Int)) -> String:
+    string.join(list.map(xs, fn(n: Int): int_to_string(n)), " ")
+
+fn main(console: Console):
+    let primes = [n for n in 2..50 if is_prime(n)]
+    print(console, "primes under 50:")
+    print(console, show(primes))
+    print(console, "found " <> int_to_string(length(primes)))
+`,
+  "FizzBuzz": `// Matching on a tuple of two conditions — no if/else ladder.
+fn fizzbuzz(n: Int) -> String:
+    match (n % 3 == 0, n % 5 == 0):
+        (true, true) -> "FizzBuzz"
+        (true, false) -> "Fizz"
+        (false, true) -> "Buzz"
+        (false, false) -> int_to_string(n)
+
+fn main(console: Console):
+    for n in 1..21:
+        print(console, fizzbuzz(n))
+`,
+  "Bar chart": `import string
+
+type Bar:
+    Bar(String, Int)
+
+fn render(b: Bar) -> String:
+    match b:
+        Bar(label, n) -> string.repeat("#", n) <> " " <> label
+
+fn main(console: Console):
+    let data = [Bar("api", 12), Bar("web", 7), Bar("db", 18), Bar("cache", 3)]
+    print(console, "requests/sec")
+    for b in data:
+        print(console, render(b))
+`,
+  "Actors": `// Two actors. The worker totals each list it's sent and hands the result to
+// the reporter — they share nothing but messages.
+actor Reporter:
+    console: Console
+
+    on Result(label: String, total: Int):
+        print(console, label <> " total = " <> int_to_string(total))
+
+actor Worker:
+    reporter: Subject
+
+    on Sum(label: String, xs: List(Int)):
+        var total = 0
+        for x in xs:
+            total = total + x
+        send(reporter, Result(label, total))
+
+fn main(console: Console):
+    let reporter = spawn Reporter(console)
+    let worker = spawn Worker(reporter)
+    send(worker, Sum("evens", [2, 4, 6, 8]))
+    send(worker, Sum("odds", [1, 3, 5, 7, 9]))
 `,
   "Pattern matching": `type Shape:
     Circle(Int)
@@ -120,11 +192,109 @@ fn main(console: Console, dir: Dir[Read]):
 `,
 };
 
+// --- syntax highlighting (dependency-free; mirrors book/witchy-hljs.js) ------
+
+const KEYWORDS = new Set(
+  ("fn let var if else match for in while return break continue type trait " +
+    "impl actor on import pub inout sink own move spawn where as gen yield")
+    .split(" "),
+);
+const LITERALS = new Set(["true", "false"]);
+const BUILTINS = new Set(
+  ("print read write exists is_dir list subdir make_dir connect listen accept " +
+    "send_line send_bytes recv_line recv_all recv_bytes close restrict now " +
+    "get_env send length at push concat dict_new insert get_or has remove " +
+    "update keys values pairs size to_string int_to_string string_length " +
+    "char_count index_of split string_chars replace substring to_upper " +
+    "to_lower trim starts_with ends_with contains int_to_float float_to_int " +
+    "int_to_duration duration_to_int sqrt string_to_int fail")
+    .split(" "),
+);
+
+function escapeHtml(s) {
+  return s.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[c]);
+}
+
+// One pass: comments, strings (with ${...} interpolation), numbers (incl.
+// duration suffixes), then words classified as keyword / literal / builtin /
+// type (Title-case) / plain.
+const TOKEN =
+  /(\/\/[^\n]*|\/\*[\s\S]*?\*\/)|("(?:\\.|[^"\\])*")|(\b\d+(?:\.\d+)?(?:ms|hr|s|m|h|d|w)?\b)|([A-Za-z_][A-Za-z0-9_]*)/g;
+
+function highlightString(str) {
+  // Color ${...} interpolations distinctly inside an otherwise-green string.
+  let out = "";
+  let last = 0;
+  const re = /\$\{[^}]*\}/g;
+  let m;
+  while ((m = re.exec(str))) {
+    out += `<span class="t-str">${escapeHtml(str.slice(last, m.index))}</span>`;
+    out += `<span class="t-subst">${escapeHtml(m[0])}</span>`;
+    last = re.lastIndex;
+  }
+  out += `<span class="t-str">${escapeHtml(str.slice(last))}</span>`;
+  return out;
+}
+
+function highlightWitchy(src) {
+  let out = "";
+  let last = 0;
+  let m;
+  TOKEN.lastIndex = 0;
+  while ((m = TOKEN.exec(src))) {
+    out += escapeHtml(src.slice(last, m.index));
+    last = TOKEN.lastIndex;
+    if (m[1]) out += `<span class="t-comment">${escapeHtml(m[1])}</span>`;
+    else if (m[2]) out += highlightString(m[2]);
+    else if (m[3]) out += `<span class="t-num">${escapeHtml(m[3])}</span>`;
+    else {
+      const w = m[4];
+      const cls = KEYWORDS.has(w)
+        ? "t-kw"
+        : LITERALS.has(w)
+          ? "t-lit"
+          : BUILTINS.has(w)
+            ? "t-builtin"
+            : /^[A-Z]/.test(w)
+              ? "t-type"
+              : null;
+      out += cls ? `<span class="${cls}">${escapeHtml(w)}</span>` : escapeHtml(w);
+    }
+  }
+  out += escapeHtml(src.slice(last));
+  return out;
+}
+
 function init() {
   const editor = document.getElementById("editor");
+  const highlight = document.getElementById("editor-hl");
   const output = document.getElementById("output");
   const runBtn = document.getElementById("run");
   const picker = document.getElementById("examples");
+
+  // Keep the highlighted layer in sync with the textarea's text and scroll.
+  const sync = () => {
+    // Trailing newline guard: a final \n in the textarea needs a matching line
+    // in the <pre>, or the last visible line drifts.
+    highlight.innerHTML = highlightWitchy(editor.value + "\n");
+  };
+  const syncScroll = () => {
+    highlight.scrollTop = editor.scrollTop;
+    highlight.scrollLeft = editor.scrollLeft;
+  };
+  editor.addEventListener("input", sync);
+  editor.addEventListener("scroll", syncScroll);
+  // A tab inserts four spaces instead of leaving the field.
+  editor.addEventListener("keydown", (e) => {
+    if (e.key === "Tab") {
+      e.preventDefault();
+      const s = editor.selectionStart;
+      const eN = editor.selectionEnd;
+      editor.value = editor.value.slice(0, s) + "    " + editor.value.slice(eN);
+      editor.selectionStart = editor.selectionEnd = s + 4;
+      sync();
+    }
+  });
 
   for (const name of Object.keys(EXAMPLES)) {
     const opt = document.createElement("option");
@@ -136,9 +306,10 @@ function init() {
     editor.value = EXAMPLES[name];
     output.textContent = "";
     output.className = "";
+    sync();
   };
   picker.addEventListener("change", () => load(picker.value));
-  load("Hello");
+  load("Primes");
 
   const run = () => {
     if (!wasm) {

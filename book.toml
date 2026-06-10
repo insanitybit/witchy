@@ -17,6 +17,7 @@ preferred-dark-theme = "ayu"
 git-repository-url = "https://github.com/insanitybit/witchy"
 edit-url-template = "https://github.com/insanitybit/witchy/edit/master/{path}"
 additional-css = ["book/witchy.css"]
+additional-js = ["book/witchy-hljs.js"]
 
 [output.html.fold]
 enable = true
