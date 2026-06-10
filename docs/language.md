@@ -461,6 +461,35 @@ The host mints exactly these capabilities and nothing else. (This block
 type-checks but isn't run by the doc harness, since it needs `Dir` — run it
 with `witchy sandbox --dir <root> prog.witchy a b c`.)
 
+### 13.1 The build entrypoint
+
+A rune may ship a **build step**: a top-level `fn build` whose first parameter is
+a build capability. It is the root of *build-time* authority, exactly as `main`
+is the root of runtime authority — and the two capability sets never mix: `build`
+may take **only** build capabilities, and `main` may take none of them.
+
+```witchy
+fn build(out: BuildOut, schema: BuildRead, cc: BuildExec):
+    let proto = read_build(schema, "api.proto")
+    write_out(out, "api.witchy", run_tool(cc, "protoc", proto))
+```
+
+| Capability | Grants | Operations |
+|---|---|---|
+| `BuildOut` | write generated source into this rune's confined output sandbox (the only cap granted automatically) | `write_out(out, name, contents)` |
+| `BuildRead` | read project files, confined to a granted subtree | `read_build(r, name) -> String` |
+| `BuildEnv` | read *named* env vars on an allow-list | `get_build_env(e, key) -> Option(String)` |
+| `BuildNet` | fetch from an allow-list of hosts (not yet implemented) | `fetch_build(n, host, path) -> String` |
+| `BuildExec` | invoke a *named* external tool on an allow-list | `run_tool(x, tool, stdin) -> String` |
+
+The types are kind-only — the specific directory/key/host/tool is the consuming
+project's *grant*, not the type. `witchy caps` reports the build footprint on its
+own axis, `witchy caps-diff` fails on a build-axis widening, and
+`witchy build-step <file> [--out <dir>] [--read <dir>] [--env K]... [--exec tool]...`
+runs a build step under those confined grants. See
+[build-time-execution-plan.md](build-time-execution-plan.md) for status and
+[package-manager.md](package-manager.md) §7.1 for the full model.
+
 ## 14. Actors
 
 ```witchy

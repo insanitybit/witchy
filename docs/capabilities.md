@@ -99,23 +99,39 @@ later gains a `Net` parameter, the `retain console:` block above still cannot
 reach it, because it was never named. A block's authority is fixed by what it
 asks for, not by what its scope accumulates.
 
-## Auditing
+## Auditing — and what it actually defends
+
+First, be precise about where the *enforcement* lives. At **runtime**, the type
+system is the defense, and it is complete on its own: a dependency cannot use a
+capability you don't pass it, and it cannot change what it demands without
+changing its signatures — which breaks your compile. A malicious version bump
+either fails to type-check or sits there unable to act.
 
 ```sh
 witchy caps program.witchy
 ```
 
-recomputes the program's capability footprint **from source** — per public
-function, per right. It is not declared metadata; it cannot drift or lie.
+recomputes the capability footprint **from source**, on two axes — the runtime
+authority each public entry point demands, and the **build footprint** (what the
+rune's `build` step may do). It is not declared metadata; it cannot drift or lie.
+For the runtime axis this is *reporting and governance* over what the types
+already guarantee: a one-shot answer to "what would I have to grant this code?"
+
+The **build axis is where the audit is the defense**. A build step runs while a
+rune is *built* — outside your type-checked call graph — so a version that newly
+wants to `exec` a tool or reach the network at build time is precisely what the
+gate exists to catch:
 
 ```sh
-witchy caps-diff old.witchy new.witchy   # exit 2 if authority widened
+witchy caps-diff old.witchy new.witchy   # exit 2 if either axis widened
 ```
 
-is the CI gate: a change that grows the footprint (a new capability kind, or a
-new right on an existing one) fails loudly and shows the diff. The package
-manager applies the same gate to dependencies: `witchy add`/`update` block when
-a rune's footprint widens until you explicitly approve.
+A runtime widening prints `WIDENING`; a build-axis widening prints
+`BUILD WIDENING` and cannot run until you explicitly grant the new capability.
+The package manager applies the same gate to dependencies: `witchy add`/`update`
+block on a widening until you approve. Build steps themselves run under confined,
+safe-by-default grants — try one with
+`witchy build-step <file> [--out <dir>] [--read <dir>] [--env K]... [--exec tool]...`.
 
 ## Enforcement: the sandbox
 

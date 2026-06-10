@@ -33,16 +33,19 @@ stay inside the portable language?" check.
 ## Seeing and enforcing authority
 
 ```sh
-witchy caps program.witchy                  # the capability footprint
-witchy caps-diff old.witchy new.witchy      # exit 2 if authority widened
+witchy caps program.witchy                  # the capability footprint (runtime + build)
+witchy caps-diff old.witchy new.witchy      # exit 2 if authority widened on either axis
 witchy sandbox program.witchy               # run confined in the WASM VM
+witchy build-step gen.witchy --out gen/     # run a build step under confined grants
 ```
 
-`caps` prints what the program is allowed to do, per function and per right.
-`caps-diff` is the CI gate against silent privilege growth. `sandbox` compiles
-to WebAssembly and runs the program in a VM granted exactly its footprint —
-pass `--dir <root>` to back a `Dir`, `--net <host:port>` to allowlist a network
-address. We'll use all three heavily in the capabilities chapter.
+`caps` prints what the program is allowed to do, per function and per right —
+and, when a rune ships a `build` step, what that step may do at *build time*,
+on its own axis. `caps-diff` is the CI gate against silent privilege growth on
+either axis. `sandbox` compiles to WebAssembly and runs the program in a VM
+granted exactly its footprint — pass `--dir <root>` to back a `Dir`,
+`--net <host:port>` to allowlist a network address. We'll use these heavily in
+the capabilities chapter.
 
 ## Compiling
 

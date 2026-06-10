@@ -196,8 +196,10 @@ witchy sandbox  <file.witchy>                 compile and run in a VM granted ex
 witchy native [-o out] <file.witchy>          compile to a native binary via rustc/LLVM
 witchy emit-wat <file.witchy>                 print the compiled WebAssembly text
 witchy emit-rust <file.witchy>                print the native (Rust) transpilation
-witchy caps     <file.witchy>                 report the capability footprint
-witchy caps-diff <old.witchy> <new.witchy>    fail if the footprint widened
+witchy caps     <file.witchy>                 report the capability footprint (runtime + build axes)
+witchy caps-diff <old.witchy> <new.witchy>    fail if the footprint widened on either axis
+witchy build-step <file.witchy>               run a rune's build step under confined grants
+                                              ([--out <dir>] [--read <dir>] [--env K]... [--exec tool]...)
 witchy test     <file.witchy|dir>             run in-language tests
 witchy fmt [--check] <file.witchy>            reformat (--check: verify only)
 witchy doc      <file.witchy>                 extract Markdown API docs
@@ -241,10 +243,15 @@ Editor support: a [Zed extension](editors/zed) with tree-sitter highlighting and
 
 Witchy is a young language (pre-1.0). The capability model, the three backends
 and their parity discipline, the formatter, the LSP, and the package-manager
-core are implemented and tested (1,100+ tests). Not yet done: a hosted public
-registry, build-time sandboxing for package builds (designed, not built), and
-performance work. See [docs/architecture.md](docs/architecture.md) for the
-honest limitations list, including the WASM memory model.
+core are implemented and tested (1,100+ tests). The build-time capability system
+is partially built: the build footprint is computed and gated (`witchy caps` /
+`caps-diff`, both axes) and build steps run confined on the interpreter
+(`witchy build-step`); still pending are the zero-ambient WASM-sandbox execution
+path, `BuildNet`, and the per-rune `[build.grants]` manifest/lockfile/registry
+integration (see [docs/build-time-execution-plan.md](docs/build-time-execution-plan.md)).
+Also not yet done: a hosted public registry and performance work. See
+[docs/architecture.md](docs/architecture.md) for the honest limitations list,
+including the WASM memory model.
 
 ## License
 

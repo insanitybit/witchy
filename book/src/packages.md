@@ -89,9 +89,40 @@ uploader. Registry metadata is signed (TUF-style) to resist rollback and
 tampering, and lockfiles pin content hashes, the registry's key, and the full
 provenance chain, all re-checkable offline with `witchy verify`.
 
-Crucially, **dependency code never runs at build time.** Resolving and linking a
-rune reads and type-checks its source; it does not execute it. The build step
-can't be a vector, because there's nothing to exploit there.
+Crucially, **resolving and installing a rune never executes its code** — it is
+read and type-checked, nothing more. There is no `postinstall`, no `build.rs`
+running with your ambient authority.
+
+## Build steps are capabilities too
+
+Some runes legitimately need to run code at *build* time — generating witchy
+source from a schema, say. That is the one place code executes outside your
+type-checked call graph, which makes it exactly where supply-chain attacks live
+in other ecosystems. witchy models it with the same machinery as runtime: a build
+step is a `fn build` entrypoint that may take **only build capabilities**:
+
+```witchy
+fn build(out: BuildOut, schema: BuildRead, cc: BuildExec):
+    let proto = read_build(schema, "api.proto")
+    write_out(out, "api.witchy", run_tool(cc, "protoc", proto))
+```
+
+`BuildOut` (write into the rune's own confined output sandbox) is the only
+capability granted automatically; reading project files (`BuildRead`), named env
+vars (`BuildEnv`), the network (`BuildNet`), or executing a named tool
+(`BuildExec`) must each be granted by *the consuming project*, per rune. The
+build footprint is computed from the `build` signature — `witchy caps` shows it
+on its own axis — and a version whose build step newly demands a capability trips
+`BUILD WIDENING` in `witchy caps-diff` and is blocked until you consciously grant
+it. You can run one confined yourself:
+
+```sh
+witchy build-step gen.witchy --out gen/ --read proto/ --exec protoc
+```
+
+(The per-rune `[build.grants]` manifest wiring and the WASM-sandboxed execution
+path are still landing — `docs/build-time-execution-plan.md` tracks the status —
+but the footprint, the gate, and confined execution work today.)
 
 ## Try the whole thing locally
 
