@@ -103,28 +103,33 @@ computed (Phase 1), execution still pending.
 
 Make the `build` step actually run, confined.
 
-**Soundness requirement for auto-execution (audit before and after).** A build
-step cannot *modify* existing source — `BuildOut` is confined to a fresh
+**Soundness requirement for auto-execution (audit before and after) ✅ DONE.**
+A build step cannot *modify* existing source — `BuildOut` is confined to a fresh
 per-rune output sandbox (path-escape rejected, tested) and `BuildRead` is
 read-only — but the source it *generates* is linked into the program, and
-generated code can declare capability-typed signatures. So when `witchy build`
-auto-runs build steps (Phase 2b), the pipeline must recompute the rune's
-footprint over **shipped + generated** source and run the widening gate against
-the locked baseline; generated source that widens either axis blocks exactly
-like a version bump would. (Defense in depth: a new runtime demand also breaks
-the consumer's type-check at the call site, and generated modules may not shadow
-std — but the recompute+gate is the explicit, auditable check.)
+generated code can declare capability-typed signatures. So the pipeline
+recomputes the rune's footprint over **shipped + generated** source and runs the
+widening gate against the locked baseline; generated source that widens either
+axis blocks exactly like a version bump would (e2e:
+`build_steps_auto_run_and_generated_source_is_gated`). Defense in depth: a new
+runtime demand also breaks the consumer's type-check at the call site, and
+generated modules may not shadow std.
 
 *Phase 2a done (interpreter path):* `interpreter::run_build_step(module, BuildGrants)`
 mints the build caps for the `build` entrypoint from confined grants (a `BuildOut`
-output dir, an optional `BuildRead` root, `BuildEnv` key allow-list) and runs it;
-the build host builtins `write_out`/`read_build`/`get_build_env` are confined via
-the same `resolve`/`resolve_write` machinery as runtime Dir ops (`fetch_build`/
-`run_tool` refuse for now). `witchy build-step <file> [--out][--read][--env]`
-exercises it. The build step's authority is exactly its minted grants — it cannot
-forge a runtime cap (the type checker forbids it). Remaining 2b: the WASM-sandbox
-path (zero-ambient `Linker`) for the hard isolation guarantee, plus `BuildNet`/
-`BuildExec` host fns and wiring generated source into the consumer's compile.
+output dir, an optional `BuildRead` root, `BuildEnv` key allow-list, `BuildExec`
+tool allow-list) and runs it; the build host builtins are confined via the same
+`resolve`/`resolve_write` machinery as runtime Dir ops (`fetch_build` refuses for
+now). `witchy build-step <file> [--out][--read][--env][--exec]` exercises one
+directly.
+
+*Auto-run done:* `witchy build`/`run` exclude a dependency's `build` module from
+the consumer link (so two runes shipping one can't collide), execute it under the
+manifest grants into `<project>/build-out/<rune>/`, link the generated `.witchy`
+modules in under the usual std-shadowing/collision guards, and apply the
+audit-before-and-after gate above. Remaining 2b: the WASM-sandbox execution path
+(zero-ambient `Linker`) for the hard isolation guarantee, `BuildNet`, build-output
+caching (§7.2; today steps re-run per build), and multiple `read` roots.
 
 **Runtime (`src/runtime.rs`)**
 - Extend `Capabilities` with the build-time grants and add build host functions,

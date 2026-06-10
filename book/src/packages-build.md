@@ -104,28 +104,40 @@ the build *still* refuses until you also add `net = [...]` to the
 demand"; the grant is "and here is the attenuated instance it may actually use."
 A compromised dependency that "needs network at build time" stops cold, twice.
 
-## Running a build step
+## Build steps run during `witchy build` — audited before and after
 
-`witchy build-step` runs one directly, under exactly the grants you give on the
-command line — useful for developing a build step, or for wiring generation into
-CI explicitly:
+With the grants in place, `witchy build`/`run` execute a dependency's build step
+automatically: the `build` module is *excluded* from your program's link, run
+confined under exactly its `[build.grants]`, and the `.witchy` source it emits
+joins the link like any module — your code can `import` it directly.
+
+And because **generated code is still code**, the pipeline recomputes the rune's
+footprint over its shipped *plus generated* source and gates it against the
+locked baseline. A build step that tries to smuggle authority in by *generating*
+capability-hungry code is refused:
+
+```text
+error: `genlib`'s build step generated source that WIDENS its footprint (+ Net)
+beyond the locked baseline — refusing. Generated code is still code; it cannot
+smuggle in authority the version was not accepted with.
+```
+
+You can also run a step directly — useful while developing one, or to vendor its
+output instead of running it on every build (the *preferred* path for published
+runes: run the build once, vendor the generated source, and your consumers run
+no build step at all):
 
 ```sh
 witchy build-step genlib/src/build.witchy --out gen/ --read proto/ --exec protoc
 ```
 
-The step runs with zero ambient authority — only the minted, confined caps. A
-`write_out` to `../escape.txt` is rejected by the same path-confinement the
-runtime `Dir` uses; an un-allow-listed tool is refused before it starts; an
-ungranted `BuildRead` never gets minted at all.
-
-One honest status note: today `witchy build` *gates and locks* build-time
-authority but does not yet auto-execute `build.witchy` during resolution — you
-run generation via `build-step` (and commit or vendor the output). Auto-running
-build steps inside the zero-ambient WASM sandbox is the next piece of
-[the plan](https://github.com/insanitybit/witchy/blob/master/docs/build-time-execution-plan.md).
-The *preferred* path, even then, stays authoring-time codegen: run the build
-once, vendor the generated source, and your consumers run no build step at all.
+Either way the step runs with zero ambient authority — only the minted, confined
+caps. A `write_out` to `../escape.txt` is rejected by the same path-confinement
+the runtime `Dir` uses; an un-allow-listed tool is refused before it starts; an
+ungranted `BuildRead` never gets minted at all. (One status note: execution is
+currently on the interpreter; the defense-in-depth WASM-sandbox path is the
+remaining piece of
+[the plan](https://github.com/insanitybit/witchy/blob/master/docs/build-time-execution-plan.md).)
 
 ## Determinism, tiered
 

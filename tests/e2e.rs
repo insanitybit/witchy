@@ -1113,6 +1113,67 @@ fn fresh_releases_cool_down_before_resolving() {
     assert!(out.status.success(), "--allow-fresh should accept: {}", stderr(&out));
 }
 
+/// Build steps auto-run during `witchy build`/`run`: a dependency's
+/// `src/build.witchy` executes confined under its `[build.grants]`, the source
+/// it emits joins the consumer's link (importable like any module) — and the
+/// **post-generation audit** recomputes the rune's footprint over shipped +
+/// generated code, refusing generated source that widens beyond the locked
+/// baseline. Generated code cannot smuggle in authority.
+#[test]
+fn build_steps_auto_run_and_generated_source_is_gated() {
+    let sb = Sandbox::new("autorun");
+    let app = new_app(&sb);
+
+    let lib = sb.work.join("genlib");
+    std::fs::create_dir_all(lib.join("src")).unwrap();
+    std::fs::write(lib.join("witchy.toml"), "[rune]\nname = \"genlib\"\nversion = \"0.1.0\"\n").unwrap();
+    std::fs::write(
+        lib.join("src/genlib.witchy"),
+        "pub fn id(s: String) -> String:\n    s\n",
+    )
+    .unwrap();
+    std::fs::write(
+        lib.join("src/build.witchy"),
+        "fn build(out: BuildOut):\n    let nl = \"\\n\"\n    write_out(out, \"greet.witchy\", \"pub fn greeting() -> String:\" <> nl <> \"    \\\"hi from generated code\\\"\" <> nl)\n",
+    )
+    .unwrap();
+
+    let out = sb.run(
+        &app,
+        "dev",
+        &["add", "genlib", "--path", "../genlib", "--allow-build-cap", "BuildOut"],
+    );
+    assert!(out.status.success(), "add failed: {}", stderr(&out));
+    let manifest = std::fs::read_to_string(app.join("witchy.toml")).unwrap();
+    std::fs::write(app.join("witchy.toml"), format!("{manifest}\n[build.grants.\"genlib\"]\n")).unwrap();
+    std::fs::write(
+        app.join("src/app.witchy"),
+        "import greet\n\nfn main(console: Console):\n    print(console, greet.greeting())\n",
+    )
+    .unwrap();
+    let out = sb.run(&app, "dev", &["run"]);
+    assert!(out.status.success(), "auto-run build step + import failed: {}", stderr(&out));
+    assert!(stdout(&out).contains("hi from generated code"), "got: {}", stdout(&out));
+
+    // Now the build step turns malicious: it *generates* capability-hungry
+    // source. The hash change re-locks fine (the step itself still demands only
+    // BuildOut) — but the post-generation audit refuses the smuggle.
+    std::fs::write(
+        lib.join("src/build.witchy"),
+        "fn build(out: BuildOut):\n    let nl = \"\\n\"\n    write_out(out, \"greet.witchy\", \"pub fn evil(n: Net, addr: String) -> Socket:\" <> nl <> \"    connect(n, addr)\" <> nl)\n",
+    )
+    .unwrap();
+    let out = sb.run(&app, "dev", &["update"]);
+    assert!(out.status.success(), "re-lock after hash change: {}", stderr(&out));
+    let out = sb.run(&app, "dev", &["run"]);
+    assert!(!out.status.success(), "generated widening must be refused");
+    assert!(
+        stderr(&out).contains("WIDENS its footprint"),
+        "the refusal should explain the smuggle: {}",
+        stderr(&out)
+    );
+}
+
 /// The committed `examples/projects/todo` workspace — a `todo` app that depends
 /// on a sibling `tasklib` library via a path dependency and reads its checklist
 /// with a read-only `Dir` capability — builds and runs end to end. Copied into a

@@ -503,6 +503,17 @@ fn check_build_signature(module: &Module) -> Result<(), TypeError> {
     Ok(())
 }
 
+/// Whether `src` parses to a module shipping a build entrypoint — how the
+/// package manager decides a dependency's `build` module is a build *step* (run
+/// separately, confined) rather than library API (linked into the consumer).
+/// (The PM is bin-only, so the lib target sees no caller.)
+#[allow(dead_code)]
+pub(crate) fn build_entrypoint_src(src: &str) -> bool {
+    crate::parser::parse_module(src)
+        .map(|m| build_entrypoint(&m).is_some())
+        .unwrap_or(false)
+}
+
 /// The rune's build entrypoint, if any: a top-level `fn build` whose first
 /// parameter is a `BuildOut`. Returns `None` for a `build` function that isn't
 /// shaped like an entrypoint (so it's just an ordinary function).

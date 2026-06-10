@@ -489,6 +489,15 @@ fn assemble(root_dir: &Path, env: &CovenEnv) -> PmResult<Assembled> {
     // module name is ambiguous; a dependency claiming a *standard-library* name
     // (`list`, `string`, ...) is a std-shadowing attack and is refused outright.
     // The root rune may shadow std (that's the consumer's own choice).
+    //
+    // A dependency's `build` module is its build *step*, not library API: it is
+    // excluded from the consumer link (so two runes shipping one never collide)
+    // and — grants permitting, which the loop above enforced — executed, with
+    // its generated source joining the link under the same guards. Afterwards
+    // the rune's footprint is recomputed over shipped + generated source and
+    // gated against the locked baseline: a build step cannot smuggle authority
+    // into the program by *generating* capability-hungry code (audit before and
+    // after).
     let mut modules: Vec<(String, String)> = Vec::new();
     let mut owner: BTreeMap<String, String> = BTreeMap::new();
     for (n, s) in root_src.modules() {
@@ -496,7 +505,36 @@ fn assemble(root_dir: &Path, env: &CovenEnv) -> PmResult<Assembled> {
         modules.push((n, s));
     }
     for r in &resolution.runes {
+        let mut rune_modules: Vec<(String, String)> = Vec::new();
+        let mut build_src: Option<String> = None;
         for (n, s) in r.src.modules() {
+            if n == "build" && crate::typeck::build_entrypoint_src(&s) {
+                build_src = Some(s);
+                continue;
+            }
+            rune_modules.push((n, s));
+        }
+        if let Some(bsrc) = build_src {
+            let grant = manifest.build.grants.get(&r.name).cloned().unwrap_or_default();
+            let generated = run_dep_build_step(root_dir, &r.name, &bsrc, &grant)?;
+            rune_modules.extend(generated);
+            // Audit before and after: the footprint over shipped + generated
+            // source must not exceed what the lock accepted for this rune.
+            let after = super::footprint::of_modules(&rune_modules)?;
+            let widened = after.widening_over(&r.footprint);
+            if !widened.runtime.is_empty() || !widened.build.is_empty() {
+                let mut kinds: Vec<String> = widened.runtime.iter().cloned().collect();
+                kinds.extend(widened.build.iter().cloned());
+                return err(format!(
+                    "`{}`'s build step generated source that WIDENS its footprint (+ {}) beyond \
+                     the locked baseline — refusing. Generated code is still code; it cannot \
+                     smuggle in authority the version was not accepted with.",
+                    r.name,
+                    kinds.join(", ")
+                ));
+            }
+        }
+        for (n, s) in rune_modules {
             if crate::linker::std_source(&n).is_some() {
                 return err(format!(
                     "rune `{}` provides a module `{n}` that shadows the standard library — refusing (possible std-shadowing attack)",
@@ -549,6 +587,53 @@ fn assemble(root_dir: &Path, env: &CovenEnv) -> PmResult<Assembled> {
         resolution,
         manifest,
     })
+}
+
+/// Execute one dependency's build step under its manifest grant, returning the
+/// generated modules as `(name, source)`. The step is linked and type-checked on
+/// its own (so std imports resolve), runs with only the minted, confined grants
+/// (§7.1 — the earlier default-deny/grant check already authorized them), and
+/// its sole product is source in a per-rune output sandbox under the project.
+fn run_dep_build_step(
+    root: &Path,
+    rune: &str,
+    build_src: &str,
+    grant: &super::manifest::Grant,
+) -> PmResult<Vec<(String, String)>> {
+    let module = parser::parse_module(build_src)
+        .map_err(|e| super::PmError(format!("{rune}: build step: {e}")))?;
+    let linked = linker::link(vec![("build".to_string(), module)], "build")
+        .map_err(|e| super::PmError(format!("{rune}: build step: {e}")))?;
+    typeck::check(&linked).map_err(|e| super::PmError(format!("{rune}: build step: {e}")))?;
+
+    if grant.read.len() > 1 {
+        return err(format!(
+            "[build.grants.\"{rune}\"] names {} read roots; one confined read root is supported for now",
+            grant.read.len()
+        ));
+    }
+    let out_dir = root.join("build-out").join(rune.replace('/', "__"));
+    // A fresh sandbox per run — stale output must never linger into the link.
+    let _ = std::fs::remove_dir_all(&out_dir);
+    let grants = crate::interpreter::BuildGrants {
+        out_dir: out_dir.clone(),
+        read_root: grant.read.first().map(|p| root.join(p)),
+        env_keys: grant.env.clone(),
+        net_hosts: grant.net.clone(),
+        exec_tools: grant.exec.clone(),
+    };
+    let generated = crate::interpreter::run_build_step(linked, grants)
+        .map_err(|e| super::PmError(format!("{rune}: build step failed: {}", e.message)))?;
+    let mut out = Vec::new();
+    for f in generated {
+        let Some(stem) = f.strip_suffix(".witchy") else {
+            continue; // non-source artifacts stay in the sandbox
+        };
+        let text = std::fs::read_to_string(out_dir.join(&f))
+            .map_err(|e| super::PmError(format!("{rune}: reading generated `{f}`: {e}")))?;
+        out.push((stem.to_string(), text));
+    }
+    Ok(out)
 }
 
 fn cmd_build(rest: &[String]) -> PmResult<()> {

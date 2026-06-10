@@ -274,8 +274,12 @@ rebuilds are deterministic; provenance ties bytes to public source history.
 > section exists. Staging cooldowns are also built (consumer-side): a freshly
 > released version carries a signed `released_at` and is not resolvable until
 > its window passes (`WITCHY_COOLDOWN_SECS`, default 72h) unless `--allow-fresh`.
-> Pending: the zero-ambient WASM-sandbox execution path, `BuildNet`, and
-> auto-running build steps during `witchy build`.
+> Build steps **auto-run during `witchy build`** (interpreter execution): the
+> `build` module is excluded from the consumer link, run under its grants, its
+> generated source joins the link — and the rune's footprint is **recomputed
+> over shipped + generated source and gated against the locked baseline**, so
+> generated code cannot smuggle in authority. Pending: the zero-ambient
+> WASM-sandbox execution path, `BuildNet`, and build-output caching (§7.2).
 
 Assume consumer-side build execution *will* eventually be required (generating
 witchy source from a schema, etc.). Model it now so that when it lands it is
