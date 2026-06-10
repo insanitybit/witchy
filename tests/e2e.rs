@@ -1174,6 +1174,52 @@ fn build_steps_auto_run_and_generated_source_is_gated() {
     );
 }
 
+/// A deterministic build step (no BuildExec/BuildNet) is cached by its inputs
+/// (§7.2): a second build with unchanged inputs reuses the prior output instead
+/// of re-running. We prove the *hit* by corrupting the cached output and leaving
+/// the cache key intact — a cache hit serves the corrupted bytes, a miss would
+/// regenerate the original.
+#[test]
+fn deterministic_build_output_is_cached() {
+    let sb = Sandbox::new("buildcache");
+    let app = new_app(&sb);
+    let lib = sb.work.join("genlib");
+    std::fs::create_dir_all(lib.join("src")).unwrap();
+    std::fs::write(lib.join("witchy.toml"), "[rune]\nname = \"genlib\"\nversion = \"0.1.0\"\n").unwrap();
+    std::fs::write(lib.join("src/genlib.witchy"), "pub fn id(s: String) -> String:\n    s\n").unwrap();
+    std::fs::write(
+        lib.join("src/build.witchy"),
+        "fn build(out: BuildOut):\n    let nl = \"\\n\"\n    write_out(out, \"greet.witchy\", \"pub fn greeting() -> String:\" <> nl <> \"    \\\"V1\\\"\" <> nl)\n",
+    )
+    .unwrap();
+    let out = sb.run(&app, "dev", &["add", "genlib", "--path", "../genlib", "--allow-build-cap", "BuildOut"]);
+    assert!(out.status.success(), "add failed: {}", stderr(&out));
+    let manifest = std::fs::read_to_string(app.join("witchy.toml")).unwrap();
+    std::fs::write(app.join("witchy.toml"), format!("{manifest}\n[build.grants.\"genlib\"]\n")).unwrap();
+    std::fs::write(
+        app.join("src/app.witchy"),
+        "import greet\n\nfn main(console: Console):\n    print(console, greet.greeting())\n",
+    )
+    .unwrap();
+
+    let out = sb.run(&app, "dev", &["run"]);
+    assert!(out.status.success(), "first run failed: {}", stderr(&out));
+    assert!(stdout(&out).contains("V1"), "got: {}", stdout(&out));
+
+    // Corrupt the generated output, keep the cache key.
+    let gen_file = app.join("build-out/genlib/greet.witchy");
+    let body = std::fs::read_to_string(&gen_file).unwrap().replace("V1", "CACHED");
+    std::fs::write(&gen_file, body).unwrap();
+
+    let out = sb.run(&app, "dev", &["run"]);
+    assert!(out.status.success(), "cached run failed: {}", stderr(&out));
+    assert!(
+        stdout(&out).contains("CACHED"),
+        "a deterministic build step should be cached (got: {})",
+        stdout(&out)
+    );
+}
+
 /// The committed `examples/projects/todo` workspace — a `todo` app that depends
 /// on a sibling `tasklib` library via a path dependency and reads its checklist
 /// with a read-only `Dir` capability — builds and runs end to end. Copied into a

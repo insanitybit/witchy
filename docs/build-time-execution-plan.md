@@ -1,10 +1,11 @@
 # Implementation Plan: Build-Time Execution as a Capability
 
-Status: **largely implemented** — Phases 1, 2a, auto-run, and 3 are live (see
-the per-phase notes below); the WASM-sandbox execution path and build-output
-caching remain. The *design* lives in [package-manager.md](package-manager.md)
-§4 (the footprint model) and §7.1 (build-time execution as a capability); this
-document tracks the implementation against it.
+Status: **largely implemented** — Phases 1, 2a, auto-run, 3, and build-output
+caching are live (see the per-phase notes below); only the zero-ambient
+WASM-sandbox execution path (defense-in-depth over interpreter execution)
+remains. The *design* lives in [package-manager.md](package-manager.md) §4 (the
+footprint model) and §7.1 (build-time execution as a capability); this document
+tracks the implementation against it.
 
 ## Why this, and the reframing
 
@@ -131,10 +132,13 @@ directly.
 the consumer link (so two runes shipping one can't collide), execute it under the
 manifest grants into `<project>/build-out/<rune>/`, link the generated `.witchy`
 modules in under the usual std-shadowing/collision guards, and apply the
-audit-before-and-after gate above. A BuildRead grant may now name multiple
-confined roots (`read_build` tries each in order). Remaining 2b: the WASM-sandbox
-execution path (zero-ambient `Linker`) for the hard isolation guarantee, and
-build-output caching (§7.2; today steps re-run per build).
+audit-before-and-after gate above. A BuildRead grant may name multiple confined
+roots (`read_build` tries each in order). Build-output caching (§7.2) is in:
+a deterministic step (no BuildExec/BuildNet) is keyed by its inputs (build source
++ read-tree contents + named env values) and reused on an unchanged rebuild;
+Exec/Net steps re-run (their output may depend on external state) and stay
+`pinned-only`. Remaining 2b: the WASM-sandbox execution path (zero-ambient
+`Linker`) for the hard isolation guarantee.
 
 **Runtime (`src/runtime.rs`)**
 - Extend `Capabilities` with the build-time grants and add build host functions,

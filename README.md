@@ -271,7 +271,7 @@ build-axis widening (`--allow-build-cap`), and **execution itself is
 default-deny** — a dependency that ships a build step is refused until you write
 its `[build.grants]` section (an empty section accepts only the confined
 `BuildOut` sandbox). Still pending: the zero-ambient WASM-sandbox execution
-path (build steps now auto-run during `witchy build` with generated source re-audited against the locked baseline; all five build capabilities — including allow-listed `BuildNet` fetches — are live; staging
+path, layered over interpreter execution (build steps auto-run during `witchy build` with generated source re-audited against the locked baseline; all five build capabilities — including allow-listed `BuildNet` fetches — are live; deterministic build outputs are cached; staging
 cooldowns are now built: a fresh release sits out a 72h window — `WITCHY_COOLDOWN_SECS` — before resolving, unless `--allow-fresh`; see [docs/build-time-execution-plan.md](docs/build-time-execution-plan.md)).
 Also not yet done: a hosted public registry and performance work. See
 [docs/architecture.md](docs/architecture.md) for the honest limitations list,

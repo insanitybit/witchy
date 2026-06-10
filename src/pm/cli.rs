@@ -607,29 +607,115 @@ fn run_dep_build_step(
     typeck::check(&linked).map_err(|e| super::PmError(format!("{rune}: build step: {e}")))?;
 
     let out_dir = root.join("build-out").join(rune.replace('/', "__"));
+    let read_roots: Vec<PathBuf> = grant.read.iter().map(|p| root.join(p)).collect();
+
+    // §7.2 build-output caching. A *deterministic* build step (no BuildExec /
+    // BuildNet — the capability model removes clocks, env, network, and
+    // randomness unless granted) is a pure function of its inputs: the build
+    // source, the read-tree contents, the named env values, and the grant. Hash
+    // those into a cache key; if the previous run's key matches, reuse its output
+    // and skip re-running. A step that shells out or hits the network is *not*
+    // cached (its output may depend on mutable external state) — it re-runs every
+    // build, and its footprint is already `pinned-only`.
+    let footprint = super::footprint::compute(&linked);
+    let deterministic = !footprint.build.contains("BuildExec") && !footprint.build.contains("BuildNet");
+    let cache_key = if deterministic {
+        Some(build_cache_key(build_src, &read_roots, &grant.env))
+    } else {
+        None
+    };
+    let key_file = out_dir.join(".witchy-build-cache");
+    if let Some(key) = &cache_key {
+        if std::fs::read_to_string(&key_file).ok().as_deref() == Some(key.as_str()) {
+            return read_generated(rune, &out_dir);
+        }
+    }
+
     // A fresh sandbox per run — stale output must never linger into the link.
     let _ = std::fs::remove_dir_all(&out_dir);
     let grants = crate::interpreter::BuildGrants {
         out_dir: out_dir.clone(),
         // Each granted read path becomes a confined root, resolved relative to
         // the project; `read_build` tries them in order.
-        read_roots: grant.read.iter().map(|p| root.join(p)).collect(),
+        read_roots,
         env_keys: grant.env.clone(),
         net_hosts: grant.net.clone(),
         exec_tools: grant.exec.clone(),
     };
-    let generated = crate::interpreter::run_build_step(linked, grants)
+    crate::interpreter::run_build_step(linked, grants)
         .map_err(|e| super::PmError(format!("{rune}: build step failed: {}", e.message)))?;
+    if let Some(key) = &cache_key {
+        let _ = std::fs::write(&key_file, key);
+    }
+    read_generated(rune, &out_dir)
+}
+
+/// Collect the `.witchy` modules a build step wrote into `out_dir` as
+/// `(module-name, source)`. Non-source artifacts stay in the sandbox.
+fn read_generated(rune: &str, out_dir: &Path) -> PmResult<Vec<(String, String)>> {
     let mut out = Vec::new();
-    for f in generated {
-        let Some(stem) = f.strip_suffix(".witchy") else {
-            continue; // non-source artifacts stay in the sandbox
-        };
+    let entries = match std::fs::read_dir(out_dir) {
+        Ok(rd) => rd,
+        Err(_) => return Ok(out),
+    };
+    let mut names: Vec<String> = entries
+        .flatten()
+        .filter_map(|e| e.file_name().into_string().ok())
+        .collect();
+    names.sort();
+    for f in names {
+        let Some(stem) = f.strip_suffix(".witchy") else { continue };
         let text = std::fs::read_to_string(out_dir.join(&f))
             .map_err(|e| super::PmError(format!("{rune}: reading generated `{f}`: {e}")))?;
         out.push((stem.to_string(), text));
     }
     Ok(out)
+}
+
+/// The cache key for a deterministic build step: a hash over the build source,
+/// the (sorted) contents of every confined read root, and the named env values.
+fn build_cache_key(build_src: &str, read_roots: &[PathBuf], env_keys: &[String]) -> String {
+    let mut material = String::new();
+    material.push_str("witchy-build-cache-v1\n");
+    material.push_str(build_src);
+    material.push('\n');
+    for rootp in read_roots {
+        let mut files = read_tree(rootp);
+        files.sort();
+        for (rel, bytes) in files {
+            material.push_str(&rel);
+            material.push('\0');
+            material.push_str(&super::tuf::sha256_hex(&bytes));
+            material.push('\n');
+        }
+    }
+    for k in env_keys {
+        material.push_str(k);
+        material.push('=');
+        material.push_str(&std::env::var(k).unwrap_or_default());
+        material.push('\n');
+    }
+    super::tuf::sha256_hex(material.as_bytes())
+}
+
+/// Every file under `dir`, as `(relative-path, bytes)`. Used to fold the read
+/// inputs into the build cache key (so a changed input invalidates the cache).
+fn read_tree(dir: &Path) -> Vec<(String, Vec<u8>)> {
+    fn walk(base: &Path, cur: &Path, out: &mut Vec<(String, Vec<u8>)>) {
+        let Ok(rd) = std::fs::read_dir(cur) else { return };
+        for entry in rd.flatten() {
+            let p = entry.path();
+            if p.is_dir() {
+                walk(base, &p, out);
+            } else if let Ok(bytes) = std::fs::read(&p) {
+                let rel = p.strip_prefix(base).unwrap_or(&p).to_string_lossy().into_owned();
+                out.push((rel, bytes));
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(dir, dir, &mut out);
+    out
 }
 
 fn cmd_build(rest: &[String]) -> PmResult<()> {
