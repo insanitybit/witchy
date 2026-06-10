@@ -4752,13 +4752,15 @@ fn yn(b: Bool) -> String:
             "CONTRIBUTING.md".into(),
             "examples/README.md".into(),
         ];
-        let mut docs: Vec<_> = std::fs::read_dir("docs")
-            .expect("docs/")
-            .filter_map(|e| e.ok().map(|e| e.path()))
-            .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("md"))
-            .collect();
-        docs.sort();
-        files.extend(docs);
+        for dir in ["docs", "book/src"] {
+            let Ok(entries) = std::fs::read_dir(dir) else { continue };
+            let mut md: Vec<_> = entries
+                .filter_map(|e| e.ok().map(|e| e.path()))
+                .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("md"))
+                .collect();
+            md.sort();
+            files.extend(md);
+        }
 
         let mut checked = 0usize;
         let mut ran = 0usize;

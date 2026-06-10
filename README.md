@@ -146,6 +146,9 @@ reference's examples preloaded.
 
 ## Learn more
 
+- **[The witchy Book](book/src/SUMMARY.md)** — the guided, chapter-by-chapter
+  introduction (build it with `./scripts/build-book.sh`, or read the chapters as
+  Markdown under `book/src/`). Start here if you're new.
 - **[Language reference](docs/language.md)** — the full syntax and semantics.
 - **[Capabilities guide](docs/capabilities.md)** — the security model, for users.
 - **[Standard library](docs/stdlib.md)** — 30 modules, function-by-function.
