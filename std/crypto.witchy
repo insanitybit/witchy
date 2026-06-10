@@ -25,11 +25,11 @@ pub fn rune_hash(paths: List(String), contents: List(String)) -> String:
 pub fn ed25519_verify(public_key: String, message: String, signature: String) -> Bool:
     false
 
-// Sign `message` with a `SigningKey` capability (the host grants it; it cannot be
+// Sign `message` with a `Secret` capability (the host grants it; it cannot be
 // forged), returning the hex signature.
-pub fn sign(key: SigningKey, message: String) -> String:
+pub fn sign(key: Secret, message: String) -> String:
     message
 
-// The hex Ed25519 public key for a `SigningKey` — what verifiers check against.
-pub fn public_key(key: SigningKey) -> String:
+// The hex Ed25519 public key for a `Secret` — what verifiers check against.
+pub fn public_key(key: Secret) -> String:
     ""

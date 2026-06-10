@@ -41,7 +41,7 @@ audit witchy code by reading signatures, not by tracing call graphs.
 | `Env` | read environment variables | `get_env(env, name) -> Option(String)` |
 | `Dir`, `Dir[Read]`, `Dir[Write]` | a directory **subtree** | `read`, `write`, `exists`, `is_dir`, `list`, `make_dir`, `subdir` |
 | `Net`, `Net[Connect]`, `Net[Listen]` (+ `Tcp`/`Udp`/`Uds` transport markers) | the network | `connect`, `listen`, `accept`, `send_line`, `recv_line`, `recv_all`, … |
-| `SigningKey` | an Ed25519 private key | `crypto.sign`, `crypto.public_key` |
+| `Secret` | an Ed25519 private key | `crypto.sign`, `crypto.public_key` |
 
 A `Dir` is not "the filesystem" — it is one subtree. `read(dir, path)` resolves
 `path` relative to the capability and rejects `..`, absolute paths, and

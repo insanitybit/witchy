@@ -21,7 +21,7 @@ import toml
 import string
 import rights
 
-fn main(console: Console, net: Net, root: Dir, key: SigningKey, clock: Clock, args: List(String)):
+fn main(console: Console, net: Net, root: Dir, key: Secret, clock: Clock, args: List(String)):
     let addr = if length(args) > 0: at(args, 0) else: "127.0.0.1:8787"
     // Trailing args are trusted issuers as `issuer=pubkeyhex` (a JWKS stand-in).
     // With at least one, publish/promote require a short-lived identity token
@@ -45,7 +45,7 @@ fn parse_issuers(args: List(String)) -> List((String, String)):
     out
 
 // --- GET /coven/rootpub : the registry's root public key (hex) ---------------
-fn h_rootpub(key: SigningKey) -> fn(Request) -> Response:
+fn h_rootpub(key: Secret) -> fn(Request) -> Response:
     fn(req: Request): server.text(200, crypto.public_key(key))
 
 // --- GET /coven/index : every published rune name ----------------------------
@@ -98,13 +98,13 @@ fn source_response(store: Dir, name: String, version: String) -> Response:
 // Server-side enforcement: recompute the footprint from source, reject an
 // under-declared manifest, content-address the bytes, and land the version
 // STAGED (not resolvable until promoted). Re-publishing a version is refused.
-fn h_publish(store: Dir, key: SigningKey, clock: Clock, issuers: List((String, String))) -> fn(Request) -> Response:
+fn h_publish(store: Dir, key: Secret, clock: Clock, issuers: List((String, String))) -> fn(Request) -> Response:
     fn(req: Request):
         match server.json_body(req):
             Ok(doc) -> do_publish(store, key, clock, issuers, doc)
             Err(e) -> err_json(400, "bad request body: " <> e)
 
-fn do_publish(store: Dir, key: SigningKey, clock: Clock, issuers: List((String, String)), doc: Json) -> Response:
+fn do_publish(store: Dir, key: Secret, clock: Clock, issuers: List((String, String)), doc: Json) -> Response:
     let manifest = jstr(doc, "manifest_toml")
     let files = parse_source(doc)
     let name = toml_field(manifest, "rune.name")
@@ -123,7 +123,7 @@ fn do_publish(store: Dir, key: SigningKey, clock: Clock, issuers: List((String, 
             Ok(uploaded_by) -> publish_checked(store, key, clock, manifest, name, version, uploaded_by, files)
             Err(fail) -> fail_response(fail)
 
-fn publish_checked(store: Dir, key: SigningKey, clock: Clock, manifest: String, name: String, version: String, uploaded_by: String, files: List((String, String))) -> Response:
+fn publish_checked(store: Dir, key: Secret, clock: Clock, manifest: String, name: String, version: String, uploaded_by: String, files: List((String, String))) -> Response:
     let computed = computed_footprint(files)
     let declared = toml.get_array(manifest, "capabilities.runtime")
     let gap = rights.uncovered(declared, computed)
@@ -139,13 +139,13 @@ fn publish_checked(store: Dir, key: SigningKey, clock: Clock, manifest: String, 
         server.json(200, rec)
 
 // --- POST /coven/promote : second-factor release (separation of duties) ------
-fn h_promote(store: Dir, key: SigningKey, clock: Clock, issuers: List((String, String))) -> fn(Request) -> Response:
+fn h_promote(store: Dir, key: Secret, clock: Clock, issuers: List((String, String))) -> fn(Request) -> Response:
     fn(req: Request):
         match server.json_body(req):
             Ok(doc) -> do_promote(store, key, clock, issuers, doc)
             Err(e) -> err_json(400, "bad request body: " <> e)
 
-fn do_promote(store: Dir, key: SigningKey, clock: Clock, issuers: List((String, String)), doc: Json) -> Response:
+fn do_promote(store: Dir, key: Secret, clock: Clock, issuers: List((String, String)), doc: Json) -> Response:
     let name = unwire(jstr(doc, "name"))
     let version = jstr(doc, "version")
     let factor = jstr(doc, "second_factor")
@@ -158,13 +158,13 @@ fn do_promote(store: Dir, key: SigningKey, clock: Clock, issuers: List((String, 
             Ok(promoter) -> promote_authenticated(store, key, clock, name, version, factor, promoter)
             Err(fail) -> fail_response(fail)
 
-fn promote_authenticated(store: Dir, key: SigningKey, clock: Clock, name: String, version: String, factor: String, promoter: String) -> Response:
+fn promote_authenticated(store: Dir, key: Secret, clock: Clock, name: String, version: String, factor: String, promoter: String) -> Response:
     if string.is_empty(promoter):
         err_json(400, "promotion requires an authenticated promoter identity")
     else:
         promote_checked(store, key, clock, name, version, factor, promoter)
 
-fn promote_checked(store: Dir, key: SigningKey, clock: Clock, name: String, version: String, factor: String, promoter: String) -> Response:
+fn promote_checked(store: Dir, key: Secret, clock: Clock, name: String, version: String, factor: String, promoter: String) -> Response:
     let state = record_field(store, name, version, "state")
     if state != "staged":
         err_json(400, name <> "@" <> version <> " is " <> state <> "; only a staged version can be promoted")
@@ -182,13 +182,13 @@ fn promote_checked(store: Dir, key: SigningKey, clock: Clock, name: String, vers
         server.json(200, json.encode(JsonObject([("record", parse_or_null(rec)), ("separation_of_duties", JsonBool(true)), ("delta_runtime", JsonArray(strs_json(delta)))])))
 
 // --- POST /coven/yank : exclude from new resolutions -------------------------
-fn h_yank(store: Dir, key: SigningKey, clock: Clock) -> fn(Request) -> Response:
+fn h_yank(store: Dir, key: Secret, clock: Clock) -> fn(Request) -> Response:
     fn(req: Request):
         match server.json_body(req):
             Ok(doc) -> do_yank(store, key, clock, doc)
             Err(e) -> err_json(400, "bad request body: " <> e)
 
-fn do_yank(store: Dir, key: SigningKey, clock: Clock, doc: Json) -> Response:
+fn do_yank(store: Dir, key: Secret, clock: Clock, doc: Json) -> Response:
     let name = unwire(jstr(doc, "name"))
     let version = jstr(doc, "version")
     if !exists(store, meta_path(name, version)):
@@ -211,13 +211,13 @@ fn do_yank(store: Dir, key: SigningKey, clock: Clock, doc: Json) -> Response:
 // short-lived signed pointer to it — its expiry detects freeze). Both are signed
 // by the registry root key over canonical JSON byte-identical to the Rust roles,
 // so they verify under crate::pm::tuf::verify_signed.
-fn h_snapshot(store: Dir, key: SigningKey, clock: Clock) -> fn(Request) -> Response:
+fn h_snapshot(store: Dir, key: Secret, clock: Clock) -> fn(Request) -> Response:
     fn(req: Request):
         if !exists(store, "snapshot.json"):
             rebuild_metadata(store, key, clock)
         server.json(200, read(store, "snapshot.json"))
 
-fn h_timestamp(store: Dir, key: SigningKey, clock: Clock) -> fn(Request) -> Response:
+fn h_timestamp(store: Dir, key: Secret, clock: Clock) -> fn(Request) -> Response:
     fn(req: Request):
         if !exists(store, "timestamp.json"):
             rebuild_metadata(store, key, clock)
@@ -226,7 +226,7 @@ fn h_timestamp(store: Dir, key: SigningKey, clock: Clock) -> fn(Request) -> Resp
 // Regenerate + re-sign the snapshot and timestamp. The snapshot pins every
 // current record's signed-payload digest, version-numbered; the timestamp points
 // at it with a 24h expiry.
-fn rebuild_metadata(store: Dir, key: SigningKey, clock: Clock):
+fn rebuild_metadata(store: Dir, key: Secret, clock: Clock):
     let created = now(clock) / 1000
     let version = current_snapshot_version(store) + 1
     let targets = JsonObject(all_target_digests(store))
@@ -452,7 +452,7 @@ fn signing_payload(name: String, version: String, state: String, hash: String, r
     "coven-v1\nname=" <> name <> "\nversion=" <> version <> "\nstate=" <> state <> "\nhash=" <> hash <> "\nrt=" <> string.join(rt, ",") <> "\nbuild=\nuploaded_by=" <> uploaded_by <> "\npromoted_by=" <> promoted_by <> "\nfactor=" <> factor <> "\nprovenance=" <> provenance
 
 // Build + sign a record, returning its coven.json text.
-fn sign_record(key: SigningKey, name: String, version: String, state: String, hash: String, rt: List(String), uploaded_by: String, promoted_by: String, factor: String, provenance: String) -> String:
+fn sign_record(key: Secret, name: String, version: String, state: String, hash: String, rt: List(String), uploaded_by: String, promoted_by: String, factor: String, provenance: String) -> String:
     let sig = crypto.sign(key, signing_payload(name, version, state, hash, rt, uploaded_by, promoted_by, factor, provenance))
     json.encode(JsonObject([("name", JsonString(name)), ("version", JsonString(version)), ("state", JsonString(state)), ("hash", JsonString(hash)), ("runtime_footprint", JsonArray(strs_json(rt))), ("build_footprint", JsonArray([])), ("determinism", JsonString("guaranteed")), ("uploaded_by", JsonString(uploaded_by)), ("promoted_by", opt_json(promoted_by)), ("second_factor", opt_json(factor)), ("provenance", opt_json(provenance)), ("sig", JsonString(sig))]))
 

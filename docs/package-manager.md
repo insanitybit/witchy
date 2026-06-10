@@ -289,7 +289,12 @@ statically computed, lockfile-pinned, explicitly granted per-rune, and gated.
 - **Its only product is source.** A build step emits generated `.witchy` source
   (and data) into a confined per-rune output sandbox, which then flows into the
   normal parse→link→type-check pipeline. It cannot touch the project tree, the
-  store, or other runes' outputs.
+  store, or other runes' outputs — in particular it **cannot modify existing
+  source** (`BuildOut` is write-confined to the fresh sandbox; `BuildRead` is
+  read-only). And because *generated* source is still source, the pipeline
+  recomputes the rune's footprint over shipped **plus generated** code and runs
+  the widening gate on the result: a build step cannot smuggle authority into
+  the program by generating capability-hungry code.
 - **Build-time capabilities** — a distinct, enumerated set, each attenuable
   (cap-std style):
   - `BuildOut` — write generated source into *this rune's own* output sandbox.

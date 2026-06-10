@@ -35,7 +35,7 @@ pub enum Value {
     Net(Vec<String>),
     /// A signing capability: an Ed25519 private seed. Unforgeable — minted only by
     /// the host (the root grant) — since the ability to sign *is* authority.
-    SigningKey([u8; 32]),
+    Secret([u8; 32]),
     /// A connected socket — a handle into the interpreter's socket table.
     Socket(usize),
     /// A listening server socket — a handle into the interpreter's listener
@@ -132,7 +132,7 @@ impl fmt::Display for Value {
             Value::Subject(id) => write!(f, "<actor #{id}>"),
             Value::Dir(_) => write!(f, "<dir>"),
             Value::Net(_) => write!(f, "<net>"),
-            Value::SigningKey(_) => write!(f, "<signing key>"),
+            Value::Secret(_) => write!(f, "<signing key>"),
             Value::Socket(id) => write!(f, "<socket #{id}>"),
             Value::Listener(id) => write!(f, "<listener #{id}>"),
             Value::Build(_) => write!(f, "<build capability>"),
@@ -298,8 +298,8 @@ pub struct Interpreter {
     root: PathBuf,
     /// Allow-list backing the root `Net` capability.
     net_allow: Vec<String>,
-    /// Ed25519 seed backing the root `SigningKey` capability, if the host granted
-    /// one. A `main` that declares a `SigningKey` parameter requires this.
+    /// Ed25519 seed backing the root `Secret` capability, if the host granted
+    /// one. A `main` that declares a `Secret` parameter requires this.
     signing_key: Option<[u8; 32]>,
     /// Open sockets, indexed by `Value::Socket` handle.
     sockets: Vec<BufReader<TcpStream>>,
@@ -393,9 +393,9 @@ impl Interpreter {
             Some(Type::Named(n, _)) if n == "Env" => Ok(Value::Cap(Capability::Env)),
             Some(Type::Named(n, _)) if n == "Dir" => Ok(Value::Dir(self.root.clone())),
             Some(Type::Named(n, _)) if n == "Net" => Ok(Value::Net(self.net_allow.clone())),
-            Some(Type::Named(n, _)) if n == "SigningKey" => match self.signing_key {
-                Some(seed) => Ok(Value::SigningKey(seed)),
-                None => err("`main` requires a `SigningKey`, but the host granted none (provide `--signing-key <hex-seed-file>`)"),
+            Some(Type::Named(n, _)) if n == "Secret" => match self.signing_key {
+                Some(seed) => Ok(Value::Secret(seed)),
+                None => err("`main` requires a `Secret`, but the host granted none (provide `--signing-key <hex-seed-file>`)"),
             },
             other => {
                 let found = match other {
@@ -403,7 +403,7 @@ impl Interpreter {
                     None => "no type annotation".to_string(),
                 };
                 err(format!(
-                    "`main` parameters must be capabilities (Console, Clock, Env, Dir, Net, SigningKey) or `List(String)` for command-line args; got {found}"
+                    "`main` parameters must be capabilities (Console, Clock, Env, Dir, Net, Secret) or `List(String)` for command-line args; got {found}"
                 ))
             }
         }
@@ -1973,7 +1973,7 @@ pub fn run_module_args(
     run_module_signed(module, root, net_allow, args, None)
 }
 
-/// Like [`run_module_args`], but also grants the root `SigningKey` capability
+/// Like [`run_module_args`], but also grants the root `Secret` capability
 /// from `signing_key` (an Ed25519 seed) to a `main` that declares one. Signing is
 /// authority, so the key is host-provided, never constructed by the program.
 pub fn run_module_signed(

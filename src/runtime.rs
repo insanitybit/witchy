@@ -70,7 +70,7 @@ pub struct Capabilities {
     /// The program's command-line arguments (`main(args: List(String))`).
     /// Pure input chosen by the host, not authority.
     pub args: Vec<String>,
-    /// The Ed25519 seed backing the root `SigningKey` capability. The key
+    /// The Ed25519 seed backing the root `Secret` capability. The key
     /// material stays host-side; the guest only ever sees signatures and the
     /// public key.
     pub signing_key: Option<[u8; 32]>,
@@ -323,7 +323,7 @@ impl Runtime {
             linker.func_wrap("witchy", "net_recv_bytes_len", host_net_recv_bytes_len)?;
             linker.func_wrap("witchy", "net_close", host_net_close)?;
         }
-        // The SigningKey capability: the seed never enters guest memory — the
+        // The Secret capability: the seed never enters guest memory — the
         // host signs and reports the public key on the guest's behalf.
         if caps.signing_key.is_some() {
             linker.func_wrap("witchy", "crypto.sign", host_crypto_sign)?;
@@ -908,12 +908,12 @@ fn host_crypto_sign(mut caller: Caller<'_, ActorState>, msg_ptr: i32, out_ptr: i
         .data()
         .caps
         .signing_key
-        .ok_or_else(|| Error::msg("crypto.sign: no SigningKey granted"))?;
+        .ok_or_else(|| Error::msg("crypto.sign: no Secret granted"))?;
     let mem = memory_of(&mut caller)?;
     let msg = read_wstr(mem.data(&caller), msg_ptr)?;
     let f = crate::native::lookup("crypto.sign")
         .ok_or_else(|| Error::msg("crypto.sign is not registered"))?;
-    let sig = match f(&[Value::SigningKey(seed), Value::Str(msg)]).map_err(|e| Error::msg(e.message))? {
+    let sig = match f(&[Value::Secret(seed), Value::Str(msg)]).map_err(|e| Error::msg(e.message))? {
         Value::Str(s) => s,
         _ => return Err(Error::msg("crypto.sign did not return a String")),
     };
@@ -929,10 +929,10 @@ fn host_crypto_public_key(mut caller: Caller<'_, ActorState>, out_ptr: i32) -> R
         .data()
         .caps
         .signing_key
-        .ok_or_else(|| Error::msg("crypto.public_key: no SigningKey granted"))?;
+        .ok_or_else(|| Error::msg("crypto.public_key: no Secret granted"))?;
     let f = crate::native::lookup("crypto.public_key")
         .ok_or_else(|| Error::msg("crypto.public_key is not registered"))?;
-    let pk = match f(&[Value::SigningKey(seed)]).map_err(|e| Error::msg(e.message))? {
+    let pk = match f(&[Value::Secret(seed)]).map_err(|e| Error::msg(e.message))? {
         Value::Str(s) => s,
         _ => return Err(Error::msg("crypto.public_key did not return a String")),
     };

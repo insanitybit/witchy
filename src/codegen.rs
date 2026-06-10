@@ -437,7 +437,7 @@ struct Codegen {
     /// run export then builds the host-provided list via `$build_args`.
     uses_args: bool,
     /// Whether the `crypto.sign` host import + guest helper are needed
-    /// (`SigningKey` capability).
+    /// (`Secret` capability).
     uses_crypto_sign: bool,
     /// Whether the `crypto.public_key` host import + guest helper are needed.
     uses_crypto_public_key: bool,
@@ -1675,7 +1675,7 @@ impl Codegen {
         }
         if self.uses_crypto_sign {
             // crypto.sign(msg_ptr, out_data_ptr): the host signs with the GRANTED
-            // key and writes the 128 hex signature bytes. SigningKey-gated.
+            // key and writes the 128 hex signature bytes. Secret-gated.
             s.push_str("  (import \"witchy\" \"crypto.sign\" (func $crypto_sign_host (param i32 i32)))\n");
         }
         if self.uses_crypto_public_key {
@@ -3538,7 +3538,7 @@ impl Codegen {
                 let s = self.compile_expr(&args[0])?;
                 Ok(format!("{s}    call $crypto_sha256\n"))
             }
-            // `crypto.sign(key, msg)` / `crypto.public_key(key)`: the SigningKey
+            // `crypto.sign(key, msg)` / `crypto.public_key(key)`: the Secret
             // argument is type-level only — the granted host key IS the key, so
             // only the message travels. Fixed-size results (128/64 hex bytes).
             ("crypto.sign", 2) => {

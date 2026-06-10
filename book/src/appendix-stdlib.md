@@ -49,7 +49,7 @@ These do real I/O, so their functions take capabilities:
 |---|---|
 | `fs` / `path` | `Dir` |
 | `http` / `server` | `Net` |
-| `crypto` | hashing, verification; signing needs a `SigningKey` |
+| `crypto` | hashing, verification; signing needs a `Secret` |
 
 ## Build-time intrinsics
 

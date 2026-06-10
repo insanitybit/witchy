@@ -18,7 +18,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::ast::*;
 
 /// Runtime capability type names (what a caller / `main` must supply).
-const RUNTIME_CAPS: &[&str] = &["Console", "Clock", "Env", "SigningKey", "Dir", "Net", "Socket", "Subject"];
+const RUNTIME_CAPS: &[&str] = &["Console", "Clock", "Env", "Secret", "Dir", "Net", "Socket", "Subject"];
 /// Build-time capability type names (what a build step demands of the consumer).
 const BUILD_CAPS: &[&str] = &["BuildOut", "BuildRead", "BuildEnv", "BuildNet", "BuildExec"];
 

@@ -494,7 +494,7 @@ fn main() -> wasmtime::Result<()> {
                     }
                 }
             } else if arg == "--signing-key" || arg.starts_with("--signing-key=") {
-                // Grant the root `SigningKey` from a file holding a 64-hex-char
+                // Grant the root `Secret` from a file holding a 64-hex-char
                 // (32-byte) Ed25519 seed — the host decides what key to hand over.
                 let path = match arg.strip_prefix("--signing-key=") {
                     Some(p) => p.to_string(),
@@ -948,7 +948,7 @@ fn execute_file_args(
 
 /// Link, type-check, and run `path`, returning its output and the process exit
 /// code (`main`'s `Int` return, else 0). `args` populate a `List(String)`
-/// parameter; `signing_key` grants the root `SigningKey` capability.
+/// parameter; `signing_key` grants the root `Secret` capability.
 fn execute_file_exit(
     path: &str,
     net_allow: Vec<String>,
@@ -1240,9 +1240,9 @@ fn run_file_sandboxed(
         return Err(format!("`{path}` has no `main` to run"));
     }
     let footprint = capabilities::analyze(&linked);
-    if footprint.total.contains_key("SigningKey") && signing_key.is_none() {
+    if footprint.total.contains_key("Secret") && signing_key.is_none() {
         return Err(format!(
-            "`{path}` needs a SigningKey, but the host granted none (provide `--signing-key <seed-file>`)"
+            "`{path}` needs a Secret, but the host granted none (provide `--signing-key <seed-file>`)"
         ));
     }
     let wat = codegen::compile_module(&linked)
@@ -1277,7 +1277,7 @@ fn run_file_sandboxed(
         caps.net_connect = rights.contains("Connect");
         caps.net_listen = rights.contains("Listen");
     }
-    if footprint.total.contains_key("SigningKey") {
+    if footprint.total.contains_key("Secret") {
         caps.signing_key = signing_key;
     }
     let mut rt = Runtime::batch().map_err(|e| e.to_string())?;
@@ -4071,14 +4071,14 @@ mod example_tests {
         assert_eq!(link_run(&prog("tampered")), vec!["bad"]);
     }
 
-    /// Signing round-trips entirely in witchy: a host-granted `SigningKey`
+    /// Signing round-trips entirely in witchy: a host-granted `Secret`
     /// capability signs a message (`crypto.sign`), and `crypto.ed25519_verify`
     /// against the key's public half (`crypto.public_key`) accepts it. Without a
-    /// granted key, a `SigningKey` parameter is refused, and the capability
+    /// granted key, a `Secret` parameter is refused, and the capability
     /// surfaces in the footprint.
     #[test]
     fn crypto_signing_round_trips_in_witchy() {
-        let src = "import crypto\nfn main(console: Console, signer: SigningKey):\n    let msg = \"sign me\"\n    let sig = crypto.sign(signer, msg)\n    print(console, if crypto.ed25519_verify(crypto.public_key(signer), msg, sig): \"verified\" else: \"FAILED\")\n";
+        let src = "import crypto\nfn main(console: Console, signer: Secret):\n    let msg = \"sign me\"\n    let sig = crypto.sign(signer, msg)\n    print(console, if crypto.ed25519_verify(crypto.public_key(signer), msg, sig): \"verified\" else: \"FAILED\")\n";
         let module = parser::parse_module(src).expect("parse");
         let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
@@ -4086,16 +4086,16 @@ mod example_tests {
             .expect("run");
         assert_eq!(out, vec!["verified"]);
 
-        // A `SigningKey` parameter without a host-granted key is refused.
-        let m2 = parser::parse_module("fn main(console: Console, s: SigningKey):\n    print(console, \"x\")\n").expect("parse");
+        // A `Secret` parameter without a host-granted key is refused.
+        let m2 = parser::parse_module("fn main(console: Console, s: Secret):\n    print(console, \"x\")\n").expect("parse");
         let l2 = crate::linker::link(vec![("main".into(), m2)], "main").expect("link");
         assert!(interpreter::run_module_signed(l2, ".", Vec::new(), Vec::new(), None).is_err());
 
         // The signing authority surfaces in the capability footprint.
         let fp = crate::capabilities::analyze(
-            &parser::parse_module("fn main(console: Console, s: SigningKey):\n    print(console, \"x\")\n").expect("parse"),
+            &parser::parse_module("fn main(console: Console, s: Secret):\n    print(console, \"x\")\n").expect("parse"),
         );
-        assert!(fp.total.contains_key("SigningKey"), "SigningKey should appear in the footprint");
+        assert!(fp.total.contains_key("Secret"), "Secret should appear in the footprint");
     }
 
     /// `compiler.footprint` exposes witchy's own capability analyzer to witchy
@@ -4803,7 +4803,7 @@ fn yn(b: Bool) -> String:
         assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
     }
 
-    /// The SigningKey capability is enforced in the WASM sandbox: with the same
+    /// The Secret capability is enforced in the WASM sandbox: with the same
     /// seed granted, sign/public_key/verify produce byte-identical results on
     /// both backends (Ed25519 is deterministic), and a module importing the
     /// signing ops cannot instantiate without the grant — the seed never enters
@@ -4811,7 +4811,7 @@ fn yn(b: Bool) -> String:
     #[test]
     fn signing_key_compiles_to_wasm_and_is_gated() {
         use crate::runtime::{Capabilities, Runtime};
-        let src = "import crypto\nfn main(console: Console, signer: SigningKey):\n    let msg = \"sign me\"\n    let sig = crypto.sign(signer, msg)\n    print(console, crypto.public_key(signer))\n    print(console, sig)\n    print(console, if crypto.ed25519_verify(crypto.public_key(signer), msg, sig): \"verified\" else: \"FAILED\")\n";
+        let src = "import crypto\nfn main(console: Console, signer: Secret):\n    let msg = \"sign me\"\n    let sig = crypto.sign(signer, msg)\n    print(console, crypto.public_key(signer))\n    print(console, sig)\n    print(console, if crypto.ed25519_verify(crypto.public_key(signer), msg, sig): \"verified\" else: \"FAILED\")\n";
         let module = parser::parse_module(src).expect("parse");
         let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");

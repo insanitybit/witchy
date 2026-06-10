@@ -69,7 +69,7 @@ fn main(console: Console):
 Builtins: `Int`, `Float`, `Bool`, `String`, `Duration`, `Nil` (the unit type),
 `List(a)`, `Dict(k, v)`, tuples `(a, b, ...)`, function types
 `fn(Int, String) -> Bool`, and the capability types (`Console`, `Clock`, `Env`,
-`Dir[...]`, `Net[...]`, `SigningKey` — see [capabilities.md](capabilities.md)).
+`Dir[...]`, `Net[...]`, `Secret` — see [capabilities.md](capabilities.md)).
 
 **Algebraic data types.** One `type` declaration covers enums, tagged unions,
 and records:

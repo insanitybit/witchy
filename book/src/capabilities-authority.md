@@ -13,7 +13,7 @@ capabilities:
 | `Env` | reading environment variables |
 | `Dir` | access to a directory subtree |
 | `Net` | access to the network |
-| `SigningKey` | signing with a private key |
+| `Secret` | signing with a private key |
 
 The defining property: **you cannot construct one.** There is no `Console()`,
 no `Dir.open("/")`, no global `stdin`. The type checker knows these types have

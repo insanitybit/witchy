@@ -173,7 +173,7 @@ pub enum Ty {
     Console,
     Clock,
     Env,
-    SigningKey,
+    Secret,
     Subject,
     Dir(DirRights),
     Net(NetRights),
@@ -210,7 +210,7 @@ impl fmt::Display for Ty {
             Ty::Console => write!(f, "Console"),
             Ty::Clock => write!(f, "Clock"),
             Ty::Env => write!(f, "Env"),
-            Ty::SigningKey => write!(f, "SigningKey"),
+            Ty::Secret => write!(f, "Secret"),
             Ty::Subject => write!(f, "Subject"),
             Ty::Dir(r) => write!(f, "{r}"),
             Ty::Net(r) => write!(f, "{r}"),
@@ -332,7 +332,7 @@ fn check_unique_functions(module: &Module) -> Result<(), TypeError> {
 /// (`Option`/`Result`/`Dict`). Any other named type must be declared (a `type`
 /// or an actor) or be a lowercase generic parameter.
 const BUILTIN_TYPE_NAMES: &[&str] = &[
-    "Int", "Float", "Duration", "String", "Bool", "Nil", "Console", "Clock", "Env", "SigningKey",
+    "Int", "Float", "Duration", "String", "Bool", "Nil", "Console", "Clock", "Env", "Secret",
     "Subject", "Dir", "Net", "Socket", "Listener", "List", "Option", "Result", "Dict",
     "BuildOut", "BuildRead", "BuildEnv", "BuildNet", "BuildExec",
 ];
@@ -428,7 +428,7 @@ fn check_type_names(module: &Module) -> Result<(), TypeError> {
 /// authority (the rights of `Dir`/`Net` don't matter here — any are grantable).
 pub(crate) fn is_capability_type(t: &ast::Type) -> bool {
     matches!(t, ast::Type::Named(n, _)
-        if matches!(n.as_str(), "Console" | "Clock" | "Env" | "Dir" | "Net" | "SigningKey"))
+        if matches!(n.as_str(), "Console" | "Clock" | "Env" | "Dir" | "Net" | "Secret"))
 }
 
 /// Whether `t` is a *build-time* capability — the parallel set granted only to a
@@ -469,7 +469,7 @@ fn check_main_signature(module: &Module) -> Result<(), TypeError> {
         };
         return terr(format!(
             "`main` parameter `{}` {found}, but `main` may only take host capabilities \
-             (Console, Clock, Env, Dir, Net, SigningKey) or `List(String)` for command-line args",
+             (Console, Clock, Env, Dir, Net, Secret) or `List(String)` for command-line args",
             p.name
         ));
     }
@@ -629,7 +629,7 @@ impl Checker {
             "Console" => Ty::Console,
             "Clock" => Ty::Clock,
             "Env" => Ty::Env,
-            "SigningKey" => Ty::SigningKey,
+            "Secret" => Ty::Secret,
             "Subject" => Ty::Subject,
             "Dir" => Ty::Dir(dir_rights(args)),
             "Net" => Ty::Net(net_rights(args)),
@@ -673,7 +673,7 @@ impl Checker {
                 "Console" => Ty::Console,
             "Clock" => Ty::Clock,
             "Env" => Ty::Env,
-            "SigningKey" => Ty::SigningKey,
+            "Secret" => Ty::Secret,
                 "Subject" => Ty::Subject,
                 "Dir" => Ty::Dir(dir_rights(args)),
                 "Net" => Ty::Net(net_rights(args)),
@@ -880,7 +880,7 @@ impl Checker {
             Ty::Console
                 | Ty::Clock
                 | Ty::Env
-                | Ty::SigningKey
+                | Ty::Secret
                 | Ty::Subject
                 | Ty::Dir(_)
                 | Ty::Net(_)

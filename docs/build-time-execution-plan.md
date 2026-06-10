@@ -103,6 +103,18 @@ computed (Phase 1), execution still pending.
 
 Make the `build` step actually run, confined.
 
+**Soundness requirement for auto-execution (audit before and after).** A build
+step cannot *modify* existing source — `BuildOut` is confined to a fresh
+per-rune output sandbox (path-escape rejected, tested) and `BuildRead` is
+read-only — but the source it *generates* is linked into the program, and
+generated code can declare capability-typed signatures. So when `witchy build`
+auto-runs build steps (Phase 2b), the pipeline must recompute the rune's
+footprint over **shipped + generated** source and run the widening gate against
+the locked baseline; generated source that widens either axis blocks exactly
+like a version bump would. (Defense in depth: a new runtime demand also breaks
+the consumer's type-check at the call site, and generated modules may not shadow
+std — but the recompute+gate is the explicit, auditable check.)
+
 *Phase 2a done (interpreter path):* `interpreter::run_build_step(module, BuildGrants)`
 mints the build caps for the `build` entrypoint from confined grants (a `BuildOut`
 output dir, an optional `BuildRead` root, `BuildEnv` key allow-list) and runs it;

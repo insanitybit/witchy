@@ -62,13 +62,13 @@ The canonical content hash of a rune's source tree, as `sha256:<hex>`. Pass para
 
 Verify an Ed25519 signature. `public_key` and `signature` are hex-encoded; `message` is the raw string. Total: malformed input or a bad signature yields `false`, never an error.
 
-#### `fn sign(key: SigningKey, message: String) -> String`
+#### `fn sign(key: Secret, message: String) -> String`
 
-Sign `message` with a `SigningKey` capability (the host grants it; it cannot be forged), returning the hex signature.
+Sign `message` with a `Secret` capability (the host grants it; it cannot be forged), returning the hex signature.
 
-#### `fn public_key(key: SigningKey) -> String`
+#### `fn public_key(key: Secret) -> String`
 
-The hex Ed25519 public key for a `SigningKey` — what verifiers check against.
+The hex Ed25519 public key for a `Secret` — what verifiers check against.
 
 ## `csv`
 
