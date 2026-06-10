@@ -1,9 +1,11 @@
 # Appendix: The Standard Library
 
 witchy ships ~30 standard-library modules. Bring one in with `import name` and
-call its functions module-qualified (`list.map`, `string.join`). This appendix
-is a map; the full, function-by-function reference — generated from the library
-sources, so it's always current — is
+call its functions module-qualified (`list.map`, `string.join`). A module's
+*types and their constructors* come in unqualified, though — after `import json`
+you write `JsonInt(1)`, not `json.JsonInt(1)`. This appendix is a map; the full,
+function-by-function reference — generated from the library sources, so it's
+always current — is
 [docs/stdlib.md](https://github.com/insanitybit/witchy/blob/master/docs/stdlib.md).
 
 ## Collections and data

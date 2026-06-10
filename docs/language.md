@@ -436,10 +436,13 @@ fn main(console: Console):
     print(console, string.join(shouted, "-"))   // A-B-C
 ```
 
-`import name` brings a module in under its name; calls are module-qualified
-(`list.map`). Resolution order: a sibling `name.witchy` file, then the bundled
-standard library (30+ modules — see [stdlib.md](stdlib.md)). `pub` items are
-importable; everything else is module-private. Package dependencies ("runes")
+`import name` brings a module in under its name; **function** calls are
+module-qualified (`list.map`). A module's `pub` **types and their constructors**,
+however, come into scope *unqualified* — after `import json` you write
+`JsonInt(1)` and `JsonObject([...])`, not `json.JsonInt(1)`. Resolution order: a
+sibling `name.witchy` file, then the bundled standard library (30+ modules — see
+[stdlib.md](stdlib.md)). `pub` items are importable; everything else is
+module-private. Package dependencies ("runes")
 come from the manifest — see [package-manager.md](package-manager.md).
 
 ## 13. Entry point
