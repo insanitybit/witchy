@@ -10345,7 +10345,7 @@ fn main(console: Console):
     fn coven_witchy_signed_record_verifies_under_the_rust_verifier() {
         // The registry root public key for the seed = 31×0x00 then 0x01.
         let rootpub = "4cb5abf6ad79fbf5abbccafcc269d85cd2651ed4b885b5869f241aedf0a5ba29";
-        let record_json = r#"{"name":"acme/money","version":"1.0.0","state":"staged","hash":"sha256:000690f7a340df21196bf7dfa8447e0fb5877a4afd84c79529b292067d288fd6","runtime_footprint":[],"build_footprint":[],"determinism":"guaranteed","uploaded_by":"ci-bot","promoted_by":null,"second_factor":null,"provenance":"uploader=ci-bot|hash=sha256:000690f7a340df21196bf7dfa8447e0fb5877a4afd84c79529b292067d288fd6","sig":"62fc6ef3541f9a5154e0ad519497aaf6c1d54112c66f732d39665814c8eca6bd1bd024d77b44993945a8c359b7f3a815a107f60e612676987dbad96042ff0006"}"#;
+        let record_json = r#"{"name":"acme/money","version":"1.0.0","state":"staged","hash":"sha256:000690f7a340df21196bf7dfa8447e0fb5877a4afd84c79529b292067d288fd6","runtime_footprint":[],"build_footprint":[],"determinism":"guaranteed","uploaded_by":"ci-bot","promoted_by":null,"second_factor":null,"provenance":"uploader=ci-bot|hash=sha256:000690f7a340df21196bf7dfa8447e0fb5877a4afd84c79529b292067d288fd6","released_at":0,"sig":"bc9a32c54c0acf85fda29b4fba71caca659855c840052a1de8d9c42ffcb1515806db555c741bcf456abf069aba7ca1c8cf4c297a068db94b332a5d20686c7c03"}"#;
         let record: crate::pm::registry::Record =
             serde_json::from_str(record_json).expect("deserialize witchy-coven record");
         crate::pm::registry::verify_record_with(rootpub, &record)

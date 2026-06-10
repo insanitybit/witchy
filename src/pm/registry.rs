@@ -52,6 +52,11 @@ pub struct Record {
     pub second_factor: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provenance: Option<String>,
+    /// Unix seconds when this version was promoted to released. `0` = unknown
+    /// (legacy records), which is treated as past any cooldown. Signed — the
+    /// staging-cooldown window keys off it, so it must be tamper-evident.
+    #[serde(default)]
+    pub released_at: u64,
     /// Ed25519 signature (hex) over [`Record::signing_payload`], by the registry
     /// root key. Re-signed on every state transition.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -76,7 +81,7 @@ impl Record {
             State::Yanked => "yanked",
         };
         format!(
-            "coven-v1\nname={}\nversion={}\nstate={}\nhash={}\nrt={}\nbuild={}\nuploaded_by={}\npromoted_by={}\nfactor={}\nprovenance={}",
+            "coven-v1\nname={}\nversion={}\nstate={}\nhash={}\nrt={}\nbuild={}\nuploaded_by={}\npromoted_by={}\nfactor={}\nprovenance={}\nreleased_at={}",
             self.name,
             self.version,
             state,
@@ -87,13 +92,14 @@ impl Record {
             self.promoted_by.as_deref().unwrap_or(""),
             self.second_factor.as_deref().unwrap_or(""),
             self.provenance.as_deref().unwrap_or(""),
+            self.released_at,
         )
     }
 }
 
 const META: &str = "coven.json";
 
-fn now_unix() -> u64 {
+pub fn now_unix() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -333,6 +339,7 @@ impl LocalRegistry {
             uploaded_by: uploaded_by.to_string(),
             promoted_by: None,
             second_factor: None,
+            released_at: 0,
             // A verified trusted-publishing attestation (from the server) takes
             // precedence; otherwise provenance binds bytes -> uploader -> time,
             // with a declared source repo as an optional anchor.
@@ -395,6 +402,9 @@ impl LocalRegistry {
         record.state = State::Released;
         record.promoted_by = Some(promoter.to_string());
         record.second_factor = Some(second_factor.to_string());
+        // The release moment starts the staging-cooldown clock (§8): a fresh
+        // release is not resolvable until the window passes (or --allow-fresh).
+        record.released_at = now_unix();
         self.write_record(&mut record)?;
         self.rebuild_metadata()?;
 
@@ -533,17 +543,70 @@ fn require_token(token: Option<&super::trusted::IdToken>) -> PmResult<&super::tr
     })
 }
 
-/// Select the best version of a rune satisfying `req`: released always eligible,
-/// staged only when `include_staged`, yanked never. Shared by the local and
-/// remote registries so version-selection policy lives in exactly one place.
+// --- staging cooldown (§8) ---------------------------------------------------
+//
+// A freshly released version is not resolvable until it has been released for a
+// cooldown window — time for the ecosystem to notice a compromised release —
+// unless the consumer explicitly accepts it (`--allow-fresh`). The window is
+// `WITCHY_COOLDOWN_SECS` (default 72 hours); `released_at == 0` (legacy records)
+// is treated as past any window. Locked versions are unaffected: like yank, the
+// cooldown gates *new resolution* only.
+
+use std::sync::atomic::{AtomicBool, Ordering};
+
+static ALLOW_FRESH: AtomicBool = AtomicBool::new(false);
+
+/// Accept versions still inside their cooldown window for this invocation
+/// (the `--allow-fresh` flag).
+pub fn set_allow_fresh(v: bool) {
+    ALLOW_FRESH.store(v, Ordering::Relaxed);
+}
+
+pub fn cooldown_secs() -> u64 {
+    std::env::var("WITCHY_COOLDOWN_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(72 * 3600)
+}
+
+/// Whether a released record is still cooling down (and fresh ones aren't being
+/// accepted).
+fn cooling(r: &Record) -> bool {
+    if ALLOW_FRESH.load(Ordering::Relaxed) || r.released_at == 0 {
+        return false;
+    }
+    now_unix() < r.released_at.saturating_add(cooldown_secs())
+}
+
+/// Select the best version of a rune satisfying `req`: released always eligible
+/// (once its cooldown window has passed), staged only when `include_staged`,
+/// yanked never. Shared by the local and remote registries so version-selection
+/// policy lives in exactly one place.
 pub fn select_best(versions: Vec<Record>, req: &Req, include_staged: bool) -> Option<Record> {
     let mut candidates: Vec<Record> = versions
         .into_iter()
         .filter(|r| match r.state {
-            State::Released => true,
+            State::Released => !cooling(r),
             State::Staged => include_staged,
             State::Yanked => false,
         })
+        .filter(|r| Version::parse(&r.version).map(|v| req.matches(&v)).unwrap_or(false))
+        .collect();
+    candidates.sort_by(|a, b| {
+        Version::parse(&a.version)
+            .ok()
+            .cmp(&Version::parse(&b.version).ok())
+    });
+    candidates.pop()
+}
+
+/// A released version that *would* satisfy `req` but is still inside its
+/// cooldown window — so callers can explain "blocked by cooldown, use
+/// --allow-fresh" instead of a bare "no version found".
+pub fn cooling_match(versions: Vec<Record>, req: &Req) -> Option<Record> {
+    let mut candidates: Vec<Record> = versions
+        .into_iter()
+        .filter(|r| matches!(r.state, State::Released) && cooling(r))
         .filter(|r| Version::parse(&r.version).map(|v| req.matches(&v)).unwrap_or(false))
         .collect();
     candidates.sort_by(|a, b| {
@@ -675,6 +738,16 @@ impl Registry {
         }
     }
 
+    /// A released version that would satisfy `req` but is still inside its
+    /// staging-cooldown window — for "blocked by cooldown" diagnostics.
+    pub fn cooling_match(&self, name: &str, req: &Req) -> Option<Record> {
+        let versions = match self {
+            Registry::Local(r) => r.versions(name),
+            Registry::Remote(r) => r.versions(name),
+        };
+        cooling_match(versions, req)
+    }
+
     pub fn fetch(&self, name: &str, version: &str) -> PmResult<RuneSource> {
         match self {
             Registry::Local(r) => r.fetch(name, version),
@@ -780,6 +853,10 @@ mod tests {
     use super::*;
 
     fn tmp_registry() -> (LocalRegistry, PathBuf) {
+        // In-process tests publish and immediately resolve; zero the staging
+        // cooldown so they exercise their own subject. (The cooldown has its own
+        // e2e test, which runs in a subprocess with its own window.)
+        unsafe { std::env::set_var("WITCHY_COOLDOWN_SECS", "0") };
         let root = std::env::temp_dir().join(format!(
             "witchy-reg-{}-{}",
             std::process::id(),

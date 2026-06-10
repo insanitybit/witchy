@@ -346,6 +346,8 @@ mod tests {
     use super::*;
 
     fn tmp(label: &str) -> PathBuf {
+        // Tests promote and immediately resolve; zero the staging cooldown.
+        unsafe { std::env::set_var("WITCHY_COOLDOWN_SECS", "0") };
         let d = std::env::temp_dir().join(format!(
             "witchy-resolve-{label}-{}-{}",
             std::process::id(),

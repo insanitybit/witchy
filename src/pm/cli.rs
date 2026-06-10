@@ -598,6 +598,8 @@ fn cmd_run(rest: &[String]) -> PmResult<()> {
 fn cmd_add(rest: &[String]) -> PmResult<()> {
     let env = CovenEnv::load();
     let a = parse_args(rest);
+    // `--allow-fresh`: accept versions still inside their staging cooldown (§8).
+    super::registry::set_allow_fresh(a.has("--allow-fresh"));
     let spec = a
         .positional
         .first()
@@ -624,7 +626,17 @@ fn cmd_add(rest: &[String]) -> PmResult<()> {
             None => {
                 // Default to a caret on the latest released version.
                 let latest = env.registry.best_match(&name, &Req::Any, false).ok_or_else(|| {
-                    if env.registry.best_match(&name, &Req::Any, true).is_some() {
+                    if let Some(cooling) = env.registry.cooling_match(&name, &Req::Any) {
+                        let age = super::registry::now_unix().saturating_sub(cooling.released_at);
+                        super::PmError(format!(
+                            "`{name}`@{} was released {}h ago and is inside its {}h staging cooldown — \
+                             a fresh release is not resolvable yet (compromised-release protection). \
+                             Re-run with --allow-fresh to accept it now.",
+                            cooling.version,
+                            age / 3600,
+                            super::registry::cooldown_secs() / 3600,
+                        ))
+                    } else if env.registry.best_match(&name, &Req::Any, true).is_some() {
                         super::PmError(format!(
                             "`{name}` exists but is only STAGED, not released — it must be promoted (second factor) before it can be added"
                         ))
@@ -694,6 +706,7 @@ fn cmd_add(rest: &[String]) -> PmResult<()> {
 fn cmd_update(rest: &[String]) -> PmResult<()> {
     let env = CovenEnv::load();
     let a = parse_args(rest);
+    super::registry::set_allow_fresh(a.has("--allow-fresh"));
     let root = Path::new(".");
     let manifest = Manifest::load(root)?;
     let old_lock = Lockfile::load(root)?;

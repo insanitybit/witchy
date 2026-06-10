@@ -589,7 +589,14 @@ fn record_signature_valid(rootpub: String, text: String) -> Bool:
         Err(e) -> false
 
 fn record_payload(doc: Json) -> String:
-    "coven-v1\nname=" <> jget(doc, "name") <> "\nversion=" <> jget(doc, "version") <> "\nstate=" <> jget(doc, "state") <> "\nhash=" <> jget(doc, "hash") <> "\nrt=" <> string.join(json.get_strings(doc, "runtime_footprint"), ",") <> "\nbuild=\nuploaded_by=" <> jget(doc, "uploaded_by") <> "\npromoted_by=" <> jget(doc, "promoted_by") <> "\nfactor=" <> jget(doc, "second_factor") <> "\nprovenance=" <> jget(doc, "provenance")
+    "coven-v1\nname=" <> jget(doc, "name") <> "\nversion=" <> jget(doc, "version") <> "\nstate=" <> jget(doc, "state") <> "\nhash=" <> jget(doc, "hash") <> "\nrt=" <> string.join(json.get_strings(doc, "runtime_footprint"), ",") <> "\nbuild=\nuploaded_by=" <> jget(doc, "uploaded_by") <> "\npromoted_by=" <> jget(doc, "promoted_by") <> "\nfactor=" <> jget(doc, "second_factor") <> "\nprovenance=" <> jget(doc, "provenance") <> "\nreleased_at=" <> int_to_string(jget_int(doc, "released_at"))
+
+fn jget_int(doc: Json, key: String) -> Int:
+    match json.get(doc, key):
+        Some(j) -> match json.as_int(j):
+            Some(n) -> n
+            None -> 0
+        None -> 0
 
 // --- registry/url helpers ----------------------------------------------------
 fn hostport(addr: String) -> (String, Int):

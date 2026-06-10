@@ -157,6 +157,10 @@ impl Sandbox {
         cmd.current_dir(dir)
             .env("WITCHY_HOME", &self.home)
             .env("WITCHY_USER", user)
+            // Most tests publish and immediately consume; zero the staging
+            // cooldown so they exercise their own subject. The cooldown itself
+            // has a dedicated test that overrides this.
+            .env("WITCHY_COOLDOWN_SECS", "0")
             .args(args);
         if let Some(u) = &self.coven_url {
             cmd.env("COVEN_URL", u);
@@ -171,6 +175,7 @@ impl Sandbox {
         cmd.current_dir(dir)
             .env("WITCHY_HOME", &self.home)
             .env("WITCHY_USER", user)
+            .env("WITCHY_COOLDOWN_SECS", "0")
             .env("COVEN_ID_TOKEN", id_token)
             .args(args);
         if let Some(u) = &self.coven_url {
@@ -1069,6 +1074,43 @@ fn build_steps_are_default_deny_even_when_safe() {
         "an empty grants section accepts a BuildOut-only step: {}",
         stderr(&out)
     );
+}
+
+/// Staging cooldown (§8): a freshly released version is not resolvable until its
+/// cooldown window passes — protection against a compromised release being
+/// consumed the moment it lands — unless the consumer explicitly accepts it with
+/// `--allow-fresh`. The `released_at` stamp is part of the signed record, so the
+/// window can't be erased by metadata tampering.
+#[test]
+fn fresh_releases_cool_down_before_resolving() {
+    let sb = Sandbox::new("cooldown");
+    let app = new_app(&sb);
+    sb.publish_lib("acme/fresh", "1.0.0", "fn f(s: String) -> String:\n    s\n");
+
+    // With a real window in force, the just-promoted version is refused…
+    let run_cooled = |args: &[&str]| {
+        let mut cmd = Command::new(BIN);
+        cmd.current_dir(&app)
+            .env("WITCHY_HOME", &sb.home)
+            .env("WITCHY_USER", "dev")
+            .env("WITCHY_COOLDOWN_SECS", "3600")
+            .args(args);
+        if let Some(u) = &sb.coven_url {
+            cmd.env("COVEN_URL", u);
+        }
+        cmd.output().expect("spawn witchy")
+    };
+    let out = run_cooled(&["add", "acme/fresh"]);
+    assert!(!out.status.success(), "a release inside its cooldown must not resolve");
+    let msg = stderr(&out);
+    assert!(
+        msg.contains("staging cooldown") && msg.contains("--allow-fresh"),
+        "the refusal should explain the window and the override: {msg}"
+    );
+
+    // …and `--allow-fresh` is the explicit acceptance.
+    let out = run_cooled(&["add", "acme/fresh", "--allow-fresh"]);
+    assert!(out.status.success(), "--allow-fresh should accept: {}", stderr(&out));
 }
 
 /// The committed `examples/projects/todo` workspace — a `todo` app that depends

@@ -133,7 +133,7 @@ fn publish_checked(store: Dir, key: Secret, clock: Clock, manifest: String, name
         let hash = content_hash(files)
         store_source(store, name, version, files)
         let provenance = "uploader=" <> uploaded_by <> "|hash=" <> hash
-        let rec = sign_record(key, name, version, "staged", hash, computed, uploaded_by, "", "", provenance)
+        let rec = sign_record(key, name, version, "staged", hash, computed, uploaded_by, "", "", provenance, 0)
         write(store, meta_path(name, version), rec)
         rebuild_metadata(store, key, clock)
         server.json(200, rec)
@@ -175,7 +175,7 @@ fn promote_checked(store: Dir, key: Secret, clock: Clock, name: String, version:
         let rt = record_array(store, name, version, "runtime_footprint")
         let uploaded_by = record_field(store, name, version, "uploaded_by")
         let provenance = record_field(store, name, version, "provenance")
-        let rec = sign_record(key, name, version, "released", hash, rt, uploaded_by, promoter, factor, provenance)
+        let rec = sign_record(key, name, version, "released", hash, rt, uploaded_by, promoter, factor, provenance, now(clock) / 1000)
         write(store, meta_path(name, version), rec)
         rebuild_metadata(store, key, clock)
         let delta = rights.uncovered(latest_released_footprint(store, name, version), rt)
@@ -200,7 +200,7 @@ fn do_yank(store: Dir, key: Secret, clock: Clock, doc: Json) -> Response:
         let promoted_by = record_field(store, name, version, "promoted_by")
         let factor = record_field(store, name, version, "second_factor")
         let provenance = record_field(store, name, version, "provenance")
-        let rec = sign_record(key, name, version, "yanked", hash, rt, uploaded_by, promoted_by, factor, provenance)
+        let rec = sign_record(key, name, version, "yanked", hash, rt, uploaded_by, promoted_by, factor, provenance, record_int(store, name, version, "released_at"))
         write(store, meta_path(name, version), rec)
         rebuild_metadata(store, key, clock)
         server.json(200, json.encode(JsonObject([("ok", JsonBool(true))])))
@@ -253,7 +253,7 @@ fn all_target_digests(store: Dir) -> List((String, Json)):
 // digest the snapshot pins, so a record swapped to an older state stops matching.
 fn record_signing_payload(text: String) -> String:
     match json.decode(text):
-        Ok(doc) -> signing_payload(jstr(doc, "name"), jstr(doc, "version"), jstr(doc, "state"), jstr(doc, "hash"), json.get_strings(doc, "runtime_footprint"), jstr(doc, "uploaded_by"), jstr(doc, "promoted_by"), jstr(doc, "second_factor"), jstr(doc, "provenance"))
+        Ok(doc) -> signing_payload(jstr(doc, "name"), jstr(doc, "version"), jstr(doc, "state"), jstr(doc, "hash"), json.get_strings(doc, "runtime_footprint"), jstr(doc, "uploaded_by"), jstr(doc, "promoted_by"), jstr(doc, "second_factor"), jstr(doc, "provenance"), jint(doc, "released_at"))
         Err(e) -> ""
 
 fn current_snapshot_version(store: Dir) -> Int:
@@ -448,13 +448,15 @@ fn insert_json_pair(sorted: List((String, Json)), item: (String, Json)) -> List(
 // The canonical, signed view of a record — every security-relevant field except
 // the signature. Byte-identical to src/pm/registry.rs::Record::signing_payload,
 // so a witchy-signed record verifies under the Rust ed25519 verifier.
-fn signing_payload(name: String, version: String, state: String, hash: String, rt: List(String), uploaded_by: String, promoted_by: String, factor: String, provenance: String) -> String:
-    "coven-v1\nname=" <> name <> "\nversion=" <> version <> "\nstate=" <> state <> "\nhash=" <> hash <> "\nrt=" <> string.join(rt, ",") <> "\nbuild=\nuploaded_by=" <> uploaded_by <> "\npromoted_by=" <> promoted_by <> "\nfactor=" <> factor <> "\nprovenance=" <> provenance
+fn signing_payload(name: String, version: String, state: String, hash: String, rt: List(String), uploaded_by: String, promoted_by: String, factor: String, provenance: String, released_at: Int) -> String:
+    "coven-v1\nname=" <> name <> "\nversion=" <> version <> "\nstate=" <> state <> "\nhash=" <> hash <> "\nrt=" <> string.join(rt, ",") <> "\nbuild=\nuploaded_by=" <> uploaded_by <> "\npromoted_by=" <> promoted_by <> "\nfactor=" <> factor <> "\nprovenance=" <> provenance <> "\nreleased_at=" <> int_to_string(released_at)
 
-// Build + sign a record, returning its coven.json text.
-fn sign_record(key: Secret, name: String, version: String, state: String, hash: String, rt: List(String), uploaded_by: String, promoted_by: String, factor: String, provenance: String) -> String:
-    let sig = crypto.sign(key, signing_payload(name, version, state, hash, rt, uploaded_by, promoted_by, factor, provenance))
-    json.encode(JsonObject([("name", JsonString(name)), ("version", JsonString(version)), ("state", JsonString(state)), ("hash", JsonString(hash)), ("runtime_footprint", JsonArray(strs_json(rt))), ("build_footprint", JsonArray([])), ("determinism", JsonString("guaranteed")), ("uploaded_by", JsonString(uploaded_by)), ("promoted_by", opt_json(promoted_by)), ("second_factor", opt_json(factor)), ("provenance", opt_json(provenance)), ("sig", JsonString(sig))]))
+// Build + sign a record, returning its coven.json text. `released_at` (unix
+// seconds; 0 = not yet released) starts the consumer-side staging cooldown, so
+// it is part of the signed payload — tamper-evident like every other field.
+fn sign_record(key: Secret, name: String, version: String, state: String, hash: String, rt: List(String), uploaded_by: String, promoted_by: String, factor: String, provenance: String, released_at: Int) -> String:
+    let sig = crypto.sign(key, signing_payload(name, version, state, hash, rt, uploaded_by, promoted_by, factor, provenance, released_at))
+    json.encode(JsonObject([("name", JsonString(name)), ("version", JsonString(version)), ("state", JsonString(state)), ("hash", JsonString(hash)), ("runtime_footprint", JsonArray(strs_json(rt))), ("build_footprint", JsonArray([])), ("determinism", JsonString("guaranteed")), ("uploaded_by", JsonString(uploaded_by)), ("promoted_by", opt_json(promoted_by)), ("second_factor", opt_json(factor)), ("provenance", opt_json(provenance)), ("released_at", JsonInt(released_at)), ("sig", JsonString(sig))]))
 
 // --- the store: content addressing + source IO -------------------------------
 fn meta_path(name: String, version: String) -> String:
@@ -549,6 +551,13 @@ fn record_field(store: Dir, name: String, version: String, field: String) -> Str
             Ok(doc) -> jstr(doc, field)
             Err(e) -> ""
         None -> ""
+
+fn record_int(store: Dir, name: String, version: String, field: String) -> Int:
+    match read_record(store, name, version):
+        Some(text) -> match json.decode(text):
+            Ok(doc) -> jint(doc, field)
+            Err(e) -> 0
+        None -> 0
 
 fn record_array(store: Dir, name: String, version: String, field: String) -> List(String):
     match read_record(store, name, version):

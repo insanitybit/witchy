@@ -80,7 +80,7 @@ Commit the lockfile. Same lock ⇒ same bytes, same authority, offline.
 | Command | What it does |
 |---|---|
 | `witchy new <name>` / `init` | scaffold a rune (namespaced names like `acme/lib` work) |
-| `witchy add <pkg>[@version] [--path <p>]` | resolve + add a dependency — **gated** on widening (either axis) |
+| `witchy add <pkg>[@version] [--path <p>]` | resolve + add a dependency — **gated** on widening (either axis), and a release younger than the staging cooldown (72h; `WITCHY_COOLDOWN_SECS`) is refused unless `--allow-fresh` |
 | `witchy build` | resolve, verify hashes, link, type-check; writes/uses the lock |
 | `witchy run` | `build`, then run the app rune |
 | `witchy update [--allow-cap K] [--allow-build-cap K]` | re-resolve; **blocked** if the tree's footprint would widen on either axis until you accept |

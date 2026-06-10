@@ -163,8 +163,13 @@ made it bite. Verified working end to end: `[build.grants."name"]` parsing with
 `witchy audit`/`why-cap` reporting both axes. Added on top: **default-deny on
 execution itself** — a rune that ships a build step at all is refused until the
 grants section exists (an empty section accepts execution with only `BuildOut`).
-Still pending here: coven surfacing the build footprint at the promotion
-checkpoint, and staging cooldowns.
+Staging cooldowns are now built too: records carry a **signed** `released_at`
+(stamped at promote in both the Rust registry and the witchy coven — the signing
+payload gained a `released_at=` line in all three implementations), and a fresh
+release is not resolvable until `WITCHY_COOLDOWN_SECS` (default 72h) passes,
+unless `add`/`update` is run with `--allow-fresh`. Locked versions are
+unaffected (like yank, the cooldown gates *new resolution* only). Still pending
+here: coven surfacing the build footprint at the promotion checkpoint.
 
 **Manifest (`src/pm/` + `witchy.toml` parsing)**
 - Parse `[build.grants."ns/name"]` granting attenuated build caps to a specific

@@ -271,9 +271,11 @@ rebuilds are deterministic; provenance ties bytes to public source history.
 > `build_footprint` recorded in the lockfile, the `add`/`update` gate blocking on
 > build-axis widening (`--allow-build-cap`), and **default-deny on execution
 > itself** — a rune that ships a build step at all is refused until the grants
-> section exists. Pending: the zero-ambient WASM-sandbox execution path,
-> `BuildNet`, auto-running build steps during `witchy build`, and staging
-> cooldowns (§8).
+> section exists. Staging cooldowns are also built (consumer-side): a freshly
+> released version carries a signed `released_at` and is not resolvable until
+> its window passes (`WITCHY_COOLDOWN_SECS`, default 72h) unless `--allow-fresh`.
+> Pending: the zero-ambient WASM-sandbox execution path, `BuildNet`, and
+> auto-running build steps during `witchy build`.
 
 Assume consumer-side build execution *will* eventually be required (generating
 witchy source from a schema, etc.). Model it now so that when it lands it is
@@ -474,10 +476,13 @@ Promotion requirements (the "double confirmation"):
    footprint change before it reaches anyone.
 4. **Non-repudiable audit.** Every promotion is recorded in the transparency log
    (who, when, factor type, footprints at promotion). Maintainers can monitor for
-   unexpected promotions — detection even if both factors leak. Optional
-   per-namespace **cooldown**: a version must sit staged for a review/scan window,
-   or auto-promote after T only if no objection is filed (opt-in; default is
-   explicit human promotion).
+   unexpected promotions — detection even if both factors leak. And the
+   **staging cooldown** (implemented, consumer-side): every record carries a
+   signed `released_at`, and a freshly released version is not resolvable until
+   its window passes (`WITCHY_COOLDOWN_SECS`, default 72 hours) unless the
+   consumer explicitly accepts it with `--allow-fresh` — so a compromised
+   release cannot be consumed the moment it lands, and the window cannot be
+   erased by metadata tampering (the stamp is under the record signature).
 
 This composes with the rest: a hijacked maintainer (T5) or a stolen CI token
 (T8) can stage a malicious version, but releasing it still demands a separate

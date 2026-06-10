@@ -85,7 +85,11 @@ shuts down namespace hijacking.
 Release is two-phase. A publish lands **staged** — visible but not resolvable.
 A separate **promote**, by a different identity and with a second factor, makes
 it a real release. Separation of duties is enforced: the promoter can't be the
-uploader. Registry metadata is signed (TUF-style) to resist rollback and
+uploader. And even once released, a version sits out a **staging cooldown**
+(72 hours by default) before `add`/`update` will resolve it — time for a
+compromised release to be noticed before anyone consumes it — unless you accept
+it explicitly with `--allow-fresh`. The release timestamp is part of the signed
+record, so the window can't be erased by tampering. Registry metadata is signed (TUF-style) to resist rollback and
 tampering, and lockfiles pin content hashes, the registry's key, and the full
 provenance chain, all re-checkable offline with `witchy verify`.
 
