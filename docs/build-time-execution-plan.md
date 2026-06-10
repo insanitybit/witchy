@@ -1,0 +1,180 @@
+# Implementation Plan: Build-Time Execution as a Capability
+
+Status: **plan, not yet implemented.** This is the roadmap for building the
+build-time half of the capability model. The *design* already exists in
+[package-manager.md](package-manager.md) §4 (the footprint model) and §7.1
+(build-time execution as a capability); this document turns that design into a
+phased, code-grounded implementation plan.
+
+## Why this, and the reframing
+
+Runtime capability safety is already complete **by the type system**: capabilities
+are unforgeable, enter only at `main`, and flow solely by argument, so a function
+cannot exercise authority it was not handed, and a dependency cannot widen what it
+demands without breaking its callers' type-checking. The runtime `witchy caps` /
+`caps-diff` is therefore *reporting and pre-flight diffing over a guarantee the
+types already provide* — useful for governance, but not a separate line of
+defense.
+
+The one axis that is **not** in your program's type-checked call graph is
+**build-time execution**: code a rune runs while *being built* (codegen from a
+schema, etc.). That is the npm `postinstall` / cargo `build.rs` attack surface.
+witchy eliminates ambient build execution entirely (resolve/install run no rune
+code), and §7.1 models the legitimate cases as the *same* capability machinery as
+runtime — typed, statically computed, granted per-rune, lock-pinned, gated.
+
+**So the audit/footprint feature should be framed as a supply-chain tool with two
+axes, and build-time is the headline** — it is the part capability *analysis*
+uniquely defends, beyond what types already enforce.
+
+## Conventions this plan adopts (faithful to §7.1)
+
+- **Build step = a witchy program with a `build` entrypoint.** A rune that ships
+  one places it at `src/build.witchy` with `fn build(out: BuildOut, ...)`. It is
+  validated like `main` (only build capabilities as parameters), runs in a
+  zero-ambient sandboxed WASM actor, and its *only* product is generated `.witchy`
+  source written through `out`.
+- **Five build capability types**, a parallel set to the runtime caps, each
+  attenuable cap-std style:
+  - `BuildOut` — write generated source into this rune's own confined output
+    sandbox. The only cap granted automatically.
+  - `BuildRead` — read specific project files/dirs (rights/scope like `Dir`).
+  - `BuildEnv` — read specific named env vars.
+  - `BuildNet` — fetch from an explicit host allow-list.
+  - `BuildExec` — invoke a specific named external tool (most sensitive; outputs
+    hashed into the lock).
+- **Per-rune grants in the consuming `witchy.toml`** under
+  `[build.grants."ns/name"]`; safe by default (only `BuildOut` without a grant).
+- **The gate (§10) extends to the build axis**: an upgrade whose build step newly
+  demands a build cap is blocked until `--allow-build-cap` + a grant.
+
+---
+
+## Phase 1 — Static build footprint + the `build` entrypoint + caps reframe
+
+Compiler-only; no execution. Self-contained, fully testable, and unblocks the
+rest. This is "audit, reframed around build-time" with nothing actually running.
+
+**Type system (`src/typeck.rs`)**
+- Add `BuildOut`, `BuildRead(DirRights)`, `BuildEnv`, `BuildNet(NetRights)`,
+  `BuildExec` to the `Ty` capability variants and the `Type`→`Ty` mapping
+  (mirroring `Dir`/`Net`). Decide rights parameterization: `BuildRead` reuses
+  `DirRights`-style scoping; `BuildNet` reuses host-list scoping; `BuildEnv`/
+  `BuildExec` carry a name list (new small rights type, or reuse a string set).
+- Extend `is_capability_type` (line ~414) and the internal `is_capability`
+  (Ty-level) to recognize the build kinds.
+- Add `check_build_signature` (sibling of `check_main_signature`, line ~432):
+  a `build` function may take only build capabilities; runtime caps / `List(String)`
+  are rejected with a clear message. A module with no `build` fn is fine.
+
+**Footprint analyzer (`src/capabilities.rs`)**
+- Make `Footprint` two-axis: keep the existing entries as the *runtime* axis and
+  add a parallel *build* axis (computed over the `build` entrypoint's signature).
+  Likely: `Footprint { runtime: Vec<Entry>, build: Vec<Entry>, total_runtime,
+  total_build }`, or tag each `Entry`/`CapSet` element with an axis.
+- `host_cap` / `caps_in` classify the build kinds onto the build axis.
+- `analyze` (line ~313) additionally walks the `build` entrypoint.
+- `diff` / `FootprintDiff::widened` already operate on `CapSet` lattices — extend
+  to report widening per axis (runtime widening vs. build widening are distinct,
+  high-signal events).
+
+**Tooling (`src/main.rs`)**
+- `witchy caps`: print both axes, clearly labeled (e.g. a `runtime` section and a
+  `build` section; omit the build section when there's no build step).
+- `witchy caps-diff`: exit non-zero on widening of *either* axis; label which.
+
+**Tests** (mirror the existing `capabilities.rs` tests): a `build` entrypoint's
+footprint is the union of its build-cap params; pure `build` → empty build
+footprint; `caps-diff` flags a build-axis widening; `check_build_signature`
+rejects a runtime cap in `build`.
+
+**Docs (stub):** note in package-manager.md that the build footprint is now
+computed (Phase 1), execution still pending.
+
+---
+
+## Phase 2 — Sandboxed build execution
+
+Make the `build` step actually run, confined.
+
+**Runtime (`src/runtime.rs`)**
+- Extend `Capabilities` with the build-time grants and add build host functions,
+  linked into the per-actor `Linker` exactly like the runtime host fns. Start
+  with `BuildOut`: a `build_out_write(rel, bytes)` that writes into a confined
+  per-rune output directory (reuse `interpreter::resolve_write` confinement, as
+  the runtime Dir host fns already do — see `host_dir_write`).
+- A build actor is spawned with **zero ambient authority**: only the build host
+  functions for the caps it was granted are linked; everything else is absent, so
+  it physically cannot call them (same property as the runtime sandbox).
+
+**Driver (`src/main.rs` `build`/run pipeline)**
+- Before compiling the consumer, for each rune with a `src/build.witchy`: compile
+  it to WASM, run `build(...)` in the sandbox with its granted caps, collect the
+  generated `.witchy` from its output sandbox, and feed it into the normal
+  parse→link→type-check pipeline alongside the rune's hand-written source.
+- Output is cached by (input hash + build footprint + grants) for determinism
+  (§7.2); deterministic steps rebuild for free.
+
+Then add the remaining host functions, each attenuated: `BuildRead` (confined
+Dir read), `BuildEnv` (named keys only), `BuildNet` (host allow-list), `BuildExec`
+(named tool; content-hash outputs into the lock).
+
+---
+
+## Phase 3 — Manifest grants + lock + the gate
+
+Wire the safe-by-default grant model and the widening gate.
+
+**Manifest (`src/pm/` + `witchy.toml` parsing)**
+- Parse `[build.grants."ns/name"]` granting attenuated build caps to a specific
+  rune's build step. Absent ⇒ that rune's build step gets only `BuildOut`.
+- A rune whose build step *demands* an ungranted cap **fails the build**, naming
+  the rune and the demanded cap ("rune `acme/foo` wants `BuildNet` at build time;
+  grant it in `[build.grants.\"acme/foo\"]` or it cannot build").
+
+**Lock + gate (`src/pm/`, coven)**
+- The lockfile records each rune's `build_footprint` (demanded) and the grants in
+  effect; the build runs only if grant ⊇ demand.
+- Extend block-on-widening (§10) to the build axis: `witchy add`/`update` block
+  when a new version's build step newly demands a build cap; `--allow-build-cap`
+  to accept, which also adds the grant.
+- coven recomputes the build footprint server-side at publish (never trusts
+  declared metadata), and the promotion checkpoint (§8.1) surfaces "wants `exec
+  protoc` at build time" before download.
+
+---
+
+## Phase 4 — Docs reframe
+
+Make the framing match the model.
+
+- **README**: the supply-chain section leads with "runtime authority is enforced
+  by the type system; the mechanism capability *analysis* uniquely adds is the
+  build-time footprint + gate." Adjust the three-bullet pitch accordingly.
+- **Book** (`book/src/`): the capabilities chapters and the packages chapter get
+  the same reframe; add a short "Build-time capabilities" section once Phase 2
+  lands so examples are real.
+- **package-manager.md**: promote §7.1 from "designed" to "implemented" as phases
+  land; keep the threat table (T1/T5) accurate.
+
+---
+
+## Open decisions to settle before Phase 1
+
+1. **Rights shape for `BuildEnv`/`BuildExec`.** A named-string-set rights type
+   (e.g. `BuildEnv["TARGET","HOST"]`, `BuildExec["protoc"]`) vs. a coarse kind
+   with the names living only in the manifest grant. The footprint gates on *kind*
+   (§4.4), so names can live in the grant; carrying them in the type is nicer for
+   reading a signature but adds type-system surface. Leaning: kind in the type,
+   names in the grant, to keep the type system small.
+2. **Build entrypoint discovery.** `src/build.witchy` with `fn build(...)` (chosen
+   here) vs. a `[build] entry = "..."` manifest key. File convention is simpler
+   and matches `main`'s "it's just a function" feel.
+3. **Output-sandbox location** for `BuildOut` (per-rune dir under the store/target)
+   and how generated source is namespaced so two runes' build outputs can't
+   collide — reuse the existing confinement (`resolve_write`) rooted per rune.
+4. **Caching key** details for §7.2 reproducibility (input hash composition).
+
+These are refinements, not forks — §7.1 fixes the model. Recommend resolving #1–#2
+at the start of Phase 1 (they shape the type-system additions) and #3–#4 at
+Phase 2.
