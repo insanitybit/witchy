@@ -1235,7 +1235,11 @@ fn run_file_sandboxed(
     let mut actor = rt
         .spawn(wat.as_bytes(), caps, RUN_MEMORY_PAGES)
         .map_err(|e| e.to_string())?;
-    actor.run().map_err(|e| e.to_string())?;
+    // Surface the *root cause*, not wasmtime's outer "error while executing at
+    // wasm backtrace…" wrapper: a confinement violation then reads as the same
+    // clean "`..` escapes the Dir capability" the interpreter and native backends
+    // print, and a genuine trap reads as "wasm trap: …" rather than a stack dump.
+    actor.run().map_err(|e| e.root_cause().to_string())?;
     let mut lines = actor.output();
     // At the process boundary an Int-returning `main` is the exit code (the
     // run export surfaces it as the final print_int line; pop and convert).
@@ -8006,6 +8010,39 @@ fn main(console: Console):
         .expect("sandbox run");
         assert_eq!(out, vec!["found: needle in here"]);
         assert_eq!(exit, Some(0), "Int-returning main becomes the exit code");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A confinement violation in the WASM sandbox surfaces the same clean
+    /// message the interpreter and native backends print — the root cause, not
+    /// wasmtime's "error while executing at wasm backtrace…" wrapper.
+    #[test]
+    fn sandbox_confinement_error_is_clean() {
+        let root = std::env::temp_dir().join(format!("witchy_sandbox_esc_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let src_path = root.join("reader.witchy");
+        std::fs::write(
+            &src_path,
+            "fn main(console: Console, dir: Dir[Read], args: List(String)) -> Int:\n    print(console, read(dir, at(args, 0)))\n    0\n",
+        )
+        .unwrap();
+        let err = crate::run_file_sandboxed(
+            src_path.to_str().unwrap(),
+            Some(root.clone()),
+            Vec::new(),
+            vec!["../secret.txt".to_string()],
+            None,
+        )
+        .expect_err("a `..` traversal must be denied");
+        assert!(
+            err.contains("escapes the Dir capability"),
+            "the denial should cite the Dir capability, got: {err}"
+        );
+        assert!(
+            !err.contains("wasm backtrace"),
+            "the raw wasmtime backtrace must not leak to the user, got: {err}"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
