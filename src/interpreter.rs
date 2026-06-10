@@ -2224,6 +2224,30 @@ fn main(console: Console):
     }
 
     #[test]
+    fn build_generated_source_compiles_and_runs() {
+        // The whole point: a build step emits real witchy source, which then flows
+        // into the normal compile and runs. Here `build` writes a `greet` module,
+        // and a consumer imports and calls it.
+        let dir = std::env::temp_dir().join(format!("witchy_build_e2e_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let build_mod = crate::parser::parse_module(
+            "fn build(out: BuildOut):\n    let nl = \"\\n\"\n    write_out(out, \"greet.witchy\", \"pub fn greeting() -> String:\" <> nl <> \"    \\\"hi from generated code\\\"\" <> nl)\n",
+        )
+        .expect("parse build module");
+        let gen_dir = dir.join("gen");
+        let files = run_build_step(build_mod, BuildGrants { out_dir: gen_dir.clone(), ..Default::default() })
+            .expect("build step runs");
+        assert_eq!(files, vec!["greet.witchy".to_string()]);
+        let generated = std::fs::read_to_string(gen_dir.join("greet.witchy")).unwrap();
+        // The generated source links with a consumer and runs.
+        let consumer = "import greet\nfn main(console: Console):\n    print(console, greet.greeting())\n";
+        let out = run_program(&[("greet", generated.as_str()), ("main", consumer)], "main")
+            .expect("generated source compiles and runs");
+        assert_eq!(out, vec!["hi from generated code"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn build_exec_runs_only_allow_listed_tools() {
         // `cat` echoes its stdin, so the generated file is exactly the input —
         // deterministic. The grant allow-lists `cat`; anything else is refused.
