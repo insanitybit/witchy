@@ -1,0 +1,14 @@
+// Tally how often each word appears, then print the whole table. Accumulating a
+// frequency map (`insert` + `get_or`) and then walking `keys` to report it is the
+// everyday "group by a key" shape. Keys iterate in insertion order, identically
+// on every backend.
+//   witchy examples/histogram.witchy
+//   witchy parity examples/histogram.witchy
+fn main(console: Console):
+    let text = "the cat sat on the mat the cat ran"
+    var counts = dict_new()
+    for word in split(text, " "):
+        counts = insert(counts, word, get_or(counts, word, 0) + 1)
+
+    for word in keys(counts):
+        print(console, word <> ": " <> int_to_string(get_or(counts, word, 0)))

@@ -882,6 +882,12 @@ impl Codegen {
             Expr::Call { name, args } if name == "at" && !args.is_empty() => {
                 self.elem_val_type_of(&args[0])
             }
+            // `get_or(d, k, default)` returns the Dict's value type, which is the
+            // default's type — so a `let v = get_or(d, k, 0)` (or a String default)
+            // tracks `v`, and `v` can in turn be used as a Dict key.
+            Expr::Call { name, args } if name == "get_or" && args.len() == 3 => {
+                self.val_type_of(&args[2])
+            }
             Expr::Call { name, .. } => match name.as_str() {
                 "int_to_string" | "to_string" | "to_upper" | "to_lower" | "trim" | "replace"
                 | "substring" | "crypto.sha256" | "crypto.sign" | "crypto.public_key" | "read"
@@ -1222,6 +1228,17 @@ impl Codegen {
             Expr::Call { name, args } if name == "values" && args.len() == 1 => match &args[0] {
                 Expr::Var(d) => self
                     .local_dict_value_valtype
+                    .get(d)
+                    .copied()
+                    .unwrap_or(ValType::Other),
+                _ => ValType::Other,
+            },
+            // `keys(d)` yields a list of the Dict's keys; carry their type so
+            // `for k in keys(d)` can in turn use `k` as a Dict key (e.g.
+            // `get_or(d, k, 0)`) without the key type going unknown.
+            Expr::Call { name, args } if name == "keys" && args.len() == 1 => match &args[0] {
+                Expr::Var(d) => self
+                    .local_dict_key_valtype
                     .get(d)
                     .copied()
                     .unwrap_or(ValType::Other),
