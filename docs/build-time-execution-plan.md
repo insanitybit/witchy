@@ -1,11 +1,12 @@
 # Implementation Plan: Build-Time Execution as a Capability
 
-Status: **largely implemented** — Phases 1, 2a, auto-run, 3, and build-output
-caching are live (see the per-phase notes below); only the zero-ambient
-WASM-sandbox execution path (defense-in-depth over interpreter execution)
-remains. The *design* lives in [package-manager.md](package-manager.md) §4 (the
-footprint model) and §7.1 (build-time execution as a capability); this document
-tracks the implementation against it.
+Status: **implemented.** Every phase is live: the two-axis footprint + gate, the
+`build` entrypoint, default-deny grants, all five build capabilities, auto-run
+during `witchy build` with the audit-before-and-after gate, build-output caching,
+staging cooldowns, the promotion checkpoint, and the zero-ambient **WASM-sandbox
+execution path** for deterministic steps. The *design* lives in
+[package-manager.md](package-manager.md) §4 (the footprint model) and §7.1
+(build-time execution as a capability); this document tracks the implementation.
 
 ## Why this, and the reframing
 
@@ -137,8 +138,22 @@ roots (`read_build` tries each in order). Build-output caching (§7.2) is in:
 a deterministic step (no BuildExec/BuildNet) is keyed by its inputs (build source
 + read-tree contents + named env values) and reused on an unchanged rebuild;
 Exec/Net steps re-run (their output may depend on external state) and stay
-`pinned-only`. Remaining 2b: the WASM-sandbox execution path (zero-ambient
-`Linker`) for the hard isolation guarantee.
+`pinned-only`.
+
+*WASM-sandbox execution done (2b):* a deterministic step (footprint ⊆ {BuildOut,
+BuildRead}) runs in the **zero-ambient WASM sandbox**. `codegen::compile_build_module`
+promotes the `build` entrypoint to `main` so the whole `compile_module` pipeline
+(the `run` export, marshaling) is reused — only the `write_out`/`read_build` host
+calls are new, gated on names that never appear in an ordinary program (so
+main-program parity is untouched). The runtime links *only* `build_out_write` and
+`build_read_len`, confined to the granted output sandbox and read roots through
+the same `resolve`/`resolve_write` machinery as a runtime `Dir`; a `..` write
+traps. The module imports nothing else (test: `build_module_is_zero_ambient`), so
+even an interpreter bug couldn't help a build step here — the dangerous host
+functions don't exist for the guest to call. Steps using BuildExec/BuildNet run
+on the (capability-sound) interpreter, where the WASM boundary adds no isolation
+over the allow-list anyway — the dangerous operation is host-side process/socket
+I/O gated identically on both backends. This phase is complete.
 
 **Runtime (`src/runtime.rs`)**
 - Extend `Capabilities` with the build-time grants and add build host functions,

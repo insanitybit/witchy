@@ -134,10 +134,13 @@ witchy build-step genlib/src/build.witchy --out gen/ --read proto/ --exec protoc
 Either way the step runs with zero ambient authority — only the minted, confined
 caps. A `write_out` to `../escape.txt` is rejected by the same path-confinement
 the runtime `Dir` uses; an un-allow-listed tool is refused before it starts; an
-ungranted `BuildRead` never gets minted at all. (One status note: execution is
-currently on the interpreter; the defense-in-depth WASM-sandbox path is the
-remaining piece of
-[the plan](https://github.com/insanitybit/witchy/blob/master/docs/build-time-execution-plan.md).)
+ungranted `BuildRead` never gets minted at all. A **deterministic** step (one that
+only writes generated source and reads project files) runs in the **zero-ambient
+WASM sandbox**: it is compiled and instantiated with *only* its `write_out` /
+`read_build` host functions linked, so the dangerous host functions don't even
+exist for it to call. Steps that `exec` a tool or hit the network run on the
+interpreter, where the WASM boundary adds nothing — the dangerous operation is a
+native process or socket, gated identically by the allow-list either way.
 
 ## Determinism, tiered
 

@@ -1308,6 +1308,43 @@ fn run_file_sandboxed(
     Ok((lines, exit_code))
 }
 
+/// Run a `build` step in the **zero-ambient WASM sandbox**: compile it (the
+/// `build` entrypoint becomes the `run` export), then instantiate under a
+/// `Capabilities` granting *only* the build output sandbox and read roots — so
+/// the module physically has no `dir_*`/`net_*`/`print` import to call, and a
+/// `..` write traps via the same confinement as a runtime `Dir`. Returns the
+/// generated source files written into `out_dir`.
+///
+/// Used for deterministic steps (BuildOut/BuildRead only). It is hard isolation
+/// for untrusted codegen logic: a bug in the interpreter could not help a build
+/// step here, because the dangerous host functions simply are not linked.
+pub fn run_build_step_sandboxed(
+    module: ast::Module,
+    out_dir: std::path::PathBuf,
+    read_roots: Vec<std::path::PathBuf>,
+) -> Result<Vec<String>, String> {
+    use runtime::{Capabilities, Runtime};
+    std::fs::create_dir_all(&out_dir).map_err(|e| format!("build: output dir: {e}"))?;
+    let wat = codegen::compile_build_module(&module).map_err(|e| e.message)?;
+    let caps = Capabilities {
+        build_out: Some(out_dir.clone()),
+        build_read_roots: read_roots,
+        ..Default::default()
+    };
+    let mut rt = Runtime::batch().map_err(|e| e.to_string())?;
+    let mut actor = rt
+        .spawn(wat.as_bytes(), caps, RUN_MEMORY_PAGES)
+        .map_err(|e| e.to_string())?;
+    actor.run().map_err(|e| e.root_cause().to_string())?;
+    let mut generated: Vec<String> = std::fs::read_dir(&out_dir)
+        .map_err(|e| format!("build: reading output dir: {e}"))?
+        .flatten()
+        .filter_map(|e| e.file_name().into_string().ok())
+        .collect();
+    generated.sort();
+    Ok(generated)
+}
+
 /// Instantiate a compiled WAT module under print/print_int authority, run its
 /// `run` export, and return the captured output lines.
 /// Linear-memory cap (64 KiB pages) for a run-to-completion program: 1 GiB.
@@ -8116,6 +8153,43 @@ fn main(console: Console):
         .expect("sandbox run");
         assert_eq!(out, vec!["found: needle in here"]);
         assert_eq!(exit, Some(0), "Int-returning main becomes the exit code");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A build step runs in the **WASM sandbox**: it is compiled, instantiated
+    /// with only the BuildOut/BuildRead host functions linked, reads a confined
+    /// schema and writes generated source — and a `..` write traps via the same
+    /// confinement as a runtime `Dir`.
+    #[test]
+    fn build_step_runs_in_the_wasm_sandbox() {
+        let root = std::env::temp_dir().join(format!("witchy_wasm_build_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let schema = root.join("schema");
+        std::fs::create_dir_all(&schema).unwrap();
+        std::fs::write(schema.join("svc.txt"), "Greeter").unwrap();
+
+        let module = parser::parse_module(
+            "fn build(out: BuildOut, schema: BuildRead):\n    let nl = \"\\n\"\n    write_out(out, \"api.witchy\", \"pub fn service() -> String:\" <> nl <> \"    \\\"\" <> read_build(schema, \"svc.txt\") <> \"\\\"\" <> nl)\n",
+        )
+        .expect("parse");
+        let generated = crate::run_build_step_sandboxed(
+            module,
+            root.join("out"),
+            vec![schema.clone()],
+        )
+        .expect("sandboxed build step runs");
+        assert_eq!(generated, vec!["api.witchy".to_string()]);
+        let body = std::fs::read_to_string(root.join("out/api.witchy")).unwrap();
+        assert!(body.contains("\"Greeter\""), "generated source embeds the schema value: {body}");
+
+        // A `..` escape traps inside the sandbox, exactly like a runtime Dir.
+        let escaper = parser::parse_module(
+            "fn build(out: BuildOut):\n    write_out(out, \"../escape.txt\", \"nope\")\n",
+        )
+        .unwrap();
+        let err = crate::run_build_step_sandboxed(escaper, root.join("out2"), Vec::new())
+            .expect_err("a `..` write must trap in the sandbox");
+        assert!(err.contains("escapes the Dir capability"), "got: {err}");
         let _ = std::fs::remove_dir_all(&root);
     }
 

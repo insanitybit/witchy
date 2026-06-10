@@ -633,17 +633,30 @@ fn run_dep_build_step(
 
     // A fresh sandbox per run — stale output must never linger into the link.
     let _ = std::fs::remove_dir_all(&out_dir);
-    let grants = crate::interpreter::BuildGrants {
-        out_dir: out_dir.clone(),
-        // Each granted read path becomes a confined root, resolved relative to
-        // the project; `read_build` tries them in order.
-        read_roots,
-        env_keys: grant.env.clone(),
-        net_hosts: grant.net.clone(),
-        exec_tools: grant.exec.clone(),
-    };
-    crate::interpreter::run_build_step(linked, grants)
-        .map_err(|e| super::PmError(format!("{rune}: build step failed: {}", e.message)))?;
+    // Hard isolation when it adds value: a step that only writes generated source
+    // and reads project files (no BuildExec/BuildNet, whose host-side process /
+    // socket I/O the WASM boundary can't sandbox anyway — the allow-list is the
+    // confinement there) runs in the zero-ambient WASM sandbox. Everything else
+    // runs on the (capability-sound) interpreter.
+    let sandboxable = footprint.build.iter().all(|k| k == "BuildOut" || k == "BuildRead");
+    if sandboxable {
+        let m = parser::parse_module(build_src)
+            .map_err(|e| super::PmError(format!("{rune}: build step: {e}")))?;
+        crate::run_build_step_sandboxed(m, out_dir.clone(), read_roots)
+            .map_err(|e| super::PmError(format!("{rune}: build step failed: {e}")))?;
+    } else {
+        let grants = crate::interpreter::BuildGrants {
+            out_dir: out_dir.clone(),
+            // Each granted read path becomes a confined root, resolved relative to
+            // the project; `read_build` tries them in order.
+            read_roots,
+            env_keys: grant.env.clone(),
+            net_hosts: grant.net.clone(),
+            exec_tools: grant.exec.clone(),
+        };
+        crate::interpreter::run_build_step(linked, grants)
+            .map_err(|e| super::PmError(format!("{rune}: build step failed: {}", e.message)))?;
+    }
     if let Some(key) = &cache_key {
         let _ = std::fs::write(&key_file, key);
     }

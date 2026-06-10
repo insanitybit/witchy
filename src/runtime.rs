@@ -74,6 +74,14 @@ pub struct Capabilities {
     /// material stays host-side; the guest only ever sees signatures and the
     /// public key.
     pub signing_key: Option<[u8; 32]>,
+    /// The confined output directory backing a build step's `BuildOut`
+    /// capability — where `write_out` may write generated source, and nowhere
+    /// else. `None` denies build-time writes entirely.
+    pub build_out: Option<std::path::PathBuf>,
+    /// The confined read roots backing a build step's `BuildRead` capability —
+    /// `read_build` resolves a path against the first root that holds it. Empty
+    /// denies build-time reads.
+    pub build_read_roots: Vec<std::path::PathBuf>,
 }
 
 impl Capabilities {
@@ -139,6 +147,10 @@ pub struct ActorState {
     sockets: Vec<std::io::BufReader<std::net::TcpStream>>,
     /// Listening server sockets, indexed by the guest's i32 Listener handles.
     listeners: Vec<std::net::TcpListener>,
+    /// A build step's confined output directory (`BuildOut`) and read roots
+    /// (`BuildRead`) — host-side, so a guest holds only an opaque handle.
+    build_out: Option<std::path::PathBuf>,
+    build_read_roots: Vec<std::path::PathBuf>,
 }
 
 /// A spawned actor: an isolated VM plus the entrypoint we can drive.
@@ -259,6 +271,8 @@ impl Runtime {
             nets,
             sockets: Vec::new(),
             listeners: Vec::new(),
+            build_out: caps.build_out.clone(),
+            build_read_roots: caps.build_read_roots.clone(),
         };
 
         let mut store = Store::new(&self.engine, state);
@@ -328,6 +342,17 @@ impl Runtime {
         if caps.signing_key.is_some() {
             linker.func_wrap("witchy", "crypto.sign", host_crypto_sign)?;
             linker.func_wrap("witchy", "crypto.public_key", host_crypto_public_key)?;
+        }
+        // The build-time capabilities. Like Dir, each is linked only when granted
+        // — a build step compiled against `write_out` cannot even instantiate
+        // without a `BuildOut` grant, and `read_build` without a `BuildRead` one.
+        if caps.build_out.is_some() {
+            linker.func_wrap("witchy", "build_out_write", host_build_out_write)?;
+        }
+        if !caps.build_read_roots.is_empty() {
+            // `read_build` is staged like `dir_read`; `fill_pending` (linked
+            // unconditionally below) does the transfer.
+            linker.func_wrap("witchy", "build_read_len", host_build_read_len)?;
         }
         // `fill_pending` / `write_pending_list` only write out data already
         // staged by a granted size call — no authority of their own, so they are
@@ -728,6 +753,62 @@ fn host_dir_make_dir(mut caller: Caller<'_, ActorState>, h: i32, name_ptr: i32) 
     let path = confine(crate::interpreter::resolve_write(&base, &name))?;
     std::fs::create_dir_all(&path)
         .map_err(|e| Error::msg(format!("make_dir failed for `{}`: {e}", path.display())))
+}
+
+// --- build-time host ops ---
+//
+// The build sandbox grants a single `BuildOut` (the confined output dir) and the
+// `BuildRead` roots, both held host-side in `ActorState` — the guest's handle is
+// opaque and ignored. `write_out` confines through the same `resolve_write` as a
+// runtime `Dir`; `read_build` tries each granted root, matching the interpreter.
+
+/// `build_out_write(_h, name, contents)`: write generated source into the build
+/// output sandbox (trap on escape — a `..` can't leave it).
+fn host_build_out_write(
+    mut caller: Caller<'_, ActorState>,
+    _h: i32,
+    name_ptr: i32,
+    contents_ptr: i32,
+) -> Result<()> {
+    let mem = memory_of(&mut caller)?;
+    let data = mem.data(&caller);
+    let name = read_wstr(data, name_ptr)?;
+    let contents = read_wstr(data, contents_ptr)?;
+    let base = caller
+        .data()
+        .build_out
+        .clone()
+        .ok_or_else(|| Error::msg("write_out: no BuildOut grant"))?;
+    let path = confine(crate::interpreter::resolve_write(&base, &name))?;
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    std::fs::write(&path, contents)
+        .map_err(|e| Error::msg(format!("write_out failed for `{}`: {e}", path.display())))
+}
+
+/// `build_read_len(_h, rel) -> byte length`: read the file from the first granted
+/// read root that holds it, stage its bytes, and report the length; the guest
+/// allocates and calls `fill_pending` (identical staging to `dir_read_len`).
+fn host_build_read_len(mut caller: Caller<'_, ActorState>, _h: i32, rel_ptr: i32) -> Result<i32> {
+    let mem = memory_of(&mut caller)?;
+    let rel = read_wstr(mem.data(&caller), rel_ptr)?;
+    let roots = caller.data().build_read_roots.clone();
+    let mut last = String::from("no granted read root");
+    for base in &roots {
+        match crate::interpreter::resolve(base, &rel) {
+            Ok(path) => match std::fs::read_to_string(&path) {
+                Ok(contents) => {
+                    let len = contents.len() as i32;
+                    caller.data_mut().pending = Some(contents.into_bytes());
+                    return Ok(len);
+                }
+                Err(e) => last = format!("`{}`: {e}", path.display()),
+            },
+            Err(e) => last = e.message,
+        }
+    }
+    Err(Error::msg(format!("read_build: `{rel}` not found in any granted read root ({last})")))
 }
 
 // --- the Net capability family ---

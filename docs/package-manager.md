@@ -261,25 +261,23 @@ rebuilds are deterministic; provenance ties bytes to public source history.
 
 ### 7.1 Build-time execution as a capability (the model for "when it's needed")
 
-> **Implementation status.** Largely built — see
-> [build-time-execution-plan.md](build-time-execution-plan.md). Done: the five
-> build capability *types*, the `build` entrypoint and its signature check, the
-> two-axis footprint (`witchy caps`/`caps-diff` report and gate the build axis),
-> confined build *execution* on the interpreter (`witchy build-step`, with
-> `BuildOut`/`BuildRead`/`BuildEnv`/`BuildExec` allow-lists enforced), **and** the
-> consumer-side model below: `[build.grants."name"]` in `witchy.toml`,
-> `build_footprint` recorded in the lockfile, the `add`/`update` gate blocking on
-> build-axis widening (`--allow-build-cap`), and **default-deny on execution
-> itself** — a rune that ships a build step at all is refused until the grants
-> section exists. Staging cooldowns are also built (consumer-side): a freshly
-> released version carries a signed `released_at` and is not resolvable until
-> its window passes (`WITCHY_COOLDOWN_SECS`, default 72h) unless `--allow-fresh`.
-> Build steps **auto-run during `witchy build`** (interpreter execution): the
-> `build` module is excluded from the consumer link, run under its grants, its
-> generated source joins the link — and the rune's footprint is **recomputed
-> over shipped + generated source and gated against the locked baseline**, so
-> generated code cannot smuggle in authority. Pending: the zero-ambient
-> WASM-sandbox execution path (defense-in-depth over interpreter execution); all five build capabilities are live, deterministic build outputs are cached (§7.2), and the gate/grant/cooldown/audit machinery is complete.
+> **Implementation status.** Built — see
+> [build-time-execution-plan.md](build-time-execution-plan.md). The five build
+> capability *types* and the `build` entrypoint; the two-axis footprint
+> (`witchy caps`/`caps-diff` report and gate the build axis); all five build
+> capabilities executing confined; `[build.grants."name"]` in `witchy.toml` with
+> **default-deny on execution itself** (a rune that ships a build step is refused
+> until the grants section exists); `build_footprint` in the lockfile and the
+> `add`/`update` gate blocking build-axis widening (`--allow-build-cap`); build
+> steps **auto-run during `witchy build`** with the footprint **recomputed over
+> shipped + generated source and gated against the locked baseline** (generated
+> code cannot smuggle in authority); deterministic build-output **caching**;
+> **staging cooldowns** (signed `released_at`, 72h window, `--allow-fresh`); the
+> promotion checkpoint surfacing the absolute footprint; and the zero-ambient
+> **WASM-sandbox execution path** for deterministic steps (`BuildExec`/`BuildNet`
+> steps run on the capability-sound interpreter, where the sandbox adds no
+> isolation over the allow-list). The only residual is hardening depth, not
+> capability coverage.
 
 Assume consumer-side build execution *will* eventually be required (generating
 witchy source from a schema, etc.). Model it now so that when it lands it is

@@ -263,17 +263,20 @@ Editor support: a [Zed extension](editors/zed) with tree-sitter highlighting and
 
 Witchy is a young language (pre-1.0). The capability model, the three backends
 and their parity discipline, the formatter, the LSP, and the package-manager
-core are implemented and tested (1,100+ tests). The build-time capability system
-is largely built: the build footprint is computed and gated (`witchy caps` /
-`caps-diff`, both axes), build steps run confined (`witchy build-step`), the
-lockfile records both footprints per rune, the `add`/`update` gate blocks
-build-axis widening (`--allow-build-cap`), and **execution itself is
-default-deny** — a dependency that ships a build step is refused until you write
-its `[build.grants]` section (an empty section accepts only the confined
-`BuildOut` sandbox). Still pending: the zero-ambient WASM-sandbox execution
-path, layered over interpreter execution (build steps auto-run during `witchy build` with generated source re-audited against the locked baseline; all five build capabilities — including allow-listed `BuildNet` fetches — are live; deterministic build outputs are cached; staging
-cooldowns are now built: a fresh release sits out a 72h window — `WITCHY_COOLDOWN_SECS` — before resolving, unless `--allow-fresh`; see [docs/build-time-execution-plan.md](docs/build-time-execution-plan.md)).
-Also not yet done: a hosted public registry and performance work. See
+core are implemented and tested (1,150+ tests).
+
+The **build-time capability system** is built end to end: the build footprint is
+computed and gated on its own axis (`witchy caps` / `caps-diff`); all five build
+capabilities (`BuildOut`/`BuildRead`/`BuildEnv`/`BuildNet`/`BuildExec`) execute
+confined; build steps **auto-run during `witchy build`**, with the rune's
+footprint re-audited over *shipped + generated* source so generated code can't
+smuggle in authority; execution is **default-deny** (a dependency's build step is
+refused until you write its `[build.grants]` section); deterministic outputs are
+cached; deterministic steps run in the **zero-ambient WASM sandbox**; releases
+sit out a signed 72h **staging cooldown** (`--allow-fresh` to override). See
+[docs/build-time-execution-plan.md](docs/build-time-execution-plan.md).
+
+Not yet done: a hosted public registry and performance work. See
 [docs/architecture.md](docs/architecture.md) for the honest limitations list,
 including the WASM memory model.
 

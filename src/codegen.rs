@@ -429,6 +429,9 @@ struct Codegen {
     /// import, so a read-only program never imports a write op (and therefore
     /// instantiates under a read-only grant).
     used_dir_ops: std::collections::BTreeSet<&'static str>,
+    /// Which build-time host ops a `build` entrypoint uses ("write_out",
+    /// "read_build") — gated like the Dir ops so each pulls in only its import.
+    used_build_ops: std::collections::BTreeSet<&'static str>,
     /// Which `Net` operations the program uses, gated per verb the same way
     /// ("connect"/"restrict" under Connect; "listen"/"accept" under Listen;
     /// socket I/O under either).
@@ -675,6 +678,7 @@ impl Codegen {
             uses_now: false,
             uses_get_env: false,
             used_dir_ops: std::collections::BTreeSet::new(),
+            used_build_ops: std::collections::BTreeSet::new(),
             used_net_ops: std::collections::BTreeSet::new(),
             uses_args: false,
             uses_crypto_sign: false,
@@ -1718,6 +1722,14 @@ impl Codegen {
         if self.used_dir_ops.contains("make_dir") {
             s.push_str("  (import \"witchy\" \"dir_make_dir\" (func $dir_make_dir_host (param i32 i32)))\n");
         }
+        // Build-time host ops: write generated source into the confined output
+        // sandbox, and read from the confined read roots (staged like `dir_read`).
+        if self.used_build_ops.contains("write_out") {
+            s.push_str("  (import \"witchy\" \"build_out_write\" (func $build_out_write_host (param i32 i32 i32)))\n");
+        }
+        if self.used_build_ops.contains("read_build") {
+            s.push_str("  (import \"witchy\" \"build_read_len\" (func $build_read_len_host (param i32 i32) (result i32)))\n");
+        }
         // The Net family: a guest Net/Socket/Listener is an i32 handle into the
         // host's tables; the import list is the program's network footprint.
         if self.used_net_ops.contains("restrict") {
@@ -1753,6 +1765,7 @@ impl Codegen {
         // `fill_pending` is the shared, authority-free transfer primitive for
         // every staged read (Dir read, Net recv) — emitted once.
         if self.used_dir_ops.contains("read")
+            || self.used_build_ops.contains("read_build")
             || self.used_net_ops.contains("recv_line")
             || self.used_net_ops.contains("recv_all")
             || self.used_net_ops.contains("recv_bytes")
@@ -1822,6 +1835,9 @@ impl Codegen {
         }
         if self.used_dir_ops.contains("read") {
             s.push_str(DIR_READ_WAT);
+        }
+        if self.used_build_ops.contains("read_build") {
+            s.push_str(BUILD_READ_WAT);
         }
         if self.used_dir_ops.contains("list") {
             s.push_str(DIR_LIST_WAT);
@@ -3979,6 +3995,22 @@ impl Codegen {
                 let name = self.compile_expr(&args[1])?;
                 Ok(format!("{d}{name}    call $dir_make_dir_host\n    i32.const 0\n"))
             }
+            // --- build-time host ops (only reachable from a `build` entrypoint
+            // compiled via `compile_build_module`). The BuildOut/BuildRead handle
+            // is an i32 like a Dir handle; the host confines via its own tables. ---
+            ("write_out", 3) => {
+                self.used_build_ops.insert("write_out");
+                let h = self.compile_expr(&args[0])?;
+                let name = self.compile_expr(&args[1])?;
+                let contents = self.compile_expr(&args[2])?;
+                Ok(format!("{h}{name}{contents}    call $build_out_write_host\n    i32.const 0\n"))
+            }
+            ("read_build", 2) => {
+                self.used_build_ops.insert("read_build");
+                let h = self.compile_expr(&args[0])?;
+                let rel = self.compile_expr(&args[1])?;
+                Ok(format!("{h}{rel}    call $build_read\n"))
+            }
             // --- the Net capability family. Net/Socket/Listener values are i32
             // handles into the host's tables; each op is its own gated import. ---
             ("restrict", 2) | ("connect", 2) | ("listen", 2) => {
@@ -4563,6 +4595,28 @@ pub fn compile_module(module: &Module) -> Result<String, CodegenError> {
     Ok(wat)
 }
 
+/// Compile a rune's build step to a WASM module that runs in the zero-ambient
+/// build sandbox. The `build` entrypoint is renamed to `main` so the whole
+/// `compile_module` pipeline (the `run` export, marshaling, helpers) is reused
+/// verbatim — its capability parameters lower to handle 0 exactly like `main`'s,
+/// and the only build-specific code is the `write_out`/`read_build` host calls,
+/// which never appear in an ordinary program (so parity is untouched). The host
+/// links only `build_out_write`/`build_read_len`, confined to the granted output
+/// sandbox and read roots — nothing else exists for the guest to call.
+pub fn compile_build_module(module: &Module) -> Result<String, CodegenError> {
+    let mut m = module.clone();
+    // A build module ships no `main`; promote its `build` entrypoint to `main`.
+    m.items.retain(|it| !matches!(it, Item::Function(f) if f.name == "main"));
+    for item in &mut m.items {
+        if let Item::Function(f) = item {
+            if f.name.rsplit('.').next() == Some("build") {
+                f.name = "main".to_string();
+            }
+        }
+    }
+    compile_module(&m)
+}
+
 /// Compile a single actor to its own WASM module. Int fields with literal
 /// initializers become mutable globals (state); capability fields are erased;
 /// each handler becomes an exported function.
@@ -5061,6 +5115,19 @@ const GET_ENV_WAT: &str = r#"  (func $get_env (param $name i32) (result i32)
 const DIR_READ_WAT: &str = r#"  (func $dir_read (param $h i32) (param $rel i32) (result i32)
     (local $len i32) (local $res i32)
     (local.set $len (call $dir_read_len_host (local.get $h) (local.get $rel)))
+    (call $ensure (i32.add (local.get $len) (i32.const 4)))
+    (local.set $res (global.get $heap))
+    (i32.store (local.get $res) (local.get $len))
+    (call $fill_pending_host (i32.add (local.get $res) (i32.const 4)))
+    (global.set $heap (i32.add (i32.add (local.get $res) (i32.const 4)) (local.get $len)))
+    (local.get $res))
+"#;
+
+// read_build(h, rel): the confined file's contents as a fresh string — identical
+// staging to `dir_read`, but the host resolves against the build read roots.
+const BUILD_READ_WAT: &str = r#"  (func $build_read (param $h i32) (param $rel i32) (result i32)
+    (local $len i32) (local $res i32)
+    (local.set $len (call $build_read_len_host (local.get $h) (local.get $rel)))
     (call $ensure (i32.add (local.get $len) (i32.const 4)))
     (local.set $res (global.get $heap))
     (i32.store (local.get $res) (local.get $len))
@@ -6343,6 +6410,25 @@ mod tests {
     use crate::parser::parse_module;
     use std::sync::{Arc, Mutex};
     use wasmtime::{Caller, Engine, Linker, Module as WtModule, Store};
+
+    #[test]
+    fn build_module_is_zero_ambient() {
+        // A compiled build step imports ONLY its build host functions — none of
+        // the runtime authority. That's the structural zero-ambient guarantee:
+        // the dangerous host functions don't exist for the guest to call.
+        let module = parse_module(
+            "fn build(out: BuildOut, schema: BuildRead):\n    write_out(out, \"x.witchy\", read_build(schema, \"a.proto\"))\n",
+        )
+        .expect("parse");
+        let wat = compile_build_module(&module).expect("compile build module");
+        assert!(wat.contains("(export \"run\")"), "build entrypoint becomes the run export");
+        assert!(wat.contains("build_out_write"), "write_out import present");
+        assert!(wat.contains("build_read_len"), "read_build import present");
+        // No runtime-authority imports leaked in.
+        for forbidden in ["dir_write", "dir_read_len", "net_connect", "net_listen", "\"print\"", "\"now\"", "crypto.sign"] {
+            assert!(!wat.contains(forbidden), "build module must not import `{forbidden}`:\n{wat}");
+        }
+    }
 
     fn run_int(src: &str) -> i64 {
         let module = parse_module(src).expect("parse");
