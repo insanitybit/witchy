@@ -92,3 +92,9 @@ For everything else — string manipulation, lists, dicts, sorting, JSON, time �
 see the [standard library reference](appendix-stdlib.md) and the `examples/`
 directory in the repository, which carries a runnable program for nearly every
 feature in this book.
+
+When you're ready to build something larger, `examples/projects/` has complete
+multi-rune applications — a todo app, a ledger, a sales report, a dashboard, and
+more — each a small project with its own `witchy.toml`, a library rune and an app
+rune wired together by a path dependency. They're the closest thing to a template
+for real software: copy the shape, `witchy run`, and start editing.
