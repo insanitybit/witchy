@@ -1046,9 +1046,39 @@ impl Interpreter {
                 }
                 _ => err("fetch_build expects a BuildNet, a host, and a path"),
             },
+            // Invoke an external tool — but only one named on the BuildExec grant's
+            // allow-list. `input` is fed on stdin; stdout is returned. This is the
+            // "native toolchain escape hatch" (§7.1): the allow-list is the
+            // confinement, since the tool itself runs as a native process.
             "run_tool" => match args {
-                [Value::Build(BuildCap::Exec(_)), Value::Str(_), Value::Str(_)] => {
-                    err("run_tool (build-time exec) is not yet implemented")
+                [Value::Build(BuildCap::Exec(allow)), Value::Str(tool), Value::Str(input)] => {
+                    if !allow.iter().any(|t| t == tool) {
+                        return err(format!(
+                            "run_tool: `{tool}` is not in this BuildExec grant's allow-list"
+                        ));
+                    }
+                    use std::io::Write;
+                    use std::process::{Command, Stdio};
+                    let mut child = Command::new(tool)
+                        .stdin(Stdio::piped())
+                        .stdout(Stdio::piped())
+                        .stderr(Stdio::piped())
+                        .spawn()
+                        .map_err(|e| RuntimeError {
+                            message: format!("run_tool: cannot start `{tool}`: {e}"),
+                        })?;
+                    if let Some(mut stdin) = child.stdin.take() {
+                        stdin.write_all(input.as_bytes()).map_err(|e| RuntimeError {
+                            message: format!("run_tool: writing to `{tool}` stdin: {e}"),
+                        })?;
+                    }
+                    let out = child.wait_with_output().map_err(|e| RuntimeError {
+                        message: format!("run_tool: `{tool}` failed: {e}"),
+                    })?;
+                    if !out.status.success() {
+                        return err(format!("run_tool: `{tool}` exited with {}", out.status));
+                    }
+                    Ok(Some(Value::Str(String::from_utf8_lossy(&out.stdout).into_owned())))
                 }
                 _ => err("run_tool expects a BuildExec, a tool name, and input"),
             },
@@ -2190,6 +2220,40 @@ fn main(console: Console):
         let g2 = BuildGrants { out_dir: dir.join("out2"), ..Default::default() };
         let err = run_build_step(m2, g2).expect_err("a `..` write must be refused");
         assert!(err.message.contains("escapes the Dir capability"), "{}", err.message);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn build_exec_runs_only_allow_listed_tools() {
+        // `cat` echoes its stdin, so the generated file is exactly the input —
+        // deterministic. The grant allow-lists `cat`; anything else is refused.
+        let dir = std::env::temp_dir().join(format!("witchy_build_exec_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let module = crate::parser::parse_module(
+            "fn build(out: BuildOut, cc: BuildExec):\n    write_out(out, \"x.txt\", run_tool(cc, \"cat\", \"piped-input\"))\n",
+        )
+        .unwrap();
+        let grants = BuildGrants {
+            out_dir: dir.join("out"),
+            exec_tools: vec!["cat".to_string()],
+            ..Default::default()
+        };
+        let generated = run_build_step(module, grants).expect("cat is allow-listed");
+        assert_eq!(generated, vec!["x.txt".to_string()]);
+        assert_eq!(std::fs::read_to_string(dir.join("out/x.txt")).unwrap(), "piped-input");
+
+        // A tool NOT on the allow-list is refused before it runs.
+        let m2 = crate::parser::parse_module(
+            "fn build(out: BuildOut, cc: BuildExec):\n    write_out(out, \"x.txt\", run_tool(cc, \"rm\", \"-rf /\"))\n",
+        )
+        .unwrap();
+        let g2 = BuildGrants {
+            out_dir: dir.join("out2"),
+            exec_tools: vec!["cat".to_string()],
+            ..Default::default()
+        };
+        let err = run_build_step(m2, g2).expect_err("an un-allow-listed tool must be refused");
+        assert!(err.message.contains("not in this BuildExec grant's allow-list"), "{}", err.message);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

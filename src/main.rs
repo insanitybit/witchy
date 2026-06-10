@@ -202,6 +202,7 @@ fn main() -> wasmtime::Result<()> {
         let mut out_dir: Option<std::path::PathBuf> = None;
         let mut read_root: Option<std::path::PathBuf> = None;
         let mut env_keys: Vec<String> = Vec::new();
+        let mut exec_tools: Vec<String> = Vec::new();
         let mut path: Option<String> = None;
         let mut argv = std::env::args().skip(2);
         while let Some(a) = argv.next() {
@@ -213,15 +214,20 @@ fn main() -> wasmtime::Result<()> {
                         env_keys.push(k);
                     }
                 }
+                "--exec" => {
+                    if let Some(t) = argv.next() {
+                        exec_tools.push(t);
+                    }
+                }
                 _ if path.is_none() => path = Some(a),
                 _ => {}
             }
         }
         let Some(path) = path else {
-            eprintln!("usage: witchy build-step <file.witchy> [--out <dir>] [--read <dir>] [--env <KEY>]...");
+            eprintln!("usage: witchy build-step <file.witchy> [--out <dir>] [--read <dir>] [--env <KEY>]... [--exec <tool>]...");
             std::process::exit(1);
         };
-        match run_build_step_file(&path, out_dir, read_root, env_keys) {
+        match run_build_step_file(&path, out_dir, read_root, env_keys, exec_tools) {
             Ok(files) if files.is_empty() => println!("{path}: no `build` entrypoint, or it generated no files"),
             Ok(files) => {
                 println!("build step generated {} file(s):", files.len());
@@ -1355,6 +1361,7 @@ fn run_build_step_file(
     out_dir: Option<std::path::PathBuf>,
     read_root: Option<std::path::PathBuf>,
     env_keys: Vec<String>,
+    exec_tools: Vec<String>,
 ) -> Result<Vec<String>, String> {
     let (linked, _) = link_file(path)?;
     typeck::check(&linked).map_err(|e| e.to_string())?;
@@ -1362,6 +1369,7 @@ fn run_build_step_file(
         out_dir: out_dir.unwrap_or_else(|| std::path::PathBuf::from("build-out")),
         read_root,
         env_keys,
+        exec_tools,
         ..Default::default()
     };
     interpreter::run_build_step(linked, grants).map_err(|e| e.message)
