@@ -261,6 +261,15 @@ rebuilds are deterministic; provenance ties bytes to public source history.
 
 ### 7.1 Build-time execution as a capability (the model for "when it's needed")
 
+> **Implementation status.** Partly built — see
+> [build-time-execution-plan.md](build-time-execution-plan.md). Done: the five
+> build capability *types*, the `build` entrypoint and its signature check, the
+> two-axis footprint (`witchy caps`/`caps-diff` report and gate the build axis),
+> and confined build *execution* on the interpreter (`witchy build-step`, with
+> `BuildOut`/`BuildRead`/`BuildEnv`/`BuildExec` enforced). Pending: the
+> zero-ambient WASM-sandbox execution path, `BuildNet`, and the `witchy.toml`
+> grant + lockfile + registry integration described below.
+
 Assume consumer-side build execution *will* eventually be required (generating
 witchy source from a schema, etc.). Model it now so that when it lands it is
 **safe by default**, governed by the *same* machinery as runtime: typed,
