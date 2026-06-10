@@ -606,18 +606,14 @@ fn run_dep_build_step(
         .map_err(|e| super::PmError(format!("{rune}: build step: {e}")))?;
     typeck::check(&linked).map_err(|e| super::PmError(format!("{rune}: build step: {e}")))?;
 
-    if grant.read.len() > 1 {
-        return err(format!(
-            "[build.grants.\"{rune}\"] names {} read roots; one confined read root is supported for now",
-            grant.read.len()
-        ));
-    }
     let out_dir = root.join("build-out").join(rune.replace('/', "__"));
     // A fresh sandbox per run — stale output must never linger into the link.
     let _ = std::fs::remove_dir_all(&out_dir);
     let grants = crate::interpreter::BuildGrants {
         out_dir: out_dir.clone(),
-        read_root: grant.read.first().map(|p| root.join(p)),
+        // Each granted read path becomes a confined root, resolved relative to
+        // the project; `read_build` tries them in order.
+        read_roots: grant.read.iter().map(|p| root.join(p)).collect(),
         env_keys: grant.env.clone(),
         net_hosts: grant.net.clone(),
         exec_tools: grant.exec.clone(),
@@ -1275,6 +1271,19 @@ fn cmd_promote(rest: &[String]) -> PmResult<()> {
     } else {
         println!("  this release NEWLY exposes: {}", render_widening(&p.footprint_delta));
         println!("  (you vouched for this by promoting.)");
+    }
+    // §7.1: surface the release's *absolute* footprint at the checkpoint, so the
+    // promoter (and anyone reading the transparency log) sees exactly what this
+    // version may do — on both axes — before it can be downloaded. Build-time
+    // authority is the high-signal line: "this version runs a build step that may
+    // exec / reach the network".
+    let fr = |xs: &[String]| if xs.is_empty() { "none".to_string() } else { xs.join(", ") };
+    println!("  runtime footprint: {}", fr(&p.record.runtime_footprint));
+    if !p.record.build_footprint.is_empty() {
+        println!(
+            "  BUILD footprint:   {}  — this version executes a build step at build time.",
+            fr(&p.record.build_footprint)
+        );
     }
     Ok(())
 }

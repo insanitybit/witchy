@@ -131,9 +131,10 @@ directly.
 the consumer link (so two runes shipping one can't collide), execute it under the
 manifest grants into `<project>/build-out/<rune>/`, link the generated `.witchy`
 modules in under the usual std-shadowing/collision guards, and apply the
-audit-before-and-after gate above. Remaining 2b: the WASM-sandbox execution path
-(zero-ambient `Linker`) for the hard isolation guarantee, build-output
-caching (§7.2; today steps re-run per build), and multiple `read` roots.
+audit-before-and-after gate above. A BuildRead grant may now name multiple
+confined roots (`read_build` tries each in order). Remaining 2b: the WASM-sandbox
+execution path (zero-ambient `Linker`) for the hard isolation guarantee, and
+build-output caching (§7.2; today steps re-run per build).
 
 **Runtime (`src/runtime.rs`)**
 - Extend `Capabilities` with the build-time grants and add build host functions,
@@ -177,8 +178,11 @@ Staging cooldowns are now built too: records carry a **signed** `released_at`
 payload gained a `released_at=` line in all three implementations), and a fresh
 release is not resolvable until `WITCHY_COOLDOWN_SECS` (default 72h) passes,
 unless `add`/`update` is run with `--allow-fresh`. Locked versions are
-unaffected (like yank, the cooldown gates *new resolution* only). Still pending
-here: coven surfacing the build footprint at the promotion checkpoint.
+unaffected (like yank, the cooldown gates *new resolution* only). And `witchy
+promote` now surfaces the release's **absolute** footprint at the checkpoint —
+both axes, with the build line called out ("this version executes a build step
+at build time") — so a promoter vouches for exactly what the version can do.
+This phase is complete.
 
 **Manifest (`src/pm/` + `witchy.toml` parsing)**
 - Parse `[build.grants."ns/name"]` granting attenuated build caps to a specific

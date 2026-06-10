@@ -200,7 +200,7 @@ fn main() -> wasmtime::Result<()> {
     // half of the capability model, exercised in isolation.
     if std::env::args().nth(1).as_deref() == Some("build-step") {
         let mut out_dir: Option<std::path::PathBuf> = None;
-        let mut read_root: Option<std::path::PathBuf> = None;
+        let mut read_roots: Vec<std::path::PathBuf> = Vec::new();
         let mut env_keys: Vec<String> = Vec::new();
         let mut exec_tools: Vec<String> = Vec::new();
         let mut path: Option<String> = None;
@@ -208,7 +208,11 @@ fn main() -> wasmtime::Result<()> {
         while let Some(a) = argv.next() {
             match a.as_str() {
                 "--out" => out_dir = argv.next().map(std::path::PathBuf::from),
-                "--read" => read_root = argv.next().map(std::path::PathBuf::from),
+                "--read" => {
+                    if let Some(d) = argv.next() {
+                        read_roots.push(std::path::PathBuf::from(d));
+                    }
+                }
                 "--env" => {
                     if let Some(k) = argv.next() {
                         env_keys.push(k);
@@ -224,10 +228,10 @@ fn main() -> wasmtime::Result<()> {
             }
         }
         let Some(path) = path else {
-            eprintln!("usage: witchy build-step <file.witchy> [--out <dir>] [--read <dir>] [--env <KEY>]... [--exec <tool>]...");
+            eprintln!("usage: witchy build-step <file.witchy> [--out <dir>] [--read <dir>]... [--env <KEY>]... [--exec <tool>]...");
             std::process::exit(1);
         };
-        match run_build_step_file(&path, out_dir, read_root, env_keys, exec_tools) {
+        match run_build_step_file(&path, out_dir, read_roots, env_keys, exec_tools) {
             Ok(files) if files.is_empty() => println!("{path}: no `build` entrypoint, or it generated no files"),
             Ok(files) => {
                 println!("build step generated {} file(s):", files.len());
@@ -1359,7 +1363,7 @@ fn analyze_file(path: &str) -> Result<capabilities::Footprint, String> {
 fn run_build_step_file(
     path: &str,
     out_dir: Option<std::path::PathBuf>,
-    read_root: Option<std::path::PathBuf>,
+    read_roots: Vec<std::path::PathBuf>,
     env_keys: Vec<String>,
     exec_tools: Vec<String>,
 ) -> Result<Vec<String>, String> {
@@ -1367,7 +1371,7 @@ fn run_build_step_file(
     typeck::check(&linked).map_err(|e| e.to_string())?;
     let grants = interpreter::BuildGrants {
         out_dir: out_dir.unwrap_or_else(|| std::path::PathBuf::from("build-out")),
-        read_root,
+        read_roots,
         env_keys,
         exec_tools,
         ..Default::default()

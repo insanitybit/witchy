@@ -64,13 +64,14 @@ pub enum Value {
 pub enum BuildCap {
     /// Write generated source into this confined output directory.
     Out(PathBuf),
-    /// Read project files confined to this directory subtree.
-    Read(PathBuf),
+    /// Read project files confined to one of these directory subtrees. A relative
+    /// path resolves against the first granted root that contains it.
+    Read(Vec<PathBuf>),
     /// Read environment variables, restricted to this allow-list of names.
     Env(Vec<String>),
-    /// Fetch from this allow-list of hosts. (Execution deferred to a later phase.)
+    /// Fetch from this allow-list of hosts.
     Net(Vec<String>),
-    /// Invoke external tools, restricted to this allow-list. (Deferred.)
+    /// Invoke external tools, restricted to this allow-list.
     Exec(Vec<String>),
 }
 
@@ -418,10 +419,12 @@ impl Interpreter {
             Some(Type::Named(n, _)) if n == "BuildOut" => {
                 Ok(Value::Build(BuildCap::Out(grants.out_dir.clone())))
             }
-            Some(Type::Named(n, _)) if n == "BuildRead" => match &grants.read_root {
-                Some(r) => Ok(Value::Build(BuildCap::Read(r.clone()))),
-                None => err("build step demands `BuildRead` but no read grant was provided"),
-            },
+            Some(Type::Named(n, _)) if n == "BuildRead" => {
+                if grants.read_roots.is_empty() {
+                    return err("build step demands `BuildRead` but no read grant was provided");
+                }
+                Ok(Value::Build(BuildCap::Read(grants.read_roots.clone())))
+            }
             Some(Type::Named(n, _)) if n == "BuildEnv" => {
                 Ok(Value::Build(BuildCap::Env(grants.env_keys.clone())))
             }
@@ -1011,14 +1014,29 @@ impl Interpreter {
                 }
                 _ => err("write_out expects a BuildOut, a relative path, and contents"),
             },
-            // Read a project file confined to the BuildRead grant's subtree.
+            // Read a project file confined to the BuildRead grant's subtree(s).
+            // Each granted root is tried in turn; the first that both confines the
+            // path and holds the file wins. Confinement (no `..`, no absolute, no
+            // symlink escape) is enforced per root, exactly like a runtime `Dir`.
             "read_build" => match args {
-                [Value::Build(BuildCap::Read(base)), Value::Str(rel)] => {
-                    let path = resolve(base, rel)?;
-                    match std::fs::read_to_string(&path) {
-                        Ok(contents) => Ok(Some(Value::Str(contents))),
-                        Err(e) => err(format!("read_build failed for `{}`: {e}", path.display())),
+                [Value::Build(BuildCap::Read(roots)), Value::Str(rel)] => {
+                    if roots.is_empty() {
+                        return err("read_build: this BuildRead grant names no readable root");
                     }
+                    let mut last_err = None;
+                    for base in roots {
+                        match resolve(base, rel) {
+                            Ok(path) => match std::fs::read_to_string(&path) {
+                                Ok(contents) => return Ok(Some(Value::Str(contents))),
+                                Err(e) => last_err = Some(format!("`{}`: {e}", path.display())),
+                            },
+                            Err(e) => last_err = Some(e.message),
+                        }
+                    }
+                    err(format!(
+                        "read_build: `{rel}` not found in any granted read root ({})",
+                        last_err.unwrap_or_default()
+                    ))
                 }
                 _ => err("read_build expects a BuildRead and a relative path"),
             },
@@ -2132,7 +2150,7 @@ fn run_module_inner(
 #[derive(Debug, Clone, Default)]
 pub struct BuildGrants {
     pub out_dir: PathBuf,
-    pub read_root: Option<PathBuf>,
+    pub read_roots: Vec<PathBuf>,
     pub env_keys: Vec<String>,
     pub net_hosts: Vec<String>,
     pub exec_tools: Vec<String>,
@@ -2220,7 +2238,7 @@ fn main(console: Console):
         .expect("parse");
         let grants = BuildGrants {
             out_dir: out_dir.clone(),
-            read_root: Some(src_root.clone()),
+            read_roots: vec![src_root.clone()],
             ..Default::default()
         };
         let generated = run_build_step(module, grants).expect("build step runs");
@@ -2274,6 +2292,42 @@ fn main(console: Console):
         let out = run_program(&[("greet", generated.as_str()), ("main", consumer)], "main")
             .expect("generated source compiles and runs");
         assert_eq!(out, vec!["hi from generated code"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn build_read_spans_multiple_granted_roots() {
+        // A BuildRead grant can name several confined roots; `read_build` resolves
+        // a path against the first root that holds it — and still nothing else.
+        let dir = std::env::temp_dir().join(format!("witchy_build_mr_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let a = dir.join("a");
+        let b = dir.join("b");
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        std::fs::write(a.join("from_a.txt"), "ALPHA").unwrap();
+        std::fs::write(b.join("from_b.txt"), "BETA").unwrap();
+
+        let module = crate::parser::parse_module(
+            "fn build(out: BuildOut, src: BuildRead):\n    write_out(out, \"g.txt\", read_build(src, \"from_a.txt\") <> \"/\" <> read_build(src, \"from_b.txt\"))\n",
+        )
+        .unwrap();
+        let grants = BuildGrants {
+            out_dir: dir.join("out"),
+            read_roots: vec![a.clone(), b.clone()],
+            ..Default::default()
+        };
+        run_build_step(module, grants).expect("reads across both roots");
+        assert_eq!(std::fs::read_to_string(dir.join("out/g.txt")).unwrap(), "ALPHA/BETA");
+
+        // A file in neither root is refused.
+        let m2 = crate::parser::parse_module(
+            "fn build(out: BuildOut, src: BuildRead):\n    write_out(out, \"g.txt\", read_build(src, \"nope.txt\"))\n",
+        )
+        .unwrap();
+        let g2 = BuildGrants { out_dir: dir.join("out2"), read_roots: vec![a, b], ..Default::default() };
+        let e = run_build_step(m2, g2).expect_err("a path in no granted root must fail");
+        assert!(e.message.contains("not found in any granted read root"), "{}", e.message);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
