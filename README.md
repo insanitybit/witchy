@@ -11,6 +11,61 @@ fn main(console: Console, dir: Dir):
     print(console, load(dir, "notes.txt"))           // full Dir narrows to Dir[Read]
 ```
 
+# Why witchy?
+
+Supply chain security is a serious problem. Packages have very good reasons for running
+code during install time, yet the capability is all or nothing. Libraries in most
+languages have no means by which they can be restricted. It's very hard to know that
+`some_library::foo()` doesn't delete your file system or steal your secrets.
+
+`witchy` aims to take supply chain security very seriously across its entire stack of
+language features and tooling. The language itself is capability based, allowing you to
+write code like this:
+```
+import http        // stdlib HTTP client over `Net` — trusted, you hand it `net`
+import markdown    // third-party rune; vetted as pure (footprint: [])
+
+fn main(console: Console, net: Net, dir: Dir):
+    // You genuinely hold both caps and use them legitimately.
+    let template = read(dir, "report.tmpl")
+    let notes    = http.body(http.get(net, "notes.internal", 443, "/today"))
+
+    // Hand the untrusted rune the *data*, never the *authority*. Inside the
+    // seal `net` and `dir` don't exist, so nothing here — markdown or anything
+    // it calls — can be handed them. Only the rendered String crosses back out.
+    let html = without net, dir:
+        markdown.render(template, notes)
+
+    print(console, html)
+```
+
+This is extremely hard to mess up. `without` drops the capabilities from the scope entirely,
+even if `render` changed to require a `net` you *couldn't* pass it in without addressing the
+explicit `without` block too.
+
+This extends out to build time execution. Build scripts are full `witchy` programs, but once
+again we can reason about those in terms of their capabiltiies. A dependency `foo` that only
+requires `Clock` gets compromised, now it asks for `Net` - that gets flagged!
+```
+$ witchy update
+blocked: acme/logger 1.0.0 -> 1.1.0 widens the footprint
+  + Net
+run `witchy update --allow-cap Net` to accept, or pin the old version
+```
+No hidden "suddenly my dependency is pulling from ghostbin".
+
+## A disclosure
+
+`witchy` is a project for fun. It's vibe coded using different models. It's a way
+for me to explore ideas in this space. If that's not for you, no problem! But you
+should be aware, upfront, that this project oscillates heavily between "these changes
+were meaningfully reviewed" and "I literally didn't even check". I have also not
+invested much into the AI side of things! In an ideal world I would ensure there
+are skills, tools, etc, to assist the AI in doing things properly but that's just
+not the case at all today.
+
+Eventually, I'd love to rewrite docs myself by hand. For now they are mostly AI generated.
+
 ## New here? Run the docs
 
 The guided way to learn witchy is **[The witchy Book](book/src/SUMMARY.md)**. Run
