@@ -21,6 +21,7 @@ languages have no means by which they can be restricted. It's very hard to know 
 `witchy` aims to take supply chain security very seriously across its entire stack of
 language features and tooling. The language itself is capability based, allowing you to
 write code like this:
+
 ```
 import http        // stdlib HTTP client over `Net` — trusted, you hand it `net`
 import markdown    // third-party rune; vetted as pure (footprint: [])
@@ -40,19 +41,34 @@ fn main(console: Console, net: Net, dir: Dir):
 ```
 
 This is extremely hard to mess up. `without` drops the capabilities from the scope entirely,
-even if `render` changed to require a `net` you *couldn't* pass it in without addressing the
+even if `render` changed to require a `net` you _couldn't_ pass it in without addressing the
 explicit `without` block too.
 
-This extends out to build time execution. Build scripts are full `witchy` programs, but once
+### Build-Time Execution, safe by default
+
+The capability model extends out to build time execution. Build scripts are full `witchy` programs, but once
 again we can reason about those in terms of their capabiltiies. A dependency `foo` that only
 requires `Clock` gets compromised, now it asks for `Net` - that gets flagged!
+
 ```
 $ witchy update
 blocked: acme/logger 1.0.0 -> 1.1.0 widens the footprint
   + Net
 run `witchy update --allow-cap Net` to accept, or pin the old version
 ```
+
 No hidden "suddenly my dependency is pulling from ghostbin".
+
+### Witchy's Package Registry - Coven
+
+The witchy package registry, `coven`, holdes packages named `runes`. This registry is
+truly a "safe by default" system;
+
+- Only supports trusted publishing, no long-lived API keys that can be compromised.
+- Full support for package signing and TUF.
+- Separation of states for "published" and "released" - your CI can handle publishing,
+  but a human has to manually (2FA'd) mark packages as released.
+- Dependency cooldowns and default-deny for build-time execution are the default.
 
 ## A disclosure
 
@@ -66,7 +82,11 @@ not the case at all today.
 
 Eventually, I'd love to rewrite docs myself by hand. For now they are mostly AI generated.
 
-## New here? Run the docs
+If you would like to contribute, please disclose any AI usage (with the model used),
+`witchy` is a project that is accepting of AI written code but takes the position that
+it *must* be open and honest about where and when AI is used.
+
+## Run the docs
 
 The guided way to learn witchy is **[The witchy Book](book/src/SUMMARY.md)**. Run
 it locally with live reload:
@@ -82,14 +102,14 @@ generators, and the package manager — every example is run and verified by the
 test suite, so what you read is exactly what the language does. (No witchy build
 needed just to read it.)
 
-Want to *run code* with zero install instead? The [playground](#playground) runs
+Want to _run code_ with zero install instead? The [playground](#playground) runs
 the real interpreter in your browser. Or jump straight to [Install](#install) to
 build the `witchy` CLI.
 
 Authority enters a witchy program in exactly one place: the typed parameters of
 `main`, minted by the host. A `Console`, a `Dir[Read]`, a `Net[Connect, Tcp]` —
 capabilities are unforgeable values that propagate only as function arguments,
-are visible in every signature, and can only ever be *narrowed*, never widened.
+are visible in every signature, and can only ever be _narrowed_, never widened.
 Calling an effectful operation without the capability is a **compile-time
 error**. A function with no capability parameters provably has no effects.
 
@@ -108,15 +128,15 @@ That makes three things possible that mainstream languages can't offer:
 
 ## Three backends, one semantics
 
-| Backend | Command | Use |
-|---|---|---|
-| Tree-walking interpreter | `witchy run.witchy` | Development; the reference semantics |
-| WebAssembly (wasmtime) | `witchy sandbox run.witchy` | Confinement: the capability boundary is the VM boundary |
-| Native (Rust transpilation) | `witchy native run.witchy` | Speed |
+| Backend                     | Command                     | Use                                                     |
+| --------------------------- | --------------------------- | ------------------------------------------------------- |
+| Tree-walking interpreter    | `witchy run.witchy`         | Development; the reference semantics                    |
+| WebAssembly (wasmtime)      | `witchy sandbox run.witchy` | Confinement: the capability boundary is the VM boundary |
+| Native (Rust transpilation) | `witchy native run.witchy`  | Speed                                                   |
 
 The backends are held to a **zero-silent-divergence** invariant: `witchy parity
 <file>` runs a program on both the interpreter and the compiled WASM and
-confirms identical output — including agreement on *error paths* (an
+confirms identical output — including agreement on _error paths_ (an
 out-of-bounds index traps on both, an unparseable integer fails on both). The
 test suite contains hundreds of differential tests and a property-based fuzzer
 holding the backends together.
