@@ -48,6 +48,17 @@ CI runs `witchy fmt --check` over the tree. If you edit `std/`, regenerate the
 API reference: `witchy doc std/*.witchy > docs/stdlib.md` (a test asserts it
 is current).
 
+## Documentation is tested
+
+Every ` ```witchy ` fenced block in the markdown docs (`README.md`, `docs/*.md`,
+…) is verified by the `documentation_examples_are_valid` test: it must parse,
+link, and type-check, and a `Console`-only `main` is run on both backends with
+the outputs compared. So examples in the docs must be **complete, correct
+programs** — when you change the language, the docs that demonstrate it fail the
+build until updated. Genuinely partial snippets (signatures with `...`, shell
+commands, sample output) use a different fence (untagged, or ` ```sh `) and are
+not executed.
+
 ## Where things live
 
 See [docs/architecture.md](docs/architecture.md) for the pipeline and file

@@ -51,7 +51,7 @@ folder and nothing else.
 
 ## Attenuation patterns
 
-```
+```witchy
 // Implicit narrowing at a call: more authority stands in for less.
 fn load(dir: Dir[Read], name: String) -> String:
     read(dir, name)
@@ -61,9 +61,11 @@ fn main(console: Console, dir: Dir):
 
     // Explicit narrowing when you want to NAME the smaller handle:
     let ro = dir as Dir[Read]
+    print(console, read(ro, "config.txt"))
 
     // Subtree attenuation: a smaller world, not just fewer verbs.
     let uploads = subdir(dir, "uploads")
+    print(console, read(uploads, "latest.bin"))
 ```
 
 Brands go further: wrap a capability in your own type to encode *policy*

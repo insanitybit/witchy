@@ -4741,6 +4741,87 @@ fn yn(b: Bool) -> String:
         assert!(denied.is_err(), "signing imports must not instantiate without the grant");
     }
 
+    /// Every ```witchy code block in the documentation must be a real program:
+    /// it parses, links, and type-checks; and when it defines a `main` whose
+    /// footprint needs nothing beyond Console, it RUNS on both backends and the
+    /// outputs must agree. Docs that drift from the language break the build.
+    #[test]
+    fn documentation_examples_are_valid() {
+        let mut files: Vec<std::path::PathBuf> = vec![
+            "README.md".into(),
+            "CONTRIBUTING.md".into(),
+            "examples/README.md".into(),
+        ];
+        let mut docs: Vec<_> = std::fs::read_dir("docs")
+            .expect("docs/")
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("md"))
+            .collect();
+        docs.sort();
+        files.extend(docs);
+
+        let mut checked = 0usize;
+        let mut ran = 0usize;
+        for file in &files {
+            let Ok(text) = std::fs::read_to_string(file) else { continue };
+            for (idx, snippet) in extract_witchy_blocks(&text).into_iter().enumerate() {
+                let context = format!("{}: ```witchy block #{}", file.display(), idx + 1);
+                let module = parser::parse_module(&snippet)
+                    .unwrap_or_else(|e| panic!("{context} fails to parse: {e:?}\n---\n{snippet}"));
+                let linked = crate::linker::link(vec![("main".into(), module)], "main")
+                    .unwrap_or_else(|e| panic!("{context} fails to link: {e}\n---\n{snippet}"));
+                typeck::check(&linked)
+                    .unwrap_or_else(|e| panic!("{context} fails to type-check: {e}\n---\n{snippet}"));
+                checked += 1;
+
+                let has_main = linked
+                    .items
+                    .iter()
+                    .any(|it| matches!(it, ast::Item::Function(f) if f.name == "main"));
+                // Actors compile through a separate module path (and run on the
+                // demo scheduler), so the single-module run below doesn't apply —
+                // such examples are still fully parse + type-checked above.
+                let has_actor = linked.items.iter().any(|it| matches!(it, ast::Item::Actor(_)));
+                let footprint = crate::capabilities::analyze(&linked);
+                let console_only = footprint.total.keys().all(|k| *k == "Console");
+                if has_main && console_only && !has_actor {
+                    let wat = codegen::compile_module(&linked)
+                        .unwrap_or_else(|e| panic!("{context} fails to compile to WASM: {e}"));
+                    let interp =
+                        interpreter::run_module(linked, std::path::Path::new("."), Vec::new())
+                            .unwrap_or_else(|e| panic!("{context} fails on the interpreter: {e}"));
+                    let compiled = crate::run_wat_capture(&wat)
+                        .unwrap_or_else(|e| panic!("{context} fails on WASM: {e}"));
+                    assert_eq!(interp, compiled, "{context}: the backends DIVERGE");
+                    ran += 1;
+                }
+            }
+        }
+        assert!(checked >= 20, "expected the docs to carry many checked examples, found {checked}");
+        assert!(ran >= 5, "expected several runnable doc examples, found {ran}");
+    }
+
+    /// Pull the contents of every fenced block tagged exactly `witchy`.
+    fn extract_witchy_blocks(markdown: &str) -> Vec<String> {
+        let mut blocks = Vec::new();
+        let mut current: Option<String> = None;
+        for line in markdown.lines() {
+            match &mut current {
+                None if line.trim_end() == "```witchy" => current = Some(String::new()),
+                Some(body) => {
+                    if line.trim_end() == "```" {
+                        blocks.push(current.take().unwrap());
+                    } else {
+                        body.push_str(line);
+                        body.push('\n');
+                    }
+                }
+                None => {}
+            }
+        }
+        blocks
+    }
+
     /// The in-language test framework: `witchy test` discovers zero-parameter
     /// `test_*` functions, a test passes by returning and fails by aborting
     /// (std/testing's assertions report a message). Capability-free by

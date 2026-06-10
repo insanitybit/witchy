@@ -3,7 +3,7 @@
 A capability-secure language where a program's authority is a **typed, auditable,
 diffable, enforceable artifact**.
 
-```
+```witchy
 fn load(dir: Dir[Read], name: String) -> String:    // provably cannot write
     read(dir, name)
 
@@ -50,7 +50,7 @@ holding the backends together.
 
 Indentation-based layout, expression-oriented, statically typed with inference:
 
-```
+```witchy
 type Shape:
     Circle(Int)
     Square(Int)
