@@ -11,6 +11,26 @@ fn main(console: Console, dir: Dir):
     print(console, load(dir, "notes.txt"))           // full Dir narrows to Dir[Read]
 ```
 
+## New here? Run the docs
+
+The guided way to learn witchy is **[The witchy Book](book/src/SUMMARY.md)**. Run
+it locally with live reload:
+
+```sh
+git clone https://github.com/insanitybit/witchy && cd witchy
+cargo install mdbook              # one-time, if you don't already have it
+./scripts/build-book.sh --serve   # builds the book and opens it in your browser
+```
+
+That's a chapter-by-chapter tour from "hello" through capabilities, actors,
+generators, and the package manager — every example is run and verified by the
+test suite, so what you read is exactly what the language does. (No witchy build
+needed just to read it.)
+
+Want to *run code* with zero install instead? The [playground](#playground) runs
+the real interpreter in your browser. Or jump straight to [Install](#install) to
+build the `witchy` CLI.
+
 Authority enters a witchy program in exactly one place: the typed parameters of
 `main`, minted by the host. A `Console`, a `Dir[Read]`, a `Net[Connect, Tcp]` —
 capabilities are unforgeable values that propagate only as function arguments,
@@ -166,7 +186,7 @@ Editor support: a [Zed extension](editors/zed) with tree-sitter highlighting and
 
 Witchy is a young language (pre-1.0). The capability model, the three backends
 and their parity discipline, the formatter, the LSP, and the package-manager
-core are implemented and tested (850+ tests). Not yet done: a hosted public
+core are implemented and tested (1,100+ tests). Not yet done: a hosted public
 registry, build-time sandboxing for package builds (designed, not built), and
 performance work. See [docs/architecture.md](docs/architecture.md) for the
 honest limitations list, including the WASM memory model.
