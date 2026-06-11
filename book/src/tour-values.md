@@ -52,7 +52,7 @@ n is 3, doubled 6
 ```
 
 `${expr}` renders *any* value — scalars, lists, tuples, records, sum types,
-dicts, and any nesting — identically on all three backends (it is sugar for the
+dicts, and any nesting — identically on both backends (it is sugar for the
 built-in `to_string`). So you rarely call `to_string`/`int_to_string` by hand;
 reach for `"${x}"`. Strings are UTF-8 and the common operations
 (`string_length`, `char_count`, `split`, `contains`, …) live in the `string`

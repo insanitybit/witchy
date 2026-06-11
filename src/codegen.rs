@@ -468,6 +468,8 @@ struct Codegen {
     uses_str_append_cap: bool,
     /// Whether the `$dict_insert_cap` helper is needed.
     uses_dict_insert_cap: bool,
+    /// Whether the `$dict_update_cap` helper (the in-place upsert) is needed.
+    uses_dict_update_cap: bool,
     /// Memoized per-shape region copy-out helpers (`$rcopy_<shape>`), the
     /// same family pattern as `eq_helpers`/`ts_helpers`.
     rcopy_helpers: std::collections::BTreeMap<String, String>,
@@ -781,6 +783,7 @@ impl Codegen {
             uses_list_push_cap: false,
             uses_str_append_cap: false,
             uses_dict_insert_cap: false,
+            uses_dict_update_cap: false,
             rcopy_helpers: std::collections::BTreeMap::new(),
             uses_region: false,
             wm_level: 0,
@@ -1781,6 +1784,7 @@ impl Codegen {
             || self.uses_list_push_cap
             || self.uses_str_append_cap
             || self.uses_dict_insert_cap
+            || self.uses_dict_update_cap
             || self.uses_wm
             || self.uses_region
             || self.uses_compiler_footprint
@@ -2030,6 +2034,11 @@ impl Codegen {
         }
         if self.uses_dict_insert_cap {
             s.push_str(DICT_INSERT_CAP_WAT);
+        }
+        // `$dict_update_cap` calls `$dict_get_or` (emitted via `uses_dict`),
+        // the closure ABI, and `$dict_insert_cap`.
+        if self.uses_dict_update_cap {
+            s.push_str(DICT_UPDATE_CAP_WAT);
         }
         if self.uses_list_concat {
             s.push_str(LIST_CONCAT_WAT);
@@ -2437,6 +2446,30 @@ impl Codegen {
                             out.push_str(to_slot(vk));
                             out.push_str(&format!(
                                 "    i32.const {mode}\n    local.get ${name}__cap\n    call $dict_insert_cap\n    local.set ${name}__cap\n    local.set ${name}\n"
+                            ));
+                            tail_is_value = false;
+                            continue;
+                        }
+                        // The upsert fast path: `d = update(d, k, dflt, f)`
+                        // applies the closure and writes the slot in place.
+                        if let Some((kexpr, dexpr, fexpr)) = self_update_args(name, value) {
+                            let mode = self.dict_key_mode(kexpr)?;
+                            self.uses_dict = true;
+                            self.uses_str_eq = true;
+                            self.uses_dict_insert_cap = true;
+                            self.uses_dict_update_cap = true;
+                            self.clos_arities.insert(1);
+                            let kk = self.kind_of(kexpr);
+                            let dk = self.kind_of(dexpr);
+                            out.push_str(&format!("    local.get ${name}\n"));
+                            out.push_str(&self.compile_expr(kexpr)?);
+                            out.push_str(to_slot(kk));
+                            out.push_str(&self.compile_expr(dexpr)?);
+                            out.push_str(to_slot(dk));
+                            out.push_str(&format!("    i32.const {mode}\n"));
+                            out.push_str(&self.compile_expr(fexpr)?);
+                            out.push_str(&format!(
+                                "    local.get ${name}__cap\n    call $dict_update_cap\n    local.set ${name}__cap\n    local.set ${name}\n"
                             ));
                             tail_is_value = false;
                             continue;
@@ -5619,6 +5652,18 @@ fn self_insert_args<'a>(name: &str, value: &'a Expr) -> Option<(&'a Expr, &'a Ex
     None
 }
 
+/// `d = update(d, k, default, f)`: the upsert analogue of `self_insert_args`.
+fn self_update_args<'a>(name: &str, value: &'a Expr) -> Option<(&'a Expr, &'a Expr, &'a Expr)> {
+    if let Expr::Call { name: f, args } = value {
+        if f == "update" && args.len() == 4 {
+            if matches!(&args[0], Expr::Var(v) if v == name) {
+                return Some((&args[1], &args[2], &args[3]));
+            }
+        }
+    }
+    None
+}
+
 /// `s = s <> a <> b <> …` (any left-spine whose leftmost leaf is the assigned
 /// variable): the appended pieces, in order. The string-builder analogue of
 /// `self_push_elem`.
@@ -5660,6 +5705,15 @@ fn scan_push_block(b: &Block, self_push: &mut HashSet<String>, disq: &mut HashSe
                     self_push.insert(name.clone());
                     scan_push_expr(k, self_push, disq);
                     scan_push_expr(v, self_push, disq);
+                    continue;
+                }
+                if let Some((k, dflt, f)) = self_update_args(name, value) {
+                    // The updater closure's body is scanned too: a lambda that
+                    // CAPTURES the dict disqualifies it (the capture aliases).
+                    self_push.insert(name.clone());
+                    scan_push_expr(k, self_push, disq);
+                    scan_push_expr(dflt, self_push, disq);
+                    scan_push_expr(f, self_push, disq);
                     continue;
                 }
                 // A plain reassignment is fine (the emitter resets the
@@ -7938,6 +7992,19 @@ const DICT_REMOVE_WAT: &str = r#"  (func $dict_remove (param $d i32) (param $k i
 // `k`. Equivalent to `insert(d, k, f(get_or(d, k, default)))`, but the closure
 // call lives in this helper's own frame so call-site arg evaluation stays
 // single-shot and nests cleanly.
+// The in-place upsert: apply the updater closure to the current value (or
+// `default` when `k` is absent), then store through `$dict_insert_cap` —
+// overwriting the slot or appending into owned slack, growing geometrically.
+const DICT_UPDATE_CAP_WAT: &str = r#"  (func $dict_update_cap (param $d i32) (param $k i64) (param $default i64) (param $mode i32) (param $clos i32) (param $cap i32) (result i32 i32)
+    (local $new i64)
+    (local.set $new
+      (call_indirect (type $clos1)
+        (local.get $clos)
+        (call $dict_get_or (local.get $d) (local.get $k) (local.get $default) (local.get $mode))
+        (i32.load (local.get $clos))))
+    (call $dict_insert_cap (local.get $d) (local.get $k) (local.get $new) (local.get $mode) (local.get $cap)))
+"#;
+
 const DICT_UPDATE_WAT: &str = r#"  (func $dict_update (param $d i32) (param $k i64) (param $default i64) (param $mode i32) (param $clos i32) (result i32)
     (local $new i64)
     (local.set $new

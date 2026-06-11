@@ -143,11 +143,13 @@ All wasmtime-45 features we already ship but don't fully use:
 | `rayon` or std threads | actor scheduler pool | 3 |
 | `wasmer` + `wasmer-compiler-llvm` | optional LLVM engine — only if Binaryen numbers disappoint | 4 |
 
-## Native backend retirement
+## Native backend retirement — DONE (2026-06-11, e302f70)
 
-The native tier stays frozen (no new feature work) until Phase 1's exit
-criterion holds and Phase 0 shows the WASM tier within ~1.5× of it across the
-suite. Then `witchy native`/`emit-rust` are removed (git keeps the history),
-and the ownership-conventions appendix is rewritten around what the
-conventions buy the WASM tier (clone elision and in-place mutation — the same
-knobs, one tier).
+The exit criteria held (Phase 1 complete; the WASM tier at or beyond the
+native tier across the suite), so the native backend was removed:
+`src/rustgen.rs` deleted, the `witchy native`/`emit-rust` CLI arms dropped,
+and the `let`-borrow no-escape contract moved from rustc's borrow checker
+into typeck (`borrow_escape_check`) so the documented language rule survives
+the backend. The ownership-conventions appendix is rewritten around what the
+conventions buy the one compiled tier (provable non-aliasing for in-place
+mutation).

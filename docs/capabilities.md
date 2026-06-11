@@ -155,6 +155,12 @@ call**. The enforcement is structural, not a runtime permission check:
   every resolution runs the same `..`/absolute/symlink confinement as the
   interpreter.
 - Memory is capped; a scheduler can preempt runaway actors at loop back-edges.
+- ACTOR programs sandbox per actor: each spawned actor runs in its own VM
+  linked with only the families its declared capability fields entitle it to
+  (no `Console` field, no `print` import; a `Dir[Read]` field links the read
+  family only). `Dir`/`Net` authority moves at `spawn` by handle translation
+  — the host copies the path/allowlist into the new VM's own table — so an
+  attenuated grant (`subdir`, `restrict`) stays attenuated across actors.
 
 The interpreter (`witchy program.witchy`) enforces capabilities at the type
 level and confines `Dir` paths identically, but it is a development runtime,

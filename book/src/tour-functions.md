@@ -156,8 +156,8 @@ Every parameter has an *ownership convention* that says what the function may do
 with its argument. The default — no keyword — is an **owned, immutable value**:
 the function reads it but the caller sees no change. Annotate it `let` to make it
 an explicit **borrow**: same read-only meaning, but the compiler guarantees it
-doesn't escape the call and the native backend passes it without copying — a free
-win for read-only parameters on a hot path.
+doesn't escape the call — returning a `let`-borrowed parameter is a type
+error — which is what lets backends share it without a defensive copy.
 
 ```witchy
 fn sum(let xs: List(Int), i: Int) -> Int:
@@ -200,9 +200,9 @@ by default, `let` to borrow, `own`/`move` to transfer, `inout`/`var` to mutate t
 caller's variable in place. There's no aliasing and no garbage-collector surprise
 — who may change what is part of every function's type.
 
-These conventions are also witchy's **performance knobs** on the native backend
-(clone vs. borrow vs. move): see
+These conventions are also witchy's **performance knobs** (what may alias
+determines what the compiler may mutate in place): see
 [Appendix: Performance — the Ownership Knobs](appendix-performance.md) for
-exactly what each one compiles to and when to reach for it.
+what each one means to the optimizer and when to reach for it.
 
 Next: defining your own types.

@@ -19,8 +19,8 @@ follow along.
 
 ## Building from source
 
-To use witchy as a real tool — the sandbox, the package manager, native
-compilation — build the binary. You'll need a Rust toolchain (`rustup`
+To use witchy as a real tool — the sandbox, the package manager — build the
+binary. You'll need a Rust toolchain (`rustup`
 recommended):
 
 ```sh

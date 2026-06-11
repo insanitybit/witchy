@@ -120,10 +120,17 @@ is a boundary, and you decide exactly what crosses it.
 ## Actors in the sandbox
 
 When actors compile, the boundary becomes physical: each actor runs in **its own
-WebAssembly VM** with its own linear memory. A message crosses that boundary by
-value — `Int`, `Float`, and `Subject` fields are copied, and a `String`'s bytes
-are read out of the sender and re-allocated in the receiver — so no actor ever
-sees another's memory.
+WebAssembly VM** with its own linear memory, linked with **only the host
+imports its capability fields entitle it to**. The `Worker` above has no
+`print` import in its instance — not denied, absent. The `Auditor`'s VM links
+the directory *write* family and nothing else (`Dir[Write]` is a per-right
+gate), and its `Dir` is an opaque handle whose path lives host-side: at
+`spawn` the host translates the spawner's handle into the new VM's own table,
+so the attenuated `subdir(dir, "audit")` grant stays attenuated across the VM
+boundary. A message crosses by value — `Int`, `Float`, and `Subject` fields
+are copied, and a `String`'s bytes are read out of the sender and
+re-allocated in the receiver — so no actor ever sees another's memory.
+(Capabilities travel at `spawn`, never in messages.)
 
 Passing a `Subject` in a message is capability delegation: the receiver gains
 the authority to message that actor, and nothing else. An actor that was never

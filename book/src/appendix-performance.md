@@ -1,55 +1,49 @@
 # Appendix: Performance — the Ownership Knobs
 
 The parameter conventions from [the functions chapter](tour-functions.md) are
-not just a correctness model — they are witchy's **optimization knobs**. This
-appendix says exactly what each one buys you and where.
+not just a correctness model — they are what lets the compiler optimize
+without a garbage collector. This appendix says what each one means to the
+optimizer and which knobs actually move the needle.
 
-First, the ground rule: witchy has value semantics. A callee must never be able
-to mutate what the caller still observes. Each backend honors that its own way —
-the interpreter and the WASM backend through their value representations, and
-the **native (Rust) backend** by choosing, per parameter, between *clone*,
-*borrow*, and *move*. That choice is the knob.
+First, the ground rule: witchy has value semantics. A callee must never be
+able to mutate what the caller still observes. That guarantee is exactly what
+makes witchy's aggressive optimizations *sound*: when the compiler can prove
+a value has one owner, it is free to mutate it in place, because no one else
+can be looking.
 
-| You write | The native backend emits | Cost profile |
+| You write | What it means | What the optimizer gets |
 |---|---|---|
-| `fn f(xs: List(Int))` *(default)* | the argument is **cloned at the call site** so the caller keeps its value | safe everywhere; a deep copy per call for collections (`List`/`Dict`/`String`/records). Scalars (`Int`, `Float`, `Bool`, `Duration`) and capabilities are `Copy` — free |
-| `fn f(let xs: List(Int))` | the parameter lowers to **`&T`** and the call passes a reference — **no clone** | the read-only fast path. The compiler enforces the borrow can't escape (not returned, stored, or mutated), which is what makes eliding the clone sound |
-| `fn f(own xs: List(Int))` / `sink` | the argument is **moved — no clone** | for "I'm consuming this": the callee may take buffers apart in place; the checker forbids the caller from using the value afterwards, so nothing needs copying |
-| `fn f(inout n: Int)` | a mutable write-back parameter | mutate-in-place with the final value delivered back to the caller's `var`; no copy-out |
+| `fn f(xs: List(Int))` *(default)* | an owned, observably immutable value | the callee's copy is independent; safe everywhere |
+| `fn f(let xs: List(Int))` | an immutable **borrow** — the type checker rejects returning it, so it cannot outlive the call | the value provably has no new owner after the call; backends share it without a defensive copy |
+| `fn f(own xs: List(Int))` / `sink` | ownership transfer; use-after-move is a compile error | the callee may consume the value in place — its story ends here |
+| `fn f(inout n: Int)` | the callee mutates and the caller's `var` is written back | mutate-in-place with write-back; no copy-out |
 
-A few practical consequences:
+## The optimizations you get without asking
 
-- **The default is "correct first."** If you annotate nothing, every call is
-  value-semantic and safe; for collection arguments on a hot path you pay one
-  clone per call.
-- **`let` is the free win.** A function that only *reads* a collection should
-  take it `let`. Same observable behavior, zero-copy on native:
+Most of the compiled tier's speed comes from machinery that needs **no
+annotations** — it triggers on shapes the compiler can prove unaliased:
 
-  ```witchy
-  fn sum(let xs: List(Int), i: Int) -> Int:
-      if i >= length(xs):
-          0
-      else:
-          at(xs, i) + sum(xs, i + 1)
+- **Linear update.** A self-assign accumulation — `xs = push(xs, e)`,
+  `s = s <> piece`, `d = insert(d, k, v)` — mutates the collection in place
+  with capacity doubling, instead of copying per step. One alias (binding the
+  value to a second name, passing it somewhere it's retained) and the
+  copying path is used instead; value semantics never bend. Both backends
+  apply this — accumulate-in-loop is O(n) everywhere.
+- **Dict hash index.** Dicts carry a hidden open-addressing index; lookups,
+  `has`, `get_or`, and upserts are O(1) while iteration order stays
+  insertion order.
+- **Loop watermark resets.** A loop body whose allocations provably don't
+  escape the iteration rewinds the arena every pass — a million-iteration
+  formatting loop runs in constant memory.
+- **Per-message actor resets.** An actor's arena resets before every
+  delivery; persistent state lives host-side. Resident actors stay flat.
 
-  fn main(console: Console):
-      print(console, int_to_string(sum([1, 2, 3, 4], 0)))
-  ```
-
-- **`own` + `move` ends a value's story.** When the caller is finished with a
-  value, transferring it lets the callee reuse the allocation instead of copying
-  it — and use-after-move is a compile error, not a latent bug.
-- **Closures are cheap to pass** (reference-counted on native), and the checker
-  forbids cloning what can't be cloned — you don't manage any of that.
-
-Two honest caveats. First, these knobs change *performance on the native
-backend*; on the interpreter and the WASM backend they are checked for exactly
-the same semantics but compile to the same code either way — so a program tuned
-with `let`/`own` is no faster in the sandbox, just equally correct. Second, the
-usual advice applies: write the default first, and reach for the knobs when a
-profile (or an obvious hot loop over a big collection) says so. The signature
-documents the decision either way — that's the point of putting ownership in the
-type.
+The honest summary of where the knobs matter: `let`/`own`/`inout` are
+*contracts* — they document and enforce who owns what, and they keep the
+unaliased shapes above provable. The measured wins come from the automatic
+machinery plus `region:` below. Write the default first; reach for
+annotations when they say something true about ownership, and for `region:`
+when a profile (or an obvious burst of temporaries) says so.
 
 ## Regions: scoping your allocations
 

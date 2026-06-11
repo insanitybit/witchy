@@ -155,4 +155,4 @@ state.
 
 That's the supply-chain story, end to end: authority that is typed, computed,
 granted explicitly, pinned in the lock, and unable to widen silently — at runtime
-*and* at build time. Next: how the three backends keep one meaning.
+*and* at build time. Next: how the two backends keep one meaning.

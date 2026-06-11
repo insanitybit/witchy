@@ -50,7 +50,6 @@ the capabilities chapter.
 ## Compiling
 
 ```sh
-witchy native program.witchy        # compile to a native binary (via rustc) and run
 witchy emit-wat program.witchy      # print the generated WebAssembly text
 witchy emit-rust program.witchy     # print the Rust transpilation
 ```

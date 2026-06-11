@@ -2,7 +2,7 @@
 
 This is the reference for witchy's syntax and semantics. The behavioral
 contract is enforced by differential testing: the tree-walking interpreter is
-the reference semantics, and the compiled backends (WebAssembly, native) must
+the reference semantics, and the compiled backend (WebAssembly) must
 produce identical results — `witchy parity <file>` checks any program, and the
 test suite holds the backends to **zero silent divergence**, including error
 paths.
@@ -66,7 +66,7 @@ fn main(console: Console):
 
 **Rendering values to strings.** Reach for interpolation first: `"${x}"` renders
 *any* value — scalars, record fields, lists, tuples, records, sum types, dicts,
-and any nesting — identically on all three backends. You rarely need to call
+and any nesting — identically on both backends. You rarely need to call
 `to_string`/`int_to_string` by hand; they are what `${…}` desugars to. To print
 one value, `print(console, "${x}")`, or `say(console, x)` — the `Show`-accepting
 `print` from `import show`, for any `Show` value (the built-in scalars and your
@@ -293,13 +293,13 @@ an occurs check).
 
 **Parameter conventions** (Hylo-style value semantics):
 
-| Convention | Meaning | Native backend lowering |
-|---|---|---|
-| (default) | owned, observably immutable value | collection-typed arguments are **cloned at the call** to preserve value semantics (scalars/capabilities are `Copy` — free) |
-| `let` | immutable **borrow**; may not escape (be returned, stored, or mutated) | passed as **`&T` — no clone**; the opt-in for read-only hot paths |
-| `inout` | the callee mutates and the caller's `var` is **written back** — even on early `return`/`?` | mutable write-back; no copy-out |
-| `sink` / `own` | ownership transfer; using the source afterwards is a check-time error | the value is **moved — no clone**; the callee may consume buffers in place |
-| `move e` | explicitly transfer a binding at a call site | marks the move; pairs with `sink`/`own` |
+| Convention | Meaning |
+|---|---|
+| (default) | owned, observably immutable value |
+| `let` | immutable **borrow**; may not escape — returning a `let`-borrowed parameter is a type error |
+| `inout` | the callee mutates and the caller's `var` is **written back** — even on early `return`/`?` |
+| `sink` / `own` | ownership transfer; using the source afterwards is a check-time error |
+| `move e` | explicitly transfer a binding at a call site; pairs with `sink`/`own` |
 
 ```witchy
 fn bump(inout n: Int):
@@ -561,8 +561,27 @@ fn main(console: Console):
 explicitly at spawn — attenuated, if you choose) and returns a `Subject`.
 `send(subject, Msg(...))` is validated at check time against the declared
 handlers (unknown messages, wrong arity, and wrong field types are errors).
-Messages are copied; actors share nothing. Compiled actors run one VM per actor
-(own memory, own grant), preemptible by the scheduler at loop back-edges.
+Messages are copied; actors share nothing. Compiled actors run one VM per
+actor — own memory, own grant: the VM links only the host-import families
+the actor's capability fields entitle it to, and `Dir`/`Net` grants transfer
+at `spawn` by handle translation, so this works on both backends and in the
+sandbox:
+
+```witchy
+actor Confined:
+    console: Console
+    dir: Dir                       // this actor's whole filesystem view
+
+    on Read(name: String):
+        print(console, read(dir, name))
+
+fn main(console: Console, dir: Dir):
+    let worker = spawn Confined(console, subdir(dir, "data"))
+    send(worker, Read("notes.txt"))      // resolves inside data/ only
+```
+
+Capabilities travel at `spawn`, not in messages — a capability-typed message
+parameter is a compile error on the compiled backend.
 
 ## 15. In-language tests
 

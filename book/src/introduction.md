@@ -45,18 +45,17 @@ WebAssembly and runs it in a VM that has been handed *exactly* the host
 functions its footprint calls for — and nothing else physically exists for it
 to call.
 
-## One language, one meaning, three ways to run it
+## One language, one meaning, two ways to run it
 
-witchy has three backends:
+witchy has two backends:
 
 | Backend | What it's for |
 |---|---|
 | **Interpreter** | The reference. Fast to start, used during development. |
-| **WebAssembly** (via wasmtime) | Confinement — the capability boundary becomes the VM boundary. Also the browser playground. |
-| **Native** (transpiled to Rust) | Speed. |
+| **WebAssembly** (via wasmtime) | Deployment — confinement *and* speed: the capability boundary becomes the VM boundary, and the tier benches at native class. Also the browser playground. |
 
-These are not three dialects. They are held to a single invariant the project
-calls **parity**: a program produces *identical* output on all three, down to
+These are not two dialects. They are held to a single invariant the project
+calls **parity**: a program produces *identical* output on both, down to
 error behavior, and the test suite enforces it. When a backend cannot do
 something the same way, that is a loud compile-time error — never a quietly
 different answer. You will see this idea return throughout the book, because it

@@ -15,10 +15,10 @@ source ──lexer──> tokens ──parser──> AST ──linker──> one
                                                   │
                                               typeck.rs
                                                   │
-        ┌─────────────────────────┬───────────────┴───────────────┐
-   interpreter.rs            codegen.rs                      rustgen.rs
-   (tree-walking,            (hand-emitted WAT,              (Rust source,
-    the REFERENCE)            run on wasmtime)                rustc/LLVM)
+                  ┌───────────────┴───────────────┐
+             interpreter.rs                   codegen.rs
+             (tree-walking,                   (hand-emitted WAT,
+              the REFERENCE)                   run on wasmtime)
 ```
 
 | File | Role |
@@ -30,8 +30,8 @@ source ──lexer──> tokens ──parser──> AST ──linker──> one
 | `src/traits.rs` | Trait desugaring to plain functions; monomorphization of bounded AND unbounded generics for the compiled backends |
 | `src/interpreter.rs` | The reference semantics; also the `Dir`/`Net` confinement logic the sandbox reuses |
 | `src/codegen.rs` | WAT emission: universal 8-byte value slots, per-shape structural-equality helpers, capability host imports |
-| `src/runtime.rs` | The wasmtime sandbox: one `Store` per actor, capability-gated host functions, memory caps, epoch preemption |
-| `src/rustgen.rs` | The native backend: transpile to Rust, compile with rustc |
+| `src/runtime.rs` | The wasmtime sandbox: capability-gated host functions over one shared `ActorState`, memory caps, epoch preemption |
+| `src/actor_system.rs` | Compiled actor programs: one VM per actor, per-kind capability gates, spawn-time Dir/Net handle translation, typed message routing |
 | `src/capabilities.rs` | The footprint analyzer (`witchy caps`, `caps-diff`) — recomputed from source, never trusted metadata |
 | `src/pm/` | The package manager: manifest/lockfile, resolution, content-addressed store, registry client/server, TUF, signing, the block-on-widening gate |
 | `src/format.rs` | The canonical formatter (comment-preserving, round-trip-verified) |
@@ -68,33 +68,56 @@ into a host-side table (paths and allowlists never enter guest memory, so a
 module cannot forge or widen authority); `Console`/`Clock`/`Env` are erased
 entirely (the linked host import *is* the authority).
 
-## Memory model — honest limitations
+## Memory model
 
-The compiled backend uses a **bump allocator with no reclamation**: `$heap`
-grows monotonically; values are never freed. This is a deliberate simplicity
-choice with real consequences:
+The compiled backend is a **bump arena with structured reclamation** — no
+tracing GC, no free lists; instead, memory is reclaimed at well-defined
+lifetimes the compiler can prove (or the user declares):
 
-- **Fine:** CLI invocations, tests, build steps, request-scoped work — the
-  whole arena is discarded when the VM exits, and linear memory is capped
-  (1 GiB ceiling for `run`, smaller per-actor caps under the scheduler), so a
-  runaway program traps rather than consuming the host.
-- **Not fine:** long-running, allocation-heavy servers compiled to WASM. A
-  loop that allocates indefinitely will eventually hit the memory cap and
-  trap. Run resident services on the interpreter or native backend, or
-  restart actors periodically (one actor = one VM = one arena).
+- **Program exit** — the whole arena is discarded with the VM; linear memory
+  is capped (1 GiB ceiling for `run`), so a runaway program traps rather than
+  consuming the host.
+- **Per message** (actors) — the host calls `__msg_prep` before each
+  delivery, resetting the actor's arena to its base. Persistent state lives
+  in host cells / globals, so a resident actor's memory is flat across
+  millions of messages.
+- **Per loop iteration** — escape-free loops get a watermark reset: the
+  compiler proves nothing allocated inside the body outlives the iteration
+  and rewinds the heap each pass.
+- **`region:` blocks** — user-declared allocation scopes. Everything born in
+  the region dies at its end; the block's VALUE escapes by a shape-directed
+  copy-out that short-circuits on parent-side data (a passthrough result
+  copies zero bytes — asserted in tests via the exported
+  `__region_copy_bytes` counter). See [regions.md](regions.md).
 
-GC or arena-reset-per-message is future work; the design (per-actor isolated
-memories) is chosen so reclamation can land per-actor without a global
-collector.
+On top of reclamation, hot mutation paths avoid allocating at all: the
+linear-update optimizer turns unaliased self-assign shapes
+(`xs = push(xs, e)`, `s = s <> p`, `d = insert(d, k, v)`) into in-place
+appends with capacity doubling, and dicts carry a hidden open-addressing hash
+index for O(1) lookups. The interpreter applies the same in-place
+self-assign optimization (values are fully owned there, so the slot is the
+value's only home). Measured: string workloads run 4–5.7× faster than Go,
+lists/dicts/compute at parity — see `bench/BASELINE.md`.
 
 ## The runtime sandbox
 
-Each actor is a wasmtime `Store` with its own linear memory and its own
+Each VM is a wasmtime `Store` with its own linear memory and its own
 `Linker`. A capability grant means "this host function is linked"; everything
-else is structurally absent — an actor importing an ungranted function fails
-at instantiation, before any code runs. Resource bounds: a per-actor linear
+else is structurally absent — a module importing an ungranted function fails
+at instantiation, before any code runs. Resource bounds: a per-VM linear
 memory cap and (under the scheduler) epoch-based preemption at loop back-edges
 to reclaim runaway actors.
+
+Compiled ACTOR programs run on the same gated surface
+(`link_capability_imports` over the shared `ActorState`): each actor kind's
+VM links only the import families its declared capability fields entitle it
+to — an actor without a `Console` field physically has no `print` import,
+and a `Dir[Read]` field links the read family only. `Dir`/`Net` fields are
+i32 handles into the actor's own host-side table; `spawn` TRANSLATES the
+spawner's handle into the spawnee's table (paths/allowlists never enter
+guest memory), so attenuation (`subdir`, `restrict`) carries across VM
+boundaries. The driver (`main`) VM takes its grant from the host: the dev
+grant for `run`/`parity`, the computed footprint for `witchy sandbox`.
 
 Trusted computing base: the lexer-to-codegen pipeline, the runtime host
 functions, and wasmtime itself. Microarchitectural side channels (Spectre
@@ -109,16 +132,19 @@ Tracked honestly rather than hidden:
   constructor literals). A payload codegen cannot resolve — e.g. through an
   unspecialized generic function, or a *recursive* generic ADT — stays a loud
   compile error, never a silent pointer compare.
-- `spawn` IS guest-callable from a compiled program's `main`: the driver runs
-  in its own VM, each `spawn` instantiates the actor's VM through a host
-  import (capability arguments erased — the system grants them; Subject
-  arguments travel as ids), and `send` routes through the system. Messages
-  between compiled actor VMs carry `Int`, `Float`, `String` (copied by
-  content), `Subject` (delegating send authority), `List(Int)`/`List(String)`,
-  scalar-tuple, and record fields, and handlers can `spawn` new actors
-  themselves (delivery takes the running actor out of the table, so
-  registration never deadlocks). Anything outside that surface is a loud
-  compile error, never a silent difference.
+- `spawn` IS guest-callable from a compiled program's `main` AND from
+  handlers: each `spawn` instantiates the actor's VM through a host import
+  under the kind's own capability gate (Subject ids and Dir/Net handles
+  travel as i32s and are translated; Console/Clock/Env are erased — the gate
+  carries them), and `send` routes through the system. Messages between
+  compiled actor VMs carry `Int`, `Float`, `String` (copied by content),
+  `Subject` (delegating send authority), `List(Int)`/`List(String)`,
+  scalar-tuple, and record fields. Anything outside that surface — including
+  a capability-typed MESSAGE parameter (pass capabilities at `spawn`, not in
+  messages) and `Secret`-typed actor fields — is a loud compile error, never
+  a silent difference.
 - The LSP has diagnostics, completion, and hover — no go-to-definition or
   rename yet.
-- No GC (see the memory model above).
+- No tracing GC: reclamation is structural (see the memory model above). A
+  long-running loop that accumulates into a single ever-growing value still
+  grows; bound it with a `region:` or per-message state.
