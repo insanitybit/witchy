@@ -51,6 +51,14 @@ feature parity-testable for free.
   lowering passes, eq/shape machinery) continues to work untouched —
   the same trick `retain`/`without` use.
 
+## Status — 2026-06-11: Phases 1–3 SHIPPED
+
+Phase 1 (2adea75), Phase 2 (536bdc3), Phase 3 (f63b4eb). Measured:
+region-vs-no-region bench 48 ms vs 75 ms with flat memory; the passthrough
+zero-copy property is asserted in tests via `__region_copy_bytes`. Phase 4
+remains in the drawer per its own gate: the counter shows copy-outs moving
+only result-sized bytes in every current workload.
+
 ## Phases
 
 ### Phase 1 — front end (parser, typeck, interpreter, fmt)
