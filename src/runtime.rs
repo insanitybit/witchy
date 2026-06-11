@@ -1113,12 +1113,31 @@ pub fn optimize_module(input: &[u8]) -> Vec<u8> {
     if !std::env::var_os("WITCHY_WASM_OPT").is_some_and(|v| v == "1") {
         return input.to_vec();
     }
-    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let dir = std::env::temp_dir();
-    let pid = std::process::id();
-    let src = dir.join(format!("witchy_opt_{pid}_{n}.wat"));
-    let out = dir.join(format!("witchy_opt_{pid}_{n}.wasm"));
+    // A private, randomly named, owner-only directory per invocation — never
+    // predictable paths in the shared temp dir (symlink-attack surface).
+    let private_dir = (|| -> Option<std::path::PathBuf> {
+        for _ in 0..4 {
+            let mut bytes = [0u8; 8];
+            getrandom::fill(&mut bytes).ok()?;
+            let name: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+            let dir = std::env::temp_dir().join(format!("witchy-opt-{name}"));
+            let mut builder = std::fs::DirBuilder::new();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::DirBuilderExt;
+                builder.mode(0o700);
+            }
+            if builder.create(&dir).is_ok() {
+                return Some(dir);
+            }
+        }
+        None
+    })();
+    let Some(dir) = private_dir else {
+        return input.to_vec();
+    };
+    let src = dir.join("module.wat");
+    let out = dir.join("module.wasm");
     let optimized = (|| -> Option<Vec<u8>> {
         std::fs::write(&src, input).ok()?;
         let status = std::process::Command::new("wasm-opt")
@@ -1134,8 +1153,7 @@ pub fn optimize_module(input: &[u8]) -> Vec<u8> {
         }
         std::fs::read(&out).ok()
     })();
-    let _ = std::fs::remove_file(&src);
-    let _ = std::fs::remove_file(&out);
+    let _ = std::fs::remove_dir_all(&dir);
     optimized.unwrap_or_else(|| input.to_vec())
 }
 

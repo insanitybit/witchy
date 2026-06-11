@@ -564,6 +564,27 @@ impl System {
         sigs: Vec<MessageSig>,
         specs: Vec<(String, Vec<(String, bool)>)>,
     ) -> Result<Vec<String>> {
+        // WITCHY_PARALLEL_ACTORS=N drains with N worker threads (shared-
+        // nothing parallelism across actor VMs); the default stays the
+        // deterministic single-threaded drain, matching the interpreter's
+        // global FIFO schedule.
+        let workers = std::env::var("WITCHY_PARALLEL_ACTORS")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(0);
+        Self::run_program_with_workers(driver_wat, actor_wats, sigs, specs, workers)
+    }
+
+    /// `run_program` with an explicit drain width: `workers > 1` uses the
+    /// parallel scheduler (cross-actor output interleaving is relaxed;
+    /// per-actor delivery order is preserved).
+    pub fn run_program_with_workers(
+        driver_wat: &str,
+        actor_wats: &[(String, String)],
+        sigs: Vec<MessageSig>,
+        specs: Vec<(String, Vec<(String, bool)>)>,
+        workers: usize,
+    ) -> Result<Vec<String>> {
         let engine = speed_engine();
         let mut kinds = Vec::new();
         for (name, wat) in actor_wats {
@@ -583,8 +604,117 @@ impl System {
         let (mut dstore, dinstance) = link_vm(&sys.shared, &driver)?;
         let run = dinstance.get_typed_func::<(), ()>(&mut dstore, "run")?;
         run.call(&mut dstore, ())?;
-        sys.run_to_quiescence()?;
+        if workers > 1 {
+            sys.run_to_quiescence_parallel(workers)?;
+        } else {
+            sys.run_to_quiescence()?;
+        }
         Ok(sys.output())
+    }
+
+    /// Drain the mailboxes with `workers` OS threads. Actors are isolated VMs,
+    /// so cross-actor parallelism is safe by construction; what this relaxes
+    /// is the GLOBAL print interleaving (per-actor delivery order is still
+    /// FIFO: a message for a busy actor parks in a pending queue that splices
+    /// back, in order, when the actor is returned to the table). Opt-in —
+    /// the default drain stays deterministic, matching the interpreter.
+    fn run_to_quiescence_parallel(&mut self, workers: usize) -> Result<()> {
+        use std::collections::HashMap;
+        use std::sync::Condvar;
+        type Msg = (usize, u32, Vec<FieldVal>);
+        struct Sched {
+            pending: HashMap<usize, VecDeque<Msg>>,
+            inflight: usize,
+        }
+        let sched = Arc::new((Mutex::new(Sched { pending: HashMap::new(), inflight: 0 }), Condvar::new()));
+        let errors: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        std::thread::scope(|scope| {
+            for _ in 0..workers.max(1) {
+                let shared = self.shared.clone();
+                let sched = Arc::clone(&sched);
+                let errors = Arc::clone(&errors);
+                scope.spawn(move || {
+                    loop {
+                        // Lock order everywhere: sched > queue > actors.
+                        let job = {
+                            let (lock, cv) = &*sched;
+                            let mut st = lock.lock().unwrap();
+                            loop {
+                                let mut grabbed: Option<(Msg, (Store<Host>, Instance))> = None;
+                                {
+                                    let mut q = shared.queue.lock().unwrap();
+                                    while let Some(msg) = q.pop_front() {
+                                        let mut actors = shared.actors.lock().unwrap();
+                                        match actors.get_mut(msg.0) {
+                                            Some(slot) if slot.is_some() => {
+                                                let vm = slot.take().unwrap();
+                                                grabbed = Some((msg, vm));
+                                                break;
+                                            }
+                                            Some(_) => {
+                                                // Target busy: park in arrival order.
+                                                st.pending.entry(msg.0).or_default().push_back(msg);
+                                            }
+                                            None => {
+                                                errors.lock().unwrap().push(format!(
+                                                    "send to unknown actor id {}",
+                                                    msg.0
+                                                ));
+                                            }
+                                        }
+                                    }
+                                }
+                                match grabbed {
+                                    Some(j) => {
+                                        st.inflight += 1;
+                                        break Some(j);
+                                    }
+                                    None => {
+                                        let queue_empty = shared.queue.lock().unwrap().is_empty();
+                                        if st.inflight == 0 && queue_empty {
+                                            cv.notify_all();
+                                            break None;
+                                        }
+                                        st = cv.wait(st).unwrap();
+                                    }
+                                }
+                            }
+                        };
+                        let Some(((target, tag, fields), (mut store, instance))) = job else {
+                            return;
+                        };
+                        let name = shared.sigs.get(tag as usize).map(|(n, _)| n.clone());
+                        let result = match name {
+                            Some(n) => System::deliver(&mut store, &instance, &n, &fields),
+                            None => Ok(()),
+                        };
+                        {
+                            let (lock, cv) = &*sched;
+                            let mut st = lock.lock().unwrap();
+                            // Release parked messages to the FRONT (their
+                            // arrival order preserved), then return the VM.
+                            if let Some(mut parked) = st.pending.remove(&target) {
+                                let mut q = shared.queue.lock().unwrap();
+                                while let Some(m) = parked.pop_back() {
+                                    q.push_front(m);
+                                }
+                            }
+                            shared.actors.lock().unwrap()[target] = Some((store, instance));
+                            st.inflight -= 1;
+                            if let Err(e) = result {
+                                errors.lock().unwrap().push(e.to_string());
+                            }
+                            cv.notify_all();
+                        }
+                    }
+                });
+            }
+        });
+        let errs = errors.lock().unwrap();
+        if let Some(first) = errs.first() {
+            return Err(Error::msg(first.clone()));
+        }
+        Ok(())
     }
 
     fn run_to_quiescence(&mut self) -> Result<()> {
@@ -1070,6 +1200,68 @@ impl Source:
             let out = System::run_program(&driver, &actors, sigs, specs).expect("run program");
             let interp = crate::interpreter::run_with(src, ".", Vec::new()).expect("interp");
             assert_eq!(out, interp, "compiled actor system must match the interpreter");
+        }
+    }
+
+    /// The PARALLEL drain: worker threads deliver to distinct actors
+    /// concurrently (shared-nothing VMs), preserving per-actor FIFO via
+    /// parked pending queues. Cross-actor print interleaving is relaxed, so
+    /// the assertion compares SORTED output against the deterministic drain,
+    /// plus each actor's own messages must arrive in send order.
+    #[test]
+    fn parallel_drain_preserves_per_actor_order() {
+        let src = r#"
+actor Echo:
+    console: Console
+
+impl Echo:
+    on Work(tag: String, n: Int):
+        print(console, tag <> ":" <> int_to_string(n))
+
+actor Fan:
+    a: Subject
+    b: Subject
+    c: Subject
+
+impl Fan:
+    on Go(count: Int):
+        var i = 0
+        for i in 0..count:
+            send(a, Work("a", i))
+            send(b, Work("b", i))
+            send(c, Work("c", i))
+
+fn main(console: Console):
+    let e1 = spawn Echo(console)
+    let e2 = spawn Echo(console)
+    let e3 = spawn Echo(console)
+    let fan = spawn Fan(e1, e2, e3)
+    send(fan, Go(50))
+"#;
+        let module = parser::parse_module(src).expect("parse");
+        let (driver, actors, sigs, specs) =
+            codegen::compile_system(&module).expect("compile system");
+        let out =
+            System::run_program_with_workers(&driver, &actors, sigs.clone(), specs.clone(), 4)
+                .expect("parallel run");
+        let serial =
+            System::run_program(&driver, &actors, sigs, specs).expect("serial run");
+        let mut sorted_out = out.clone();
+        sorted_out.sort();
+        let mut sorted_serial = serial.clone();
+        sorted_serial.sort();
+        assert_eq!(sorted_out, sorted_serial, "same multiset of outputs");
+        for tag in ["a", "b", "c"] {
+            let seq: Vec<&String> =
+                out.iter().filter(|l| l.starts_with(&format!("{tag}:"))).collect();
+            let nums: Vec<i64> = seq
+                .iter()
+                .map(|l| l.split(':').nth(1).unwrap().parse().unwrap())
+                .collect();
+            let mut expected = nums.clone();
+            expected.sort();
+            assert_eq!(nums, expected, "per-actor FIFO must hold for {tag}");
+            assert_eq!(nums.len(), 50, "all {tag} messages delivered");
         }
     }
 

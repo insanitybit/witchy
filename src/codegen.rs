@@ -2913,8 +2913,13 @@ impl Codegen {
                 self.next_label += 1;
                 let ctr = format!("__forctr_{var}");
                 let end = format!("__forend_{var}");
-                let lo_wat = self.compile_expr(lo)?;
-                let hi_wat = self.compile_expr(hi)?;
+                // The counter/bound locals are i64; a bound that is an i32 in
+                // its context (e.g. an Int MESSAGE parameter, which travels at
+                // wire width in handlers) widens here.
+                let lo_wat =
+                    format!("{}{}", self.compile_expr(lo)?, kind_convert(self.kind_of(lo), Kind::I64));
+                let hi_wat =
+                    format!("{}{}", self.compile_expr(hi)?, kind_convert(self.kind_of(hi), Kind::I64));
                 let exit_cmp = if *inclusive { "i64.gt_s" } else { "i64.ge_s" };
                 let guard_max = if *inclusive {
                     format!(
