@@ -1,7 +1,7 @@
 // Two actors, one message hop: the Forwarder holds only a Subject for the
-// Printer — its entire authority is "relay to that one actor". Run with
-// `witchy run` (the host demo drives Relay) or see actors.witchy for a
-// self-driving main.
+// Printer — its entire authority is "relay to that one actor". A library of
+// actors with no `main`; see actors.witchy or dispatch.witchy for a
+// self-driving program.
 actor Printer:
     console: Console
 

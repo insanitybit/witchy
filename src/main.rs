@@ -642,7 +642,10 @@ fn main() -> wasmtime::Result<()> {
     run_compiled(&mut rt, "witchy compiled to WASM (record field access)", include_str!("../examples/record_compiled.witchy"));
     run_compiled(&mut rt, "witchy compiled to WASM (strings)", include_str!("../examples/strings.witchy"));
     run_compiled_actor(&mut rt, "witchy actor compiled to its own WASM VM", include_str!("../examples/counter.witchy"));
-    run_actor_system("witchy compiled actors messaging", include_str!("../examples/mailbox.witchy"));
+    run_actor_system(
+        "witchy compiled actor system (driver + spawned VMs)",
+        include_str!("../examples/dispatch.witchy"),
+    );
     run_net_demo("witchy network capability");
     run_program_demo(
         "witchy modules (import)",
@@ -1605,9 +1608,9 @@ fn main(console: Console, net: Net):
     }
 }
 
-/// Compile a program's actors and run them on the actor system, wiring a
-/// Forwarder's Subject to a Printer and relaying a few messages — compiled
-/// actors sending to each other across their WASM VMs.
+/// Compile a whole actor PROGRAM and run it on the actor system: `main`
+/// executes in a driver VM, each `spawn` instantiates that actor's own WASM
+/// VM through a host import, and `send` routes across the isolated VMs.
 fn run_actor_system(title: &str, src: &str) {
     println!("\n== {title} ==");
     if let Err(e) = typeck::check_str(src) {
@@ -1621,40 +1624,20 @@ fn run_actor_system(title: &str, src: &str) {
             return;
         }
     };
-    let (actors, tags) = match codegen::compile_program(&module) {
+    let (driver, actors, sigs, specs) = match codegen::compile_system(&module) {
         Ok(v) => v,
         Err(e) => {
             println!("{e}");
             return;
         }
     };
-    let mut sys = actor_system::System::new(tags);
-    let (mut printer, mut fwd) = (None, None);
-    for (name, wat) in &actors {
-        match sys.spawn(wat) {
-            Ok(id) => {
-                if name == "Printer" {
-                    printer = Some(id);
-                } else if name == "Forwarder" {
-                    fwd = Some(id);
-                }
-            }
-            Err(e) => {
-                println!("spawn failed: {e}");
-                return;
+    match actor_system::System::run_program(&driver, &actors, sigs, specs) {
+        Ok(output) => {
+            for line in output {
+                println!("{line}");
             }
         }
-    }
-    let (Some(printer), Some(fwd)) = (printer, fwd) else {
-        println!("expected Printer and Forwarder actors");
-        return;
-    };
-    let _ = sys.set_subject(fwd, "target", printer);
-    for n in 1..=3 {
-        let _ = sys.send(fwd, "Relay", n);
-    }
-    for line in sys.output() {
-        println!("{line}");
+        Err(e) => println!("run failed: {e}"),
     }
 }
 
