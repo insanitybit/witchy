@@ -28,7 +28,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::ast::{BinOp, Block, Convention, Expr, Item, Module, Stmt};
+use crate::ast::{BinOp, Block, Convention, Expr, Item, Module, Stmt, Type, UnOp};
 
 /// Why an accumulation site reverts to the copying path — surfaced as a
 /// check-time note and an LSP hint. Only emitted when the cost repeats (the
@@ -143,11 +143,33 @@ pub fn self_concat_pieces<'a>(name: &str, value: &'a Expr) -> Option<Vec<&'a Exp
     }
 }
 
-pub fn is_self_assign_shape(name: &str, value: &Expr) -> bool {
+/// `x = f(move x)` against an own-ABI callee: the call continues `x`'s
+/// linear pipeline (the ownership token crosses the call both ways).
+pub fn self_own_call<'a>(
+    name: &str,
+    value: &'a Expr,
+    summaries: &Summaries,
+) -> Option<(&'a str, usize)> {
+    if let Expr::Call { name: f, args } = value {
+        let idx = summaries.own_abi(f)?;
+        let arg = args.get(idx)?;
+        let inner = match arg {
+            Expr::Unary { op: UnOp::Move, expr } => expr.as_ref(),
+            other => other,
+        };
+        if matches!(inner, Expr::Var(v) if v == name) {
+            return Some((f.as_str(), idx));
+        }
+    }
+    None
+}
+
+pub fn is_self_assign_shape(name: &str, value: &Expr, summaries: &Summaries) -> bool {
     self_push_elem(name, value).is_some()
         || self_insert_args(name, value).is_some()
         || self_update_args(name, value).is_some()
         || self_concat_pieces(name, value).is_some()
+        || self_own_call(name, value, summaries).is_some()
 }
 
 // ---------------------------------------------------------------------------
@@ -159,6 +181,12 @@ pub fn is_self_assign_shape(name: &str, value: &Expr) -> bool {
 struct FnInfo {
     convs: Vec<Convention>,
     may_alias_out: Vec<bool>,
+    /// `Some(i)`: this function carries the own-ABI — parameter `i` is its
+    /// single `own` collection parameter, the function has no `inout`
+    /// parameters, and the return value may alias that parameter. The
+    /// ownership token travels across the call (extra i32 cap param + extra
+    /// i32 cap result), so `x = f(move x)` pipelines keep their owned slack.
+    own_abi: Option<usize>,
 }
 
 pub struct Summaries {
@@ -189,6 +217,7 @@ impl Summaries {
                         // Optimistic start; `let` borrows are certified clean
                         // by typeck (a borrow cannot be returned) and stay so.
                         may_alias_out: vec![false; f.params.len()],
+                        own_abi: None,
                     },
                 );
                 bodies.insert(f.name.clone(), f);
@@ -216,9 +245,36 @@ impl Summaries {
                 }
             }
             if !changed {
-                return summaries;
+                break;
             }
         }
+        // The own-ABI: decided AFTER the alias fixpoint, identically wherever
+        // this module compiles (the driver and each actor module must agree
+        // on every function's signature).
+        for (name, f) in &bodies {
+            let sinks: Vec<usize> = f
+                .params
+                .iter()
+                .enumerate()
+                .filter(|(_, p)| {
+                    p.convention == Convention::Sink
+                        && matches!(&p.ty, Some(Type::Named(n, _)) if n == "List" || n == "Dict" || n == "String")
+                })
+                .map(|(i, _)| i)
+                .collect();
+            let has_inout = f.params.iter().any(|p| p.convention == Convention::Inout);
+            if let [i] = sinks.as_slice() {
+                if !has_inout && summaries.fns[name.as_str()].may_alias_out[*i] {
+                    summaries.fns.get_mut(name.as_str()).unwrap().own_abi = Some(*i);
+                }
+            }
+        }
+        summaries
+    }
+
+    /// The own-ABI decision for a callee (see `FnInfo::own_abi`).
+    pub fn own_abi(&self, name: &str) -> Option<usize> {
+        self.fns.get(name).and_then(|f| f.own_abi)
     }
 
     /// Is the value passed in argument position `idx` of a call to `name`
@@ -274,7 +330,7 @@ pub fn analyze(body: &Block, summaries: &Summaries) -> Facts {
     // Pass A: accumulators + per-loop self-assign site sets (for cliffs).
     let mut accs = HashSet::new();
     let mut loop_sites: HashMap<usize, HashSet<String>> = HashMap::new();
-    collect_accumulators(body, &mut accs, &mut Vec::new(), &mut loop_sites);
+    collect_accumulators(body, summaries, &mut accs, &mut Vec::new(), &mut loop_sites);
     if accs.is_empty() {
         return Facts::default();
     }
@@ -296,13 +352,14 @@ pub fn analyze(body: &Block, summaries: &Summaries) -> Facts {
 
 fn collect_accumulators(
     b: &Block,
+    summaries: &Summaries,
     accs: &mut HashSet<String>,
     loop_ptrs: &mut Vec<usize>,
     loop_sites: &mut HashMap<usize, HashSet<String>>,
 ) {
     for stmt in &b.stmts {
         if let Stmt::Assign { name, value } = stmt {
-            if is_self_assign_shape(name, value) {
+            if is_self_assign_shape(name, value, summaries) {
                 accs.insert(name.clone());
                 for lp in loop_ptrs.iter() {
                     loop_sites.entry(*lp).or_default().insert(name.clone());
@@ -316,7 +373,7 @@ fn collect_accumulators(
             | Stmt::Return(Some(value))
             | Stmt::Expr(value)
             | Stmt::Yield(value) => {
-                collect_accumulators_expr(value, accs, loop_ptrs, loop_sites)
+                collect_accumulators_expr(value, summaries, accs, loop_ptrs, loop_sites)
             }
             Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
         }
@@ -325,51 +382,52 @@ fn collect_accumulators(
 
 fn collect_accumulators_expr(
     e: &Expr,
+    summaries: &Summaries,
     accs: &mut HashSet<String>,
     loop_ptrs: &mut Vec<usize>,
     loop_sites: &mut HashMap<usize, HashSet<String>>,
 ) {
     match e {
         Expr::While { cond, body } => {
-            collect_accumulators_expr(cond, accs, loop_ptrs, loop_sites);
+            collect_accumulators_expr(cond, summaries, accs, loop_ptrs, loop_sites);
             loop_ptrs.push(body as *const Block as usize);
-            collect_accumulators(body, accs, loop_ptrs, loop_sites);
+            collect_accumulators(body, summaries, accs, loop_ptrs, loop_sites);
             loop_ptrs.pop();
         }
         Expr::For { iter, body, .. } => {
-            collect_accumulators_expr(iter, accs, loop_ptrs, loop_sites);
+            collect_accumulators_expr(iter, summaries, accs, loop_ptrs, loop_sites);
             loop_ptrs.push(body as *const Block as usize);
-            collect_accumulators(body, accs, loop_ptrs, loop_sites);
+            collect_accumulators(body, summaries, accs, loop_ptrs, loop_sites);
             loop_ptrs.pop();
         }
         Expr::If { cond, then_block, else_block } => {
-            collect_accumulators_expr(cond, accs, loop_ptrs, loop_sites);
-            collect_accumulators(then_block, accs, loop_ptrs, loop_sites);
+            collect_accumulators_expr(cond, summaries, accs, loop_ptrs, loop_sites);
+            collect_accumulators(then_block, summaries, accs, loop_ptrs, loop_sites);
             if let Some(b) = else_block {
-                collect_accumulators(b, accs, loop_ptrs, loop_sites);
+                collect_accumulators(b, summaries, accs, loop_ptrs, loop_sites);
             }
         }
         Expr::Match { scrutinee, arms } => {
-            collect_accumulators_expr(scrutinee, accs, loop_ptrs, loop_sites);
+            collect_accumulators_expr(scrutinee, summaries, accs, loop_ptrs, loop_sites);
             for arm in arms {
                 if let Some(g) = &arm.guard {
-                    collect_accumulators_expr(g, accs, loop_ptrs, loop_sites);
+                    collect_accumulators_expr(g, summaries, accs, loop_ptrs, loop_sites);
                 }
-                collect_accumulators_expr(&arm.body, accs, loop_ptrs, loop_sites);
+                collect_accumulators_expr(&arm.body, summaries, accs, loop_ptrs, loop_sites);
             }
         }
-        Expr::Block(b) => collect_accumulators(b, accs, loop_ptrs, loop_sites),
+        Expr::Block(b) => collect_accumulators(b, summaries, accs, loop_ptrs, loop_sites),
         // Lambda interiors are separate compile units with their own facts.
         Expr::Lambda { .. } => {}
         Expr::Binary { lhs, rhs, .. } => {
-            collect_accumulators_expr(lhs, accs, loop_ptrs, loop_sites);
-            collect_accumulators_expr(rhs, accs, loop_ptrs, loop_sites);
+            collect_accumulators_expr(lhs, summaries, accs, loop_ptrs, loop_sites);
+            collect_accumulators_expr(rhs, summaries, accs, loop_ptrs, loop_sites);
         }
         Expr::Unary { expr, .. }
         | Expr::Try(expr)
         | Expr::As { expr, .. }
         | Expr::Field { base: expr, .. } => {
-            collect_accumulators_expr(expr, accs, loop_ptrs, loop_sites)
+            collect_accumulators_expr(expr, summaries, accs, loop_ptrs, loop_sites)
         }
         Expr::Call { args, .. }
         | Expr::Ctor { args, .. }
@@ -377,47 +435,47 @@ fn collect_accumulators_expr(
         | Expr::Tuple(args)
         | Expr::Spawn { args, .. } => {
             for a in args {
-                collect_accumulators_expr(a, accs, loop_ptrs, loop_sites);
+                collect_accumulators_expr(a, summaries, accs, loop_ptrs, loop_sites);
             }
         }
         Expr::Apply { func, args } => {
-            collect_accumulators_expr(func, accs, loop_ptrs, loop_sites);
+            collect_accumulators_expr(func, summaries, accs, loop_ptrs, loop_sites);
             for a in args {
-                collect_accumulators_expr(a, accs, loop_ptrs, loop_sites);
+                collect_accumulators_expr(a, summaries, accs, loop_ptrs, loop_sites);
             }
         }
         Expr::RecordUpdate { base, fields } => {
-            collect_accumulators_expr(base, accs, loop_ptrs, loop_sites);
+            collect_accumulators_expr(base, summaries, accs, loop_ptrs, loop_sites);
             for (_, v) in fields {
-                collect_accumulators_expr(v, accs, loop_ptrs, loop_sites);
+                collect_accumulators_expr(v, summaries, accs, loop_ptrs, loop_sites);
             }
         }
         Expr::Record { fields, spread, .. } => {
             for (_, v) in fields {
-                collect_accumulators_expr(v, accs, loop_ptrs, loop_sites);
+                collect_accumulators_expr(v, summaries, accs, loop_ptrs, loop_sites);
             }
             if let Some(s) = spread {
-                collect_accumulators_expr(s, accs, loop_ptrs, loop_sites);
+                collect_accumulators_expr(s, summaries, accs, loop_ptrs, loop_sites);
             }
         }
         Expr::Range { lo, hi, .. } => {
-            collect_accumulators_expr(lo, accs, loop_ptrs, loop_sites);
-            collect_accumulators_expr(hi, accs, loop_ptrs, loop_sites);
+            collect_accumulators_expr(lo, summaries, accs, loop_ptrs, loop_sites);
+            collect_accumulators_expr(hi, summaries, accs, loop_ptrs, loop_sites);
         }
         Expr::Index { base, index } => {
-            collect_accumulators_expr(base, accs, loop_ptrs, loop_sites);
-            collect_accumulators_expr(index, accs, loop_ptrs, loop_sites);
+            collect_accumulators_expr(base, summaries, accs, loop_ptrs, loop_sites);
+            collect_accumulators_expr(index, summaries, accs, loop_ptrs, loop_sites);
         }
         Expr::WhileLet { scrutinee, body, .. } => {
-            collect_accumulators_expr(scrutinee, accs, loop_ptrs, loop_sites);
+            collect_accumulators_expr(scrutinee, summaries, accs, loop_ptrs, loop_sites);
             loop_ptrs.push(body as *const Block as usize);
-            collect_accumulators(body, accs, loop_ptrs, loop_sites);
+            collect_accumulators(body, summaries, accs, loop_ptrs, loop_sites);
             loop_ptrs.pop();
         }
         Expr::MethodCall { receiver, args, .. } => {
-            collect_accumulators_expr(receiver, accs, loop_ptrs, loop_sites);
+            collect_accumulators_expr(receiver, summaries, accs, loop_ptrs, loop_sites);
             for a in args {
-                collect_accumulators_expr(a, accs, loop_ptrs, loop_sites);
+                collect_accumulators_expr(a, summaries, accs, loop_ptrs, loop_sites);
             }
         }
         Expr::Int(_)
@@ -458,7 +516,25 @@ impl<'a> Walker<'a> {
                     self.scan(value, true, "bound to a new name", &mut shares);
                 }
                 Stmt::Assign { name, value } => {
-                    if self.accs.contains(name) && is_self_assign_shape(name, value) {
+                    if let Some((fname, idx)) =
+                        self_own_call(name, value, self.summaries).filter(|_| self.accs.contains(name))
+                    {
+                        // `x = f(move x)`: the ownership token crosses the
+                        // call; the other arguments are scanned per the
+                        // callee's summary.
+                        self.facts.site_entries += 1;
+                        let fname = fname.to_string();
+                        if let Expr::Call { args, .. } = value {
+                            for (j, a) in args.iter().enumerate() {
+                                if j == idx {
+                                    continue;
+                                }
+                                let live = self.summaries.arg_live(&fname, j);
+                                self.scan(a, live, &format!("passed to `{fname}`"), &mut shares);
+                            }
+                        }
+                        shares.retain(|(v, _)| v != name);
+                    } else if self.accs.contains(name) && is_self_assign_shape(name, value, self.summaries) {
                         self.facts.site_entries += 1;
                         // The shape's own occurrence of `name` is the
                         // operation; everything else in the RHS is scanned,

@@ -2198,6 +2198,32 @@ mod example_tests {
         assert_eq!(wasm_run(src), want, "wasm");
     }
 
+    /// THE OWN-ABI: `xs = grow(move xs, i)` is a linear pipeline — the
+    /// ownership token crosses the call in both directions (an extra cap
+    /// param and result), so a cross-function builder stays O(n). Without
+    /// the transfer each call re-owned by copy: O(n²) — the reowns counter
+    /// (not timing) is the proof. (The interpreter leg stays small: it
+    /// clones at every call by design.)
+    #[test]
+    fn analysis_own_abi_pipelines_in_place() {
+        let src = "fn grow(own xs: List(Int), n: Int) -> List(Int):\n    xs = push(xs, n)\n    xs\n\nfn main(console: Console):\n    var xs = [0]\n    var i = 0\n    while i < 3000:\n        xs = grow(move xs, i)\n        i = i + 1\n    print(console, int_to_string(length(xs)))\n    print(console, int_to_string(at(xs, 3000)))\n";
+        let want = vec!["3001".to_string(), "2999".to_string()];
+        assert_eq!(link_run(src), want, "interpreter");
+        let (out, reowns) = wasm_run_reowns(src);
+        assert_eq!(out, want, "wasm");
+        assert!(reowns <= 2, "the token must survive the calls, got {reowns} re-owns");
+    }
+
+    /// An own-ABI callee that returns its parameter only on SOME paths: the
+    /// other paths return a zero token (the caller re-owns later) — always
+    /// correct, never corrupting.
+    #[test]
+    fn analysis_own_abi_partial_return_paths_are_sound() {
+        let src = "fn cap_at(own xs: List(Int), n: Int) -> List(Int):\n    if length(xs) >= n:\n        []\n    else:\n        xs = push(xs, n)\n        xs\n\nfn main(console: Console):\n    var xs = [0]\n    var i = 0\n    while i < 50:\n        xs = cap_at(move xs, i)\n        i = i + 1\n    print(console, to_string(xs))\n";
+        let interp = link_run(src);
+        assert_eq!(wasm_run(src), interp, "wasm must agree on the mixed paths");
+    }
+
     /// THE FORCED-COPY DIFFERENTIAL: `WITCHY_NO_INPLACE` compiles with the
     /// in-place machinery off (the copying paths ARE the semantics). Outputs
     /// must be identical — any divergence is an analysis soundness bug.

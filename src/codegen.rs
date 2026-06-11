@@ -469,6 +469,9 @@ struct Codegen {
     facts_stack: Vec<(analysis::Facts, usize, usize)>,
     /// Module-wide function summaries for the uniqueness analysis.
     summaries: analysis::Summaries,
+    /// The current function's own-ABI parameter (its ownership token is the
+    /// `${name}__cap` PARAM, and the function returns an extra i32 token).
+    cur_fn_own_param: Option<String>,
     /// Whether the `$list_push_cap` helper is needed.
     uses_list_push_cap: bool,
     /// Whether the `$str_append_cap` helper is needed.
@@ -789,6 +792,7 @@ impl Codegen {
             inplace_push: HashSet::new(),
             facts_stack: Vec::new(),
             summaries: analysis::Summaries::empty(),
+            cur_fn_own_param: None,
             uses_list_push_cap: false,
             uses_str_append_cap: false,
             uses_dict_insert_cap: false,
@@ -2302,6 +2306,19 @@ impl Codegen {
         for p in &f.params {
             header.push_str(&format!("(param ${} {}) ", p.name, wasm_ty(self.locals[&p.name])));
         }
+        // The own-ABI: a single `own` collection parameter whose buffer may
+        // be returned carries the caller's ownership token across the call —
+        // an extra i32 cap param here, and an extra i32 cap result appended
+        // below. Decided from the module summaries, so every compile of this
+        // module agrees on the signature.
+        self.cur_fn_own_param = self
+            .summaries
+            .own_abi(&f.name)
+            .and_then(|i| f.params.get(i))
+            .map(|p| p.name.clone());
+        if let Some(p) = &self.cur_fn_own_param {
+            header.push_str(&format!("(param ${p}__cap i32) "));
+        }
         // Result = the normal return value, then one slot per `inout` parameter
         // (moved back out to the caller).
         let ret_kind = match &f.ret {
@@ -2322,6 +2339,9 @@ impl Codegen {
                 header.push_str(&format!(" {}", wasm_ty(self.locals[&p.name])));
             }
         }
+        if self.cur_fn_own_param.is_some() {
+            header.push_str(" i32");
+        }
         header.push_str(")\n");
 
         self.begin_unit(&renamed);
@@ -2335,11 +2355,15 @@ impl Codegen {
             header.push_str(&format!("    (local ${name} {})\n", wasm_ty(k)));
         }
         // Shadow capacity slots for in-place push (zero = no owned slack).
+        // The own-ABI parameter's token is already a param, not a local.
         let mut cap_vars: Vec<&String> = self.inplace_push.iter().collect();
         cap_vars.sort();
         for v in cap_vars {
-            header.push_str(&format!("    (local ${v}__cap i32)\n"));
+            if Some(v.as_str()) != self.cur_fn_own_param.as_deref() {
+                header.push_str(&format!("    (local ${v}__cap i32)\n"));
+            }
         }
+        header.push_str("    (local $__witchy_owncap i32)\n");
         // Scratch slots: tuple destructuring, `?`, and `match` scrutinees.
         header.push_str(&format!("    (local ${TUPLE_TMP} i32)\n"));
         header.push_str(&format!("    (local ${TRY_TMP} i32)\n"));
@@ -2358,8 +2382,14 @@ impl Codegen {
         // i32 body returned from an `-> Int` function is widened, etc.).
         let body = format!("{body}{}", kind_convert(self.block_kind(&renamed), ret_kind));
         // Move-out: append each `inout` parameter's final value (declaration order).
-        let epilogue = self.inout_epilogue();
+        let mut epilogue = self.inout_epilogue();
+        let tail_expr = match renamed.stmts.last() {
+            Some(Stmt::Expr(e)) => Some(e),
+            _ => None,
+        };
+        epilogue.push_str(&self.own_cap_push(tail_expr));
         self.finish_unit(&f.name)?;
+        self.cur_fn_own_param = None;
         Ok(format!("{header}{body}{epilogue}  )\n"))
     }
 
@@ -2435,6 +2465,28 @@ impl Codegen {
         s
     }
 
+    /// The own-ABI's extra result: the ownership token of the returned
+    /// buffer. Meaningful only when the function returns its own parameter
+    /// directly AND the body tracked the token; anything else returns 0 (the
+    /// caller re-owns on its next mutation — one copy, never corruption).
+    fn own_cap_push(&self, ret: Option<&Expr>) -> String {
+        let Some(p) = &self.cur_fn_own_param else {
+            return String::new();
+        };
+        let returned = match ret {
+            Some(Expr::Var(v)) => v == p,
+            Some(Expr::Unary { op: UnOp::Move, expr }) => {
+                matches!(expr.as_ref(), Expr::Var(v) if v == p)
+            }
+            _ => false,
+        };
+        if returned && self.inplace_push.contains(p) {
+            format!("    local.get ${p}__cap\n")
+        } else {
+            "    i32.const 0\n".to_string()
+        }
+    }
+
     fn compile_block(&mut self, block: &Block) -> Result<String, CodegenError> {
         let mut out = String::new();
         let last = block.stmts.len().saturating_sub(1);
@@ -2468,7 +2520,7 @@ impl Codegen {
                     // trusts the runtime token. Missing facts mean dirty.
                     let mut cap_load = format!("    local.get ${name}__cap\n");
                     let mut site_dirty = false;
-                    if is_self_assign_shape(name, value) {
+                    if is_self_assign_shape(name, value, &self.summaries) {
                         match self.facts_stack.last_mut() {
                             Some((facts, _, sites)) if facts.accumulators.contains(name) => {
                                 *sites += 1;
@@ -2588,6 +2640,17 @@ impl Codegen {
                             tail_is_value = false;
                             continue;
                         }
+                        // `xs = f(move xs)` against an own-ABI callee: the
+                        // call emission stowed the returned ownership token
+                        // in the scratch — store value and token together.
+                        if analysis::self_own_call(name, value, &self.summaries).is_some() {
+                            out.push_str(&self.compile_expr(value)?);
+                            out.push_str(&format!(
+                                "    local.set ${name}\n    local.get $__witchy_owncap\n    local.set ${name}__cap\n"
+                            ));
+                            tail_is_value = false;
+                            continue;
+                        }
                         // Reassigned from anything else: the new value's slack
                         // is unknown — reset the capacity so the next push
                         // copies before mutating.
@@ -2650,6 +2713,7 @@ impl Codegen {
                     // `inout` functions return extra results (one per inout param);
                     // reproduce the epilogue here so an early return is well-formed.
                     out.push_str(&self.inout_epilogue());
+                    out.push_str(&self.own_cap_push(opt.as_ref()));
                     out.push_str("    return\n");
                     // Anything after a `return` in this block is unreachable.
                     tail_is_value = false;
@@ -3586,6 +3650,7 @@ impl Codegen {
         // A lambda body is its own compile unit: its accumulators get their
         // own cap locals here (the OUTER unit records the capture shares).
         let saved_inplace = std::mem::take(&mut self.inplace_push);
+        let saved_own = self.cur_fn_own_param.take();
         self.begin_unit(body);
         // The closure result is the universal i64 slot: the body's tail value (and
         // any `return`) is stored via `to_slot`, and each `Apply` recovers it at
@@ -3622,6 +3687,7 @@ impl Codegen {
         for v in &lam_caps {
             header.push_str(&format!("    (local ${v}__cap i32)\n"));
         }
+        header.push_str("    (local $__witchy_owncap i32)\n");
         header.push_str(&format!("    (local ${TUPLE_TMP} i32)\n"));
         header.push_str(&format!("    (local ${TRY_TMP} i32)\n"));
         header.push_str(&format!("    (local ${MATCH_TMP} i64)\n"));
@@ -3666,6 +3732,7 @@ impl Codegen {
 
         self.finish_unit("lambda")?;
         self.inplace_push = saved_inplace;
+        self.cur_fn_own_param = saved_own;
         self.restore_scope(saved);
 
         // Construction site: allocate `[code_index][cap0]..[capN]` via `$mkN`,
@@ -5582,7 +5649,28 @@ impl Codegen {
                         out.push_str(kind_convert(ak, pk));
                     }
                 }
+                // The own-ABI: pass the moved variable's ownership token (or
+                // 0 — the callee re-owns on first mutation), and stow the
+                // returned token in the scratch so the call expression still
+                // yields a single value. The self-assign shape site picks the
+                // scratch back up; every other context discards it.
+                let own_abi = self.summaries.own_abi(name);
+                if let Some(idx) = own_abi {
+                    let inner = match args.get(idx) {
+                        Some(Expr::Unary { op: UnOp::Move, expr }) => Some(expr.as_ref()),
+                        other => other,
+                    };
+                    match inner {
+                        Some(Expr::Var(v)) if self.inplace_push.contains(v) => {
+                            out.push_str(&format!("    local.get ${v}__cap\n"));
+                        }
+                        _ => out.push_str("    i32.const 0\n"),
+                    }
+                }
                 out.push_str(&format!("    call ${name}\n"));
+                if own_abi.is_some() {
+                    out.push_str("    local.set $__witchy_owncap\n");
+                }
                 // Write back `inout` outputs, which sit on top of the stack in
                 // reverse declaration order above the normal return value.
                 if let Some(convs) = self.fn_conventions.get(name).cloned() {
@@ -6533,6 +6621,7 @@ fn compile_actor_in(
     // before field/handler compilation, since compiling a function resets the
     // per-function local tables the handlers rely on.
     register_module_items(&mut cg, parent);
+    cg.summaries = analysis::Summaries::of_module(parent);
     let bodies: HashMap<String, &Function> = parent
         .items
         .iter()
@@ -6842,6 +6931,7 @@ fn compile_actor_in(
         for v in cap_vars {
             header.push_str(&format!("    (local ${v}__cap i32)\n"));
         }
+        header.push_str("    (local $__witchy_owncap i32)\n");
         // The same scratch slots ordinary functions get: tuple destructuring,
         // `?`, `match` scrutinees, loop watermarks, and the call pool.
         header.push_str(&format!("    (local ${TUPLE_TMP} i32)\n"));
