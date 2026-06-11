@@ -26,6 +26,16 @@ enum FieldVal {
     Str(String),
     IntList(Vec<i64>),
     StrList(Vec<String>),
+    Tuple(Vec<TupleElem>),
+}
+
+/// One tuple member, decoded by its declared kind (tuple slots hold the
+/// universal i64 rep, so Ints travel at full width).
+#[derive(Debug, Clone)]
+enum TupleElem {
+    Int(i64),
+    Float(f64),
+    Str(String),
 }
 
 /// (target actor id, message tag, decoded field values).
@@ -266,6 +276,40 @@ impl System {
                                 }
                                 fs.push(FieldVal::StrList(xs));
                             }
+                            Some(MsgField::Tuple(elems)) => {
+                                let tup = read(off)?;
+                                let read64 = |o: i32| -> Result<i64> {
+                                    let o = o as usize;
+                                    let b = data
+                                        .get(o..o + 8)
+                                        .ok_or_else(|| Error::msg("send tuple out of bounds"))?;
+                                    Ok(i64::from_le_bytes(b.try_into().expect("8 bytes")))
+                                };
+                                let mut xs = Vec::with_capacity(elems.len());
+                                for (j, e) in elems.iter().enumerate() {
+                                    let slot = tup + 4 + 8 * j as i32;
+                                    match e {
+                                        MsgField::Float => {
+                                            xs.push(TupleElem::Float(f64::from_bits(
+                                                read64(slot)? as u64,
+                                            )));
+                                        }
+                                        MsgField::Str => {
+                                            let sp = read(slot)?;
+                                            let len = read(sp)?.max(0) as usize;
+                                            let o = sp as usize + 4;
+                                            let bytes = data.get(o..o + len).ok_or_else(|| {
+                                                Error::msg("send string out of bounds")
+                                            })?;
+                                            xs.push(TupleElem::Str(
+                                                String::from_utf8_lossy(bytes).into_owned(),
+                                            ));
+                                        }
+                                        _ => xs.push(TupleElem::Int(read64(slot)?)),
+                                    }
+                                }
+                                fs.push(FieldVal::Tuple(xs));
+                            }
                             _ => fs.push(FieldVal::Int(read(off)?)),
                         }
                     }
@@ -360,6 +404,43 @@ impl System {
                         bytes.extend_from_slice(&x.to_le_bytes());
                     }
                     args.push(Val::I32(write_block(store, instance, &bytes)?));
+                }
+                FieldVal::Tuple(xs) => {
+                    // `[0 tag][i64 slots]`, string members appended after the
+                    // slots with absolute pointers computed from the base.
+                    let n = xs.len();
+                    let strings: usize = xs
+                        .iter()
+                        .map(|e| if let TupleElem::Str(s) = e { 4 + s.len() } else { 0 })
+                        .sum();
+                    let total = 4 + 8 * n + strings;
+                    let alloc =
+                        instance.get_typed_func::<i32, i32>(&mut *store, "__msg_alloc")?;
+                    let base = alloc.call(&mut *store, (total - 4) as i32)?;
+                    let mut bytes = Vec::with_capacity(total);
+                    bytes.extend_from_slice(&0i32.to_le_bytes());
+                    let mut str_off = base as i64 + 4 + 8 * n as i64;
+                    let mut tail: Vec<u8> = Vec::with_capacity(strings);
+                    for e in xs {
+                        match e {
+                            TupleElem::Int(v) => bytes.extend_from_slice(&v.to_le_bytes()),
+                            TupleElem::Float(x) => {
+                                bytes.extend_from_slice(&x.to_bits().to_le_bytes())
+                            }
+                            TupleElem::Str(s) => {
+                                bytes.extend_from_slice(&str_off.to_le_bytes());
+                                tail.extend_from_slice(&(s.len() as u32).to_le_bytes());
+                                tail.extend_from_slice(s.as_bytes());
+                                str_off += 4 + s.len() as i64;
+                            }
+                        }
+                    }
+                    bytes.extend_from_slice(&tail);
+                    let mem = instance
+                        .get_memory(&mut *store, "memory")
+                        .ok_or_else(|| Error::msg("actor has no memory"))?;
+                    mem.write(&mut *store, base as usize, &bytes)?;
+                    args.push(Val::I32(base));
                 }
                 FieldVal::StrList(xs) => {
                     // The guest list layout with absolute pointers, computed
@@ -630,6 +711,34 @@ impl Feeder:
         sys.set_subject(ids["Feeder"], "target", ids["Stats"]).unwrap();
         sys.send(ids["Feeder"], "Go", 7).unwrap();
         assert_eq!(sys.output(), vec!["42", "ada;x7;grace;"]);
+    }
+
+    /// A scalar tuple crosses the VM boundary by content: each member travels
+    /// at its own kind (Int as the full i64 slot, Float as f64 bits, String by
+    /// its bytes), re-laid out in the receiver, and the handler destructures
+    /// it like any tuple.
+    #[test]
+    fn tuple_message_params_cross_vms_by_content() {
+        let src = r#"
+actor Sink:
+    console: Console
+
+impl Sink:
+    on Entry(row: (Int, String, Float)):
+        let (n, label, x) = row
+        print(console, label <> "=" <> int_to_string(n) <> "/" <> to_string(x))
+
+actor Source:
+    target: Subject
+
+impl Source:
+    on Go(n: Int):
+        send(target, Entry((n * 6, "answer", 0.5)))
+"#;
+        let (mut sys, ids) = build(src);
+        sys.set_subject(ids["Source"], "target", ids["Sink"]).unwrap();
+        sys.send(ids["Source"], "Go", 7).unwrap();
+        assert_eq!(sys.output(), vec!["answer=42/0.5"]);
     }
 
     #[test]

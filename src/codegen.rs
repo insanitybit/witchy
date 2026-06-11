@@ -17,9 +17,9 @@
 //!
 //! `send` between compiled actors crosses the VM boundary by value: Int, Float,
 //! and Subject fields are copied (passing a Subject delegates send authority);
-//! String, List(Int), and List(String) fields are read out of the sender by
-//! content and re-laid out in the receiver (`__msg_alloc`). Not yet compiled:
-//! tuple/record message parameters and `spawn` from compiled code — each
+//! String, List(Int), List(String), and scalar-tuple fields are read out of the
+//! sender by content and re-laid out in the receiver (`__msg_alloc`). Not yet
+//! compiled: record message parameters and `spawn` from compiled code — each
 //! errors clearly.
 
 use std::collections::{HashMap, HashSet};
@@ -5313,7 +5313,7 @@ pub fn compile_actor_module(actor: &ActorDef) -> Result<String, CodegenError> {
 
 /// The host-visible type of one message field: how the actor system reads it
 /// out of the sender's memory and delivers it into the receiver's.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum MsgField {
     /// A scalar copied by value.
     Int,
@@ -5331,6 +5331,10 @@ pub enum MsgField {
     /// A `List(String)`: walked by content like `Str`, re-laid out in the
     /// receiver with absolute pointers (the `write_pending_list` layout).
     StrList,
+    /// A tuple of Int/Float/String members (`[0 tag][i64 slots]` layout): each
+    /// member is read by its own kind and the tuple re-laid out in the
+    /// receiver, string members by content.
+    Tuple(Vec<MsgField>),
 }
 
 /// One routable message: its name and per-field wire types.
@@ -5357,8 +5361,23 @@ fn message_sig_of(h: &crate::ast::Handler) -> Result<Vec<MsgField>, CodegenError
                     h.message, p.name
                 )),
             },
+            Some(Type::Tuple(items)) => {
+                let elems: Result<Vec<MsgField>, CodegenError> = items
+                    .iter()
+                    .map(|t| match t {
+                        Type::Named(n, _) if n == "Int" => Ok(MsgField::Int),
+                        Type::Named(n, _) if n == "Float" => Ok(MsgField::Float),
+                        Type::Named(n, _) if n == "String" => Ok(MsgField::Str),
+                        _ => cerr(format!(
+                            "handler `{}` param `{}`: tuple members must be Int, Float, or String",
+                            h.message, p.name
+                        )),
+                    })
+                    .collect();
+                Ok(MsgField::Tuple(elems?))
+            }
             _ => cerr(format!(
-                "handler `{}` param `{}`: only Int, Float, String, Subject, List(Int), and List(String) message parameters compile yet",
+                "handler `{}` param `{}`: only Int, Float, String, Subject, List(Int), List(String), and scalar tuples compile as message parameters yet",
                 h.message, p.name
             )),
         })
@@ -5560,6 +5579,19 @@ fn compile_actor_with_tags(
                     cg.uses_msg_alloc = true;
                     cg.local_list_elem_valtype.insert(p.name.clone(), ValType::Str);
                 }
+                MsgField::Tuple(elems) => {
+                    cg.uses_msg_alloc = true;
+                    let slots: Vec<ValType> = elems
+                        .iter()
+                        .map(|e| match e {
+                            MsgField::Int => ValType::Int,
+                            MsgField::Float => ValType::Float,
+                            MsgField::Str => ValType::Str,
+                            _ => ValType::Other,
+                        })
+                        .collect();
+                    cg.local_tuple_slots.insert(p.name.clone(), slots);
+                }
                 // A Subject is an opaque actor id; it is a send target, not a
                 // printable value, so it gets no value type.
                 MsgField::Subject => {}
@@ -5578,6 +5610,15 @@ fn compile_actor_with_tags(
             let k = cg.locals.get(name).copied().unwrap_or(Kind::I32);
             header.push_str(&format!("    (local ${name} {})\n", wasm_ty(k)));
         }
+        // The same scratch slots ordinary functions get: tuple destructuring,
+        // `?`, `match` scrutinees, and the call pool.
+        header.push_str(&format!("    (local ${TUPLE_TMP} i32)\n"));
+        header.push_str(&format!("    (local ${TRY_TMP} i32)\n"));
+        header.push_str(&format!("    (local ${MATCH_TMP} i64)\n"));
+        for i in 0..APPLY_POOL {
+            header.push_str(&format!("    (local $__witchy_call_{i} i32)\n"));
+        }
+        cg.apply_level = 0;
         let body = cg.compile_block(&renamed)?;
         handlers.push((header, body));
     }
