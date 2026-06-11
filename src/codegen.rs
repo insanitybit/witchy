@@ -14,8 +14,10 @@
 //! fields are erased (their authority is the host import), and each `on` handler
 //! becomes an exported function the host calls to deliver a message.
 //!
-//! Not yet compiled: floats, lists, ADT constructors, `match`, string/Subject
-//! message parameters, and `send` between compiled actors — each errors clearly.
+//! `send` between compiled actors crosses the VM boundary by value: Int fields
+//! are copied, String fields are read out of the sender and re-allocated in the
+//! receiver (`__msg_alloc`). Not yet compiled: Subject/float/compound message
+//! parameters and `spawn` from compiled code — each errors clearly.
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -419,6 +421,9 @@ struct Codegen {
     uses_crypto_sha256: bool,
     /// Whether the `crypto.rune_hash` host import + guest helper are needed.
     uses_crypto_rune_hash: bool,
+    /// Whether the actor needs the `__msg_alloc` export (a String message
+    /// parameter the host re-allocates into this actor's memory).
+    uses_msg_alloc: bool,
     /// Whether the `compiler.footprint` host import + guest helper are needed.
     uses_compiler_footprint: bool,
     /// Whether the `compiler.diff` host import + guest helper are needed.
@@ -710,6 +715,7 @@ impl Codegen {
             uses_crypto_ed25519_verify: false,
             uses_crypto_sha256: false,
             uses_crypto_rune_hash: false,
+            uses_msg_alloc: false,
             uses_compiler_footprint: false,
             uses_compiler_diff: false,
             uses_float_to_str: false,
@@ -1700,6 +1706,7 @@ impl Codegen {
             || self.uses_dict_iter
             || self.uses_crypto_sha256
             || self.uses_crypto_rune_hash
+            || self.uses_msg_alloc
             || self.uses_compiler_footprint
             || self.uses_compiler_diff
             || self.uses_float_to_str
@@ -5180,22 +5187,60 @@ pub fn compile_actor_module(actor: &ActorDef) -> Result<String, CodegenError> {
     compile_actor_with_tags(actor, &HashMap::new())
 }
 
+/// The host-visible type of one message field: how the actor system reads it
+/// out of the sender's memory and delivers it into the receiver's.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum MsgField {
+    /// A scalar copied by value.
+    Int,
+    /// A string: the slot is a pointer in the SENDER's memory; the host copies
+    /// the content and re-allocates it in the receiver before delivery.
+    Str,
+}
+
+/// One routable message: its name and per-field wire types.
+pub type MessageSig = (String, Vec<MsgField>);
+
 /// Compile every actor in a module, assigning each distinct handler message a
 /// shared tag so the host can route inter-actor sends. Returns (actor name,
-/// WAT) pairs and the tag -> message-name table.
-/// The result of compiling a module's actors: each actor's `(name, WAT)` and the
-/// program-wide message-tag table (tag index -> message name).
-pub type CompiledActors = (Vec<(String, String)>, Vec<String>);
+/// WAT) pairs and the tag -> message-signature table.
+pub type CompiledActors = (Vec<(String, String)>, Vec<MessageSig>);
+
+fn message_sig_of(h: &crate::ast::Handler) -> Result<Vec<MsgField>, CodegenError> {
+    h.params
+        .iter()
+        .map(|p| match &p.ty {
+            Some(Type::Named(t, _)) if t == "Int" => Ok(MsgField::Int),
+            Some(Type::Named(t, _)) if t == "String" => Ok(MsgField::Str),
+            _ => cerr(format!(
+                "handler `{}` param `{}`: only Int and String message parameters compile yet",
+                h.message, p.name
+            )),
+        })
+        .collect()
+}
 
 pub fn compile_program(module: &Module) -> Result<CompiledActors, CodegenError> {
     let mut tag_of: HashMap<String, u32> = HashMap::new();
-    let mut names: Vec<String> = Vec::new();
+    let mut sigs: Vec<MessageSig> = Vec::new();
     for item in &module.items {
         if let Item::Actor(a) = item {
             for h in &a.handlers {
-                if !tag_of.contains_key(&h.message) {
-                    tag_of.insert(h.message.clone(), names.len() as u32);
-                    names.push(h.message.clone());
+                let sig = message_sig_of(h)?;
+                match tag_of.get(&h.message) {
+                    None => {
+                        tag_of.insert(h.message.clone(), sigs.len() as u32);
+                        sigs.push((h.message.clone(), sig));
+                    }
+                    // The host decodes a message by its tag's signature, so every
+                    // actor declaring the message must agree on its field types.
+                    Some(&tag) if sigs[tag as usize].1 != sig => {
+                        return cerr(format!(
+                            "message `{}` is declared with different parameter types by different actors",
+                            h.message
+                        ));
+                    }
+                    Some(_) => {}
                 }
             }
         }
@@ -5206,7 +5251,7 @@ pub fn compile_program(module: &Module) -> Result<CompiledActors, CodegenError> 
             actors.push((a.name.clone(), compile_actor_with_tags(a, &tag_of)?));
         }
     }
-    Ok((actors, names))
+    Ok((actors, sigs))
 }
 
 fn compile_actor_with_tags(
@@ -5278,19 +5323,21 @@ fn compile_actor_with_tags(
 
     let mut handlers: Vec<(String, String)> = Vec::new();
     for h in &actor.handlers {
-        for p in &h.params {
-            if !matches!(&p.ty, Some(Type::Named(t, _)) if t == "Int") {
-                return cerr(format!(
-                    "handler `{}` param `{}`: only Int message parameters compile yet",
-                    h.message, p.name
-                ));
-            }
-        }
+        let sig = message_sig_of(h)?;
         let mut header = format!("  (func (export \"{}\") ", h.message);
-        for p in &h.params {
+        for (p, kind) in h.params.iter().zip(&sig) {
+            // An Int travels by value; a String param is a pointer to a
+            // `[len][bytes]` string the host re-allocated in THIS actor's
+            // memory (via `__msg_alloc`) before delivery.
             header.push_str(&format!("(param ${} i32) ", p.name));
-            // Handler params are all Int (validated above), so `to_string` works.
-            cg.local_val_types.insert(p.name.clone(), ValType::Int);
+            let vt = match kind {
+                MsgField::Int => ValType::Int,
+                MsgField::Str => {
+                    cg.uses_msg_alloc = true;
+                    ValType::Str
+                }
+            };
+            cg.local_val_types.insert(p.name.clone(), vt);
         }
         header.push('\n');
         let renamed = alpha_rename(&h.body, &h.params);
@@ -5305,19 +5352,32 @@ fn compile_actor_with_tags(
         handlers.push((header, body));
     }
 
-    // No-GC for actors: reset the heap arena at the start of each message, since
-    // a handler's heap allocations never escape (state lives in globals; sends
-    // copy). This bounds memory for long-running actors without a collector.
+    // No-GC for actors: the host calls `__msg_prep` before each delivery to
+    // reset the heap arena, since a handler's heap allocations never escape
+    // (state lives in globals; sends copy). This bounds memory for long-running
+    // actors without a collector. `__msg_alloc` then re-allocates any String
+    // message fields in THIS actor's memory before the handler runs.
     let mut extra_globals = state_globals;
-    let reset = if cg.need_heap() {
+    let mut msg_helpers = String::new();
+    if cg.need_heap() {
         extra_globals.push_str(&format!(
             "  (global $heap_base i32 (i32.const {}))\n",
             cg.next_offset
         ));
-        "    global.get $heap_base\n    global.set $heap\n"
-    } else {
-        ""
-    };
+        msg_helpers.push_str(
+            "  (func (export \"__msg_prep\")\n    global.get $heap_base\n    global.set $heap)\n",
+        );
+        if cg.uses_msg_alloc {
+            msg_helpers.push_str(
+                "  (func (export \"__msg_alloc\") (param $n i32) (result i32)\n    \
+                 (local $p i32)\n    \
+                 (call $ensure (i32.add (local.get $n) (i32.const 4)))\n    \
+                 (local.set $p (global.get $heap))\n    \
+                 (global.set $heap (i32.add (local.get $p) (i32.add (local.get $n) (i32.const 4))))\n    \
+                 (local.get $p))\n",
+            );
+        }
+    }
 
     let mut wat = String::from("(module\n");
     let mut arities: Vec<usize> = cg.clos_arities.iter().copied().collect();
@@ -5348,8 +5408,9 @@ fn compile_actor_with_tags(
     wat.push_str(&cg.emit_data_globals_helpers(&extra_globals));
     for (header, body) in &handlers {
         // Handlers return nothing; discard the block's trailing value.
-        wat.push_str(&format!("{header}{reset}{body}    drop\n  )\n"));
+        wat.push_str(&format!("{header}{body}    drop\n  )\n"));
     }
+    wat.push_str(&msg_helpers);
     for lam in &cg.lambdas {
         wat.push_str(lam);
     }
@@ -7530,8 +7591,13 @@ impl Counter:
             .unwrap();
         let mut store = Store::new(&engine, ());
         let instance = linker.instantiate(&mut store, &wt).unwrap();
+        // The host resets the arena via `__msg_prep` before each delivery
+        // (exactly what `actor_system::System::invoke` does).
+        let prep = instance.get_typed_func::<(), ()>(&mut store, "__msg_prep").unwrap();
         let tick = instance.get_typed_func::<(), ()>(&mut store, "Tick").unwrap();
+        prep.call(&mut store, ()).unwrap();
         tick.call(&mut store, ()).unwrap();
+        prep.call(&mut store, ()).unwrap();
         tick.call(&mut store, ()).unwrap();
         let c = captured.lock().unwrap();
         // State persists (count is a global); the heap arena is reset, so the

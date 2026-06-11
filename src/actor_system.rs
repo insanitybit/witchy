@@ -15,30 +15,40 @@ use std::sync::{Arc, Mutex};
 
 use wasmtime::{Caller, Engine, Error, Extern, Instance, Linker, Module, Result, Store, Val};
 
-/// (target actor id, message tag, Int field values copied from the sender).
-/// Fields are copied at send time, so the receiver never sees sender memory.
-type Queue = Arc<Mutex<VecDeque<(usize, u32, Vec<i32>)>>>;
+use crate::codegen::{MessageSig, MsgField};
+
+/// One decoded message field, copied OUT of the sender at send time so the
+/// receiver never sees sender memory: scalars by value, strings by content.
+#[derive(Debug, Clone)]
+enum FieldVal {
+    Int(i32),
+    Str(String),
+}
+
+/// (target actor id, message tag, decoded field values).
+type Queue = Arc<Mutex<VecDeque<(usize, u32, Vec<FieldVal>)>>>;
 type Output = Arc<Mutex<Vec<String>>>;
 
 /// Per-actor host state.
 struct Host {
     queue: Queue,
     output: Output,
+    sigs: Arc<Vec<MessageSig>>,
 }
 
 pub struct System {
     engine: Engine,
-    tag_to_message: Vec<String>,
+    sigs: Arc<Vec<MessageSig>>,
     actors: Vec<(Store<Host>, Instance)>,
     queue: Queue,
     output: Output,
 }
 
 impl System {
-    pub fn new(tag_to_message: Vec<String>) -> Self {
+    pub fn new(sigs: Vec<MessageSig>) -> Self {
         Self {
             engine: Engine::default(),
-            tag_to_message,
+            sigs: Arc::new(sigs),
             actors: Vec::new(),
             queue: Arc::new(Mutex::new(VecDeque::new())),
             output: Arc::new(Mutex::new(Vec::new())),
@@ -56,6 +66,7 @@ impl System {
         let host = Host {
             queue: Arc::clone(&self.queue),
             output: Arc::clone(&self.output),
+            sigs: Arc::clone(&self.sigs),
         };
         let mut store = Store::new(&self.engine, host);
         let mut linker = Linker::new(&self.engine);
@@ -83,13 +94,21 @@ impl System {
             caller.data().output.lock().unwrap().push(n.to_string());
         })?;
         // The third argument is a pointer into the sender's memory to a field
-        // record `[count][f0]..[fN-1]` (the list layout). The fields are read
-        // and copied now, so the message carries values, not a pointer — actors
-        // stay isolated.
+        // record `[count][f0]..[fN-1]` (the list layout). The fields are
+        // DECODED by the message tag's signature and copied now — an Int by
+        // value, a String by content (the slot holds a sender-memory pointer
+        // to `[len][bytes]`) — so the message carries values, not pointers,
+        // and actors stay isolated.
         linker.func_wrap(
             "witchy",
             "send",
             |mut caller: Caller<'_, Host>, target: i32, tag: i32, ptr: i32| -> Result<()> {
+                let sig = caller
+                    .data()
+                    .sigs
+                    .get(tag as usize)
+                    .map(|(_, fields)| fields.clone())
+                    .ok_or_else(|| Error::msg(format!("send with unknown tag {tag}")))?;
                 let fields = {
                     let mem = caller
                         .get_export("memory")
@@ -106,9 +125,20 @@ impl System {
                     let count = read(ptr)?.max(0);
                     let mut fs = Vec::with_capacity(count as usize);
                     for i in 0..count {
-                        // Each element is an 8-byte slot; the Int value is in its
-                        // low 4 bytes (the list layout is now 8-byte slots).
-                        fs.push(read(ptr + 4 + 8 * i)?);
+                        // Each element is an 8-byte slot; the value (Int or
+                        // string pointer) is in its low 4 bytes.
+                        let slot = read(ptr + 4 + 8 * i)?;
+                        match sig.get(i as usize) {
+                            Some(MsgField::Str) => {
+                                let len = read(slot)?.max(0) as usize;
+                                let o = slot as usize + 4;
+                                let bytes = data
+                                    .get(o..o + len)
+                                    .ok_or_else(|| Error::msg("send string out of bounds"))?;
+                                fs.push(FieldVal::Str(String::from_utf8_lossy(bytes).into_owned()));
+                            }
+                            _ => fs.push(FieldVal::Int(slot)),
+                        }
                     }
                     fs
                 };
@@ -141,13 +171,13 @@ impl System {
     /// Deliver a message to an actor by name, then run to quiescence.
     pub fn send(&mut self, target: usize, message: &str, arg: i32) -> Result<()> {
         let tag = self
-            .tag_to_message
+            .sigs
             .iter()
-            .position(|m| m == message)
+            .position(|(m, _)| m == message)
             .ok_or_else(|| Error::msg(format!("unknown message `{message}`")))? as u32;
         // Driver-injected message: a single Int field (one-field or, for a
         // zero-field handler, ignored).
-        self.queue.lock().unwrap().push_back((target, tag, vec![arg]));
+        self.queue.lock().unwrap().push_back((target, tag, vec![FieldVal::Int(arg)]));
         self.run_to_quiescence()
     }
 
@@ -167,18 +197,42 @@ impl System {
         Ok(())
     }
 
-    fn invoke(&mut self, target: usize, tag: u32, fields: &[i32]) -> Result<()> {
-        let Some(name) = self.tag_to_message.get(tag as usize).cloned() else {
+    fn invoke(&mut self, target: usize, tag: u32, fields: &[FieldVal]) -> Result<()> {
+        let Some((name, _)) = self.sigs.get(tag as usize) else {
             return Ok(());
         };
+        let name = name.clone();
         let (store, instance) = &mut self.actors[target];
         // An actor that doesn't export a handler for this message just drops it.
         let Some(func) = instance.get_func(&mut *store, &name) else {
             return Ok(());
         };
+        // Reset the target's no-GC arena before re-allocating message strings —
+        // the prep/alloc pair is exported whenever the actor has a heap.
+        if let Some(prep) = instance.get_typed_func::<(), ()>(&mut *store, "__msg_prep").ok() {
+            prep.call(&mut *store, ())?;
+        }
         let nparams = func.ty(&*store).params().len();
-        // Pass one Val per handler parameter, in order.
-        let args: Vec<Val> = fields.iter().take(nparams).map(|&f| Val::I32(f)).collect();
+        // Pass one Val per handler parameter, in order: an Int by value, a
+        // String re-allocated into the TARGET's memory via its `__msg_alloc`.
+        let mut args: Vec<Val> = Vec::with_capacity(nparams);
+        for f in fields.iter().take(nparams) {
+            match f {
+                FieldVal::Int(n) => args.push(Val::I32(*n)),
+                FieldVal::Str(s) => {
+                    let alloc =
+                        instance.get_typed_func::<i32, i32>(&mut *store, "__msg_alloc")?;
+                    let p = alloc.call(&mut *store, s.len() as i32)?;
+                    let mem = instance
+                        .get_memory(&mut *store, "memory")
+                        .ok_or_else(|| Error::msg("actor has no memory"))?;
+                    let mut bytes = (s.len() as u32).to_le_bytes().to_vec();
+                    bytes.extend_from_slice(s.as_bytes());
+                    mem.write(&mut *store, p as usize, &bytes)?;
+                    args.push(Val::I32(p));
+                }
+            }
+        }
         func.call(&mut *store, &args, &mut [])?;
         Ok(())
     }
@@ -222,6 +276,38 @@ impl Forwarder:
         sys.set_subject(ids["Forwarder"], "target", ids["Printer"]).unwrap();
         sys.send(ids["Forwarder"], "Relay", 42).unwrap();
         assert_eq!(sys.output(), vec!["got 42"]);
+    }
+
+    /// String message fields cross the VM boundary by CONTENT: the host reads
+    /// the bytes out of the sender's memory at send time and re-allocates them
+    /// in the receiver (via its `__msg_alloc` export) at delivery — a literal,
+    /// a runtime-built string, and a mixed String+Int message all arrive intact,
+    /// and the receiver can compare and concatenate them as ordinary strings.
+    #[test]
+    fn string_message_params_cross_vms_by_content() {
+        let src = r#"
+actor Logger:
+    console: Console
+
+impl Logger:
+    on Note(text: String, level: Int):
+        print(console, (text <> "@" <> int_to_string(level)))
+    on Check(word: String):
+        print(console, if word == "magic": "yes" else: "no")
+
+actor Producer:
+    target: Subject
+
+impl Producer:
+    on Go(n: Int):
+        send(target, Note("built:" <> int_to_string(n), n))
+        send(target, Check("magic"))
+        send(target, Check("plain"))
+"#;
+        let (mut sys, ids) = build(src);
+        sys.set_subject(ids["Producer"], "target", ids["Logger"]).unwrap();
+        sys.send(ids["Producer"], "Go", 9).unwrap();
+        assert_eq!(sys.output(), vec!["built:9@9", "yes", "no"]);
     }
 
     #[test]
