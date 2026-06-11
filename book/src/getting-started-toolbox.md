@@ -7,7 +7,8 @@ constantly; here they are, roughly in the order you meet them.
 
 ```sh
 witchy program.witchy            # run on the interpreter
-witchy check program.witchy      # type-check only, don't run
+witchy check program.witchy      # type-check only, don't run (also prints
+                                 # performance notes, e.g. copy-path loops)
 witchy fmt program.witchy        # reformat in place (canonical layout)
 witchy fmt --check program.witchy  # verify formatting (for CI); exit 1 if not
 ```

@@ -81,6 +81,13 @@ index: 50k inserts 1.63 s → 10 ms); item 4 landed (loop watermark resets — a
 resolved (overflow wraps by definition on both backends). The 300k-push
 bench went from an OOM trap to Go parity.
 
+**Superseded (2026-06-11, later):** item 2's eligibility scan was replaced
+wholesale by the **uniqueness pass** ([ownership-analysis.md](ownership-analysis.md)):
+share-event/dirty-site analysis with function summaries, so aliases cost one
+re-own instead of disqualifying, read-only calls don't break accumulation,
+`d = update(…)` upserts and `x = f(move x)` own-ABI pipelines run in place,
+and the remaining copy-path cliffs are flagged by `witchy check`/the LSP.
+
 **Scoreboard vs Go (measured, bench/BASELINE.md):** strings 4–5.7× faster;
 lists, dicts, compute, and cold start at parity. C# legs ship in the harness
 and activate when a dotnet toolchain is present.

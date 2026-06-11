@@ -82,9 +82,10 @@ actor's per-message reset (state lives host-side, so a resident actor stays
 flat across millions of messages), compiler-proven escape-free loop
 iterations (watermark resets), and user-declared [`region:`
 blocks](appendix-performance.md) whose value escapes by copy-out. Hot paths
-avoid allocating at all: unaliased accumulation (`xs = push(xs, e)`,
-`s = s <> p`, `d = insert(d, k, v)`) mutates in place, and dicts carry a
-hidden hash index. The result benches at native-class speed — strings 4–5.7×
+avoid allocating at all: an ownership analysis proves where accumulation
+(`xs = push(xs, e)`, `s = s <> p`, `d = insert(d, k, v)`,
+`x = f(move x)`) can mutate in place — aliases cost one copy where they
+happen, never the whole loop — and dicts carry a hidden hash index. The result benches at native-class speed — strings 4–5.7×
 faster than Go, lists/dicts/compute at parity (`bench/BASELINE.md`) — while
 staying a sandbox. The repository's `docs/architecture.md` has the full
 memory-model story and the honest list of current limitations.
