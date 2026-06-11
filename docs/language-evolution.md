@@ -81,12 +81,13 @@ working (they desugar to the module functions).
   add `Hash` (dict keys), `Len`?—no: length stays per-module (`list.length`,
   `string.length`); do add `Iter` as the protocol `for` and `std/iter`
   already share informally.
-- **Migration mechanics**: one release with both names live (builtin
-  aliases emit a deprecation note via `witchy check`), a `witchy fmt`
-  canonicalization that rewrites bare builtins to module-qualified calls
-  (the formatter is already the canonicalization vehicle), then removal.
-  The repository migrates in the same change (std, examples, projects,
-  book) — the fmt rewrite makes it mechanical.
+- **Migration mechanics: BREAK.** witchy is pre-prod — the builtins are
+  removed outright in one change, no alias release, no deprecation notes.
+  A one-shot `witchy fmt` canonicalization rewrites bare builtins to
+  module-qualified calls, and the whole repository (std, examples,
+  projects, book) migrates in the same commit; anyone outside the repo
+  runs `fmt` once and is current. The error for a removed builtin names
+  the module that now owns it ("`split` moved to `string.split`").
 - The F5 finding dissolves rather than getting documented: there is no
   builtins-vs-module distinction left to explain. The book's stdlib appendix
   becomes the single reference; capability ops get their own short page.
@@ -110,13 +111,13 @@ This phase makes it the *rule* and finishes the half-built parts:
 - **Self-less functions in an `impl` are static**: callable as
   `Type.name(args)` (today that syntax mis-desugars into a method call with
   the type as receiver — fix the desugar), never as a method on a value.
-- **Decision: method-call syntax narrows to real methods.** `x.f(a)`
-  resolves to inherent impls, then trait impls, for `x`'s type — it stops
-  being sugar for *any* free function. (Free functions are called as
-  functions; the module migration in Phase 2 makes `list.push(xs, e)` the
-  spelling, with `xs.push(e)` available exactly when `push` is a method.)
-  One deprecation cycle where the old any-fn UFCS still resolves but
-  `witchy check` notes it.
+- **Decision: method-call syntax narrows to real methods, immediately.**
+  `x.f(a)` resolves to inherent impls, then trait impls, for `x`'s type —
+  it stops being sugar for *any* free function, in one breaking change.
+  (Free functions are called as functions; the module migration in Phase 2
+  makes `list.push(xs, e)` the spelling, with `xs.push(e)` available
+  exactly when `push` is a method.) The error at an old UFCS site names
+  the function spelling to use.
 - This is what "disambiguates calling conventions": the receiver's
   convention is declared on `self` in one place, visible at every call site,
   instead of inferred from how a free function happens to take its first
@@ -181,6 +182,8 @@ The learning-log bugs don't wait for the phases:
    properly) → Phase 2 (stdlib) → Phase 3 (self) → Phase 4 (derive) →
    Phase 5 (comptime).
 
-Phases 2 and 3 are user-visible breaking changes; they ride the same
-deprecation vehicle (check-time notes + fmt canonicalization + one removal
-release) so the ecosystem migrates by running `witchy fmt`.
+Phases 2 and 3 are breaking changes, taken in one cut each: witchy is
+pre-prod, and carrying aliases, dual namespaces, or transition releases is
+cruft with no constituency. The migration vehicle is `witchy fmt` (one run
+mechanically rewrites a tree to the new spellings) plus removal errors that
+name the new spelling — never a compatibility layer.
