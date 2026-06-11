@@ -4702,6 +4702,17 @@ fn yn(b: Bool) -> String:
         );
     }
 
+    /// ARENA WATERMARK RESETS: a loop whose body lets nothing escape an
+    /// iteration (only scalar outer assignments) reclaims each iteration's
+    /// allocations — 200k iterations that would otherwise demand ~6 GB run in
+    /// constant memory. WASM-only: the interpreter's clone-per-push is
+    /// quadratic and would take far too long at this scale.
+    #[test]
+    fn arena_resets_keep_escape_free_loops_constant_memory() {
+        let src = "fn main(console: Console):\n    var total = 0\n    for i in 0..200000:\n        var row = []\n        var j = 0\n        for j in 0..1000:\n            row = push(row, j)\n        total = total + at(row, 999)\n    print(console, int_to_string(total))\n";
+        assert_eq!(wasm_run(src), vec!["199800000"]);
+    }
+
     /// IN-PLACE STRING APPEND: the builder pattern `s = s <> piece` appends
     /// into owned byte slack (amortized O(1)); a literal-seeded alias keeps
     /// the copying path, so the interned literal is never mutated.

@@ -466,6 +466,10 @@ struct Codegen {
     uses_list_push_cap: bool,
     /// Whether the `$str_append_cap` helper is needed.
     uses_str_append_cap: bool,
+    /// Current loop-watermark nesting depth (see WM_POOL).
+    wm_level: usize,
+    /// Whether any loop emitted a watermark reset (forces the heap global).
+    uses_wm: bool,
     /// Whether any list state field exists (links the field_*list host fns).
     uses_list_field: bool,
     /// Whether the `compiler.footprint` host import + guest helper are needed.
@@ -769,6 +773,8 @@ impl Codegen {
             inplace_push: HashSet::new(),
             uses_list_push_cap: false,
             uses_str_append_cap: false,
+            wm_level: 0,
+            uses_wm: false,
             uses_compiler_footprint: false,
             uses_compiler_diff: false,
             uses_float_to_str: false,
@@ -1764,6 +1770,7 @@ impl Codegen {
             || self.uses_list_field
             || self.uses_list_push_cap
             || self.uses_str_append_cap
+            || self.uses_wm
             || self.uses_compiler_footprint
             || self.uses_compiler_diff
             || self.uses_float_to_str
@@ -2290,11 +2297,15 @@ impl Codegen {
         header.push_str(&format!("    (local ${TUPLE_TMP} i32)\n"));
         header.push_str(&format!("    (local ${TRY_TMP} i32)\n"));
         header.push_str(&format!("    (local ${MATCH_TMP} i64)\n"));
+        for i in 0..WM_POOL {
+            header.push_str(&format!("    (local $__witchy_wm_{i} i32)\n"));
+        }
         for i in 0..APPLY_POOL {
             header.push_str(&format!("    (local $__witchy_call_{i} i32)\n"));
         }
 
         self.apply_level = 0;
+        self.wm_level = 0;
         let body = self.compile_block(&renamed)?;
         // The body's tail value must match the declared result kind (a generic
         // i32 body returned from an `-> Int` function is widened, etc.).
@@ -2755,13 +2766,17 @@ impl Codegen {
                 let id = self.next_label;
                 self.next_label += 1;
                 let c = self.compile_expr(cond)?;
+                let (wm_capture, wm_reset) = self.loop_watermark(body);
                 // `break` exits to $we{id}; `continue` re-enters $wl{id}, which
                 // re-checks the condition.
                 self.loop_labels.push((format!("$we{id}"), format!("$wl{id}")));
                 let b = self.compile_block(body)?;
                 self.loop_labels.pop();
+                if !wm_capture.is_empty() {
+                    self.wm_level -= 1;
+                }
                 Ok(format!(
-                    "    block $we{id}\n    loop $wl{id}\n{c}    i32.eqz\n    br_if $we{id}\n{b}    drop\n    br $wl{id}\n    end\n    end\n    i32.const 0\n"
+                    "{wm_capture}    block $we{id}\n    loop $wl{id}\n{c}    i32.eqz\n    br_if $we{id}\n{b}    drop\n{wm_reset}    br $wl{id}\n    end\n    end\n    i32.const 0\n"
                 ))
             }
             Expr::Apply { func, args } => {
@@ -2875,17 +2890,22 @@ impl Codegen {
                 } else {
                     String::new()
                 };
+                let (wm_capture, wm_reset) = self.loop_watermark(body);
                 self.loop_labels.push((format!("$fe{id}"), format!("$fc{id}")));
                 let body_wat = self.compile_block(body)?;
                 self.loop_labels.pop();
+                if !wm_capture.is_empty() {
+                    self.wm_level -= 1;
+                }
                 Ok(format!(
                     "{lo_wat}    local.set ${ctr}\n\
-                     {hi_wat}    local.set ${end}\n    \
+                     {hi_wat}    local.set ${end}\n\
+                     {wm_capture}    \
                      block $fe{id}\n    loop $fl{id}\n    \
                      local.get ${ctr}\n    local.get ${end}\n    {exit_cmp}\n    br_if $fe{id}\n    \
                      local.get ${ctr}\n    local.set ${var}\n    \
                      block $fc{id}\n{body_wat}    drop\n    end\n\
-                     {guard_max}    \
+                     {wm_reset}{guard_max}    \
                      local.get ${ctr}\n    i64.const 1\n    i64.add\n    local.set ${ctr}\n    \
                      br $fl{id}\n    end\n    end\n    i32.const 0\n"
                 ))
@@ -2906,18 +2926,24 @@ impl Codegen {
                     self.local_records.insert(var.clone(), elem);
                 }
                 let elem_from = from_slot(self.iter_elem_kind(iter));
+                let (wm_capture, wm_reset) = self.loop_watermark(body);
                 // `break` branches to $fe{id} (loop exit); `continue` to $fc{id}
                 // (an inner block around the body, after which the index advances).
                 self.loop_labels.push((format!("$fe{id}"), format!("$fc{id}")));
                 let body_wat = self.compile_block(body)?;
                 self.loop_labels.pop();
+                if !wm_capture.is_empty() {
+                    self.wm_level -= 1;
+                }
                 Ok(format!(
                     "{iter_wat}    local.set ${list_l}\n    \
-                     i32.const 0\n    local.set ${idx_l}\n    \
+                     i32.const 0\n    local.set ${idx_l}\n\
+                     {wm_capture}    \
                      block $fe{id}\n    loop $fl{id}\n    \
                      local.get ${idx_l}\n    local.get ${list_l}\n    i32.load\n    i32.ge_s\n    br_if $fe{id}\n    \
                      local.get ${list_l}\n    i32.const 4\n    i32.add\n    local.get ${idx_l}\n    i32.const 8\n    i32.mul\n    i32.add\n    i64.load\n{elem_from}    local.set ${var}\n\
-                     block $fc{id}\n{body_wat}    drop\n    end\n    \
+                     block $fc{id}\n{body_wat}    drop\n    end\n\
+                     {wm_reset}    \
                      local.get ${idx_l}\n    i32.const 1\n    i32.add\n    local.set ${idx_l}\n    \
                      br $fl{id}\n    end\n    end\n    i32.const 0\n"
                 ))
@@ -3390,6 +3416,9 @@ impl Codegen {
         header.push_str(&format!("    (local ${TUPLE_TMP} i32)\n"));
         header.push_str(&format!("    (local ${TRY_TMP} i32)\n"));
         header.push_str(&format!("    (local ${MATCH_TMP} i64)\n"));
+        for i in 0..WM_POOL {
+            header.push_str(&format!("    (local $__witchy_wm_{i} i32)\n"));
+        }
         for i in 0..APPLY_POOL {
             header.push_str(&format!("    (local $__witchy_call_{i} i32)\n"));
         }
@@ -3418,6 +3447,7 @@ impl Codegen {
         // The lifted body is its own function: application nesting restarts at 0.
         let saved_apply_level = self.apply_level;
         self.apply_level = 0;
+        self.wm_level = 0;
         let body_wat = self.compile_block(body)?;
         // Store the body's tail value into the universal i64 closure-result slot.
         let body_wat = format!("{body_wat}{}", to_slot(self.block_kind(body)));
@@ -3505,6 +3535,146 @@ impl Codegen {
     /// rather than comparing pointers). Lists (any depth) come from the nesting
     /// tracker, tuples from literals or tracked tuple locals, records from
     /// `record_type_of`.
+    /// Whether a loop body lets nothing escape an iteration, so the heap can
+    /// reset to a loop-entry watermark each time around — the actors'
+    /// per-message arena discipline, generalized to long-running loops. Sound
+    /// when every assignment to a variable declared OUTSIDE the body is
+    /// scalar (Int/Float/Bool — copied, not pointed at) or a state
+    /// field/global (which copy out to host cells / wasm globals), and the
+    /// body never yields (a generator frame outlives its iteration).
+    /// The watermark capture/reset pair for a loop whose body is
+    /// arena-resettable (and a pool slot is free). Bumps `wm_level`; the
+    /// caller decrements it after compiling the body iff capture is
+    /// non-empty.
+    fn loop_watermark(&mut self, body: &Block) -> (String, String) {
+        if self.wm_level >= WM_POOL || !self.loop_arena_resettable(body) {
+            return (String::new(), String::new());
+        }
+        let wm = format!("__witchy_wm_{}", self.wm_level);
+        self.wm_level += 1;
+        self.uses_wm = true;
+        (
+            format!("    global.get $heap\n    local.set ${wm}\n"),
+            format!("    local.get ${wm}\n    global.set $heap\n"),
+        )
+    }
+
+    fn loop_arena_resettable(&self, body: &Block) -> bool {
+        let mut inner_lets = Vec::new();
+        collect_let_names(body, &mut inner_lets);
+        let inner: HashSet<String> = inner_lets.into_iter().collect();
+        let mut ok = true;
+        self.scan_escapes_block(body, &inner, &mut ok);
+        ok
+    }
+
+    fn scan_escapes_block(&self, b: &Block, inner: &HashSet<String>, ok: &mut bool) {
+        for stmt in &b.stmts {
+            match stmt {
+                Stmt::Assign { name, value } => {
+                    if !inner.contains(name)
+                        && !self.globals.contains(name)
+                        && !self.str_fields.contains_key(name)
+                        && !self.list_fields.contains_key(name)
+                    {
+                        let scalar_kind = matches!(
+                            self.locals.get(name),
+                            Some(Kind::I64) | Some(Kind::F64)
+                        );
+                        let scalar_type = matches!(
+                            self.local_val_types.get(name),
+                            Some(ValType::Int) | Some(ValType::Bool) | Some(ValType::Float)
+                        );
+                        if !scalar_kind && !scalar_type {
+                            *ok = false;
+                        }
+                    }
+                    self.scan_escapes_expr(value, inner, ok);
+                }
+                Stmt::Let { value, .. } | Stmt::LetTuple { value, .. } => {
+                    self.scan_escapes_expr(value, inner, ok)
+                }
+                Stmt::Yield(_) => *ok = false,
+                Stmt::Return(Some(e)) | Stmt::Expr(e) => self.scan_escapes_expr(e, inner, ok),
+                Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
+            }
+        }
+    }
+
+    fn scan_escapes_expr(&self, e: &Expr, inner: &HashSet<String>, ok: &mut bool) {
+        match e {
+            Expr::If { cond, then_block, else_block } => {
+                self.scan_escapes_expr(cond, inner, ok);
+                self.scan_escapes_block(then_block, inner, ok);
+                if let Some(b) = else_block {
+                    self.scan_escapes_block(b, inner, ok);
+                }
+            }
+            Expr::Match { scrutinee, arms } => {
+                self.scan_escapes_expr(scrutinee, inner, ok);
+                for arm in arms {
+                    if let Some(g) = &arm.guard {
+                        self.scan_escapes_expr(g, inner, ok);
+                    }
+                    self.scan_escapes_expr(&arm.body, inner, ok);
+                }
+            }
+            Expr::While { cond, body } => {
+                self.scan_escapes_expr(cond, inner, ok);
+                self.scan_escapes_block(body, inner, ok);
+            }
+            Expr::For { iter, body, .. } => {
+                self.scan_escapes_expr(iter, inner, ok);
+                self.scan_escapes_block(body, inner, ok);
+            }
+            Expr::Lambda { body, .. } => self.scan_escapes_block(body, inner, ok),
+            Expr::Block(b) => self.scan_escapes_block(b, inner, ok),
+            Expr::Binary { lhs, rhs, .. } => {
+                self.scan_escapes_expr(lhs, inner, ok);
+                self.scan_escapes_expr(rhs, inner, ok);
+            }
+            Expr::Unary { expr, .. }
+            | Expr::Try(expr)
+            | Expr::As { expr, .. }
+            | Expr::Field { base: expr, .. } => self.scan_escapes_expr(expr, inner, ok),
+            Expr::Call { args, .. }
+            | Expr::Ctor { args, .. }
+            | Expr::List(args)
+            | Expr::Tuple(args)
+            | Expr::Spawn { args, .. } => {
+                for a in args {
+                    self.scan_escapes_expr(a, inner, ok);
+                }
+            }
+            Expr::Apply { func, args } => {
+                self.scan_escapes_expr(func, inner, ok);
+                for a in args {
+                    self.scan_escapes_expr(a, inner, ok);
+                }
+            }
+            Expr::RecordUpdate { base, fields } => {
+                self.scan_escapes_expr(base, inner, ok);
+                for (_, v) in fields {
+                    self.scan_escapes_expr(v, inner, ok);
+                }
+            }
+            Expr::Range { lo, hi, .. } => {
+                self.scan_escapes_expr(lo, inner, ok);
+                self.scan_escapes_expr(hi, inner, ok);
+            }
+            Expr::Index { .. }
+            | Expr::WhileLet { .. }
+            | Expr::MethodCall { .. }
+            | Expr::Record { .. }
+            | Expr::Var(_)
+            | Expr::Int(_)
+            | Expr::Duration(_)
+            | Expr::Float(_)
+            | Expr::Str(_)
+            | Expr::Bool(_) => {}
+        }
+    }
+
     fn eq_shape_of(&self, e: &Expr) -> Option<EqShape> {
         // A `let`-bound compound whose shape was captured at binding time (the
         // authoritative resolution of its RHS) — resolves slots-of-compounds the
@@ -5050,6 +5220,10 @@ fn fn_param_returning_var(params: &[crate::ast::Param], tv: &str) -> Option<usiz
 /// identifiers (first-class function values) — used for reachability/DCE. Over-
 /// approximates (also picks up locals), which is safe: non-function names just
 /// don't match any function and are ignored.
+/// How many nested loops can carry an arena watermark (deeper loops simply
+/// skip the reset — a safe fallback).
+const WM_POOL: usize = 4;
+
 /// Variables eligible for IN-PLACE push (`xs = push(xs, e)` appends into
 /// exclusively-owned slack instead of copying the list): every appearance of
 /// the variable in the body must be a self-push reassignment, a read through
@@ -6252,14 +6426,18 @@ fn compile_actor_in(
             header.push_str(&format!("    (local ${v}__cap i32)\n"));
         }
         // The same scratch slots ordinary functions get: tuple destructuring,
-        // `?`, `match` scrutinees, and the call pool.
+        // `?`, `match` scrutinees, loop watermarks, and the call pool.
         header.push_str(&format!("    (local ${TUPLE_TMP} i32)\n"));
         header.push_str(&format!("    (local ${TRY_TMP} i32)\n"));
         header.push_str(&format!("    (local ${MATCH_TMP} i64)\n"));
+        for i in 0..WM_POOL {
+            header.push_str(&format!("    (local $__witchy_wm_{i} i32)\n"));
+        }
         for i in 0..APPLY_POOL {
             header.push_str(&format!("    (local $__witchy_call_{i} i32)\n"));
         }
         cg.apply_level = 0;
+        cg.wm_level = 0;
         let body = cg.compile_block(&renamed)?;
         handlers.push((header, body));
     }
