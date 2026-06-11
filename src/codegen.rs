@@ -5659,6 +5659,7 @@ fn compile_actor_in(
 
     let mut state_globals = String::new();
     let mut str_field_inits: Vec<(u32, u32)> = Vec::new();
+    let mut list_field_inits: Vec<(u32, ValType, String)> = Vec::new();
     for field in &actor.fields {
         let tname = match &field.ty {
             Type::Named(n, _) => n.as_str(),
@@ -5737,11 +5738,26 @@ fn compile_actor_in(
                 },
                 _ => unreachable!("List fields are Named types"),
             };
+            let idx = (cg.str_fields.len() + cg.list_fields.len()) as u32;
             match &field.init {
-                Some(Expr::List(items)) if items.is_empty() => {}
+                Some(Expr::List(items)) => {
+                    if !items.iter().all(|e| matches!(e, Expr::Int(_) | Expr::Str(_))) {
+                        return cerr(format!(
+                            "field `{}`: list state must initialize to a literal list of constants",
+                            field.name
+                        ));
+                    }
+                    // A non-empty initializer compiles into the start function:
+                    // build the literal in the arena, then copy it OUT to the
+                    // host cell (an unset cell already reads back as empty).
+                    if !items.is_empty() {
+                        let code = cg.compile_expr(&Expr::List(items.clone()))?;
+                        list_field_inits.push((idx, elem_vt, code));
+                    }
+                }
                 Some(_) => {
                     return cerr(format!(
-                        "field `{}`: list state must initialize to `[]` in codegen",
+                        "field `{}`: list state must initialize to a literal list in codegen",
                         field.name
                     ))
                 }
@@ -5752,7 +5768,6 @@ fn compile_actor_in(
                     ))
                 }
             }
-            let idx = (cg.str_fields.len() + cg.list_fields.len()) as u32;
             cg.list_fields.insert(field.name.clone(), (idx, elem_vt));
             cg.uses_list_field = true;
             cg.local_list_elem_valtype.insert(field.name.clone(), elem_vt);
@@ -5969,16 +5984,25 @@ fn compile_actor_in(
     }
     wat.push_str(&helper_wat);
     wat.push_str(&msg_helpers);
-    if !str_field_inits.is_empty() {
-        // Set each String state cell to its declared initializer (an interned
-        // literal) at instantiation, before any message is delivered.
-        wat.push_str("  (func $__init_str_fields\n");
+    if !str_field_inits.is_empty() || !list_field_inits.is_empty() {
+        // Set each String/list state cell to its declared initializer at
+        // instantiation, before any message is delivered: strings are interned
+        // literals; a list is built in the arena and copied OUT to its cell.
+        wat.push_str("  (func $__init_state_fields\n");
         for (idx, off) in &str_field_inits {
             wat.push_str(&format!(
                 "    (call $field_str_set_host (i32.const {idx}) (i32.const {off}))\n"
             ));
         }
-        wat.push_str("  )\n  (start $__init_str_fields)\n");
+        for (idx, vt, code) in &list_field_inits {
+            let set = if *vt == ValType::Str {
+                "$field_strlist_set_host"
+            } else {
+                "$field_intlist_set_host"
+            };
+            wat.push_str(&format!("    i32.const {idx}\n{code}    call {set}\n"));
+        }
+        wat.push_str("  )\n  (start $__init_state_fields)\n");
     }
     for lam in &cg.lambdas {
         wat.push_str(lam);

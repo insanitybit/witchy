@@ -1111,8 +1111,8 @@ fn main(console: Console):
         let src = r#"
 actor Journal:
     console: Console
-    var values: List(Int) = []
-    var labels: List(String) = []
+    var values: List(Int) = [5]
+    var labels: List(String) = ["seed"]
 
 impl Journal:
     on Note(n: Int):
@@ -1130,7 +1130,10 @@ impl Journal:
         sys.send(ids["Journal"], "Note", 1).unwrap();
         sys.send(ids["Journal"], "Note", 2).unwrap();
         sys.send(ids["Journal"], "Note", 3).unwrap();
-        assert_eq!(sys.output(), vec!["10 v1,", "30 v1,v2,", "60 v1,v2,v3,"]);
+        assert_eq!(
+            sys.output(),
+            vec!["15 seed,v1,", "35 seed,v1,v2,", "65 seed,v1,v2,v3,"]
+        );
     }
 
     #[test]
