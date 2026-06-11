@@ -7259,11 +7259,11 @@ fn main(console: Console):
         // port is kept, and an absent path renders as "/".
         let client = r#"
 import url
-import option
+import result
 fn render(s: String) -> String:
     match url.parse(s):
-        Some(u) -> url.format(u)
-        None -> "no parse"
+        Ok(u) -> url.format(u)
+        Err(_e) -> "no parse"
 fn main(console: Console):
     print(console, render("https://example.com/path"))
     print(console, render("http://example.com:8080/x"))
@@ -7297,11 +7297,11 @@ fn main(console: Console):
         // in string_to_int. A valid or defaulted port still parses, both backends.
         let client = r#"
 import url
-import option
+import result
 fn p(s: String) -> String:
     match url.parse(s):
-        Some(u) -> "ok:" <> int_to_string(url.port(u))
-        None -> "none"
+        Ok(u) -> "ok:" <> int_to_string(url.port(u))
+        Err(_e) -> "none"
 fn main(console: Console):
     print(console, p("https://h:8443/x"))
     print(console, p("https://h:abc/x"))
@@ -13134,8 +13134,8 @@ fn main(console: Console):
 import url
 fn describe(s: String) -> String:
     match url.parse(s):
-        Some(u) -> url.scheme(u) <> " " <> url.host(u) <> " " <> int_to_string(url.port(u)) <> " " <> url.path(u)
-        None -> "invalid"
+        Ok(u) -> url.scheme(u) <> " " <> url.host(u) <> " " <> int_to_string(url.port(u)) <> " " <> url.path(u)
+        Err(e) -> "invalid: " <> e
 fn main(console: Console):
     print(console, describe("http://example.com"))
     print(console, describe("http://example.com:8080/foo"))
@@ -13152,7 +13152,7 @@ fn main(console: Console):
                 "http example.com 80 /",
                 "http example.com 8080 /foo",
                 "https x.com 443 /a/b",
-                "invalid"
+                "invalid: missing `scheme://` in: notaurl"
             ]
         );
     }

@@ -1,18 +1,23 @@
 // Minimal URL parsing — the witchy slice of Go's net/url. Pure and
 // capability-free, so it compiles to WASM. Handles `scheme://host[:port][/path]`;
 // the port defaults by scheme (443 for https, else 80) and the path to "/".
+//
+// Structured parses return `Result(_, String)` with what went wrong (the same
+// convention as `json.decode` and `semver.parse`); simple scalar parses like
+// `string.parse_int` stay `Option`.
 
 import option
+import result
 import ascii
 
 type Url:
     Url(String, String, Int, String)
 
-// Parse a URL, or `None` if it has no `scheme://`.
-pub fn parse(s: String) -> Option(Url):
+// Parse a URL, or an error naming what is malformed.
+pub fn parse(s: String) -> Result(Url, String):
     let sep = index_of(s, "://")
     if sep < 0:
-        None
+        Err("missing `scheme://` in: " <> s)
     else:
         let scheme = substring(s, 0, sep)
         let rest = substring(s, sep + 3, char_count(s))
@@ -22,11 +27,11 @@ pub fn parse(s: String) -> Option(Url):
         let colon = index_of(authority, ":")
         let host = if colon < 0: authority else: substring(authority, 0, colon)
         if colon < 0:
-            Some(Url(scheme, host, default_port(scheme), path))
+            Ok(Url(scheme, host, default_port(scheme), path))
         else:
             match parse_port(substring(authority, colon + 1, char_count(authority))):
-                Some(p) -> Some(Url(scheme, host, p, path))
-                None -> None
+                Some(p) -> Ok(Url(scheme, host, p, path))
+                None -> Err("invalid port in: " <> s)
 
 fn default_port(scheme: String) -> Int:
     if scheme == "https":

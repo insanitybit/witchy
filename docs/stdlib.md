@@ -1652,13 +1652,15 @@ Read `key` from an inline table value like `{ path = "../money", version = "1" }
 
 Minimal URL parsing — the witchy slice of Go's net/url. Pure and capability-free, so it compiles to WASM. Handles `scheme://host[:port][/path]`; the port defaults by scheme (443 for https, else 80) and the path to "/".
 
+Structured parses return `Result(_, String)` with what went wrong (the same convention as `json.decode` and `semver.parse`); simple scalar parses like `string.parse_int` stay `Option`.
+
 #### `type Url`
 
 - `Url(String, String, Int, String)`
 
-#### `fn parse(s: String) -> Option(Url)`
+#### `fn parse(s: String) -> Result(Url, String)`
 
-Parse a URL, or `None` if it has no `scheme://`.
+Parse a URL, or an error naming what is malformed.
 
 #### `fn scheme(u: Url) -> String`
 

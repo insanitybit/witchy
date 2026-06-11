@@ -50,8 +50,8 @@ pub fn head(net: Net, host: String, port: Int, path: String) -> Response:
 // parse. Saves splitting host/port/path by hand.
 pub fn get_url(net: Net, raw: String) -> Result(Response, String):
     match url.parse(raw):
-        Some(u) -> Ok(get(net, url.host(u), url.port(u), url.path(u)))
-        None -> Err("invalid URL: " <> raw)
+        Ok(u) -> Ok(get(net, url.host(u), url.port(u), url.path(u)))
+        Err(e) -> Err("invalid URL: " <> e)
 
 // Send a request with custom headers, returning the response. The generic form
 // behind the method helpers — use it when you need to set headers (auth,
@@ -120,9 +120,9 @@ pub fn send(rb: RequestBuilder, net: Net) -> Result(Response, String):
     match rb:
         RequestBuilder(m, u, hs, b) ->
             match url.parse(u):
-                Some(parsed) ->
+                Ok(parsed) ->
                     Ok(request_with(net, m, url.host(parsed), url.port(parsed), url.path(parsed), hs, b))
-                None -> Err("invalid URL: " <> u)
+                Err(e) -> Err("invalid URL: " <> e)
 
 // Whether the response status is in the 2xx success range.
 pub fn is_success(r: Response) -> Bool:
