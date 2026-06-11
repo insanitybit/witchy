@@ -310,6 +310,42 @@ impl Producer:
         assert_eq!(sys.output(), vec!["built:9@9", "yes", "no"]);
     }
 
+    /// A Subject travels IN a message: the Introducer hands the Hub a
+    /// reference to the Printer, and the Hub — which was never configured
+    /// with a Printer field — messages it. Capability delegation between
+    /// compiled actors, the heart of the actor security model.
+    #[test]
+    fn subject_message_params_delegate_send_authority() {
+        let src = r#"
+actor Printer:
+    console: Console
+
+impl Printer:
+    on Show(n: Int):
+        print(console, ("shown " <> int_to_string(n)))
+
+actor Hub:
+    console: Console
+
+impl Hub:
+    on Route(dest: Subject, n: Int):
+        send(dest, Show((n + 1)))
+
+actor Introducer:
+    hub: Subject
+    printer: Subject
+
+impl Introducer:
+    on Go(n: Int):
+        send(hub, Route(printer, n))
+"#;
+        let (mut sys, ids) = build(src);
+        sys.set_subject(ids["Introducer"], "hub", ids["Hub"]).unwrap();
+        sys.set_subject(ids["Introducer"], "printer", ids["Printer"]).unwrap();
+        sys.send(ids["Introducer"], "Go", 41).unwrap();
+        assert_eq!(sys.output(), vec!["shown 42"]);
+    }
+
     #[test]
     fn multi_field_and_zero_field_messages() {
         // Messages now carry any number of Int fields across the VM boundary

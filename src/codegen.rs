@@ -15,9 +15,10 @@
 //! becomes an exported function the host calls to deliver a message.
 //!
 //! `send` between compiled actors crosses the VM boundary by value: Int fields
-//! are copied, String fields are read out of the sender and re-allocated in the
-//! receiver (`__msg_alloc`). Not yet compiled: Subject/float/compound message
-//! parameters and `spawn` from compiled code — each errors clearly.
+//! and Subject ids are copied (passing a Subject delegates send authority),
+//! String fields are read out of the sender and re-allocated in the receiver
+//! (`__msg_alloc`). Not yet compiled: float/compound message parameters and
+//! `spawn` from compiled code — each errors clearly.
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -5196,6 +5197,9 @@ pub enum MsgField {
     /// A string: the slot is a pointer in the SENDER's memory; the host copies
     /// the content and re-allocates it in the receiver before delivery.
     Str,
+    /// An actor id copied by value — passing a Subject in a message hands the
+    /// receiver the authority to message that actor (capability delegation).
+    Subject,
 }
 
 /// One routable message: its name and per-field wire types.
@@ -5212,8 +5216,9 @@ fn message_sig_of(h: &crate::ast::Handler) -> Result<Vec<MsgField>, CodegenError
         .map(|p| match &p.ty {
             Some(Type::Named(t, _)) if t == "Int" => Ok(MsgField::Int),
             Some(Type::Named(t, _)) if t == "String" => Ok(MsgField::Str),
+            Some(Type::Named(t, _)) if t == "Subject" => Ok(MsgField::Subject),
             _ => cerr(format!(
-                "handler `{}` param `{}`: only Int and String message parameters compile yet",
+                "handler `{}` param `{}`: only Int, String, and Subject message parameters compile yet",
                 h.message, p.name
             )),
         })
@@ -5330,14 +5335,18 @@ fn compile_actor_with_tags(
             // `[len][bytes]` string the host re-allocated in THIS actor's
             // memory (via `__msg_alloc`) before delivery.
             header.push_str(&format!("(param ${} i32) ", p.name));
-            let vt = match kind {
-                MsgField::Int => ValType::Int,
+            match kind {
+                MsgField::Int => {
+                    cg.local_val_types.insert(p.name.clone(), ValType::Int);
+                }
                 MsgField::Str => {
                     cg.uses_msg_alloc = true;
-                    ValType::Str
+                    cg.local_val_types.insert(p.name.clone(), ValType::Str);
                 }
-            };
-            cg.local_val_types.insert(p.name.clone(), vt);
+                // A Subject is an opaque actor id; it is a send target, not a
+                // printable value, so it gets no value type.
+                MsgField::Subject => {}
+            }
         }
         header.push('\n');
         let renamed = alpha_rename(&h.body, &h.params);
