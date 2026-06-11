@@ -73,12 +73,17 @@ recorded run, so regressions fail loudly.
 Exit criterion: the 300k-push benchmark runs in the same order of magnitude
 as native Rust, and `std/server` compiled serves indefinitely under load.
 
-**Status 2026-06-11:** items 1–2 landed as one change (shadow-capacity
-locals: in-place push + string append, no representation change); item 4
-landed (loop watermark resets — a 200k-iteration/6 GB-churn soak runs in
-constant memory); item 5 was already resolved (overflow wraps by definition
-on both backends). The 300k-push bench went from an OOM trap to ~30 ms.
-Remaining: dict growth verification (item 3).
+**Status 2026-06-11 — PHASE 1 COMPLETE:** items 1–2 landed as one change
+(shadow-capacity locals: in-place push + string append, no representation
+change); item 3 landed twice (in-place insert, then the hidden-word hash
+index: 50k inserts 1.63 s → 10 ms); item 4 landed (loop watermark resets — a
+200k-iteration/6 GB-churn soak runs in constant memory); item 5 was already
+resolved (overflow wraps by definition on both backends). The 300k-push
+bench went from an OOM trap to Go parity.
+
+**Scoreboard vs Go (measured, bench/BASELINE.md):** strings 4–5.7× faster;
+lists, dicts, compute, and cold start at parity. C# legs ship in the harness
+and activate when a dotnet toolchain is present.
 
 ## Phase 2 — Codegen quality
 
