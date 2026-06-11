@@ -117,4 +117,17 @@ files under `audit/`", and that is visible at the `spawn` site and checked by th
 type system. Concurrency and capability-security are the same idea here: an actor
 is a boundary, and you decide exactly what crosses it.
 
+## Actors in the sandbox
+
+When actors compile, the boundary becomes physical: each actor runs in **its own
+WebAssembly VM** with its own linear memory. A message crosses that boundary by
+value — `Int`, `Float`, and `Subject` fields are copied, and a `String`'s bytes
+are read out of the sender and re-allocated in the receiver — so no actor ever
+sees another's memory.
+
+Passing a `Subject` in a message is capability delegation: the receiver gains
+the authority to message that actor, and nothing else. An actor that was never
+introduced to the printer cannot reach it — there is no global registry to look
+one up in, only the references you were explicitly handed.
+
 Next: putting it all together in a real project.

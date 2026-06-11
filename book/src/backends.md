@@ -58,12 +58,14 @@ the right thing in the sandbox" would be two separate hopes. With it, they're on
 fact, mechanically enforced.
 
 It also shapes how you write witchy. `witchy parity` is your signal that you've
-stayed inside the portable language. A handful of conveniences are
-interpreter-only — and the compiler tells you, loudly, the moment you lean on one
-in code meant for the sandbox. (It never silently mis-renders: `to_string` of a
-whole list, tuple, record, ADT, or dict now compiles and renders identically on
-all three backends, and a shape the compiler genuinely can't resolve is a clear
-error, not a wrong answer.) You're never guessing.
+stayed inside the portable language — and that language now covers the whole
+standard library, including the native intrinsics (`crypto`, `encoding`, the
+`compiler` module) and networking, which compile to host imports backed by the
+same implementations the interpreter uses. The few remaining edges (notably
+`spawn` from compiled code) are loud compile errors, never silent differences.
+(`to_string` of a whole list, tuple, record, ADT, or dict compiles and renders
+identically on all three backends, and a shape the compiler genuinely can't
+resolve is a clear error, not a wrong answer.) You're never guessing.
 
 ## A note on memory
 
