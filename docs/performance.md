@@ -104,14 +104,14 @@ All wasmtime-45 features we already ship but don't fully use:
 2. **AOT artifact cache**: `Module::serialize`/`deserialize` keyed by program
    hash (the Cranelift cache exists; serialize skips even the cache lookup
    work and makes `witchy sandbox` cold-start microsecond-class).
-3. **Pooling instance allocator** (`PoolingAllocationConfig`) for actor
-   systems — spawn cost drops from mmap-per-VM to slot reuse; matters once
-   handlers spawn workers per job.
-4. **Threaded actor scheduler**: the drain loop is single-threaded today.
-   Actors share nothing (the whole point), so a work-stealing pool over the
-   per-actor mailboxes is safe parallelism Go has to buy with GC coordination.
-   (`Engine` and the queue are already `Send`; the table's `Option`-take
-   pattern extends to per-actor locks.)
+3. **Pooling instance allocator** — deferred until profiling shows spawn
+   pressure (the measure-first rule; on-demand allocation hasn't appeared in
+   any profile yet).
+4. **Threaded actor scheduler** — LANDED (`WITCHY_PARALLEL_ACTORS=N` /
+   `run_program_with_workers`): workers deliver to distinct actor VMs
+   concurrently; per-actor FIFO is preserved via parked pending queues; the
+   deterministic drain stays the default, so parity with the interpreter's
+   schedule is untouched unless explicitly relaxed.
 
 ## Phase 4 — Researched options, deliberately deferred
 
