@@ -472,6 +472,9 @@ struct Codegen {
     /// The current function's own-ABI parameter (its ownership token is the
     /// `${name}__cap` PARAM, and the function returns an extra i32 token).
     cur_fn_own_param: Option<String>,
+    /// Whether the current function has type-variable parameters (a generic
+    /// fallback): unknown-type comparisons there are rejected loudly.
+    cur_fn_has_type_vars: bool,
     /// Whether the `$list_push_cap` helper is needed.
     uses_list_push_cap: bool,
     /// Whether the `$str_append_cap` helper is needed.
@@ -793,6 +796,7 @@ impl Codegen {
             facts_stack: Vec::new(),
             summaries: analysis::Summaries::empty(),
             cur_fn_own_param: None,
+            cur_fn_has_type_vars: false,
             uses_list_push_cap: false,
             uses_str_append_cap: false,
             uses_dict_insert_cap: false,
@@ -2299,6 +2303,12 @@ impl Codegen {
         }
         // Rename shadowing bindings to unique names so function-wide locals
         // don't alias (the interpreter scopes lexically; this preserves that).
+        self.cur_fn_has_type_vars = f.params.iter().any(|p| {
+            matches!(&p.ty, Some(Type::Named(n, args))
+                if args.is_empty() && n.chars().next().is_some_and(|c| c.is_lowercase()))
+                || matches!(&p.ty, Some(Type::Named(_, args))
+                    if args.iter().any(type_has_var))
+        });
         let renamed = alpha_rename(&f.body, &f.params);
         self.infer_locals(&renamed);
 
@@ -2903,6 +2913,27 @@ impl Codegen {
                 {
                     return cerr(
                         "`==` on a Dict is not yet compiled to WASM (structural dict equality) — compare `pairs(d)` or specific keys instead",
+                    );
+                }
+                // VALUE EQUALITY, ALWAYS: in a generic function (type-variable
+                // params), two operands of unknown type could be pointers — a
+                // bare i32.eq would compare REFERENCES, which witchy's
+                // semantics do not have. Loud error; the call site resolves it
+                // by monomorphization (concrete arguments) or an `Eq` bound.
+                if matches!(
+                    op,
+                    BinOp::Eq | BinOp::NotEq | BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq
+                ) && self.cur_fn_has_type_vars
+                    && self.val_type_of(lhs) == ValType::Other
+                    && self.val_type_of(rhs) == ValType::Other
+                    && self.kind_of(lhs) == Kind::I32
+                    && self.kind_of(rhs) == Kind::I32
+                {
+                    return cerr(
+                        "`==`/ordering on values of an unresolved generic type would compare \
+                         references, not contents — witchy only has value equality. Call this \
+                         function with concretely-typed arguments (so it monomorphizes), or add \
+                         a `where ...: Eq`/`Ord` bound",
                     );
                 }
                 // Promote both operands to a common kind so a concrete i64 Int
@@ -5821,6 +5852,18 @@ const WM_POOL: usize = 4;
 /// buffer, so the variable keeps the copying push. This is the linear-update
 /// optimization: value semantics are preserved because no one else can
 /// observe the mutated block.
+/// Does the type mention a bare lowercase type variable anywhere?
+fn type_has_var(t: &Type) -> bool {
+    match t {
+        Type::Named(n, args) => {
+            (args.is_empty() && n.chars().next().is_some_and(|c| c.is_lowercase()))
+                || args.iter().any(type_has_var)
+        }
+        Type::Tuple(ts) => ts.iter().any(type_has_var),
+        Type::Fn(ps, r) => ps.iter().any(type_has_var) || type_has_var(r),
+    }
+}
+
 /// `WITCHY_NO_INPLACE=1` compiles with the in-place machinery (linear update
 /// and loop watermark resets) OFF — the copying paths ARE the semantics, so
 /// diffing outputs against an optimized build is a soundness check on the
@@ -5968,6 +6011,22 @@ fn reachable_functions(module: &Module) -> HashSet<String> {
 /// shared by the module/driver compile and by actor modules, which carry
 /// the module's plain functions for their handlers to call.
 fn register_module_items(cg: &mut Codegen, module: &Module) {
+    // `Option`/`Result` are language-level (`?`, `Some`/`Ok` literals, the
+    // interpreter evaluates them natively): their constructors exist for
+    // patterns whether or not std/option / std/result are linked. Tags match
+    // the std declarations (Some=0/None=1, Ok=0/Err=1); if the modules ARE
+    // linked, the Item::Type pass below re-registers identical values.
+    for (ty, variants) in [
+        ("Option", [("Some", 1usize), ("None", 0)]),
+        ("Result", [("Ok", 1), ("Err", 1)]),
+    ] {
+        cg.adt_variant_names
+            .insert(ty.to_string(), variants.iter().map(|(n, _)| n.to_string()).collect());
+        for (tag, (name, nfields)) in variants.iter().enumerate() {
+            cg.ctor_type_name.insert(name.to_string(), ty.to_string());
+            cg.ctors.insert(name.to_string(), (tag as u32, *nfields));
+        }
+    }
     // Collect parameter conventions up front so call sites can resolve `inout`
     // write-back even for forward references.
     for item in &module.items {
