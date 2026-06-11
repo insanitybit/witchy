@@ -88,7 +88,7 @@ pub struct System {
 
 impl System {
     pub fn new(sigs: Vec<MessageSig>) -> Self {
-        Self::new_with_kinds(Engine::default(), sigs, Vec::new())
+        Self::new_with_kinds(speed_engine(), sigs, Vec::new())
     }
 
     fn new_with_kinds(
@@ -564,7 +564,7 @@ impl System {
         sigs: Vec<MessageSig>,
         specs: Vec<(String, Vec<(String, bool)>)>,
     ) -> Result<Vec<String>> {
-        let engine = Engine::default();
+        let engine = speed_engine();
         let mut kinds = Vec::new();
         for (name, wat) in actor_wats {
             let module = Module::new(&engine, wat)?;
@@ -734,6 +734,13 @@ impl System {
         func.call(&mut *store, &args, &mut [])?;
         Ok(())
     }
+}
+
+/// An engine at Cranelift's Speed tier (matching `runtime.rs`).
+fn speed_engine() -> Engine {
+    let mut config = wasmtime::Config::new();
+    config.cranelift_opt_level(wasmtime::OptLevel::Speed);
+    Engine::new(&config).unwrap_or_default()
 }
 
 fn set_cell(caller: &Caller<'_, Host>, idx: i32, cell: StateCell) {

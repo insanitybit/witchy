@@ -217,6 +217,10 @@ impl Runtime {
 
     fn with_preemption(preempt: bool) -> Result<Self> {
         let mut config = Config::new();
+        // Cranelift's Speed tier: the compile-time cost is amortized by the
+        // compilation cache below, so generated code quality is free on every
+        // run after the first.
+        config.cranelift_opt_level(wasmtime::OptLevel::Speed);
         // Epoch-based interruption lets the scheduler preempt a runaway actor
         // (exercised in M4). It is only worth its per-backedge cost when a
         // scheduler will actually advance the epoch.

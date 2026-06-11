@@ -65,10 +65,10 @@ recorded run, so regressions fail loudly.
    loop. A reset is sound exactly when no value allocated inside the scope
    escapes it; the capability/escape analysis used for `let`-borrows already
    answers this for function boundaries.
-5. **Checked arithmetic**: `+`/`-`/`*` trap on Int overflow like the
-   interpreter errors (the last known *silent* divergence). ~2 extra
-   instructions per op; measure in Phase 0's compute bench, claw back via
-   Phase 2 if needed.
+5. ~~Checked arithmetic~~ — already resolved the other way: Int overflow
+   WRAPS (two's complement) as defined language behavior on both backends
+   (`integer_overflow_wraps_like_the_wasm_backend`). No divergence remains,
+   and wrapping keeps arithmetic at one instruction.
 
 Exit criterion: the 300k-push benchmark runs in the same order of magnitude
 as native Rust, and `std/server` compiled serves indefinitely under load.
