@@ -2,10 +2,10 @@
 
 This is the reference for witchy's syntax and semantics. The behavioral
 contract is enforced by differential testing: the tree-walking interpreter is
-the reference semantics, and the compiled backend (WebAssembly) must
-produce identical results — `witchy parity <file>` checks any program, and the
-test suite holds the backends to **zero silent divergence**, including error
-paths.
+the reference semantics, and the compiled backend (WebAssembly) must produce
+identical results. The test suite and a CI sweep (the project's
+`witchy parity` harness) hold the backends to **zero silent divergence**,
+including error paths.
 
 Every ` ```witchy ` block below is a complete program that the test suite
 type-checks — and, when it needs nothing beyond `Console`, runs on both

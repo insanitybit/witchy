@@ -116,6 +116,7 @@ USAGE:
     witchy [--net <host:port>]... <file.witchy>   run a program
     witchy check    <file.witchy>                 type-check without running
     witchy parity   <file.witchy>                 run on both backends, confirm identical output
+                                                  (a verify-the-compiler tool, not a workflow step)
     witchy test     <file.witchy|dir>             run in-language tests (zero-param `test_*` functions)
     witchy sandbox [--dir <root>] [--net <addr>]... <file.witchy> [args...]
                                                   compile and run in a VM granted exactly its footprint

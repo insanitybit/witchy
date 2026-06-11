@@ -4,7 +4,7 @@ Every file here is a runnable program; from the repo root:
 
 ```sh
 witchy examples/hello.witchy          # run (interpreter)
-witchy parity examples/hello.witchy   # prove both backends agree
+witchy check examples/hello.witchy    # type-check (capabilities included)
 witchy caps examples/hello.witchy     # show its capability footprint
 witchy sandbox examples/hello.witchy  # run confined in the WASM VM
 ```

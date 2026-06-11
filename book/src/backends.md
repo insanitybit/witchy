@@ -34,12 +34,11 @@ The interpreter is the reference: it defines what a program *means*. The
 compiled tier must match it. The project's test suite contains hundreds of
 *differential* tests that run a program on the interpreter and the compiled
 backend and assert the outputs are equal, plus a property-based fuzzer
-generating programs to try to pry them apart. You can run the check on any
-program yourself:
-
-```sh
-witchy parity program.witchy
-```
+generating programs to try to pry them apart, plus a CI sweep that runs
+every example through `witchy parity` — the project's own
+verify-the-compiler harness. (It ships in the CLI so the claim is
+inspectable, not because your workflow needs it: parity checks **witchy**,
+not your program.)
 
 Parity covers the boring-but-critical edges, not just the happy path:
 
@@ -65,14 +64,14 @@ are the same program.** Without parity, "it worked when I tested it" and "it doe
 the right thing in the sandbox" would be two separate hopes. With it, they're one
 fact, mechanically enforced.
 
-It also shapes how you write witchy. `witchy parity` is your signal that you've
-stayed inside the portable language — and that language now covers the whole
-standard library, including the native intrinsics (`crypto`, `encoding`, the
-`compiler` module), networking, and **actor programs**: `witchy parity` runs an
-actor program with each actor in its own VM, capabilities gated per actor, and
-diffs the output against the interpreter. The few remaining edges (a
-capability in a *message*, a `Secret`-typed actor field) are loud compile
-errors, never silent differences. You're never guessing.
+And it asks nothing of you. There is no "portable subset" to stay inside —
+the portable language is simply the language, covering the whole standard
+library (the native intrinsics, networking) and **actor programs**, which
+the harness runs with each actor in its own VM, capabilities gated per
+actor. On the rare edge a backend genuinely can't express yet (a capability
+in a *message*, a `Secret`-typed actor field), the compiler stops you with
+a loud error at build time. You never run a verification step; you never
+guess.
 
 ## A note on memory
 

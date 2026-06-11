@@ -133,12 +133,13 @@ That makes three things possible that mainstream languages can't offer:
 | Tree-walking interpreter | `witchy run.witchy`         | Development; the reference semantics                    |
 | WebAssembly (wasmtime)   | `witchy sandbox run.witchy` | Deployment: confinement AND speed — the capability boundary is the VM boundary, and the tier benches at Go-class (see `bench/`)                                                   |
 
-The backends are held to a **zero-silent-divergence** invariant: `witchy parity
-<file>` runs a program on both the interpreter and the compiled WASM and
-confirms identical output — including agreement on _error paths_ (an
-out-of-bounds index traps on both, an unparseable integer fails on both). The
-test suite contains hundreds of differential tests and a property-based fuzzer
-holding the backends together.
+The backends are held to a **zero-silent-divergence** invariant, enforced by
+the project's own `witchy parity` harness (runs a program on both backends
+and confirms identical output — including agreement on _error paths_: an
+out-of-bounds index traps on both, an unparseable integer fails on both), a
+test suite with hundreds of differential tests, and a property-based fuzzer.
+You never verify this yourself: anything one backend can't express is a loud
+compile error, never a quiet difference.
 
 ## The language in 30 seconds
 
@@ -212,6 +213,7 @@ witchy [--net <host:port>]... <file.witchy>   run a program
                                               ([--signing-key <seed-file>] grants the root Secret)
 witchy check    <file.witchy>                 type-check without running
 witchy parity   <file.witchy>                 run on both backends, confirm identical output
+                                              (a verify-the-compiler tool, not a workflow step)
 witchy sandbox [--dir <root>] [--net <addr>]... <file.witchy> [args...]
                                               compile and run in a VM granted exactly its footprint
 witchy emit-wat <file.witchy>                 print the compiled WebAssembly text

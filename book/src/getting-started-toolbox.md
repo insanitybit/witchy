@@ -18,18 +18,20 @@ capability and exhaustiveness errors — without running anything. `fmt` is the
 canonical formatter; it preserves your comments and is idempotent, so there's
 one true layout and no style arguments.
 
-## The parity check
+## The parity harness (you'll likely never need it)
 
 ```sh
 witchy parity program.witchy
 ```
 
-This runs your program on *both* the interpreter and the compiled WebAssembly
-backend and confirms they produce identical output — including identical
-failure (an out-of-bounds index traps on both, an unparseable number errors on
-both). It's how the language keeps its promise that the sandbox runs the same
-program you developed against. When you write witchy, `parity` is your "did I
-stay inside the portable language?" check.
+This runs a program on *both* the interpreter and the compiled WebAssembly
+backend and confirms identical output — including identical failure. It is
+how **witchy verifies witchy**: the project's CI sweeps every example and
+test through it to enforce the zero-silent-divergence promise. As a witchy
+*user* you rely on that promise rather than re-checking it — the compiler
+already stops you loudly if you reach an edge the compiled tier can't
+express. Reach for `parity` only if you're hacking on witchy itself (or
+filing a compiler bug — its output is the perfect reproduction).
 
 ## Seeing and enforcing authority
 
