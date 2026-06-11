@@ -4709,7 +4709,7 @@ fn yn(b: Bool) -> String:
     #[test]
     fn region_blocks_value_escape_and_parity() {
         let src = "import string\n\nfn main(console: Console):\n    let summary = region:\n        var parts = []\n        for i in 0..50:\n            parts = push(parts, int_to_string(i))\n        string.join(parts, \",\")\n    print(console, int_to_string(string_length(summary)))\n    var n = 0\n    let direct = region -> Int:\n        n = n + 42\n        n\n    print(console, int_to_string(direct))\n";
-        let want: Vec<String> = ["140", "42"].iter().map(|s| s.to_string()).collect();
+        let want: Vec<String> = ["139", "42"].iter().map(|s| s.to_string()).collect();
         assert_eq!(link_run(src), want.clone(), "interpreter");
         assert_eq!(wasm_run(src), want, "compiled WASM must agree");
     }
