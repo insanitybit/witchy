@@ -1859,6 +1859,20 @@ fn witchy_pm_add_resolves_and_fetches_from_coven() {
         .expect("run pm verify-rune");
     let verify_out = String::from_utf8_lossy(&verify.stdout).to_string();
 
+    // Tamper with the vendored source bytes: the offline re-verification must
+    // BLOCK on the signed-hash mismatch (a compromised mirror or local edit).
+    std::fs::write(
+        dest.join("vendor/money/src/money.witchy"),
+        "fn ver() -> String:\n    \"evil\"\n",
+    )
+    .unwrap();
+    let tampered = Command::new(BIN)
+        .args([pm_src.as_str(), "verify-rune", "vendor/money", rootpub])
+        .current_dir(&dest)
+        .output()
+        .expect("run pm verify-rune on tampered source");
+    let tampered_out = String::from_utf8_lossy(&tampered.stdout).to_string();
+
     let _ = std::fs::remove_dir_all(&store);
     let _ = std::fs::remove_dir_all(&dest);
 
@@ -1879,6 +1893,15 @@ fn witchy_pm_add_resolves_and_fetches_from_coven() {
     assert!(
         verify.status.success() && verify_out.contains("acme/money@1.5.0 verified"),
         "offline verify-rune must re-verify the vendored rune: {verify_out:?}"
+    );
+    assert_eq!(
+        tampered.status.code(),
+        Some(2),
+        "verify-rune must exit 2 on tampered source: {tampered_out:?}"
+    );
+    assert!(
+        tampered_out.contains("no longer matches its signed hash (tampered)"),
+        "verify-rune must name the tamper: {tampered_out:?}"
     );
 }
 
