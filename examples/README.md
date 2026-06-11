@@ -48,6 +48,7 @@ witchy sandbox examples/hello.witchy  # run confined in the WASM VM
 | [jq](jq.witchy), [parse_kv](parse_kv.witchy), [config_merge](config_merge.witchy), [diff](diff.witchy) | Structured data tools |
 | [stats](stats.witchy), [matrix](matrix.witchy), [temperature](temperature.witchy), [floats](floats.witchy) | Numerics |
 | [actors](actors.witchy), [counter](counter.witchy), [mailbox](mailbox.witchy), [dispatch](dispatch.witchy) | Actors and message passing |
+| [actor_caps](actor_caps.witchy) | Capability-holding actors: per-actor gated VMs, authority granted at `spawn` |
 | [lazy_fib](lazy_fib.witchy), [generators](generators.witchy) | Lazy iterators |
 | [regions](regions.witchy) | User-controlled allocation scopes (`region:`) |
 
