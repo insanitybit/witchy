@@ -31,3 +31,14 @@ Memory model landed: in-place push/append/insert (linear-update over shadow
 capacity locals), arena watermark resets for escape-free loops (200k-iteration
 / 6 GB-churn soak in constant memory). Remaining levers: dict hash index
 (lookup is still a linear scan), wasm-opt post-pass, threaded actors.
+
+## After the dict hash index (same day)
+
+| workload | before | after |
+|---|---|---|
+| 50k int-keyed inserts | 1.63 s (linear scans) | **10 ms** |
+| 20k string-keyed build + lookups | trap-prone via copying path | **17 ms wall** |
+
+With this, every core structure (list, string, dict) builds and reads at
+Go-class speed on the WASM tier. wasm-opt measured as not-a-lever at current
+codegen quality; parallel actor drain available opt-in.
