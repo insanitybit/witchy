@@ -459,6 +459,11 @@ struct Codegen {
     spawnable: HashMap<String, Vec<(String, bool)>>,
     /// Actor kinds actually spawned, for import emission.
     used_spawns: std::collections::BTreeSet<String>,
+    /// Variables in the CURRENT function/handler eligible for in-place push
+    /// (see `push_eligible_vars`); each carries a shadow `${name}__cap` local.
+    inplace_push: HashSet<String>,
+    /// Whether the `$list_push_cap` helper is needed.
+    uses_list_push_cap: bool,
     /// Whether any list state field exists (links the field_*list host fns).
     uses_list_field: bool,
     /// Whether the `compiler.footprint` host import + guest helper are needed.
@@ -759,6 +764,8 @@ impl Codegen {
             uses_list_field: false,
             spawnable: HashMap::new(),
             used_spawns: std::collections::BTreeSet::new(),
+            inplace_push: HashSet::new(),
+            uses_list_push_cap: false,
             uses_compiler_footprint: false,
             uses_compiler_diff: false,
             uses_float_to_str: false,
@@ -1752,6 +1759,7 @@ impl Codegen {
             || self.uses_msg_alloc
             || self.uses_str_field
             || self.uses_list_field
+            || self.uses_list_push_cap
             || self.uses_compiler_footprint
             || self.uses_compiler_diff
             || self.uses_float_to_str
@@ -1978,6 +1986,9 @@ impl Codegen {
         }
         if self.uses_list_push {
             s.push_str(LIST_PUSH_WAT);
+        }
+        if self.uses_list_push_cap {
+            s.push_str(LIST_PUSH_CAP_WAT);
         }
         if self.uses_list_concat {
             s.push_str(LIST_CONCAT_WAT);
@@ -2239,6 +2250,21 @@ impl Codegen {
         }
         header.push_str(")\n");
 
+        self.inplace_push = push_eligible_vars(&renamed);
+        let shadowed: Vec<String> = self
+            .inplace_push
+            .iter()
+            .filter(|v| {
+                self.globals.contains(*v)
+                    || self.str_fields.contains_key(*v)
+                    || self.list_fields.contains_key(*v)
+            })
+            .cloned()
+            .collect();
+        for v in shadowed {
+            self.inplace_push.remove(&v);
+        }
+
         let mut lets = Vec::new();
         collect_let_names(&renamed, &mut lets);
         lets.sort();
@@ -2246,6 +2272,12 @@ impl Codegen {
         for name in &lets {
             let k = self.locals.get(name).copied().unwrap_or(Kind::I32);
             header.push_str(&format!("    (local ${name} {})\n", wasm_ty(k)));
+        }
+        // Shadow capacity slots for in-place push (zero = no owned slack).
+        let mut cap_vars: Vec<&String> = self.inplace_push.iter().collect();
+        cap_vars.sort();
+        for v in cap_vars {
+            header.push_str(&format!("    (local ${v}__cap i32)\n"));
         }
         // Scratch slots: tuple destructuring, `?`, and `match` scrutinees.
         header.push_str(&format!("    (local ${TUPLE_TMP} i32)\n"));
@@ -2286,6 +2318,13 @@ impl Codegen {
                 Stmt::Let { name, value, .. } => {
                     out.push_str(&self.compile_expr(value)?);
                     out.push_str(&format!("    local.set ${name}\n"));
+                    // A re-bound eligible variable (e.g. `var xs = []` inside a
+                    // loop) starts with NO owned slack — a stale capacity from
+                    // a prior iteration would let push write past a fresh,
+                    // exactly-sized block.
+                    if self.inplace_push.contains(name) {
+                        out.push_str(&format!("    i32.const 0\n    local.set ${name}__cap\n"));
+                    }
                     tail_is_value = false;
                 }
                 Stmt::Assign { name, value } => {
@@ -2307,6 +2346,36 @@ impl Codegen {
                         out.push_str(&format!("    i32.const {idx}\n"));
                         out.push_str(&self.compile_expr(value)?);
                         out.push_str(&format!("    call {set}\n"));
+                        tail_is_value = false;
+                        continue;
+                    }
+                    if self.inplace_push.contains(name) {
+                        // The linear-update fast path: append into the block's
+                        // exclusively-owned slack (tracked in the shadow
+                        // `__cap` local), growing geometrically when full —
+                        // amortized O(1) instead of copy-per-push.
+                        if let Some(elem) = self_push_elem(name, value) {
+                            let xk = self.kind_of(elem);
+                            self.uses_list_push_cap = true;
+                            out.push_str(&format!("    local.get ${name}\n"));
+                            out.push_str(&self.compile_expr(elem)?);
+                            out.push_str(to_slot(xk));
+                            out.push_str(&format!(
+                                "    local.get ${name}__cap\n    call $list_push_cap\n    local.set ${name}__cap\n    local.set ${name}\n"
+                            ));
+                            tail_is_value = false;
+                            continue;
+                        }
+                        // Reassigned from anything else: the new value's slack
+                        // is unknown — reset the capacity so the next push
+                        // copies before mutating.
+                        let vk = self.kind_of(value);
+                        out.push_str(&self.compile_expr(value)?);
+                        let target = self.locals.get(name).copied().unwrap_or(Kind::I32);
+                        out.push_str(kind_convert(vk, target));
+                        out.push_str(&format!(
+                            "    local.set ${name}\n    i32.const 0\n    local.set ${name}__cap\n"
+                        ));
                         tail_is_value = false;
                         continue;
                     }
@@ -4960,6 +5029,145 @@ fn fn_param_returning_var(params: &[crate::ast::Param], tv: &str) -> Option<usiz
 /// identifiers (first-class function values) — used for reachability/DCE. Over-
 /// approximates (also picks up locals), which is safe: non-function names just
 /// don't match any function and are ignored.
+/// Variables eligible for IN-PLACE push (`xs = push(xs, e)` appends into
+/// exclusively-owned slack instead of copying the list): every appearance of
+/// the variable in the body must be a self-push reassignment, a read through
+/// `at`/`length`, a `for` iteration, or a plain reassignment (which resets
+/// the tracked capacity). Anything else — passed to a function, stored in a
+/// structure, returned, captured by a lambda, compared — can alias the
+/// buffer, so the variable keeps the copying push. This is the linear-update
+/// optimization: value semantics are preserved because no one else can
+/// observe the mutated block.
+fn push_eligible_vars(b: &Block) -> HashSet<String> {
+    let mut self_push: HashSet<String> = HashSet::new();
+    let mut disq: HashSet<String> = HashSet::new();
+    scan_push_block(b, &mut self_push, &mut disq);
+    self_push.retain(|v| !disq.contains(v));
+    self_push
+}
+
+fn self_push_elem<'a>(name: &str, value: &'a Expr) -> Option<&'a Expr> {
+    if let Expr::Call { name: f, args } = value {
+        if f == "push" && args.len() == 2 {
+            if matches!(&args[0], Expr::Var(v) if v == name) {
+                return Some(&args[1]);
+            }
+        }
+    }
+    None
+}
+
+fn scan_push_block(b: &Block, self_push: &mut HashSet<String>, disq: &mut HashSet<String>) {
+    for stmt in &b.stmts {
+        match stmt {
+            Stmt::Assign { name, value } => {
+                if let Some(elem) = self_push_elem(name, value) {
+                    self_push.insert(name.clone());
+                    scan_push_expr(elem, self_push, disq);
+                    continue;
+                }
+                // A plain reassignment is fine (the emitter resets the
+                // capacity); only the right-hand side's uses matter.
+                scan_push_expr(value, self_push, disq);
+            }
+            Stmt::Let { value, .. } => scan_push_expr(value, self_push, disq),
+            Stmt::LetTuple { names, value } => {
+                // Tuple-destructured bindings skip capacity tracking entirely.
+                for n in names {
+                    disq.insert(n.clone());
+                }
+                scan_push_expr(value, self_push, disq);
+            }
+            Stmt::Return(Some(e)) | Stmt::Expr(e) | Stmt::Yield(e) => {
+                scan_push_expr(e, self_push, disq)
+            }
+            Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
+        }
+    }
+}
+
+fn scan_push_expr(e: &Expr, self_push: &mut HashSet<String>, disq: &mut HashSet<String>) {
+    match e {
+        // Whitelisted reads: the pointer is consumed within the operation and
+        // never retained.
+        Expr::Call { name, args }
+            if (name == "at" && args.len() == 2) || (name == "length" && args.len() == 1) =>
+        {
+            if !matches!(&args[0], Expr::Var(_)) {
+                scan_push_expr(&args[0], self_push, disq);
+            }
+            for a in &args[1..] {
+                scan_push_expr(a, self_push, disq);
+            }
+        }
+        Expr::For { iter, body, .. } => {
+            if !matches!(iter.as_ref(), Expr::Var(_)) {
+                scan_push_expr(iter, self_push, disq);
+            }
+            scan_push_block(body, self_push, disq);
+        }
+        Expr::Var(v) => {
+            disq.insert(v.clone());
+        }
+        Expr::Range { lo, hi, .. } => {
+            scan_push_expr(lo, self_push, disq);
+            scan_push_expr(hi, self_push, disq);
+        }
+        Expr::Index { .. } | Expr::WhileLet { .. } | Expr::MethodCall { .. } | Expr::Record { .. } => {}
+        Expr::Call { args, .. }
+        | Expr::Ctor { args, .. }
+        | Expr::List(args)
+        | Expr::Tuple(args)
+        | Expr::Spawn { args, .. } => {
+            for a in args {
+                scan_push_expr(a, self_push, disq);
+            }
+        }
+        Expr::Apply { func, args } => {
+            scan_push_expr(func, self_push, disq);
+            for a in args {
+                scan_push_expr(a, self_push, disq);
+            }
+        }
+        Expr::Unary { expr, .. } | Expr::Try(expr) | Expr::As { expr, .. } | Expr::Field { base: expr, .. } => {
+            scan_push_expr(expr, self_push, disq)
+        }
+        Expr::RecordUpdate { base, fields } => {
+            scan_push_expr(base, self_push, disq);
+            for (_, v) in fields {
+                scan_push_expr(v, self_push, disq);
+            }
+        }
+        Expr::Binary { lhs, rhs, .. } => {
+            scan_push_expr(lhs, self_push, disq);
+            scan_push_expr(rhs, self_push, disq);
+        }
+        Expr::If { cond, then_block, else_block } => {
+            scan_push_expr(cond, self_push, disq);
+            scan_push_block(then_block, self_push, disq);
+            if let Some(b) = else_block {
+                scan_push_block(b, self_push, disq);
+            }
+        }
+        Expr::Match { scrutinee, arms } => {
+            scan_push_expr(scrutinee, self_push, disq);
+            for arm in arms {
+                if let Some(g) = &arm.guard {
+                    scan_push_expr(g, self_push, disq);
+                }
+                scan_push_expr(&arm.body, self_push, disq);
+            }
+        }
+        Expr::While { cond, body } => {
+            scan_push_expr(cond, self_push, disq);
+            scan_push_block(body, self_push, disq);
+        }
+        Expr::Lambda { body, .. } => scan_push_block(body, self_push, disq),
+        Expr::Block(b) => scan_push_block(b, self_push, disq),
+        Expr::Int(_) | Expr::Duration(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) => {}
+    }
+}
+
 fn collect_fn_refs_block(b: &Block, out: &mut HashSet<String>) {
     for stmt in &b.stmts {
         match stmt {
@@ -5959,6 +6167,25 @@ fn compile_actor_in(
             let k = cg.locals.get(name).copied().unwrap_or(Kind::I32);
             header.push_str(&format!("    (local ${name} {})\n", wasm_ty(k)));
         }
+        cg.inplace_push = push_eligible_vars(&renamed);
+        let shadowed: Vec<String> = cg
+            .inplace_push
+            .iter()
+            .filter(|v| {
+                cg.globals.contains(*v)
+                    || cg.str_fields.contains_key(*v)
+                    || cg.list_fields.contains_key(*v)
+            })
+            .cloned()
+            .collect();
+        for v in shadowed {
+            cg.inplace_push.remove(&v);
+        }
+        let mut cap_vars: Vec<String> = cg.inplace_push.iter().cloned().collect();
+        cap_vars.sort();
+        for v in cap_vars {
+            header.push_str(&format!("    (local ${v}__cap i32)\n"));
+        }
         // The same scratch slots ordinary functions get: tuple destructuring,
         // `?`, `match` scrutinees, and the call pool.
         header.push_str(&format!("    (local ${TUPLE_TMP} i32)\n"));
@@ -6213,6 +6440,36 @@ const LIST_PUSH_WAT: &str = r#"  (func $list_push (param $list i32) (param $x i6
     local.get $x i64.store
     local.get $new i32.const 4 i32.add local.get $len i32.const 1 i32.add i32.const 8 i32.mul i32.add global.set $heap
     local.get $new)
+"#;
+
+// push_cap(list, x, cap): the linear-update push. `cap` is the caller's
+// exclusively-owned slack (a shadow local; 0 = unknown). With room, the
+// element appends in place and the length header bumps — sound only because
+// the eligibility analysis proved no alias can observe this block. Without
+// room, a fresh block is allocated at DOUBLE the needed capacity and the
+// spine copied once — amortized O(1) per push. Returns (list, cap).
+const LIST_PUSH_CAP_WAT: &str = r#"  (func $list_push_cap (param $list i32) (param $x i64) (param $cap i32) (result i32 i32)
+    (local $len i32) (local $new i32) (local $newcap i32)
+    local.get $list i32.load local.set $len
+    (if (i32.gt_s (local.get $cap) (local.get $len))
+      (then
+        (i64.store (i32.add (i32.add (local.get $list) (i32.const 4)) (i32.mul (local.get $len) (i32.const 8))) (local.get $x))
+        (i32.store (local.get $list) (i32.add (local.get $len) (i32.const 1)))
+        local.get $list local.get $cap
+        return))
+    (local.set $newcap (i32.mul (i32.add (local.get $len) (i32.const 1)) (i32.const 2)))
+    (if (i32.lt_s (local.get $newcap) (i32.const 8))
+      (then (local.set $newcap (i32.const 8))))
+    (call $ensure (i32.add (i32.const 4) (i32.mul (local.get $newcap) (i32.const 8))))
+    global.get $heap local.set $new
+    (i32.store (local.get $new) (i32.add (local.get $len) (i32.const 1)))
+    (memory.copy
+      (i32.add (local.get $new) (i32.const 4))
+      (i32.add (local.get $list) (i32.const 4))
+      (i32.mul (local.get $len) (i32.const 8)))
+    (i64.store (i32.add (i32.add (local.get $new) (i32.const 4)) (i32.mul (local.get $len) (i32.const 8))) (local.get $x))
+    (global.set $heap (i32.add (i32.add (local.get $new) (i32.const 4)) (i32.mul (local.get $newcap) (i32.const 8))))
+    local.get $new local.get $newcap)
 "#;
 
 // concat(a, b): a fresh list `[alen+blen][a elems][b elems]` (8-byte slots).

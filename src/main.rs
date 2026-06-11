@@ -4702,6 +4702,21 @@ fn yn(b: Bool) -> String:
         );
     }
 
+    /// IN-PLACE PUSH (the linear-update optimization): an unaliased
+    /// accumulate-in-loop appends into owned slack — 50k pushes complete
+    /// instantly instead of O(n²) copying — while an ALIASED list keeps the
+    /// copying push, so value semantics hold: `ys` still sees the original.
+    #[test]
+    fn inplace_push_is_fast_and_alias_safe() {
+        let src = "fn main(console: Console):\n    var xs = []\n    for i in 0..50000:\n        xs = push(xs, i)\n    print(console, int_to_string(length(xs)))\n    print(console, int_to_string(at(xs, 49999)))\n    var small = [1]\n    let alias = small\n    small = push(small, 2)\n    print(console, to_string(alias))\n    print(console, to_string(small))\n";
+        let want: Vec<String> = ["50000", "49999", "[1]", "[1, 2]"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(link_run(src), want.clone(), "interpreter");
+        assert_eq!(wasm_run(src), want, "compiled WASM must agree");
+    }
+
     /// The `std/regex` toolkit — greedy quantifiers, escapes (`\d`/`\w`/`\s` and
     /// literal metacharacters), character classes with ranges and negation, and
     /// the span-based API (`find`/`find_all`/`extract`/`replace_all`/`split`) —
