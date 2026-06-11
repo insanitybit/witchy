@@ -4702,6 +4702,18 @@ fn yn(b: Bool) -> String:
         );
     }
 
+    /// IN-PLACE DICT INSERT: `d = insert(d, k, v)` updates/appends into owned
+    /// entry slack (no per-insert table copy); an aliased dict keeps the
+    /// copying insert, so the alias still sees the original.
+    #[test]
+    fn inplace_dict_insert_is_fast_and_alias_safe() {
+        let src = "fn main(console: Console):\n    var d = dict_new()\n    for i in 0..2000:\n        d = insert(d, i, i * 2)\n    print(console, int_to_string(size(d)))\n    print(console, int_to_string(get_or(d, 1999, 0 - 1)))\n    var e = dict_new()\n    let alias = e\n    e = insert(e, 1, 10)\n    print(console, int_to_string(size(alias)))\n    print(console, int_to_string(size(e)))\n";
+        let want: Vec<String> =
+            ["2000", "3998", "0", "1"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(link_run(src), want.clone(), "interpreter");
+        assert_eq!(wasm_run(src), want, "compiled WASM must agree");
+    }
+
     /// ARENA WATERMARK RESETS: a loop whose body lets nothing escape an
     /// iteration (only scalar outer assignments) reclaims each iteration's
     /// allocations — 200k iterations that would otherwise demand ~6 GB run in

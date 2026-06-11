@@ -466,6 +466,8 @@ struct Codegen {
     uses_list_push_cap: bool,
     /// Whether the `$str_append_cap` helper is needed.
     uses_str_append_cap: bool,
+    /// Whether the `$dict_insert_cap` helper is needed.
+    uses_dict_insert_cap: bool,
     /// Current loop-watermark nesting depth (see WM_POOL).
     wm_level: usize,
     /// Whether any loop emitted a watermark reset (forces the heap global).
@@ -773,6 +775,7 @@ impl Codegen {
             inplace_push: HashSet::new(),
             uses_list_push_cap: false,
             uses_str_append_cap: false,
+            uses_dict_insert_cap: false,
             wm_level: 0,
             uses_wm: false,
             uses_compiler_footprint: false,
@@ -1770,6 +1773,7 @@ impl Codegen {
             || self.uses_list_field
             || self.uses_list_push_cap
             || self.uses_str_append_cap
+            || self.uses_dict_insert_cap
             || self.uses_wm
             || self.uses_compiler_footprint
             || self.uses_compiler_diff
@@ -2003,6 +2007,9 @@ impl Codegen {
         }
         if self.uses_str_append_cap {
             s.push_str(STR_APPEND_CAP_WAT);
+        }
+        if self.uses_dict_insert_cap {
+            s.push_str(DICT_INSERT_CAP_WAT);
         }
         if self.uses_list_concat {
             s.push_str(LIST_CONCAT_WAT);
@@ -2380,6 +2387,32 @@ impl Codegen {
                             out.push_str(to_slot(xk));
                             out.push_str(&format!(
                                 "    local.get ${name}__cap\n    call $list_push_cap\n    local.set ${name}__cap\n    local.set ${name}\n"
+                            ));
+                            tail_is_value = false;
+                            continue;
+                        }
+                        // The dict fast path: `d = insert(d, k, v)` updates or
+                        // appends an entry into owned entry slack.
+                        if let Some((kexpr, vexpr)) = self_insert_args(name, value) {
+                            let mode = self.dict_key_mode(kexpr)?;
+                            self.uses_dict = true;
+                            self.uses_str_eq = true;
+                            self.uses_dict_insert_cap = true;
+                            if let Some(kvt) = self.dict_key_valtype_of(value) {
+                                self.local_dict_key_valtype.insert(name.clone(), kvt);
+                            }
+                            if let Some(vvt) = self.dict_value_valtype_of(value) {
+                                self.local_dict_value_valtype.insert(name.clone(), vvt);
+                            }
+                            let kk = self.kind_of(kexpr);
+                            let vk = self.kind_of(vexpr);
+                            out.push_str(&format!("    local.get ${name}\n"));
+                            out.push_str(&self.compile_expr(kexpr)?);
+                            out.push_str(to_slot(kk));
+                            out.push_str(&self.compile_expr(vexpr)?);
+                            out.push_str(to_slot(vk));
+                            out.push_str(&format!(
+                                "    i32.const {mode}\n    local.get ${name}__cap\n    call $dict_insert_cap\n    local.set ${name}__cap\n    local.set ${name}\n"
                             ));
                             tail_is_value = false;
                             continue;
@@ -5252,6 +5285,18 @@ fn self_push_elem<'a>(name: &str, value: &'a Expr) -> Option<&'a Expr> {
     None
 }
 
+/// `d = insert(d, k, v)`: the dict analogue of `self_push_elem`.
+fn self_insert_args<'a>(name: &str, value: &'a Expr) -> Option<(&'a Expr, &'a Expr)> {
+    if let Expr::Call { name: f, args } = value {
+        if f == "insert" && args.len() == 3 {
+            if matches!(&args[0], Expr::Var(v) if v == name) {
+                return Some((&args[1], &args[2]));
+            }
+        }
+    }
+    None
+}
+
 /// `s = s <> a <> b <> …` (any left-spine whose leftmost leaf is the assigned
 /// variable): the appended pieces, in order. The string-builder analogue of
 /// `self_push_elem`.
@@ -5289,6 +5334,12 @@ fn scan_push_block(b: &Block, self_push: &mut HashSet<String>, disq: &mut HashSe
                     }
                     continue;
                 }
+                if let Some((k, v)) = self_insert_args(name, value) {
+                    self_push.insert(name.clone());
+                    scan_push_expr(k, self_push, disq);
+                    scan_push_expr(v, self_push, disq);
+                    continue;
+                }
                 // A plain reassignment is fine (the emitter resets the
                 // capacity); only the right-hand side's uses matter.
                 scan_push_expr(value, self_push, disq);
@@ -5315,7 +5366,15 @@ fn scan_push_expr(e: &Expr, self_push: &mut HashSet<String>, disq: &mut HashSet<
         // never retained.
         Expr::Call { name, args }
             if (name == "at" && args.len() == 2)
-                || ((name == "length" || name == "string_length" || name == "to_string")
+                || (name == "has" && args.len() == 2)
+                || (name == "get_or" && args.len() == 3)
+                || ((name == "length"
+                    || name == "string_length"
+                    || name == "to_string"
+                    || name == "size"
+                    || name == "keys"
+                    || name == "values"
+                    || name == "pairs")
                     && args.len() == 1) =>
         {
             if !matches!(&args[0], Expr::Var(_)) {
@@ -7248,6 +7307,55 @@ const KEY_EQ_WAT: &str = r#"  (func $key_eq (param $a i64) (param $b i64) (param
 
 // insert(d, k, v): a fresh map like `d` with `k` set to `v` — the matching
 // entry's value replaced, or `(k, v)` appended (count+1) if `k` is absent.
+// insert_cap(d, k, v, mode, cap): the linear-update dict insert. With owned
+// slack (cap = entry capacity from the shadow local), an existing key updates
+// its value slot in place and a new key appends an entry; without, the table
+// copies once at double capacity. The key scan stays linear (the dict's
+// lookup model); only the per-insert COPY is eliminated. Returns (d, cap).
+const DICT_INSERT_CAP_WAT: &str = r#"  (func $dict_insert_cap (param $d i32) (param $k i64) (param $v i64) (param $mode i32) (param $cap i32) (result i32 i32)
+    (local $count i32) (local $i i32) (local $found i32) (local $new i32) (local $bytes i32) (local $newcap i32)
+    (local.set $count (i32.load (local.get $d)))
+    (local.set $found (i32.const -1))
+    (local.set $i (i32.const 0))
+    (block $fdone
+      (loop $f
+        (br_if $fdone (i32.ge_s (local.get $i) (local.get $count)))
+        (if (call $key_eq
+              (i64.load (i32.add (i32.add (local.get $d) (i32.const 4)) (i32.mul (local.get $i) (i32.const 16))))
+              (local.get $k) (local.get $mode))
+          (then (local.set $found (local.get $i)) (br $fdone)))
+        (local.set $i (i32.add (local.get $i) (i32.const 1)))
+        (br $f)))
+    (if (i32.and (i32.ge_s (local.get $found) (i32.const 0)) (i32.gt_s (local.get $cap) (i32.const 0)))
+      (then
+        (i64.store (i32.add (i32.add (local.get $d) (i32.const 12)) (i32.mul (local.get $found) (i32.const 16))) (local.get $v))
+        local.get $d local.get $cap
+        return))
+    (if (i32.and (i32.lt_s (local.get $found) (i32.const 0)) (i32.gt_s (local.get $cap) (local.get $count)))
+      (then
+        (i64.store (i32.add (i32.add (local.get $d) (i32.const 4)) (i32.mul (local.get $count) (i32.const 16))) (local.get $k))
+        (i64.store (i32.add (i32.add (local.get $d) (i32.const 12)) (i32.mul (local.get $count) (i32.const 16))) (local.get $v))
+        (i32.store (local.get $d) (i32.add (local.get $count) (i32.const 1)))
+        local.get $d local.get $cap
+        return))
+    (local.set $newcap (i32.mul (i32.add (local.get $count) (i32.const 1)) (i32.const 2)))
+    (if (i32.lt_s (local.get $newcap) (i32.const 8))
+      (then (local.set $newcap (i32.const 8))))
+    (call $ensure (i32.add (i32.const 4) (i32.mul (local.get $newcap) (i32.const 16))))
+    (local.set $bytes (i32.add (i32.const 4) (i32.mul (local.get $count) (i32.const 16))))
+    (local.set $new (global.get $heap))
+    (memory.copy (local.get $new) (local.get $d) (local.get $bytes))
+    (global.set $heap (i32.add (i32.add (local.get $new) (i32.const 4)) (i32.mul (local.get $newcap) (i32.const 16))))
+    (if (i32.ge_s (local.get $found) (i32.const 0))
+      (then
+        (i64.store (i32.add (i32.add (local.get $new) (i32.const 12)) (i32.mul (local.get $found) (i32.const 16))) (local.get $v)))
+      (else
+        (i64.store (i32.add (i32.add (local.get $new) (i32.const 4)) (i32.mul (local.get $count) (i32.const 16))) (local.get $k))
+        (i64.store (i32.add (i32.add (local.get $new) (i32.const 12)) (i32.mul (local.get $count) (i32.const 16))) (local.get $v))
+        (i32.store (local.get $new) (i32.add (local.get $count) (i32.const 1)))))
+    local.get $new local.get $newcap)
+"#;
+
 const DICT_INSERT_WAT: &str = r#"  (func $dict_insert (param $d i32) (param $k i64) (param $v i64) (param $mode i32) (result i32)
     (local $count i32) (local $i i32) (local $found i32) (local $new i32) (local $bytes i32)
     (local.set $count (i32.load (local.get $d)))
