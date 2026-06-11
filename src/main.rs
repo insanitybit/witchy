@@ -8480,7 +8480,13 @@ fn main(console: Console):
     /// with the interpreter line for line.
     #[test]
     fn verify_file_covers_actor_programs() {
-        for example in ["examples/actors.witchy", "examples/dispatch.witchy"] {
+        // conventions.witchy is the case whose handler calls a top-level
+        // function — the actor module must carry the helper.
+        for example in [
+            "examples/actors.witchy",
+            "examples/dispatch.witchy",
+            "examples/conventions.witchy",
+        ] {
             crate::verify_file(example).expect("actor program backends should agree");
         }
     }

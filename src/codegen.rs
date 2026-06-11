@@ -5078,30 +5078,11 @@ fn reachable_functions(module: &Module) -> HashSet<String> {
     reachable
 }
 
-pub fn compile_module(module: &Module) -> Result<String, CodegenError> {
-    compile_module_with(module, &HashMap::new(), &HashMap::new())
-}
-
-/// `compile_module` seeded with an actor-system program's message tags and
-/// spawnable actor specs, so the DRIVER (the module holding `main`) can
-/// `spawn` actors and `send` them messages through the system's host imports.
-pub fn compile_module_with(
-    module: &Module,
-    tags: &HashMap<String, u32>,
-    spawnable: &HashMap<String, Vec<(String, bool)>>,
-) -> Result<String, CodegenError> {
-    // Desugar traits/impls to ordinary functions (no-op for trait-free modules)
-    // so codegen, like the interpreter, only ever sees plain functions. Then
-    // lower ranges to their list-building blocks once, so the local-collection
-    // and emission passes below agree on the synthetic loop-variable names.
-    let recs = crate::records::lower(module.clone())
-        .map_err(|message| CodegenError { message })?;
-    let mut lowered = crate::traits::lower_for_wasm(recs);
-    crate::parser::lower_sugar_module(&mut lowered);
-    let module = &lowered;
-    let mut cg = Codegen::new();
-    cg.message_tags = tags.clone();
-    cg.spawnable = spawnable.clone();
+/// Register every item's compile-time metadata (parameter conventions,
+/// return kinds/types, record fields, generic shape hints, ...) on `cg` —
+/// shared by the module/driver compile and by actor modules, which carry
+/// the module's plain functions for their handlers to call.
+fn register_module_items(cg: &mut Codegen, module: &Module) {
     // Collect parameter conventions up front so call sites can resolve `inout`
     // write-back even for forward references.
     for item in &module.items {
@@ -5266,6 +5247,33 @@ pub fn compile_module_with(
             }
         }
     }
+}
+
+pub fn compile_module(module: &Module) -> Result<String, CodegenError> {
+    compile_module_with(module, &HashMap::new(), &HashMap::new())
+}
+
+/// `compile_module` seeded with an actor-system program's message tags and
+/// spawnable actor specs, so the DRIVER (the module holding `main`) can
+/// `spawn` actors and `send` them messages through the system's host imports.
+pub fn compile_module_with(
+    module: &Module,
+    tags: &HashMap<String, u32>,
+    spawnable: &HashMap<String, Vec<(String, bool)>>,
+) -> Result<String, CodegenError> {
+    // Desugar traits/impls to ordinary functions (no-op for trait-free modules)
+    // so codegen, like the interpreter, only ever sees plain functions. Then
+    // lower ranges to their list-building blocks once, so the local-collection
+    // and emission passes below agree on the synthetic loop-variable names.
+    let recs = crate::records::lower(module.clone())
+        .map_err(|message| CodegenError { message })?;
+    let mut lowered = crate::traits::lower_for_wasm(recs);
+    crate::parser::lower_sugar_module(&mut lowered);
+    let module = &lowered;
+    let mut cg = Codegen::new();
+    cg.message_tags = tags.clone();
+    cg.spawnable = spawnable.clone();
+    register_module_items(&mut cg, module);
     let mut func_wat = String::new();
     let mut main_params = 0usize;
     let mut main_param_is_args: Vec<bool> = Vec::new();
@@ -5544,32 +5552,17 @@ pub fn compile_program(module: &Module) -> Result<CompiledActors, CodegenError> 
             }
         }
     }
-    // An actor module contains ONLY the actor (handlers + state); a handler
-    // calling a top-level function would emit a call to a function the module
-    // doesn't carry — fail at compile time, not VM instantiation.
-    let fn_names: HashSet<String> = module
-        .items
-        .iter()
-        .filter_map(|it| match it {
-            Item::Function(f) => Some(f.name.clone()),
-            _ => None,
-        })
-        .collect();
+    // Each actor module carries the parent module's plain functions its
+    // handlers (transitively) call — lowered the same way the driver lowers
+    // them, so the two agree on synthetic names and specializations.
+    let recs =
+        crate::records::lower(module.clone()).map_err(|message| CodegenError { message })?;
+    let mut parent = crate::traits::lower_for_wasm(recs);
+    crate::parser::lower_sugar_module(&mut parent);
     let mut actors = Vec::new();
     for item in &module.items {
         if let Item::Actor(a) = item {
-            for h in &a.handlers {
-                let mut refs = HashSet::new();
-                collect_fn_refs_block(&h.body, &mut refs);
-                if let Some(name) = refs.iter().find(|r| fn_names.contains(*r)) {
-                    return cerr(format!(
-                        "actor `{}` handler `{}` calls top-level function `{name}` — \
-                         handlers calling module functions are not compiled yet",
-                        a.name, h.message
-                    ));
-                }
-            }
-            actors.push((a.name.clone(), compile_actor_with_tags(a, &tag_of)?));
+            actors.push((a.name.clone(), compile_actor_in(a, &tag_of, &parent)?));
         }
     }
     Ok((actors, sigs))
@@ -5579,6 +5572,18 @@ fn compile_actor_with_tags(
     actor: &ActorDef,
     tags: &HashMap<String, u32>,
 ) -> Result<String, CodegenError> {
+    compile_actor_in(
+        actor,
+        tags,
+        &Module { imports: Vec::new(), items: Vec::new(), import_lines: Vec::new(), item_lines: Vec::new() },
+    )
+}
+
+fn compile_actor_in(
+    actor: &ActorDef,
+    tags: &HashMap<String, u32>,
+    parent: &Module,
+) -> Result<String, CodegenError> {
     // Lower ranges first (see compile_module) so the passes below see plain
     // blocks with consistent synthetic names.
     let mut actor_owned = actor.clone();
@@ -5586,6 +5591,49 @@ fn compile_actor_with_tags(
     let actor = &actor_owned;
     let mut cg = Codegen::new();
     cg.message_tags = tags.clone();
+    // The module's plain functions travel WITH the actor: register their
+    // metadata, then compile every helper a handler (transitively) calls —
+    // before field/handler compilation, since compiling a function resets the
+    // per-function local tables the handlers rely on.
+    register_module_items(&mut cg, parent);
+    let bodies: HashMap<String, &Function> = parent
+        .items
+        .iter()
+        .filter_map(|it| match it {
+            Item::Function(f) => Some((f.name.clone(), f)),
+            _ => None,
+        })
+        .collect();
+    let mut needed: HashSet<String> = HashSet::new();
+    let mut work: Vec<String> = Vec::new();
+    for h in &actor.handlers {
+        let mut refs = HashSet::new();
+        collect_fn_refs_block(&h.body, &mut refs);
+        for n in refs {
+            if bodies.contains_key(&n) && needed.insert(n.clone()) {
+                work.push(n);
+            }
+        }
+    }
+    while let Some(n) = work.pop() {
+        if let Some(f) = bodies.get(&n) {
+            let mut refs = HashSet::new();
+            collect_fn_refs_block(&f.body, &mut refs);
+            for m in refs {
+                if bodies.contains_key(&m) && needed.insert(m.clone()) {
+                    work.push(m);
+                }
+            }
+        }
+    }
+    let mut helper_wat = String::new();
+    for item in &parent.items {
+        if let Item::Function(f) = item {
+            if needed.contains(&f.name) {
+                helper_wat.push_str(&cg.compile_function(f)?);
+            }
+        }
+    }
 
     let mut state_globals = String::new();
     let mut str_field_inits: Vec<(u32, u32)> = Vec::new();
@@ -5897,6 +5945,7 @@ fn compile_actor_with_tags(
         // Handlers return nothing; discard the block's trailing value.
         wat.push_str(&format!("{header}{body}    drop\n  )\n"));
     }
+    wat.push_str(&helper_wat);
     wat.push_str(&msg_helpers);
     if !str_field_inits.is_empty() {
         // Set each String state cell to its declared initializer (an interned
