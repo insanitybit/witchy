@@ -1,5 +1,26 @@
 # The uniqueness pass — one ownership analysis for every fast path
 
+## Status — SHIPPED (2026-06-11: 9a1ffb5 core, 842bac3 own-ABI)
+
+All phases landed, with one design simplification the implementation
+surfaced: **the runtime `__cap` token is self-healing** (one copy re-owns),
+so no liveness fixpoint is needed at all. The analysis finds *share events*
+(statements that can create a live whole-alias → the consumer zeroes the
+token there, path-sensitively, because kills attach to the statement that
+shares) and *dirty sites* (self-assigns whose RHS embeds a share → forced
+zero token). Everything else — including "alias dies before the loop" — is
+the token's job: the kill costs one re-own copy, not a disqualification.
+
+Shipped beyond the plan: the own-ABI (`x = f(move x)` pipelines carry the
+token across calls — Phase 2's stretch goal), the `__witchy_reowns` counter
+(tests assert copy *counts*, not timings), and the consumption check (facts
+are keyed by AST identity; a cloned subtree is a loud compile error).
+Deviations, recorded: the loop-watermark scan was already semantic
+(escape-based), so it stays; the interpreter's in-place guard is
+evaluation-order-based (its values are fully owned — aliasing cannot occur),
+so its `expr_mentions` check is already exact and stays.
+
+
 Today the compiled tier's in-place machinery (linear update, loop watermark
 resets, region copy-out) runs on three separate **syntactic whitelists**: a
 variable is eligible only if every use of it matches a recognized pattern, and

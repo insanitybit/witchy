@@ -219,7 +219,8 @@ impl Actor {
     /// `__region_copy_bytes` counter), or None when the module has no regions.
     /// The exported re-own counter: how many in-place accumulation sites
     /// entered with a zero ownership token (each one copies). None when the
-    /// module has no in-place machinery.
+    /// module has no in-place machinery. (A test/diagnostic API.)
+    #[allow(dead_code)]
     pub fn reowns(&mut self) -> Option<i64> {
         self.instance
             .get_global(&mut self.store, "__witchy_reowns")

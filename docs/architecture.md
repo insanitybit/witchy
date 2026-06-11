@@ -90,14 +90,26 @@ lifetimes the compiler can prove (or the user declares):
   copies zero bytes — asserted in tests via the exported
   `__region_copy_bytes` counter). See [regions.md](regions.md).
 
-On top of reclamation, hot mutation paths avoid allocating at all: the
-linear-update optimizer turns unaliased self-assign shapes
-(`xs = push(xs, e)`, `s = s <> p`, `d = insert(d, k, v)`) into in-place
-appends with capacity doubling, and dicts carry a hidden open-addressing hash
-index for O(1) lookups. The interpreter applies the same in-place
-self-assign optimization (values are fully owned there, so the slot is the
-value's only home). Measured: string workloads run 4–5.7× faster than Go,
-lists/dicts/compute at parity — see `bench/BASELINE.md`.
+On top of reclamation, hot mutation paths avoid allocating at all. The
+**uniqueness pass** (`src/analysis.rs`, design in
+[ownership-analysis.md](ownership-analysis.md)) drives in-place mutation of
+the self-assign accumulation shapes (`xs = push(xs, e)`, `s = s <> p`,
+`d = insert/update(d, …)`, `x = f(move x)`) through a runtime ownership
+token: the analysis finds every statement that can create a live whole-alias
+(the token is zeroed there — path-sensitively) and every site whose own RHS
+embeds one; everything provably unaliased mutates in place with capacity
+doubling. Function summaries (a bottom-up pass over the call graph) mean a
+read-only helper call doesn't break the chain, `let`-borrow parameters are
+certified by typeck, and an `own` parameter carries the token ACROSS the
+call (`x = grow(move x)` pipelines are O(n) end to end). Dicts carry a
+hidden open-addressing hash index for O(1) lookups. The interpreter applies
+the same in-place self-assign optimization (values are fully owned there).
+Accumulation that falls back to copying inside a loop is flagged at check
+time (`witchy check` notes + LSP hints); `WITCHY_NO_INPLACE=1` compiles the
+copying paths for differential verification, and the exported
+`__witchy_reowns` counter lets tests assert copy counts. Measured: string
+workloads run 4–5.7× faster than Go, lists/dicts/compute at parity — see
+`bench/BASELINE.md`.
 
 ## The runtime sandbox
 
