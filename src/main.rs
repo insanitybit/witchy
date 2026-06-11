@@ -4702,6 +4702,22 @@ fn yn(b: Bool) -> String:
         );
     }
 
+    /// THE DICT HASH INDEX: a hidden word at ptr-4 points at an
+    /// open-addressing table over the (insertion-ordered) entry array, so
+    /// get_or/has/insert lookups probe instead of scanning. String and Int
+    /// keys, growth rebuilds, removal (index dropped, rebuilt on next
+    /// growth), and a missing-key probe all agree with the interpreter.
+    #[test]
+    fn dict_hash_index_agrees_on_both_backends() {
+        let src = "fn main(console: Console):\n    var d = dict_new()\n    for i in 0..3000:\n        d = insert(d, \"k\" <> int_to_string(i), i * 2)\n    print(console, int_to_string(size(d)))\n    print(console, int_to_string(get_or(d, \"k2999\", 0 - 1)))\n    print(console, int_to_string(get_or(d, \"absent\", 0 - 1)))\n    print(console, to_string(has(d, \"k1500\")))\n    d = remove(d, \"k0\")\n    print(console, int_to_string(size(d)))\n    d = insert(d, \"again\", 7)\n    print(console, int_to_string(get_or(d, \"again\", 0 - 1)))\n";
+        let want: Vec<String> = ["3000", "5998", "-1", "true", "2999", "7"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(link_run(src), want.clone(), "interpreter");
+        assert_eq!(wasm_run(src), want, "compiled WASM must agree");
+    }
+
     /// IN-PLACE DICT INSERT: `d = insert(d, k, v)` updates/appends into owned
     /// entry slack (no per-insert table copy); an aliased dict keeps the
     /// copying insert, so the alias still sees the original.

@@ -87,6 +87,9 @@ pub struct System {
 }
 
 impl System {
+    /// Test/driver entry points: production programs construct systems via
+    /// `run_program`, but tests drive actors directly.
+    #[allow(dead_code)]
     pub fn new(sigs: Vec<MessageSig>) -> Self {
         Self::new_with_kinds(speed_engine(), sigs, Vec::new())
     }
@@ -114,6 +117,7 @@ impl System {
     }
 
     /// Instantiate a compiled actor module in its own VM; returns its id.
+    #[allow(dead_code)]
     pub fn spawn(&mut self, wat: &str) -> Result<usize> {
         let module = Module::new(&self.shared.engine, crate::runtime::optimize_module(wat.as_bytes()))?;
         let (store, instance) = link_vm(&self.shared, &module)?;
@@ -528,6 +532,7 @@ fn link_vm(shared: &Shared, module: &Module) -> Result<(Store<Host>, Instance)> 
 
 impl System {
     /// Set an exported `Subject` global (e.g. a `target` field) to an actor id.
+    #[allow(dead_code)]
     pub fn set_subject(&mut self, id: usize, field: &str, target: usize) -> Result<()> {
         let mut actors = self.shared.actors.lock().unwrap();
         let (store, instance) = actors[id]
@@ -541,6 +546,7 @@ impl System {
     }
 
     /// Deliver a message to an actor by name, then run to quiescence.
+    #[allow(dead_code)]
     pub fn send(&mut self, target: usize, message: &str, arg: i32) -> Result<()> {
         let tag = self
             .shared
