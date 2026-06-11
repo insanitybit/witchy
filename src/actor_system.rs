@@ -22,6 +22,7 @@ use crate::codegen::{MessageSig, MsgField};
 #[derive(Debug, Clone)]
 enum FieldVal {
     Int(i32),
+    Float(f64),
     Str(String),
 }
 
@@ -93,6 +94,22 @@ impl System {
         linker.func_wrap("witchy", "print_int", |caller: Caller<'_, Host>, n: i64| {
             caller.data().output.lock().unwrap().push(n.to_string());
         })?;
+        // Float -> string formatting, byte-identical to the interpreter's
+        // Display (same bridge `runtime.rs` links for ordinary modules).
+        linker.func_wrap(
+            "witchy",
+            "float_to_str",
+            |mut caller: Caller<'_, Host>, x: f64, out_ptr: i32| -> Result<i32> {
+                let bytes = format!("{x}").into_bytes();
+                let mem = caller
+                    .get_export("memory")
+                    .and_then(Extern::into_memory)
+                    .ok_or_else(|| Error::msg("actor has no memory"))?;
+                mem.write(&mut caller, out_ptr as usize, &bytes)
+                    .map_err(|e| Error::msg(format!("writing float string: {e}")))?;
+                Ok(bytes.len() as i32)
+            },
+        )?;
         // The third argument is a pointer into the sender's memory to a field
         // record `[count][f0]..[fN-1]` (the list layout). The fields are
         // DECODED by the message tag's signature and copied now — an Int by
@@ -125,11 +142,13 @@ impl System {
                     let count = read(ptr)?.max(0);
                     let mut fs = Vec::with_capacity(count as usize);
                     for i in 0..count {
-                        // Each element is an 8-byte slot; the value (Int or
-                        // string pointer) is in its low 4 bytes.
-                        let slot = read(ptr + 4 + 8 * i)?;
+                        // Each element is an 8-byte slot: an Int, Subject id, or
+                        // string pointer lives in the low 4 bytes; a Float is
+                        // the full slot's f64 bits.
+                        let off = ptr + 4 + 8 * i;
                         match sig.get(i as usize) {
                             Some(MsgField::Str) => {
+                                let slot = read(off)?;
                                 let len = read(slot)?.max(0) as usize;
                                 let o = slot as usize + 4;
                                 let bytes = data
@@ -137,7 +156,16 @@ impl System {
                                     .ok_or_else(|| Error::msg("send string out of bounds"))?;
                                 fs.push(FieldVal::Str(String::from_utf8_lossy(bytes).into_owned()));
                             }
-                            _ => fs.push(FieldVal::Int(slot)),
+                            Some(MsgField::Float) => {
+                                let o = off as usize;
+                                let b = data
+                                    .get(o..o + 8)
+                                    .ok_or_else(|| Error::msg("send field out of bounds"))?;
+                                fs.push(FieldVal::Float(f64::from_le_bytes(
+                                    b.try_into().expect("8-byte slice"),
+                                )));
+                            }
+                            _ => fs.push(FieldVal::Int(read(off)?)),
                         }
                     }
                     fs
@@ -219,6 +247,7 @@ impl System {
         for f in fields.iter().take(nparams) {
             match f {
                 FieldVal::Int(n) => args.push(Val::I32(*n)),
+                FieldVal::Float(x) => args.push(Val::F64(x.to_bits())),
                 FieldVal::Str(s) => {
                     let alloc =
                         instance.get_typed_func::<i32, i32>(&mut *store, "__msg_alloc")?;
@@ -344,6 +373,32 @@ impl Introducer:
         sys.set_subject(ids["Introducer"], "printer", ids["Printer"]).unwrap();
         sys.send(ids["Introducer"], "Go", 41).unwrap();
         assert_eq!(sys.output(), vec!["shown 42"]);
+    }
+
+    /// Float message fields cross the VM boundary as the full f64 slot, and
+    /// the receiver renders them with the same host formatting bridge ordinary
+    /// modules use — arithmetic on the wire value stays exact.
+    #[test]
+    fn float_message_params_cross_vms() {
+        let src = r#"
+actor Gauge:
+    console: Console
+
+impl Gauge:
+    on Reading(x: Float):
+        print(console, to_string((x * 2.0)))
+
+actor Sensor:
+    target: Subject
+
+impl Sensor:
+    on Sample(n: Int):
+        send(target, Reading(1.25))
+"#;
+        let (mut sys, ids) = build(src);
+        sys.set_subject(ids["Sensor"], "target", ids["Gauge"]).unwrap();
+        sys.send(ids["Sensor"], "Sample", 0).unwrap();
+        assert_eq!(sys.output(), vec!["2.5"]);
     }
 
     #[test]

@@ -104,14 +104,17 @@ class) are out of scope.
 
 Tracked honestly rather than hidden:
 
-- `Result` (multi-parameter generic) `==` is a compile error, not structural —
-  instantiating both payload types needs type information codegen doesn't
-  carry yet. (Single-parameter generics like `Option` compare structurally.)
+- Generic ADT `==` (including `Result`) is structural when the payload types
+  are visible at the comparison site (declared parameter or return types,
+  constructor literals). A payload codegen cannot resolve — e.g. through an
+  unspecialized generic function, or a *recursive* generic ADT — stays a loud
+  compile error, never a silent pointer compare.
 - `spawn` inside compiled programs is host-driven (the demo scheduler), not a
-  guest-callable import yet: messages between compiled actor VMs currently
-  carry scalar fields only, and guest-initiated spawn needs a cross-VM value
-  marshaling ABI. Loud compile error, never a silent difference; the
-  interpreter runs the full actor model.
+  guest-callable import yet. Messages between compiled actor VMs carry `Int`,
+  `Float`, `String` (copied by content), and `Subject` (delegating send
+  authority) fields; compound message fields (lists, tuples, records) are a
+  loud compile error, never a silent difference. The interpreter runs the
+  full actor model.
 - The LSP has diagnostics, completion, and hover — no go-to-definition or
   rename yet.
 - No GC (see the memory model above).

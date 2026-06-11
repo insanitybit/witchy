@@ -14,11 +14,11 @@
 //! fields are erased (their authority is the host import), and each `on` handler
 //! becomes an exported function the host calls to deliver a message.
 //!
-//! `send` between compiled actors crosses the VM boundary by value: Int fields
-//! and Subject ids are copied (passing a Subject delegates send authority),
+//! `send` between compiled actors crosses the VM boundary by value: Int, Float,
+//! and Subject fields are copied (passing a Subject delegates send authority),
 //! String fields are read out of the sender and re-allocated in the receiver
-//! (`__msg_alloc`). Not yet compiled: float/compound message parameters and
-//! `spawn` from compiled code — each errors clearly.
+//! (`__msg_alloc`). Not yet compiled: compound message parameters (lists,
+//! tuples, records) and `spawn` from compiled code — each errors clearly.
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -5200,6 +5200,8 @@ pub enum MsgField {
     /// An actor id copied by value — passing a Subject in a message hands the
     /// receiver the authority to message that actor (capability delegation).
     Subject,
+    /// An f64 copied by value (the full 8-byte slot).
+    Float,
 }
 
 /// One routable message: its name and per-field wire types.
@@ -5217,8 +5219,9 @@ fn message_sig_of(h: &crate::ast::Handler) -> Result<Vec<MsgField>, CodegenError
             Some(Type::Named(t, _)) if t == "Int" => Ok(MsgField::Int),
             Some(Type::Named(t, _)) if t == "String" => Ok(MsgField::Str),
             Some(Type::Named(t, _)) if t == "Subject" => Ok(MsgField::Subject),
+            Some(Type::Named(t, _)) if t == "Float" => Ok(MsgField::Float),
             _ => cerr(format!(
-                "handler `{}` param `{}`: only Int, String, and Subject message parameters compile yet",
+                "handler `{}` param `{}`: only Int, Float, String, and Subject message parameters compile yet",
                 h.message, p.name
             )),
         })
@@ -5331,13 +5334,19 @@ fn compile_actor_with_tags(
         let sig = message_sig_of(h)?;
         let mut header = format!("  (func (export \"{}\") ", h.message);
         for (p, kind) in h.params.iter().zip(&sig) {
-            // An Int travels by value; a String param is a pointer to a
-            // `[len][bytes]` string the host re-allocated in THIS actor's
-            // memory (via `__msg_alloc`) before delivery.
-            header.push_str(&format!("(param ${} i32) ", p.name));
+            // An Int or Subject travels by value; a Float as the full f64; a
+            // String param is a pointer to a `[len][bytes]` string the host
+            // re-allocated in THIS actor's memory (`__msg_alloc`) before
+            // delivery.
+            let wasm_ty = if *kind == MsgField::Float { "f64" } else { "i32" };
+            header.push_str(&format!("(param ${} {wasm_ty}) ", p.name));
             match kind {
                 MsgField::Int => {
                     cg.local_val_types.insert(p.name.clone(), ValType::Int);
+                }
+                MsgField::Float => {
+                    cg.locals.insert(p.name.clone(), Kind::F64);
+                    cg.local_val_types.insert(p.name.clone(), ValType::Float);
                 }
                 MsgField::Str => {
                     cg.uses_msg_alloc = true;
