@@ -189,6 +189,13 @@ enum EqShape {
     /// `AdtInst("Option", [[Bits], []])` — sound for both operands because the
     /// type checker guarantees `==` operands share a type.
     AdtInst(String, Vec<Vec<EqShape>>),
+    /// A RECURSIVE generic ADT instantiation (`Stack(Int)`), identified by its
+    /// type ARGUMENT shapes rather than an expanded field tree (which would be
+    /// infinite). The helper resolves each variant's fields lazily under the
+    /// argument substitution; a self-referential field resolves to this same
+    /// shape, whose helper name is already reserved — the recursion becomes a
+    /// `call` to the helper itself.
+    AdtRec(String, Vec<EqShape>),
     /// A Dict with resolved key and value shapes. Equality is insertion-order-
     /// sensitive over the `[count][key slot][value slot]...` entries — exactly
     /// the interpreter's pairwise `Vec<(K, V)>` comparison.
@@ -217,6 +224,7 @@ impl EqShape {
                 | EqShape::Record(_)
                 | EqShape::Adt(_)
                 | EqShape::AdtInst(..)
+                | EqShape::AdtRec(..)
                 | EqShape::Dict(..)
         )
     }
@@ -240,6 +248,10 @@ impl EqShape {
                     .map(|fs| fs.iter().map(|f| f.id()).collect::<Vec<_>>().join("_"))
                     .collect();
                 format!("adti_{name}_{}_", vs.join("__"))
+            }
+            EqShape::AdtRec(name, args) => {
+                let a: Vec<String> = args.iter().map(|s| s.id()).collect();
+                format!("adtr_{name}_{}_", a.join("_"))
             }
             EqShape::Dict(k, v) => format!("dict_{}_{}", k.id(), v.id()),
         }
@@ -3467,6 +3479,11 @@ impl Codegen {
                 for v in &vars {
                     subst.entry(v.clone()).or_insert(EqShape::Int);
                 }
+                if self.adt_is_self_recursive(&tyname) {
+                    let args: Vec<EqShape> =
+                        vars.iter().filter_map(|v| subst.get(v).cloned()).collect();
+                    return Some(EqShape::AdtRec(tyname, args));
+                }
                 let inst: Option<Vec<Vec<EqShape>>> = variants
                     .iter()
                     .map(|fs| {
@@ -3512,6 +3529,23 @@ impl Codegen {
         self.eq_shape_of_type_with(ty, &HashMap::new())
     }
 
+    /// Whether the ADT's variants reference the ADT itself (directly, or nested
+    /// inside a List/Tuple/argument position) — `Push(a, Stack(a))` is.
+    fn adt_is_self_recursive(&self, name: &str) -> bool {
+        fn mentions(ty: &Type, name: &str) -> bool {
+            match ty {
+                Type::Named(n, args) => n == name || args.iter().any(|a| mentions(a, name)),
+                Type::Tuple(ts) => ts.iter().any(|t| mentions(t, name)),
+                Type::Fn(params, ret) => {
+                    params.iter().any(|p| mentions(p, name)) || mentions(ret, name)
+                }
+            }
+        }
+        self.adt_variants
+            .get(name)
+            .is_some_and(|vs| vs.iter().any(|fs| fs.iter().any(|f| mentions(f, name))))
+    }
+
     /// `eq_shape_of_type` under a type-variable substitution. A generic ADT
     /// applied to concrete arguments (`Result(Int, String)`) instantiates to an
     /// `AdtInst` by substituting its parameters (first-appearance order across
@@ -3544,10 +3578,6 @@ impl Codegen {
                 }),
                 t if self.record_fields.contains_key(t) => Some(EqShape::Record(t.to_string())),
                 t if self.adt_variants.contains_key(t) => {
-                    // A RECURSIVE generic ADT (`Push(a, Stack(a))`) has no finite
-                    // instantiated shape — its self-reference falls back to the
-                    // by-name shape (loud if a type-variable field is compared),
-                    // exactly the pre-instantiation behavior.
                     if args.is_empty() || visiting.iter().any(|v| v == t) {
                         return Some(EqShape::Adt(t.to_string()));
                     }
@@ -3559,13 +3589,22 @@ impl Codegen {
                         }
                     }
                     let mut inner: HashMap<String, EqShape> = HashMap::new();
+                    let mut arg_shapes: Vec<EqShape> = Vec::new();
                     for (pn, arg) in params.iter().zip(args) {
                         match self.eq_shape_of_type_rec(arg, subst, visiting) {
                             Some(s) => {
+                                arg_shapes.push(s.clone());
                                 inner.insert(pn.clone(), s);
                             }
                             None => return Some(EqShape::Adt(t.to_string())),
                         }
+                    }
+                    // A self-RECURSIVE generic ADT (`Push(a, Stack(a))`) has no
+                    // finite expanded shape: identify it by its arguments. The
+                    // helper expands one level lazily; the self-reference calls
+                    // the same helper.
+                    if self.adt_is_self_recursive(t) {
+                        return Some(EqShape::AdtRec(t.to_string(), arg_shapes));
                     }
                     visiting.push(t.to_string());
                     let inst: Option<Vec<Vec<EqShape>>> = variants
@@ -3733,6 +3772,56 @@ impl Codegen {
                         let off = 4 + 8 * i;
                         let cmp = self.slot_cmp(
                             fshape,
+                            &format!("(i32.add (local.get $a) (i32.const {off}))"),
+                            &format!("(i32.add (local.get $b) (i32.const {off}))"),
+                        )?;
+                        checks.push_str(&format!("      (if (i32.eqz {cmp}) (then (return (i32.const 0))))\n"));
+                    }
+                    arms.push_str(&format!(
+                        "    (if (i32.eq (local.get $t) (i32.const {tag})) (then\n{checks}      (return (i32.const 1))))\n"
+                    ));
+                }
+                format!(
+                    "  (func ${name} (param $a i32) (param $b i32) (result i32)\n    \
+                     (local $t i32)\n    \
+                     (if (i32.ne (i32.load (local.get $a)) (i32.load (local.get $b))) (then (return (i32.const 0))))\n    \
+                     (local.set $t (i32.load (local.get $a)))\n{arms}    \
+                     (i32.const 1))\n"
+                )
+            }
+            EqShape::AdtRec(tyname, arg_shapes) => {
+                // A recursive generic instantiation: expand ONE level of each
+                // variant's fields under the argument substitution. The
+                // self-referential field resolves back to this same shape, whose
+                // helper name is already reserved — so its slot comparison is a
+                // recursive call to this very function.
+                let variants = self.adt_variants.get(tyname).cloned().ok_or_else(|| {
+                    CodegenError { message: format!("unknown type `{tyname}` in `==`") }
+                })?;
+                let mut params: Vec<String> = Vec::new();
+                for fields in &variants {
+                    for f in fields {
+                        collect_type_vars(f, &mut params);
+                    }
+                }
+                let subst: HashMap<String, EqShape> =
+                    params.iter().cloned().zip(arg_shapes.iter().cloned()).collect();
+                let mut arms = String::new();
+                for (tag, fields) in variants.iter().enumerate() {
+                    if fields.is_empty() {
+                        continue;
+                    }
+                    let mut checks = String::new();
+                    for (i, fty) in fields.iter().enumerate() {
+                        let off = 4 + 8 * i;
+                        let fshape =
+                            self.eq_shape_of_type_with(fty, &subst).ok_or_else(|| CodegenError {
+                                message: format!(
+                                    "cannot compare `{tyname}` with `==`: a field of variant {tag} has an unresolved type"
+                                ),
+                            })?;
+                        let cmp = self.slot_cmp(
+                            &fshape,
                             &format!("(i32.add (local.get $a) (i32.const {off}))"),
                             &format!("(i32.add (local.get $b) (i32.const {off}))"),
                         )?;

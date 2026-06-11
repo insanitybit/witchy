@@ -5517,6 +5517,22 @@ fn yn(b: Bool) -> String:
         assert_eq!(wasm_run(src), want, "compiled WASM must agree");
     }
 
+    /// A RECURSIVE generic ADT (`Stack(a)`, whose `Push` carries a `Stack(a)`)
+    /// compares structurally on both backends: the shape is identified by its
+    /// type arguments and the generated helper calls itself for the
+    /// self-referential field — deep spines compare by content, through
+    /// literals, declared parameter types, and nullary constructors.
+    #[test]
+    fn recursive_generic_adt_equality_agrees_on_both_backends() {
+        let src = "type Stack:\n    Empty\n    Push(a, Stack(a))\n\nfn same(s: Stack(Int), t: Stack(Int)) -> Bool:\n    s == t\n\nfn main(console: Console):\n    print(console, to_string(Push(2, Push(1, Empty)) == Push(2, Push(1, Empty))))\n    print(console, to_string(Push(2, Push(1, Empty)) == Push(2, Push(9, Empty))))\n    print(console, to_string(Push(\"b\", Push(\"a\", Empty)) == Push(\"b\", Push(\"a\", Empty))))\n    print(console, to_string(Push(\"b\", Push(\"a\", Empty)) == Push(\"b\", Push(\"z\", Empty))))\n    print(console, to_string(same(Push(1, Empty), Push(1, Empty))))\n    print(console, to_string(same(Push(1, Empty), Empty)))\n";
+        let want: Vec<String> = ["true", "false", "true", "false", "true", "false"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(link_run(src), want.clone(), "interpreter");
+        assert_eq!(wasm_run(src), want, "compiled WASM must agree");
+    }
+
     /// The boundary of structural equality stays LOUD: a generic ADT whose
     /// payload is unresolvable at the comparison site (a generic function's
     /// `Result(a, String)` return, with a non-primitive `a` the monomorphizer
