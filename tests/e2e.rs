@@ -2116,3 +2116,127 @@ fn witchy_pm_add_resolves_transitive_dependencies() {
         "verify-vendor must re-verify the whole tree offline: {vverify_out:?}"
     );
 }
+
+/// The witchy pm's LOCAL lifecycle, end to end and offline: scaffold two runes
+/// (`new`), wire a path dependency, pin it (`lock`), confirm the pin (`verify`)
+/// and the authority baseline (`gate`) — then tamper with the dependency so it
+/// also demands `Net`, and watch `verify` flag the changed bytes (exit 2),
+/// `gate` block the widened authority (exit 2, naming Net and its contributor),
+/// and an explicit `gate <dir> Net` consent admit it (exit 0). This is the
+/// self-hosted twin of the Rust PM's lock/verify/gate e2e coverage.
+#[test]
+fn witchy_pm_local_lifecycle_new_lock_verify_gate() {
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let pm_src = format!("{manifest_dir}/projects/pm/src/pm.witchy");
+    let work = unique("witchy-pm-local");
+    let pm = |args: &[&str]| {
+        let mut full = vec![pm_src.as_str()];
+        full.extend_from_slice(args);
+        Command::new(BIN)
+            .args(&full)
+            .current_dir(&work)
+            .output()
+            .expect("run pm")
+    };
+
+    // Scaffold the app and its dependency, then declare the path dep.
+    let new_app = pm(&["new", "app"]);
+    let new_util = pm(&["new", "util"]);
+    assert!(
+        new_app.status.success() && stdout(&new_app).contains("created rune `app`"),
+        "pm new app: {:?} / {:?}",
+        stdout(&new_app),
+        stderr(&new_app)
+    );
+    assert!(new_util.status.success(), "pm new util: {:?}", stderr(&new_util));
+    let manifest_path = work.join("app/witchy.toml");
+    let manifest = std::fs::read_to_string(&manifest_path).unwrap();
+    std::fs::write(
+        &manifest_path,
+        manifest.replace("[dependencies]\n", "[dependencies]\nutil = { path = \"../util\" }\n"),
+    )
+    .unwrap();
+
+    // info + deps see the declared dependency.
+    let info = pm(&["info", "app"]);
+    assert!(
+        stdout(&info).contains("name:     app") && stdout(&info).contains("version:  0.1.0"),
+        "pm info: {:?}",
+        stdout(&info)
+    );
+    let deps = pm(&["deps", "app"]);
+    assert!(
+        stdout(&deps).contains("util -> path:../util"),
+        "pm deps must show the path dep: {:?}",
+        stdout(&deps)
+    );
+
+    // lock pins the dependency; verify and gate agree with the fresh pin.
+    let lock = pm(&["lock", "app"]);
+    assert!(
+        lock.status.success() && stdout(&lock).contains("locked 1 dependencies"),
+        "pm lock: {:?} / {:?}",
+        stdout(&lock),
+        stderr(&lock)
+    );
+    let lockfile = std::fs::read_to_string(work.join("app/witchy.lock")).unwrap();
+    assert!(
+        lockfile.contains("name = \"util\"") && lockfile.contains("hash = \"sha256:"),
+        "the lockfile must pin util by content hash: {lockfile:?}"
+    );
+    let verify_ok = pm(&["verify", "app"]);
+    assert!(
+        verify_ok.status.success()
+            && stdout(&verify_ok).contains("OK: every locked hash matches"),
+        "pm verify on a fresh lock: {:?}",
+        stdout(&verify_ok)
+    );
+    let gate_ok = pm(&["gate", "app"]);
+    assert!(
+        gate_ok.status.success() && stdout(&gate_ok).contains("OK: dependencies demand no authority"),
+        "pm gate on a fresh lock: {:?}",
+        stdout(&gate_ok)
+    );
+
+    // Tamper: the dependency now also demands Net.
+    std::fs::write(
+        work.join("util/src/util.witchy"),
+        "fn main(console: Console):\n    print(console, \"hello from util\")\n\npub fn fetch(net: Net) -> Int:\n    0\n",
+    )
+    .unwrap();
+    let verify_bad = pm(&["verify", "app"]);
+    assert_eq!(
+        verify_bad.status.code(),
+        Some(2),
+        "verify must exit 2 on changed bytes: {:?}",
+        stdout(&verify_bad)
+    );
+    assert!(
+        stdout(&verify_bad).contains("BLOCK: lock no longer matches source for: util"),
+        "verify must name the tampered dep: {:?}",
+        stdout(&verify_bad)
+    );
+    let gate_bad = pm(&["gate", "app"]);
+    assert_eq!(
+        gate_bad.status.code(),
+        Some(2),
+        "gate must exit 2 on widened authority: {:?}",
+        stdout(&gate_bad)
+    );
+    assert!(
+        stdout(&gate_bad).contains("BLOCK: dependencies demand new authority: Net")
+            && stdout(&gate_bad).contains("Net <- util"),
+        "gate must name the new capability and its contributor: {:?}",
+        stdout(&gate_bad)
+    );
+
+    // Explicit consent (like --allow-cap) folds Net into the baseline.
+    let gate_allowed = pm(&["gate", "app", "Net"]);
+    let _ = std::fs::remove_dir_all(&work);
+    assert!(
+        gate_allowed.status.success()
+            && stdout(&gate_allowed).contains("OK: dependencies demand no authority"),
+        "gate with Net consented must pass: {:?}",
+        stdout(&gate_allowed)
+    );
+}
