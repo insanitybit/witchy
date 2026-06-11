@@ -505,6 +505,26 @@ impl Caller:
         );
     }
 
+    /// Float STATE is a real (mut f64) global: it persists across messages and
+    /// accumulates with f64 arithmetic.
+    #[test]
+    fn float_state_fields_accumulate_across_messages() {
+        let src = r#"
+actor Tally:
+    console: Console
+    var total: Float = 0.5
+
+impl Tally:
+    on Bump(n: Int):
+        total = (total + 1.25)
+        print(console, to_string(total))
+"#;
+        let (mut sys, ids) = build(src);
+        sys.send(ids["Tally"], "Bump", 0).unwrap();
+        sys.send(ids["Tally"], "Bump", 0).unwrap();
+        assert_eq!(sys.output(), vec!["1.75", "3"]);
+    }
+
     #[test]
     fn multi_field_and_zero_field_messages() {
         // Messages now carry any number of Int fields across the VM boundary

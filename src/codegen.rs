@@ -2242,7 +2242,10 @@ impl Codegen {
                     let vk = self.kind_of(value);
                     out.push_str(&self.compile_expr(value)?);
                     if self.globals.contains(name) {
-                        out.push_str(kind_convert(vk, Kind::I32));
+                        // An Int/Subject global is i32; a Float field's f64 kind
+                        // is registered in `locals`.
+                        let target = self.locals.get(name).copied().unwrap_or(Kind::I32);
+                        out.push_str(kind_convert(vk, target));
                         out.push_str(&format!("    global.set ${name}\n"));
                     } else {
                         let target = self.locals.get(name).copied().unwrap_or(Kind::I32);
@@ -3084,13 +3087,10 @@ impl Codegen {
         // tables are swapped out for the lambda body).
         let mut cap_info: Vec<CaptureInfo> = Vec::new();
         for c in &captures {
-            // A global (actor field) is i32; a local keeps its kind so an Int
-            // capture survives as i64 in its 8-byte env slot.
-            let kind = if self.globals.contains(c) {
-                Kind::I32
-            } else {
-                self.locals.get(c).copied().unwrap_or(Kind::I32)
-            };
+            // A capture keeps its registered kind: an Int local survives as
+            // i64 in its 8-byte env slot, a Float field (a global whose f64
+            // kind lives in `locals`) as f64; other globals are i32.
+            let kind = self.locals.get(c).copied().unwrap_or(Kind::I32);
             cap_info.push((
                 c.clone(),
                 self.globals.contains(c),
@@ -5370,9 +5370,37 @@ fn compile_actor_with_tags(
             str_field_inits.push((idx, init_off));
             continue;
         }
+        // A Float field is a real (mut f64) global — floats are values, so no
+        // host cell is needed. Its kind registers in `locals` so reads,
+        // assignments, and captures convert at f64.
+        if tname == "Float" {
+            let init = match &field.init {
+                Some(Expr::Float(x)) => *x,
+                Some(_) => {
+                    return cerr(format!(
+                        "field `{}`: initializer must be a Float literal",
+                        field.name
+                    ))
+                }
+                None => {
+                    return cerr(format!(
+                        "field `{}`: Float state needs an initializer in codegen",
+                        field.name
+                    ))
+                }
+            };
+            cg.globals.insert(field.name.clone());
+            cg.locals.insert(field.name.clone(), Kind::F64);
+            cg.local_val_types.insert(field.name.clone(), ValType::Float);
+            state_globals.push_str(&format!(
+                "  (global ${} (mut f64) (f64.const {init}))\n",
+                field.name
+            ));
+            continue;
+        }
         if tname != "Int" {
             return cerr(format!(
-                "actor field `{}`: only Int, String, and capability fields compile yet",
+                "actor field `{}`: only Int, Float, String, and capability fields compile yet",
                 field.name
             ));
         }
