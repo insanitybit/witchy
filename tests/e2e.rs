@@ -2240,3 +2240,107 @@ fn witchy_pm_local_lifecycle_new_lock_verify_gate() {
         stdout(&gate_allowed)
     );
 }
+
+/// Registry guardrails in the **witchy** coven, over real HTTP: promote and
+/// yank of a never-published version are 404s; re-publishing a released
+/// version is refused 409 (immutability); and promote reports the rights-
+/// precise `delta_runtime` against the latest released version — a first
+/// release's delta is its whole footprint, an upgrade's delta names only the
+/// NEW authority.
+#[test]
+fn witchy_coven_promote_delta_immutability_and_error_paths() {
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let coven_src = format!("{manifest_dir}/projects/coven/src/coven.witchy");
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let addr = format!("127.0.0.1:{port}");
+    let store = unique("witchy-coven-guard");
+    let seed = store.join("root.seed");
+    std::fs::write(
+        &seed,
+        "0000000000000000000000000000000000000000000000000000000000000001",
+    )
+    .unwrap();
+    let mut server = Command::new(BIN)
+        .args(["--net", &addr, "--signing-key", seed.to_str().unwrap(), &coven_src, &addr])
+        .current_dir(&store)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn witchy coven");
+    let mut up = false;
+    for _ in 0..80 {
+        if std::net::TcpStream::connect(&addr).is_ok() {
+            up = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    if !up {
+        let _ = server.kill();
+        let _ = server.wait();
+        panic!("witchy coven never started on {addr}");
+    }
+
+    let publish = |version: &str, declared: &str, module: &str| {
+        let manifest = format!(
+            "[rune]\nname = \"acme/widget\"\nversion = \"{version}\"\n\n[capabilities]\nruntime = [{declared}]\n"
+        );
+        let source = format!(
+            "{{\"files\":[[\"witchy.toml\",{}],[\"src/widget.witchy\",{}]]}}",
+            json_str(&manifest),
+            json_str(module)
+        );
+        let body = format!(
+            "{{\"manifest_toml\":{},\"source\":{source},\"uploaded_by\":\"ci\"}}",
+            json_str(&manifest)
+        );
+        http_post(&addr, "/coven/publish", &body)
+    };
+    let promote = |version: &str| {
+        let body = format!(
+            "{{\"name\":\"acme~widget\",\"version\":\"{version}\",\"second_factor\":\"webauthn\",\"promoted_by\":\"human\"}}"
+        );
+        http_post(&addr, "/coven/promote", &body)
+    };
+
+    // Error paths first: nothing is published yet.
+    let ghost_promote = promote("9.9.9");
+    let ghost_yank =
+        http_post(&addr, "/coven/yank", "{\"name\":\"acme~widget\",\"version\":\"9.9.9\"}");
+    // First release: the delta against an empty baseline is the whole footprint.
+    let console_module = "pub fn run(console: Console):\n    print(console, \"hi\")\n";
+    let pub_v1 = publish("1.0.0", "\"Console\"", console_module);
+    let promote_v1 = promote("1.0.0");
+    // Immutability: the released version cannot be re-published.
+    let republish = publish("1.0.0", "\"Console\"", console_module);
+    // An upgrade that widens: only the NEW authority appears in the delta.
+    let net_module = "pub fn run(console: Console):\n    print(console, \"hi\")\n\npub fn fetch(net: Net) -> Int:\n    0\n";
+    let pub_v2 = publish("1.1.0", "\"Console\", \"Net\"", net_module);
+    let promote_v2 = promote("1.1.0");
+
+    let _ = server.kill();
+    let _ = server.wait();
+    let _ = std::fs::remove_dir_all(&store);
+
+    assert_eq!(ghost_promote.0, 404, "promote of a never-published version: {}", ghost_promote.1);
+    assert_eq!(ghost_yank.0, 404, "yank of a never-published version: {}", ghost_yank.1);
+    assert_eq!(pub_v1.0, 200, "publish 1.0.0: {}", pub_v1.1);
+    assert_eq!(promote_v1.0, 200, "promote 1.0.0: {}", promote_v1.1);
+    assert!(
+        promote_v1.1.contains("\"delta_runtime\":[\"Console\"]"),
+        "first release delta must be its whole footprint: {}",
+        promote_v1.1
+    );
+    assert_eq!(republish.0, 409, "re-publishing a version must be refused: {}", republish.1);
+    assert_eq!(pub_v2.0, 200, "publish 1.1.0: {}", pub_v2.1);
+    assert_eq!(promote_v2.0, 200, "promote 1.1.0: {}", promote_v2.1);
+    assert!(
+        promote_v2.1.contains("\"delta_runtime\":[\"Net\"]"),
+        "an upgrade's delta must name only the NEW authority: {}",
+        promote_v2.1
+    );
+}

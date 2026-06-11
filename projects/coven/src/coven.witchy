@@ -18,6 +18,7 @@ import compiler
 import crypto
 import fs
 import toml
+import semver
 import string
 import rights
 
@@ -539,10 +540,28 @@ fn all_names(store: Dir) -> List(String):
                 out = push(out, ns <> "/" <> nm)
     out
 
-// The latest released version's footprint (for the promote delta) — Phase A keeps
-// it simple: the empty baseline, so the delta is everything the release exposes.
+// The runtime footprint of the highest RELEASED version other than the one
+// being promoted — the baseline the promote delta is computed against, so an
+// upgrade's delta names only the authority that is actually NEW. Empty when
+// this is the rune's first release.
 fn latest_released_footprint(store: Dir, name: String, version: String) -> List(String):
-    []
+    var best = ""
+    for v in versions_of(store, name):
+        if v != version && record_field(store, name, v, "state") == "released":
+            if string.is_empty(best) || version_newer(v, best):
+                best = v
+    if string.is_empty(best):
+        []
+    else:
+        record_array(store, name, best, "runtime_footprint")
+
+fn version_newer(a: String, b: String) -> Bool:
+    match semver.parse(a):
+        Ok(va) ->
+            match semver.parse(b):
+                Ok(vb) -> semver.compare(va, vb) > 0
+                Err(_e) -> true
+        Err(_e) -> false
 
 // --- reading record fields ---------------------------------------------------
 fn record_field(store: Dir, name: String, version: String, field: String) -> String:
