@@ -468,6 +468,11 @@ struct Codegen {
     uses_str_append_cap: bool,
     /// Whether the `$dict_insert_cap` helper is needed.
     uses_dict_insert_cap: bool,
+    /// Memoized per-shape region copy-out helpers (`$rcopy_<shape>`), the
+    /// same family pattern as `eq_helpers`/`ts_helpers`.
+    rcopy_helpers: std::collections::BTreeMap<String, String>,
+    /// Whether any `region:` block emitted reclamation machinery.
+    uses_region: bool,
     /// Current loop-watermark nesting depth (see WM_POOL).
     wm_level: usize,
     /// Whether any loop emitted a watermark reset (forces the heap global).
@@ -776,6 +781,8 @@ impl Codegen {
             uses_list_push_cap: false,
             uses_str_append_cap: false,
             uses_dict_insert_cap: false,
+            rcopy_helpers: std::collections::BTreeMap::new(),
+            uses_region: false,
             wm_level: 0,
             uses_wm: false,
             uses_compiler_footprint: false,
@@ -1775,6 +1782,7 @@ impl Codegen {
             || self.uses_str_append_cap
             || self.uses_dict_insert_cap
             || self.uses_wm
+            || self.uses_region
             || self.uses_compiler_footprint
             || self.uses_compiler_diff
             || self.uses_float_to_str
@@ -1990,6 +1998,15 @@ impl Codegen {
                 "  (global $heap (mut i32) (i32.const {}))\n",
                 self.next_offset
             ));
+        }
+        if self.uses_region {
+            // Copy-out scratch: the region watermark, the temp-copy base, and
+            // the slide delta (temp base - watermark); plus the observable
+            // copied-bytes counter (Phase 3 of docs/regions.md).
+            s.push_str("  (global $rcopy_wm (mut i32) (i32.const 0))\n");
+            s.push_str("  (global $rcopy_base (mut i32) (i32.const 0))\n");
+            s.push_str("  (global $rcopy_delta (mut i32) (i32.const 0))\n");
+            s.push_str("  (global $__region_copy_bytes (export \"__region_copy_bytes\") (mut i64) (i64.const 0))\n");
         }
         s.push_str(extra_globals);
         if self.need_heap() {
@@ -2799,6 +2816,7 @@ impl Codegen {
                     )),
                 }
             }
+            Expr::Block(b) if b.region.is_some() => self.compile_region(b),
             Expr::Block(b) => self.compile_block(b),
             Expr::While { cond, body } => {
                 let id = self.next_label;
@@ -3718,6 +3736,288 @@ impl Codegen {
         }
     }
 
+
+    /// Compile a `region:` block (docs/regions.md Phase 2): capture a
+    /// watermark, run the body, deep-copy the value's region-born bytes down
+    /// to the watermark, and reset the heap past the compacted copy.
+    ///
+    /// The copy runs ABOVE the live data with every stored pointer
+    /// pre-biased by the slide delta, then one overlap-safe `memory.copy`
+    /// moves the finished block to the watermark — no forwarding pointers,
+    /// no GC machinery. Values already below the watermark (parent data,
+    /// interned literals) are shared, not copied. If the watermark pool is
+    /// exhausted the block compiles plainly — a region never changes
+    /// behavior, only when memory is reclaimed.
+    fn compile_region(&mut self, b: &Block) -> Result<String, CodegenError> {
+        if self.wm_level >= WM_POOL {
+            return self.compile_block(b);
+        }
+        let ann = b.region.as_ref().and_then(|r| r.ty.clone());
+        let shape = match &ann {
+            Some(t) => self.eq_shape_of_type(t),
+            None => match b.stmts.last() {
+                Some(Stmt::Expr(tail)) => self.eq_operand_shape(tail),
+                _ => None,
+            },
+        };
+        let wm = format!("__witchy_wm_{}", self.wm_level);
+        self.wm_level += 1;
+        self.uses_wm = true;
+        let body = self.compile_block(b);
+        self.wm_level -= 1;
+        let body = body?;
+        let capture = format!("    global.get $heap\n    local.set ${wm}\n");
+        let reset = format!("    local.get ${wm}\n    global.set $heap\n");
+        match shape {
+            // A scalar value lives on the operand stack: reset and done.
+            Some(EqShape::Int | EqShape::Bool | EqShape::Float) => {
+                Ok(format!("{capture}{body}{reset}"))
+            }
+            Some(shape) => {
+                let helper = self.ensure_rcopy_helper(&shape)?;
+                self.uses_region = true;
+                Ok(format!(
+                    "{capture}{body}\
+                     local.get ${wm}\n    global.set $rcopy_wm\n    \
+                     global.get $heap\n    global.set $rcopy_base\n    \
+                     global.get $heap\n    local.get ${wm}\n    i32.sub\n    global.set $rcopy_delta\n    \
+                     call ${helper}\n    \
+                     local.get ${wm}\n    global.get $rcopy_base\n    global.get $heap\n    global.get $rcopy_base\n    i32.sub\n    memory.copy\n    \
+                     local.get ${wm}\n    global.get $heap\n    global.get $rcopy_base\n    i32.sub\n    i32.add\n    global.set $heap\n"
+                ))
+            }
+            None => match self.block_kind(b) {
+                Kind::I64 | Kind::F64 => Ok(format!("{capture}{body}{reset}")),
+                _ => cerr(
+                    "cannot determine the `region:` value's shape for the copy-out — ascribe it: `region -> T:`",
+                ),
+            },
+        }
+    }
+
+    /// The i64 to store at a copied-out slot, given the SOURCE slot address:
+    /// scalars verbatim, pointer shapes through their (biased) copy helper.
+    fn slot_rcopy(&mut self, shape: &EqShape, src: &str) -> Result<String, CodegenError> {
+        Ok(match shape {
+            EqShape::Int | EqShape::Bool | EqShape::Float => format!("(i64.load {src})"),
+            compound => {
+                let h = self.ensure_rcopy_helper(compound)?;
+                format!("(i64.extend_i32_u (call ${h} (i32.wrap_i64 (i64.load {src}))))")
+            }
+        })
+    }
+
+    /// Ensure the region copy-out helper for `shape` exists and return its
+    /// name. Every helper: parent short-circuit, allocate at the temp base,
+    /// fill (recursing per slot shape), count the bytes, and return the
+    /// pointer PRE-BIASED to its post-slide address.
+    fn ensure_rcopy_helper(&mut self, shape: &EqShape) -> Result<String, CodegenError> {
+        let name = format!("rcopy_{}", shape.id());
+        if self.rcopy_helpers.contains_key(&name) {
+            return Ok(name);
+        }
+        self.rcopy_helpers.insert(name.clone(), String::new()); // reserve (cycles)
+        let prologue = "    (if (i32.lt_u (local.get $p) (global.get $rcopy_wm)) (then (return (local.get $p))))\n";
+        let alloc = |size_expr: &str| {
+            format!(
+                "    (local.set $size {size_expr})\n    \
+                 (call $ensure (local.get $size))\n    \
+                 (local.set $n (global.get $heap))\n    \
+                 (global.set $heap (i32.add (local.get $n) (local.get $size)))\n    \
+                 (global.set $__region_copy_bytes (i64.add (global.get $__region_copy_bytes) (i64.extend_i32_u (local.get $size))))\n"
+            )
+        };
+        let ret_biased = "    (i32.sub (local.get $n) (global.get $rcopy_delta)))\n";
+        let body = match shape {
+            EqShape::Int | EqShape::Bool | EqShape::Float => {
+                unreachable!("scalar shapes never get copy helpers")
+            }
+            EqShape::Str => format!(
+                "  (func ${name} (param $p i32) (result i32)\n    (local $n i32) (local $size i32)\n{prologue}{}    \
+                 (memory.copy (local.get $n) (local.get $p) (local.get $size))\n{ret_biased}",
+                alloc("(i32.add (i32.const 4) (i32.load (local.get $p)))")
+            ),
+            EqShape::List(elem) => {
+                let header = format!(
+                    "  (func ${name} (param $p i32) (result i32)\n    (local $n i32) (local $size i32) (local $i i32) (local $len i32)\n{prologue}    \
+                     (local.set $len (i32.load (local.get $p)))\n{}",
+                    alloc("(i32.add (i32.const 4) (i32.mul (i32.load (local.get $p)) (i32.const 8)))")
+                );
+                if matches!(**elem, EqShape::Int | EqShape::Bool | EqShape::Float) {
+                    // Scalar payload: one straight copy.
+                    format!(
+                        "{header}    (memory.copy (local.get $n) (local.get $p) (local.get $size))\n{ret_biased}"
+                    )
+                } else {
+                    let slot = self.slot_rcopy(
+                        elem,
+                        "(i32.add (i32.add (local.get $p) (i32.const 4)) (i32.mul (local.get $i) (i32.const 8)))",
+                    )?;
+                    format!(
+                        "{header}    (i32.store (local.get $n) (local.get $len))\n    \
+                         (local.set $i (i32.const 0))\n    \
+                         (block $done (loop $l\n      \
+                         (br_if $done (i32.ge_s (local.get $i) (local.get $len)))\n      \
+                         (i64.store (i32.add (i32.add (local.get $n) (i32.const 4)) (i32.mul (local.get $i) (i32.const 8))) {slot})\n      \
+                         (local.set $i (i32.add (local.get $i) (i32.const 1)))\n      (br $l)))\n{ret_biased}"
+                    )
+                }
+            }
+            EqShape::Tuple(shapes) => {
+                let nslots = shapes.len();
+                let mut fills =
+                    String::from("    (i32.store (local.get $n) (i32.load (local.get $p)))\n");
+                for (i, fs) in shapes.iter().enumerate() {
+                    let off = 4 + 8 * i;
+                    let slot = self.slot_rcopy(
+                        fs,
+                        &format!("(i32.add (local.get $p) (i32.const {off}))"),
+                    )?;
+                    fills.push_str(&format!(
+                        "    (i64.store (i32.add (local.get $n) (i32.const {off})) {slot})\n"
+                    ));
+                }
+                format!(
+                    "  (func ${name} (param $p i32) (result i32)\n    (local $n i32) (local $size i32)\n{prologue}{}{fills}{ret_biased}",
+                    alloc(&format!("(i32.const {})", 4 + 8 * nslots))
+                )
+            }
+            EqShape::Record(tyname) => {
+                let fields = self.record_field_types.get(tyname).cloned().ok_or_else(|| {
+                    CodegenError { message: format!("unknown record `{tyname}` in a region copy") }
+                })?;
+                let mut shapes = Vec::new();
+                for (i, fty) in fields.iter().enumerate() {
+                    shapes.push(self.eq_shape_of_type(fty).ok_or_else(|| CodegenError {
+                        message: format!(
+                            "a `region:` returning `{tyname}` needs a copyable field type (field {})",
+                            i + 1
+                        ),
+                    })?);
+                }
+                return self.rcopy_variant_body(&name, &[shapes]);
+            }
+            EqShape::Adt(tyname) => {
+                let variants = self.adt_variants.get(tyname).cloned().ok_or_else(|| {
+                    CodegenError { message: format!("unknown type `{tyname}` in a region copy") }
+                })?;
+                let mut all = Vec::new();
+                for fs in &variants {
+                    let mut shapes = Vec::new();
+                    for f in fs {
+                        shapes.push(self.eq_shape_of_type(f).ok_or_else(|| CodegenError {
+                            message: format!(
+                                "a `region:` returning `{tyname}` has a field whose shape is unresolved — ascribe the region (`region -> T:`)"
+                            ),
+                        })?);
+                    }
+                    all.push(shapes);
+                }
+                return self.rcopy_variant_body(&name, &all);
+            }
+            EqShape::AdtInst(_, variant_shapes) => {
+                let all = variant_shapes.clone();
+                return self.rcopy_variant_body(&name, &all);
+            }
+            EqShape::AdtRec(tyname, args) => {
+                let variants = self.adt_variants.get(tyname).cloned().ok_or_else(|| {
+                    CodegenError { message: format!("unknown type `{tyname}` in a region copy") }
+                })?;
+                let mut params: Vec<String> = Vec::new();
+                for fields in &variants {
+                    for f in fields {
+                        collect_type_vars(f, &mut params);
+                    }
+                }
+                let subst: HashMap<String, EqShape> =
+                    params.iter().cloned().zip(args.iter().cloned()).collect();
+                let mut all = Vec::new();
+                for fs in &variants {
+                    let mut shapes = Vec::new();
+                    for f in fs {
+                        shapes.push(self.eq_shape_of_type_with(f, &subst).ok_or_else(|| {
+                            CodegenError {
+                                message: format!(
+                                    "a `region:` returning `{tyname}` has an unresolved field shape — ascribe the region"
+                                ),
+                            }
+                        })?);
+                    }
+                    all.push(shapes);
+                }
+                return self.rcopy_variant_body(&name, &all);
+            }
+            EqShape::Dict(k, v) => {
+                let kslot = self.slot_rcopy(
+                    k,
+                    "(i32.add (i32.add (local.get $p) (i32.const 4)) (i32.mul (local.get $i) (i32.const 16)))",
+                )?;
+                let vslot = self.slot_rcopy(
+                    v,
+                    "(i32.add (i32.add (local.get $p) (i32.const 12)) (i32.mul (local.get $i) (i32.const 16)))",
+                )?;
+                // The hidden index word is written 0: the source index points
+                // region-side and must not survive; it rebuilds on the next
+                // owned growth.
+                format!(
+                    "  (func ${name} (param $p i32) (result i32)\n    (local $n i32) (local $size i32) (local $i i32) (local $len i32)\n{prologue}    \
+                     (local.set $len (i32.load (local.get $p)))\n{}    \
+                     (i32.store (local.get $n) (i32.const 0))\n    \
+                     (i32.store (i32.add (local.get $n) (i32.const 4)) (local.get $len))\n    \
+                     (local.set $i (i32.const 0))\n    \
+                     (block $done (loop $l\n      \
+                     (br_if $done (i32.ge_s (local.get $i) (local.get $len)))\n      \
+                     (i64.store (i32.add (i32.add (local.get $n) (i32.const 8)) (i32.mul (local.get $i) (i32.const 16))) {kslot})\n      \
+                     (i64.store (i32.add (i32.add (local.get $n) (i32.const 16)) (i32.mul (local.get $i) (i32.const 16))) {vslot})\n      \
+                     (local.set $i (i32.add (local.get $i) (i32.const 1)))\n      (br $l)))\n    \
+                     (i32.sub (i32.add (local.get $n) (i32.const 4)) (global.get $rcopy_delta)))\n",
+                    alloc("(i32.add (i32.const 8) (i32.mul (i32.load (local.get $p)) (i32.const 16)))")
+                )
+            }
+        };
+        self.rcopy_helpers.insert(name.clone(), body);
+        Ok(name)
+    }
+
+    /// The shared `[header][slots]` copy body for tuples-with-tags: records
+    /// (single variant) and ADTs (tag-dispatched variants).
+    fn rcopy_variant_body(
+        &mut self,
+        name: &str,
+        variants: &[Vec<EqShape>],
+    ) -> Result<String, CodegenError> {
+        let prologue = "    (if (i32.lt_u (local.get $p) (global.get $rcopy_wm)) (then (return (local.get $p))))\n";
+        let mut arms = String::new();
+        for (tag, shapes) in variants.iter().enumerate() {
+            let size = 4 + 8 * shapes.len();
+            let mut fills = String::new();
+            for (i, fs) in shapes.iter().enumerate() {
+                let off = 4 + 8 * i;
+                let slot = self
+                    .slot_rcopy(fs, &format!("(i32.add (local.get $p) (i32.const {off}))"))?;
+                fills.push_str(&format!(
+                    "      (i64.store (i32.add (local.get $n) (i32.const {off})) {slot})\n"
+                ));
+            }
+            arms.push_str(&format!(
+                "    (if (i32.eq (local.get $t) (i32.const {tag})) (then\n      \
+                 (local.set $size (i32.const {size}))\n      \
+                 (call $ensure (local.get $size))\n      \
+                 (local.set $n (global.get $heap))\n      \
+                 (global.set $heap (i32.add (local.get $n) (local.get $size)))\n      \
+                 (global.set $__region_copy_bytes (i64.add (global.get $__region_copy_bytes) (i64.extend_i32_u (local.get $size))))\n      \
+                 (i32.store (local.get $n) (local.get $t))\n{fills}      \
+                 (return (i32.sub (local.get $n) (global.get $rcopy_delta)))))\n"
+            ));
+        }
+        let body = format!(
+            "  (func ${name} (param $p i32) (result i32)\n    (local $n i32) (local $size i32) (local $t i32)\n{prologue}    \
+             (local.set $t (i32.load (local.get $p)))\n{arms}    (unreachable))\n"
+        );
+        self.rcopy_helpers.insert(name.to_string(), body);
+        Ok(name.to_string())
+    }
+
     fn eq_shape_of(&self, e: &Expr) -> Option<EqShape> {
         // A `let`-bound compound whose shape was captured at binding time (the
         // authoritative resolution of its RHS) — resolves slots-of-compounds the
@@ -3962,6 +4262,13 @@ impl Codegen {
                     self.eq_shape_of_type_rec(inner, subst, visiting)
                         .map(|s| EqShape::List(Box::new(s)))
                 }),
+                "Dict" => match args.as_slice() {
+                    [k, v] => Some(EqShape::Dict(
+                        Box::new(self.eq_shape_of_type_rec(k, subst, visiting)?),
+                        Box::new(self.eq_shape_of_type_rec(v, subst, visiting)?),
+                    )),
+                    _ => None,
+                },
                 t if self.record_fields.contains_key(t) => Some(EqShape::Record(t.to_string())),
                 t if self.adt_variants.contains_key(t) => {
                     if args.is_empty() || visiting.iter().any(|v| v == t) {
@@ -5885,6 +6192,9 @@ pub fn compile_module_with(
     for lam in &cg.lambdas {
         wat.push_str(lam);
     }
+    for body in cg.rcopy_helpers.values() {
+        wat.push_str(body);
+    }
     for body in cg.eq_helpers.values() {
         wat.push_str(body);
     }
@@ -6597,6 +6907,9 @@ fn compile_actor_in(
     }
     for lam in &cg.lambdas {
         wat.push_str(lam);
+    }
+    for body in cg.rcopy_helpers.values() {
+        wat.push_str(body);
     }
     for body in cg.eq_helpers.values() {
         wat.push_str(body);

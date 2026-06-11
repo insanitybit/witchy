@@ -4714,6 +4714,31 @@ fn yn(b: Bool) -> String:
         assert_eq!(wasm_run(src), want, "compiled WASM must agree");
     }
 
+    /// `region:` Phase 2: the copy-out handles every shape — string, record
+    /// with a nested list, recursive generic ADT, dict (whose hidden index is
+    /// dropped on the way out), nested regions — and parent-side values pass
+    /// through shared, all agreeing with the interpreter.
+    #[test]
+    fn region_copy_out_shapes_agree_on_both_backends() {
+        let src = "type Stack:\n    Empty\n    Push(a, Stack(a))\n\ntype Reading:\n    sensor: String\n    values: List(Int)\n\nfn main(console: Console):\n    let st = region -> Stack(Int):\n        Push(1, Push(2, Empty))\n    print(console, to_string(st == Push(1, Push(2, Empty))))\n    let r = region -> Reading:\n        var vs = []\n        for i in 0..50:\n            vs = push(vs, i * i)\n        Reading(sensor: \"t\" <> \"0\", values: vs)\n    print(console, r.sensor)\n    print(console, int_to_string(at(r.values, 49)))\n    let d = region -> Dict(String, Int):\n        var m = dict_new()\n        for i in 0..100:\n            m = insert(m, \"k\" <> int_to_string(i), i)\n        m\n    print(console, int_to_string(get_or(d, \"k42\", 0 - 1)))\n    let shared = \"parent-side\"\n    let s = region -> String:\n        shared\n    print(console, s)\n    let nested = region -> Int:\n        let inner = region -> String:\n            \"abc\" <> \"def\"\n        string_length(inner)\n    print(console, int_to_string(nested))\n";
+        let want: Vec<String> = ["true", "t0", "2401", "42", "parent-side", "6"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(link_run(src), want.clone(), "interpreter");
+        assert_eq!(wasm_run(src), want, "compiled WASM must agree");
+    }
+
+    /// `region:` reclamation: 100k regions each churning a 1000-element
+    /// throwaway list (~1.6 GB cumulative, past the 1 GB cap) run in constant
+    /// memory — inside a loop the automatic reset cannot help (an outer list
+    /// grows), so only the region machinery reclaims. WASM-only for speed.
+    #[test]
+    fn region_reclaims_inside_nonresettable_loops() {
+        let src = "fn main(console: Console):\n    var total = 0\n    var keep = []\n    for i in 0..100000:\n        let last = region -> Int:\n            var row = []\n            var j = 0\n            for j in 0..1000:\n                row = push(row, j)\n            at(row, 999)\n        total = total + last\n        keep = push(keep, i)\n    print(console, int_to_string(total))\n    print(console, int_to_string(length(keep)))\n";
+        assert_eq!(wasm_run(src), vec!["99900000", "100000"]);
+    }
+
     /// `region:` rejections: an outer pointer-typed assignment and a `yield`
     /// are type errors — the region's only pointer escape is its value.
     #[test]
