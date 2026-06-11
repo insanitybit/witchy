@@ -35,6 +35,11 @@ struct Host {
     queue: Queue,
     output: Output,
     sigs: Arc<Vec<MessageSig>>,
+    /// String state cells, indexed by the field order codegen assigned. State
+    /// strings live HOST-side because the guest's no-GC arena resets between
+    /// messages; reads stage through `pending` (the fill_pending protocol).
+    str_cells: Mutex<Vec<String>>,
+    pending: Mutex<Option<Vec<u8>>>,
 }
 
 pub struct System {
@@ -68,6 +73,8 @@ impl System {
             queue: Arc::clone(&self.queue),
             output: Arc::clone(&self.output),
             sigs: Arc::clone(&self.sigs),
+            str_cells: Mutex::new(Vec::new()),
+            pending: Mutex::new(None),
         };
         let mut store = Store::new(&self.engine, host);
         let mut linker = Linker::new(&self.engine);
@@ -94,6 +101,70 @@ impl System {
         linker.func_wrap("witchy", "print_int", |caller: Caller<'_, Host>, n: i64| {
             caller.data().output.lock().unwrap().push(n.to_string());
         })?;
+        // String state cells: set copies the value's content out of the guest;
+        // len stages a cell's bytes; fill_pending writes them into the fresh
+        // guest allocation (the same staging protocol as Dir reads).
+        linker.func_wrap(
+            "witchy",
+            "field_str_set",
+            |mut caller: Caller<'_, Host>, idx: i32, ptr: i32| -> Result<()> {
+                let mem = caller
+                    .get_export("memory")
+                    .and_then(Extern::into_memory)
+                    .ok_or_else(|| Error::msg("actor has no memory"))?;
+                let s = {
+                    let data = mem.data(&caller);
+                    let o = ptr as usize;
+                    let len_bytes = data
+                        .get(o..o + 4)
+                        .ok_or_else(|| Error::msg("field_str_set out of bounds"))?;
+                    let len =
+                        i32::from_le_bytes([len_bytes[0], len_bytes[1], len_bytes[2], len_bytes[3]])
+                            .max(0) as usize;
+                    let bytes = data
+                        .get(o + 4..o + 4 + len)
+                        .ok_or_else(|| Error::msg("field_str_set out of bounds"))?;
+                    String::from_utf8_lossy(bytes).into_owned()
+                };
+                let mut cells = caller.data().str_cells.lock().unwrap();
+                if cells.len() <= idx as usize {
+                    cells.resize(idx as usize + 1, String::new());
+                }
+                cells[idx as usize] = s;
+                Ok(())
+            },
+        )?;
+        linker.func_wrap(
+            "witchy",
+            "field_str_len",
+            |caller: Caller<'_, Host>, idx: i32| -> Result<i32> {
+                let cells = caller.data().str_cells.lock().unwrap();
+                let bytes = cells.get(idx as usize).cloned().unwrap_or_default().into_bytes();
+                let len = bytes.len() as i32;
+                *caller.data().pending.lock().unwrap() = Some(bytes);
+                Ok(len)
+            },
+        )?;
+        linker.func_wrap(
+            "witchy",
+            "fill_pending",
+            |mut caller: Caller<'_, Host>, out_ptr: i32| -> Result<()> {
+                let staged = caller
+                    .data()
+                    .pending
+                    .lock()
+                    .unwrap()
+                    .take()
+                    .ok_or_else(|| Error::msg("fill_pending called with nothing staged"))?;
+                let mem = caller
+                    .get_export("memory")
+                    .and_then(Extern::into_memory)
+                    .ok_or_else(|| Error::msg("actor has no memory"))?;
+                mem.write(&mut caller, out_ptr as usize, &staged)
+                    .map_err(|e| Error::msg(format!("writing staged bytes: {e}")))?;
+                Ok(())
+            },
+        )?;
         // Float -> string formatting, byte-identical to the interpreter's
         // Display (same bridge `runtime.rs` links for ordinary modules).
         linker.func_wrap(
@@ -399,6 +470,39 @@ impl Sensor:
         sys.set_subject(ids["Sensor"], "target", ids["Gauge"]).unwrap();
         sys.send(ids["Sensor"], "Sample", 0).unwrap();
         assert_eq!(sys.output(), vec!["2.5"]);
+    }
+
+    /// String STATE persists across messages: the field lives in a host cell
+    /// (the guest's no-GC arena resets between messages, so a guest-heap
+    /// string could not survive), is initialized at instantiation, reads back
+    /// as a fresh arena copy, and is reassigned from a runtime-built value.
+    #[test]
+    fn string_state_fields_persist_across_messages() {
+        let src = r#"
+actor Greeter:
+    console: Console
+    var last: String = "nobody"
+
+impl Greeter:
+    on Greet(name: String):
+        print(console, ("hello " <> name <> ", after " <> last))
+        last = (name <> "!")
+
+actor Caller:
+    target: Subject
+
+impl Caller:
+    on Go(n: Int):
+        send(target, Greet("ada"))
+        send(target, Greet("grace"))
+"#;
+        let (mut sys, ids) = build(src);
+        sys.set_subject(ids["Caller"], "target", ids["Greeter"]).unwrap();
+        sys.send(ids["Caller"], "Go", 0).unwrap();
+        assert_eq!(
+            sys.output(),
+            vec!["hello ada, after nobody", "hello grace, after ada!"]
+        );
     }
 
     #[test]

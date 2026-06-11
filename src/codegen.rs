@@ -9,10 +9,11 @@
 //! Capabilities remain host imports (`print`, `print_int`) that the runtime
 //! links only when granted, so an ungranted compiled module cannot instantiate.
 //!
-//! An actor compiles to its own module: each non-capability `Int` field becomes
-//! a mutable WASM global (its state, persisting across messages), capability
-//! fields are erased (their authority is the host import), and each `on` handler
-//! becomes an exported function the host calls to deliver a message.
+//! An actor compiles to its own module: an `Int` field becomes a mutable WASM
+//! global, a `String` field a host-side cell (the per-message arena reset would
+//! clobber a guest-heap string), capability fields are erased (their authority
+//! is the host import), and each `on` handler becomes an exported function the
+//! host calls to deliver a message.
 //!
 //! `send` between compiled actors crosses the VM boundary by value: Int, Float,
 //! and Subject fields are copied (passing a Subject delegates send authority),
@@ -425,6 +426,12 @@ struct Codegen {
     /// Whether the actor needs the `__msg_alloc` export (a String message
     /// parameter the host re-allocates into this actor's memory).
     uses_msg_alloc: bool,
+    /// String state fields of the actor being compiled -> host cell index.
+    /// String state lives in HOST cells (not guest globals): the per-message
+    /// arena reset would clobber a guest-heap string between messages.
+    str_fields: HashMap<String, u32>,
+    /// Whether any String state field exists (links the field_str host pair).
+    uses_str_field: bool,
     /// Whether the `compiler.footprint` host import + guest helper are needed.
     uses_compiler_footprint: bool,
     /// Whether the `compiler.diff` host import + guest helper are needed.
@@ -717,6 +724,8 @@ impl Codegen {
             uses_crypto_sha256: false,
             uses_crypto_rune_hash: false,
             uses_msg_alloc: false,
+            str_fields: HashMap::new(),
+            uses_str_field: false,
             uses_compiler_footprint: false,
             uses_compiler_diff: false,
             uses_float_to_str: false,
@@ -1708,6 +1717,7 @@ impl Codegen {
             || self.uses_crypto_sha256
             || self.uses_crypto_rune_hash
             || self.uses_msg_alloc
+            || self.uses_str_field
             || self.uses_compiler_footprint
             || self.uses_compiler_diff
             || self.uses_float_to_str
@@ -1764,6 +1774,13 @@ impl Codegen {
             // compiler_diff_len(old_ptr, new_ptr) -> JSON byte length: staged like
             // compiler_footprint_len.
             s.push_str("  (import \"witchy\" \"compiler_diff_len\" (func $compiler_diff_len_host (param i32 i32) (result i32)))\n");
+        }
+        if self.uses_str_field {
+            // String actor state: field_str_set(idx, str_ptr) copies the value
+            // OUT to its host cell; field_str_len(idx) stages the cell's bytes
+            // for `fill_pending` (the dir_read staging protocol).
+            s.push_str("  (import \"witchy\" \"field_str_set\" (func $field_str_set_host (param i32 i32)))\n");
+            s.push_str("  (import \"witchy\" \"field_str_len\" (func $field_str_len_host (param i32) (result i32)))\n");
         }
         if self.uses_float_to_str {
             // float_to_str(x, out_data_ptr) -> byte length: the host formats `x`
@@ -1875,6 +1892,7 @@ impl Codegen {
             || self.used_net_ops.contains("recv_bytes")
             || self.uses_compiler_footprint
             || self.uses_compiler_diff
+            || self.uses_str_field
         {
             s.push_str("  (import \"witchy\" \"fill_pending\" (func $fill_pending_host (param i32)))\n");
         }
@@ -1932,6 +1950,9 @@ impl Codegen {
         }
         if self.uses_crypto_rune_hash {
             s.push_str(CRYPTO_RUNE_HASH_WAT);
+        }
+        if self.uses_str_field {
+            s.push_str(FIELD_STR_GET_WAT);
         }
         if self.uses_compiler_footprint {
             s.push_str(COMPILER_FOOTPRINT_WAT);
@@ -2209,6 +2230,15 @@ impl Codegen {
                     tail_is_value = false;
                 }
                 Stmt::Assign { name, value } => {
+                    if let Some(&idx) = self.str_fields.get(name) {
+                        // Assigning a String state field copies the content OUT
+                        // to the host cell, so it survives the arena reset.
+                        out.push_str(&format!("    i32.const {idx}\n"));
+                        out.push_str(&self.compile_expr(value)?);
+                        out.push_str("    call $field_str_set_host\n");
+                        tail_is_value = false;
+                        continue;
+                    }
                     let vk = self.kind_of(value);
                     out.push_str(&self.compile_expr(value)?);
                     if self.globals.contains(name) {
@@ -2297,6 +2327,9 @@ impl Codegen {
             Expr::Var(name) => {
                 if self.cap_fields.contains(name) {
                     Ok("    i32.const 0\n".to_string())
+                } else if let Some(&idx) = self.str_fields.get(name) {
+                    // A String state field: a fresh arena copy of the host cell.
+                    Ok(format!("    i32.const {idx}\n    call $field_str_get\n"))
                 } else if self.globals.contains(name) {
                     Ok(format!("    global.get ${name}\n"))
                 } else if !self.locals.contains_key(name) {
@@ -5275,6 +5308,7 @@ fn compile_actor_with_tags(
     cg.message_tags = tags.clone();
 
     let mut state_globals = String::new();
+    let mut str_field_inits: Vec<(u32, u32)> = Vec::new();
     for field in &actor.fields {
         let tname = match &field.ty {
             Type::Named(n, _) => n.as_str(),
@@ -5306,9 +5340,39 @@ fn compile_actor_with_tags(
             ));
             continue;
         }
+        // String state lives in host cells (the per-message arena reset would
+        // clobber a guest-heap string): reads stage through `field_str_len` +
+        // `fill_pending`, writes copy content out via `field_str_set`, and a
+        // start function sets the declared initializers at instantiation.
+        if tname == "String" {
+            let init_off = match &field.init {
+                Some(Expr::Str(s)) => {
+                    let s = s.clone();
+                    cg.intern(&s)
+                }
+                Some(_) => {
+                    return cerr(format!(
+                        "field `{}`: initializer must be a String literal",
+                        field.name
+                    ))
+                }
+                None => {
+                    return cerr(format!(
+                        "field `{}`: String state needs an initializer in codegen",
+                        field.name
+                    ))
+                }
+            };
+            let idx = cg.str_fields.len() as u32;
+            cg.str_fields.insert(field.name.clone(), idx);
+            cg.uses_str_field = true;
+            cg.local_val_types.insert(field.name.clone(), ValType::Str);
+            str_field_inits.push((idx, init_off));
+            continue;
+        }
         if tname != "Int" {
             return cerr(format!(
-                "actor field `{}`: only Int state and capability fields compile yet",
+                "actor field `{}`: only Int, String, and capability fields compile yet",
                 field.name
             ));
         }
@@ -5429,6 +5493,17 @@ fn compile_actor_with_tags(
         wat.push_str(&format!("{header}{body}    drop\n  )\n"));
     }
     wat.push_str(&msg_helpers);
+    if !str_field_inits.is_empty() {
+        // Set each String state cell to its declared initializer (an interned
+        // literal) at instantiation, before any message is delivered.
+        wat.push_str("  (func $__init_str_fields\n");
+        for (idx, off) in &str_field_inits {
+            wat.push_str(&format!(
+                "    (call $field_str_set_host (i32.const {idx}) (i32.const {off}))\n"
+            ));
+        }
+        wat.push_str("  )\n  (start $__init_str_fields)\n");
+    }
     for lam in &cg.lambdas {
         wat.push_str(lam);
     }
@@ -5923,6 +5998,19 @@ const COMPILER_FOOTPRINT_WAT: &str = r#"  (func $compiler_footprint (param $src 
 
 // diff(old, new): the footprint-diff JSON of two witchy sources — staged like
 // `compiler_footprint`.
+// field_str_get(idx): a fresh arena copy of a String state field's host cell —
+// staged by `field_str_len`, written by `fill_pending` (the dir_read protocol).
+const FIELD_STR_GET_WAT: &str = r#"  (func $field_str_get (param $idx i32) (result i32)
+    (local $len i32) (local $res i32)
+    (local.set $len (call $field_str_len_host (local.get $idx)))
+    (call $ensure (i32.add (local.get $len) (i32.const 4)))
+    (local.set $res (global.get $heap))
+    (i32.store (local.get $res) (local.get $len))
+    (call $fill_pending_host (i32.add (local.get $res) (i32.const 4)))
+    (global.set $heap (i32.add (i32.add (local.get $res) (i32.const 4)) (local.get $len)))
+    (local.get $res))
+"#;
+
 const COMPILER_DIFF_WAT: &str = r#"  (func $compiler_diff (param $old i32) (param $new i32) (result i32)
     (local $len i32) (local $res i32)
     (local.set $len (call $compiler_diff_len_host (local.get $old) (local.get $new)))
