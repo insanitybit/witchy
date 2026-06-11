@@ -254,7 +254,7 @@ impl Runtime {
         memory_pages_max: usize,
     ) -> Result<Actor> {
         let id = self.next_id;
-        let module = Module::new(&self.engine, wasm)?;
+        let module = Module::new(&self.engine, optimize_module(wasm.as_ref()))?;
 
         let mailbox = self.mailboxes.get_or_create(id);
         let limits = StoreLimitsBuilder::new()
@@ -1103,6 +1103,42 @@ fn host_crypto_public_key(mut caller: Caller<'_, ActorState>, out_ptr: i32) -> R
 // --- small helpers for safe guest-memory access ---
 
 /// Read a witchy string value (a `[i32 len][bytes...]` header) at `ptr`.
+/// Run Binaryen's `wasm-opt -O2` over a module before Cranelift sees it — a
+/// mature optimizer (inlining, GVN, const-prop, local coalescing) over our
+/// deliberately naive emitter. OPT-IN via `WITCHY_WASM_OPT=1` (it costs
+/// tens of milliseconds per module, which the test suite's hundreds of tiny
+/// modules should not pay), and it degrades to the input untouched when the
+/// binary is missing or fails — never a hard dependency.
+pub fn optimize_module(input: &[u8]) -> Vec<u8> {
+    if !std::env::var_os("WITCHY_WASM_OPT").is_some_and(|v| v == "1") {
+        return input.to_vec();
+    }
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir = std::env::temp_dir();
+    let pid = std::process::id();
+    let src = dir.join(format!("witchy_opt_{pid}_{n}.wat"));
+    let out = dir.join(format!("witchy_opt_{pid}_{n}.wasm"));
+    let optimized = (|| -> Option<Vec<u8>> {
+        std::fs::write(&src, input).ok()?;
+        let status = std::process::Command::new("wasm-opt")
+            .args(["-O2", "--all-features"])
+            .arg(&src)
+            .arg("-o")
+            .arg(&out)
+            .stderr(std::process::Stdio::null())
+            .status()
+            .ok()?;
+        if !status.success() {
+            return None;
+        }
+        std::fs::read(&out).ok()
+    })();
+    let _ = std::fs::remove_file(&src);
+    let _ = std::fs::remove_file(&out);
+    optimized.unwrap_or_else(|| input.to_vec())
+}
+
 fn read_wstr(data: &[u8], ptr: i32) -> Result<String> {
     let len_bytes = slice(data, ptr, 4)?;
     let len = i32::from_le_bytes([len_bytes[0], len_bytes[1], len_bytes[2], len_bytes[3]]);

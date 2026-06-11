@@ -115,7 +115,7 @@ impl System {
 
     /// Instantiate a compiled actor module in its own VM; returns its id.
     pub fn spawn(&mut self, wat: &str) -> Result<usize> {
-        let module = Module::new(&self.shared.engine, wat)?;
+        let module = Module::new(&self.shared.engine, crate::runtime::optimize_module(wat.as_bytes()))?;
         let (store, instance) = link_vm(&self.shared, &module)?;
         let mut actors = self.shared.actors.lock().unwrap();
         actors.push(Some((store, instance)));
@@ -567,7 +567,7 @@ impl System {
         let engine = speed_engine();
         let mut kinds = Vec::new();
         for (name, wat) in actor_wats {
-            let module = Module::new(&engine, wat)?;
+            let module = Module::new(&engine, crate::runtime::optimize_module(wat.as_bytes()))?;
             let spec = specs
                 .iter()
                 .find(|(n, _)| n == name)
@@ -576,7 +576,7 @@ impl System {
             kinds.push((name.clone(), module, spec));
         }
         let mut sys = System::new_with_kinds(engine, sigs, kinds);
-        let driver = Module::new(&sys.shared.engine, driver_wat)?;
+        let driver = Module::new(&sys.shared.engine, crate::runtime::optimize_module(driver_wat.as_bytes()))?;
         // The driver lives OUTSIDE the actor table (it has no handlers and
         // must not hold the table's lock while running, since its spawns
         // take that lock).

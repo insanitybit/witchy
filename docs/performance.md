@@ -73,13 +73,22 @@ recorded run, so regressions fail loudly.
 Exit criterion: the 300k-push benchmark runs in the same order of magnitude
 as native Rust, and `std/server` compiled serves indefinitely under load.
 
+**Status 2026-06-11:** items 1–2 landed as one change (shadow-capacity
+locals: in-place push + string append, no representation change); item 4
+landed (loop watermark resets — a 200k-iteration/6 GB-churn soak runs in
+constant memory); item 5 was already resolved (overflow wraps by definition
+on both backends). The 300k-push bench went from an OOM trap to ~30 ms.
+Remaining: dict growth verification (item 3).
+
 ## Phase 2 — Codegen quality
 
-1. **Binaryen post-pass** (`wasm-opt` crate, Rust bindings to Binaryen): run
-   `-O2`/`-O3` + `--converge` over the emitted module behind a `--release`
-   flag. This buys a mature optimizer (inlining, GVN, const-prop, dead-code,
-   local coalescing) for a naive emitter without writing any passes — the
-   single highest-leverage item in this phase.
+1. **Binaryen post-pass** — landed as an opt-in (`WITCHY_WASM_OPT=1`,
+   shell-out, degrades to a no-op without the binary) and then MEASURED:
+   at 64M ops the optimized module is no faster (Cranelift Speed already
+   emits ~0.6 ns/op for our loop shapes) and the ~50 ms invocation cost
+   dominates every benchmark. Verdict: keep the hook for future
+   inline-heavy code, but it is NOT a current lever — which also validates
+   deferring the wasmer-LLVM engine.
 2. **Direct calls over `call_indirect`** when the closure target is statically
    known (the common `list.map(xs, fn(x): …)` shape).
 3. **Flatten non-escaping tuples/records into locals** (escape-analysis lite —
