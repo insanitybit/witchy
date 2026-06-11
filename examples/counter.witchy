@@ -1,3 +1,5 @@
+// Per-actor state: `count` persists across messages, and only Tick can
+// change it — no other code can reach an actor's state from outside.
 actor Counter:
     console: Console
     var count: Int = 0

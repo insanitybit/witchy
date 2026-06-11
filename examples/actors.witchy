@@ -1,3 +1,5 @@
+// Actors and message passing: spawn grants each actor exactly its declared
+// capabilities, send is fire-and-forget, and the mailbox drains in order.
 actor Logger:
     console: Console
     var count: Int = 0

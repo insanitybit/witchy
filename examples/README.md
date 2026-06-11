@@ -47,7 +47,7 @@ witchy sandbox examples/hello.witchy  # run confined in the WASM VM
 | [rle](rle.witchy), [roman](roman.witchy), [anagram](anagram.witchy), [wordcount](wordcount.witchy), [dedup](dedup.witchy) | Text processing |
 | [jq](jq.witchy), [parse_kv](parse_kv.witchy), [config_merge](config_merge.witchy), [diff](diff.witchy) | Structured data tools |
 | [stats](stats.witchy), [matrix](matrix.witchy), [temperature](temperature.witchy), [floats](floats.witchy) | Numerics |
-| [actors](actors.witchy), [counter](counter.witchy), [mailbox](mailbox.witchy) | Actors and message passing |
+| [actors](actors.witchy), [counter](counter.witchy), [mailbox](mailbox.witchy), [dispatch](dispatch.witchy) | Actors and message passing |
 | [lazy_fib](lazy_fib.witchy), [generators](generators.witchy) | Lazy iterators |
 
 ## Multi-package projects ([projects/](projects/))

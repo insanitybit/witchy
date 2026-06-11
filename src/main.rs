@@ -14147,6 +14147,26 @@ fn main(console: Console):
         );
     }
 
+    /// The dispatch example: the full actor message model in one program —
+    /// Float and String fields, a List(String) summary, Float state averaging
+    /// across messages, and a Subject delivered IN a message (delegation: the
+    /// Router is introduced to the Reporter at runtime). The relayed Alert is
+    /// enqueued mid-drain, so it lands after the directly-queued Summary.
+    #[test]
+    fn dispatch_example_delegates_and_aggregates() {
+        assert_eq!(
+            interp(include_str!("../examples/dispatch.witchy")),
+            vec![
+                "mean 2",
+                "mean 3",
+                "routing thermostat",
+                "summary: 2 samples",
+                "summary: 1 alert",
+                "[alert 1] thermostat at 99.5",
+            ]
+        );
+    }
+
     #[test]
     fn commands_example_runs_and_compiles() {
         let src = include_str!("../examples/commands.witchy");

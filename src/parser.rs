@@ -37,18 +37,26 @@ pub fn parse_module(src: &str) -> Result<Module, ParseError> {
 /// Move `on` handlers written in an inherent `impl Actor { ... }` block onto the
 /// matching `ActorDef`, so the rest of the compiler sees handlers on the actor
 /// regardless of whether they were written inline or in a separate impl block.
-/// An impl left with neither methods nor handlers is dropped.
-fn merge_actor_impls(mut items: Vec<Item>) -> Vec<Item> {
+/// An impl left with neither methods nor handlers is dropped — and its source
+/// line with it, in lockstep, so `item_lines` stays valid for the formatter's
+/// comment placement (dropping the lines wholesale silently discarded every
+/// comment in any file with an actor + impl pair).
+fn merge_actor_impls(items: Vec<Item>, lines: Vec<u32>) -> (Vec<Item>, Vec<u32>) {
     use std::collections::HashSet;
-    let actors: HashSet<String> = items
+    let mut paired: Vec<(Item, u32)> = if items.len() == lines.len() {
+        items.into_iter().zip(lines).collect()
+    } else {
+        items.into_iter().map(|it| (it, 0)).collect()
+    };
+    let actors: HashSet<String> = paired
         .iter()
-        .filter_map(|it| match it {
+        .filter_map(|(it, _)| match it {
             Item::Actor(a) => Some(a.name.clone()),
             _ => None,
         })
         .collect();
     let mut pulled: Vec<(String, Vec<Handler>)> = Vec::new();
-    for it in &mut items {
+    for (it, _) in &mut paired {
         if let Item::Impl(im) = it {
             if actors.contains(&im.type_name) && !im.handlers.is_empty() {
                 pulled.push((im.type_name.clone(), std::mem::take(&mut im.handlers)));
@@ -56,7 +64,7 @@ fn merge_actor_impls(mut items: Vec<Item>) -> Vec<Item> {
         }
     }
     for (name, handlers) in pulled {
-        for it in &mut items {
+        for (it, _) in &mut paired {
             if let Item::Actor(a) = it {
                 if a.name == name {
                     a.handlers.extend(handlers);
@@ -65,8 +73,10 @@ fn merge_actor_impls(mut items: Vec<Item>) -> Vec<Item> {
             }
         }
     }
-    items.retain(|it| !matches!(it, Item::Impl(im) if im.methods.is_empty() && im.handlers.is_empty()));
-    items
+    paired.retain(
+        |(it, _)| !matches!(it, Item::Impl(im) if im.methods.is_empty() && im.handlers.is_empty()),
+    );
+    paired.into_iter().unzip()
 }
 
 struct Parser {
@@ -183,14 +193,7 @@ impl Parser {
             item_lines.push(self.cur().line);
             items.push(self.item()?);
         }
-        let items = merge_actor_impls(items);
-        // The item line list is only valid when merging didn't change the item
-        // count (actor-impl merging can drop items); otherwise leave it empty.
-        let item_lines = if items.len() == item_lines.len() {
-            item_lines
-        } else {
-            Vec::new()
-        };
+        let (items, item_lines) = merge_actor_impls(items, item_lines);
         Ok(Module {
             imports,
             items,
