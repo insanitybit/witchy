@@ -1067,11 +1067,31 @@ A uniformly-chosen element of `xs` (None if empty) and the next state.
 
 ## `regex`
 
-A small backtracking regular-expression matcher over strings — the classic Kernighan & Pike design, in pure witchy. Supported syntax:   .   any single character   *   zero or more of the preceding atom   +   one or more of the preceding atom   ?   zero or one of the preceding atom   ^   anchor to the start of the text (only as the first character)   $   anchor to the end of the text (only as the last character) any other character matches itself. There is no escaping yet, so the metacharacters above cannot be matched literally. Pure and capability-free, and correct on both the interpreter and the compiled backend.
+A small backtracking regular-expression engine over strings — the classic Kernighan & Pike design grown a working toolkit, in pure witchy. Syntax:   .          any single character   *          zero or more of the preceding atom (greedy, with backtracking)   +          one or more of the preceding atom (greedy)   ?          zero or one of the preceding atom (greedy)   ^          anchor to the start of the text (only as the first character)   $          anchor to the end of the text (only as the last character)   [abc]      character class; [a-z] ranges; [^...] negation. `]` cannot be a              member and escapes are not recognized inside a class; a `-` first              or last is literal.   \d \w \s   digit / word (letter, digit, `_`) / whitespace, ASCII   \. \* \+ \? \^ \$ \[ \] \\   literal metacharacters Any other character matches itself. Positions are character indices. Pure and capability-free; identical on the interpreter and compiled backends.
 
 #### `fn matches(pattern: String, text: String) -> Bool`
 
-True if `pattern` matches anywhere in `text` (anchored to the start when the pattern begins with `^`).
+True if `pattern` matches anywhere in `text`.
+
+#### `fn find(pattern: String, text: String) -> Option((Int, Int))`
+
+The leftmost match as a (start, end) character span — end exclusive — or None. Quantifiers are greedy, so `find("a+", "caat")` is Some((1, 3)).
+
+#### `fn find_all(pattern: String, text: String) -> List((Int, Int))`
+
+Every non-overlapping match, leftmost first. An empty match advances one character so the scan always terminates.
+
+#### `fn extract(pattern: String, text: String) -> List(String)`
+
+The matched substrings, leftmost first: extract("\\d+", "a1b22") is ["1", "22"].
+
+#### `fn replace_all(pattern: String, text: String, replacement: String) -> String`
+
+`text` with every match replaced: replace_all("\\s+", "a  b", "-") is "a-b".
+
+#### `fn split(pattern: String, text: String) -> List(String)`
+
+`text` split on every match: split(",\\s*", "a, b,c") is ["a", "b", "c"].
 
 ## `result`
 

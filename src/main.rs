@@ -4654,6 +4654,33 @@ fn yn(b: Bool) -> String:
         );
     }
 
+    /// The `std/regex` toolkit — greedy quantifiers, escapes (`\d`/`\w`/`\s` and
+    /// literal metacharacters), character classes with ranges and negation, and
+    /// the span-based API (`find`/`find_all`/`extract`/`replace_all`/`split`) —
+    /// agrees on both backends, including the `Option((Int, Int))` span payload.
+    #[test]
+    fn regex_module_toolkit_agrees_on_both_backends() {
+        let src = "import regex\nimport string\n\nfn main(console: Console):\n    print(console, to_string(regex.matches(\"h.llo\", \"say hello\")))\n    print(console, to_string(regex.matches(\"^\\\\d+$\", \"12345\")))\n    print(console, to_string(regex.matches(\"^\\\\d+$\", \"12a45\")))\n    print(console, to_string(regex.extract(\"\\\\d+\", \"a1b22c333\")))\n    print(console, regex.replace_all(\"\\\\s+\", \"too   many    spaces\", \" \"))\n    print(console, to_string(regex.split(\",\\\\s*\", \"a, b,c\")))\n    print(console, to_string(regex.matches(\"[a-f]+\", \"deadbeef\")))\n    print(console, to_string(regex.matches(\"^[^0-9]+$\", \"abc\")))\n    print(console, to_string(regex.find(\"a+\", \"caat\")))\n    print(console, to_string(regex.matches(\"\\\\w+@\\\\w+\\\\.\\\\w+\", \"mail me: a_b@example.com\")))\n    print(console, regex.replace_all(\"[0-9]+\", \"r2d2\", \"#\"))\n";
+        let want: Vec<String> = [
+            "true",
+            "true",
+            "false",
+            "[1, 22, 333]",
+            "too many spaces",
+            "[a, b, c]",
+            "true",
+            "true",
+            "Some((1, 3))",
+            "true",
+            "r#d#",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        assert_eq!(link_run(src), want.clone(), "interpreter");
+        assert_eq!(wasm_run(src), want, "compiled WASM must agree");
+    }
+
     /// `examples/matrix.witchy` — integer matrices — multiplies a 2x3 by a 3x2,
     /// transposes, and prints an identity, all with right-aligned columns. A
     /// `List(List(Int))` workout (nested `at`) that agrees on both backends.
