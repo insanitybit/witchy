@@ -19,3 +19,15 @@ Reading: compute and startup are already in Go's class; the headline win is
 the memory-model work (a workload that *trapped* now ties, and the string
 builder beats Go's compiler). Next levers per docs/performance.md: arena
 reset points (long-running loops), wasm-opt post-pass, threaded actors.
+
+## After Phase 1 (same day)
+
+| bench | Go | witchy (WASM) | ratio |
+|---|---|---|---|
+| listbuild | 9.8 ms | 9.7 ms | **parity (1.01×)** — was an OOM trap at baseline |
+| strings | 41.0 ms | 10.4 ms | **witchy 3.9× faster** |
+
+Memory model landed: in-place push/append/insert (linear-update over shadow
+capacity locals), arena watermark resets for escape-free loops (200k-iteration
+/ 6 GB-churn soak in constant memory). Remaining levers: dict hash index
+(lookup is still a linear scan), wasm-opt post-pass, threaded actors.
