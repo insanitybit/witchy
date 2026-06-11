@@ -4739,6 +4739,40 @@ fn yn(b: Bool) -> String:
         assert_eq!(wasm_run(src), vec!["99900000", "100000"]);
     }
 
+    /// `region:` Phase 3: the `__region_copy_bytes` counter proves the
+    /// watermark short-circuit — a parent-side passthrough copies ZERO bytes,
+    /// and a region-born string copies exactly its own block.
+    #[test]
+    fn region_copy_counter_proves_passthrough_is_free() {
+        use crate::runtime::{Capabilities, Runtime};
+        let run_and_count = |src: &str| -> (Vec<String>, i64) {
+            let module = parser::parse_module(src).expect("parse");
+            let wat = codegen::compile_module(&module).expect("compile");
+            let mut rt = Runtime::batch().expect("rt");
+            let mut actor = rt
+                .spawn(
+                    wat.as_bytes(),
+                    Capabilities { print: true, quiet: true, ..Default::default() },
+                    64,
+                )
+                .expect("spawn");
+            actor.run().expect("run");
+            (actor.output(), actor.region_copy_bytes().expect("counter"))
+        };
+        // Parent-side value: shared, not copied.
+        let (out, copied) = run_and_count(
+            "fn main(console: Console):\n    let shared = \"twelve chars\"\n    let s = region -> String:\n        shared\n    print(console, s)\n",
+        );
+        assert_eq!(out, vec!["twelve chars"]);
+        assert_eq!(copied, 0, "parent passthrough must copy nothing");
+        // Region-born value: exactly its own block (4-byte header + 6 bytes).
+        let (out, copied) = run_and_count(
+            "fn main(console: Console):\n    let s = region -> String:\n        \"abc\" <> \"def\"\n    print(console, s)\n",
+        );
+        assert_eq!(out, vec!["abcdef"]);
+        assert_eq!(copied, 10, "a region-born string copies header + bytes");
+    }
+
     /// `region:` rejections: an outer pointer-typed assignment and a `yield`
     /// are type errors — the region's only pointer escape is its value.
     #[test]

@@ -1,0 +1,16 @@
+// The same workload WITHOUT `region:` — the outer `keep` list pins the loop
+// (no automatic reset), so garbage accumulates until the memory cap.
+fn run_one(i: Int) -> Int:
+    var row = []
+    var j = 0
+    for j in 0..500:
+        row = push(row, j * 3)
+    at(row, 499)
+
+fn main(console: Console):
+    var total = 0
+    var keep = []
+    for i in 0..20000:
+        total = total + run_one(i)
+        keep = push(keep, i)
+    print(console, int_to_string(total))

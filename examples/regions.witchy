@@ -1,0 +1,19 @@
+// `region:` gives short-term allocations an explicit lifetime: everything
+// allocated inside is reclaimed at the block's end, and the block's VALUE is
+// what escapes — deep-copied out, except values from OUTSIDE the region,
+// which are shared rather than copied. A region never changes behavior, only
+// when memory is freed, so it runs identically interpreted and compiled.
+// Run:  witchy examples/regions.witchy
+
+import string
+
+fn summarize(let words: List(String)) -> String:
+    int_to_string(length(words)) <> " words, first: " <> at(words, 0)
+
+fn main(console: Console):
+    let summary = region -> String:
+        var words = []
+        for i in 0..1000:
+            words = push(words, "w" <> int_to_string(i))
+        summarize(words)
+    print(console, summary)

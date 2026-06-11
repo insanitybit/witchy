@@ -12,14 +12,15 @@ mkdir -p bin
 BENCHES=("$@")
 [ ${#BENCHES[@]} -eq 0 ] && BENCHES=(cpu listbuild strings hello)
 for b in "${BENCHES[@]}"; do
-  go build -o "bin/${b}_go" "${b}.go"
+  [ -f "${b}.go" ] && go build -o "bin/${b}_go" "${b}.go"
   # Warm witchy's compilation cache so the measured runs are JIT-artifact hits.
   "$WITCHY" sandbox "${b}.witchy" >/dev/null 2>&1 || true
 done
 for b in "${BENCHES[@]}"; do
   echo
   echo "== ${b} =="
-  legs=("bin/${b}_go" "$WITCHY sandbox ${b}.witchy")
+  legs=("$WITCHY sandbox ${b}.witchy")
+  [ -f "bin/${b}_go" ] && legs=("bin/${b}_go" "${legs[@]}")
   if command -v dotnet >/dev/null 2>&1 && [ -f "${b}.cs" ]; then
     legs+=("dotnet run --project ${b}")
   fi

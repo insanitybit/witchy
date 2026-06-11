@@ -1,0 +1,14 @@
+// The region workload: per-iteration garbage reclaimed by `region:`.
+fn main(console: Console):
+    var total = 0
+    var keep = []
+    for i in 0..20000:
+        let last = region -> Int:
+            var row = []
+            var j = 0
+            for j in 0..500:
+                row = push(row, j * 3)
+            at(row, 499)
+        total = total + last
+        keep = push(keep, i)
+    print(console, int_to_string(total))

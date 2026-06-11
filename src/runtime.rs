@@ -167,7 +167,20 @@ impl Actor {
             .instance
             .get_typed_func::<(), ()>(&mut self.store, "run")?;
         run.call(&mut self.store, ())?;
+        if std::env::var_os("WITCHY_REGION_STATS").is_some_and(|v| v == "1") {
+            if let Some(bytes) = self.region_copy_bytes() {
+                eprintln!("region copy-out: {bytes} byte(s)");
+            }
+        }
         Ok(())
+    }
+
+    /// The total bytes the `region:` copy-outs moved (the exported
+    /// `__region_copy_bytes` counter), or None when the module has no regions.
+    pub fn region_copy_bytes(&mut self) -> Option<i64> {
+        self.instance
+            .get_global(&mut self.store, "__region_copy_bytes")
+            .and_then(|g| g.get(&mut self.store).i64())
     }
 
     /// Invoke a no-argument exported message handler (used by compiled actors).

@@ -50,3 +50,24 @@ usual advice applies: write the default first, and reach for the knobs when a
 profile (or an obvious hot loop over a big collection) says so. The signature
 documents the decision either way — that's the point of putting ownership in the
 type.
+
+## Regions: scoping your allocations
+
+`region:` is the allocation-lifetime knob. Everything allocated inside the
+block is reclaimed when it ends; the block's value is what survives — and
+only its region-born bytes are copied out (anything from outside the region
+is shared, verifiably: run with `WITCHY_REGION_STATS=1` and a parent-side
+passthrough reports zero bytes copied). Use it around parse-then-summarize
+shapes, per-item work in long loops the automatic reset can't cover, and
+anywhere a burst of temporaries would otherwise live until the enclosing
+boundary:
+
+```witchy
+let summary = region -> String:
+    let parsed = parse_huge_input(text)
+    summarize(parsed)
+```
+
+The compiler already inserts the same machinery for free where it can prove
+it safe (every actor message, escape-free loop iterations); `region:` is the
+explicit form for everything else.
