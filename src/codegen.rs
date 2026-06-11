@@ -2566,6 +2566,7 @@ impl Codegen {
                         })],
                         lines: vec![0],
                         restrict: None,
+                        region: None,
                     };
                     self.compile_lambda(&params, &body)
                 } else {

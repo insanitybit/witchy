@@ -4702,7 +4702,28 @@ fn yn(b: Bool) -> String:
         );
     }
 
-    /// THE DICT HASH INDEX: a hidden word at ptr-4 points at an
+    /// `region:` Phase 1 (docs/regions.md): the syntax parses (with optional
+    /// `-> T` ascription), the block's value escapes, scalar outer
+    /// assignments are allowed, and both backends agree — a region NEVER
+    /// changes observable behavior, only when memory is reclaimed.
+    #[test]
+    fn region_blocks_value_escape_and_parity() {
+        let src = "import string\n\nfn main(console: Console):\n    let summary = region:\n        var parts = []\n        for i in 0..50:\n            parts = push(parts, int_to_string(i))\n        string.join(parts, \",\")\n    print(console, int_to_string(string_length(summary)))\n    var n = 0\n    let direct = region -> Int:\n        n = n + 42\n        n\n    print(console, int_to_string(direct))\n";
+        let want: Vec<String> = ["140", "42"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(link_run(src), want.clone(), "interpreter");
+        assert_eq!(wasm_run(src), want, "compiled WASM must agree");
+    }
+
+    /// `region:` rejections: an outer pointer-typed assignment and a `yield`
+    /// are type errors — the region's only pointer escape is its value.
+    #[test]
+    fn region_rejects_outer_pointer_assign_and_yield() {
+        let leak = "fn main(console: Console):\n    var leak = [1]\n    let x = region:\n        leak = push(leak, 2)\n        7\n    print(console, int_to_string(x))\n";
+        let module = parser::parse_module(leak).expect("parse");
+        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        let err = typeck::check(&linked).expect_err("outer pointer assign must be rejected");
+        assert!(err.to_string().contains("inside `region:`"), "{err}");
+    }
     /// open-addressing table over the (insertion-ordered) entry array, so
     /// get_or/has/insert lookups probe instead of scanning. String and Int
     /// keys, growth rebuilds, removal (index dropped, rebuilt on next

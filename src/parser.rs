@@ -590,7 +590,7 @@ impl Parser {
             stmts.push(self.stmt()?);
         }
         self.expect(&Tok::RBrace)?;
-        Ok(Block { stmts, lines, restrict: None })
+        Ok(Block { stmts, lines, restrict: None, region: None })
     }
 
     fn stmt(&mut self) -> Result<Stmt, ParseError> {
@@ -895,6 +895,7 @@ impl Parser {
                 Ok(Expr::Lambda { params, body })
             }
             Tok::Match => self.match_expr(),
+            Tok::Region => self.region_block(),
             Tok::Retain => self.restrict_block(RestrictMode::Retain),
             Tok::Without => self.restrict_block(RestrictMode::Without),
             Tok::Spawn => {
@@ -1053,7 +1054,7 @@ impl Parser {
         };
         // Wrap from the innermost clause outward.
         for clause in clauses.into_iter().rev() {
-            let body = Block { stmts: vec![inner], lines: vec![0], restrict: None };
+            let body = Block { stmts: vec![inner], lines: vec![0], restrict: None, region: None };
             inner = match clause {
                 Clause::If(cond) => Stmt::Expr(Expr::If {
                     cond: Box::new(cond),
@@ -1079,6 +1080,7 @@ impl Parser {
             ],
             lines: vec![0, 0, 0],
             restrict: None,
+            region: None,
         }))
     }
 
@@ -1087,6 +1089,16 @@ impl Parser {
     /// `retain:` drops every capability, fully sandboxing the block); a trailing
     /// comma is allowed. The body is an ordinary indented block; the restriction
     /// rides along on `Block.restrict` and is enforced by the type checker.
+    /// `region:` / `region -> Type:` — a user-controlled allocation scope.
+    /// The optional type ascribes the block's value (the copy-out shape).
+    fn region_block(&mut self) -> Result<Expr, ParseError> {
+        self.advance(); // `region`
+        let ty = if self.eat(&Tok::RArrow) { Some(self.ty()?) } else { None };
+        let mut block = self.block()?;
+        block.region = Some(RegionAnn { ty });
+        Ok(Expr::Block(block))
+    }
+
     fn restrict_block(&mut self, mode: RestrictMode) -> Result<Expr, ParseError> {
         self.advance(); // `retain` / `without`
         let mut names = Vec::new();
@@ -1118,6 +1130,7 @@ impl Parser {
                 stmts: vec![Stmt::Expr(e)],
                 lines: vec![line],
                 restrict: None,
+                region: None,
             })
         } else {
             self.block()
@@ -1135,7 +1148,7 @@ impl Parser {
             let then_block = self.colon_or_block()?;
             let fallback = match self.else_block()? {
                 Some(eb) => Expr::Block(eb),
-                None => Expr::Block(Block { stmts: vec![], lines: vec![], restrict: None }),
+                None => Expr::Block(Block { stmts: vec![], lines: vec![], restrict: None, region: None }),
             };
             return Ok(Expr::Match {
                 scrutinee: Box::new(scrutinee),
@@ -1165,6 +1178,7 @@ impl Parser {
                     stmts: vec![Stmt::Expr(self.if_expr()?)],
                     lines: vec![line],
                     restrict: None,
+                    region: None,
                 }))
             } else {
                 Ok(Some(self.colon_or_block()?))
@@ -1480,6 +1494,7 @@ pub(crate) fn desugar_range(lo: Expr, hi: Expr, inclusive: bool) -> Expr {
         ],
         lines: vec![0, 0],
         restrict: None,
+        region: None,
     };
     Expr::Block(Block {
         stmts: vec![
@@ -1491,6 +1506,7 @@ pub(crate) fn desugar_range(lo: Expr, hi: Expr, inclusive: bool) -> Expr {
         ],
         lines: vec![0, 0, 0, 0, 0],
         restrict: None,
+        region: None,
     })
 }
 
@@ -1661,13 +1677,13 @@ pub(crate) fn desugar_while_let(pattern: Pattern, scrutinee: Expr, body: Block) 
             MatchArm {
                 pattern: Pattern::Wildcard,
                 guard: None,
-                body: Expr::Block(Block { stmts: vec![Stmt::Break], lines: vec![0], restrict: None }),
+                body: Expr::Block(Block { stmts: vec![Stmt::Break], lines: vec![0], restrict: None, region: None }),
             },
         ],
     };
     Expr::While {
         cond: Box::new(Expr::Bool(true)),
-        body: Block { stmts: vec![Stmt::Expr(dispatch)], lines: vec![0], restrict: None },
+        body: Block { stmts: vec![Stmt::Expr(dispatch)], lines: vec![0], restrict: None, region: None },
     }
 }
 

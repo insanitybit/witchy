@@ -371,6 +371,16 @@ fn handler(s: &mut String, h: &Handler, c: &mut Comments) {
 /// Write a `retain`/`without` firewall header (`without a, b:`) with no leading
 /// pad or trailing newline — the caller positions it (padded on its own line in
 /// statement position, or inline after `= ` in value position).
+/// Write a `region:` / `region -> T:` header, no leading pad or newline.
+fn region_header(s: &mut String, r: &crate::ast::RegionAnn) {
+    s.push_str("region");
+    if let Some(t) = &r.ty {
+        s.push_str(" -> ");
+        s.push_str(&type_str(t));
+    }
+    s.push(':');
+}
+
 fn restrict_header(s: &mut String, r: &CapRestrict) {
     s.push_str(match r.mode {
         RestrictMode::Retain => "retain",
@@ -389,6 +399,11 @@ fn block(s: &mut String, b: &Block, depth: usize, c: &mut Comments) {
     if let Some(r) = &b.restrict {
         pad(s, depth);
         restrict_header(s, r);
+        s.push('\n');
+        block_stmts(s, b, depth + 1, c);
+    } else if let Some(r) = &b.region {
+        pad(s, depth);
+        region_header(s, r);
         s.push('\n');
         block_stmts(s, b, depth + 1, c);
     } else {
@@ -513,6 +528,12 @@ fn value_or_block(s: &mut String, e: &Expr, depth: usize, c: &mut Comments) {
         // the header follows `= ` on this line, the body indents below.
         Expr::Block(b) if b.restrict.is_some() => {
             restrict_header(s, b.restrict.as_ref().unwrap());
+            s.push('\n');
+            block_stmts(s, b, depth + 1, c);
+        }
+        // A `region:` block used as a value: header after `= `, body below.
+        Expr::Block(b) if b.region.is_some() => {
+            region_header(s, b.region.as_ref().unwrap());
             s.push('\n');
             block_stmts(s, b, depth + 1, c);
         }

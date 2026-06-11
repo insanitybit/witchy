@@ -534,6 +534,12 @@ pub(crate) fn build_entrypoint(module: &Module) -> Option<&Function> {
 /// Collect the type-parameter names (lowercase, argument-less) appearing in a
 /// type expression, in order of first appearance. Used to infer the parameters
 /// of a generic ADT from its variant field types.
+/// Types a region assignment may freely write through to the outer scope:
+/// copied by value, never pointer-backed.
+fn is_scalar_ty(t: &Ty) -> bool {
+    matches!(t, Ty::Int | Ty::Float | Ty::Bool | Ty::Duration)
+}
+
 fn collect_type_params(t: &ast::Type, acc: &mut Vec<String>) {
     match t {
         ast::Type::Tuple(ts) => {
@@ -599,6 +605,10 @@ struct Checker {
     /// Bindings that have been consumed (moved out via a `sink` parameter) and
     /// may not be used again until reassigned. Flow-sensitive within a body.
     consumed: HashSet<String>,
+    /// One entry per ACTIVE `region:` block, holding the names declared
+    /// inside it — an assignment to a name outside the innermost region must
+    /// be scalar (a region's only pointer-escape is its value).
+    region_locals: Vec<HashSet<String>>,
     /// The declared return type of the function currently being checked, so `?`
     /// can require the enclosing function to return a matching Result/Option.
     current_ret: Option<Ty>,
@@ -846,6 +856,9 @@ impl Checker {
         // that an outer firewall dropped is a legitimate shadow, not a leak.
         if let Some(h) = self.hidden.last_mut() {
             h.remove(&name);
+        }
+        if let Some(r) = self.region_locals.last_mut() {
+            r.insert(name.clone());
         }
         self.scopes.last_mut().unwrap().insert(name, (ty, mutable));
     }
@@ -1417,6 +1430,27 @@ impl Checker {
     // --- inference ---
 
     fn infer_block(&mut self, block: &Block) -> Result<Ty, TypeError> {
+        let is_region = block.region.is_some();
+        if is_region {
+            self.region_locals.push(HashSet::new());
+        }
+        let result = self.infer_block_inner(block);
+        if is_region {
+            self.region_locals.pop();
+        }
+        let ty = result?;
+        if let Some(ann) = &block.region {
+            if let Some(want) = &ann.ty {
+                let want_ty = self.to_ty(want);
+                self.unify(&ty, &want_ty).map_err(|e| TypeError {
+                    message: format!("region value: {}", e.message),
+                })?;
+            }
+        }
+        Ok(ty)
+    }
+
+    fn infer_block_inner(&mut self, block: &Block) -> Result<Ty, TypeError> {
         self.push();
         if let Some(r) = &block.restrict {
             if let Err(e) = self.apply_restrict(r) {
@@ -1447,6 +1481,14 @@ impl Checker {
                             "cannot assign to `{name}`: it is immutable (declared with `let`)"
                         ));
                     }
+                    if let Some(scope) = self.region_locals.last() {
+                        if !scope.contains(name) && !is_scalar_ty(&self.resolve(&existing)) {
+                            self.pop();
+                            return terr(format!(
+                                "cannot assign `{name}` inside `region:`: it is declared outside the region and is not a scalar — a region's only escape is its value"
+                            ));
+                        }
+                    }
                     self.unify(&existing, &vt)?;
                     self.consumed.remove(name); // reassignment re-initializes
                     ty = Ty::Nil;
@@ -1476,7 +1518,16 @@ impl Checker {
                     // type, so contribute a fresh var (which unifies with anything).
                     ty = self.fresh();
                 }
-                Stmt::Expr(e) | Stmt::Yield(e) => {
+                Stmt::Expr(e) => {
+                    ty = self.infer(e)?;
+                }
+                Stmt::Yield(e) => {
+                    if !self.region_locals.is_empty() {
+                        self.pop();
+                        return terr(
+                            "cannot `yield` inside `region:`: the generator frame outlives the region".to_string(),
+                        );
+                    }
                     ty = self.infer(e)?;
                 }
                 // `break`/`continue` diverge (control leaves the block), so like
@@ -2304,6 +2355,7 @@ pub fn check(module: &Module) -> Result<(), TypeError> {
         scopes: vec![HashMap::new()],
         hidden: vec![HashSet::new()],
         consumed: HashSet::new(),
+        region_locals: Vec::new(),
         current_ret: None,
         cur_line: 0,
     };

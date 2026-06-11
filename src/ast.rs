@@ -188,6 +188,19 @@ pub struct Block {
     /// outer scope might gain; every backend runs the block normally (capabilities
     /// are erased at runtime). `None` for an ordinary block.
     pub restrict: Option<CapRestrict>,
+    /// A `region:` allocation scope: everything allocated inside is reclaimed
+    /// at the block's end and the block's VALUE is what escapes (deep-copied
+    /// out on the WASM tier). Purely a reclamation annotation — a region
+    /// never changes observable behavior, only when memory is freed; the
+    /// interpreter runs the block normally. `None` for an ordinary block.
+    pub region: Option<RegionAnn>,
+}
+
+/// A `region:` / `region -> T:` annotation. The optional type guarantees the
+/// copy-out shape at check time instead of inferring it from the tail.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RegionAnn {
+    pub ty: Option<Type>,
 }
 
 /// A block-level capability restriction introduced by `retain`/`without`.
