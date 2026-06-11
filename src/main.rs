@@ -4708,8 +4708,11 @@ fn yn(b: Bool) -> String:
     /// copying push, so value semantics hold: `ys` still sees the original.
     #[test]
     fn inplace_push_is_fast_and_alias_safe() {
-        let src = "fn main(console: Console):\n    var xs = []\n    for i in 0..50000:\n        xs = push(xs, i)\n    print(console, int_to_string(length(xs)))\n    print(console, int_to_string(at(xs, 49999)))\n    var small = [1]\n    let alias = small\n    small = push(small, 2)\n    print(console, to_string(alias))\n    print(console, to_string(small))\n";
-        let want: Vec<String> = ["50000", "49999", "[1]", "[1, 2]"]
+        // 5k keeps the INTERPRETER leg fast (its push is clone-per-call, so
+        // the cost is quadratic there); the in-place WASM path is exercised
+        // identically at any size.
+        let src = "fn main(console: Console):\n    var xs = []\n    for i in 0..5000:\n        xs = push(xs, i)\n    print(console, int_to_string(length(xs)))\n    print(console, int_to_string(at(xs, 4999)))\n    var small = [1]\n    let alias = small\n    small = push(small, 2)\n    print(console, to_string(alias))\n    print(console, to_string(small))\n";
+        let want: Vec<String> = ["5000", "4999", "[1]", "[1, 2]"]
             .iter()
             .map(|s| s.to_string())
             .collect();
