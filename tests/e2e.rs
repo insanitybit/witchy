@@ -1534,8 +1534,8 @@ fn witchy_coven_full_lifecycle_self_hosted() {
         "TUF snapshot must verify: {lines:?}"
     );
     assert!(
-        lines.contains(&"timestamp:200 verified=true"),
-        "TUF timestamp must verify: {lines:?}"
+        lines.contains(&"timestamp:200 verified=true fresh=true"),
+        "TUF timestamp must verify AND be fresh (freeze protection): {lines:?}"
     );
 }
 

@@ -10,7 +10,7 @@ import json
 import crypto
 import string
 
-fn main(console: Console, net: Net, args: List(String)):
+fn main(console: Console, net: Net, clock: Clock, args: List(String)):
     let addr = if length(args) > 0: at(args, 0) else: "127.0.0.1:8787"
     let (host, port) = hostport(addr)
 
@@ -53,7 +53,20 @@ fn main(console: Console, net: Net, args: List(String)):
     let snap = http.get(net, host, port, "/coven/snapshot")
     print(console, "snapshot:" <> int_to_string(http.status(snap)) <> " verified=" <> verify_signed_doc(http.body(snap), rootpub))
     let ts = http.get(net, host, port, "/coven/timestamp")
-    print(console, "timestamp:" <> int_to_string(http.status(ts)) <> " verified=" <> verify_signed_doc(http.body(ts), rootpub))
+    print(console, "timestamp:" <> int_to_string(http.status(ts)) <> " verified=" <> verify_signed_doc(http.body(ts), rootpub) <> " fresh=" <> timestamp_fresh(http.body(ts), now(clock) / 1000))
+
+// Freeze protection: a verified timestamp is only trustworthy while it is
+// FRESH — replaying an old (validly signed) timestamp would let a mirror
+// freeze a client on stale targets, so an expired one is refused.
+fn timestamp_fresh(text: String, now_seconds: Int) -> String:
+    match json.decode(text):
+        Ok(doc) -> match json.get(doc, "signed"):
+            Some(signed) ->
+                match json.get_int(signed, "expires"):
+                    Some(expires) -> if expires > now_seconds: "true" else: "false"
+                    None -> "no-expiry"
+            None -> "no-signed"
+        Err(e) -> "decode-err"
 
 // Verify a signed TUF role: re-encode its `signed` payload canonically and check
 // the ed25519 signature against the registry root key.
