@@ -1078,7 +1078,7 @@ fn verify_file(path: &str) -> Result<(), String> {
         let (driver, actors, sigs, specs) = codegen::compile_system(&linked)
             .map_err(|e| format!("cannot compile to WASM (an interpreter-only feature?): {e}"))?;
         Some(
-            actor_system::System::run_program(&driver, &actors, sigs, specs)
+            actor_system::System::run_program(&driver, &actors, sigs, specs, &actor_system::dev_caps())
                 .map_err(|e| e.to_string()),
         )
     } else {
@@ -1179,8 +1179,7 @@ fn run_file_sandboxed(
             "`{path}` needs a Secret, but the host granted none (provide `--signing-key <seed-file>`)"
         ));
     }
-    let wat = codegen::compile_module(&linked)
-        .map_err(|e| format!("cannot compile to WASM (an interpreter-only feature?): {e}"))?;
+    let has_actors = linked.items.iter().any(|it| matches!(it, ast::Item::Actor(_)));
     eprintln!(
         "sandboxing `{path}` \u{2014} granted exactly: {}",
         capabilities::show_caps(&footprint.total)
@@ -1214,16 +1213,29 @@ fn run_file_sandboxed(
     if footprint.total.contains_key("Secret") {
         caps.signing_key = signing_key;
     }
-    let mut rt = Runtime::batch().map_err(|e| e.to_string())?;
-    let mut actor = rt
-        .spawn(wat.as_bytes(), caps, RUN_MEMORY_PAGES)
-        .map_err(|e| e.to_string())?;
-    // Surface the *root cause*, not wasmtime's outer "error while executing at
-    // wasm backtrace…" wrapper: a confinement violation then reads as the same
-    // clean "`..` escapes the Dir capability" both backends
-    // print, and a genuine trap reads as "wasm trap: …" rather than a stack dump.
-    actor.run().map_err(|e| e.root_cause().to_string())?;
-    let mut lines = actor.output();
+    // An ACTOR program runs on the compiled actor system: the driver VM gets
+    // the computed-footprint grant (above), and each spawned actor's VM links
+    // only what its own capability fields entitle it to, with Dir/Net handles
+    // translated at spawn. A plain program runs in the single-module VM.
+    let mut lines = if has_actors {
+        let (driver, actors, sigs, specs) = codegen::compile_system(&linked)
+            .map_err(|e| format!("cannot compile to WASM (an interpreter-only feature?): {e}"))?;
+        actor_system::System::run_program(&driver, &actors, sigs, specs, &caps)
+            .map_err(|e| e.root_cause().to_string())?
+    } else {
+        let wat = codegen::compile_module(&linked)
+            .map_err(|e| format!("cannot compile to WASM (an interpreter-only feature?): {e}"))?;
+        let mut rt = Runtime::batch().map_err(|e| e.to_string())?;
+        let mut actor = rt
+            .spawn(wat.as_bytes(), caps, RUN_MEMORY_PAGES)
+            .map_err(|e| e.to_string())?;
+        // Surface the *root cause*, not wasmtime's outer "error while executing at
+        // wasm backtrace…" wrapper: a confinement violation then reads as the same
+        // clean "`..` escapes the Dir capability" both backends
+        // print, and a genuine trap reads as "wasm trap: …" rather than a stack dump.
+        actor.run().map_err(|e| e.root_cause().to_string())?;
+        actor.output()
+    };
     // At the process boundary an Int-returning `main` is the exit code (the
     // run export surfaces it as the final print_int line; pop and convert).
     let main_returns_int = linked.items.iter().any(|it| {
@@ -1537,7 +1549,7 @@ fn run_actor_system(title: &str, src: &str) {
             return;
         }
     };
-    match actor_system::System::run_program(&driver, &actors, sigs, specs) {
+    match actor_system::System::run_program(&driver, &actors, sigs, specs, &actor_system::dev_caps()) {
         Ok(output) => {
             for line in output {
                 println!("{line}");

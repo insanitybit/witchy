@@ -207,8 +207,10 @@ expect_fails "a STAGED version is not addable" \
 (cd "$WORK/logger" && WITCHY_USER=alice COVEN_ID_TOKEN="$ALICE" \
     "$BIN" promote acme/logger@1.0.0 --factor webauthn >/dev/null)
 ok "promote with a second factor (separation of duties)"
-(cd "$WORK/app" && WITCHY_USER=dev "$BIN" add acme/logger >/dev/null)
-ok "add: fetched over HTTP, signature-verified"
+expect_fails "a FRESH release sits out its staging cooldown" \
+    env -C "$WORK/app" WITCHY_USER=dev "$BIN" add acme/logger
+(cd "$WORK/app" && WITCHY_USER=dev "$BIN" add acme/logger --allow-fresh >/dev/null)
+ok "add: fetched over HTTP, signature-verified (--allow-fresh past the cooldown)"
 expect_contains "lockfile pins the registry key" "ed25519:" "$(cat "$WORK/app/witchy.lock")"
 expect_contains "lockfile records trusted-publishing provenance" "trusted-publisher" "$(cat "$WORK/app/witchy.lock")"
 
@@ -225,12 +227,12 @@ printf 'pub fn line(s: String) -> String:\n    "[log] " <> s\n\npub fn beacon(ne
 (cd "$WORK/logger" && WITCHY_USER=alice COVEN_ID_TOKEN="$ALICE" \
     "$BIN" promote acme/logger@1.1.0 --factor webauthn >/dev/null)
 set +e
-UPDATE_OUT="$(cd "$WORK/app" && WITCHY_USER=dev "$BIN" update 2>&1)"
+UPDATE_OUT="$(cd "$WORK/app" && WITCHY_USER=dev "$BIN" update --allow-fresh 2>&1)"
 UPDATE_CODE=$?
 set -e
 [ "$UPDATE_CODE" -ne 0 ] || die "update must BLOCK a widening upgrade"
 expect_contains "update blocks and names the new authority" "Net" "$UPDATE_OUT"
-(cd "$WORK/app" && WITCHY_USER=dev "$BIN" update --allow-cap Net >/dev/null)
+(cd "$WORK/app" && WITCHY_USER=dev "$BIN" update --allow-cap Net --allow-fresh >/dev/null)
 expect_contains "explicit consent upgrades and re-locks" "1.1.0" "$(cat "$WORK/app/witchy.lock")"
 
 # Namespace binding: a valid token from another repository cannot publish.

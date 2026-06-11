@@ -452,11 +452,11 @@ struct Codegen {
     /// state, list state lives in host cells; reads stage a fresh arena copy
     /// and writes copy the content out.
     list_fields: HashMap<String, (u32, ValType)>,
-    /// Spawnable actor kinds (DRIVER module only): name -> the spawn-argument
-    /// spec, one entry per UNINITIALIZED field in order — `false` for a
-    /// capability (erased; the system grants it), `true` for a value (a
-    /// Subject id) that travels as an i32 argument.
-    spawnable: HashMap<String, Vec<(String, bool)>>,
+    /// Spawnable actor kinds (driver module AND actor handlers): name -> the
+    /// spawn-argument spec, one entry per UNINITIALIZED field in order. Value
+    /// and Dir/Net arguments travel as i32s (a Subject id / the spawner's
+    /// capability handle, which the host translates); Erased ones don't.
+    spawnable: HashMap<String, Vec<(String, SpawnArgKind)>>,
     /// Actor kinds actually spawned, for import emission.
     used_spawns: std::collections::BTreeSet<String>,
     /// Variables in the CURRENT function/handler eligible for in-place push
@@ -1816,8 +1816,11 @@ impl Codegen {
         for name in &self.used_spawns {
             // spawn_{Actor}(value args...) -> the new actor's Subject id; the
             // host instantiates the actor's own VM (capability args erased).
-            let nvals =
-                self.spawnable.get(name).map(|s| s.iter().filter(|(_, v)| *v).count()).unwrap_or(0);
+            let nvals = self
+                .spawnable
+                .get(name)
+                .map(|s| s.iter().filter(|(_, k)| *k != SpawnArgKind::Erased).count())
+                .unwrap_or(0);
             let params = "(param i32) ".repeat(nvals);
             s.push_str(&format!(
                 "  (import \"witchy\" \"spawn_{name}\" (func $spawn_{name} {params}(result i32)))\n"
@@ -3125,18 +3128,20 @@ impl Codegen {
             }
             Expr::Match { scrutinee, arms } => self.compile_match(scrutinee, arms),
             Expr::Spawn { actor, args } => {
-                // Compiles only in the DRIVER of an actor-system program (the
-                // spawnable specs are seeded there): capability arguments are
-                // erased — the system grants them at instantiation — and value
-                // arguments (Subject ids) travel as i32s. The host instantiates
-                // the actor's own VM and returns its id.
+                // Compiles in actor-system programs (the spawnable specs are
+                // seeded in the driver and every actor module): Console/Clock/
+                // Env arguments are erased — the spawnee's link gate carries
+                // that authority — while Subject ids and Dir/Net capability
+                // HANDLES travel as i32s (the host translates a handle into
+                // the new VM's own table). The host instantiates the actor's
+                // own VM and returns its id.
                 let Some(spec) = self.spawnable.get(actor).cloned() else {
                     return cerr("`spawn` is not compiled to WASM yet (host-driven)");
                 };
                 self.used_spawns.insert(actor.clone());
                 let mut out = String::new();
-                for (a, (_, is_value)) in args.iter().zip(&spec) {
-                    if *is_value {
+                for (a, (_, kind)) in args.iter().zip(&spec) {
+                    if *kind != SpawnArgKind::Erased {
                         let k = self.kind_of(a);
                         out.push_str(&self.compile_expr(a)?);
                         out.push_str(kind_convert(k, Kind::I32));
@@ -6088,7 +6093,7 @@ pub fn compile_module(module: &Module) -> Result<String, CodegenError> {
 pub fn compile_module_with(
     module: &Module,
     tags: &HashMap<String, u32>,
-    spawnable: &HashMap<String, Vec<(String, bool)>>,
+    spawnable: &HashMap<String, Vec<(String, SpawnArgKind)>>,
 ) -> Result<String, CodegenError> {
     // Desugar traits/impls to ordinary functions (no-op for trait-free modules)
     // so codegen, like the interpreter, only ever sees plain functions. Then
@@ -6346,24 +6351,93 @@ fn message_sig_of(
         .collect()
 }
 
+/// How one spawn argument travels to the new actor's VM.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpawnArgKind {
+    /// A plain value (a Subject id): pushed as an i32 at the call site and
+    /// set on the spawnee's exported field global.
+    Value,
+    /// A `Dir` capability: the spawner pushes ITS i32 handle; the host
+    /// resolves the path in the spawner's table, installs it in the spawnee's
+    /// own table, and sets the field global to the new handle. Attenuation
+    /// (`subdir`) therefore survives the transfer.
+    Dir,
+    /// A `Net` capability: as `Dir`, with the allowlist.
+    Net,
+    /// Type-level only (Console/Clock/Env): nothing travels — the spawnee's
+    /// link gate (derived from its field types) carries the authority.
+    Erased,
+}
+
+/// Which host-import families an actor kind's VM is entitled to, derived
+/// from its declared capability fields. The system links exactly these: an
+/// actor without a `Console` field physically has no `print` import to call.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct KindGate {
+    pub print: bool,
+    pub clock: bool,
+    pub env: bool,
+    pub dir_read: bool,
+    pub dir_write: bool,
+    pub net_connect: bool,
+    pub net_listen: bool,
+}
+
+/// Derive an actor kind's link gate from its field types, honoring rights:
+/// a `Dir[Read]` field entitles the VM to the read family only; bare
+/// `Dir`/`Net` to the full family (mirroring typeck's rights default).
+fn kind_gate(actor: &ActorDef) -> KindGate {
+    let mut g = KindGate::default();
+    for f in &actor.fields {
+        let Type::Named(n, args) = &f.ty else { continue };
+        let names: Vec<&str> = args
+            .iter()
+            .filter_map(|a| match a {
+                Type::Named(r, _) => Some(r.as_str()),
+                _ => None,
+            })
+            .collect();
+        match n.as_str() {
+            "Console" => g.print = true,
+            "Clock" => g.clock = true,
+            "Env" => g.env = true,
+            "Dir" => {
+                let bare = names.is_empty();
+                g.dir_read |= bare || names.contains(&"Read");
+                g.dir_write |= bare || names.contains(&"Write");
+            }
+            "Net" => {
+                let no_verb = !names.contains(&"Connect") && !names.contains(&"Listen");
+                g.net_connect |= no_verb || names.contains(&"Connect");
+                g.net_listen |= no_verb || names.contains(&"Listen");
+            }
+            _ => {}
+        }
+    }
+    g
+}
+
 /// A whole compiled actor PROGRAM: the driver (the module's plain functions
 /// and `main`, with `spawn`/`send` bridged to the system), each actor's own
-/// module, the message signatures, and each actor's spawn-argument spec —
-/// one `(field name, is_value)` per UNINITIALIZED field, where a capability
-/// field is erased (`false`) and a Subject travels as an i32 (`true`).
-pub type CompiledSystem =
-    (String, Vec<(String, String)>, Vec<MessageSig>, Vec<(String, Vec<(String, bool)>)>);
+/// module, the message signatures, and each actor's spawn spec — the
+/// per-UNINITIALIZED-field argument kinds plus the kind's capability gate.
+pub type CompiledSystem = (
+    String,
+    Vec<(String, String)>,
+    Vec<MessageSig>,
+    Vec<(String, Vec<(String, SpawnArgKind)>, KindGate)>,
+);
 
 pub fn compile_system(module: &Module) -> Result<CompiledSystem, CodegenError> {
     let (actors, sigs) = compile_program(module)?;
     let tags: HashMap<String, u32> =
         sigs.iter().enumerate().map(|(i, (n, _))| (n.clone(), i as u32)).collect();
     let spawnable = spawn_specs(module);
-    let specs: Vec<(String, Vec<(String, bool)>)> = module
+    let specs: Vec<(String, Vec<(String, SpawnArgKind)>, KindGate)> = module
         .items
         .iter()
         .filter_map(|it| match it {
-            Item::Actor(a) => Some((a.name.clone(), spawnable[&a.name].clone())),
+            Item::Actor(a) => Some((a.name.clone(), spawnable[&a.name].clone(), kind_gate(a))),
             _ => None,
         })
         .collect();
@@ -6371,20 +6445,26 @@ pub fn compile_system(module: &Module) -> Result<CompiledSystem, CodegenError> {
     Ok((driver, actors, sigs, specs))
 }
 
-/// Each actor's spawn-argument spec: one `(field name, is_value)` per
-/// UNINITIALIZED field — a capability is erased (`false`), a Subject travels
-/// as an i32 (`true`).
-fn spawn_specs(module: &Module) -> HashMap<String, Vec<(String, bool)>> {
+/// Each actor's spawn-argument spec: one `(field name, kind)` per
+/// UNINITIALIZED field.
+fn spawn_specs(module: &Module) -> HashMap<String, Vec<(String, SpawnArgKind)>> {
     let mut spawnable = HashMap::new();
     for item in &module.items {
         if let Item::Actor(a) = item {
-            let spec: Vec<(String, bool)> = a
+            let spec: Vec<(String, SpawnArgKind)> = a
                 .fields
                 .iter()
                 .filter(|f| f.init.is_none())
                 .map(|f| {
-                    let is_value = !matches!(&f.ty, Type::Named(n, _) if n == "Console");
-                    (f.name.clone(), is_value)
+                    let kind = match &f.ty {
+                        Type::Named(n, _) if n == "Console" || n == "Clock" || n == "Env" => {
+                            SpawnArgKind::Erased
+                        }
+                        Type::Named(n, _) if n == "Dir" => SpawnArgKind::Dir,
+                        Type::Named(n, _) if n == "Net" => SpawnArgKind::Net,
+                        _ => SpawnArgKind::Value,
+                    };
+                    (f.name.clone(), kind)
                 })
                 .collect();
             spawnable.insert(a.name.clone(), spec);
@@ -6471,7 +6551,7 @@ fn compile_actor_in(
     actor: &ActorDef,
     tags: &HashMap<String, u32>,
     parent: &Module,
-    spawnable: &HashMap<String, Vec<(String, bool)>>,
+    spawnable: &HashMap<String, Vec<(String, SpawnArgKind)>>,
 ) -> Result<String, CodegenError> {
     // Lower ranges first (see compile_module) so the passes below see plain
     // blocks with consistent synthetic names.
@@ -6547,14 +6627,17 @@ fn compile_actor_in(
                 ))
             }
         };
-        // Console is erased (its authority is the linked `print` import).
-        if tname == "Console" {
+        // Console/Clock/Env are erased (their authority is the gated host
+        // import the kind's capability gate links — or doesn't).
+        if tname == "Console" || tname == "Clock" || tname == "Env" {
             cg.cap_fields.insert(field.name.clone());
             continue;
         }
         // A Subject is a real i32 (the target's id), exported so the host can
-        // set it at spawn.
-        if tname == "Subject" {
+        // set it at spawn. A Dir/Net capability field is likewise a real i32 —
+        // a HANDLE into this actor's host-side table — set at spawn after the
+        // host translates the spawner's handle, so attenuation carries over.
+        if tname == "Subject" || tname == "Dir" || tname == "Net" {
             cg.globals.insert(field.name.clone());
             state_globals.push_str(&format!(
                 "  (global ${0} (export \"{0}\") (mut i32) (i32.const 0))\n",
@@ -6674,7 +6757,7 @@ fn compile_actor_in(
         }
         if tname != "Int" {
             return cerr(format!(
-                "actor field `{}`: only Int, Float, String, and capability fields compile yet",
+                "actor field `{}`: only Int, Float, String, List, Subject, and capability (Console/Clock/Env/Dir/Net) fields compile yet",
                 field.name
             ));
         }

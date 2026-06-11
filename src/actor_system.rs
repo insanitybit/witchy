@@ -6,16 +6,22 @@
 //! the target actor's exported handler (named by the message, looked up by tag).
 //! `Subject` fields are exported globals the host sets at spawn.
 //!
-//! This grants every actor the host capabilities (print/print_int/send) for
-//! simplicity; per-actor capability *gating* is enforced by the spike runtime
-//! in `runtime.rs`.
+//! Capabilities are per-actor and gated exactly like the single-module sandbox
+//! (the SAME `link_capability_imports` surface from `runtime.rs`, over the same
+//! `ActorState`): each kind's VM links only the import families its declared
+//! capability fields entitle it to — an actor without a `Console` field
+//! physically has no `print` import. Dir/Net authority transfers at spawn by
+//! HANDLE TRANSLATION: the spawner passes its i32 handle, the host resolves it
+//! in the spawner's table and installs the payload in the spawnee's own table,
+//! so attenuation (`subdir`/`restrict`) carries across VMs.
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 use wasmtime::{Caller, Engine, Error, Extern, Instance, Linker, Module, Result, Store, Val};
 
-use crate::codegen::{MessageSig, MsgField};
+use crate::codegen::{KindGate, MessageSig, MsgField, SpawnArgKind};
+use crate::runtime::{link_capability_imports, system_state, ActorState, Capabilities};
 
 /// One decoded message field, copied OUT of the sender at send time so the
 /// receiver never sees sender memory: scalars by value, strings by content.
@@ -45,28 +51,25 @@ type Output = Arc<Mutex<Vec<String>>>;
 /// One persistent state cell. String/list state lives HOST-side because the
 /// guest's no-GC arena resets between messages.
 #[derive(Debug, Clone)]
-enum StateCell {
+pub(crate) enum StateCell {
     Str(String),
     IntList(Vec<i64>),
     StrList(Vec<String>),
 }
 
-/// Per-actor host state.
-struct Host {
-    queue: Queue,
-    output: Output,
-    sigs: Arc<Vec<MessageSig>>,
+/// The actor-system extension carried in `ActorState.sys`: the per-actor
+/// state cells (everything else the system needs — queue, signatures, output
+/// — is shared and captured by the host-function closures).
+pub(crate) struct SysState {
     /// State cells, indexed by the field order codegen assigned; reads stage
     /// through `pending` (fill_pending) or `pending_list` (write_pending_list).
-    cells: Mutex<Vec<Option<StateCell>>>,
-    pending: Mutex<Option<Vec<u8>>>,
-    pending_list: Mutex<Option<Vec<String>>>,
+    pub(crate) cells: Vec<Option<StateCell>>,
 }
 
 /// The live actor table. Entries are `Option` because delivery TAKES the
 /// target out while its handler runs: the table's lock is released during the
 /// call, so a handler's `spawn` can register a new actor without deadlocking.
-type Actors = Arc<Mutex<Vec<Option<(Store<Host>, Instance)>>>>;
+type Actors = Arc<Mutex<Vec<Option<(Store<ActorState>, Instance)>>>>;
 
 /// Everything a VM (or a `spawn_*` host call instantiating a new one) needs:
 /// cheap-clone handles to the system's engine, mailboxes, output, message
@@ -77,13 +80,59 @@ struct Shared {
     queue: Queue,
     output: Output,
     sigs: Arc<Vec<MessageSig>>,
-    /// Spawnable kinds: (name, compiled module, spawn-arg spec).
-    kinds: Arc<Vec<(String, Module, Vec<(String, bool)>)>>,
+    /// Spawnable kinds: (name, compiled module, spawn-arg spec, capability gate).
+    kinds: Arc<Vec<(String, Module, Vec<(String, SpawnArgKind)>, KindGate)>>,
     actors: Actors,
 }
 
 pub struct System {
     shared: Shared,
+}
+
+/// The development/differential grant (parity runs, direct test drives):
+/// mirrors what the interpreter ambiently allows a dev run — output, clock,
+/// env, a Dir rooted at `.` with both rights, and an empty Net allowlist.
+/// `witchy sandbox` is the strict path that grants exactly the footprint.
+pub(crate) fn dev_caps() -> Capabilities {
+    Capabilities {
+        print: true,
+        print_int: true,
+        quiet: true,
+        clock: true,
+        env: true,
+        dir_root: Some(std::path::PathBuf::from(".")),
+        dir_read: true,
+        dir_write: true,
+        net_allow: Some(Vec::new()),
+        net_connect: true,
+        net_listen: true,
+        ..Default::default()
+    }
+}
+
+/// Convert an actor kind's static gate into a `Capabilities` for LINKING.
+/// The payload fields (`dir_root`/`net_allow`) are placeholders that only
+/// arm the family's gate — the real authority is the per-VM handle TABLES,
+/// seeded from the spawner's translated handles, never from these.
+fn gate_caps(g: &KindGate) -> Capabilities {
+    Capabilities {
+        print: g.print,
+        print_int: g.print,
+        quiet: true,
+        clock: g.clock,
+        env: g.env,
+        dir_root: if g.dir_read || g.dir_write {
+            Some(std::path::PathBuf::new())
+        } else {
+            None
+        },
+        dir_read: g.dir_read,
+        dir_write: g.dir_write,
+        net_allow: if g.net_connect || g.net_listen { Some(Vec::new()) } else { None },
+        net_connect: g.net_connect,
+        net_listen: g.net_listen,
+        ..Default::default()
+    }
 }
 
 impl System {
@@ -97,7 +146,7 @@ impl System {
     fn new_with_kinds(
         engine: Engine,
         sigs: Vec<MessageSig>,
-        kinds: Vec<(String, Module, Vec<(String, bool)>)>,
+        kinds: Vec<(String, Module, Vec<(String, SpawnArgKind)>, KindGate)>,
     ) -> Self {
         Self {
             shared: Shared {
@@ -116,418 +165,372 @@ impl System {
         self.shared.output.lock().unwrap().clone()
     }
 
-    /// Instantiate a compiled actor module in its own VM; returns its id.
+    /// Instantiate a compiled actor module in its own VM under the
+    /// development grant; returns its id. (Tests drive actors directly.)
     #[allow(dead_code)]
     pub fn spawn(&mut self, wat: &str) -> Result<usize> {
         let module = Module::new(&self.shared.engine, crate::runtime::optimize_module(wat.as_bytes()))?;
-        let (store, instance) = link_vm(&self.shared, &module)?;
+        let caps = dev_caps();
+        let dirs = caps.dir_root.iter().cloned().collect();
+        let nets = caps.net_allow.iter().cloned().collect();
+        let (store, instance) = link_vm(&self.shared, &module, &caps, dirs, nets)?;
         let mut actors = self.shared.actors.lock().unwrap();
         actors.push(Some((store, instance)));
         Ok(actors.len() - 1)
     }
 }
 
-/// Build a VM (store + instance) wired to the system: the full host-import
-/// surface, plus one `spawn_{Kind}` import per registered actor kind — a
-/// guest `spawn` instantiates the kind's own VM, sets its Subject arguments,
-/// and returns the new actor's id.
-fn link_vm(shared: &Shared, module: &Module) -> Result<(Store<Host>, Instance)> {
-    {
-        let host = Host {
-            queue: Arc::clone(&shared.queue),
-            output: Arc::clone(&shared.output),
-            sigs: Arc::clone(&shared.sigs),
-            cells: Mutex::new(Vec::new()),
-            pending: Mutex::new(None),
-            pending_list: Mutex::new(None),
-        };
-        let mut store = Store::new(&shared.engine, host);
-        let mut linker = Linker::new(&shared.engine);
+/// Build a VM (store + instance) wired to the system: the capability imports
+/// its grant entitles it to (and NO others — the shared gated surface from
+/// `runtime.rs`), the actor-system surface (typed `send`, state cells), plus
+/// one `spawn_{Kind}` import per registered actor kind — a guest `spawn`
+/// instantiates the kind's own VM under ITS gate, translates Dir/Net handles
+/// into its tables, sets its value arguments, and returns the new actor's id.
+fn link_vm(
+    shared: &Shared,
+    module: &Module,
+    caps: &Capabilities,
+    dirs: Vec<std::path::PathBuf>,
+    nets: Vec<Vec<String>>,
+) -> Result<(Store<ActorState>, Instance)> {
+    let state = system_state(
+        caps,
+        Arc::clone(&shared.output),
+        dirs,
+        nets,
+        SysState { cells: Vec::new() },
+    );
+    let mut store = Store::new(&shared.engine, state);
+    let mut linker: Linker<ActorState> = Linker::new(&shared.engine);
+    // The gated capability surface — print/clock/env/dir/net families exactly
+    // as granted, plus the authority-free staples (fill_pending,
+    // write_pending_list, float_to_str, pure crypto/encoding).
+    link_capability_imports(&mut linker, caps)?;
 
-        linker.func_wrap(
-            "witchy",
-            "print",
-            |mut caller: Caller<'_, Host>, ptr: i32, len: i32| -> Result<()> {
+    // --- actor STATE cells: no authority (actor-local state); reads stage
+    // through the same pending-transfer protocol as Dir reads. ---
+    linker.func_wrap(
+        "witchy",
+        "field_str_set",
+        |mut caller: Caller<'_, ActorState>, idx: i32, ptr: i32| -> Result<()> {
+            let mem = caller
+                .get_export("memory")
+                .and_then(Extern::into_memory)
+                .ok_or_else(|| Error::msg("actor has no memory"))?;
+            let s = {
+                let data = mem.data(&caller);
+                let o = ptr as usize;
+                let len_bytes = data
+                    .get(o..o + 4)
+                    .ok_or_else(|| Error::msg("field_str_set out of bounds"))?;
+                let len =
+                    i32::from_le_bytes([len_bytes[0], len_bytes[1], len_bytes[2], len_bytes[3]])
+                        .max(0) as usize;
+                let bytes = data
+                    .get(o + 4..o + 4 + len)
+                    .ok_or_else(|| Error::msg("field_str_set out of bounds"))?;
+                String::from_utf8_lossy(bytes).into_owned()
+            };
+            set_cell(&mut caller, idx, StateCell::Str(s));
+            Ok(())
+        },
+    )?;
+    linker.func_wrap(
+        "witchy",
+        "field_str_len",
+        |mut caller: Caller<'_, ActorState>, idx: i32| -> Result<i32> {
+            let s = match get_cell(&mut caller, idx) {
+                Some(StateCell::Str(s)) => s,
+                None => String::new(),
+                Some(other) => {
+                    return Err(Error::msg(format!("cell {idx} is not a String: {other:?}")))
+                }
+            };
+            let bytes = s.into_bytes();
+            let len = bytes.len() as i32;
+            caller.data_mut().pending = Some(bytes);
+            Ok(len)
+        },
+    )?;
+    linker.func_wrap(
+        "witchy",
+        "field_intlist_set",
+        |mut caller: Caller<'_, ActorState>, idx: i32, ptr: i32| -> Result<()> {
+            let mem = caller
+                .get_export("memory")
+                .and_then(Extern::into_memory)
+                .ok_or_else(|| Error::msg("actor has no memory"))?;
+            let xs = {
+                let data = mem.data(&caller);
+                read_i64_list(data, ptr)?
+            };
+            set_cell(&mut caller, idx, StateCell::IntList(xs));
+            Ok(())
+        },
+    )?;
+    linker.func_wrap(
+        "witchy",
+        "field_intlist_len",
+        |mut caller: Caller<'_, ActorState>, idx: i32| -> Result<i32> {
+            let xs = match get_cell(&mut caller, idx) {
+                Some(StateCell::IntList(xs)) => xs,
+                None => Vec::new(),
+                Some(other) => {
+                    return Err(Error::msg(format!("cell {idx} is not a List(Int): {other:?}")))
+                }
+            };
+            let mut bytes = (xs.len() as i32).to_le_bytes().to_vec();
+            for x in &xs {
+                bytes.extend_from_slice(&x.to_le_bytes());
+            }
+            let size = bytes.len() as i32;
+            caller.data_mut().pending = Some(bytes);
+            Ok(size)
+        },
+    )?;
+    linker.func_wrap(
+        "witchy",
+        "field_strlist_set",
+        |mut caller: Caller<'_, ActorState>, idx: i32, ptr: i32| -> Result<()> {
+            let mem = caller
+                .get_export("memory")
+                .and_then(Extern::into_memory)
+                .ok_or_else(|| Error::msg("actor has no memory"))?;
+            let xs = {
+                let data = mem.data(&caller);
+                read_str_list(data, ptr)?
+            };
+            set_cell(&mut caller, idx, StateCell::StrList(xs));
+            Ok(())
+        },
+    )?;
+    linker.func_wrap(
+        "witchy",
+        "field_strlist_size",
+        |mut caller: Caller<'_, ActorState>, idx: i32| -> Result<i32> {
+            let xs = match get_cell(&mut caller, idx) {
+                Some(StateCell::StrList(xs)) => xs,
+                None => Vec::new(),
+                Some(other) => {
+                    return Err(Error::msg(format!(
+                        "cell {idx} is not a List(String): {other:?}"
+                    )))
+                }
+            };
+            let size = 4 + 8 * xs.len() + xs.iter().map(|s| 4 + s.len()).sum::<usize>();
+            caller.data_mut().pending_list = Some(xs);
+            Ok(size as i32)
+        },
+    )?;
+
+    // --- typed send: possession of a Subject id IS the send authority, so it
+    // is always linked. The third argument is a pointer into the sender's
+    // memory to a field record `[count][f0]..[fN-1]` (the list layout). The
+    // fields are DECODED by the message tag's signature and copied now — an
+    // Int by value, a String by content — so the message carries values, not
+    // pointers, and actors stay isolated. ---
+    let send_sigs = Arc::clone(&shared.sigs);
+    let send_queue = Arc::clone(&shared.queue);
+    linker.func_wrap(
+        "witchy",
+        "send",
+        move |mut caller: Caller<'_, ActorState>, target: i32, tag: i32, ptr: i32| -> Result<()> {
+            let sig = send_sigs
+                .get(tag as usize)
+                .map(|(_, fields)| fields.clone())
+                .ok_or_else(|| Error::msg(format!("send with unknown tag {tag}")))?;
+            let fields = {
                 let mem = caller
                     .get_export("memory")
                     .and_then(Extern::into_memory)
                     .ok_or_else(|| Error::msg("actor has no memory"))?;
-                let s = {
-                    let data = mem.data(&caller);
-                    let bytes = data
-                        .get(ptr as usize..(ptr + len) as usize)
-                        .ok_or_else(|| Error::msg("print out of bounds"))?;
-                    String::from_utf8_lossy(bytes).into_owned()
-                };
-                caller.data().output.lock().unwrap().push(s);
-                Ok(())
-            },
-        )?;
-        linker.func_wrap("witchy", "print_int", |caller: Caller<'_, Host>, n: i64| {
-            caller.data().output.lock().unwrap().push(n.to_string());
-        })?;
-        // String state cells: set copies the value's content out of the guest;
-        // len stages a cell's bytes; fill_pending writes them into the fresh
-        // guest allocation (the same staging protocol as Dir reads).
-        linker.func_wrap(
-            "witchy",
-            "field_str_set",
-            |mut caller: Caller<'_, Host>, idx: i32, ptr: i32| -> Result<()> {
-                let mem = caller
-                    .get_export("memory")
-                    .and_then(Extern::into_memory)
-                    .ok_or_else(|| Error::msg("actor has no memory"))?;
-                let s = {
-                    let data = mem.data(&caller);
-                    let o = ptr as usize;
-                    let len_bytes = data
+                let data = mem.data(&caller);
+                let read = |off: i32| -> Result<i32> {
+                    let o = off as usize;
+                    let b = data
                         .get(o..o + 4)
-                        .ok_or_else(|| Error::msg("field_str_set out of bounds"))?;
-                    let len =
-                        i32::from_le_bytes([len_bytes[0], len_bytes[1], len_bytes[2], len_bytes[3]])
-                            .max(0) as usize;
-                    let bytes = data
-                        .get(o + 4..o + 4 + len)
-                        .ok_or_else(|| Error::msg("field_str_set out of bounds"))?;
-                    String::from_utf8_lossy(bytes).into_owned()
+                        .ok_or_else(|| Error::msg("send field out of bounds"))?;
+                    Ok(i32::from_le_bytes([b[0], b[1], b[2], b[3]]))
                 };
-                set_cell(&caller, idx, StateCell::Str(s));
-                Ok(())
-            },
-        )?;
-        linker.func_wrap(
-            "witchy",
-            "field_str_len",
-            |caller: Caller<'_, Host>, idx: i32| -> Result<i32> {
-                let s = match get_cell(&caller, idx) {
-                    Some(StateCell::Str(s)) => s,
-                    None => String::new(),
-                    Some(other) => {
-                        return Err(Error::msg(format!("cell {idx} is not a String: {other:?}")))
-                    }
-                };
-                let bytes = s.into_bytes();
-                let len = bytes.len() as i32;
-                *caller.data().pending.lock().unwrap() = Some(bytes);
-                Ok(len)
-            },
-        )?;
-        // List state cells: the set fns walk the guest list by element type;
-        // the read fns stage a fresh copy (fill_pending / write_pending_list).
-        linker.func_wrap(
-            "witchy",
-            "field_intlist_set",
-            |mut caller: Caller<'_, Host>, idx: i32, ptr: i32| -> Result<()> {
-                let mem = caller
-                    .get_export("memory")
-                    .and_then(Extern::into_memory)
-                    .ok_or_else(|| Error::msg("actor has no memory"))?;
-                let xs = {
-                    let data = mem.data(&caller);
-                    read_i64_list(data, ptr)?
-                };
-                set_cell(&caller, idx, StateCell::IntList(xs));
-                Ok(())
-            },
-        )?;
-        linker.func_wrap(
-            "witchy",
-            "field_intlist_len",
-            |caller: Caller<'_, Host>, idx: i32| -> Result<i32> {
-                let xs = match get_cell(&caller, idx) {
-                    Some(StateCell::IntList(xs)) => xs,
-                    None => Vec::new(),
-                    Some(other) => {
-                        return Err(Error::msg(format!("cell {idx} is not a List(Int): {other:?}")))
-                    }
-                };
-                let mut bytes = (xs.len() as i32).to_le_bytes().to_vec();
-                for x in &xs {
-                    bytes.extend_from_slice(&x.to_le_bytes());
-                }
-                let size = bytes.len() as i32;
-                *caller.data().pending.lock().unwrap() = Some(bytes);
-                Ok(size)
-            },
-        )?;
-        linker.func_wrap(
-            "witchy",
-            "field_strlist_set",
-            |mut caller: Caller<'_, Host>, idx: i32, ptr: i32| -> Result<()> {
-                let mem = caller
-                    .get_export("memory")
-                    .and_then(Extern::into_memory)
-                    .ok_or_else(|| Error::msg("actor has no memory"))?;
-                let xs = {
-                    let data = mem.data(&caller);
-                    read_str_list(data, ptr)?
-                };
-                set_cell(&caller, idx, StateCell::StrList(xs));
-                Ok(())
-            },
-        )?;
-        linker.func_wrap(
-            "witchy",
-            "field_strlist_size",
-            |caller: Caller<'_, Host>, idx: i32| -> Result<i32> {
-                let xs = match get_cell(&caller, idx) {
-                    Some(StateCell::StrList(xs)) => xs,
-                    None => Vec::new(),
-                    Some(other) => {
-                        return Err(Error::msg(format!(
-                            "cell {idx} is not a List(String): {other:?}"
-                        )))
-                    }
-                };
-                let size = 4 + 8 * xs.len() + xs.iter().map(|s| 4 + s.len()).sum::<usize>();
-                *caller.data().pending_list.lock().unwrap() = Some(xs);
-                Ok(size as i32)
-            },
-        )?;
-        // Lay a staged string list out at base_ptr in the guest list format —
-        // authority-free (only writes already-staged data), same as runtime.rs.
-        linker.func_wrap(
-            "witchy",
-            "write_pending_list",
-            |mut caller: Caller<'_, Host>, base_ptr: i32| -> Result<()> {
-                let names = caller
-                    .data()
-                    .pending_list
-                    .lock()
-                    .unwrap()
-                    .take()
-                    .ok_or_else(|| Error::msg("write_pending_list called with nothing staged"))?;
-                let n = names.len();
-                let mut buf =
-                    Vec::with_capacity(4 + 8 * n + names.iter().map(|s| 4 + s.len()).sum::<usize>());
-                buf.extend_from_slice(&(n as i32).to_le_bytes());
-                let strings_start = base_ptr as i64 + 4 + 8 * n as i64;
-                let mut offset = 0i64;
-                for name in &names {
-                    buf.extend_from_slice(&(strings_start + offset).to_le_bytes());
-                    offset += 4 + name.len() as i64;
-                }
-                for name in &names {
-                    buf.extend_from_slice(&(name.len() as i32).to_le_bytes());
-                    buf.extend_from_slice(name.as_bytes());
-                }
-                let mem = caller
-                    .get_export("memory")
-                    .and_then(Extern::into_memory)
-                    .ok_or_else(|| Error::msg("actor has no memory"))?;
-                mem.write(&mut caller, base_ptr as usize, &buf)
-                    .map_err(|e| Error::msg(format!("writing staged list: {e}")))?;
-                Ok(())
-            },
-        )?;
-        linker.func_wrap(
-            "witchy",
-            "fill_pending",
-            |mut caller: Caller<'_, Host>, out_ptr: i32| -> Result<()> {
-                let staged = caller
-                    .data()
-                    .pending
-                    .lock()
-                    .unwrap()
-                    .take()
-                    .ok_or_else(|| Error::msg("fill_pending called with nothing staged"))?;
-                let mem = caller
-                    .get_export("memory")
-                    .and_then(Extern::into_memory)
-                    .ok_or_else(|| Error::msg("actor has no memory"))?;
-                mem.write(&mut caller, out_ptr as usize, &staged)
-                    .map_err(|e| Error::msg(format!("writing staged bytes: {e}")))?;
-                Ok(())
-            },
-        )?;
-        // Float -> string formatting, byte-identical to the interpreter's
-        // Display (same bridge `runtime.rs` links for ordinary modules).
-        linker.func_wrap(
-            "witchy",
-            "float_to_str",
-            |mut caller: Caller<'_, Host>, x: f64, out_ptr: i32| -> Result<i32> {
-                let bytes = format!("{x}").into_bytes();
-                let mem = caller
-                    .get_export("memory")
-                    .and_then(Extern::into_memory)
-                    .ok_or_else(|| Error::msg("actor has no memory"))?;
-                mem.write(&mut caller, out_ptr as usize, &bytes)
-                    .map_err(|e| Error::msg(format!("writing float string: {e}")))?;
-                Ok(bytes.len() as i32)
-            },
-        )?;
-        // The third argument is a pointer into the sender's memory to a field
-        // record `[count][f0]..[fN-1]` (the list layout). The fields are
-        // DECODED by the message tag's signature and copied now — an Int by
-        // value, a String by content (the slot holds a sender-memory pointer
-        // to `[len][bytes]`) — so the message carries values, not pointers,
-        // and actors stay isolated.
-        linker.func_wrap(
-            "witchy",
-            "send",
-            |mut caller: Caller<'_, Host>, target: i32, tag: i32, ptr: i32| -> Result<()> {
-                let sig = caller
-                    .data()
-                    .sigs
-                    .get(tag as usize)
-                    .map(|(_, fields)| fields.clone())
-                    .ok_or_else(|| Error::msg(format!("send with unknown tag {tag}")))?;
-                let fields = {
-                    let mem = caller
-                        .get_export("memory")
-                        .and_then(Extern::into_memory)
-                        .ok_or_else(|| Error::msg("actor has no memory"))?;
-                    let data = mem.data(&caller);
-                    let read = |off: i32| -> Result<i32> {
-                        let o = off as usize;
-                        let b = data
-                            .get(o..o + 4)
-                            .ok_or_else(|| Error::msg("send field out of bounds"))?;
-                        Ok(i32::from_le_bytes([b[0], b[1], b[2], b[3]]))
-                    };
-                    let count = read(ptr)?.max(0);
-                    let mut fs = Vec::with_capacity(count as usize);
-                    for i in 0..count {
-                        // Each element is an 8-byte slot: an Int, Subject id, or
-                        // string pointer lives in the low 4 bytes; a Float is
-                        // the full slot's f64 bits.
-                        let off = ptr + 4 + 8 * i;
-                        match sig.get(i as usize) {
-                            Some(MsgField::Str) => {
-                                let slot = read(off)?;
-                                let len = read(slot)?.max(0) as usize;
-                                let o = slot as usize + 4;
+                let count = read(ptr)?.max(0);
+                let mut fs = Vec::with_capacity(count as usize);
+                for i in 0..count {
+                    // Each element is an 8-byte slot: an Int, Subject id, or
+                    // string pointer lives in the low 4 bytes; a Float is
+                    // the full slot's f64 bits.
+                    let off = ptr + 4 + 8 * i;
+                    match sig.get(i as usize) {
+                        Some(MsgField::Str) => {
+                            let slot = read(off)?;
+                            let len = read(slot)?.max(0) as usize;
+                            let o = slot as usize + 4;
+                            let bytes = data
+                                .get(o..o + len)
+                                .ok_or_else(|| Error::msg("send string out of bounds"))?;
+                            fs.push(FieldVal::Str(String::from_utf8_lossy(bytes).into_owned()));
+                        }
+                        Some(MsgField::Float) => {
+                            let o = off as usize;
+                            let b = data
+                                .get(o..o + 8)
+                                .ok_or_else(|| Error::msg("send field out of bounds"))?;
+                            fs.push(FieldVal::Float(f64::from_le_bytes(
+                                b.try_into().expect("8-byte slice"),
+                            )));
+                        }
+                        Some(MsgField::IntList) => {
+                            let list = read(off)?;
+                            let n = read(list)?.max(0);
+                            let mut xs = Vec::with_capacity(n as usize);
+                            for j in 0..n {
+                                let o = (list + 4 + 8 * j) as usize;
+                                let b = data
+                                    .get(o..o + 8)
+                                    .ok_or_else(|| Error::msg("send list out of bounds"))?;
+                                xs.push(i64::from_le_bytes(b.try_into().expect("8 bytes")));
+                            }
+                            fs.push(FieldVal::IntList(xs));
+                        }
+                        Some(MsgField::StrList) => {
+                            let list = read(off)?;
+                            let n = read(list)?.max(0);
+                            let mut xs = Vec::with_capacity(n as usize);
+                            for j in 0..n {
+                                let sp = read(list + 4 + 8 * j)?;
+                                let len = read(sp)?.max(0) as usize;
+                                let o = sp as usize + 4;
                                 let bytes = data
                                     .get(o..o + len)
                                     .ok_or_else(|| Error::msg("send string out of bounds"))?;
-                                fs.push(FieldVal::Str(String::from_utf8_lossy(bytes).into_owned()));
+                                xs.push(String::from_utf8_lossy(bytes).into_owned());
                             }
-                            Some(MsgField::Float) => {
-                                let o = off as usize;
+                            fs.push(FieldVal::StrList(xs));
+                        }
+                        Some(MsgField::Tuple(elems)) => {
+                            let tup = read(off)?;
+                            let read64 = |o: i32| -> Result<i64> {
+                                let o = o as usize;
                                 let b = data
                                     .get(o..o + 8)
-                                    .ok_or_else(|| Error::msg("send field out of bounds"))?;
-                                fs.push(FieldVal::Float(f64::from_le_bytes(
-                                    b.try_into().expect("8-byte slice"),
-                                )));
-                            }
-                            Some(MsgField::IntList) => {
-                                let list = read(off)?;
-                                let n = read(list)?.max(0);
-                                let mut xs = Vec::with_capacity(n as usize);
-                                for j in 0..n {
-                                    let o = (list + 4 + 8 * j) as usize;
-                                    let b = data
-                                        .get(o..o + 8)
-                                        .ok_or_else(|| Error::msg("send list out of bounds"))?;
-                                    xs.push(i64::from_le_bytes(b.try_into().expect("8 bytes")));
-                                }
-                                fs.push(FieldVal::IntList(xs));
-                            }
-                            Some(MsgField::StrList) => {
-                                let list = read(off)?;
-                                let n = read(list)?.max(0);
-                                let mut xs = Vec::with_capacity(n as usize);
-                                for j in 0..n {
-                                    let sp = read(list + 4 + 8 * j)?;
-                                    let len = read(sp)?.max(0) as usize;
-                                    let o = sp as usize + 4;
-                                    let bytes = data
-                                        .get(o..o + len)
-                                        .ok_or_else(|| Error::msg("send string out of bounds"))?;
-                                    xs.push(String::from_utf8_lossy(bytes).into_owned());
-                                }
-                                fs.push(FieldVal::StrList(xs));
-                            }
-                            Some(MsgField::Tuple(elems)) => {
-                                let tup = read(off)?;
-                                let read64 = |o: i32| -> Result<i64> {
-                                    let o = o as usize;
-                                    let b = data
-                                        .get(o..o + 8)
-                                        .ok_or_else(|| Error::msg("send tuple out of bounds"))?;
-                                    Ok(i64::from_le_bytes(b.try_into().expect("8 bytes")))
-                                };
-                                let mut xs = Vec::with_capacity(elems.len());
-                                for (j, e) in elems.iter().enumerate() {
-                                    let slot = tup + 4 + 8 * j as i32;
-                                    match e {
-                                        MsgField::Float => {
-                                            xs.push(TupleElem::Float(f64::from_bits(
-                                                read64(slot)? as u64,
-                                            )));
-                                        }
-                                        MsgField::Str => {
-                                            let sp = read(slot)?;
-                                            let len = read(sp)?.max(0) as usize;
-                                            let o = sp as usize + 4;
-                                            let bytes = data.get(o..o + len).ok_or_else(|| {
-                                                Error::msg("send string out of bounds")
-                                            })?;
-                                            xs.push(TupleElem::Str(
-                                                String::from_utf8_lossy(bytes).into_owned(),
-                                            ));
-                                        }
-                                        _ => xs.push(TupleElem::Int(read64(slot)?)),
+                                    .ok_or_else(|| Error::msg("send tuple out of bounds"))?;
+                                Ok(i64::from_le_bytes(b.try_into().expect("8 bytes")))
+                            };
+                            let mut xs = Vec::with_capacity(elems.len());
+                            for (j, e) in elems.iter().enumerate() {
+                                let slot = tup + 4 + 8 * j as i32;
+                                match e {
+                                    MsgField::Float => {
+                                        xs.push(TupleElem::Float(f64::from_bits(
+                                            read64(slot)? as u64,
+                                        )));
                                     }
+                                    MsgField::Str => {
+                                        let sp = read(slot)?;
+                                        let len = read(sp)?.max(0) as usize;
+                                        let o = sp as usize + 4;
+                                        let bytes = data.get(o..o + len).ok_or_else(|| {
+                                            Error::msg("send string out of bounds")
+                                        })?;
+                                        xs.push(TupleElem::Str(
+                                            String::from_utf8_lossy(bytes).into_owned(),
+                                        ));
+                                    }
+                                    _ => xs.push(TupleElem::Int(read64(slot)?)),
                                 }
-                                fs.push(FieldVal::Tuple(xs));
                             }
-                            _ => fs.push(FieldVal::Int(read(off)?)),
+                            fs.push(FieldVal::Tuple(xs));
+                        }
+                        _ => fs.push(FieldVal::Int(read(off)?)),
+                    }
+                }
+                fs
+            };
+            send_queue.lock().unwrap().push_back((target as usize, tag as u32, fields));
+            Ok(())
+        },
+    )?;
+
+    // One spawn import per registered actor kind: translate the spawner's
+    // Dir/Net handles into payloads for the new VM's own tables, instantiate
+    // the kind's VM under ITS capability gate, set its value (Subject) and
+    // capability-handle globals, and hand back the new id. Console/Clock/Env
+    // arguments were erased at the call site — the gate carries them.
+    for (kname, kmodule, spec, gate) in shared.kinds.iter() {
+        let nvals = spec.iter().filter(|(_, k)| *k != SpawnArgKind::Erased).count();
+        let ty = wasmtime::FuncType::new(
+            &shared.engine,
+            std::iter::repeat(wasmtime::ValType::I32).take(nvals),
+            [wasmtime::ValType::I32],
+        );
+        let shared2 = shared.clone();
+        let kmodule = kmodule.clone();
+        let spec = spec.clone();
+        let kcaps = gate_caps(gate);
+        linker.func_new(
+            "witchy",
+            &format!("spawn_{kname}"),
+            ty,
+            move |caller: Caller<'_, ActorState>, params, results| {
+                // Resolve capability handles in the SPAWNER's tables first;
+                // the payloads seed the spawnee's own tables in field order.
+                let mut dirs: Vec<std::path::PathBuf> = Vec::new();
+                let mut nets: Vec<Vec<String>> = Vec::new();
+                let mut sets: Vec<(String, Val)> = Vec::new();
+                let mut pi = 0;
+                for (field, kind) in &spec {
+                    match kind {
+                        SpawnArgKind::Erased => {}
+                        SpawnArgKind::Value => {
+                            sets.push((field.clone(), params[pi].clone()));
+                            pi += 1;
+                        }
+                        SpawnArgKind::Dir => {
+                            let h = params[pi].i32().unwrap_or(-1);
+                            pi += 1;
+                            let path = caller
+                                .data()
+                                .dirs
+                                .get(h as usize)
+                                .cloned()
+                                .ok_or_else(|| {
+                                    Error::msg(format!("spawn {field}: unknown Dir handle {h}"))
+                                })?;
+                            sets.push((field.clone(), Val::I32(dirs.len() as i32)));
+                            dirs.push(path);
+                        }
+                        SpawnArgKind::Net => {
+                            let h = params[pi].i32().unwrap_or(-1);
+                            pi += 1;
+                            let allow = caller
+                                .data()
+                                .nets
+                                .get(h as usize)
+                                .cloned()
+                                .ok_or_else(|| {
+                                    Error::msg(format!("spawn {field}: unknown Net handle {h}"))
+                                })?;
+                            sets.push((field.clone(), Val::I32(nets.len() as i32)));
+                            nets.push(allow);
                         }
                     }
-                    fs
-                };
-                caller
-                    .data()
-                    .queue
-                    .lock()
-                    .unwrap()
-                    .push_back((target as usize, tag as u32, fields));
+                }
+                let (mut store, instance) = link_vm(&shared2, &kmodule, &kcaps, dirs, nets)?;
+                for (field, val) in sets {
+                    let g = instance.get_global(&mut store, &field).ok_or_else(|| {
+                        Error::msg(format!("spawned actor has no exported global `{field}`"))
+                    })?;
+                    g.set(&mut store, val)?;
+                }
+                let mut actors = shared2.actors.lock().unwrap();
+                actors.push(Some((store, instance)));
+                results[0] = Val::I32((actors.len() - 1) as i32);
                 Ok(())
             },
         )?;
-
-        // One spawn import per registered actor kind: instantiate the kind's
-        // own VM, set its value (Subject) arguments by exported global, and
-        // hand back the new id. Capability args were erased at the call site.
-        for (kname, kmodule, spec) in shared.kinds.iter() {
-            let nvals = spec.iter().filter(|(_, v)| *v).count();
-            let ty = wasmtime::FuncType::new(
-                &shared.engine,
-                std::iter::repeat(wasmtime::ValType::I32).take(nvals),
-                [wasmtime::ValType::I32],
-            );
-            let shared2 = shared.clone();
-            let kmodule = kmodule.clone();
-            let spec = spec.clone();
-            linker.func_new(
-                "witchy",
-                &format!("spawn_{kname}"),
-                ty,
-                move |_caller, params, results| {
-                    let (mut store, instance) = link_vm(&shared2, &kmodule)?;
-                    let mut pi = 0;
-                    for (field, is_value) in &spec {
-                        if *is_value {
-                            let g = instance.get_global(&mut store, field).ok_or_else(|| {
-                                Error::msg(format!("spawned actor has no exported global `{field}`"))
-                            })?;
-                            g.set(&mut store, params[pi].clone())?;
-                            pi += 1;
-                        }
-                    }
-                    let mut actors = shared2.actors.lock().unwrap();
-                    actors.push(Some((store, instance)));
-                    results[0] = Val::I32((actors.len() - 1) as i32);
-                    Ok(())
-                },
-            )?;
-        }
-
-        let instance = linker.instantiate(&mut store, module)?;
-        Ok((store, instance))
     }
+
+    let instance = linker.instantiate(&mut store, module)?;
+    Ok((store, instance))
 }
 
 impl System {
@@ -568,7 +571,8 @@ impl System {
         driver_wat: &str,
         actor_wats: &[(String, String)],
         sigs: Vec<MessageSig>,
-        specs: Vec<(String, Vec<(String, bool)>)>,
+        specs: Vec<(String, Vec<(String, SpawnArgKind)>, KindGate)>,
+        driver_caps: &Capabilities,
     ) -> Result<Vec<String>> {
         // WITCHY_PARALLEL_ACTORS=N drains with N worker threads (shared-
         // nothing parallelism across actor VMs); the default stays the
@@ -578,7 +582,7 @@ impl System {
             .ok()
             .and_then(|v| v.parse::<usize>().ok())
             .unwrap_or(0);
-        Self::run_program_with_workers(driver_wat, actor_wats, sigs, specs, workers)
+        Self::run_program_with_workers(driver_wat, actor_wats, sigs, specs, driver_caps, workers)
     }
 
     /// `run_program` with an explicit drain width: `workers > 1` uses the
@@ -588,26 +592,30 @@ impl System {
         driver_wat: &str,
         actor_wats: &[(String, String)],
         sigs: Vec<MessageSig>,
-        specs: Vec<(String, Vec<(String, bool)>)>,
+        specs: Vec<(String, Vec<(String, SpawnArgKind)>, KindGate)>,
+        driver_caps: &Capabilities,
         workers: usize,
     ) -> Result<Vec<String>> {
         let engine = speed_engine();
         let mut kinds = Vec::new();
         for (name, wat) in actor_wats {
             let module = Module::new(&engine, crate::runtime::optimize_module(wat.as_bytes()))?;
-            let spec = specs
+            let (spec, gate) = specs
                 .iter()
-                .find(|(n, _)| n == name)
-                .map(|(_, s)| s.clone())
+                .find(|(n, _, _)| n == name)
+                .map(|(_, s, g)| (s.clone(), *g))
                 .unwrap_or_default();
-            kinds.push((name.clone(), module, spec));
+            kinds.push((name.clone(), module, spec, gate));
         }
         let mut sys = System::new_with_kinds(engine, sigs, kinds);
         let driver = Module::new(&sys.shared.engine, crate::runtime::optimize_module(driver_wat.as_bytes()))?;
         // The driver lives OUTSIDE the actor table (it has no handlers and
         // must not hold the table's lock while running, since its spawns
-        // take that lock).
-        let (mut dstore, dinstance) = link_vm(&sys.shared, &driver)?;
+        // take that lock). Its grant comes from the host: the dev/differential
+        // grant for `run`/`parity`, the computed footprint for `sandbox`.
+        let ddirs = driver_caps.dir_root.iter().cloned().collect();
+        let dnets = driver_caps.net_allow.iter().cloned().collect();
+        let (mut dstore, dinstance) = link_vm(&sys.shared, &driver, driver_caps, ddirs, dnets)?;
         let run = dinstance.get_typed_func::<(), ()>(&mut dstore, "run")?;
         run.call(&mut dstore, ())?;
         if workers > 1 {
@@ -646,7 +654,7 @@ impl System {
                             let (lock, cv) = &*sched;
                             let mut st = lock.lock().unwrap();
                             loop {
-                                let mut grabbed: Option<(Msg, (Store<Host>, Instance))> = None;
+                                let mut grabbed: Option<(Msg, (Store<ActorState>, Instance))> = None;
                                 {
                                     let mut q = shared.queue.lock().unwrap();
                                     while let Some(msg) = q.pop_front() {
@@ -765,7 +773,7 @@ impl System {
 
     /// Call the handler on a taken-out actor (no table lock held).
     fn deliver(
-        store: &mut Store<Host>,
+        store: &mut Store<ActorState>,
         instance: &Instance,
         name: &str,
         fields: &[FieldVal],
@@ -879,16 +887,24 @@ fn speed_engine() -> Engine {
     Engine::new(&config).unwrap_or_default()
 }
 
-fn set_cell(caller: &Caller<'_, Host>, idx: i32, cell: StateCell) {
-    let mut cells = caller.data().cells.lock().unwrap();
+fn set_cell(caller: &mut Caller<'_, ActorState>, idx: i32, cell: StateCell) {
+    let cells = &mut caller.data_mut().sys.as_mut().expect("system actor").cells;
     if cells.len() <= idx as usize {
         cells.resize(idx as usize + 1, None);
     }
     cells[idx as usize] = Some(cell);
 }
 
-fn get_cell(caller: &Caller<'_, Host>, idx: i32) -> Option<StateCell> {
-    caller.data().cells.lock().unwrap().get(idx as usize).cloned().flatten()
+fn get_cell(caller: &mut Caller<'_, ActorState>, idx: i32) -> Option<StateCell> {
+    caller
+        .data()
+        .sys
+        .as_ref()
+        .expect("system actor")
+        .cells
+        .get(idx as usize)
+        .cloned()
+        .flatten()
 }
 
 /// Read a guest `[count][i64 slots]` list.
@@ -925,7 +941,7 @@ fn read_le_i32(data: &[u8], off: i32) -> Result<i32> {
 
 /// Reserve guest memory via the actor's `__msg_alloc` (which adds the 4-byte
 /// header to its argument) and write a complete `[len/count][payload]` block.
-fn write_block(store: &mut Store<Host>, instance: &Instance, block: &[u8]) -> Result<i32> {
+fn write_block(store: &mut Store<ActorState>, instance: &Instance, block: &[u8]) -> Result<i32> {
     let alloc = instance.get_typed_func::<i32, i32>(&mut *store, "__msg_alloc")?;
     let p = alloc.call(&mut *store, (block.len() - 4) as i32)?;
     let mem = instance
@@ -1203,7 +1219,7 @@ impl Source:
             let module = parser::parse_module(src).expect("parse");
             let (driver, actors, sigs, specs) =
                 codegen::compile_system(&module).expect("compile system");
-            let out = System::run_program(&driver, &actors, sigs, specs).expect("run program");
+            let out = System::run_program(&driver, &actors, sigs, specs, &dev_caps()).expect("run program");
             let interp = crate::interpreter::run_with(src, ".", Vec::new()).expect("interp");
             assert_eq!(out, interp, "compiled actor system must match the interpreter");
         }
@@ -1248,10 +1264,10 @@ fn main(console: Console):
         let (driver, actors, sigs, specs) =
             codegen::compile_system(&module).expect("compile system");
         let out =
-            System::run_program_with_workers(&driver, &actors, sigs.clone(), specs.clone(), 4)
+            System::run_program_with_workers(&driver, &actors, sigs.clone(), specs.clone(), &dev_caps(), 4)
                 .expect("parallel run");
         let serial =
-            System::run_program(&driver, &actors, sigs, specs).expect("serial run");
+            System::run_program(&driver, &actors, sigs, specs, &dev_caps()).expect("serial run");
         let mut sorted_out = out.clone();
         sorted_out.sort();
         let mut sorted_serial = serial.clone();
@@ -1269,6 +1285,132 @@ fn main(console: Console):
             assert_eq!(nums, expected, "per-actor FIFO must hold for {tag}");
             assert_eq!(nums.len(), 50, "all {tag} messages delivered");
         }
+    }
+
+    /// CAPABILITY-HOLDING ACTORS: an actor's `Dir` field is a real handle
+    /// into its own VM's host-side table. Spawn TRANSLATES the spawner's
+    /// handle (here an attenuated `subdir`), so the spawned worker reads
+    /// inside the subtree but cannot even see the parent's files — identical
+    /// to the interpreter, which threads the capability value itself.
+    #[test]
+    fn actor_dir_fields_transfer_attenuated_through_spawn() {
+        let tmp = std::env::temp_dir().join(format!("witchy_actorcap_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(tmp.join("sub")).unwrap();
+        std::fs::write(tmp.join("note.txt"), "outer note").unwrap();
+        std::fs::write(tmp.join("sub/inner.txt"), "inner secret").unwrap();
+        let src = r#"
+actor Confined:
+    console: Console
+    dir: Dir
+    on Read(name: String):
+        print(console, read(dir, name))
+    on Probe():
+        if exists(dir, "note.txt"):
+            print(console, "sees outer note.txt")
+        else:
+            print(console, "outer note.txt invisible")
+
+actor Spawner:
+    console: Console
+    dir: Dir
+    on Go():
+        let worker = spawn Confined(console, subdir(dir, "sub"))
+        send(worker, Read("inner.txt"))
+        send(worker, Probe())
+
+fn main(console: Console, dir: Dir):
+    let s = spawn Spawner(console, dir)
+    send(s, Go())
+"#;
+        let module = parser::parse_module(src).expect("parse");
+        let (driver, actors, sigs, specs) =
+            codegen::compile_system(&module).expect("compile system");
+        let mut caps = dev_caps();
+        caps.dir_root = Some(tmp.clone());
+        let out = System::run_program(&driver, &actors, sigs, specs, &caps)
+            .expect("run program");
+        let interp = crate::interpreter::run_with(src, &tmp, Vec::new()).expect("interp");
+        assert_eq!(out, interp, "compiled actor system must match the interpreter");
+        assert_eq!(out, vec!["inner secret", "outer note.txt invisible"]);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Clock fields work in compiled actors (`now(clock)` under the gated
+    /// import), and a console-less actor (Subject field only) participates
+    /// without ever holding a `print` import.
+    #[test]
+    fn actor_clock_field_and_consoleless_actor() {
+        let src = r#"
+actor Timer:
+    console: Console
+    clock: Clock
+    on Tick():
+        if now(clock) > 0:
+            print(console, "ticked")
+        else:
+            print(console, "no time")
+
+actor Quiet:
+    out: Subject
+    on Relay(n: Int):
+        send(out, Tick())
+
+fn main(console: Console, clock: Clock):
+    let t = spawn Timer(console, clock)
+    let q = spawn Quiet(t)
+    send(q, Relay(1))
+"#;
+        let module = parser::parse_module(src).expect("parse");
+        let (driver, actors, sigs, specs) =
+            codegen::compile_system(&module).expect("compile system");
+        let out = System::run_program(&driver, &actors, sigs, specs, &dev_caps())
+            .expect("run program");
+        let interp = crate::interpreter::run_with(src, ".", Vec::new()).expect("interp");
+        assert_eq!(out, interp);
+        assert_eq!(out, vec!["ticked"]);
+    }
+
+    /// THE GATE, at the module level: each actor's compiled module imports
+    /// only the host families its own code (and so its own fields) uses — a
+    /// console-only actor carries no `dir_*`/`now`/`net_*` import for the
+    /// host to even consider, and the link gate (derived from its fields)
+    /// wouldn't define them anyway.
+    #[test]
+    fn actor_modules_import_only_their_own_capability_families() {
+        let src = r#"
+actor Logger:
+    console: Console
+    on Log(msg: String):
+        print(console, msg)
+
+actor Reader:
+    console: Console
+    dir: Dir
+    on Read(name: String):
+        print(console, read(dir, name))
+
+fn main(console: Console, dir: Dir):
+    let l = spawn Logger(console)
+    let r = spawn Reader(console, dir)
+    send(l, Log("hi"))
+"#;
+        let module = parser::parse_module(src).expect("parse");
+        let (_driver, actors, _sigs, specs) =
+            codegen::compile_system(&module).expect("compile system");
+        let logger = &actors.iter().find(|(n, _)| n == "Logger").unwrap().1;
+        let reader = &actors.iter().find(|(n, _)| n == "Reader").unwrap().1;
+        for forbidden in ["dir_read", "dir_write", "\"now\"", "net_connect", "net_listen"] {
+            assert!(
+                !logger.contains(forbidden),
+                "Logger must not import {forbidden}"
+            );
+        }
+        assert!(reader.contains("dir_read"), "Reader uses its Dir");
+        let (_, _, lgate) = specs.iter().find(|(n, _, _)| n == "Logger").unwrap();
+        assert!(lgate.print && !lgate.dir_read && !lgate.dir_write && !lgate.clock);
+        let (_, _, rgate) = specs.iter().find(|(n, _, _)| n == "Reader").unwrap();
+        assert!(rgate.print && rgate.dir_read && rgate.dir_write);
     }
 
     /// A RECORD message field travels on the tuple wire — `[0 tag][slots]`,
@@ -1305,7 +1447,7 @@ fn main(console: Console):
         let module = parser::parse_module(src).expect("parse");
         let (driver, actors, sigs, specs) =
             codegen::compile_system(&module).expect("compile system");
-        let out = System::run_program(&driver, &actors, sigs, specs).expect("run program");
+        let out = System::run_program(&driver, &actors, sigs, specs, &dev_caps()).expect("run program");
         let interp = crate::interpreter::run_with(src, ".", Vec::new()).expect("interp");
         assert_eq!(out, interp, "record messages must match the interpreter");
         assert_eq!(out, vec!["temp=1.5/7"]);
@@ -1341,7 +1483,7 @@ fn main(console: Console):
         let module = parser::parse_module(src).expect("parse");
         let (driver, actors, sigs, specs) =
             codegen::compile_system(&module).expect("compile system");
-        let out = System::run_program(&driver, &actors, sigs, specs).expect("run program");
+        let out = System::run_program(&driver, &actors, sigs, specs, &dev_caps()).expect("run program");
         let interp = crate::interpreter::run_with(src, ".", Vec::new()).expect("interp");
         assert_eq!(out, interp, "handler spawns must match the interpreter");
         assert_eq!(out, vec!["worker did task 1", "worker did task 2"]);

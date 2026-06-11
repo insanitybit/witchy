@@ -120,7 +120,10 @@ impl Mailboxes {
     }
 }
 
-/// Host-side state owned by each actor's `Store`.
+/// Host-side state owned by each actor's `Store` — for BOTH runtimes: the
+/// single-module sandbox (`Runtime::spawn`) and the compiled actor system
+/// (`actor_system::System`, which carries its extra state in `sys`). One
+/// state type means one set of capability host functions.
 pub struct ActorState {
     id: ActorId,
     caps: Capabilities,
@@ -129,20 +132,20 @@ pub struct ActorState {
     limits: StoreLimits,
     /// Everything the actor has printed (via the `print`/`print_int`
     /// capabilities), so the host can observe a compiled program's output.
-    output: Arc<Mutex<Vec<String>>>,
+    pub(crate) output: Arc<Mutex<Vec<String>>>,
     /// The `Dir` capability handle table: index 0 is the granted root, and each
     /// `subdir` mints a new confined entry. Guest code only ever holds the i32
     /// index — the paths live host-side, so a module cannot forge a directory.
-    dirs: Vec<std::path::PathBuf>,
+    pub(crate) dirs: Vec<std::path::PathBuf>,
     /// A host->guest transfer staged by a size-probing call (`dir_read_len`,
     /// `net_recv_*_len`, ...) and consumed by the matching `fill_pending`, so
     /// the data is read once with no time-of-check/time-of-use gap.
-    pending: Option<Vec<u8>>,
+    pub(crate) pending: Option<Vec<u8>>,
     /// A staged directory listing (`dir_list_size` -> `dir_list_write`).
-    pending_list: Option<Vec<String>>,
+    pub(crate) pending_list: Option<Vec<String>>,
     /// The `Net` capability handle table: index 0 is the granted allowlist,
     /// and each `restrict` mints a narrower entry — host-side, unforgeable.
-    nets: Vec<Vec<String>>,
+    pub(crate) nets: Vec<Vec<String>>,
     /// Open sockets, indexed by the guest's i32 Socket handles.
     sockets: Vec<std::io::BufReader<std::net::TcpStream>>,
     /// Listening server sockets, indexed by the guest's i32 Listener handles.
@@ -151,6 +154,40 @@ pub struct ActorState {
     /// (`BuildRead`) — host-side, so a guest holds only an opaque handle.
     build_out: Option<std::path::PathBuf>,
     build_read_roots: Vec<std::path::PathBuf>,
+    /// Actor-system extension (message cells, etc.) — `None` for ordinary
+    /// single-module runs.
+    pub(crate) sys: Option<crate::actor_system::SysState>,
+}
+
+/// Construct the host state for one VM of the compiled ACTOR SYSTEM: shared
+/// output, capability tables seeded by the spawner's translated grants, and
+/// the system extension. The mailbox machinery is unused there (the system
+/// has its own typed queue) but kept inert for one state type.
+pub(crate) fn system_state(
+    caps: &Capabilities,
+    output: Arc<Mutex<Vec<String>>>,
+    dirs: Vec<std::path::PathBuf>,
+    nets: Vec<Vec<String>>,
+    sys: crate::actor_system::SysState,
+) -> ActorState {
+    let mailboxes = Arc::new(Mailboxes::default());
+    ActorState {
+        id: 0,
+        caps: caps.clone(),
+        mailbox: mailboxes.get_or_create(0),
+        mailboxes,
+        limits: StoreLimitsBuilder::new().build(),
+        output,
+        dirs,
+        pending: None,
+        pending_list: None,
+        nets,
+        sockets: Vec::new(),
+        listeners: Vec::new(),
+        build_out: caps.build_out.clone(),
+        build_read_roots: caps.build_read_roots.clone(),
+        sys: Some(sys),
+    }
 }
 
 /// A spawned actor: an isolated VM plus the entrypoint we can drive.
@@ -290,6 +327,7 @@ impl Runtime {
             listeners: Vec::new(),
             build_out: caps.build_out.clone(),
             build_read_roots: caps.build_read_roots.clone(),
+            sys: None,
         };
 
         let mut store = Store::new(&self.engine, state);
@@ -302,101 +340,15 @@ impl Runtime {
         }
 
         let mut linker: Linker<ActorState> = Linker::new(&self.engine);
-        // --- capability wiring: only granted host functions are defined ---
-        if caps.print {
-            linker.func_wrap("witchy", "print", host_print)?;
-        }
+        link_capability_imports(&mut linker, &caps)?;
+        // `send` (the byte-mailbox flavor) and `recv` are this runtime's own:
+        // the actor SYSTEM defines its typed `send` instead.
         if caps.send {
             linker.func_wrap("witchy", "send", host_send)?;
         }
-        if caps.print_int {
-            linker.func_wrap("witchy", "print_int", host_print_int)?;
-            // Same "print a computed result" facility, for a Float-returning main.
-            linker.func_wrap("witchy", "print_float", host_print_float)?;
-        }
-        if caps.clock {
-            linker.func_wrap("witchy", "now", host_now)?;
-        }
-        if caps.env {
-            linker.func_wrap("witchy", "env_len", host_env_len)?;
-            linker.func_wrap("witchy", "env_fill", host_env_fill)?;
-        }
-        // The Dir family is linked per RIGHT, so a module compiled against a
-        // write operation cannot even instantiate under a read-only grant.
-        if caps.dir_root.is_some() && caps.dir_read {
-            linker.func_wrap("witchy", "dir_subdir", host_dir_subdir)?;
-            linker.func_wrap("witchy", "dir_read_len", host_dir_read_len)?;
-            linker.func_wrap("witchy", "dir_exists", host_dir_exists)?;
-            linker.func_wrap("witchy", "dir_is_dir", host_dir_is_dir)?;
-            linker.func_wrap("witchy", "dir_list_size", host_dir_list_size)?;
-        }
-        if caps.dir_root.is_some() && caps.dir_write {
-            linker.func_wrap("witchy", "dir_write", host_dir_write)?;
-            linker.func_wrap("witchy", "dir_make_dir", host_dir_make_dir)?;
-        }
-        // The Net family, linked per VERB right. Socket I/O carries no authority
-        // of its own (a socket is only obtainable through a granted connect or
-        // accept), so it is linked under either verb.
-        let net = caps.net_allow.is_some();
-        if net && caps.net_connect {
-            linker.func_wrap("witchy", "net_restrict", host_net_restrict)?;
-            linker.func_wrap("witchy", "net_connect", host_net_connect)?;
-        }
-        if net && caps.net_listen {
-            linker.func_wrap("witchy", "net_listen", host_net_listen)?;
-            linker.func_wrap("witchy", "net_accept", host_net_accept)?;
-        }
-        if net && (caps.net_connect || caps.net_listen) {
-            linker.func_wrap("witchy", "net_send_line", host_net_send_line)?;
-            linker.func_wrap("witchy", "net_send_bytes", host_net_send_bytes)?;
-            linker.func_wrap("witchy", "net_recv_line_len", host_net_recv_line_len)?;
-            linker.func_wrap("witchy", "net_recv_all_len", host_net_recv_all_len)?;
-            linker.func_wrap("witchy", "net_recv_bytes_len", host_net_recv_bytes_len)?;
-            linker.func_wrap("witchy", "net_close", host_net_close)?;
-        }
-        // The Secret capability: the seed never enters guest memory — the
-        // host signs and reports the public key on the guest's behalf.
-        if caps.signing_key.is_some() {
-            linker.func_wrap("witchy", "crypto.sign", host_crypto_sign)?;
-            linker.func_wrap("witchy", "crypto.public_key", host_crypto_public_key)?;
-        }
-        // The build-time capabilities. Like Dir, each is linked only when granted
-        // — a build step compiled against `write_out` cannot even instantiate
-        // without a `BuildOut` grant, and `read_build` without a `BuildRead` one.
-        if caps.build_out.is_some() {
-            linker.func_wrap("witchy", "build_out_write", host_build_out_write)?;
-        }
-        if !caps.build_read_roots.is_empty() {
-            // `read_build` is staged like `dir_read`; `fill_pending` (linked
-            // unconditionally below) does the transfer.
-            linker.func_wrap("witchy", "build_read_len", host_build_read_len)?;
-        }
-        // `fill_pending` / `write_pending_list` only write out data already
-        // staged by a granted size call — no authority of their own, so they are
-        // always available. `args_size` stages the host-chosen argv (pure
-        // input, not authority), so it is always available too.
-        linker.func_wrap("witchy", "fill_pending", host_fill_pending)?;
-        linker.func_wrap("witchy", "write_pending_list", host_write_pending_list)?;
-        linker.func_wrap("witchy", "args_size", host_args_size)?;
         // `recv` is intrinsic: reading your *own* mailbox is not authority over
         // anyone else, so every actor may do it.
         linker.func_wrap("witchy", "recv", host_recv)?;
-        // Native-stdlib functions are pure (no authority), so they're always
-        // available — the same `crypto` module the interpreter exposes, here as a
-        // host import that bridges to the shared `native` registry.
-        linker.func_wrap("witchy", "crypto.ed25519_verify", host_ed25519_verify)?;
-        linker.func_wrap("witchy", "crypto.sha256", host_sha256)?;
-        linker.func_wrap("witchy", "crypto.rune_hash", host_crypto_rune_hash)?;
-        // The compiler's footprint analyses are pure functions of their source
-        // arguments — the toolchain exposed to witchy, same registry bridge.
-        linker.func_wrap("witchy", "compiler_footprint_len", host_compiler_footprint_len)?;
-        linker.func_wrap("witchy", "compiler_diff_len", host_compiler_diff_len)?;
-        // Float -> string formatting is pure; done in the host so it is byte-
-        // identical to the interpreter's `Display` (no float formatter in WAT).
-        linker.func_wrap("witchy", "float_to_str", host_float_to_str)?;
-        // hex/base64 transforms are pure; bridged to the same native registry the
-        // interpreter uses (byte-for-byte parity, no byte-level work in WAT).
-        linker.func_wrap("witchy", "encoding", host_encoding)?;
 
         // Ungranted capability imports are rejected here.
         let instance = linker.instantiate(&mut store, &module)?;
@@ -426,6 +378,106 @@ impl Runtime {
 // Host functions = capabilities. Each reads/writes the *calling* actor's own
 // linear memory via `Caller`; none can touch another actor's memory.
 // ---------------------------------------------------------------------------
+
+/// Register the capability host imports a grant entitles a VM to — shared by
+/// the single-module sandbox (`Runtime::spawn`) and the compiled actor system
+/// (`actor_system::link_vm`). Only granted families are defined; a module
+/// compiled against an ungranted operation cannot even instantiate.
+pub(crate) fn link_capability_imports(
+    linker: &mut Linker<ActorState>,
+    caps: &Capabilities,
+) -> Result<()> {
+    // --- capability wiring: only granted host functions are defined ---
+    if caps.print {
+        linker.func_wrap("witchy", "print", host_print)?;
+    }
+    if caps.print_int {
+        linker.func_wrap("witchy", "print_int", host_print_int)?;
+        // Same "print a computed result" facility, for a Float-returning main.
+        linker.func_wrap("witchy", "print_float", host_print_float)?;
+    }
+    if caps.clock {
+        linker.func_wrap("witchy", "now", host_now)?;
+    }
+    if caps.env {
+        linker.func_wrap("witchy", "env_len", host_env_len)?;
+        linker.func_wrap("witchy", "env_fill", host_env_fill)?;
+    }
+    // The Dir family is linked per RIGHT, so a module compiled against a
+    // write operation cannot even instantiate under a read-only grant.
+    if caps.dir_root.is_some() && caps.dir_read {
+        linker.func_wrap("witchy", "dir_subdir", host_dir_subdir)?;
+        linker.func_wrap("witchy", "dir_read_len", host_dir_read_len)?;
+        linker.func_wrap("witchy", "dir_exists", host_dir_exists)?;
+        linker.func_wrap("witchy", "dir_is_dir", host_dir_is_dir)?;
+        linker.func_wrap("witchy", "dir_list_size", host_dir_list_size)?;
+    }
+    if caps.dir_root.is_some() && caps.dir_write {
+        linker.func_wrap("witchy", "dir_write", host_dir_write)?;
+        linker.func_wrap("witchy", "dir_make_dir", host_dir_make_dir)?;
+    }
+    // The Net family, linked per VERB right. Socket I/O carries no authority
+    // of its own (a socket is only obtainable through a granted connect or
+    // accept), so it is linked under either verb.
+    let net = caps.net_allow.is_some();
+    if net && caps.net_connect {
+        linker.func_wrap("witchy", "net_restrict", host_net_restrict)?;
+        linker.func_wrap("witchy", "net_connect", host_net_connect)?;
+    }
+    if net && caps.net_listen {
+        linker.func_wrap("witchy", "net_listen", host_net_listen)?;
+        linker.func_wrap("witchy", "net_accept", host_net_accept)?;
+    }
+    if net && (caps.net_connect || caps.net_listen) {
+        linker.func_wrap("witchy", "net_send_line", host_net_send_line)?;
+        linker.func_wrap("witchy", "net_send_bytes", host_net_send_bytes)?;
+        linker.func_wrap("witchy", "net_recv_line_len", host_net_recv_line_len)?;
+        linker.func_wrap("witchy", "net_recv_all_len", host_net_recv_all_len)?;
+        linker.func_wrap("witchy", "net_recv_bytes_len", host_net_recv_bytes_len)?;
+        linker.func_wrap("witchy", "net_close", host_net_close)?;
+    }
+    // The Secret capability: the seed never enters guest memory — the
+    // host signs and reports the public key on the guest's behalf.
+    if caps.signing_key.is_some() {
+        linker.func_wrap("witchy", "crypto.sign", host_crypto_sign)?;
+        linker.func_wrap("witchy", "crypto.public_key", host_crypto_public_key)?;
+    }
+    // The build-time capabilities. Like Dir, each is linked only when granted
+    // — a build step compiled against `write_out` cannot even instantiate
+    // without a `BuildOut` grant, and `read_build` without a `BuildRead` one.
+    if caps.build_out.is_some() {
+        linker.func_wrap("witchy", "build_out_write", host_build_out_write)?;
+    }
+    if !caps.build_read_roots.is_empty() {
+        // `read_build` is staged like `dir_read`; `fill_pending` (linked
+        // unconditionally below) does the transfer.
+        linker.func_wrap("witchy", "build_read_len", host_build_read_len)?;
+    }
+    // `fill_pending` / `write_pending_list` only write out data already
+    // staged by a granted size call — no authority of their own, so they are
+    // always available. `args_size` stages the host-chosen argv (pure
+    // input, not authority), so it is always available too.
+    linker.func_wrap("witchy", "fill_pending", host_fill_pending)?;
+    linker.func_wrap("witchy", "write_pending_list", host_write_pending_list)?;
+    linker.func_wrap("witchy", "args_size", host_args_size)?;
+    // Native-stdlib functions are pure (no authority), so they're always
+    // available — the same `crypto` module the interpreter exposes, here as a
+    // host import that bridges to the shared `native` registry.
+    linker.func_wrap("witchy", "crypto.ed25519_verify", host_ed25519_verify)?;
+    linker.func_wrap("witchy", "crypto.sha256", host_sha256)?;
+    linker.func_wrap("witchy", "crypto.rune_hash", host_crypto_rune_hash)?;
+    // The compiler's footprint analyses are pure functions of their source
+    // arguments — the toolchain exposed to witchy, same registry bridge.
+    linker.func_wrap("witchy", "compiler_footprint_len", host_compiler_footprint_len)?;
+    linker.func_wrap("witchy", "compiler_diff_len", host_compiler_diff_len)?;
+    // Float -> string formatting is pure; done in the host so it is byte-
+    // identical to the interpreter's `Display` (no float formatter in WAT).
+    linker.func_wrap("witchy", "float_to_str", host_float_to_str)?;
+    // hex/base64 transforms are pure; bridged to the same native registry the
+    // interpreter uses (byte-for-byte parity, no byte-level work in WAT).
+    linker.func_wrap("witchy", "encoding", host_encoding)?;
+    Ok(())
+}
 
 fn host_print(mut caller: Caller<'_, ActorState>, ptr: i32, len: i32) -> Result<()> {
     let mem = memory_of(&mut caller)?;
