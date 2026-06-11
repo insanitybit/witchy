@@ -19,11 +19,11 @@
 //! `send` between compiled actors crosses the VM boundary by value: Int, Float,
 //! and Subject fields are copied (passing a Subject delegates send authority);
 //! String, List(Int), List(String), and scalar-tuple fields are read out of the
-//! sender by content and re-laid out in the receiver (`__msg_alloc`). `spawn`
-//! compiles everywhere in an actor-system program — from `main` (the driver)
-//! and from handlers (delivery takes the running actor out of the table, so
-//! the new VM registers without deadlock). Not yet compiled: record message
-//! parameters — errors clearly.
+//! sender by content and re-laid out in the receiver (`__msg_alloc`); records
+//! of scalars/strings travel on the tuple wire. `spawn` compiles everywhere in
+//! an actor-system program — from `main` (the driver) and from handlers
+//! (delivery takes the running actor out of the table, so the new VM
+//! registers without deadlock).
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -5457,7 +5457,10 @@ pub type MessageSig = (String, Vec<MsgField>);
 /// WAT) pairs and the tag -> message-signature table.
 pub type CompiledActors = (Vec<(String, String)>, Vec<MessageSig>);
 
-fn message_sig_of(h: &crate::ast::Handler) -> Result<Vec<MsgField>, CodegenError> {
+fn message_sig_of(
+    h: &crate::ast::Handler,
+    records: &HashMap<String, Vec<Type>>,
+) -> Result<Vec<MsgField>, CodegenError> {
     h.params
         .iter()
         .map(|p| match &p.ty {
@@ -5482,6 +5485,23 @@ fn message_sig_of(h: &crate::ast::Handler) -> Result<Vec<MsgField>, CodegenError
                         Type::Named(n, _) if n == "String" => Ok(MsgField::Str),
                         _ => cerr(format!(
                             "handler `{}` param `{}`: tuple members must be Int, Float, or String",
+                            h.message, p.name
+                        )),
+                    })
+                    .collect();
+                Ok(MsgField::Tuple(elems?))
+            }
+            // A RECORD travels on the tuple wire: same `[0 tag][slots]` layout,
+            // each field at its own kind, strings by content.
+            Some(Type::Named(t, _)) if records.contains_key(t) => {
+                let elems: Result<Vec<MsgField>, CodegenError> = records[t]
+                    .iter()
+                    .map(|ty| match ty {
+                        Type::Named(n, _) if n == "Int" => Ok(MsgField::Int),
+                        Type::Named(n, _) if n == "Float" => Ok(MsgField::Float),
+                        Type::Named(n, _) if n == "String" => Ok(MsgField::Str),
+                        _ => cerr(format!(
+                            "handler `{}` param `{}`: record fields must be Int, Float, or String",
                             h.message, p.name
                         )),
                     })
@@ -5543,13 +5563,37 @@ fn spawn_specs(module: &Module) -> HashMap<String, Vec<(String, bool)>> {
     spawnable
 }
 
+/// The module's RECORD types (single named-field constructor) -> field types,
+/// for message-signature derivation.
+fn record_types_of(module: &Module) -> HashMap<String, Vec<Type>> {
+    let mut out = HashMap::new();
+    for item in &module.items {
+        if let Item::Type(t) = item {
+            if let [variant] = t.variants.as_slice() {
+                if !variant.field_names.is_empty() {
+                    out.insert(t.name.clone(), variant.fields.clone());
+                }
+            }
+        }
+    }
+    out
+}
+
 pub fn compile_program(module: &Module) -> Result<CompiledActors, CodegenError> {
+    // Lower the WHOLE module once (records -> positional ctors, traits, sugar)
+    // so actor handler bodies and the helper functions they call agree with
+    // the driver on every synthetic name and shape.
+    let recs =
+        crate::records::lower(module.clone()).map_err(|message| CodegenError { message })?;
+    let mut parent = crate::traits::lower_for_wasm(recs);
+    crate::parser::lower_sugar_module(&mut parent);
+    let records = record_types_of(&parent);
     let mut tag_of: HashMap<String, u32> = HashMap::new();
     let mut sigs: Vec<MessageSig> = Vec::new();
-    for item in &module.items {
+    for item in &parent.items {
         if let Item::Actor(a) = item {
             for h in &a.handlers {
-                let sig = message_sig_of(h)?;
+                let sig = message_sig_of(h, &records)?;
                 match tag_of.get(&h.message) {
                     None => {
                         tag_of.insert(h.message.clone(), sigs.len() as u32);
@@ -5568,17 +5612,14 @@ pub fn compile_program(module: &Module) -> Result<CompiledActors, CodegenError> 
             }
         }
     }
-    // Each actor module carries the parent module's plain functions its
-    // handlers (transitively) call — lowered the same way the driver lowers
-    // them, so the two agree on synthetic names and specializations.
-    let recs =
-        crate::records::lower(module.clone()).map_err(|message| CodegenError { message })?;
-    let mut parent = crate::traits::lower_for_wasm(recs);
-    crate::parser::lower_sugar_module(&mut parent);
+    // Each actor compiles FROM the lowered module (so record construction in
+    // handler bodies is already positional) and carries the parent module's
+    // plain functions its handlers (transitively) call.
+    let specs = spawn_specs(&parent);
     let mut actors = Vec::new();
-    for item in &module.items {
+    for item in &parent.items {
         if let Item::Actor(a) = item {
-            actors.push((a.name.clone(), compile_actor_in(a, &tag_of, &parent, &spawn_specs(module))?));
+            actors.push((a.name.clone(), compile_actor_in(a, &tag_of, &parent, &specs)?));
         }
     }
     Ok((actors, sigs))
@@ -5829,7 +5870,7 @@ fn compile_actor_in(
     // handler's own params/lets start from this snapshot.
     let field_kinds = cg.locals.clone();
     for h in &actor.handlers {
-        let sig = message_sig_of(h)?;
+        let sig = message_sig_of(h, &record_types_of(parent))?;
         cg.locals = field_kinds.clone();
         let mut header = format!("  (func (export \"{}\") ", h.message);
         for (p, kind) in h.params.iter().zip(&sig) {
@@ -5839,6 +5880,13 @@ fn compile_actor_in(
             // delivery.
             let wasm_ty = if *kind == MsgField::Float { "f64" } else { "i32" };
             header.push_str(&format!("(param ${} {wasm_ty}) ", p.name));
+            // A record-typed param resolves `p.field` through the registered
+            // record metadata (it travels on the tuple wire).
+            if let Some(Type::Named(tn, _)) = &p.ty {
+                if cg.record_fields.contains_key(tn) {
+                    cg.local_records.insert(p.name.clone(), tn.clone());
+                }
+            }
             match kind {
                 MsgField::Int => {
                     cg.local_val_types.insert(p.name.clone(), ValType::Int);

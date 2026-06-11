@@ -1066,6 +1066,46 @@ impl Source:
         }
     }
 
+    /// A RECORD message field travels on the tuple wire — `[0 tag][slots]`,
+    /// each field at its own kind, strings by content — and the receiving
+    /// handler reads it with ordinary field access. Driven through a full
+    /// program (main spawns both actors) and diffed against the interpreter.
+    #[test]
+    fn record_message_params_cross_vms_by_content() {
+        let src = r#"
+type Reading:
+    sensor: String
+    value: Float
+    count: Int
+
+actor Sink:
+    console: Console
+
+impl Sink:
+    on Entry(r: Reading):
+        print(console, r.sensor <> "=" <> to_string(r.value) <> "/" <> int_to_string(r.count))
+
+actor Source:
+    target: Subject
+
+impl Source:
+    on Go(n: Int):
+        send(target, Entry(Reading(sensor: "temp", value: 1.5, count: n)))
+
+fn main(console: Console):
+    let collector = spawn Sink(console)
+    let source = spawn Source(collector)
+    send(source, Go(7))
+"#;
+        let module = parser::parse_module(src).expect("parse");
+        let (driver, actors, sigs, specs) =
+            codegen::compile_system(&module).expect("compile system");
+        let out = System::run_program(&driver, &actors, sigs, specs).expect("run program");
+        let interp = crate::interpreter::run_with(src, ".", Vec::new()).expect("interp");
+        assert_eq!(out, interp, "record messages must match the interpreter");
+        assert_eq!(out, vec!["temp=1.5/7"]);
+    }
+
     /// `spawn` INSIDE a handler: delivery takes the spawning actor out of the
     /// table for the duration of the call, so its spawn host import registers
     /// the new VM without deadlocking — a supervisor spawns a fresh Worker
