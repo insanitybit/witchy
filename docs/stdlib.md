@@ -30,13 +30,13 @@ True when `s` is non-empty and every character is an ASCII digit — a safe guar
 
 compiler — witchy's own toolchain, exposed to witchy programs.
 
-A native intrinsic module (implemented in Rust, like `crypto`): it gives a program access to the compiler's capability analyzer, so a (self-hosted) package manager can compute a rune's supply-chain footprint from within witchy. Interpreter-only; the body below is a placeholder the runtime never executes (the call is intercepted by its qualified name). The capability footprint of witchy `source`, as JSON:   {"total":[..],"entries":[{"name":..,"capabilities":[..],"brands":[..]}]} or {"error":".."} if the source does not parse. Parse it with `import json`.
+A native intrinsic module (implemented in Rust, like `crypto`): it gives a program access to the compiler's capability analyzer, so a (self-hosted) package manager can compute a rune's supply-chain footprint from within witchy — on either backend. The body below is a placeholder the runtime never executes (the call is intercepted by its qualified name). The capability footprint of witchy `source`, as JSON:   {"total":[..],"entries":[{"name":..,"capabilities":[..],"brands":[..]}]} or {"error":".."} if the source does not parse. Parse it with `import json`.
 
 #### `fn footprint(source: String) -> String`
 
 compiler — witchy's own toolchain, exposed to witchy programs.
 
-A native intrinsic module (implemented in Rust, like `crypto`): it gives a program access to the compiler's capability analyzer, so a (self-hosted) package manager can compute a rune's supply-chain footprint from within witchy. Interpreter-only; the body below is a placeholder the runtime never executes (the call is intercepted by its qualified name). The capability footprint of witchy `source`, as JSON:   {"total":[..],"entries":[{"name":..,"capabilities":[..],"brands":[..]}]} or {"error":".."} if the source does not parse. Parse it with `import json`.
+A native intrinsic module (implemented in Rust, like `crypto`): it gives a program access to the compiler's capability analyzer, so a (self-hosted) package manager can compute a rune's supply-chain footprint from within witchy — on either backend. The body below is a placeholder the runtime never executes (the call is intercepted by its qualified name). The capability footprint of witchy `source`, as JSON:   {"total":[..],"entries":[{"name":..,"capabilities":[..],"brands":[..]}]} or {"error":".."} if the source does not parse. Parse it with `import json`.
 
 #### `fn diff(old: String, new: String) -> String`
 
@@ -46,13 +46,13 @@ Compare two sources by capability footprint, as JSON:   {"widened":bool,"added":
 
 crypto — cryptographic hashing and signatures.
 
-Like Go's `crypto/*` packages, these are *native intrinsics*: SHA-256 and Ed25519 cannot be expressed in witchy itself (no byte access; elliptic-curve field arithmetic), so the interpreter implements them in Rust. They are reachable only through this module — there is no global builtin. The function bodies below are placeholders the runtime never executes: the interpreter intercepts each call by its qualified name (`crypto.sha256`), and the WASM backend rejects it as interpreter-only. SHA-256 of a string's UTF-8 bytes, as 64 lowercase hex characters.
+Like Go's `crypto/*` packages, these are *native intrinsics*: SHA-256 and Ed25519 cannot be expressed in witchy itself (no byte access; elliptic-curve field arithmetic), so they are implemented in Rust. They are reachable only through this module — there is no global builtin. The function bodies below are placeholders the runtime never executes: the interpreter intercepts each call by its qualified name (`crypto.sha256`), and the WASM backend bridges it to the same implementation as a host import. SHA-256 of a string's UTF-8 bytes, as 64 lowercase hex characters.
 
 #### `fn sha256(data: String) -> String`
 
 crypto — cryptographic hashing and signatures.
 
-Like Go's `crypto/*` packages, these are *native intrinsics*: SHA-256 and Ed25519 cannot be expressed in witchy itself (no byte access; elliptic-curve field arithmetic), so the interpreter implements them in Rust. They are reachable only through this module — there is no global builtin. The function bodies below are placeholders the runtime never executes: the interpreter intercepts each call by its qualified name (`crypto.sha256`), and the WASM backend rejects it as interpreter-only. SHA-256 of a string's UTF-8 bytes, as 64 lowercase hex characters.
+Like Go's `crypto/*` packages, these are *native intrinsics*: SHA-256 and Ed25519 cannot be expressed in witchy itself (no byte access; elliptic-curve field arithmetic), so they are implemented in Rust. They are reachable only through this module — there is no global builtin. The function bodies below are placeholders the runtime never executes: the interpreter intercepts each call by its qualified name (`crypto.sha256`), and the WASM backend bridges it to the same implementation as a host import. SHA-256 of a string's UTF-8 bytes, as 64 lowercase hex characters.
 
 #### `fn rune_hash(paths: List(String), contents: List(String)) -> String`
 
@@ -204,7 +204,7 @@ Parse a duration string to a `Duration` — the inverse of `human`. Accepts unit
 
 encoding — hex and base64 over a string's UTF-8 bytes.
 
-Like `crypto`, these are native intrinsics: they need byte-level access that witchy strings don't expose, so the interpreter implements them in Rust and the WASM backend treats them as interpreter-only. The function bodies below are placeholders the runtime never executes — each call is intercepted by its qualified name (`encoding.hex_encode`, …). Decoding is lenient (lossy UTF-8 for non-text payloads), never an error.
+Like `crypto`, these are native intrinsics: they need byte-level access that witchy strings don't expose, so they are implemented in Rust — the interpreter runs them directly, and the WASM backend bridges each to the same implementation as a host import. The function bodies below are placeholders the runtime never executes — each call is intercepted by its qualified name (`encoding.hex_encode`, …). Decoding is lenient (lossy UTF-8 for non-text payloads), never an error.
 
 #### `fn hex_encode(data: String) -> String`
 
@@ -292,7 +292,7 @@ The first / second component of a pair — handy for the tuples `iter.zip` and `
 
 ## `http`
 
-HTTP types and a small HTTP/1.1 *client* over the `Net` capability — the witchy answer to a slice of Go's net/http (and reqwest's shape). Pure transport built on the capability-gated socket primitives: a module handed a `Net` restricted to some hosts can reach only those, and one handed no `Net` can't reach the network at all. The `server` module builds on the shared `Request`/`Response` types here. Interpreter-only for now (compiled networking maps to wasi:sockets, a future step).
+HTTP types and a small HTTP/1.1 *client* over the `Net` capability — the witchy answer to a slice of Go's net/http (and reqwest's shape). Pure transport built on the capability-gated socket primitives: a module handed a `Net` restricted to some hosts can reach only those, and one handed no `Net` can't reach the network at all. The `server` module builds on the shared `Request`/`Response` types here. Runs on both backends: the socket primitives compile to capability-gated host imports, so a compiled module's import list IS its network footprint.
 
 #### `type Response`
 

@@ -4112,6 +4112,106 @@ mod example_tests {
         assert_eq!(link_run(&prog("tampered")), vec!["bad"]);
     }
 
+    fn wasm_run(src: &str) -> Vec<String> {
+        let module = parser::parse_module(src).expect("parse");
+        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        typeck::check(&linked).expect("typecheck");
+        let wat = codegen::compile_module(&linked).expect("compile");
+        crate::run_wat_capture(&wat).expect("wasm run")
+    }
+
+    /// `crypto.rune_hash` produces the same store hash (`src/pm/store.rs`
+    /// format) on both backends — the host walks the guest's string lists.
+    #[test]
+    fn crypto_rune_hash_runs_in_the_wasm_backend() {
+        let prog = "import crypto\nfn main(console: Console):\n    print(console, crypto.rune_hash([\"a.witchy\", \"b.witchy\"], [\"fn one\", \"fn two\"]))\n";
+        let out = wasm_run(prog);
+        assert_eq!(out, link_run(prog));
+        assert!(out[0].starts_with("sha256:") && out[0].len() == 71, "{out:?}");
+    }
+
+    /// `compiler.footprint` runs in the WASM backend (staged-JSON host bridge)
+    /// and agrees byte-for-byte with the interpreter — a self-hosted package
+    /// manager can compute footprints from inside the sandbox.
+    #[test]
+    fn compiler_footprint_runs_in_the_wasm_backend() {
+        let prog = "import compiler\nfn main(console: Console):\n    print(console, compiler.footprint(\"pub fn read_all(d: Dir[Read]) -> String:\\n    read(d, \\\"x\\\")\\n\"))\n";
+        let out = wasm_run(prog);
+        assert_eq!(out, link_run(prog));
+        assert!(out[0].contains("Dir[Read]"), "{out:?}");
+    }
+
+    /// `compiler.diff` runs in the WASM backend and flags widening exactly as
+    /// the interpreter does.
+    #[test]
+    fn compiler_diff_runs_in_the_wasm_backend() {
+        let prog = "import compiler\nfn main(console: Console):\n    let old = \"pub fn pure(x: Int) -> Int:\\n    x\\n\"\n    let new = \"pub fn pure(x: Int, d: Dir) -> Int:\\n    x\\n\"\n    print(console, compiler.diff(old, new))\n";
+        let out = wasm_run(prog);
+        assert_eq!(out, link_run(prog));
+        assert!(out[0].contains("\"widened\":true"), "{out:?}");
+    }
+
+    /// The full `std/http` client runs in the WASM backend: a real GET against
+    /// a local server returns the same status and body on both backends.
+    #[test]
+    fn std_http_client_runs_in_the_wasm_backend() {
+        use crate::runtime::{Capabilities, Runtime};
+        use std::io::{BufRead, Write};
+        let server = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = server.local_addr().unwrap().port();
+        let addr = format!("127.0.0.1:{port}");
+        // One request per backend run: consume the request head, reply 200.
+        let handle = std::thread::spawn(move || {
+            for _ in 0..2 {
+                let (stream, _) = server.accept().expect("accept");
+                let mut reader = std::io::BufReader::new(stream);
+                let mut line = String::new();
+                loop {
+                    line.clear();
+                    reader.read_line(&mut line).expect("read");
+                    if line == "\r\n" || line == "\n" || line.is_empty() {
+                        break;
+                    }
+                }
+                reader
+                    .get_mut()
+                    .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 5\r\n\r\nhello")
+                    .expect("write");
+            }
+        });
+
+        let src = format!(
+            "import http\nfn main(console: Console, net: Net):\n    let res = http.get(net, \"127.0.0.1\", {port}, \"/greet\")\n    print(console, f\"{{http.status(res)}} {{http.body(res)}}\")\n"
+        );
+        let want = vec!["200 hello".to_string()];
+        let module = parser::parse_module(&src).expect("parse");
+        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        typeck::check(&linked).expect("typecheck");
+        assert_eq!(
+            interpreter::run_module(linked.clone(), ".", vec![addr.clone()]).expect("interp"),
+            want,
+            "interpreter"
+        );
+        let wat = codegen::compile_module(&linked).expect("compile");
+        let mut rt = Runtime::batch().expect("runtime");
+        let mut actor = rt
+            .spawn(
+                wat.as_bytes(),
+                Capabilities {
+                    print: true,
+                    quiet: true,
+                    net_allow: Some(vec![addr]),
+                    net_connect: true,
+                    ..Default::default()
+                },
+                64,
+            )
+            .expect("spawn");
+        actor.run().expect("run");
+        assert_eq!(actor.output(), want, "compiled WASM must agree");
+        handle.join().expect("server thread");
+    }
+
     /// Signing round-trips entirely in witchy: a host-granted `Secret`
     /// capability signs a message (`crypto.sign`), and `crypto.ed25519_verify`
     /// against the key's public half (`crypto.public_key`) accepts it. Without a

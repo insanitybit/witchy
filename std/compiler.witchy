@@ -3,7 +3,7 @@
 // A native intrinsic module (implemented in Rust, like `crypto`): it gives a
 // program access to the compiler's capability analyzer, so a (self-hosted)
 // package manager can compute a rune's supply-chain footprint from within
-// witchy. Interpreter-only; the body below is a placeholder the runtime never
+// witchy — on either backend. The body below is a placeholder the runtime never
 // executes (the call is intercepted by its qualified name).
 // The capability footprint of witchy `source`, as JSON:
 //   {"total":[..],"entries":[{"name":..,"capabilities":[..],"brands":[..]}]}

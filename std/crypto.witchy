@@ -2,11 +2,11 @@
 //
 // Like Go's `crypto/*` packages, these are *native intrinsics*: SHA-256 and
 // Ed25519 cannot be expressed in witchy itself (no byte access; elliptic-curve
-// field arithmetic), so the interpreter implements them in Rust. They are
-// reachable only through this module — there is no global builtin. The function
-// bodies below are placeholders the runtime never executes: the interpreter
-// intercepts each call by its qualified name (`crypto.sha256`), and the WASM
-// backend rejects it as interpreter-only.
+// field arithmetic), so they are implemented in Rust. They are reachable only
+// through this module — there is no global builtin. The function bodies below
+// are placeholders the runtime never executes: the interpreter intercepts each
+// call by its qualified name (`crypto.sha256`), and the WASM backend bridges it
+// to the same implementation as a host import.
 // SHA-256 of a string's UTF-8 bytes, as 64 lowercase hex characters.
 pub fn sha256(data: String) -> String:
     data

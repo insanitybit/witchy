@@ -210,6 +210,7 @@ cargo build --release
 
 ```
 witchy [--net <host:port>]... <file.witchy>   run a program
+                                              ([--signing-key <seed-file>] grants the root Secret)
 witchy check    <file.witchy>                 type-check without running
 witchy parity   <file.witchy>                 run on both backends, confirm identical output
 witchy sandbox [--dir <root>] [--net <addr>]... <file.witchy> [args...]
@@ -225,6 +226,7 @@ witchy test     <file.witchy|dir>             run in-language tests
 witchy fmt [--check] <file.witchy>            reformat (--check: verify only)
 witchy doc      <file.witchy>                 extract Markdown API docs
 witchy lsp                                    run the language server
+witchy --bench                                compare interpreter vs compiled execution
 witchy new/add/build/run/publish/...          package-manager commands
 ```
 

@@ -417,6 +417,12 @@ struct Codegen {
     uses_crypto_ed25519_verify: bool,
     /// Whether the `crypto.sha256` host import + guest helper are needed.
     uses_crypto_sha256: bool,
+    /// Whether the `crypto.rune_hash` host import + guest helper are needed.
+    uses_crypto_rune_hash: bool,
+    /// Whether the `compiler.footprint` host import + guest helper are needed.
+    uses_compiler_footprint: bool,
+    /// Whether the `compiler.diff` host import + guest helper are needed.
+    uses_compiler_diff: bool,
     /// Whether the `float_to_str` host import + guest helper are needed (float
     /// `to_string`).
     uses_float_to_str: bool,
@@ -696,6 +702,9 @@ impl Codegen {
             uses_starts_with: false,
             uses_crypto_ed25519_verify: false,
             uses_crypto_sha256: false,
+            uses_crypto_rune_hash: false,
+            uses_compiler_footprint: false,
+            uses_compiler_diff: false,
             uses_float_to_str: false,
             uses_encoding: false,
             uses_float_ord: false,
@@ -921,6 +930,7 @@ impl Codegen {
             Expr::Call { name, .. } => match name.as_str() {
                 "int_to_string" | "to_string" | "to_upper" | "to_lower" | "trim" | "replace"
                 | "substring" | "crypto.sha256" | "crypto.sign" | "crypto.public_key" | "read"
+                | "crypto.rune_hash" | "compiler.footprint" | "compiler.diff"
                 | "recv_line" | "recv_all" | "recv_bytes" => ValType::Str,
                 "starts_with" | "ends_with" | "contains" | "has" | "exists" | "is_dir"
                 | "crypto.ed25519_verify" => ValType::Bool,
@@ -1673,6 +1683,9 @@ impl Codegen {
             || self.uses_dict
             || self.uses_dict_iter
             || self.uses_crypto_sha256
+            || self.uses_crypto_rune_hash
+            || self.uses_compiler_footprint
+            || self.uses_compiler_diff
             || self.uses_float_to_str
             || self.uses_encoding
             || self.uses_get_env
@@ -1710,6 +1723,23 @@ impl Codegen {
             // crypto.sha256(in_header_ptr, out_data_ptr): the host writes 64 hex
             // bytes at out_data_ptr (the guest pre-allocates the result string).
             s.push_str("  (import \"witchy\" \"crypto.sha256\" (func $crypto_sha256_host (param i32 i32)))\n");
+        }
+        if self.uses_crypto_rune_hash {
+            // crypto.rune_hash(paths_ptr, contents_ptr, out_data_ptr): the host
+            // walks both guest string lists and writes the fixed 71-byte
+            // `sha256:<hex>` store hash at out_data_ptr.
+            s.push_str("  (import \"witchy\" \"crypto.rune_hash\" (func $crypto_rune_hash_host (param i32 i32 i32)))\n");
+        }
+        if self.uses_compiler_footprint {
+            // compiler_footprint_len(src_ptr) -> JSON byte length: the host
+            // computes and stages the footprint JSON; `fill_pending` writes it
+            // (the dir_read staging protocol).
+            s.push_str("  (import \"witchy\" \"compiler_footprint_len\" (func $compiler_footprint_len_host (param i32) (result i32)))\n");
+        }
+        if self.uses_compiler_diff {
+            // compiler_diff_len(old_ptr, new_ptr) -> JSON byte length: staged like
+            // compiler_footprint_len.
+            s.push_str("  (import \"witchy\" \"compiler_diff_len\" (func $compiler_diff_len_host (param i32 i32) (result i32)))\n");
         }
         if self.uses_float_to_str {
             // float_to_str(x, out_data_ptr) -> byte length: the host formats `x`
@@ -1813,12 +1843,14 @@ impl Codegen {
             s.push_str("  (import \"witchy\" \"net_close\" (func $net_close_host (param i32)))\n");
         }
         // `fill_pending` is the shared, authority-free transfer primitive for
-        // every staged read (Dir read, Net recv) — emitted once.
+        // every staged read (Dir read, Net recv, compiler JSON) — emitted once.
         if self.used_dir_ops.contains("read")
             || self.used_build_ops.contains("read_build")
             || self.used_net_ops.contains("recv_line")
             || self.used_net_ops.contains("recv_all")
             || self.used_net_ops.contains("recv_bytes")
+            || self.uses_compiler_footprint
+            || self.uses_compiler_diff
         {
             s.push_str("  (import \"witchy\" \"fill_pending\" (func $fill_pending_host (param i32)))\n");
         }
@@ -1873,6 +1905,15 @@ impl Codegen {
         // import fills its 64 hex bytes.
         if self.uses_crypto_sha256 {
             s.push_str(CRYPTO_SHA256_WAT);
+        }
+        if self.uses_crypto_rune_hash {
+            s.push_str(CRYPTO_RUNE_HASH_WAT);
+        }
+        if self.uses_compiler_footprint {
+            s.push_str(COMPILER_FOOTPRINT_WAT);
+        }
+        if self.uses_compiler_diff {
+            s.push_str(COMPILER_DIFF_WAT);
         }
         if self.uses_float_to_str {
             s.push_str(FLOAT_TO_STR_WAT);
@@ -3896,9 +3937,35 @@ impl Codegen {
             ("encoding.hex_decode", 1) => self.compile_encoding(1, &args[0]),
             ("encoding.base64_encode", 1) => self.compile_encoding(2, &args[0]),
             ("encoding.base64_decode", 1) => self.compile_encoding(3, &args[0]),
-            // Any remaining native-stdlib functions aren't bridged into WASM yet.
+            // `crypto.rune_hash(paths, contents) -> String`: both args are guest
+            // string lists; the host walks them and writes the fixed 71-byte
+            // `sha256:<hex>` store hash into the guest-allocated result.
+            ("crypto.rune_hash", 2) => {
+                self.uses_crypto_rune_hash = true;
+                let paths = self.compile_expr(&args[0])?;
+                let contents = self.compile_expr(&args[1])?;
+                Ok(format!("{paths}{contents}    call $crypto_rune_hash\n"))
+            }
+            // `compiler.footprint(src)` / `compiler.diff(old, new)`: pure
+            // toolchain analyses returning JSON of unpredictable size — the host
+            // computes and stages the result at the `_len` call, the guest
+            // allocates `[len][bytes]`, and `fill_pending` writes the bytes.
+            ("compiler.footprint", 1) => {
+                self.uses_compiler_footprint = true;
+                let src = self.compile_expr(&args[0])?;
+                Ok(format!("{src}    call $compiler_footprint\n"))
+            }
+            ("compiler.diff", 2) => {
+                self.uses_compiler_diff = true;
+                let old = self.compile_expr(&args[0])?;
+                let new = self.compile_expr(&args[1])?;
+                Ok(format!("{old}{new}    call $compiler_diff\n"))
+            }
+            // Safety net: every registered native is bridged above; a future
+            // native added without a bridge fails loudly here instead of
+            // miscompiling as an unknown user function.
             (n, _) if crate::native::is_native(n) => {
-                cerr(format!("`{n}` is interpreter-only (not compiled to WASM)"))
+                cerr(format!("`{n}` is not bridged into WASM yet"))
             }
             // `now(clock)`: the Clock capability argument is type-level only (like
             // print's Console); the host import is the authority, linked only when
@@ -5592,6 +5659,48 @@ const CRYPTO_SHA256_WAT: &str = r#"  (func $crypto_sha256 (param $in i32) (resul
     (i32.store (local.get $res) (i32.const 64))
     (call $crypto_sha256_host (local.get $in) (i32.add (local.get $res) (i32.const 4)))
     (global.set $heap (i32.add (local.get $res) (i32.const 68)))
+    (local.get $res))
+"#;
+
+// rune_hash(paths, contents): the store's content hash of a rune's files — a
+// fixed 71-byte `sha256:<64 hex>` string. The host walks both guest lists and
+// runs the same native implementation the interpreter (and `src/pm/store.rs`)
+// uses, so all three agree byte-for-byte.
+const CRYPTO_RUNE_HASH_WAT: &str = r#"  (func $crypto_rune_hash (param $paths i32) (param $contents i32) (result i32)
+    (local $res i32)
+    (call $ensure (i32.const 75))
+    (local.set $res (global.get $heap))
+    (i32.store (local.get $res) (i32.const 71))
+    (call $crypto_rune_hash_host (local.get $paths) (local.get $contents) (i32.add (local.get $res) (i32.const 4)))
+    (global.set $heap (i32.add (local.get $res) (i32.const 75)))
+    (local.get $res))
+"#;
+
+// footprint(src): the capability-footprint JSON of witchy source. The host
+// computes and stages the JSON at the `_len` call (no compute/fill race), the
+// guest allocates `[len][bytes]`, and `fill_pending` writes the bytes — the
+// same staging protocol as `dir_read`.
+const COMPILER_FOOTPRINT_WAT: &str = r#"  (func $compiler_footprint (param $src i32) (result i32)
+    (local $len i32) (local $res i32)
+    (local.set $len (call $compiler_footprint_len_host (local.get $src)))
+    (call $ensure (i32.add (local.get $len) (i32.const 4)))
+    (local.set $res (global.get $heap))
+    (i32.store (local.get $res) (local.get $len))
+    (call $fill_pending_host (i32.add (local.get $res) (i32.const 4)))
+    (global.set $heap (i32.add (i32.add (local.get $res) (i32.const 4)) (local.get $len)))
+    (local.get $res))
+"#;
+
+// diff(old, new): the footprint-diff JSON of two witchy sources — staged like
+// `compiler_footprint`.
+const COMPILER_DIFF_WAT: &str = r#"  (func $compiler_diff (param $old i32) (param $new i32) (result i32)
+    (local $len i32) (local $res i32)
+    (local.set $len (call $compiler_diff_len_host (local.get $old) (local.get $new)))
+    (call $ensure (i32.add (local.get $len) (i32.const 4)))
+    (local.set $res (global.get $heap))
+    (i32.store (local.get $res) (local.get $len))
+    (call $fill_pending_host (i32.add (local.get $res) (i32.const 4)))
+    (global.set $heap (i32.add (i32.add (local.get $res) (i32.const 4)) (local.get $len)))
     (local.get $res))
 "#;
 

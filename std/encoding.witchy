@@ -1,11 +1,12 @@
 // encoding — hex and base64 over a string's UTF-8 bytes.
 //
 // Like `crypto`, these are native intrinsics: they need byte-level access that
-// witchy strings don't expose, so the interpreter implements them in Rust and the
-// WASM backend treats them as interpreter-only. The function bodies below are
-// placeholders the runtime never executes — each call is intercepted by its
-// qualified name (`encoding.hex_encode`, …). Decoding is lenient (lossy UTF-8 for
-// non-text payloads), never an error.
+// witchy strings don't expose, so they are implemented in Rust — the interpreter
+// runs them directly, and the WASM backend bridges each to the same
+// implementation as a host import. The function bodies below are placeholders
+// the runtime never executes — each call is intercepted by its qualified name
+// (`encoding.hex_encode`, …). Decoding is lenient (lossy UTF-8 for non-text
+// payloads), never an error.
 
 // Lowercase hex of `data`'s UTF-8 bytes.
 pub fn hex_encode(data: String) -> String:

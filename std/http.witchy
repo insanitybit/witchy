@@ -3,8 +3,9 @@
 // transport built on the capability-gated socket primitives: a module handed a
 // `Net` restricted to some hosts can reach only those, and one handed no `Net`
 // can't reach the network at all. The `server` module builds on the shared
-// `Request`/`Response` types here. Interpreter-only for now (compiled networking
-// maps to wasi:sockets, a future step).
+// `Request`/`Response` types here. Runs on both backends: the socket primitives
+// compile to capability-gated host imports, so a compiled module's import list
+// IS its network footprint.
 
 // `header` returns Option; `get_url` returns Result; `url` parses URL strings.
 

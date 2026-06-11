@@ -369,6 +369,11 @@ impl Runtime {
         // host import that bridges to the shared `native` registry.
         linker.func_wrap("witchy", "crypto.ed25519_verify", host_ed25519_verify)?;
         linker.func_wrap("witchy", "crypto.sha256", host_sha256)?;
+        linker.func_wrap("witchy", "crypto.rune_hash", host_crypto_rune_hash)?;
+        // The compiler's footprint analyses are pure functions of their source
+        // arguments — the toolchain exposed to witchy, same registry bridge.
+        linker.func_wrap("witchy", "compiler_footprint_len", host_compiler_footprint_len)?;
+        linker.func_wrap("witchy", "compiler_diff_len", host_compiler_diff_len)?;
         // Float -> string formatting is pure; done in the host so it is byte-
         // identical to the interpreter's `Display` (no float formatter in WAT).
         linker.func_wrap("witchy", "float_to_str", host_float_to_str)?;
@@ -524,6 +529,75 @@ fn host_sha256(mut caller: Caller<'_, ActorState>, in_ptr: i32, out_ptr: i32) ->
     }
     mem.write(&mut caller, out_ptr as usize, hex.as_bytes())
         .map_err(|e| Error::msg(format!("writing sha256 result into guest memory: {e}")))
+}
+
+/// `crypto.rune_hash(paths_ptr, contents_ptr, out_data_ptr)`: read both guest
+/// string lists, compute the store's content hash through the shared native
+/// registry, and write the fixed 71-byte `sha256:<hex>` result into the
+/// guest-allocated string.
+fn host_crypto_rune_hash(
+    mut caller: Caller<'_, ActorState>,
+    paths_ptr: i32,
+    contents_ptr: i32,
+    out_ptr: i32,
+) -> Result<()> {
+    use crate::interpreter::Value;
+    let mem = memory_of(&mut caller)?;
+    let paths = read_wstr_list(mem.data(&caller), paths_ptr)?;
+    let contents = read_wstr_list(mem.data(&caller), contents_ptr)?;
+    let to_list = |xs: Vec<String>| Value::List(xs.into_iter().map(Value::Str).collect());
+    let f = crate::native::lookup("crypto.rune_hash")
+        .ok_or_else(|| Error::msg("crypto.rune_hash is not registered"))?;
+    let hash = match f(&[to_list(paths), to_list(contents)]).map_err(|e| Error::msg(e.message))? {
+        Value::Str(s) => s,
+        _ => return Err(Error::msg("crypto.rune_hash did not return a String")),
+    };
+    if hash.len() != 71 {
+        return Err(Error::msg("crypto.rune_hash result is not 71 bytes"));
+    }
+    mem.write(&mut caller, out_ptr as usize, hash.as_bytes())
+        .map_err(|e| Error::msg(format!("writing rune_hash result into guest memory: {e}")))
+}
+
+/// `compiler_footprint_len(src_ptr) -> Int`: compute the capability-footprint
+/// JSON of the guest's source string through the shared native registry, stage
+/// it for `fill_pending`, and report its byte length.
+fn host_compiler_footprint_len(mut caller: Caller<'_, ActorState>, src_ptr: i32) -> Result<i32> {
+    use crate::interpreter::Value;
+    let mem = memory_of(&mut caller)?;
+    let src = read_wstr(mem.data(&caller), src_ptr)?;
+    let f = crate::native::lookup("compiler.footprint")
+        .ok_or_else(|| Error::msg("compiler.footprint is not registered"))?;
+    let json = match f(&[Value::Str(src)]).map_err(|e| Error::msg(e.message))? {
+        Value::Str(s) => s,
+        _ => return Err(Error::msg("compiler.footprint did not return a String")),
+    };
+    let len = json.len() as i32;
+    caller.data_mut().pending = Some(json.into_bytes());
+    Ok(len)
+}
+
+/// `compiler_diff_len(old_ptr, new_ptr) -> Int`: compute the footprint-diff
+/// JSON of two guest source strings, stage it for `fill_pending`, and report
+/// its byte length.
+fn host_compiler_diff_len(
+    mut caller: Caller<'_, ActorState>,
+    old_ptr: i32,
+    new_ptr: i32,
+) -> Result<i32> {
+    use crate::interpreter::Value;
+    let mem = memory_of(&mut caller)?;
+    let old_src = read_wstr(mem.data(&caller), old_ptr)?;
+    let new_src = read_wstr(mem.data(&caller), new_ptr)?;
+    let f = crate::native::lookup("compiler.diff")
+        .ok_or_else(|| Error::msg("compiler.diff is not registered"))?;
+    let json = match f(&[Value::Str(old_src), Value::Str(new_src)]).map_err(|e| Error::msg(e.message))? {
+        Value::Str(s) => s,
+        _ => return Err(Error::msg("compiler.diff did not return a String")),
+    };
+    let len = json.len() as i32;
+    caller.data_mut().pending = Some(json.into_bytes());
+    Ok(len)
 }
 
 /// `encoding.*(op, in_header_ptr, out_data_ptr) -> byte length`: read the input
@@ -1030,6 +1104,22 @@ fn read_wstr(data: &[u8], ptr: i32) -> Result<String> {
     let len = i32::from_le_bytes([len_bytes[0], len_bytes[1], len_bytes[2], len_bytes[3]]);
     let bytes = slice(data, ptr + 4, len)?;
     Ok(String::from_utf8_lossy(bytes).into_owned())
+}
+
+/// Read a guest `List(String)` — `[count: i32][count x i64 string pointers]`,
+/// the layout `write_pending_list` produces and list literals share.
+fn read_wstr_list(data: &[u8], ptr: i32) -> Result<Vec<String>> {
+    let len_bytes = slice(data, ptr, 4)?;
+    let len = i32::from_le_bytes([len_bytes[0], len_bytes[1], len_bytes[2], len_bytes[3]]);
+    let mut out = Vec::with_capacity(len.max(0) as usize);
+    for i in 0..len {
+        let slot = slice(data, ptr + 4 + 8 * i, 8)?;
+        let elem = i64::from_le_bytes([
+            slot[0], slot[1], slot[2], slot[3], slot[4], slot[5], slot[6], slot[7],
+        ]);
+        out.push(read_wstr(data, elem as i32)?);
+    }
+    Ok(out)
 }
 
 fn memory_of(caller: &mut Caller<'_, ActorState>) -> Result<Memory> {
