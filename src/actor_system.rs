@@ -201,6 +201,7 @@ fn link_vm(
         SysState { cells: Vec::new() },
     );
     let mut store = Store::new(&shared.engine, state);
+    store.limiter(|s| &mut s.limits);
     let mut linker: Linker<ActorState> = Linker::new(&shared.engine);
     // The gated capability surface — print/clock/env/dir/net families exactly
     // as granted, plus the authority-free staples (fill_pending,

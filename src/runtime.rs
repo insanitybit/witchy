@@ -129,7 +129,7 @@ pub struct ActorState {
     caps: Capabilities,
     mailbox: Mailbox,
     mailboxes: Arc<Mailboxes>,
-    limits: StoreLimits,
+    pub(crate) limits: StoreLimits,
     /// Everything the actor has printed (via the `print`/`print_int`
     /// capabilities), so the host can observe a compiled program's output.
     pub(crate) output: Arc<Mutex<Vec<String>>>,
@@ -176,7 +176,10 @@ pub(crate) fn system_state(
         caps: caps.clone(),
         mailbox: mailboxes.get_or_create(0),
         mailboxes,
-        limits: StoreLimitsBuilder::new().build(),
+        // The same 1 GiB ceiling as a `run` VM (RUN_MEMORY_PAGES): a runaway
+        // actor traps instead of consuming the host. The caller must attach
+        // the limiter (`store.limiter`) for this to bite.
+        limits: StoreLimitsBuilder::new().memory_size(16384 * 64 * 1024).build(),
         output,
         dirs,
         pending: None,
