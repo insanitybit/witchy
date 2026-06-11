@@ -3,3 +3,4 @@
 /web/witchy.wasm
 .playwright-mcp/
 /book-html
+bench/bin/
