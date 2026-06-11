@@ -115,8 +115,10 @@ Tracked honestly rather than hidden:
   arguments travel as ids), and `send` routes through the system. Messages
   between compiled actor VMs carry `Int`, `Float`, `String` (copied by
   content), `Subject` (delegating send authority), `List(Int)`/`List(String)`,
-  and scalar-tuple fields; record fields and `spawn` inside a HANDLER are a
-  loud compile error, never a silent difference.
+  and scalar-tuple fields, and handlers can `spawn` new actors themselves
+  (delivery takes the running actor out of the table, so registration never
+  deadlocks); record fields are a loud compile error, never a silent
+  difference.
 - The LSP has diagnostics, completion, and hover — no go-to-definition or
   rename yet.
 - No GC (see the memory model above).

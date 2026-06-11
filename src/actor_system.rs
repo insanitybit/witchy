@@ -63,7 +63,10 @@ struct Host {
     pending_list: Mutex<Option<Vec<String>>>,
 }
 
-type Actors = Arc<Mutex<Vec<(Store<Host>, Instance)>>>;
+/// The live actor table. Entries are `Option` because delivery TAKES the
+/// target out while its handler runs: the table's lock is released during the
+/// call, so a handler's `spawn` can register a new actor without deadlocking.
+type Actors = Arc<Mutex<Vec<Option<(Store<Host>, Instance)>>>>;
 
 /// Everything a VM (or a `spawn_*` host call instantiating a new one) needs:
 /// cheap-clone handles to the system's engine, mailboxes, output, message
@@ -115,7 +118,7 @@ impl System {
         let module = Module::new(&self.shared.engine, wat)?;
         let (store, instance) = link_vm(&self.shared, &module)?;
         let mut actors = self.shared.actors.lock().unwrap();
-        actors.push((store, instance));
+        actors.push(Some((store, instance)));
         Ok(actors.len() - 1)
     }
 }
@@ -511,7 +514,7 @@ fn link_vm(shared: &Shared, module: &Module) -> Result<(Store<Host>, Instance)> 
                         }
                     }
                     let mut actors = shared2.actors.lock().unwrap();
-                    actors.push((store, instance));
+                    actors.push(Some((store, instance)));
                     results[0] = Val::I32((actors.len() - 1) as i32);
                     Ok(())
                 },
@@ -527,7 +530,9 @@ impl System {
     /// Set an exported `Subject` global (e.g. a `target` field) to an actor id.
     pub fn set_subject(&mut self, id: usize, field: &str, target: usize) -> Result<()> {
         let mut actors = self.shared.actors.lock().unwrap();
-        let (store, instance) = &mut actors[id];
+        let (store, instance) = actors[id]
+            .as_mut()
+            .ok_or_else(|| Error::msg("actor is mid-delivery"))?;
         let global = instance
             .get_global(&mut *store, field)
             .ok_or_else(|| Error::msg(format!("no exported global `{field}`")))?;
@@ -603,10 +608,34 @@ impl System {
             return Ok(());
         };
         let name = name.clone();
+        // TAKE the target out of the table and release the lock for the
+        // duration of the call: a handler's `spawn` re-enters the table to
+        // register the new VM, which would deadlock against a held lock. The
+        // drain is single-threaded, so the same actor can never be delivered
+        // to re-entrantly; sends during the call only touch the queue.
+        let taken = {
+            let mut actors = self.shared.actors.lock().unwrap();
+            actors
+                .get_mut(target)
+                .and_then(|slot| slot.take())
+                .ok_or_else(|| Error::msg(format!("no actor with id {target}")))?
+        };
+        let (mut store_owned, instance_owned) = taken;
+        let result = Self::deliver(&mut store_owned, &instance_owned, &name, fields);
         let mut actors = self.shared.actors.lock().unwrap();
-        let (store, instance) = &mut actors[target];
+        actors[target] = Some((store_owned, instance_owned));
+        result
+    }
+
+    /// Call the handler on a taken-out actor (no table lock held).
+    fn deliver(
+        store: &mut Store<Host>,
+        instance: &Instance,
+        name: &str,
+        fields: &[FieldVal],
+    ) -> Result<()> {
         // An actor that doesn't export a handler for this message just drops it.
-        let Some(func) = instance.get_func(&mut *store, &name) else {
+        let Some(func) = instance.get_func(&mut *store, name) else {
             return Ok(());
         };
         // Reset the target's no-GC arena before re-allocating message strings —
@@ -1035,6 +1064,42 @@ impl Source:
             let interp = crate::interpreter::run_with(src, ".", Vec::new()).expect("interp");
             assert_eq!(out, interp, "compiled actor system must match the interpreter");
         }
+    }
+
+    /// `spawn` INSIDE a handler: delivery takes the spawning actor out of the
+    /// table for the duration of the call, so its spawn host import registers
+    /// the new VM without deadlocking — a supervisor spawns a fresh Worker
+    /// per job, hands it the payload, and the output matches the interpreter.
+    #[test]
+    fn handlers_spawn_actors_without_deadlock() {
+        let src = r#"
+actor Worker:
+    console: Console
+
+impl Worker:
+    on Job(label: String):
+        print(console, "worker did " <> label)
+
+actor Supervisor:
+    console: Console
+
+impl Supervisor:
+    on Assign(n: Int):
+        let w = spawn Worker(console)
+        send(w, Job("task " <> int_to_string(n)))
+
+fn main(console: Console):
+    let sup = spawn Supervisor(console)
+    send(sup, Assign(1))
+    send(sup, Assign(2))
+"#;
+        let module = parser::parse_module(src).expect("parse");
+        let (driver, actors, sigs, specs) =
+            codegen::compile_system(&module).expect("compile system");
+        let out = System::run_program(&driver, &actors, sigs, specs).expect("run program");
+        let interp = crate::interpreter::run_with(src, ".", Vec::new()).expect("interp");
+        assert_eq!(out, interp, "handler spawns must match the interpreter");
+        assert_eq!(out, vec!["worker did task 1", "worker did task 2"]);
     }
 
     /// LIST state persists across messages in host cells: a List(Int) and a

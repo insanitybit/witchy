@@ -19,9 +19,11 @@
 //! `send` between compiled actors crosses the VM boundary by value: Int, Float,
 //! and Subject fields are copied (passing a Subject delegates send authority);
 //! String, List(Int), List(String), and scalar-tuple fields are read out of the
-//! sender by content and re-laid out in the receiver (`__msg_alloc`). Not yet
-//! compiled: record message parameters and `spawn` from compiled code — each
-//! errors clearly.
+//! sender by content and re-laid out in the receiver (`__msg_alloc`). `spawn`
+//! compiles everywhere in an actor-system program — from `main` (the driver)
+//! and from handlers (delivery takes the running actor out of the table, so
+//! the new VM registers without deadlock). Not yet compiled: record message
+//! parameters — errors clearly.
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -5506,8 +5508,24 @@ pub fn compile_system(module: &Module) -> Result<CompiledSystem, CodegenError> {
     let (actors, sigs) = compile_program(module)?;
     let tags: HashMap<String, u32> =
         sigs.iter().enumerate().map(|(i, (n, _))| (n.clone(), i as u32)).collect();
-    let mut specs: Vec<(String, Vec<(String, bool)>)> = Vec::new();
-    let mut spawnable: HashMap<String, Vec<(String, bool)>> = HashMap::new();
+    let spawnable = spawn_specs(module);
+    let specs: Vec<(String, Vec<(String, bool)>)> = module
+        .items
+        .iter()
+        .filter_map(|it| match it {
+            Item::Actor(a) => Some((a.name.clone(), spawnable[&a.name].clone())),
+            _ => None,
+        })
+        .collect();
+    let driver = compile_module_with(module, &tags, &spawnable)?;
+    Ok((driver, actors, sigs, specs))
+}
+
+/// Each actor's spawn-argument spec: one `(field name, is_value)` per
+/// UNINITIALIZED field — a capability is erased (`false`), a Subject travels
+/// as an i32 (`true`).
+fn spawn_specs(module: &Module) -> HashMap<String, Vec<(String, bool)>> {
+    let mut spawnable = HashMap::new();
     for item in &module.items {
         if let Item::Actor(a) = item {
             let spec: Vec<(String, bool)> = a
@@ -5519,12 +5537,10 @@ pub fn compile_system(module: &Module) -> Result<CompiledSystem, CodegenError> {
                     (f.name.clone(), is_value)
                 })
                 .collect();
-            spawnable.insert(a.name.clone(), spec.clone());
-            specs.push((a.name.clone(), spec));
+            spawnable.insert(a.name.clone(), spec);
         }
     }
-    let driver = compile_module_with(module, &tags, &spawnable)?;
-    Ok((driver, actors, sigs, specs))
+    spawnable
 }
 
 pub fn compile_program(module: &Module) -> Result<CompiledActors, CodegenError> {
@@ -5562,7 +5578,7 @@ pub fn compile_program(module: &Module) -> Result<CompiledActors, CodegenError> 
     let mut actors = Vec::new();
     for item in &module.items {
         if let Item::Actor(a) = item {
-            actors.push((a.name.clone(), compile_actor_in(a, &tag_of, &parent)?));
+            actors.push((a.name.clone(), compile_actor_in(a, &tag_of, &parent, &spawn_specs(module))?));
         }
     }
     Ok((actors, sigs))
@@ -5576,6 +5592,7 @@ fn compile_actor_with_tags(
         actor,
         tags,
         &Module { imports: Vec::new(), items: Vec::new(), import_lines: Vec::new(), item_lines: Vec::new() },
+        &HashMap::new(),
     )
 }
 
@@ -5583,6 +5600,7 @@ fn compile_actor_in(
     actor: &ActorDef,
     tags: &HashMap<String, u32>,
     parent: &Module,
+    spawnable: &HashMap<String, Vec<(String, bool)>>,
 ) -> Result<String, CodegenError> {
     // Lower ranges first (see compile_module) so the passes below see plain
     // blocks with consistent synthetic names.
@@ -5591,6 +5609,10 @@ fn compile_actor_in(
     let actor = &actor_owned;
     let mut cg = Codegen::new();
     cg.message_tags = tags.clone();
+    // Handlers may spawn: a handler-context spawn instantiates through the
+    // same host imports the driver uses (delivery takes the spawning actor
+    // OUT of the table, so the new VM's registration cannot deadlock).
+    cg.spawnable = spawnable.clone();
     // The module's plain functions travel WITH the actor: register their
     // metadata, then compile every helper a handler (transitively) calls —
     // before field/handler compilation, since compiling a function resets the
