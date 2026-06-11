@@ -63,43 +63,79 @@ struct Host {
     pending_list: Mutex<Option<Vec<String>>>,
 }
 
-pub struct System {
+type Actors = Arc<Mutex<Vec<(Store<Host>, Instance)>>>;
+
+/// Everything a VM (or a `spawn_*` host call instantiating a new one) needs:
+/// cheap-clone handles to the system's engine, mailboxes, output, message
+/// signatures, registered actor kinds, and the live actor table.
+#[derive(Clone)]
+struct Shared {
     engine: Engine,
-    sigs: Arc<Vec<MessageSig>>,
-    actors: Vec<(Store<Host>, Instance)>,
     queue: Queue,
     output: Output,
+    sigs: Arc<Vec<MessageSig>>,
+    /// Spawnable kinds: (name, compiled module, spawn-arg spec).
+    kinds: Arc<Vec<(String, Module, Vec<(String, bool)>)>>,
+    actors: Actors,
+}
+
+pub struct System {
+    shared: Shared,
 }
 
 impl System {
     pub fn new(sigs: Vec<MessageSig>) -> Self {
+        Self::new_with_kinds(Engine::default(), sigs, Vec::new())
+    }
+
+    fn new_with_kinds(
+        engine: Engine,
+        sigs: Vec<MessageSig>,
+        kinds: Vec<(String, Module, Vec<(String, bool)>)>,
+    ) -> Self {
         Self {
-            engine: Engine::default(),
-            sigs: Arc::new(sigs),
-            actors: Vec::new(),
-            queue: Arc::new(Mutex::new(VecDeque::new())),
-            output: Arc::new(Mutex::new(Vec::new())),
+            shared: Shared {
+                engine,
+                queue: Arc::new(Mutex::new(VecDeque::new())),
+                output: Arc::new(Mutex::new(Vec::new())),
+                sigs: Arc::new(sigs),
+                kinds: Arc::new(kinds),
+                actors: Arc::new(Mutex::new(Vec::new())),
+            },
         }
     }
 
     /// Everything the actors have printed, in order.
     pub fn output(&self) -> Vec<String> {
-        self.output.lock().unwrap().clone()
+        self.shared.output.lock().unwrap().clone()
     }
 
     /// Instantiate a compiled actor module in its own VM; returns its id.
     pub fn spawn(&mut self, wat: &str) -> Result<usize> {
-        let module = Module::new(&self.engine, wat)?;
+        let module = Module::new(&self.shared.engine, wat)?;
+        let (store, instance) = link_vm(&self.shared, &module)?;
+        let mut actors = self.shared.actors.lock().unwrap();
+        actors.push((store, instance));
+        Ok(actors.len() - 1)
+    }
+}
+
+/// Build a VM (store + instance) wired to the system: the full host-import
+/// surface, plus one `spawn_{Kind}` import per registered actor kind — a
+/// guest `spawn` instantiates the kind's own VM, sets its Subject arguments,
+/// and returns the new actor's id.
+fn link_vm(shared: &Shared, module: &Module) -> Result<(Store<Host>, Instance)> {
+    {
         let host = Host {
-            queue: Arc::clone(&self.queue),
-            output: Arc::clone(&self.output),
-            sigs: Arc::clone(&self.sigs),
+            queue: Arc::clone(&shared.queue),
+            output: Arc::clone(&shared.output),
+            sigs: Arc::clone(&shared.sigs),
             cells: Mutex::new(Vec::new()),
             pending: Mutex::new(None),
             pending_list: Mutex::new(None),
         };
-        let mut store = Store::new(&self.engine, host);
-        let mut linker = Linker::new(&self.engine);
+        let mut store = Store::new(&shared.engine, host);
+        let mut linker = Linker::new(&shared.engine);
 
         linker.func_wrap(
             "witchy",
@@ -445,15 +481,53 @@ impl System {
             },
         )?;
 
-        let instance = linker.instantiate(&mut store, &module)?;
-        let id = self.actors.len();
-        self.actors.push((store, instance));
-        Ok(id)
-    }
+        // One spawn import per registered actor kind: instantiate the kind's
+        // own VM, set its value (Subject) arguments by exported global, and
+        // hand back the new id. Capability args were erased at the call site.
+        for (kname, kmodule, spec) in shared.kinds.iter() {
+            let nvals = spec.iter().filter(|(_, v)| *v).count();
+            let ty = wasmtime::FuncType::new(
+                &shared.engine,
+                std::iter::repeat(wasmtime::ValType::I32).take(nvals),
+                [wasmtime::ValType::I32],
+            );
+            let shared2 = shared.clone();
+            let kmodule = kmodule.clone();
+            let spec = spec.clone();
+            linker.func_new(
+                "witchy",
+                &format!("spawn_{kname}"),
+                ty,
+                move |_caller, params, results| {
+                    let (mut store, instance) = link_vm(&shared2, &kmodule)?;
+                    let mut pi = 0;
+                    for (field, is_value) in &spec {
+                        if *is_value {
+                            let g = instance.get_global(&mut store, field).ok_or_else(|| {
+                                Error::msg(format!("spawned actor has no exported global `{field}`"))
+                            })?;
+                            g.set(&mut store, params[pi].clone())?;
+                            pi += 1;
+                        }
+                    }
+                    let mut actors = shared2.actors.lock().unwrap();
+                    actors.push((store, instance));
+                    results[0] = Val::I32((actors.len() - 1) as i32);
+                    Ok(())
+                },
+            )?;
+        }
 
+        let instance = linker.instantiate(&mut store, module)?;
+        Ok((store, instance))
+    }
+}
+
+impl System {
     /// Set an exported `Subject` global (e.g. a `target` field) to an actor id.
     pub fn set_subject(&mut self, id: usize, field: &str, target: usize) -> Result<()> {
-        let (store, instance) = &mut self.actors[id];
+        let mut actors = self.shared.actors.lock().unwrap();
+        let (store, instance) = &mut actors[id];
         let global = instance
             .get_global(&mut *store, field)
             .ok_or_else(|| Error::msg(format!("no exported global `{field}`")))?;
@@ -464,20 +538,54 @@ impl System {
     /// Deliver a message to an actor by name, then run to quiescence.
     pub fn send(&mut self, target: usize, message: &str, arg: i32) -> Result<()> {
         let tag = self
+            .shared
             .sigs
             .iter()
             .position(|(m, _)| m == message)
             .ok_or_else(|| Error::msg(format!("unknown message `{message}`")))? as u32;
         // Driver-injected message: a single Int field (one-field or, for a
         // zero-field handler, ignored).
-        self.queue.lock().unwrap().push_back((target, tag, vec![FieldVal::Int(arg)]));
+        self.shared.queue.lock().unwrap().push_back((target, tag, vec![FieldVal::Int(arg)]));
         self.run_to_quiescence()
+    }
+
+    /// Run a whole compiled actor PROGRAM: register every actor kind, run the
+    /// driver's `main` in its own VM (its `spawn`s instantiate actor VMs, its
+    /// `send`s enqueue), then drain the mailboxes to quiescence and return
+    /// everything printed.
+    pub fn run_program(
+        driver_wat: &str,
+        actor_wats: &[(String, String)],
+        sigs: Vec<MessageSig>,
+        specs: Vec<(String, Vec<(String, bool)>)>,
+    ) -> Result<Vec<String>> {
+        let engine = Engine::default();
+        let mut kinds = Vec::new();
+        for (name, wat) in actor_wats {
+            let module = Module::new(&engine, wat)?;
+            let spec = specs
+                .iter()
+                .find(|(n, _)| n == name)
+                .map(|(_, s)| s.clone())
+                .unwrap_or_default();
+            kinds.push((name.clone(), module, spec));
+        }
+        let mut sys = System::new_with_kinds(engine, sigs, kinds);
+        let driver = Module::new(&sys.shared.engine, driver_wat)?;
+        // The driver lives OUTSIDE the actor table (it has no handlers and
+        // must not hold the table's lock while running, since its spawns
+        // take that lock).
+        let (mut dstore, dinstance) = link_vm(&sys.shared, &driver)?;
+        let run = dinstance.get_typed_func::<(), ()>(&mut dstore, "run")?;
+        run.call(&mut dstore, ())?;
+        sys.run_to_quiescence()?;
+        Ok(sys.output())
     }
 
     fn run_to_quiescence(&mut self) -> Result<()> {
         let mut steps = 0u64;
         loop {
-            let item = self.queue.lock().unwrap().pop_front();
+            let item = self.shared.queue.lock().unwrap().pop_front();
             let Some((target, tag, fields)) = item else {
                 break;
             };
@@ -491,11 +599,12 @@ impl System {
     }
 
     fn invoke(&mut self, target: usize, tag: u32, fields: &[FieldVal]) -> Result<()> {
-        let Some((name, _)) = self.sigs.get(tag as usize) else {
+        let Some((name, _)) = self.shared.sigs.get(tag as usize) else {
             return Ok(());
         };
         let name = name.clone();
-        let (store, instance) = &mut self.actors[target];
+        let mut actors = self.shared.actors.lock().unwrap();
+        let (store, instance) = &mut actors[target];
         // An actor that doesn't export a handler for this message just drops it.
         let Some(func) = instance.get_func(&mut *store, &name) else {
             return Ok(());
@@ -903,6 +1012,29 @@ impl Source:
         sys.set_subject(ids["Source"], "target", ids["Sink"]).unwrap();
         sys.send(ids["Source"], "Go", 7).unwrap();
         assert_eq!(sys.output(), vec!["answer=42/0.5"]);
+    }
+
+    /// GUEST-CALLABLE SPAWN: the program's own `main` runs in a driver VM,
+    /// `spawn Logger(console)` instantiates the actor in ITS own VM through a
+    /// host import (the capability argument is erased — the system grants
+    /// printing), `spawn Forwarder(logger)` passes a Subject id as a value
+    /// argument, and `send` routes through the system. Byte-identical output
+    /// to the interpreter running the same program.
+    #[test]
+    fn compiled_program_spawns_actors_from_main() {
+        for src in [
+            include_str!("../examples/actors.witchy"),
+            // The full message model from a compiled main: Float/String/List
+            // fields, Float state, and a Subject delivered IN a message.
+            include_str!("../examples/dispatch.witchy"),
+        ] {
+            let module = parser::parse_module(src).expect("parse");
+            let (driver, actors, sigs, specs) =
+                codegen::compile_system(&module).expect("compile system");
+            let out = System::run_program(&driver, &actors, sigs, specs).expect("run program");
+            let interp = crate::interpreter::run_with(src, ".", Vec::new()).expect("interp");
+            assert_eq!(out, interp, "compiled actor system must match the interpreter");
+        }
     }
 
     /// LIST state persists across messages in host cells: a List(Int) and a

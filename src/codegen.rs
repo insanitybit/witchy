@@ -450,6 +450,13 @@ struct Codegen {
     /// state, list state lives in host cells; reads stage a fresh arena copy
     /// and writes copy the content out.
     list_fields: HashMap<String, (u32, ValType)>,
+    /// Spawnable actor kinds (DRIVER module only): name -> the spawn-argument
+    /// spec, one entry per UNINITIALIZED field in order — `false` for a
+    /// capability (erased; the system grants it), `true` for a value (a
+    /// Subject id) that travels as an i32 argument.
+    spawnable: HashMap<String, Vec<(String, bool)>>,
+    /// Actor kinds actually spawned, for import emission.
+    used_spawns: std::collections::BTreeSet<String>,
     /// Whether any list state field exists (links the field_*list host fns).
     uses_list_field: bool,
     /// Whether the `compiler.footprint` host import + guest helper are needed.
@@ -748,6 +755,8 @@ impl Codegen {
             uses_str_field: false,
             list_fields: HashMap::new(),
             uses_list_field: false,
+            spawnable: HashMap::new(),
+            used_spawns: std::collections::BTreeSet::new(),
             uses_compiler_footprint: false,
             uses_compiler_diff: false,
             uses_float_to_str: false,
@@ -1770,6 +1779,16 @@ impl Codegen {
         if self.uses_send {
             // send(target_id, message_tag, arg)
             s.push_str("  (import \"witchy\" \"send\" (func $send (param i32 i32 i32)))\n");
+        }
+        for name in &self.used_spawns {
+            // spawn_{Actor}(value args...) -> the new actor's Subject id; the
+            // host instantiates the actor's own VM (capability args erased).
+            let nvals =
+                self.spawnable.get(name).map(|s| s.iter().filter(|(_, v)| *v).count()).unwrap_or(0);
+            let params = "(param i32) ".repeat(nvals);
+            s.push_str(&format!(
+                "  (import \"witchy\" \"spawn_{name}\" (func $spawn_{name} {params}(result i32)))\n"
+            ));
         }
         if self.uses_crypto_ed25519_verify {
             // crypto.ed25519_verify(pk_ptr, msg_ptr, sig_ptr) -> bool; each arg is
@@ -2926,7 +2945,27 @@ impl Codegen {
                 Ok(out)
             }
             Expr::Match { scrutinee, arms } => self.compile_match(scrutinee, arms),
-            Expr::Spawn { .. } => cerr("`spawn` is not compiled to WASM yet"),
+            Expr::Spawn { actor, args } => {
+                // Compiles only in the DRIVER of an actor-system program (the
+                // spawnable specs are seeded there): capability arguments are
+                // erased — the system grants them at instantiation — and value
+                // arguments (Subject ids) travel as i32s. The host instantiates
+                // the actor's own VM and returns its id.
+                let Some(spec) = self.spawnable.get(actor).cloned() else {
+                    return cerr("`spawn` is not compiled to WASM yet (host-driven)");
+                };
+                self.used_spawns.insert(actor.clone());
+                let mut out = String::new();
+                for (a, (_, is_value)) in args.iter().zip(&spec) {
+                    if *is_value {
+                        let k = self.kind_of(a);
+                        out.push_str(&self.compile_expr(a)?);
+                        out.push_str(kind_convert(k, Kind::I32));
+                    }
+                }
+                out.push_str(&format!("    call $spawn_{actor}\n"));
+                Ok(out)
+            }
         }
     }
 
@@ -4332,7 +4371,12 @@ impl Codegen {
                 ))
             }
             ("int_to_float", 1) => {
-                Ok(format!("{}    f64.convert_i64_s\n", self.compile_expr(&args[0])?))
+                let k = self.kind_of(&args[0]);
+                Ok(format!(
+                    "{}{}    f64.convert_i64_s\n",
+                    self.compile_expr(&args[0])?,
+                    kind_convert(k, Kind::I64)
+                ))
             }
             ("float_to_int", 1) => {
                 // Saturating (non-trapping) truncation to match the interpreter's
@@ -5035,6 +5079,17 @@ fn reachable_functions(module: &Module) -> HashSet<String> {
 }
 
 pub fn compile_module(module: &Module) -> Result<String, CodegenError> {
+    compile_module_with(module, &HashMap::new(), &HashMap::new())
+}
+
+/// `compile_module` seeded with an actor-system program's message tags and
+/// spawnable actor specs, so the DRIVER (the module holding `main`) can
+/// `spawn` actors and `send` them messages through the system's host imports.
+pub fn compile_module_with(
+    module: &Module,
+    tags: &HashMap<String, u32>,
+    spawnable: &HashMap<String, Vec<(String, bool)>>,
+) -> Result<String, CodegenError> {
     // Desugar traits/impls to ordinary functions (no-op for trait-free modules)
     // so codegen, like the interpreter, only ever sees plain functions. Then
     // lower ranges to their list-building blocks once, so the local-collection
@@ -5045,6 +5100,8 @@ pub fn compile_module(module: &Module) -> Result<String, CodegenError> {
     crate::parser::lower_sugar_module(&mut lowered);
     let module = &lowered;
     let mut cg = Codegen::new();
+    cg.message_tags = tags.clone();
+    cg.spawnable = spawnable.clone();
     // Collect parameter conventions up front so call sites can resolve `inout`
     // write-back even for forward references.
     for item in &module.items {
@@ -5244,7 +5301,10 @@ pub fn compile_module(module: &Module) -> Result<String, CodegenError> {
                 }
             }
             Item::Type(_) => {}
-            Item::Actor(_) => return cerr("use compile_actor_module to compile an actor"),
+            // Actors compile to their OWN modules (`compile_program`); the
+            // driver skips them. A `spawn` outside a seeded driver still fails
+            // loudly at the expression.
+            Item::Actor(_) => {}
             Item::Trait(_) | Item::Impl(_) | Item::Const { .. } | Item::TypeAlias { .. } => {}
         }
     }
@@ -5424,6 +5484,39 @@ fn message_sig_of(h: &crate::ast::Handler) -> Result<Vec<MsgField>, CodegenError
             )),
         })
         .collect()
+}
+
+/// A whole compiled actor PROGRAM: the driver (the module's plain functions
+/// and `main`, with `spawn`/`send` bridged to the system), each actor's own
+/// module, the message signatures, and each actor's spawn-argument spec —
+/// one `(field name, is_value)` per UNINITIALIZED field, where a capability
+/// field is erased (`false`) and a Subject travels as an i32 (`true`).
+pub type CompiledSystem =
+    (String, Vec<(String, String)>, Vec<MessageSig>, Vec<(String, Vec<(String, bool)>)>);
+
+pub fn compile_system(module: &Module) -> Result<CompiledSystem, CodegenError> {
+    let (actors, sigs) = compile_program(module)?;
+    let tags: HashMap<String, u32> =
+        sigs.iter().enumerate().map(|(i, (n, _))| (n.clone(), i as u32)).collect();
+    let mut specs: Vec<(String, Vec<(String, bool)>)> = Vec::new();
+    let mut spawnable: HashMap<String, Vec<(String, bool)>> = HashMap::new();
+    for item in &module.items {
+        if let Item::Actor(a) = item {
+            let spec: Vec<(String, bool)> = a
+                .fields
+                .iter()
+                .filter(|f| f.init.is_none())
+                .map(|f| {
+                    let is_value = !matches!(&f.ty, Type::Named(n, _) if n == "Console");
+                    (f.name.clone(), is_value)
+                })
+                .collect();
+            spawnable.insert(a.name.clone(), spec.clone());
+            specs.push((a.name.clone(), spec));
+        }
+    }
+    let driver = compile_module_with(module, &tags, &spawnable)?;
+    Ok((driver, actors, sigs, specs))
 }
 
 pub fn compile_program(module: &Module) -> Result<CompiledActors, CodegenError> {
@@ -5682,6 +5775,27 @@ fn compile_actor_with_tags(
         // Infer each let's kind (as `compile_function` does) so e.g. an i64
         // list element flowing into a local declares that local at i64.
         cg.infer_locals(&renamed);
+        // Inference treats assignment targets as locals, but a state FIELD is
+        // not one: an Int global stays i32 and a host-cell field's reads have
+        // their own kinds. Restore the field kinds (e.g. a Float's f64) and
+        // drop any other field name inference picked up.
+        let field_names: Vec<String> = cg
+            .globals
+            .iter()
+            .cloned()
+            .chain(cg.str_fields.keys().cloned())
+            .chain(cg.list_fields.keys().cloned())
+            .collect();
+        for fname in field_names {
+            match field_kinds.get(&fname) {
+                Some(&k) => {
+                    cg.locals.insert(fname, k);
+                }
+                None => {
+                    cg.locals.remove(&fname);
+                }
+            }
+        }
         let mut lets = Vec::new();
         collect_let_names(&renamed, &mut lets);
         lets.sort();

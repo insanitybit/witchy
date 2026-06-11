@@ -109,12 +109,14 @@ Tracked honestly rather than hidden:
   constructor literals). A payload codegen cannot resolve — e.g. through an
   unspecialized generic function, or a *recursive* generic ADT — stays a loud
   compile error, never a silent pointer compare.
-- `spawn` inside compiled programs is host-driven (the demo scheduler), not a
-  guest-callable import yet. Messages between compiled actor VMs carry `Int`,
-  `Float`, `String` (copied by content), and `Subject` (delegating send
-  authority) fields; compound message fields (lists, tuples, records) are a
-  loud compile error, never a silent difference. The interpreter runs the
-  full actor model.
+- `spawn` IS guest-callable from a compiled program's `main`: the driver runs
+  in its own VM, each `spawn` instantiates the actor's VM through a host
+  import (capability arguments erased — the system grants them; Subject
+  arguments travel as ids), and `send` routes through the system. Messages
+  between compiled actor VMs carry `Int`, `Float`, `String` (copied by
+  content), `Subject` (delegating send authority), `List(Int)`/`List(String)`,
+  and scalar-tuple fields; record fields and `spawn` inside a HANDLER are a
+  loud compile error, never a silent difference.
 - The LSP has diagnostics, completion, and hover — no go-to-definition or
   rename yet.
 - No GC (see the memory model above).
