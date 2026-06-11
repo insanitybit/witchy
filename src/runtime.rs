@@ -217,6 +217,15 @@ impl Actor {
 
     /// The total bytes the `region:` copy-outs moved (the exported
     /// `__region_copy_bytes` counter), or None when the module has no regions.
+    /// The exported re-own counter: how many in-place accumulation sites
+    /// entered with a zero ownership token (each one copies). None when the
+    /// module has no in-place machinery.
+    pub fn reowns(&mut self) -> Option<i64> {
+        self.instance
+            .get_global(&mut self.store, "__witchy_reowns")
+            .and_then(|g| g.get(&mut self.store).i64())
+    }
+
     pub fn region_copy_bytes(&mut self) -> Option<i64> {
         self.instance
             .get_global(&mut self.store, "__region_copy_bytes")

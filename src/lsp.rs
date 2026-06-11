@@ -313,7 +313,29 @@ fn compute_diagnostics(uri: &str, text: &str) -> Vec<Value> {
         Err(e) => return vec![line_diag(0, text, &e.to_string())],
     };
     match typeck::check(&linked) {
-        Ok(()) => vec![],
+        Ok(()) => {
+            // Performance notes (severity Hint -> rendered unobtrusively):
+            // accumulation that reverts to the copying path inside a loop.
+            crate::analysis::module_cliffs(&linked)
+                .into_iter()
+                .map(|(func, c)| {
+                    let line0 = c.line.saturating_sub(1);
+                    let end = line_len(text, line0);
+                    json!({
+                        "range": {
+                            "start": { "line": line0, "character": 0 },
+                            "end": { "line": line0, "character": end }
+                        },
+                        "severity": 4, // Hint
+                        "source": "witchy",
+                        "message": format!(
+                            "`{}` is rebuilt by copy on every iteration (in `{func}`): it is {} — O(n²)",
+                            c.var, c.reason
+                        )
+                    })
+                })
+                .collect()
+        }
         Err(e) => {
             let line0 = extract_line(&e.message).map_or(0, |n| n.saturating_sub(1));
             vec![line_diag(line0, text, &format!("type error: {}", e.message))]

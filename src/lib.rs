@@ -12,6 +12,7 @@
 // readability of the nested capability/pattern checks).
 #![allow(clippy::collapsible_if, clippy::collapsible_match, clippy::items_after_test_module)]
 
+pub mod analysis;
 pub mod aliases;
 pub mod ast;
 pub mod capabilities;

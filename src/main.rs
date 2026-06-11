@@ -12,6 +12,7 @@
 #![allow(clippy::collapsible_if, clippy::collapsible_match, clippy::items_after_test_module)]
 
 mod actor_system;
+mod analysis;
 mod aliases;
 mod ast;
 mod capabilities;
@@ -874,7 +875,19 @@ fn link_file(path: &str) -> Result<(ast::Module, String), String> {
 /// which never return.
 fn check_file(path: &str) -> Result<(), String> {
     let (linked, _stem) = link_file(path)?;
-    typeck::check(&linked).map_err(|e| e.to_string())
+    typeck::check(&linked).map_err(|e| e.to_string())?;
+    // Performance notes from the uniqueness analysis: accumulation that
+    // reverts to the copying path inside a loop (O(n²)). Never an error —
+    // the copying path IS the semantics — but the cliff should be visible
+    // at check time, not at a memory-cap trap.
+    for (func, c) in analysis::module_cliffs(&linked) {
+        eprintln!(
+            "note: in `{func}` (line {}): `{}` is rebuilt by copy on every \
+             iteration of this loop — it is {}",
+            c.line, c.var, c.reason
+        );
+    }
+    Ok(())
 }
 
 /// Read a 32-byte Ed25519 signing seed from a file holding 64 hex characters.
@@ -2086,6 +2099,117 @@ mod example_tests {
         typeck::check(&linked).expect("typecheck");
         let wat = codegen::compile_module(&linked).expect("compile");
         crate::run_wat_capture(&wat).expect("wasm run")
+    }
+
+    /// `wasm_run` that also reads the exported `__witchy_reowns` counter —
+    /// the timing-free proof of whether accumulation ran in place (O(1)
+    /// re-owns) or fell to the copying path (O(n) re-owns).
+    fn wasm_run_reowns(src: &str) -> (Vec<String>, i64) {
+        use crate::runtime::{Capabilities, Runtime};
+        let module = parser::parse_module(src).expect("parse");
+        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        typeck::check(&linked).expect("typecheck");
+        let wat = codegen::compile_module(&linked).expect("compile");
+        let mut rt = Runtime::batch().expect("runtime");
+        let mut actor = rt
+            .spawn(
+                wat.as_bytes(),
+                Capabilities { print: true, print_int: true, quiet: true, ..Default::default() },
+                crate::RUN_MEMORY_PAGES,
+            )
+            .expect("spawn");
+        actor.run().expect("run");
+        let reowns = actor.reowns().unwrap_or(0);
+        (actor.output(), reowns)
+    }
+
+    /// THE UNIQUENESS ANALYSIS, observable: an alias taken BEFORE the loop
+    /// zeroes the ownership token once — the first push re-owns (one copy)
+    /// and everything after runs in place. The old syntactic whitelist
+    /// disqualified the variable outright (O(n²), memory-cap trap at this
+    /// size). The alias still sees its snapshot.
+    #[test]
+    fn analysis_alias_before_loop_stays_linear() {
+        let src = "fn main(console: Console):\n    var xs = [1, 2, 3]\n    let snapshot = xs\n    var i = 0\n    while i < 50000:\n        xs = push(xs, i)\n        i = i + 1\n    print(console, to_string(snapshot))\n    print(console, int_to_string(length(xs)))\n";
+        let want = vec!["[1, 2, 3]".to_string(), "50003".to_string()];
+        assert_eq!(link_run(src), want, "interpreter");
+        let (out, reowns) = wasm_run_reowns(src);
+        assert_eq!(out, want, "wasm");
+        assert!(reowns <= 2, "expected O(1) re-owns, got {reowns}");
+    }
+
+    /// An alias RE-TAKEN inside the loop forces the copying path each
+    /// iteration (the kill re-zeroes the token) — correct, O(n) re-owns, and
+    /// exactly what the cliff diagnostic exists to flag.
+    #[test]
+    fn analysis_alias_inside_loop_reowns_per_iteration() {
+        let src = "fn main(console: Console):\n    var ys = []\n    var last = [9]\n    var j = 0\n    while j < 200:\n        ys = push(ys, j)\n        last = ys\n        j = j + 1\n    print(console, int_to_string(length(last)))\n";
+        let want = vec!["200".to_string()];
+        assert_eq!(link_run(src), want, "interpreter");
+        let (out, reowns) = wasm_run_reowns(src);
+        assert_eq!(out, want, "wasm");
+        assert!(reowns >= 150, "every iteration must re-own, got {reowns}");
+    }
+
+    /// FUNCTION SUMMARIES: a read-only helper called in the hot loop no
+    /// longer kills the token (the bottom-up pass proves its parameter never
+    /// aliases out). Under the whitelist this was an instant disqualification.
+    #[test]
+    fn analysis_readonly_call_keeps_loop_linear() {
+        let src = "fn peek(xs: List(Int)) -> Int:\n    length(xs)\n\nfn main(console: Console):\n    var ws = []\n    var m = 0\n    var probe = 0\n    while m < 3000:\n        ws = push(ws, m)\n        probe = peek(ws)\n        m = m + 1\n    print(console, int_to_string(probe))\n";
+        let want = vec!["3000".to_string()];
+        assert_eq!(link_run(src), want, "interpreter");
+        let (out, reowns) = wasm_run_reowns(src);
+        assert_eq!(out, want, "wasm");
+        assert!(reowns <= 2, "the summary must keep the loop in place, got {reowns}");
+    }
+
+    /// A function that RETURNS its parameter (may_alias_out) still kills:
+    /// the bound result whole-aliases the buffer, so the next push copies —
+    /// and the alias keeps its snapshot.
+    #[test]
+    fn analysis_alias_returning_call_still_kills() {
+        let src = "fn same(xs: List(Int)) -> List(Int):\n    xs\n\nfn main(console: Console):\n    var xs = [1]\n    var i = 0\n    while i < 100:\n        xs = push(xs, i)\n        i = i + 1\n    let held = same(xs)\n    xs = push(xs, 999)\n    print(console, int_to_string(length(held)))\n    print(console, int_to_string(length(xs)))\n";
+        let want = vec!["101".to_string(), "102".to_string()];
+        assert_eq!(link_run(src), want, "interpreter");
+        let (out, _) = wasm_run_reowns(src);
+        assert_eq!(out, want, "wasm");
+    }
+
+    /// DIRTY SITES: a self-assign whose RHS embeds the variable (`s = s <> s`,
+    /// a pushed snapshot stored into a dict) runs through the copying path
+    /// and stays value-semantic on both backends.
+    #[test]
+    fn analysis_dirty_shapes_stay_value_semantic() {
+        let src = "fn main(console: Console):\n    var s = \"ab\"\n    var k = 0\n    while k < 5:\n        s = s <> s\n        k = k + 1\n    print(console, int_to_string(string_length(s)))\n    var d = dict_new()\n    var zs = [1]\n    d = insert(d, \"snap\", zs)\n    zs = push(zs, 2)\n    print(console, int_to_string(length(get_or(d, \"snap\", []))))\n    print(console, int_to_string(length(zs)))\n";
+        let want: Vec<String> = ["64", "1", "2"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(link_run(src), want, "interpreter");
+        assert_eq!(wasm_run(src), want, "wasm");
+    }
+
+    /// A lambda body is its own analysis unit: an accumulator inside one gets
+    /// its own ownership token (this used to emit an undeclared `__cap`
+    /// local — a loud compile failure).
+    #[test]
+    fn analysis_lambda_accumulator_compiles() {
+        let src = "fn main(console: Console):\n    let build = fn(n: Int):\n        var acc = [0]\n        var t = 0\n        while t < n:\n            acc = push(acc, t)\n            t = t + 1\n        length(acc)\n    print(console, int_to_string(build(1000)))\n";
+        let want = vec!["1001".to_string()];
+        assert_eq!(link_run(src), want, "interpreter");
+        assert_eq!(wasm_run(src), want, "wasm");
+    }
+
+    /// THE FORCED-COPY DIFFERENTIAL: `WITCHY_NO_INPLACE` compiles with the
+    /// in-place machinery off (the copying paths ARE the semantics). Outputs
+    /// must be identical — any divergence is an analysis soundness bug.
+    #[test]
+    fn forced_copy_mode_is_differential() {
+        let src = "fn tag(let prefix: String, n: Int) -> String:\n    prefix <> int_to_string(n)\n\nfn main(console: Console):\n    var xs = []\n    let alias = xs\n    var s = \"\"\n    var d = dict_new()\n    var i = 0\n    while i < 800:\n        xs = push(xs, i)\n        s = s <> tag(\"x\", i)\n        d = update(d, i % 7, 0, fn(n: Int): n + 1)\n        i = i + 1\n    print(console, int_to_string(length(xs)))\n    print(console, int_to_string(length(alias)))\n    print(console, int_to_string(string_length(s)))\n    print(console, int_to_string(get_or(d, 3, 0)))\n";
+        let optimized = wasm_run(src);
+        codegen::set_force_copy_for_tests(Some(true));
+        let forced = wasm_run(src);
+        codegen::set_force_copy_for_tests(None);
+        assert_eq!(optimized, forced, "forced-copy output must match the optimized build");
+        assert_eq!(link_run(src), optimized, "and both must match the interpreter");
     }
 
     /// `crypto.rune_hash` produces the same store hash (`src/pm/store.rs`

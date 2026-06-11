@@ -25,6 +25,7 @@
 //! (delivery takes the running actor out of the table, so the new VM
 //! registers without deadlock).
 
+use crate::analysis::{self, is_self_assign_shape, self_concat_pieces, self_insert_args, self_push_elem, self_update_args};
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 
@@ -460,8 +461,14 @@ struct Codegen {
     /// Actor kinds actually spawned, for import emission.
     used_spawns: std::collections::BTreeSet<String>,
     /// Variables in the CURRENT function/handler eligible for in-place push
-    /// (see `push_eligible_vars`); each carries a shadow `${name}__cap` local.
+    /// (the analysis's accumulator set); each carries a shadow `${name}__cap`
+    /// ownership-token local.
     inplace_push: HashSet<String>,
+    /// The active compile unit's uniqueness facts + (kills consumed, sites
+    /// seen) for the post-compile consumption check; units nest via lambdas.
+    facts_stack: Vec<(analysis::Facts, usize, usize)>,
+    /// Module-wide function summaries for the uniqueness analysis.
+    summaries: analysis::Summaries,
     /// Whether the `$list_push_cap` helper is needed.
     uses_list_push_cap: bool,
     /// Whether the `$str_append_cap` helper is needed.
@@ -780,6 +787,8 @@ impl Codegen {
             spawnable: HashMap::new(),
             used_spawns: std::collections::BTreeSet::new(),
             inplace_push: HashSet::new(),
+            facts_stack: Vec::new(),
+            summaries: analysis::Summaries::empty(),
             uses_list_push_cap: false,
             uses_str_append_cap: false,
             uses_dict_insert_cap: false,
@@ -2026,6 +2035,17 @@ impl Codegen {
         if self.uses_list_push {
             s.push_str(LIST_PUSH_WAT);
         }
+        if self.uses_list_push_cap
+            || self.uses_str_append_cap
+            || self.uses_dict_insert_cap
+            || self.uses_dict_update_cap
+        {
+            // The observable RE-OWN counter: how many times an in-place site
+            // entered with a zero ownership token (and so copied). Tests
+            // assert exact bounds — O(1) for clean accumulation loops, O(n)
+            // when an alias forces the copying path each iteration.
+            s.push_str("  (global $__witchy_reowns (export \"__witchy_reowns\") (mut i64) (i64.const 0))\n");
+        }
         if self.uses_list_push_cap {
             s.push_str(LIST_PUSH_CAP_WAT);
         }
@@ -2304,20 +2324,7 @@ impl Codegen {
         }
         header.push_str(")\n");
 
-        self.inplace_push = push_eligible_vars(&renamed);
-        let shadowed: Vec<String> = self
-            .inplace_push
-            .iter()
-            .filter(|v| {
-                self.globals.contains(*v)
-                    || self.str_fields.contains_key(*v)
-                    || self.list_fields.contains_key(*v)
-            })
-            .cloned()
-            .collect();
-        for v in shadowed {
-            self.inplace_push.remove(&v);
-        }
+        self.begin_unit(&renamed);
 
         let mut lets = Vec::new();
         collect_let_names(&renamed, &mut lets);
@@ -2352,6 +2359,7 @@ impl Codegen {
         let body = format!("{body}{}", kind_convert(self.block_kind(&renamed), ret_kind));
         // Move-out: append each `inout` parameter's final value (declaration order).
         let epilogue = self.inout_epilogue();
+        self.finish_unit(&f.name)?;
         Ok(format!("{header}{body}{epilogue}  )\n"))
     }
 
@@ -2367,11 +2375,79 @@ impl Codegen {
         s
     }
 
+    /// Begin a compile unit (function/handler/lambda body): run the
+    /// uniqueness analysis and install its facts. Accumulators that are
+    /// globals or host-cell fields carry no cap local and are filtered here.
+    fn begin_unit(&mut self, body: &Block) {
+        let facts = if force_copy_mode() {
+            analysis::Facts::default()
+        } else {
+            analysis::analyze(body, &self.summaries)
+        };
+        self.inplace_push = facts
+            .accumulators
+            .iter()
+            .filter(|v| {
+                !self.globals.contains(*v)
+                    && !self.str_fields.contains_key(*v)
+                    && !self.list_fields.contains_key(*v)
+            })
+            .cloned()
+            .collect();
+        self.facts_stack.push((facts, 0, 0));
+    }
+
+    /// End a compile unit, asserting every analysis entry was consumed — a
+    /// cloned-subtree bug (compiling different AST nodes than were analyzed)
+    /// surfaces here as a loud error, never as a lost cap kill.
+    fn finish_unit(&mut self, unit: &str) -> Result<(), CodegenError> {
+        let Some((facts, kills, sites)) = self.facts_stack.pop() else {
+            return cerr(format!("internal: unbalanced analysis unit in `{unit}`"));
+        };
+        if kills != facts.kill_entries || sites != facts.site_entries {
+            return cerr(format!(
+                "internal: uniqueness facts for `{unit}` were not fully consumed \
+                 ({kills}/{} kills, {sites}/{} sites) — a compiled subtree was not \
+                 the analyzed AST instance",
+                facts.kill_entries, facts.site_entries
+            ));
+        }
+        Ok(())
+    }
+
+    /// The ownership-token kills to emit AFTER a statement (zeroing the cap
+    /// of every accumulator the statement may have whole-aliased).
+    fn take_kills(&mut self, stmt: &Stmt) -> String {
+        let vars: Vec<String> = match self.facts_stack.last_mut() {
+            Some((facts, kills, _)) => {
+                let vs = facts.kills_after(stmt).to_vec();
+                *kills += vs.len();
+                vs
+            }
+            None => return String::new(),
+        };
+        let mut s = String::new();
+        for v in &vars {
+            if self.inplace_push.contains(v) {
+                s.push_str(&format!("    i32.const 0\n    local.set ${v}__cap\n"));
+            }
+        }
+        s
+    }
+
     fn compile_block(&mut self, block: &Block) -> Result<String, CodegenError> {
         let mut out = String::new();
         let last = block.stmts.len().saturating_sub(1);
         let mut tail_is_value = false;
+        // Cap kills for statement N are emitted at the start of statement
+        // N+1 (and flushed after the loop): the alias becomes observable only
+        // once the statement completes, and the deferred emission survives
+        // the arms' `continue`s. The kill is stack-neutral, so a tail value
+        // already on the stack is undisturbed.
+        let mut pending_kills = String::new();
         for (i, stmt) in block.stmts.iter().enumerate() {
+            out.push_str(&pending_kills);
+            pending_kills = self.take_kills(stmt);
             match stmt {
                 Stmt::Let { name, value, .. } => {
                     out.push_str(&self.compile_expr(value)?);
@@ -2386,6 +2462,24 @@ impl Codegen {
                     tail_is_value = false;
                 }
                 Stmt::Assign { name, value } => {
+                    // Uniqueness-site accounting + the dirty gate: a site
+                    // whose own RHS embeds a share of `name` runs with a
+                    // forced zero token (the copy re-owns); a clean site
+                    // trusts the runtime token. Missing facts mean dirty.
+                    let mut cap_load = format!("    local.get ${name}__cap\n");
+                    let mut site_dirty = false;
+                    if is_self_assign_shape(name, value) {
+                        match self.facts_stack.last_mut() {
+                            Some((facts, _, sites)) if facts.accumulators.contains(name) => {
+                                *sites += 1;
+                                site_dirty = facts.is_dirty(stmt);
+                            }
+                            _ => site_dirty = true,
+                        }
+                        if site_dirty {
+                            cap_load = "    i32.const 0\n".to_string();
+                        }
+                    }
                     if let Some(&idx) = self.str_fields.get(name) {
                         // Assigning a String state field copies the content OUT
                         // to the host cell, so it survives the arena reset.
@@ -2418,8 +2512,9 @@ impl Codegen {
                             out.push_str(&format!("    local.get ${name}\n"));
                             out.push_str(&self.compile_expr(elem)?);
                             out.push_str(to_slot(xk));
+                            out.push_str(&cap_load);
                             out.push_str(&format!(
-                                "    local.get ${name}__cap\n    call $list_push_cap\n    local.set ${name}__cap\n    local.set ${name}\n"
+                                "    call $list_push_cap\n    local.set ${name}__cap\n    local.set ${name}\n"
                             ));
                             tail_is_value = false;
                             continue;
@@ -2444,8 +2539,10 @@ impl Codegen {
                             out.push_str(to_slot(kk));
                             out.push_str(&self.compile_expr(vexpr)?);
                             out.push_str(to_slot(vk));
+                            out.push_str(&format!("    i32.const {mode}\n"));
+                            out.push_str(&cap_load);
                             out.push_str(&format!(
-                                "    i32.const {mode}\n    local.get ${name}__cap\n    call $dict_insert_cap\n    local.set ${name}__cap\n    local.set ${name}\n"
+                                "    call $dict_insert_cap\n    local.set ${name}__cap\n    local.set ${name}\n"
                             ));
                             tail_is_value = false;
                             continue;
@@ -2468,15 +2565,18 @@ impl Codegen {
                             out.push_str(to_slot(dk));
                             out.push_str(&format!("    i32.const {mode}\n"));
                             out.push_str(&self.compile_expr(fexpr)?);
+                            out.push_str(&cap_load);
                             out.push_str(&format!(
-                                "    local.get ${name}__cap\n    call $dict_update_cap\n    local.set ${name}__cap\n    local.set ${name}\n"
+                                "    call $dict_update_cap\n    local.set ${name}__cap\n    local.set ${name}\n"
                             ));
                             tail_is_value = false;
                             continue;
                         }
                         // The string-builder fast path: `s = s <> a <> b`
                         // appends each piece into owned byte slack.
-                        if let Some(pieces) = self_concat_pieces(name, value) {
+                        if let Some(pieces) =
+                            self_concat_pieces(name, value).filter(|_| !site_dirty)
+                        {
                             self.uses_str_append_cap = true;
                             for piece in pieces {
                                 out.push_str(&format!("    local.get ${name}\n"));
@@ -2572,6 +2672,7 @@ impl Codegen {
                 }
             }
         }
+        out.push_str(&pending_kills);
         if !tail_is_value {
             out.push_str("    i32.const 0\n");
         }
@@ -3482,6 +3583,10 @@ impl Codegen {
             }
         }
         self.infer_locals(body);
+        // A lambda body is its own compile unit: its accumulators get their
+        // own cap locals here (the OUTER unit records the capture shares).
+        let saved_inplace = std::mem::take(&mut self.inplace_push);
+        self.begin_unit(body);
         // The closure result is the universal i64 slot: the body's tail value (and
         // any `return`) is stored via `to_slot`, and each `Apply` recovers it at
         // the closure's return kind. This keeps a big `Int` return from truncating
@@ -3511,6 +3616,11 @@ impl Codegen {
         for name in &lets {
             let k = self.locals.get(name).copied().unwrap_or(Kind::I32);
             header.push_str(&format!("    (local ${name} {})\n", wasm_ty(k)));
+        }
+        let mut lam_caps: Vec<String> = self.inplace_push.iter().cloned().collect();
+        lam_caps.sort();
+        for v in &lam_caps {
+            header.push_str(&format!("    (local ${v}__cap i32)\n"));
         }
         header.push_str(&format!("    (local ${TUPLE_TMP} i32)\n"));
         header.push_str(&format!("    (local ${TRY_TMP} i32)\n"));
@@ -3554,6 +3664,8 @@ impl Codegen {
         self.lambdas[index] = format!("{header}{prologue}{body_wat}  )\n");
         self.clos_arities.insert(params.len());
 
+        self.finish_unit("lambda")?;
+        self.inplace_push = saved_inplace;
         self.restore_scope(saved);
 
         // Construction site: allocate `[code_index][cap0]..[capN]` via `$mkN`,
@@ -3646,7 +3758,7 @@ impl Codegen {
     /// caller decrements it after compiling the body iff capture is
     /// non-empty.
     fn loop_watermark(&mut self, body: &Block) -> (String, String) {
-        if self.wm_level >= WM_POOL || !self.loop_arena_resettable(body) {
+        if force_copy_mode() || self.wm_level >= WM_POOL || !self.loop_arena_resettable(body) {
             return (String::new(), String::new());
         }
         let wm = format!("__witchy_wm_{}", self.wm_level);
@@ -5621,230 +5733,27 @@ const WM_POOL: usize = 4;
 /// buffer, so the variable keeps the copying push. This is the linear-update
 /// optimization: value semantics are preserved because no one else can
 /// observe the mutated block.
-fn push_eligible_vars(b: &Block) -> HashSet<String> {
-    let mut self_push: HashSet<String> = HashSet::new();
-    let mut disq: HashSet<String> = HashSet::new();
-    scan_push_block(b, &mut self_push, &mut disq);
-    self_push.retain(|v| !disq.contains(v));
-    self_push
+/// `WITCHY_NO_INPLACE=1` compiles with the in-place machinery (linear update
+/// and loop watermark resets) OFF — the copying paths ARE the semantics, so
+/// diffing outputs against an optimized build is a soundness check on the
+/// uniqueness analysis.
+fn force_copy_mode() -> bool {
+    FORCE_COPY_OVERRIDE.with(|c| c.get())
+        .unwrap_or_else(|| std::env::var_os("WITCHY_NO_INPLACE").is_some_and(|v| v == "1"))
 }
 
-fn self_push_elem<'a>(name: &str, value: &'a Expr) -> Option<&'a Expr> {
-    if let Expr::Call { name: f, args } = value {
-        if f == "push" && args.len() == 2 {
-            if matches!(&args[0], Expr::Var(v) if v == name) {
-                return Some(&args[1]);
-            }
-        }
-    }
-    None
+thread_local! {
+    static FORCE_COPY_OVERRIDE: std::cell::Cell<Option<bool>> =
+        const { std::cell::Cell::new(None) };
 }
 
-/// `d = insert(d, k, v)`: the dict analogue of `self_push_elem`.
-fn self_insert_args<'a>(name: &str, value: &'a Expr) -> Option<(&'a Expr, &'a Expr)> {
-    if let Expr::Call { name: f, args } = value {
-        if f == "insert" && args.len() == 3 {
-            if matches!(&args[0], Expr::Var(v) if v == name) {
-                return Some((&args[1], &args[2]));
-            }
-        }
-    }
-    None
+/// Thread-local override of `WITCHY_NO_INPLACE` so in-process differential
+/// tests can compile both ways without racing the process environment.
+#[cfg(test)]
+pub fn set_force_copy_for_tests(v: Option<bool>) {
+    FORCE_COPY_OVERRIDE.with(|c| c.set(v));
 }
 
-/// `d = update(d, k, default, f)`: the upsert analogue of `self_insert_args`.
-fn self_update_args<'a>(name: &str, value: &'a Expr) -> Option<(&'a Expr, &'a Expr, &'a Expr)> {
-    if let Expr::Call { name: f, args } = value {
-        if f == "update" && args.len() == 4 {
-            if matches!(&args[0], Expr::Var(v) if v == name) {
-                return Some((&args[1], &args[2], &args[3]));
-            }
-        }
-    }
-    None
-}
-
-/// `s = s <> a <> b <> …` (any left-spine whose leftmost leaf is the assigned
-/// variable): the appended pieces, in order. The string-builder analogue of
-/// `self_push_elem`.
-fn self_concat_pieces<'a>(name: &str, value: &'a Expr) -> Option<Vec<&'a Expr>> {
-    let mut pieces: Vec<&'a Expr> = Vec::new();
-    let mut cur = value;
-    loop {
-        match cur {
-            Expr::Binary { op: BinOp::Concat, lhs, rhs } => {
-                pieces.push(rhs);
-                cur = lhs;
-            }
-            Expr::Var(v) if v == name && !pieces.is_empty() => {
-                pieces.reverse();
-                return Some(pieces);
-            }
-            _ => return None,
-        }
-    }
-}
-
-fn scan_push_block(b: &Block, self_push: &mut HashSet<String>, disq: &mut HashSet<String>) {
-    for stmt in &b.stmts {
-        match stmt {
-            Stmt::Assign { name, value } => {
-                if let Some(elem) = self_push_elem(name, value) {
-                    self_push.insert(name.clone());
-                    scan_push_expr(elem, self_push, disq);
-                    continue;
-                }
-                if let Some(pieces) = self_concat_pieces(name, value) {
-                    self_push.insert(name.clone());
-                    for p in pieces {
-                        scan_push_expr(p, self_push, disq);
-                    }
-                    continue;
-                }
-                if let Some((k, v)) = self_insert_args(name, value) {
-                    self_push.insert(name.clone());
-                    scan_push_expr(k, self_push, disq);
-                    scan_push_expr(v, self_push, disq);
-                    continue;
-                }
-                if let Some((k, dflt, f)) = self_update_args(name, value) {
-                    // The updater closure's body is scanned too: a lambda that
-                    // CAPTURES the dict disqualifies it (the capture aliases).
-                    self_push.insert(name.clone());
-                    scan_push_expr(k, self_push, disq);
-                    scan_push_expr(dflt, self_push, disq);
-                    scan_push_expr(f, self_push, disq);
-                    continue;
-                }
-                // A plain reassignment is fine (the emitter resets the
-                // capacity); only the right-hand side's uses matter.
-                scan_push_expr(value, self_push, disq);
-            }
-            Stmt::Let { value, .. } => scan_push_expr(value, self_push, disq),
-            Stmt::LetTuple { names, value } => {
-                // Tuple-destructured bindings skip capacity tracking entirely.
-                for n in names {
-                    disq.insert(n.clone());
-                }
-                scan_push_expr(value, self_push, disq);
-            }
-            Stmt::Return(Some(e)) | Stmt::Expr(e) | Stmt::Yield(e) => {
-                scan_push_expr(e, self_push, disq)
-            }
-            Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
-        }
-    }
-}
-
-fn scan_push_expr(e: &Expr, self_push: &mut HashSet<String>, disq: &mut HashSet<String>) {
-    match e {
-        // Whitelisted reads: the pointer is consumed within the operation and
-        // never retained.
-        Expr::Call { name, args }
-            if ((name == "at"
-                || name == "has"
-                || name == "remove"
-                || name == "contains"
-                || name == "index_of")
-                && args.len() == 2)
-                || (name == "get_or" && args.len() == 3)
-                || ((name == "length"
-                    || name == "string_length"
-                    || name == "to_string"
-                    || name == "size"
-                    || name == "keys"
-                    || name == "values"
-                    || name == "pairs")
-                    && args.len() == 1) =>
-        {
-            if !matches!(&args[0], Expr::Var(_)) {
-                scan_push_expr(&args[0], self_push, disq);
-            }
-            for a in &args[1..] {
-                scan_push_expr(a, self_push, disq);
-            }
-        }
-        // print(console, msg) reads the message's bytes out to the host.
-        Expr::Call { name, args } if name == "print" && args.len() == 2 => {
-            scan_push_expr(&args[0], self_push, disq);
-            if !matches!(&args[1], Expr::Var(_)) {
-                scan_push_expr(&args[1], self_push, disq);
-            }
-        }
-        Expr::For { iter, body, .. } => {
-            if !matches!(iter.as_ref(), Expr::Var(_)) {
-                scan_push_expr(iter, self_push, disq);
-            }
-            scan_push_block(body, self_push, disq);
-        }
-        Expr::Var(v) => {
-            disq.insert(v.clone());
-        }
-        Expr::Range { lo, hi, .. } => {
-            scan_push_expr(lo, self_push, disq);
-            scan_push_expr(hi, self_push, disq);
-        }
-        Expr::Index { .. } | Expr::WhileLet { .. } | Expr::MethodCall { .. } | Expr::Record { .. } => {}
-        Expr::Call { args, .. }
-        | Expr::Ctor { args, .. }
-        | Expr::List(args)
-        | Expr::Tuple(args)
-        | Expr::Spawn { args, .. } => {
-            for a in args {
-                scan_push_expr(a, self_push, disq);
-            }
-        }
-        Expr::Apply { func, args } => {
-            scan_push_expr(func, self_push, disq);
-            for a in args {
-                scan_push_expr(a, self_push, disq);
-            }
-        }
-        Expr::Unary { expr, .. } | Expr::Try(expr) | Expr::As { expr, .. } | Expr::Field { base: expr, .. } => {
-            scan_push_expr(expr, self_push, disq)
-        }
-        Expr::RecordUpdate { base, fields } => {
-            scan_push_expr(base, self_push, disq);
-            for (_, v) in fields {
-                scan_push_expr(v, self_push, disq);
-            }
-        }
-        // Every binary operator READS its operands into a fresh result (concat
-        // copies, comparisons compare content, arithmetic is scalar) — a bare
-        // variable operand never escapes through one.
-        Expr::Binary { lhs, rhs, .. } => {
-            if !matches!(lhs.as_ref(), Expr::Var(_)) {
-                scan_push_expr(lhs, self_push, disq);
-            }
-            if !matches!(rhs.as_ref(), Expr::Var(_)) {
-                scan_push_expr(rhs, self_push, disq);
-            }
-        }
-        Expr::If { cond, then_block, else_block } => {
-            scan_push_expr(cond, self_push, disq);
-            scan_push_block(then_block, self_push, disq);
-            if let Some(b) = else_block {
-                scan_push_block(b, self_push, disq);
-            }
-        }
-        Expr::Match { scrutinee, arms } => {
-            scan_push_expr(scrutinee, self_push, disq);
-            for arm in arms {
-                if let Some(g) = &arm.guard {
-                    scan_push_expr(g, self_push, disq);
-                }
-                scan_push_expr(&arm.body, self_push, disq);
-            }
-        }
-        Expr::While { cond, body } => {
-            scan_push_expr(cond, self_push, disq);
-            scan_push_block(body, self_push, disq);
-        }
-        Expr::Lambda { body, .. } => scan_push_block(body, self_push, disq),
-        Expr::Block(b) => scan_push_block(b, self_push, disq),
-        Expr::Int(_) | Expr::Duration(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) => {}
-    }
-}
 
 fn collect_fn_refs_block(b: &Block, out: &mut HashSet<String>) {
     for stmt in &b.stmts {
@@ -6162,6 +6071,7 @@ pub fn compile_module_with(
     cg.message_tags = tags.clone();
     cg.spawnable = spawnable.clone();
     register_module_items(&mut cg, module);
+    cg.summaries = analysis::Summaries::of_module(module);
     let mut func_wat = String::new();
     let mut main_params = 0usize;
     let mut main_param_is_args: Vec<bool> = Vec::new();
@@ -6926,20 +6836,7 @@ fn compile_actor_in(
             let k = cg.locals.get(name).copied().unwrap_or(Kind::I32);
             header.push_str(&format!("    (local ${name} {})\n", wasm_ty(k)));
         }
-        cg.inplace_push = push_eligible_vars(&renamed);
-        let shadowed: Vec<String> = cg
-            .inplace_push
-            .iter()
-            .filter(|v| {
-                cg.globals.contains(*v)
-                    || cg.str_fields.contains_key(*v)
-                    || cg.list_fields.contains_key(*v)
-            })
-            .cloned()
-            .collect();
-        for v in shadowed {
-            cg.inplace_push.remove(&v);
-        }
+        cg.begin_unit(&renamed);
         let mut cap_vars: Vec<String> = cg.inplace_push.iter().cloned().collect();
         cap_vars.sort();
         for v in cap_vars {
@@ -6959,6 +6856,7 @@ fn compile_actor_in(
         cg.apply_level = 0;
         cg.wm_level = 0;
         let body = cg.compile_block(&renamed)?;
+        cg.finish_unit(&format!("{}.{}", actor.name, h.message))?;
         handlers.push((header, body));
     }
 
@@ -7216,6 +7114,8 @@ const LIST_PUSH_WAT: &str = r#"  (func $list_push (param $list i32) (param $x i6
 // spine copied once — amortized O(1) per push. Returns (list, cap).
 const LIST_PUSH_CAP_WAT: &str = r#"  (func $list_push_cap (param $list i32) (param $x i64) (param $cap i32) (result i32 i32)
     (local $len i32) (local $new i32) (local $newcap i32)
+    (if (i32.eqz (local.get $cap))
+      (then (global.set $__witchy_reowns (i64.add (global.get $__witchy_reowns) (i64.const 1)))))
     local.get $list i32.load local.set $len
     (if (i32.gt_s (local.get $cap) (local.get $len))
       (then
@@ -7245,6 +7145,8 @@ const LIST_PUSH_CAP_WAT: &str = r#"  (func $list_push_cap (param $list i32) (par
 // header bumps; without, a fresh block at double the needed bytes.
 const STR_APPEND_CAP_WAT: &str = r#"  (func $str_append_cap (param $s i32) (param $piece i32) (param $cap i32) (result i32 i32)
     (local $len i32) (local $plen i32) (local $need i32) (local $new i32) (local $newcap i32)
+    (if (i32.eqz (local.get $cap))
+      (then (global.set $__witchy_reowns (i64.add (global.get $__witchy_reowns) (i64.const 1)))))
     local.get $s i32.load local.set $len
     local.get $piece i32.load local.set $plen
     (local.set $need (i32.add (local.get $len) (local.get $plen)))
@@ -7884,6 +7786,8 @@ const KEY_EQ_WAT: &str = r#"  (func $key_eq (param $a i64) (param $b i64) (param
 // lookup model); only the per-insert COPY is eliminated. Returns (d, cap).
 const DICT_INSERT_CAP_WAT: &str = r#"  (func $dict_insert_cap (param $d i32) (param $k i64) (param $v i64) (param $mode i32) (param $cap i32) (result i32 i32)
     (local $count i32) (local $found i32) (local $new i32) (local $bytes i32) (local $newcap i32) (local $idx i32)
+    (if (i32.eqz (local.get $cap))
+      (then (global.set $__witchy_reowns (i64.add (global.get $__witchy_reowns) (i64.const 1)))))
     (local.set $count (i32.load (local.get $d)))
     (local.set $found (call $dict_find (local.get $d) (local.get $k) (local.get $mode)))
     (if (i32.and (i32.ge_s (local.get $found) (i32.const 0)) (i32.gt_s (local.get $cap) (i32.const 0)))
