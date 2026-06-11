@@ -1,5 +1,5 @@
 // Closure-call benchmark: invoke a first-class function (an `Rc<dyn Fn>` on the
-// native backend) several million times in a tight loop. Measures closure-call
+// compiled backend) several million times in a tight loop. Measures closure-call
 // overhead (heap pointer + indirect call), the same shape Go's func values have.
 
 fn main(console: Console):

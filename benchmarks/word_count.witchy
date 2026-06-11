@@ -3,8 +3,7 @@
 // string hashing — the bread-and-butter of Go log/text processors.
 //
 // `update(d, w, 0, fn(n): n + 1)` is the single-lookup upsert — one hash, like
-// Go's `m[w]++`. The native backend fuses it to `d.entry(w).or_insert(0)` and
-// inlines the `+ 1` updater (no per-iteration closure allocation).
+// Go's `m[w]++`.
 
 fn main(console: Console):
     var d = dict_new()

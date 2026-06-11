@@ -861,7 +861,7 @@ impl Mono<'_> {
         // variable is now a concrete type, and the trait obligation is satisfied
         // by the impl whose method this specialization's body resolves to.
         // Clearing them lets the (fully concrete) specialization compile on the
-        // native backend, which has no notion of an unsatisfied generic bound.
+        // compiled backend, which has no notion of an unsatisfied generic bound.
         f.bounds = Vec::new();
         self.generated.push(f);
         mangled

@@ -126,13 +126,12 @@ That makes three things possible that mainstream languages can't offer:
    WebAssembly and runs it in a VM granted exactly the computed footprint —
    the module physically has no other host imports to call.
 
-## Three backends, one semantics
+## Two backends, one semantics
 
-| Backend                     | Command                     | Use                                                     |
-| --------------------------- | --------------------------- | ------------------------------------------------------- |
-| Tree-walking interpreter    | `witchy run.witchy`         | Development; the reference semantics                    |
-| WebAssembly (wasmtime)      | `witchy sandbox run.witchy` | Confinement: the capability boundary is the VM boundary |
-| Native (Rust transpilation) | `witchy native run.witchy`  | Speed                                                   |
+| Backend                  | Command                     | Use                                                     |
+| ------------------------ | --------------------------- | ------------------------------------------------------- |
+| Tree-walking interpreter | `witchy run.witchy`         | Development; the reference semantics                    |
+| WebAssembly (wasmtime)   | `witchy sandbox run.witchy` | Deployment: confinement AND speed — the capability boundary is the VM boundary, and the tier benches at Go-class (see `bench/`)                                                   |
 
 The backends are held to a **zero-silent-divergence** invariant: `witchy parity
 <file>` runs a program on both the interpreter and the compiled WASM and
@@ -215,9 +214,7 @@ witchy check    <file.witchy>                 type-check without running
 witchy parity   <file.witchy>                 run on both backends, confirm identical output
 witchy sandbox [--dir <root>] [--net <addr>]... <file.witchy> [args...]
                                               compile and run in a VM granted exactly its footprint
-witchy native [-o out] <file.witchy>          compile to a native binary via rustc/LLVM, then run it
 witchy emit-wat <file.witchy>                 print the compiled WebAssembly text
-witchy emit-rust <file.witchy>                print the native (Rust) transpilation
 witchy caps     <file.witchy>                 report the capability footprint (runtime + build axes)
 witchy caps-diff <old.witchy> <new.witchy>    fail if the footprint widened on either axis
 witchy build-step <file.witchy>               run a rune's build step under confined grants
@@ -264,9 +261,9 @@ Editor support: a [Zed extension](editors/zed) with tree-sitter highlighting and
 
 ## Status
 
-Witchy is a young language (pre-1.0). The capability model, the three backends
+Witchy is a young language (pre-1.0). The capability model, the two backends
 and their parity discipline, the formatter, the LSP, and the package-manager
-core are implemented and tested (1,150+ tests).
+core are implemented and tested (1,100+ tests).
 
 The **build-time capability system** is built end to end: the build footprint is
 computed and gated on its own axis (`witchy caps` / `caps-diff`); all five build
@@ -279,9 +276,8 @@ cached; deterministic steps run in the **zero-ambient WASM sandbox**; releases
 sit out a signed 72h **staging cooldown** (`--allow-fresh` to override). See
 [docs/build-time-execution-plan.md](docs/build-time-execution-plan.md).
 
-Not yet done: a hosted public registry and performance work. See
-[docs/architecture.md](docs/architecture.md) for the honest limitations list,
-including the WASM memory model.
+Not yet done: a hosted public registry. See
+[docs/architecture.md](docs/architecture.md) for the honest limitations list.
 
 ## License
 

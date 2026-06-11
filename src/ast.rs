@@ -144,15 +144,13 @@ pub struct Param {
 /// `sink` consumes (takes ownership / moves the value in).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Convention {
-    /// The default (no keyword): an owned value. Observably immutable to the
-    /// caller; the native backend clones collection arguments to preserve value
-    /// semantics.
+    /// The default (no keyword): an owned value, observably immutable to the
+    /// caller (value semantics).
     #[default]
     Let,
     /// An explicit `let` keyword on a parameter: an immutable *borrow*. Same
-    /// observable semantics as the default, but the native backend passes it by
-    /// reference (`&T`) with no clone — an opt-in for read-only hot paths. A
-    /// borrowed parameter may not escape (be returned, stored, or mutated).
+    /// observable semantics as the default; the no-escape contract (a borrowed
+    /// parameter may not be returned) is enforced by the type checker.
     Borrow,
     Inout,
     Sink,
@@ -378,9 +376,9 @@ pub enum UnOp {
     Not,
     BitNot,
     /// `move x` — a use-site ownership transfer. Value-neutral (it evaluates to
-    /// its operand); on the native backend it forces a move (no clone) so the
-    /// caller relinquishes the binding. Carried as a unary op so every AST walker
-    /// that already recurses through `Unary` handles it transparently.
+    /// its operand); the caller relinquishes the binding (use-after-move is a
+    /// compile error). Carried as a unary op so every AST walker that already
+    /// recurses through `Unary` handles it transparently.
     Move,
 }
 

@@ -534,6 +534,118 @@ pub(crate) fn build_entrypoint(module: &Module) -> Option<&Function> {
 /// Collect the type-parameter names (lowercase, argument-less) appearing in a
 /// type expression, in order of first appearance. Used to infer the parameters
 /// of a generic ADT from its variant field types.
+/// A `let`-borrowed parameter may not BE the function's result: every block
+/// tail and `return` expression is checked for the bare parameter (through
+/// if/match/block tails). Everything else copies by value semantics, so this
+/// is the whole escape surface — previously enforced only by the native
+/// backend's borrow checker, now a language rule.
+fn borrow_escape_check(func: &Function) -> Result<(), TypeError> {
+    let borrowed: Vec<&str> = func
+        .params
+        .iter()
+        .filter(|p| p.convention == Convention::Borrow)
+        .map(|p| p.name.as_str())
+        .collect();
+    if borrowed.is_empty() {
+        return Ok(());
+    }
+    fn check_result_expr(e: &Expr, borrowed: &[&str], fname: &str) -> Result<(), TypeError> {
+        match e {
+            Expr::Var(v) if borrowed.contains(&v.as_str()) => terr(format!(
+                "in `{fname}`: the `let`-borrowed parameter `{v}` cannot be returned — a borrow must not outlive the call (drop the `let`, or take it `own`)"
+            )),
+            Expr::If { then_block, else_block, .. } => {
+                check_result_block(then_block, borrowed, fname)?;
+                if let Some(b) = else_block {
+                    check_result_block(b, borrowed, fname)?;
+                }
+                Ok(())
+            }
+            Expr::Match { arms, .. } => {
+                for arm in arms {
+                    check_result_expr(&arm.body, borrowed, fname)?;
+                }
+                Ok(())
+            }
+            Expr::Block(b) => check_result_block(b, borrowed, fname),
+            _ => Ok(()),
+        }
+    }
+    fn check_result_block(b: &Block, borrowed: &[&str], fname: &str) -> Result<(), TypeError> {
+        if let Some(Stmt::Expr(tail)) = b.stmts.last() {
+            check_result_expr(tail, borrowed, fname)?;
+        }
+        Ok(())
+    }
+    // Every `return` expression, anywhere in the body.
+    fn scan_returns_block(b: &Block, borrowed: &[&str], fname: &str) -> Result<(), TypeError> {
+        for stmt in &b.stmts {
+            match stmt {
+                Stmt::Return(Some(e)) => check_result_expr(e, borrowed, fname)?,
+                Stmt::Let { value, .. }
+                | Stmt::Assign { value, .. }
+                | Stmt::LetTuple { value, .. }
+                | Stmt::Expr(value)
+                | Stmt::Yield(value) => scan_returns_expr(value, borrowed, fname)?,
+                Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
+            }
+        }
+        Ok(())
+    }
+    fn scan_returns_expr(e: &Expr, borrowed: &[&str], fname: &str) -> Result<(), TypeError> {
+        match e {
+            Expr::If { cond, then_block, else_block } => {
+                scan_returns_expr(cond, borrowed, fname)?;
+                scan_returns_block(then_block, borrowed, fname)?;
+                if let Some(b) = else_block {
+                    scan_returns_block(b, borrowed, fname)?;
+                }
+                Ok(())
+            }
+            Expr::Match { scrutinee, arms } => {
+                scan_returns_expr(scrutinee, borrowed, fname)?;
+                for arm in arms {
+                    scan_returns_expr(&arm.body, borrowed, fname)?;
+                }
+                Ok(())
+            }
+            Expr::While { cond, body } => {
+                scan_returns_expr(cond, borrowed, fname)?;
+                scan_returns_block(body, borrowed, fname)
+            }
+            Expr::For { iter, body, .. } => {
+                scan_returns_expr(iter, borrowed, fname)?;
+                scan_returns_block(body, borrowed, fname)
+            }
+            Expr::Block(b) => scan_returns_block(b, borrowed, fname),
+            Expr::Binary { lhs, rhs, .. } => {
+                scan_returns_expr(lhs, borrowed, fname)?;
+                scan_returns_expr(rhs, borrowed, fname)
+            }
+            Expr::Unary { expr, .. } | Expr::Try(expr) | Expr::As { expr, .. } => {
+                scan_returns_expr(expr, borrowed, fname)
+            }
+            Expr::Call { args, .. } | Expr::Ctor { args, .. } | Expr::List(args)
+            | Expr::Tuple(args) | Expr::Spawn { args, .. } => {
+                for a in args {
+                    scan_returns_expr(a, borrowed, fname)?;
+                }
+                Ok(())
+            }
+            Expr::Apply { func: f2, args } => {
+                scan_returns_expr(f2, borrowed, fname)?;
+                for a in args {
+                    scan_returns_expr(a, borrowed, fname)?;
+                }
+                Ok(())
+            }
+            _ => Ok(()),
+        }
+    }
+    check_result_block(&func.body, &borrowed, &func.name)?;
+    scan_returns_block(&func.body, &borrowed, &func.name)
+}
+
 /// Types a region assignment may freely write through to the outer scope:
 /// copied by value, never pointer-backed.
 fn is_scalar_ty(t: &Ty) -> bool {
@@ -2265,6 +2377,7 @@ impl Checker {
     }
 
     fn check_function(&mut self, func: &Function) -> Result<(), TypeError> {
+        borrow_escape_check(func)?;
         let (params, ret) = self.fn_sigs.get(&func.name).cloned().unwrap();
         self.scopes = vec![HashMap::new()];
         self.hidden = vec![HashSet::new()];

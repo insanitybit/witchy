@@ -93,13 +93,6 @@ expect_eq "interpreter output" "$WANT" "$GOT_INTERP"
 expect_contains "interpreter <-> WASM parity" "agree" "$("$BIN" parity "$WORK/lang.witchy" 2>&1)"
 expect_contains "type-checks standalone" "" "$("$BIN" check "$WORK/lang.witchy" 2>&1)"
 test -n "$("$BIN" emit-wat "$WORK/lang.witchy")" && ok "emit-wat produces a module"
-test -n "$("$BIN" emit-rust "$WORK/lang.witchy")" && ok "emit-rust produces a program"
-if command -v rustc >/dev/null; then
-    GOT_NATIVE="$("$BIN" native "$WORK/lang.witchy")"
-    expect_eq "native backend agrees" "$WANT" "$GOT_NATIVE"
-else
-    echo "  (rustc not found — skipping the native backend)"
-fi
 
 stage "3. The formatter: canonical and idempotent"
 printf 'fn main(console: Console):\n        print(console,"x")\n' > "$WORK/ugly.witchy"
