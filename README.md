@@ -212,8 +212,9 @@ cargo build --release
 witchy [--net <host:port>]... <file.witchy>   run a program
 witchy check    <file.witchy>                 type-check without running
 witchy parity   <file.witchy>                 run on both backends, confirm identical output
-witchy sandbox  <file.witchy>                 compile and run in a VM granted exactly its footprint
-witchy native [-o out] <file.witchy>          compile to a native binary via rustc/LLVM
+witchy sandbox [--dir <root>] [--net <addr>]... <file.witchy> [args...]
+                                              compile and run in a VM granted exactly its footprint
+witchy native [-o out] <file.witchy>          compile to a native binary via rustc/LLVM, then run it
 witchy emit-wat <file.witchy>                 print the compiled WebAssembly text
 witchy emit-rust <file.witchy>                print the native (Rust) transpilation
 witchy caps     <file.witchy>                 report the capability footprint (runtime + build axes)
@@ -248,7 +249,7 @@ reference's examples preloaded.
   Markdown under `book/src/`). Start here if you're new.
 - **[Language reference](docs/language.md)** — the full syntax and semantics.
 - **[Capabilities guide](docs/capabilities.md)** — the security model, for users.
-- **[Standard library](docs/stdlib.md)** — 30 modules, function-by-function.
+- **[Standard library](docs/stdlib.md)** — 31 modules, function-by-function.
 - **[Examples](examples/)** — 100+ programs from `hello` to a self-hosted
   package registry; see the [index](examples/README.md).
 - **[Capability rights design](docs/capability-rights.md)** and

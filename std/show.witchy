@@ -3,7 +3,7 @@
 // them a *custom* readable form. (The built-in `to_string` already renders any
 // value structurally — `Point(1, 2)`, `[Circle(2), Dot]` — on every backend;
 // reach for `Show` when you want a different rendering than that default.) Pure
-// and capability-free, like every std module.
+// except `say`, which takes the `Console` it prints to.
 
 import string
 

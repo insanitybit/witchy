@@ -16,6 +16,7 @@ always current — is
 | `dict` | map operations over `Dict(k, v)` |
 | `set` | set operations |
 | `string` | `split`, `lines`, `join`, `trim`, case, search, … |
+| `path` | path-*string* manipulation (join, normalize, base/dir/ext) — pure; the `Dir`-using half lives in `fs` |
 | `iter` | lazy iterator combinators (`take`, `collect`, …) |
 | `option` / `result` | helpers for `Option` / `Result` |
 
@@ -47,9 +48,10 @@ These do real I/O, so their functions take capabilities:
 
 | Module | Capability |
 |---|---|
-| `fs` / `path` | `Dir` |
+| `fs` | `Dir` |
 | `http` / `server` | `Net` |
 | `crypto` | hashing, verification; signing needs a `Secret` |
+| `show` | the trait and `show_list` are pure; `say` (the Show-accepting `print`) takes a `Console` |
 
 ## Build-time intrinsics
 
@@ -60,8 +62,9 @@ chapter.
 
 ## A reminder about portability
 
-Most of the library works on every backend. A few things are interpreter-only by
-nature (rendering a whole compound value with `to_string`, Unicode-aware
-operations the WebAssembly backend scopes to ASCII). The compiler tells you —
-loudly — if you use one in code headed for the sandbox, so you never have to
-guess. `witchy parity <file>` is the definitive check.
+Most of the library works on every backend — including rendering whole compound
+values with `to_string`/interpolation, which is identical on all three. A few
+things are interpreter-only by nature (e.g. Unicode-aware operations the
+WebAssembly backend scopes to ASCII). The compiler tells you — loudly — if you
+use one in code headed for the sandbox, so you never have to guess.
+`witchy parity <file>` is the definitive check.

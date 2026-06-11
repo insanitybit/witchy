@@ -224,6 +224,7 @@ registry  = "coven"
 hash      = "sha256:9f86d081..."        # canonicalized source tree (§7)
 runtime_footprint = ["Net"]             # computed; the gate diffs against this (§10)
 build_footprint   = []                  # this rune runs no build step
+determinism = "guaranteed"              # reproducibility class (§7.2)
 provenance = "sigstore:...|git:commit=abc123|signer=acme"   # §8
 
 [[rune]]
@@ -233,15 +234,17 @@ registry  = "coven"
 hash      = "sha256:..."
 runtime_footprint = []
 build_footprint   = ["BuildRead", "BuildExec"]   # demanded by its build step
-build_grants      = { read = ["proto/"], exec = ["protoc"] }   # in effect (§7.1)
-build_inputs      = ["sha256:..."]      # hashed exec/fetch outputs => reproducible
+determinism = "pinned-only"             # BuildExec used => re-runs, not cached (§7.2)
 provenance = "..."
 ```
 
 The `*_footprint` fields are the baselines the capability gate compares the next
-resolution against (§10). Hashes make builds reproducible and tamper-evident;
-`build_inputs` pins anything a granted `BuildExec`/`BuildNet` produced so
-rebuilds are deterministic; provenance ties bytes to public source history.
+resolution against (§10); `determinism` records each rune's reproducibility
+class (§7.2). Hashes make builds reproducible and tamper-evident; provenance
+ties bytes to public source history. The build *grants* themselves
+(`[build.grants."name"]` — which directories, which tools) live in the
+consumer's `witchy.toml`, not the lock: the lock pins what was *demanded and
+reviewed*; the manifest states what you *granted*.
 
 ---
 
@@ -642,14 +645,14 @@ full lifecycle. What is built vs. modelled-for-later:
 | Manifest / lockfile / semver / store (§5,6,7) | **Built.** `witchy.toml`, `witchy.lock` (pins hash+footprint+provenance), content-addressed store, PubGrub-lite resolution. |
 | Two-phase publish (§8.1) | **Built (local).** stage → second-factor `promote`, immutability, separation of duties, server-side footprint recomputation. |
 | Determinism tiering (§7.2) | **Built.** computed class surfaced by `audit`. |
-| Build-grant enforcement (§7.1) | **Built (enforced; grant ⊇ demand).** Build *capability types* don't exist in the language yet, so build footprints are empty in practice — the machinery is ready for when they land. |
+| Build-grant enforcement (§7.1) | **Built.** All five build capability types (`BuildOut`/`BuildRead`/`BuildEnv`/`BuildNet`/`BuildExec`) exist in the language, are footprinted on their own axis, and execute confined; grants are enforced per-rune (grant ⊇ demand), default-deny — even `BuildOut` alone requires an explicit `[build.grants."name"]` section. |
 | CLI (§11) | **Built.** new/init/add/build/run/update/audit/why/why-cap/publish/promote/yank/list/verify/vendor. Never executes dependency code. |
 | **Cryptographic record signing** (§8 targets role) | **Built.** `src/pm/keys.rs` — every registry record is **Ed25519-signed** by the registry root key; `fetch`/`build`/`verify` reject any record whose signature fails (catches metadata tampering that content-hashing alone would miss). The client **pins the key fingerprint (TOFU)** in `witchy.lock` and refuses to build if the registry's key changes. |
 | **Networked registry server** (§8) | **Built.** `witchy coven-serve` (`src/pm/server.rs`, tiny_http) serves a JSON wire protocol; `src/pm/remote.rs` is the zero-trust HTTP client (verifies every record signature + source hash). `COVEN_URL` switches the CLI from the local model to a remote server. |
 | **TUF snapshot + timestamp roles** (§8) | **Built.** `src/pm/tuf.rs` — the server regenerates/re-signs a version-numbered snapshot + a short-lived timestamp on every mutation; the client verifies the full chain (signatures, freshness ⇒ no freeze, version ≥ pinned ⇒ no rollback, per-record snapshot consistency). The snapshot version is pinned in `witchy.lock`. |
 | **Trusted Publishing — keyless OIDC** (§8, §12) | **Built.** No long-lived API tokens exist. `src/pm/trusted.rs`: short-lived identity tokens (a JWT stand-in) from trusted issuers (a JWKS stand-in) carry CI/human claims; the server verifies them and matches a per-namespace **trust policy** (first trusted publish TOFU-binds issuer + `repository` + `workflow_ref`; later publishes must match). The publisher identity and a signed SLSA-style **provenance attestation** are derived from the *verified* claims, and **separation of duties** is enforced (the human who promotes ≠ the machine that staged). Bearer auth is rejected outright. `coven-gen-issuer`/`coven-mint-token` model the IdP/CI side. |
 | Remaining registry refinements | **Modelled, not built.** A live-IdP adapter (real RS256/ES256 JWT parsing + JWKS fetched over https, e.g. GitHub Actions / Sigstore Fulcio+Rekor) in place of the Ed25519 stand-in, and full TUF **key separation** (per-namespace *delegated signing* keys — today all roles are signed by the one registry root key). |
-| Sandboxed **build actor execution** (§7.1) | **Modelled, not built.** Awaits Build* capability types in the language; the footprint/grant/gate plumbing already accounts for it. |
+| Sandboxed **build-step execution** (§7.1) | **Built.** Build steps auto-run during `witchy build` under exactly their grants; a **deterministic** step runs in the zero-ambient WASM sandbox (only its `write_out`/`read_build` host functions are linked) and its output is cached by a hash over the build source and granted inputs; exec/net steps run on the interpreter behind the allow-lists and re-run every time. Generated source is re-footprinted and gated against the locked baseline. |
 
 The invariant holds today: **no dependency code is ever executed during
 resolve/install/build** — only `witchy run` executes the user's own program.

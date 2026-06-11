@@ -147,9 +147,11 @@ native process or socket, gated identically by the allow-list either way.
 The lock's `determinism` field records what reproducibility the build can
 promise: `guaranteed` when every build step is pure (the capability model
 removes clocks, env, network, and randomness *by construction* unless granted),
-and `pinned-only` once `BuildExec`/`BuildNet` enter — their outputs are
-content-hashed into the lock, so rebuilds still pin even when the outside world
-is involved.
+and `pinned-only` once `BuildExec`/`BuildNet` enter. Deterministic steps are
+also *cached*: a content hash over the build source and its granted inputs keys
+the output, so an unchanged step never re-runs — while a step that touches the
+outside world re-runs every time, since its output may depend on external
+state.
 
 That's the supply-chain story, end to end: authority that is typed, computed,
 granted explicitly, pinned in the lock, and unable to widen silently — at runtime
