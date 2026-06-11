@@ -464,6 +464,8 @@ struct Codegen {
     inplace_push: HashSet<String>,
     /// Whether the `$list_push_cap` helper is needed.
     uses_list_push_cap: bool,
+    /// Whether the `$str_append_cap` helper is needed.
+    uses_str_append_cap: bool,
     /// Whether any list state field exists (links the field_*list host fns).
     uses_list_field: bool,
     /// Whether the `compiler.footprint` host import + guest helper are needed.
@@ -766,6 +768,7 @@ impl Codegen {
             used_spawns: std::collections::BTreeSet::new(),
             inplace_push: HashSet::new(),
             uses_list_push_cap: false,
+            uses_str_append_cap: false,
             uses_compiler_footprint: false,
             uses_compiler_diff: false,
             uses_float_to_str: false,
@@ -1760,6 +1763,7 @@ impl Codegen {
             || self.uses_str_field
             || self.uses_list_field
             || self.uses_list_push_cap
+            || self.uses_str_append_cap
             || self.uses_compiler_footprint
             || self.uses_compiler_diff
             || self.uses_float_to_str
@@ -1989,6 +1993,9 @@ impl Codegen {
         }
         if self.uses_list_push_cap {
             s.push_str(LIST_PUSH_CAP_WAT);
+        }
+        if self.uses_str_append_cap {
+            s.push_str(STR_APPEND_CAP_WAT);
         }
         if self.uses_list_concat {
             s.push_str(LIST_CONCAT_WAT);
@@ -2363,6 +2370,20 @@ impl Codegen {
                             out.push_str(&format!(
                                 "    local.get ${name}__cap\n    call $list_push_cap\n    local.set ${name}__cap\n    local.set ${name}\n"
                             ));
+                            tail_is_value = false;
+                            continue;
+                        }
+                        // The string-builder fast path: `s = s <> a <> b`
+                        // appends each piece into owned byte slack.
+                        if let Some(pieces) = self_concat_pieces(name, value) {
+                            self.uses_str_append_cap = true;
+                            for piece in pieces {
+                                out.push_str(&format!("    local.get ${name}\n"));
+                                out.push_str(&self.compile_expr(piece)?);
+                                out.push_str(&format!(
+                                    "    local.get ${name}__cap\n    call $str_append_cap\n    local.set ${name}__cap\n    local.set ${name}\n"
+                                ));
+                            }
                             tail_is_value = false;
                             continue;
                         }
@@ -5057,6 +5078,27 @@ fn self_push_elem<'a>(name: &str, value: &'a Expr) -> Option<&'a Expr> {
     None
 }
 
+/// `s = s <> a <> b <> …` (any left-spine whose leftmost leaf is the assigned
+/// variable): the appended pieces, in order. The string-builder analogue of
+/// `self_push_elem`.
+fn self_concat_pieces<'a>(name: &str, value: &'a Expr) -> Option<Vec<&'a Expr>> {
+    let mut pieces: Vec<&'a Expr> = Vec::new();
+    let mut cur = value;
+    loop {
+        match cur {
+            Expr::Binary { op: BinOp::Concat, lhs, rhs } => {
+                pieces.push(rhs);
+                cur = lhs;
+            }
+            Expr::Var(v) if v == name && !pieces.is_empty() => {
+                pieces.reverse();
+                return Some(pieces);
+            }
+            _ => return None,
+        }
+    }
+}
+
 fn scan_push_block(b: &Block, self_push: &mut HashSet<String>, disq: &mut HashSet<String>) {
     for stmt in &b.stmts {
         match stmt {
@@ -5064,6 +5106,13 @@ fn scan_push_block(b: &Block, self_push: &mut HashSet<String>, disq: &mut HashSe
                 if let Some(elem) = self_push_elem(name, value) {
                     self_push.insert(name.clone());
                     scan_push_expr(elem, self_push, disq);
+                    continue;
+                }
+                if let Some(pieces) = self_concat_pieces(name, value) {
+                    self_push.insert(name.clone());
+                    for p in pieces {
+                        scan_push_expr(p, self_push, disq);
+                    }
                     continue;
                 }
                 // A plain reassignment is fine (the emitter resets the
@@ -5091,13 +5140,22 @@ fn scan_push_expr(e: &Expr, self_push: &mut HashSet<String>, disq: &mut HashSet<
         // Whitelisted reads: the pointer is consumed within the operation and
         // never retained.
         Expr::Call { name, args }
-            if (name == "at" && args.len() == 2) || (name == "length" && args.len() == 1) =>
+            if (name == "at" && args.len() == 2)
+                || ((name == "length" || name == "string_length" || name == "to_string")
+                    && args.len() == 1) =>
         {
             if !matches!(&args[0], Expr::Var(_)) {
                 scan_push_expr(&args[0], self_push, disq);
             }
             for a in &args[1..] {
                 scan_push_expr(a, self_push, disq);
+            }
+        }
+        // print(console, msg) reads the message's bytes out to the host.
+        Expr::Call { name, args } if name == "print" && args.len() == 2 => {
+            scan_push_expr(&args[0], self_push, disq);
+            if !matches!(&args[1], Expr::Var(_)) {
+                scan_push_expr(&args[1], self_push, disq);
             }
         }
         Expr::For { iter, body, .. } => {
@@ -5138,9 +5196,16 @@ fn scan_push_expr(e: &Expr, self_push: &mut HashSet<String>, disq: &mut HashSet<
                 scan_push_expr(v, self_push, disq);
             }
         }
+        // Every binary operator READS its operands into a fresh result (concat
+        // copies, comparisons compare content, arithmetic is scalar) — a bare
+        // variable operand never escapes through one.
         Expr::Binary { lhs, rhs, .. } => {
-            scan_push_expr(lhs, self_push, disq);
-            scan_push_expr(rhs, self_push, disq);
+            if !matches!(lhs.as_ref(), Expr::Var(_)) {
+                scan_push_expr(lhs, self_push, disq);
+            }
+            if !matches!(rhs.as_ref(), Expr::Var(_)) {
+                scan_push_expr(rhs, self_push, disq);
+            }
         }
         Expr::If { cond, then_block, else_block } => {
             scan_push_expr(cond, self_push, disq);
@@ -6469,6 +6534,40 @@ const LIST_PUSH_CAP_WAT: &str = r#"  (func $list_push_cap (param $list i32) (par
       (i32.mul (local.get $len) (i32.const 8)))
     (i64.store (i32.add (i32.add (local.get $new) (i32.const 4)) (i32.mul (local.get $len) (i32.const 8))) (local.get $x))
     (global.set $heap (i32.add (i32.add (local.get $new) (i32.const 4)) (i32.mul (local.get $newcap) (i32.const 8))))
+    local.get $new local.get $newcap)
+"#;
+
+// append_cap(s, piece, cap): the string-builder append. `cap` is the caller's
+// exclusively-owned BYTE slack past the header (0 = unknown, e.g. an interned
+// literal — the first append always copies, so a shared literal is never
+// written). With room, the piece's bytes copy onto the end and the length
+// header bumps; without, a fresh block at double the needed bytes.
+const STR_APPEND_CAP_WAT: &str = r#"  (func $str_append_cap (param $s i32) (param $piece i32) (param $cap i32) (result i32 i32)
+    (local $len i32) (local $plen i32) (local $need i32) (local $new i32) (local $newcap i32)
+    local.get $s i32.load local.set $len
+    local.get $piece i32.load local.set $plen
+    (local.set $need (i32.add (local.get $len) (local.get $plen)))
+    (if (i32.ge_s (local.get $cap) (local.get $need))
+      (then
+        (memory.copy
+          (i32.add (i32.add (local.get $s) (i32.const 4)) (local.get $len))
+          (i32.add (local.get $piece) (i32.const 4))
+          (local.get $plen))
+        (i32.store (local.get $s) (local.get $need))
+        local.get $s local.get $cap
+        return))
+    (local.set $newcap (i32.mul (local.get $need) (i32.const 2)))
+    (if (i32.lt_s (local.get $newcap) (i32.const 16))
+      (then (local.set $newcap (i32.const 16))))
+    (call $ensure (i32.add (i32.const 4) (local.get $newcap)))
+    global.get $heap local.set $new
+    (i32.store (local.get $new) (local.get $need))
+    (memory.copy (i32.add (local.get $new) (i32.const 4)) (i32.add (local.get $s) (i32.const 4)) (local.get $len))
+    (memory.copy
+      (i32.add (i32.add (local.get $new) (i32.const 4)) (local.get $len))
+      (i32.add (local.get $piece) (i32.const 4))
+      (local.get $plen))
+    (global.set $heap (i32.add (i32.add (local.get $new) (i32.const 4)) (local.get $newcap)))
     local.get $new local.get $newcap)
 "#;
 

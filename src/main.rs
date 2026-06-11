@@ -4702,6 +4702,18 @@ fn yn(b: Bool) -> String:
         );
     }
 
+    /// IN-PLACE STRING APPEND: the builder pattern `s = s <> piece` appends
+    /// into owned byte slack (amortized O(1)); a literal-seeded alias keeps
+    /// the copying path, so the interned literal is never mutated.
+    #[test]
+    fn inplace_string_append_is_fast_and_alias_safe() {
+        let src = "fn main(console: Console):\n    var s = \"\"\n    for i in 0..2000:\n        s = s <> \"ab\"\n    print(console, int_to_string(string_length(s)))\n    var t = \"seed\"\n    let alias = t\n    t = t <> \"!\"\n    print(console, alias)\n    print(console, t)\n";
+        let want: Vec<String> =
+            ["4000", "seed", "seed!"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(link_run(src), want.clone(), "interpreter");
+        assert_eq!(wasm_run(src), want, "compiled WASM must agree");
+    }
+
     /// IN-PLACE PUSH (the linear-update optimization): an unaliased
     /// accumulate-in-loop appends into owned slack — 50k pushes complete
     /// instantly instead of O(n²) copying — while an ALIASED list keeps the
