@@ -2734,9 +2734,9 @@ fn yn(b: Bool) -> String:
     /// the copying path, so the interned literal is never mutated.
     #[test]
     fn inplace_string_append_is_fast_and_alias_safe() {
-        let src = "fn main(console: Console):\n    var s = \"\"\n    for i in 0..2000:\n        s = s <> \"ab\"\n    print(console, int_to_string(string_length(s)))\n    var t = \"seed\"\n    let alias = t\n    t = t <> \"!\"\n    print(console, alias)\n    print(console, t)\n";
+        let src = "fn main(console: Console):\n    var s = \"\"\n    for i in 0..20000:\n        s = s <> \"ab\"\n    print(console, int_to_string(string_length(s)))\n    var t = \"seed\"\n    let alias = t\n    t = t <> \"!\"\n    print(console, alias)\n    print(console, t)\n";
         let want: Vec<String> =
-            ["4000", "seed", "seed!"].iter().map(|s| s.to_string()).collect();
+            ["40000", "seed", "seed!"].iter().map(|s| s.to_string()).collect();
         assert_eq!(link_run(src), want.clone(), "interpreter");
         assert_eq!(wasm_run(src), want, "compiled WASM must agree");
     }
@@ -2747,14 +2747,41 @@ fn yn(b: Bool) -> String:
     /// copying push, so value semantics hold: `ys` still sees the original.
     #[test]
     fn inplace_push_is_fast_and_alias_safe() {
-        // 5k keeps the INTERPRETER leg fast (its push is clone-per-call, so
-        // the cost is quadratic there); the in-place WASM path is exercised
-        // identically at any size.
-        let src = "fn main(console: Console):\n    var xs = []\n    for i in 0..5000:\n        xs = push(xs, i)\n    print(console, int_to_string(length(xs)))\n    print(console, int_to_string(at(xs, 4999)))\n    var small = [1]\n    let alias = small\n    small = push(small, 2)\n    print(console, to_string(alias))\n    print(console, to_string(small))\n";
-        let want: Vec<String> = ["5000", "4999", "[1]", "[1, 2]"]
+        // 50k would take minutes under clone-per-push on either backend; both
+        // have an in-place fast path for the unaliased self-assign shape.
+        let src = "fn main(console: Console):\n    var xs = []\n    for i in 0..50000:\n        xs = push(xs, i)\n    print(console, int_to_string(length(xs)))\n    print(console, int_to_string(at(xs, 49999)))\n    var small = [1]\n    let alias = small\n    small = push(small, 2)\n    print(console, to_string(alias))\n    print(console, to_string(small))\n";
+        let want: Vec<String> = ["50000", "49999", "[1]", "[1, 2]"]
             .iter()
             .map(|s| s.to_string())
             .collect();
+        assert_eq!(link_run(src), want.clone(), "interpreter");
+        assert_eq!(wasm_run(src), want, "compiled WASM must agree");
+    }
+
+    /// IN-PLACE DICT ACCUMULATION: the `d = insert(d, k, v)` and
+    /// `d = update(d, k, dflt, f)` self-assign shapes mutate the slot in place
+    /// on both backends; an aliased dict keeps the copying path so value
+    /// semantics hold.
+    #[test]
+    fn inplace_dict_upsert_is_fast_and_alias_safe() {
+        let src = "fn main(console: Console):\n    var d = dict_new()\n    for i in 0..10000:\n        d = insert(d, i, i)\n    print(console, int_to_string(size(d)))\n    var counts = dict_new()\n    for i in 0..30000:\n        counts = update(counts, i % 3, 0, fn(n: Int): n + 1)\n    print(console, int_to_string(get_or(counts, 0, 0)))\n    var small = dict_new()\n    small = insert(small, 1, 10)\n    let alias = small\n    small = insert(small, 2, 20)\n    print(console, int_to_string(size(alias)))\n    print(console, int_to_string(size(small)))\n";
+        let want: Vec<String> = ["10000", "10000", "1", "2"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(link_run(src), want.clone(), "interpreter");
+        assert_eq!(wasm_run(src), want, "compiled WASM must agree");
+    }
+
+    /// Closure capture is pruned to the names the body mentions (the
+    /// interpreter used to clone the entire environment per closure — itself a
+    /// quadratic cost in accumulation loops). Calling through a captured
+    /// closure variable still works, and capture remains a snapshot: a later
+    /// reassignment of the source variable is invisible to the closure.
+    #[test]
+    fn closure_capture_pruned_and_snapshot() {
+        let src = "fn main(console: Console):\n    let add = fn(x: Int): x + 1\n    let twice = fn(y: Int): add(add(y))\n    print(console, int_to_string(twice(3)))\n    var n = 10\n    let snap = fn(): n\n    n = 99\n    print(console, int_to_string(snap()))\n";
+        let want: Vec<String> = ["5", "10"].iter().map(|s| s.to_string()).collect();
         assert_eq!(link_run(src), want.clone(), "interpreter");
         assert_eq!(wasm_run(src), want, "compiled WASM must agree");
     }

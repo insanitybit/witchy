@@ -4,7 +4,7 @@
 //! so we can iterate on language behaviour. Compiling to WASM actors on the
 //! proven runtime is a later phase.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -279,6 +279,195 @@ impl Env {
             }
         }
         Assign::Unbound
+    }
+
+    /// A pruned snapshot for closure capture: only bindings whose names appear
+    /// in the closure body (`mentioned`), innermost occurrence winning — the
+    /// same resolution `get`'s reverse scan produces. Observationally identical
+    /// to cloning the whole environment (a name the body never mentions can
+    /// never be looked up), without the O(everything) copy per closure created
+    /// or applied.
+    fn capture(&self, mentioned: &HashSet<String>) -> Env {
+        let mut scope: Vec<(String, Value, bool)> = Vec::new();
+        for s in &self.scopes {
+            for (n, v, m) in s {
+                if mentioned.contains(n.as_str()) {
+                    match scope.iter_mut().find(|(en, _, _)| en == n) {
+                        Some(slot) => *slot = (n.clone(), v.clone(), *m),
+                        None => scope.push((n.clone(), v.clone(), *m)),
+                    }
+                }
+            }
+        }
+        Env { scopes: vec![scope] }
+    }
+
+    /// Mutable access to a binding's slot plus its mutability, innermost first
+    /// (the same binding `assign` would write).
+    fn slot_mut(&mut self, name: &str) -> Option<(&mut Value, bool)> {
+        for scope in self.scopes.iter_mut().rev() {
+            for (n, slot, mutable) in scope.iter_mut().rev() {
+                if n == name {
+                    return Some((slot, *mutable));
+                }
+            }
+        }
+        None
+    }
+}
+
+/// Walk every identifier an expression can possibly resolve through the
+/// environment: variable reads, call names (a closure in a variable), method
+/// names, assignment targets. Binders (params, patterns, loop variables) are
+/// deliberately included-by-omission — we never report them, but we DO walk
+/// the scopes they govern, so the scan over-approximates. Over-approximation
+/// is safe for both users (closure capture keeps an extra binding; the
+/// in-place fast path stands down).
+fn idents_in_expr(e: &Expr, f: &mut dyn FnMut(&str)) {
+    match e {
+        Expr::Int(_) | Expr::Float(_) | Expr::Duration(_) | Expr::Str(_) | Expr::Bool(_) => {}
+        Expr::Var(n) => f(n),
+        Expr::List(items) | Expr::Tuple(items) => {
+            for it in items {
+                idents_in_expr(it, f);
+            }
+        }
+        Expr::Call { name, args } => {
+            f(name);
+            for a in args {
+                idents_in_expr(a, f);
+            }
+        }
+        Expr::MethodCall { receiver, method, args } => {
+            f(method);
+            idents_in_expr(receiver, f);
+            for a in args {
+                idents_in_expr(a, f);
+            }
+        }
+        Expr::Apply { func, args } => {
+            idents_in_expr(func, f);
+            for a in args {
+                idents_in_expr(a, f);
+            }
+        }
+        Expr::Ctor { args, .. } | Expr::Spawn { args, .. } => {
+            for a in args {
+                idents_in_expr(a, f);
+            }
+        }
+        Expr::Unary { expr, .. } | Expr::Try(expr) | Expr::As { expr, .. } => {
+            idents_in_expr(expr, f)
+        }
+        Expr::Field { base, .. } => idents_in_expr(base, f),
+        Expr::Lambda { body, .. } => idents_in_block(body, f),
+        Expr::RecordUpdate { base, fields } => {
+            idents_in_expr(base, f);
+            for (_, fe) in fields {
+                idents_in_expr(fe, f);
+            }
+        }
+        Expr::Record { fields, spread, .. } => {
+            for (_, fe) in fields {
+                idents_in_expr(fe, f);
+            }
+            if let Some(s) = spread {
+                idents_in_expr(s, f);
+            }
+        }
+        Expr::Binary { lhs, rhs, .. } => {
+            idents_in_expr(lhs, f);
+            idents_in_expr(rhs, f);
+        }
+        Expr::If { cond, then_block, else_block } => {
+            idents_in_expr(cond, f);
+            idents_in_block(then_block, f);
+            if let Some(b) = else_block {
+                idents_in_block(b, f);
+            }
+        }
+        Expr::Match { scrutinee, arms } => {
+            idents_in_expr(scrutinee, f);
+            for arm in arms {
+                if let Some(g) = &arm.guard {
+                    idents_in_expr(g, f);
+                }
+                idents_in_expr(&arm.body, f);
+            }
+        }
+        Expr::Block(b) => idents_in_block(b, f),
+        Expr::While { cond, body } => {
+            idents_in_expr(cond, f);
+            idents_in_block(body, f);
+        }
+        Expr::For { iter, body, .. } => {
+            idents_in_expr(iter, f);
+            idents_in_block(body, f);
+        }
+        Expr::WhileLet { scrutinee, body, .. } => {
+            idents_in_expr(scrutinee, f);
+            idents_in_block(body, f);
+        }
+        Expr::Range { lo, hi, .. } => {
+            idents_in_expr(lo, f);
+            idents_in_expr(hi, f);
+        }
+        Expr::Index { base, index } => {
+            idents_in_expr(base, f);
+            idents_in_expr(index, f);
+        }
+    }
+}
+
+fn idents_in_block(b: &Block, f: &mut dyn FnMut(&str)) {
+    for stmt in &b.stmts {
+        match stmt {
+            Stmt::Let { value, .. } | Stmt::LetTuple { value, .. } => idents_in_expr(value, f),
+            Stmt::Assign { name, value } => {
+                f(name);
+                idents_in_expr(value, f);
+            }
+            Stmt::Return(opt) => {
+                if let Some(e) = opt {
+                    idents_in_expr(e, f);
+                }
+            }
+            Stmt::Break | Stmt::Continue => {}
+            Stmt::Expr(e) | Stmt::Yield(e) => idents_in_expr(e, f),
+        }
+    }
+}
+
+/// Does the expression mention `name` anywhere it could resolve through the
+/// environment? Conservative (over-approximates); used to guard the in-place
+/// accumulation fast path.
+fn expr_mentions(e: &Expr, name: &str) -> bool {
+    let mut found = false;
+    idents_in_expr(e, &mut |n| {
+        if n == name {
+            found = true;
+        }
+    });
+    found
+}
+
+/// If `e` is a `<>` chain whose leftmost operand is exactly `Var(name)`
+/// (`name <> a <> b` parses left-associated), return the right operands in
+/// evaluation order; otherwise None.
+fn concat_spine<'a>(mut e: &'a Expr, name: &str) -> Option<Vec<&'a Expr>> {
+    let mut rights = Vec::new();
+    loop {
+        match e {
+            Expr::Binary { op: BinOp::Concat, lhs, rhs } => {
+                rights.push(&**rhs);
+                e = lhs;
+            }
+            Expr::Var(v) if v == name => {
+                rights.reverse();
+                return Some(rights);
+            }
+            _ => return None,
+        }
     }
 }
 
@@ -1382,6 +1571,139 @@ impl Interpreter {
         Ok(())
     }
 
+    /// The interpreter-side linear-update fast path: a self-assignment of an
+    /// accumulation shape — `xs = push(xs, e)`, `d = insert(d, k, v)`,
+    /// `d = update(d, k, dflt, f)`, `s = s <> p` (any left spine) — mutates the
+    /// variable's slot in place instead of cloning the whole collection per
+    /// step, turning accumulate-in-loop from O(n²) into O(n). Sound because
+    /// values are fully owned (binding one clones it; no two bindings share
+    /// storage), so the slot is the value's only home — and the path stands
+    /// down unless the rest of the right-hand side provably never mentions the
+    /// variable, so the early mutation is unobservable. Returns Ok(true) when
+    /// handled; Ok(false) means take the general clone-and-assign path.
+    fn try_inplace_assign(
+        &mut self,
+        name: &str,
+        rhs: &Expr,
+        env: &mut Env,
+    ) -> Result<bool, Flow> {
+        match rhs {
+            Expr::Call { name: f, args }
+                if f == "push" && args.len() == 2
+                    && matches!(&args[0], Expr::Var(v) if v == name)
+                    && !expr_mentions(&args[1], name)
+                    && !matches!(env.get(f), Some(Value::Closure { .. })) =>
+            {
+                if !matches!(env.slot_mut(name), Some((Value::List(_), true))) {
+                    return Ok(false);
+                }
+                let x = self.eval(&args[1], env)?;
+                let Some((Value::List(items), true)) = env.slot_mut(name) else {
+                    unreachable!("slot checked above; the argument cannot reach it");
+                };
+                items.push(x);
+                Ok(true)
+            }
+            Expr::Call { name: f, args }
+                if f == "insert" && args.len() == 3
+                    && matches!(&args[0], Expr::Var(v) if v == name)
+                    && !expr_mentions(&args[1], name)
+                    && !expr_mentions(&args[2], name)
+                    && !matches!(env.get(f), Some(Value::Closure { .. })) =>
+            {
+                if !matches!(env.slot_mut(name), Some((Value::Dict(_), true))) {
+                    return Ok(false);
+                }
+                let k = self.eval(&args[1], env)?;
+                let v = self.eval(&args[2], env)?;
+                let Some((Value::Dict(entries), true)) = env.slot_mut(name) else {
+                    unreachable!("slot checked above; the arguments cannot reach it");
+                };
+                match entries.iter_mut().find(|(ek, _)| ek == &k) {
+                    Some(slot) => slot.1 = v,
+                    None => entries.push((k, v)),
+                }
+                Ok(true)
+            }
+            // `update` is matched before locals in `eval_call`, so no shadow check.
+            Expr::Call { name: f, args }
+                if f == "update" && args.len() == 4
+                    && matches!(&args[0], Expr::Var(v) if v == name)
+                    && args[1..].iter().all(|a| !expr_mentions(a, name)) =>
+            {
+                if !matches!(env.slot_mut(name), Some((Value::Dict(_), true))) {
+                    return Ok(false);
+                }
+                let k = self.eval(&args[1], env)?;
+                let dflt = self.eval(&args[2], env)?;
+                let updater = self.eval(&args[3], env)?;
+                let current = {
+                    let Some((Value::Dict(entries), true)) = env.slot_mut(name) else {
+                        unreachable!("slot checked above; the arguments cannot reach it");
+                    };
+                    entries
+                        .iter()
+                        .find(|(ek, _)| ek == &k)
+                        .map(|(_, v)| v.clone())
+                        .unwrap_or(dflt)
+                };
+                let new_v = self.apply_closure(updater, vec![current])?;
+                let Some((Value::Dict(entries), true)) = env.slot_mut(name) else {
+                    unreachable!("slot checked above; the closure cannot reach it");
+                };
+                match entries.iter_mut().find(|(ek, _)| ek == &k) {
+                    Some(slot) => slot.1 = new_v,
+                    None => entries.push((k, new_v)),
+                }
+                Ok(true)
+            }
+            Expr::Binary { op: BinOp::Concat, .. } => {
+                let Some(rights) = concat_spine(rhs, name) else {
+                    return Ok(false);
+                };
+                if rights.iter().any(|r| expr_mentions(r, name)) {
+                    return Ok(false);
+                }
+                if !matches!(env.slot_mut(name), Some((Value::Str(_), true))) {
+                    return Ok(false);
+                }
+                let Some((slot, true)) = env.slot_mut(name) else { unreachable!() };
+                let mut acc = match std::mem::replace(slot, Value::Nil) {
+                    Value::Str(s) => s,
+                    _ => unreachable!("slot checked above"),
+                };
+                for r in rights {
+                    let v = match self.eval(r, env) {
+                        Ok(v) => v,
+                        Err(flow) => {
+                            // Put the accumulated string back before unwinding so
+                            // the environment stays consistent.
+                            if let Some((slot, _)) = env.slot_mut(name) {
+                                *slot = Value::Str(acc);
+                            }
+                            return Err(flow);
+                        }
+                    };
+                    match v {
+                        Value::Str(b) => acc.push_str(&b),
+                        other => {
+                            // The same error the general `<>` evaluation reports,
+                            // with the left side accumulated so far.
+                            let a = Value::Str(acc);
+                            return err(format!(
+                                "`<>` expects two Strings, got `{a}` and `{other}`"
+                            ));
+                        }
+                    }
+                }
+                let Some((slot, true)) = env.slot_mut(name) else { unreachable!() };
+                *slot = Value::Str(acc);
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
+    }
+
     fn eval_block(&mut self, block: &Block, env: &mut Env) -> Result<Value, Flow> {
         // Only open a scope if the block actually introduces bindings. Most
         // function bodies and if-branches are binding-free (just an expression),
@@ -1406,16 +1728,18 @@ impl Interpreter {
                     result = Value::Nil;
                 }
                 Stmt::Assign { name, value } => {
-                    let v = self.eval(value, env)?;
-                    match env.assign(name, v) {
-                        Assign::Done => {}
-                        Assign::Immutable => {
-                            return err(format!(
-                                "cannot assign to `{name}`: it is immutable (declared with `let`)"
-                            ))
-                        }
-                        Assign::Unbound => {
-                            return err(format!("cannot assign to unbound variable `{name}`"))
+                    if !self.try_inplace_assign(name, value, env)? {
+                        let v = self.eval(value, env)?;
+                        match env.assign(name, v) {
+                            Assign::Done => {}
+                            Assign::Immutable => {
+                                return err(format!(
+                                    "cannot assign to `{name}`: it is immutable (declared with `let`)"
+                                ))
+                            }
+                            Assign::Unbound => {
+                                return err(format!("cannot assign to unbound variable `{name}`"))
+                            }
                         }
                     }
                     result = Value::Nil;
@@ -1583,11 +1907,19 @@ impl Interpreter {
                     (UnOp::BitNot, other) => err(format!("cannot apply `~` to `{other}`")),
                 }
             }
-            Expr::Lambda { params, body } => Ok(Value::Closure {
-                params: params.clone(),
-                body: body.clone(),
-                env: Box::new(env.clone()),
-            }),
+            Expr::Lambda { params, body } => {
+                let mut mentioned = HashSet::new();
+                idents_in_block(body, &mut |n| {
+                    if !mentioned.contains(n) {
+                        mentioned.insert(n.to_string());
+                    }
+                });
+                Ok(Value::Closure {
+                    params: params.clone(),
+                    body: body.clone(),
+                    env: Box::new(env.capture(&mentioned)),
+                })
+            }
             Expr::RecordUpdate { base, fields } => {
                 let v = self.eval(base, env)?;
                 let Value::Ctor { name, fields: mut values } = v else {
