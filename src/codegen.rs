@@ -544,6 +544,12 @@ struct Codegen {
     /// Function name -> the value type it returns, so `to_string(f(...))` can be
     /// rendered. Populated from return-type annotations.
     fn_ret_valtype: HashMap<String, ValType>,
+    /// Function name -> its DECLARED return type, resolved lazily to an
+    /// `EqShape` at `==` sites (lazily so every type is registered by then) —
+    /// e.g. `-> Result(Int, String)` makes a call result structurally
+    /// comparable. Generic returns (`-> Result(a, e)`) resolve to the by-name
+    /// shape, preserving the loud error.
+    fn_ret_ty: HashMap<String, Type>,
     /// Function name -> the record type it returns (when it returns one), so a
     /// `let q = f(...)` binds `q` to that record type.
     fn_ret_records: HashMap<String, String>,
@@ -677,6 +683,7 @@ impl Codegen {
             local_tuple_slots: HashMap::new(),
             local_shape: HashMap::new(),
             fn_ret_valtype: HashMap::new(),
+            fn_ret_ty: HashMap::new(),
             fn_ret_records: HashMap::new(),
             fn_ret_result_record: HashMap::new(),
             fn_ret_result_valtype: HashMap::new(),
@@ -1455,6 +1462,15 @@ impl Codegen {
                     }
                     if let Some(kvt) = self.dict_key_valtype_of(value) {
                         self.local_dict_key_valtype.insert(name.clone(), kvt);
+                    }
+                    // Refresh the captured compound shape: a reassignment can pin
+                    // a payload the original binding could not (`var o = None`
+                    // then `o = Some("s")`), and the later, fuller pin is the one
+                    // comparisons after the assignment must use.
+                    if let Some(shape) = self.eq_operand_shape(value) {
+                        if shape.is_compound() {
+                            self.local_shape.insert(name.clone(), shape);
+                        }
                     }
                     self.infer_locals_expr(value);
                 }
@@ -3346,6 +3362,14 @@ impl Codegen {
                     Box::new(self.eq_operand_shape(&args[2])?),
                 ));
             }
+            // A call to a function with a declared compound return type
+            // (`-> Result(Int, String)`) resolves from that declaration.
+            if let Some(shape) = self.fn_ret_ty.get(name).cloned().and_then(|t| {
+                let s = self.eq_shape_of_type(&t)?;
+                s.is_compound().then_some(s)
+            }) {
+                return Some(shape);
+            }
         }
         if let Some(rec) = self.record_type_of(e) {
             return Some(EqShape::Record(rec));
@@ -3366,41 +3390,51 @@ impl Codegen {
                 let mut vars: Vec<String> = Vec::new();
                 for fs in &variants {
                     for f in fs {
-                        if let Some(v) = bare_type_var(f) {
-                            if !vars.contains(&v) {
-                                vars.push(v);
-                            }
-                        }
+                        collect_type_vars(f, &mut vars);
                     }
                 }
-                if vars.len() == 1 {
-                    let (tag, _) = *self.ctors.get(name)?;
-                    let my_fields = variants.get(tag as usize)?;
-                    let mut payload: Option<EqShape> = None;
-                    for (i, f) in my_fields.iter().enumerate() {
-                        if bare_type_var(f).is_some() {
-                            payload = self.eq_operand_shape(args.get(i)?);
-                            break;
-                        }
-                    }
-                    let payload = payload.unwrap_or(EqShape::Int);
-                    let inst: Vec<Vec<EqShape>> = variants
-                        .iter()
-                        .map(|fs| {
-                            fs.iter()
-                                .map(|f| {
-                                    if bare_type_var(f).is_some() {
-                                        Some(payload.clone())
-                                    } else {
-                                        self.eq_shape_of_type(f)
-                                    }
-                                })
-                                .collect::<Option<Vec<_>>>()
-                        })
-                        .collect::<Option<Vec<_>>>()?;
-                    return Some(EqShape::AdtInst(tyname, inst));
+                if vars.is_empty() {
+                    return Some(EqShape::Adt(tyname));
                 }
-                return Some(EqShape::Adt(tyname));
+                // Pin every variable this constructor's own arguments determine
+                // (`Ok(3)` pins Ok's `a` = Int); variables only OTHER variants
+                // carry (`Err`'s `e`) take a placeholder. Sound for both
+                // operands: the type checker guarantees `==` operands share a
+                // type, and a placeholder variant can only both-match at runtime
+                // when this operand IS that variant — which it is not, so the
+                // placeholder field comparison never executes from this site.
+                let (tag, _) = *self.ctors.get(name)?;
+                let my_fields = variants.get(tag as usize)?;
+                let mut subst: HashMap<String, EqShape> = HashMap::new();
+                let mut my_vars: Vec<String> = Vec::new();
+                for (i, f) in my_fields.iter().enumerate() {
+                    let before = my_vars.len();
+                    collect_type_vars(f, &mut my_vars);
+                    if my_vars.len() > before {
+                        let arg_shape = self.eq_operand_shape(args.get(i)?)?;
+                        unify_type_vars(f, &arg_shape, &mut subst);
+                    }
+                }
+                // Every variable in THIS variant's fields must be pinned by its
+                // arguments (a nested `List(a)` pins through the list shape);
+                // otherwise this site can't vouch for its own payload — fall
+                // back to the by-name shape (loud later), never a placeholder.
+                if my_vars.iter().any(|v| !subst.contains_key(v)) {
+                    return Some(EqShape::Adt(tyname));
+                }
+                for v in &vars {
+                    subst.entry(v.clone()).or_insert(EqShape::Int);
+                }
+                let inst: Option<Vec<Vec<EqShape>>> = variants
+                    .iter()
+                    .map(|fs| {
+                        fs.iter().map(|f| self.eq_shape_of_type_with(f, &subst)).collect()
+                    })
+                    .collect();
+                return Some(match inst {
+                    Some(inst) => EqShape::AdtInst(tyname, inst),
+                    None => EqShape::Adt(tyname),
+                });
             }
         }
         None
@@ -3433,6 +3467,29 @@ impl Codegen {
     /// generic type variables do not (they yield `None`, a loud error at the use
     /// site rather than a silent pointer compare).
     fn eq_shape_of_type(&self, ty: &Type) -> Option<EqShape> {
+        self.eq_shape_of_type_with(ty, &HashMap::new())
+    }
+
+    /// `eq_shape_of_type` under a type-variable substitution. A generic ADT
+    /// applied to concrete arguments (`Result(Int, String)`) instantiates to an
+    /// `AdtInst` by substituting its parameters (first-appearance order across
+    /// the variants' fields — the SAME rule the type checker uses) with the
+    /// arguments' shapes; an unresolvable argument falls back to the by-name
+    /// `Adt` shape (loud later if a type-variable field is actually compared).
+    fn eq_shape_of_type_with(
+        &self,
+        ty: &Type,
+        subst: &HashMap<String, EqShape>,
+    ) -> Option<EqShape> {
+        self.eq_shape_of_type_rec(ty, subst, &mut Vec::new())
+    }
+
+    fn eq_shape_of_type_rec(
+        &self,
+        ty: &Type,
+        subst: &HashMap<String, EqShape>,
+        visiting: &mut Vec<String>,
+    ) -> Option<EqShape> {
         match ty {
             Type::Named(n, args) => match n.as_str() {
                 "Int" | "Duration" => Some(EqShape::Int),
@@ -3440,15 +3497,55 @@ impl Codegen {
                 "Float" => Some(EqShape::Float),
                 "String" => Some(EqShape::Str),
                 "List" => args.first().and_then(|inner| {
-                    self.eq_shape_of_type(inner).map(|s| EqShape::List(Box::new(s)))
+                    self.eq_shape_of_type_rec(inner, subst, visiting)
+                        .map(|s| EqShape::List(Box::new(s)))
                 }),
                 t if self.record_fields.contains_key(t) => Some(EqShape::Record(t.to_string())),
-                t if self.adt_variants.contains_key(t) => Some(EqShape::Adt(t.to_string())),
+                t if self.adt_variants.contains_key(t) => {
+                    // A RECURSIVE generic ADT (`Push(a, Stack(a))`) has no finite
+                    // instantiated shape — its self-reference falls back to the
+                    // by-name shape (loud if a type-variable field is compared),
+                    // exactly the pre-instantiation behavior.
+                    if args.is_empty() || visiting.iter().any(|v| v == t) {
+                        return Some(EqShape::Adt(t.to_string()));
+                    }
+                    let variants = self.adt_variants.get(t)?;
+                    let mut params: Vec<String> = Vec::new();
+                    for fields in variants {
+                        for f in fields {
+                            collect_type_vars(f, &mut params);
+                        }
+                    }
+                    let mut inner: HashMap<String, EqShape> = HashMap::new();
+                    for (pn, arg) in params.iter().zip(args) {
+                        match self.eq_shape_of_type_rec(arg, subst, visiting) {
+                            Some(s) => {
+                                inner.insert(pn.clone(), s);
+                            }
+                            None => return Some(EqShape::Adt(t.to_string())),
+                        }
+                    }
+                    visiting.push(t.to_string());
+                    let inst: Option<Vec<Vec<EqShape>>> = variants
+                        .iter()
+                        .map(|fs| {
+                            fs.iter()
+                                .map(|f| self.eq_shape_of_type_rec(f, &inner, visiting))
+                                .collect()
+                        })
+                        .collect();
+                    visiting.pop();
+                    match inst {
+                        Some(inst) => Some(EqShape::AdtInst(t.to_string(), inst)),
+                        None => Some(EqShape::Adt(t.to_string())),
+                    }
+                }
+                v if subst.contains_key(v) => subst.get(v).cloned(),
                 _ => None,
             },
             Type::Tuple(items) => items
                 .iter()
-                .map(|t| self.eq_shape_of_type(t))
+                .map(|t| self.eq_shape_of_type_rec(t, subst, visiting))
                 .collect::<Option<Vec<_>>>()
                 .map(EqShape::Tuple),
             Type::Fn(..) => None,
@@ -4535,6 +4632,59 @@ impl Codegen {
 }
 
 /// If `ty` is a bare type-parameter (lowercase, argument-less name), return it.
+/// Pin type variables in `ty` by structurally matching it against a resolved
+/// shape: a bare var takes the whole shape, `List(a)` against a list shape
+/// pins `a` to the element, tuples pin pairwise. First pin wins.
+fn unify_type_vars(ty: &Type, shape: &EqShape, subst: &mut HashMap<String, EqShape>) {
+    if let Some(v) = bare_type_var(ty) {
+        subst.entry(v).or_insert_with(|| shape.clone());
+        return;
+    }
+    match (ty, shape) {
+        (Type::Named(n, args), EqShape::List(inner)) if n == "List" => {
+            if let Some(a) = args.first() {
+                unify_type_vars(a, inner, subst);
+            }
+        }
+        (Type::Tuple(ts), EqShape::Tuple(ss)) => {
+            for (t, s) in ts.iter().zip(ss) {
+                unify_type_vars(t, s, subst);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Collect a type's variables (lowercase, argument-less names) in order of
+/// first appearance — the same parameter-ordering rule the type checker's
+/// `collect_type_params` applies to a type declaration.
+fn collect_type_vars(ty: &Type, acc: &mut Vec<String>) {
+    match ty {
+        Type::Tuple(ts) => {
+            for t in ts {
+                collect_type_vars(t, acc);
+            }
+        }
+        Type::Fn(params, ret) => {
+            for p in params {
+                collect_type_vars(p, acc);
+            }
+            collect_type_vars(ret, acc);
+        }
+        Type::Named(name, args) => {
+            if args.is_empty() && name.chars().next().is_some_and(|c| c.is_lowercase()) {
+                if !acc.contains(name) {
+                    acc.push(name.clone());
+                }
+            } else {
+                for a in args {
+                    collect_type_vars(a, acc);
+                }
+            }
+        }
+    }
+}
+
 fn bare_type_var(ty: &Type) -> Option<String> {
     match ty {
         Type::Named(n, args)
@@ -4734,6 +4884,7 @@ pub fn compile_module(module: &Module) -> Result<String, CodegenError> {
                 cg.fn_ret.insert(f.name.clone(), ret);
                 if let Some(t) = &f.ret {
                     cg.fn_ret_valtype.insert(f.name.clone(), ty_to_valtype(t));
+                    cg.fn_ret_ty.insert(f.name.clone(), t.clone());
                 }
                 // A function returning a closure (`-> fn(...) -> RET`): record the
                 // closure's return kind so a `let f = make(...)` then `f(x)` call

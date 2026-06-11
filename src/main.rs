@@ -5473,17 +5473,35 @@ fn yn(b: Bool) -> String:
     }
 
     /// A MULTI-parameter generic ADT (`Result`, whose Ok and Err payloads are
-    /// different type variables) still can't be instantiated from one
-    /// constructor, so `==` on it stays a LOUD codegen error — never a silent
-    /// pointer compare. (Guards the boundary of structural-equality support.)
+    /// different type variables) is structural on both backends: payloads pin
+    /// from constructor literals (the variant's own variables must unify with
+    /// its arguments; the other variant's take a safe placeholder), from
+    /// declared parameter types, and from declared function returns. (Closes
+    /// the last loud equality gap.)
+    #[test]
+    fn result_equality_agrees_on_both_backends() {
+        let src = "import result\n\nfn classify(n: Int) -> Result(Int, String):\n    if n >= 0: Ok(n) else: Err(\"negative\")\n\nfn same(a: Result(Int, String), b: Result(Int, String)) -> Bool:\n    a == b\n\nfn main(console: Console):\n    print(console, to_string(classify(5) == Ok(5)))\n    print(console, to_string(classify(5) == Ok(6)))\n    print(console, to_string(classify(0 - 1) == Err(\"negative\")))\n    print(console, to_string(classify(0 - 1) == Err(\"positive\")))\n    print(console, to_string(classify(5) == Err(\"negative\")))\n    print(console, to_string(same(Ok(1), Ok(1))))\n    print(console, to_string(same(Err(\"a\"), Err(\"a\"))))\n    print(console, to_string(same(Ok(1), Err(\"a\"))))\n    print(console, to_string(Ok([1, 2]) == Ok([1, 2])))\n    print(console, to_string(Ok([1, 2]) == Ok([1, 3])))\n";
+        let want: Vec<String> =
+            ["true", "false", "true", "false", "false", "true", "true", "false", "true", "false"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect();
+        assert_eq!(link_run(src), want.clone(), "interpreter");
+        assert_eq!(wasm_run(src), want, "compiled WASM must agree");
+    }
+
+    /// The boundary of structural equality stays LOUD: a generic ADT whose
+    /// payload is unresolvable at the comparison site (a generic function's
+    /// `Result(a, String)` return, with a non-primitive `a` the monomorphizer
+    /// can't specialize) is a codegen error — never a silent pointer compare.
     #[test]
     fn unsupported_compound_equality_is_a_loud_error_not_silent() {
-        let res = "import result\n\nfn main(console: Console):\n    print(console, to_string(Ok(5) == Err(\"x\")))\n";
+        let res = "import result\n\nfn wrap(x: a) -> Result(a, String):\n    Ok(x)\n\nfn main(console: Console):\n    print(console, to_string(wrap([1]) == wrap([2])))\n";
         let rm = parser::parse_module(res).expect("parse");
         let linked = crate::linker::link(vec![("main".into(), rm)], "main").expect("link");
         assert!(
             codegen::compile_module(&linked).is_err(),
-            "Result `==` must be a loud codegen error"
+            "an unresolvable generic payload must stay a loud codegen error"
         );
     }
 
