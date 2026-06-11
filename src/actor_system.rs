@@ -42,16 +42,25 @@ enum TupleElem {
 type Queue = Arc<Mutex<VecDeque<(usize, u32, Vec<FieldVal>)>>>;
 type Output = Arc<Mutex<Vec<String>>>;
 
+/// One persistent state cell. String/list state lives HOST-side because the
+/// guest's no-GC arena resets between messages.
+#[derive(Debug, Clone)]
+enum StateCell {
+    Str(String),
+    IntList(Vec<i64>),
+    StrList(Vec<String>),
+}
+
 /// Per-actor host state.
 struct Host {
     queue: Queue,
     output: Output,
     sigs: Arc<Vec<MessageSig>>,
-    /// String state cells, indexed by the field order codegen assigned. State
-    /// strings live HOST-side because the guest's no-GC arena resets between
-    /// messages; reads stage through `pending` (the fill_pending protocol).
-    str_cells: Mutex<Vec<String>>,
+    /// State cells, indexed by the field order codegen assigned; reads stage
+    /// through `pending` (fill_pending) or `pending_list` (write_pending_list).
+    cells: Mutex<Vec<Option<StateCell>>>,
     pending: Mutex<Option<Vec<u8>>>,
+    pending_list: Mutex<Option<Vec<String>>>,
 }
 
 pub struct System {
@@ -85,8 +94,9 @@ impl System {
             queue: Arc::clone(&self.queue),
             output: Arc::clone(&self.output),
             sigs: Arc::clone(&self.sigs),
-            str_cells: Mutex::new(Vec::new()),
+            cells: Mutex::new(Vec::new()),
             pending: Mutex::new(None),
+            pending_list: Mutex::new(None),
         };
         let mut store = Store::new(&self.engine, host);
         let mut linker = Linker::new(&self.engine);
@@ -138,11 +148,7 @@ impl System {
                         .ok_or_else(|| Error::msg("field_str_set out of bounds"))?;
                     String::from_utf8_lossy(bytes).into_owned()
                 };
-                let mut cells = caller.data().str_cells.lock().unwrap();
-                if cells.len() <= idx as usize {
-                    cells.resize(idx as usize + 1, String::new());
-                }
-                cells[idx as usize] = s;
+                set_cell(&caller, idx, StateCell::Str(s));
                 Ok(())
             },
         )?;
@@ -150,11 +156,125 @@ impl System {
             "witchy",
             "field_str_len",
             |caller: Caller<'_, Host>, idx: i32| -> Result<i32> {
-                let cells = caller.data().str_cells.lock().unwrap();
-                let bytes = cells.get(idx as usize).cloned().unwrap_or_default().into_bytes();
+                let s = match get_cell(&caller, idx) {
+                    Some(StateCell::Str(s)) => s,
+                    None => String::new(),
+                    Some(other) => {
+                        return Err(Error::msg(format!("cell {idx} is not a String: {other:?}")))
+                    }
+                };
+                let bytes = s.into_bytes();
                 let len = bytes.len() as i32;
                 *caller.data().pending.lock().unwrap() = Some(bytes);
                 Ok(len)
+            },
+        )?;
+        // List state cells: the set fns walk the guest list by element type;
+        // the read fns stage a fresh copy (fill_pending / write_pending_list).
+        linker.func_wrap(
+            "witchy",
+            "field_intlist_set",
+            |mut caller: Caller<'_, Host>, idx: i32, ptr: i32| -> Result<()> {
+                let mem = caller
+                    .get_export("memory")
+                    .and_then(Extern::into_memory)
+                    .ok_or_else(|| Error::msg("actor has no memory"))?;
+                let xs = {
+                    let data = mem.data(&caller);
+                    read_i64_list(data, ptr)?
+                };
+                set_cell(&caller, idx, StateCell::IntList(xs));
+                Ok(())
+            },
+        )?;
+        linker.func_wrap(
+            "witchy",
+            "field_intlist_len",
+            |caller: Caller<'_, Host>, idx: i32| -> Result<i32> {
+                let xs = match get_cell(&caller, idx) {
+                    Some(StateCell::IntList(xs)) => xs,
+                    None => Vec::new(),
+                    Some(other) => {
+                        return Err(Error::msg(format!("cell {idx} is not a List(Int): {other:?}")))
+                    }
+                };
+                let mut bytes = (xs.len() as i32).to_le_bytes().to_vec();
+                for x in &xs {
+                    bytes.extend_from_slice(&x.to_le_bytes());
+                }
+                let size = bytes.len() as i32;
+                *caller.data().pending.lock().unwrap() = Some(bytes);
+                Ok(size)
+            },
+        )?;
+        linker.func_wrap(
+            "witchy",
+            "field_strlist_set",
+            |mut caller: Caller<'_, Host>, idx: i32, ptr: i32| -> Result<()> {
+                let mem = caller
+                    .get_export("memory")
+                    .and_then(Extern::into_memory)
+                    .ok_or_else(|| Error::msg("actor has no memory"))?;
+                let xs = {
+                    let data = mem.data(&caller);
+                    read_str_list(data, ptr)?
+                };
+                set_cell(&caller, idx, StateCell::StrList(xs));
+                Ok(())
+            },
+        )?;
+        linker.func_wrap(
+            "witchy",
+            "field_strlist_size",
+            |caller: Caller<'_, Host>, idx: i32| -> Result<i32> {
+                let xs = match get_cell(&caller, idx) {
+                    Some(StateCell::StrList(xs)) => xs,
+                    None => Vec::new(),
+                    Some(other) => {
+                        return Err(Error::msg(format!(
+                            "cell {idx} is not a List(String): {other:?}"
+                        )))
+                    }
+                };
+                let size = 4 + 8 * xs.len() + xs.iter().map(|s| 4 + s.len()).sum::<usize>();
+                *caller.data().pending_list.lock().unwrap() = Some(xs);
+                Ok(size as i32)
+            },
+        )?;
+        // Lay a staged string list out at base_ptr in the guest list format —
+        // authority-free (only writes already-staged data), same as runtime.rs.
+        linker.func_wrap(
+            "witchy",
+            "write_pending_list",
+            |mut caller: Caller<'_, Host>, base_ptr: i32| -> Result<()> {
+                let names = caller
+                    .data()
+                    .pending_list
+                    .lock()
+                    .unwrap()
+                    .take()
+                    .ok_or_else(|| Error::msg("write_pending_list called with nothing staged"))?;
+                let n = names.len();
+                let mut buf =
+                    Vec::with_capacity(4 + 8 * n + names.iter().map(|s| 4 + s.len()).sum::<usize>());
+                buf.extend_from_slice(&(n as i32).to_le_bytes());
+                let strings_start = base_ptr as i64 + 4 + 8 * n as i64;
+                let mut offset = 0i64;
+                for name in &names {
+                    buf.extend_from_slice(&(strings_start + offset).to_le_bytes());
+                    offset += 4 + name.len() as i64;
+                }
+                for name in &names {
+                    buf.extend_from_slice(&(name.len() as i32).to_le_bytes());
+                    buf.extend_from_slice(name.as_bytes());
+                }
+                let mem = caller
+                    .get_export("memory")
+                    .and_then(Extern::into_memory)
+                    .ok_or_else(|| Error::msg("actor has no memory"))?;
+                mem.write(&mut caller, base_ptr as usize, &buf)
+                    .map_err(|e| Error::msg(format!("writing staged list: {e}")))?;
+                Ok(())
             },
         )?;
         linker.func_wrap(
@@ -478,6 +598,50 @@ impl System {
     }
 }
 
+fn set_cell(caller: &Caller<'_, Host>, idx: i32, cell: StateCell) {
+    let mut cells = caller.data().cells.lock().unwrap();
+    if cells.len() <= idx as usize {
+        cells.resize(idx as usize + 1, None);
+    }
+    cells[idx as usize] = Some(cell);
+}
+
+fn get_cell(caller: &Caller<'_, Host>, idx: i32) -> Option<StateCell> {
+    caller.data().cells.lock().unwrap().get(idx as usize).cloned().flatten()
+}
+
+/// Read a guest `[count][i64 slots]` list.
+fn read_i64_list(data: &[u8], ptr: i32) -> Result<Vec<i64>> {
+    let count = read_le_i32(data, ptr)?.max(0);
+    let mut out = Vec::with_capacity(count as usize);
+    for i in 0..count {
+        let o = (ptr + 4 + 8 * i) as usize;
+        let b = data.get(o..o + 8).ok_or_else(|| Error::msg("list out of bounds"))?;
+        out.push(i64::from_le_bytes(b.try_into().expect("8 bytes")));
+    }
+    Ok(out)
+}
+
+/// Read a guest `[count][string-pointer slots]` list by content.
+fn read_str_list(data: &[u8], ptr: i32) -> Result<Vec<String>> {
+    let count = read_le_i32(data, ptr)?.max(0);
+    let mut out = Vec::with_capacity(count as usize);
+    for i in 0..count {
+        let sp = read_le_i32(data, ptr + 4 + 8 * i)?;
+        let len = read_le_i32(data, sp)?.max(0) as usize;
+        let o = sp as usize + 4;
+        let bytes = data.get(o..o + len).ok_or_else(|| Error::msg("string out of bounds"))?;
+        out.push(String::from_utf8_lossy(bytes).into_owned());
+    }
+    Ok(out)
+}
+
+fn read_le_i32(data: &[u8], off: i32) -> Result<i32> {
+    let o = off as usize;
+    let b = data.get(o..o + 4).ok_or_else(|| Error::msg("read out of bounds"))?;
+    Ok(i32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+}
+
 /// Reserve guest memory via the actor's `__msg_alloc` (which adds the 4-byte
 /// header to its argument) and write a complete `[len/count][payload]` block.
 fn write_block(store: &mut Store<Host>, instance: &Instance, block: &[u8]) -> Result<i32> {
@@ -739,6 +903,37 @@ impl Source:
         sys.set_subject(ids["Source"], "target", ids["Sink"]).unwrap();
         sys.send(ids["Source"], "Go", 7).unwrap();
         assert_eq!(sys.output(), vec!["answer=42/0.5"]);
+    }
+
+    /// LIST state persists across messages in host cells: a List(Int) and a
+    /// List(String) field both start empty, accumulate via push on each
+    /// message (read back as a fresh arena copy, re-stored by content), and
+    /// survive the per-message arena reset.
+    #[test]
+    fn list_state_fields_accumulate_across_messages() {
+        let src = r#"
+actor Journal:
+    console: Console
+    var values: List(Int) = []
+    var labels: List(String) = []
+
+impl Journal:
+    on Note(n: Int):
+        values = push(values, n * 10)
+        labels = push(labels, "v" <> int_to_string(n))
+        var total = 0
+        for v in values:
+            total = total + v
+        var joined = ""
+        for l in labels:
+            joined = joined <> l <> ","
+        print(console, int_to_string(total) <> " " <> joined)
+"#;
+        let (mut sys, ids) = build(src);
+        sys.send(ids["Journal"], "Note", 1).unwrap();
+        sys.send(ids["Journal"], "Note", 2).unwrap();
+        sys.send(ids["Journal"], "Note", 3).unwrap();
+        assert_eq!(sys.output(), vec!["10 v1,", "30 v1,v2,", "60 v1,v2,v3,"]);
     }
 
     #[test]

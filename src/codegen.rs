@@ -9,11 +9,12 @@
 //! Capabilities remain host imports (`print`, `print_int`) that the runtime
 //! links only when granted, so an ungranted compiled module cannot instantiate.
 //!
-//! An actor compiles to its own module: an `Int` field becomes a mutable WASM
-//! global, a `String` field a host-side cell (the per-message arena reset would
-//! clobber a guest-heap string), capability fields are erased (their authority
-//! is the host import), and each `on` handler becomes an exported function the
-//! host calls to deliver a message.
+//! An actor compiles to its own module: `Int`/`Float` fields become mutable
+//! WASM globals; `String`, `List(Int)`, and `List(String)` fields become
+//! host-side cells (the per-message arena reset would clobber guest-heap
+//! values) read back as fresh arena copies; capability fields are erased
+//! (their authority is the host import); and each `on` handler becomes an
+//! exported function the host calls to deliver a message.
 //!
 //! `send` between compiled actors crosses the VM boundary by value: Int, Float,
 //! and Subject fields are copied (passing a Subject delegates send authority);
@@ -445,6 +446,12 @@ struct Codegen {
     str_fields: HashMap<String, u32>,
     /// Whether any String state field exists (links the field_str host pair).
     uses_str_field: bool,
+    /// List state fields -> (host cell index, element value type). Like String
+    /// state, list state lives in host cells; reads stage a fresh arena copy
+    /// and writes copy the content out.
+    list_fields: HashMap<String, (u32, ValType)>,
+    /// Whether any list state field exists (links the field_*list host fns).
+    uses_list_field: bool,
     /// Whether the `compiler.footprint` host import + guest helper are needed.
     uses_compiler_footprint: bool,
     /// Whether the `compiler.diff` host import + guest helper are needed.
@@ -739,6 +746,8 @@ impl Codegen {
             uses_msg_alloc: false,
             str_fields: HashMap::new(),
             uses_str_field: false,
+            list_fields: HashMap::new(),
+            uses_list_field: false,
             uses_compiler_footprint: false,
             uses_compiler_diff: false,
             uses_float_to_str: false,
@@ -1731,6 +1740,7 @@ impl Codegen {
             || self.uses_crypto_rune_hash
             || self.uses_msg_alloc
             || self.uses_str_field
+            || self.uses_list_field
             || self.uses_compiler_footprint
             || self.uses_compiler_diff
             || self.uses_float_to_str
@@ -1795,6 +1805,16 @@ impl Codegen {
             s.push_str("  (import \"witchy\" \"field_str_set\" (func $field_str_set_host (param i32 i32)))\n");
             s.push_str("  (import \"witchy\" \"field_str_len\" (func $field_str_len_host (param i32) (result i32)))\n");
         }
+        if self.uses_list_field {
+            // List actor state: the set fns walk the guest list by the field's
+            // declared element type; intlist_len stages the whole [count][i64s]
+            // block for fill_pending, strlist_size stages a pending string list
+            // for write_pending_list (the dir_list protocol).
+            s.push_str("  (import \"witchy\" \"field_intlist_set\" (func $field_intlist_set_host (param i32 i32)))\n");
+            s.push_str("  (import \"witchy\" \"field_intlist_len\" (func $field_intlist_len_host (param i32) (result i32)))\n");
+            s.push_str("  (import \"witchy\" \"field_strlist_set\" (func $field_strlist_set_host (param i32 i32)))\n");
+            s.push_str("  (import \"witchy\" \"field_strlist_size\" (func $field_strlist_size_host (param i32) (result i32)))\n");
+        }
         if self.uses_float_to_str {
             // float_to_str(x, out_data_ptr) -> byte length: the host formats `x`
             // (Rust Display) into the guest's pre-allocated buffer.
@@ -1847,7 +1867,7 @@ impl Codegen {
         if self.uses_args {
             s.push_str("  (import \"witchy\" \"args_size\" (func $args_size_host (result i32)))\n");
         }
-        if self.used_dir_ops.contains("list") || self.uses_args {
+        if self.used_dir_ops.contains("list") || self.uses_args || self.uses_list_field {
             s.push_str("  (import \"witchy\" \"write_pending_list\" (func $write_pending_list_host (param i32)))\n");
         }
         if self.used_dir_ops.contains("write") {
@@ -1906,6 +1926,7 @@ impl Codegen {
             || self.uses_compiler_footprint
             || self.uses_compiler_diff
             || self.uses_str_field
+            || self.uses_list_field
         {
             s.push_str("  (import \"witchy\" \"fill_pending\" (func $fill_pending_host (param i32)))\n");
         }
@@ -1966,6 +1987,10 @@ impl Codegen {
         }
         if self.uses_str_field {
             s.push_str(FIELD_STR_GET_WAT);
+        }
+        if self.uses_list_field {
+            s.push_str(FIELD_INTLIST_GET_WAT);
+            s.push_str(FIELD_STRLIST_GET_WAT);
         }
         if self.uses_compiler_footprint {
             s.push_str(COMPILER_FOOTPRINT_WAT);
@@ -2252,6 +2277,18 @@ impl Codegen {
                         tail_is_value = false;
                         continue;
                     }
+                    if let Some(&(idx, vt)) = self.list_fields.get(name) {
+                        let set = if vt == ValType::Str {
+                            "$field_strlist_set_host"
+                        } else {
+                            "$field_intlist_set_host"
+                        };
+                        out.push_str(&format!("    i32.const {idx}\n"));
+                        out.push_str(&self.compile_expr(value)?);
+                        out.push_str(&format!("    call {set}\n"));
+                        tail_is_value = false;
+                        continue;
+                    }
                     let vk = self.kind_of(value);
                     out.push_str(&self.compile_expr(value)?);
                     if self.globals.contains(name) {
@@ -2346,6 +2383,11 @@ impl Codegen {
                 } else if let Some(&idx) = self.str_fields.get(name) {
                     // A String state field: a fresh arena copy of the host cell.
                     Ok(format!("    i32.const {idx}\n    call $field_str_get\n"))
+                } else if let Some(&(idx, vt)) = self.list_fields.get(name) {
+                    // A list state field: a fresh arena copy of the host cell.
+                    let helper =
+                        if vt == ValType::Str { "$field_strlist_get" } else { "$field_intlist_get" };
+                    Ok(format!("    i32.const {idx}\n    call {helper}\n"))
                 } else if self.globals.contains(name) {
                     Ok(format!("    global.get ${name}\n"))
                 } else if !self.locals.contains_key(name) {
@@ -5486,11 +5528,49 @@ fn compile_actor_with_tags(
                     ))
                 }
             };
-            let idx = cg.str_fields.len() as u32;
+            let idx = (cg.str_fields.len() + cg.list_fields.len()) as u32;
             cg.str_fields.insert(field.name.clone(), idx);
             cg.uses_str_field = true;
             cg.local_val_types.insert(field.name.clone(), ValType::Str);
             str_field_inits.push((idx, init_off));
+            continue;
+        }
+        // List state shares the host-cell space with String state. v1 keeps
+        // initializers to the empty list (an unset cell reads back as empty),
+        // so no start-function registration is needed.
+        if tname == "List" {
+            let elem_vt = match &field.ty {
+                Type::Named(_, args) => match args.first() {
+                    Some(Type::Named(e, _)) if e == "Int" => ValType::Int,
+                    Some(Type::Named(e, _)) if e == "String" => ValType::Str,
+                    _ => {
+                        return cerr(format!(
+                            "actor field `{}`: only List(Int) and List(String) state compiles yet",
+                            field.name
+                        ))
+                    }
+                },
+                _ => unreachable!("List fields are Named types"),
+            };
+            match &field.init {
+                Some(Expr::List(items)) if items.is_empty() => {}
+                Some(_) => {
+                    return cerr(format!(
+                        "field `{}`: list state must initialize to `[]` in codegen",
+                        field.name
+                    ))
+                }
+                None => {
+                    return cerr(format!(
+                        "field `{}`: list state needs an initializer in codegen",
+                        field.name
+                    ))
+                }
+            }
+            let idx = (cg.str_fields.len() + cg.list_fields.len()) as u32;
+            cg.list_fields.insert(field.name.clone(), (idx, elem_vt));
+            cg.uses_list_field = true;
+            cg.local_list_elem_valtype.insert(field.name.clone(), elem_vt);
             continue;
         }
         // A Float field is a real (mut f64) global — floats are values, so no
@@ -6197,6 +6277,31 @@ const FIELD_STR_GET_WAT: &str = r#"  (func $field_str_get (param $idx i32) (resu
     (i32.store (local.get $res) (local.get $len))
     (call $fill_pending_host (i32.add (local.get $res) (i32.const 4)))
     (global.set $heap (i32.add (i32.add (local.get $res) (i32.const 4)) (local.get $len)))
+    (local.get $res))
+"#;
+
+// field_intlist_get(idx): a fresh arena copy of a List(Int) state cell — the
+// host stages the whole `[count][i64 slots]` block and reports its byte size.
+const FIELD_INTLIST_GET_WAT: &str = r#"  (func $field_intlist_get (param $idx i32) (result i32)
+    (local $size i32) (local $res i32)
+    (local.set $size (call $field_intlist_len_host (local.get $idx)))
+    (call $ensure (local.get $size))
+    (local.set $res (global.get $heap))
+    (call $fill_pending_host (local.get $res))
+    (global.set $heap (i32.add (local.get $res) (local.get $size)))
+    (local.get $res))
+"#;
+
+// field_strlist_get(idx): a fresh arena copy of a List(String) state cell —
+// staged as a pending string list, laid out by `write_pending_list` (the
+// dir_list protocol).
+const FIELD_STRLIST_GET_WAT: &str = r#"  (func $field_strlist_get (param $idx i32) (result i32)
+    (local $size i32) (local $res i32)
+    (local.set $size (call $field_strlist_size_host (local.get $idx)))
+    (call $ensure (local.get $size))
+    (local.set $res (global.get $heap))
+    (call $write_pending_list_host (local.get $res))
+    (global.set $heap (i32.add (local.get $res) (local.get $size)))
     (local.get $res))
 "#;
 
