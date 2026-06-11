@@ -1109,8 +1109,26 @@ fn verify_file(path: &str) -> Result<(), String> {
         return Err(format!("`{path}` has no `main` to run"));
     }
     // Compile first (borrows `linked`), then run the interpreter (consumes it).
-    let wat = codegen::compile_module(&linked)
-        .map_err(|e| format!("cannot compile to WASM (an interpreter-only feature?): {e}"))?;
+    // An actor program runs on the compiled ACTOR SYSTEM (its main in a driver
+    // VM, each spawned actor in its own); a plain program on the single-module
+    // WASM runtime.
+    let has_actors = linked.items.iter().any(|it| matches!(it, ast::Item::Actor(_)));
+    let compiled_system = if has_actors {
+        let (driver, actors, sigs, specs) = codegen::compile_system(&linked)
+            .map_err(|e| format!("cannot compile to WASM (an interpreter-only feature?): {e}"))?;
+        Some(
+            actor_system::System::run_program(&driver, &actors, sigs, specs)
+                .map_err(|e| e.to_string()),
+        )
+    } else {
+        None
+    };
+    let wat = if has_actors {
+        String::new()
+    } else {
+        codegen::compile_module(&linked)
+            .map_err(|e| format!("cannot compile to WASM (an interpreter-only feature?): {e}"))?
+    };
     // Run BOTH backends regardless of either failing: a program that errors on
     // one backend but produces a value on the other is itself a divergence (a
     // trap and a clean result are not the same behavior), so we must not return
@@ -1123,12 +1141,15 @@ fn verify_file(path: &str) -> Result<(), String> {
             && matches!(&f.ret, Some(ast::Type::Named(n, _)) if n == "Int"))
     });
     let interp = interpreter::run_module(linked, Path::new("."), Vec::new()).map_err(|e| e.to_string());
-    let compiled = run_wat_capture(&wat).map(|mut lines| {
-        if main_returns_int {
-            lines.pop();
-        }
-        lines
-    });
+    let compiled = match compiled_system {
+        Some(result) => result,
+        None => run_wat_capture(&wat).map(|mut lines| {
+            if main_returns_int {
+                lines.pop();
+            }
+            lines
+        }),
+    };
     match (interp, compiled) {
         (Ok(i), Ok(c)) if i == c => {
             println!(
@@ -8452,6 +8473,16 @@ fn main(console: Console):
         )
         .unwrap();
         crate::verify_file(path.to_str().unwrap()).expect("backends should agree");
+    }
+
+    /// `witchy parity` covers ACTOR programs: the compiled side runs the whole
+    /// actor system (driver + per-actor VMs via guest spawn) and must agree
+    /// with the interpreter line for line.
+    #[test]
+    fn verify_file_covers_actor_programs() {
+        for example in ["examples/actors.witchy", "examples/dispatch.witchy"] {
+            crate::verify_file(example).expect("actor program backends should agree");
+        }
     }
 
     #[test]

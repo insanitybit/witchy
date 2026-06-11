@@ -5544,9 +5544,31 @@ pub fn compile_program(module: &Module) -> Result<CompiledActors, CodegenError> 
             }
         }
     }
+    // An actor module contains ONLY the actor (handlers + state); a handler
+    // calling a top-level function would emit a call to a function the module
+    // doesn't carry — fail at compile time, not VM instantiation.
+    let fn_names: HashSet<String> = module
+        .items
+        .iter()
+        .filter_map(|it| match it {
+            Item::Function(f) => Some(f.name.clone()),
+            _ => None,
+        })
+        .collect();
     let mut actors = Vec::new();
     for item in &module.items {
         if let Item::Actor(a) = item {
+            for h in &a.handlers {
+                let mut refs = HashSet::new();
+                collect_fn_refs_block(&h.body, &mut refs);
+                if let Some(name) = refs.iter().find(|r| fn_names.contains(*r)) {
+                    return cerr(format!(
+                        "actor `{}` handler `{}` calls top-level function `{name}` — \
+                         handlers calling module functions are not compiled yet",
+                        a.name, h.message
+                    ));
+                }
+            }
             actors.push((a.name.clone(), compile_actor_with_tags(a, &tag_of)?));
         }
     }
