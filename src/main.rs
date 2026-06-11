@@ -3647,6 +3647,50 @@ mod example_tests {
         assert!(rust.contains("if (x < 0i64) =>"), "expected a match guard");
     }
 
+    /// Guards on string and list patterns, and a top-level constant, transpile
+    /// and RUN on the native backend with the interpreter's exact semantics: a
+    /// failing guard falls through to the NEXT arm (including variable arms),
+    /// and the constant inlines at its use sites.
+    #[test]
+    fn native_backend_guarded_str_list_matches_and_const() {
+        let src = "let LIMIT = 3\n\nfn judge(word: String) -> String:\n    match word:\n        \"ok\" -> \"literal\"\n        w if string_length(w) > LIMIT -> \"long:\" <> w\n        w -> \"short:\" <> w\n\nfn shape(xs: List(Int)) -> String:\n    match xs:\n        [] -> \"empty\"\n        [x] if x > LIMIT -> \"one-big\"\n        [x] -> \"one-small\"\n        [x, y, ..rest] if x == y -> \"twins+\" <> int_to_string(length(rest))\n        _ -> \"other\"\n\nfn main(console: Console):\n    print(console, judge(\"ok\"))\n    print(console, judge(\"hello\"))\n    print(console, judge(\"hi\"))\n    print(console, shape([]))\n    print(console, shape([9]))\n    print(console, shape([2]))\n    print(console, shape([5, 5, 1, 2]))\n    print(console, shape([1, 2, 3]))\n";
+        let want = vec![
+            "literal",
+            "long:hello",
+            "short:hi",
+            "empty",
+            "one-big",
+            "one-small",
+            "twins+2",
+            "other",
+        ];
+        assert_eq!(link_run(src), want, "interpreter (ground truth)");
+        let dir = std::env::temp_dir().join(format!("witchy_nguard_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let s = dir.join("prog.witchy");
+        std::fs::write(&s, src).unwrap();
+        let rust = crate::emit_rust_file(s.to_str().unwrap()).expect("transpile");
+        let rs = dir.join("prog.rs");
+        let bin = dir.join("prog_bin");
+        std::fs::write(&rs, &rust).unwrap();
+        if let Ok(st) = std::process::Command::new("rustc")
+            .args(["-O", "-C", "overflow-checks=off", "--edition", "2021"])
+            .arg(&rs)
+            .arg("-o")
+            .arg(&bin)
+            .status()
+        {
+            assert!(st.success(), "guarded-match program should compile: {rust}");
+            let out = std::process::Command::new(&bin).output().expect("run");
+            assert_eq!(
+                String::from_utf8_lossy(&out.stdout),
+                "literal\nlong:hello\nshort:hi\nempty\none-big\none-small\ntwins+2\nother\n",
+                "native must match the interpreter"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// The native backend transpiles record types to Rust structs — declaration,
     /// construction, and field access.
     #[test]

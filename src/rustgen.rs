@@ -1476,6 +1476,10 @@ fn gen_actors(m: &Module) -> Result<String, String> {
 }
 
 pub fn transpile_module(m: &Module) -> Result<String, String> {
+    // Inline top-level constants at their use sites (idempotent after the
+    // linker's own pass; covers unlinked single-module input).
+    let inlined = crate::consts::inline(m.clone());
+    let m = &inlined;
     RECORD_FIELDS.with(|r| r.borrow_mut().clear());
     VARIANT_TO_ENUM.with(|r| r.borrow_mut().clear());
     ENUM_NAMES.with(|r| r.borrow_mut().clear());
@@ -1594,9 +1598,10 @@ pub fn transpile_module(m: &Module) -> Result<String, String> {
             // no runtime code the subset references. Actors are emitted separately
             // by `gen_actors` (structs + the mailbox runtime).
             Item::Type(_) | Item::Trait(_) | Item::TypeAlias { .. } | Item::Impl(_) | Item::Actor(_) => {}
-            Item::Const { .. } => {
-                return Err("native backend: top-level `const` is not supported yet".into())
-            }
+            // Top-level constants were inlined at every use site (the same
+            // `consts::inline` pass the linker applies), so the items carry no
+            // remaining runtime code.
+            Item::Const { .. } => {}
         }
     }
     if !saw_main {
@@ -2744,21 +2749,19 @@ fn gen_call(name: &str, args: &[Expr]) -> Result<String, String> {
 /// For a constructor pattern with `Box`ed (recursive) fields, the `let x = *x;`
 /// statements that move each boxed binding out of its box (so the arm body uses
 /// the plain value). Only simple variable bindings are handled.
-/// Lower a `match` with list patterns to an if-else chain on the list length,
-/// binding elements by index (cloned). This gives exact top-to-bottom match
-/// semantics and avoids slice-pattern by-reference binding. Arms must be list,
-/// variable, or wildcard patterns (a list scrutinee admits no others).
+/// Lower a `match` with list patterns to a guarded if-chain over an Option
+/// result: each arm tests its length condition, binds elements by index
+/// (cloned), then applies its guard — a failing guard falls through to the
+/// NEXT arm, exactly the interpreter's top-to-bottom rule.
 fn gen_list_match(scrutinee: String, arms: &[crate::ast::MatchArm], value: bool) -> Result<String, String> {
     use crate::ast::Pattern;
-    let mut out = format!("{{ let __m = {scrutinee};\n");
-    let mut emitted_if = false;
-    let mut catch_all = false;
+    let mut out = format!("{{ let __m = {scrutinee};\n    let mut __r = None;\n");
     for arm in arms {
-        if arm.guard.is_some() {
-            return Err("native backend: a guard on a list pattern is not supported yet".into());
-        }
-        let body = if value { gen_value(&arm.body)? } else { gen_expr(&arm.body, false)? };
-        match &arm.pattern {
+        let guard = match &arm.guard {
+            Some(g) => gen_value(g)?,
+            None => "true".to_string(),
+        };
+        let (cond, binds) = match &arm.pattern {
             Pattern::List { elems, rest } => {
                 let mut binds = String::new();
                 for (i, e) in elems.iter().enumerate() {
@@ -2777,74 +2780,75 @@ fn gen_list_match(scrutinee: String, arms: &[crate::ast::MatchArm], value: bool)
                         format!("__m.len() >= {}", elems.len())
                     }
                 };
-                let kw = if emitted_if { "else if" } else { "if" };
-                out.push_str(&format!("    {kw} {cond} {{ {binds}{body} }}\n"));
-                emitted_if = true;
+                (cond, binds)
             }
-            Pattern::Var(n) => {
-                let prefix = if emitted_if { "else " } else { "" };
-                out.push_str(&format!("    {prefix}{{ let {n} = __m; {body} }}\n"));
-                catch_all = true;
-                break;
-            }
-            Pattern::Wildcard => {
-                let prefix = if emitted_if { "else " } else { "" };
-                out.push_str(&format!("    {prefix}{{ {body} }}\n"));
-                catch_all = true;
-                break;
-            }
+            Pattern::Var(n) => ("true".to_string(), format!("let {n} = __m.clone(); ")),
+            Pattern::Wildcard => ("true".to_string(), String::new()),
             _ => {
                 return Err("native backend: a list match's arms must be list, variable, or wildcard patterns".into())
             }
+        };
+        let body = if value { gen_value(&arm.body)? } else { gen_expr(&arm.body, false)? };
+        let assign = if value {
+            format!("__r = Some({body});")
+        } else {
+            format!("{body} __r = Some(());")
+        };
+        out.push_str(&format!(
+            "    if __r.is_none() && {cond} {{ {binds}if {guard} {{ {assign} }} }}\n"
+        ));
+        // An unguarded variable/wildcard arm matches unconditionally — arms
+        // after it can never run.
+        if arm.guard.is_none() && matches!(&arm.pattern, Pattern::Var(_) | Pattern::Wildcard) {
+            break;
         }
     }
-    if !catch_all {
-        out.push_str("    else { unreachable!(\"non-exhaustive list match\") }\n");
+    if value {
+        out.push_str("    __r.unwrap_or_else(|| unreachable!(\"non-exhaustive list match\")) }");
+    } else {
+        out.push_str("    if __r.is_none() { unreachable!(\"non-exhaustive list match\") } }");
     }
-    out.push('}');
     Ok(out)
 }
 
-/// Lower a `match` with string patterns to an if-else chain comparing the
-/// scrutinee to each literal — exact top-to-bottom semantics, and a variable arm
-/// binds the (owned `String`) scrutinee, sidestepping `String`/`&str` mismatches.
+/// Lower a `match` with string patterns to a guarded if-chain over an Option
+/// result, comparing the scrutinee to each literal — exact top-to-bottom
+/// semantics (a failing guard falls through to the next arm), and a variable
+/// arm binds an owned `String`, sidestepping `String`/`&str` mismatches.
 fn gen_str_match(scrutinee: String, arms: &[crate::ast::MatchArm], value: bool) -> Result<String, String> {
     use crate::ast::Pattern;
-    let mut out = format!("{{ let __m = {scrutinee};\n");
-    let mut emitted_if = false;
-    let mut catch_all = false;
+    let mut out = format!("{{ let __m = {scrutinee};\n    let mut __r = None;\n");
     for arm in arms {
-        if arm.guard.is_some() {
-            return Err("native backend: a guard on a string pattern is not supported yet".into());
-        }
-        let body = if value { gen_value(&arm.body)? } else { gen_expr(&arm.body, false)? };
-        match &arm.pattern {
-            Pattern::Str(s) => {
-                let kw = if emitted_if { "else if" } else { "if" };
-                out.push_str(&format!("    {kw} __m == {s:?} {{ {body} }}\n"));
-                emitted_if = true;
-            }
-            Pattern::Var(n) => {
-                let prefix = if emitted_if { "else " } else { "" };
-                out.push_str(&format!("    {prefix}{{ let {n} = __m; {body} }}\n"));
-                catch_all = true;
-                break;
-            }
-            Pattern::Wildcard => {
-                let prefix = if emitted_if { "else " } else { "" };
-                out.push_str(&format!("    {prefix}{{ {body} }}\n"));
-                catch_all = true;
-                break;
-            }
+        let guard = match &arm.guard {
+            Some(g) => gen_value(g)?,
+            None => "true".to_string(),
+        };
+        let (cond, binds) = match &arm.pattern {
+            Pattern::Str(s) => (format!("__m == {s:?}"), String::new()),
+            Pattern::Var(n) => ("true".to_string(), format!("let {n} = __m.clone(); ")),
+            Pattern::Wildcard => ("true".to_string(), String::new()),
             _ => {
                 return Err("native backend: a string match's arms must be string, variable, or wildcard patterns".into())
             }
+        };
+        let body = if value { gen_value(&arm.body)? } else { gen_expr(&arm.body, false)? };
+        let assign = if value {
+            format!("__r = Some({body});")
+        } else {
+            format!("{body} __r = Some(());")
+        };
+        out.push_str(&format!(
+            "    if __r.is_none() && {cond} {{ {binds}if {guard} {{ {assign} }} }}\n"
+        ));
+        if arm.guard.is_none() && matches!(&arm.pattern, Pattern::Var(_) | Pattern::Wildcard) {
+            break;
         }
     }
-    if !catch_all {
-        out.push_str("    else { unreachable!(\"non-exhaustive string match\") }\n");
+    if value {
+        out.push_str("    __r.unwrap_or_else(|| unreachable!(\"non-exhaustive string match\")) }");
+    } else {
+        out.push_str("    if __r.is_none() { unreachable!(\"non-exhaustive string match\") } }");
     }
-    out.push('}');
     Ok(out)
 }
 
