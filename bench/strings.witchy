@@ -1,0 +1,7 @@
+// String building: the NAIVE accumulate form — the compiler's linear-update
+// rewrite is what makes it builder-class.
+fn main(console: Console):
+    var s = ""
+    for i in 0..20000:
+        s = s <> "ab"
+    print(console, int_to_string(string_length(s)))

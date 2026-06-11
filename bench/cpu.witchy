@@ -1,0 +1,8 @@
+// Compute-bound: 4M iterations of mixed arithmetic.
+fn main(console: Console):
+    var total = 0
+    for i in 0..2000:
+        var j = 0
+        for j in 0..2000:
+            total = total + (i * 7 + j) % 13
+    print(console, int_to_string(total))
