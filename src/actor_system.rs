@@ -24,6 +24,8 @@ enum FieldVal {
     Int(i32),
     Float(f64),
     Str(String),
+    IntList(Vec<i64>),
+    StrList(Vec<String>),
 }
 
 /// (target actor id, message tag, decoded field values).
@@ -236,6 +238,34 @@ impl System {
                                     b.try_into().expect("8-byte slice"),
                                 )));
                             }
+                            Some(MsgField::IntList) => {
+                                let list = read(off)?;
+                                let n = read(list)?.max(0);
+                                let mut xs = Vec::with_capacity(n as usize);
+                                for j in 0..n {
+                                    let o = (list + 4 + 8 * j) as usize;
+                                    let b = data
+                                        .get(o..o + 8)
+                                        .ok_or_else(|| Error::msg("send list out of bounds"))?;
+                                    xs.push(i64::from_le_bytes(b.try_into().expect("8 bytes")));
+                                }
+                                fs.push(FieldVal::IntList(xs));
+                            }
+                            Some(MsgField::StrList) => {
+                                let list = read(off)?;
+                                let n = read(list)?.max(0);
+                                let mut xs = Vec::with_capacity(n as usize);
+                                for j in 0..n {
+                                    let sp = read(list + 4 + 8 * j)?;
+                                    let len = read(sp)?.max(0) as usize;
+                                    let o = sp as usize + 4;
+                                    let bytes = data
+                                        .get(o..o + len)
+                                        .ok_or_else(|| Error::msg("send string out of bounds"))?;
+                                    xs.push(String::from_utf8_lossy(bytes).into_owned());
+                                }
+                                fs.push(FieldVal::StrList(xs));
+                            }
                             _ => fs.push(FieldVal::Int(read(off)?)),
                         }
                     }
@@ -320,22 +350,63 @@ impl System {
                 FieldVal::Int(n) => args.push(Val::I32(*n)),
                 FieldVal::Float(x) => args.push(Val::F64(x.to_bits())),
                 FieldVal::Str(s) => {
+                    let mut bytes = (s.len() as u32).to_le_bytes().to_vec();
+                    bytes.extend_from_slice(s.as_bytes());
+                    args.push(Val::I32(write_block(store, instance, &bytes)?));
+                }
+                FieldVal::IntList(xs) => {
+                    let mut bytes = (xs.len() as i32).to_le_bytes().to_vec();
+                    for x in xs {
+                        bytes.extend_from_slice(&x.to_le_bytes());
+                    }
+                    args.push(Val::I32(write_block(store, instance, &bytes)?));
+                }
+                FieldVal::StrList(xs) => {
+                    // The guest list layout with absolute pointers, computed
+                    // from the allocation base (like `write_pending_list`).
+                    let n = xs.len();
+                    let total =
+                        4 + 8 * n + xs.iter().map(|s| 4 + s.len()).sum::<usize>();
                     let alloc =
                         instance.get_typed_func::<i32, i32>(&mut *store, "__msg_alloc")?;
-                    let p = alloc.call(&mut *store, s.len() as i32)?;
+                    // __msg_alloc reserves `n + 4`; our block already counts its
+                    // own 4-byte header, so ask for total - 4 content bytes.
+                    let base = alloc.call(&mut *store, (total - 4) as i32)?;
+                    let mut bytes = Vec::with_capacity(total);
+                    bytes.extend_from_slice(&(n as i32).to_le_bytes());
+                    let strings_start = base as i64 + 4 + 8 * n as i64;
+                    let mut offset = 0i64;
+                    for s in xs {
+                        bytes.extend_from_slice(&(strings_start + offset).to_le_bytes());
+                        offset += 4 + s.len() as i64;
+                    }
+                    for s in xs {
+                        bytes.extend_from_slice(&(s.len() as u32).to_le_bytes());
+                        bytes.extend_from_slice(s.as_bytes());
+                    }
                     let mem = instance
                         .get_memory(&mut *store, "memory")
                         .ok_or_else(|| Error::msg("actor has no memory"))?;
-                    let mut bytes = (s.len() as u32).to_le_bytes().to_vec();
-                    bytes.extend_from_slice(s.as_bytes());
-                    mem.write(&mut *store, p as usize, &bytes)?;
-                    args.push(Val::I32(p));
+                    mem.write(&mut *store, base as usize, &bytes)?;
+                    args.push(Val::I32(base));
                 }
             }
         }
         func.call(&mut *store, &args, &mut [])?;
         Ok(())
     }
+}
+
+/// Reserve guest memory via the actor's `__msg_alloc` (which adds the 4-byte
+/// header to its argument) and write a complete `[len/count][payload]` block.
+fn write_block(store: &mut Store<Host>, instance: &Instance, block: &[u8]) -> Result<i32> {
+    let alloc = instance.get_typed_func::<i32, i32>(&mut *store, "__msg_alloc")?;
+    let p = alloc.call(&mut *store, (block.len() - 4) as i32)?;
+    let mem = instance
+        .get_memory(&mut *store, "memory")
+        .ok_or_else(|| Error::msg("actor has no memory"))?;
+    mem.write(&mut *store, p as usize, block)?;
+    Ok(p)
 }
 
 #[cfg(test)]
@@ -523,6 +594,42 @@ impl Tally:
         sys.send(ids["Tally"], "Bump", 0).unwrap();
         sys.send(ids["Tally"], "Bump", 0).unwrap();
         assert_eq!(sys.output(), vec!["1.75", "3"]);
+    }
+
+    /// List message fields cross the VM boundary by content: a List(Int) is
+    /// re-laid out slot-for-slot in the receiver, and a List(String) arrives
+    /// with absolute pointers into the receiver's own memory — the receiver
+    /// iterates, indexes, and compares them as ordinary lists.
+    #[test]
+    fn list_message_params_cross_vms_by_content() {
+        let src = r#"
+actor Stats:
+    console: Console
+
+impl Stats:
+    on Nums(xs: List(Int)):
+        var total = 0
+        for x in xs:
+            total = (total + x)
+        print(console, int_to_string(total))
+    on Names(names: List(String)):
+        var joined = ""
+        for n in names:
+            joined = (joined <> n <> ";")
+        print(console, joined)
+
+actor Feeder:
+    target: Subject
+
+impl Feeder:
+    on Go(n: Int):
+        send(target, Nums([10, 20, (n + 5)]))
+        send(target, Names(["ada", ("x" <> int_to_string(n)), "grace"]))
+"#;
+        let (mut sys, ids) = build(src);
+        sys.set_subject(ids["Feeder"], "target", ids["Stats"]).unwrap();
+        sys.send(ids["Feeder"], "Go", 7).unwrap();
+        assert_eq!(sys.output(), vec!["42", "ada;x7;grace;"]);
     }
 
     #[test]

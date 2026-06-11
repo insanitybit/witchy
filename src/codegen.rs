@@ -16,10 +16,11 @@
 //! host calls to deliver a message.
 //!
 //! `send` between compiled actors crosses the VM boundary by value: Int, Float,
-//! and Subject fields are copied (passing a Subject delegates send authority),
-//! String fields are read out of the sender and re-allocated in the receiver
-//! (`__msg_alloc`). Not yet compiled: compound message parameters (lists,
-//! tuples, records) and `spawn` from compiled code — each errors clearly.
+//! and Subject fields are copied (passing a Subject delegates send authority);
+//! String, List(Int), and List(String) fields are read out of the sender by
+//! content and re-laid out in the receiver (`__msg_alloc`). Not yet compiled:
+//! tuple/record message parameters and `spawn` from compiled code — each
+//! errors clearly.
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -5235,6 +5236,12 @@ pub enum MsgField {
     Subject,
     /// An f64 copied by value (the full 8-byte slot).
     Float,
+    /// A `List(Int)`: the host walks the sender's `[count][i64 slots]` and
+    /// re-lays it out in the receiver.
+    IntList,
+    /// A `List(String)`: walked by content like `Str`, re-laid out in the
+    /// receiver with absolute pointers (the `write_pending_list` layout).
+    StrList,
 }
 
 /// One routable message: its name and per-field wire types.
@@ -5253,8 +5260,16 @@ fn message_sig_of(h: &crate::ast::Handler) -> Result<Vec<MsgField>, CodegenError
             Some(Type::Named(t, _)) if t == "String" => Ok(MsgField::Str),
             Some(Type::Named(t, _)) if t == "Subject" => Ok(MsgField::Subject),
             Some(Type::Named(t, _)) if t == "Float" => Ok(MsgField::Float),
+            Some(Type::Named(t, args)) if t == "List" => match args.first() {
+                Some(Type::Named(e, _)) if e == "Int" => Ok(MsgField::IntList),
+                Some(Type::Named(e, _)) if e == "String" => Ok(MsgField::StrList),
+                _ => cerr(format!(
+                    "handler `{}` param `{}`: only List(Int) and List(String) list parameters compile yet",
+                    h.message, p.name
+                )),
+            },
             _ => cerr(format!(
-                "handler `{}` param `{}`: only Int, Float, String, and Subject message parameters compile yet",
+                "handler `{}` param `{}`: only Int, Float, String, Subject, List(Int), and List(String) message parameters compile yet",
                 h.message, p.name
             )),
         })
@@ -5422,8 +5437,12 @@ fn compile_actor_with_tags(
     }
 
     let mut handlers: Vec<(String, String)> = Vec::new();
+    // Field kinds (e.g. a Float field's f64) persist across handlers; each
+    // handler's own params/lets start from this snapshot.
+    let field_kinds = cg.locals.clone();
     for h in &actor.handlers {
         let sig = message_sig_of(h)?;
+        cg.locals = field_kinds.clone();
         let mut header = format!("  (func (export \"{}\") ", h.message);
         for (p, kind) in h.params.iter().zip(&sig) {
             // An Int or Subject travels by value; a Float as the full f64; a
@@ -5444,6 +5463,14 @@ fn compile_actor_with_tags(
                     cg.uses_msg_alloc = true;
                     cg.local_val_types.insert(p.name.clone(), ValType::Str);
                 }
+                MsgField::IntList => {
+                    cg.uses_msg_alloc = true;
+                    cg.local_list_elem_valtype.insert(p.name.clone(), ValType::Int);
+                }
+                MsgField::StrList => {
+                    cg.uses_msg_alloc = true;
+                    cg.local_list_elem_valtype.insert(p.name.clone(), ValType::Str);
+                }
                 // A Subject is an opaque actor id; it is a send target, not a
                 // printable value, so it gets no value type.
                 MsgField::Subject => {}
@@ -5451,12 +5478,16 @@ fn compile_actor_with_tags(
         }
         header.push('\n');
         let renamed = alpha_rename(&h.body, &h.params);
+        // Infer each let's kind (as `compile_function` does) so e.g. an i64
+        // list element flowing into a local declares that local at i64.
+        cg.infer_locals(&renamed);
         let mut lets = Vec::new();
         collect_let_names(&renamed, &mut lets);
         lets.sort();
         lets.dedup();
         for name in &lets {
-            header.push_str(&format!("    (local ${name} i32)\n"));
+            let k = cg.locals.get(name).copied().unwrap_or(Kind::I32);
+            header.push_str(&format!("    (local ${name} {})\n", wasm_ty(k)));
         }
         let body = cg.compile_block(&renamed)?;
         handlers.push((header, body));
