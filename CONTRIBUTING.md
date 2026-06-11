@@ -23,7 +23,7 @@ multi-rune example project, and doc extraction — ~30 asserted checks.
 
 ## The one rule: parity
 
-witchy has three backends (interpreter = reference, WASM, native) held to
+witchy has two backends (interpreter = reference, compiled WASM) held to
 **zero silent divergence**. Before opening a PR:
 
 ```sh

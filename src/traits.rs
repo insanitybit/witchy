@@ -82,17 +82,29 @@ fn subst_self(t: &Type, impl_type: &str) -> Type {
 /// generics on primitive type arguments (the interpreter and Rust handle generic
 /// `==` and 64-bit Ints natively, so only the lossy WASM i32 generic ABI needs it).
 pub fn lower(module: Module) -> Module {
-    lower_with(module, false)
+    lower_with(module, false).0
+}
+
+/// [`lower`] that surfaces unsatisfiable trait dispatch: a trait-method call
+/// whose receiver type is known but has no impl. The type checker runs THIS
+/// flavor so the error reads "`Float` does not implement `Show`" at check
+/// time instead of "unknown function `show`" after lowering.
+pub fn lower_checked(module: Module) -> Result<Module, String> {
+    let (lowered, missing) = lower_with(module, false);
+    match missing.into_iter().next() {
+        Some(msg) => Err(msg),
+        None => Ok(lowered),
+    }
 }
 
 /// Like [`lower`], but also monomorphizes unbounded generics on primitive type
 /// arguments — for the WASM backend, whose generic ABI otherwise pointer-compares
 /// strings and truncates large Ints.
 pub fn lower_for_wasm(module: Module) -> Module {
-    lower_with(module, true)
+    lower_with(module, true).0
 }
 
-fn lower_with(module: Module, mono_unbounded: bool) -> Module {
+fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
     // Expand type aliases and inline module-level constants first (a no-op once
     // the linker has done so, but covers single-module paths like `check_str`).
     let module = crate::aliases::resolve(crate::consts::inline(module));
@@ -102,7 +114,7 @@ fn lower_with(module: Module, mono_unbounded: bool) -> Module {
                 || (mono_unbounded && !signature_type_vars(f).is_empty()))
     });
     if !needs_lowering {
-        return module;
+        return (module, Vec::new());
     }
 
     // method name -> owning trait (increment 1 assumes a method name is unique
@@ -218,12 +230,22 @@ fn lower_with(module: Module, mono_unbounded: bool) -> Module {
     // Tables used to determine a receiver's type at a trait-method call site.
     let (ctor_results, fn_rets) = build_tables(&items);
     let ctor_fields = build_ctor_fields(&items);
+    let free_fns: std::collections::HashSet<String> = items
+        .iter()
+        .filter_map(|it| match it {
+            Item::Function(f) => Some(f.name.clone()),
+            _ => None,
+        })
+        .collect();
+    let missing_impls = std::cell::RefCell::new(Vec::new());
     let ctx = Ctx {
         trait_methods: &trait_methods,
         impl_table: &impl_table,
         ctor_results: &ctor_results,
         fn_rets: &fn_rets,
         ctor_fields: &ctor_fields,
+        free_fns: &free_fns,
+        missing_impls: &missing_impls,
     };
     for item in &mut items {
         match item {
@@ -248,7 +270,10 @@ fn lower_with(module: Module, mono_unbounded: bool) -> Module {
         }
     }
 
-    Module { imports, items, import_lines: Vec::new(), item_lines: Vec::new() }
+    (
+        Module { imports, items, import_lines: Vec::new(), item_lines: Vec::new() },
+        missing_impls.into_inner(),
+    )
 }
 
 /// Variable name -> the head name of its (known) type.
@@ -276,6 +301,14 @@ struct Ctx<'a> {
     ctor_results: &'a HashMap<String, String>,
     fn_rets: &'a HashMap<String, String>,
     ctor_fields: &'a HashMap<String, Vec<Type>>,
+    /// Plain (non-method) function names: a trait-method call that ALSO names
+    /// a free function may legitimately resolve to it, so it is never a
+    /// missing-impl error.
+    free_fns: &'a std::collections::HashSet<String>,
+    /// Trait-method calls whose receiver type is KNOWN but has no impl —
+    /// surfaced by the type checker as a clean "T does not implement Trait"
+    /// instead of a post-lowering unknown-function error.
+    missing_impls: &'a std::cell::RefCell<Vec<String>>,
 }
 
 impl Ctx<'_> {
@@ -312,11 +345,22 @@ impl Ctx<'_> {
                 for a in args.iter_mut() {
                     self.rewrite_expr(a, scope);
                 }
-                if self.trait_methods.contains_key(name.as_str()) {
+                if let Some(trait_name) = self.trait_methods.get(name.as_str()) {
                     if let Some(recv) = args.first() {
                         if let Some(tn) = self.type_name(recv, scope) {
-                            if let Some(mangled) = self.impl_table.get(&(name.clone(), tn)) {
-                                *name = mangled.clone();
+                            match self.impl_table.get(&(name.clone(), tn.clone())) {
+                                Some(mangled) => *name = mangled.clone(),
+                                // The receiver's type is known and no impl
+                                // exists; unless a plain function of this name
+                                // can take the call, that is a bound the
+                                // program cannot satisfy — report it cleanly.
+                                None if !self.free_fns.contains(name.as_str()) => {
+                                    self.missing_impls.borrow_mut().push(format!(
+                                        "`{tn}` does not implement `{trait_name}` \
+                                         (no `impl {trait_name} for {tn}`) — required by a call to `{name}`"
+                                    ));
+                                }
+                                None => {}
                             }
                         }
                     }
@@ -445,6 +489,7 @@ fn head_type_name(
         Expr::Float(_) => Some("Float".into()),
         Expr::Str(_) => Some("String".into()),
         Expr::Bool(_) => Some("Bool".into()),
+        Expr::Duration(_) => Some("Duration".into()),
         Expr::Var(n) => scope.get(n).cloned(),
         Expr::Ctor { name, .. } => ctor_results.get(name).cloned(),
         Expr::Call { name, .. } => fn_rets.get(name).cloned().or_else(|| builtin_ret(name)),

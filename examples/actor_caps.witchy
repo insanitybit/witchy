@@ -12,7 +12,7 @@ actor Timer:
 impl Timer:
     on Tick(label: String):
         if now(clock) > 0:
-            print(console, "tick: " <> label)
+            print(console, "tick: ${label}")
         else:
             print(console, "the clock is broken")
 
@@ -22,7 +22,7 @@ actor Quiet:
 impl Quiet:
     on Relay(n: Int):
         // No Console here: this actor can compute and send, nothing else.
-        send(out, Tick("relayed " <> int_to_string(n)))
+        send(out, Tick("relayed ${n}"))
 
 fn main(console: Console, clock: Clock):
     let timer = spawn Timer(console, clock)

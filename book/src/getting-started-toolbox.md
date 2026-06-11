@@ -54,7 +54,6 @@ the capabilities chapter.
 
 ```sh
 witchy emit-wat program.witchy      # print the generated WebAssembly text
-witchy emit-rust program.witchy     # print the Rust transpilation
 ```
 
 ## Tests and docs

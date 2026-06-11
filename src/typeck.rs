@@ -2451,7 +2451,9 @@ pub fn check(module: &Module) -> Result<(), TypeError> {
 
     // Trait/impl declarations are desugared to ordinary functions first, so the
     // checker only ever sees plain functions (a no-op for trait-free modules).
-    let lowered = crate::traits::lower(recs);
+    // The checked flavor surfaces unsatisfiable dispatch ("`Float` does not
+    // implement `Show`") instead of a post-lowering unknown-function error.
+    let lowered = crate::traits::lower_checked(recs).map_err(|message| TypeError { message })?;
     let module = &lowered;
     let mut c = Checker {
         fn_sigs: HashMap::new(),

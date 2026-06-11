@@ -62,7 +62,7 @@ fn classify(n: Int) -> String:
 
 fn main(console: Console):
     print(console, classify(double(0)))
-    print(console, int_to_string(double(21)))
+    print(console, "${double(21)}")
 ```
 
 ```text

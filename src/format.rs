@@ -729,6 +729,13 @@ fn expr(e: &Expr) -> String {
             format!("{o}{}", operand(inner, UNARY_PREC, false))
         }
         Expr::Binary { op, lhs, rhs } => {
+            // A `<>` chain in the canonical shape interpolation desugars to
+            // prints back as the interpolation itself (see `interpolation_sugar`).
+            if *op == BinOp::Concat {
+                if let Some(sugar) = interpolation_sugar(e) {
+                    return sugar;
+                }
+            }
             let p = binop_prec(*op);
             format!("{} {} {}", operand(lhs, p, false), binop(*op), operand(rhs, p, true))
         }
@@ -903,6 +910,13 @@ fn expr_prec(e: &Expr) -> u8 {
 /// wrapped at equal precedence (`a - (b - c)`), the left operand only when it
 /// binds strictly looser (`a - b - c` stays flat).
 fn operand(e: &Expr, parent: u8, is_right: bool) -> String {
+    // A concat chain that prints as an interpolated string literal is a
+    // PRIMARY — never parenthesized, whatever its AST precedence says.
+    if let Expr::Binary { op: BinOp::Concat, .. } = e {
+        if let Some(sugar) = interpolation_sugar(e) {
+            return sugar;
+        }
+    }
     let s = expr(e);
     let needs = if is_right { expr_prec(e) <= parent } else { expr_prec(e) < parent };
     if needs {
@@ -910,6 +924,77 @@ fn operand(e: &Expr, parent: u8, is_right: bool) -> String {
     } else {
         s
     }
+}
+
+/// Print a `<>` chain back as the string interpolation it desugared from.
+///
+/// The lexer expands `"a ${x} b"` to `("a " <> to_string(x) <> " b")` at the
+/// TOKEN level, so the AST has no interpolation node; this is its inverse.
+/// The shape is strict — literal segments alternating with `to_string(expr)`
+/// pieces, starting and ending with a literal (the lexer always emits the
+/// trailing literal, even when empty) — and the two spellings parse to the
+/// same AST, so re-sugaring is pure canonicalization: a hand-written chain of
+/// this exact shape prints as the interpolation idiom too.
+fn interpolation_sugar(e: &Expr) -> Option<String> {
+    let mut pieces: Vec<&Expr> = Vec::new();
+    let mut cur = e;
+    loop {
+        match cur {
+            Expr::Binary { op: BinOp::Concat, lhs, rhs } => {
+                pieces.push(rhs);
+                cur = lhs;
+            }
+            other => {
+                pieces.push(other);
+                break;
+            }
+        }
+    }
+    pieces.reverse();
+    if pieces.len() < 3 || pieces.len() % 2 == 0 {
+        return None;
+    }
+    let mut out = String::from("\"");
+    for (i, p) in pieces.iter().enumerate() {
+        if i % 2 == 0 {
+            let Expr::Str(text) = p else { return None };
+            out.push_str(&interp_segment(text));
+        } else {
+            let Expr::Call { name, args } = p else { return None };
+            if name != "to_string" || args.len() != 1 {
+                return None;
+            }
+            let inner = expr(&args[0]);
+            // A multi-line rendering can't live inside a string literal.
+            if inner.contains('\n') {
+                return None;
+            }
+            out.push_str("${");
+            out.push_str(&inner);
+            out.push('}');
+        }
+    }
+    out.push('"');
+    Some(out)
+}
+
+/// `string_lit` escaping for a segment inside an interpolated literal — also
+/// escapes `$` so a literal dollar survives the round trip.
+fn interp_segment(v: &str) -> String {
+    let mut s = String::new();
+    for c in v.chars() {
+        match c {
+            '"' => s.push_str("\\\""),
+            '\\' => s.push_str("\\\\"),
+            '\n' => s.push_str("\\n"),
+            '\t' => s.push_str("\\t"),
+            '\r' => s.push_str("\\r"),
+            '\0' => s.push_str("\\0"),
+            '$' => s.push_str("\\$"),
+            _ => s.push(c),
+        }
+    }
+    s
 }
 
 fn pattern(p: &Pattern) -> String {

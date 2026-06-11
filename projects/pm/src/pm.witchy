@@ -180,7 +180,7 @@ fn cmd_lock(console: Console, root: Dir, dir: String) -> Int:
         let n = length(toml.table(manifest, "dependencies"))
         let lockpath = join_path(dir, "witchy.lock")
         write(root, lockpath, generate_lock(root, dir))
-        print(console, "locked " <> to_string(n) <> " dependencies -> " <> to_string(lockpath) <> "")
+        print(console, "locked ${n} dependencies -> ${lockpath}")
         0
 
 // --- verify: every locked hash must still match its source ------------------

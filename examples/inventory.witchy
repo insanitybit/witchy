@@ -11,11 +11,11 @@ fn main(console: Console):
     var total = 0
     for v in values(prices):
         total = total + v
-    print(console, "total = " <> to_string(total) <> "")
+    print(console, "total = ${total}")
 
     var pricey = 0
     for entry in pairs(prices):
         let (name, price) = entry
         if price > 2:
             pricey = pricey + 1
-    print(console, "over 2: " <> to_string(pricey) <> "")
+    print(console, "over 2: ${pricey}")

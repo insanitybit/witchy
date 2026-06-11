@@ -2199,6 +2199,45 @@ mod example_tests {
         assert_eq!(wasm_run(src), want, "wasm");
     }
 
+    /// `say` covers every scalar out of the box (Duration in its HUMAN form
+    /// — the custom rendering `Show` exists for), and a missing impl is a
+    /// clean check-time error naming the trait and type, not a post-lowering
+    /// "unknown function" artifact.
+    #[test]
+    fn show_scalars_and_missing_impl_diagnostic() {
+        let src = "import show\n\nfn main(console: Console):\n    say(console, 42)\n    say(console, 3.5)\n    say(console, 90s)\n    say(console, true)\n";
+        let want: Vec<String> =
+            ["42", "3.5", "1m30s", "true"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(link_run(src), want, "interpreter");
+        assert_eq!(wasm_run(src), want, "wasm");
+        let missing = "import show\n\ntype Blob:\n    n: Int\n\nfn main(console: Console):\n    say(console, Blob(1))\n";
+        let module = parser::parse_module(missing).expect("parse");
+        let linked =
+            crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        let err = typeck::check(&linked).expect_err("missing impl must be rejected");
+        assert!(
+            err.to_string().contains("`Blob` does not implement `Show`"),
+            "want a clean trait error, got: {err}"
+        );
+    }
+
+    /// The formatter ROUND-TRIPS string interpolation (the lexer desugars it
+    /// to a `<>` chain; `interpolation_sugar` prints it back), and
+    /// canonicalizes a hand-written chain of the exact desugared shape into
+    /// the idiom.
+    #[test]
+    fn fmt_round_trips_interpolation() {
+        let src = "fn main(console: Console):\n    let n = 3\n    print(console, \"n is ${n}, doubled ${n * 2}\")\n    print(console, \"cost: \\$${n}\")\n";
+        assert_eq!(crate::format::reformat(src).as_deref(), Some(src), "interpolation must round-trip");
+        let chain = "fn main(console: Console):\n    let n = 3\n    print(console, \"n is \" <> to_string(n) <> \"\")\n";
+        let want = "fn main(console: Console):\n    let n = 3\n    print(console, \"n is ${n}\")\n";
+        assert_eq!(
+            crate::format::reformat(chain).as_deref(),
+            Some(want),
+            "the canonical chain shape prints as interpolation"
+        );
+    }
+
     /// THE OWN-ABI: `xs = grow(move xs, i)` is a linear pipeline — the
     /// ownership token crosses the call in both directions (an extra cap
     /// param and result), so a cross-function builder stays O(n). Without
