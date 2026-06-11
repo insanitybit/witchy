@@ -49,6 +49,7 @@ witchy sandbox examples/hello.witchy  # run confined in the WASM VM
 | [stats](stats.witchy), [matrix](matrix.witchy), [temperature](temperature.witchy), [floats](floats.witchy) | Numerics |
 | [actors](actors.witchy), [counter](counter.witchy), [mailbox](mailbox.witchy), [dispatch](dispatch.witchy) | Actors and message passing |
 | [lazy_fib](lazy_fib.witchy), [generators](generators.witchy) | Lazy iterators |
+| [regions](regions.witchy) | User-controlled allocation scopes (`region:`) |
 
 ## Multi-package projects ([projects/](projects/))
 
