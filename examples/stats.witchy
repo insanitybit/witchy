@@ -38,11 +38,11 @@ fn variance(xs: List(Float), avg: Float) -> Float:
 fn minimum(xs: List(Float)) -> Float:
     var lo = at(xs, 0)
     for x in xs:
-        lo = math.fmin(lo, x)
+        lo = math.float_min(lo, x)
     lo
 
 fn maximum(xs: List(Float)) -> Float:
     var hi = at(xs, 0)
     for x in xs:
-        hi = math.fmax(hi, x)
+        hi = math.float_max(hi, x)
     hi

@@ -29,4 +29,4 @@ fn main(console: Console):
     // Combine and compare durations directly.
     print(console, duration.clock(1h + 30m))
     print(console, to_string(90s < 2m))
-    print(console, duration.human(duration.from_hms(0, 2, 30)))
+    print(console, duration.human(duration.from_clock(0, 2, 30)))

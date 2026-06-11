@@ -81,7 +81,7 @@ fn sign(n: Int) -> Int:
     else:
         0
 
-pub fn eq(a: Version, b: Version) -> Bool:
+pub fn equals(a: Version, b: Version) -> Bool:
     compare(a, b) == 0
 
 pub fn lt(a: Version, b: Version) -> Bool:
@@ -134,7 +134,7 @@ fn wrap_exact(r: Result(Version, String)) -> Result(Req, String):
 pub fn matches(req: Req, v: Version) -> Bool:
     match req:
         Any -> true
-        Exact(r) -> eq(v, r)
+        Exact(r) -> equals(v, r)
         AtLeast(r) -> gte(v, r)
         Tilde(r) -> major(v) == major(r) && minor(v) == minor(r) && patch(v) >= patch(r)
         Caret(r) -> caret_matches(r, v)

@@ -132,7 +132,7 @@ The values whose keys satisfy `pred`, in the Dict's iteration order.
 
 Pure helpers for the built-in `Duration` type — a length of time, written as a literal like `30s`, `2hr`, or `500ms`. Durations are combined and compared with the language operators (`a + b`, `d * 3`, `a < b`); this module adds construction from plain numbers, component access, and human formatting. Capability-free, so it compiles to WASM. A Duration is carried as whole milliseconds (`int_to_duration`/`duration_to_int` are the Int<->Duration bridge).
 
-#### `fn millis(n: Int) -> Duration`
+#### `fn milliseconds(n: Int) -> Duration`
 
 ---- Construction from a count of one unit ----
 
@@ -146,11 +146,11 @@ Pure helpers for the built-in `Duration` type — a length of time, written as a
 
 #### `fn weeks(n: Int) -> Duration`
 
-#### `fn from_hms(h: Int, m: Int, s: Int) -> Duration`
+#### `fn from_clock(h: Int, m: Int, s: Int) -> Duration`
 
 Build a duration from hours, minutes, and seconds.
 
-#### `fn to_millis(d: Duration) -> Int`
+#### `fn to_milliseconds(d: Duration) -> Int`
 
 ---- Total conversions (whole units, truncated toward zero) ----
 
@@ -184,7 +184,7 @@ The minutes component (0..59).
 
 The seconds component (0..59).
 
-#### `fn part_millis(d: Duration) -> Int`
+#### `fn part_milliseconds(d: Duration) -> Int`
 
 The milliseconds component (0..999).
 
@@ -784,7 +784,7 @@ All but the first `n` elements.
 
 All elements after the first; the empty list maps to the empty list.
 
-#### `fn init(xs: List(a)) -> List(a)`
+#### `fn drop_last(xs: List(a)) -> List(a)`
 
 All elements except the last; the empty list maps to the empty list.
 
@@ -896,15 +896,15 @@ Render `n` in `base` (2..16) with lowercase digits; a negative `n` gets a leadin
 
 `n` in binary (e.g. 5 -> "101").
 
-#### `fn fmin(a: Float, b: Float) -> Float`
+#### `fn float_min(a: Float, b: Float) -> Float`
 
 --- Float versions (Int comparison can't be reused for Float) ---
 
-#### `fn fmax(a: Float, b: Float) -> Float`
+#### `fn float_max(a: Float, b: Float) -> Float`
 
-#### `fn fabs(x: Float) -> Float`
+#### `fn float_abs(x: Float) -> Float`
 
-#### `fn fclamp(x: Float, lo: Float, hi: Float) -> Float`
+#### `fn float_clamp(x: Float, lo: Float, hi: Float) -> Float`
 
 #### `fn format_float(x: Float, decimals: Int) -> String`
 
@@ -1214,7 +1214,7 @@ Parse `major.minor.patch` (missing trailing components default to 0). Errors on 
 
 -1 if a < b, 0 if equal, 1 if a > b — comparing major, then minor, then patch.
 
-#### `fn eq(a: Version, b: Version) -> Bool`
+#### `fn equals(a: Version, b: Version) -> Bool`
 
 #### `fn lt(a: Version, b: Version) -> Bool`
 

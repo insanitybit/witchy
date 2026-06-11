@@ -475,7 +475,7 @@ pub fn tail(xs: List(a)) -> List(a):
     drop(xs, 1)
 
 // All elements except the last; the empty list maps to the empty list.
-pub fn init(xs: List(a)) -> List(a):
+pub fn drop_last(xs: List(a)) -> List(a):
     take(xs, length(xs) - 1)
 
 // Split `xs` into consecutive sublists of length `n` (the final one may be

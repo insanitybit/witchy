@@ -721,7 +721,7 @@ fn main() -> wasmtime::Result<()> {
         "math_demo",
     );
     run_program_demo(
-        "witchy float math (sqrt + fabs/fmin/fmax)",
+        "witchy float math (sqrt + float_abs/float_min/float_max)",
         &[
             ("math", include_str!("../std/math.witchy")),
             ("floats", include_str!("../examples/floats.witchy")),
@@ -7688,18 +7688,18 @@ fn main(console: Console):
     #[test]
     fn duration_module_backends_agree() {
         // The duration module over the built-in Duration type: human/clock format
-        // a Duration (combined from literals), to_millis bridges back to Int.
+        // a Duration (combined from literals), to_milliseconds bridges back to Int.
         let client = r#"
 import duration
 fn main(console: Console):
-    print(console, int_to_string(duration.to_millis(duration.from_hms(1, 2, 3))))
+    print(console, int_to_string(duration.to_milliseconds(duration.from_clock(1, 2, 3))))
     print(console, duration.clock(1h + 2m + 3s))
     print(console, duration.clock(90s))
     print(console, duration.human(1h + 1m + 1s))
     print(console, duration.human(90s))
     print(console, duration.human(5s))
     print(console, duration.human(500ms))
-    print(console, int_to_string(duration.to_millis(duration.hours(2))))
+    print(console, int_to_string(duration.to_milliseconds(duration.hours(2))))
     print(console, int_to_string(duration.part_minutes(1h + 2m + 3s)))
 "#;
         let sources = [
@@ -7727,7 +7727,7 @@ import duration
 import option
 fn show(o: Option(Duration)) -> String:
     match o:
-        Some(d) -> int_to_string(duration.to_millis(d))
+        Some(d) -> int_to_string(duration.to_milliseconds(d))
         None -> "none"
 fn roundtrip(d: Duration) -> String:
     match duration.parse(duration.human(d)):
@@ -8668,9 +8668,9 @@ fn main() -> Int:
     #[test]
     fn std_math_compiles_and_runs_on_wasm() {
         // Importing `math` forces every function in it to compile (Int helpers
-        // *and* the Float ones: fmin/fmax/fabs/fclamp, which use f64 compares and
+        // *and* the Float ones: float_min/float_max/float_abs/float_clamp, which use f64 compares and
         // unary negation). gcd(48,36)=12, pow(2,10)=1024, clamp(15,0,10)=10,
-        // fclamp(15,0,10)=10.0, fabs(-3.5)=3.5 -> 12+1024+10+10+3 = 1059.
+        // float_clamp(15,0,10)=10.0, float_abs(-3.5)=3.5 -> 12+1024+10+10+3 = 1059.
         let client = r#"
 import math
 
@@ -8678,8 +8678,8 @@ fn main() -> Int:
     let a = math.gcd(48, 36)
     let b = math.pow(2, 10)
     let c = math.clamp(15, 0, 10)
-    let f = math.fclamp(15.0, 0.0, 10.0)
-    let g = math.fabs((0.0 - 3.5))
+    let f = math.float_clamp(15.0, 0.0, 10.0)
+    let g = math.float_abs((0.0 - 3.5))
     ((((a + b) + c) + float_to_int(f)) + float_to_int(g))
 "#;
         assert_eq!(
@@ -8696,8 +8696,8 @@ fn main() -> Int:
     // the newly-wired print_float host, which formats f64 exactly like the
     // interpreter's Value::Float Display. Previously the compiled module failed
     // to instantiate (no print_float import provider).
-    // A broader compiled-float workout: division, fabs (negation + compare),
-    // fmax, a float comparison driving a float-valued `if`, multiply, subtract,
+    // A broader compiled-float workout: division, float_abs (negation + compare),
+    // float_max, a float comparison driving a float-valued `if`, multiply, subtract,
     // and sqrt — all feeding one Float result. Both backends agree.
     #[test]
     fn float_arithmetic_compiled_backends_agree() {
@@ -8706,8 +8706,8 @@ import math
 
 fn main() -> Float:
     let a = (10.0 / 4.0)
-    let b = math.fabs((0.0 - 1.5))
-    let c = math.fmax(a, b)
+    let b = math.float_abs((0.0 - 1.5))
+    let c = math.float_max(a, b)
     let d = if (c > 2.0): (c * 2.0) else: 0.0
     (d - sqrt(4.0))
 "#;
@@ -8724,7 +8724,7 @@ fn main() -> Float:
 import math
 
 fn main() -> Float:
-    (math.fmin(2.5, sqrt(2.25)) + math.fclamp(5.0, 0.0, 1.0))
+    (math.float_min(2.5, sqrt(2.25)) + math.float_clamp(5.0, 0.0, 1.0))
 "#;
         let sources = [("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
@@ -12774,9 +12774,9 @@ fn main(console: Console):
     for c in cs:
         print(console, int_to_string(list.sum(c)))
     print(console, int_to_string(list.sum(list.tail([1, 2, 3]))))
-    print(console, int_to_string(list.sum(list.init([1, 2, 3]))))
+    print(console, int_to_string(list.sum(list.drop_last([1, 2, 3]))))
     print(console, int_to_string(length(list.tail([]))))
-    print(console, int_to_string(length(list.init([]))))
+    print(console, int_to_string(length(list.drop_last([]))))
 "#;
         let sources = [("list", crate::bundled_module("list").unwrap()), ("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");

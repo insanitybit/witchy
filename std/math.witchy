@@ -164,26 +164,26 @@ pub fn to_binary(n: Int) -> String:
     to_base(n, 2)
 
 // --- Float versions (Int comparison can't be reused for Float) ---
-pub fn fmin(a: Float, b: Float) -> Float:
+pub fn float_min(a: Float, b: Float) -> Float:
     if a < b:
         a
     else:
         b
 
-pub fn fmax(a: Float, b: Float) -> Float:
+pub fn float_max(a: Float, b: Float) -> Float:
     if a > b:
         a
     else:
         b
 
-pub fn fabs(x: Float) -> Float:
+pub fn float_abs(x: Float) -> Float:
     if x < 0.0:
         -x
     else:
         x
 
-pub fn fclamp(x: Float, lo: Float, hi: Float) -> Float:
-    fmax(lo, fmin(x, hi))
+pub fn float_clamp(x: Float, lo: Float, hi: Float) -> Float:
+    float_max(lo, float_min(x, hi))
 
 // Format `x` with `decimals` digits after the decimal point, rounded half-up:
 // format_float(3.14159, 2) = "3.14", format_float(-0.5, 1) = "-0.5",
@@ -194,7 +194,7 @@ pub fn fclamp(x: Float, lo: Float, hi: Float) -> Float:
 pub fn format_float(x: Float, decimals: Int) -> String:
     let d = if decimals < 0: 0 else: decimals
     let scale = pow(10, d)
-    let scaled = float_to_int(fabs(x) * int_to_float(scale) + 0.5)
+    let scaled = float_to_int(float_abs(x) * int_to_float(scale) + 0.5)
     let sign = if x < 0.0 && scaled > 0: "-" else: ""
     if d == 0:
         sign <> int_to_string(scaled)
