@@ -1,8 +1,0 @@
-import string
-
-fn main(console: Console):
-    let s = "hello"
-    // string literal as arg to a fn inside ${...} interpolation
-    print(console, "upper: ${string.to_upper(s)}")
-    // a literal in the call argument
-    print(console, "join: ${string.contains(s, "ell")}")

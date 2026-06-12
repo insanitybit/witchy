@@ -1,4 +1,0 @@
-// genlib — placeholder library. The interesting code is generated into a
-// separate `generated` module by `build.witchy`, importable as `import generated`.
-pub fn id(s: String) -> String:
-    s

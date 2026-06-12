@@ -1,8 +1,0 @@
-// mylib — a pure helper rune used by the consumer rune.
-import string
-
-pub fn shout(s: String) -> String:
-    "HEY " <> string.to_upper(s)
-
-pub fn squares_up_to(n: Int) -> List(Int):
-    [i * i for i in 1..n + 1]

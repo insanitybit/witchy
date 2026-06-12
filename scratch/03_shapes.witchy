@@ -1,0 +1,37 @@
+// 03_shapes.witchy — records, enums, and exhaustive match.
+type Point:
+    x: Int
+    y: Int
+
+type Shape:
+    Circle(Int)
+    Rectangle(Int, Int)
+    Triangle(Int, Int)
+
+fn area(s: Shape) -> Int:
+    match s:
+        Circle(r) -> 3 * r * r
+        Rectangle(w, h) -> w * h
+        Triangle(b, h) -> b * h / 2
+
+fn translate(p: Point, dx: Int, dy: Int) -> Point:
+    Point(x: p.x + dx, y: p.y + dy)
+
+fn describe(n: Int) -> String:
+    match n:
+        0 -> "zero"
+        m if m > 0 -> "positive ${m}"
+        _ -> "negative ${n}"
+
+fn main(console: Console):
+    let shapes = [Circle(2), Rectangle(3, 4), Triangle(6, 5)]
+    for s in shapes:
+        print(console, "area = ${area(s)}")
+
+    let p = Point(1, 2)
+    let q = translate(p, 10, 20)
+    print(console, "p=${p}, q=${q}")
+
+    print(console, describe(0))
+    print(console, describe(7))
+    print(console, describe(0 - 4))

@@ -1,0 +1,52 @@
+// 22_taskq.witchy — a tiny task queue: parse a file, prioritize, render.
+// Tests the spread `..base` record update form.
+
+import string
+
+type Task derive(Show, Eq):
+    id: Int
+    title: String
+    priority: Int  // 1 = high, 3 = low
+    done: Bool
+
+fn parse_line(id: Int, line: String) -> Option(Task):
+    let t = string.trim(line)
+    if string.starts_with(t, "[x] "):
+        Some(Task(id, string.strip_prefix(t, "[x] "), 3, true))
+    else if string.starts_with(t, "[!] "):
+        Some(Task(id, string.strip_prefix(t, "[!] "), 1, false))
+    else if string.starts_with(t, "[ ] "):
+        Some(Task(id, string.strip_prefix(t, "[ ] "), 2, false))
+    else:
+        None
+
+fn parse(text: String) -> List(Task):
+    var out = []
+    var id = 1
+    for line in string.lines(text):
+        if let Some(task) = parse_line(id, line):
+            out = list.push(out, task)
+            id = id + 1
+    out
+
+fn mark_done(t: Task) -> Task:
+    Task(done: true, priority: 3, ..t)
+
+fn render(t: Task) -> String:
+    let mark = if t.done: "[x]" else if t.priority == 1: "[!]" else: "[ ]"
+    "${mark} (${t.id}) ${t.title}"
+
+fn main(console: Console, root: Dir[Read]):
+    let text = read(root, "tasks.txt")
+    let tasks = parse(text)
+    let sorted = list.sort_by(tasks, fn(a: Task, b: Task): a.priority < b.priority)
+    print(console, "tasks (high-pri first):")
+    for t in sorted:
+        print(console, "  " <> render(t))
+
+    // mutate one with spread
+    if list.length(tasks) > 0:
+        let first = list.at(tasks, 0)
+        let updated = mark_done(first)
+        print(console, "")
+        print(console, "after mark_done: ${render(updated)}")

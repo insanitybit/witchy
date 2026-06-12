@@ -1,9 +1,0 @@
-import option
-
-fn main(console: Console):
-    let x = Some(7)
-    match x:
-        Some(v) ->
-            print(console, "got ${v}")
-        _ ->
-            print(console, "nope")

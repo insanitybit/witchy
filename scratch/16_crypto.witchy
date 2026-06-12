@@ -1,0 +1,14 @@
+// 16_crypto.witchy — hash + encoding.
+// Note: crypto.sha256 already returns a hex string (not raw bytes), so we
+// shouldn't pipe it through encoding.hex_encode again. Surprising — `sha256`
+// implies bytes in most APIs.
+
+import crypto
+import encoding
+
+fn main(console: Console):
+    let msg = "witchy"
+    let h = crypto.sha256(msg)
+    print(console, "sha256(witchy) = ${h}")
+    // hex_encode is for arbitrary string data:
+    print(console, "hex_encode('hi') = ${encoding.hex_encode("hi")}")

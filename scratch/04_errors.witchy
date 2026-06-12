@@ -1,0 +1,36 @@
+// 04_errors.witchy — Option, Result, ?, fail.
+fn checked_div(a: Int, b: Int) -> Result(Int, String):
+    if b == 0:
+        Err("division by zero")
+    else:
+        Ok(a / b)
+
+fn pipeline(a: Int, b: Int, c: Int) -> Result(Int, String):
+    let first = checked_div(a, b)?
+    let second = checked_div(first, c)?
+    Ok(second)
+
+fn first_even(xs: List(Int)) -> Option(Int):
+    for x in xs:
+        if x % 2 == 0:
+            return Some(x)
+    None
+
+fn show(r: Result(Int, String)) -> String:
+    match r:
+        Ok(v) -> "ok: ${v}"
+        Err(e) -> "err: ${e}"
+
+fn main(console: Console):
+    print(console, show(pipeline(100, 5, 2)))
+    print(console, show(pipeline(100, 0, 2)))
+    print(console, show(pipeline(100, 5, 0)))
+
+    match first_even([1, 3, 5]):
+        Some(n) -> print(console, "found ${n}")
+        None -> print(console, "no evens")
+
+    if let Some(n) = first_even([1, 4, 9]):
+        print(console, "found ${n} via if-let")
+    else:
+        print(console, "nope")

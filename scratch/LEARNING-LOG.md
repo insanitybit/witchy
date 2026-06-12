@@ -1,376 +1,270 @@
-# Learning Log: A Fresh LLM Learns Witchy
+# LEARNING-LOG — an LLM learns witchy
 
-Audience: language designers. I (an LLM, no prior witchy memory) read
-`book/src/**` cover-to-cover, then wrote a graduated series of real programs in
-`scratch/`, with reduced "probe" files for surprises. This log is the deliverable.
+> Author: a Claude agent.
+> Date: 2026-06-12.
+> Approach: read book/src/ end-to-end, then write programs in scratch/, recording every error verbatim, what I expected, what fixed it, and a severity.
 
-## Severity key
-
-- **Blocker** — couldn't proceed using only the book.
-- **Friction** — book was unclear or wrong; cost real time.
-- **Papercut** — small surprise, quickly worked around.
-- **Worked-well** — call-outs where the language/tooling delighted.
+Severities used:
+- **Blocker** — produces a wrong program or makes a thing impossible
+- **Friction** — slowed me down, but worked once I figured it out
+- **Papercut** — minor, surprised me briefly
+- **Worked-well** — called out because it was unusually pleasant
 
 ---
 
-## Top findings (prioritized)
+## Programs written
 
-### 1. `derive(...)` and `comptime:` are completely undocumented in the book — Friction
+| # | File | One-line |
+|---|---|---|
+| 1 | `01_hello.witchy` | hello, witchy + interpolation |
+| 2 | `02_collections.witchy` | lists, tuples, dicts, comprehensions, fold |
+| 3 | `03_shapes.witchy` | records, sum-type enums, exhaustive `match`, guards |
+| 4 | `04_errors.witchy` | `Option`, `Result`, `?`, `if let Some` |
+| 5 | `05_generics.witchy` | generics, `Ord` bound, `derive(Show, Eq, Ord)`, `impl Show`, `impl Trait` |
+| 6 | `06_iterators.witchy` | `iter.range/map/filter/take/collect`, `gen fn` Fibs + Collatz |
+| 7 | `07_comptime.witchy` | top-level `comptime:` block emitting fn families |
+| 8 | `08_log_scanner.witchy` | the book's project: `Dir[Read] + Env + args`, sandbox-runs |
+| 9 | `09_narrowing.witchy` | `subdir(...) as Dir[Write]` + implicit narrowing |
+| 10 | `10_actors.witchy` | `Counter` + Boss/Worker actors with `Subject` |
+| 11 | `11_tests.witchy` | `witchy test` with `testing.assert_*` |
+| 12 | `12_optional_caps.witchy` | `Option(Dir[Write])` and a capability enum |
+| 13 | `13_http_client.witchy` | HTTP GET (Net) — see Net-narrowing friction below |
+| 14 | `14_clock_duration.witchy` | `Clock` + duration literals |
+| 15 | `15_json.witchy` | `json.decode` and accessors |
+| 16 | `16_crypto.witchy` | `crypto.sha256` + `encoding` |
+| 17 | `17_firewall.witchy` | `without dir:` and `retain:` blocks |
+| 18 | `18_caps_diff_{a,b}.witchy` | demonstrates `witchy caps-diff` widening exit code 2 |
+| 19 | `19_dice.witchy` | seeded `random.next_below` |
+| 20 | `20_actor_caps.witchy` | actor that holds `Dir[Write]` and writes audit lines |
+| 21 | `21_regex.witchy` | extract + replace_all |
+| 22 | `22_taskq.witchy` | richer record/spread/sort example |
+| 23 | `proj/{wordlib,wordapp}` | two-rune project with a path dependency (`witchy run`, `witchy audit`) |
 
-Tasks #40 in the project memory mark `derive(Show,Eq,Ord) + comptime v1` as
-shipped, and the docs/language.md reference covers both — but `book/src/**`
-mentions neither (grep confirms zero hits). I had to fall back to
-`docs/language.md` § 8 to learn both. Recommendation: add a "Convenience"
-sub-chapter after Generics/Traits with `derive(...)`; add a "Compile-time code
-generation" sub-chapter before or alongside the Tour-iterators chapter.
+**Probes** (small files that test surprising behavior):
+`probe_fmt_compr.witchy`, `probe_fmt_compr_orig.witchy`, `probe_fmt_compr2.witchy`, `probe_regex.witchy`.
 
-### 2. Comprehensions `[expr for x in xs if cond]` are documented only in `docs/language.md`, not in the book — Friction
+**Verification:** every Console-only program verified with `witchy parity`; capability-shaped programs verified by `witchy sandbox --dir <root>`; `caps-diff` and `caps` invoked on relevant programs.
 
-`docs/language.md` § 10 introduces comprehensions. The book's `tour-iterators.md`
-shows `iter.filter`/`iter.map`/`iter.collect` but never comprehensions. They are
-arguably the most ergonomic everyday tool I reached for. Add to
-`tour-iterators.md` or `tour-values.md`.
+Counts:
+- 23 programs (+ 4 small probes + 1 multi-rune project = 28 .witchy files total)
+- First-try-success ≈ 16 / 23 ≈ **70%**
+- The 7 that needed a fix-up after first run/check are detailed below.
 
-### 3. Inline `match` arms with `->` body cannot contain `return` or assignments — Friction
+---
 
+## Findings, in order I hit them
+
+### F1. Blocker — `witchy fmt` silently corrupts `let x = [comprehension]`
+**Severity: Blocker.**
+
+Minimal repro (`probe_fmt_compr.witchy`):
+
+Before fmt — runs correctly, prints `[1, 4, 9, 16, 25]`:
 ```witchy
-// Compiles:
-match x:
-    0 ->
-        return Err("zero")
-    _ ->
-        Ok(n * 2)
-
-// Parse error: "expected an expression, found `return`"
-match x:
-    0 -> return Err("zero")
-    _ -> Ok(n * 2)
-
-// Also parse error: "expected a pattern, found `=`"
-match Event.parse_line(line):
-    Some(e) -> out = list.push(out, e)
-    None -> ()
+fn main(console: Console):
+    let xs = [1, 2, 3, 4, 5]
+    let ys = [n * n for n in xs]
+    print(console, "${ys}")
 ```
 
-In other words, the `arm -> expr` form requires the body to be an *expression*,
-not a statement. Once you drop the `->` and indent the arm body on its own line,
-both `return` and assignment work fine. The error message ("expected an
-expression, found `return`") points at the right place but doesn't explain the
-distinction between expression-form and block-form arms. See
-`probe_return.witchy`. Recommendations: (a) accept statements on the right-hand
-side of `->`, or (b) flag this in the book's match section.
-
-### 4. `Dir.write` SEMANTICS — replace-not-append, but book and stdlib comments suggest append — Friction
-
-`book/src/capabilities-optional.md` says "Append a line if we were given somewhere
-to write" but the call is `write(d, name, line)` — which actually *overwrites*
-the file. My `11_auditor_actor.witchy` recorded three lines and the file ended
-with only the last one. There appears to be no first-class `append` primitive on
-`Dir`. Either:
-
-- Document write as overwrite-only and add an `append`-style helper, or
-- Fix the misleading comment in `capabilities-optional.md` line 15.
-
-### 5. `let _ = expr` does not parse — Papercut
-
+After `witchy fmt probe_fmt_compr.witchy` the file is:
 ```witchy
-let _ = recv_all(sock)   // parse error: expected an identifier, found `_`
+fn main(console: Console):
+    let xs = [1, 2, 3, 4, 5]
+    let ys = 0
+    print(console, "${ys}")
 ```
 
-Workaround is to name the binding (`let _bytes = ...`), but Rust users will
-reach for `_` immediately. Either accept `_` as a discard pattern in `let`, or
-document a `discard expr` form.
+Now the same program prints `0`. **The formatter rewrites the program into a wrong one — silently, with no warning.** The interpreter and WASM backend both happily run the corrupted source.
 
-### 6. `\"` inside `${...}` interpolation fails (lex error) — Papercut
+The desugar elsewhere (`probe_fmt_compr2.witchy`, function-tail position) emits a verbose `var __compr0 = []; for n in xs: __compr0 = list.push(__compr0, n * n); __compr0` — at least there it still works, but it exposes synthetic identifiers that shouldn't survive into formatted source.
 
-```witchy
-print(console, "${equal(Score(1, \"x\"), Score(1, \"x\"))}")
-// parse error: unterminated `${` interpolation
-```
+This violates the docs' explicit claim ("`fmt` preserves your comments and is idempotent", and the testing chapter's "every example is extracted, type-checked, and ... run on both backends"). I expected fmt to be a bijection over well-formed witchy code.
 
-But a plain inner string works: `"${some_fn("ok")}"`. So the `\` is being eaten
-by the *outer* string scanner. Either re-enter string mode inside `${ }` (most
-ergonomic — the user expects escapes to work), or document the constraint. As a
-new user I tried `\"` three times before I gave up and refactored to a `let`.
-
-### 7. `fmt` desugars `if let` into `match`; book teaches `if let` — Papercut
-
-`book/src/tour-errors.md` introduces `if let Some(v) = ... :` as an idiom. When
-you `witchy fmt`, every `if let` is rewritten to `match v:` + wildcard.
-Inconsistent: the book's "canonical" idiom is not the formatter's canonical form.
-Either keep `if let` syntactically and don't fold it, or remove it from the book.
-
-### 8. `fmt` rewrites `Inc()` (nullary variant ctor with parens) to `Inc` (bare) — Papercut
-
-The actors chapter uses `send(counter, Inc())`. `fmt` rewrites this to
-`send(counter, Inc)`. Both work; the book's form is not the canonical form. Tiny
-inconsistency, but it means copy-pasting from the book and then running `fmt`
-silently changes your code.
-
-### 9. `witchy new` always scaffolds with a `main` (even for libraries) — Papercut
-
-A scaffolded rune always has `main(console)`. For a library, you must delete
-this and replace with `pub fn`s. There is no `--lib` flag. Minor, but a
-discoverable one-liner would help: e.g. `witchy new mylib --lib` (or print a
-"libraries: replace main with pub fns" line in `new`'s output).
-
-### 10. The `why`/`tree`/`outdated` subcommands ignore `-C` — Friction
-
-`witchy build/run/add/audit -C path` all work. But:
-
-```
-$ witchy why mylib -C /path/to/myapp
-error: cannot read ./witchy.toml: No such file or directory (os error 2)
-```
-
-You must `cd` first. Inconsistent.
-
-### 11. Build-step output is a *separate* generated module — undocumented mental-model trap — Friction
-
-`book/src/packages-build.md` shows `write_out(out, "api.witchy", ...)` and says
-the output "flows into the ordinary parse → link → type-check pipeline" — but it
-doesn't say *where*. I assumed the generated functions would become part of the
-host rune's module (so `genlib.generated_message()` from inside a `genlib.outer`
-function). That is wrong. Instead, each generated file becomes its OWN module
-that the consumer imports separately: my `build.witchy` wrote `generated.witchy`,
-and the consumer needed `import generated` (NOT `genlib.generated_message`). I
-found this by reading `tests/e2e.rs` after the book left me stuck.
-
-This is a meaningful conceptual gap. Recommendation: a one-paragraph
-"how generated code is reached" subsection in `packages-build.md` that says:
-
-> A build step's output files (`name.witchy`) become *new modules* available
-> to the rune AND its consumers via `import name`. They are not folded into
-> the host rune's module.
-
-### 12. The book's `dict` examples don't show an `import dict` — Papercut
-
-`tour-values.md` shows `dict.new()`, `dict.insert(...)` without an `import dict`
-line. In a real program, you need `import dict`. Same for `list` (the book is
-inconsistent here — sometimes shows it, sometimes doesn't). Recommendation: be
-consistent in the book examples.
-
-### 13. The `caps` per-function breakdown is not as advertised — Papercut
-
-The book (capabilities-authority.md) shows:
-
-```
-fetch   Net[Connect, Tcp]
-load    Dir[Read]
-serve   Net[Listen, Tcp]
-main    Console, Dir, Net
-total   Console, Dir, Net
-```
-
-In practice `witchy caps` only seems to print `main` and `total`:
-
-```
-Host-capability footprint of /Users/cobrien/workspace/witchy/scratch/14_event_summary.witchy:
-  main   Console, Dir[Read]
-  total  Console, Dir[Read]
-```
-
-Maybe a flag to expand? `--per-function`? At minimum the book overstates the
-output detail.
+Workaround: don't use a list comprehension as the RHS of a `let`. Either:
+- use the function-tail form, or
+- inline the loop manually.
 
 ---
 
-## Worked-well callouts
+### F2. Friction — `witchy run` doesn't forward CLI args to the program
+**Severity: Friction.**
 
-- **`witchy parity`** — running on both backends and confirming identical
-  output gave me confidence after every program; very nice tool to have. Worked
-  out of the box on every program I wrote.
-- **Error messages on capability narrowing** — clear, specific, and they name
-  the right (`Write`, `Listen`) that was demanded. See `probe_narrow_fail.witchy`
-  and `probe_net.witchy`.
-- **The widening-gate UX** — `witchy update` and `witchy add` both gave precise,
-  actionable messages when authority would widen, naming the right and even the
-  flag to accept. The two-layer build-step default-deny (kind gate + grants
-  section) is well-staged.
-- **Sandbox structural enforcement** — running with `--dir scratch` then trying
-  `../etc/passwd` failed with `\`..\` escapes the Dir capability` immediately.
-  Trustworthy.
-- **The `check` perf note** — `xs is rebuilt by copy on every iteration of this
-  loop — it is bound to a new name` (probe_perf2). Surprisingly delightful;
-  exactly the right level of feedback for the optimization model.
-- **`derive(Show, Eq, Ord)` plus `say`** — `type Score derive(Show, Eq, Ord)` gave
-  me a structural rendering and the `equal`/`less` functions for free. The
-  combination of `say(console, x)` and `say(console, "${x}")` worked seamlessly.
-- **Comprehensions** — once I found them in docs/language.md, `[e for e in events
-  if e.severity == "ERROR"]` was the clearest line of `14_event_summary.witchy`.
-- **`witchy test`** — simple, fast, capability-free. The `test_*` convention is
-  zero-friction.
-- **Actors** — the spawn + send + handler model with capabilities pinned at
-  spawn was very natural. I expected friction; there was none. (`07_actors.witchy`,
-  `11_auditor_actor.witchy` both compiled and ran first try.)
+Repro: `scratch/proj/wordapp/`.
+
+```
+witchy run sample.txt
+```
+
+prints `usage: wordapp <file>` because `args` in `main(console, root, args)` is empty. Also tried `witchy run -- sample.txt` (same), `witchy run sample.txt extra` (same).
+
+`witchy --help` mentions `[args...]` only for `sandbox`, never for `run`. I worked around it by hard-coding the path in the app.
+
+What I expected: parity with `cargo run -- <args>` or `go run main.go <args>`.
 
 ---
 
-## Per-program notes
+### F3. Friction — `Net[Connect, Tcp]` narrowing in user code doesn't compose with `http.get`
+**Severity: Friction.**
 
-### `01_hello.witchy` — Hello world
+Repro: `13_http_client.witchy` v1.
 
-Copied straight from the book. Worked first try, both interpreter and parity.
+```
+witchy check 13_http_client.witchy
+type error: `13_http_client.fetch`, line 6: in call to `http.get`:
+  expected `Net`, found `Net[Connect, Tcp]`
+```
 
-### `02_records_enums.witchy` — Records, sum types, match, list patterns, guards
+The book (capabilities-narrowing.md and appendix-recipes.md) explicitly suggests narrowing a `Net` to `Net[Connect, Tcp]` for an HTTP client. But `std/http.witchy:29` declares `pub fn get(net: Net, ...)` — *not* a narrowed signature. So a downstream function that takes the narrower handle can't pass it to `http.get`.
 
-Worked first try. The `..a` spread for records, `[first, ..rest]` list pattern,
-and guard clauses (`m if m > 0`) all behaved as described. **Worked-well.**
+Either the docs over-promise or the stdlib signature should be `Net[Connect, Tcp]`. Either is correct; the two should agree.
 
-### `03_generics_traits.witchy` — `where T: Ord`, `impl Show for T`, `impl Trait`
-
-Worked first try. The `largest` generic compiled cleanly for both `Int` and
-`String`. **Worked-well.**
-
-### `04_errors_result.witchy` — `Option`, `Result`, `?`, `if let`
-
-Worked first try, including `?` for both Result chaining and inside Option-typed
-expressions. Later `fmt` rewrote my `if let Some(v) = first_even(...)` into a
-`match`, which surprised me — Finding #7.
-
-### `05_iter_generators.witchy` — `gen fn`, `yield`, lazy iteration
-
-Worked first try. The infinite Fibonacci bounded by `iter.take` was beautiful.
-The Collatz example illustrated unbounded loops cleanly. **Worked-well.**
-
-### `06_capabilities.witchy` — `Clock`, `Env`, `Dir[Read]`, `retain`/`without`
-
-Worked first try. `caps` reported `Clock, Console, Dir, Env`. Sandbox respected
-all of them. Both `retain console:` and `without clock:` compiled and ran.
-
-### `07_actors.witchy` — Counter, Worker, Boss, Subject
-
-Worked first try. Parity passed.
-
-### `08_methods_derive.witchy` — `impl Score: fn doubled(self)`, `Score.zero()`, `derive`
-
-First attempt hit Finding #6: `\"` inside `${ ... }` failed to parse. Refactored
-to use `let` bindings before the interpolation. Then worked. The `Score.zero()`
-static method form is very pleasant.
-
-### `09_comptime.witchy` — `comptime:` block with `emit`
-
-Worked first try. I had to learn this from `docs/language.md` since the book
-doesn't mention `comptime` (Finding #1). The combination of `comptime:` + string
-interpolation inside `emit("    ${i * 7}")` is striking.
-
-### `10_scan_logs.witchy` — The book's confined log scanner
-
-Worked first try. `caps` reported exactly `Console, Dir[Read], Env` as
-predicted. The path-escape sandbox check (`scan ../etc/passwd`) was rejected
-with a clear error. **Worked-well.**
-
-### `11_auditor_actor.witchy` — Subdir + `Dir[Write]` actor
-
-Worked, but the file only had the *last* line written — see Finding #4
-(write-is-replace, not append; book comment is misleading).
-
-### `12_tests.witchy` — `witchy test`
-
-All five test functions passed. `assert_int_eq` and `assert_eq` (strings) both
-worked. **Worked-well.**
-
-### `13_inventory.witchy` — JSON, `impl Show`, `impl Item: fn total(self)`, dict
-
-First attempt failed because I used `match arm -> return Err("...")` inline —
-that's Finding #3. I refactored two `match` blocks into named helpers
-(`as_array_or_err`, `item_or_err`) that returned `Result`, and chained with `?`.
-Worked after that. The `dict.get_or(t, key, 0) + 1` upsert pattern is a clean
-witchy idiom.
-
-### `14_event_summary.witchy` — Capstone: parse log → tally → comprehension-filter → render
-
-First attempt failed because I used `match arm -> out = list.push(...)` — same
-Finding #3. Refactored to `if let Some(e) = ...`. Worked. `[e for e in events
-if e.severity == "ERROR"]` (Finding #2 — comprehensions) was the cleanest line
-in the whole program.
-
-### Package manager — `mylib` ↔ `myapp` path dep
-
-- `witchy new mylib`, edited to a library (deleted scaffolded `main`),
-  `witchy build` says `(library — no main; import it from another rune)` —
-  helpful.
-- `witchy new myapp`, `witchy add mylib --path ../mylib` — worked,
-  edited the consumer to `import mylib` and called `mylib.shout("hello")`.
-- `witchy audit` and `witchy tree` and `witchy why mylib` (had to `cd` —
-  Finding #10).
-- Probed the widening gate: I added a `Net[Connect, Tcp]` fn to mylib;
-  `witchy update` blocked with a clean message:
-
-  ```
-  BLOCKED: this change would widen your dependency tree's capability footprint.
-    + Net[Connect, Tcp]  (runtime) introduced by: mylib
-    To accept, re-run:  witchy update --allow-cap Net[Connect, Tcp]
-  ```
-
-  Then reverted and re-ran. **Worked-well.**
-
-### Build steps — `genlib` (with `build.witchy`) ↔ `genapp`
-
-I went down a rabbit hole here (Finding #11). My first model was that
-`build.witchy`'s emitted source would be folded into the host rune's module
-(so `genlib.outer()` could call a generated `generated_message()`). Wrong:
-the build output is a *separate* module the consumer imports. After reading
-`tests/e2e.rs` I rebuilt it correctly:
-
-- `src/build.witchy`: `fn build(out: BuildOut): write_out(out, "generated.witchy", "pub fn generated_message() -> String:\n    \"hello from a build step!\"\n")`
-- `src/genlib.witchy`: just `pub fn id(s: String) -> String: s`
-- `genapp/src/genapp.witchy`: `import generated` (not `import genlib`!) and
-  `print(console, genlib.id(generated.generated_message()))`.
-- The widening gate fired on `add`:
-  `BLOCKED: ... + BuildOut (build) introduced by: genlib`. Re-ran with
-  `--allow-build-cap BuildOut`.
-- A second gate fired on `build`:
-  `genlib ships a build step, and build-time code execution is denied by
-  default`. Added an empty `[build.grants."genlib"]` section to accept.
-- `witchy run` then ran the build step and printed
-  `hello from a build step!`. **Worked-well.**
-
-The two-layer gate (kind-widening + execution-consent) feels right; the book
-explains both layers; the only confusion was where the generated source *lives*.
+Workaround: accept a full `Net`, with a comment.
 
 ---
 
-## Smaller probes (reproducers)
+### F4. Friction — `list.sort_by` is a `<` predicate, not a 3-way compare
+**Severity: Friction.**
 
-- `probe_narrow_fail.witchy` — writing through `Dir[Read]` produces
-  `\`write\` needs \`Write\` but the capability is \`Dir[Read]\``.
-- `probe_net.witchy` — listening on `Net[Connect, Tcp]` produces
-  `\`listen\` needs \`Listen\` but the capability is \`Net[Connect, Tcp]\``.
-- `probe_return.witchy` — Finding #3 reproducer.
-- `probe_string_escape.witchy` / `probe_interp_call.witchy` /
-  `probe_interp_quote.witchy` — Finding #6 reproducers.
-- `probe_perf.witchy` / `probe_perf2.witchy` — perf-note reproducer.
-- `probe_iflet.witchy` — Finding #7 (fmt rewrites if-let to match).
+Repro: my first `wordlib.top` returned `if a.n > b.n: -1 else if a.n < b.n: 1 else: 0` (the C/Java convention).
 
----
+```
+type error: `wordlib.top`, line 33: in call to `list.sort_by`:
+  expected `Bool`, found `Int`
+```
 
-## Suggested book additions
+Once you know `sort_by` wants a `less` predicate the rewrite is a one-liner. The error doesn't say *which* shape it wants, which is the cost.
 
-Listed in order of how badly I missed them:
-
-1. **A `derive(...)` section** in `tour-generics.md` (Finding #1). Right now
-   `derive` exists in the language and works, but a learner would not find it.
-2. **A `comptime:` section** — probably its own short page (Finding #1, #2).
-3. **A comprehensions paragraph** somewhere prominent — `tour-values.md` or
-   `tour-iterators.md` (Finding #2).
-4. **A `match` semantics note** that `arm -> body` requires an *expression*;
-   for `return` or assignments, use the indented form (Finding #3).
-5. **A `Dir` operations table** in the capabilities chapter listing the verbs
-   (`read`, `write`, `subdir`, `exists`, `make_dir`, `is_dir`, `list`) and
-   their semantics (write = overwrite) (Finding #4).
-6. **A "where does generated code go?" subsection** in `packages-build.md`
-   (Finding #11). One paragraph would have saved me 20 minutes.
+The stdlib reference appendix lists `list.sort_by` only by name — the actual signature `(xs, less: fn(a,a) -> Bool)` lives in `std/list.witchy`. Surfacing the comparator shape in the appendix (or in the error message) would have shortened this.
 
 ---
 
-## Methodology notes
+### F5. Friction — `duration.to_ms` doesn't exist; it's `duration.to_milliseconds`
+**Severity: Friction.**
 
-- Used the freshly-built `target/release/witchy` exclusively, never rebuilt.
-- Wrote programs `01..14` in `scratch/`, plus seven `probe_*.witchy` files for
-  reproducers.
-- Used `witchy fmt` on every main program; reformatted in place.
-- Verified each program with `witchy parity` (where the program took no
-  command-line args), `witchy check`, and `witchy sandbox` (where applicable).
-- Ran the test runner on `12_tests.witchy`.
-- Did NOT modify anything outside `scratch/`.
+Plus: `duration` is not in the prelude, so you need `import duration`. The book mentions Duration extensively but the only API surface I saw was `1s + 1m`, comparison, etc. The error was cryptic:
+
+```
+type error: `main`, line 10: cannot resolve the method call `.to_ms(…)` — methods come from `impl` blocks; a plain function is called as `to_ms(value, …)`
+```
+
+The error helpfully redirects toward `to_ms(value, …)` but it's *still* the wrong name. Real name is `duration.to_milliseconds`. The memory note says "readable names" is the policy — that's good, but the appendix should call out the verbose name so users don't guess wrong.
+
+---
+
+### F6. Papercut — JSON: type is `Json`, parser is `decode` (not `JsonValue`/`parse`)
+**Severity: Papercut.**
+
+I guessed `json.parse` + `JsonValue` from the appendix line "parse and encode JSON". Real names are `json.decode` / `Json`. The link error is clear (`module 'json' has no function 'parse'`), but the appendix could list one example call.
+
+---
+
+### F7. Papercut — `crypto.sha256` returns a hex *string*, not bytes
+**Severity: Papercut.**
+
+I wrapped it in `encoding.hex_encode(h)` and got a 128-char ASCII-hex-of-hex result. The stdlib reference says only "hashing" — surprising for someone with a Rust/Python/Go background where `sha256(...)` returns 32 raw bytes. A docstring like "returns the hex digest" on `pub fn sha256` would catch this.
+
+---
+
+### F8. Friction — tuple `.0`/`.1` field access is a parser error
+**Severity: Friction.**
+
+```
+let pair = ("a", 1)
+let n = pair.1
+```
+
+yields:
+```
+error: wordlib: parse error at 25:14: expected an identifier, found `1`
+```
+
+The book on pair destructuring says "destructure". OK, but in a comparator lambda, destructuring isn't natural. (Rust/Swift/Python all support `.0/.1`.) I worked around by using a record. Worth a note in the values tour.
+
+---
+
+### F9. Friction — `without`/`retain` name the *binding*, not the type
+**Severity: Friction.**
+
+Wrote `without Dir:`. Got:
+```
+type error: `main`, line 5: no capability `Dir` is in scope to drop here
+```
+
+Real form is `without dir:` (the lowercase parameter name). The error pointed at the binding scope but didn't suggest "use the binding name". A "did you mean `dir`?" hint when there's a parameter `dir: Dir` in scope would shorten this.
+
+---
+
+### F10. Papercut — regex `\d{n}` quantifier not supported
+**Severity: Papercut.**
+
+`extract("\\d{3}", text)` returns `[]`. `extract("[0-9]+", text)` works. The stdlib docstring lists `* + ?` but not `{n}` — so the regex engine is honestly K&P-tiny. Fine, but `extract` returning `[]` is silent — I'd appreciate a "this pattern matched nothing" debug aid, or for `{n}` to be a parse error.
+
+---
+
+### F11. Friction — `witchy caps` requires a file argument when run inside a project
+**Severity: Friction.**
+
+In a project dir, `witchy build` and `witchy run` know which entry to read. `witchy caps` doesn't:
+```
+$ witchy caps
+usage: witchy caps <file>
+```
+
+It would be nice if it inferred `src/<name>.witchy` from `witchy.toml`.
+
+---
+
+### F12. Worked-well — `witchy caps-diff` exit code 2 and clean diff
+Probe `18_caps_diff_{a,b}.witchy` worked exactly as documented:
+```
+WIDENING: the newer version demands new host authority (Net). Review before trusting.
+$ echo $?
+2
+```
+This is the single best-designed thing I touched.
+
+---
+
+### F13. Worked-well — sandbox path confinement
+A typo'd `../etc/passwd` was rejected with the clean message:
+```
+`..` escapes the Dir capability
+```
+Did exactly what the book said.
+
+---
+
+### F14. Worked-well — actors are simple and the WASM-per-actor story is invisible
+`10_actors.witchy` and `20_actor_caps.witchy` (with attenuated `subdir(...) as Dir[Write]`) Just Worked. The fact that each actor is its own VM with its own imports is invisible from the writer's perspective, which is the point.
+
+---
+
+### F15. Papercut — `witchy parity` flagged my Clock-dependent program as divergent
+Expected: parity is for deterministic programs. `now(clock)` is by definition nondeterministic, so parity says "DIVERGE". The diff output is helpful but the message itself ("✗ ... the two backends DIVERGE") *sounds* alarming for a program that is correct on both backends. A short note "(nondeterministic capability — diverging output is expected)" would help.
+
+---
+
+## Things I tried and got right first try (worth noting)
+
+- All record / enum / match programs (3, 4).
+- `derive(Show, Eq, Ord)` with `==`, `ord.max_of` (5).
+- `gen fn` + `iter.take`/`collect` for infinite generators — exactly like Rust iterators but with no lifetime gymnastics (6).
+- `comptime:` block emitting witchy source for a family of functions (7).
+- `Option(Dir[Write])` and a capability enum (12) — the auditor *did* see through them as the docs promise.
+- The two-rune project with `path = "../wordlib"` — scaffold, build, audit all worked the first time.
+
+## Top 5 friction findings (one line each)
+
+1. **(BLOCKER)** `witchy fmt` silently rewrites `let x = [..for..]` to `let x = 0` — produces a wrong program from a correct one.
+2. **(Friction)** `witchy run` doesn't forward CLI args to the program (no `-- args` shape documented or working).
+3. **(Friction)** `Net[Connect, Tcp]` narrowing doesn't pass `http.get`'s signature (`Net`), so the book's recipe doesn't typecheck.
+4. **(Friction)** `list.sort_by` takes a `Bool` less-predicate; error doesn't say which shape; stdlib appendix doesn't list signatures.
+5. **(Friction)** Naming inconsistencies bit me three times: `duration.to_ms` vs `to_milliseconds`, `json.parse`/`JsonValue` vs `decode`/`Json`, `crypto.sha256` returns hex-string not bytes. A one-line example per stdlib module in the appendix would prevent all of them.
+
+## Other notes
+
+- Zero programs produced silently-wrong output at runtime — every error I hit was either a clear compile-time message or, in one case, the formatter (which is a build-step tool, not a runtime). So **on the language side, there were zero silent-wrong-output findings**; the one silent-wrong-output finding is in `witchy fmt`.
+- The `verify-cap-by-reading-the-type` story is real and felt good. `witchy caps` consistently told me the truth.
+- `witchy parity` is a comfortable reflex for pure programs.
+- `witchy sandbox --dir <root>` is the workflow that made capabilities feel concrete.

@@ -1,4 +1,0 @@
-fn main(console: Console):
-    let q = "quoted"
-    // The issue from earlier: a "string \" inside" ${expr} containing escape
-    print(console, "${"abc"}")

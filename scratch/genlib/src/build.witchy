@@ -1,5 +1,0 @@
-// Build step: emit a generated_message() function with a hard-coded value.
-// Demonstrates BuildOut alone (no BuildRead/BuildExec needed).
-
-fn build(out: BuildOut):
-    write_out(out, "generated.witchy", "pub fn generated_message() -> String:\n    \"hello from a build step!\"\n")

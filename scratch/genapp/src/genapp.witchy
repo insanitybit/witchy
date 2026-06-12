@@ -1,6 +1,0 @@
-// Consumer of genlib + a generated module produced by genlib's build step.
-import generated
-import genlib
-
-fn main(console: Console):
-    print(console, genlib.id(generated.generated_message()))

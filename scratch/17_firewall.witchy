@@ -1,0 +1,21 @@
+// 17_firewall.witchy — `without` and `retain` capability firewalls.
+//
+// NOTE: `without`/`retain` name *the binding* (the lowercase variable),
+// not the type — I first tried `without Dir:` and got
+// "no capability `Dir` is in scope to drop". `without dir:` works.
+
+fn main(console: Console, dir: Dir):
+    print(console, "before: have console + dir")
+
+    // Drop dir for this scope; still have console.
+    without dir:
+        print(console, "in without-dir block — can still print")
+        // `write(dir, ...)` here would not compile.
+
+    // A fully sealed pure region — drops every capability.
+    let n = retain:
+        var sum = 0
+        for x in [1, 2, 3, 4]:
+            sum = sum + x
+        sum
+    print(console, "sealed sum = ${n}")

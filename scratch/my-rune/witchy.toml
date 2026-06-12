@@ -1,5 +1,0 @@
-[rune]
-name = "my-rune"
-version = "0.1.0"
-
-[dependencies]

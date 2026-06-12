@@ -1,0 +1,11 @@
+// 21_regex.witchy — regex matching.
+
+import regex
+
+fn main(console: Console):
+    let text = "phone: 555-1212, fax: 555-9999, mob: 555-3000"
+    // Probe: \\d quantifiers seem to extract zero matches; let's try [0-9].
+    let nums = regex.extract("[0-9]+-[0-9]+", text)
+    print(console, "found ${list.length(nums)} numbers: ${nums}")
+    let masked = regex.replace_all("[0-9]+-[0-9]+", text, "XXX-XXXX")
+    print(console, "masked: ${masked}")

@@ -1,9 +1,0 @@
-// Probe: a TCP client that should NOT be able to listen.
-fn fetcher(net: Net[Connect, Tcp]):
-    let sock = connect(net, "example.test:80")
-    let _bytes = recv_all(sock)
-    let _l = listen(net, "0.0.0.0:8080")
-
-fn main(console: Console, net: Net[Connect, Tcp]):
-    fetcher(net)
-    print(console, "ok")

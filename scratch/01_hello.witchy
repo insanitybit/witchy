@@ -1,11 +1,9 @@
-fn double(n: Int) -> Int:
-    n * 2
-
-fn classify(n: Int) -> String:
-    match n:
-        0 -> "zero"
-        _ -> if n > 0: "positive" else: "negative"
+// 01_hello.witchy — the obligatory hello, plus a quick taste of strings,
+// interpolation, and a pure helper.
+fn greet(name: String) -> String:
+    "hello, " <> name <> "!"
 
 fn main(console: Console):
-    print(console, classify(double(0)))
-    print(console, "${double(21)}")
+    print(console, greet("witchy"))
+    let n = 7
+    print(console, "n=${n}, n*n=${n * n}")

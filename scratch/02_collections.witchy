@@ -1,0 +1,29 @@
+// 02_collections.witchy — lists, tuples, dicts, list comprehension.
+fn squares(xs: List(Int)) -> List(Int):
+    var __compr0 = []
+    for n in xs:
+        __compr0 = list.push(__compr0, n * n)
+    __compr0
+
+fn odds(xs: List(Int)) -> List(Int):
+    var __compr1 = []
+    for n in xs:
+        if n % 2 == 1:
+            __compr1 = list.push(__compr1, n)
+    __compr1
+
+fn main(console: Console):
+    let xs = [1, 2, 3, 4, 5]
+    print(console, "xs       = ${xs}")
+    print(console, "squares  = ${squares(xs)}")
+    print(console, "odds     = ${odds(xs)}")
+    print(console, "sum      = ${list.fold(xs, 0, fn(acc: Int, n: Int): acc + n)}")
+
+    let pair = (42, "answer")
+    let (n, word) = pair
+    print(console, "pair[0]=${n}, pair[1]=${word}")
+
+    let ages = dict.insert(dict.insert(dict.new(), "ada", 36), "bob", 41)
+    print(console, "ages     = ${ages}")
+    print(console, "ada      = ${dict.get_or(ages, "ada", 0)}")
+    print(console, "nobody   = ${dict.get_or(ages, "nobody", -1)}")

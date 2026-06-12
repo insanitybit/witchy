@@ -1,0 +1,12 @@
+// 14_clock_duration.witchy — Clock + Duration literals.
+
+import duration
+
+fn main(console: Console, clock: Clock):
+    let t = now(clock)
+    print(console, "wall clock = ${t}")
+    let small = 250ms
+    let big = 5m
+    print(console, "250ms < 5m? ${small < big}")
+    print(console, "1s + 1s == 2s? ${1s + 1s == 2s}")
+    print(console, "30s in ms: ${duration.to_milliseconds(30s)}")

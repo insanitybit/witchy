@@ -1,9 +1,0 @@
-[rune]
-name = "genapp"
-version = "0.1.0"
-
-[dependencies.genlib]
-path = "../genlib"
-
-[build.grants."genlib"]
-

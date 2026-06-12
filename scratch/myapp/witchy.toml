@@ -1,6 +1,0 @@
-[rune]
-name = "myapp"
-version = "0.1.0"
-
-[dependencies.mylib]
-path = "../mylib"
