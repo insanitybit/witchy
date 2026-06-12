@@ -29,6 +29,14 @@ build capability in `main`'s is too. A build step's only *product* is source: it
 writes generated `.witchy` into a confined output sandbox, which then flows into
 the ordinary parse → link → type-check pipeline.
 
+Where does that generated code *land*? Each output file becomes a **new module
+of its own**, named after the file — `write_out(out, "api.witchy", ...)`
+produces a module `api` that the rest of the rune uses like any other:
+`import api`, then `api.decode(...)`. Generated functions do **not** get
+spliced into the module that declared the build step; if you expected to call
+`decode(...)` unqualified, that's the trap. (Patterned, same-module generation
+is what [`comptime`](tour-comptime.md) is for.)
+
 The five build capabilities, kind-only in the type (the *specifics* — which
 directory, which tool, which variable — live in the consumer's grant):
 

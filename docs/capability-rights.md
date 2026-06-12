@@ -87,8 +87,9 @@ bitset is cleaner.)
   full set. (Chose brackets over `Dir(Read)` to avoid the constructor/generic
   collision; no nominal `ReadDir`/`WriteDir` aliases — `Dir[Read]` reads fine.)
 - Ops are gated by right-membership in `Typeck::check_dir_op`: `read`/`exists`/
-  `subdir` need `Read`, `write` needs `Write`. A `Dir[Read]` passed to `write`
-  is a compile-time error.
+  `is_dir`/`list`/`subdir` need `Read`; `write` (replace), `append` (add to the
+  end, creating if absent), and `make_dir` need `Write`. A `Dir[Read]` passed
+  to `write` is a compile-time error.
 - Narrowing is done with the `as` ascription (see below), not per-right builtins.
 
 **`Net` verbs are implemented** (typechecker + interpreter + parser):

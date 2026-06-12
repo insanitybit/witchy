@@ -12,8 +12,6 @@ The actual work — filtering lines — needs no capabilities at all. So we writ
 as plain functions, and we can run and test them immediately:
 
 ```witchy
-import string
-
 // Lines of `contents` that contain `query`.
 fn matches(query: String, contents: String) -> List(String):
     var hits = []
@@ -56,9 +54,6 @@ Now the thin outer layer that reads the file and decides which variant to use.
 This part needs authority, and its signature says exactly which:
 
 ```witchy
-import option
-import string
-
 fn matches(query: String, contents: String) -> List(String):
     var hits = []
     for line in string.lines(contents):

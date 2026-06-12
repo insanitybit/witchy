@@ -9,8 +9,6 @@ failure, and a single operator makes them ergonomic.
 answer" without inventing a sentinel like `-1` or `null`.
 
 ```witchy
-import option
-
 fn first_even(xs: List(Int)) -> Option(Int):
     for x in xs:
         if x % 2 == 0:
@@ -34,8 +32,6 @@ none
 There's a shorthand for "do this only if it's `Some`":
 
 ```witchy
-import option
-
 fn lookup(xs: List(Int), i: Int) -> Option(Int):
     if i < list.length(xs):
         Some(list.at(xs, i))
@@ -59,8 +55,6 @@ got 20
 *why* it failed:
 
 ```witchy
-import result
-
 fn checked_div(a: Int, b: Int) -> Result(Int, String):
     if b == 0:
         Err("division by zero")
@@ -90,8 +84,6 @@ value and keeps going; on `Err`/`None` it returns that from the enclosing
 function immediately.
 
 ```witchy
-import result
-
 fn checked_div(a: Int, b: Int) -> Result(Int, String):
     if b == 0:
         Err("division by zero")

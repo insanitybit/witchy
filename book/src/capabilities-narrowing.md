@@ -26,6 +26,20 @@ narrowing automatically at the call boundary. The reverse never type-checks: you
 cannot pass a `Dir[Read]` where a `Dir[Write]` is wanted, because that would be
 *widening*, and authority only ever shrinks.
 
+The full `Dir` verb set, and the right each one demands:
+
+| Verb | Needs | Semantics |
+|---|---|---|
+| `read(d, path)` | `Read` | file contents; error if missing or outside the subtree |
+| `exists(d, path)` / `is_dir(d, path)` | `Read` | total — a path outside the subtree just reads as `false` |
+| `list(d)` | `Read` | entry names in the directory |
+| `subdir(d, name)` | `Read` | mint a capability confined to a child, keeping the rights (see below) |
+| `write(d, path, contents)` | `Write` | **replace** the whole file, creating it if absent |
+| `append(d, path, contents)` | `Write` | add to the end, creating the file if absent |
+| `make_dir(d, name)` | `Write` | create a subdirectory (idempotent) |
+
+Note `write` *overwrites* — for a log you keep adding to, use `append`.
+
 `Net` works the same way along two axes: a verb (`Connect` to dial out vs
 `Listen` to accept connections) and a transport (`Tcp`/`Udp`/`Uds`). A
 `Net[Connect, Tcp]` is a TCP client that structurally cannot listen:
@@ -143,12 +157,15 @@ way to *name* the dropped one to smuggle it back.
 Because rights are part of the footprint, `witchy caps` reports them precisely:
 
 ```text
-fetch   Net[Connect, Tcp]
-load    Dir[Read]
-serve   Net[Listen, Tcp]
-main    Console, Dir, Net
-total   Console, Dir, Net
+  fetch  Net[Connect, Tcp]
+  load   Dir[Read]
+  serve  Net[Listen, Tcp]
+  main   Console, Dir, Net
+  total  Console, Dir, Net
 ```
+
+(Private helpers appear too — the rows are *every* function whose signature
+carries a capability; `total` is the union over the entry points.)
 
 And `witchy caps-diff old.witchy new.witchy` understands them. A change from
 `Net[Connect]` to `Net[Connect, Listen]` is a *widening* — "this code now

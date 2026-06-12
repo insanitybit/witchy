@@ -67,6 +67,7 @@ witchy doc module.witchy            # extract Markdown API docs from doc comment
 
 ```sh
 witchy new my-rune        # scaffold a new package ("rune")
+witchy new my-lib --lib   # scaffold a library: pub fns, no main
 witchy add acme/logger    # add a dependency (gated on capability widening)
 witchy build              # resolve, link, and type-check the project
 witchy run                # build and run

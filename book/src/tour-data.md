@@ -150,5 +150,10 @@ knows the guard might not hold, so it still expects the cases below it. Aim a
 `match` at a value with an unhandled variant and witchy won't compile it; that's
 the feature, not an annoyance.
 
+An arm's body is usually an expression, but a single statement works inline
+too — `0 -> return Err("zero")` to bail out of the enclosing function, or
+`Some(v) -> total = total + v` to update a `var`. For more than one statement,
+put the body on its own indented lines after the `->`.
+
 With records and enums in hand, we can talk about the witchy way to handle
 things going wrong.

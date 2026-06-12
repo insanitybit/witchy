@@ -23,9 +23,9 @@ impl Counter:
 
 fn main(console: Console):
     let counter = spawn Counter(console)
-    send(counter, Inc())
-    send(counter, Inc())
-    send(counter, Inc())
+    send(counter, Inc)
+    send(counter, Inc)
+    send(counter, Inc)
 ```
 
 ```text
@@ -40,7 +40,7 @@ Three things are happening here:
   fields with no default (`console`) are supplied as arguments, in order; fields
   with a default (`var n: Int = 0`) may be omitted. `spawn` returns a `Subject` —
   a typed handle to the actor's mailbox, not the actor itself.
-- **`send(counter, Inc())`** drops an `Inc` message into that mailbox and returns
+- **`send(counter, Inc)`** drops an `Inc` message (a nullary message is written bare, like any nullary constructor) into that mailbox and returns
   immediately. The handler runs later, on its own.
 - **The state is private.** Nothing outside the actor can read or write `n`. The
   only way to affect a `Counter` is to send it a message it has a handler for.

@@ -53,7 +53,7 @@ n is 3, doubled 6
 
 `${expr}` renders *any* value — scalars, lists, tuples, records, sum types,
 dicts, and any nesting — identically on both backends (it is sugar for the
-built-in `to_string`). So you rarely call `to_string`/`int_to_string` by hand;
+built-in `to_string`). So you rarely call `to_string` by hand;
 reach for `"${x}"`. Strings are UTF-8 and the common operations
 (`string.length`, `string.char_count`, `string.split`, `string.contains`, …)
 live in the `string` module — part of the prelude, so no import line is
@@ -78,7 +78,7 @@ fn main(console: Console):
 123
 ```
 
-`string_to_int` is strict: it errors on non-numeric input or on a value that
+`string.to_int` is strict: it errors on non-numeric input or on a value that
 won't fit in an `Int`, rather than silently returning a wrong number.
 
 ## Lists, tuples, and dicts
@@ -87,9 +87,6 @@ Three built-in compound types. **Lists** are homogeneous and immutable;
 **tuples** are fixed-size and heterogeneous; **dicts** are immutable maps.
 
 ```witchy
-import list
-import string
-
 fn show(xs: List(Int)) -> String:
     string.join(list.map(xs, fn(n: Int): to_string(n)), " ")
 
@@ -125,11 +122,38 @@ A couple of practical notes you'll bump into:
   when you want a **custom** format (here, space-separated and unbracketed)
   instead of that structural default. For a type of your own, implement the
   `Show` trait to give it a custom rendering (see [Generics](tour-generics.md)).
-- Builtins like `int_to_string` aren't first-class function values, so to pass
+- `list`, `dict`, `string`, `math`, `option`, and `result` form **the
+  prelude**: their functions are available in every program with no `import`
+  line. That's why none of the examples above import anything.
+- Intrinsics like `to_string` aren't first-class function values, so to pass
   one to `list.map` you wrap it in a lambda: `fn(n: Int): to_string(n)`.
 
 Indexing out of bounds (`xs[9]`) is a runtime error on every backend, never a
 garbage value.
+
+## Comprehensions
+
+The everyday map/filter shapes have a literal form: `[expr for x in xs]`
+builds a new list from an old one, and an `if` clause filters as it goes:
+
+```witchy
+fn main(console: Console):
+    let xs = [1, 2, 3, 4, 5]
+    print(console, "${[n * n for n in xs]}")
+    print(console, "${[n for n in xs if n % 2 == 1]}")
+    print(console, "${[to_string(n) for n in xs if n > 3]}")
+```
+
+```text
+[1, 4, 9, 16, 25]
+[1, 3, 5]
+[4, 5]
+```
+
+A comprehension is pure sugar for the equivalent `for` loop with an
+accumulator, so it costs nothing extra and works the same on both backends.
+For *lazy* pipelines over large or infinite sequences, reach for
+[iterators](tour-iterators.md) instead.
 
 ## Equality is structural
 
@@ -137,8 +161,6 @@ garbage value.
 lists, tuples, records, enums, `Option`, dicts — not identity:
 
 ```witchy
-import option
-
 fn main(console: Console):
     print(console, to_string([1, 2, 3] == [1, 2, 3]))
     print(console, to_string((1, "a") == (1, "a")))

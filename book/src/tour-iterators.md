@@ -14,7 +14,6 @@ nothing runs until you `collect` it into a list (or fold, count, or loop over it
 
 ```witchy
 import iter
-import string
 
 fn show(xs: List(Int)) -> String:
     var parts = []
@@ -46,7 +45,6 @@ each value; calling it returns an `Iter(a)` that runs only as far as it's asked.
 
 ```witchy
 import iter
-import string
 
 // Infinite — and that's fine, because the caller bounds it with `take`.
 gen fn fibs() -> Iter(Int):
@@ -79,7 +77,6 @@ sequence, which is finite but whose length you can't predict:
 
 ```witchy
 import iter
-import string
 
 gen fn collatz(start: Int) -> Iter(Int):
     var n = start
@@ -123,5 +120,6 @@ compute the next value. That word — *provably* — is the thread we pull on ne
 Everything so far has been pure: code that computes and returns values. Now we
 get to the part witchy exists for — what happens when a program needs to actually
 *do* something in the world, and how the language keeps that authority honest.
+One short stop first: code that runs at compile time.
 
-Next: capabilities, the heart of witchy.
+Next: comptime.

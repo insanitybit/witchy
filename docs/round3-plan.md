@@ -1,5 +1,15 @@
 # Learner round 2 — evaluation, and the round-3 plan
 
+> **STATUS (2026-06-12): sections A–C are SHIPPED.** Statement match arms /
+> `let _` / `${}` string escapes; fmt canon (inline statement arms, if-let
+> survives with else, bare nullary ctors) with the tree reformatted; `-C`
+> position-independent for every subcommand; `witchy caps` prints per-function
+> rows (the book's sample is now real output); `witchy new --lib`; `append` as
+> a full Dir primitive on both backends. Book: prelude documented (+ imports
+> dropped), derive section, comptime page, comprehensions, Dir verb table,
+> generated-modules paragraph, caps/match/Inc fixes. Remaining: section D —
+> learner round 4.
+
 Round 2 (scratch/LEARNING-LOG.md; round 1 archived at
 ~/workspace/witchy-scratch-round1) ran against the post-evolution language:
 typed lowering, value equality, the stdlib cut, methods/statics, derive,

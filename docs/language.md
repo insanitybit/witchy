@@ -48,7 +48,7 @@ types and constructors. A lowercase, argument-less name in type position
 | `3.5`, `0.5` | `Float` | IEEE-754 double; `to_string` renders the shortest round-trip form |
 | `true` / `false` | `Bool` | |
 | `"hi\n"` | `String` | UTF-8; escapes `\n \t \r \0 \\ \" \$` |
-| `"sum: ${a + b}"` | `String` | interpolation — `${expr}` renders *any* value (see below) |
+| `"sum: ${a + b}"` | `String` | interpolation — `${expr}` renders *any* value (see below); inner strings may be bare (`"${f("x")}"`) or escaped (`"${f(\"x\")}"`) |
 | `30s`, `250ms`, `5m`, `2h`/`2hr`, `1d`, `1w` | `Duration` | a distinct type carried as milliseconds; not mixable with bare `Int` |
 | `[1, 2, 3]` | `List(Int)` | immutable |
 | `(1, "a")` | tuple | fixed arity, mixed types |
@@ -135,6 +135,8 @@ fn main(console: Console):
 Top-level `let` declares a module constant (inlined at compile time).
 Assigning to a `let`, or to a variable captured by a closure, is a check-time
 error (closures capture **by value**; return the new value or use `inout`).
+`let _ = expr` evaluates and discards — the same meaning as the bare
+expression statement, which is the form `fmt` prints.
 
 ## 4. Expressions and operators
 
@@ -245,6 +247,10 @@ fn main(console: Console):
 unreachable arms are rejected. Patterns: literals, `_`, variables, constructors
 with nested patterns, tuples, list shapes (`[]`, `[first, ..rest]`), and guards
 (`PAT if cond ->`, which don't count toward exhaustiveness).
+
+An arm body is an expression, a single inline statement (`0 -> return
+Err("zero")`, `Some(v) -> total = total + v`, `_ -> break`), or an indented
+block of statements on the lines after the `->`.
 
 ```witchy
 type Shape:

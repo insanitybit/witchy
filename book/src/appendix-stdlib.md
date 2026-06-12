@@ -3,7 +3,12 @@
 witchy ships ~30 standard-library modules. Bring one in with `import name` and
 call its functions module-qualified (`list.map`, `string.join`). A module's
 *types and their constructors* come in unqualified, though — after `import json`
-you write `JsonInt(1)`, not `json.JsonInt(1)`. This appendix is a map; the full,
+you write `JsonInt(1)`, not `json.JsonInt(1)`.
+
+Six modules form **the prelude** and never need an import line: `list`,
+`string`, `dict`, `math`, `option`, and `result`. Every program can write
+`list.push(...)` or `dict.new()` directly; `import list` is not wrong, just
+redundant. This appendix is a map; the full,
 function-by-function reference — generated from the library sources, so it's
 always current — is
 [docs/stdlib.md](https://github.com/insanitybit/witchy/blob/master/docs/stdlib.md).
@@ -12,13 +17,13 @@ always current — is
 
 | Module | What it gives you |
 |---|---|
-| `list` | `map`, `filter`, `fold`, `zip`, `sort`, … |
-| `dict` | map operations over `Dict(k, v)` |
+| `list` *(prelude)* | `map`, `filter`, `fold`, `zip`, `sort`, … |
+| `dict` *(prelude)* | map operations over `Dict(k, v)` |
 | `set` | set operations |
-| `string` | `split`, `lines`, `join`, `trim`, case, search, … |
+| `string` *(prelude)* | `split`, `lines`, `join`, `trim`, case, search, … |
 | `path` | path-*string* manipulation (join, normalize, base/dir/ext) — pure; the `Dir`-using half lives in `fs` |
 | `iter` | lazy iterator combinators (`take`, `collect`, …) |
-| `option` / `result` | helpers for `Option` / `Result` |
+| `option` / `result` *(prelude)* | helpers for `Option` / `Result` |
 
 ## Formats
 
@@ -35,7 +40,7 @@ always current — is
 
 | Module | What it gives you |
 |---|---|
-| `math` | `sqrt`, `pow`, trig, `abs`, … |
+| `math` *(prelude)* | `sqrt`, `pow`, trig, `abs`, … |
 | `random` | seeded pseudo-random numbers |
 | `time` / `duration` | time and `Duration` helpers |
 | `semver` | version parsing and comparison |

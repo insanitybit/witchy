@@ -14,6 +14,7 @@
   - [Errors as Values](tour-errors.md)
   - [Generics and Traits](tour-generics.md)
   - [Generators and Iterators](tour-iterators.md)
+  - [Compile-Time Code: comptime](tour-comptime.md)
 - [Capabilities: The Heart of witchy](capabilities.md)
   - [Authority as a Value](capabilities-authority.md)
   - [Narrowing and Attenuation](capabilities-narrowing.md)

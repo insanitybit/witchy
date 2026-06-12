@@ -134,6 +134,40 @@ built-in `to_string` already render *every* value structurally (including bare
 lists, tuples, and dicts, which can't carry a `Show` impl); `Show` is for giving
 *your own* types a rendering you choose.
 
+## Deriving the common traits
+
+For a record, the obvious `Show`, `Eq`, and `Ord` impls are mechanical — so the
+compiler writes them for you. Add `derive(...)` to the type:
+
+```witchy
+import ord
+
+type Score derive(Show, Eq, Ord):
+    points: Int
+    label: String
+
+fn main(console: Console):
+    let a = Score(10, "alpha")
+    let b = Score(12, "beta")
+    print(console, "${a == Score(10, "alpha")}")   // derived Eq
+    print(console, "${ord.max_of(a, b)}")          // derived Ord (field order)
+```
+
+```text
+true
+Score(12, beta)
+```
+
+- `derive(Show)` renders the record structurally (`Score(12, beta)`), which
+  also feeds `${...}` and `say`.
+- `derive(Eq)` is field-by-field structural equality.
+- `derive(Ord)` compares fields lexicographically, in declaration order.
+
+Write an explicit `impl` only when you want behavior the mechanical version
+doesn't give you — a custom display format, a comparison that ignores a field.
+A derive and a hand-written impl of the same trait on the same type is an
+error, not an override.
+
 That rounds out the type system. One more pure-language idea remains before we
 reach the heart of witchy — describing sequences that are computed on demand
 rather than all at once.

@@ -39,7 +39,7 @@ audit witchy code by reading signatures, not by tracing call graphs.
 | `Console` | write to stdout | `print(console, s)` |
 | `Clock` | read the wall clock | `now(clock) -> Int` (epoch ms) |
 | `Env` | read environment variables | `get_env(env, name) -> Option(String)` |
-| `Dir`, `Dir[Read]`, `Dir[Write]` | a directory **subtree** | `read`, `write`, `exists`, `is_dir`, `list`, `make_dir`, `subdir` |
+| `Dir`, `Dir[Read]`, `Dir[Write]` | a directory **subtree** | `read`, `write`, `append`, `exists`, `is_dir`, `list`, `make_dir`, `subdir` |
 | `Net`, `Net[Connect]`, `Net[Listen]` (+ `Tcp`/`Udp`/`Uds` transport markers) | the network | `connect`, `listen`, `accept`, `send_line`, `recv_line`, `recv_all`, … |
 | `Secret` | an Ed25519 private key | `crypto.sign`, `crypto.public_key` |
 

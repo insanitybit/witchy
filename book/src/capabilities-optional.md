@@ -10,13 +10,13 @@ Wrap a capability in `Option` to say "maybe a `Dir`, maybe not." The function
 matches on it and uses the capability only in the `Some` branch:
 
 ```witchy
-import option
-
 // Append a line if we were given somewhere to write; otherwise do nothing.
+// (`append` creates the file if absent and adds to it; `write` would
+// overwrite the whole file each call.)
 fn record(out: Option(Dir[Write]), name: String, line: String) -> Bool:
     match out:
         Some(d) ->
-            write(d, name, line)
+            append(d, name, line)
             true
         None -> false
 

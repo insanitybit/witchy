@@ -94,6 +94,10 @@ Commit the lockfile. Same lock ⇒ same bytes, same authority, offline.
 | `witchy publish` / `promote` / `yank` / `list` | registry operations (staged → 2FA-promoted releases) |
 | `witchy coven-serve` | run a registry yourself (it's a witchy program — `projects/coven`) |
 
+Every project command accepts `-C <dir>` (anywhere in the arguments) to run
+against a project directory from somewhere else — `witchy why genlib -C
+path/to/app` works the same as `cd`-ing first.
+
 ## Reading an audit
 
 `witchy audit` answers "what can my whole tree do?" in one screen:
