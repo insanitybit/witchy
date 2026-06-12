@@ -13,6 +13,7 @@ use crate::ast::*;
 /// loud errors.
 pub fn expand(module: &mut Module) -> Result<(), String> {
     let mut generated: Vec<Item> = Vec::new();
+    let mut needs_json = false;
     for item in &mut module.items {
         let Item::Type(t) = item else { continue };
         // CONSUME the annotation: this pass runs at every pipeline entry
@@ -23,14 +24,25 @@ pub fn expand(module: &mut Module) -> Result<(), String> {
                 "Show" => generated.push(impl_show(t)),
                 "Eq" => generated.push(impl_eq(t)),
                 "Ord" => generated.push(impl_ord(t)?),
+                "Json" => {
+                    generated.push(impl_json(t)?);
+                    needs_json = true;
+                }
                 other => {
                     return Err(format!(
-                        "type `{}`: unknown derive `{other}` (supported: Show, Eq, Ord)",
+                        "type `{}`: unknown derive `{other}` (supported: Show, Eq, Ord, Json)",
                         t.name
                     ))
                 }
             }
         }
+    }
+    // The generated `to_json` names `Json` and its constructors, and any use
+    // of the result goes through `json.encode` — both need the import, and
+    // the parser has already qualified calls by the imports it SAW, so it
+    // must be written, not injected.
+    if needs_json && !module.imports.iter().any(|i| i == "json") {
+        return Err("derive(Json) needs `import json` in the module".into());
     }
     let n = generated.len();
     module.items.extend(generated);
@@ -190,4 +202,132 @@ fn impl_ord(t: &TypeDef) -> Result<Item, String> {
             body,
         )],
     }))
+}
+
+/// `impl T: fn to_json(self) -> Json` — encode a RECORD as a `Json` object,
+/// field by declared field. Scalars map to their `Json` constructors; a
+/// `List` maps element-wise; an `Option` is the payload or `JsonNull`; any
+/// other named type is encoded by ITS `to_json` (so nested records compose
+/// when they derive `Json` too). Anything else is a loud error.
+fn impl_json(t: &TypeDef) -> Result<Item, String> {
+    let [variant] = t.variants.as_slice() else {
+        return Err(format!(
+            "type `{}`: derive(Json) supports record types (one constructor with named fields)",
+            t.name
+        ));
+    };
+    if variant.field_names.is_empty() {
+        return Err(format!(
+            "type `{}`: derive(Json) supports record types (one constructor with named fields)",
+            t.name
+        ));
+    }
+    let mut pairs = Vec::new();
+    for (name, ty) in variant.field_names.iter().zip(&variant.fields) {
+        let field = Expr::Field {
+            base: Box::new(Expr::Var("self".into())),
+            field: name.clone(),
+        };
+        let value = json_value(&t.name, name, ty, field)?;
+        pairs.push(Expr::Tuple(vec![Expr::Str(name.clone()), value]));
+    }
+    let body = Expr::Ctor {
+        name: "JsonObject".into(),
+        args: vec![Expr::List(pairs)],
+    };
+    Ok(Item::Impl(ImplDef {
+        trait_name: None,
+        type_name: t.name.clone(),
+        handlers: Vec::new(),
+        methods: vec![method(
+            "to_json",
+            vec![self_param()],
+            Type::Named("Json".into(), Vec::new()),
+            body,
+        )],
+    }))
+}
+
+/// The `Json`-building expression for one value of declared type `ty`.
+fn json_value(tyname: &str, fname: &str, ty: &Type, value: Expr) -> Result<Expr, String> {
+    let ctor = |name: &str, value: Expr| Expr::Ctor {
+        name: name.into(),
+        args: vec![value],
+    };
+    match ty {
+        Type::Named(n, args) if args.is_empty() => match n.as_str() {
+            "Int" => Ok(ctor("JsonInt", value)),
+            "Float" => Ok(ctor("JsonFloat", value)),
+            "Bool" => Ok(ctor("JsonBool", value)),
+            "String" => Ok(ctor("JsonString", value)),
+            other if other.chars().next().is_some_and(|c| c.is_uppercase()) => {
+                Ok(Expr::MethodCall {
+                    receiver: Box::new(value),
+                    method: "to_json".into(),
+                    args: Vec::new(),
+                })
+            }
+            other => Err(format!(
+                "type `{tyname}`: derive(Json) cannot encode field `{fname}: {other}` \
+                 (a type variable has no JSON shape)"
+            )),
+        },
+        Type::Named(n, args) if n == "List" && args.len() == 1 => {
+            let elem = json_value(tyname, fname, &args[0], Expr::Var("x".into()))?;
+            Ok(ctor(
+                "JsonArray",
+                Expr::Call {
+                    name: "list.map".into(),
+                    args: vec![
+                        value,
+                        Expr::Lambda {
+                            params: vec![Param {
+                                name: "x".into(),
+                                ty: Some(args[0].clone()),
+                                convention: Convention::default(),
+                            }],
+                            body: Block {
+                                stmts: vec![Stmt::Expr(elem)],
+                                lines: vec![0],
+                                restrict: None,
+                                region: None,
+                            },
+                        },
+                    ],
+                },
+            ))
+        }
+        Type::Named(n, args) if n == "Option" && args.len() == 1 => {
+            let payload = json_value(tyname, fname, &args[0], Expr::Var("x".into()))?;
+            Ok(Expr::Match {
+                scrutinee: Box::new(value),
+                arms: vec![
+                    MatchArm {
+                        pattern: Pattern::Ctor {
+                            name: "Some".into(),
+                            args: vec![Pattern::Var("x".into())],
+                        },
+                        guard: None,
+                        body: payload,
+                    },
+                    MatchArm {
+                        pattern: Pattern::Ctor {
+                            name: "None".into(),
+                            args: Vec::new(),
+                        },
+                        guard: None,
+                        body: Expr::Ctor {
+                            name: "JsonNull".into(),
+                            args: Vec::new(),
+                        },
+                    },
+                ],
+            })
+        }
+        other => Err(format!(
+            "type `{tyname}`: derive(Json) cannot encode field `{fname}: {other:?}` \
+             (supported: Int, Float, Bool, String, List, Option, and record types \
+              that derive Json themselves)"
+        )),
+    }
 }

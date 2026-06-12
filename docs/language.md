@@ -67,7 +67,7 @@ fn main(console: Console):
 **Rendering values to strings.** Reach for interpolation first: `"${x}"` renders
 *any* value — scalars, record fields, lists, tuples, records, sum types, dicts,
 and any nesting — identically on both backends. You rarely need to call
-`to_string`/`int_to_string` by hand; they are what `${…}` desugars to. To print
+`to_string` by hand; it is what `${…}` desugars to. To print
 one value, `print(console, "${x}")`, or `say(console, x)` — the `Show`-accepting
 `print` from `import show`, for any `Show` value (the built-in scalars and your
 own types). The **`Show` trait** (`fn show(self) -> String`) is the trait-method
@@ -407,7 +407,9 @@ composes with an explicit `where` clause. The std library uses it for
 
 `derive(...)` on a type generates the impls you would write by hand —
 appended to the module before checking, so the footprint and both backends
-see ordinary code:
+see ordinary code. Supported: `Show`, `Eq`, `Ord`, and `Json` (which needs
+`import json` and generates `to_json(self) -> Json` over scalars, lists,
+options, and nested derived records):
 
 ```witchy
 import show

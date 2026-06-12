@@ -162,6 +162,10 @@ Score(12, beta)
   also feeds `${...}` and `say`.
 - `derive(Eq)` is field-by-field structural equality.
 - `derive(Ord)` compares fields lexicographically, in declaration order.
+- `derive(Json)` (with `import json`) generates `to_json(self) -> Json`, so
+  `json.encode(score.to_json())` serializes the record — scalars, lists,
+  options, and nested `derive(Json)` records all map; anything else is a
+  compile error, not a guess.
 
 Write an explicit `impl` only when you want behavior the mechanical version
 doesn't give you — a custom display format, a comparison that ignores a field.

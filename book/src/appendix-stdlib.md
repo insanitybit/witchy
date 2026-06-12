@@ -37,7 +37,7 @@ to_ms` finds `duration.to_milliseconds`.
 
 | Module | What it gives you |
 |---|---|
-| `json` | parse and encode JSON — `json.decode(s)` returns the `Json` sum type |
+| `json` | parse and encode JSON — `json.decode(s)` returns the `Json` sum type; `derive(Json)` on a record generates `to_json` |
 | `csv` | RFC 4180 CSV |
 | `toml` | TOML parsing |
 | `url` | URL parsing |

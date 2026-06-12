@@ -223,6 +223,7 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
     {
         let (ctor_results, fn_rets) = build_tables(&items);
         let ctor_fields = build_ctor_fields(&items);
+        let record_fields = build_record_fields(&items);
         let free_fns: std::collections::HashSet<String> = items
             .iter()
             .filter_map(|it| match it {
@@ -238,6 +239,7 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
             ctor_results: &ctor_results,
             fn_rets: &fn_rets,
             ctor_fields: &ctor_fields,
+            record_fields: &record_fields,
             free_fns: &free_fns,
             missing_impls: &quiet,
             statics: &statics,
@@ -308,10 +310,12 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
     if !templates.is_empty() {
         let (ctor_results, fn_rets) = build_tables(&items);
         let ctor_fields = build_ctor_fields(&items);
+        let record_fields = build_record_fields(&items);
         let mut mono = Mono {
             templates: &templates,
             ctor_results: &ctor_results,
             ctor_fields: &ctor_fields,
+            record_fields: &record_fields,
             fn_rets,
             memo: HashMap::new(),
             generated: Vec::new(),
@@ -324,6 +328,7 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
     // Tables used to determine a receiver's type at a trait-method call site.
     let (ctor_results, fn_rets) = build_tables(&items);
     let ctor_fields = build_ctor_fields(&items);
+        let record_fields = build_record_fields(&items);
     let free_fns: std::collections::HashSet<String> = items
         .iter()
         .filter_map(|it| match it {
@@ -338,6 +343,7 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
         ctor_results: &ctor_results,
         fn_rets: &fn_rets,
         ctor_fields: &ctor_fields,
+        record_fields: &record_fields,
         free_fns: &free_fns,
         missing_impls: &missing_impls,
         statics: &statics,
@@ -397,6 +403,8 @@ struct Ctx<'a> {
     ctor_results: &'a HashMap<String, String>,
     fn_rets: &'a HashMap<String, String>,
     ctor_fields: &'a HashMap<String, Vec<Type>>,
+    /// Record type name -> its named field types (for typing `x.field`).
+    record_fields: &'a HashMap<String, Vec<(String, Type)>>,
     /// Plain (non-method) function names: a trait-method call that ALSO names
     /// a free function may legitimately resolve to it, so it is never a
     /// missing-impl error.
@@ -413,7 +421,7 @@ struct Ctx<'a> {
 
 impl Ctx<'_> {
     fn type_name(&self, e: &Expr, scope: &Scope) -> Option<String> {
-        head_type_name(e, scope, self.ctor_results, self.fn_rets)
+        head_type_name(e, scope, self.ctor_results, self.fn_rets, self.record_fields)
     }
 
     fn rewrite_block(&self, b: &mut Block, scope: &mut Scope) {
@@ -662,6 +670,7 @@ fn head_type_name(
     scope: &Scope,
     ctor_results: &HashMap<String, String>,
     fn_rets: &HashMap<String, String>,
+    record_fields: &HashMap<String, Vec<(String, Type)>>,
 ) -> Option<String> {
     match e {
         Expr::Int(_) => Some("Int".into()),
@@ -670,13 +679,21 @@ fn head_type_name(
         Expr::Bool(_) => Some("Bool".into()),
         Expr::Duration(_) => Some("Duration".into()),
         Expr::Var(n) => scope.get(n).cloned(),
+        // `self.home` — a record field of a known record type, when the field
+        // type is concrete (so generated method bodies dispatch on fields).
+        Expr::Field { base, field } => {
+            let base_ty = head_type_name(base, scope, ctor_results, fn_rets, record_fields)?;
+            let fields = record_fields.get(&base_ty)?;
+            let (_, ft) = fields.iter().find(|(n, _)| n == field)?;
+            type_to_scope_name(ft)
+        }
         Expr::Ctor { name, .. } => ctor_results.get(name).cloned(),
         Expr::Call { name, .. } => fn_rets.get(name).cloned().or_else(|| builtin_ret(name)),
-        Expr::RecordUpdate { base, .. } => head_type_name(base, scope, ctor_results, fn_rets),
+        Expr::RecordUpdate { base, .. } => head_type_name(base, scope, ctor_results, fn_rets, record_fields),
         // `!` yields Bool; `-`/`~` preserve the operand's type (so `-5` is Int).
         Expr::Unary { op, expr } => match op {
             UnOp::Not => Some("Bool".into()),
-            UnOp::Neg | UnOp::BitNot | UnOp::Move => head_type_name(expr, scope, ctor_results, fn_rets),
+            UnOp::Neg | UnOp::BitNot | UnOp::Move => head_type_name(expr, scope, ctor_results, fn_rets, record_fields),
         },
         // Comparisons/logic yield Bool; `<>` yields String; arithmetic and
         // bitwise ops have the type of their (left) operand.
@@ -684,7 +701,7 @@ fn head_type_name(
             BinOp::Eq | BinOp::NotEq | BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq
             | BinOp::And | BinOp::Or => Some("Bool".into()),
             BinOp::Concat => Some("String".into()),
-            _ => head_type_name(lhs, scope, ctor_results, fn_rets),
+            _ => head_type_name(lhs, scope, ctor_results, fn_rets, record_fields),
         },
         // A list literal's type encodes its element type when determinable from
         // the first element, e.g. `List<Int>`, so a `for` loop over it can type
@@ -692,7 +709,7 @@ fn head_type_name(
         Expr::List(items) => Some(
             match items
                 .first()
-                .and_then(|e| head_type_name(e, scope, ctor_results, fn_rets))
+                .and_then(|e| head_type_name(e, scope, ctor_results, fn_rets, record_fields))
             {
                 Some(elem) => format!("List<{elem}>"),
                 None => "List".to_string(),
@@ -742,6 +759,24 @@ fn build_tables(items: &[Item]) -> (HashMap<String, String>, HashMap<String, Str
         }
     }
     (ctor_results, fn_rets)
+}
+
+/// Record type name -> its named field types, for typing `x.field` receivers.
+fn build_record_fields(items: &[Item]) -> HashMap<String, Vec<(String, Type)>> {
+    let mut map = HashMap::new();
+    for item in items {
+        if let Item::Type(t) = item {
+            if let [v] = t.variants.as_slice() {
+                if !v.field_names.is_empty() {
+                    map.insert(
+                        t.name.clone(),
+                        v.field_names.iter().cloned().zip(v.fields.iter().cloned()).collect(),
+                    );
+                }
+            }
+        }
+    }
+    map
 }
 
 /// Constructor name -> the types of its fields, for typing the variables bound
@@ -932,6 +967,7 @@ struct Mono<'a> {
     templates: &'a HashMap<String, Function>,
     ctor_results: &'a HashMap<String, String>,
     ctor_fields: &'a HashMap<String, Vec<Type>>,
+    record_fields: &'a HashMap<String, Vec<(String, Type)>>,
     fn_rets: HashMap<String, String>,
     memo: HashMap<(String, Vec<String>), String>,
     generated: Vec<Function>,
@@ -982,7 +1018,7 @@ impl Mono<'_> {
     }
 
     fn type_name(&self, e: &Expr, scope: &Scope) -> Option<String> {
-        head_type_name(e, scope, self.ctor_results, &self.fn_rets)
+        head_type_name(e, scope, self.ctor_results, &self.fn_rets, self.record_fields)
     }
 
     /// The concrete type of field `pos` of the element TUPLE of a list argument,
@@ -1008,7 +1044,7 @@ impl Mono<'_> {
                 seed_params(params, &mut s);
                 match body.stmts.last() {
                     Some(Stmt::Expr(e)) | Some(Stmt::Return(Some(e))) => {
-                        head_type_name(e, &s, self.ctor_results, &self.fn_rets)
+                        head_type_name(e, &s, self.ctor_results, &self.fn_rets, self.record_fields)
                     }
                     _ => None,
                 }
