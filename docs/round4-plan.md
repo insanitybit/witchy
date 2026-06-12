@@ -48,10 +48,11 @@ under proper names. So grow breadth where programs actually stalled:
 - `time`: SHIPPED — `parse_iso8601` (offsets normalized to UTC, fractional
   seconds, bare dates), validated `civil(y, mo, da, h, mi, s)` (Feb 30 is an
   Err, not a rollover), `days_in_month`, and strftime-style `format`.
-- `json`: `encode` ergonomics for records (derive-assisted `to_json`?
-  comptime-able?) — the learner hand-built `Json` trees.
-- `string`: `pad_left`/`pad_right`/`repeat` (the learner wrote all three by
-  hand for table rendering).
+- `json`: SHIPPED — `derive(Json)` generates `to_json(self) -> Json` for
+  records (scalars, lists, options, composable nesting; unsupported field
+  types are compile errors; `import json` required loudly).
+- `string`: already existed (`pad_left`/`pad_right`/`repeat`) — `witchy
+  which` is the actual fix.
 
 ### C. Tooling: discovery aids — SHIPPED
 `witchy which <name>`: exact → substring → abbreviation (subsequence) tiers
