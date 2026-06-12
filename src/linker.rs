@@ -236,6 +236,18 @@ pub fn link(mut modules: Vec<(String, Module)>, entry: &str) -> Result<Module, L
         .collect::<Result<_, _>>()
         .map_err(|message| LinkError { message })?;
 
+    // `comptime:` blocks expand here — every module's blocks run (zero
+    // capabilities, print = the emit channel) and the items their output
+    // parses to are appended, BEFORE name resolution and type checking see
+    // the module. Additive only.
+    {
+        let names: Vec<String> = modules.iter().map(|(n, _)| n.clone()).collect();
+        for (i, name) in names.iter().enumerate() {
+            crate::comptime::expand(name, &mut modules[i].1)
+                .map_err(|message| LinkError { message })?;
+        }
+    }
+
     // THE PRELUDE: the core data modules are always in the link set, so the
     // module-qualified spellings (`list.push`, `string.split`, `dict.insert`,
     // `math.sqrt`) resolve without an import line. Locally provided modules
@@ -356,7 +368,7 @@ pub fn link(mut modules: Vec<(String, Module)>, entry: &str) -> Result<Module, L
                 Item::Type(t) => items.push(Item::Type(t.clone())),
                 // Constants and aliases were resolved per-module above, so none
                 // remain here.
-                Item::Const { .. } | Item::TypeAlias { .. } => {}
+                Item::Const { .. } | Item::TypeAlias { .. } | Item::Comptime(_) => {}
                 // Traits/impls are carried into the merged module and desugared
                 // after linking (see `crate::traits`). Their method bodies are
                 // rewritten here, in their defining module's context, so calls
@@ -467,7 +479,7 @@ fn resolve_methods(module: &mut Module) {
                     resolve_in_block(&mut method.body, &sig, &by_base, &mut vars);
                 }
             }
-            Item::Type(_) | Item::Const { .. } | Item::TypeAlias { .. } => {}
+            Item::Type(_) | Item::Const { .. } | Item::TypeAlias { .. } | Item::Comptime(_) => {}
         }
     }
 }

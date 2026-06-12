@@ -6186,7 +6186,7 @@ fn register_module_items(cg: &mut Codegen, module: &Module) {
                 }
             }
             Item::Actor(_) => {}
-            Item::Trait(_) | Item::Impl(_) | Item::Const { .. } | Item::TypeAlias { .. } => {}
+            Item::Trait(_) | Item::Impl(_) | Item::Const { .. } | Item::TypeAlias { .. } | Item::Comptime(_) => {}
         }
     }
     // Now that all record types are known, record which constructor fields are
@@ -6346,7 +6346,7 @@ pub fn compile_module_with(
             // driver skips them. A `spawn` outside a seeded driver still fails
             // loudly at the expression.
             Item::Actor(_) => {}
-            Item::Trait(_) | Item::Impl(_) | Item::Const { .. } | Item::TypeAlias { .. } => {}
+            Item::Trait(_) | Item::Impl(_) | Item::Const { .. } | Item::TypeAlias { .. } | Item::Comptime(_) => {}
         }
     }
     if !has_main {

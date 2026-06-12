@@ -45,7 +45,7 @@ pub fn lower(mut module: Module) -> Result<Module, String> {
                 }
             }
             Item::Const { value, .. } => lower_expr(value, &orders)?,
-            Item::Type(_) | Item::Trait(_) | Item::TypeAlias { .. } => {}
+            Item::Type(_) | Item::Trait(_) | Item::TypeAlias { .. } | Item::Comptime(_) => {}
         }
     }
     Ok(module)

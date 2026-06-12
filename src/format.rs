@@ -177,6 +177,10 @@ fn item_str(s: &mut String, item: &Item, c: &mut Comments) {
             s.push_str(&type_str(ty));
             s.push('\n');
         }
+        Item::Comptime(b) => {
+            s.push_str("comptime:\n");
+            block(s, b, 1, c);
+        }
     }
 }
 
@@ -1139,148 +1143,10 @@ pub fn reformat(src: &str) -> Option<String> {
     }
 }
 
-fn strip_lines_module(m: &mut Module) {
-    // The source-line arrays are formatting metadata, not part of the program;
-    // clear them so the round-trip comparison ignores comment-induced line shifts.
-    m.import_lines.clear();
-    m.item_lines.clear();
-    for it in &mut m.items {
-        strip_lines_item(it);
-    }
-}
 
-fn strip_lines_item(it: &mut Item) {
-    match it {
-        Item::Function(f) => strip_lines_block(&mut f.body),
-        Item::Actor(a) => {
-            for fld in &mut a.fields {
-                if let Some(e) = &mut fld.init {
-                    strip_lines_expr(e);
-                }
-            }
-            for h in &mut a.handlers {
-                strip_lines_block(&mut h.body);
-            }
-        }
-        Item::Type(_) | Item::TypeAlias { .. } => {}
-        Item::Const { value, .. } => strip_lines_expr(value),
-        Item::Trait(t) => {
-            for m in &mut t.methods {
-                if let Some(b) = &mut m.default {
-                    strip_lines_block(b);
-                }
-            }
-        }
-        Item::Impl(im) => {
-            for f in &mut im.methods {
-                strip_lines_block(&mut f.body);
-            }
-            for h in &mut im.handlers {
-                strip_lines_block(&mut h.body);
-            }
-        }
-    }
-}
 
-fn strip_lines_block(b: &mut Block) {
-    b.lines.clear();
-    for s in &mut b.stmts {
-        strip_lines_stmt(s);
-    }
-}
 
-fn strip_lines_stmt(s: &mut Stmt) {
-    match s {
-        Stmt::Let { value, .. } | Stmt::Assign { value, .. } | Stmt::LetTuple { value, .. } => {
-            strip_lines_expr(value)
-        }
-        Stmt::Return(Some(e)) | Stmt::Expr(e) => strip_lines_expr(e),
-        _ => {}
-    }
-}
 
-fn strip_lines_expr(e: &mut Expr) {
-    match e {
-        Expr::List(xs) | Expr::Tuple(xs) | Expr::Call { args: xs, .. }
-        | Expr::Ctor { args: xs, .. } | Expr::Spawn { args: xs, .. } => {
-            for x in xs {
-                strip_lines_expr(x);
-            }
-        }
-        Expr::Apply { func, args } => {
-            strip_lines_expr(func);
-            for x in args {
-                strip_lines_expr(x);
-            }
-        }
-        Expr::Unary { expr, .. } | Expr::Try(expr) | Expr::As { expr, .. } | Expr::Field { base: expr, .. } => {
-            strip_lines_expr(expr)
-        }
-        Expr::Binary { lhs, rhs, .. } => {
-            strip_lines_expr(lhs);
-            strip_lines_expr(rhs);
-        }
-        Expr::Range { lo, hi, .. } => {
-            strip_lines_expr(lo);
-            strip_lines_expr(hi);
-        }
-        Expr::Index { base, index } => {
-            strip_lines_expr(base);
-            strip_lines_expr(index);
-        }
-        Expr::MethodCall { receiver, args, .. } => {
-            strip_lines_expr(receiver);
-            for a in args {
-                strip_lines_expr(a);
-            }
-        }
-        Expr::WhileLet { scrutinee, body, .. } => {
-            strip_lines_expr(scrutinee);
-            strip_lines_block(body);
-        }
-        Expr::Lambda { body, .. } => strip_lines_block(body),
-        Expr::RecordUpdate { base, fields } => {
-            strip_lines_expr(base);
-            for (_, v) in fields {
-                strip_lines_expr(v);
-            }
-        }
-        Expr::Record { fields, spread, .. } => {
-            for (_, v) in fields {
-                strip_lines_expr(v);
-            }
-            if let Some(s) = spread {
-                strip_lines_expr(s);
-            }
-        }
-        Expr::If { cond, then_block, else_block } => {
-            strip_lines_expr(cond);
-            strip_lines_block(then_block);
-            if let Some(b) = else_block {
-                strip_lines_block(b);
-            }
-        }
-        Expr::Match { scrutinee, arms } => {
-            strip_lines_expr(scrutinee);
-            for a in arms {
-                if let Some(g) = &mut a.guard {
-                    strip_lines_expr(g);
-                }
-                strip_lines_expr(&mut a.body);
-            }
-        }
-        Expr::Block(b) => strip_lines_block(b),
-        Expr::While { cond, body } => {
-            strip_lines_expr(cond);
-            strip_lines_block(body);
-        }
-        Expr::For { iter, body, .. } => {
-            strip_lines_expr(iter);
-            strip_lines_block(body);
-        }
-        _ => {}
-    }
-}
 
 fn string_lit(v: &str) -> String {
     let mut s = String::from("\"");

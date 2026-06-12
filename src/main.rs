@@ -18,6 +18,7 @@ mod ast;
 mod capabilities;
 mod codegen;
 mod consts;
+mod comptime;
 mod derive;
 mod doc;
 mod format;
@@ -2222,6 +2223,24 @@ mod example_tests {
         let module = parser::parse_module(bad).expect("parse");
         let err = crate::records::lower(module).expect_err("unknown derive must be rejected");
         assert!(err.contains("unknown derive"), "got: {err}");
+    }
+
+    /// `comptime:` — compile-time item generation: zero capabilities
+    /// reachable (deterministic by construction), `emit(line)` as the
+    /// channel, output parsed as ADDITIVE items before checking — so the
+    /// generated functions exist on both backends and in the footprint.
+    #[test]
+    fn comptime_blocks_generate_items_additively() {
+        let src = "comptime:\n    var i = 0\n    while i < 3:\n        emit(\"pub fn lucky_${i}() -> Int:\")\n        emit(\"    ${i * 7}\")\n        emit(\"\")\n        i = i + 1\n\nfn main(console: Console):\n    print(console, \"${lucky_0()} ${lucky_1()} ${lucky_2()}\")\n";
+        let want = vec!["0 7 14".to_string()];
+        assert_eq!(link_run(src), want, "interpreter");
+        assert_eq!(wasm_run(src), want, "wasm");
+        // Emitted garbage is a loud error carrying the emitted source.
+        let bad = "comptime:\n    emit(\"fn (((\")\n\nfn main(console: Console):\n    print(console, \"x\")\n";
+        let module = parser::parse_module(bad).expect("parse");
+        let err = crate::linker::link(vec![("main".into(), module)], "main")
+            .expect_err("bad emission must be loud");
+        assert!(err.to_string().contains("does not parse"), "got: {err}");
     }
 
     /// Tuple patterns in `for` (the learning log's F4): `for (k, v) in

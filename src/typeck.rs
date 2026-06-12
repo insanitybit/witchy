@@ -2680,7 +2680,7 @@ fn run_check(module: &Module, record: bool) -> Result<Option<TypeTable>, TypeErr
             }
             // Desugared to functions by `traits::lower` and constants inlined by
             // `crate::consts` before this point.
-            Item::Trait(_) | Item::Impl(_) | Item::Const { .. } | Item::TypeAlias { .. } => {}
+            Item::Trait(_) | Item::Impl(_) | Item::Const { .. } | Item::TypeAlias { .. } | Item::Comptime(_) => {}
         }
     }
 
@@ -2709,7 +2709,7 @@ fn run_check(module: &Module, record: bool) -> Result<Option<TypeTable>, TypeErr
             }
             // Actor handler errors already carry actor/handler context.
             Item::Actor(a) => c.check_actor(a).map_err(|e| at_loc(e, c.cur_line, ""))?,
-            Item::Type(_) | Item::Trait(_) | Item::Impl(_) | Item::Const { .. } | Item::TypeAlias { .. } => {}
+            Item::Type(_) | Item::Trait(_) | Item::Impl(_) | Item::Const { .. } | Item::TypeAlias { .. } | Item::Comptime(_) => {}
         }
     }
     if let Some(rec) = c.type_record.take() {

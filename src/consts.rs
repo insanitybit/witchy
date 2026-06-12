@@ -226,7 +226,7 @@ pub fn inline(mut module: Module) -> Module {
                     subst_block(&mut h.body, &consts, &cnames, &mut scope);
                 }
             }
-            Item::Const { .. } | Item::Type(_) | Item::Trait(_) | Item::TypeAlias { .. } => {}
+            Item::Const { .. } | Item::Type(_) | Item::Trait(_) | Item::TypeAlias { .. } | Item::Comptime(_) => {}
         }
     }
 

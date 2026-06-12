@@ -38,6 +38,13 @@ pub enum Item {
     /// `crate::aliases` before type-checking/codegen, so later stages never see
     /// this variant.
     TypeAlias { name: String, ty: Type },
+    /// `comptime:` — a block executed AT COMPILE TIME with no capabilities
+    /// (deterministic by construction); everything it prints is parsed as
+    /// witchy source and appended to the module as ADDITIVE items before
+    /// type-checking and footprint analysis (docs/language-evolution.md
+    /// Phase 5). Expanded by `crate::comptime` during linking, so later
+    /// stages never see this variant.
+    Comptime(Block),
 }
 
 /// A trait declaration: named method signatures (no bodies). The receiver is the

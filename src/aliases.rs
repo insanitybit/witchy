@@ -152,7 +152,7 @@ pub fn resolve(mut module: Module) -> Module {
                     resolve_in_block(&mut h.body, &map);
                 }
             }
-            Item::TypeAlias { .. } | Item::Const { .. } => {}
+            Item::TypeAlias { .. } | Item::Const { .. } | Item::Comptime(_) => {}
         }
     }
 

@@ -550,7 +550,7 @@ impl Interpreter {
                 }
                 // Desugared to functions by `traits::lower` before this point;
                 // constants are inlined by `crate::consts`.
-                Item::Trait(_) | Item::Impl(_) | Item::Const { .. } | Item::TypeAlias { .. } => {}
+                Item::Trait(_) | Item::Impl(_) | Item::Const { .. } | Item::TypeAlias { .. } | Item::Comptime(_) => {}
             }
         }
         Self {

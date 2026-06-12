@@ -231,6 +231,12 @@ impl Parser {
             self.expect(&Tok::Eq)?;
             let value = self.expr(0)?;
             Ok(Item::Const { name, value })
+        } else if self.at(&Tok::Comptime) {
+            // `comptime:` — compile-time item generation (additive, capability-
+            // free; expanded by `crate::comptime` during linking).
+            self.advance();
+            let body = self.block()?;
+            Ok(Item::Comptime(body))
         } else {
             Err(self.error(format!(
                 "expected a top-level item (`fn`, `actor`, `type`, `trait`, `impl`, or `let`), found `{}`",
@@ -1614,7 +1620,7 @@ pub(crate) fn lower_methods_module(m: &mut Module) {
                 }
             }
             Item::Const { value, .. } => lower_methods_expr(value),
-            Item::Type(_) | Item::Trait(_) | Item::TypeAlias { .. } => {}
+            Item::Type(_) | Item::Trait(_) | Item::TypeAlias { .. } | Item::Comptime(_) => {}
         }
     }
 }
@@ -1763,7 +1769,7 @@ pub(crate) fn lower_sugar_module(m: &mut Module) {
                 }
             }
             Item::Const { value, .. } => lower_sugar_expr(value),
-            Item::Type(_) | Item::Trait(_) | Item::TypeAlias { .. } => {}
+            Item::Type(_) | Item::Trait(_) | Item::TypeAlias { .. } | Item::Comptime(_) => {}
         }
     }
 }
