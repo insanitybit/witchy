@@ -135,10 +135,13 @@ launder authority out of a signature.
 Start with the compiler-built derives, because Phase 2's trait-rich stdlib
 makes hand-written `Eq`/`Ord`/`Show` impls the dominant boilerplate:
 
-```text
-type Point derive(Show, Eq, Ord):     # (```text until Phase 4 lands)
+```witchy
+type Point derive(Show, Eq, Ord):
     x: Int
     y: Int
+
+fn main(console: Console):
+    print(console, "${Point(1, 2)}")
 ```
 
 expands (deterministically, in the compiler, no user code execution) to the

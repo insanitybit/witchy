@@ -257,6 +257,11 @@ fn function(s: &mut String, f: &Function, indented: bool, c: &mut Comments) {
 fn type_def(s: &mut String, t: &TypeDef) {
     s.push_str("type ");
     s.push_str(&t.name);
+    if !t.derives.is_empty() {
+        s.push_str(" derive(");
+        s.push_str(&t.derives.join(", "));
+        s.push(')');
+    }
     s.push_str(":\n");
     let is_record = t.variants.len() == 1 && !t.variants[0].field_names.is_empty();
     if is_record {

@@ -214,6 +214,59 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
     // (e.g. `dict.get(d, k)` needs `v` from `d: Dict(String, String)`).
     // Node pointers stay valid through the moves below (statements live in
     // each function's own heap allocations).
+    //
+    // QUIET pre-mono dispatch pass: resolve trait-method calls and method
+    // syntax at every CONCRETE site (including instantiated trait defaults
+    // like `Ord__Int__less` calling `compare`), so the annotate probe below
+    // sees a checkable module. Diagnostics are discarded here — anything
+    // genuinely unresolvable is re-found loudly by the post-mono pass.
+    {
+        let (ctor_results, fn_rets) = build_tables(&items);
+        let ctor_fields = build_ctor_fields(&items);
+        let free_fns: std::collections::HashSet<String> = items
+            .iter()
+            .filter_map(|it| match it {
+                Item::Function(f) => Some(f.name.clone()),
+                _ => None,
+            })
+            .collect();
+        let quiet = std::cell::RefCell::new(Vec::new());
+        let empty_table = crate::typeck::TypeTable::default();
+        let ctx = Ctx {
+            trait_methods: &trait_methods,
+            impl_table: &impl_table,
+            ctor_results: &ctor_results,
+            fn_rets: &fn_rets,
+            ctor_fields: &ctor_fields,
+            free_fns: &free_fns,
+            missing_impls: &quiet,
+            statics: &statics,
+            table: &empty_table,
+        };
+        for item in &mut items {
+            match item {
+                Item::Function(f) => {
+                    let mut scope = Scope::new();
+                    seed_params(&f.params, &mut scope);
+                    ctx.rewrite_block(&mut f.body, &mut scope);
+                }
+                Item::Actor(a) => {
+                    for field in &mut a.fields {
+                        if let Some(init) = &mut field.init {
+                            ctx.rewrite_expr(init, &mut Scope::new());
+                        }
+                    }
+                    for h in &mut a.handlers {
+                        let mut scope = Scope::new();
+                        seed_params(&h.params, &mut scope);
+                        ctx.rewrite_block(&mut h.body, &mut scope);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
     let (items_back, type_table) = {
         let probe = Module {
             imports: imports.clone(),

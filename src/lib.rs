@@ -18,6 +18,7 @@ pub mod ast;
 pub mod capabilities;
 pub mod codegen;
 pub mod consts;
+pub mod derive;
 pub mod doc;
 pub mod format;
 pub mod generators;

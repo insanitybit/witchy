@@ -2696,9 +2696,14 @@ fn run_check(module: &Module, record: bool) -> Result<Option<TypeTable>, TypeErr
     // are where build-time authority enters, so they must be build capabilities.
     check_build_signature(module)?;
 
-    // Pass 2: check bodies.
+    // Pass 2: check bodies. `where`-bounded templates are checked through
+    // their monomorphic instantiations (trait-method calls in a template
+    // body only resolve once the bound variable is concrete) — the lowering
+    // extracts them before `check` historically; `annotate` runs earlier in
+    // the pipeline and skips them here for the same reason.
     for item in &module.items {
         match item {
+            Item::Function(f) if !f.bounds.is_empty() => {}
             Item::Function(f) => {
                 c.check_function(f).map_err(|e| at_loc(e, c.cur_line, &f.name))?
             }

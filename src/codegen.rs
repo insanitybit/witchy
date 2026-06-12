@@ -475,6 +475,8 @@ struct Codegen {
     /// Whether the current function has type-variable parameters (a generic
     /// fallback): unknown-type comparisons there are rejected loudly.
     cur_fn_has_type_vars: bool,
+    /// The function being compiled, for error context.
+    cur_fn_name: String,
     /// Phase 0 (docs/language-evolution.md): typeck's resolved types for the
     /// EXACT module instance being compiled — the authoritative fallback
     /// wherever the local tracking maps come up empty.
@@ -801,6 +803,7 @@ impl Codegen {
             summaries: analysis::Summaries::empty(),
             cur_fn_own_param: None,
             cur_fn_has_type_vars: false,
+            cur_fn_name: String::new(),
             type_table: crate::typeck::TypeTable::default(),
             uses_list_push_cap: false,
             uses_str_append_cap: false,
@@ -2350,6 +2353,7 @@ impl Codegen {
         }
         // Rename shadowing bindings to unique names so function-wide locals
         // don't alias (the interpreter scopes lexically; this preserves that).
+        self.cur_fn_name = f.name.clone();
         self.cur_fn_has_type_vars = f.params.iter().any(|p| {
             matches!(&p.ty, Some(Type::Named(n, args))
                 if args.is_empty() && n.chars().next().is_some_and(|c| c.is_lowercase()))
@@ -2978,12 +2982,13 @@ impl Codegen {
                     && self.kind_of(lhs) == Kind::I32
                     && self.kind_of(rhs) == Kind::I32
                 {
-                    return cerr(
-                        "`==`/ordering on values of an unresolved generic type would compare \
-                         references, not contents — witchy only has value equality. Call this \
-                         function with concretely-typed arguments (so it monomorphizes), or add \
-                         a `where ...: Eq`/`Ord` bound",
-                    );
+                    return cerr(format!(
+                        "in `{}`: `==`/ordering on values of an unresolved generic type would \
+                         compare references, not contents — witchy only has value equality. Call \
+                         this function with concretely-typed arguments (so it monomorphizes), or \
+                         add a `where ...: Eq`/`Ord` bound",
+                        self.cur_fn_name
+                    ));
                 }
                 // Promote both operands to a common kind so a concrete i64 Int
                 // and an i32 (generic/narrowed) operand don't clash: f64 if either

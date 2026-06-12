@@ -17,6 +17,11 @@ type Orders = HashMap<String, Vec<String>>;
 /// without a spread) a missing field. A no-op for modules with no named-field
 /// construction.
 pub fn lower(mut module: Module) -> Result<Module, String> {
+    // `derive(...)` expands FIRST (additive impl items), so the generated
+    // impls flow through every later stage exactly like handwritten ones.
+    // This is the single funnel every entry point (link, check, compile,
+    // interpret) already passes through.
+    crate::derive::expand(&mut module)?;
     let orders = field_orders(&module);
     for item in &mut module.items {
         match item {

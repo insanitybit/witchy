@@ -125,6 +125,10 @@ impl Parser {
         &self.toks[self.pos].kind
     }
 
+    fn at_ident(&self, name: &str) -> bool {
+        matches!(self.kind(), Tok::Ident(n) if n == name)
+    }
+
     fn at(&self, k: &Tok) -> bool {
         self.kind() == k
     }
@@ -324,6 +328,20 @@ impl Parser {
             let ty = self.ty()?;
             return Ok(Item::TypeAlias { name, ty });
         }
+        // `derive(Show, Eq, Ord)` — compiler-generated impls (additive,
+        // expanded before checking; docs/language-evolution.md Phase 4).
+        let mut derives = Vec::new();
+        if self.at_ident("derive") {
+            self.advance();
+            self.expect(&Tok::LParen)?;
+            while !self.at(&Tok::RParen) {
+                derives.push(self.ident()?);
+                if !self.eat(&Tok::Comma) {
+                    break;
+                }
+            }
+            self.expect(&Tok::RParen)?;
+        }
         self.expect(&Tok::LBrace)?;
         let mut variants = Vec::new();
         let mut rec_names: Vec<String> = Vec::new();
@@ -368,9 +386,10 @@ impl Parser {
                     fields: rec_types,
                     field_names: rec_names,
                 }],
+                derives,
             }))
         } else {
-            Ok(Item::Type(TypeDef { name, variants }))
+            Ok(Item::Type(TypeDef { name, variants, derives }))
         }
     }
 

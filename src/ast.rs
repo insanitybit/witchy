@@ -79,6 +79,10 @@ pub struct ImplDef {
 pub struct TypeDef {
     pub name: String,
     pub variants: Vec<Variant>,
+    /// `type T derive(Show, Eq, Ord):` — traits whose impls the compiler
+    /// generates (additively, before checking; docs/language-evolution.md
+    /// Phase 4). Empty for an undecorated type.
+    pub derives: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

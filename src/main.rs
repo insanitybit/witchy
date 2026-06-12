@@ -18,6 +18,7 @@ mod ast;
 mod capabilities;
 mod codegen;
 mod consts;
+mod derive;
 mod doc;
 mod format;
 mod generators;
@@ -2201,6 +2202,26 @@ mod example_tests {
         let want = vec!["1001".to_string()];
         assert_eq!(link_run(src), want, "interpreter");
         assert_eq!(wasm_run(src), want, "wasm");
+    }
+
+    /// `derive(Show, Eq, Ord)`: compiler-generated impls, byte-identical in
+    /// behavior to handwritten ones on both backends, additive-only (the
+    /// expansion appends impls before checking; footprint analysis covers
+    /// the expanded program).
+    #[test]
+    fn derive_show_eq_ord_generates_working_impls() {
+        let src = "import show\nimport ord\nimport list\n\ntype Point derive(Show, Eq, Ord):\n    x: Int\n    y: Int\n\nfn main(console: Console):\n    let a = Point(1, 2)\n    let b = Point(1, 3)\n    say(console, a)\n    print(console, \"${eq(a, Point(1, 2))} ${eq(a, b)}\")\n    print(console, \"${less(a, b)} ${less(b, a)}\")\n    print(console, \"${list.contains([a, b], Point(1, 3))}\")\n";
+        let want: Vec<String> = ["Point(1, 2)", "true false", "true false", "true"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(link_run(src), want, "interpreter");
+        assert_eq!(wasm_run(src), want, "wasm");
+        // Unknown derives are loud.
+        let bad = "type T derive(Serialize):\n    n: Int\n\nfn main(console: Console):\n    print(console, \"x\")\n";
+        let module = parser::parse_module(bad).expect("parse");
+        let err = crate::records::lower(module).expect_err("unknown derive must be rejected");
+        assert!(err.contains("unknown derive"), "got: {err}");
     }
 
     /// Tuple patterns in `for` (the learning log's F4): `for (k, v) in
