@@ -1,0 +1,27 @@
+import show
+
+type Temp:
+    celsius: Int
+
+impl Show for Temp:
+    fn show(self) -> String:
+        "${self.celsius} deg C"
+
+fn to_fahrenheit(t: Temp) -> Int:
+    t.celsius * 9 / 5 + 32
+
+fn classify(t: Temp) -> String:
+    if t.celsius <= 0:
+        "freezing"
+    else if t.celsius < 20:
+        "cold"
+    else if t.celsius < 30:
+        "warm"
+    else:
+        "hot"
+
+fn main(console: Console):
+    let temps = [Temp(-5), Temp(12), Temp(25), Temp(40)]
+    for t in temps:
+        show.say(console, t)
+        print(console, "  -> ${to_fahrenheit(t)}F, ${classify(t)}")

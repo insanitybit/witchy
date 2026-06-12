@@ -1,0 +1,8 @@
+type Msg:
+    Text(String)
+    Empty
+
+fn main(console: Console):
+    match Text("hi"):
+        Text(s) -> print(console, "got: ${s}")
+        Empty -> print(console, "none")

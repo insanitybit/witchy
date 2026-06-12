@@ -189,6 +189,23 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
         .collect();
     items.extend(generated.into_iter().map(Item::Function));
 
+    // Phase 0 (typed lowering): annotate this exact items instance so
+    // monomorphization can resolve type arguments the head-name scope cannot
+    // (e.g. `dict.get(d, k)` needs `v` from `d: Dict(String, String)`).
+    // Node pointers stay valid through the moves below (statements live in
+    // each function's own heap allocations).
+    let (items_back, type_table) = {
+        let probe = Module {
+            imports: imports.clone(),
+            items,
+            import_lines: Vec::new(),
+            item_lines: Vec::new(),
+        };
+        let t = crate::typeck::annotate(&probe);
+        (probe.items, t)
+    };
+    let mut items = items_back;
+
     // Pull out bounded generic functions (templates). Only their concrete
     // specializations are emitted, generated next.
     let mut templates: HashMap<String, Function> = HashMap::new();
@@ -222,6 +239,7 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
             fn_rets,
             memo: HashMap::new(),
             generated: Vec::new(),
+            table: &type_table,
         };
         mono.run(&mut items);
         items.extend(mono.generated.into_iter().map(Item::Function));
@@ -647,6 +665,43 @@ fn is_type_var_name(n: &str) -> bool {
 /// `Int` (truncated to 32 bits). For records/enums/parameterized types the head
 /// name alone wouldn't capture the type, and codegen treats them as pointers
 /// either way, so those calls keep using the generic version.
+/// Unify a declared parameter type against a typeck-resolved type, binding
+/// `var` if it appears. Only SIMPLE named bindings (no type arguments) are
+/// returned — monomorphization's name-keyed substitution can't represent a
+/// composite type argument.
+fn bind_var_simple(param: &Type, concrete: &crate::typeck::Ty, var: &str) -> Option<String> {
+    use crate::typeck::Ty;
+    match (param, concrete) {
+        (Type::Named(n, args), _) if n == var && args.is_empty() => simple_ty_name(concrete),
+        (Type::Named(n, pargs), Ty::Named(cn, cargs))
+            if n == cn && pargs.len() == cargs.len() =>
+        {
+            pargs.iter().zip(cargs).find_map(|(p, c)| bind_var_simple(p, c, var))
+        }
+        (Type::Named(n, pargs), Ty::List(e)) if n == "List" && pargs.len() == 1 => {
+            bind_var_simple(&pargs[0], e, var)
+        }
+        (Type::Tuple(ps), Ty::Tuple(cs)) if ps.len() == cs.len() => {
+            ps.iter().zip(cs).find_map(|(p, c)| bind_var_simple(p, c, var))
+        }
+        _ => None,
+    }
+}
+
+/// The plain name of a resolved type, when it has one (no type arguments).
+fn simple_ty_name(t: &crate::typeck::Ty) -> Option<String> {
+    use crate::typeck::Ty;
+    match t {
+        Ty::Int => Some("Int".into()),
+        Ty::Float => Some("Float".into()),
+        Ty::Bool => Some("Bool".into()),
+        Ty::String => Some("String".into()),
+        Ty::Duration => Some("Duration".into()),
+        Ty::Named(n, args) if args.is_empty() => Some(n.clone()),
+        _ => None,
+    }
+}
+
 fn is_specializable_type_arg(n: &str) -> bool {
     matches!(n, "Int" | "Bool" | "Float" | "String" | "Duration")
 }
@@ -719,6 +774,9 @@ struct Mono<'a> {
     fn_rets: HashMap<String, String>,
     memo: HashMap<(String, Vec<String>), String>,
     generated: Vec<Function>,
+    /// typeck's resolved types for this module instance: the fallback when
+    /// the head-name scope can't resolve a type argument.
+    table: &'a crate::typeck::TypeTable,
 }
 
 impl Mono<'_> {
@@ -862,13 +920,39 @@ impl Mono<'_> {
                     _ => {}
                 }
             }
+            // The typed-lowering resolution: unify each parameter's declared
+            // type against the argument's typeck-resolved type. Table
+            // bindings are exact, so any simple named type is trusted — this
+            // is what lets `dict.get(d, key)` specialize its VALUE type, and
+            // generic helpers specialize on user record types (content
+            // equality). It both fills in what the head-name scope missed
+            // and CONFIRMS a non-primitive name the scope guessed.
+            let mut table_name = None;
+            for (i, p) in template.params.iter().enumerate() {
+                let (Some(pty), Some(arg)) = (&p.ty, args.get(i)) else { continue };
+                if let Some(ty) = self.table.type_of(arg) {
+                    if let Some(tn) = bind_var_simple(pty, ty, &var) {
+                        table_name = Some(tn);
+                        break;
+                    }
+                }
+            }
+            let from_table = match (&found, &table_name) {
+                (None, Some(tn)) => {
+                    found = Some(tn.clone());
+                    true
+                }
+                (Some(f), Some(tn)) => f == tn,
+                _ => false,
+            };
             // A `where`-bounded generic resolves to whatever concrete type the
             // trait dispatch picked (any named type). An *unbounded* generic is
             // only specialized on a primitive type argument — the cases the i32
-            // generic ABI miscompiles — so anything else falls back to the
-            // generic version rather than producing an unsound specialization.
+            // generic ABI miscompiles — unless the TABLE confirmed the type
+            // exactly; anything else falls back to the generic version rather
+            // than producing an unsound specialization.
             let tn = found?;
-            if !bounded && !is_specializable_type_arg(&tn) {
+            if !bounded && !from_table && !is_specializable_type_arg(&tn) {
                 return None;
             }
             result.push(tn);

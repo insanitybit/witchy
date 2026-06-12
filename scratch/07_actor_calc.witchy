@@ -1,0 +1,20 @@
+actor Calculator:
+    console: Console
+    var total: Int = 0
+
+impl Calculator:
+    on Add(n: Int):
+        total = total + n
+    on Sub(n: Int):
+        total = total - n
+    on Report(label: String):
+        print(console, label <> ": " <> int_to_string(total))
+
+fn main(console: Console):
+    let calc = spawn Calculator(console)
+    send(calc, Add(10))
+    send(calc, Add(5))
+    send(calc, Sub(3))
+    send(calc, Report("running total"))
+    send(calc, Add(100))
+    send(calc, Report("final total"))

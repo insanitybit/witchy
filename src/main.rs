@@ -2199,6 +2199,48 @@ mod example_tests {
         assert_eq!(wasm_run(src), want, "wasm");
     }
 
+    /// VALUE EQUALITY, ALWAYS (the learning log's F15): dict lookups with
+    /// RUNTIME-BUILT keys (trim/split/concat-sourced) — the case literal-key
+    /// tests pass vacuously through interning. dict.get/has must find them
+    /// by CONTENT on both backends; the compiled tier used to silently
+    /// pointer-compare and return None.
+    #[test]
+    fn runtime_built_dict_keys_compare_by_content() {
+        let src = "import dict\nimport string\n\nfn main(console: Console):\n    var d = dict_new()\n    d = insert(d, string.trim(\"  host  \"), \"localhost\")\n    let parts = split(\"port=8080\", \"=\")\n    d = insert(d, at(parts, 0), at(parts, 1))\n    d = insert(d, \"lit\" <> \"eral\", \"joined\")\n    match dict.get(d, \"host\"):\n        Some(v) -> print(console, \"host=\" <> v)\n        None -> print(console, \"host MISSING\")\n    match dict.get(d, \"port\"):\n        Some(v) -> print(console, \"port=\" <> v)\n        None -> print(console, \"port MISSING\")\n    print(console, \"${has(d, \"literal\")}\")\n    print(console, \"${size(d)}\")\n";
+        let want: Vec<String> = ["host=localhost", "port=8080", "true", "3"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(link_run(src), want, "interpreter");
+        assert_eq!(wasm_run(src), want, "wasm");
+    }
+
+    /// Generic stdlib functions over USER RECORD types compare by content:
+    /// typed lowering resolves the type argument (confirmed via the table),
+    /// the specialization's `==` becomes structural. Previously the generic
+    /// fallback pointer-compared (or, post-hotfix, refused to compile).
+    #[test]
+    fn generic_equality_on_records_is_structural() {
+        let src = "import list\n\ntype Point:\n    x: Int\n    y: Int\n\nfn main(console: Console):\n    let pts = [Point(1, 2), Point(3, 4)]\n    let probe = Point(1 + 2, 4)\n    print(console, \"${list.contains(pts, probe)}\")\n    print(console, \"${list.index_of(pts, Point(1, 2))}\")\n";
+        let want: Vec<String> = ["true", "0"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(link_run(src), want, "interpreter");
+        assert_eq!(wasm_run(src), want, "wasm");
+    }
+
+    /// THE F11 FAMILY (learning log): interpolating values whose type only
+    /// typed lowering knows — an ADT String payload and a generic-combinator
+    /// return — renders identically on both backends.
+    #[test]
+    fn interpolation_of_mono_typed_values_agrees() {
+        let src = "import iter\n\ntype Msg:\n    Text(String)\n    Silence\n\nfn main(console: Console):\n    match Text(\"hi\"):\n        Text(s) -> print(console, \"got: ${s}\")\n        Silence -> print(console, \"none\")\n    let collected = iter.collect(iter.take(iter.range(1, 100), 3))\n    print(console, \"collected: ${collected}\")\n";
+        let want: Vec<String> = ["got: hi", "collected: [1, 2, 3]"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(link_run(src), want, "interpreter");
+        assert_eq!(wasm_run(src), want, "wasm");
+    }
+
     /// `say` covers every scalar out of the box (Duration in its HUMAN form
     /// — the custom rendering `Show` exists for), and a missing impl is a
     /// clean check-time error naming the trait and type, not a post-lowering
@@ -7317,9 +7359,11 @@ fn main(console: Console):
     }
 
     #[test]
-    fn to_string_on_undetermined_type_is_rejected() {
-        // A shape codegen genuinely cannot pin down (a bare generic type
-        // variable) errors clearly rather than silently mis-rendering.
+    fn to_string_through_generics_renders() {
+        // Typed lowering (Phase 0) resolves what used to be undetermined: a
+        // generic tuple rendered through a monomorphizable call works
+        // identically on both backends. (The loud could-not-determine error
+        // remains for shapes with NO resolvable call site.)
         let src = r#"
 fn render(t: (a, a)) -> String:
     to_string(t)
@@ -7327,12 +7371,8 @@ fn render(t: (a, a)) -> String:
 fn main(console: Console):
     print(console, render((1, 2)))
 "#;
-        let module = parser::parse_module(src).expect("parse");
-        let err = codegen::compile_module(&module).expect_err("should reject");
-        assert!(
-            err.to_string().contains("could not determine"),
-            "unexpected error: {err}"
-        );
+        assert_eq!(link_run(src), vec!["(1, 2)"], "interpreter");
+        assert_eq!(wasm_run(src), vec!["(1, 2)"], "wasm");
     }
 
     #[test]

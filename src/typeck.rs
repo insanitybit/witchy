@@ -685,6 +685,9 @@ fn collect_type_params(t: &ast::Type, acc: &mut Vec<String>) {
 type RecordInfo = (Vec<u32>, Vec<(String, Ty)>);
 
 struct Checker {
+    /// When annotating (see `annotate`): expression identity -> inferred type,
+    /// finalized against the ending substitution. Key = `&Expr as *const _`.
+    type_record: Option<HashMap<usize, Ty>>,
     fn_sigs: HashMap<String, (Vec<Ty>, Ty)>,
     ctor_sigs: HashMap<String, (Vec<Ty>, Ty)>,
     /// Type-parameter var ids per constructor, so a generic ADT's constructors
@@ -1656,6 +1659,14 @@ impl Checker {
     }
 
     fn infer(&mut self, expr: &Expr) -> Result<Ty, TypeError> {
+        let t = self.infer_inner(expr)?;
+        if let Some(rec) = &mut self.type_record {
+            rec.insert(expr as *const Expr as usize, t.clone());
+        }
+        Ok(t)
+    }
+
+    fn infer_inner(&mut self, expr: &Expr) -> Result<Ty, TypeError> {
         match expr {
             Expr::Int(_) => Ok(Ty::Int),
             Expr::Float(_) => Ok(Ty::Float),
@@ -2454,8 +2465,96 @@ pub fn check(module: &Module) -> Result<(), TypeError> {
     // The checked flavor surfaces unsatisfiable dispatch ("`Float` does not
     // implement `Show`") instead of a post-lowering unknown-function error.
     let lowered = crate::traits::lower_checked(recs).map_err(|message| TypeError { message })?;
-    let module = &lowered;
+    run_check(&lowered, false).map(|_| ())
+}
+
+/// The resolved-type side table produced by `annotate`: expression identity
+/// (`&Expr as *const _`) -> the concrete `Ty` the checker inferred, finalized
+/// against the ending substitution. Entries exist only where the type is
+/// fully concrete (no free variables) — consumers fall back where it is not.
+#[derive(Default)]
+pub struct TypeTable {
+    types: HashMap<usize, Ty>,
+}
+
+impl TypeTable {
+    pub fn type_of(&self, e: &Expr) -> Option<&Ty> {
+        self.types.get(&(e as *const Expr as usize))
+    }
+    pub fn is_empty(&self) -> bool {
+        self.types.is_empty()
+    }
+}
+
+/// Convert a resolved checker type to the surface `ast::Type` shape the
+/// backends' type-directed machinery (eq/to_string shapes, valtypes)
+/// consumes. None where no surface form exists (functions, free variables).
+pub fn ty_to_ast(t: &Ty) -> Option<crate::ast::Type> {
+    use crate::ast::Type as T;
+    Some(match t {
+        Ty::Int => T::Named("Int".into(), Vec::new()),
+        Ty::Float => T::Named("Float".into(), Vec::new()),
+        Ty::Duration => T::Named("Duration".into(), Vec::new()),
+        Ty::String => T::Named("String".into(), Vec::new()),
+        Ty::Bool => T::Named("Bool".into(), Vec::new()),
+        Ty::Nil => T::Named("Nil".into(), Vec::new()),
+        Ty::Console => T::Named("Console".into(), Vec::new()),
+        Ty::Clock => T::Named("Clock".into(), Vec::new()),
+        Ty::Env => T::Named("Env".into(), Vec::new()),
+        Ty::Secret => T::Named("Secret".into(), Vec::new()),
+        Ty::Subject => T::Named("Subject".into(), Vec::new()),
+        Ty::Dir(_) => T::Named("Dir".into(), Vec::new()),
+        Ty::Net(_) => T::Named("Net".into(), Vec::new()),
+        Ty::Socket => T::Named("Socket".into(), Vec::new()),
+        Ty::Listener => T::Named("Listener".into(), Vec::new()),
+        Ty::BuildOut | Ty::BuildRead | Ty::BuildEnv | Ty::BuildNet | Ty::BuildExec => {
+            return None
+        }
+        Ty::List(e) => T::Named("List".into(), vec![ty_to_ast(e)?]),
+        Ty::Tuple(ts) => {
+            T::Tuple(ts.iter().map(ty_to_ast).collect::<Option<Vec<_>>>()?)
+        }
+        Ty::Named(n, args) => T::Named(
+            n.clone(),
+            args.iter().map(ty_to_ast).collect::<Option<Vec<_>>>()?,
+        ),
+        Ty::Fn(..) | Ty::Var(_) => return None,
+    })
+}
+
+fn ty_has_var(t: &Ty) -> bool {
+    match t {
+        Ty::Var(_) => true,
+        Ty::List(e) => ty_has_var(e),
+        Ty::Tuple(ts) => ts.iter().any(ty_has_var),
+        Ty::Named(_, args) => args.iter().any(ty_has_var),
+        Ty::Fn(ps, r) => ps.iter().any(ty_has_var) || ty_has_var(r),
+        _ => false,
+    }
+}
+
+/// Annotate an ALREADY-LOWERED module instance (the exact AST a consumer will
+/// keep walking): the typed-lowering keystone (docs/language-evolution.md
+/// Phase 0). Best-effort by contract — consumers only annotate modules that
+/// already passed `check`, so any error here yields an empty table and the
+/// consumer's own fallbacks apply.
+pub fn annotate(module: &Module) -> TypeTable {
+    match run_check(module, true) {
+        Ok(Some(table)) => table,
+        Err(e) => {
+            if std::env::var_os("WITCHY_DEBUG_ANNOTATE").is_some() {
+                eprintln!("annotate: checker error on lowered module: {e}");
+            }
+            TypeTable::default()
+        }
+        _ => TypeTable::default(),
+    }
+}
+
+fn run_check(module: &Module, record: bool) -> Result<Option<TypeTable>, TypeError> {
+    let module = &module;
     let mut c = Checker {
+        type_record: if record { Some(HashMap::new()) } else { None },
         fn_sigs: HashMap::new(),
         fn_conventions: HashMap::new(),
         ctor_sigs: HashMap::new(),
@@ -2600,7 +2699,17 @@ pub fn check(module: &Module) -> Result<(), TypeError> {
             Item::Type(_) | Item::Trait(_) | Item::Impl(_) | Item::Const { .. } | Item::TypeAlias { .. } => {}
         }
     }
-    Ok(())
+    if let Some(rec) = c.type_record.take() {
+        let mut types = HashMap::new();
+        for (k, ty) in rec {
+            let resolved = c.resolve(&ty);
+            if !ty_has_var(&resolved) {
+                types.insert(k, resolved);
+            }
+        }
+        return Ok(Some(TypeTable { types }));
+    }
+    Ok(None)
 }
 
 /// Convenience: parse then type-check.

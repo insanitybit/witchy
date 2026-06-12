@@ -1,0 +1,30 @@
+import string
+import list
+
+type WordCount:
+    word: String
+    count: Int
+
+fn count_words(text: String) -> Dict(String, Int):
+    var counts = dict_new()
+    for word in string.words(text):
+        let w = to_lower(word)
+        counts = insert(counts, w, get_or(counts, w, 0) + 1)
+    counts
+
+// Sort by count descending, then word ascending for ties.
+fn ranked(counts: Dict(String, Int)) -> List(WordCount):
+    var rows = []
+    for entry in pairs(counts):
+        let (word, n) = entry
+        rows = push(rows, WordCount(word, n))
+    list.sort_by(rows, fn(a: WordCount, b: WordCount): if a.count != b.count: a.count > b.count else: a.word < b.word)
+
+fn main(console: Console):
+    let text = "the quick brown fox the lazy dog the QUICK Fox jumps over the lazy DOG"
+    let report = ranked(count_words(text))
+    print(console, "rank  count  word")
+    var rank = 1
+    for wc in report:
+        print(console, "${string.pad_left(int_to_string(rank), 4, " ")}  ${string.pad_left(int_to_string(wc.count), 5, " ")}  ${wc.word}")
+        rank = rank + 1

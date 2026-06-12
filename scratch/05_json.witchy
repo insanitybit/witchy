@@ -1,0 +1,12 @@
+import json
+
+fn main(console: Console):
+    let doc = JsonObject([
+        ("name", JsonString("witchy")),
+        ("version", JsonInt(1)),
+        ("stable", JsonBool(false)),
+    ])
+    print(console, json.encode(doc))
+    match json.decode("{\"a\": [1, 2, 3]}"):
+        Ok(v) -> print(console, json.encode(v))
+        Err(e) -> print(console, "parse error: " <> e)

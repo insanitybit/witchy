@@ -1,0 +1,36 @@
+import iter
+import string
+
+// Manual stringification: `${a_collected_list}` does not compile to WASM (F11),
+// so render Int lists by hand the way the book's iterator chapter does.
+fn show_ints(xs: List(Int)) -> String:
+    var parts = []
+    for x in xs:
+        parts = push(parts, int_to_string(x))
+    "[" <> string.join(parts, ", ") <> "]"
+
+gen fn naturals(start: Int) -> Iter(Int):
+    var n = start
+    while true:
+        yield n
+        n = n + 1
+
+fn is_prime(n: Int) -> Bool:
+    if n < 2:
+        false
+    else:
+        var d = 2
+        var prime = true
+        while d * d <= n:
+            if n % d == 0:
+                prime = false
+                break
+            d = d + 1
+        prime
+
+fn main(console: Console):
+    let primes = iter.filter(naturals(2), fn(n: Int): is_prime(n))
+    let first10 = iter.collect(iter.take(primes, 10))
+    print(console, "first 10 primes: " <> show_ints(first10))
+    let sum = iter.fold(iter.take(iter.filter(naturals(2), fn(n: Int): is_prime(n)), 10), 0, fn(acc: Int, x: Int): acc + x)
+    print(console, "their sum: " <> int_to_string(sum))

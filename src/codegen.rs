@@ -475,6 +475,10 @@ struct Codegen {
     /// Whether the current function has type-variable parameters (a generic
     /// fallback): unknown-type comparisons there are rejected loudly.
     cur_fn_has_type_vars: bool,
+    /// Phase 0 (docs/language-evolution.md): typeck's resolved types for the
+    /// EXACT module instance being compiled — the authoritative fallback
+    /// wherever the local tracking maps come up empty.
+    type_table: crate::typeck::TypeTable,
     /// Whether the `$list_push_cap` helper is needed.
     uses_list_push_cap: bool,
     /// Whether the `$str_append_cap` helper is needed.
@@ -797,6 +801,7 @@ impl Codegen {
             summaries: analysis::Summaries::empty(),
             cur_fn_own_param: None,
             cur_fn_has_type_vars: false,
+            type_table: crate::typeck::TypeTable::default(),
             uses_list_push_cap: false,
             uses_str_append_cap: false,
             uses_dict_insert_cap: false,
@@ -989,6 +994,20 @@ impl Codegen {
     /// The source-level value type of an expression, to the extent codegen can
     /// determine it. Used by `to_string`; `Other` means "not distinguished".
     fn val_type_of(&self, e: &Expr) -> ValType {
+        match self.val_type_of_inner(e) {
+            // The local tracking maps came up empty: ask typeck's table (the
+            // typed-lowering keystone) before giving up.
+            ValType::Other => self
+                .type_table
+                .type_of(e)
+                .and_then(crate::typeck::ty_to_ast)
+                .map(|t| ty_to_valtype(&t))
+                .unwrap_or(ValType::Other),
+            vt => vt,
+        }
+    }
+
+    fn val_type_of_inner(&self, e: &Expr) -> ValType {
         match e {
             Expr::Int(_) | Expr::Duration(_) => ValType::Int,
             Expr::Bool(_) => ValType::Bool,
@@ -2309,8 +2328,10 @@ impl Codegen {
                 || matches!(&p.ty, Some(Type::Named(_, args))
                     if args.iter().any(type_has_var))
         });
-        let renamed = alpha_rename(&f.body, &f.params);
-        self.infer_locals(&renamed);
+        // Bodies are pre-renamed at module level (alpha_rename_module), so
+        // this is the exact instance the type table and facts are keyed to.
+        let renamed = &f.body;
+        self.infer_locals(renamed);
 
         let mut header = format!("  (func ${} ", f.name);
         for p in &f.params {
@@ -2333,7 +2354,7 @@ impl Codegen {
         // (moved back out to the caller).
         let ret_kind = match &f.ret {
             Some(t) => ty_kind(t),
-            None => self.block_kind(&renamed),
+            None => self.block_kind(renamed),
         };
         self.cur_fn_ret_kind = ret_kind;
         self.cur_fn_inout = f.params.iter().any(|p| p.convention == Convention::Inout);
@@ -2354,10 +2375,10 @@ impl Codegen {
         }
         header.push_str(")\n");
 
-        self.begin_unit(&renamed);
+        self.begin_unit(renamed);
 
         let mut lets = Vec::new();
-        collect_let_names(&renamed, &mut lets);
+        collect_let_names(renamed, &mut lets);
         lets.sort();
         lets.dedup();
         for name in &lets {
@@ -2387,10 +2408,10 @@ impl Codegen {
 
         self.apply_level = 0;
         self.wm_level = 0;
-        let body = self.compile_block(&renamed)?;
+        let body = self.compile_block(renamed)?;
         // The body's tail value must match the declared result kind (a generic
         // i32 body returned from an `-> Int` function is widened, etc.).
-        let body = format!("{body}{}", kind_convert(self.block_kind(&renamed), ret_kind));
+        let body = format!("{body}{}", kind_convert(self.block_kind(renamed), ret_kind));
         // Move-out: append each `inout` parameter's final value (declaration order).
         let mut epilogue = self.inout_epilogue();
         let tail_expr = match renamed.stmts.last() {
@@ -4436,7 +4457,17 @@ impl Codegen {
     /// The shape of a value used as a tuple element / general operand: a compound
     /// shape if resolvable, else its scalar value type.
     fn eq_operand_shape(&self, e: &Expr) -> Option<EqShape> {
-        self.eq_shape_of(e).or_else(|| EqShape::scalar(self.val_type_of(e)))
+        self.eq_shape_of(e)
+            .or_else(|| EqShape::scalar(self.val_type_of(e)))
+            .or_else(|| self.table_shape_of(e))
+    }
+
+    /// The structural shape of an expression per typeck's resolved type —
+    /// the fallback that makes `${collect(...)}`, ADT-payload bindings, and
+    /// every other "the local maps lost it" case render and compare.
+    fn table_shape_of(&self, e: &Expr) -> Option<EqShape> {
+        let t = crate::typeck::ty_to_ast(self.type_table.type_of(e)?)?;
+        self.eq_shape_of_type(&t)
     }
 
     /// Whether an expression is statically known to be a `Dict` (a tracked dict
@@ -5200,7 +5231,7 @@ impl Codegen {
                 // per-shape helper, byte-identical to the interpreter's Display —
                 // so `"${xs}"` works on WASM too. Shapes the structural machinery
                 // can't resolve (a generic payload) still error loudly.
-                ValType::Other => match self.eq_shape_of(&args[0]) {
+                ValType::Other => match self.eq_shape_of(&args[0]).or_else(|| self.table_shape_of(&args[0])) {
                     Some(shape) if shape.is_compound() => {
                         let h = self.ensure_ts_helper(&shape)?;
                         let arg = self.compile_expr(&args[0])?;
@@ -6213,12 +6244,14 @@ pub fn compile_module_with(
         .map_err(|message| CodegenError { message })?;
     let mut lowered = crate::traits::lower_for_wasm(recs);
     crate::parser::lower_sugar_module(&mut lowered);
+    alpha_rename_module(&mut lowered);
     let module = &lowered;
     let mut cg = Codegen::new();
     cg.message_tags = tags.clone();
     cg.spawnable = spawnable.clone();
     register_module_items(&mut cg, module);
     cg.summaries = analysis::Summaries::of_module(module);
+    cg.type_table = crate::typeck::annotate(module);
     let mut func_wat = String::new();
     let mut main_params = 0usize;
     let mut main_param_is_args: Vec<bool> = Vec::new();
@@ -6608,6 +6641,7 @@ pub fn compile_program(module: &Module) -> Result<CompiledActors, CodegenError> 
         crate::records::lower(module.clone()).map_err(|message| CodegenError { message })?;
     let mut parent = crate::traits::lower_for_wasm(recs);
     crate::parser::lower_sugar_module(&mut parent);
+    alpha_rename_module(&mut parent);
     let records = record_types_of(&parent);
     let mut tag_of: HashMap<String, u32> = HashMap::new();
     let mut sigs: Vec<MessageSig> = Vec::new();
@@ -6650,8 +6684,13 @@ fn compile_actor_with_tags(
     actor: &ActorDef,
     tags: &HashMap<String, u32>,
 ) -> Result<String, CodegenError> {
+    let mut actor = actor.clone();
+    crate::parser::lower_sugar_actor(&mut actor);
+    for h in &mut actor.handlers {
+        h.body = alpha_rename(&h.body, &h.params);
+    }
     compile_actor_in(
-        actor,
+        &actor,
         tags,
         &Module { imports: Vec::new(), items: Vec::new(), import_lines: Vec::new(), item_lines: Vec::new() },
         &HashMap::new(),
@@ -6664,11 +6703,9 @@ fn compile_actor_in(
     parent: &Module,
     spawnable: &HashMap<String, Vec<(String, SpawnArgKind)>>,
 ) -> Result<String, CodegenError> {
-    // Lower ranges first (see compile_module) so the passes below see plain
-    // blocks with consistent synthetic names.
-    let mut actor_owned = actor.clone();
-    crate::parser::lower_sugar_actor(&mut actor_owned);
-    let actor = &actor_owned;
+    // Callers pre-lower and pre-alpha-rename the actor (compile_program does
+    // it module-wide; compile_actor_with_tags on its own clone), so handler
+    // bodies here are the EXACT instances the type table and facts key on.
     let mut cg = Codegen::new();
     cg.message_tags = tags.clone();
     // Handlers may spawn: a handler-context spawn instantiates through the
@@ -6681,6 +6718,7 @@ fn compile_actor_in(
     // per-function local tables the handlers rely on.
     register_module_items(&mut cg, parent);
     cg.summaries = analysis::Summaries::of_module(parent);
+    cg.type_table = crate::typeck::annotate(parent);
     let bodies: HashMap<String, &Function> = parent
         .items
         .iter()
@@ -6951,10 +6989,10 @@ fn compile_actor_in(
             }
         }
         header.push('\n');
-        let renamed = alpha_rename(&h.body, &h.params);
+        let renamed = &h.body;
         // Infer each let's kind (as `compile_function` does) so e.g. an i64
         // list element flowing into a local declares that local at i64.
-        cg.infer_locals(&renamed);
+        cg.infer_locals(renamed);
         // Inference treats assignment targets as locals, but a state FIELD is
         // not one: an Int global stays i32 and a host-cell field's reads have
         // their own kinds. Restore the field kinds (e.g. a Float's f64) and
@@ -6977,14 +7015,14 @@ fn compile_actor_in(
             }
         }
         let mut lets = Vec::new();
-        collect_let_names(&renamed, &mut lets);
+        collect_let_names(renamed, &mut lets);
         lets.sort();
         lets.dedup();
         for name in &lets {
             let k = cg.locals.get(name).copied().unwrap_or(Kind::I32);
             header.push_str(&format!("    (local ${name} {})\n", wasm_ty(k)));
         }
-        cg.begin_unit(&renamed);
+        cg.begin_unit(renamed);
         let mut cap_vars: Vec<String> = cg.inplace_push.iter().cloned().collect();
         cap_vars.sort();
         for v in cap_vars {
@@ -7004,7 +7042,7 @@ fn compile_actor_in(
         }
         cg.apply_level = 0;
         cg.wm_level = 0;
-        let body = cg.compile_block(&renamed)?;
+        let body = cg.compile_block(renamed)?;
         cg.finish_unit(&format!("{}.{}", actor.name, h.message))?;
         handlers.push((header, body));
     }
@@ -8978,6 +9016,26 @@ impl Renamer {
 
 /// Alpha-rename a function/handler body so shadowing bindings get unique names.
 /// `params` are bound in the outermost scope (never renamed themselves).
+/// Alpha-rename every function and handler body IN PLACE, once, at module
+/// level — BEFORE `typeck::annotate` runs — so the annotated AST instance is
+/// the very one codegen compiles (the type table and uniqueness facts are
+/// keyed by node identity). `compile_function` compiles bodies as-given.
+fn alpha_rename_module(m: &mut Module) {
+    for item in &mut m.items {
+        match item {
+            Item::Function(f) => {
+                f.body = alpha_rename(&f.body, &f.params);
+            }
+            Item::Actor(a) => {
+                for h in &mut a.handlers {
+                    h.body = alpha_rename(&h.body, &h.params);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 fn alpha_rename(body: &Block, params: &[Param]) -> Block {
     let mut r = Renamer::new();
     r.scopes.push(HashMap::new());
