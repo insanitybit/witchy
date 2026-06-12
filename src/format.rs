@@ -621,24 +621,38 @@ fn multiline(s: &mut String, e: &Expr, depth: usize, c: &mut Comments) {
             block(s, body, depth + 1, c);
         }
         Expr::Match { scrutinee, arms } => {
-            // An empty wildcard arm body can only arise from desugaring an
-            // `if let` without `else` (no other construct yields an empty block,
-            // which has no off-side surface form). Render it back as `if let`,
-            // which re-parses to exactly this match.
+            // A two-arm match of `pattern -> block` plus an unguarded wildcard
+            // block IS an `if let` (the desugar produces exactly this shape, and
+            // re-parsing the sugar reproduces it), so that is how it prints. An
+            // empty wildcard body is the elseless form — an empty block has no
+            // off-side surface form, so it can only come from the desugar.
             if let [then_arm, else_arm] = arms.as_slice() {
                 if then_arm.guard.is_none()
                     && else_arm.guard.is_none()
+                    && then_arm.pattern != Pattern::Wildcard
                     && else_arm.pattern == Pattern::Wildcard
-                    && matches!(&else_arm.body, Expr::Block(b) if b.stmts.is_empty())
                 {
-                    if let Expr::Block(tb) = &then_arm.body {
-                        s.push_str("if let ");
-                        s.push_str(&pattern(&then_arm.pattern));
-                        s.push_str(" = ");
-                        s.push_str(&expr(scrutinee));
-                        s.push_str(":\n");
-                        block(s, tb, depth + 1, c);
-                        return;
+                    if let (Expr::Block(tb), Expr::Block(eb)) = (&then_arm.body, &else_arm.body)
+                    {
+                        if tb.restrict.is_none()
+                            && tb.region.is_none()
+                            && eb.restrict.is_none()
+                            && eb.region.is_none()
+                            && !tb.stmts.is_empty()
+                        {
+                            s.push_str("if let ");
+                            s.push_str(&pattern(&then_arm.pattern));
+                            s.push_str(" = ");
+                            s.push_str(&expr(scrutinee));
+                            s.push_str(":\n");
+                            block(s, tb, depth + 1, c);
+                            if !eb.stmts.is_empty() {
+                                pad(s, depth);
+                                s.push_str("else:\n");
+                                block(s, eb, depth + 1, c);
+                            }
+                            return;
+                        }
                     }
                 }
             }
@@ -668,7 +682,42 @@ fn multiline(s: &mut String, e: &Expr, depth: usize, c: &mut Comments) {
 /// continues multi-line on the same line as `->`, everything else is inline (so
 /// the re-parsed arm body has the same shape, not a `Block` wrapper).
 fn arm_body(s: &mut String, body: &Expr, depth: usize, c: &mut Comments) {
+    // A one-statement block whose statement fits on a line prints inline
+    // (`-> return e`, `-> x = e`, `-> break`) — the same source shape it
+    // parses from. `return` with no value must stay in block form: inline it
+    // would swallow the next arm's pattern as its value.
+    fn inline_value(e: &Expr) -> Option<String> {
+        if matches!(e, Expr::Match { .. } | Expr::Lambda { .. } | Expr::Block(_)) {
+            return None;
+        }
+        let rendered = expr(e);
+        (!rendered.contains('\n')).then_some(rendered)
+    }
     match body {
+        Expr::Block(b)
+            if b.stmts.len() == 1 && b.restrict.is_none() && b.region.is_none() =>
+        {
+            let inline = match &b.stmts[0] {
+                Stmt::Return(Some(e)) => inline_value(e).map(|v| format!("return {v}")),
+                Stmt::Assign { name, value } => {
+                    inline_value(value).map(|v| format!("{name} = {v}"))
+                }
+                Stmt::Break => Some("break".into()),
+                Stmt::Continue => Some("continue".into()),
+                _ => None,
+            };
+            match inline {
+                Some(line) => {
+                    s.push(' ');
+                    s.push_str(&line);
+                    s.push('\n');
+                }
+                None => {
+                    s.push('\n');
+                    block(s, b, depth + 1, c);
+                }
+            }
+        }
         Expr::Block(b) => {
             s.push('\n');
             block(s, b, depth + 1, c);
@@ -1088,10 +1137,6 @@ pub(crate) fn type_str(t: &Type) -> String {
     }
 }
 
-/// Reformat witchy source (brace or off-side) as canonical brace-free source,
-/// returning `None` unless the result re-parses to the *same* AST. The round-trip
-/// guard makes the printer safe to apply in bulk: anything it cannot yet render
-/// faithfully is simply left untouched.
 thread_local! {
     /// Function names defined by the module currently being formatted —
     /// exempt from the moved-builtin rewrite.
@@ -1103,6 +1148,10 @@ fn local_fn(name: &str) -> bool {
     LOCAL_FNS.with(|s| s.borrow().contains(name))
 }
 
+/// Reformat witchy source (brace or off-side) as canonical brace-free source,
+/// returning `None` unless the output re-parses and formats to itself
+/// (idempotence). That guard makes the printer safe to apply in bulk: anything
+/// it cannot yet render faithfully is simply left untouched.
 pub fn reformat(src: &str) -> Option<String> {
     let original = crate::parser::parse_module(src).ok()?;
     LOCAL_FNS.with(|s| {

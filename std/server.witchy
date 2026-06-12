@@ -170,25 +170,24 @@ impl Router:
     fn head(self, p: String, h: fn(Request) -> Response) -> Router:
         route(self, "HEAD", p, h)
 
-    // Match `p` under ANY method (axum's `any`). Stored with the `*` wildcard
-    // method, which `check_route` accepts for any verb.
     fn any(self, p: String, h: fn(Request) -> Response) -> Router:
+        // Match `p` under ANY method (axum's `any`). Stored with the `*` wildcard
+        // method, which `check_route` accepts for any verb.
         route(self, "*", p, h)
 
-    // Mount `sub`'s routes under `prefix` (axum-style nesting).
     fn nest(self, prefix: String, sub: Router) -> Router:
+        // Mount `sub`'s routes under `prefix` (axum-style nesting).
         match sub:
             Router(sub_routes, _sub_layers) ->
                 var out = self
                 for rt in sub_routes:
                     match rt:
-                        Route(m, p, h) ->
-                            out = route(out, m, prefix <> p, h)
+                        Route(m, p, h) -> out = route(out, m, prefix <> p, h)
                 out
 
-    // A tower-style middleware Layer: `fn(Handler) -> Handler`, wrapping the
-    // whole dispatch (so it sees every request, 404s included).
     fn layer(self, mw: fn(fn(Request) -> Response) -> fn(Request) -> Response) -> Router:
+        // A tower-style middleware Layer: `fn(Handler) -> Handler`, wrapping the
+        // whole dispatch (so it sees every request, 404s included).
         match self:
             Router(routes, layers) -> Router(routes, list.push(layers, mw))
 

@@ -662,6 +662,34 @@ impl Lexer {
                         }
                     }
                 }
+                // `\"` — the writer kept the enclosing string's escaping going
+                // inside the braces (a natural habit). Honor it: the pair is a
+                // quote, opening a nested string that the matching `\"` closes.
+                Some('\\') if self.peek() == Some('"') => {
+                    self.bump();
+                    src.push('"');
+                    loop {
+                        match self.bump() {
+                            None => return Err(self.err("unterminated string in interpolation")),
+                            Some('\\') => match self.bump() {
+                                Some('"') => {
+                                    src.push('"');
+                                    break;
+                                }
+                                Some(c) => {
+                                    src.push('\\');
+                                    src.push(c);
+                                }
+                                None => {
+                                    return Err(
+                                        self.err("unterminated string in interpolation")
+                                    );
+                                }
+                            },
+                            Some(c) => src.push(c),
+                        }
+                    }
+                }
                 Some(c) => src.push(c),
             }
         }

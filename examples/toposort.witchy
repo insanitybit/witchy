@@ -29,10 +29,8 @@ fn toposort(nodes: List(String), edges: List((String, String))) -> Result(List(S
     var stuck = false
     while list.length(order) < list.length(nodes) && !stuck:
         match next_ready(nodes, edges, order):
-            Some(node) ->
-                order = list.push(order, node)
-            None ->
-                stuck = true
+            Some(node) -> order = list.push(order, node)
+            None -> stuck = true
     if stuck:
         Err("cycle among " <> string.join(remaining(nodes, order), ", "))
     else:

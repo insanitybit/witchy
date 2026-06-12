@@ -20,11 +20,10 @@ fn pop(xs: List(Int)) -> Option((Int, List(Int))):
 fn main(console: Console):
     // if let: bind and act only when the value is present, with an else fallback.
     let found = Some(42)
-    match found:
-        Some(x) ->
-            print(console, "found: " <> to_string(x))
-        _ ->
-            print(console, "nothing")
+    if let Some(x) = found:
+        print(console, "found: " <> to_string(x))
+    else:
+        print(console, "nothing")
 
     // if let with no else is a statement: the body runs, or nothing happens.
     if let Some(x) = pop([7, 8, 9]):

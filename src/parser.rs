@@ -646,6 +646,13 @@ impl Parser {
         }
         if self.at(&Tok::Let) || self.at(&Tok::Var) {
             let mutable = self.advance() == Tok::Var;
+            if !mutable && self.eat(&Tok::Underscore) {
+                // `let _ = e` — evaluate for effects, bind nothing. Same
+                // meaning as the bare expression statement (the canonical
+                // form, which `fmt` prints).
+                self.expect(&Tok::Eq)?;
+                return Ok(Stmt::Expr(self.expr(0)?));
+            }
             if self.at(&Tok::LParen) {
                 // Tuple destructure: `let (a, b) = e` (bindings are immutable).
                 self.advance();
@@ -1272,7 +1279,25 @@ impl Parser {
             self.expect(&Tok::RArrow)?;
             let outer = self.in_match_arm;
             self.in_match_arm = true;
-            let body = self.expr(0)?;
+            // An inline arm body may be a single statement (`-> return e`,
+            // `-> x = e`), not just an expression; it parses as a one-statement
+            // block, the same shape the indented form produces.
+            let body = if self.at(&Tok::Return)
+                || self.at(&Tok::Break)
+                || self.at(&Tok::Continue)
+                || self.is_assignment()
+            {
+                let line = self.cur().line;
+                let st = self.stmt()?;
+                Expr::Block(Block {
+                    stmts: vec![st],
+                    lines: vec![line],
+                    restrict: None,
+                    region: None,
+                })
+            } else {
+                self.expr(0)?
+            };
             self.in_match_arm = outer;
             let last = alternatives.len() - 1;
             for (i, (pattern, range_guard)) in alternatives.into_iter().enumerate() {
@@ -1591,141 +1616,6 @@ pub(crate) fn desugar_method(receiver: Expr, method: String, args: Vec<Expr>) ->
     all.push(receiver);
     all.extend(args);
     Expr::Call { name: method, args: all }
-}
-
-/// Replace every `Expr::MethodCall` in a module with its `desugar_method`
-/// lowering. The linker runs this before resolving names, so name resolution and
-/// every later stage see the same plain `Call` the parser used to produce; the
-/// formatter, which never links, keeps the node so it can print `r.m(args)`.
-pub(crate) fn lower_methods_module(m: &mut Module) {
-    for item in &mut m.items {
-        match item {
-            Item::Function(f) => lower_methods_block(&mut f.body),
-            Item::Actor(a) => {
-                for field in &mut a.fields {
-                    if let Some(init) = &mut field.init {
-                        lower_methods_expr(init);
-                    }
-                }
-                for h in &mut a.handlers {
-                    lower_methods_block(&mut h.body);
-                }
-            }
-            Item::Impl(im) => {
-                for meth in &mut im.methods {
-                    lower_methods_block(&mut meth.body);
-                }
-                for h in &mut im.handlers {
-                    lower_methods_block(&mut h.body);
-                }
-            }
-            Item::Const { value, .. } => lower_methods_expr(value),
-            Item::Type(_) | Item::Trait(_) | Item::TypeAlias { .. } | Item::Comptime(_) => {}
-        }
-    }
-}
-
-fn lower_methods_block(b: &mut Block) {
-    for stmt in &mut b.stmts {
-        match stmt {
-            Stmt::Let { value, .. }
-            | Stmt::LetTuple { value, .. }
-            | Stmt::Assign { value, .. }
-            | Stmt::Expr(value)
-            | Stmt::Yield(value)
-            | Stmt::Return(Some(value)) => lower_methods_expr(value),
-            Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
-        }
-    }
-}
-
-fn lower_methods_expr(e: &mut Expr) {
-    match e {
-        Expr::MethodCall { receiver, method, args } => {
-            lower_methods_expr(receiver);
-            for a in args.iter_mut() {
-                lower_methods_expr(a);
-            }
-            *e = desugar_method((**receiver).clone(), method.clone(), std::mem::take(args));
-        }
-        Expr::Int(_) | Expr::Float(_) | Expr::Duration(_) | Expr::Str(_) | Expr::Bool(_)
-        | Expr::Var(_) => {}
-        Expr::List(xs)
-        | Expr::Tuple(xs)
-        | Expr::Call { args: xs, .. }
-        | Expr::Ctor { args: xs, .. }
-        | Expr::Spawn { args: xs, .. } => {
-            for x in xs {
-                lower_methods_expr(x);
-            }
-        }
-        Expr::Apply { func, args } => {
-            lower_methods_expr(func);
-            for a in args {
-                lower_methods_expr(a);
-            }
-        }
-        Expr::Unary { expr, .. }
-        | Expr::Try(expr)
-        | Expr::As { expr, .. }
-        | Expr::Field { base: expr, .. } => lower_methods_expr(expr),
-        Expr::Index { base, index } => {
-            lower_methods_expr(base);
-            lower_methods_expr(index);
-        }
-        Expr::Range { lo, hi, .. } => {
-            lower_methods_expr(lo);
-            lower_methods_expr(hi);
-        }
-        Expr::RecordUpdate { base, fields } => {
-            lower_methods_expr(base);
-            for (_, v) in fields {
-                lower_methods_expr(v);
-            }
-        }
-        Expr::Record { fields, spread, .. } => {
-            for (_, v) in fields {
-                lower_methods_expr(v);
-            }
-            if let Some(s) = spread {
-                lower_methods_expr(s);
-            }
-        }
-        Expr::Binary { lhs, rhs, .. } => {
-            lower_methods_expr(lhs);
-            lower_methods_expr(rhs);
-        }
-        Expr::If { cond, then_block, else_block } => {
-            lower_methods_expr(cond);
-            lower_methods_block(then_block);
-            if let Some(b) = else_block {
-                lower_methods_block(b);
-            }
-        }
-        Expr::While { cond, body } => {
-            lower_methods_expr(cond);
-            lower_methods_block(body);
-        }
-        Expr::WhileLet { scrutinee, body, .. } => {
-            lower_methods_expr(scrutinee);
-            lower_methods_block(body);
-        }
-        Expr::For { iter, body, .. } => {
-            lower_methods_expr(iter);
-            lower_methods_block(body);
-        }
-        Expr::Match { scrutinee, arms } => {
-            lower_methods_expr(scrutinee);
-            for arm in arms.iter_mut() {
-                if let Some(g) = &mut arm.guard {
-                    lower_methods_expr(g);
-                }
-                lower_methods_expr(&mut arm.body);
-            }
-        }
-        Expr::Lambda { body, .. } => lower_methods_block(body),
-        Expr::Block(b) => lower_methods_block(b),
-    }
 }
 
 /// Lower `while let PAT = SCRUT: body` to `while true` over a match whose

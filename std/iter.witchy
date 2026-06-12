@@ -198,8 +198,7 @@ pub fn for_each(it: Iter(a), f: fn(a) -> Nil):
     var more = true
     while more:
         match next(cur):
-            Empty ->
-                more = false
+            Empty -> more = false
             Item(x, rest) ->
                 f(x)
                 cur = rest
@@ -214,8 +213,7 @@ pub fn collect(it: Iter(a)) -> List(a):
     var more = true
     while more:
         match next(cur):
-            Empty ->
-                more = false
+            Empty -> more = false
             Item(x, rest) ->
                 out = list.push(out, x)
                 cur = rest
@@ -228,8 +226,7 @@ pub fn fold(it: Iter(a), init: b, f: fn(b, a) -> b) -> b:
     var more = true
     while more:
         match next(cur):
-            Empty ->
-                more = false
+            Empty -> more = false
             Item(x, rest) ->
                 acc = f(acc, x)
                 cur = rest

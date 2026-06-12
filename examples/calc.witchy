@@ -70,8 +70,7 @@ fn tokenize(source: String) -> Result(List(Token), String):
                 Some(tok) ->
                     tokens = list.push(tokens, tok)
                     i = i + 1
-                None ->
-                    failure = "unexpected character `" <> c <> "`"
+                None -> failure = "unexpected character `" <> c <> "`"
     if string.is_empty(failure):
         Ok(tokens)
     else:
