@@ -151,7 +151,7 @@ Everything is an expression; a block's value is its final expression.
 | `& \| ^ ~ << >>` | bitwise on `Int` (shifts mask the count to 6 bits) |
 | `xs[i]` | list indexing, sugar for `list.at(xs, i)`; out of bounds is a runtime error on every backend |
 | `lo..hi` | a half-open range (for-loop iteration; never materialized) |
-| `x.f(args)` | method-call sugar for `f(x, args)` (UFCS) |
+| `x.f(args)` | a METHOD call: resolves to `impl` methods / trait dispatch for `x`'s type |
 | `e?` | unwrap `Ok`/`Some` or return the `Err`/`None` from the enclosing function |
 | `cap as Dir[Read]` | capability narrowing (drop rights; never widen) |
 
@@ -166,13 +166,12 @@ fn main(console: Console):
     print(console, to_string(2.5 < 3.0))
     let xs = [10, 20, 30]
     print(console, to_string(xs[1]))            // indexing sugar
-    print(console, to_string(8.double()))       // UFCS: double(8)
 ```
 
 Float notes: `0.0 / 0.0` is NaN; `1.0 / 0.0` is infinity; NaN `==` anything is
-`false` (IEEE), while NaN *ordering* errors. Conversions: `int_to_float`,
-`float_to_int` (saturating truncation), `string_to_int` (strict; errors on
-junk or overflow), `sqrt`, `to_string`.
+`false` (IEEE), while NaN *ordering* errors. Conversions: `math.to_float`,
+`math.to_int` (saturating truncation), `string.to_int` (strict; errors on
+junk or overflow), `math.sqrt`, `to_string`.
 
 ## 5. Control flow
 

@@ -16,7 +16,7 @@ has the precise semantics; this is the cheat sheet.
 | `& \| ^ ~ << >>` | bitwise on `Int` (shift counts masked to 6 bits) |
 | `xs[i]` | list indexing (sugar for `list.at(xs, i)`); out of bounds errors |
 | `lo..hi` | half-open range, for iteration only |
-| `x.f(a)` | method-call sugar for `f(x, a)` |
+| `x.f(a)` | a method call (`impl` methods / trait dispatch for `x`'s type) |
 | `${expr}` | string interpolation (sugar for `to_string(expr)`) |
 | `e?` | unwrap `Ok`/`Some`, or early-return the `Err`/`None` |
 | `cap as T` | capability narrowing (drop rights; never widen) |

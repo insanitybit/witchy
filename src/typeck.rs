@@ -1682,14 +1682,13 @@ impl Checker {
                 let d = crate::parser::desugar_index((**base).clone(), (**index).clone());
                 self.infer(&d)
             }
-            // A UFCS call lowers to `method(receiver, args)`; type it as that.
-            Expr::MethodCall { receiver, method, args } => {
-                let d = crate::parser::desugar_method(
-                    (**receiver).clone(),
-                    method.clone(),
-                    args.clone(),
-                );
-                self.infer(&d)
+            Expr::MethodCall { method, .. } => {
+                // Trait lowering resolves every method call (impl, trait
+                // bound, or static); one that survives is unresolvable.
+                terr(format!(
+                    "cannot resolve the method call `.{method}(…)` — methods come from \
+                     `impl` blocks; a plain function is called as `{method}(value, …)`"
+                ))
             }
             // Named-field record construction is lowered by `crate::records`
             // before type-checking.

@@ -9,9 +9,9 @@
 // third-party handler can only compute over the request; it cannot phone home.
 //
 //   let app = server.router()
-//       |> server.get("/", home)
-//       |> server.get("/users/:id", show)
-//       |> server.layer(logging(console))
+//       .get("/", home)
+//       .get("/users/:id", show)
+//       .layer(logging(console))
 //   server.serve(net, "127.0.0.1:8080", app)
 
 import http
@@ -149,45 +149,48 @@ pub fn route(r: Router, m: String, p: String, h: fn(Request) -> Response) -> Rou
     match r:
         Router(routes, layers) -> Router(list.push(routes, Route(m, p, h)), layers)
 
-pub fn get(r: Router, p: String, h: fn(Request) -> Response) -> Router:
-    route(r, "GET", p, h)
+// The fluent surface: real METHODS on Router (`router().get(...).post(...)`),
+// each returning the extended Router.
+impl Router:
+    fn get(self, p: String, h: fn(Request) -> Response) -> Router:
+        route(self, "GET", p, h)
 
-pub fn post(r: Router, p: String, h: fn(Request) -> Response) -> Router:
-    route(r, "POST", p, h)
+    fn post(self, p: String, h: fn(Request) -> Response) -> Router:
+        route(self, "POST", p, h)
 
-pub fn put(r: Router, p: String, h: fn(Request) -> Response) -> Router:
-    route(r, "PUT", p, h)
+    fn put(self, p: String, h: fn(Request) -> Response) -> Router:
+        route(self, "PUT", p, h)
 
-pub fn delete(r: Router, p: String, h: fn(Request) -> Response) -> Router:
-    route(r, "DELETE", p, h)
+    fn delete(self, p: String, h: fn(Request) -> Response) -> Router:
+        route(self, "DELETE", p, h)
 
-pub fn patch(r: Router, p: String, h: fn(Request) -> Response) -> Router:
-    route(r, "PATCH", p, h)
+    fn patch(self, p: String, h: fn(Request) -> Response) -> Router:
+        route(self, "PATCH", p, h)
 
-pub fn head(r: Router, p: String, h: fn(Request) -> Response) -> Router:
-    route(r, "HEAD", p, h)
+    fn head(self, p: String, h: fn(Request) -> Response) -> Router:
+        route(self, "HEAD", p, h)
 
-// Match `p` under ANY method (axum's `any`). Stored with the `*` wildcard method,
-// which `check_route` accepts for any verb.
-pub fn any(r: Router, p: String, h: fn(Request) -> Response) -> Router:
-    route(r, "*", p, h)
+    // Match `p` under ANY method (axum's `any`). Stored with the `*` wildcard
+    // method, which `check_route` accepts for any verb.
+    fn any(self, p: String, h: fn(Request) -> Response) -> Router:
+        route(self, "*", p, h)
 
-// Mount `sub`'s routes under `prefix` (axum-style nesting).
-pub fn nest(r: Router, prefix: String, sub: Router) -> Router:
-    match sub:
-        Router(sub_routes, _sub_layers) ->
-            var out = r
-            for rt in sub_routes:
-                match rt:
-                    Route(m, p, h) ->
-                        out = route(out, m, prefix <> p, h)
-            out
+    // Mount `sub`'s routes under `prefix` (axum-style nesting).
+    fn nest(self, prefix: String, sub: Router) -> Router:
+        match sub:
+            Router(sub_routes, _sub_layers) ->
+                var out = self
+                for rt in sub_routes:
+                    match rt:
+                        Route(m, p, h) ->
+                            out = route(out, m, prefix <> p, h)
+                out
 
-// A tower-style middleware Layer: `fn(Handler) -> Handler`, wrapping the whole
-// dispatch (so it sees every request, 404s included).
-pub fn layer(r: Router, mw: fn(fn(Request) -> Response) -> fn(Request) -> Response) -> Router:
-    match r:
-        Router(routes, layers) -> Router(routes, list.push(layers, mw))
+    // A tower-style middleware Layer: `fn(Handler) -> Handler`, wrapping the
+    // whole dispatch (so it sees every request, 404s included).
+    fn layer(self, mw: fn(fn(Request) -> Response) -> fn(Request) -> Response) -> Router:
+        match self:
+            Router(routes, layers) -> Router(routes, list.push(layers, mw))
 
 // ---- Dispatch + path matching ----
 fn dispatch(routes: List(Route)) -> fn(Request) -> Response:

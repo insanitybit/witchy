@@ -6623,28 +6623,36 @@ fn main(console: Console):
     }
 
     #[test]
-    fn method_call_syntax_backends_agree() {
-        // UFCS method chaining: `recv.f(args)` == `f(recv, args)`. The method name
-        // resolves to a same-module function (inc) or an imported one (list.*),
-        // and reads like a Rust chain. The qualified form still works too.
+    fn method_calls_resolve_to_real_methods_only() {
+        // Method-call syntax resolves to impl methods (instance + static) and
+        // trait-bound dispatch — NOT to arbitrary free functions. A free
+        // function called as a method is a loud error naming the spelling.
         let client = r#"
-import list
-fn inc(x: Int) -> Int:
-    x + 1
+type Counter:
+    n: Int
+
+impl Counter:
+    fn fresh() -> Counter:
+        Counter(0)
+    fn bumped(self) -> Counter:
+        Counter(self.n + 1)
+
 fn main(console: Console):
-    print(console, to_string([1, 2, 3, 4].filter(fn(n: Int): n % 2 == 0).map(fn(n: Int): n * 2).sum()))
-    print(console, to_string(5.inc().inc()))
-    print(console, to_string(list.sum([10, 20, 30])))
+    let c = Counter.fresh().bumped().bumped()
+    print(console, "${c.n}")
 "#;
-        let sources = [
-            ("option", crate::bundled_module("option").unwrap()),
-            ("list", crate::bundled_module("list").unwrap()),
-            ("main", client),
-        ];
-        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
-        let compiled = run_linked_on_wasm(&sources, "main");
-        assert_eq!(interpreted, compiled, "method-call syntax diverged");
-        assert_eq!(compiled, vec!["12", "7", "60"]);
+        let want = vec!["2".to_string()];
+        assert_eq!(link_run(client), want, "interpreter");
+        assert_eq!(wasm_run(client), want, "wasm");
+        // Free-function UFCS is gone — one cut, loud error.
+        let ufcs = "fn inc(x: Int) -> Int:\n    x + 1\n\nfn main(console: Console):\n    print(console, \"${5.inc()}\")\n";
+        let module = parser::parse_module(ufcs).expect("parse");
+        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        let err = typeck::check(&linked).expect_err("free-fn UFCS must be rejected");
+        assert!(
+            err.to_string().contains("methods come from `impl` blocks"),
+            "got: {err}"
+        );
     }
 
     #[test]

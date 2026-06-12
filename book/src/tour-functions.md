@@ -21,23 +21,32 @@ the common case (though `return` exists for early exits). Parameters *must* be
 annotated; locals are inferred. A `pub fn` is exported from its module;
 everything else is module-private.
 
-There's a pleasant bit of sugar: `x.f(args)` means `f(x, args)`. So
-`8.double()` is `double(8)`. It reads left-to-right for pipelines:
+Method-call syntax (`value.method(args)`) belongs to **methods** — functions
+declared in an `impl` block with a `self` parameter. A plain function is
+called as a function. We'll meet `impl` properly in the types chapter; the
+shape looks like this:
 
 ```witchy
-fn double(n: Int) -> Int:
-    n * 2
+type Score:
+    points: Int
 
-fn inc(n: Int) -> Int:
-    n + 1
+impl Score:
+    fn doubled(self) -> Score:
+        Score(self.points * 2)
+    fn bumped(self) -> Score:
+        Score(self.points + 1)
 
 fn main(console: Console):
-    print(console, to_string(3.double().inc().double()))
+    let s = Score(3).doubled().bumped().doubled()
+    print(console, "${s.points}")
 ```
 
 ```text
 14
 ```
+
+A method without `self` is a *static*, called on the type itself:
+`Score.zero()` — handy for constructors with defaults.
 
 ## `if` is an expression
 

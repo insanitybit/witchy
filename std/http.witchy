@@ -73,7 +73,7 @@ fn request(net: Net, method: String, host: String, port: Int, path: String, body
 // ---- Request builder (reqwest-style fluent client) ----
 
 // An outgoing request being assembled: method, full URL, headers, and body.
-// Build it up with `|>` and finish with `send`.
+// Build it up with the chainable methods and finish with `.send(net)`.
 type RequestBuilder:
     RequestBuilder(String, String, List((String, String)), String)
 
@@ -96,33 +96,36 @@ pub fn delete_request(url: String) -> RequestBuilder:
 pub fn patch_request(url: String) -> RequestBuilder:
     build("PATCH", url)
 
-// Add a request header (chainable: `|> with_header("Authorization", "...")`).
-pub fn with_header(rb: RequestBuilder, name: String, value: String) -> RequestBuilder:
-    match rb:
-        RequestBuilder(m, u, hs, b) -> RequestBuilder(m, u, list.push(hs, (name, value)), b)
+// The fluent surface: real METHODS on RequestBuilder, each returning the
+// extended builder (`http.get_request(url).with_header(...).send(net)`).
+impl RequestBuilder:
+    // Add a request header (chainable).
+    fn with_header(self, name: String, value: String) -> RequestBuilder:
+        match self:
+            RequestBuilder(m, u, hs, b) -> RequestBuilder(m, u, list.push(hs, (name, value)), b)
 
-// Set the request body (e.g. a JSON document); also sets nothing else.
-pub fn with_body(rb: RequestBuilder, b: String) -> RequestBuilder:
-    match rb:
-        RequestBuilder(m, u, hs, _b) -> RequestBuilder(m, u, hs, b)
+    // Set the request body (e.g. a JSON document); nothing else changes.
+    fn with_body(self, b: String) -> RequestBuilder:
+        match self:
+            RequestBuilder(m, u, hs, _b) -> RequestBuilder(m, u, hs, b)
 
-// Append a `key=value` query parameter to the URL (chainable), choosing `?` for
-// the first and `&` thereafter. Values are appended as-is (no escaping yet).
-pub fn with_query(rb: RequestBuilder, key: String, value: String) -> RequestBuilder:
-    match rb:
-        RequestBuilder(m, u, hs, b) ->
-            let sep = if string.contains(u, "?"): "&" else: "?"
-            RequestBuilder(m, u <> sep <> key <> "=" <> value, hs, b)
+    // Append a `key=value` query parameter to the URL (chainable), choosing
+    // `?` for the first and `&` thereafter. Values are appended as-is.
+    fn with_query(self, key: String, value: String) -> RequestBuilder:
+        match self:
+            RequestBuilder(m, u, hs, b) ->
+                let sep = if string.contains(u, "?"): "&" else: "?"
+                RequestBuilder(m, u <> sep <> key <> "=" <> value, hs, b)
 
-// Send the assembled request, parsing host/port/path from its URL. An Err is
-// returned (rather than a panic) when the URL doesn't parse.
-pub fn send(rb: RequestBuilder, net: Net) -> Result(Response, String):
-    match rb:
-        RequestBuilder(m, u, hs, b) ->
-            match url.parse(u):
-                Ok(parsed) ->
-                    Ok(request_with(net, m, url.host(parsed), url.port(parsed), url.path(parsed), hs, b))
-                Err(e) -> Err("invalid URL: " <> e)
+    // Send the assembled request, parsing host/port/path from its URL. An Err
+    // is returned (rather than a panic) when the URL doesn't parse.
+    fn send(self, net: Net) -> Result(Response, String):
+        match self:
+            RequestBuilder(m, u, hs, b) ->
+                match url.parse(u):
+                    Ok(parsed) ->
+                        Ok(request_with(net, m, url.host(parsed), url.port(parsed), url.path(parsed), hs, b))
+                    Err(e) -> Err("invalid URL: " <> e)
 
 // Whether the response status is in the 2xx success range.
 pub fn is_success(r: Response) -> Bool:

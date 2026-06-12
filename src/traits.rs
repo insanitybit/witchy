@@ -133,13 +133,33 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
     // (method name, receiver type) -> mangled function, plus the generated
     // functions themselves (impl methods with `self` typed to the impl type).
     let mut impl_table: HashMap<(String, String), String> = HashMap::new();
+    // (type name, method name) -> mangled fn, for self-less impl methods.
+    let mut statics: HashMap<(String, String), String> = HashMap::new();
     let mut generated: Vec<Function> = Vec::new();
     for item in &module.items {
         if let Item::Impl(im) = item {
             let provided: HashSet<&str> = im.methods.iter().map(|m| m.name.as_str()).collect();
-            // Methods the impl defines.
+            // Methods the impl defines. A method whose first parameter is
+            // `self` is an INSTANCE method (dispatched on a value); one
+            // without is a STATIC, callable only as `Type.name(args)`.
             for method in &im.methods {
                 let mangled = mangle(im.trait_name.as_deref(), &im.type_name, &method.name);
+                let is_static =
+                    method.params.first().map_or(true, |p| p.name != "self");
+                if is_static {
+                    statics.insert(
+                        (im.type_name.clone(), method.name.clone()),
+                        mangled.clone(),
+                    );
+                    generated.push(method_fn(
+                        mangled,
+                        method.params.clone(),
+                        method.ret.clone(),
+                        method.body.clone(),
+                        &im.type_name,
+                    ));
+                    continue;
+                }
                 impl_table.insert((method.name.clone(), im.type_name.clone()), mangled.clone());
                 // An inherent method dispatches by receiver type too, so register
                 // its name as dispatchable (trait methods are already in the map).
@@ -267,6 +287,8 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
         ctor_fields: &ctor_fields,
         free_fns: &free_fns,
         missing_impls: &missing_impls,
+        statics: &statics,
+        table: &type_table,
     };
     for item in &mut items {
         match item {
@@ -330,6 +352,10 @@ struct Ctx<'a> {
     /// surfaced by the type checker as a clean "T does not implement Trait"
     /// instead of a post-lowering unknown-function error.
     missing_impls: &'a std::cell::RefCell<Vec<String>>,
+    /// Self-less impl methods: `Type.name(args)` statics.
+    statics: &'a HashMap<(String, String), String>,
+    /// typeck's resolved types — receiver typing for method resolution.
+    table: &'a crate::typeck::TypeTable,
 }
 
 impl Ctx<'_> {
@@ -434,10 +460,85 @@ impl Ctx<'_> {
                 self.rewrite_expr(base, scope);
                 self.rewrite_expr(index, scope);
             }
-            Expr::MethodCall { receiver, args, .. } => {
+            // METHOD RESOLUTION (docs/language-evolution.md Phase 3):
+            // `x.f(a)` resolves to a real method — an impl for x's type, a
+            // trait method on a bound receiver, or a `Type.f(a)` static. It
+            // is NOT sugar for arbitrary free functions; an unresolvable
+            // method is a loud check-time error naming the function spelling.
+            Expr::MethodCall { receiver, method, args } => {
                 self.rewrite_expr(receiver, scope);
                 for a in args.iter_mut() {
                     self.rewrite_expr(a, scope);
+                }
+                // `Type.name(args)` — a static call on the TYPE itself.
+                if let Expr::Ctor { name: tyname, args: cargs } = receiver.as_ref() {
+                    if cargs.is_empty() {
+                        if let Some(mangled) = self.statics.get(&(tyname.clone(), method.clone())) {
+                            let mut call_args = Vec::new();
+                            call_args.append(args);
+                            *e = Expr::Call { name: mangled.clone(), args: call_args };
+                            return;
+                        }
+                        // `Dog.greet()` where `Dog` is a NULLARY CONSTRUCTOR
+                        // is a method call on that value, not a static access:
+                        // fall through to instance dispatch.
+                        let is_value = self
+                            .ctor_fields
+                            .get(tyname.as_str())
+                            .is_some_and(|fs| fs.is_empty());
+                        if self
+                            .impl_table
+                            .contains_key(&(method.clone(), tyname.clone()))
+                            && !is_value
+                        {
+                            self.missing_impls.borrow_mut().push(format!(
+                                "`{tyname}.{method}` is an INSTANCE method (it takes `self`) — \
+                                 call it on a value: `value.{method}(…)`"
+                            ));
+                            return;
+                        }
+                    }
+                }
+                let tn = self
+                    .type_name(receiver, scope)
+                    .or_else(|| {
+                        self.table
+                            .type_of(receiver)
+                            .and_then(crate::typeck::ty_to_ast)
+                            .and_then(|t| type_to_scope_name(&t))
+                    });
+                if let Some(tn) = &tn {
+                    if let Some(mangled) = self.impl_table.get(&(method.clone(), tn.clone())) {
+                        let mut call_args = vec![std::mem::replace(
+                            receiver.as_mut(),
+                            Expr::Bool(false),
+                        )];
+                        call_args.append(args);
+                        *e = Expr::Call { name: mangled.clone(), args: call_args };
+                        return;
+                    }
+                }
+                // A trait method on a generic (bound) receiver dispatches
+                // after monomorphization: lower to the bare trait call.
+                let receiver_is_generic =
+                    tn.as_deref().is_none_or(|n| n.chars().next().is_some_and(char::is_lowercase));
+                if self.trait_methods.contains_key(method.as_str()) && receiver_is_generic {
+                    let mut call_args =
+                        vec![std::mem::replace(receiver.as_mut(), Expr::Bool(false))];
+                    call_args.append(args);
+                    *e = Expr::Call { name: method.clone(), args: call_args };
+                    return;
+                }
+                match tn {
+                    Some(tn) => self.missing_impls.borrow_mut().push(format!(
+                        "no method `{method}` on `{tn}` — methods come from `impl` blocks; \
+                         a plain function is called as `{method}(value, …)` (or module-qualified, \
+                         e.g. `list.{method}(value, …)`)"
+                    )),
+                    None => self.missing_impls.borrow_mut().push(format!(
+                        "cannot resolve the method call `.{method}(…)` — the receiver's type \
+                         is not known here; call the function directly: `{method}(value, …)`"
+                    )),
                 }
             }
             Expr::WhileLet { pattern, scrutinee, body } => {

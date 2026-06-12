@@ -271,13 +271,9 @@ pub fn link(mut modules: Vec<(String, Module)>, entry: &str) -> Result<Module, L
         i += 1;
     }
 
-    // Lower UFCS method calls (`x.f()`) to plain calls (`f(x)`) before any
-    // resolution, so name resolution and every later stage see exactly what the
-    // parser used to produce. (The formatter never links, so it keeps the
-    // `MethodCall` nodes and can print the `.method()` form.)
-    for (_, m) in modules.iter_mut() {
-        crate::parser::lower_methods_module(m);
-    }
+    // MethodCall nodes survive linking: `x.f(a)` resolves to a REAL method
+    // (impl/trait/static) during trait lowering, not to arbitrary free
+    // functions (docs/language-evolution.md Phase 3).
 
     // Reject cyclic constant/alias definitions with a clear message before
     // resolution turns them into dangling self-references.

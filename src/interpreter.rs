@@ -1814,15 +1814,12 @@ impl Interpreter {
                 let d = crate::parser::desugar_index((**base).clone(), (**index).clone());
                 self.eval(&d, env)
             }
-            // A UFCS call lowers to `method(receiver, args)`; evaluate that.
-            Expr::MethodCall { receiver, method, args } => {
-                let d = crate::parser::desugar_method(
-                    (**receiver).clone(),
-                    method.clone(),
-                    args.clone(),
-                );
-                self.eval(&d, env)
-            }
+            // Trait lowering resolves every method call; one that reaches
+            // evaluation is unresolvable (mirrors the type checker's error).
+            Expr::MethodCall { method, .. } => err(format!(
+                "cannot resolve the method call `.{method}(…)` — methods come from \
+                 `impl` blocks; a plain function is called as `{method}(value, …)`"
+            )),
             // Named-field record construction is lowered by `crate::records`
             // before evaluation.
             Expr::Record { .. } => {
@@ -3103,7 +3100,7 @@ fn main(console: Console, net: Net):
 
     #[test]
     fn http_client_builder_loopback() {
-        // The reqwest-style client builder (get_request |> with_header |> send)
+        // The reqwest-style client builder (get_request().with_header(...).send(net))
         // against a raw TCP server: it sends the method/path/header and parses
         // the response status and body.
         use std::io::{Read, Write};
@@ -3137,7 +3134,7 @@ fn main(console: Console, net: Net):
     let req = http.get_request("http://{addr}/path")
         .with_header("X-Test", "abc")
         .with_query("q", "hi")
-    match http.send(req, net):
+    match req.send(net):
         Ok(resp) ->
             print(console, to_string(http.status(resp)))
             print(console, http.body(resp))
@@ -3168,11 +3165,7 @@ fn main(console: Console, net: Net):
 import http
 import server
 fn main(console: Console, net: Net):
-    let app = server.router()
-        |> server.post("/make", fn(req: Request): server.created("made"))
-        |> server.get("/bad", fn(req: Request): server.bad_request("nope"))
-        |> server.get("/secret", fn(req: Request): server.unauthorized("auth"))
-        |> server.delete("/item", fn(req: Request): server.no_content())
+    let app = server.router().post("/make", fn(req: Request): server.created("made")).get("/bad", fn(req: Request): server.bad_request("nope")).get("/secret", fn(req: Request): server.unauthorized("auth")).delete("/item", fn(req: Request): server.no_content())
     server.serve_n(net, "{addr}", app, 4)
 "#
         );
@@ -3219,8 +3212,7 @@ fn main(console: Console, net: Net):
 import http
 import server
 fn main(console: Console, net: Net):
-    let app = server.router()
-        |> server.post("/items", fn(req: Request): server.created("ok"))
+    let app = server.router().post("/items", fn(req: Request): server.created("ok"))
     server.serve_n(net, "{addr}", app, 3)
 "#
         );
@@ -3313,8 +3305,7 @@ fn main(console: Console, net: Net):
 import http
 import server
 fn main(console: Console, net: Net):
-    let app = server.router()
-        |> server.any("/ping", fn(req: Request): server.ok(server.method(req)))
+    let app = server.router().any("/ping", fn(req: Request): server.ok(server.method(req)))
     server.serve_n(net, "{addr}", app, 2)
 "#
         );
@@ -3364,12 +3355,8 @@ fn tag(resp: Response) -> Response:
     server.with_header(resp, "x-by", "witchy")
 
 fn main(console: Console, net: Net):
-    let api = server.router()
-        |> server.get("/ping", fn(req: Request): server.text(200, "pong"))
-    let app = server.router()
-        |> server.get("/", fn(req: Request): server.text(200, "root"))
-        |> server.nest("/api", api)
-        |> server.layer(tagger)
+    let api = server.router().get("/ping", fn(req: Request): server.text(200, "pong"))
+    let app = server.router().get("/", fn(req: Request): server.text(200, "root")).nest("/api", api).layer(tagger)
     server.serve_n(net, "{addr}", app, 3)
 "#
         );
@@ -3419,7 +3406,7 @@ import json
 fn greet(req: Request) -> Response:
     server.json_value(200, JsonObject([("hello", JsonString(server.param(req, "name")))]))
 fn main(console: Console, net: Net):
-    let app = server.router() |> server.get("/hello/:name", greet)
+    let app = server.router().get("/hello/:name", greet)
     server.serve_n(net, "{addr}", app, 1)
 "#
         );
@@ -3468,7 +3455,7 @@ fn echo_name(req: Request) -> Response:
         Ok(doc) -> server.text(200, name_of(doc))
         Err(e) -> server.text(400, e)
 fn main(console: Console, net: Net):
-    let app = server.router() |> server.post("/", echo_name)
+    let app = server.router().post("/", echo_name)
     server.serve_n(net, "{addr}", app, 1)
 "#
         );
@@ -3512,7 +3499,7 @@ fn main(console: Console, net: Net):
 import http
 import server
 fn main(console: Console, net: Net):
-    let app = server.router() |> server.post("/", fn(req: Request): server.text(200, server.form_field(req, "name")))
+    let app = server.router().post("/", fn(req: Request): server.text(200, server.form_field(req, "name")))
     server.serve_n(net, "{addr}", app, 1)
 "#
         );
@@ -3566,7 +3553,7 @@ fn serve_file(dir: Dir, p: String) -> Response:
 fn main(console: Console, net: Net, root: Dir):
     let examples = subdir(root, "examples")
     let data = subdir(examples, "data")
-    let app = server.router() |> server.get("/files/*path", file_server(data))
+    let app = server.router().get("/files/*path", file_server(data))
     server.serve_n(net, "{addr}", app, 2)
 "#
         );
@@ -3607,7 +3594,7 @@ fn evil(req: Request) -> Response:
     let s = connect(net, "10.0.0.1:80")
     server.text(200, "leaked")
 fn main(console: Console, net: Net):
-    let app = server.router() |> server.get("/", evil)
+    let app = server.router().get("/", evil)
     server.serve_n(net, "127.0.0.1:0", app, 0)
 "#;
         let parsed = crate::parser::parse_module(src).expect("parse");

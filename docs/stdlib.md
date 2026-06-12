@@ -344,7 +344,7 @@ A parsed request the server hands to a handler: method, raw path, the path param
 
 #### `type RequestBuilder`
 
-An outgoing request being assembled: method, full URL, headers, and body. Build it up with `|>` and finish with `send`.
+An outgoing request being assembled: method, full URL, headers, and body. Build it up with the chainable methods and finish with `.send(net)`.
 
 - `RequestBuilder(String, String, List((String, String)), String)`
 
@@ -385,22 +385,6 @@ Start a request to `url` with `method` (e.g. "GET").
 #### `fn delete_request(url: String) -> RequestBuilder`
 
 #### `fn patch_request(url: String) -> RequestBuilder`
-
-#### `fn with_header(rb: RequestBuilder, name: String, value: String) -> RequestBuilder`
-
-Add a request header (chainable: `|> with_header("Authorization", "...")`).
-
-#### `fn with_body(rb: RequestBuilder, b: String) -> RequestBuilder`
-
-Set the request body (e.g. a JSON document); also sets nothing else.
-
-#### `fn with_query(rb: RequestBuilder, key: String, value: String) -> RequestBuilder`
-
-Append a `key=value` query parameter to the URL (chainable), choosing `?` for the first and `&` thereafter. Values are appended as-is (no escaping yet).
-
-#### `fn send(rb: RequestBuilder, net: Net) -> Result(Response, String)`
-
-Send the assembled request, parsing host/port/path from its URL. An Err is returned (rather than a panic) when the URL doesn't parse.
 
 #### `fn is_success(r: Response) -> Bool`
 
@@ -1323,7 +1307,7 @@ The witchy web framework — a slice of axum/tower over the `Net` capability, bu
 
 A handler is a pure `fn(Request) -> Response`: it has NO capability parameters, so it is *structurally* unable to touch the network, filesystem, or console. To give a handler authority (a logger, a store, an outbound client), capture it in the closure — capture IS dependency injection. `serve` holds the `Net` to listen and never hands it to a handler, so even a mounted third-party handler can only compute over the request; it cannot phone home.
 
-  let app = server.router()       |> server.get("/", home)       |> server.get("/users/:id", show)       |> server.layer(logging(console))   server.serve(net, "127.0.0.1:8080", app)
+  let app = server.router()       .get("/", home)       .get("/users/:id", show)       .layer(logging(console))   server.serve(net, "127.0.0.1:8080", app)
 
 #### `type Route`
 
@@ -1420,30 +1404,6 @@ Return `resp` with its status code replaced.
 #### `fn router() -> Router`
 
 #### `fn route(r: Router, m: String, p: String, h: fn(Request) -> Response) -> Router`
-
-#### `fn get(r: Router, p: String, h: fn(Request) -> Response) -> Router`
-
-#### `fn post(r: Router, p: String, h: fn(Request) -> Response) -> Router`
-
-#### `fn put(r: Router, p: String, h: fn(Request) -> Response) -> Router`
-
-#### `fn delete(r: Router, p: String, h: fn(Request) -> Response) -> Router`
-
-#### `fn patch(r: Router, p: String, h: fn(Request) -> Response) -> Router`
-
-#### `fn head(r: Router, p: String, h: fn(Request) -> Response) -> Router`
-
-#### `fn any(r: Router, p: String, h: fn(Request) -> Response) -> Router`
-
-Match `p` under ANY method (axum's `any`). Stored with the `*` wildcard method, which `check_route` accepts for any verb.
-
-#### `fn nest(r: Router, prefix: String, sub: Router) -> Router`
-
-Mount `sub`'s routes under `prefix` (axum-style nesting).
-
-#### `fn layer(r: Router, mw: fn(fn(Request) -> Response) -> fn(Request) -> Response) -> Router`
-
-A tower-style middleware Layer: `fn(Handler) -> Handler`, wrapping the whole dispatch (so it sees every request, 404s included).
 
 #### `fn serve(net: Net, addr: String, app: Router)`
 
