@@ -12,6 +12,19 @@ Everything below either fixes that or builds on the fix.
 Decisions in this document are made, not open; phases are ordered by
 dependency, not preference.
 
+## Status — ALL PHASES SHIPPED (2026-06-12)
+
+Phase 0 typed lowering (a142f44), Phase 1 value equality (1b02134 + the
+efc07d3 hotfix), Phase 2 builtins→stdlib one cut (91f2122 + riders 9213d49),
+Phase 3 methods/statics/no-UFCS (9066eff), Phase 4 derive (e1232d9), Phase 5
+comptime v1 (fef6f77). Notable deltas from the plan text below: the type
+table is consumed as the authoritative FALLBACK (the valtype maps shrink
+incrementally rather than all at once); comptime v1 executes on the
+reference interpreter under the zero-grant determinism contract (the WASM
+hard-isolation upgrade is mechanical — the channel is printed-source-in,
+items-out); `string.to_int` keeps the trapping primitive with `parse_int`
+as the total API.
+
 ## Phase 0 — the keystone: typed lowering
 
 Thread typeck's RESOLVED types into lowering and codegen instead of

@@ -55,9 +55,9 @@ n is 3, doubled 6
 dicts, and any nesting — identically on both backends (it is sugar for the
 built-in `to_string`). So you rarely call `to_string`/`int_to_string` by hand;
 reach for `"${x}"`. Strings are UTF-8 and the common operations
-(`string_length`, `char_count`, `split`, `contains`, …) live in the `string`
-module and as builtins; the [stdlib reference](appendix-stdlib.md) has the full
-list.
+(`string.length`, `string.char_count`, `string.split`, `string.contains`, …)
+live in the `string` module — part of the prelude, so no import line is
+needed; the [stdlib reference](appendix-stdlib.md) has the full list.
 
 ## Conversions
 

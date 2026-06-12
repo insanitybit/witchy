@@ -397,6 +397,51 @@ composes with an explicit `where` clause. The std library uses it for
 `show.say(console, x: impl Show)` — a `Show`-accepting `print`, so you write
 `say(console, value)` instead of converting by hand.
 
+### Deriving the standard traits
+
+`derive(...)` on a type generates the impls you would write by hand —
+appended to the module before checking, so the footprint and both backends
+see ordinary code:
+
+```witchy
+import show
+import ord
+
+type Point derive(Show, Eq, Ord):
+    x: Int
+    y: Int
+
+fn main(console: Console):
+    say(console, Point(1, 2))
+    print(console, "${less(Point(1, 2), Point(1, 3))}")
+```
+
+`Show` renders structurally (`to_string`), `Eq` is structural equality, and
+`Ord` compares record fields lexicographically (records only).
+
+### `comptime:` — compile-time item generation
+
+A top-level `comptime:` block runs **at compile time** with no capabilities
+reachable (there is no parameter list to receive one), making it
+deterministic by construction. `emit(line)` is its only channel: the output
+is parsed as witchy source and **appended** to the module before type
+checking and footprint analysis — generated code is analyzed exactly like
+handwritten code, and nothing existing can be rewritten, so a comptime
+block cannot launder authority out of a signature.
+
+```witchy
+comptime:
+    var i = 0
+    while i < 3:
+        emit("pub fn lucky_${i}() -> Int:")
+        emit("    ${i * 7}")
+        emit("")
+        i = i + 1
+
+fn main(console: Console):
+    print(console, "${lucky_0()} ${lucky_1()} ${lucky_2()}")
+```
+
 ## 9. Errors, `Option`/`Result`, and failure
 
 witchy has no exceptions. Expected failure is a value:
@@ -485,7 +530,13 @@ fn main(console: Console):
     print(console, string.join(shouted, "-"))   // A-B-C
 ```
 
-`import name` brings a module in under its name; **function** calls are
+The core data modules — `list`, `string`, `dict`, `math`, `option`,
+`result` — are **the prelude**: always available, no import line needed
+(`list.push(xs, 1)` works anywhere). Pure data operations live ONLY in
+modules; the global namespace is capability operations (`print`, `read`,
+`send`, `now`, …), `to_string`, and `fail` — authority is loud and
+unprefixed, everything else says where it came from. For other modules,
+`import name` brings the module in under its name; **function** calls are
 module-qualified (`list.map`). A module's `pub` **types and their constructors**,
 however, come into scope *unqualified* — after `import json` you write
 `JsonInt(1)` and `JsonObject([...])`, not `json.JsonInt(1)`. Resolution order: a
