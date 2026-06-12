@@ -133,11 +133,21 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
     // (method name, receiver type) -> mangled function, plus the generated
     // functions themselves (impl methods with `self` typed to the impl type).
     let mut impl_table: HashMap<(String, String), String> = HashMap::new();
+    // (trait name, impl head) -> the impl's trait type-arguments
+    // (`impl FromIterator(a) for List(a)` registers ("FromIterator","List")
+    // -> [a]) — the variable map for substitution-directed dispatch.
+    let mut impl_trait_args: HashMap<(String, String), Vec<Type>> = HashMap::new();
     // (type name, method name) -> mangled fn, for self-less impl methods.
     let mut statics: HashMap<(String, String), String> = HashMap::new();
     let mut generated: Vec<Function> = Vec::new();
     for item in &module.items {
         if let Item::Impl(im) = item {
+            if let Some(t) = &im.trait_name {
+                if !im.trait_args.is_empty() {
+                    impl_trait_args
+                        .insert((t.clone(), im.type_name.clone()), im.trait_args.clone());
+                }
+            }
             let provided: HashSet<&str> = im.methods.iter().map(|m| m.name.as_str()).collect();
             // Methods the impl defines. A method whose first parameter is
             // `self` is an INSTANCE method (dispatched on a value); one
@@ -307,12 +317,24 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
             }
         }
     }
+    let mut mono_diags: Vec<String> = Vec::new();
     if !templates.is_empty() {
         let (ctor_results, fn_rets) = build_tables(&items);
         let ctor_fields = build_ctor_fields(&items);
         let record_fields = build_record_fields(&items);
+        let known_fns: std::collections::HashSet<String> = items
+            .iter()
+            .filter_map(|it| match it {
+                Item::Function(f) => Some(f.name.clone()),
+                _ => None,
+            })
+            .collect();
         let mut mono = Mono {
             templates: &templates,
+            known_fns: &known_fns,
+            trait_methods: &trait_methods,
+            impl_trait_args: &impl_trait_args,
+            diagnostics: Vec::new(),
             ctor_results: &ctor_results,
             ctor_fields: &ctor_fields,
             record_fields: &record_fields,
@@ -323,6 +345,7 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
         };
         mono.run(&mut items);
         items.extend(mono.generated.into_iter().map(Item::Function));
+        mono_diags = mono.diagnostics;
     }
 
     // Tables used to determine a receiver's type at a trait-method call site.
@@ -374,7 +397,11 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
 
     (
         Module { imports, items, import_lines: Vec::new(), item_lines: Vec::new() },
-        missing_impls.into_inner(),
+        {
+            let mut d = missing_impls.into_inner();
+            d.extend(mono_diags);
+            d
+        },
     )
 }
 
@@ -834,10 +861,117 @@ fn bind_ctor_pattern(pat: &Pattern, ctor_fields: &HashMap<String, Vec<Type>>, sc
 }
 
 /// Replace each bound type variable in a type with its concrete instantiation.
+/// Encode a CONCRETE `Type` as the scope naming ("List<Int>", "(String, Int)").
+/// None when a type variable or unencodable form remains.
+fn encode_scope_type(t: &Type) -> Option<String> {
+    match t {
+        Type::Named(n, args) if args.is_empty() => {
+            if n.chars().next().is_some_and(char::is_lowercase) {
+                None // a type variable, not a concrete type
+            } else {
+                Some(n.clone())
+            }
+        }
+        Type::Named(n, args) => {
+            let inner: Option<Vec<String>> = args.iter().map(encode_scope_type).collect();
+            Some(format!("{n}<{}>", inner?.join(", ")))
+        }
+        Type::Tuple(ts) => {
+            let inner: Option<Vec<String>> = ts.iter().map(encode_scope_type).collect();
+            Some(format!("({})", inner?.join(", ")))
+        }
+        _ => None,
+    }
+}
+
+/// Match a type PATTERN (an impl's trait argument, possibly containing type
+/// variables) against a concrete type, collecting variable bindings as scope
+/// encodings. False when the shapes disagree or a leaf can't encode.
+fn bind_type_vars(pattern: &Type, concrete: &Type, out: &mut HashMap<String, String>) -> bool {
+    match (pattern, concrete) {
+        (Type::Named(v, a), c) if a.is_empty() && v.chars().next().is_some_and(char::is_lowercase) => {
+            match encode_scope_type(c) {
+                Some(enc) => match out.get(v) {
+                    Some(prev) => prev == &enc,
+                    None => {
+                        out.insert(v.clone(), enc);
+                        true
+                    }
+                },
+                None => false,
+            }
+        }
+        (Type::Named(pn, pa), Type::Named(cn, ca)) => {
+            pn == cn
+                && pa.len() == ca.len()
+                && pa.iter().zip(ca).all(|(p, c)| bind_type_vars(p, c, out))
+        }
+        (Type::Tuple(ps), Type::Tuple(cs)) => {
+            ps.len() == cs.len() && ps.iter().zip(cs).all(|(p, c)| bind_type_vars(p, c, out))
+        }
+        _ => pattern == concrete,
+    }
+}
+
+/// Decode a scope-encoded type name ("List<Int>", "Dict<String, Int>",
+/// "Int") back into a structured `Type` — the inverse of `simple_ty_name`.
+fn decode_scope_type(name: &str) -> Type {
+    // A tuple encoding: "(String, Int)".
+    if let Some(inner) = name.strip_prefix('(').and_then(|r| r.strip_suffix(')')) {
+        let mut args = Vec::new();
+        let mut depth = 0usize;
+        let mut start = 0usize;
+        for (i, c) in inner.char_indices() {
+            match c {
+                '<' | '(' => depth += 1,
+                '>' | ')' => depth = depth.saturating_sub(1),
+                ',' if depth == 0 => {
+                    args.push(decode_scope_type(inner[start..i].trim()));
+                    start = i + 1;
+                }
+                _ => {}
+            }
+        }
+        if start < inner.len() {
+            args.push(decode_scope_type(inner[start..].trim()));
+        }
+        return Type::Tuple(args);
+    }
+    match name.split_once('<') {
+        Some((head, rest)) if rest.ends_with('>') => {
+            let inner = &rest[..rest.len() - 1];
+            // Split on top-level commas only (nested encodings nest brackets).
+            let mut args = Vec::new();
+            let mut depth = 0usize;
+            let mut start = 0usize;
+            for (i, c) in inner.char_indices() {
+                match c {
+                    '<' | '(' => depth += 1,
+                    '>' | ')' => depth = depth.saturating_sub(1),
+                    ',' if depth == 0 => {
+                        args.push(decode_scope_type(inner[start..i].trim()));
+                        start = i + 1;
+                    }
+                    _ => {}
+                }
+            }
+            if start < inner.len() {
+                args.push(decode_scope_type(inner[start..].trim()));
+            }
+            if head == "List" && args.len() == 1 {
+                Type::Named("List".into(), args)
+            } else {
+                Type::Named(head.to_string(), args)
+            }
+        }
+        _ => Type::Named(name.to_string(), vec![]),
+    }
+}
+
 fn subst_vars(t: &Type, subst: &HashMap<&str, String>) -> Type {
     match t {
         Type::Named(n, args) if args.is_empty() && subst.contains_key(n.as_str()) => {
-            Type::Named(subst[n.as_str()].clone(), vec![])
+            decode_scope_type(&subst[n.as_str()])
         }
         Type::Named(n, args) => {
             Type::Named(n.clone(), args.iter().map(|a| subst_vars(a, subst)).collect())
@@ -894,6 +1028,17 @@ fn simple_ty_name(t: &crate::typeck::Ty) -> Option<String> {
         Ty::String => Some("String".into()),
         Ty::Duration => Some("Duration".into()),
         Ty::Named(n, args) if args.is_empty() => Some(n.clone()),
+        // Compound types use the same scope encoding `head_type_name`
+        // produces ("List<Int>"), so list_elem/head-splitting reads them.
+        Ty::List(e) => Some(format!("List<{}>", simple_ty_name(e)?)),
+        Ty::Tuple(ts) => {
+            let inner: Option<Vec<String>> = ts.iter().map(simple_ty_name).collect();
+            Some(format!("({})", inner?.join(", ")))
+        }
+        Ty::Named(n, args) => {
+            let inner: Option<Vec<String>> = args.iter().map(simple_ty_name).collect();
+            Some(format!("{n}<{}>", inner?.join(", ")))
+        }
         _ => None,
     }
 }
@@ -947,11 +1092,127 @@ fn signature_type_vars(f: &Function) -> Vec<String> {
 
 /// The type variables a function is generic over: its `where`-bound variables if
 /// bounded, otherwise the free type variables in its signature.
+/// Rename bare calls per `renames`, recursively — the substitution-directed
+/// dispatch rewrite over a specialization's body.
+fn rename_calls_block(b: &mut Block, renames: &HashMap<String, String>) {
+    fn walk_expr(e: &mut Expr, renames: &HashMap<String, String>) {
+        match e {
+            Expr::Call { name, args } => {
+                if let Some(to) = renames.get(name.as_str()) {
+                    *name = to.clone();
+                }
+                for a in args {
+                    walk_expr(a, renames);
+                }
+            }
+            Expr::Apply { func, args } => {
+                walk_expr(func, renames);
+                for a in args {
+                    walk_expr(a, renames);
+                }
+            }
+            Expr::MethodCall { receiver, args, .. } => {
+                walk_expr(receiver, renames);
+                for a in args {
+                    walk_expr(a, renames);
+                }
+            }
+            Expr::Ctor { args, .. } | Expr::List(args) | Expr::Tuple(args)
+            | Expr::Spawn { args, .. } => {
+                for a in args {
+                    walk_expr(a, renames);
+                }
+            }
+            Expr::Unary { expr, .. } | Expr::Try(expr) | Expr::As { expr, .. }
+            | Expr::Field { base: expr, .. } => walk_expr(expr, renames),
+            Expr::Binary { lhs, rhs, .. } => {
+                walk_expr(lhs, renames);
+                walk_expr(rhs, renames);
+            }
+            Expr::Range { lo, hi, .. } => {
+                walk_expr(lo, renames);
+                walk_expr(hi, renames);
+            }
+            Expr::Index { base, index } => {
+                walk_expr(base, renames);
+                walk_expr(index, renames);
+            }
+            Expr::Record { fields, spread, .. } => {
+                for (_, v) in fields {
+                    walk_expr(v, renames);
+                }
+                if let Some(sp) = spread {
+                    walk_expr(sp, renames);
+                }
+            }
+            Expr::RecordUpdate { base, fields } => {
+                walk_expr(base, renames);
+                for (_, v) in fields {
+                    walk_expr(v, renames);
+                }
+            }
+            Expr::If { cond, then_block, else_block } => {
+                walk_expr(cond, renames);
+                rename_calls_block(then_block, renames);
+                if let Some(b) = else_block {
+                    rename_calls_block(b, renames);
+                }
+            }
+            Expr::Match { scrutinee, arms } => {
+                walk_expr(scrutinee, renames);
+                for a in arms {
+                    if let Some(g) = &mut a.guard {
+                        walk_expr(g, renames);
+                    }
+                    walk_expr(&mut a.body, renames);
+                }
+            }
+            Expr::While { cond, body } => {
+                walk_expr(cond, renames);
+                rename_calls_block(body, renames);
+            }
+            Expr::WhileLet { scrutinee, body, .. } => {
+                walk_expr(scrutinee, renames);
+                rename_calls_block(body, renames);
+            }
+            Expr::For { iter, body, .. } => {
+                walk_expr(iter, renames);
+                rename_calls_block(body, renames);
+            }
+            Expr::Lambda { body, .. } | Expr::Block(body) => {
+                rename_calls_block(body, renames)
+            }
+            Expr::Int(_) | Expr::Duration(_) | Expr::Float(_) | Expr::Str(_)
+            | Expr::Bool(_) | Expr::Var(_) => {}
+        }
+    }
+    for st in &mut b.stmts {
+        match st {
+            Stmt::Let { value, .. }
+            | Stmt::Assign { value, .. }
+            | Stmt::LetTuple { value, .. }
+            | Stmt::Return(Some(value))
+            | Stmt::Expr(value)
+            | Stmt::Yield(value) => walk_expr(value, renames),
+            Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
+        }
+    }
+}
+
 fn type_var_list(f: &Function) -> Vec<String> {
     if f.bounds.is_empty() {
         signature_type_vars(f)
     } else {
-        f.bounds.iter().map(|(v, _)| v.clone()).collect()
+        // Bound variables first, then any other signature variables — a
+        // bounded fn can be generic over more than its bounds (`collect`
+        // is bounded on its RESULT `c` and free in its element `a`).
+        let mut vars: Vec<String> = f.bounds.iter().map(|(v, _, _)| v.clone()).collect();
+        for v in signature_type_vars(f) {
+            if !vars.contains(&v) {
+                vars.push(v);
+            }
+        }
+        vars
     }
 }
 
@@ -965,6 +1226,16 @@ fn type_var_list(f: &Function) -> Vec<String> {
 /// unbounded ones specialized on a primitive type argument.
 struct Mono<'a> {
     templates: &'a HashMap<String, Function>,
+    /// Every function name in the module — a dispatch rewrite only fires
+    /// when its target actually exists (a missing impl stays a bare call,
+    /// which the post-mono pass diagnoses properly).
+    known_fns: &'a std::collections::HashSet<String>,
+    /// method name -> owning trait, and (trait, impl head) -> the impl's
+    /// trait type-arguments — substitution-directed dispatch for bounds.
+    trait_methods: &'a HashMap<String, String>,
+    impl_trait_args: &'a HashMap<(String, String), Vec<Type>>,
+    /// Loud failures (an uninferrable bounded call) surfaced as check errors.
+    diagnostics: Vec<String>,
     ctor_results: &'a HashMap<String, String>,
     ctor_fields: &'a HashMap<String, Vec<Type>>,
     record_fields: &'a HashMap<String, Vec<(String, Type)>>,
@@ -1059,6 +1330,7 @@ impl Mono<'_> {
         template: &Function,
         args: &[Expr],
         scope: &Scope,
+        result_ty: Option<&crate::typeck::Ty>,
     ) -> Option<Vec<String>> {
         let mut result = Vec::new();
         let bounded = !template.bounds.is_empty();
@@ -1134,7 +1406,7 @@ impl Mono<'_> {
                     }
                 }
             }
-            let from_table = match (&found, &table_name) {
+            let mut from_table = match (&found, &table_name) {
                 (None, Some(tn)) => {
                     found = Some(tn.clone());
                     true
@@ -1142,6 +1414,19 @@ impl Mono<'_> {
                 (Some(f), Some(tn)) => f == tn,
                 _ => false,
             };
+            // A RETURN-POSITION variable (`fn collect(...) -> c`): no argument
+            // mentions it, so it binds from the call site's EXPECTED type —
+            // typeck's table, fed by unification (an ascribed binding, a typed
+            // parameter the result is passed to). This is what makes
+            // annotation-driven instantiation work.
+            if found.is_none() {
+                if let (Some(ret), Some(ty)) = (&template.ret, result_ty) {
+                    if let Some(tn) = bind_var_simple(ret, ty, &var) {
+                        found = Some(tn);
+                        from_table = true;
+                    }
+                }
+            }
             // A `where`-bounded generic resolves to whatever concrete type the
             // trait dispatch picked (any named type). An *unbounded* generic is
             // only specialized on a primitive type argument — the cases the i32
@@ -1162,7 +1447,17 @@ impl Mono<'_> {
         if let Some(m) = self.memo.get(&key) {
             return m.clone();
         }
-        let mangled = format!("{name}__{}", type_args.join("__"));
+        // Type arguments may carry scope encodings ("List<Int>"); mangle
+        // segments stay identifier-safe.
+        let safe: Vec<String> = type_args
+            .iter()
+            .map(|t| {
+                t.chars()
+                    .map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' })
+                    .collect()
+            })
+            .collect();
+        let mangled = format!("{name}__{}", safe.join("__"));
         self.memo.insert(key, mangled.clone());
 
         let mut f = self.templates[name].clone();
@@ -1181,6 +1476,73 @@ impl Mono<'_> {
         f.ret = f.ret.as_ref().map(|t| subst_vars(t, &subst));
         if let Some(Type::Named(n, _)) = &f.ret {
             self.fn_rets.insert(mangled.clone(), n.clone());
+        }
+        // Substitution-directed trait dispatch: a bound variable's trait
+        // methods resolve by the SUBSTITUTED type — not by any argument — so a
+        // constructor-style method (`from_iter`, which mentions its bound
+        // variable only in the RESULT) dispatches correctly, and the impl's
+        // own generic method is specialized at the bound's type arguments.
+        let trait_method_pairs: Vec<(String, String)> = self
+            .trait_methods
+            .iter()
+            .map(|(m, t)| (m.clone(), t.clone()))
+            .collect();
+        let bounds_snapshot = f.bounds.clone();
+        let mut renames: HashMap<String, String> = HashMap::new();
+        for (bvar, btrait, btargs) in &bounds_snapshot {
+            let Some(concrete) = subst.get(bvar.as_str()) else { continue };
+            let head = concrete.split('<').next().unwrap_or(concrete).to_string();
+            let impl_vars = self.impl_trait_args.get(&(btrait.clone(), head.clone())).cloned();
+            for (method, owner) in &trait_method_pairs {
+                if owner != btrait {
+                    continue;
+                }
+                let mangled = format!("{btrait}__{head}__{method}");
+                let mut target = mangled.clone();
+                if let (Some(vars), Some(tmpl)) =
+                    (&impl_vars, self.templates.get(&mangled).cloned())
+                {
+                    // Bind the impl method's own type variables by STRUCTURAL
+                    // matching: each impl trait-argument pattern against the
+                    // bound's (substituted) concrete argument. Anything that
+                    // doesn't bind falls back to the generic impl function.
+                    let mut bound_map: HashMap<String, String> = HashMap::new();
+                    let mut ok = vars.len() == btargs.len();
+                    if ok {
+                        for (pat, targ) in vars.iter().zip(btargs) {
+                            let concrete = subst_vars(targ, &subst);
+                            if !bind_type_vars(pat, &concrete, &mut bound_map) {
+                                ok = false;
+                                break;
+                            }
+                        }
+                    }
+                    if ok {
+                        let mut targs_out: Vec<String> = Vec::new();
+                        for v in type_var_list(&tmpl) {
+                            match bound_map.get(&v) {
+                                Some(c) => targs_out.push(c.clone()),
+                                None => {
+                                    ok = false;
+                                    break;
+                                }
+                            }
+                        }
+                        if ok && !targs_out.is_empty() {
+                            target = self.specialize(&mangled, targs_out);
+                        }
+                    }
+                }
+                if target != mangled
+                    || self.known_fns.contains(&mangled)
+                    || self.templates.contains_key(&mangled)
+                {
+                    renames.insert(method.clone(), target);
+                }
+            }
+        }
+        if !renames.is_empty() {
+            rename_calls_block(&mut f.body, &renames);
         }
         drop(subst);
         // Monomorphization discharges the `where` bounds: every bound type
@@ -1217,14 +1579,34 @@ impl Mono<'_> {
     }
 
     fn walk_expr(&mut self, e: &mut Expr, scope: &mut Scope) {
+        let result_ty = self.table.type_of(e).cloned();
         match e {
             Expr::Call { name, args } => {
                 for a in args.iter_mut() {
                     self.walk_expr(a, scope);
                 }
                 if let Some(template) = self.templates.get(name.as_str()).cloned() {
-                    if let Some(type_args) = self.resolve_type_args(&template, args, scope) {
-                        *name = self.specialize(name, type_args);
+                    match self.resolve_type_args(&template, args, scope, result_ty.as_ref()) {
+                        Some(type_args) => *name = self.specialize(name, type_args),
+                        // A BOUNDED template has no generic fallback (its body
+                        // can't compile unresolved), so failing to infer is an
+                        // error — and for a result-position variable the fix
+                        // is an ascription.
+                        None if !template.bounds.is_empty() => {
+                            if std::env::var_os("WITCHY_DEBUG_MONO").is_some() {
+                                eprintln!(
+                                    "mono: `{name}` unresolved; result_ty={:?}; vars={:?}",
+                                    result_ty,
+                                    type_var_list(&template)
+                                );
+                            }
+                            self.diagnostics.push(format!(
+                                "cannot infer the result type for `{name}` — give the \
+                                 expected type, e.g. ascribe the binding \
+                                 (`let x: List(Int) = {name}(…)`)"
+                            ));
+                        }
+                        None => {}
                     }
                 }
             }

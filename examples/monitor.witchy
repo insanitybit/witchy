@@ -19,6 +19,6 @@ impl Monitor:
 fn main(console: Console):
     let monitor = spawn Monitor(console)
 
-    let sample = iter.collect(iter.take(readings(1), 6))
+    let sample: List(Int) = iter.collect(iter.take(readings(1), 6))
     for r in sample:
         send(monitor, Reading(r))

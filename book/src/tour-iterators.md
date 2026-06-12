@@ -25,7 +25,8 @@ fn main(console: Console):
     // "the even numbers in [1, 20), each doubled" — built lazily, then realized.
     let evens = iter.filter(iter.range(1, 20), fn(n: Int): n % 2 == 0)
     let doubled = iter.map(evens, fn(n: Int): n * 2)
-    print(console, show(iter.collect(iter.take(doubled, 5))))
+    let firsts: List(Int) = iter.collect(iter.take(doubled, 5))
+    print(console, show(firsts))
 ```
 
 ```text
@@ -63,7 +64,8 @@ fn show(xs: List(Int)) -> String:
     string.join(parts, ", ")
 
 fn main(console: Console):
-    print(console, show(iter.collect(iter.take(fibs(), 10))))
+    let first10: List(Int) = iter.collect(iter.take(fibs(), 10))
+    print(console, show(first10))
 ```
 
 ```text
@@ -105,6 +107,12 @@ collatz(27) steps: 112
 ```
 
 ## Why this stays simple
+
+`collect` builds **whatever the call site expects** — any type implementing
+`FromIterator`. The ascription chooses: a `List(Int)`, a
+`Dict(String, Int)` from an iterator of pairs, or a `String` from an
+iterator of pieces. With no expected type (say, collecting just to print),
+the compiler asks you to ascribe the binding rather than guess.
 
 If you've met iterators in Rust, you may be bracing for lifetimes and lending
 iterators. There's none of that here: witchy values are plain data with no

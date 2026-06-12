@@ -53,6 +53,9 @@ pub enum Item {
 #[derive(Debug, Clone, PartialEq)]
 pub struct TraitDef {
     pub name: String,
+    /// `trait FromIterator(e):` — the trait's type parameters. Empty for the
+    /// plain `trait Show:` form.
+    pub typarams: Vec<String>,
     pub methods: Vec<MethodSig>,
 }
 
@@ -73,6 +76,9 @@ pub struct MethodSig {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ImplDef {
     pub trait_name: Option<String>,
+    /// `impl FromIterator(a) for …` — the trait's type arguments at this
+    /// impl. Empty for unparameterized traits.
+    pub trait_args: Vec<Type>,
     pub type_name: String,
     pub methods: Vec<Function>,
     /// Message handlers (`on Msg(...) { ... }`) for an inherent impl on an actor
@@ -137,7 +143,9 @@ pub struct Function {
     /// Trait bounds from a `where` clause: `(type variable, trait)` pairs, e.g.
     /// `where a: Ord` is `("a", "Ord")`. Such a function is a generic template;
     /// `crate::traits` monomorphizes it per concrete instantiation.
-    pub bounds: Vec<(String, String)>,
+    /// `where a: Ord` / `where c: FromIterator(a)` — (variable, trait,
+    /// trait type-arguments).
+    pub bounds: Vec<(String, String, Vec<Type>)>,
     /// `gen fn` — a generator whose `yield`s build a lazy `iter.Iter`. Lowered to
     /// ordinary functions by `crate::generators` before any later stage.
     pub is_gen: bool,

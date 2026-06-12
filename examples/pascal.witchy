@@ -28,5 +28,6 @@ fn show_row(row: List(Int)) -> String:
     string.join(parts, " ")
 
 fn main(console: Console):
-    for row in iter.collect(iter.take(pascal(), 6)):
+    let rows: List(List(Int)) = iter.collect(iter.take(pascal(), 6))
+    for row in rows:
         print(console, show_row(row))

@@ -184,7 +184,7 @@ fn item_str(s: &mut String, item: &Item, c: &mut Comments) {
     }
 }
 
-fn sig(name: &str, params: &[Param], ret: &Option<Type>, bounds: &[(String, String)]) -> String {
+fn sig(name: &str, params: &[Param], ret: &Option<Type>, bounds: &[(String, String, Vec<Type>)]) -> String {
     // `impl Trait` params are stored desugared (a fresh `impltrait_N` type var
     // plus a bound). Render them back to `impl Trait` and omit those bounds from
     // the `where` clause, so the surface syntax round-trips through `witchy fmt`.
@@ -200,8 +200,8 @@ fn sig(name: &str, params: &[Param], ret: &Option<Type>, bounds: &[(String, Stri
             Some(Type::Named(v, args)) if args.is_empty() && is_impl_var(v) => {
                 let trait_name = bounds
                     .iter()
-                    .find(|(bv, _)| bv == v)
-                    .map(|(_, t)| t.as_str())
+                    .find(|(bv, _, _)| bv == v)
+                    .map(|(_, t, _)| t.as_str())
                     .unwrap_or("?");
                 h.push_str(&format!("{}: impl {trait_name}", p.name));
             }
@@ -213,16 +213,21 @@ fn sig(name: &str, params: &[Param], ret: &Option<Type>, bounds: &[(String, Stri
         h.push_str(" -> ");
         h.push_str(&type_str(r));
     }
-    let visible: Vec<&(String, String)> = bounds.iter().filter(|(v, _)| !is_impl_var(v)).collect();
+    let visible: Vec<&(String, String, Vec<Type>)> =
+        bounds.iter().filter(|(v, _, _)| !is_impl_var(v)).collect();
     if !visible.is_empty() {
         h.push_str(" where ");
-        for (i, (v, t)) in visible.iter().enumerate() {
+        for (i, (v, t, ta)) in visible.iter().enumerate() {
             if i > 0 {
                 h.push_str(", ");
             }
             h.push_str(v);
             h.push_str(": ");
             h.push_str(t);
+            if !ta.is_empty() {
+                let rendered: Vec<String> = ta.iter().map(type_str).collect();
+                h.push_str(&format!("({})", rendered.join(", ")));
+            }
         }
     }
     h
@@ -299,6 +304,9 @@ fn type_def(s: &mut String, t: &TypeDef) {
 fn trait_def(s: &mut String, t: &TraitDef, c: &mut Comments) {
     s.push_str("trait ");
     s.push_str(&t.name);
+    if !t.typarams.is_empty() {
+        s.push_str(&format!("({})", t.typarams.join(", ")));
+    }
     s.push_str(":\n");
     for m in &t.methods {
         pad(s, 1);
@@ -318,6 +326,10 @@ fn impl_def(s: &mut String, im: &ImplDef, c: &mut Comments) {
     s.push_str("impl ");
     if let Some(t) = &im.trait_name {
         s.push_str(t);
+        if !im.trait_args.is_empty() {
+            let rendered: Vec<String> = im.trait_args.iter().map(type_str).collect();
+            s.push_str(&format!("({})", rendered.join(", ")));
+        }
         s.push_str(" for ");
     }
     s.push_str(&im.type_name);

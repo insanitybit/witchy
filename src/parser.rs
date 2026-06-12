@@ -94,7 +94,7 @@ struct Parser {
     /// `impl Trait` parameter bounds collected while parsing one function's
     /// params — `fn f(x: impl Show)` desugars to a fresh type var plus a
     /// `where`-style bound, reusing the whole trait/monomorphization path.
-    pending_impl_bounds: Vec<(String, String)>,
+    pending_impl_bounds: Vec<(String, String, Vec<Type>)>,
 }
 
 impl Parser {
@@ -249,13 +249,24 @@ impl Parser {
     fn trait_def(&mut self) -> Result<TraitDef, ParseError> {
         self.expect(&Tok::Trait)?;
         let name = self.ident()?;
+        // `trait FromIterator(e):` — type parameters.
+        let mut typarams = Vec::new();
+        if self.eat(&Tok::LParen) {
+            while !self.at(&Tok::RParen) {
+                typarams.push(self.ident()?);
+                if !self.eat(&Tok::Comma) {
+                    break;
+                }
+            }
+            self.expect(&Tok::RParen)?;
+        }
         self.expect(&Tok::LBrace)?;
         let mut methods = Vec::new();
         while !self.at(&Tok::RBrace) && !self.at(&Tok::Eof) {
             methods.push(self.method_sig()?);
         }
         self.expect(&Tok::RBrace)?;
-        Ok(TraitDef { name, methods })
+        Ok(TraitDef { name, typarams, methods })
     }
 
     /// A method signature inside a `trait`: `fn name(params) -> Ret`, with an
@@ -290,9 +301,38 @@ impl Parser {
     fn impl_def(&mut self) -> Result<ImplDef, ParseError> {
         self.expect(&Tok::Impl)?;
         let first = self.ident()?;
+        // `impl FromIterator(a) for List(a):` — trait type-arguments, and a
+        // possibly-generic target whose HEAD names the impl.
+        let mut trait_args = Vec::new();
+        if self.at(&Tok::LParen) {
+            self.advance();
+            while !self.at(&Tok::RParen) {
+                trait_args.push(self.ty()?);
+                if !self.eat(&Tok::Comma) {
+                    break;
+                }
+            }
+            self.expect(&Tok::RParen)?;
+        }
         let (trait_name, type_name) = if self.eat(&Tok::For) {
-            (Some(first), self.ident()?)
+            let head = self.ident()?;
+            // A generic target (`List(a)`) keeps only its head: impls are
+            // registered and mangled by head, and the methods stay generic.
+            if self.at(&Tok::LParen) {
+                self.advance();
+                while !self.at(&Tok::RParen) {
+                    let _ = self.ty()?;
+                    if !self.eat(&Tok::Comma) {
+                        break;
+                    }
+                }
+                self.expect(&Tok::RParen)?;
+            }
+            (Some(first), head)
         } else {
+            if !trait_args.is_empty() {
+                return Err(self.error("an inherent `impl Type:` takes no type arguments"));
+            }
             (None, first)
         };
         self.expect(&Tok::LBrace)?;
@@ -308,6 +348,7 @@ impl Parser {
         self.expect(&Tok::RBrace)?;
         Ok(ImplDef {
             trait_name,
+            trait_args,
             type_name,
             methods,
             handlers,
@@ -497,14 +538,26 @@ impl Parser {
     }
 
     /// An optional `where a: Trait, b: Trait2` clause after a function signature.
-    fn where_clause(&mut self) -> Result<Vec<(String, String)>, ParseError> {
+    fn where_clause(&mut self) -> Result<Vec<(String, String, Vec<Type>)>, ParseError> {
         let mut bounds = Vec::new();
         if self.eat(&Tok::Where) {
             loop {
                 let var = self.ident()?;
                 self.expect(&Tok::Colon)?;
                 let trait_name = self.ident()?;
-                bounds.push((var, trait_name));
+                // `where c: FromIterator(a)` — the trait's type arguments.
+                let mut targs = Vec::new();
+                if self.at(&Tok::LParen) {
+                    self.advance();
+                    while !self.at(&Tok::RParen) {
+                        targs.push(self.ty()?);
+                        if !self.eat(&Tok::Comma) {
+                            break;
+                        }
+                    }
+                    self.expect(&Tok::RParen)?;
+                }
+                bounds.push((var, trait_name, targs));
                 if !self.eat(&Tok::Comma) {
                     break;
                 }
@@ -539,7 +592,7 @@ impl Parser {
                     self.advance();
                     let trait_name = self.ident()?;
                     let var = format!("impltrait_{}", self.pending_impl_bounds.len());
-                    self.pending_impl_bounds.push((var.clone(), trait_name));
+                    self.pending_impl_bounds.push((var.clone(), trait_name, Vec::new()));
                     Some(Type::Named(var, Vec::new()))
                 } else {
                     Some(self.ty()?)
@@ -1867,13 +1920,13 @@ fn add(a: Int, b: Int) -> Int:
             other => panic!("expected a type var, got {other:?}"),
         };
         assert_ne!(p0, p1, "each impl-Trait param gets its own type variable");
-        assert!(f.bounds.contains(&(p0, "Show".to_string())));
-        assert!(f.bounds.contains(&(p1, "Ord".to_string())));
+        assert!(f.bounds.contains(&(p0, "Show".to_string(), Vec::new())));
+        assert!(f.bounds.contains(&(p1, "Ord".to_string(), Vec::new())));
         // It coexists with an explicit `where`.
         let m2 = parse_module("fn g(x: impl Show, y: a) -> Int where a: Ord:\n    0\n").unwrap();
         let Item::Function(g) = &m2.items[0] else { panic!() };
-        assert!(g.bounds.iter().any(|(_, t)| t == "Show"));
-        assert!(g.bounds.contains(&("a".to_string(), "Ord".to_string())));
+        assert!(g.bounds.iter().any(|(_, t, _)| t == "Show"));
+        assert!(g.bounds.contains(&("a".to_string(), "Ord".to_string(), Vec::new())));
     }
 
     #[test]

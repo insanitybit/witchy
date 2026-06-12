@@ -499,9 +499,9 @@ Map each element to an iterator and concatenate the results.
 
 Call `f` on every element for its effect (drives to exhaustion). The right consumer for a generator when you don't need to early-exit — no list is built.
 
-#### `fn collect(it: Iter(a)) -> List(a)`
+#### `fn collect(it: Iter(a)) -> c where c: FromIterator(a)`
 
-Collect into a list (drives the iterator to exhaustion — don't call on an unbounded one).
+Collect into any FromIterator type, chosen by the call site's expected type (drives the iterator to exhaustion — don't call on an unbounded one):     let xs: List(Int) = iter.collect(it)     let joined: String = iter.collect(pieces)
 
 #### `fn fold(it: Iter(a), init: b, f: fn(b, a) -> b) -> b`
 

@@ -93,6 +93,7 @@ fn other_param(ty: &str) -> Param {
 /// structural rendering as the derived default.
 fn impl_show(t: &TypeDef) -> Item {
     Item::Impl(ImplDef {
+        trait_args: Vec::new(),
         trait_name: Some("Show".into()),
         type_name: t.name.clone(),
         handlers: Vec::new(),
@@ -112,6 +113,7 @@ fn impl_show(t: &TypeDef) -> Item {
 /// structural equality (deep, both backends).
 fn impl_eq(t: &TypeDef) -> Item {
     Item::Impl(ImplDef {
+        trait_args: Vec::new(),
         trait_name: Some("Eq".into()),
         type_name: t.name.clone(),
         handlers: Vec::new(),
@@ -192,6 +194,7 @@ fn impl_ord(t: &TypeDef) -> Result<Item, String> {
         };
     }
     Ok(Item::Impl(ImplDef {
+        trait_args: Vec::new(),
         trait_name: Some("Ord".into()),
         type_name: t.name.clone(),
         handlers: Vec::new(),
@@ -236,6 +239,7 @@ fn impl_json(t: &TypeDef) -> Result<Item, String> {
         args: vec![Expr::List(pairs)],
     };
     Ok(Item::Impl(ImplDef {
+        trait_args: Vec::new(),
         trait_name: None,
         type_name: t.name.clone(),
         handlers: Vec::new(),

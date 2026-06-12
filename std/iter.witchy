@@ -205,19 +205,59 @@ pub fn for_each(it: Iter(a), f: fn(a) -> Nil):
 
 // ---- consumers ----
 
-// Collect into a list (drives the iterator to exhaustion — don't call on an
-// unbounded one).
-pub fn collect(it: Iter(a)) -> List(a):
-    var out = []
-    var cur = it
-    var more = true
-    while more:
-        match next(cur):
-            Empty -> more = false
-            Item(x, rest) ->
-                out = list.push(out, x)
-                cur = rest
-    out
+// A type an iterator can be collected INTO. `from_iter` mentions the
+// implementing type only in its result, so a call dispatches on the EXPECTED
+// type — an ascribed binding, a typed parameter, a for-loop — not on any
+// argument.
+trait FromIterator(e):
+    fn from_iter(it: Iter(e)) -> Self
+
+impl FromIterator(a) for List(a):
+    fn from_iter(it: Iter(a)) -> List(a):
+        var out = []
+        var cur = it
+        var more = true
+        while more:
+            match next(cur):
+                Empty -> more = false
+                Item(x, rest) ->
+                    out = list.push(out, x)
+                    cur = rest
+        out
+
+impl FromIterator((k, v)) for Dict(k, v):
+    fn from_iter(it: Iter((k, v))) -> Dict(k, v):
+        var out = dict.new()
+        var cur = it
+        var more = true
+        while more:
+            match next(cur):
+                Empty -> more = false
+                Item(pair, rest) ->
+                    let (key, value) = pair
+                    out = dict.insert(out, key, value)
+                    cur = rest
+        out
+
+impl FromIterator(String) for String:
+    fn from_iter(it: Iter(String)) -> String:
+        var out = ""
+        var cur = it
+        var more = true
+        while more:
+            match next(cur):
+                Empty -> more = false
+                Item(piece, rest) ->
+                    out = out + piece
+                    cur = rest
+        out
+
+// Collect into any FromIterator type, chosen by the call site's expected
+// type (drives the iterator to exhaustion — don't call on an unbounded one):
+//     let xs: List(Int) = iter.collect(it)
+//     let joined: String = iter.collect(pieces)
+pub fn collect(it: Iter(a)) -> c where c: FromIterator(a):
+    from_iter(it)
 
 // Left fold over the elements.
 pub fn fold(it: Iter(a), init: b, f: fn(b, a) -> b) -> b:

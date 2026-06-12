@@ -73,7 +73,7 @@ fn variant_str(v: &Variant) -> String {
     }
 }
 
-fn signature(name: &str, params: &[Param], ret: &Option<Type>, bounds: &[(String, String)]) -> String {
+fn signature(name: &str, params: &[Param], ret: &Option<Type>, bounds: &[(String, String, Vec<Type>)]) -> String {
     let ps: Vec<String> = params.iter().map(|p| param_str(p, bounds)).collect();
     let r = ret
         .as_ref()
@@ -81,30 +81,44 @@ fn signature(name: &str, params: &[Param], ret: &Option<Type>, bounds: &[(String
         .unwrap_or_default();
     // `where` bounds, minus the synthetic `impl Trait` ones (rendered inline on
     // the param), matching `witchy fmt`.
-    let visible: Vec<&(String, String)> =
-        bounds.iter().filter(|(v, _)| !is_impl_var(v)).collect();
+    let visible: Vec<&(String, String, Vec<Type>)> =
+        bounds.iter().filter(|(v, _, _)| !is_impl_var(v)).collect();
     let w = if visible.is_empty() {
         String::new()
     } else {
-        let bs: Vec<String> = visible.iter().map(|(v, t)| format!("{v}: {t}")).collect();
+        let bs: Vec<String> = visible
+            .iter()
+            .map(|(v, t, ta)| format!("{v}: {}", bound_trait_str(t, ta)))
+            .collect();
         format!(" where {}", bs.join(", "))
     };
     format!("fn {name}({}){r}{w}", ps.join(", "))
+}
+
+
+/// Render a bound's trait with its type arguments: `Ord`, `FromIterator(a)`.
+fn bound_trait_str(t: &str, args: &[Type]) -> String {
+    if args.is_empty() {
+        t.to_string()
+    } else {
+        let rendered: Vec<String> = args.iter().map(type_str).collect();
+        format!("{t}({})", rendered.join(", "))
+    }
 }
 
 fn is_impl_var(v: &str) -> bool {
     v.starts_with("impltrait_")
 }
 
-fn param_str(p: &Param, bounds: &[(String, String)]) -> String {
+fn param_str(p: &Param, bounds: &[(String, String, Vec<Type>)]) -> String {
     match &p.ty {
         // An `impl Trait` param is stored desugared (a fresh `impltrait_N` type
         // var plus a bound); render it back to the surface `impl Trait`.
         Some(Type::Named(v, args)) if args.is_empty() && is_impl_var(v) => {
             let trait_name = bounds
                 .iter()
-                .find(|(bv, _)| bv == v)
-                .map(|(_, t)| t.as_str())
+                .find(|(bv, _, _)| bv == v)
+                .map(|(_, t, _)| t.as_str())
                 .unwrap_or("?");
             format!("{}: impl {trait_name}", p.name)
         }

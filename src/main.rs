@@ -2344,7 +2344,7 @@ mod example_tests {
     /// return — renders identically on both backends.
     #[test]
     fn interpolation_of_mono_typed_values_agrees() {
-        let src = "import iter\n\ntype Msg:\n    Text(String)\n    Silence\n\nfn main(console: Console):\n    match Text(\"hi\"):\n        Text(s) -> print(console, \"got: ${s}\")\n        Silence -> print(console, \"none\")\n    let collected = iter.collect(iter.take(iter.range(1, 100), 3))\n    print(console, \"collected: ${collected}\")\n";
+        let src = "import iter\n\ntype Msg:\n    Text(String)\n    Silence\n\nfn main(console: Console):\n    match Text(\"hi\"):\n        Text(s) -> print(console, \"got: ${s}\")\n        Silence -> print(console, \"none\")\n    let collected: List(Int) = iter.collect(iter.take(iter.range(1, 100), 3))\n    print(console, \"collected: ${collected}\")\n";
         let want: Vec<String> = ["got: hi", "collected: [1, 2, 3]"]
             .iter()
             .map(|s| s.to_string())
@@ -4024,14 +4024,19 @@ fn yn(b: Bool) -> String:
         assert_eq!(wasm_run(src), want, "compiled WASM must agree");
     }
 
-    /// The boundary of structural equality stays LOUD: a generic ADT whose
-    /// payload is unresolvable at the comparison site (a generic function's
-    /// `Result(a, String)` return, with a non-primitive `a` the monomorphizer
-    /// can't specialize) is a codegen error — never a silent pointer compare.
+    /// The boundary of structural equality stays LOUD where the payload is
+    /// genuinely unresolvable — and return-position inference has moved that
+    /// boundary: a list-literal payload now RESOLVES (and compares content-
+    /// correctly on both backends), while an empty-list payload, with nothing
+    /// to pin its element type, stays a codegen error — never a silent
+    /// pointer compare.
     #[test]
     fn unsupported_compound_equality_is_a_loud_error_not_silent() {
-        let res = "import result\n\nfn wrap(x: a) -> Result(a, String):\n    Ok(x)\n\nfn main(console: Console):\n    print(console, __render(wrap([1]) == wrap([2])))\n";
-        let rm = parser::parse_module(res).expect("parse");
+        let resolved = "import result\n\nfn wrap(x: a) -> Result(a, String):\n    Ok(x)\n\nfn main(console: Console):\n    print(console, __render(wrap([1]) == wrap([2])))\n";
+        assert_eq!(interp(resolved), vec!["false"]);
+        assert_eq!(wasm_run(resolved), vec!["false"], "backends agree");
+        let unresolvable = "import result\n\nfn wrap(x: a) -> Result(a, String):\n    Ok(x)\n\nfn main(console: Console):\n    print(console, __render(wrap([]) == wrap([])))\n";
+        let rm = parser::parse_module(unresolvable).expect("parse");
         let linked = crate::linker::link(vec![("main".into(), rm)], "main").expect("link");
         assert!(
             codegen::compile_module(&linked).is_err(),
@@ -8496,7 +8501,8 @@ import func
 import string
 fn main(console: Console):
     var es = []
-    for p in iter.collect(iter.enumerate(iter.from_list(["a", "b", "c"]))):
+    let ps: List((Int, String)) = iter.collect(iter.enumerate(iter.from_list(["a", "b", "c"])))
+    for p in ps:
         es = list.push(es, __render(func.first(p)) + func.second(p))
     print(console, string.join(es, " "))
     print(console, __render(iter.count(iter.zip(iter.count_from(1), iter.from_list([0, 0, 0])))))
@@ -8582,7 +8588,8 @@ fn main(console: Console):
         None -> print(console, "none")
     // a finite range, doubled and collected
     print(console, __render(iter.count(iter.range(0, 5))))
-    for v in iter.collect(iter.map(iter.range(0, 3), fn(n: Int): n * 10)):
+    let vs: List(Int) = iter.collect(iter.map(iter.range(0, 3), fn(n: Int): n * 10))
+    for v in vs:
         print(console, __render(v))
 "#;
         let sources = [("iter", crate::bundled_module("iter").unwrap()), ("main", client)];

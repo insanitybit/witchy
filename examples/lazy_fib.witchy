@@ -24,7 +24,8 @@ fn show(xs: List(Int)) -> String:
 
 fn main(console: Console):
     // The first 10 Fibonacci numbers (take, then collect into a list).
-    print(console, "first 10: " + show(iter.collect(iter.take(fibs(), 10))))
+    let first10: List(Int) = iter.collect(iter.take(fibs(), 10))
+    print(console, "first 10: " + show(first10))
 
     // The sum of the even Fibonacci numbers below 1000 — take_while / filter /
     // sum, all lazy over the infinite stream.
