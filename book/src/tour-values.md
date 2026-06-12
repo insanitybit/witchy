@@ -134,6 +134,10 @@ A couple of practical notes you'll bump into:
 - `list`, `dict`, `string`, `math`, `option`, and `result` form **the
   prelude**: their functions are available in every program with no `import`
   line. That's why none of the examples above import anything.
+- A binding can carry its type: `let xs: List(Int) = []` pins an otherwise
+  ambiguous literal, and `let d: DateTime = ...` turns a wrong assumption
+  into an error at that line instead of a confusing one later. Locals are
+  inferred by default; ascribe when it helps.
 - Intrinsics like `to_string` aren't first-class function values, so to pass
   one to `list.map` you wrap it in a lambda: `fn(n: Int): "${n}"`.
 

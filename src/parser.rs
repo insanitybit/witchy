@@ -669,9 +669,15 @@ impl Parser {
                 return Ok(Stmt::LetTuple { names, value });
             }
             let name = self.ident()?;
+            // `let x: T = e` — an optional ascription, unified with the value.
+            let ty = if self.eat(&Tok::Colon) {
+                Some(self.ty()?)
+            } else {
+                None
+            };
             self.expect(&Tok::Eq)?;
             let value = self.expr(0)?;
-            Ok(Stmt::Let { name, mutable, value })
+            Ok(Stmt::Let { name, ty, mutable, value })
         } else if self.is_assignment() {
             let name = self.ident()?;
             // `x op= e` desugars to `x = x op e`; plain `x = e` is unchanged.
@@ -1152,6 +1158,7 @@ impl Parser {
             stmts: vec![
                 Stmt::Let {
                     name: acc.clone(),
+                    ty: None,
                     mutable: true,
                     value: Expr::List(Vec::new()),
                 },
@@ -1596,9 +1603,9 @@ pub(crate) fn desugar_range(lo: Expr, hi: Expr, inclusive: bool) -> Expr {
     };
     Expr::Block(Block {
         stmts: vec![
-            Stmt::Let { name: acc.clone(), mutable: true, value: Expr::List(Vec::new()) },
-            Stmt::Let { name: idx.clone(), mutable: true, value: lo },
-            Stmt::Let { name: end, mutable: false, value: hi },
+            Stmt::Let { name: acc.clone(), ty: None, mutable: true, value: Expr::List(Vec::new()) },
+            Stmt::Let { name: idx.clone(), ty: None, mutable: true, value: lo },
+            Stmt::Let { name: end, ty: None, mutable: false, value: hi },
             Stmt::Expr(Expr::While { cond: Box::new(lt), body }),
             Stmt::Expr(Expr::Var(acc)),
         ],

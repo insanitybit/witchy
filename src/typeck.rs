@@ -1602,8 +1602,21 @@ impl Checker {
                 self.cur_line = *line;
             }
             match stmt {
-                Stmt::Let { name, mutable, value } => {
+                Stmt::Let { name, ty: decl, mutable, value } => {
                     let vt = self.infer(value)?;
+                    // An ascription is a unification constraint: it pins type
+                    // variables the RHS leaves open (`let xs: List(Int) = []`,
+                    // a return-position type variable) and errors at THIS line
+                    // when the RHS disagrees.
+                    if let Some(decl) = decl {
+                        let want = self.to_ty(decl);
+                        self.unify(&want, &vt).map_err(|e| TypeError {
+                            message: format!(
+                                "`{name}` is declared `{want}` but the value disagrees: {}",
+                                e.message
+                            ),
+                        })?;
+                    }
                     self.define(name.clone(), vt, *mutable);
                     ty = Ty::Nil;
                 }

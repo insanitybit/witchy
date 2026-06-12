@@ -452,10 +452,14 @@ fn block_stmts(s: &mut String, b: &Block, depth: usize, c: &mut Comments) {
 
 fn stmt(s: &mut String, st: &Stmt, depth: usize, c: &mut Comments) {
     match st {
-        Stmt::Let { name, mutable, value } => {
+        Stmt::Let { name, ty, mutable, value } => {
             pad(s, depth);
             s.push_str(if *mutable { "var " } else { "let " });
             s.push_str(name);
+            if let Some(t) = ty {
+                s.push_str(": ");
+                s.push_str(&type_str(t));
+            }
             s.push_str(" = ");
             value_or_block(s, value, depth, c);
         }
@@ -1058,7 +1062,7 @@ fn comprehension_sugar(b: &Block) -> Option<String> {
     if b.restrict.is_some() || b.region.is_some() || b.stmts.len() != 3 {
         return None;
     }
-    let Stmt::Let { name: acc, mutable: true, value: Expr::List(init) } = &b.stmts[0] else {
+    let Stmt::Let { name: acc, ty: None, mutable: true, value: Expr::List(init) } = &b.stmts[0] else {
         return None;
     };
     if !acc.starts_with("__compr") || !init.is_empty() {
@@ -1532,7 +1536,7 @@ mod tests {
         // loop), so the printer has no faithful inline form for it.
         let block = Expr::Block(Block {
             stmts: vec![
-                Stmt::Let { name: "__zzz".into(), mutable: true, value: Expr::List(vec![]) },
+                Stmt::Let { name: "__zzz".into(), ty: None, mutable: true, value: Expr::List(vec![]) },
                 Stmt::Expr(Expr::Var("__zzz".into())),
             ],
             lines: vec![0, 0],
@@ -1551,7 +1555,7 @@ mod tests {
                 }],
                 ret: None,
                 body: Block {
-                    stmts: vec![Stmt::Let { name: "x".into(), mutable: false, value: block }],
+                    stmts: vec![Stmt::Let { name: "x".into(), ty: None, mutable: false, value: block }],
                     lines: vec![0],
                     restrict: None,
                     region: None,

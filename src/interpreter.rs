@@ -1746,7 +1746,7 @@ impl Interpreter {
                 self.cur_line = *line;
             }
             match stmt {
-                Stmt::Let { name, mutable, value } => {
+                Stmt::Let { name, ty: _, mutable, value } => {
                     let v = self.eval(value, env)?;
                     env.define(name.clone(), v, *mutable);
                     result = Value::Nil;

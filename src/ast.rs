@@ -232,9 +232,14 @@ pub enum RestrictMode {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Stmt {
-    /// `let x = e` or `var x = e`.
+    /// `let x = e` or `var x = e`, optionally ascribed: `let x: T = e`.
+    /// The ascription is a unification constraint — it can PIN type variables
+    /// the right-hand side leaves open (an empty `[]`, a return-position
+    /// type variable), and it fails loudly when the RHS disagrees.
     Let {
         name: String,
+        /// `let x: T = …` — None for the inferred form.
+        ty: Option<Type>,
         mutable: bool,
         value: Expr,
     },

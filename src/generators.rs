@@ -92,6 +92,7 @@ fn lower_gen(f: Function) -> (Function, Function) {
     // Helper body: `var __i = 0` + the body with yields rewritten + final `None`.
     let mut stmts = vec![Stmt::Let {
         name: COUNTER.to_string(),
+        ty: None,
         mutable: true,
         value: Expr::Int(0),
     }];
@@ -183,8 +184,8 @@ fn rewrite_block(b: Block) -> Block {
                     },
                 });
             }
-            Stmt::Let { name, mutable, value } => {
-                out.push(Stmt::Let { name, mutable, value: rewrite_expr(value) })
+            Stmt::Let { name, ty, mutable, value } => {
+                out.push(Stmt::Let { name, ty, mutable, value: rewrite_expr(value) })
             }
             Stmt::Assign { name, value } => {
                 out.push(Stmt::Assign { name, value: rewrite_expr(value) })

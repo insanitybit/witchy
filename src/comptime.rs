@@ -52,6 +52,7 @@ pub fn expand(name: &str, module: &mut Module) -> Result<(), String> {
         body.stmts.insert(
             0,
             crate::ast::Stmt::Let {
+                ty: None,
                 name: "emit".into(),
                 mutable: false,
                 value: crate::ast::Expr::Lambda {

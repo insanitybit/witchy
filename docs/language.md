@@ -132,6 +132,13 @@ fn main(console: Console):
     print(console, "${lo}..${hi}")
 ```
 
+`let x: Type = e` ascribes the binding: the annotation is a unification
+constraint, so it pins type variables the value leaves open (`let xs:
+List(Int) = []`, a return-position type variable) and a disagreeing value
+errors at the binding line. Locals stay inferred by default — ascribe for
+ambiguous literals, checked documentation, and catching a wrong assumption
+where it is made.
+
 Top-level `let` declares a module constant (inlined at compile time).
 Assigning to a `let`, or to a variable captured by a closure, is a check-time
 error (closures capture **by value**; return the new value or use `inout`).
