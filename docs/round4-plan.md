@@ -45,7 +45,9 @@ non-tuple bases; `examples/tuples.witchy` pins it.
 ### B. Stdlib: the next Go-parity slice
 Round 3's misses were all *discovery*, not absence — the functions existed
 under proper names. So grow breadth where programs actually stalled:
-- `time`: formatting/parsing (RFC3339 + a strftime-ish subset over `Clock`).
+- `time`: SHIPPED — `parse_iso8601` (offsets normalized to UTC, fractional
+  seconds, bare dates), validated `civil(y, mo, da, h, mi, s)` (Feb 30 is an
+  Err, not a rollover), `days_in_month`, and strftime-style `format`.
 - `json`: `encode` ergonomics for records (derive-assisted `to_json`?
   comptime-able?) — the learner hand-built `Json` trees.
 - `string`: `pad_left`/`pad_right`/`repeat` (the learner wrote all three by

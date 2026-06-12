@@ -1631,10 +1631,6 @@ time — civil (UTC) date/time from a unix timestamp.
 
 #### `type DateTime`
 
-time — civil (UTC) date/time from a unix timestamp.
-
-`std/duration` models *spans*; this module models *points* on the calendar. Given seconds since the unix epoch (1970-01-01T00:00:00Z), it computes the civil year/month/day/hour/minute/second and formats them. The conversions use the standard days<->civil algorithm (proleptic Gregorian), correct for any CE date and for negative timestamps (before 1970) via floor division.
-
 - `DateTime(Int, Int, Int, Int, Int, Int)`
 
 #### `fn year(d: DateTime) -> Int`
@@ -1656,6 +1652,18 @@ The civil UTC date/time at `secs` seconds since the unix epoch.
 #### `fn to_unix(d: DateTime) -> Int`
 
 The unix timestamp for a DateTime (its inverse).
+
+#### `fn civil(y: Int, mo: Int, da: Int, h: Int, mi: Int, s: Int) -> Result(DateTime, String)`
+
+A DateTime from civil UTC components, validated — `civil(2026, 2, 30, ...)` is an Err, not a rollover.
+
+#### `fn days_in_month(y: Int, mo: Int) -> Int`
+
+Days in a month, honoring leap February.
+
+#### `fn parse_iso8601(text: String) -> Result(DateTime, String)`
+
+Parse RFC 3339 / ISO 8601: `2026-06-08T22:30:00Z`, an offset like `+02:00` (normalized to UTC), fractional seconds (truncated), a space instead of the `T`, or a bare `YYYY-MM-DD` (midnight UTC).
 
 #### `fn is_leap(y: Int) -> Bool`
 
@@ -1680,6 +1688,10 @@ Day of week: 0 = Sunday … 6 = Saturday.
 #### `fn iso8601(d: DateTime) -> String`
 
 RFC 3339 / ISO 8601 in UTC, e.g. `2026-06-08T22:30:00Z`.
+
+#### `fn format(d: DateTime, layout: String) -> String`
+
+A strftime-style layout: `%Y-%m-%d %H:%M:%S`, `%A %B %d` and friends. Directives: %Y year, %m month, %d day, %H hour, %M minute, %S second, %a/%A weekday (short/full), %b/%B month name (short/full), %% a literal percent. Anything else after `%` passes through unchanged.
 
 ## `toml`
 

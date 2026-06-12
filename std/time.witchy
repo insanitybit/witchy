@@ -5,6 +5,9 @@
 // civil year/month/day/hour/minute/second and formats them. The conversions use
 // the standard days<->civil algorithm (proleptic Gregorian), correct for any CE
 // date and for negative timestamps (before 1970) via floor division.
+
+import ascii
+
 type DateTime:
     DateTime(Int, Int, Int, Int, Int, Int)
 
@@ -45,6 +48,85 @@ pub fn from_unix(secs: Int) -> DateTime:
 pub fn to_unix(d: DateTime) -> Int:
     days_from_civil(year(d), month(d), day(d)) * 86400 + hour(d) * 3600 + minute(d) * 60 + second(d)
 
+// A DateTime from civil UTC components, validated — `civil(2026, 2, 30, ...)`
+// is an Err, not a rollover.
+pub fn civil(y: Int, mo: Int, da: Int, h: Int, mi: Int, s: Int) -> Result(DateTime, String):
+    if mo < 1 || mo > 12:
+        return Err("month ${mo} is out of range 1..12")
+    if da < 1 || da > days_in_month(y, mo):
+        return Err("day ${da} is out of range for ${y}-${mo}")
+    if h < 0 || h > 23 || mi < 0 || mi > 59 || s < 0 || s > 59:
+        return Err("time ${h}:${mi}:${s} is out of range")
+    Ok(DateTime(y, mo, da, h, mi, s))
+
+// Days in a month, honoring leap February.
+pub fn days_in_month(y: Int, mo: Int) -> Int:
+    match mo:
+        2 -> if is_leap(y): 29 else: 28
+        4 -> 30
+        6 -> 30
+        9 -> 30
+        11 -> 30
+        _ -> 31
+
+// --- parsing -------------------------------------------------------------------
+
+// Parse RFC 3339 / ISO 8601: `2026-06-08T22:30:00Z`, an offset like
+// `+02:00` (normalized to UTC), fractional seconds (truncated), a space
+// instead of the `T`, or a bare `YYYY-MM-DD` (midnight UTC).
+pub fn parse_iso8601(text: String) -> Result(DateTime, String):
+    let t = string.trim(text)
+    let (y, mo, da) = parse_date_part(t)?
+    if string.length(t) == 10:
+        return civil(y, mo, da, 0, 0, 0)
+    let sep = string.substring(t, 10, 11)
+    if sep != "T" && sep != "t" && sep != " ":
+        return Err("expected `T` between date and time in `${t}`")
+    if string.length(t) < 19 || string.substring(t, 13, 14) != ":" || string.substring(t, 16, 17) != ":":
+        return Err("expected `HH:MM:SS` after the date in `${t}`")
+    let h = int_at(t, 11, 13)?
+    let mi = int_at(t, 14, 16)?
+    let s = int_at(t, 17, 19)?
+    let base = civil(y, mo, da, h, mi, s)?
+    // The rest: optional `.fraction` (truncated), then `Z`, an offset, or
+    // nothing (read as UTC).
+    var rest = string.substring(t, 19, string.length(t))
+    if string.starts_with(rest, "."):
+        var i = 1
+        while i < string.length(rest) && ascii.is_digit(string.substring(rest, i, i + 1)):
+            i = i + 1
+        if i == 1:
+            return Err("empty fractional seconds in `${t}`")
+        rest = string.substring(rest, i, string.length(rest))
+    if rest == "" || rest == "Z" || rest == "z":
+        return Ok(base)
+    let sign = string.substring(rest, 0, 1)
+    if sign != "+" && sign != "-" || string.length(rest) != 6 || string.substring(rest, 3, 4) != ":":
+        return Err("bad UTC offset `${rest}` in `${t}` (expected `Z` or `+HH:MM`)")
+    let oh = int_at(rest, 1, 3)?
+    let om = int_at(rest, 4, 6)?
+    if oh > 23 || om > 59:
+        return Err("UTC offset `${rest}` is out of range")
+    let offset = oh * 3600 + om * 60
+    let delta = if sign == "+": 0 - offset else: offset
+    Ok(from_unix(to_unix(base) + delta))
+
+// `YYYY-MM-DD` at the start of `t`.
+fn parse_date_part(t: String) -> Result((Int, Int, Int), String):
+    if string.length(t) < 10 || string.substring(t, 4, 5) != "-" || string.substring(t, 7, 8) != "-":
+        return Err("`${t}` is not an ISO 8601 date (expected `YYYY-MM-DD`)")
+    let y = int_at(t, 0, 4)?
+    let mo = int_at(t, 5, 7)?
+    let da = int_at(t, 8, 10)?
+    Ok((y, mo, da))
+
+// The digits at `s[from..to]`, as an Int — Err on anything non-numeric.
+fn int_at(s: String, from: Int, to: Int) -> Result(Int, String):
+    let piece = string.substring(s, from, to)
+    if piece == "" || !ascii.all_digits(piece):
+        return Err("expected digits at ${from}..${to} of `${s}`, found `${piece}`")
+    Ok(string.to_int(piece))
+
 // --- calendar facts ----------------------------------------------------------
 pub fn is_leap(y: Int) -> Bool:
     y % 4 == 0 && y % 100 != 0 || y % 400 == 0
@@ -72,6 +154,38 @@ pub fn time_string(d: DateTime) -> String:
 // RFC 3339 / ISO 8601 in UTC, e.g. `2026-06-08T22:30:00Z`.
 pub fn iso8601(d: DateTime) -> String:
     date_string(d) <> "T" <> time_string(d) <> "Z"
+
+// A strftime-style layout: `%Y-%m-%d %H:%M:%S`, `%A %B %d` and friends.
+// Directives: %Y year, %m month, %d day, %H hour, %M minute, %S second,
+// %a/%A weekday (short/full), %b/%B month name (short/full), %% a literal
+// percent. Anything else after `%` passes through unchanged.
+pub fn format(d: DateTime, layout: String) -> String:
+    var out = ""
+    var pending = false
+    for c in string.chars(layout):
+        if pending:
+            out = out <> directive(d, c)
+            pending = false
+        else if c == "%":
+            pending = true
+        else:
+            out = out <> c
+    out
+
+fn directive(d: DateTime, c: String) -> String:
+    match c:
+        "Y" -> pad4(year(d))
+        "m" -> pad2(month(d))
+        "d" -> pad2(day(d))
+        "H" -> pad2(hour(d))
+        "M" -> pad2(minute(d))
+        "S" -> pad2(second(d))
+        "a" -> string.substring(weekday_name(d), 0, 3)
+        "A" -> weekday_name(d)
+        "b" -> string.substring(month_name(d), 0, 3)
+        "B" -> month_name(d)
+        "%" -> "%"
+        _ -> "%" <> c
 
 // --- internals ---------------------------------------------------------------
 

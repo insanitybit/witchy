@@ -2810,6 +2810,9 @@ fn yn(b: Bool) -> String:
             crate::execute_file("examples/time_and_encoding.witchy", Vec::new()).unwrap(),
             vec![
                 "date:    2026-05-28T20:26:40Z (Thursday)",
+                "layout:  Thursday, May 28 2026 at 20:26",
+                "parsed:  2026-06-08T20:30:00Z",
+                "checked: day 30 is out of range for 2026-2",
                 "base64:  d2l0Y2h5IPCfp5k=",
                 "hex:     77697463687920f09fa799",
                 "decoded: witchy 🧙",

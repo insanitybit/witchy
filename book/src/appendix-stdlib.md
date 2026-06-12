@@ -50,7 +50,7 @@ to_ms` finds `duration.to_milliseconds`.
 |---|---|
 | `math` *(prelude)* | `sqrt`, `pow`, trig, `abs`, … |
 | `random` | seeded pseudo-random numbers |
-| `time` / `duration` | time and `Duration` helpers |
+| `time` / `duration` | civil UTC date-times: `parse_iso8601`, `iso8601`, strftime-style `format`, validated `civil(...)`; `Duration` helpers |
 | `semver` | version parsing and comparison |
 | `eq` / `ord` / `show` | the comparison/ordering/display traits and generic algorithms |
 | `ascii` | ASCII classification |
