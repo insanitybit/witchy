@@ -49,10 +49,10 @@ fn main(console: Console):
     let nums = Push(1, Push(2, Push(3, Empty)))
     let words = Push("first", Push("second", Empty))
 
-    print(console, "nums size:  " <> "${size(nums)}")
-    print(console, "words size: " <> "${size(words)}")
-    print(console, "nums top:   " <> show_top_int(nums))
-    print(console, "words top:  " <> show_top_str(words))
+    print(console, "nums size:  " + "${size(nums)}")
+    print(console, "words size: " + "${size(words)}")
+    print(console, "nums top:   " + show_top_int(nums))
+    print(console, "words top:  " + show_top_str(words))
     // reverse is generic too: after reversing, the bottom element is on top.
-    print(console, "rev nums top:  " <> show_top_int(reverse(nums)))
-    print(console, "rev words top: " <> show_top_str(reverse(words)))
+    print(console, "rev nums top:  " + show_top_int(reverse(nums)))
+    print(console, "rev words top: " + show_top_str(reverse(words)))

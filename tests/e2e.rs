@@ -254,7 +254,7 @@ fn networked_registry_full_lifecycle() {
     let lib = sb.work.join("lib");
     std::fs::create_dir_all(lib.join("src")).unwrap();
     std::fs::write(lib.join("witchy.toml"), "[rune]\nname = \"acme/lib\"\nversion = \"1.0.0\"\n").unwrap();
-    std::fs::write(lib.join("src/lib.witchy"), "fn shout(s: String) -> String:\n    \"HEY \" <> s\n").unwrap();
+    std::fs::write(lib.join("src/lib.witchy"), "fn shout(s: String) -> String:\n    \"HEY \" + s\n").unwrap();
     // Publish via a trusted CI identity token (no long-lived API key).
     let ci = server.ci_token("acme/lib-repo", "release.yml");
     assert!(sb.run_id(&lib, "ci", &ci, &["publish"]).status.success());
@@ -491,7 +491,7 @@ fn full_lifecycle_publish_promote_add_use() {
     sb.publish_lib(
         "acme/strkit",
         "0.1.0",
-        "fn shout(s: String) -> String:\n    \"HEY \" <> s\n",
+        "fn shout(s: String) -> String:\n    \"HEY \" + s\n",
     );
 
     // Add the released library (pure — no capability widening, so no consent needed).
@@ -994,7 +994,7 @@ fn path_dependency_builds_and_runs() {
     std::fs::write(lib.join("witchy.toml"), "[rune]\nname = \"greet\"\nversion = \"0.1.0\"\n").unwrap();
     std::fs::write(
         lib.join("src/greet.witchy"),
-        "fn hi(s: String) -> String:\n    \"hi \" <> s\n",
+        "fn hi(s: String) -> String:\n    \"hi \" + s\n",
     )
     .unwrap();
 
@@ -1028,7 +1028,7 @@ fn build_steps_are_default_deny_even_when_safe() {
     std::fs::write(lib.join("witchy.toml"), "[rune]\nname = \"safegen\"\nversion = \"0.1.0\"\n").unwrap();
     std::fs::write(
         lib.join("src/safegen.witchy"),
-        "pub fn shout(s: String) -> String:\n    \"HEY \" <> s\n",
+        "pub fn shout(s: String) -> String:\n    \"HEY \" + s\n",
     )
     .unwrap();
     // A BuildOut-only build step: writes into its confined sandbox, nothing else.
@@ -1134,7 +1134,7 @@ fn build_steps_auto_run_and_generated_source_is_gated() {
     .unwrap();
     std::fs::write(
         lib.join("src/build.witchy"),
-        "fn build(out: BuildOut):\n    let nl = \"\\n\"\n    write_out(out, \"greet.witchy\", \"pub fn greeting() -> String:\" <> nl <> \"    \\\"hi from generated code\\\"\" <> nl)\n",
+        "fn build(out: BuildOut):\n    let nl = \"\\n\"\n    write_out(out, \"greet.witchy\", \"pub fn greeting() -> String:\" + nl + \"    \\\"hi from generated code\\\"\" + nl)\n",
     )
     .unwrap();
 
@@ -1160,7 +1160,7 @@ fn build_steps_auto_run_and_generated_source_is_gated() {
     // BuildOut) — but the post-generation audit refuses the smuggle.
     std::fs::write(
         lib.join("src/build.witchy"),
-        "fn build(out: BuildOut):\n    let nl = \"\\n\"\n    write_out(out, \"greet.witchy\", \"pub fn evil(n: Net, addr: String) -> Socket:\" <> nl <> \"    connect(n, addr)\" <> nl)\n",
+        "fn build(out: BuildOut):\n    let nl = \"\\n\"\n    write_out(out, \"greet.witchy\", \"pub fn evil(n: Net, addr: String) -> Socket:\" + nl + \"    connect(n, addr)\" + nl)\n",
     )
     .unwrap();
     let out = sb.run(&app, "dev", &["update"]);
@@ -1189,7 +1189,7 @@ fn deterministic_build_output_is_cached() {
     std::fs::write(lib.join("src/genlib.witchy"), "pub fn id(s: String) -> String:\n    s\n").unwrap();
     std::fs::write(
         lib.join("src/build.witchy"),
-        "fn build(out: BuildOut):\n    let nl = \"\\n\"\n    write_out(out, \"greet.witchy\", \"pub fn greeting() -> String:\" <> nl <> \"    \\\"V1\\\"\" <> nl)\n",
+        "fn build(out: BuildOut):\n    let nl = \"\\n\"\n    write_out(out, \"greet.witchy\", \"pub fn greeting() -> String:\" + nl + \"    \\\"V1\\\"\" + nl)\n",
     )
     .unwrap();
     let out = sb.run(&app, "dev", &["add", "genlib", "--path", "../genlib", "--allow-build-cap", "BuildOut"]);

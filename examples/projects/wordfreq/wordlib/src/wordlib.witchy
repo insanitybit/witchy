@@ -37,5 +37,5 @@ fn normalize(word: String) -> String:
     var kept = ""
     for ch in string.chars(word):
         if ascii.is_alpha(ch) || ascii.is_digit(ch):
-            kept = kept <> ch
+            kept = kept + ch
     string.to_lower(kept)

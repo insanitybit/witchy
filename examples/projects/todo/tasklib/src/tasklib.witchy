@@ -56,5 +56,5 @@ pub fn render(tasks: List(Task)) -> String:
     var out = []
     for task in tasks:
         let mark = if is_done(task): "[x]" else: "[ ]"
-        out = list.push(out, mark <> " " <> title(task))
+        out = list.push(out, mark + " " + title(task))
     string.join(out, "\n")

@@ -34,6 +34,6 @@ pub fn load(c: ConfigDir, name: String) -> String:
 fn main(console: Console, root: Dir):
     // `if let` only proceeds once the directory has been confirmed and branded.
     if let Some(cfg) = config_dir(subdir(root, "examples")):
-        print(console, "config says: " <> load(cfg, "greeting.txt"))
+        print(console, "config says: " + load(cfg, "greeting.txt"))
     else:
         print(console, "no config directory found")

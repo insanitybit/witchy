@@ -24,16 +24,16 @@ fn show(xs: List(Int)) -> String:
 
 fn main(console: Console):
     // The first 10 Fibonacci numbers (take, then collect into a list).
-    print(console, "first 10: " <> show(iter.collect(iter.take(fibs(), 10))))
+    print(console, "first 10: " + show(iter.collect(iter.take(fibs(), 10))))
 
     // The sum of the even Fibonacci numbers below 1000 — take_while / filter /
     // sum, all lazy over the infinite stream.
     let small = iter.take_while(fibs(), fn(n: Int): n < 1000)
     let evens = iter.filter(small, fn(n: Int): n % 2 == 0)
-    print(console, "even fib sum < 1000: " <> "${iter.sum(evens)}")
+    print(console, "even fib sum < 1000: " + "${iter.sum(evens)}")
 
     // The first Fibonacci number past 1000 — found by scanning an infinite
     // iterator that stops at the first match.
     match iter.find(fibs(), fn(n: Int): n > 1000):
-        Some(n) -> print(console, "first fib > 1000: " <> "${n}")
+        Some(n) -> print(console, "first fib > 1000: " + "${n}")
         None -> print(console, "none")

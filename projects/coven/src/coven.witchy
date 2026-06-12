@@ -32,7 +32,7 @@ fn main(console: Console, net: Net, root: Dir, key: Secret, clock: Clock, args: 
     let store = subdir(root, "registry")
     let app = server.router().get("/coven/rootpub", h_rootpub(key)).get("/coven/index", h_index(store)).get("/coven/versions", h_versions(store)).get("/coven/record", h_record(store)).get("/coven/source", h_source(store)).get("/coven/snapshot", h_snapshot(store, key, clock)).get("/coven/timestamp", h_timestamp(store, key, clock)).post("/coven/publish", h_publish(store, key, clock, issuers)).post("/coven/promote", h_promote(store, key, clock, issuers)).post("/coven/yank", h_yank(store, key, clock))
 
-    print(console, "coven serving at http://" <> addr <> "  (root key " <> crypto.public_key(key) <> "; " <> "${list.length(issuers)}" <> " trusted issuer(s))")
+    print(console, "coven serving at http://" + addr + "  (root key " + crypto.public_key(key) + "; " + "${list.length(issuers)}" + " trusted issuer(s))")
     server.serve(net, addr, app)
 
 // Parse trailing `issuer=pubkeyhex` args into (issuer, pubkey) pairs.
@@ -71,7 +71,7 @@ fn h_record(store: Dir) -> fn(Request) -> Response:
         if exists(store, meta_path(name, version)):
             server.json(200, read(store, meta_path(name, version)))
         else:
-            err_json(404, name <> "@" <> version <> " not found in registry")
+            err_json(404, name + "@" + version + " not found in registry")
 
 // --- GET /coven/source?name=&version= : the rune source, hash-verified -------
 fn h_source(store: Dir) -> fn(Request) -> Response:
@@ -79,7 +79,7 @@ fn h_source(store: Dir) -> fn(Request) -> Response:
         let name = unwire(server.query(req, "name"))
         let version = server.query(req, "version")
         if !exists(store, meta_path(name, version)):
-            err_json(404, name <> "@" <> version <> " not found")
+            err_json(404, name + "@" + version + " not found")
         else:
             source_response(store, name, version)
 
@@ -103,7 +103,7 @@ fn h_publish(store: Dir, key: Secret, clock: Clock, issuers: List((String, Strin
     fn(req: Request):
         match server.json_body(req):
             Ok(doc) -> do_publish(store, key, clock, issuers, doc)
-            Err(e) -> err_json(400, "bad request body: " <> e)
+            Err(e) -> err_json(400, "bad request body: " + e)
 
 fn do_publish(store: Dir, key: Secret, clock: Clock, issuers: List((String, String)), doc: Json) -> Response:
     let manifest = jstr(doc, "manifest_toml")
@@ -111,11 +111,11 @@ fn do_publish(store: Dir, key: Secret, clock: Clock, issuers: List((String, Stri
     let name = toml_field(manifest, "rune.name")
     let version = toml_field(manifest, "rune.version")
     if !valid_name(name):
-        err_json(400, "invalid rune name `" <> name <> "` (need lowercase `namespace/name`, no traversal)")
+        err_json(400, "invalid rune name `" + name + "` (need lowercase `namespace/name`, no traversal)")
     else if !valid_version(version):
-        err_json(400, "invalid version `" <> version <> "`")
+        err_json(400, "invalid version `" + version + "`")
     else if exists(store, meta_path(name, version)):
-        err_json(409, name <> "@" <> version <> " already published — versions are immutable, bump the version")
+        err_json(409, name + "@" + version + " already published — versions are immutable, bump the version")
     else:
         // Trusted publishing: the publisher identity comes from a verified
         // identity token (401) and must satisfy the namespace's bound policy
@@ -129,11 +129,11 @@ fn publish_checked(store: Dir, key: Secret, clock: Clock, manifest: String, name
     let declared = toml.get_array(manifest, "capabilities.runtime")
     let gap = rights.uncovered(declared, computed)
     if !string.is_empty(string.join(gap, ", ")):
-        err_json(400, "declared [capabilities] does not cover what the source demands (" <> string.join(gap, ", ") <> ") — coven recomputes and will not publish an under-declared rune")
+        err_json(400, "declared [capabilities] does not cover what the source demands (" + string.join(gap, ", ") + ") — coven recomputes and will not publish an under-declared rune")
     else:
         let hash = content_hash(files)
         store_source(store, name, version, files)
-        let provenance = "uploader=" <> uploaded_by <> "|hash=" <> hash
+        let provenance = "uploader=" + uploaded_by + "|hash=" + hash
         let rec = sign_record(key, name, version, "staged", hash, computed, uploaded_by, "", "", provenance, 0)
         write(store, meta_path(name, version), rec)
         rebuild_metadata(store, key, clock)
@@ -144,14 +144,14 @@ fn h_promote(store: Dir, key: Secret, clock: Clock, issuers: List((String, Strin
     fn(req: Request):
         match server.json_body(req):
             Ok(doc) -> do_promote(store, key, clock, issuers, doc)
-            Err(e) -> err_json(400, "bad request body: " <> e)
+            Err(e) -> err_json(400, "bad request body: " + e)
 
 fn do_promote(store: Dir, key: Secret, clock: Clock, issuers: List((String, String)), doc: Json) -> Response:
     let name = unwire(jstr(doc, "name"))
     let version = jstr(doc, "version")
     let factor = jstr(doc, "second_factor")
     if !exists(store, meta_path(name, version)):
-        err_json(404, name <> "@" <> version <> " not found")
+        err_json(404, name + "@" + version + " not found")
     else if string.is_empty(factor):
         err_json(400, "promotion requires a second factor (the out-of-band 2FA event) — refusing to release")
     else:
@@ -168,7 +168,7 @@ fn promote_authenticated(store: Dir, key: Secret, clock: Clock, name: String, ve
 fn promote_checked(store: Dir, key: Secret, clock: Clock, name: String, version: String, factor: String, promoter: String) -> Response:
     let state = record_field(store, name, version, "state")
     if state != "staged":
-        err_json(400, name <> "@" <> version <> " is " <> state <> "; only a staged version can be promoted")
+        err_json(400, name + "@" + version + " is " + state + "; only a staged version can be promoted")
     else if promoter == record_field(store, name, version, "uploaded_by"):
         err_json(403, "separation of duties: the identity that published a version may not promote it")
     else:
@@ -187,13 +187,13 @@ fn h_yank(store: Dir, key: Secret, clock: Clock) -> fn(Request) -> Response:
     fn(req: Request):
         match server.json_body(req):
             Ok(doc) -> do_yank(store, key, clock, doc)
-            Err(e) -> err_json(400, "bad request body: " <> e)
+            Err(e) -> err_json(400, "bad request body: " + e)
 
 fn do_yank(store: Dir, key: Secret, clock: Clock, doc: Json) -> Response:
     let name = unwire(jstr(doc, "name"))
     let version = jstr(doc, "version")
     if !exists(store, meta_path(name, version)):
-        err_json(404, name <> "@" <> version <> " not found")
+        err_json(404, name + "@" + version + " not found")
     else:
         let hash = record_field(store, name, version, "hash")
         let rt = record_array(store, name, version, "runtime_footprint")
@@ -234,7 +234,7 @@ fn rebuild_metadata(store: Dir, key: Secret, clock: Clock):
     let snapshot = JsonObject([("version", JsonInt(version)), ("created", JsonInt(created)), ("targets", targets)])
     let snap_canonical = json.encode(snapshot)
     write(store, "snapshot.json", json.encode(JsonObject([("signed", snapshot), ("sig", JsonString(crypto.sign(key, snap_canonical)))])))
-    let timestamp = JsonObject([("snapshot_version", JsonInt(version)), ("snapshot_hash", JsonString("sha256:" <> crypto.sha256(snap_canonical))), ("expires", JsonInt(created + 86400))])
+    let timestamp = JsonObject([("snapshot_version", JsonInt(version)), ("snapshot_hash", JsonString("sha256:" + crypto.sha256(snap_canonical))), ("expires", JsonInt(created + 86400))])
     let ts_canonical = json.encode(timestamp)
     write(store, "timestamp.json", json.encode(JsonObject([("signed", timestamp), ("sig", JsonString(crypto.sign(key, ts_canonical)))])))
 
@@ -246,8 +246,8 @@ fn all_target_digests(store: Dir) -> List((String, Json)):
     for name in all_names(store):
         for v in versions_of(store, name):
             if let Some(text) = read_record(store, name, v):
-                let digest = "sha256:" <> crypto.sha256(record_signing_payload(text))
-                pairs = insert_sorted(pairs, (name <> "@" <> v, JsonString(digest)))
+                let digest = "sha256:" + crypto.sha256(record_signing_payload(text))
+                pairs = insert_sorted(pairs, (name + "@" + v, JsonString(digest)))
     pairs
 
 // Reconstruct a record's canonical signing payload from its stored JSON — the
@@ -312,9 +312,9 @@ fn authorized_publisher(store: Dir, issuers: List((String, String)), doc: Json, 
 
 fn authorize_publish(store: Dir, name: String, claims: Json) -> Result(String, (Int, String)):
     let ns = namespace_of(name)
-    let pubfile = "_policy/" <> ns <> "/publisher.json"
+    let pubfile = "_policy/" + ns + "/publisher.json"
     if !exists(store, pubfile):
-        fs.ensure_dir(store, "_policy/" <> ns)
+        fs.ensure_dir(store, "_policy/" + ns)
         write(store, pubfile, json.encode(JsonObject([("issuer", JsonString(jstr(claims, "iss"))), ("repository", JsonString(claim(claims, "repository"))), ("workflow_ref", JsonString(claim(claims, "workflow_ref")))])))
         Ok(jstr(claims, "sub"))
     else:
@@ -322,11 +322,11 @@ fn authorize_publish(store: Dir, name: String, claims: Json) -> Result(String, (
 
 fn enforce_publish_policy(policy: Json, claims: Json, ns: String) -> Result(String, (Int, String)):
     if jstr(policy, "issuer") != jstr(claims, "iss"):
-        Err((403, "namespace `" <> ns <> "` trusts issuer `" <> jstr(policy, "issuer") <> "`, not `" <> jstr(claims, "iss") <> "`"))
+        Err((403, "namespace `" + ns + "` trusts issuer `" + jstr(policy, "issuer") + "`, not `" + jstr(claims, "iss") + "`"))
     else if jstr(policy, "repository") != claim(claims, "repository"):
-        Err((403, "identity not authorized to publish to `" <> ns <> "`: repository `" <> claim(claims, "repository") <> "` does not match the bound `" <> jstr(policy, "repository") <> "`"))
+        Err((403, "identity not authorized to publish to `" + ns + "`: repository `" + claim(claims, "repository") + "` does not match the bound `" + jstr(policy, "repository") + "`"))
     else if jstr(policy, "workflow_ref") != claim(claims, "workflow_ref"):
-        Err((403, "identity not authorized to publish to `" <> ns <> "`: workflow_ref does not match the bound policy"))
+        Err((403, "identity not authorized to publish to `" + ns + "`: workflow_ref does not match the bound policy"))
     else:
         Ok(jstr(claims, "sub"))
 
@@ -343,16 +343,16 @@ fn authorized_promoter(store: Dir, issuers: List((String, String)), doc: Json, n
 
 fn authorize_promote(store: Dir, name: String, claims: Json) -> Result(String, (Int, String)):
     let ns = namespace_of(name)
-    let mfile = "_policy/" <> ns <> "/maintainers.json"
-    let id = jstr(claims, "iss") <> "|" <> jstr(claims, "sub")
+    let mfile = "_policy/" + ns + "/maintainers.json"
+    let id = jstr(claims, "iss") + "|" + jstr(claims, "sub")
     if !exists(store, mfile):
-        fs.ensure_dir(store, "_policy/" <> ns)
+        fs.ensure_dir(store, "_policy/" + ns)
         write(store, mfile, json.encode(JsonArray([JsonString(id)])))
         Ok(jstr(claims, "sub"))
     else if member(string_array(read(store, mfile)), id):
         Ok(jstr(claims, "sub"))
     else:
-        Err((403, "`" <> jstr(claims, "sub") <> "` is not a maintainer of namespace `" <> ns <> "`"))
+        Err((403, "`" + jstr(claims, "sub") + "` is not a maintainer of namespace `" + ns + "`"))
 
 // Verify a request's identity token, yielding its claims or a (401, reason).
 fn verified_claims(issuers: List((String, String)), doc: Json, now: Int, missing: String) -> Result(Json, (Int, String)):
@@ -407,7 +407,7 @@ fn check_token(issuers: List((String, String)), claims: Json, sig: String, now: 
                 Err("identity token has expired")
             else:
                 Ok(claims)
-        None -> Err("issuer `" <> iss <> "` is not trusted by this registry")
+        None -> Err("issuer `" + iss + "` is not trusted by this registry")
 
 fn issuer_key(issuers: List((String, String)), iss: String) -> Option(String):
     var found = None
@@ -450,7 +450,7 @@ fn insert_json_pair(sorted: List((String, Json)), item: (String, Json)) -> List(
 // the signature. Byte-identical to src/pm/registry.rs::Record::signing_payload,
 // so a witchy-signed record verifies under the Rust ed25519 verifier.
 fn signing_payload(name: String, version: String, state: String, hash: String, rt: List(String), uploaded_by: String, promoted_by: String, factor: String, provenance: String, released_at: Int) -> String:
-    "coven-v1\nname=" <> name <> "\nversion=" <> version <> "\nstate=" <> state <> "\nhash=" <> hash <> "\nrt=" <> string.join(rt, ",") <> "\nbuild=\nuploaded_by=" <> uploaded_by <> "\npromoted_by=" <> promoted_by <> "\nfactor=" <> factor <> "\nprovenance=" <> provenance <> "\nreleased_at=" <> "${released_at}"
+    "coven-v1\nname=" + name + "\nversion=" + version + "\nstate=" + state + "\nhash=" + hash + "\nrt=" + string.join(rt, ",") + "\nbuild=\nuploaded_by=" + uploaded_by + "\npromoted_by=" + promoted_by + "\nfactor=" + factor + "\nprovenance=" + provenance + "\nreleased_at=" + "${released_at}"
 
 // Build + sign a record, returning its coven.json text. `released_at` (unix
 // seconds; 0 = not yet released) starts the consumer-side staging cooldown, so
@@ -461,10 +461,10 @@ fn sign_record(key: Secret, name: String, version: String, state: String, hash: 
 
 // --- the store: content addressing + source IO -------------------------------
 fn meta_path(name: String, version: String) -> String:
-    name <> "/" <> version <> "/coven.json"
+    name + "/" + version + "/coven.json"
 
 fn rune_path(name: String, version: String, rel: String) -> String:
-    name <> "/" <> version <> "/rune/" <> rel
+    name + "/" + version + "/rune/" + rel
 
 // Write every source file under <name>/<version>/rune/, creating dirs as needed.
 fn store_source(store: Dir, name: String, version: String, files: List((String, String))):
@@ -478,10 +478,10 @@ fn store_source(store: Dir, name: String, version: String, files: List((String, 
 // `src/**/*.witchy` (recursively, so a nested module keeps its full path).
 fn read_source(store: Dir, name: String, version: String) -> List((String, String)):
     var out = []
-    let base = name <> "/" <> version <> "/rune"
-    if exists(store, base <> "/witchy.toml"):
-        out = list.push(out, ("witchy.toml", read(store, base <> "/witchy.toml")))
-    for f in fs.collect_files(store, base <> "/src", "src", ".witchy"):
+    let base = name + "/" + version + "/rune"
+    if exists(store, base + "/witchy.toml"):
+        out = list.push(out, ("witchy.toml", read(store, base + "/witchy.toml")))
+    for f in fs.collect_files(store, base + "/src", "src", ".witchy"):
         out = list.push(out, f)
     out
 
@@ -537,7 +537,7 @@ fn all_names(store: Dir) -> List(String):
     for ns in list(store):
         if !string.ends_with(ns, ".json") && !string.starts_with(ns, "_"):
             for nm in list(subdir(store, ns)):
-                out = list.push(out, ns <> "/" <> nm)
+                out = list.push(out, ns + "/" + nm)
     out
 
 // The runtime footprint of the highest RELEASED version other than the one

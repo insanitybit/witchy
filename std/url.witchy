@@ -17,7 +17,7 @@ type Url:
 pub fn parse(s: String) -> Result(Url, String):
     let sep = string.index_of(s, "://")
     if sep < 0:
-        Err("missing `scheme://` in: " <> s)
+        Err("missing `scheme://` in: " + s)
     else:
         let scheme = string.substring(s, 0, sep)
         let rest = string.substring(s, sep + 3, string.char_count(s))
@@ -31,7 +31,7 @@ pub fn parse(s: String) -> Result(Url, String):
         else:
             match parse_port(string.substring(authority, colon + 1, string.char_count(authority))):
                 Some(p) -> Ok(Url(scheme, host, p, path))
-                None -> Err("invalid port in: " <> s)
+                None -> Err("invalid port in: " + s)
 
 fn default_port(scheme: String) -> Int:
     if scheme == "https":
@@ -70,5 +70,5 @@ pub fn path(u: Url) -> String:
 pub fn format(u: Url) -> String:
     match u:
         Url(s, h, p, pa) ->
-            let authority = if p == default_port(s): h else: h <> ":" <> "${p}"
-            s <> "://" <> authority <> pa
+            let authority = if p == default_port(s): h else: h + ":" + "${p}"
+            s + "://" + authority + pa

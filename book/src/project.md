@@ -32,9 +32,9 @@ fn matches_ci(query: String, contents: String) -> List(String):
 fn main(console: Console):
     let log = "INFO started\nWARN disk low\ninfo retry\nERROR boom"
     for line in matches("INFO", log):
-        print(console, "exact:  " <> line)
+        print(console, "exact:  " + line)
     for line in matches_ci("info", log):
-        print(console, "ci:     " <> line)
+        print(console, "ci:     " + line)
 ```
 
 ```text

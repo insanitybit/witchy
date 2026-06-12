@@ -41,7 +41,7 @@ pub fn patch(v: Version) -> Int:
 pub fn parse(s: String) -> Result(Version, String):
     let parts = string.split(string.trim(s), ".")
     if list.length(parts) == 0 || list.length(parts) > 3:
-        Err("bad version `" <> s <> "`: expected major.minor.patch")
+        Err("bad version `" + s + "`: expected major.minor.patch")
     else:
         match component(parts, 0):
             Ok(a) -> match component(parts, 1):
@@ -57,10 +57,10 @@ fn component(parts: List(String), i: Int) -> Result(Int, String):
     else:
         match string.parse_int(list.at(parts, i)):
             Some(n) -> Ok(n)
-            None -> Err("bad version component `" <> list.at(parts, i) <> "`")
+            None -> Err("bad version component `" + list.at(parts, i) + "`")
 
 pub fn format(v: Version) -> String:
-    "${major(v)}" <> "." <> "${minor(v)}" <> "." <> "${patch(v)}"
+    "${major(v)}" + "." + "${minor(v)}" + "." + "${patch(v)}"
 
 // --- ordering ----------------------------------------------------------------
 

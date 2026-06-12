@@ -123,7 +123,7 @@ pub fn self_update_args<'a>(
     None
 }
 
-/// `s = s <> a <> b <> …` (any left spine whose leftmost leaf is the assigned
+/// `s = s + a + b + …` (any left spine whose leftmost leaf is the assigned
 /// variable): the appended pieces, in order.
 pub fn self_concat_pieces<'a>(name: &str, value: &'a Expr) -> Option<Vec<&'a Expr>> {
     let mut pieces: Vec<&'a Expr> = Vec::new();

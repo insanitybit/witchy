@@ -977,7 +977,7 @@ actor Printer:
 
 impl Printer:
     on Show(n: Int):
-        print(console, ("got " <> __render(n)))
+        print(console, ("got " + __render(n)))
 
 actor Forwarder:
     target: Subject
@@ -1005,7 +1005,7 @@ actor Logger:
 
 impl Logger:
     on Note(text: String, level: Int):
-        print(console, (text <> "@" <> __render(level)))
+        print(console, (text + "@" + __render(level)))
     on Check(word: String):
         print(console, if word == "magic": "yes" else: "no")
 
@@ -1014,7 +1014,7 @@ actor Producer:
 
 impl Producer:
     on Go(n: Int):
-        send(target, Note("built:" <> __render(n), n))
+        send(target, Note("built:" + __render(n), n))
         send(target, Check("magic"))
         send(target, Check("plain"))
 "#;
@@ -1036,7 +1036,7 @@ actor Printer:
 
 impl Printer:
     on Show(n: Int):
-        print(console, ("shown " <> __render(n)))
+        print(console, ("shown " + __render(n)))
 
 actor Hub:
     console: Console
@@ -1099,8 +1099,8 @@ actor Greeter:
 
 impl Greeter:
     on Greet(name: String):
-        print(console, ("hello " <> name <> ", after " <> last))
-        last = (name <> "!")
+        print(console, ("hello " + name + ", after " + last))
+        last = (name + "!")
 
 actor Caller:
     target: Subject
@@ -1158,7 +1158,7 @@ impl Stats:
     on Names(names: List(String)):
         var joined = ""
         for n in names:
-            joined = (joined <> n <> ";")
+            joined = (joined + n + ";")
         print(console, joined)
 
 actor Feeder:
@@ -1167,7 +1167,7 @@ actor Feeder:
 impl Feeder:
     on Go(n: Int):
         send(target, Nums([10, 20, (n + 5)]))
-        send(target, Names(["ada", ("x" <> __render(n)), "grace"]))
+        send(target, Names(["ada", ("x" + __render(n)), "grace"]))
 "#;
         let (mut sys, ids) = build(src);
         sys.set_subject(ids["Feeder"], "target", ids["Stats"]).unwrap();
@@ -1188,7 +1188,7 @@ actor Sink:
 impl Sink:
     on Entry(row: (Int, String, Float)):
         let (n, label, x) = row
-        print(console, label <> "=" <> __render(n) <> "/" <> __render(x))
+        print(console, label + "=" + __render(n) + "/" + __render(x))
 
 actor Source:
     target: Subject
@@ -1239,7 +1239,7 @@ actor Echo:
 
 impl Echo:
     on Work(tag: String, n: Int):
-        print(console, tag <> ":" <> __render(n))
+        print(console, tag + ":" + __render(n))
 
 actor Fan:
     a: Subject
@@ -1431,7 +1431,7 @@ actor Sink:
 
 impl Sink:
     on Entry(r: Reading):
-        print(console, r.sensor <> "=" <> __render(r.value) <> "/" <> __render(r.count))
+        print(console, r.sensor + "=" + __render(r.value) + "/" + __render(r.count))
 
 actor Source:
     target: Subject
@@ -1466,7 +1466,7 @@ actor Worker:
 
 impl Worker:
     on Job(label: String):
-        print(console, "worker did " <> label)
+        print(console, "worker did " + label)
 
 actor Supervisor:
     console: Console
@@ -1474,7 +1474,7 @@ actor Supervisor:
 impl Supervisor:
     on Assign(n: Int):
         let w = spawn Worker(console)
-        send(w, Job("task " <> __render(n)))
+        send(w, Job("task " + __render(n)))
 
 fn main(console: Console):
     let sup = spawn Supervisor(console)
@@ -1505,14 +1505,14 @@ actor Journal:
 impl Journal:
     on Note(n: Int):
         values = list.push(values, n * 10)
-        labels = list.push(labels, "v" <> __render(n))
+        labels = list.push(labels, "v" + __render(n))
         var total = 0
         for v in values:
             total = total + v
         var joined = ""
         for l in labels:
-            joined = joined <> l <> ","
-        print(console, __render(total) <> " " <> joined)
+            joined = joined + l + ","
+        print(console, __render(total) + " " + joined)
 "#;
         let (mut sys, ids) = build(src);
         sys.send(ids["Journal"], "Note", 1).unwrap();

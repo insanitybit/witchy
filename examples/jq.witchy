@@ -10,12 +10,12 @@ import string
 fn main(console: Console):
     let document = "{\"user\":{\"name\":\"Ada\",\"roles\":[\"admin\",\"dev\"]},\"active\":true,\"count\":42}"
     for path in ["user.name", "user.roles", "user.roles.0", "user.roles.1", "count", "active", "user.missing"]:
-        print(console, string.pad_right(path, 16, " ") <> "=> " <> query(document, path))
+        print(console, string.pad_right(path, 16, " ") + "=> " + query(document, path))
 
 fn query(document: String, path: String) -> String:
     match json.decode(document):
         Ok(value) -> render(navigate(value, path))
-        Err(message) -> "parse error: " <> message
+        Err(message) -> "parse error: " + message
 
 fn render(selected: Option(Json)) -> String:
     match selected:

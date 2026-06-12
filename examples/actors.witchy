@@ -7,7 +7,7 @@ actor Logger:
 impl Logger:
     on Log(msg: String):
         count = count + 1
-        print(console, "[${count}] " <> msg)
+        print(console, "[${count}] " + msg)
 
 actor Forwarder:
     logger: Subject

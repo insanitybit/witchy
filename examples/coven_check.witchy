@@ -25,7 +25,7 @@ fn main(console: Console, root: Dir[Read]) -> Int:
         print(console, "OK: manifest admits everything the code demands")
         0
     else:
-        print(console, "UNDER-DECLARED: code demands " <> missing <> " not admitted by [capabilities]")
+        print(console, "UNDER-DECLARED: code demands " + missing + " not admitted by [capabilities]")
         1
 
 // The capability names in a footprint report's "total" array.

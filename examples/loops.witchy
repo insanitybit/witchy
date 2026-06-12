@@ -5,9 +5,9 @@ fn main(console: Console):
     var sum = 0
     for n in nums:
         sum = sum + n
-    print(console, "sum = " <> "${sum}")
+    print(console, "sum = " + "${sum}")
 
     var line = ""
     for word in ["witchy", "loops", "work"]:
-        line = line <> word <> " "
+        line = line + word + " "
     print(console, string.trim(line))

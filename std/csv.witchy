@@ -23,13 +23,13 @@ pub fn parse(text: String) -> List(List(String)):
         if in_quotes:
             if ch == "\"":
                 if i + 1 < n && list.at(chars, i + 1) == "\"":
-                    field = field <> "\""
+                    field = field + "\""
                     i = i + 2
                 else:
                     in_quotes = false
                     i = i + 1
             else:
-                field = field <> ch
+                field = field + ch
                 i = i + 1
         else if ch == "\"":
             in_quotes = true
@@ -47,7 +47,7 @@ pub fn parse(text: String) -> List(List(String)):
         else if ch == "\r":
             i = i + 1
         else:
-            field = field <> ch
+            field = field + ch
             i = i + 1
     // Flush a final row that had no trailing newline.
     if !string.is_empty(field) || list.length(row) > 0:
@@ -59,7 +59,7 @@ pub fn parse(text: String) -> List(List(String)):
 pub fn encode(rows: List(List(String))) -> String:
     var out = ""
     for row in rows:
-        out = out <> encode_row(row) <> "\n"
+        out = out + encode_row(row) + "\n"
     out
 
 fn encode_row(row: List(String)) -> String:
@@ -70,7 +70,7 @@ fn encode_row(row: List(String)) -> String:
 
 fn encode_field(f: String) -> String:
     if needs_quoting(f):
-        "\"" <> string.join(string.split(f, "\""), "\"\"") <> "\""
+        "\"" + string.join(string.split(f, "\""), "\"\"") + "\""
     else:
         f
 

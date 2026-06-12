@@ -28,11 +28,11 @@ fn exit_code(report: String) -> Int:
 fn gate(report: String) -> String:
     match json.decode(report):
         Ok(doc) -> verdict(doc)
-        Err(e) -> "error: " <> e
+        Err(e) -> "error: " + e
 
 fn verdict(doc: Json) -> String:
     if widened(doc):
-        "BLOCK: upgrade widens authority by " <> added(doc)
+        "BLOCK: upgrade widens authority by " + added(doc)
     else:
         "OK: no new authority"
 

@@ -192,12 +192,13 @@ touching the original is a compile error, not a dangling reference:
 
 ```witchy
 fn into_label(own name: String) -> String:
-    "[" <> name <> "]"
+    "[" + name + "]"
 
 fn main(console: Console):
     let name = "witchy"
     print(console, into_label(move name))
-    // print(console, name)   // <- compile error: `name` was moved
+
+// print(console, name)   // <- compile error: `name` was moved
 ```
 
 ```text

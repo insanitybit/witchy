@@ -39,6 +39,6 @@ fn show(xs: List(Int)) -> String:
     string.join(parts, ", ")
 
 fn main(console: Console):
-    print(console, "fib[0..10): " <> show(iter.collect(iter.take(fibs(), 10))))
-    print(console, "collatz(6): " <> show(iter.collect(collatz(6))))
-    print(console, "collatz(27) length: " <> "${iter.count(collatz(27))}")
+    print(console, "fib[0..10): " + show(iter.collect(iter.take(fibs(), 10))))
+    print(console, "collatz(6): " + show(iter.collect(collatz(6))))
+    print(console, "collatz(27) length: " + "${iter.count(collatz(27))}")

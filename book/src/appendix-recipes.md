@@ -50,7 +50,7 @@ case explicitly.
 ```witchy
 fn main(console: Console, env: Env):
     match get_env(env, "HOME"):
-        Some(h) -> print(console, "HOME is " <> h)
+        Some(h) -> print(console, "HOME is " + h)
         None -> print(console, "HOME is unset")
 ```
 
@@ -65,7 +65,7 @@ fn main(console: Console, args: List(String)) -> Int:
         print(console, "usage: prog <name>")
         1
     else:
-        print(console, "hello, " <> list.at(args, 0))
+        print(console, "hello, " + list.at(args, 0))
         0
 ```
 
@@ -79,7 +79,7 @@ import http
 
 fn main(console: Console, net: Net):
     let resp = http.get(net, "localhost", 80, "/")
-    print(console, "status " <> "${http.status(resp)}")
+    print(console, "status " + "${http.status(resp)}")
     if http.is_success(resp):
         print(console, http.body(resp))
 ```

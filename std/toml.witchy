@@ -41,7 +41,7 @@ pub fn table(text: String, section: String) -> List((String, String)):
 // `get_array` to read its fields. Use this to walk a `witchy.lock`'s `[[rune]]`
 // entries, which `table`/`get` (single-table) cannot enumerate.
 pub fn array_tables(text: String, name: String) -> List(String):
-    let marker = "[[" <> name <> "]]"
+    let marker = "[[" + name + "]]"
     var blocks = []
     var current = ""
     var collecting = false
@@ -58,7 +58,7 @@ pub fn array_tables(text: String, name: String) -> List(String):
             current = ""
             collecting = false
         else if collecting:
-            current = current <> line <> "\n"
+            current = current + line + "\n"
     if collecting:
         blocks = list.push(blocks, current)
     blocks

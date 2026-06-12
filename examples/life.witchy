@@ -82,6 +82,6 @@ fn render(grid: List(List(Bool))) -> String:
     for row in grid:
         var line = ""
         for live in row:
-            line = line <> if live: "#" else: "."
+            line = line + if live: "#" else: "."
         lines = list.push(lines, line)
     string.join(lines, "\n")

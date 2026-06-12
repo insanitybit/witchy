@@ -12,13 +12,13 @@ import string
 fn main(console: Console, root: Dir[Read]):
     let target = "examples/data/sample_rune.witchy"
     let report = compiler.footprint(read(root, target))
-    print(console, target <> " demands: " <> total_of(report))
+    print(console, target + " demands: " + total_of(report))
 
 // Pull the "total" array out of the footprint JSON and render it.
 fn total_of(report: String) -> String:
     match json.decode(report):
         Ok(doc) -> render_total(doc)
-        Err(e) -> "parse error: " <> e
+        Err(e) -> "parse error: " + e
 
 fn render_total(doc: Json) -> String:
     match json.get(doc, "total"):

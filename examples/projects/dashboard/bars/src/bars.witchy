@@ -15,4 +15,4 @@ pub fn pct(done: Int, total: Int) -> Int:
 // A fixed-width progress bar like "[####----]" for done/total.
 pub fn bar(done: Int, total: Int, width: Int) -> String:
     let filled = if total == 0: 0 else: done * width / total
-    "[" <> string.repeat("#", filled) <> string.repeat("-", width - filled) <> "]"
+    "[" + string.repeat("#", filled) + string.repeat("-", width - filled) + "]"

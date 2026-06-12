@@ -452,13 +452,13 @@ fn expr_mentions(e: &Expr, name: &str) -> bool {
 }
 
 /// If `e` is a `<>` chain whose leftmost operand is exactly `Var(name)`
-/// (`name <> a <> b` parses left-associated), return the right operands in
+/// (`name + a + b` parses left-associated), return the right operands in
 /// evaluation order; otherwise None.
 fn concat_spine<'a>(mut e: &'a Expr, name: &str) -> Option<Vec<&'a Expr>> {
     let mut rights = Vec::new();
     loop {
         match e {
-            Expr::Binary { op: BinOp::Concat, lhs, rhs } => {
+            Expr::Binary { op: BinOp::Add, lhs, rhs } => {
                 rights.push(&**rhs);
                 e = lhs;
             }
@@ -841,7 +841,7 @@ impl Interpreter {
                     // Each print is one output line; the trailing newline is the
                     // line terminator. Strip it to match the WASM host
                     // (`host_print` in runtime.rs), so the backends agree when a
-                    // printed string ends in `\n` (e.g. `s <> "\n"`).
+                    // printed string ends in `\n` (e.g. `s + "\n"`).
                     self.output.push(msg.to_string().trim_end_matches('\n').to_string());
                     Ok(Some(Value::Nil))
                 }
@@ -1597,7 +1597,7 @@ impl Interpreter {
 
     /// The interpreter-side linear-update fast path: a self-assignment of an
     /// accumulation shape — `xs = list.push(xs, e)`, `d = dict.insert(d, k, v)`,
-    /// `d = dict.update(d, k, dflt, f)`, `s = s <> p` (any left spine) — mutates the
+    /// `d = dict.update(d, k, dflt, f)`, `s = s + p` (any left spine) — mutates the
     /// variable's slot in place instead of cloning the whole collection per
     /// step, turning accumulate-in-loop from O(n²) into O(n). Sound because
     /// values are fully owned (binding one clones it; no two bindings share
@@ -1681,7 +1681,7 @@ impl Interpreter {
                 }
                 Ok(true)
             }
-            Expr::Binary { op: BinOp::Concat, .. } => {
+            Expr::Binary { op: BinOp::Add, .. } => {
                 let Some(rights) = concat_spine(rhs, name) else {
                     return Ok(false);
                 };
@@ -2201,6 +2201,9 @@ fn eval_binary(op: BinOp, l: Value, r: Value) -> Result<Value, RuntimeError> {
         // agree exactly). It never panics the host. Division still errors on the
         // two cases WASM's `i64.div_s` traps on: divide-by-zero and INT_MIN / -1.
         Add | Sub | Mul | Div => match (op, l, r) {
+            // `+` on strings concatenates (typeck guarantees both sides are
+            // strings; this arm makes the reference semantics value-exact).
+            (Add, Str(a), Str(b)) => Ok(Str(format!("{a}{b}"))),
             (Add, Int(a), Int(b)) => Ok(Int(a.wrapping_add(b))),
             (Sub, Int(a), Int(b)) => Ok(Int(a.wrapping_sub(b))),
             (Mul, Int(a), Int(b)) => Ok(Int(a.wrapping_mul(b))),
@@ -2628,7 +2631,7 @@ fn main(console: Console):
         std::fs::write(src_root.join("api.proto"), "service Foo").unwrap();
 
         let module = crate::parser::parse_module(
-            "fn build(out: BuildOut, schema: BuildRead):\n    write_out(out, \"api.witchy\", \"// generated from: \" <> read_build(schema, \"api.proto\"))\n",
+            "fn build(out: BuildOut, schema: BuildRead):\n    write_out(out, \"api.witchy\", \"// generated from: \" + read_build(schema, \"api.proto\"))\n",
         )
         .expect("parse");
         let grants = BuildGrants {
@@ -2674,7 +2677,7 @@ fn main(console: Console):
         let dir = std::env::temp_dir().join(format!("witchy_build_e2e_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let build_mod = crate::parser::parse_module(
-            "fn build(out: BuildOut):\n    let nl = \"\\n\"\n    write_out(out, \"greet.witchy\", \"pub fn greeting() -> String:\" <> nl <> \"    \\\"hi from generated code\\\"\" <> nl)\n",
+            "fn build(out: BuildOut):\n    let nl = \"\\n\"\n    write_out(out, \"greet.witchy\", \"pub fn greeting() -> String:\" + nl + \"    \\\"hi from generated code\\\"\" + nl)\n",
         )
         .expect("parse build module");
         let gen_dir = dir.join("gen");
@@ -2704,7 +2707,7 @@ fn main(console: Console):
         std::fs::write(b.join("from_b.txt"), "BETA").unwrap();
 
         let module = crate::parser::parse_module(
-            "fn build(out: BuildOut, src: BuildRead):\n    write_out(out, \"g.txt\", read_build(src, \"from_a.txt\") <> \"/\" <> read_build(src, \"from_b.txt\"))\n",
+            "fn build(out: BuildOut, src: BuildRead):\n    write_out(out, \"g.txt\", read_build(src, \"from_a.txt\") + \"/\" + read_build(src, \"from_b.txt\"))\n",
         )
         .unwrap();
         let grants = BuildGrants {
@@ -2873,7 +2876,7 @@ fn double(n: Int) -> Int:
     (n * 2)
 
 fn main(console: Console):
-    print(console, ("doubled: " <> __render(double(21))))
+    print(console, ("doubled: " + __render(double(21))))
 "#;
         assert_eq!(run(src).unwrap(), vec!["doubled: 42"]);
     }
@@ -2974,7 +2977,7 @@ fn main(console: Console):
     fn capability_can_be_threaded_to_a_helper() {
         let src = r#"
 fn announce(console: Console, who: String) -> Nil:
-    print(console, ("hello, " <> who))
+    print(console, ("hello, " + who))
 
 fn main(console: Console):
     announce(console, "witchy")
@@ -3133,7 +3136,7 @@ import server
 fn main(console: Console, net: Net):
     let app = server.router()
         .get("/", fn(req: Request): server.text(200, "home"))
-        .get("/users/:id", fn(req: Request): server.text(200, "user " <> server.param(req, "id")))
+        .get("/users/:id", fn(req: Request): server.text(200, "user " + server.param(req, "id")))
         .post("/echo", fn(req: Request): server.text(201, server.request_body(req)))
     server.serve_n(net, "{addr}", app, 3)
 "#
@@ -3209,7 +3212,7 @@ fn main(console: Console, net: Net):
             print(console, __render(http.status(resp)))
             print(console, http.body(resp))
             print(console, __render(http.is_success(resp)))
-        Err(e) -> print(console, "err: " <> e)
+        Err(e) -> print(console, "err: " + e)
 "#
         );
         let parsed = crate::parser::parse_module(&src).expect("parse");
@@ -3677,7 +3680,7 @@ fn main(console: Console, net: Net):
     fn modules_qualified_calls() {
         let strutil = r#"
 fn shout(name: String) -> String:
-    ("HELLO, " <> name)
+    ("HELLO, " + name)
 "#;
         let app = r#"
 import strutil
@@ -3696,7 +3699,7 @@ fn main(console: Console):
         // The app chooses to hand the logger its Console.
         let logger = r#"
 fn log(console: Console, msg: String):
-    print(console, ("[log] " <> msg))
+    print(console, ("[log] " + msg))
 "#;
         let app = r#"
 import logger
@@ -3790,7 +3793,7 @@ fn main(console: Console):
     print(console, __render(r))
     let pair = (1, "one")
     match pair:
-        (n, name) -> print(console, ((__render(n) <> "=") <> name))
+        (n, name) -> print(console, ((__render(n) + "=") + name))
 "#;
         assert_eq!(run(src).unwrap(), vec!["3", "2", "1=one"]);
     }
@@ -3817,8 +3820,8 @@ type Result:
 
 fn show(r: Result(Int, String)) -> String:
     match r:
-        Ok(n) -> ("ok " <> __render(n))
-        Err(msg) -> ("err " <> msg)
+        Ok(n) -> ("ok " + __render(n))
+        Err(msg) -> ("err " + msg)
 
 fn main(console: Console):
     print(console, show(Ok(7)))
@@ -3993,7 +3996,7 @@ fn main(console: Console):
     var report = ""
     for e in dict.pairs(d):
         let (k, v) = e
-        report = ((((report <> k) <> "=") <> __render(v)) <> ";")
+        report = ((((report + k) + "=") + __render(v)) + ";")
     print(console, report)
 "#;
         assert_eq!(run(src).unwrap(), vec!["30", "a=10;b=20;"]);
@@ -4140,8 +4143,8 @@ type Point:
 fn main(console: Console):
     let p = Point(1, 2)
     let q = Point(x: 10, y: ((p).y + 1), ..p)
-    print(console, (__render((p).x) <> __render((p).y)))
-    print(console, (__render((q).x) <> __render((q).y)))
+    print(console, (__render((p).x) + __render((p).y)))
+    print(console, (__render((q).x) + __render((q).y)))
 "#;
         assert_eq!(run(src).unwrap(), vec!["12", "103"]);
     }
@@ -4155,7 +4158,7 @@ type Person:
 
 fn main(console: Console):
     let p = Person("witchy", 7)
-    print(console, (((p).name <> " is ") <> __render((p).age)))
+    print(console, (((p).name + " is ") + __render((p).age)))
 "#;
         assert_eq!(run(src).unwrap(), vec!["witchy is 7"]);
     }
@@ -4289,7 +4292,7 @@ actor Logger:
 impl Logger:
     on Log(msg: String):
         count = (count + 1)
-        print(console, ((("[" <> __render(count)) <> "] ") <> msg))
+        print(console, ((("[" + __render(count)) + "] ") + msg))
 
 fn main(console: Console):
     let logger = spawn Logger(console)

@@ -17,7 +17,7 @@ fn total(accounts: List(Account)) -> Int:
 
 fn debit(a: Account, amount: Int) -> Result(Account, String):
     match a.balance < amount:
-        true -> Err("insufficient funds for " <> a.name)
+        true -> Err("insufficient funds for " + a.name)
         false -> Ok(Account(a.name, a.balance - amount))
 
 fn pay_both(a: Account, b: Account, amount: Int) -> Result(Int, String):
@@ -27,11 +27,11 @@ fn pay_both(a: Account, b: Account, amount: Int) -> Result(Int, String):
 
 fn show(r: Result(Int, String)) -> String:
     match r:
-        Ok(n) -> "remaining: " <> "${n}"
-        Err(e) -> "error: " <> e
+        Ok(n) -> "remaining: " + "${n}"
+        Err(e) -> "error: " + e
 
 fn main(console: Console):
     let accounts = [Account("alice", 100), Account("bob", 50)]
-    print(console, "total = " <> "${total(accounts)}")
+    print(console, "total = " + "${total(accounts)}")
     print(console, show(pay_both(Account("alice", 100), Account("bob", 50), 30)))
     print(console, show(pay_both(Account("alice", 100), Account("bob", 50), 70)))

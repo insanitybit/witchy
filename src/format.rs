@@ -840,9 +840,10 @@ fn expr(e: &Expr) -> String {
             format!("{o}{}", operand(inner, UNARY_PREC, false))
         }
         Expr::Binary { op, lhs, rhs } => {
-            // A `<>` chain in the canonical shape interpolation desugars to
-            // prints back as the interpolation itself (see `interpolation_sugar`).
-            if *op == BinOp::Concat {
+            // A string-`+` chain in the canonical shape interpolation
+            // desugars to prints back as the interpolation itself (see
+            // `interpolation_sugar`).
+            if matches!(op, BinOp::Concat | BinOp::Add) {
                 if let Some(sugar) = interpolation_sugar(e) {
                     return sugar;
                 }
@@ -967,7 +968,7 @@ fn binop(op: BinOp) -> &'static str {
         BinOp::Mul => "*",
         BinOp::Div => "/",
         BinOp::Mod => "%",
-        BinOp::Concat => "<>",
+        BinOp::Concat => "+",
         BinOp::Eq => "==",
         BinOp::NotEq => "!=",
         BinOp::Lt => "<",
@@ -1031,7 +1032,7 @@ fn expr_prec(e: &Expr) -> u8 {
 fn operand(e: &Expr, parent: u8, is_right: bool) -> String {
     // A concat chain that prints as an interpolated string literal is a
     // PRIMARY — never parenthesized, whatever its AST precedence says.
-    if let Expr::Binary { op: BinOp::Concat, .. } = e {
+    if let Expr::Binary { op: BinOp::Concat | BinOp::Add, .. } = e {
         if let Some(sugar) = interpolation_sugar(e) {
             return sugar;
         }
@@ -1104,7 +1105,7 @@ fn comprehension_sugar(b: &Block) -> Option<String> {
 
 /// Print a `<>` chain back as the string interpolation it desugared from.
 ///
-/// The lexer expands `"a ${x} b"` to `("a " <> __render(x) <> " b")` at the
+/// The lexer expands `"a ${x} b"` to `("a " + __render(x) + " b")` at the
 /// TOKEN level, so the AST has no interpolation node; this is its inverse.
 /// The shape is strict — literal segments alternating with `__render(expr)`
 /// pieces, starting and ending with a literal (the lexer always emits the
@@ -1116,7 +1117,7 @@ fn interpolation_sugar(e: &Expr) -> Option<String> {
     let mut cur = e;
     loop {
         match cur {
-            Expr::Binary { op: BinOp::Concat, lhs, rhs } => {
+            Expr::Binary { op: BinOp::Concat | BinOp::Add, lhs, rhs } => {
                 pieces.push(rhs);
                 cur = lhs;
             }
@@ -1308,7 +1309,7 @@ fn canon_stmt(s: &mut Stmt) {
 
 fn canon_expr(e: &mut Expr) {
     // A rendering call in any spelling canonicalizes to the interpolation
-    // DESUGAR (`"" <> __render(e) <> ""`), the exact tree `"${e}"` parses to —
+    // DESUGAR (`"" + __render(e) + ""`), the exact tree `"${e}"` parses to —
     // so the printer's interpolation rewrite reads as equality, not a change.
     if let Expr::Call { name, args } = e {
         if !local_fn(name)
@@ -1318,9 +1319,9 @@ fn canon_expr(e: &mut Expr) {
             let mut arg = args.remove(0);
             canon_expr(&mut arg);
             *e = Expr::Binary {
-                op: BinOp::Concat,
+                op: BinOp::Add,
                 lhs: Box::new(Expr::Binary {
-                    op: BinOp::Concat,
+                    op: BinOp::Add,
                     lhs: Box::new(Expr::Str(String::new())),
                     rhs: Box::new(Expr::Call { name: "__render".into(), args: vec![arg] }),
                 }),
@@ -1356,7 +1357,11 @@ fn canon_expr(e: &mut Expr) {
         | Expr::Try(expr)
         | Expr::As { expr, .. }
         | Expr::Field { base: expr, .. } => canon_expr(expr),
-        Expr::Binary { lhs, rhs, .. } => {
+        Expr::Binary { op, lhs, rhs } => {
+            // Legacy `<>` reads as the `+` it prints to.
+            if *op == BinOp::Concat {
+                *op = BinOp::Add;
+            }
             canon_expr(lhs);
             canon_expr(rhs);
         }

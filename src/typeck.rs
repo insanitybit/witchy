@@ -2186,6 +2186,25 @@ impl Checker {
             Add | Sub | Mul | Div => {
                 let lr = self.resolve(&lt);
                 let rr = self.resolve(&rt);
+                // `+` concatenates strings — type-directed, never coercing: a
+                // String operand demands a String on the other side, and a
+                // mixed `+` names interpolation as the fix.
+                if matches!(lr, Ty::String) || matches!(rr, Ty::String) {
+                    if !matches!(op, Add) {
+                        return terr("only `+` is defined on String (it concatenates)");
+                    }
+                    for other in [&lr, &rr] {
+                        if !matches!(other, Ty::String | Ty::Var(_)) {
+                            return terr(format!(
+                                "cannot `+` a String and `{other}` — render the value \
+                                 into the string instead: `\"${{a}}${{b}}\"`"
+                            ));
+                        }
+                    }
+                    self.unify(&Ty::String, &lt)?;
+                    self.unify(&Ty::String, &rt)?;
+                    return Ok(Ty::String);
+                }
                 // Duration arithmetic: durations add/subtract with each other,
                 // scale by an Int (multiply / divide), and Duration / Duration is
                 // their Int ratio. Mixing a Duration with a bare Int under +/-
@@ -2230,9 +2249,16 @@ impl Checker {
                 Ok(Ty::Int)
             }
             Concat => {
-                self.unify(&Ty::String, &lt)?;
-                self.unify(&Ty::String, &rt)?;
-                Ok(Ty::String)
+                // Surface `<>` is gone; the OP survives as compiler-internal IR
+                // (codegen flips string `+` to it after annotation), so the
+                // annotating run types it and only the user-facing check
+                // teaches.
+                if self.type_record.is_some() {
+                    self.unify(&Ty::String, &lt)?;
+                    self.unify(&Ty::String, &rt)?;
+                    return Ok(Ty::String);
+                }
+                terr("`<>` was removed — `+` concatenates strings, and `\"${a}${b}\"` interpolates")
             }
             Eq | NotEq => {
                 self.unify(&lt, &rt)?;
@@ -3061,7 +3087,7 @@ fn main(console: Console):
     fn rejects_string_plus_int() {
         let src = r#"
 fn f() -> String:
-    ("a" <> 1)
+    ("a" + 1)
 "#;
         assert!(check_str(src).is_err());
     }
@@ -3498,7 +3524,7 @@ fn f(xs: List(Int)) -> Int:
 fn f(xs: List(Int)) -> String:
     match xs:
         [] -> ""
-        [head, ..] -> (head <> "!")
+        [head, ..] -> (head + "!")
 "#;
         assert!(check_str(src).is_err());
     }
@@ -3798,7 +3824,7 @@ actor Logger:
 impl Logger:
     on Log(msg: String):
         count = (count + 1)
-        print(console, ((("[" <> __render(count)) <> "] ") <> msg))
+        print(console, ((("[" + __render(count)) + "] ") + msg))
 
 fn main(console: Console):
     let logger = spawn Logger(console)

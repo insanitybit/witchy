@@ -31,11 +31,11 @@ impl Ord for Version:
 
 fn show_version(v: Version) -> String:
     match v:
-        Version(a, b) -> "${a}" <> "." <> "${b}"
+        Version(a, b) -> "${a}" + "." + "${b}"
 
 fn main(console: Console):
     let numbers = [34, 50, 25, 100, 65]
-    print(console, "largest number: " <> "${largest(numbers)}")
+    print(console, "largest number: " + "${largest(numbers)}")
 
     let versions = [Version(1, 9), Version(2, 0), Version(1, 12), Version(2, 0)]
-    print(console, "latest version: " <> show_version(largest(versions)))
+    print(console, "latest version: " + show_version(largest(versions)))

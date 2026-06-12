@@ -10,10 +10,10 @@ actor Reporter:
 impl Reporter:
     on Alert(source: String, value: Float):
         alerts = alerts + 1
-        print(console, "[alert ${alerts}] " <> source <> " at " <> "${value}")
+        print(console, "[alert ${alerts}] " + source + " at " + "${value}")
     on Summary(lines: List(String)):
         for line in lines:
-            print(console, "summary: " <> line)
+            print(console, "summary: " + line)
 
 actor Gauge:
     console: Console
@@ -24,14 +24,14 @@ impl Gauge:
     on Sample(x: Float):
         total = total + x
         count = count + 1
-        print(console, "mean " <> "${total / math.to_float(count)}")
+        print(console, "mean " + "${total / math.to_float(count)}")
 
 actor Router:
     console: Console
 
 impl Router:
     on Dispatch(dest: Subject, source: String, value: Float):
-        print(console, "routing " <> source)
+        print(console, "routing " + source)
         send(dest, Alert(source, value))
 
 // The router was never configured with a reporter — the Subject inside the

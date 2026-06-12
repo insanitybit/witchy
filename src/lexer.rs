@@ -554,7 +554,7 @@ impl Lexer {
 
     /// Lex a string literal. A plain string is a single `Str` token. A string
     /// with `${ expr }` interpolations expands to the token stream for
-    /// `( lit0 <> __render(expr0) <> lit1 <> ... )`, so the parser needs no
+    /// `( lit0 + __render(expr0) + lit1 + ... )`, so the parser needs no
     /// special handling and interpolation works in both backends (`to_string` +
     /// concat). Write `\$` for a literal `$`.
     fn string(&mut self, fstring: bool) -> Result<Vec<Tok>, LexError> {
@@ -607,7 +607,7 @@ impl Lexer {
             }
         }
         if interpolated {
-            out.push(Tok::Concat);
+            out.push(Tok::Plus);
             out.push(Tok::Str(text));
             out.push(Tok::RParen);
             Ok(out)
@@ -626,7 +626,7 @@ impl Lexer {
         interpolated: &mut bool,
     ) -> Result<(), LexError> {
         if *interpolated {
-            out.push(Tok::Concat);
+            out.push(Tok::Plus);
         } else {
             out.push(Tok::LParen);
             *interpolated = true;
@@ -634,7 +634,7 @@ impl Lexer {
         out.push(Tok::Str(std::mem::take(text)));
         let src = self.interp_source()?;
         let expr_toks = Lexer::new(&src).tokenize()?;
-        out.push(Tok::Concat);
+        out.push(Tok::Plus);
         out.push(Tok::Ident("__render".into()));
         out.push(Tok::LParen);
         for t in expr_toks {
@@ -987,7 +987,7 @@ mod tests {
 
     #[test]
     fn lexes_a_small_program() {
-        let src = "fn greet(name: String) -> String: \"hi, \" <> name";
+        let src = "fn greet(name: String) -> String: \"hi, \" + name";
         let toks = kinds(src);
         assert_eq!(
             toks,
@@ -1003,7 +1003,7 @@ mod tests {
                 Tok::Ident("String".into()),
                 Tok::Colon,
                 Tok::Str("hi, ".into()),
-                Tok::Concat,
+                Tok::Plus,
                 Tok::Ident("name".into()),
                 Tok::Eof,
             ]
@@ -1044,18 +1044,18 @@ mod tests {
 
     #[test]
     fn interpolation_expands_to_concat_tokens() {
-        // "a${x}b" lexes to the token stream for `("a" <> __render(x) <> "b")`.
+        // "a${x}b" lexes to the token stream for `("a" + __render(x) + "b")`.
         assert_eq!(
             kinds(r#""a${x}b""#),
             vec![
                 Tok::LParen,
                 Tok::Str("a".into()),
-                Tok::Concat,
+                Tok::Plus,
                 Tok::Ident("__render".into()),
                 Tok::LParen,
                 Tok::Ident("x".into()),
                 Tok::RParen,
-                Tok::Concat,
+                Tok::Plus,
                 Tok::Str("b".into()),
                 Tok::RParen,
                 Tok::Eof,

@@ -16,7 +16,7 @@ fn main(console: Console):
     // filter the evens, then sort ascending with a comparator closure: [2, 8].
     let evens = list.filter(xs, fn(n: Int): n % 2 == 0)
     let sorted = list.sort_by(evens, fn(a: Int, b: Int): a < b)
-    print(console, "${list.at(sorted, 0)}" <> " " <> "${list.at(sorted, 1)}")
+    print(console, "${list.at(sorted, 0)}" + " " + "${list.at(sorted, 1)}")
 
     // A *capturing* closure handed to a library function: `bonus` is closed over
     // and added on every step. sum(xs)=35, plus 7*100 = 735.

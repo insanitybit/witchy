@@ -27,7 +27,7 @@ fn is_entry(line: String) -> Bool:
 pub fn lookup(pairs: List((String, String)), key: String) -> Result(String, String):
     match find(pairs, key):
         Some(v) -> Ok(v)
-        None -> Err("missing config key: " <> key)
+        None -> Err("missing config key: " + key)
 
 fn find(pairs: List((String, String)), key: String) -> Option(String):
     for pair in pairs:

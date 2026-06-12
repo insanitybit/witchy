@@ -12,7 +12,7 @@ fn main(console: Console):
     for sample in ["aaabbbbc", "wwwwww", "abcdef", "mississippi", ""]:
         let encoded = encode(sample)
         let restored = decode(encoded)
-        print(console, render(sample) <> " -> " <> render(encoded) <> "  roundtrip " <> yes_no(restored == sample))
+        print(console, render(sample) + " -> " + render(encoded) + "  roundtrip " + yes_no(restored == sample))
 
 // Collapse each maximal run into "<count><char>".
 fn encode(text: String) -> String:
@@ -26,7 +26,7 @@ fn encode(text: String) -> String:
         while i < n && list.at(chars, i) == run_char:
             count = count + 1
             i = i + 1
-        out = out <> "${count}" <> run_char
+        out = out + "${count}" + run_char
     out
 
 // Expand each "<count><char>" run back to the original characters.
@@ -41,12 +41,12 @@ fn decode(encoded: String) -> String:
             count = count * 10 + ascii.to_digit(list.at(chars, i))
             i = i + 1
         if i < n:
-            out = out <> string.repeat(list.at(chars, i), count)
+            out = out + string.repeat(list.at(chars, i), count)
             i = i + 1
     out
 
 fn render(s: String) -> String:
-    "\"" <> s <> "\""
+    "\"" + s + "\""
 
 fn yes_no(ok: Bool) -> String:
     if ok:

@@ -47,7 +47,7 @@ pub fn show_list(xs: List(a)) -> String where a: Show:
     var parts = []
     for x in xs:
         parts = list.push(parts, show(x))
-    "[" <> string.join(parts, ", ") <> "]"
+    "[" + string.join(parts, ", ") + "]"
 
 // Print any `Show` value without converting it by hand — `say(console, 42)`,
 // `say(console, point)`. The Show-accepting `print` you reach for instead of

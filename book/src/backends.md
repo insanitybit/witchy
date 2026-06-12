@@ -81,7 +81,7 @@ flat across millions of messages), compiler-proven escape-free loop
 iterations (watermark resets), and user-declared [`region:`
 blocks](appendix-performance.md) whose value escapes by copy-out. Hot paths
 avoid allocating at all: an ownership analysis proves where accumulation
-(`xs = list.push(xs, e)`, `s = s <> p`, `d = dict.insert(d, k, v)`,
+(`xs = list.push(xs, e)`, `s = s + p`, `d = dict.insert(d, k, v)`,
 `x = f(move x)`) can mutate in place — aliases cost one copy where they
 happen, never the whole loop — and dicts carry a hidden hash index. The result benches at native-class speed — strings 4–5.7×
 faster than Go, lists/dicts/compute at parity (`bench/BASELINE.md`) — while

@@ -14,12 +14,12 @@ type Outcome:
 
 fn main(console: Console):
     for expr in ["3 4 +", "5 1 2 + 4 * + 3 -", "10 2 /", "1 0 /", "1 +"]:
-        print(console, string.pad_right(expr, 20, " ") <> "=> " <> run(expr))
+        print(console, string.pad_right(expr, 20, " ") + "=> " + run(expr))
 
 fn run(expr: String) -> String:
     match eval(string.words(expr)):
         Ok(value) -> "${value}"
-        Err(message) -> "error: " <> message
+        Err(message) -> "error: " + message
 
 fn eval(tokens: List(String)) -> Result(Int, String):
     var outcome = Stack([])
@@ -40,7 +40,7 @@ fn push_or_apply(stack: List(Int), token: String) -> Outcome:
 fn apply_operator(stack: List(Int), op: String) -> Outcome:
     let n = list.length(stack)
     if n < 2:
-        Failure("stack underflow at `" <> op <> "`")
+        Failure("stack underflow at `" + op + "`")
     else:
         let b = list.at(stack, n - 1)
         let a = list.at(stack, n - 2)
@@ -61,7 +61,7 @@ fn compute(op: String, a: Int, b: Int) -> Result(Int, String):
         else:
             Ok(a / b)
     else:
-        Err("unknown token `" <> op <> "`")
+        Err("unknown token `" + op + "`")
 
 fn finish(outcome: Outcome) -> Result(Int, String):
     match outcome:
@@ -70,7 +70,7 @@ fn finish(outcome: Outcome) -> Result(Int, String):
             if list.length(stack) == 1:
                 Ok(list.at(stack, 0))
             else:
-                Err("expected a single result, the stack has " <> "${list.length(stack)}")
+                Err("expected a single result, the stack has " + "${list.length(stack)}")
 
 // The first `k` elements of `xs` (the stack below the two consumed operands).
 fn prefix(xs: List(Int), k: Int) -> List(Int):

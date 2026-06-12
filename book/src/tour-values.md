@@ -42,13 +42,13 @@ milliseconds, and that is what `${timeout}` prints —
 
 ## Strings
 
-Strings concatenate with `<>` and interpolate with `${...}`:
+Strings concatenate with `+` and interpolate with `${...}`:
 
 ```witchy
 fn main(console: Console):
     let who = "world"
     let n = 3
-    print(console, "hello, " <> who)
+    print(console, "hello, " + who)
     print(console, "n is ${n}, doubled ${n * 2}")
 ```
 

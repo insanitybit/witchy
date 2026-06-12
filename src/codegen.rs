@@ -1025,12 +1025,17 @@ impl Codegen {
                 UnOp::Neg | UnOp::Move => self.val_type_of(expr),
                 UnOp::BitNot => ValType::Int,
             },
-            Expr::Binary { op, lhs, .. } => match op {
+            Expr::Binary { op, lhs, rhs } => match op {
                 BinOp::Eq | BinOp::NotEq | BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq
                 | BinOp::And | BinOp::Or => ValType::Bool,
                 BinOp::Concat => ValType::Str,
+                // `+` is concat when either side is a string; otherwise the
+                // numeric type rides on the left operand.
                 BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {
-                    self.val_type_of(lhs)
+                    match self.val_type_of(lhs) {
+                        ValType::Other if *op == BinOp::Add => self.val_type_of(rhs),
+                        vt => vt,
+                    }
                 }
                 // Bitwise ops are always Int.
                 BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor | BinOp::Shl | BinOp::Shr => {
@@ -2693,7 +2698,7 @@ impl Codegen {
                             tail_is_value = false;
                             continue;
                         }
-                        // The string-builder fast path: `s = s <> a <> b`
+                        // The string-builder fast path: `s = s + a + b`
                         // appends each piece into owned byte slack.
                         if let Some(pieces) =
                             self_concat_pieces(name, value).filter(|_| !site_dirty)
@@ -2881,7 +2886,15 @@ impl Codegen {
                 }
             },
             Expr::Binary { op, lhs, rhs } => {
-                if *op == BinOp::Concat {
+                if *op == BinOp::Concat
+                    || (*op == BinOp::Add
+                        && (self.val_type_of(lhs) == ValType::Str
+                            || self.val_type_of(rhs) == ValType::Str))
+                {
+                    // String `+`. The program pipeline flips these to Concat
+                    // after annotation (so the ownership analysis sees concat
+                    // shapes); this val-type net covers paths that compile
+                    // un-flipped trees (the standalone-actor entry).
                     self.uses_concat = true;
                     let l = self.compile_expr(lhs)?;
                     let r = self.compile_expr(rhs)?;
@@ -6322,13 +6335,17 @@ pub fn compile_module_with(
     let mut lowered = crate::traits::lower_for_wasm(recs);
     crate::parser::lower_sugar_module(&mut lowered);
     alpha_rename_module(&mut lowered);
-    let module = &lowered;
     let mut cg = Codegen::new();
     cg.message_tags = tags.clone();
     cg.spawnable = spawnable.clone();
+    // Types first, then the string-`+` flip (in place, so node identity — the
+    // table's keys — survives), and only THEN the ownership analysis, which
+    // matches concat shapes.
+    cg.type_table = crate::typeck::annotate(&lowered);
+    flip_string_add_module(&mut lowered, &cg.type_table);
+    let module = &lowered;
     register_module_items(&mut cg, module);
     cg.summaries = analysis::Summaries::of_module(module);
-    cg.type_table = crate::typeck::annotate(module);
     let mut func_wat = String::new();
     let mut main_params = 0usize;
     let mut main_param_is_args: Vec<bool> = Vec::new();
@@ -6793,9 +6810,12 @@ fn compile_actor_in(
     // metadata, then compile every helper a handler (transitively) calls —
     // before field/handler compilation, since compiling a function resets the
     // per-function local tables the handlers rely on.
+    // `parent` arrives pre-flipped from the program pipeline (string `+` is
+    // already `Concat` here); the standalone-actor path is covered by the
+    // val-type net in the `Add` compile arm.
+    cg.type_table = crate::typeck::annotate(parent);
     register_module_items(&mut cg, parent);
     cg.summaries = analysis::Summaries::of_module(parent);
-    cg.type_table = crate::typeck::annotate(parent);
     let bodies: HashMap<String, &Function> = parent
         .items
         .iter()
@@ -9106,6 +9126,153 @@ impl Renamer {
 /// level — BEFORE `typeck::annotate` runs — so the annotated AST instance is
 /// the very one codegen compiles (the type table and uniqueness facts are
 /// keyed by node identity). `compile_function` compiles bodies as-given.
+/// Flip string `+` to the internal `Concat` op, in place — AFTER annotation
+/// (the table's node-identity keys survive a field mutation) and BEFORE the
+/// ownership analysis (whose accumulator shapes match `Concat`). Detection is
+/// the type table plus string literals; anything it misses still compiles
+/// correctly through the val-type net in the `Add` arm, just unoptimized.
+fn flip_string_add_module(m: &mut Module, table: &crate::typeck::TypeTable) {
+    fn stringy(e: &Expr, table: &crate::typeck::TypeTable) -> bool {
+        matches!(e, Expr::Str(_))
+            || matches!(
+                table.type_of(e).and_then(crate::typeck::ty_to_ast),
+                Some(Type::Named(n, _)) if n == "String"
+            )
+    }
+    fn walk_expr(e: &mut Expr, table: &crate::typeck::TypeTable) {
+        match e {
+            Expr::Binary { op, lhs, rhs } => {
+                walk_expr(lhs, table);
+                walk_expr(rhs, table);
+                if *op == BinOp::Add && (stringy(lhs, table) || stringy(rhs, table)) {
+                    *op = BinOp::Concat;
+                }
+            }
+            Expr::List(xs) | Expr::Tuple(xs) | Expr::Ctor { args: xs, .. }
+            | Expr::Call { args: xs, .. } | Expr::Spawn { args: xs, .. } => {
+                for x in xs {
+                    walk_expr(x, table);
+                }
+            }
+            Expr::Apply { func, args } => {
+                walk_expr(func, table);
+                for a in args {
+                    walk_expr(a, table);
+                }
+            }
+            Expr::MethodCall { receiver, args, .. } => {
+                walk_expr(receiver, table);
+                for a in args {
+                    walk_expr(a, table);
+                }
+            }
+            Expr::Unary { expr, .. }
+            | Expr::Try(expr)
+            | Expr::As { expr, .. }
+            | Expr::Field { base: expr, .. } => walk_expr(expr, table),
+            Expr::Range { lo, hi, .. } => {
+                walk_expr(lo, table);
+                walk_expr(hi, table);
+            }
+            Expr::Index { base, index } => {
+                walk_expr(base, table);
+                walk_expr(index, table);
+            }
+            Expr::Record { fields, spread, .. } => {
+                for (_, v) in fields {
+                    walk_expr(v, table);
+                }
+                if let Some(sp) = spread {
+                    walk_expr(sp, table);
+                }
+            }
+            Expr::RecordUpdate { base, fields } => {
+                walk_expr(base, table);
+                for (_, v) in fields {
+                    walk_expr(v, table);
+                }
+            }
+            Expr::If { cond, then_block, else_block } => {
+                walk_expr(cond, table);
+                walk_block(then_block, table);
+                if let Some(b) = else_block {
+                    walk_block(b, table);
+                }
+            }
+            Expr::Match { scrutinee, arms } => {
+                walk_expr(scrutinee, table);
+                for a in arms {
+                    if let Some(g) = &mut a.guard {
+                        walk_expr(g, table);
+                    }
+                    walk_expr(&mut a.body, table);
+                }
+            }
+            Expr::While { cond, body } => {
+                walk_expr(cond, table);
+                walk_block(body, table);
+            }
+            Expr::WhileLet { scrutinee, body, .. } => {
+                walk_expr(scrutinee, table);
+                walk_block(body, table);
+            }
+            Expr::For { iter, body, .. } => {
+                walk_expr(iter, table);
+                walk_block(body, table);
+            }
+            Expr::Lambda { body, .. } => walk_block(body, table),
+            Expr::Block(b) => walk_block(b, table),
+            Expr::Int(_) | Expr::Duration(_) | Expr::Float(_) | Expr::Str(_)
+            | Expr::Bool(_) | Expr::Var(_) => {}
+        }
+    }
+    fn walk_block(b: &mut Block, table: &crate::typeck::TypeTable) {
+        for st in &mut b.stmts {
+            match st {
+                Stmt::Let { value, .. }
+                | Stmt::Assign { value, .. }
+                | Stmt::LetTuple { value, .. }
+                | Stmt::Return(Some(value))
+                | Stmt::Expr(value)
+                | Stmt::Yield(value) => walk_expr(value, table),
+                Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
+            }
+        }
+    }
+    for item in &mut m.items {
+        match item {
+            Item::Function(f) => walk_block(&mut f.body, table),
+            Item::Actor(a) => {
+                for fl in &mut a.fields {
+                    if let Some(init) = &mut fl.init {
+                        walk_expr(init, table);
+                    }
+                }
+                for h in &mut a.handlers {
+                    walk_block(&mut h.body, table);
+                }
+            }
+            Item::Impl(im) => {
+                for f in &mut im.methods {
+                    walk_block(&mut f.body, table);
+                }
+                for h in &mut im.handlers {
+                    walk_block(&mut h.body, table);
+                }
+            }
+            Item::Trait(t) => {
+                for msig in &mut t.methods {
+                    if let Some(b) = &mut msig.default {
+                        walk_block(b, table);
+                    }
+                }
+            }
+            Item::Const { value, .. } => walk_expr(value, table),
+            Item::Type(_) | Item::TypeAlias { .. } | Item::Comptime(_) => {}
+        }
+    }
+}
+
 fn alpha_rename_module(m: &mut Module) {
     for item in &mut m.items {
         match item {
@@ -9632,7 +9799,7 @@ actor Counter:
 impl Counter:
     on Tick():
         count = (count + 1)
-        print(console, ("n=" <> __render(count)))
+        print(console, ("n=" + __render(count)))
 "#;
         let module = parse_module(src).unwrap();
         let Item::Actor(actor) = &module.items[0] else {
@@ -9679,7 +9846,7 @@ impl Counter:
     fn compiles_string_concatenation() {
         let src = r#"
 fn shout(name: String) -> String:
-    ("hello, " <> name)
+    ("hello, " + name)
 
 fn main(console: Console):
     print(console, shout("witchy"))
@@ -9717,7 +9884,7 @@ actor Counter:
 impl Counter:
     on Tick():
         count = (count + 1)
-        print(console, ("count is " <> __render(count)))
+        print(console, ("count is " + __render(count)))
 "#;
         let module = parse_module(src).unwrap();
         let Item::Actor(actor) = &module.items[0] else {

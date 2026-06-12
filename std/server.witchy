@@ -182,7 +182,7 @@ impl Router:
                 var out = self
                 for rt in sub_routes:
                     match rt:
-                        Route(m, p, h) -> out = route(out, m, prefix <> p, h)
+                        Route(m, p, h) -> out = route(out, m, prefix + p, h)
                 out
 
     fn layer(self, mw: fn(fn(Request) -> Response) -> fn(Request) -> Response) -> Router:
@@ -285,7 +285,7 @@ fn join_segs(xs: List(String)) -> String:
             out = s
             first = false
         else:
-            out = out <> "/" <> s
+            out = out + "/" + s
     out
 
 // ---- Request parsing from the socket ----
@@ -372,13 +372,13 @@ fn after(s: String, sep: String) -> String:
 fn render_response(resp: Response) -> String:
     match resp:
         Response(code, headers, b) ->
-            var out = "HTTP/1.1 ${code} " <> reason(code) <> "\r\n"
+            var out = "HTTP/1.1 ${code} " + reason(code) + "\r\n"
             for h in headers:
                 let (k, v) = h
-                out = out <> k <> ": " <> v <> "\r\n"
-            out = out <> "Content-Length: " <> "${string.length(b)}" <> "\r\n"
-            out = out <> "Connection: close\r\n\r\n"
-            out <> b
+                out = out + k + ": " + v + "\r\n"
+            out = out + "Content-Length: " + "${string.length(b)}" + "\r\n"
+            out = out + "Connection: close\r\n\r\n"
+            out + b
 
 fn reason(code: Int) -> String:
     if code == 200:

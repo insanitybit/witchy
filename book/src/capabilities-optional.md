@@ -58,7 +58,7 @@ fn handle(a: Access, name: String) -> String:
         ReadOnly(d) -> read(d, name)
         Writable(d) ->
             write(d, name, "touched")
-            "wrote " <> name
+            "wrote " + name
 
 fn main(console: Console, dir: Dir):
     print(console, handle(ReadOnly(dir as Dir[Read]), "notes.txt"))

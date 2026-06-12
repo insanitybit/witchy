@@ -7,10 +7,10 @@ actor Account:
 impl Account:
     on Deposit(amount: Int):
         cents = cents + amount
-        print(console, "deposit  " <> money.format(amount) <> "  -> balance " <> money.format(cents))
+        print(console, "deposit  " + money.format(amount) + "  -> balance " + money.format(cents))
     on Withdraw(amount: Int):
         cents = cents - amount
-        print(console, "withdraw " <> money.format(amount) <> "  -> balance " <> money.format(cents))
+        print(console, "withdraw " + money.format(amount) + "  -> balance " + money.format(cents))
 
 fn main(console: Console):
     let acct = spawn Account(console)

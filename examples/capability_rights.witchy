@@ -33,8 +33,8 @@ fn main(console: Console, root: Dir):
     let data = subdir(subdir(root, "examples"), "data")
     // Implicit narrowing: `load` asks for `Dir[Read]`; the full `data` capability
     // narrows automatically at the call — no cast needed.
-    print(console, "implicit: " <> load(data, "greeting.txt"))
+    print(console, "implicit: " + load(data, "greeting.txt"))
     // Explicit narrowing: name a read-only handle with `as`. Passing `ro` where a
     // full `Dir` is wanted would be a compile error.
     let ro = data as Dir[Read]
-    print(console, "explicit: " <> load(ro, "greeting.txt"))
+    print(console, "explicit: " + load(ro, "greeting.txt"))

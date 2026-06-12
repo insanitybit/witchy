@@ -21,19 +21,19 @@ fn main(console: Console):
     // if let: bind and act only when the value is present, with an else fallback.
     let found = Some(42)
     if let Some(x) = found:
-        print(console, "found: " <> "${x}")
+        print(console, "found: " + "${x}")
     else:
         print(console, "nothing")
 
     // if let with no else is a statement: the body runs, or nothing happens.
     if let Some(x) = pop([7, 8, 9]):
         let (head, _rest) = x
-        print(console, "head is " <> "${head}")
+        print(console, "head is " + "${head}")
 
     // while let: keep matching until the pattern fails — here, until the list
     // is empty and `pop` returns None.
     var stack = [1, 2, 3, 4]
     while let Some((top, rest)) = pop(stack):
-        print(console, "pop " <> "${top}")
+        print(console, "pop " + "${top}")
         stack = rest
     print(console, "drained")

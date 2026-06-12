@@ -144,8 +144,8 @@ Everything is an expression; a block's value is its final expression.
 
 | Operators | Meaning |
 |---|---|
-| `+ - * / %` | arithmetic (`Int` wraps; `/ 0` and `Int.MIN / -1` are runtime errors on every backend) |
-| `<>` | string concatenation |
+| `+ - * / %` | arithmetic (`Int` wraps; `/ 0` and `Int.MIN / -1` are runtime errors on every backend); `+` on two Strings concatenates — never coerces |
+
 | `== !=` | **structural** equality — deep, on lists, tuples, records, enums, `Option`, `Dict` (insertion-order-sensitive), on every backend |
 | `< <= > >=` | ordering on `Int`/`Float`/`String`/`Duration` only; ordering a NaN is a runtime error; compounds don't order |
 | `&& \|\|` | short-circuit boolean |
@@ -163,7 +163,7 @@ fn double(n: Int) -> Int:
 
 fn main(console: Console):
     print(console, "${7 % 3}")
-    print(console, "a" <> "b")
+    print(console, "a" + "b")
     print(console, "${[1, 2] == [1, 2]}")
     print(console, "${2.5 < 3.0}")
     let xs = [10, 20, 30]
@@ -260,13 +260,13 @@ type Shape:
 fn describe(s: Shape) -> String:
     match s:
         Circle(r) if r > 100 -> "big circle"
-        Circle(r) -> "circle " <> "${r}"
-        Square(w) -> "square " <> "${w}"
+        Circle(r) -> "circle " + "${r}"
+        Square(w) -> "square " + "${w}"
 
 fn head(xs: List(Int)) -> String:
     match xs:
         [] -> "empty"
-        [first, ..rest] -> "first " <> "${first}" <> ", " <> "${list.length(rest)}" <> " more"
+        [first, ..rest] -> "first " + "${first}" + ", " + "${list.length(rest)}" + " more"
 
 fn main(console: Console):
     print(console, describe(Circle(2)))
@@ -469,8 +469,8 @@ fn ratio(a: Int, b: Int, c: Int) -> Result(Int, String):
 
 fn show(r: Result(Int, String)) -> String:
     match r:
-        Ok(v) -> "ok: " <> "${v}"
-        Err(e) -> "err: " <> e
+        Ok(v) -> "ok: " + "${v}"
+        Err(e) -> "err: " + e
 
 fn main(console: Console):
     print(console, show(ratio(100, 5, 2)))

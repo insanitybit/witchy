@@ -11,7 +11,7 @@ fn main(console: Console):
     let width = 20
     print(console, "wrapped to ${width} columns:")
     for line in wrap(text, width):
-        print(console, "| " <> string.pad_right(line, width, " ") <> " |")
+        print(console, "| " + string.pad_right(line, width, " ") + " |")
 
 fn wrap(text: String, width: Int) -> List(String):
     var lines = []
@@ -20,7 +20,7 @@ fn wrap(text: String, width: Int) -> List(String):
         if string.length(current) == 0:
             current = word
         else if string.length(current) + 1 + string.length(word) <= width:
-            current = current <> " " <> word
+            current = current + " " + word
         else:
             lines = list.push(lines, current)
             current = word

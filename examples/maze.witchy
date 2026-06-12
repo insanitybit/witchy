@@ -90,7 +90,7 @@ fn render_path(console: Console, maze: List(String), prev: Dict(Int, Int), start
         var c = 0
         while c < width:
             let here = r * width + c
-            line = line <> glyph(string.substring(row, c, c + 1), dict.has(route, here))
+            line = line + glyph(string.substring(row, c, c + 1), dict.has(route, here))
             c = c + 1
         print(console, line)
         r = r + 1

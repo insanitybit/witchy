@@ -15,13 +15,13 @@ fn main(console: Console, root: Dir[Read]):
 fn report(text: String) -> String:
     match json.decode(text):
         Ok(doc) -> render(array_or_empty(json.as_array(doc)))
-        Err(e) -> "parse error: " <> e
+        Err(e) -> "parse error: " + e
 
 fn render(records: List(Json)) -> String:
     var scores = []
     for r in records:
         scores = list.push(scores, score_of(r))
-    string.join(["records: " <> "${stats.count(scores)}", "total:   " <> "${stats.total(scores)}", "max:     " <> "${stats.max(scores)}", "average: " <> "${stats.average(scores)}"], "\n")
+    string.join(["records: " + "${stats.count(scores)}", "total:   " + "${stats.total(scores)}", "max:     " + "${stats.max(scores)}", "average: " + "${stats.average(scores)}"], "\n")
 
 // The integer "score" field of one record, defaulting to 0 if absent / non-int.
 fn score_of(record: Json) -> Int:

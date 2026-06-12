@@ -24,7 +24,7 @@ Most of the compiled tier's speed comes from machinery that needs **no
 annotations** — it triggers on shapes the compiler can prove unaliased:
 
 - **Linear update, analysis-driven.** A self-assign accumulation —
-  `xs = list.push(xs, e)`, `s = s <> piece`, `d = dict.insert(d, k, v)`,
+  `xs = list.push(xs, e)`, `s = s + piece`, `d = dict.insert(d, k, v)`,
   `d = dict.update(d, k, dflt, f)` — mutates the collection in place with
   capacity doubling. The *uniqueness pass* decides when that is sound: an
   alias zeroes the ownership token exactly where it is created (one copy

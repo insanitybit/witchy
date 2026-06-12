@@ -145,15 +145,15 @@ pub fn month_name(d: DateTime) -> String:
 
 // `YYYY-MM-DD`.
 pub fn date_string(d: DateTime) -> String:
-    pad4(year(d)) <> "-" <> pad2(month(d)) <> "-" <> pad2(day(d))
+    pad4(year(d)) + "-" + pad2(month(d)) + "-" + pad2(day(d))
 
 // `HH:MM:SS`.
 pub fn time_string(d: DateTime) -> String:
-    pad2(hour(d)) <> ":" <> pad2(minute(d)) <> ":" <> pad2(second(d))
+    pad2(hour(d)) + ":" + pad2(minute(d)) + ":" + pad2(second(d))
 
 // RFC 3339 / ISO 8601 in UTC, e.g. `2026-06-08T22:30:00Z`.
 pub fn iso8601(d: DateTime) -> String:
-    date_string(d) <> "T" <> time_string(d) <> "Z"
+    date_string(d) + "T" + time_string(d) + "Z"
 
 // A strftime-style layout: `%Y-%m-%d %H:%M:%S`, `%A %B %d` and friends.
 // Directives: %Y year, %m month, %d day, %H hour, %M minute, %S second,
@@ -164,12 +164,12 @@ pub fn format(d: DateTime, layout: String) -> String:
     var pending = false
     for c in string.chars(layout):
         if pending:
-            out = out <> directive(d, c)
+            out = out + directive(d, c)
             pending = false
         else if c == "%":
             pending = true
         else:
-            out = out <> c
+            out = out + c
     out
 
 fn directive(d: DateTime, c: String) -> String:
@@ -185,7 +185,7 @@ fn directive(d: DateTime, c: String) -> String:
         "b" -> string.substring(month_name(d), 0, 3)
         "B" -> month_name(d)
         "%" -> "%"
-        _ -> "%" <> c
+        _ -> "%" + c
 
 // --- internals ---------------------------------------------------------------
 
@@ -232,16 +232,16 @@ fn pmod(a: Int, b: Int) -> Int:
 
 fn pad2(n: Int) -> String:
     if n < 10:
-        "0" <> "${n}"
+        "0" + "${n}"
     else:
         "${n}"
 
 fn pad4(n: Int) -> String:
     if n < 10:
-        "000" <> "${n}"
+        "000" + "${n}"
     else if n < 100:
-        "00" <> "${n}"
+        "00" + "${n}"
     else if n < 1000:
-        "0" <> "${n}"
+        "0" + "${n}"
     else:
         "${n}"

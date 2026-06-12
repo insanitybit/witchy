@@ -18,7 +18,7 @@ fn to_roman(n: Int) -> String:
     var i = 0
     while i < list.length(values):
         while remaining >= values[i]:
-            result = result <> symbols[i]
+            result = result + symbols[i]
             remaining = remaining - values[i]
         i = i + 1
     result
@@ -50,4 +50,4 @@ fn from_roman(s: String) -> Int:
 fn main(console: Console):
     for n in [4, 9, 49, 90, 1994, 2024]:
         let r = to_roman(n)
-        print(console, "${n}" <> " = " <> r <> " -> " <> "${from_roman(r)}")
+        print(console, "${n}" + " = " + r + " -> " + "${from_roman(r)}")

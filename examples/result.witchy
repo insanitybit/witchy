@@ -14,8 +14,8 @@ fn safe_div(a: Int, b: Int) -> Result(Int, String):
 
 fn show(r: Result(Int, String)) -> String:
     match r:
-        Ok(n) -> "ok " <> "${n}"
-        Err(msg) -> "err " <> msg
+        Ok(n) -> "ok " + "${n}"
+        Err(msg) -> "err " + msg
 
 fn main(console: Console):
     print(console, show(safe_div(10, 2)))

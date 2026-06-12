@@ -7,8 +7,8 @@ has the precise semantics; this is the cheat sheet.
 
 | Operator | Meaning |
 |---|---|
-| `+ - * / %` | arithmetic; `Int` wraps on overflow; `/0` and `%0` are runtime errors |
-| `<>` | string concatenation |
+| `+ - * / %` | arithmetic; `+` on two Strings concatenates; `Int` wraps on overflow; `/0` and `%0` are runtime errors |
+
 | `== !=` | structural (deep) equality |
 | `< <= > >=` | ordering — `Int`/`Float`/`String`/`Duration` only |
 | `&& \|\|` | short-circuit boolean and/or |

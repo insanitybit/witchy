@@ -95,8 +95,8 @@ type Event:
 
 fn describe(e: Event) -> String:
     match e:
-        Click(x, y) -> "click at " <> "${x}" <> "," <> "${y}"
-        Key(k) -> "key " <> k
+        Click(x, y) -> "click at " + "${x}" + "," + "${y}"
+        Key(k) -> "key " + k
         Close -> "close"
 
 fn main(console: Console):
@@ -118,8 +118,8 @@ destructure lists (`[]`, `[first, ..rest]`), and add a guard condition:
 fn head(xs: List(Int)) -> String:
     match xs:
         [] -> "empty"
-        [only] -> "one: " <> "${only}"
-        [first, ..rest] -> "first " <> "${first}" <> " then " <> "${list.length(rest)}"
+        [only] -> "one: " + "${only}"
+        [first, ..rest] -> "first " + "${first}" + " then " + "${list.length(rest)}"
 
 fn sign(n: Int) -> String:
     match n:

@@ -23,9 +23,9 @@ fn main(console: Console):
     let kept = without console:
         list.filter(names, fn(n: String): is_valid(n))
 
-    print(console, "kept ${list.length(kept)} of " <> "${list.length(names)}")
+    print(console, "kept ${list.length(kept)} of " + "${list.length(names)}")
     for n in kept:
-        print(console, "  ok: " <> n)
+        print(console, "  ok: " + n)
 
     // A fully sealed block: `retain:` with no names drops every capability, so
     // this is pure computation — it cannot reach the console even by accident.
@@ -34,4 +34,4 @@ fn main(console: Console):
         for n in kept:
             sum = sum + string.length(n)
         sum
-    print(console, "total chars: " <> "${total}")
+    print(console, "total chars: " + "${total}")

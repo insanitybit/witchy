@@ -30,5 +30,5 @@ fn functional(upper: Int) -> Int:
 
 fn main(console: Console):
     let upper = 1000
-    print(console, "imperative: " <> "${imperative(upper)}")
-    print(console, "functional: " <> "${functional(upper)}")
+    print(console, "imperative: " + "${imperative(upper)}")
+    print(console, "functional: " + "${functional(upper)}")

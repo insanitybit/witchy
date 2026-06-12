@@ -51,18 +51,18 @@ pub fn head(net: Net[Connect, Tcp], host: String, port: Int, path: String) -> Re
 pub fn get_url(net: Net[Connect, Tcp], raw: String) -> Result(Response, String):
     match url.parse(raw):
         Ok(u) -> Ok(get(net, url.host(u), url.port(u), url.path(u)))
-        Err(e) -> Err("invalid URL: " <> e)
+        Err(e) -> Err("invalid URL: " + e)
 
 // Send a request with custom headers, returning the response. The generic form
 // behind the method helpers — use it when you need to set headers (auth,
 // content-type, ...). `Connection: close` ends `recv_all` after the body.
 pub fn request_with(net: Net[Connect, Tcp], method: String, host: String, port: Int, path: String, headers: List((String, String)), body: String) -> Response:
-    let sock = connect(net, host <> ":" <> "${port}")
-    var head = method <> " " <> path <> " HTTP/1.1\r\n" <> "Host: " <> host <> "\r\n"
+    let sock = connect(net, host + ":" + "${port}")
+    var head = method + " " + path + " HTTP/1.1\r\n" + "Host: " + host + "\r\n"
     for h in headers:
         let (k, v) = h
-        head = head <> k <> ": " <> v <> "\r\n"
-    let req = head <> "Content-Length: " <> "${string.length(body)}" <> "\r\n" <> "Connection: close\r\n\r\n" <> body
+        head = head + k + ": " + v + "\r\n"
+    let req = head + "Content-Length: " + "${string.length(body)}" + "\r\n" + "Connection: close\r\n\r\n" + body
 
     send_bytes(sock, req)
     parse_response(recv_all(sock))
@@ -115,7 +115,7 @@ impl RequestBuilder:
         match self:
             RequestBuilder(m, u, hs, b) ->
                 let sep = if string.contains(u, "?"): "&" else: "?"
-                RequestBuilder(m, u <> sep <> key <> "=" <> value, hs, b)
+                RequestBuilder(m, u + sep + key + "=" + value, hs, b)
 
     fn send(self, net: Net[Connect, Tcp]) -> Result(Response, String):
         // Send the assembled request, parsing host/port/path from its URL. An Err
@@ -125,7 +125,7 @@ impl RequestBuilder:
                 match url.parse(u):
                     Ok(parsed) ->
                         Ok(request_with(net, m, url.host(parsed), url.port(parsed), url.path(parsed), hs, b))
-                    Err(e) -> Err("invalid URL: " <> e)
+                    Err(e) -> Err("invalid URL: " + e)
 
 // Whether the response status is in the 2xx success range.
 pub fn is_success(r: Response) -> Bool:

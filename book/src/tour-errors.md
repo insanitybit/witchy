@@ -17,11 +17,11 @@ fn first_even(xs: List(Int)) -> Option(Int):
 
 fn main(console: Console):
     match first_even([1, 3, 4, 7]):
-        Some(n) -> print(console, "found " <> "${n}")
+        Some(n) -> print(console, "found " + "${n}")
         None -> print(console, "none")
 
     match first_even([1, 3, 5]):
-        Some(n) -> print(console, "found " <> "${n}")
+        Some(n) -> print(console, "found " + "${n}")
         None -> print(console, "none")
 ```
 
@@ -41,7 +41,7 @@ fn lookup(xs: List(Int), i: Int) -> Option(Int):
 
 fn main(console: Console):
     if let Some(v) = lookup([10, 20, 30], 1):
-        print(console, "got " <> "${v}")
+        print(console, "got " + "${v}")
     else:
         print(console, "out of range")
 ```
@@ -64,8 +64,8 @@ fn checked_div(a: Int, b: Int) -> Result(Int, String):
 
 fn show(r: Result(Int, String)) -> String:
     match r:
-        Ok(v) -> "ok: " <> "${v}"
-        Err(e) -> "error: " <> e
+        Ok(v) -> "ok: " + "${v}"
+        Err(e) -> "error: " + e
 
 fn main(console: Console):
     print(console, show(checked_div(10, 2)))
@@ -98,8 +98,8 @@ fn average_of_ratios(a: Int, b: Int, c: Int) -> Result(Int, String):
 
 fn show(r: Result(Int, String)) -> String:
     match r:
-        Ok(v) -> "ok: " <> "${v}"
-        Err(e) -> "error: " <> e
+        Ok(v) -> "ok: " + "${v}"
+        Err(e) -> "error: " + e
 
 fn main(console: Console):
     print(console, show(average_of_ratios(100, 5, 2)))

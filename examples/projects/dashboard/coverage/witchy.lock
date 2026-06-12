@@ -5,7 +5,7 @@
 name = "bars"
 version = "0.1.0"
 source = "path:./../bars"
-hash = "sha256:7a31ddfced7767bc0edf72ac37cafd80135afa740f9034c2f9da736a3ffe3a55"
+hash = "sha256:ada85087fb4dc3fdbc9b7fcc3cc77d121abbc79cb5d2118225f7b0fc17436013"
 runtime_footprint = []
 build_footprint = []
 determinism = "guaranteed"

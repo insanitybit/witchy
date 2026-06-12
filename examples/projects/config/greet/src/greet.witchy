@@ -9,10 +9,10 @@ import kv
 fn main(console: Console, root: Dir[Read]):
     match build(kv.parse(read(root, "config.kv"))):
         Ok(message) -> print(console, message)
-        Err(e) -> print(console, "config error: " <> e)
+        Err(e) -> print(console, "config error: " + e)
 
 // Compose the greeting from two config keys; `?` propagates the first miss.
 fn build(pairs: List((String, String))) -> Result(String, String):
     let greeting = kv.lookup(pairs, "greeting")?
     let name = kv.lookup(pairs, "name")?
-    Ok(greeting <> ", " <> name <> "!")
+    Ok(greeting + ", " + name + "!")

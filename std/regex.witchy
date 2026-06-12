@@ -48,9 +48,9 @@ pub fn replace_all(pattern: String, text: String, replacement: String) -> String
     var prev = 0
     for span in find_all(pattern, text):
         let (s, e) = span
-        out = out <> string.substring(text, prev, s) <> replacement
+        out = out + string.substring(text, prev, s) + replacement
         prev = e
-    out <> string.substring(text, prev, string.length(text))
+    out + string.substring(text, prev, string.length(text))
 
 // `text` split on every match: split(",\\s*", "a, b,c") is ["a", "b", "c"].
 pub fn split(pattern: String, text: String) -> List(String):

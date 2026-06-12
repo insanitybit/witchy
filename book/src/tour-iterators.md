@@ -95,8 +95,8 @@ fn show(xs: List(Int)) -> String:
     string.join(parts, ", ")
 
 fn main(console: Console):
-    print(console, "collatz(6): " <> show(iter.collect(collatz(6))))
-    print(console, "collatz(27) steps: " <> "${iter.count(collatz(27))}")
+    print(console, "collatz(6): " + show(iter.collect(collatz(6))))
+    print(console, "collatz(27) steps: " + "${iter.count(collatz(27))}")
 ```
 
 ```text

@@ -15,7 +15,7 @@ import json
 fn logging(console: Console) -> fn(fn(Request) -> Response) -> fn(Request) -> Response:
     fn(next: fn(Request) -> Response):
         fn(req: Request):
-            print(console, server.method(req) <> " " <> server.path(req))
+            print(console, server.method(req) + " " + server.path(req))
             next(req)
 
 fn home(req: Request) -> Response:

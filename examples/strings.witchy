@@ -3,7 +3,7 @@
 // (ptr, len). Granted the `print` capability the module runs; denied it, the
 // module cannot instantiate.
 fn shout(name: String) -> String:
-    "hello, " <> name
+    "hello, " + name
 
 fn main(console: Console):
-    print(console, shout("compiled witchy") <> "\n")
+    print(console, shout("compiled witchy") + "\n")

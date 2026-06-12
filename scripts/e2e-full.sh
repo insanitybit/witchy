@@ -113,7 +113,7 @@ fn test_double():
     testing.assert_int_eq(double(21), 42)
 
 fn test_strings():
-    testing.assert_eq("a" <> "b", "ab")
+    testing.assert_eq("a" + "b", "ab")
 EOF
 expect_contains "passing suite reports ok" "2 passed; 0 failed" "$("$BIN" test "$WORK/suite.witchy")"
 cat >> "$WORK/suite.witchy" <<'EOF'
@@ -160,7 +160,7 @@ fn main(console: Console, env: Env, dir: Dir[Read], args: List(String)) -> Int:
         None -> "unset"
     for line in string.lines(read(dir, list.at(args, 0))):
         if string.contains(line, "needle"):
-            print(console, label <> ": " <> line)
+            print(console, label + ": " + line)
     0
 EOF
 GOT="$(E2E_LABEL=found "$BIN" sandbox --dir "$WORK/jail" "$WORK/grep.witchy" data.txt 2>/dev/null)"
@@ -196,7 +196,7 @@ ALICE="$(mint --sub alice)"
 
 mkdir -p "$WORK/logger/src"
 printf '[rune]\nname = "acme/logger"\nversion = "1.0.0"\n' > "$WORK/logger/witchy.toml"
-printf 'pub fn line(s: String) -> String:\n    "[log] " <> s\n' > "$WORK/logger/src/logger.witchy"
+printf 'pub fn line(s: String) -> String:\n    "[log] " + s\n' > "$WORK/logger/src/logger.witchy"
 (cd "$WORK/logger" && WITCHY_USER=ci-bot COVEN_ID_TOKEN="$CI_TOKEN" "$BIN" publish >/dev/null)
 ok "trusted publish (lands STAGED)"
 
@@ -221,7 +221,7 @@ expect_eq "the consumer runs against the fetched rune" "[log] hello" "$GOT"
 
 # The widening gate: v1.1.0 quietly starts demanding Net.
 printf '[rune]\nname = "acme/logger"\nversion = "1.1.0"\n' > "$WORK/logger/witchy.toml"
-printf 'pub fn line(s: String) -> String:\n    "[log] " <> s\n\npub fn beacon(net: Net, s: String) -> String:\n    s\n' \
+printf 'pub fn line(s: String) -> String:\n    "[log] " + s\n\npub fn beacon(net: Net, s: String) -> String:\n    s\n' \
     > "$WORK/logger/src/logger.witchy"
 (cd "$WORK/logger" && WITCHY_USER=ci-bot COVEN_ID_TOKEN="$CI_TOKEN" "$BIN" publish >/dev/null)
 (cd "$WORK/logger" && WITCHY_USER=alice COVEN_ID_TOKEN="$ALICE" \

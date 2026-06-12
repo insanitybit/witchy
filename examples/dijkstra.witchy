@@ -16,12 +16,12 @@ fn main(console: Console):
     let source = 0
     let target = 4
     let (dist, prev) = dijkstra(list.length(names), edges, source)
-    print(console, "shortest distances from " <> list.at(names, source) <> ":")
+    print(console, "shortest distances from " + list.at(names, source) + ":")
     var i = 0
     while i < list.length(names):
-        print(console, "  " <> list.at(names, i) <> " = " <> "${list.at(dist, i)}")
+        print(console, "  " + list.at(names, i) + " = " + "${list.at(dist, i)}")
         i = i + 1
-    print(console, "path to " <> list.at(names, target) <> ": " <> string.join(path_to(names, prev, target), " -> "))
+    print(console, "path to " + list.at(names, target) + ": " + string.join(path_to(names, prev, target), " -> "))
 
 // Returns (distance from source, predecessor) for every node. Unreachable nodes
 // keep a sentinel distance; predecessors start at -1.

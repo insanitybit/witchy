@@ -181,7 +181,7 @@ mod tests {
 
     #[test]
     fn renders_signature_and_doc() {
-        let src = "// greet — a tiny module.\n\n// Say hello to `name`.\npub fn hello(name: String) -> String:\n    \"hi \" <> name\n\nfn private_helper() -> Int:\n    0\n";
+        let src = "// greet — a tiny module.\n\n// Say hello to `name`.\npub fn hello(name: String) -> String:\n    \"hi \" + name\n\nfn private_helper() -> Int:\n    0\n";
         let md = render("greet", src).unwrap();
         assert!(md.contains("## `greet`"), "module heading: {md}");
         assert!(md.contains("greet — a tiny module."), "module doc: {md}");

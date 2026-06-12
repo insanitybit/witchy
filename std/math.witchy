@@ -157,7 +157,7 @@ pub fn to_base(n: Int, base: Int) -> String:
     else if n == 0:
         "0"
     else if n < 0:
-        "-" <> to_base_pos(0 - n, base)
+        "-" + to_base_pos(0 - n, base)
     else:
         to_base_pos(n, base)
 
@@ -165,7 +165,7 @@ fn to_base_pos(n: Int, base: Int) -> String:
     if n == 0:
         ""
     else:
-        to_base_pos(n / base, base) <> base_digit(n % base)
+        to_base_pos(n / base, base) + base_digit(n % base)
 
 fn base_digit(d: Int) -> String:
     string.substring("0123456789abcdef", d, d + 1)
@@ -212,13 +212,13 @@ pub fn format_float(x: Float, decimals: Int) -> String:
     let scaled = math.to_int(float_abs(x) * math.to_float(scale) + 0.5)
     let sign = if x < 0.0 && scaled > 0: "-" else: ""
     if d == 0:
-        sign <> "${scaled}"
+        sign + "${scaled}"
     else:
-        sign <> "${scaled / scale}" <> "." <> zero_pad(scaled % scale, d)
+        sign + "${scaled / scale}" + "." + zero_pad(scaled % scale, d)
 
 // `n` as a decimal string left-padded with zeros to at least `width` digits.
 fn zero_pad(n: Int, width: Int) -> String:
     var s = "${n}"
     while string.length(s) < width:
-        s = "0" <> s
+        s = "0" + s
     s

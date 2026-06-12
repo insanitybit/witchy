@@ -8,20 +8,20 @@ import encoding
 
 fn main(console: Console):
     let d = time.from_unix(1780000000)
-    print(console, "date:    " <> time.iso8601(d) <> " (" <> time.weekday_name(d) <> ")")
-    print(console, "layout:  " <> time.format(d, "%A, %B %d %Y at %H:%M"))
+    print(console, "date:    " + time.iso8601(d) + " (" + time.weekday_name(d) + ")")
+    print(console, "layout:  " + time.format(d, "%A, %B %d %Y at %H:%M"))
 
     // Parsing accepts `Z`, offsets (normalized to UTC), fractional seconds,
     // and bare dates; impossible dates are an Err, not a rollover.
     match time.parse_iso8601("2026-06-08T22:30:00+02:00"):
-        Ok(p) -> print(console, "parsed:  " <> time.iso8601(p))
-        Err(e) -> print(console, "ERR " <> e)
+        Ok(p) -> print(console, "parsed:  " + time.iso8601(p))
+        Err(e) -> print(console, "ERR " + e)
 
     match time.parse_iso8601("2026-02-30T00:00:00Z"):
         Ok(_) -> print(console, "BAD: accepted Feb 30")
-        Err(e) -> print(console, "checked: " <> e)
+        Err(e) -> print(console, "checked: " + e)
 
     let payload = "witchy 🧙"
-    print(console, "base64:  " <> encoding.base64_encode(payload))
-    print(console, "hex:     " <> encoding.hex_encode(payload))
-    print(console, "decoded: " <> encoding.base64_decode(encoding.base64_encode(payload)))
+    print(console, "base64:  " + encoding.base64_encode(payload))
+    print(console, "hex:     " + encoding.hex_encode(payload))
+    print(console, "decoded: " + encoding.base64_decode(encoding.base64_encode(payload)))

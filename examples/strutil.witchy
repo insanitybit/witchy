@@ -2,4 +2,4 @@
 // grants no authority, and `shout` itself can't touch the filesystem, network,
 // or console — it has no capability to do so and can't forge one.
 fn shout(name: String) -> String:
-    "HELLO, " <> name
+    "HELLO, " + name

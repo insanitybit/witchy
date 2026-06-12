@@ -2086,7 +2086,7 @@ mod example_tests {
             #[test]
             fn rle_round_trips_over_digit_free_text(s in "[a-zA-Z ]{0,40}") {
                 let src = format!(
-                    "import string\nimport ascii\n\nfn encode(t: String) -> String:\n    let cs = string.chars(t)\n    let n = list.length(cs)\n    var out = \"\"\n    var i = 0\n    while i < n:\n        let c = list.at(cs, i)\n        var k = 0\n        while i < n && list.at(cs, i) == c:\n            k = k + 1\n            i = i + 1\n        out = out <> __render(k) <> c\n    out\n\nfn decode(e: String) -> String:\n    let cs = string.chars(e)\n    let n = list.length(cs)\n    var out = \"\"\n    var i = 0\n    while i < n:\n        var k = 0\n        while i < n && ascii.is_digit(list.at(cs, i)):\n            k = k * 10 + ascii.to_digit(list.at(cs, i))\n            i = i + 1\n        if i < n:\n            out = out <> string.repeat(list.at(cs, i), k)\n            i = i + 1\n    out\n\nfn yn(b: Bool) -> String:\n    if b: \"y\" else: \"n\"\n\nfn main(console: Console):\n    let s = \"{}\"\n    print(console, yn(decode(encode(s)) == s))\n",
+                    "import string\nimport ascii\n\nfn encode(t: String) -> String:\n    let cs = string.chars(t)\n    let n = list.length(cs)\n    var out = \"\"\n    var i = 0\n    while i < n:\n        let c = list.at(cs, i)\n        var k = 0\n        while i < n && list.at(cs, i) == c:\n            k = k + 1\n            i = i + 1\n        out = out + __render(k) + c\n    out\n\nfn decode(e: String) -> String:\n    let cs = string.chars(e)\n    let n = list.length(cs)\n    var out = \"\"\n    var i = 0\n    while i < n:\n        var k = 0\n        while i < n && ascii.is_digit(list.at(cs, i)):\n            k = k * 10 + ascii.to_digit(list.at(cs, i))\n            i = i + 1\n        if i < n:\n            out = out + string.repeat(list.at(cs, i), k)\n            i = i + 1\n    out\n\nfn yn(b: Bool) -> String:\n    if b: \"y\" else: \"n\"\n\nfn main(console: Console):\n    let s = \"{}\"\n    print(console, yn(decode(encode(s)) == s))\n",
                     esc(&s)
                 );
                 prop_assert_eq!(link_run(&src), vec!["y".to_string()]);
@@ -2235,12 +2235,12 @@ mod example_tests {
         assert_eq!(out, want, "wasm");
     }
 
-    /// DIRTY SITES: a self-assign whose RHS embeds the variable (`s = s <> s`,
+    /// DIRTY SITES: a self-assign whose RHS embeds the variable (`s = s + s`,
     /// a pushed snapshot stored into a dict) runs through the copying path
     /// and stays value-semantic on both backends.
     #[test]
     fn analysis_dirty_shapes_stay_value_semantic() {
-        let src = "fn main(console: Console):\n    var s = \"ab\"\n    var k = 0\n    while k < 5:\n        s = s <> s\n        k = k + 1\n    print(console, __render(string.length(s)))\n    var d = dict.new()\n    var zs = [1]\n    d = dict.insert(d, \"snap\", zs)\n    zs = list.push(zs, 2)\n    print(console, __render(list.length(dict.get_or(d, \"snap\", []))))\n    print(console, __render(list.length(zs)))\n";
+        let src = "fn main(console: Console):\n    var s = \"ab\"\n    var k = 0\n    while k < 5:\n        s = s + s\n        k = k + 1\n    print(console, __render(string.length(s)))\n    var d = dict.new()\n    var zs = [1]\n    d = dict.insert(d, \"snap\", zs)\n    zs = list.push(zs, 2)\n    print(console, __render(list.length(dict.get_or(d, \"snap\", []))))\n    print(console, __render(list.length(zs)))\n";
         let want: Vec<String> = ["64", "1", "2"].iter().map(|s| s.to_string()).collect();
         assert_eq!(link_run(src), want, "interpreter");
         assert_eq!(wasm_run(src), want, "wasm");
@@ -2318,7 +2318,7 @@ mod example_tests {
     /// pointer-compare and return None.
     #[test]
     fn runtime_built_dict_keys_compare_by_content() {
-        let src = "import dict\nimport string\n\nfn main(console: Console):\n    var d = dict.new()\n    d = dict.insert(d, string.trim(\"  host  \"), \"localhost\")\n    let parts = string.split(\"port=8080\", \"=\")\n    d = dict.insert(d, list.at(parts, 0), list.at(parts, 1))\n    d = dict.insert(d, \"lit\" <> \"eral\", \"joined\")\n    match dict.get(d, \"host\"):\n        Some(v) -> print(console, \"host=\" <> v)\n        None -> print(console, \"host MISSING\")\n    match dict.get(d, \"port\"):\n        Some(v) -> print(console, \"port=\" <> v)\n        None -> print(console, \"port MISSING\")\n    print(console, \"${dict.has(d, \"literal\")}\")\n    print(console, \"${dict.size(d)}\")\n";
+        let src = "import dict\nimport string\n\nfn main(console: Console):\n    var d = dict.new()\n    d = dict.insert(d, string.trim(\"  host  \"), \"localhost\")\n    let parts = string.split(\"port=8080\", \"=\")\n    d = dict.insert(d, list.at(parts, 0), list.at(parts, 1))\n    d = dict.insert(d, \"lit\" + \"eral\", \"joined\")\n    match dict.get(d, \"host\"):\n        Some(v) -> print(console, \"host=\" + v)\n        None -> print(console, \"host MISSING\")\n    match dict.get(d, \"port\"):\n        Some(v) -> print(console, \"port=\" + v)\n        None -> print(console, \"port MISSING\")\n    print(console, \"${dict.has(d, \"literal\")}\")\n    print(console, \"${dict.size(d)}\")\n";
         let want: Vec<String> = ["host=localhost", "port=8080", "true", "3"]
             .iter()
             .map(|s| s.to_string())
@@ -2383,7 +2383,7 @@ mod example_tests {
     fn fmt_round_trips_interpolation() {
         let src = "fn main(console: Console):\n    let n = 3\n    print(console, \"n is ${n}, doubled ${n * 2}\")\n    print(console, \"cost: \\$${n}\")\n";
         assert_eq!(crate::format::reformat(src).as_deref(), Some(src), "interpolation must round-trip");
-        let chain = "fn main(console: Console):\n    let n = 3\n    print(console, \"n is \" <> __render(n) <> \"\")\n";
+        let chain = "fn main(console: Console):\n    let n = 3\n    print(console, \"n is \" + __render(n) + \"\")\n";
         let want = "fn main(console: Console):\n    let n = 3\n    print(console, \"n is ${n}\")\n";
         assert_eq!(
             crate::format::reformat(chain).as_deref(),
@@ -2423,7 +2423,7 @@ mod example_tests {
     /// must be identical — any divergence is an analysis soundness bug.
     #[test]
     fn forced_copy_mode_is_differential() {
-        let src = "fn tag(let prefix: String, n: Int) -> String:\n    prefix <> __render(n)\n\nfn main(console: Console):\n    var xs = []\n    let alias = xs\n    var s = \"\"\n    var d = dict.new()\n    var i = 0\n    while i < 800:\n        xs = list.push(xs, i)\n        s = s <> tag(\"x\", i)\n        d = dict.update(d, i % 7, 0, fn(n: Int): n + 1)\n        i = i + 1\n    print(console, __render(list.length(xs)))\n    print(console, __render(list.length(alias)))\n    print(console, __render(string.length(s)))\n    print(console, __render(dict.get_or(d, 3, 0)))\n";
+        let src = "fn tag(let prefix: String, n: Int) -> String:\n    prefix + __render(n)\n\nfn main(console: Console):\n    var xs = []\n    let alias = xs\n    var s = \"\"\n    var d = dict.new()\n    var i = 0\n    while i < 800:\n        xs = list.push(xs, i)\n        s = s + tag(\"x\", i)\n        d = dict.update(d, i % 7, 0, fn(n: Int): n + 1)\n        i = i + 1\n    print(console, __render(list.length(xs)))\n    print(console, __render(list.length(alias)))\n    print(console, __render(string.length(s)))\n    print(console, __render(dict.get_or(d, 3, 0)))\n";
         let optimized = wasm_run(src);
         codegen::set_force_copy_for_tests(Some(true));
         let forced = wasm_run(src);
@@ -2564,7 +2564,7 @@ mod example_tests {
         assert!(out[0].contains("\"name\":\"load\""), "entry missing: {}", out[0]);
         // The output is valid JSON — it round-trips through `std/json`.
         let composed = link_run(
-            "import compiler\nimport json\nfn main(console: Console):\n    match json.decode(compiler.footprint(\"pub fn serve(n: Net) -> Int:\\n    0\\n\")):\n        Ok(doc) -> print(console, \"valid\")\n        Err(e) -> print(console, \"invalid: \" <> e)\n",
+            "import compiler\nimport json\nfn main(console: Console):\n    match json.decode(compiler.footprint(\"pub fn serve(n: Net) -> Int:\\n    0\\n\")):\n        Ok(doc) -> print(console, \"valid\")\n        Err(e) -> print(console, \"invalid: \" + e)\n",
         );
         assert_eq!(composed, vec!["valid"]);
         // Malformed source degrades to an error object, not a crash.
@@ -2668,7 +2668,7 @@ fn main(console: Console):
     let lock = "[[rune]]\nname = \"money\"\nhash = \"sha256:aa\"\n\n[[rune]]\nname = \"util\"\nhash = \"sha256:bb\"\n"
     var names = []
     for block in toml.array_tables(lock, "rune"):
-        names = list.push(names, opt(toml.get(block, "name")) <> "=" <> opt(toml.get(block, "hash")))
+        names = list.push(names, opt(toml.get(block, "name")) + "=" + opt(toml.get(block, "hash")))
     print(console, string.join(names, "|"))
 
 fn opt(o: Option(String)) -> String:
@@ -2735,11 +2735,11 @@ fn yes(b: Bool) -> String:
         let src = r#"import path
 
 fn main(console: Console):
-    print(console, path.base("a/b/c.txt") <> "|" <> path.dir("a/b/c.txt"))
-    print(console, path.ext("a/b.tar.gz") <> "|" <> path.stem("a/b.tar.gz"))
-    print(console, "[" <> path.ext(".bashrc") <> "]|" <> path.base("a/b/"))
-    print(console, path.join("a/b", "c") <> "|" <> path.join("a", "/x"))
-    print(console, path.normalize("a/./b/../c/") <> "|" <> path.normalize("/a/b/../../../x"))
+    print(console, path.base("a/b/c.txt") + "|" + path.dir("a/b/c.txt"))
+    print(console, path.ext("a/b.tar.gz") + "|" + path.stem("a/b.tar.gz"))
+    print(console, "[" + path.ext(".bashrc") + "]|" + path.base("a/b/"))
+    print(console, path.join("a/b", "c") + "|" + path.join("a", "/x"))
+    print(console, path.normalize("a/./b/../c/") + "|" + path.normalize("/a/b/../../../x"))
     print(console, path.normalize("../a/../../b"))
 "#;
         assert_eq!(
@@ -2987,7 +2987,7 @@ fn yn(b: Bool) -> String:
     /// through shared, all agreeing with the interpreter.
     #[test]
     fn region_copy_out_shapes_agree_on_both_backends() {
-        let src = "type Stack:\n    Empty\n    Push(a, Stack(a))\n\ntype Reading:\n    sensor: String\n    values: List(Int)\n\nfn main(console: Console):\n    let st = region -> Stack(Int):\n        Push(1, Push(2, Empty))\n    print(console, __render(st == Push(1, Push(2, Empty))))\n    let r = region -> Reading:\n        var vs = []\n        for i in 0..50:\n            vs = list.push(vs, i * i)\n        Reading(sensor: \"t\" <> \"0\", values: vs)\n    print(console, r.sensor)\n    print(console, __render(list.at(r.values, 49)))\n    let d = region -> Dict(String, Int):\n        var m = dict.new()\n        for i in 0..100:\n            m = dict.insert(m, \"k\" <> __render(i), i)\n        m\n    print(console, __render(dict.get_or(d, \"k42\", 0 - 1)))\n    let shared = \"parent-side\"\n    let s = region -> String:\n        shared\n    print(console, s)\n    let nested = region -> Int:\n        let inner = region -> String:\n            \"abc\" <> \"def\"\n        string.length(inner)\n    print(console, __render(nested))\n";
+        let src = "type Stack:\n    Empty\n    Push(a, Stack(a))\n\ntype Reading:\n    sensor: String\n    values: List(Int)\n\nfn main(console: Console):\n    let st = region -> Stack(Int):\n        Push(1, Push(2, Empty))\n    print(console, __render(st == Push(1, Push(2, Empty))))\n    let r = region -> Reading:\n        var vs = []\n        for i in 0..50:\n            vs = list.push(vs, i * i)\n        Reading(sensor: \"t\" + \"0\", values: vs)\n    print(console, r.sensor)\n    print(console, __render(list.at(r.values, 49)))\n    let d = region -> Dict(String, Int):\n        var m = dict.new()\n        for i in 0..100:\n            m = dict.insert(m, \"k\" + __render(i), i)\n        m\n    print(console, __render(dict.get_or(d, \"k42\", 0 - 1)))\n    let shared = \"parent-side\"\n    let s = region -> String:\n        shared\n    print(console, s)\n    let nested = region -> Int:\n        let inner = region -> String:\n            \"abc\" + \"def\"\n        string.length(inner)\n    print(console, __render(nested))\n";
         let want: Vec<String> = ["true", "t0", "2401", "42", "parent-side", "6"]
             .iter()
             .map(|s| s.to_string())
@@ -3034,7 +3034,7 @@ fn yn(b: Bool) -> String:
         assert_eq!(copied, 0, "parent passthrough must copy nothing");
         // Region-born value: exactly its own block (4-byte header + 6 bytes).
         let (out, copied) = run_and_count(
-            "fn main(console: Console):\n    let s = region -> String:\n        \"abc\" <> \"def\"\n    print(console, s)\n",
+            "fn main(console: Console):\n    let s = region -> String:\n        \"abc\" + \"def\"\n    print(console, s)\n",
         );
         assert_eq!(out, vec!["abcdef"]);
         assert_eq!(copied, 10, "a region-born string copies header + bytes");
@@ -3056,7 +3056,7 @@ fn yn(b: Bool) -> String:
     /// growth), and a missing-key probe all agree with the interpreter.
     #[test]
     fn dict_hash_index_agrees_on_both_backends() {
-        let src = "fn main(console: Console):\n    var d = dict.new()\n    for i in 0..3000:\n        d = dict.insert(d, \"k\" <> __render(i), i * 2)\n    print(console, __render(dict.size(d)))\n    print(console, __render(dict.get_or(d, \"k2999\", 0 - 1)))\n    print(console, __render(dict.get_or(d, \"absent\", 0 - 1)))\n    print(console, __render(dict.has(d, \"k1500\")))\n    d = dict.remove(d, \"k0\")\n    print(console, __render(dict.size(d)))\n    d = dict.insert(d, \"again\", 7)\n    print(console, __render(dict.get_or(d, \"again\", 0 - 1)))\n";
+        let src = "fn main(console: Console):\n    var d = dict.new()\n    for i in 0..3000:\n        d = dict.insert(d, \"k\" + __render(i), i * 2)\n    print(console, __render(dict.size(d)))\n    print(console, __render(dict.get_or(d, \"k2999\", 0 - 1)))\n    print(console, __render(dict.get_or(d, \"absent\", 0 - 1)))\n    print(console, __render(dict.has(d, \"k1500\")))\n    d = dict.remove(d, \"k0\")\n    print(console, __render(dict.size(d)))\n    d = dict.insert(d, \"again\", 7)\n    print(console, __render(dict.get_or(d, \"again\", 0 - 1)))\n";
         let want: Vec<String> = ["3000", "5998", "-1", "true", "2999", "7"]
             .iter()
             .map(|s| s.to_string())
@@ -3088,12 +3088,12 @@ fn yn(b: Bool) -> String:
         assert_eq!(wasm_run(src), vec!["199800000"]);
     }
 
-    /// IN-PLACE STRING APPEND: the builder pattern `s = s <> piece` appends
+    /// IN-PLACE STRING APPEND: the builder pattern `s = s + piece` appends
     /// into owned byte slack (amortized O(1)); a literal-seeded alias keeps
     /// the copying path, so the interned literal is never mutated.
     #[test]
     fn inplace_string_append_is_fast_and_alias_safe() {
-        let src = "fn main(console: Console):\n    var s = \"\"\n    for i in 0..20000:\n        s = s <> \"ab\"\n    print(console, __render(string.length(s)))\n    var t = \"seed\"\n    let alias = t\n    t = t <> \"!\"\n    print(console, alias)\n    print(console, t)\n";
+        let src = "fn main(console: Console):\n    var s = \"\"\n    for i in 0..20000:\n        s = s + \"ab\"\n    print(console, __render(string.length(s)))\n    var t = \"seed\"\n    let alias = t\n    t = t + \"!\"\n    print(console, alias)\n    print(console, t)\n";
         let want: Vec<String> =
             ["40000", "seed", "seed!"].iter().map(|s| s.to_string()).collect();
         assert_eq!(link_run(src), want.clone(), "interpreter");
@@ -3367,7 +3367,7 @@ fn yn(b: Bool) -> String:
     /// to `$str_eq`. (Regression for the run-length-encoding parity divergence.)
     #[test]
     fn wasm_string_eq_on_two_at_results_compares_content() {
-        let src = "fn main(console: Console):\n    let a = \"x\" <> \"y\"\n    let b = \"x\" <> \"y\"\n    let xs = [a, b, \"zz\"]\n    print(console, if list.at(xs, 0) == list.at(xs, 1): \"eq\" else: \"ne\")\n    print(console, if list.at(xs, 0) == list.at(xs, 2): \"eq\" else: \"ne\")\n";
+        let src = "fn main(console: Console):\n    let a = \"x\" + \"y\"\n    let b = \"x\" + \"y\"\n    let xs = [a, b, \"zz\"]\n    print(console, if list.at(xs, 0) == list.at(xs, 1): \"eq\" else: \"ne\")\n    print(console, if list.at(xs, 0) == list.at(xs, 2): \"eq\" else: \"ne\")\n";
         let want = vec!["eq".to_string(), "ne".to_string()];
         assert_eq!(interp(src), want.clone(), "interpreter");
         assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
@@ -3382,7 +3382,7 @@ fn yn(b: Bool) -> String:
     /// found via `list.repeat(-1, n)`.
     #[test]
     fn wasm_negative_int_survives_the_generic_list_abi() {
-        let src = "fn fill(x: a, n: Int) -> List(a):\n    var out = []\n    var i = 0\n    while i < n:\n        out = list.push(out, x)\n        i = i + 1\n    out\n\nfn show(xs: List(Int)) -> String:\n    var out = \"\"\n    for v in xs:\n        out = out <> __render(v) <> \" \"\n    out\n\nfn main(console: Console):\n    print(console, show(fill(-1, 3)))\n";
+        let src = "fn fill(x: a, n: Int) -> List(a):\n    var out = []\n    var i = 0\n    while i < n:\n        out = list.push(out, x)\n        i = i + 1\n    out\n\nfn show(xs: List(Int)) -> String:\n    var out = \"\"\n    for v in xs:\n        out = out + __render(v) + \" \"\n    out\n\nfn main(console: Console):\n    print(console, show(fill(-1, 3)))\n";
         let want = vec!["-1 -1 -1 ".to_string()];
         assert_eq!(interp(src), want.clone(), "interpreter");
         assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
@@ -3396,7 +3396,7 @@ fn yn(b: Bool) -> String:
     /// the wrong count. (Regression for the generic-`==`-on-non-primitives gap.)
     #[test]
     fn wasm_monomorphizes_generic_equality_on_strings() {
-        let src = "fn count_eq(xs: List(a), target: a) -> Int:\n    var n = 0\n    for x in xs:\n        if x == target:\n            n = n + 1\n    n\n\nfn b(s: String) -> String:\n    s <> \"\"\n\nfn main(console: Console):\n    print(console, __render(count_eq([b(\"aa\"), b(\"bb\"), b(\"aa\")], b(\"aa\"))))\n";
+        let src = "fn count_eq(xs: List(a), target: a) -> Int:\n    var n = 0\n    for x in xs:\n        if x == target:\n            n = n + 1\n    n\n\nfn b(s: String) -> String:\n    s + \"\"\n\nfn main(console: Console):\n    print(console, __render(count_eq([b(\"aa\"), b(\"bb\"), b(\"aa\")], b(\"aa\"))))\n";
         let want = vec!["2".to_string()];
         assert_eq!(interp(src), want.clone(), "interpreter");
         assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
@@ -3610,7 +3610,7 @@ fn yn(b: Bool) -> String:
         let path = std::env::temp_dir().join(format!("witchy_testfw_{}.witchy", std::process::id()));
         std::fs::write(
             &path,
-            "import testing\n\nfn double(n: Int) -> Int:\n    n * 2\n\nfn test_double():\n    testing.assert_int_eq(double(21), 42)\n\nfn test_strings():\n    testing.assert_eq(\"a\" <> \"b\", \"ab\")\n    testing.assert_ne(\"a\", \"b\")\n\nfn test_broken():\n    testing.assert(1 > 2, \"deliberately wrong\")\n",
+            "import testing\n\nfn double(n: Int) -> Int:\n    n * 2\n\nfn test_double():\n    testing.assert_int_eq(double(21), 42)\n\nfn test_strings():\n    testing.assert_eq(\"a\" + \"b\", \"ab\")\n    testing.assert_ne(\"a\", \"b\")\n\nfn test_broken():\n    testing.assert(1 > 2, \"deliberately wrong\")\n",
         )
         .unwrap();
         let (passed, failed) = crate::run_tests_in_file(path.to_str().unwrap()).expect("run");
@@ -3647,7 +3647,7 @@ fn yn(b: Bool) -> String:
         // SAFETY-free env set: std::env::set_var is fine in a single-threaded
         // test context; the var is namespaced to this test.
         unsafe { std::env::set_var("WITCHY_E2E_ENV_VAR", "from the host") };
-        let env_src = "import option\n\nfn main(console: Console, env: Env):\n    match get_env(env, \"WITCHY_E2E_ENV_VAR\"):\n        Some(v) -> print(console, \"got: \" <> v)\n        None -> print(console, \"unset\")\n    match get_env(env, \"WITCHY_E2E_DEFINITELY_UNSET\"):\n        Some(v) -> print(console, \"got: \" <> v)\n        None -> print(console, \"unset\")\n";
+        let env_src = "import option\n\nfn main(console: Console, env: Env):\n    match get_env(env, \"WITCHY_E2E_ENV_VAR\"):\n        Some(v) -> print(console, \"got: \" + v)\n        None -> print(console, \"unset\")\n    match get_env(env, \"WITCHY_E2E_DEFINITELY_UNSET\"):\n        Some(v) -> print(console, \"got: \" + v)\n        None -> print(console, \"unset\")\n";
         let want = vec!["got: from the host".to_string(), "unset".to_string()];
         let module = parser::parse_module(env_src).expect("parse");
         let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
@@ -3675,7 +3675,7 @@ fn yn(b: Bool) -> String:
         std::fs::write(root.join("a.txt"), "alpha").expect("seed a");
         std::fs::write(root.join("sub/b.txt"), "beta").expect("seed b");
 
-        let src = "fn main(console: Console, dir: Dir):\n    print(console, read(dir, \"a.txt\"))\n    print(console, __render(exists(dir, \"a.txt\")))\n    print(console, __render(exists(dir, \"missing.txt\")))\n    let sub = subdir(dir, \"sub\")\n    print(console, read(sub, \"b.txt\"))\n    write(dir, \"out.txt\", \"written\")\n    print(console, read(dir, \"out.txt\"))\n    make_dir(dir, \"made\")\n    print(console, __render(is_dir(dir, \"made\")))\n    for name in list(dir):\n        print(console, \"entry: \" <> name)\n";
+        let src = "fn main(console: Console, dir: Dir):\n    print(console, read(dir, \"a.txt\"))\n    print(console, __render(exists(dir, \"a.txt\")))\n    print(console, __render(exists(dir, \"missing.txt\")))\n    let sub = subdir(dir, \"sub\")\n    print(console, read(sub, \"b.txt\"))\n    write(dir, \"out.txt\", \"written\")\n    print(console, read(dir, \"out.txt\"))\n    make_dir(dir, \"made\")\n    print(console, __render(is_dir(dir, \"made\")))\n    for name in list(dir):\n        print(console, \"entry: \" + name)\n";
         let want = vec![
             "alpha".to_string(),
             "true".to_string(),
@@ -4128,7 +4128,7 @@ fn yn(b: Bool) -> String:
     #[test]
     fn trim_whitespace_set_agrees_on_both_backends() {
         // "  \t\n hi \r\x0b" -> "hi"; "\x0c x \x0c" -> "x"; NBSP stays around 'y'.
-        let src = "fn main(console: Console):\n    print(console, \"[\" <> string.trim(\"  \\t\\n hi \\r\u{0b}\") <> \"]\")\n    print(console, \"[\" <> string.trim(\"\u{0c} x \u{0c}\") <> \"]\")\n    print(console, \"[\" <> string.trim(\"\u{a0}y\u{a0}\") <> \"]\")\n";
+        let src = "fn main(console: Console):\n    print(console, \"[\" + string.trim(\"  \\t\\n hi \\r\u{0b}\") + \"]\")\n    print(console, \"[\" + string.trim(\"\u{0c} x \u{0c}\") + \"]\")\n    print(console, \"[\" + string.trim(\"\u{a0}y\u{a0}\") + \"]\")\n";
         let want = vec![
             "[hi]".to_string(),
             "[x]".to_string(),
@@ -4177,7 +4177,7 @@ fn yn(b: Bool) -> String:
     /// interpreter-only `?`-in-inout gap.)
     #[test]
     fn try_in_inout_fn_agrees_on_both_backends() {
-        let src = "import result\n\nfn step(inout n: Int, r: Result(Int, String)) -> Result(Int, String):\n    n = n + 100\n    let got = r?\n    n = n + got\n    Ok(n)\n\nfn describe(r: Result(Int, String)) -> String:\n    match r:\n        Ok(v) -> \"ok:\" <> __render(v)\n        Err(e) -> \"err:\" <> e\n\nfn main(console: Console):\n    var a = 1\n    let ok = step(a, Ok(5))\n    print(console, __render(a))\n    print(console, describe(ok))\n    var b = 1\n    let bad = step(b, Err(\"nope\"))\n    print(console, __render(b))\n    print(console, describe(bad))\n";
+        let src = "import result\n\nfn step(inout n: Int, r: Result(Int, String)) -> Result(Int, String):\n    n = n + 100\n    let got = r?\n    n = n + got\n    Ok(n)\n\nfn describe(r: Result(Int, String)) -> String:\n    match r:\n        Ok(v) -> \"ok:\" + __render(v)\n        Err(e) -> \"err:\" + e\n\nfn main(console: Console):\n    var a = 1\n    let ok = step(a, Ok(5))\n    print(console, __render(a))\n    print(console, describe(ok))\n    var b = 1\n    let bad = step(b, Err(\"nope\"))\n    print(console, __render(b))\n    print(console, describe(bad))\n";
         let want = vec![
             "106".to_string(),
             "ok:106".to_string(),
@@ -4453,9 +4453,9 @@ fn yn(b: Bool) -> String:
 
 fn main(console: Console):
     print(console, time.iso8601(time.from_unix(1780000000)))
-    print(console, time.weekday_name(time.from_unix(0)) <> " " <> time.iso8601(time.from_unix(0)))
+    print(console, time.weekday_name(time.from_unix(0)) + " " + time.iso8601(time.from_unix(0)))
     print(console, time.iso8601(time.from_unix(-86401)))
-    print(console, yn(time.is_leap(2000)) <> yn(time.is_leap(1900)) <> yn(time.is_leap(2024)))
+    print(console, yn(time.is_leap(2000)) + yn(time.is_leap(1900)) + yn(time.is_leap(2024)))
     print(console, yn(time.to_unix(time.from_unix(1780000000)) == 1780000000))
 
 fn yn(b: Bool) -> String:
@@ -4490,7 +4490,7 @@ fn main(console: Console):
     print(console, bs(enc == "a,\"b,c\"\n\"d\"\"e\",f\n"))
     print(console, bs(csv.encode(csv.parse(enc)) == enc))
     let recs = csv.parse_records(text)
-    print(console, __render(list.length(recs)) <> ":" <> dict.get_or(list.at(recs, 0), "city", "?"))
+    print(console, __render(list.length(recs)) + ":" + dict.get_or(list.at(recs, 0), "city", "?"))
 
 fn bs(b: Bool) -> String:
     if b: "y" else: "n"
@@ -4515,7 +4515,7 @@ fn main(console: Console):
     print(console, oi(dict.get(d, "b")))
     print(console, oi(dict.get(d, "z")))
     let m = dict.merge(d, dict.from_pairs([("b", 20), ("d", 4)]))
-    print(console, __render(dict.get_or(m, "b", 0)) <> "," <> __render(dict.get_or(m, "d", 0)))
+    print(console, __render(dict.get_or(m, "b", 0)) + "," + __render(dict.get_or(m, "d", 0)))
     let tens = dict.map_values(d, fn(v: Int): v * 10)
     print(console, oi(dict.get(tens, "c")))
     let evens = dict.filter(d, fn(k: String, v: Int): v % 2 == 0)
@@ -4551,7 +4551,7 @@ fn main(console: Console):
             print(console, opt(json.get_string(d, "name")))
             print(console, oi(json.get_int(d, "n")))
             print(console, string.join(json.get_strings(d, "caps"), ","))
-            print(console, "[" <> string.join(json.get_strings(d, "absent"), ",") <> "]")
+            print(console, "[" + string.join(json.get_strings(d, "absent"), ",") + "]")
         Err(e) -> print(console, "err")
 
 fn opt(o: Option(String)) -> String:
@@ -4818,11 +4818,11 @@ import list
 fn main(console: Console):
     let xs = [5, 3, 8, 1, 9, 2]
     let rev = list.reverse(xs)
-    print(console, ((__render(list.at(rev, 0)) <> ",") <> __render(list.at(rev, 5))))
-    print(console, ((__render(list.length(list.take(xs, 3))) <> ":") <> __render(list.at(list.take(xs, 3), 2))))
+    print(console, ((__render(list.at(rev, 0)) + ",") + __render(list.at(rev, 5))))
+    print(console, ((__render(list.length(list.take(xs, 3))) + ":") + __render(list.at(list.take(xs, 3), 2))))
     print(console, __render(list.at(list.drop(xs, 4), 0)))
     let sorted = list.sort_by(xs, fn(a: Int, b: Int): (a < b))
-    print(console, ((__render(list.at(sorted, 0)) <> "..") <> __render(list.at(sorted, 5))))
+    print(console, ((__render(list.at(sorted, 0)) + "..") + __render(list.at(sorted, 5))))
     let pairs = list.zip([1, 2, 3], [10, 20, 30])
     let (pa, pb) = list.at(pairs, 1)
     print(console, __render((pa + pb)))
@@ -5178,7 +5178,7 @@ fn build(s: String) -> String:
     var acc = ""
     var i = 0
     while (i < string.char_count(s)):
-        acc = (acc <> string.substring(s, i, (i + 1)))
+        acc = (acc + string.substring(s, i, (i + 1)))
         i = (i + 1)
     acc
 
@@ -5222,7 +5222,7 @@ fn build(s: String) -> String:
     var acc = ""
     var i = 0
     while (i < string.char_count(s)):
-        acc = (acc <> string.substring(s, i, (i + 1)))
+        acc = (acc + string.substring(s, i, (i + 1)))
         i = (i + 1)
     acc
 
@@ -5267,7 +5267,7 @@ fn build(s: String) -> String:
     var acc = ""
     var i = 0
     while (i < string.char_count(s)):
-        acc = (acc <> string.substring(s, i, (i + 1)))
+        acc = (acc + string.substring(s, i, (i + 1)))
         i = (i + 1)
     acc
 
@@ -5360,7 +5360,7 @@ type Coord:
 impl Show for Coord:
     fn show(self) -> String:
         match self:
-            Coord(x, y) -> (((("(" <> __render(x)) <> ",") <> __render(y)) <> ")")
+            Coord(x, y) -> (((("(" + __render(x)) + ",") + __render(y)) + ")")
 
 fn main(console: Console):
     print(console, show.show_list([1, 2, 3]))
@@ -5503,7 +5503,7 @@ type Coord:
 impl Show for Coord:
     fn show(self) -> String:
         match self:
-            Coord(x, y) -> (((("(" <> show(x)) <> ", ") <> show(y)) <> ")")
+            Coord(x, y) -> (((("(" + show(x)) + ", ") + show(y)) + ")")
 
 type Named:
     Named(String, Coord)
@@ -5511,7 +5511,7 @@ type Named:
 impl Show for Named:
     fn show(self) -> String:
         match self:
-            Named(label, c) -> ((label <> "=") <> show(c))
+            Named(label, c) -> ((label + "=") + show(c))
 
 fn main(console: Console):
     print(console, show(Coord(3, 4)))
@@ -5719,11 +5719,11 @@ fn main(console: Console):
         let client = r#"
 import string
 fn main(console: Console):
-    print(console, "[" <> string.center("hi", 6, " ") <> "]")
-    print(console, "[" <> string.center("hi", 7, " ") <> "]")
-    print(console, "[" <> string.center("odd", 8, "*") <> "]")
-    print(console, "[" <> string.center("toolong", 4, " ") <> "]")
-    print(console, "[" <> string.center("x", 1, " ") <> "]")
+    print(console, "[" + string.center("hi", 6, " ") + "]")
+    print(console, "[" + string.center("hi", 7, " ") + "]")
+    print(console, "[" + string.center("odd", 8, "*") + "]")
+    print(console, "[" + string.center("toolong", 4, " ") + "]")
+    print(console, "[" + string.center("x", 1, " ") + "]")
 "#;
         let sources = [
             ("string", crate::bundled_module("string").unwrap()),
@@ -5785,7 +5785,7 @@ import url
 import result
 fn p(s: String) -> String:
     match url.parse(s):
-        Ok(u) -> "ok:" <> __render(url.port(u))
+        Ok(u) -> "ok:" + __render(url.port(u))
         Err(_e) -> "none"
 fn main(console: Console):
     print(console, p("https://h:8443/x"))
@@ -5897,7 +5897,7 @@ fn classify(s: String) -> String:
     match json.decode(s):
         Ok(j) ->
             match json.as_int(j):
-                Some(n) -> "int:" <> __render(n)
+                Some(n) -> "int:" + __render(n)
                 None -> "ok"
         Err(_e) -> "err"
 fn main(console: Console):
@@ -5925,7 +5925,7 @@ import json
 fn round_trip(s: String) -> String:
     match json.decode(s):
         Ok(j) -> json.encode(j)
-        Err(e) -> "err:" <> e
+        Err(e) -> "err:" + e
 fn main(console: Console):
     print(console, round_trip("10"))
     print(console, round_trip("-3"))
@@ -5950,7 +5950,7 @@ fn main(console: Console):
 import string
 fn show2(p: (String, String)) -> String:
     let (a, b) = p
-    a <> "|" <> b
+    a + "|" + b
 fn main(console: Console):
     print(console, show2(string.rsplit_once("a.b.c", ".")))
     print(console, show2(string.split_once("a.b.c", ".")))
@@ -6109,7 +6109,7 @@ import string
 fn nums(r: Result(List(Int), String)) -> String:
     match r:
         Ok(xs) -> string.join(list.map(xs, fn(n: Int): __render(n)), ",")
-        Err(e) -> "err:" <> e
+        Err(e) -> "err:" + e
 fn onums(o: Option(List(Int))) -> String:
     match o:
         Some(xs) -> string.join(list.map(xs, fn(n: Int): __render(n)), ",")
@@ -6628,7 +6628,7 @@ fn main(console: Console):
         // Regression: a printed string ending in `\n` (the line terminator) must
         // produce identical output on both backends. The WASM host strips a
         // trailing newline; the interpreter now does too.
-        let src = "fn main(console: Console):\n    print(console, \"ab\" <> \"\\n\")\n    print(console, \"cd\")\n";
+        let src = "fn main(console: Console):\n    print(console, \"ab\" + \"\\n\")\n    print(console, \"cd\")\n";
         let sources = [("main", src)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
         let compiled = run_linked_on_wasm(&sources, "main");
@@ -6779,7 +6779,7 @@ fn main(console: Console):
         let src_path = root.join("prog.witchy");
         std::fs::write(
             &src_path,
-            "import option\nimport string\n\nfn main(console: Console, env: Env, dir: Dir[Read], args: List(String)) -> Int:\n    let path = list.at(args, 0)\n    let label = match get_env(env, \"WITCHY_SANDBOX_LABEL\"):\n        Some(v) -> v\n        None -> \"unlabeled\"\n    for line in string.lines(read(dir, path)):\n        if string.contains(line, \"needle\"):\n            print(console, label <> \": \" <> line)\n    0\n",
+            "import option\nimport string\n\nfn main(console: Console, env: Env, dir: Dir[Read], args: List(String)) -> Int:\n    let path = list.at(args, 0)\n    let label = match get_env(env, \"WITCHY_SANDBOX_LABEL\"):\n        Some(v) -> v\n        None -> \"unlabeled\"\n    for line in string.lines(read(dir, path)):\n        if string.contains(line, \"needle\"):\n            print(console, label + \": \" + line)\n    0\n",
         )
         .unwrap();
         unsafe { std::env::set_var("WITCHY_SANDBOX_LABEL", "found") };
@@ -6809,7 +6809,7 @@ fn main(console: Console):
         std::fs::write(schema.join("svc.txt"), "Greeter").unwrap();
 
         let module = parser::parse_module(
-            "fn build(out: BuildOut, schema: BuildRead):\n    let nl = \"\\n\"\n    write_out(out, \"api.witchy\", \"pub fn service() -> String:\" <> nl <> \"    \\\"\" <> read_build(schema, \"svc.txt\") <> \"\\\"\" <> nl)\n",
+            "fn build(out: BuildOut, schema: BuildRead):\n    let nl = \"\\n\"\n    write_out(out, \"api.witchy\", \"pub fn service() -> String:\" + nl + \"    \\\"\" + read_build(schema, \"svc.txt\") + \"\\\"\" + nl)\n",
         )
         .expect("parse");
         let generated = crate::run_build_step_sandboxed(
@@ -6963,7 +6963,7 @@ fn main(console: Console):
     let xs = [Item(2, "a"), Item(1, "b"), Item(2, "c"), Item(1, "d"), Item(2, "e")]
     let sorted = list.sort_by(xs, fn(p: Item, q: Item): key(p) < key(q))
     for it in sorted:
-        print(console, __render(key(it)) <> tag(it))
+        print(console, __render(key(it)) + tag(it))
 "#;
         let sources = [("list", crate::bundled_module("list").unwrap()), ("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
@@ -6987,7 +6987,7 @@ fn build(s: String) -> String:
     var acc = ""
     var i = 0
     while (i < string.char_count(s)):
-        acc = (acc <> string.substring(s, i, (i + 1)))
+        acc = (acc + string.substring(s, i, (i + 1)))
         i = (i + 1)
     acc
 
@@ -7926,7 +7926,7 @@ fn main() -> Int:
     var s = ""
     var i = 0
     while (i < 400):
-        s = (s <> "x")
+        s = (s + "x")
         i = (i + 1)
     string.length(s)
 "#;
@@ -8497,7 +8497,7 @@ import string
 fn main(console: Console):
     var es = []
     for p in iter.collect(iter.enumerate(iter.from_list(["a", "b", "c"]))):
-        es = list.push(es, __render(func.first(p)) <> func.second(p))
+        es = list.push(es, __render(func.first(p)) + func.second(p))
     print(console, string.join(es, " "))
     print(console, __render(iter.count(iter.zip(iter.count_from(1), iter.from_list([0, 0, 0])))))
     print(console, __render(iter.sum(iter.chain(iter.range(0, 4), iter.range(10, 13)))))
@@ -8955,7 +8955,7 @@ fn main(console: Console):
         // Edit lib's source: the pinned hash no longer matches — verify must BLOCK.
         std::fs::write(
             tmp.join("lib/src/lib.witchy"),
-            "fn f(s: String) -> String:\n    s <> s\n",
+            "fn f(s: String) -> String:\n    s + s\n",
         )
         .unwrap();
         let (out, code) = run_pm(vec!["verify".into(), "app".into()]);
@@ -9607,7 +9607,7 @@ fn main(console: Console):
     print(console, __render(list.length(ps)))
     let first = list.at(ps, 0)
     let (n, s) = first
-    print(console, (__render(n) <> s))
+    print(console, (__render(n) + s))
 "#;
         let out = interpreter::run_program(
             &[("list", crate::bundled_module("list").unwrap()), ("main", client)],
@@ -9866,7 +9866,7 @@ fn main(console: Console):
     fn replace_and_int_keyed_dict_backends_agree() {
         let src = r#"
 fn main(console: Console):
-    print(console, (("[" <> string.replace("abc", "", "-")) <> "]"))
+    print(console, (("[" + string.replace("abc", "", "-")) + "]"))
     print(console, string.replace("abc", "x", "y"))
     print(console, string.replace("aaa", "a", "bb"))
     print(console, string.replace("hello world", "o", "0"))
@@ -10007,7 +10007,7 @@ fn main(console: Console):
     // Dict operations factored into helper functions: codegen picks the
     // string-vs-i32 key comparison from the static key type, so a `k: String`
     // parameter must compile to by-value comparison just like an inline String
-    // key. Looking up with a freshly built string (`"ap" <> "ple"`) proves the
+    // key. Looking up with a freshly built string (`"ap" + "ple"`) proves the
     // match is structural, not by pointer — and both backends must agree.
     // An integration stress test for first-class functions: a list of closures
     // folded with a higher-order lambda that applies each function-typed
@@ -10282,9 +10282,9 @@ fn quadrant(x: Int, y: Int) -> String:
 
 fn describe(pair: (Int, String)) -> String:
     match pair:
-        (0, s) -> ("zero:" <> s)
-        (n, "stop") -> ("stop@" <> __render(n))
-        (n, s) -> ((s <> "=") <> __render(n))
+        (0, s) -> ("zero:" + s)
+        (n, "stop") -> ("stop@" + __render(n))
+        (n, s) -> ((s + "=") + __render(n))
 
 fn main(console: Console):
     print(console, quadrant(0, 0))
@@ -10460,10 +10460,10 @@ import string
 
 fn main(console: Console):
     print(console, string.take("hello", 3))
-    print(console, (("[" <> string.take("hi", 10)) <> "]"))
-    print(console, (("[" <> string.take("hi", 0)) <> "]"))
+    print(console, (("[" + string.take("hi", 10)) + "]"))
+    print(console, (("[" + string.take("hi", 0)) + "]"))
     print(console, string.drop("hello", 2))
-    print(console, (("[" <> string.drop("hi", 5)) <> "]"))
+    print(console, (("[" + string.drop("hi", 5)) + "]"))
     print(console, string.take("café", 2))
     print(console, string.drop("café", 3))
 "#;
@@ -10481,7 +10481,7 @@ import string
 
 fn main(console: Console):
     print(console, string.reverse("hello"))
-    print(console, (("[" <> string.reverse("")) <> "]"))
+    print(console, (("[" + string.reverse("")) + "]"))
     print(console, string.reverse("a"))
     print(console, string.reverse("café"))
 "#;
@@ -10530,7 +10530,7 @@ fn main(console: Console):
     print(console, v)
     let (a, b) = string.split_once("no-sep-here", "=")
     print(console, a)
-    print(console, (("[" <> b) <> "]"))
+    print(console, (("[" + b) + "]"))
     let (h, rest) = string.split_once("a=b=c", "=")
     print(console, h)
     print(console, rest)
@@ -10617,8 +10617,8 @@ import string
 fn main(console: Console):
     print(console, string.char_at("witchy", 0))
     print(console, string.char_at("witchy", 5))
-    print(console, (("[" <> string.char_at("witchy", 10)) <> "]"))
-    print(console, (("[" <> string.char_at("", 0)) <> "]"))
+    print(console, (("[" + string.char_at("witchy", 10)) + "]"))
+    print(console, (("[" + string.char_at("", 0)) + "]"))
 "#;
         let sources = [("string", crate::bundled_module("string").unwrap()), ("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
@@ -10640,7 +10640,7 @@ fn main(console: Console):
     var d = dict.new()
     d = put(d, "apple", 1)
     d = put(d, "banana", 2)
-    print(console, __render(lookup(d, ("ap" <> "ple"))))
+    print(console, __render(lookup(d, ("ap" + "ple"))))
     print(console, __render(lookup(d, "banana")))
     print(console, __render(lookup(d, "cherry")))
 "#;
@@ -10918,8 +10918,8 @@ fn render(j: Json) -> String:
         JNull -> "null"
         JBool(b) -> if b: "true" else: "false"
         JNum(n) -> __render(n)
-        JStr(s) -> (("\"" <> s) <> "\"")
-        JArr(items) -> (("[" <> string.join(list.map(items, render), ",")) <> "]")
+        JStr(s) -> (("\"" + s) + "\"")
+        JArr(items) -> (("[" + string.join(list.map(items, render), ",")) + "]")
 
 fn main(console: Console):
     let doc = JArr([JNum(1), JStr("hi"), JBool(true), JNull, JArr([JNum(2), JNum(3)])])
@@ -11541,12 +11541,12 @@ fn main(console: Console):
     print(console, __render(list.length(string.split("abc", ""))))
     print(console, __render(list.length(string.split("abc", "x"))))
     print(console, __render(list.length(string.split("a,b,c", ","))))
-    print(console, (("[" <> string.substring("", 0, 5)) <> "]"))
-    print(console, (("[" <> string.substring("hello", 3, 1)) <> "]"))
+    print(console, (("[" + string.substring("", 0, 5)) + "]"))
+    print(console, (("[" + string.substring("hello", 3, 1)) + "]"))
     print(console, string.substring("hello", 2, 100))
     print(console, __render(string.index_of("hello", "")))
     print(console, __render(string.index_of("hello", "z")))
-    print(console, (("[" <> (("" <> "x") <> "")) <> "]"))
+    print(console, (("[" + (("" + "x") + "")) + "]"))
     print(console, __render(string.length("")))
 "#;
         assert_eq!(interp(src), run_on_wasm(src), "string edge cases diverged");
@@ -11633,8 +11633,8 @@ fn main(console: Console):
 import url
 fn describe(s: String) -> String:
     match url.parse(s):
-        Ok(u) -> url.scheme(u) <> " " <> url.host(u) <> " " <> __render(url.port(u)) <> " " <> url.path(u)
-        Err(e) -> "invalid: " <> e
+        Ok(u) -> url.scheme(u) + " " + url.host(u) + " " + __render(url.port(u)) + " " + url.path(u)
+        Err(e) -> "invalid: " + e
 fn main(console: Console):
     print(console, describe("http://example.com"))
     print(console, describe("http://example.com:8080/foo"))
@@ -11707,11 +11707,11 @@ fn main(console: Console, net: Net):
         let client = r#"
 import string
 fn main(console: Console):
-    print(console, "[" <> string.trim("  hello  ") <> "]")
-    print(console, "[" <> string.trim_start("  hi") <> "]")
-    print(console, "[" <> string.trim_end("bye  ") <> "]")
-    print(console, "[" <> string.trim("\t\n x \r\n") <> "]")
-    print(console, "[" <> string.trim("nospace") <> "]")
+    print(console, "[" + string.trim("  hello  ") + "]")
+    print(console, "[" + string.trim_start("  hi") + "]")
+    print(console, "[" + string.trim_end("bye  ") + "]")
+    print(console, "[" + string.trim("\t\n x \r\n") + "]")
+    print(console, "[" + string.trim("nospace") + "]")
 "#;
         let sources = [("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
@@ -11786,7 +11786,7 @@ fn main(console: Console):
 trait Label:
     fn tag(self) -> String
     fn shout(self) -> String:
-        (tag(self) <> "!")
+        (tag(self) + "!")
 
 impl Label for Int:
     fn tag(self) -> String:
@@ -11894,7 +11894,7 @@ type Point:
 impl Show for Point:
     fn show(self) -> String:
         match self:
-            Point(x, y) -> (((("(" <> __render(x)) <> ", ") <> __render(y)) <> ")")
+            Point(x, y) -> (((("(" + __render(x)) + ", ") + __render(y)) + ")")
 
 fn main(console: Console):
     print(console, show(42))
@@ -12341,7 +12341,7 @@ fn main(console: Console):
     let input = "{\"name\":\"witchy\",\"nums\":[1,2,3],\"ok\":true,\"nil\":null,\"neg\":-5,\"nested\":{\"a\":[true,false]}}"
     match json.decode(input):
         Ok(j) -> print(console, json.encode(j))
-        Err(e) -> print(console, "error: " <> e)
+        Err(e) -> print(console, "error: " + e)
 "#;
         let sources = [("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
@@ -12690,7 +12690,7 @@ fn main(console: Console):
             dir.join("strutil.witchy"),
             r#"
 fn shout(s: String) -> String:
-    ("HI " <> s)
+    ("HI " + s)
 "#,
         )
         .unwrap();

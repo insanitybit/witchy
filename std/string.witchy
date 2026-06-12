@@ -74,7 +74,7 @@ pub fn join(parts: List(String), sep: String) -> String:
             s = p
             first = false
         else:
-            s = s <> sep <> p
+            s = s + sep + p
     s
 
 // Repeat a string `n` times.
@@ -82,7 +82,7 @@ pub fn repeat(s: String, n: Int) -> String:
     var out = ""
     var i = 0
     while i < n:
-        out = out <> s
+        out = out + s
         i = i + 1
     out
 
@@ -95,7 +95,7 @@ pub fn pad_left(s: String, width: Int, fill: String) -> String:
         s
     else:
         let needed = width - len
-        string.substring(repeat(fill, needed), 0, needed) <> s
+        string.substring(repeat(fill, needed), 0, needed) + s
 
 // Right-pad `s` with copies of `fill` until it is `width` characters wide.
 pub fn pad_right(s: String, width: Int, fill: String) -> String:
@@ -104,7 +104,7 @@ pub fn pad_right(s: String, width: Int, fill: String) -> String:
         s
     else:
         let needed = width - len
-        s <> string.substring(repeat(fill, needed), 0, needed)
+        s + string.substring(repeat(fill, needed), 0, needed)
 
 // Center `s` in a field `width` characters wide, padding both sides with `fill`;
 // an odd remainder goes on the right. `s` is returned unchanged when already at
@@ -117,7 +117,7 @@ pub fn center(s: String, width: Int, fill: String) -> String:
         let total = width - len
         let left = total / 2
         let right = total - left
-        string.substring(repeat(fill, left), 0, left) <> s <> string.substring(repeat(fill, right), 0, right)
+        string.substring(repeat(fill, left), 0, left) + s + string.substring(repeat(fill, right), 0, right)
 
 // Remove `prefix` from the front of `s` when present; otherwise return `s`
 // unchanged. The complement of the `starts_with` builtin.
@@ -151,7 +151,7 @@ pub fn reverse(s: String) -> String:
     var out = ""
     var i = string.char_count(s) - 1
     while i >= 0:
-        out = out <> string.substring(s, i, i + 1)
+        out = out + string.substring(s, i, i + 1)
         i = i - 1
     out
 
@@ -198,7 +198,7 @@ pub fn replace_first(s: String, from: String, to: String) -> String:
     if i < 0:
         s
     else:
-        string.substring(s, 0, i) <> to <> string.substring(s, i + string.char_count(from), string.char_count(s))
+        string.substring(s, 0, i) + to + string.substring(s, i + string.char_count(from), string.char_count(s))
 
 // Split at the first occurrence of `sep` into `(before, after)`, with `sep`
 // itself dropped. When `sep` is absent, returns `(s, "")`. Handy for parsing

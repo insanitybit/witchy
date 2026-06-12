@@ -11,4 +11,4 @@ fn main(console: Console, root: Dir[Read]):
     print(console, "Top words:")
     for entry in wordlib.top_words(text, 5):
         let (word, count) = entry
-        print(console, "  " <> string.pad_right(word, 10, " ") <> "${count}")
+        print(console, "  " + string.pad_right(word, 10, " ") + "${count}")

@@ -18,9 +18,9 @@ pub fn join(a: String, b: String) -> String:
     else if string.is_empty(b):
         a
     else if string.ends_with(a, "/"):
-        a <> b
+        a + b
     else:
-        a <> "/" <> b
+        a + "/" + b
 
 // The final component: "a/b/c.txt" -> "c.txt", "a/b/" -> "b", "/" -> "/".
 pub fn base(p: String) -> String:
@@ -62,7 +62,7 @@ pub fn stem(p: String) -> String:
     if string.is_empty(e):
         b
     else:
-        string.strip_suffix(b, "." <> e)
+        string.strip_suffix(b, "." + e)
 
 // Collapse `.` and `..` segments and redundant slashes. A relative path that
 // backs out past its start keeps the leading `..`s; an absolute one cannot escape
@@ -80,7 +80,7 @@ pub fn normalize(p: String) -> String:
             stack = list.push(stack, seg)
     let joined = string.join(stack, "/")
     if absolute:
-        "/" <> joined
+        "/" + joined
     else if string.is_empty(joined):
         "."
     else:

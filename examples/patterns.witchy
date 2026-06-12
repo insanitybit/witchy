@@ -11,7 +11,7 @@ import string
 
 fn check(console: Console, pattern: String, text: String):
     let mark = if regex.matches(pattern, text): "match" else: "no   "
-    print(console, mark <> "  " <> pattern <> "  ~  " <> text)
+    print(console, mark + "  " + pattern + "  ~  " + text)
 
 fn main(console: Console):
     check(console, "^h.*o$", "hello")
