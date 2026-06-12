@@ -9,7 +9,7 @@ fn add(a: Int, b: Int) -> Int:
     a + b
 
 fn main(console: Console):
-    print(console, to_string(add(2, 3)))
+    print(console, "${add(2, 3)}")
 ```
 
 ```text
@@ -82,9 +82,9 @@ between two things.
 ```witchy
 fn main(console: Console):
     var total = 0
-    for n in 1..5:           // 1, 2, 3, 4
+    for n in 1..5:
         total = total + n
-    print(console, to_string(total))
+    print(console, "${total}")
 
     var count = 0
     for x in [10, 20, 30, 40]:
@@ -93,7 +93,7 @@ fn main(console: Console):
         if x > 30:
             break
         count = count + 1
-    print(console, to_string(count))
+    print(console, "${count}")
 ```
 
 ```text
@@ -119,8 +119,8 @@ fn adder(by: Int) -> fn(Int) -> Int:
 
 fn main(console: Console):
     let add10 = adder(10)
-    print(console, to_string(apply(add10, 5)))
-    print(console, to_string(apply(fn(n: Int): n * n, 6)))
+    print(console, "${apply(add10, 5)}")
+    print(console, "${apply(fn(n: Int): n * n, 6)}")
 ```
 
 ```text
@@ -140,13 +140,13 @@ genuinely want a function to mutate the caller's variable, mark the parameter
 `inout`; the final value is written back:
 
 ```witchy
-fn bump(inout n: Int):
+fn bump(var n: Int):
     n = n + 1
 
 fn main(console: Console):
     var counter = 41
     bump(counter)
-    print(console, to_string(counter))
+    print(console, "${counter}")
 ```
 
 ```text
@@ -177,8 +177,8 @@ fn sum(let xs: List(Int), i: Int) -> Int:
 
 fn main(console: Console):
     let xs = [1, 2, 3, 4]
-    print(console, to_string(sum(xs, 0)))
-    print(console, to_string(list.length(xs)))   // xs is untouched
+    print(console, "${sum(xs, 0)}")
+    print(console, "${list.length(xs)}")
 ```
 
 ```text

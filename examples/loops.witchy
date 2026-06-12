@@ -5,7 +5,7 @@ fn main(console: Console):
     var sum = 0
     for n in nums:
         sum = sum + n
-    print(console, "sum = " <> to_string(sum))
+    print(console, "sum = " <> "${sum}")
 
     var line = ""
     for word in ["witchy", "loops", "work"]:

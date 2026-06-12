@@ -118,7 +118,7 @@ fn main(console: Console, clock: Clock):
     without clock:
         // `clock` is walled off in here — `now(clock)` would not compile.
         print(console, "this section provably does not read the clock")
-    print(console, to_string(now(clock)))   // outside, clock is back
+    print(console, "${now(clock)}")
 ```
 
 A `retain` block is the mirror image: it keeps *only* what you name and drops
@@ -133,7 +133,7 @@ fn main(console: Console, clock: Clock):
     retain:
         // Fully sealed: no authority in scope, so this does provably no I/O.
         let sum = 2 + 2
-    print(console, to_string(now(clock)))
+    print(console, "${now(clock)}")
 ```
 
 ### Why this is more than a comment

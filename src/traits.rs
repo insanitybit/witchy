@@ -656,7 +656,7 @@ impl Ctx<'_> {
 /// so the table stays conservative.
 fn builtin_ret(name: &str) -> Option<String> {
     let t = match name {
-        "int_to_string" | "to_string" => "String",
+        "int_to_string" | "__render" => "String",
         "string_length" | "char_count" => "Int",
         _ => return None,
     };

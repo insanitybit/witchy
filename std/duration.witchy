@@ -90,10 +90,10 @@ pub fn part_milliseconds(d: Duration) -> Int:
 // A clock string "H:MM:SS": minutes and seconds zero-padded, hours in full (so a
 // long span reads as e.g. "100:00:00"); the sub-second part is dropped.
 pub fn clock(d: Duration) -> String:
-    to_string(part_hours(d)) <> ":" <> pad2(part_minutes(d)) <> ":" <> pad2(part_seconds(d))
+    "${part_hours(d)}" <> ":" <> pad2(part_minutes(d)) <> ":" <> pad2(part_seconds(d))
 
 fn pad2(n: Int) -> String:
-    string.pad_left(to_string(n), 2, "0")
+    string.pad_left("${n}", 2, "0")
 
 // A compact label that omits leading zero units: `1h1m1s`, `1m30s`, `5s`, and
 // `500ms` for a pure sub-second span.
@@ -103,13 +103,13 @@ pub fn human(d: Duration) -> String:
     let s = part_seconds(d)
     let r = part_milliseconds(d)
     if h > 0:
-        to_string(h) <> "h" <> to_string(m) <> "m" <> to_string(s) <> "s"
+        "${h}" <> "h" <> "${m}" <> "m" <> "${s}" <> "s"
     else if m > 0:
-        to_string(m) <> "m" <> to_string(s) <> "s"
+        "${m}" <> "m" <> "${s}" <> "s"
     else if s > 0:
-        to_string(s) <> "s"
+        "${s}" <> "s"
     else:
-        to_string(r) <> "ms"
+        "${r}" <> "ms"
 
 // Parse a duration string to a `Duration` — the inverse of `human`. Accepts
 // unit-tagged input ("1h2m3s", "500ms", "2hr", any subset) using ms/s/m/h/hr/d/w,

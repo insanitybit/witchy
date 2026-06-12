@@ -24,7 +24,7 @@ fn next_row(row: List(Int)) -> List(Int):
 fn show_row(row: List(Int)) -> String:
     var parts = []
     for n in row:
-        parts = list.push(parts, to_string(n))
+        parts = list.push(parts, "${n}")
     string.join(parts, " ")
 
 fn main(console: Console):

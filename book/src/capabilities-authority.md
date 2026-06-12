@@ -47,7 +47,7 @@ fn compute(x: Int) -> Int:
     x * x + 1
 
 fn log(console: Console, label: String, value: Int):
-    print(console, label <> ": " <> to_string(value))
+    print(console, label <> ": " <> "${value}")
 
 fn main(console: Console):
     let result = compute(6)

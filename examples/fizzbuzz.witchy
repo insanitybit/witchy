@@ -11,7 +11,7 @@ fn fizzbuzz(console: Console, n: Int):
         else if i % 5 == 0:
             print(console, "Buzz")
         else:
-            print(console, to_string(i))
+            print(console, "${i}")
         i = i + 1
 
 fn main(console: Console):

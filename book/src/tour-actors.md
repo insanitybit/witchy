@@ -19,7 +19,7 @@ actor Counter:
 impl Counter:
     on Inc():
         n = n + 1
-        print(console, "count is " <> to_string(n))
+        print(console, "count is " <> "${n}")
 
 fn main(console: Console):
     let counter = spawn Counter(console)
@@ -71,7 +71,7 @@ actor Boss:
 
 impl Boss:
     on Done(label: String, result: Int):
-        print(console, label <> " -> " <> to_string(result))
+        print(console, label <> " -> " <> "${result}")
 
 fn main(console: Console):
     let boss = spawn Boss(console)

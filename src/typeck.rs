@@ -1154,7 +1154,7 @@ impl Checker {
             "duration_to_int" => Some((vec![Ty::Duration], Ty::Int)),
             "math.sqrt" => Some((vec![Ty::Float], Ty::Float)),
             "string.to_int" => Some((vec![Ty::String], Ty::Int)),
-            "to_string" => {
+            "__render" => {
                 let a = self.fresh();
                 Some((vec![a], Ty::String))
             }
@@ -1852,6 +1852,15 @@ impl Checker {
                     return self.check_send(args);
                 }
                 let Some((params, ret)) = self.call_sig(name) else {
+                    // `to_string` was removed from the surface: interpolation
+                    // IS the rendering (it desugars to the internal __render).
+                    if name == "to_string" || name == "int_to_string" {
+                        return terr(format!(
+                            "`{name}` was removed — render with `\"${{x}}\"` \
+                             interpolation (it works on every value), or \
+                             `say(console, x)` to print a `Show` value"
+                        ));
+                    }
                     // A retired global builtin: name the module-qualified
                     // spelling that replaced it (the one-cut migration).
                     if let Some(moved) = moved_builtin(name) {
@@ -2817,7 +2826,6 @@ pub fn moved_builtin(bare: &str) -> Option<&'static str> {
         "int_to_float" => "math.to_float",
         "float_to_int" => "math.to_int",
         "sqrt" => "math.sqrt",
-        "int_to_string" => "to_string",
         _ => return None,
     })
 }
@@ -2877,7 +2885,7 @@ mod tests {
             "fn main(console: Console, clock: Clock):\n    without clock:\n        print(console, \"ok\")\n";
         check_str(drop_clock).expect("console still usable when only clock is dropped");
         let use_dropped =
-            "fn main(console: Console, clock: Clock):\n    without clock:\n        let t = now(clock)\n        print(console, to_string(t))\n";
+            "fn main(console: Console, clock: Clock):\n    without clock:\n        let t = now(clock)\n        print(console, __render(t))\n";
         let err = check_str(use_dropped).expect_err("using a dropped capability must fail");
         assert!(err.contains("walled off"), "got: {err}");
 
@@ -2886,7 +2894,7 @@ mod tests {
             "fn main(console: Console, clock: Clock):\n    retain console:\n        print(console, \"ok\")\n";
         check_str(retain_console).expect("the retained capability is usable");
         let retain_drops_rest =
-            "fn main(console: Console, clock: Clock):\n    retain console:\n        let t = now(clock)\n        print(console, to_string(t))\n";
+            "fn main(console: Console, clock: Clock):\n    retain console:\n        let t = now(clock)\n        print(console, __render(t))\n";
         let err = check_str(retain_drops_rest).expect_err("a non-retained capability must be hidden");
         assert!(err.contains("walled off"), "got: {err}");
 
@@ -2941,7 +2949,7 @@ mod tests {
         // A nested re-binding legitimately shadows the firewall: re-using the name
         // for a fresh value is fine (you still can't reach the dropped capability).
         let shadow =
-            "fn use_int(n: Int):\n    fail(to_string(n))\nfn main(console: Console):\n    without console:\n        let console = 42\n        use_int(console)\n";
+            "fn use_int(n: Int):\n    fail(__render(n))\nfn main(console: Console):\n    without console:\n        let console = 42\n        use_int(console)\n";
         check_str(shadow).expect("re-binding a dropped name to a fresh value is allowed");
     }
 
@@ -3023,7 +3031,7 @@ mod tests {
     #[test]
     fn unknown_stdlib_function_suggests_import() {
         // Calling an unimported stdlib function points at the module to import.
-        let err = check_str("fn main(console: Console):\n    print(console, to_string(minimum([1], 0)))\n")
+        let err = check_str("fn main(console: Console):\n    print(console, __render(minimum([1], 0)))\n")
             .expect_err("minimum is unimported");
         assert!(err.contains("import ord"), "{err}");
         // A genuine typo (no stdlib match) gets no misleading hint.
@@ -3044,7 +3052,7 @@ fn double(n: Int) -> Int:
     (n * 2)
 
 fn main(console: Console):
-    print(console, to_string(double(21)))
+    print(console, __render(double(21)))
 "#;
         assert!(check_str(src).is_ok(), "{:?}", check_str(src));
     }
@@ -3115,7 +3123,7 @@ fn id(x: a) -> a:
 
 fn main(console: Console):
     print(console, id("hi"))
-    print(console, to_string(id(5)))
+    print(console, __render(id(5)))
 "#;
         assert!(check_str(src).is_ok(), "{:?}", check_str(src));
     }
@@ -3157,7 +3165,7 @@ fn unwrap_str(b: Box(String)) -> String:
         Wrap(s) -> s
 
 fn main(console: Console):
-    print(console, to_string(unwrap_int(Wrap(5))))
+    print(console, __render(unwrap_int(Wrap(5))))
     print(console, unwrap_str(Wrap("hi")))
 "#;
         assert!(check_str(src).is_ok(), "{:?}", check_str(src));
@@ -3178,7 +3186,7 @@ fn unwrap(b: Box(a), default: a) -> a:
         Wrap(v) -> v
 
 fn main(console: Console):
-    print(console, to_string(unwrap(Wrap(5), 0)))
+    print(console, __render(unwrap(Wrap(5), 0)))
     print(console, unwrap(Wrap("hi"), "none"))
 "#;
         assert!(check_str(src).is_ok(), "{:?}", check_str(src));
@@ -3329,7 +3337,7 @@ fn apply(f: fn(Int) -> Int, x: Int) -> Int:
     f(x)
 
 fn main(console: Console):
-    print(console, to_string(apply(fn(n: Int): (n + 1), 10)))
+    print(console, __render(apply(fn(n: Int): (n + 1), 10)))
 "#;
         assert!(check_str(src).is_ok(), "{:?}", check_str(src));
     }
@@ -3344,7 +3352,7 @@ fn apply(f: fn(a) -> a, x: a) -> a:
 
 fn main(console: Console):
     print(console, apply(fn(s: String): s, "hi"))
-    print(console, to_string(apply(fn(n: Int): n, 5)))
+    print(console, __render(apply(fn(n: Int): n, 5)))
 "#;
         assert!(check_str(src).is_ok(), "{:?}", check_str(src));
     }
@@ -3500,7 +3508,7 @@ fn f(xs: List(Int)) -> String:
         let src = r#"
 fn main(console: Console):
     for n in [1, 2, 3]:
-        print(console, to_string(n))
+        print(console, __render(n))
 "#;
         assert!(check_str(src).is_ok(), "{:?}", check_str(src));
     }
@@ -3746,7 +3754,7 @@ type Event:
 
 fn describe(e: Event) -> String:
     match e:
-        Click(x, _) -> to_string(x)
+        Click(x, _) -> __render(x)
         Closed -> "closed"
 "#;
         assert!(check_str(src).is_ok(), "{:?}", check_str(src));
@@ -3790,7 +3798,7 @@ actor Logger:
 impl Logger:
     on Log(msg: String):
         count = (count + 1)
-        print(console, ((("[" <> to_string(count)) <> "] ") <> msg))
+        print(console, ((("[" <> __render(count)) <> "] ") <> msg))
 
 fn main(console: Console):
     let logger = spawn Logger(console)

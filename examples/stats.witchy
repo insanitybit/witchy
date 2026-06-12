@@ -12,7 +12,7 @@ fn main(console: Console):
     let data = [2.0, 4.0, 4.0, 4.0, 5.0, 5.0, 7.0, 9.0]
     let avg = mean(data)
     let population_variance = variance(data, avg)
-    report(console, "count", to_string(list.length(data)))
+    report(console, "count", "${list.length(data)}")
     report(console, "mean", math.format_float(avg, 2))
     report(console, "variance", math.format_float(population_variance, 2))
     report(console, "stddev", math.format_float(math.sqrt(population_variance), 2))

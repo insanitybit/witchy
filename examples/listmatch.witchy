@@ -9,12 +9,12 @@ fn sum(xs: List(Int)) -> Int:
 fn describe(xs: List(Int)) -> String:
     match xs:
         [] -> "empty"
-        [only] -> "one: " <> to_string(only)
-        [first, ..] -> "starts with " <> to_string(first)
+        [only] -> "one: " <> "${only}"
+        [first, ..] -> "starts with " <> "${first}"
 
 fn main(console: Console):
     let nums = [3, 7, 11]
-    print(console, "sum = " <> to_string(sum(nums)))
+    print(console, "sum = " <> "${sum(nums)}")
     print(console, describe(nums))
     print(console, describe([42]))
     print(console, describe([]))

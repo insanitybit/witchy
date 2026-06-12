@@ -21,7 +21,7 @@ fn render(records: List(Json)) -> String:
     var scores = []
     for r in records:
         scores = list.push(scores, score_of(r))
-    string.join(["records: " <> to_string(stats.count(scores)), "total:   " <> to_string(stats.total(scores)), "max:     " <> to_string(stats.max(scores)), "average: " <> to_string(stats.average(scores))], "\n")
+    string.join(["records: " <> "${stats.count(scores)}", "total:   " <> "${stats.total(scores)}", "max:     " <> "${stats.max(scores)}", "average: " <> "${stats.average(scores)}"], "\n")
 
 // The integer "score" field of one record, defaulting to 0 if absent / non-int.
 fn score_of(record: Json) -> Int:

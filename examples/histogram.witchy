@@ -11,4 +11,4 @@ fn main(console: Console):
         counts = dict.insert(counts, word, dict.get_or(counts, word, 0) + 1)
 
     for word in dict.keys(counts):
-        print(console, word <> ": " <> to_string(dict.get_or(counts, word, 0)))
+        print(console, word <> ": " <> "${dict.get_or(counts, word, 0)}")

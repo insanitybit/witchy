@@ -18,7 +18,7 @@ fn main(console: Console):
 
 fn run(expr: String) -> String:
     match eval(string.words(expr)):
-        Ok(value) -> to_string(value)
+        Ok(value) -> "${value}"
         Err(message) -> "error: " <> message
 
 fn eval(tokens: List(String)) -> Result(Int, String):
@@ -70,7 +70,7 @@ fn finish(outcome: Outcome) -> Result(Int, String):
             if list.length(stack) == 1:
                 Ok(list.at(stack, 0))
             else:
-                Err("expected a single result, the stack has " <> to_string(list.length(stack)))
+                Err("expected a single result, the stack has " <> "${list.length(stack)}")
 
 // The first `k` elements of `xs` (the stack below the two consumed operands).
 fn prefix(xs: List(Int), k: Int) -> List(Int):

@@ -15,7 +15,7 @@ fn main(console: Console, net: Net, clock: Clock, args: List(String)):
     let (host, port) = hostport(addr)
 
     let rp = http.get(net, host, port, "/coven/rootpub")
-    print(console, "rootpub:" <> to_string(http.status(rp)))
+    print(console, "rootpub:" <> "${http.status(rp)}")
 
     // publish acme/money@1.0.0 (a pure library — no capabilities)
     let pub1 = http.post(net, host, port, "/coven/publish", publish_body(money_toml(), money_files(), "ci-bot"))
@@ -31,17 +31,17 @@ fn main(console: Console, net: Net, clock: Clock, args: List(String)):
     // publish v2, then attempt to promote it as the SAME identity that uploaded
     // it — separation of duties must refuse (403).
     let pub2 = http.post(net, host, port, "/coven/publish", publish_body(money_toml_v2(), money_files_v2(), "ci-bot"))
-    print(console, "publish2:" <> to_string(http.status(pub2)))
+    print(console, "publish2:" <> "${http.status(pub2)}")
     let sod = http.post(net, host, port, "/coven/promote", promote_body("acme~money", "2.0.0", "webauthn", "ci-bot"))
-    print(console, "selfpromote:" <> to_string(http.status(sod)))
+    print(console, "selfpromote:" <> "${http.status(sod)}")
 
     // an under-declared rune: the code demands Net but the manifest declares
     // nothing — the server recomputes the footprint and refuses (400).
     let leak = http.post(net, host, port, "/coven/publish", publish_body(leak_toml(), leak_files(), "attacker"))
-    print(console, "underdeclared:" <> to_string(http.status(leak)))
+    print(console, "underdeclared:" <> "${http.status(leak)}")
 
     let src = http.get(net, host, port, "/coven/source?name=acme~money&version=1.0.0")
-    print(console, "source:" <> to_string(http.status(src)))
+    print(console, "source:" <> "${http.status(src)}")
 
     let idx = http.get(net, host, port, "/coven/index")
     print(console, "index:${http.status(idx)} " <> http.body(idx))

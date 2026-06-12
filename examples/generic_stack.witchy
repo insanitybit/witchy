@@ -36,7 +36,7 @@ fn reverse(s: Stack(a)) -> Stack(a):
 
 fn show_top_int(s: Stack(Int)) -> String:
     match peek(s):
-        Some(n) -> to_string(n)
+        Some(n) -> "${n}"
         None -> "<empty>"
 
 fn show_top_str(s: Stack(String)) -> String:
@@ -49,8 +49,8 @@ fn main(console: Console):
     let nums = Push(1, Push(2, Push(3, Empty)))
     let words = Push("first", Push("second", Empty))
 
-    print(console, "nums size:  " <> to_string(size(nums)))
-    print(console, "words size: " <> to_string(size(words)))
+    print(console, "nums size:  " <> "${size(nums)}")
+    print(console, "words size: " <> "${size(words)}")
     print(console, "nums top:   " <> show_top_int(nums))
     print(console, "words top:  " <> show_top_str(words))
     // reverse is generic too: after reversing, the bottom element is on top.

@@ -554,7 +554,7 @@ impl Lexer {
 
     /// Lex a string literal. A plain string is a single `Str` token. A string
     /// with `${ expr }` interpolations expands to the token stream for
-    /// `( lit0 <> to_string(expr0) <> lit1 <> ... )`, so the parser needs no
+    /// `( lit0 <> __render(expr0) <> lit1 <> ... )`, so the parser needs no
     /// special handling and interpolation works in both backends (`to_string` +
     /// concat). Write `\$` for a literal `$`.
     fn string(&mut self, fstring: bool) -> Result<Vec<Tok>, LexError> {
@@ -616,7 +616,7 @@ impl Lexer {
         }
     }
 
-    /// Emit one interpolation segment `<> to_string( <expr> )` (the opening brace
+    /// Emit one interpolation segment `<> __render( <expr> )` (the opening brace
     /// already consumed): close off the preceding literal, then read and tokenize
     /// the embedded expression up to its matching `}`.
     fn emit_interpolation(
@@ -635,7 +635,7 @@ impl Lexer {
         let src = self.interp_source()?;
         let expr_toks = Lexer::new(&src).tokenize()?;
         out.push(Tok::Concat);
-        out.push(Tok::Ident("to_string".into()));
+        out.push(Tok::Ident("__render".into()));
         out.push(Tok::LParen);
         for t in expr_toks {
             if t.kind == Tok::Eof {
@@ -1044,14 +1044,14 @@ mod tests {
 
     #[test]
     fn interpolation_expands_to_concat_tokens() {
-        // "a${x}b" lexes to the token stream for `("a" <> to_string(x) <> "b")`.
+        // "a${x}b" lexes to the token stream for `("a" <> __render(x) <> "b")`.
         assert_eq!(
             kinds(r#""a${x}b""#),
             vec![
                 Tok::LParen,
                 Tok::Str("a".into()),
                 Tok::Concat,
-                Tok::Ident("to_string".into()),
+                Tok::Ident("__render".into()),
                 Tok::LParen,
                 Tok::Ident("x".into()),
                 Tok::RParen,

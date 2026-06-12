@@ -27,6 +27,6 @@ fn average(rs: Readings) -> Celsius:
 
 fn main(console: Console):
     let week = [18, 21, 25, 23, 20, 19, 22]
-    print(console, "avg C = " <> to_string(average(week)))
+    print(console, "avg C = " <> "${average(week)}")
     print(console, "25C = ${to_fahrenheit(25)}F")
     print(console, "0C  = ${to_fahrenheit(0)}F")

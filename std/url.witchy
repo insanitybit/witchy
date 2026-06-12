@@ -70,5 +70,5 @@ pub fn path(u: Url) -> String:
 pub fn format(u: Url) -> String:
     match u:
         Url(s, h, p, pa) ->
-            let authority = if p == default_port(s): h else: h <> ":" <> to_string(p)
+            let authority = if p == default_port(s): h else: h <> ":" <> "${p}"
             s <> "://" <> authority <> pa

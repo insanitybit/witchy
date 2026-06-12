@@ -15,7 +15,7 @@ trait Show:
 
 impl Show for Int:
     fn show(self) -> String:
-        to_string(self)
+        "${self}"
 
 impl Show for Bool:
     fn show(self) -> String:
@@ -30,7 +30,7 @@ impl Show for String:
 
 impl Show for Float:
     fn show(self) -> String:
-        to_string(self)
+        "${self}"
 
 // A Duration SHOWS in its human form ("1m30s"), unlike the structural
 // `to_string`, which renders the underlying milliseconds — exactly the kind
@@ -51,7 +51,7 @@ pub fn show_list(xs: List(a)) -> String where a: Show:
 
 // Print any `Show` value without converting it by hand — `say(console, 42)`,
 // `say(console, point)`. The Show-accepting `print` you reach for instead of
-// `print(console, to_string(n))`. (A thin wrapper kept out of the `print`
+// `print(console, "${n}")`. (A thin wrapper kept out of the `print`
 // builtin so a builtin never depends on a std trait.)
 pub fn say(console: Console, x: impl Show):
     print(console, show(x))

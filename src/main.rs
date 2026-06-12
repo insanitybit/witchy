@@ -763,8 +763,8 @@ fn compute(x: Int, y: Int) -> Result(Int, String):
     Ok((q + 1))
 
 fn main(console: Console):
-    print(console, to_string(result.unwrap_or(compute(10, 2), (0 - 1))))
-    print(console, to_string(result.unwrap_or(compute(10, 0), (0 - 1))))
+    print(console, __render(result.unwrap_or(compute(10, 2), (0 - 1))))
+    print(console, __render(result.unwrap_or(compute(10, 0), (0 - 1))))
 "#,
             ),
         ],
@@ -1756,7 +1756,7 @@ mod example_tests {
     /// `move x` transfers ownership.
     #[test]
     fn conventions_backends_agree() {
-        let src = "fn bump(var n: Int):\n    n = n + 1\n\nfn total(let xs: List(Int)) -> Int:\n    var s = 0\n    for x in xs:\n        s = s + x\n    s\n\nfn drain(own xs: List(Int)) -> Int:\n    list.length(xs)\n\nfn doubled(xs: List(Int)) -> Int:\n    list.at(xs, 0) * 2\n\nfn main(console: Console):\n    var c = 0\n    bump(c)\n    bump(c)\n    print(console, to_string(c))\n    let nums = [10, 20, 30]\n    print(console, to_string(total(nums)))\n    print(console, to_string(doubled(nums)))\n    print(console, to_string(list.length(nums)))\n    let g = [1, 2, 3, 4]\n    print(console, to_string(drain(move g)))\n";
+        let src = "fn bump(var n: Int):\n    n = n + 1\n\nfn total(let xs: List(Int)) -> Int:\n    var s = 0\n    for x in xs:\n        s = s + x\n    s\n\nfn drain(own xs: List(Int)) -> Int:\n    list.length(xs)\n\nfn doubled(xs: List(Int)) -> Int:\n    list.at(xs, 0) * 2\n\nfn main(console: Console):\n    var c = 0\n    bump(c)\n    bump(c)\n    print(console, __render(c))\n    let nums = [10, 20, 30]\n    print(console, __render(total(nums)))\n    print(console, __render(doubled(nums)))\n    print(console, __render(list.length(nums)))\n    let g = [1, 2, 3, 4]\n    print(console, __render(drain(move g)))\n";
         let expected = ["2", "60", "20", "3", "4"];
         assert_eq!(interpreter::run(src).expect("interp"), expected, "interp");
         assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "wasm");
@@ -1769,17 +1769,17 @@ mod example_tests {
     #[test]
     fn conventions_reuse_after_move_rejected() {
         // Reuse after an `own` (sink) parameter consumes it.
-        let after_own = "fn drain(own xs: List(Int)) -> Int:\n    list.length(xs)\nfn main(c: Console):\n    let d = [1, 2, 3]\n    print(c, to_string(drain(d)))\n    print(c, to_string(list.length(d)))\n";
+        let after_own = "fn drain(own xs: List(Int)) -> Int:\n    list.length(xs)\nfn main(c: Console):\n    let d = [1, 2, 3]\n    print(c, __render(drain(d)))\n    print(c, __render(list.length(d)))\n";
         let e1 = typeck::check_str(after_own).expect_err("reuse after own should fail");
         assert!(e1.to_string().contains("after it was moved"), "got: {e1:?}");
         // Reuse after an explicit `move`.
-        let after_move = "fn drain(own xs: List(Int)) -> Int:\n    list.length(xs)\nfn main(c: Console):\n    let d = [1, 2, 3]\n    print(c, to_string(drain(move d)))\n    print(c, to_string(list.length(d)))\n";
+        let after_move = "fn drain(own xs: List(Int)) -> Int:\n    list.length(xs)\nfn main(c: Console):\n    let d = [1, 2, 3]\n    print(c, __render(drain(move d)))\n    print(c, __render(list.length(d)))\n";
         assert!(
             typeck::check_str(after_move).is_err(),
             "reuse after move should fail"
         );
         // A `let` borrow does NOT consume — reuse is fine.
-        let after_borrow = "fn peek(let xs: List(Int)) -> Int:\n    list.length(xs)\nfn main(c: Console):\n    let d = [1, 2, 3]\n    print(c, to_string(peek(d)))\n    print(c, to_string(list.length(d)))\n";
+        let after_borrow = "fn peek(let xs: List(Int)) -> Int:\n    list.length(xs)\nfn main(c: Console):\n    let d = [1, 2, 3]\n    print(c, __render(peek(d)))\n    print(c, __render(list.length(d)))\n";
         assert!(typeck::check_str(after_borrow).is_ok(), "borrow reuse should be fine");
     }
 
@@ -1802,11 +1802,11 @@ mod example_tests {
     /// and the output matches every backend.
     #[test]
     fn convention_string_and_dict_borrow() {
-        let strs = "fn first_char(let s: String) -> String:\n    if string.char_count(s) > 0:\n        string.substring(s, 0, 1)\n    else:\n        \"\"\nfn main(c: Console):\n    let txt = \"héllo\"\n    print(c, first_char(txt))\n    print(c, to_string(string.char_count(txt)))\n";
+        let strs = "fn first_char(let s: String) -> String:\n    if string.char_count(s) > 0:\n        string.substring(s, 0, 1)\n    else:\n        \"\"\nfn main(c: Console):\n    let txt = \"héllo\"\n    print(c, first_char(txt))\n    print(c, __render(string.char_count(txt)))\n";
         assert_eq!(interpreter::run(strs).expect("interp str"), ["h", "5"]);
         assert_eq!(run_linked_on_wasm(&[("main", strs)], "main"), ["h", "5"], "wasm str");
 
-        let dict = "fn lookup(let d: Dict(String, Int)) -> Int:\n    dict.get_or(d, \"a\", -1)\nfn main(c: Console):\n    var m = dict.new()\n    m = dict.insert(m, \"a\", 42)\n    print(c, to_string(lookup(m)))\n    print(c, to_string(dict.size(m)))\n";
+        let dict = "fn lookup(let d: Dict(String, Int)) -> Int:\n    dict.get_or(d, \"a\", -1)\nfn main(c: Console):\n    var m = dict.new()\n    m = dict.insert(m, \"a\", 42)\n    print(c, __render(lookup(m)))\n    print(c, __render(dict.size(m)))\n";
         assert_eq!(interpreter::run(dict).expect("interp dict"), ["42", "1"]);
         assert_eq!(run_linked_on_wasm(&[("main", dict)], "main"), ["42", "1"], "wasm dict");
     }
@@ -1816,11 +1816,11 @@ mod example_tests {
     /// the type checker, uniformly).
     #[test]
     fn convention_move_value_positions() {
-        let prog = "fn main(console: Console):\n    let a = [1, 2, 3]\n    let b = move a\n    print(console, to_string(list.length(b)))\n";
+        let prog = "fn main(console: Console):\n    let a = [1, 2, 3]\n    let b = move a\n    print(console, __render(list.length(b)))\n";
         assert_eq!(interpreter::run(prog).expect("interp"), ["3"]);
         assert_eq!(run_linked_on_wasm(&[("main", prog)], "main"), ["3"], "wasm");
         // Reuse after move is rejected everywhere.
-        let reuse = "fn main(console: Console):\n    let a = [1, 2, 3]\n    let b = move a\n    print(console, to_string(list.length(b) + list.length(a)))\n";
+        let reuse = "fn main(console: Console):\n    let a = [1, 2, 3]\n    let b = move a\n    print(console, __render(list.length(b) + list.length(a)))\n";
         assert!(typeck::check_str(reuse).is_err(), "reuse after move must fail");
     }
 
@@ -1832,11 +1832,11 @@ mod example_tests {
         // Returning a `let` parameter escapes the borrow — a TYPE error on
         // every backend (the rule moved from the removed native backend's
         // borrow checker into typeck).
-        let escapes = "fn id(let xs: List(Int)) -> List(Int):\n    xs\nfn main(c: Console):\n    print(c, to_string(list.length(id([1, 2, 3]))))\n";
+        let escapes = "fn id(let xs: List(Int)) -> List(Int):\n    xs\nfn main(c: Console):\n    print(c, __render(list.length(id([1, 2, 3]))))\n";
         let err = typeck::check_str(escapes).expect_err("escaping borrow must be rejected");
         assert!(err.to_string().contains("cannot be returned"), "{err}");
         // Reading it (no escape) is fine.
-        let reads = "fn count(let xs: List(Int)) -> Int:\n    list.length(xs)\nfn main(c: Console):\n    print(c, to_string(count([1, 2, 3])))\n";
+        let reads = "fn count(let xs: List(Int)) -> Int:\n    list.length(xs)\nfn main(c: Console):\n    print(c, __render(count([1, 2, 3])))\n";
         assert!(typeck::check_str(reads).is_ok(), "a read-only borrow should check");
     }
 
@@ -1846,9 +1846,9 @@ mod example_tests {
     #[test]
     fn convention_method_receivers() {
         // `let self` — borrow the receiver, return a fresh value (functional style).
-        let borrow_self = "type Counter:\n    Counter(Int)\nimpl Counter:\n    fn incremented(let self) -> Counter:\n        match self:\n            Counter(n) -> Counter(n + 1)\nfn main(c: Console):\n    let a = Counter(5)\n    match a.incremented():\n        Counter(n) -> print(c, to_string(n))\n";
+        let borrow_self = "type Counter:\n    Counter(Int)\nimpl Counter:\n    fn incremented(let self) -> Counter:\n        match self:\n            Counter(n) -> Counter(n + 1)\nfn main(c: Console):\n    let a = Counter(5)\n    match a.incremented():\n        Counter(n) -> print(c, __render(n))\n";
         // `own self` — consume the receiver.
-        let own_self = "import list\ntype Buffer:\n    Buffer(List(Int))\nimpl Buffer:\n    fn drain(own self) -> Int:\n        match self:\n            Buffer(xs) -> list.sum(xs)\nfn main(c: Console):\n    let buf = Buffer([1, 2, 3])\n    print(c, to_string(buf.drain()))\n";
+        let own_self = "import list\ntype Buffer:\n    Buffer(List(Int))\nimpl Buffer:\n    fn drain(own self) -> Int:\n        match self:\n            Buffer(xs) -> list.sum(xs)\nfn main(c: Console):\n    let buf = Buffer([1, 2, 3])\n    print(c, __render(buf.drain()))\n";
         for (tag, src) in [("let_self", borrow_self), ("own_self", own_self)] {
             assert_eq!(link_run(src), vec!["6"], "{tag} interp");
             assert_eq!(wasm_run(src), vec!["6"], "{tag} wasm");
@@ -1860,13 +1860,13 @@ mod example_tests {
     /// deref-cloned (you can't move out of a borrow). Same result on every backend.
     #[test]
     fn convention_borrow_forwarding() {
-        let src = "fn owned_first(xs: List(Int)) -> Int:\n    list.at(xs, 0) * 2\n\nfn borrowed_len(let ys: List(Int)) -> Int:\n    list.length(ys)\n\nfn report(let xs: List(Int)) -> Int:\n    borrowed_len(xs) + owned_first(xs)\n\nfn main(c: Console):\n    let data = [5, 6, 7]\n    print(c, to_string(report(data)))\n    print(c, to_string(list.length(data)))\n";
+        let src = "fn owned_first(xs: List(Int)) -> Int:\n    list.at(xs, 0) * 2\n\nfn borrowed_len(let ys: List(Int)) -> Int:\n    list.length(ys)\n\nfn report(let xs: List(Int)) -> Int:\n    borrowed_len(xs) + owned_first(xs)\n\nfn main(c: Console):\n    let data = [5, 6, 7]\n    print(c, __render(report(data)))\n    print(c, __render(list.length(data)))\n";
         assert_eq!(interpreter::run(src).expect("interp"), ["13", "3"]);
         assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), ["13", "3"], "wasm");
     }
 
     /// Python-style f-strings: `f"...{expr}..."` interpolates (with `{{`/`}}` for
-    /// literal braces), desugaring to `to_string` + concat — same result on both
+    /// literal braces), desugaring to `__render` + concat — same result on both
     /// backends.
     #[test]
     fn f_strings_interpolate() {
@@ -1882,7 +1882,7 @@ mod example_tests {
         let path = std::env::temp_dir().join(format!("witchy_emit_wat_{}.witchy", std::process::id()));
         std::fs::write(
             &path,
-            "fn fib(n: Int) -> Int:\n    if n < 2:\n        n\n    else:\n        fib(n - 1) + fib(n - 2)\nfn main(console: Console):\n    print(console, to_string(fib(10)))\n",
+            "fn fib(n: Int) -> Int:\n    if n < 2:\n        n\n    else:\n        fib(n - 1) + fib(n - 2)\nfn main(console: Console):\n    print(console, __render(fib(10)))\n",
         )
         .expect("write temp source");
         let wat = crate::emit_wat_file(path.to_str().unwrap()).expect("emit-wat");
@@ -1902,38 +1902,38 @@ mod example_tests {
     var a = 0
     for i in 0..5:
         a = a + i
-    print(console, to_string(a))
+    print(console, __render(a))
     var b = 0
     for i in 1..=5:
         b = b + i
-    print(console, to_string(b))
+    print(console, __render(b))
     var c = 0
     for i in 0..100:
         if i == 10:
             break
         c = c + i
-    print(console, to_string(c))
+    print(console, __render(c))
     var d = 0
     for i in 0..10:
         if i % 2 == 0:
             continue
         d = d + i
-    print(console, to_string(d))
+    print(console, __render(d))
     var e = 0
     for i in 5..5:
         e = e + 1
     for i in 5..2:
         e = e + 1
-    print(console, to_string(e))
+    print(console, __render(e))
     var f = 0
     for i in 0..3:
         for j in 0..3:
             f = f + i * j
-    print(console, to_string(f))
+    print(console, __render(f))
     var g = 0
     for i in 0..100000:
         g = g + 1
-    print(console, to_string(g))
+    print(console, __render(g))
 "#;
         let expected = vec!["10", "15", "45", "25", "0", "9", "100000"];
         assert_eq!(interp(src), expected);
@@ -1955,7 +1955,7 @@ mod example_tests {
                 let hi = lo + len;
                 let op = if inclusive { "..=" } else { ".." };
                 let src = format!(
-                    "fn main(console: Console):\n    var s = 0\n    for i in {lo}{op}{hi}:\n        s = s + i\n    print(console, to_string(s))\n"
+                    "fn main(console: Console):\n    var s = 0\n    for i in {lo}{op}{hi}:\n        s = s + i\n    print(console, __render(s))\n"
                 );
                 let reference: i64 = if inclusive { (lo..=hi).sum() } else { (lo..hi).sum() };
                 let want = vec![reference.to_string()];
@@ -1967,7 +1967,7 @@ mod example_tests {
             fn continue_skipping_odds_matches_reference(lo in -100i64..100, len in 0i64..300) {
                 let hi = lo + len;
                 let src = format!(
-                    "fn main(console: Console):\n    var s = 0\n    for i in {lo}..{hi}:\n        if i % 2 != 0:\n            continue\n        s = s + i\n    print(console, to_string(s))\n"
+                    "fn main(console: Console):\n    var s = 0\n    for i in {lo}..{hi}:\n        if i % 2 != 0:\n            continue\n        s = s + i\n    print(console, __render(s))\n"
                 );
                 let reference: i64 = (lo..hi).filter(|x| x % 2 == 0).sum();
                 let want = vec![reference.to_string()];
@@ -2086,7 +2086,7 @@ mod example_tests {
             #[test]
             fn rle_round_trips_over_digit_free_text(s in "[a-zA-Z ]{0,40}") {
                 let src = format!(
-                    "import string\nimport ascii\n\nfn encode(t: String) -> String:\n    let cs = string.chars(t)\n    let n = list.length(cs)\n    var out = \"\"\n    var i = 0\n    while i < n:\n        let c = list.at(cs, i)\n        var k = 0\n        while i < n && list.at(cs, i) == c:\n            k = k + 1\n            i = i + 1\n        out = out <> to_string(k) <> c\n    out\n\nfn decode(e: String) -> String:\n    let cs = string.chars(e)\n    let n = list.length(cs)\n    var out = \"\"\n    var i = 0\n    while i < n:\n        var k = 0\n        while i < n && ascii.is_digit(list.at(cs, i)):\n            k = k * 10 + ascii.to_digit(list.at(cs, i))\n            i = i + 1\n        if i < n:\n            out = out <> string.repeat(list.at(cs, i), k)\n            i = i + 1\n    out\n\nfn yn(b: Bool) -> String:\n    if b: \"y\" else: \"n\"\n\nfn main(console: Console):\n    let s = \"{}\"\n    print(console, yn(decode(encode(s)) == s))\n",
+                    "import string\nimport ascii\n\nfn encode(t: String) -> String:\n    let cs = string.chars(t)\n    let n = list.length(cs)\n    var out = \"\"\n    var i = 0\n    while i < n:\n        let c = list.at(cs, i)\n        var k = 0\n        while i < n && list.at(cs, i) == c:\n            k = k + 1\n            i = i + 1\n        out = out <> __render(k) <> c\n    out\n\nfn decode(e: String) -> String:\n    let cs = string.chars(e)\n    let n = list.length(cs)\n    var out = \"\"\n    var i = 0\n    while i < n:\n        var k = 0\n        while i < n && ascii.is_digit(list.at(cs, i)):\n            k = k * 10 + ascii.to_digit(list.at(cs, i))\n            i = i + 1\n        if i < n:\n            out = out <> string.repeat(list.at(cs, i), k)\n            i = i + 1\n    out\n\nfn yn(b: Bool) -> String:\n    if b: \"y\" else: \"n\"\n\nfn main(console: Console):\n    let s = \"{}\"\n    print(console, yn(decode(encode(s)) == s))\n",
                     esc(&s)
                 );
                 prop_assert_eq!(link_run(&src), vec!["y".to_string()]);
@@ -2189,7 +2189,7 @@ mod example_tests {
     /// size). The alias still sees its snapshot.
     #[test]
     fn analysis_alias_before_loop_stays_linear() {
-        let src = "fn main(console: Console):\n    var xs = [1, 2, 3]\n    let snapshot = xs\n    var i = 0\n    while i < 50000:\n        xs = list.push(xs, i)\n        i = i + 1\n    print(console, to_string(snapshot))\n    print(console, to_string(list.length(xs)))\n";
+        let src = "fn main(console: Console):\n    var xs = [1, 2, 3]\n    let snapshot = xs\n    var i = 0\n    while i < 50000:\n        xs = list.push(xs, i)\n        i = i + 1\n    print(console, __render(snapshot))\n    print(console, __render(list.length(xs)))\n";
         let want = vec!["[1, 2, 3]".to_string(), "50003".to_string()];
         assert_eq!(link_run(src), want, "interpreter");
         let (out, reowns) = wasm_run_reowns(src);
@@ -2202,7 +2202,7 @@ mod example_tests {
     /// exactly what the cliff diagnostic exists to flag.
     #[test]
     fn analysis_alias_inside_loop_reowns_per_iteration() {
-        let src = "fn main(console: Console):\n    var ys = []\n    var last = [9]\n    var j = 0\n    while j < 200:\n        ys = list.push(ys, j)\n        last = ys\n        j = j + 1\n    print(console, to_string(list.length(last)))\n";
+        let src = "fn main(console: Console):\n    var ys = []\n    var last = [9]\n    var j = 0\n    while j < 200:\n        ys = list.push(ys, j)\n        last = ys\n        j = j + 1\n    print(console, __render(list.length(last)))\n";
         let want = vec!["200".to_string()];
         assert_eq!(link_run(src), want, "interpreter");
         let (out, reowns) = wasm_run_reowns(src);
@@ -2215,7 +2215,7 @@ mod example_tests {
     /// aliases out). Under the whitelist this was an instant disqualification.
     #[test]
     fn analysis_readonly_call_keeps_loop_linear() {
-        let src = "fn peek(xs: List(Int)) -> Int:\n    list.length(xs)\n\nfn main(console: Console):\n    var ws = []\n    var m = 0\n    var probe = 0\n    while m < 3000:\n        ws = list.push(ws, m)\n        probe = peek(ws)\n        m = m + 1\n    print(console, to_string(probe))\n";
+        let src = "fn peek(xs: List(Int)) -> Int:\n    list.length(xs)\n\nfn main(console: Console):\n    var ws = []\n    var m = 0\n    var probe = 0\n    while m < 3000:\n        ws = list.push(ws, m)\n        probe = peek(ws)\n        m = m + 1\n    print(console, __render(probe))\n";
         let want = vec!["3000".to_string()];
         assert_eq!(link_run(src), want, "interpreter");
         let (out, reowns) = wasm_run_reowns(src);
@@ -2228,7 +2228,7 @@ mod example_tests {
     /// and the alias keeps its snapshot.
     #[test]
     fn analysis_alias_returning_call_still_kills() {
-        let src = "fn same(xs: List(Int)) -> List(Int):\n    xs\n\nfn main(console: Console):\n    var xs = [1]\n    var i = 0\n    while i < 100:\n        xs = list.push(xs, i)\n        i = i + 1\n    let held = same(xs)\n    xs = list.push(xs, 999)\n    print(console, to_string(list.length(held)))\n    print(console, to_string(list.length(xs)))\n";
+        let src = "fn same(xs: List(Int)) -> List(Int):\n    xs\n\nfn main(console: Console):\n    var xs = [1]\n    var i = 0\n    while i < 100:\n        xs = list.push(xs, i)\n        i = i + 1\n    let held = same(xs)\n    xs = list.push(xs, 999)\n    print(console, __render(list.length(held)))\n    print(console, __render(list.length(xs)))\n";
         let want = vec!["101".to_string(), "102".to_string()];
         assert_eq!(link_run(src), want, "interpreter");
         let (out, _) = wasm_run_reowns(src);
@@ -2240,7 +2240,7 @@ mod example_tests {
     /// and stays value-semantic on both backends.
     #[test]
     fn analysis_dirty_shapes_stay_value_semantic() {
-        let src = "fn main(console: Console):\n    var s = \"ab\"\n    var k = 0\n    while k < 5:\n        s = s <> s\n        k = k + 1\n    print(console, to_string(string.length(s)))\n    var d = dict.new()\n    var zs = [1]\n    d = dict.insert(d, \"snap\", zs)\n    zs = list.push(zs, 2)\n    print(console, to_string(list.length(dict.get_or(d, \"snap\", []))))\n    print(console, to_string(list.length(zs)))\n";
+        let src = "fn main(console: Console):\n    var s = \"ab\"\n    var k = 0\n    while k < 5:\n        s = s <> s\n        k = k + 1\n    print(console, __render(string.length(s)))\n    var d = dict.new()\n    var zs = [1]\n    d = dict.insert(d, \"snap\", zs)\n    zs = list.push(zs, 2)\n    print(console, __render(list.length(dict.get_or(d, \"snap\", []))))\n    print(console, __render(list.length(zs)))\n";
         let want: Vec<String> = ["64", "1", "2"].iter().map(|s| s.to_string()).collect();
         assert_eq!(link_run(src), want, "interpreter");
         assert_eq!(wasm_run(src), want, "wasm");
@@ -2251,7 +2251,7 @@ mod example_tests {
     /// local — a loud compile failure).
     #[test]
     fn analysis_lambda_accumulator_compiles() {
-        let src = "fn main(console: Console):\n    let build = fn(n: Int):\n        var acc = [0]\n        var t = 0\n        while t < n:\n            acc = list.push(acc, t)\n            t = t + 1\n        list.length(acc)\n    print(console, to_string(build(1000)))\n";
+        let src = "fn main(console: Console):\n    let build = fn(n: Int):\n        var acc = [0]\n        var t = 0\n        while t < n:\n            acc = list.push(acc, t)\n            t = t + 1\n        list.length(acc)\n    print(console, __render(build(1000)))\n";
         let want = vec!["1001".to_string()];
         assert_eq!(link_run(src), want, "interpreter");
         assert_eq!(wasm_run(src), want, "wasm");
@@ -2383,7 +2383,7 @@ mod example_tests {
     fn fmt_round_trips_interpolation() {
         let src = "fn main(console: Console):\n    let n = 3\n    print(console, \"n is ${n}, doubled ${n * 2}\")\n    print(console, \"cost: \\$${n}\")\n";
         assert_eq!(crate::format::reformat(src).as_deref(), Some(src), "interpolation must round-trip");
-        let chain = "fn main(console: Console):\n    let n = 3\n    print(console, \"n is \" <> to_string(n) <> \"\")\n";
+        let chain = "fn main(console: Console):\n    let n = 3\n    print(console, \"n is \" <> __render(n) <> \"\")\n";
         let want = "fn main(console: Console):\n    let n = 3\n    print(console, \"n is ${n}\")\n";
         assert_eq!(
             crate::format::reformat(chain).as_deref(),
@@ -2400,7 +2400,7 @@ mod example_tests {
     /// clones at every call by design.)
     #[test]
     fn analysis_own_abi_pipelines_in_place() {
-        let src = "fn grow(own xs: List(Int), n: Int) -> List(Int):\n    xs = list.push(xs, n)\n    xs\n\nfn main(console: Console):\n    var xs = [0]\n    var i = 0\n    while i < 3000:\n        xs = grow(move xs, i)\n        i = i + 1\n    print(console, to_string(list.length(xs)))\n    print(console, to_string(list.at(xs, 3000)))\n";
+        let src = "fn grow(own xs: List(Int), n: Int) -> List(Int):\n    xs = list.push(xs, n)\n    xs\n\nfn main(console: Console):\n    var xs = [0]\n    var i = 0\n    while i < 3000:\n        xs = grow(move xs, i)\n        i = i + 1\n    print(console, __render(list.length(xs)))\n    print(console, __render(list.at(xs, 3000)))\n";
         let want = vec!["3001".to_string(), "2999".to_string()];
         assert_eq!(link_run(src), want, "interpreter");
         let (out, reowns) = wasm_run_reowns(src);
@@ -2413,7 +2413,7 @@ mod example_tests {
     /// correct, never corrupting.
     #[test]
     fn analysis_own_abi_partial_return_paths_are_sound() {
-        let src = "fn cap_at(own xs: List(Int), n: Int) -> List(Int):\n    if list.length(xs) >= n:\n        []\n    else:\n        xs = list.push(xs, n)\n        xs\n\nfn main(console: Console):\n    var xs = [0]\n    var i = 0\n    while i < 50:\n        xs = cap_at(move xs, i)\n        i = i + 1\n    print(console, to_string(xs))\n";
+        let src = "fn cap_at(own xs: List(Int), n: Int) -> List(Int):\n    if list.length(xs) >= n:\n        []\n    else:\n        xs = list.push(xs, n)\n        xs\n\nfn main(console: Console):\n    var xs = [0]\n    var i = 0\n    while i < 50:\n        xs = cap_at(move xs, i)\n        i = i + 1\n    print(console, __render(xs))\n";
         let interp = link_run(src);
         assert_eq!(wasm_run(src), interp, "wasm must agree on the mixed paths");
     }
@@ -2423,7 +2423,7 @@ mod example_tests {
     /// must be identical — any divergence is an analysis soundness bug.
     #[test]
     fn forced_copy_mode_is_differential() {
-        let src = "fn tag(let prefix: String, n: Int) -> String:\n    prefix <> to_string(n)\n\nfn main(console: Console):\n    var xs = []\n    let alias = xs\n    var s = \"\"\n    var d = dict.new()\n    var i = 0\n    while i < 800:\n        xs = list.push(xs, i)\n        s = s <> tag(\"x\", i)\n        d = dict.update(d, i % 7, 0, fn(n: Int): n + 1)\n        i = i + 1\n    print(console, to_string(list.length(xs)))\n    print(console, to_string(list.length(alias)))\n    print(console, to_string(string.length(s)))\n    print(console, to_string(dict.get_or(d, 3, 0)))\n";
+        let src = "fn tag(let prefix: String, n: Int) -> String:\n    prefix <> __render(n)\n\nfn main(console: Console):\n    var xs = []\n    let alias = xs\n    var s = \"\"\n    var d = dict.new()\n    var i = 0\n    while i < 800:\n        xs = list.push(xs, i)\n        s = s <> tag(\"x\", i)\n        d = dict.update(d, i % 7, 0, fn(n: Int): n + 1)\n        i = i + 1\n    print(console, __render(list.length(xs)))\n    print(console, __render(list.length(alias)))\n    print(console, __render(string.length(s)))\n    print(console, __render(dict.get_or(d, 3, 0)))\n";
         let optimized = wasm_run(src);
         codegen::set_force_copy_for_tests(Some(true));
         let forced = wasm_run(src);
@@ -2975,7 +2975,7 @@ fn yn(b: Bool) -> String:
     /// changes observable behavior, only when memory is reclaimed.
     #[test]
     fn region_blocks_value_escape_and_parity() {
-        let src = "import string\n\nfn main(console: Console):\n    let summary = region:\n        var parts = []\n        for i in 0..50:\n            parts = list.push(parts, to_string(i))\n        string.join(parts, \",\")\n    print(console, to_string(string.length(summary)))\n    var n = 0\n    let direct = region -> Int:\n        n = n + 42\n        n\n    print(console, to_string(direct))\n";
+        let src = "import string\n\nfn main(console: Console):\n    let summary = region:\n        var parts = []\n        for i in 0..50:\n            parts = list.push(parts, __render(i))\n        string.join(parts, \",\")\n    print(console, __render(string.length(summary)))\n    var n = 0\n    let direct = region -> Int:\n        n = n + 42\n        n\n    print(console, __render(direct))\n";
         let want: Vec<String> = ["139", "42"].iter().map(|s| s.to_string()).collect();
         assert_eq!(link_run(src), want.clone(), "interpreter");
         assert_eq!(wasm_run(src), want, "compiled WASM must agree");
@@ -2987,7 +2987,7 @@ fn yn(b: Bool) -> String:
     /// through shared, all agreeing with the interpreter.
     #[test]
     fn region_copy_out_shapes_agree_on_both_backends() {
-        let src = "type Stack:\n    Empty\n    Push(a, Stack(a))\n\ntype Reading:\n    sensor: String\n    values: List(Int)\n\nfn main(console: Console):\n    let st = region -> Stack(Int):\n        Push(1, Push(2, Empty))\n    print(console, to_string(st == Push(1, Push(2, Empty))))\n    let r = region -> Reading:\n        var vs = []\n        for i in 0..50:\n            vs = list.push(vs, i * i)\n        Reading(sensor: \"t\" <> \"0\", values: vs)\n    print(console, r.sensor)\n    print(console, to_string(list.at(r.values, 49)))\n    let d = region -> Dict(String, Int):\n        var m = dict.new()\n        for i in 0..100:\n            m = dict.insert(m, \"k\" <> to_string(i), i)\n        m\n    print(console, to_string(dict.get_or(d, \"k42\", 0 - 1)))\n    let shared = \"parent-side\"\n    let s = region -> String:\n        shared\n    print(console, s)\n    let nested = region -> Int:\n        let inner = region -> String:\n            \"abc\" <> \"def\"\n        string.length(inner)\n    print(console, to_string(nested))\n";
+        let src = "type Stack:\n    Empty\n    Push(a, Stack(a))\n\ntype Reading:\n    sensor: String\n    values: List(Int)\n\nfn main(console: Console):\n    let st = region -> Stack(Int):\n        Push(1, Push(2, Empty))\n    print(console, __render(st == Push(1, Push(2, Empty))))\n    let r = region -> Reading:\n        var vs = []\n        for i in 0..50:\n            vs = list.push(vs, i * i)\n        Reading(sensor: \"t\" <> \"0\", values: vs)\n    print(console, r.sensor)\n    print(console, __render(list.at(r.values, 49)))\n    let d = region -> Dict(String, Int):\n        var m = dict.new()\n        for i in 0..100:\n            m = dict.insert(m, \"k\" <> __render(i), i)\n        m\n    print(console, __render(dict.get_or(d, \"k42\", 0 - 1)))\n    let shared = \"parent-side\"\n    let s = region -> String:\n        shared\n    print(console, s)\n    let nested = region -> Int:\n        let inner = region -> String:\n            \"abc\" <> \"def\"\n        string.length(inner)\n    print(console, __render(nested))\n";
         let want: Vec<String> = ["true", "t0", "2401", "42", "parent-side", "6"]
             .iter()
             .map(|s| s.to_string())
@@ -3002,7 +3002,7 @@ fn yn(b: Bool) -> String:
     /// grows), so only the region machinery reclaims. WASM-only for speed.
     #[test]
     fn region_reclaims_inside_nonresettable_loops() {
-        let src = "fn main(console: Console):\n    var total = 0\n    var keep = []\n    for i in 0..100000:\n        let last = region -> Int:\n            var row = []\n            var j = 0\n            for j in 0..1000:\n                row = list.push(row, j)\n            list.at(row, 999)\n        total = total + last\n        keep = list.push(keep, i)\n    print(console, to_string(total))\n    print(console, to_string(list.length(keep)))\n";
+        let src = "fn main(console: Console):\n    var total = 0\n    var keep = []\n    for i in 0..100000:\n        let last = region -> Int:\n            var row = []\n            var j = 0\n            for j in 0..1000:\n                row = list.push(row, j)\n            list.at(row, 999)\n        total = total + last\n        keep = list.push(keep, i)\n    print(console, __render(total))\n    print(console, __render(list.length(keep)))\n";
         assert_eq!(wasm_run(src), vec!["99900000", "100000"]);
     }
 
@@ -3044,7 +3044,7 @@ fn yn(b: Bool) -> String:
     /// are type errors — the region's only pointer escape is its value.
     #[test]
     fn region_rejects_outer_pointer_assign_and_yield() {
-        let leak = "fn main(console: Console):\n    var leak = [1]\n    let x = region:\n        leak = list.push(leak, 2)\n        7\n    print(console, to_string(x))\n";
+        let leak = "fn main(console: Console):\n    var leak = [1]\n    let x = region:\n        leak = list.push(leak, 2)\n        7\n    print(console, __render(x))\n";
         let module = parser::parse_module(leak).expect("parse");
         let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
         let err = typeck::check(&linked).expect_err("outer pointer assign must be rejected");
@@ -3056,7 +3056,7 @@ fn yn(b: Bool) -> String:
     /// growth), and a missing-key probe all agree with the interpreter.
     #[test]
     fn dict_hash_index_agrees_on_both_backends() {
-        let src = "fn main(console: Console):\n    var d = dict.new()\n    for i in 0..3000:\n        d = dict.insert(d, \"k\" <> to_string(i), i * 2)\n    print(console, to_string(dict.size(d)))\n    print(console, to_string(dict.get_or(d, \"k2999\", 0 - 1)))\n    print(console, to_string(dict.get_or(d, \"absent\", 0 - 1)))\n    print(console, to_string(dict.has(d, \"k1500\")))\n    d = dict.remove(d, \"k0\")\n    print(console, to_string(dict.size(d)))\n    d = dict.insert(d, \"again\", 7)\n    print(console, to_string(dict.get_or(d, \"again\", 0 - 1)))\n";
+        let src = "fn main(console: Console):\n    var d = dict.new()\n    for i in 0..3000:\n        d = dict.insert(d, \"k\" <> __render(i), i * 2)\n    print(console, __render(dict.size(d)))\n    print(console, __render(dict.get_or(d, \"k2999\", 0 - 1)))\n    print(console, __render(dict.get_or(d, \"absent\", 0 - 1)))\n    print(console, __render(dict.has(d, \"k1500\")))\n    d = dict.remove(d, \"k0\")\n    print(console, __render(dict.size(d)))\n    d = dict.insert(d, \"again\", 7)\n    print(console, __render(dict.get_or(d, \"again\", 0 - 1)))\n";
         let want: Vec<String> = ["3000", "5998", "-1", "true", "2999", "7"]
             .iter()
             .map(|s| s.to_string())
@@ -3070,7 +3070,7 @@ fn yn(b: Bool) -> String:
     /// copying insert, so the alias still sees the original.
     #[test]
     fn inplace_dict_insert_is_fast_and_alias_safe() {
-        let src = "fn main(console: Console):\n    var d = dict.new()\n    for i in 0..2000:\n        d = dict.insert(d, i, i * 2)\n    print(console, to_string(dict.size(d)))\n    print(console, to_string(dict.get_or(d, 1999, 0 - 1)))\n    var e = dict.new()\n    let alias = e\n    e = dict.insert(e, 1, 10)\n    print(console, to_string(dict.size(alias)))\n    print(console, to_string(dict.size(e)))\n";
+        let src = "fn main(console: Console):\n    var d = dict.new()\n    for i in 0..2000:\n        d = dict.insert(d, i, i * 2)\n    print(console, __render(dict.size(d)))\n    print(console, __render(dict.get_or(d, 1999, 0 - 1)))\n    var e = dict.new()\n    let alias = e\n    e = dict.insert(e, 1, 10)\n    print(console, __render(dict.size(alias)))\n    print(console, __render(dict.size(e)))\n";
         let want: Vec<String> =
             ["2000", "3998", "0", "1"].iter().map(|s| s.to_string()).collect();
         assert_eq!(link_run(src), want.clone(), "interpreter");
@@ -3084,7 +3084,7 @@ fn yn(b: Bool) -> String:
     /// quadratic and would take far too long at this scale.
     #[test]
     fn arena_resets_keep_escape_free_loops_constant_memory() {
-        let src = "fn main(console: Console):\n    var total = 0\n    for i in 0..200000:\n        var row = []\n        var j = 0\n        for j in 0..1000:\n            row = list.push(row, j)\n        total = total + list.at(row, 999)\n    print(console, to_string(total))\n";
+        let src = "fn main(console: Console):\n    var total = 0\n    for i in 0..200000:\n        var row = []\n        var j = 0\n        for j in 0..1000:\n            row = list.push(row, j)\n        total = total + list.at(row, 999)\n    print(console, __render(total))\n";
         assert_eq!(wasm_run(src), vec!["199800000"]);
     }
 
@@ -3093,7 +3093,7 @@ fn yn(b: Bool) -> String:
     /// the copying path, so the interned literal is never mutated.
     #[test]
     fn inplace_string_append_is_fast_and_alias_safe() {
-        let src = "fn main(console: Console):\n    var s = \"\"\n    for i in 0..20000:\n        s = s <> \"ab\"\n    print(console, to_string(string.length(s)))\n    var t = \"seed\"\n    let alias = t\n    t = t <> \"!\"\n    print(console, alias)\n    print(console, t)\n";
+        let src = "fn main(console: Console):\n    var s = \"\"\n    for i in 0..20000:\n        s = s <> \"ab\"\n    print(console, __render(string.length(s)))\n    var t = \"seed\"\n    let alias = t\n    t = t <> \"!\"\n    print(console, alias)\n    print(console, t)\n";
         let want: Vec<String> =
             ["40000", "seed", "seed!"].iter().map(|s| s.to_string()).collect();
         assert_eq!(link_run(src), want.clone(), "interpreter");
@@ -3108,7 +3108,7 @@ fn yn(b: Bool) -> String:
     fn inplace_push_is_fast_and_alias_safe() {
         // 50k would take minutes under clone-per-push on either backend; both
         // have an in-place fast path for the unaliased self-assign shape.
-        let src = "fn main(console: Console):\n    var xs = []\n    for i in 0..50000:\n        xs = list.push(xs, i)\n    print(console, to_string(list.length(xs)))\n    print(console, to_string(list.at(xs, 49999)))\n    var small = [1]\n    let alias = small\n    small = list.push(small, 2)\n    print(console, to_string(alias))\n    print(console, to_string(small))\n";
+        let src = "fn main(console: Console):\n    var xs = []\n    for i in 0..50000:\n        xs = list.push(xs, i)\n    print(console, __render(list.length(xs)))\n    print(console, __render(list.at(xs, 49999)))\n    var small = [1]\n    let alias = small\n    small = list.push(small, 2)\n    print(console, __render(alias))\n    print(console, __render(small))\n";
         let want: Vec<String> = ["50000", "49999", "[1]", "[1, 2]"]
             .iter()
             .map(|s| s.to_string())
@@ -3123,7 +3123,7 @@ fn yn(b: Bool) -> String:
     /// semantics hold.
     #[test]
     fn inplace_dict_upsert_is_fast_and_alias_safe() {
-        let src = "fn main(console: Console):\n    var d = dict.new()\n    for i in 0..10000:\n        d = dict.insert(d, i, i)\n    print(console, to_string(dict.size(d)))\n    var counts = dict.new()\n    for i in 0..30000:\n        counts = dict.update(counts, i % 3, 0, fn(n: Int): n + 1)\n    print(console, to_string(dict.get_or(counts, 0, 0)))\n    var small = dict.new()\n    small = dict.insert(small, 1, 10)\n    let alias = small\n    small = dict.insert(small, 2, 20)\n    print(console, to_string(dict.size(alias)))\n    print(console, to_string(dict.size(small)))\n";
+        let src = "fn main(console: Console):\n    var d = dict.new()\n    for i in 0..10000:\n        d = dict.insert(d, i, i)\n    print(console, __render(dict.size(d)))\n    var counts = dict.new()\n    for i in 0..30000:\n        counts = dict.update(counts, i % 3, 0, fn(n: Int): n + 1)\n    print(console, __render(dict.get_or(counts, 0, 0)))\n    var small = dict.new()\n    small = dict.insert(small, 1, 10)\n    let alias = small\n    small = dict.insert(small, 2, 20)\n    print(console, __render(dict.size(alias)))\n    print(console, __render(dict.size(small)))\n";
         let want: Vec<String> = ["10000", "10000", "1", "2"]
             .iter()
             .map(|s| s.to_string())
@@ -3139,7 +3139,7 @@ fn yn(b: Bool) -> String:
     /// reassignment of the source variable is invisible to the closure.
     #[test]
     fn closure_capture_pruned_and_snapshot() {
-        let src = "fn main(console: Console):\n    let add = fn(x: Int): x + 1\n    let twice = fn(y: Int): add(add(y))\n    print(console, to_string(twice(3)))\n    var n = 10\n    let snap = fn(): n\n    n = 99\n    print(console, to_string(snap()))\n";
+        let src = "fn main(console: Console):\n    let add = fn(x: Int): x + 1\n    let twice = fn(y: Int): add(add(y))\n    print(console, __render(twice(3)))\n    var n = 10\n    let snap = fn(): n\n    n = 99\n    print(console, __render(snap()))\n";
         let want: Vec<String> = ["5", "10"].iter().map(|s| s.to_string()).collect();
         assert_eq!(link_run(src), want.clone(), "interpreter");
         assert_eq!(wasm_run(src), want, "compiled WASM must agree");
@@ -3151,7 +3151,7 @@ fn yn(b: Bool) -> String:
     /// agrees on both backends, including the `Option((Int, Int))` span payload.
     #[test]
     fn regex_module_toolkit_agrees_on_both_backends() {
-        let src = "import regex\nimport string\n\nfn main(console: Console):\n    print(console, to_string(regex.matches(\"h.llo\", \"say hello\")))\n    print(console, to_string(regex.matches(\"^\\\\d+$\", \"12345\")))\n    print(console, to_string(regex.matches(\"^\\\\d+$\", \"12a45\")))\n    print(console, to_string(regex.extract(\"\\\\d+\", \"a1b22c333\")))\n    print(console, regex.replace_all(\"\\\\s+\", \"too   many    spaces\", \" \"))\n    print(console, to_string(regex.split(\",\\\\s*\", \"a, b,c\")))\n    print(console, to_string(regex.matches(\"[a-f]+\", \"deadbeef\")))\n    print(console, to_string(regex.matches(\"^[^0-9]+$\", \"abc\")))\n    print(console, to_string(regex.find(\"a+\", \"caat\")))\n    print(console, to_string(regex.matches(\"\\\\w+@\\\\w+\\\\.\\\\w+\", \"mail me: a_b@example.com\")))\n    print(console, regex.replace_all(\"[0-9]+\", \"r2d2\", \"#\"))\n";
+        let src = "import regex\nimport string\n\nfn main(console: Console):\n    print(console, __render(regex.matches(\"h.llo\", \"say hello\")))\n    print(console, __render(regex.matches(\"^\\\\d+$\", \"12345\")))\n    print(console, __render(regex.matches(\"^\\\\d+$\", \"12a45\")))\n    print(console, __render(regex.extract(\"\\\\d+\", \"a1b22c333\")))\n    print(console, regex.replace_all(\"\\\\s+\", \"too   many    spaces\", \" \"))\n    print(console, __render(regex.split(\",\\\\s*\", \"a, b,c\")))\n    print(console, __render(regex.matches(\"[a-f]+\", \"deadbeef\")))\n    print(console, __render(regex.matches(\"^[^0-9]+$\", \"abc\")))\n    print(console, __render(regex.find(\"a+\", \"caat\")))\n    print(console, __render(regex.matches(\"\\\\w+@\\\\w+\\\\.\\\\w+\", \"mail me: a_b@example.com\")))\n    print(console, regex.replace_all(\"[0-9]+\", \"r2d2\", \"#\"))\n";
         let want: Vec<String> = [
             "true",
             "true",
@@ -3382,7 +3382,7 @@ fn yn(b: Bool) -> String:
     /// found via `list.repeat(-1, n)`.
     #[test]
     fn wasm_negative_int_survives_the_generic_list_abi() {
-        let src = "fn fill(x: a, n: Int) -> List(a):\n    var out = []\n    var i = 0\n    while i < n:\n        out = list.push(out, x)\n        i = i + 1\n    out\n\nfn show(xs: List(Int)) -> String:\n    var out = \"\"\n    for v in xs:\n        out = out <> to_string(v) <> \" \"\n    out\n\nfn main(console: Console):\n    print(console, show(fill(-1, 3)))\n";
+        let src = "fn fill(x: a, n: Int) -> List(a):\n    var out = []\n    var i = 0\n    while i < n:\n        out = list.push(out, x)\n        i = i + 1\n    out\n\nfn show(xs: List(Int)) -> String:\n    var out = \"\"\n    for v in xs:\n        out = out <> __render(v) <> \" \"\n    out\n\nfn main(console: Console):\n    print(console, show(fill(-1, 3)))\n";
         let want = vec!["-1 -1 -1 ".to_string()];
         assert_eq!(interp(src), want.clone(), "interpreter");
         assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
@@ -3396,7 +3396,7 @@ fn yn(b: Bool) -> String:
     /// the wrong count. (Regression for the generic-`==`-on-non-primitives gap.)
     #[test]
     fn wasm_monomorphizes_generic_equality_on_strings() {
-        let src = "fn count_eq(xs: List(a), target: a) -> Int:\n    var n = 0\n    for x in xs:\n        if x == target:\n            n = n + 1\n    n\n\nfn b(s: String) -> String:\n    s <> \"\"\n\nfn main(console: Console):\n    print(console, to_string(count_eq([b(\"aa\"), b(\"bb\"), b(\"aa\")], b(\"aa\"))))\n";
+        let src = "fn count_eq(xs: List(a), target: a) -> Int:\n    var n = 0\n    for x in xs:\n        if x == target:\n            n = n + 1\n    n\n\nfn b(s: String) -> String:\n    s <> \"\"\n\nfn main(console: Console):\n    print(console, __render(count_eq([b(\"aa\"), b(\"bb\"), b(\"aa\")], b(\"aa\"))))\n";
         let want = vec!["2".to_string()];
         assert_eq!(interp(src), want.clone(), "interpreter");
         assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
@@ -3408,7 +3408,7 @@ fn yn(b: Bool) -> String:
     /// (Regression for the big-int-through-generic gap.)
     #[test]
     fn wasm_monomorphizes_big_int_through_generic() {
-        let src = "fn fill(x: a, n: Int) -> List(a):\n    var out = []\n    var i = 0\n    while i < n:\n        out = list.push(out, x)\n        i = i + 1\n    out\n\nfn main(console: Console):\n    let xs = fill(5000000000, 2)\n    print(console, to_string(list.at(xs, 0)))\n";
+        let src = "fn fill(x: a, n: Int) -> List(a):\n    var out = []\n    var i = 0\n    while i < n:\n        out = list.push(out, x)\n        i = i + 1\n    out\n\nfn main(console: Console):\n    let xs = fill(5000000000, 2)\n    print(console, __render(list.at(xs, 0)))\n";
         let want = vec!["5000000000".to_string()];
         assert_eq!(interp(src), want.clone(), "interpreter");
         assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
@@ -3420,7 +3420,7 @@ fn yn(b: Bool) -> String:
     /// (Regression for the big-Int-through-closure-return gap.)
     #[test]
     fn wasm_big_int_returned_from_closure() {
-        let src = "fn apply(f: fn(Int) -> Int, x: Int) -> Int:\n    f(x)\n\nfn main(console: Console):\n    print(console, to_string(apply(fn(k: Int): k * 5000000000, 2)))\n";
+        let src = "fn apply(f: fn(Int) -> Int, x: Int) -> Int:\n    f(x)\n\nfn main(console: Console):\n    print(console, __render(apply(fn(k: Int): k * 5000000000, 2)))\n";
         let want = vec!["10000000000".to_string()];
         assert_eq!(interp(src), want.clone(), "interpreter");
         assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
@@ -3433,11 +3433,11 @@ fn yn(b: Bool) -> String:
     #[test]
     fn wasm_big_int_closure_arg_and_capture() {
         // Argument: 5000000000 passed to the closure, + 1.
-        let arg = "fn apply(f: fn(Int) -> Int, x: Int) -> Int:\n    f(x)\n\nfn main(console: Console):\n    print(console, to_string(apply(fn(k: Int): k + 1, 5000000000)))\n";
+        let arg = "fn apply(f: fn(Int) -> Int, x: Int) -> Int:\n    f(x)\n\nfn main(console: Console):\n    print(console, __render(apply(fn(k: Int): k + 1, 5000000000)))\n";
         assert_eq!(interp(arg), vec!["5000000001"], "interpreter (arg)");
         assert_eq!(run_on_wasm(arg), vec!["5000000001"], "WASM (arg)");
         // Capture: a big Int captured by the closure, recovered from the env.
-        let cap = "fn apply(f: fn(Int) -> Int, x: Int) -> Int:\n    f(x)\n\nfn main(console: Console):\n    let big = 5000000000\n    print(console, to_string(apply(fn(x: Int): x + big, 1)))\n";
+        let cap = "fn apply(f: fn(Int) -> Int, x: Int) -> Int:\n    f(x)\n\nfn main(console: Console):\n    let big = 5000000000\n    print(console, __render(apply(fn(x: Int): x + big, 1)))\n";
         assert_eq!(interp(cap), vec!["5000000001"], "interpreter (capture)");
         assert_eq!(run_on_wasm(cap), vec!["5000000001"], "WASM (capture)");
     }
@@ -3449,7 +3449,7 @@ fn yn(b: Bool) -> String:
     /// Float-key gap.)
     #[test]
     fn dict_float_keys_agree_on_both_backends() {
-        let src = "fn main(console: Console):\n    let d = dict.insert(dict.insert(dict.insert(dict.new(), 1.5, \"a\"), 2.5, \"b\"), 1.5, \"c\")\n    print(console, dict.get_or(d, 1.5, \"?\"))\n    print(console, dict.get_or(d, 2.5, \"?\"))\n    print(console, dict.get_or(d, 9.9, \"?\"))\n    print(console, to_string(dict.size(d)))\n    let e = dict.remove(d, 1.5)\n    print(console, dict.get_or(e, 1.5, \"gone\"))\n    print(console, to_string(dict.size(e)))\n";
+        let src = "fn main(console: Console):\n    let d = dict.insert(dict.insert(dict.insert(dict.new(), 1.5, \"a\"), 2.5, \"b\"), 1.5, \"c\")\n    print(console, dict.get_or(d, 1.5, \"?\"))\n    print(console, dict.get_or(d, 2.5, \"?\"))\n    print(console, dict.get_or(d, 9.9, \"?\"))\n    print(console, __render(dict.size(d)))\n    let e = dict.remove(d, 1.5)\n    print(console, dict.get_or(e, 1.5, \"gone\"))\n    print(console, __render(dict.size(e)))\n";
         let want = vec![
             "c".to_string(),
             "b".to_string(),
@@ -3675,7 +3675,7 @@ fn yn(b: Bool) -> String:
         std::fs::write(root.join("a.txt"), "alpha").expect("seed a");
         std::fs::write(root.join("sub/b.txt"), "beta").expect("seed b");
 
-        let src = "fn main(console: Console, dir: Dir):\n    print(console, read(dir, \"a.txt\"))\n    print(console, to_string(exists(dir, \"a.txt\")))\n    print(console, to_string(exists(dir, \"missing.txt\")))\n    let sub = subdir(dir, \"sub\")\n    print(console, read(sub, \"b.txt\"))\n    write(dir, \"out.txt\", \"written\")\n    print(console, read(dir, \"out.txt\"))\n    make_dir(dir, \"made\")\n    print(console, to_string(is_dir(dir, \"made\")))\n    for name in list(dir):\n        print(console, \"entry: \" <> name)\n";
+        let src = "fn main(console: Console, dir: Dir):\n    print(console, read(dir, \"a.txt\"))\n    print(console, __render(exists(dir, \"a.txt\")))\n    print(console, __render(exists(dir, \"missing.txt\")))\n    let sub = subdir(dir, \"sub\")\n    print(console, read(sub, \"b.txt\"))\n    write(dir, \"out.txt\", \"written\")\n    print(console, read(dir, \"out.txt\"))\n    make_dir(dir, \"made\")\n    print(console, __render(is_dir(dir, \"made\")))\n    for name in list(dir):\n        print(console, \"entry: \" <> name)\n";
         let want = vec![
             "alpha".to_string(),
             "true".to_string(),
@@ -3893,7 +3893,7 @@ fn yn(b: Bool) -> String:
     fn ungranted_clock_and_env_fail_to_instantiate() {
         use crate::runtime::{Capabilities, Runtime};
         let srcs = [
-            "fn main(console: Console, clock: Clock):\n    print(console, to_string(now(clock)))\n",
+            "fn main(console: Console, clock: Clock):\n    print(console, __render(now(clock)))\n",
             "import option\n\nfn main(console: Console, env: Env):\n    match get_env(env, \"X\"):\n        Some(v) -> print(console, v)\n        None -> print(console, \"unset\")\n",
         ];
         for src in srcs {
@@ -3918,7 +3918,7 @@ fn yn(b: Bool) -> String:
     /// compound-`==` pointer-compare divergence.)
     #[test]
     fn structural_equality_agrees_on_both_backends() {
-        let src = "type Pt:\n    x: Int\n    y: Int\ntype Bag:\n    items: List(Int)\nfn main(console: Console):\n    print(console, to_string([1, 2, 3] == [1, 2, 3]))\n    print(console, to_string([1, 2, 3] == [1, 9, 3]))\n    print(console, to_string([[1], [2]] == [[1], [2]]))\n    print(console, to_string((1, \"a\") == (1, \"a\")))\n    print(console, to_string((1, \"a\") != (1, \"b\")))\n    print(console, to_string(Pt(1, 2) == Pt(1, 2)))\n    print(console, to_string(Pt(1, 2) == Pt(3, 4)))\n    print(console, to_string([Pt(1, 2)] == [Pt(1, 2)]))\n    print(console, to_string(Bag([1, 2]) == Bag([1, 2])))\n    print(console, to_string([\"a\", \"b\"] == [\"a\", \"b\"]))\n";
+        let src = "type Pt:\n    x: Int\n    y: Int\ntype Bag:\n    items: List(Int)\nfn main(console: Console):\n    print(console, __render([1, 2, 3] == [1, 2, 3]))\n    print(console, __render([1, 2, 3] == [1, 9, 3]))\n    print(console, __render([[1], [2]] == [[1], [2]]))\n    print(console, __render((1, \"a\") == (1, \"a\")))\n    print(console, __render((1, \"a\") != (1, \"b\")))\n    print(console, __render(Pt(1, 2) == Pt(1, 2)))\n    print(console, __render(Pt(1, 2) == Pt(3, 4)))\n    print(console, __render([Pt(1, 2)] == [Pt(1, 2)]))\n    print(console, __render(Bag([1, 2]) == Bag([1, 2])))\n    print(console, __render([\"a\", \"b\"] == [\"a\", \"b\"]))\n";
         let want = vec![
             "true".to_string(),  // [1,2,3] == [1,2,3]
             "false".to_string(), // [1,2,3] == [1,9,3]
@@ -3940,7 +3940,7 @@ fn yn(b: Bool) -> String:
     /// (Regression for the silent ADT pointer-compare divergence.)
     #[test]
     fn adt_structural_equality_agrees_on_both_backends() {
-        let src = "type Color:\n    Red\n    Green\n    Blue\ntype Shape:\n    Circle(Int)\n    Square(Int)\nfn main(console: Console):\n    print(console, to_string(Red == Red))\n    print(console, to_string(Red == Blue))\n    print(console, to_string(Circle(3) == Circle(3)))\n    print(console, to_string(Circle(3) == Circle(4)))\n    print(console, to_string(Circle(3) == Square(3)))\n    print(console, to_string([Red, Green] == [Red, Green]))\n";
+        let src = "type Color:\n    Red\n    Green\n    Blue\ntype Shape:\n    Circle(Int)\n    Square(Int)\nfn main(console: Console):\n    print(console, __render(Red == Red))\n    print(console, __render(Red == Blue))\n    print(console, __render(Circle(3) == Circle(3)))\n    print(console, __render(Circle(3) == Circle(4)))\n    print(console, __render(Circle(3) == Square(3)))\n    print(console, __render([Red, Green] == [Red, Green]))\n";
         let want = vec![
             "true".to_string(),
             "false".to_string(),
@@ -3970,7 +3970,7 @@ fn yn(b: Bool) -> String:
     /// like the interpreter. (Closes the former loud-error gaps.)
     #[test]
     fn option_and_dict_equality_agree_on_both_backends() {
-        let src = "import option\n\nfn main(console: Console):\n    print(console, to_string(Some(5) == Some(5)))\n    print(console, to_string(Some(5) == Some(6)))\n    print(console, to_string(Some(5) == None))\n    print(console, to_string(None == None))\n    print(console, to_string(Some(\"a\") == Some(\"a\")))\n    print(console, to_string(Some(\"a\") == Some(\"b\")))\n    let a = dict.insert(dict.insert(dict.new(), \"k\", 1), \"j\", 2)\n    let b = dict.insert(dict.insert(dict.new(), \"k\", 1), \"j\", 2)\n    let c = dict.insert(dict.insert(dict.new(), \"k\", 1), \"j\", 9)\n    let rev = dict.insert(dict.insert(dict.new(), \"j\", 2), \"k\", 1)\n    print(console, to_string(a == b))\n    print(console, to_string(a == c))\n    print(console, to_string(a == rev))\n";
+        let src = "import option\n\nfn main(console: Console):\n    print(console, __render(Some(5) == Some(5)))\n    print(console, __render(Some(5) == Some(6)))\n    print(console, __render(Some(5) == None))\n    print(console, __render(None == None))\n    print(console, __render(Some(\"a\") == Some(\"a\")))\n    print(console, __render(Some(\"a\") == Some(\"b\")))\n    let a = dict.insert(dict.insert(dict.new(), \"k\", 1), \"j\", 2)\n    let b = dict.insert(dict.insert(dict.new(), \"k\", 1), \"j\", 2)\n    let c = dict.insert(dict.insert(dict.new(), \"k\", 1), \"j\", 9)\n    let rev = dict.insert(dict.insert(dict.new(), \"j\", 2), \"k\", 1)\n    print(console, __render(a == b))\n    print(console, __render(a == c))\n    print(console, __render(a == rev))\n";
         let want = vec![
             "true".to_string(),
             "false".to_string(),
@@ -3998,7 +3998,7 @@ fn yn(b: Bool) -> String:
     /// the last loud equality gap.)
     #[test]
     fn result_equality_agrees_on_both_backends() {
-        let src = "import result\n\nfn classify(n: Int) -> Result(Int, String):\n    if n >= 0: Ok(n) else: Err(\"negative\")\n\nfn same(a: Result(Int, String), b: Result(Int, String)) -> Bool:\n    a == b\n\nfn main(console: Console):\n    print(console, to_string(classify(5) == Ok(5)))\n    print(console, to_string(classify(5) == Ok(6)))\n    print(console, to_string(classify(0 - 1) == Err(\"negative\")))\n    print(console, to_string(classify(0 - 1) == Err(\"positive\")))\n    print(console, to_string(classify(5) == Err(\"negative\")))\n    print(console, to_string(same(Ok(1), Ok(1))))\n    print(console, to_string(same(Err(\"a\"), Err(\"a\"))))\n    print(console, to_string(same(Ok(1), Err(\"a\"))))\n    print(console, to_string(Ok([1, 2]) == Ok([1, 2])))\n    print(console, to_string(Ok([1, 2]) == Ok([1, 3])))\n";
+        let src = "import result\n\nfn classify(n: Int) -> Result(Int, String):\n    if n >= 0: Ok(n) else: Err(\"negative\")\n\nfn same(a: Result(Int, String), b: Result(Int, String)) -> Bool:\n    a == b\n\nfn main(console: Console):\n    print(console, __render(classify(5) == Ok(5)))\n    print(console, __render(classify(5) == Ok(6)))\n    print(console, __render(classify(0 - 1) == Err(\"negative\")))\n    print(console, __render(classify(0 - 1) == Err(\"positive\")))\n    print(console, __render(classify(5) == Err(\"negative\")))\n    print(console, __render(same(Ok(1), Ok(1))))\n    print(console, __render(same(Err(\"a\"), Err(\"a\"))))\n    print(console, __render(same(Ok(1), Err(\"a\"))))\n    print(console, __render(Ok([1, 2]) == Ok([1, 2])))\n    print(console, __render(Ok([1, 2]) == Ok([1, 3])))\n";
         let want: Vec<String> =
             ["true", "false", "true", "false", "false", "true", "true", "false", "true", "false"]
                 .iter()
@@ -4015,7 +4015,7 @@ fn yn(b: Bool) -> String:
     /// literals, declared parameter types, and nullary constructors.
     #[test]
     fn recursive_generic_adt_equality_agrees_on_both_backends() {
-        let src = "type Stack:\n    Empty\n    Push(a, Stack(a))\n\nfn same(s: Stack(Int), t: Stack(Int)) -> Bool:\n    s == t\n\nfn main(console: Console):\n    print(console, to_string(Push(2, Push(1, Empty)) == Push(2, Push(1, Empty))))\n    print(console, to_string(Push(2, Push(1, Empty)) == Push(2, Push(9, Empty))))\n    print(console, to_string(Push(\"b\", Push(\"a\", Empty)) == Push(\"b\", Push(\"a\", Empty))))\n    print(console, to_string(Push(\"b\", Push(\"a\", Empty)) == Push(\"b\", Push(\"z\", Empty))))\n    print(console, to_string(same(Push(1, Empty), Push(1, Empty))))\n    print(console, to_string(same(Push(1, Empty), Empty)))\n";
+        let src = "type Stack:\n    Empty\n    Push(a, Stack(a))\n\nfn same(s: Stack(Int), t: Stack(Int)) -> Bool:\n    s == t\n\nfn main(console: Console):\n    print(console, __render(Push(2, Push(1, Empty)) == Push(2, Push(1, Empty))))\n    print(console, __render(Push(2, Push(1, Empty)) == Push(2, Push(9, Empty))))\n    print(console, __render(Push(\"b\", Push(\"a\", Empty)) == Push(\"b\", Push(\"a\", Empty))))\n    print(console, __render(Push(\"b\", Push(\"a\", Empty)) == Push(\"b\", Push(\"z\", Empty))))\n    print(console, __render(same(Push(1, Empty), Push(1, Empty))))\n    print(console, __render(same(Push(1, Empty), Empty)))\n";
         let want: Vec<String> = ["true", "false", "true", "false", "true", "false"]
             .iter()
             .map(|s| s.to_string())
@@ -4030,7 +4030,7 @@ fn yn(b: Bool) -> String:
     /// can't specialize) is a codegen error — never a silent pointer compare.
     #[test]
     fn unsupported_compound_equality_is_a_loud_error_not_silent() {
-        let res = "import result\n\nfn wrap(x: a) -> Result(a, String):\n    Ok(x)\n\nfn main(console: Console):\n    print(console, to_string(wrap([1]) == wrap([2])))\n";
+        let res = "import result\n\nfn wrap(x: a) -> Result(a, String):\n    Ok(x)\n\nfn main(console: Console):\n    print(console, __render(wrap([1]) == wrap([2])))\n";
         let rm = parser::parse_module(res).expect("parse");
         let linked = crate::linker::link(vec![("main".into(), rm)], "main").expect("link");
         assert!(
@@ -4049,7 +4049,7 @@ fn yn(b: Bool) -> String:
     fn nan_ordering_errors_on_both_backends() {
         for cmp in ["nan < 1.0", "nan > 1.0", "nan <= nan", "nan >= 0.0"] {
             let src = format!(
-                "fn main(console: Console):\n    let nan = 0.0 / 0.0\n    print(console, to_string({cmp}))\n"
+                "fn main(console: Console):\n    let nan = 0.0 / 0.0\n    print(console, __render({cmp}))\n"
             );
             let module = parser::parse_module(&src).expect("parse");
             let wat = codegen::compile_module(&module).expect("compile");
@@ -4057,7 +4057,7 @@ fn yn(b: Bool) -> String:
             assert!(crate::run_wat_capture(&wat).is_err(), "WASM must trap on `{cmp}`");
         }
         // Ordinary float ordering and NaN equality still agree.
-        let ok = "fn main(console: Console):\n    let nan = 0.0 / 0.0\n    print(console, to_string(1.5 < 2.5))\n    print(console, to_string(2.5 <= 2.5))\n    print(console, to_string(nan == nan))\n";
+        let ok = "fn main(console: Console):\n    let nan = 0.0 / 0.0\n    print(console, __render(1.5 < 2.5))\n    print(console, __render(2.5 <= 2.5))\n    print(console, __render(nan == nan))\n";
         let want = vec!["true".to_string(), "true".to_string(), "false".to_string()];
         assert_eq!(interp(ok), want.clone(), "interpreter");
         assert_eq!(run_on_wasm(ok), want, "compiled WASM must agree");
@@ -4078,7 +4078,7 @@ fn yn(b: Bool) -> String:
         ];
         for v in err_cases {
             let src = format!(
-                "fn main(console: Console):\n    print(console, to_string(string.to_int(\"{v}\")))\n"
+                "fn main(console: Console):\n    print(console, __render(string.to_int(\"{v}\")))\n"
             );
             let module = parser::parse_module(&src).expect("parse");
             let wat = codegen::compile_module(&module).expect("compile");
@@ -4086,7 +4086,7 @@ fn yn(b: Bool) -> String:
             assert!(crate::run_wat_capture(&wat).is_err(), "WASM must trap on `{v}`");
         }
         // The exact i64 boundaries parse identically on both backends.
-        let ok = "fn main(console: Console):\n    print(console, to_string(string.to_int(\"9223372036854775807\")))\n    print(console, to_string(string.to_int(\"-9223372036854775808\")))\n";
+        let ok = "fn main(console: Console):\n    print(console, __render(string.to_int(\"9223372036854775807\")))\n    print(console, __render(string.to_int(\"-9223372036854775808\")))\n";
         let want = vec![
             "9223372036854775807".to_string(),
             "-9223372036854775808".to_string(),
@@ -4102,19 +4102,19 @@ fn yn(b: Bool) -> String:
     /// divergence.)
     #[test]
     fn list_index_out_of_bounds_errors_on_both_backends() {
-        let oob = "fn main(console: Console):\n    let xs = [1, 2, 3]\n    print(console, to_string(list.at(xs, 5)))\n";
+        let oob = "fn main(console: Console):\n    let xs = [1, 2, 3]\n    print(console, __render(list.at(xs, 5)))\n";
         let module = parser::parse_module(oob).expect("parse");
         let wat = codegen::compile_module(&module).expect("compile");
         assert!(interpreter::run(oob).is_err(), "interpreter must error on OOB index");
         assert!(crate::run_wat_capture(&wat).is_err(), "WASM must trap on OOB index");
         // A negative index likewise traps (it used to read backwards into the heap).
-        let neg = "fn main(console: Console):\n    let xs = [1, 2, 3]\n    print(console, to_string(list.at(xs, 0 - 1)))\n";
+        let neg = "fn main(console: Console):\n    let xs = [1, 2, 3]\n    print(console, __render(list.at(xs, 0 - 1)))\n";
         let nmod = parser::parse_module(neg).expect("parse");
         let nwat = codegen::compile_module(&nmod).expect("compile");
         assert!(interpreter::run(neg).is_err(), "interpreter must error on negative index");
         assert!(crate::run_wat_capture(&nwat).is_err(), "WASM must trap on negative index");
         // In-bounds indexing still agrees.
-        let ok = "fn main(console: Console):\n    let xs = [10, 20, 30]\n    print(console, to_string(list.at(xs, 2)))\n";
+        let ok = "fn main(console: Console):\n    let xs = [10, 20, 30]\n    print(console, __render(list.at(xs, 2)))\n";
         assert_eq!(interp(ok), vec!["30".to_string()], "interpreter");
         assert_eq!(run_on_wasm(ok), vec!["30".to_string()], "compiled WASM must agree");
     }
@@ -4146,7 +4146,7 @@ fn yn(b: Bool) -> String:
     /// conversion.)
     #[test]
     fn to_string_of_builtin_call_results_agrees() {
-        let src = "fn main(console: Console):\n    let d = dict.insert(dict.insert(dict.new(), \"a\", 1), \"b\", 2)\n    print(console, to_string(dict.has(d, \"a\")))\n    print(console, to_string(dict.has(d, \"z\")))\n    print(console, to_string(dict.size(d)))\n    print(console, to_string(string.contains(\"hello\", \"ell\")))\n";
+        let src = "fn main(console: Console):\n    let d = dict.insert(dict.insert(dict.new(), \"a\", 1), \"b\", 2)\n    print(console, __render(dict.has(d, \"a\")))\n    print(console, __render(dict.has(d, \"z\")))\n    print(console, __render(dict.size(d)))\n    print(console, __render(string.contains(\"hello\", \"ell\")))\n";
         let want = vec![
             "true".to_string(),
             "false".to_string(),
@@ -4164,7 +4164,7 @@ fn yn(b: Bool) -> String:
     /// interpreter-only return-in-inout gap.)
     #[test]
     fn return_in_inout_fn_agrees_on_both_backends() {
-        let src = "fn clamp(inout n: Int):\n    if (n > 10):\n        n = 10\n        return\n    n = n + 1\n\nfn main(console: Console):\n    var a = 5\n    clamp(a)\n    print(console, to_string(a))\n    var b = 50\n    clamp(b)\n    print(console, to_string(b))\n";
+        let src = "fn clamp(inout n: Int):\n    if (n > 10):\n        n = 10\n        return\n    n = n + 1\n\nfn main(console: Console):\n    var a = 5\n    clamp(a)\n    print(console, __render(a))\n    var b = 50\n    clamp(b)\n    print(console, __render(b))\n";
         let want = vec!["6".to_string(), "10".to_string()];
         assert_eq!(interp(src), want.clone(), "interpreter");
         assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
@@ -4177,7 +4177,7 @@ fn yn(b: Bool) -> String:
     /// interpreter-only `?`-in-inout gap.)
     #[test]
     fn try_in_inout_fn_agrees_on_both_backends() {
-        let src = "import result\n\nfn step(inout n: Int, r: Result(Int, String)) -> Result(Int, String):\n    n = n + 100\n    let got = r?\n    n = n + got\n    Ok(n)\n\nfn describe(r: Result(Int, String)) -> String:\n    match r:\n        Ok(v) -> \"ok:\" <> to_string(v)\n        Err(e) -> \"err:\" <> e\n\nfn main(console: Console):\n    var a = 1\n    let ok = step(a, Ok(5))\n    print(console, to_string(a))\n    print(console, describe(ok))\n    var b = 1\n    let bad = step(b, Err(\"nope\"))\n    print(console, to_string(b))\n    print(console, describe(bad))\n";
+        let src = "import result\n\nfn step(inout n: Int, r: Result(Int, String)) -> Result(Int, String):\n    n = n + 100\n    let got = r?\n    n = n + got\n    Ok(n)\n\nfn describe(r: Result(Int, String)) -> String:\n    match r:\n        Ok(v) -> \"ok:\" <> __render(v)\n        Err(e) -> \"err:\" <> e\n\nfn main(console: Console):\n    var a = 1\n    let ok = step(a, Ok(5))\n    print(console, __render(a))\n    print(console, describe(ok))\n    var b = 1\n    let bad = step(b, Err(\"nope\"))\n    print(console, __render(b))\n    print(console, describe(bad))\n";
         let want = vec![
             "106".to_string(),
             "ok:106".to_string(),
@@ -4226,7 +4226,7 @@ fn yn(b: Bool) -> String:
     /// interpreter-only dict-upsert gap.)
     #[test]
     fn dict_update_upsert_agrees_on_both_backends() {
-        let src = "fn main(console: Console):\n    let d = dict.insert(dict.insert(dict.new(), \"a\", 1), \"b\", 2)\n    let d2 = dict.update(d, \"a\", 0, fn(x: Int): x + 10)\n    let d3 = dict.update(d2, \"c\", 100, fn(x: Int): x + 1)\n    print(console, to_string(dict.get_or(d3, \"a\", -1)))\n    print(console, to_string(dict.get_or(d3, \"b\", -1)))\n    print(console, to_string(dict.get_or(d3, \"c\", -1)))\n    print(console, to_string(dict.size(d3)))\n    let counts = dict.update(dict.update(dict.new(), \"hit\", 0, fn(n: Int): n + 1), \"hit\", 0, fn(n: Int): n + 1)\n    print(console, to_string(dict.get_or(counts, \"hit\", -1)))\n";
+        let src = "fn main(console: Console):\n    let d = dict.insert(dict.insert(dict.new(), \"a\", 1), \"b\", 2)\n    let d2 = dict.update(d, \"a\", 0, fn(x: Int): x + 10)\n    let d3 = dict.update(d2, \"c\", 100, fn(x: Int): x + 1)\n    print(console, __render(dict.get_or(d3, \"a\", -1)))\n    print(console, __render(dict.get_or(d3, \"b\", -1)))\n    print(console, __render(dict.get_or(d3, \"c\", -1)))\n    print(console, __render(dict.size(d3)))\n    let counts = dict.update(dict.update(dict.new(), \"hit\", 0, fn(n: Int): n + 1), \"hit\", 0, fn(n: Int): n + 1)\n    print(console, __render(dict.get_or(counts, \"hit\", -1)))\n";
         let want = vec![
             "11".to_string(),
             "2".to_string(),
@@ -4245,7 +4245,7 @@ fn yn(b: Bool) -> String:
     /// `to_string` gap.)
     #[test]
     fn float_to_string_agrees_on_both_backends() {
-        let src = "fn main(console: Console):\n    print(console, to_string(3.5))\n    print(console, to_string(2.0))\n    print(console, to_string(0.0 - 1.0 / 3.0))\n    print(console, to_string(0.1 + 0.2))\n    print(console, to_string(1000000.0))\n    print(console, to_string(0.0))\n";
+        let src = "fn main(console: Console):\n    print(console, __render(3.5))\n    print(console, __render(2.0))\n    print(console, __render(0.0 - 1.0 / 3.0))\n    print(console, __render(0.1 + 0.2))\n    print(console, __render(1000000.0))\n    print(console, __render(0.0))\n";
         let want = vec![
             "3.5".to_string(),
             "2".to_string(),
@@ -4264,7 +4264,7 @@ fn yn(b: Bool) -> String:
     /// `f(x)` recovers at i64. (Regression for the let-bound-closure-return gap.)
     #[test]
     fn wasm_big_int_through_curried_closure() {
-        let src = "fn make(big: Int) -> fn(Int) -> Int:\n    fn(x: Int): x + big\n\nfn main(console: Console):\n    let f = make(5000000000)\n    print(console, to_string(f(1)))\n";
+        let src = "fn make(big: Int) -> fn(Int) -> Int:\n    fn(x: Int): x + big\n\nfn main(console: Console):\n    let f = make(5000000000)\n    print(console, __render(f(1)))\n";
         let want = vec!["5000000001".to_string()];
         assert_eq!(interp(src), want.clone(), "interpreter");
         assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
@@ -4276,7 +4276,7 @@ fn yn(b: Bool) -> String:
     /// (direct or via a `let`) reads each at the right width.
     #[test]
     fn wasm_big_int_from_returned_tuple() {
-        let src = "fn pair(x: a, y: a) -> (a, a):\n    (x, y)\n\nfn main(console: Console):\n    let (p, q) = pair(9000000000, 1)\n    print(console, to_string(p))\n    print(console, to_string(q))\n";
+        let src = "fn pair(x: a, y: a) -> (a, a):\n    (x, y)\n\nfn main(console: Console):\n    let (p, q) = pair(9000000000, 1)\n    print(console, __render(p))\n    print(console, __render(q))\n";
         let want = vec!["9000000000".to_string(), "1".to_string()];
         assert_eq!(interp(src), want.clone(), "interpreter");
         assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
@@ -4288,7 +4288,7 @@ fn yn(b: Bool) -> String:
     /// (a pointer in the low bits) still works. (Regression for big-Int-Dict.)
     #[test]
     fn wasm_dict_keeps_big_int_values() {
-        let big = "fn main(console: Console):\n    var d = dict.new()\n    d = dict.insert(d, \"k\", 9000000000)\n    print(console, to_string(dict.get_or(d, \"k\", 0)))\n";
+        let big = "fn main(console: Console):\n    var d = dict.new()\n    d = dict.insert(d, \"k\", 9000000000)\n    print(console, __render(dict.get_or(d, \"k\", 0)))\n";
         assert_eq!(interp(big), vec!["9000000000"], "interpreter");
         assert_eq!(run_on_wasm(big), vec!["9000000000"], "WASM");
         let s = "fn main(console: Console):\n    var d = dict.new()\n    d = dict.insert(d, \"a\", \"hello\")\n    print(console, dict.get_or(d, \"a\", \"none\"))\n";
@@ -4301,7 +4301,7 @@ fn yn(b: Bool) -> String:
     /// carries it to `dict.values(d)`, so the loop variable is i64.
     #[test]
     fn wasm_dict_values_iteration_keeps_big_ints() {
-        let src = "fn main(console: Console):\n    var d = dict.new()\n    d = dict.insert(d, \"k\", 9000000000)\n    var s = 0\n    for v in dict.values(d):\n        s = s + v\n    print(console, to_string(s))\n";
+        let src = "fn main(console: Console):\n    var d = dict.new()\n    d = dict.insert(d, \"k\", 9000000000)\n    var s = 0\n    for v in dict.values(d):\n        s = s + v\n    print(console, __render(s))\n";
         assert_eq!(interp(src), vec!["9000000000"], "interpreter");
         assert_eq!(run_on_wasm(src), vec!["9000000000"], "WASM");
     }
@@ -4312,10 +4312,10 @@ fn yn(b: Bool) -> String:
     /// applies them to the `at`/loop tuple destructure. (Two-level nesting.)
     #[test]
     fn wasm_big_int_in_list_of_tuples() {
-        let direct = "fn main(console: Console):\n    let (a, b) = list.at([(9000000000, 1)], 0)\n    print(console, to_string(a))\n    print(console, to_string(b))\n";
+        let direct = "fn main(console: Console):\n    let (a, b) = list.at([(9000000000, 1)], 0)\n    print(console, __render(a))\n    print(console, __render(b))\n";
         assert_eq!(interp(direct), vec!["9000000000", "1"], "interpreter (direct)");
         assert_eq!(run_on_wasm(direct), vec!["9000000000", "1"], "WASM (direct)");
-        let loop_src = "fn main(console: Console):\n    for t in [(9000000000, 1)]:\n        let (a, b) = t\n        print(console, to_string(a))\n";
+        let loop_src = "fn main(console: Console):\n    for t in [(9000000000, 1)]:\n        let (a, b) = t\n        print(console, __render(a))\n";
         assert_eq!(interp(loop_src), vec!["9000000000"], "interpreter (loop)");
         assert_eq!(run_on_wasm(loop_src), vec!["9000000000"], "WASM (loop)");
     }
@@ -4325,7 +4325,7 @@ fn yn(b: Bool) -> String:
     /// as i64. (Two levels of list nesting — e.g. a matrix row/column.)
     #[test]
     fn wasm_big_int_in_nested_list() {
-        let src = "fn main(console: Console):\n    let m = [[1, 9000000000], [3, 4]]\n    print(console, to_string(list.at(list.at(m, 0), 1)))\n";
+        let src = "fn main(console: Console):\n    let m = [[1, 9000000000], [3, 4]]\n    print(console, __render(list.at(list.at(m, 0), 1)))\n";
         assert_eq!(interp(src), vec!["9000000000"], "interpreter");
         assert_eq!(run_on_wasm(src), vec!["9000000000"], "WASM");
     }
@@ -4336,7 +4336,7 @@ fn yn(b: Bool) -> String:
     /// `List(a)` return carries the element type. (The deepest nesting case.)
     #[test]
     fn wasm_big_int_through_list_of_tuples_generic() {
-        let src = "fn firsts(ps: List((a, b))) -> List(a):\n    var out = []\n    for p in ps:\n        let (x, y) = p\n        out = list.push(out, x)\n    out\n\nfn main(console: Console):\n    print(console, to_string(list.at(firsts([(9000000000, 1)]), 0)))\n";
+        let src = "fn firsts(ps: List((a, b))) -> List(a):\n    var out = []\n    for p in ps:\n        let (x, y) = p\n        out = list.push(out, x)\n    out\n\nfn main(console: Console):\n    print(console, __render(list.at(firsts([(9000000000, 1)]), 0)))\n";
         assert_eq!(interp(src), vec!["9000000000"], "interpreter");
         assert_eq!(run_on_wasm(src), vec!["9000000000"], "WASM");
     }
@@ -4349,11 +4349,11 @@ fn yn(b: Bool) -> String:
     #[test]
     fn wasm_big_int_at_arbitrary_list_depth() {
         // Depth-4 `at` chain (literal).
-        let chain = "fn main(console: Console):\n    let xs = [[[[9000000000]]]]\n    print(console, to_string(list.at(list.at(list.at(list.at(xs, 0), 0), 0), 0)))\n";
+        let chain = "fn main(console: Console):\n    let xs = [[[[9000000000]]]]\n    print(console, __render(list.at(list.at(list.at(list.at(xs, 0), 0), 0), 0)))\n";
         assert_eq!(interp(chain), vec!["9000000000"], "interpreter (at-chain)");
         assert_eq!(run_on_wasm(chain), vec!["9000000000"], "WASM (at-chain)");
         // Depth-3 nested loops through a nested-list parameter.
-        let loops = "fn total(c: List(List(List(Int)))) -> Int:\n    var s = 0\n    for plane in c:\n        for row in plane:\n            for x in row:\n                s = s + x\n    s\n\nfn main(console: Console):\n    print(console, to_string(total([[[9000000000]]])))\n";
+        let loops = "fn total(c: List(List(List(Int)))) -> Int:\n    var s = 0\n    for plane in c:\n        for row in plane:\n            for x in row:\n                s = s + x\n    s\n\nfn main(console: Console):\n    print(console, __render(total([[[9000000000]]])))\n";
         assert_eq!(interp(loops), vec!["9000000000"], "interpreter (loops/param)");
         assert_eq!(run_on_wasm(loops), vec!["9000000000"], "WASM (loops/param)");
     }
@@ -4363,7 +4363,7 @@ fn yn(b: Bool) -> String:
     /// to the inner list then destructuring the tuple recovers the Int as i64.
     #[test]
     fn wasm_big_int_in_nested_list_of_tuples() {
-        let src = "fn main(console: Console):\n    for inner in [[(9000000000, 1)]]:\n        for t in inner:\n            let (a, b) = t\n            print(console, to_string(a))\n";
+        let src = "fn main(console: Console):\n    for inner in [[(9000000000, 1)]]:\n        for t in inner:\n            let (a, b) = t\n            print(console, __render(a))\n";
         assert_eq!(interp(src), vec!["9000000000"], "interpreter");
         assert_eq!(run_on_wasm(src), vec!["9000000000"], "WASM");
     }
@@ -4385,7 +4385,7 @@ fn yn(b: Bool) -> String:
     /// results) at i64. (Regression for the big-Int-through-Option/Result gap.)
     #[test]
     fn wasm_big_int_through_result_payload_and_try() {
-        let src = "type Result:\n    Ok(a)\n    Err(e)\n\nfn fetch() -> Result(Int, String):\n    Ok(5000000000)\n\nfn chain() -> Result(Int, String):\n    let x = (fetch())?\n    Ok((x + 1))\n\nfn main(console: Console):\n    match chain():\n        Ok(v) -> print(console, to_string(v))\n        Err(e) -> print(console, e)\n";
+        let src = "type Result:\n    Ok(a)\n    Err(e)\n\nfn fetch() -> Result(Int, String):\n    Ok(5000000000)\n\nfn chain() -> Result(Int, String):\n    let x = (fetch())?\n    Ok((x + 1))\n\nfn main(console: Console):\n    match chain():\n        Ok(v) -> print(console, __render(v))\n        Err(e) -> print(console, e)\n";
         let want = vec!["5000000001".to_string()];
         assert_eq!(interp(src), want.clone(), "interpreter");
         assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
@@ -4398,7 +4398,7 @@ fn yn(b: Bool) -> String:
     /// saturating `i64.trunc_sat_f64_s`.
     #[test]
     fn wasm_float_to_int_saturates_like_the_interpreter() {
-        let src = "fn main(console: Console):\n    print(console, to_string(math.to_int(1.0 / 0.0)))\n    print(console, to_string(math.to_int(0.0 - 1.0 / 0.0)))\n    print(console, to_string(math.to_int(0.0 / 0.0)))\n    print(console, to_string(math.to_int(0.0 - 3.9)))\n";
+        let src = "fn main(console: Console):\n    print(console, __render(math.to_int(1.0 / 0.0)))\n    print(console, __render(math.to_int(0.0 - 1.0 / 0.0)))\n    print(console, __render(math.to_int(0.0 / 0.0)))\n    print(console, __render(math.to_int(0.0 - 3.9)))\n";
         let want = vec![
             "9223372036854775807".to_string(),
             "-9223372036854775808".to_string(),
@@ -4415,7 +4415,7 @@ fn yn(b: Bool) -> String:
     /// number; it now agrees on both backends.
     #[test]
     fn wasm_string_to_int_uses_i64_and_trims() {
-        let src = "fn main(console: Console):\n    print(console, to_string(string.to_int(\"5000000000\")))\n    print(console, to_string(string.to_int(\"-7000000000\")))\n    print(console, to_string(string.to_int(\"  42  \")))\n";
+        let src = "fn main(console: Console):\n    print(console, __render(string.to_int(\"5000000000\")))\n    print(console, __render(string.to_int(\"-7000000000\")))\n    print(console, __render(string.to_int(\"  42  \")))\n";
         let want = vec![
             "5000000000".to_string(),
             "-7000000000".to_string(),
@@ -4483,14 +4483,14 @@ import string
 fn main(console: Console):
     let text = "name,city\nAda,\"London, UK\"\nGrace,\"NY\"\"C\"\"\"\n"
     let rows = csv.parse(text)
-    print(console, to_string(list.length(rows)))
+    print(console, __render(list.length(rows)))
     print(console, list.at(list.at(rows, 1), 1))
     print(console, list.at(list.at(rows, 2), 1))
     let enc = csv.encode([["a", "b,c"], ["d\"e", "f"]])
     print(console, bs(enc == "a,\"b,c\"\n\"d\"\"e\",f\n"))
     print(console, bs(csv.encode(csv.parse(enc)) == enc))
     let recs = csv.parse_records(text)
-    print(console, to_string(list.length(recs)) <> ":" <> dict.get_or(list.at(recs, 0), "city", "?"))
+    print(console, __render(list.length(recs)) <> ":" <> dict.get_or(list.at(recs, 0), "city", "?"))
 
 fn bs(b: Bool) -> String:
     if b: "y" else: "n"
@@ -4511,20 +4511,20 @@ import string
 
 fn main(console: Console):
     let d = dict.from_pairs([("a", 1), ("b", 2), ("c", 3)])
-    print(console, to_string(dict.size(d)))
+    print(console, __render(dict.size(d)))
     print(console, oi(dict.get(d, "b")))
     print(console, oi(dict.get(d, "z")))
     let m = dict.merge(d, dict.from_pairs([("b", 20), ("d", 4)]))
-    print(console, to_string(dict.get_or(m, "b", 0)) <> "," <> to_string(dict.get_or(m, "d", 0)))
+    print(console, __render(dict.get_or(m, "b", 0)) <> "," <> __render(dict.get_or(m, "d", 0)))
     let tens = dict.map_values(d, fn(v: Int): v * 10)
     print(console, oi(dict.get(tens, "c")))
     let evens = dict.filter(d, fn(k: String, v: Int): v % 2 == 0)
-    print(console, to_string(dict.size(evens)))
+    print(console, __render(dict.size(evens)))
     print(console, bs(dict.is_empty(dict.new())))
 
 fn oi(o: Option(Int)) -> String:
     match o:
-        Some(n) -> to_string(n)
+        Some(n) -> __render(n)
         None -> "none"
 
 fn bs(b: Bool) -> String:
@@ -4561,7 +4561,7 @@ fn opt(o: Option(String)) -> String:
 
 fn oi(o: Option(Int)) -> String:
     match o:
-        Some(n) -> to_string(n)
+        Some(n) -> __render(n)
         None -> "?"
 "#;
         assert_eq!(link_run(src), vec!["acme", "7", "Net,Console", "[]"]);
@@ -4607,7 +4607,7 @@ fn yes(b: Bool) -> String:
     #[test]
     fn clock_capability_yields_wall_clock_time() {
         let out = interp(
-            "fn main(console: Console, clock: Clock):\n    print(console, to_string(now(clock)))\n",
+            "fn main(console: Console, clock: Clock):\n    print(console, __render(now(clock)))\n",
         );
         let ms: i64 = out[0].parse().expect("now should print an integer");
         assert!(ms > 1_600_000_000_000, "now should be ms since the Unix epoch (got {ms})");
@@ -4678,7 +4678,7 @@ fn main(console: Console):
         else:
             acc = (acc - i)
         i = (i + 1)
-    print(console, to_string(acc))
+    print(console, __render(acc))
 "#,
             ),
             (
@@ -4691,7 +4691,7 @@ type Point:
 fn main(console: Console):
     let p = Point(3, 4)
     let q = Point(x: ((p).x + 10), ..p)
-    print(console, to_string(((q).x * (q).y)))
+    print(console, __render(((q).x * (q).y)))
 "#,
             ),
             (
@@ -4703,7 +4703,7 @@ fn sum(xs: List(Int)) -> Int:
         [h, ..t] -> (h + sum(t))
 
 fn main(console: Console):
-    print(console, to_string(sum([1, 2, 3, 4, 5])))
+    print(console, __render(sum([1, 2, 3, 4, 5])))
 "#,
             ),
             (
@@ -4719,7 +4719,7 @@ fn area(s: Shape) -> Int:
         Rect(w, h) -> (w * h)
 
 fn main(console: Console):
-    print(console, to_string((area(Circle(5)) + area(Rect(3, 4)))))
+    print(console, __render((area(Circle(5)) + area(Rect(3, 4)))))
 "#,
             ),
             (
@@ -4730,7 +4730,7 @@ fn apply(f: fn(Int) -> Int, x: Int) -> Int:
 
 fn main(console: Console):
     let k = 100
-    print(console, to_string(apply(fn(n: Int): (n + k), 5)))
+    print(console, __render(apply(fn(n: Int): (n + k), 5)))
 "#,
             ),
             (
@@ -4741,7 +4741,7 @@ fn main(console: Console):
     d = dict.insert(d, "a", 1)
     d = dict.insert(d, "b", 2)
     d = dict.insert(d, "a", 9)
-    print(console, to_string((dict.get_or(d, "a", 0) + dict.size(d))))
+    print(console, __render((dict.get_or(d, "a", 0) + dict.size(d))))
 "#,
             ),
             (
@@ -4749,7 +4749,7 @@ fn main(console: Console):
                 r#"
 fn main(console: Console):
     print(console, string.replace("a,b,c", ",", "-"))
-    print(console, to_string(string.index_of("hello", "l")))
+    print(console, __render(string.index_of("hello", "l")))
     print(console, string.substring("hello", 1, 4))
     for w in string.split("the cat sat", " "):
         print(console, w)
@@ -4767,7 +4767,7 @@ fn count_matches(words: List(String), target: String) -> Int:
 
 fn main(console: Console):
     let words = string.split("apple banana apple cherry apple", " ")
-    print(console, to_string(count_matches(words, "apple")))
+    print(console, __render(count_matches(words, "apple")))
 "#,
             ),
             (
@@ -4775,13 +4775,13 @@ fn main(console: Console):
                 r#"
 fn main(console: Console):
     let a = string.substring("xapple", 1, 6)
-    print(console, to_string((a == "apple")))
-    print(console, to_string((a == "apricot")))
-    print(console, to_string((a != "apricot")))
-    print(console, to_string(("apple" < "banana")))
-    print(console, to_string(("banana" < "apple")))
-    print(console, to_string(("app" < "apple")))
-    print(console, to_string(("apple" <= "apple")))
+    print(console, __render((a == "apple")))
+    print(console, __render((a == "apricot")))
+    print(console, __render((a != "apricot")))
+    print(console, __render(("apple" < "banana")))
+    print(console, __render(("banana" < "apple")))
+    print(console, __render(("app" < "apple")))
+    print(console, __render(("apple" <= "apple")))
 "#,
             ),
             (
@@ -4789,9 +4789,9 @@ fn main(console: Console):
                 r#"
 fn main(console: Console):
     let (a, b) = (7, 8)
-    print(console, to_string((a + b)))
-    print(console, to_string((a < b)))
-    print(console, to_string("done"))
+    print(console, __render((a + b)))
+    print(console, __render((a < b)))
+    print(console, __render("done"))
 "#,
             ),
         ];
@@ -4818,29 +4818,29 @@ import list
 fn main(console: Console):
     let xs = [5, 3, 8, 1, 9, 2]
     let rev = list.reverse(xs)
-    print(console, ((to_string(list.at(rev, 0)) <> ",") <> to_string(list.at(rev, 5))))
-    print(console, ((to_string(list.length(list.take(xs, 3))) <> ":") <> to_string(list.at(list.take(xs, 3), 2))))
-    print(console, to_string(list.at(list.drop(xs, 4), 0)))
+    print(console, ((__render(list.at(rev, 0)) <> ",") <> __render(list.at(rev, 5))))
+    print(console, ((__render(list.length(list.take(xs, 3))) <> ":") <> __render(list.at(list.take(xs, 3), 2))))
+    print(console, __render(list.at(list.drop(xs, 4), 0)))
     let sorted = list.sort_by(xs, fn(a: Int, b: Int): (a < b))
-    print(console, ((to_string(list.at(sorted, 0)) <> "..") <> to_string(list.at(sorted, 5))))
+    print(console, ((__render(list.at(sorted, 0)) <> "..") <> __render(list.at(sorted, 5))))
     let pairs = list.zip([1, 2, 3], [10, 20, 30])
     let (pa, pb) = list.at(pairs, 1)
-    print(console, to_string((pa + pb)))
+    print(console, __render((pa + pb)))
     let en = list.enumerate([100, 200])
     let (ei, ev) = list.at(en, 1)
-    print(console, to_string(((ei * 1000) + ev)))
+    print(console, __render(((ei * 1000) + ev)))
     let doubled = list.map(xs, fn(n: Int): (n * 2))
     let evens = list.filter(xs, fn(n: Int): ((n % 2) == 0))
-    print(console, to_string(list.fold(doubled, 0, fn(a: Int, b: Int): (a + b))))
-    print(console, to_string(list.length(evens)))
-    print(console, to_string(list.index_of(xs, 8)))
-    print(console, to_string(list.contains(xs, 9)))
-    print(console, to_string(list.any(xs, fn(n: Int): (n > 8))))
-    print(console, to_string(list.all(xs, fn(n: Int): (n > 0))))
-    print(console, to_string(list.sum(xs)))
-    print(console, to_string(list.is_empty(xs)))
-    print(console, to_string(list.is_empty(list.filter(xs, fn(n: Int): (n > 100)))))
-    print(console, to_string(list.count(xs, fn(n: Int): ((n % 2) == 0))))
+    print(console, __render(list.fold(doubled, 0, fn(a: Int, b: Int): (a + b))))
+    print(console, __render(list.length(evens)))
+    print(console, __render(list.index_of(xs, 8)))
+    print(console, __render(list.contains(xs, 9)))
+    print(console, __render(list.any(xs, fn(n: Int): (n > 8))))
+    print(console, __render(list.all(xs, fn(n: Int): (n > 0))))
+    print(console, __render(list.sum(xs)))
+    print(console, __render(list.is_empty(xs)))
+    print(console, __render(list.is_empty(list.filter(xs, fn(n: Int): (n > 100)))))
+    print(console, __render(list.count(xs, fn(n: Int): ((n % 2) == 0))))
 "#;
         let sources = [("list", crate::bundled_module("list").unwrap()), ("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
@@ -4865,7 +4865,7 @@ fn unwrap(b: Box(a), default: a) -> a:
         Wrap(v) -> v
 
 fn main(console: Console):
-    print(console, to_string(unwrap(Wrap(42), 0)))
+    print(console, __render(unwrap(Wrap(42), 0)))
     print(console, unwrap(Wrap("hello"), "none"))
 "#;
         assert_eq!(interp(src), vec!["42", "hello"]);
@@ -4891,10 +4891,10 @@ fn add_two(a: Int, b: Int) -> Result(Int, String):
     Ok((x + y))
 
 fn main(console: Console):
-    print(console, to_string(result.unwrap_or(add_two(3, 4), 0)))
-    print(console, to_string(result.unwrap_or(add_two(3, (0 - 1)), 0)))
-    print(console, to_string(result.is_err(add_two((0 - 5), 2))))
-    print(console, to_string(result.is_ok(add_two(10, 20))))
+    print(console, __render(result.unwrap_or(add_two(3, 4), 0)))
+    print(console, __render(result.unwrap_or(add_two(3, (0 - 1)), 0)))
+    print(console, __render(result.is_err(add_two((0 - 5), 2))))
+    print(console, __render(result.is_ok(add_two(10, 20))))
 "#;
         let sources = [("result", crate::bundled_module("result").unwrap()), ("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
@@ -4920,9 +4920,9 @@ fn pick_even(n: Int) -> Option(Int):
         None
 
 fn main(console: Console):
-    print(console, to_string(option.unwrap_or(first_even(4, 6), 0)))
-    print(console, to_string(option.unwrap_or(first_even(4, 7), 0)))
-    print(console, to_string(option.is_none(first_even(3, 8))))
+    print(console, __render(option.unwrap_or(first_even(4, 6), 0)))
+    print(console, __render(option.unwrap_or(first_even(4, 7), 0)))
+    print(console, __render(option.is_none(first_even(3, 8))))
 "#;
         let sources = [("option", crate::bundled_module("option").unwrap()), ("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
@@ -4962,9 +4962,9 @@ import list
 
 fn main(console: Console):
     let xs = [3, 8, 1, 9, 4]
-    print(console, to_string(list.find_index(xs, fn(n: Int): (n > 5))))
-    print(console, to_string(list.find_index(xs, fn(n: Int): (n > 100))))
-    print(console, to_string(list.find_index(xs, fn(n: Int): (n == 1))))
+    print(console, __render(list.find_index(xs, fn(n: Int): (n > 5))))
+    print(console, __render(list.find_index(xs, fn(n: Int): (n > 100))))
+    print(console, __render(list.find_index(xs, fn(n: Int): (n == 1))))
 "#;
         let sources = [("list", crate::bundled_module("list").unwrap()), ("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
@@ -4982,13 +4982,13 @@ import list
 
 fn main(console: Console):
     let sums = list.zip_with([1, 2, 3], [10, 20], fn(a: Int, b: Int): (a + b))
-    print(console, to_string(list.length(sums)))
-    print(console, to_string(list.sum(sums)))
+    print(console, __render(list.length(sums)))
+    print(console, __render(list.sum(sums)))
     let spaced = list.intersperse([5, 6, 7], 0)
-    print(console, to_string(list.length(spaced)))
-    print(console, to_string(list.sum(spaced)))
-    print(console, to_string(list.length(list.intersperse([9], 0))))
-    print(console, to_string(list.length(list.intersperse([], 0))))
+    print(console, __render(list.length(spaced)))
+    print(console, __render(list.sum(spaced)))
+    print(console, __render(list.length(list.intersperse([9], 0))))
+    print(console, __render(list.length(list.intersperse([], 0))))
 "#;
         let sources = [("list", crate::bundled_module("list").unwrap()), ("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
@@ -5006,12 +5006,12 @@ import list
 
 fn main(console: Console):
     let xs = [1, 2, 3, 10, 4, 5]
-    print(console, to_string(list.sum(list.take_while(xs, fn(n: Int): (n < 5)))))
-    print(console, to_string(list.sum(list.drop_while(xs, fn(n: Int): (n < 5)))))
+    print(console, __render(list.sum(list.take_while(xs, fn(n: Int): (n < 5)))))
+    print(console, __render(list.sum(list.drop_while(xs, fn(n: Int): (n < 5)))))
     let threes = list.repeat(7, 3)
-    print(console, to_string(list.sum(threes)))
-    print(console, to_string(list.length(threes)))
-    print(console, to_string(list.length(list.repeat(9, 0))))
+    print(console, __render(list.sum(threes)))
+    print(console, __render(list.length(threes)))
+    print(console, __render(list.length(list.repeat(9, 0))))
 "#;
         let sources = [("list", crate::bundled_module("list").unwrap()), ("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
@@ -5030,11 +5030,11 @@ import list
 fn main(console: Console):
     let nested = [[1, 2], [3], [4, 5, 6]]
     let flat = list.flatten(nested)
-    print(console, to_string(list.length(flat)))
-    print(console, to_string(list.sum(flat)))
+    print(console, __render(list.length(flat)))
+    print(console, __render(list.sum(flat)))
     let fm = list.flat_map([1, 2, 3], fn(n: Int): [n, (n * 10)])
-    print(console, to_string(list.length(fm)))
-    print(console, to_string(list.sum(fm)))
+    print(console, __render(list.length(fm)))
+    print(console, __render(list.sum(fm)))
 "#;
         let sources = [("list", crate::bundled_module("list").unwrap()), ("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
@@ -5050,9 +5050,9 @@ fn main(console: Console):
 import option
 
 fn main(console: Console):
-    print(console, to_string(option.unwrap_or_else(Some(5), fn(): 0)))
+    print(console, __render(option.unwrap_or_else(Some(5), fn(): 0)))
     let fallback = 99
-    print(console, to_string(option.unwrap_or_else(option.filter(Some(3), fn(n: Int): (n > 10)), fn(): fallback)))
+    print(console, __render(option.unwrap_or_else(option.filter(Some(3), fn(n: Int): (n > 10)), fn(): fallback)))
 "#;
         let osrc = [("option", crate::bundled_module("option").unwrap()), ("main", opt)];
         assert_eq!(
@@ -5071,8 +5071,8 @@ fn checked(n: Int) -> Result(Int, String):
         Err("bad")
 
 fn main(console: Console):
-    print(console, to_string(result.unwrap_or_else(checked(7), fn(): 0)))
-    print(console, to_string(result.unwrap_or_else(checked((0 - 1)), fn(): 42)))
+    print(console, __render(result.unwrap_or_else(checked(7), fn(): 0)))
+    print(console, __render(result.unwrap_or_else(checked((0 - 1)), fn(): 42)))
 "#;
         let rsrc = [("result", crate::bundled_module("result").unwrap()), ("main", res)];
         assert_eq!(
@@ -5090,12 +5090,12 @@ import option
 
 fn main(console: Console):
     let s = Some(5)
-    print(console, to_string(option.is_none(s)))
-    print(console, to_string(option.is_none(option.filter(s, fn(n: Int): (n > 10)))))
+    print(console, __render(option.is_none(s)))
+    print(console, __render(option.is_none(option.filter(s, fn(n: Int): (n > 10)))))
     let chained = option.and_then(s, fn(n: Int): Some((n * 2)))
-    print(console, to_string(option.unwrap_or(chained, 0)))
+    print(console, __render(option.unwrap_or(chained, 0)))
     let kept = option.filter(s, fn(n: Int): (n > 0))
-    print(console, to_string(option.unwrap_or(kept, 0)))
+    print(console, __render(option.unwrap_or(kept, 0)))
 "#;
         let sources = [("option", crate::bundled_module("option").unwrap()), ("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
@@ -5117,14 +5117,14 @@ fn nested(n: Int) -> Option(Option(Int)):
         Some(None)
 
 fn main(console: Console):
-    print(console, to_string(option.unwrap_or(option.flatten(nested(7)), (0 - 1))))
-    print(console, to_string(option.unwrap_or(option.flatten(nested(0)), (0 - 1))))
+    print(console, __render(option.unwrap_or(option.flatten(nested(7)), (0 - 1))))
+    print(console, __render(option.unwrap_or(option.flatten(nested(0)), (0 - 1))))
     match option.zip(Some(3), Some(4)):
         Some(pair) ->
             let (x, y) = pair
-            print(console, to_string((x + y)))
+            print(console, __render((x + y)))
         None -> print(console, "none")
-    print(console, to_string(option.is_none(option.zip(Some(1), None))))
+    print(console, __render(option.is_none(option.zip(Some(1), None))))
 "#;
         let sources = [("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
@@ -5142,12 +5142,12 @@ fn main(console: Console):
 import option
 
 fn main(console: Console):
-    print(console, to_string(option.unwrap_or(option.or(Some(5), Some(9)), 0)))
-    print(console, to_string(option.unwrap_or(option.or(None, Some(9)), 0)))
-    print(console, to_string(option.unwrap_or(option.or_else(None, fn(): Some(7)), 0)))
-    print(console, to_string(option.unwrap_or(option.or_else(Some(3), fn(): Some(7)), 0)))
-    print(console, to_string(option.map_or(Some(10), 0, fn(x: Int): (x * 2))))
-    print(console, to_string(option.map_or(None, 99, fn(x: Int): (x * 2))))
+    print(console, __render(option.unwrap_or(option.or(Some(5), Some(9)), 0)))
+    print(console, __render(option.unwrap_or(option.or(None, Some(9)), 0)))
+    print(console, __render(option.unwrap_or(option.or_else(None, fn(): Some(7)), 0)))
+    print(console, __render(option.unwrap_or(option.or_else(Some(3), fn(): Some(7)), 0)))
+    print(console, __render(option.map_or(Some(10), 0, fn(x: Int): (x * 2))))
+    print(console, __render(option.map_or(None, 99, fn(x: Int): (x * 2))))
 "#;
         let sources = [("option", crate::bundled_module("option").unwrap()), ("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
@@ -5184,13 +5184,13 @@ fn build(s: String) -> String:
 
 fn main(console: Console):
     let words = [build("apple"), build("banana")]
-    print(console, to_string(eq.member(words, build("banana"))))
-    print(console, to_string(eq.member(words, build("cherry"))))
-    print(console, to_string(eq.index_of([10, 20, 30], 20)))
-    print(console, to_string(eq.index_of([10, 20, 30], 99)))
-    print(console, to_string(eq.member([Box(1), Box(2)], Box(2))))
-    print(console, to_string(ne(Box(1), Box(2))))
-    print(console, to_string(ne(Box(2), Box(2))))
+    print(console, __render(eq.member(words, build("banana"))))
+    print(console, __render(eq.member(words, build("cherry"))))
+    print(console, __render(eq.index_of([10, 20, 30], 20)))
+    print(console, __render(eq.index_of([10, 20, 30], 99)))
+    print(console, __render(eq.member([Box(1), Box(2)], Box(2))))
+    print(console, __render(ne(Box(1), Box(2))))
+    print(console, __render(ne(Box(2), Box(2))))
 "#;
         let sources = [("eq", crate::bundled_module("eq").unwrap()), ("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
@@ -5228,11 +5228,11 @@ fn build(s: String) -> String:
 
 fn main(console: Console):
     let words = [build("a"), build("b"), build("a"), build("c"), build("b"), build("a")]
-    print(console, to_string(eq.count(words, build("a"))))
-    print(console, to_string(eq.count(words, build("z"))))
+    print(console, __render(eq.count(words, build("a"))))
+    print(console, __render(eq.count(words, build("z"))))
     print(console, string.join(eq.unique(words), ","))
-    print(console, to_string(list.length(eq.unique([Tag(1), Tag(2), Tag(1), Tag(2), Tag(3)]))))
-    print(console, to_string(eq.count([Tag(1), Tag(2), Tag(1)], Tag(1))))
+    print(console, __render(list.length(eq.unique([Tag(1), Tag(2), Tag(1), Tag(2), Tag(3)]))))
+    print(console, __render(eq.count([Tag(1), Tag(2), Tag(1)], Tag(1))))
 "#;
         let sources = [
             ("eq", crate::bundled_module("eq").unwrap()),
@@ -5277,9 +5277,9 @@ fn main(console: Console):
     print(console, string.join(set.union(a, b), ","))
     print(console, string.join(set.intersection(a, b), ","))
     print(console, string.join(set.difference(a, b), ","))
-    print(console, to_string(set.is_subset([build("y")], a)))
-    print(console, to_string(set.is_subset([build("z")], a)))
-    print(console, to_string(list.length(set.union([Id(1), Id(2), Id(1)], [Id(2), Id(3)]))))
+    print(console, __render(set.is_subset([build("y")], a)))
+    print(console, __render(set.is_subset([build("z")], a)))
+    print(console, __render(list.length(set.union([Id(1), Id(2), Id(1)], [Id(2), Id(3)]))))
 "#;
         let sources = [
             ("set", crate::bundled_module("set").unwrap()),
@@ -5316,18 +5316,18 @@ fn digit_sum(s: String) -> Int:
     total
 
 fn main(console: Console):
-    print(console, to_string(ascii.is_digit("7")))
-    print(console, to_string(ascii.is_digit("x")))
-    print(console, to_string(ascii.is_alpha("Q")))
-    print(console, to_string(ascii.is_alnum("_")))
-    print(console, to_string(ascii.is_space("\t")))
-    print(console, to_string(ascii.to_digit("4")))
-    print(console, to_string(ascii.to_digit("z")))
-    print(console, to_string(digit_sum("a1b2c3")))
-    print(console, to_string(ascii.all_digits("12345")))
-    print(console, to_string(ascii.all_digits("12a45")))
-    print(console, to_string(ascii.all_digits("")))
-    print(console, to_string(ascii.all_digits("0")))
+    print(console, __render(ascii.is_digit("7")))
+    print(console, __render(ascii.is_digit("x")))
+    print(console, __render(ascii.is_alpha("Q")))
+    print(console, __render(ascii.is_alnum("_")))
+    print(console, __render(ascii.is_space("\t")))
+    print(console, __render(ascii.to_digit("4")))
+    print(console, __render(ascii.to_digit("z")))
+    print(console, __render(digit_sum("a1b2c3")))
+    print(console, __render(ascii.all_digits("12345")))
+    print(console, __render(ascii.all_digits("12a45")))
+    print(console, __render(ascii.all_digits("")))
+    print(console, __render(ascii.all_digits("0")))
 "#;
         let sources = [
             ("ascii", crate::bundled_module("ascii").unwrap()),
@@ -5360,7 +5360,7 @@ type Coord:
 impl Show for Coord:
     fn show(self) -> String:
         match self:
-            Coord(x, y) -> (((("(" <> to_string(x)) <> ",") <> to_string(y)) <> ")")
+            Coord(x, y) -> (((("(" <> __render(x)) <> ",") <> __render(y)) <> ")")
 
 fn main(console: Console):
     print(console, show.show_list([1, 2, 3]))
@@ -5386,7 +5386,7 @@ fn main(console: Console):
     fn multi_statement_match_arm_body_indented() {
         // A match arm with a multi-statement body, brace-free: `Pat ->` opens an
         // indented block. Both backends agree.
-        let client = "type Cmd:\n    Inc\n    Dec\n\nfn apply(n: Int, c: Cmd) -> Int:\n    match c:\n        Inc ->\n            let m = n + 1\n            m\n        Dec ->\n            n - 1\n\nfn main(console: Console):\n    print(console, to_string(apply(10, Inc)))\n    print(console, to_string(apply(10, Dec)))\n";
+        let client = "type Cmd:\n    Inc\n    Dec\n\nfn apply(n: Int, c: Cmd) -> Int:\n    match c:\n        Inc ->\n            let m = n + 1\n            m\n        Dec ->\n            n - 1\n\nfn main(console: Console):\n    print(console, __render(apply(10, Inc)))\n    print(console, __render(apply(10, Dec)))\n";
         assert_eq!(interp(client), vec!["11", "9"]);
         assert_eq!(run_on_wasm(client), vec!["11", "9"]);
     }
@@ -5403,9 +5403,9 @@ type Point:
 fn main(console: Console):
     let p = Point(1, 2)
     let q = Point(x: ((p).x + 10), ..p)
-    print(console, to_string(((q).x + (q).y)))
+    print(console, __render(((q).x + (q).y)))
     let r = Point(x: 5, y: 6, ..p)
-    print(console, to_string(((r).x + (r).y)))
+    print(console, __render(((r).x + (r).y)))
 "#;
         assert_eq!(interp(client), vec!["13", "11"]);
         assert_eq!(run_on_wasm(client), vec!["13", "11"]);
@@ -5421,7 +5421,7 @@ import list
 fn main(console: Console):
     let xs = [3, (0 - 2), 0, 5]
     let signs = list.map(xs, fn(n: Int): if (n > 0): 1 else: if (n < 0): (0 - 1) else: 0)
-    print(console, to_string(list.fold(signs, 0, fn(a: Int, b: Int): (a + b))))
+    print(console, __render(list.fold(signs, 0, fn(a: Int, b: Int): (a + b))))
 "#;
         let sources = [("list", crate::bundled_module("list").unwrap()), ("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
@@ -5440,8 +5440,8 @@ import list
 fn main(console: Console):
     let xs = [1, 2, 3, 4]
     let doubled = list.map(xs, fn(n: Int): (n * 2))
-    print(console, to_string(list.fold(doubled, 0, fn(a: Int, b: Int): (a + b))))
-    print(console, to_string(list.length(list.filter(xs, fn(n: Int): ((n % 2) == 0)))))
+    print(console, __render(list.fold(doubled, 0, fn(a: Int, b: Int): (a + b))))
+    print(console, __render(list.length(list.filter(xs, fn(n: Int): ((n % 2) == 0)))))
 "#;
         let sources = [("list", crate::bundled_module("list").unwrap()), ("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
@@ -5453,7 +5453,7 @@ fn main(console: Console):
     #[test]
     fn inherent_impl_in_indentation_syntax() {
         // The inherent impl works under the off-side rule too: `impl Point:`.
-        let client = "type Point:\n    Point(Int, Int)\n\nimpl Point:\n    fn sum(self) -> Int:\n        match self:\n            Point(x, y) -> x + y\n\nfn main(console: Console):\n    print(console, to_string(sum(Point(4, 5))))\n";
+        let client = "type Point:\n    Point(Int, Int)\n\nimpl Point:\n    fn sum(self) -> Int:\n        match self:\n            Point(x, y) -> x + y\n\nfn main(console: Console):\n    print(console, __render(sum(Point(4, 5))))\n";
         assert_eq!(interp(client), vec!["9"]);
         assert_eq!(run_on_wasm(client), vec!["9"]);
     }
@@ -5481,8 +5481,8 @@ impl Circle:
             Circle(r) -> (r * r)
 
 fn main(console: Console):
-    print(console, to_string(mag(Point(3, 4))))
-    print(console, to_string(mag(Circle(6))))
+    print(console, __render(mag(Point(3, 4))))
+    print(console, __render(mag(Circle(6))))
 "#;
         assert_eq!(interp(client), vec!["25", "36"]);
         assert_eq!(run_on_wasm(client), vec!["25", "36"]);
@@ -5552,7 +5552,7 @@ fn main(console: Console):
     /// including a multi-byte (UTF-8) character. Counted by Unicode scalar.
     #[test]
     fn string_chars_backends_agree() {
-        let src = "fn main(console: Console):\n    let cs = string.chars(\"café\")\n    print(console, to_string(list.length(cs)))\n    print(console, list.at(cs, 0))\n    print(console, list.at(cs, 3))\n";
+        let src = "fn main(console: Console):\n    let cs = string.chars(\"café\")\n    print(console, __render(list.length(cs)))\n    print(console, list.at(cs, 0))\n    print(console, list.at(cs, 3))\n";
         let expected = vec!["4".to_string(), "c".to_string(), "é".to_string()];
         // Interpreter (source of truth).
         assert_eq!(interpreter::run(src).expect("interp"), expected);
@@ -5598,7 +5598,7 @@ fn main(console: Console):
 import list
 import string
 fn show_ints(xs: List(Int)) -> String:
-    string.join(list.map(xs, fn(n: Int): to_string(n)), ",")
+    string.join(list.map(xs, fn(n: Int): __render(n)), ",")
 fn main(console: Console):
     print(console, show_ints(list.range_between(2, 6)))
     print(console, show_ints(list.range_between(5, 5)))
@@ -5627,7 +5627,7 @@ import set
 import list
 import string
 fn show_ints(xs: List(Int)) -> String:
-    string.join(list.map(xs, fn(n: Int): to_string(n)), ",")
+    string.join(list.map(xs, fn(n: Int): __render(n)), ",")
 fn main(console: Console):
     print(console, show_ints(set.symmetric_difference([1, 2, 3], [2, 3, 4])))
     print(console, show_ints(set.symmetric_difference([1, 1, 2], [2, 2, 3])))
@@ -5658,10 +5658,10 @@ import list
 import string
 fn main(console: Console):
     let roots = list.map([0, 1, 2, 3, 4, 8, 9, 15, 16, 100, 99], fn(n: Int): math.isqrt(n))
-    print(console, string.join(list.map(roots, fn(n: Int): to_string(n)), ","))
+    print(console, string.join(list.map(roots, fn(n: Int): __render(n)), ","))
     let flags = list.map([0, 1, 2, 4, 9, 10, 16, 17], fn(n: Int): if math.is_perfect_square(n): "T" else: "F")
     print(console, string.join(flags, ""))
-    print(console, to_string(math.isqrt(-5)))
+    print(console, __render(math.isqrt(-5)))
     print(console, if math.is_perfect_square(-4): "T" else: "F")
 "#;
         let sources = [
@@ -5686,7 +5686,7 @@ import string
 import option
 fn show(o: Option(Int)) -> String:
     match o:
-        Some(n) -> to_string(n)
+        Some(n) -> __render(n)
         None -> "none"
 fn main(console: Console):
     print(console, show(string.parse_int("42")))
@@ -5785,7 +5785,7 @@ import url
 import result
 fn p(s: String) -> String:
     match url.parse(s):
-        Ok(u) -> "ok:" <> to_string(url.port(u))
+        Ok(u) -> "ok:" <> __render(url.port(u))
         Err(_e) -> "none"
 fn main(console: Console):
     print(console, p("https://h:8443/x"))
@@ -5897,7 +5897,7 @@ fn classify(s: String) -> String:
     match json.decode(s):
         Ok(j) ->
             match json.as_int(j):
-                Some(n) -> "int:" <> to_string(n)
+                Some(n) -> "int:" <> __render(n)
                 None -> "ok"
         Err(_e) -> "err"
 fn main(console: Console):
@@ -5956,8 +5956,8 @@ fn main(console: Console):
     print(console, show2(string.split_once("a.b.c", ".")))
     print(console, show2(string.rsplit_once("nodot", ".")))
     print(console, show2(string.rsplit_once("file.tar.gz", ".")))
-    print(console, to_string(string.last_index_of("a.b.c", ".")))
-    print(console, to_string(string.last_index_of("nodot", ".")))
+    print(console, __render(string.last_index_of("a.b.c", ".")))
+    print(console, __render(string.last_index_of("nodot", ".")))
 "#;
         let sources = [("string", crate::bundled_module("string").unwrap()), ("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
@@ -5977,7 +5977,7 @@ fn main(console: Console):
 import list
 import string
 fn show_row(r: List(Int)) -> String:
-    string.join(list.map(r, fn(n: Int): to_string(n)), ",")
+    string.join(list.map(r, fn(n: Int): __render(n)), ",")
 fn show_grid(g: List(List(Int))) -> String:
     string.join(list.map(g, show_row), ";")
 fn main(console: Console):
@@ -6005,14 +6005,14 @@ fn main(console: Console):
         // both backends.
         let client = r#"
 fn main(console: Console):
-    print(console, to_string(30s > 500ms))
-    print(console, to_string(30s + 500ms == 30500ms))
-    print(console, to_string(1m == 60s))
-    print(console, to_string(2hr == 7200s))
-    print(console, to_string(1d == 24h))
-    print(console, to_string(1w > 6d))
-    print(console, to_string(2 * 1h == 7200s))
-    print(console, to_string(1h / 1m == 60))
+    print(console, __render(30s > 500ms))
+    print(console, __render(30s + 500ms == 30500ms))
+    print(console, __render(1m == 60s))
+    print(console, __render(2hr == 7200s))
+    print(console, __render(1d == 24h))
+    print(console, __render(1w > 6d))
+    print(console, __render(2 * 1h == 7200s))
+    print(console, __render(1h / 1m == 60))
 "#;
         let sources = [("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
@@ -6058,9 +6058,9 @@ fn main(console: Console):
         out = list.push(out, n)
         r = r2
         i = i + 1
-    print(console, string.join(list.map(out, fn(n: Int): to_string(n)), ","))
+    print(console, string.join(list.map(out, fn(n: Int): __render(n)), ","))
     let (d, _r3) = random.next_below(random.seed(42), 6)
-    print(console, to_string(d))
+    print(console, __render(d))
     let (b, _r4) = random.next_bool(random.seed(2))
     print(console, if b: "even" else: "odd")
 "#;
@@ -6108,11 +6108,11 @@ import list
 import string
 fn nums(r: Result(List(Int), String)) -> String:
     match r:
-        Ok(xs) -> string.join(list.map(xs, fn(n: Int): to_string(n)), ",")
+        Ok(xs) -> string.join(list.map(xs, fn(n: Int): __render(n)), ",")
         Err(e) -> "err:" <> e
 fn onums(o: Option(List(Int))) -> String:
     match o:
-        Some(xs) -> string.join(list.map(xs, fn(n: Int): to_string(n)), ",")
+        Some(xs) -> string.join(list.map(xs, fn(n: Int): __render(n)), ",")
         None -> "none"
 fn main(console: Console):
     print(console, nums(result.all([Ok(1), Ok(2), Ok(3)])))
@@ -6144,7 +6144,7 @@ import list
 import string
 fn main(console: Console):
     let (oks, errs) = result.partition([Ok(1), Err("a"), Ok(2), Err("b"), Ok(3)])
-    print(console, string.join(list.map(oks, fn(n: Int): to_string(n)), ","))
+    print(console, string.join(list.map(oks, fn(n: Int): __render(n)), ","))
     print(console, string.join(errs, ","))
 "#;
         let sources = [
@@ -6193,8 +6193,8 @@ import duration
 fn main(console: Console):
     print(console, duration.human(duration.max(30s, 1m)))
     print(console, duration.human(duration.min(30s, 1m)))
-    print(console, to_string(duration.is_zero(0ms)))
-    print(console, to_string(duration.is_zero(1s)))
+    print(console, __render(duration.is_zero(0ms)))
+    print(console, __render(duration.is_zero(1s)))
     print(console, duration.human(duration.abs(0s - 5s)))
 "#;
         let sources = [
@@ -6214,15 +6214,15 @@ fn main(console: Console):
         let client = r#"
 import duration
 fn main(console: Console):
-    print(console, to_string(duration.to_milliseconds(duration.from_clock(1, 2, 3))))
+    print(console, __render(duration.to_milliseconds(duration.from_clock(1, 2, 3))))
     print(console, duration.clock(1h + 2m + 3s))
     print(console, duration.clock(90s))
     print(console, duration.human(1h + 1m + 1s))
     print(console, duration.human(90s))
     print(console, duration.human(5s))
     print(console, duration.human(500ms))
-    print(console, to_string(duration.to_milliseconds(duration.hours(2))))
-    print(console, to_string(duration.part_minutes(1h + 2m + 3s)))
+    print(console, __render(duration.to_milliseconds(duration.hours(2))))
+    print(console, __render(duration.part_minutes(1h + 2m + 3s)))
 "#;
         let sources = [
             ("duration", crate::bundled_module("duration").unwrap()),
@@ -6249,7 +6249,7 @@ import duration
 import option
 fn show(o: Option(Duration)) -> String:
     match o:
-        Some(d) -> to_string(duration.to_milliseconds(d))
+        Some(d) -> __render(duration.to_milliseconds(d))
         None -> "none"
 fn roundtrip(d: Duration) -> String:
     match duration.parse(duration.human(d)):
@@ -6291,7 +6291,7 @@ import math
 import list
 import string
 fn show(xs: List(Int)) -> String:
-    string.join(list.map(xs, fn(n: Int): to_string(n)), ",")
+    string.join(list.map(xs, fn(n: Int): __render(n)), ",")
 fn main(console: Console):
     print(console, show([math.ceil_div(7, 3), math.ceil_div(6, 3), math.ceil_div(1, 3), math.ceil_div(0, 3)]))
     print(console, show([math.ceil_div(0 - 7, 3), math.ceil_div(0 - 6, 3)]))
@@ -6381,12 +6381,12 @@ fn main(console: Console):
 fn main(console: Console):
     let a = 3000000000
     let b = 4000000000
-    print(console, to_string(a + b))
-    print(console, to_string(a * 3))
+    print(console, __render(a + b))
+    print(console, __render(a * 3))
     let big = 9000000000000
-    print(console, to_string(big))
-    print(console, to_string(big / 1000))
-    print(console, to_string(0 - big))
+    print(console, __render(big))
+    print(console, __render(big / 1000))
+    print(console, __render(0 - big))
 "#;
         let sources = [("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
@@ -6410,9 +6410,9 @@ fn main(console: Console):
         let client = r#"
 fn main(console: Console):
     let xs = [3000000000, 5000000000]
-    print(console, to_string(list.at(xs, 0)))
-    print(console, to_string(list.at(xs, 1)))
-    print(console, to_string(list.at(xs, 0) + list.at(xs, 1)))
+    print(console, __render(list.at(xs, 0)))
+    print(console, __render(list.at(xs, 1)))
+    print(console, __render(list.at(xs, 0) + list.at(xs, 1)))
 "#;
         let sources = [("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
@@ -6428,11 +6428,11 @@ fn main(console: Console):
         let client = r#"
 fn main(console: Console):
     let fs = [1.5, 2.5, 3.5]
-    print(console, to_string(list.length(fs)))
-    print(console, to_string(math.to_int(list.at(fs, 1))))
+    print(console, __render(list.length(fs)))
+    print(console, __render(math.to_int(list.at(fs, 1))))
     let pair = (1.5, 9.5)
     let (lo, hi) = pair
-    print(console, to_string(math.to_int(hi)))
+    print(console, __render(math.to_int(hi)))
 "#;
         let sources = [("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
@@ -6757,7 +6757,7 @@ fn main(console: Console):
         let path = std::env::temp_dir().join("witchy_sandbox_smoke.witchy");
         std::fs::write(
             &path,
-            "fn main(console: Console):\n    print(console, to_string(6 * 7))\n",
+            "fn main(console: Console):\n    print(console, __render(6 * 7))\n",
         )
         .unwrap();
         let (out, exit) =
@@ -6873,7 +6873,7 @@ fn main(console: Console):
         let path = std::env::temp_dir().join("witchy_verify_smoke.witchy");
         std::fs::write(
             &path,
-            "fn main(console: Console):\n    print(console, to_string((2 + 3) * 4))\n    print(console, \"hi\")\n",
+            "fn main(console: Console):\n    print(console, __render((2 + 3) * 4))\n    print(console, \"hi\")\n",
         )
         .unwrap();
         crate::verify_file(path.to_str().unwrap()).expect("backends should agree");
@@ -6963,7 +6963,7 @@ fn main(console: Console):
     let xs = [Item(2, "a"), Item(1, "b"), Item(2, "c"), Item(1, "d"), Item(2, "e")]
     let sorted = list.sort_by(xs, fn(p: Item, q: Item): key(p) < key(q))
     for it in sorted:
-        print(console, to_string(key(it)) <> tag(it))
+        print(console, __render(key(it)) <> tag(it))
 "#;
         let sources = [("list", crate::bundled_module("list").unwrap()), ("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
@@ -6998,7 +6998,7 @@ fn main(console: Console):
     print(console, ord.max_of(build("alpha"), build("omega")))
     print(console, ord.maximum([build("x"), build("a"), build("m")], ""))
     let nums = ord.sort([3, 1, 2, 1])
-    print(console, to_string((list.at(nums, 0) + (list.at(nums, 3) * 10))))
+    print(console, __render((list.at(nums, 0) + (list.at(nums, 3) * 10))))
 "#;
         let sources = [
             ("ord", crate::bundled_module("ord").unwrap()),
@@ -7029,11 +7029,11 @@ fn checked(n: Int) -> Result(Int, String):
         Err("bad")
 
 fn main(console: Console):
-    print(console, to_string(result.unwrap_or(result.or(checked(5), Ok(9)), 0)))
-    print(console, to_string(result.unwrap_or(result.or(checked((0 - 1)), Ok(9)), 0)))
-    print(console, to_string(result.unwrap_or(result.or_else(checked((0 - 1)), fn(e: String): Ok(string.length(e))), 0)))
-    print(console, to_string(result.map_or(checked(5), 0, fn(x: Int): (x * 2))))
-    print(console, to_string(result.map_or(checked((0 - 1)), 99, fn(x: Int): (x * 2))))
+    print(console, __render(result.unwrap_or(result.or(checked(5), Ok(9)), 0)))
+    print(console, __render(result.unwrap_or(result.or(checked((0 - 1)), Ok(9)), 0)))
+    print(console, __render(result.unwrap_or(result.or_else(checked((0 - 1)), fn(e: String): Ok(string.length(e))), 0)))
+    print(console, __render(result.map_or(checked(5), 0, fn(x: Int): (x * 2))))
+    print(console, __render(result.map_or(checked((0 - 1)), 99, fn(x: Int): (x * 2))))
 "#;
         let sources = [("result", crate::bundled_module("result").unwrap()), ("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
@@ -7058,12 +7058,12 @@ fn checked(n: Int) -> Result(Int, String):
         Err("bad")
 
 fn main(console: Console):
-    print(console, to_string(result.is_err(checked(5))))
-    print(console, to_string(result.is_err(checked((0 - 1)))))
+    print(console, __render(result.is_err(checked(5))))
+    print(console, __render(result.is_err(checked((0 - 1)))))
     let chained = result.and_then(checked(5), fn(n: Int): Ok((n * 10)))
-    print(console, to_string(result.unwrap_or(chained, 0)))
+    print(console, __render(result.unwrap_or(chained, 0)))
     let mapped = result.map_err(checked((0 - 1)), fn(s: String): string.length(s))
-    print(console, to_string(result.is_err(mapped)))
+    print(console, __render(result.is_err(mapped)))
 "#;
         let sources = [("result", crate::bundled_module("result").unwrap()), ("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
@@ -7285,14 +7285,14 @@ fn main() -> Float:
 import math
 
 fn main(console: Console):
-    print(console, to_string(math.factorial(5)))
-    print(console, to_string(math.factorial(0)))
-    print(console, to_string(math.factorial(1)))
-    print(console, to_string(math.is_prime(7)))
-    print(console, to_string(math.is_prime(12)))
-    print(console, to_string(math.is_prime(1)))
-    print(console, to_string(math.is_prime(2)))
-    print(console, to_string(math.is_prime(97)))
+    print(console, __render(math.factorial(5)))
+    print(console, __render(math.factorial(0)))
+    print(console, __render(math.factorial(1)))
+    print(console, __render(math.is_prime(7)))
+    print(console, __render(math.is_prime(12)))
+    print(console, __render(math.is_prime(1)))
+    print(console, __render(math.is_prime(2)))
+    print(console, __render(math.is_prime(97)))
 "#;
         let sources = [("math", crate::bundled_module("math").unwrap()), ("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
@@ -7309,13 +7309,13 @@ fn main(console: Console):
 import math
 
 fn main(console: Console):
-    print(console, to_string(math.lcm(4, 6)))
-    print(console, to_string(math.lcm(21, 6)))
-    print(console, to_string(math.lcm(0, 5)))
-    print(console, to_string(math.lcm((0 - 4), 6)))
-    print(console, to_string(math.is_even(10)))
-    print(console, to_string(math.is_odd(7)))
-    print(console, to_string(math.is_odd((0 - 3))))
+    print(console, __render(math.lcm(4, 6)))
+    print(console, __render(math.lcm(21, 6)))
+    print(console, __render(math.lcm(0, 5)))
+    print(console, __render(math.lcm((0 - 4), 6)))
+    print(console, __render(math.is_even(10)))
+    print(console, __render(math.is_odd(7)))
+    print(console, __render(math.is_odd((0 - 3))))
 "#;
         let sources = [("math", crate::bundled_module("math").unwrap()), ("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
@@ -7370,13 +7370,13 @@ fn main() -> Int:
         let src = r#"
 fn main(console: Console):
     let p = string.split("a,bb,ccc", ",")
-    print(console, to_string(list.length(p)))
+    print(console, __render(list.length(p)))
     print(console, list.at(p, 0))
     print(console, list.at(p, 2))
-    print(console, to_string(list.length(string.split("a,,b", ","))))
+    print(console, __render(list.length(string.split("a,,b", ","))))
     print(console, list.at(string.split("a,,b", ","), 1))
-    print(console, to_string(list.length(string.split("", ","))))
-    print(console, to_string(list.length(string.split("abc", ""))))
+    print(console, __render(list.length(string.split("", ","))))
+    print(console, __render(list.length(string.split("abc", ""))))
     print(console, list.at(string.split("xXXyXXz", "XX"), 2))
 "#;
         assert_eq!(
@@ -7395,14 +7395,14 @@ fn classify(n: Int) -> Bool:
     (n > 0)
 
 fn main(console: Console):
-    print(console, to_string(42))
-    print(console, to_string((0 - 5)))
-    print(console, to_string(true))
-    print(console, to_string((3 > 7)))
-    print(console, to_string("hi"))
-    print(console, to_string(classify(9)))
+    print(console, __render(42))
+    print(console, __render((0 - 5)))
+    print(console, __render(true))
+    print(console, __render((3 > 7)))
+    print(console, __render("hi"))
+    print(console, __render(classify(9)))
     let flag = (2 == 2)
-    print(console, to_string(flag))
+    print(console, __render(flag))
 "#;
         assert_eq!(
             run_on_wasm(src),
@@ -7421,8 +7421,8 @@ fn apply(f: fn(String) -> String, s: String) -> String:
 
 fn main(console: Console):
     let x = 5
-    print(console, to_string(x))
-    print(console, apply(fn(x: String): to_string(x), "hey"))
+    print(console, __render(x))
+    print(console, apply(fn(x: String): __render(x), "hey"))
 "#;
         assert_eq!(run_on_wasm(src), vec!["5", "hey"]);
     }
@@ -7438,7 +7438,7 @@ type Shape:
     Dot
 
 fn main(console: Console):
-    print(console, to_string([1, 2, 3]))
+    print(console, __render([1, 2, 3]))
     print(console, "${[[1, 2], [3]]}")
     print(console, "${(1, "two", true)}")
     print(console, "${[Circle(2), Dot]}")
@@ -7467,7 +7467,7 @@ fn main(console: Console):
     /// `false`). The shape is now captured from the binding/declared type.
     #[test]
     fn nested_compound_equality_agrees_on_both_backends() {
-        let src = "fn same(a: (List(Int), List(Int)), b: (List(Int), List(Int))) -> Bool:\n    a == b\nfn main(console: Console):\n    let v = ([1, 2], (3, 4))\n    let w = ([1, 2], (3, 4))\n    print(console, to_string(v == w))\n    print(console, to_string(same(([1], [2]), ([1], [2]))))\n    print(console, to_string(same(([1], [2]), ([1], [9]))))\n";
+        let src = "fn same(a: (List(Int), List(Int)), b: (List(Int), List(Int))) -> Bool:\n    a == b\nfn main(console: Console):\n    let v = ([1, 2], (3, 4))\n    let w = ([1, 2], (3, 4))\n    print(console, __render(v == w))\n    print(console, __render(same(([1], [2]), ([1], [2]))))\n    print(console, __render(same(([1], [2]), ([1], [9]))))\n";
         let want = vec!["true".to_string(), "true".to_string(), "false".to_string()];
         assert_eq!(interp(src), want.clone(), "interpreter");
         assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
@@ -7481,7 +7481,7 @@ fn main(console: Console):
         // remains for shapes with NO resolvable call site.)
         let src = r#"
 fn render(t: (a, a)) -> String:
-    to_string(t)
+    __render(t)
 
 fn main(console: Console):
     print(console, render((1, 2)))
@@ -7496,10 +7496,10 @@ fn main(console: Console):
         // emitted garbage, e.g. "/" for -1).
         let src = r#"
 fn main(console: Console):
-    print(console, to_string((0 - 1)))
-    print(console, to_string((0 - 128)))
-    print(console, to_string(255))
-    print(console, to_string(0))
+    print(console, __render((0 - 1)))
+    print(console, __render((0 - 128)))
+    print(console, __render(255))
+    print(console, __render(0))
 "#;
         assert_eq!(run_on_wasm(src), vec!["-1", "-128", "255", "0"]);
     }
@@ -7534,15 +7534,15 @@ fn main(console: Console):
         // 4 (byte 5), and string.substring(3,5) is the two characters "é!".
         let src = r#"
 fn main(console: Console):
-    print(console, to_string(if string.contains("hello world", "world"): 1 else: 0))
-    print(console, to_string(if string.contains("abc", "xyz"): 1 else: 0))
-    print(console, to_string(if string.contains("abc", ""): 1 else: 0))
-    print(console, to_string(string.index_of("hello", "l")))
-    print(console, to_string(string.index_of("hello", "z")))
+    print(console, __render(if string.contains("hello world", "world"): 1 else: 0))
+    print(console, __render(if string.contains("abc", "xyz"): 1 else: 0))
+    print(console, __render(if string.contains("abc", ""): 1 else: 0))
+    print(console, __render(string.index_of("hello", "l")))
+    print(console, __render(string.index_of("hello", "z")))
     print(console, string.substring("hello", 1, 4))
     print(console, string.substring("hi", 0, 100))
     print(console, string.substring("hi", 5, 10))
-    print(console, to_string(string.index_of("café!", "!")))
+    print(console, __render(string.index_of("café!", "!")))
     print(console, string.substring("café!", 3, 5))
 "#;
         assert_eq!(
@@ -7554,7 +7554,7 @@ fn main(console: Console):
     #[test]
     fn parse_kv_example_runs_on_wasm() {
         // The `key=value` parser example now compiles end-to-end: index_of +
-        // substring + string_length + ends_with + to_string(Bool), matching the
+        // substring + string_length + ends_with + __render(Bool), matching the
         // interpreter.
         assert_eq!(
             run_on_wasm(include_str!("../examples/parse_kv.witchy")),
@@ -7572,12 +7572,12 @@ fn main(console: Console):
     d = dict.insert(d, "a", 1)
     d = dict.insert(d, "b", 2)
     d = dict.insert(d, "a", 10)
-    print(console, to_string(dict.get_or(d, "a", 0)))
-    print(console, to_string(dict.get_or(d, "b", 0)))
-    print(console, to_string(dict.get_or(d, "z", (0 - 1))))
-    print(console, to_string(dict.size(d)))
-    print(console, to_string(if dict.has(d, "b"): 1 else: 0))
-    print(console, to_string(if dict.has(d, "q"): 1 else: 0))
+    print(console, __render(dict.get_or(d, "a", 0)))
+    print(console, __render(dict.get_or(d, "b", 0)))
+    print(console, __render(dict.get_or(d, "z", (0 - 1))))
+    print(console, __render(dict.size(d)))
+    print(console, __render(if dict.has(d, "b"): 1 else: 0))
+    print(console, __render(if dict.has(d, "q"): 1 else: 0))
 "#;
         assert_eq!(run_on_wasm(src), vec!["10", "2", "-1", "2", "1", "0"]);
     }
@@ -7590,9 +7590,9 @@ fn main(console: Console):
     var d = dict.new()
     d = dict.insert(d, 1, 100)
     d = dict.insert(d, 2, 200)
-    print(console, to_string(dict.get_or(d, 1, 0)))
-    print(console, to_string(dict.get_or(d, 2, 0)))
-    print(console, to_string(dict.get_or(d, 3, (0 - 1))))
+    print(console, __render(dict.get_or(d, 1, 0)))
+    print(console, __render(dict.get_or(d, 2, 0)))
+    print(console, __render(dict.get_or(d, 3, (0 - 1))))
 "#;
         assert_eq!(run_on_wasm(src), vec!["100", "200", "-1"]);
     }
@@ -7616,7 +7616,7 @@ fn main(console: Console):
 fn main(console: Console):
     var d = dict.new()
     d = dict.insert(d, [1, 2], 5)
-    print(console, to_string(dict.size(d)))
+    print(console, __render(dict.size(d)))
 "#;
         let module = parser::parse_module(src).expect("parse");
         let err = codegen::compile_module(&module).expect_err("should reject");
@@ -7642,10 +7642,10 @@ fn lookup(b: Bool) -> Item:
         Item(5, 2)
 
 fn main(console: Console):
-    print(console, to_string((Item(7, 6)).price))
-    print(console, to_string((lookup(true)).qty))
+    print(console, __render((Item(7, 6)).price))
+    print(console, __render((lookup(true)).qty))
     let items = [Item(1, 2), Item(3, 4)]
-    print(console, to_string((list.at(items, 1)).qty))
+    print(console, __render((list.at(items, 1)).qty))
 "#;
         assert_eq!(interp(src), run_on_wasm(src));
         assert_eq!(run_on_wasm(src), vec!["7", "10", "4"]);
@@ -7671,10 +7671,10 @@ fn from_tag(t: Int) -> Int:
     ((y).price + (y).qty)
 
 fn main(console: Console):
-    print(console, to_string(pick(true)))
-    print(console, to_string(pick(false)))
-    print(console, to_string(from_tag(0)))
-    print(console, to_string(from_tag(9)))
+    print(console, __render(pick(true)))
+    print(console, __render(pick(false)))
+    print(console, __render(from_tag(0)))
+    print(console, __render(from_tag(9)))
 "#;
         assert_eq!(interp(src), run_on_wasm(src));
         assert_eq!(run_on_wasm(src), vec!["30", "10", "2", "5"]);
@@ -7695,14 +7695,14 @@ fn first_value(items: List(Item)) -> Int:
     ((first).price * (first).qty)
 
 fn main(console: Console):
-    print(console, to_string(first_value([Item(3, 10), Item(5, 2)])))
+    print(console, __render(first_value([Item(3, 10), Item(5, 2)])))
     let items = [Item(2, 4), Item(7, 1)]
     let second = list.at(items, 1)
-    print(console, to_string(((second).price + (second).qty)))
+    print(console, __render(((second).price + (second).qty)))
     var total = 0
     for it in items:
         total = (total + (it).price)
-    print(console, to_string(total))
+    print(console, __render(total))
 "#;
         assert_eq!(interp(src), run_on_wasm(src));
         assert_eq!(run_on_wasm(src), vec!["30", "8", "9"]);
@@ -7722,9 +7722,9 @@ fn main(console: Console):
     d = dict.insert(d, "apple", Item(3, 10))
     d = dict.insert(d, "bread", Item(2, 5))
     let it = dict.get_or(d, "apple", Item(0, 0))
-    print(console, to_string(((it).price * (it).qty)))
+    print(console, __render(((it).price * (it).qty)))
     let missing = dict.get_or(d, "milk", Item(0, 0))
-    print(console, to_string((missing).price))
+    print(console, __render((missing).price))
 "#;
         assert_eq!(interp(src), run_on_wasm(src));
         assert_eq!(run_on_wasm(src), vec!["30", "0"]);
@@ -7741,19 +7741,19 @@ fn main(console: Console):
     d = dict.insert(d, "b", 2)
     d = dict.insert(d, "c", 3)
     let d2 = dict.remove(d, "b")
-    print(console, to_string(dict.size(d2)))
-    print(console, to_string(if dict.has(d2, "b"): 1 else: 0))
-    print(console, to_string(dict.get_or(d2, "a", 0)))
-    print(console, to_string(dict.get_or(d2, "c", 0)))
+    print(console, __render(dict.size(d2)))
+    print(console, __render(if dict.has(d2, "b"): 1 else: 0))
+    print(console, __render(dict.get_or(d2, "a", 0)))
+    print(console, __render(dict.get_or(d2, "c", 0)))
     let d3 = dict.remove(d, "missing")
-    print(console, to_string(dict.size(d3)))
-    print(console, to_string(dict.size(d)))
+    print(console, __render(dict.size(d3)))
+    print(console, __render(dict.size(d)))
     var nums = dict.new()
     nums = dict.insert(nums, 10, 100)
     nums = dict.insert(nums, 20, 200)
     let nums2 = dict.remove(nums, 10)
-    print(console, to_string(dict.size(nums2)))
-    print(console, to_string(dict.get_or(nums2, 20, 0)))
+    print(console, __render(dict.size(nums2)))
+    print(console, __render(dict.get_or(nums2, 20, 0)))
 "#;
         assert_eq!(interp(src), run_on_wasm(src));
         assert_eq!(run_on_wasm(src), vec!["2", "0", "1", "3", "3", "3", "1", "200"]);
@@ -7772,16 +7772,16 @@ fn main(console: Console):
     var ksum = 0
     for k in dict.keys(d):
         ksum = (ksum + string.length(k))
-    print(console, to_string(ksum))
+    print(console, __render(ksum))
     var vsum = 0
     for v in dict.values(d):
         vsum = (vsum + v)
-    print(console, to_string(vsum))
+    print(console, __render(vsum))
     var psum = 0
     for entry in dict.pairs(d):
         let (k, v) = entry
         psum = ((psum + string.length(k)) + v)
-    print(console, to_string(psum))
+    print(console, __render(psum))
 "#;
         // keys "a","b","c" (len 1 each) -> 3; values 10+20+30 -> 60; pairs
         // (1+10)+(1+20)+(1+30) -> 63.
@@ -7860,12 +7860,12 @@ import list
 fn main(console: Console):
     let xs = [1, 2, 3, 4, 5, 6]
     let (evens, odds) = list.partition(xs, fn(n: Int): ((n % 2) == 0))
-    print(console, to_string(list.sum(evens)))
-    print(console, to_string(list.sum(odds)))
+    print(console, __render(list.sum(evens)))
+    print(console, __render(list.sum(odds)))
     let pairs = list.zip([10, 20, 30], [1, 2, 3])
     let (a, b) = list.unzip(pairs)
-    print(console, to_string(list.sum(a)))
-    print(console, to_string(list.sum(b)))
+    print(console, __render(list.sum(a)))
+    print(console, __render(list.sum(b)))
 "#;
         let sources = [("list", crate::bundled_module("list").unwrap()), ("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
@@ -8313,7 +8313,7 @@ actor Counter:
 impl Counter:
     on Tick():
         count = (count + 1)
-        print(console, to_string(count))
+        print(console, __render(count))
 "#;
         let module = parser::parse_module(src).expect("parse");
         let actor = module
@@ -8497,12 +8497,12 @@ import string
 fn main(console: Console):
     var es = []
     for p in iter.collect(iter.enumerate(iter.from_list(["a", "b", "c"]))):
-        es = list.push(es, to_string(func.first(p)) <> func.second(p))
+        es = list.push(es, __render(func.first(p)) <> func.second(p))
     print(console, string.join(es, " "))
-    print(console, to_string(iter.count(iter.zip(iter.count_from(1), iter.from_list([0, 0, 0])))))
-    print(console, to_string(iter.sum(iter.chain(iter.range(0, 4), iter.range(10, 13)))))
-    print(console, to_string(iter.sum(iter.flat_map(iter.range(1, 4), fn(n: Int): iter.from_list([n, n])))))
-    iter.for_each(iter.take(iter.count_from(100), 3), fn(n: Int): print(console, to_string(n)))
+    print(console, __render(iter.count(iter.zip(iter.count_from(1), iter.from_list([0, 0, 0])))))
+    print(console, __render(iter.sum(iter.chain(iter.range(0, 4), iter.range(10, 13)))))
+    print(console, __render(iter.sum(iter.flat_map(iter.range(1, 4), fn(n: Int): iter.from_list([n, n])))))
+    iter.for_each(iter.take(iter.count_from(100), 3), fn(n: Int): print(console, __render(n)))
 "#;
         let sources = [
             ("iter", crate::bundled_module("iter").unwrap()),
@@ -8575,15 +8575,15 @@ fn main(console: Console):
     // squares of 1.. while < 100, kept odd, summed: 1+9+25+49+81 = 165
     let sq = iter.map(iter.count_from(1), fn(n: Int): n * n)
     let small = iter.take_while(sq, fn(s: Int): s < 100)
-    print(console, to_string(iter.sum(iter.filter(small, fn(s: Int): s % 2 == 1))))
+    print(console, __render(iter.sum(iter.filter(small, fn(s: Int): s % 2 == 1))))
     // first multiple of 7 above 50, from an infinite iterator
     match iter.find(iter.count_from(51), fn(n: Int): n % 7 == 0):
-        Some(n) -> print(console, to_string(n))
+        Some(n) -> print(console, __render(n))
         None -> print(console, "none")
     // a finite range, doubled and collected
-    print(console, to_string(iter.count(iter.range(0, 5))))
+    print(console, __render(iter.count(iter.range(0, 5))))
     for v in iter.collect(iter.map(iter.range(0, 3), fn(n: Int): n * 10)):
-        print(console, to_string(v))
+        print(console, __render(v))
 "#;
         let sources = [("iter", crate::bundled_module("iter").unwrap()), ("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
@@ -9585,8 +9585,8 @@ import list
 
 fn main(console: Console):
     let empty = list.filter([1], fn(n: Int): (n > 100))
-    print(console, to_string(list.all(empty, fn(n: Int): (n > 0))))
-    print(console, to_string(list.any(empty, fn(n: Int): (n > 0))))
+    print(console, __render(list.all(empty, fn(n: Int): (n > 0))))
+    print(console, __render(list.any(empty, fn(n: Int): (n > 0))))
 "#;
         let out = interpreter::run_program(
             &[("list", crate::bundled_module("list").unwrap()), ("main", client)],
@@ -9604,10 +9604,10 @@ import list
 
 fn main(console: Console):
     let ps = list.zip([1, 2, 3], ["a", "b"])
-    print(console, to_string(list.length(ps)))
+    print(console, __render(list.length(ps)))
     let first = list.at(ps, 0)
     let (n, s) = first
-    print(console, (to_string(n) <> s))
+    print(console, (__render(n) <> s))
 "#;
         let out = interpreter::run_program(
             &[("list", crate::bundled_module("list").unwrap()), ("main", client)],
@@ -9625,8 +9625,8 @@ import list
 
 fn main(console: Console):
     let words = ["a", "bb", "ccc"]
-    print(console, to_string(list.contains(words, "bb")))
-    print(console, to_string(list.index_of(words, "ccc")))
+    print(console, __render(list.contains(words, "bb")))
+    print(console, __render(list.index_of(words, "ccc")))
 "#;
         let out = interpreter::run_program(
             &[("list", crate::bundled_module("list").unwrap()), ("main", client)],
@@ -9662,9 +9662,9 @@ fn compute(x: Int, y: Int) -> Result(Int, String):
     Ok((q + 1))
 
 fn main(console: Console):
-    print(console, to_string(result.unwrap_or(compute(10, 2), (0 - 1))))
-    print(console, to_string(result.unwrap_or(compute(10, 0), (0 - 1))))
-    print(console, to_string(result.is_ok(compute(10, 0))))
+    print(console, __render(result.unwrap_or(compute(10, 2), (0 - 1))))
+    print(console, __render(result.unwrap_or(compute(10, 0), (0 - 1))))
+    print(console, __render(result.is_ok(compute(10, 0))))
 "#;
         let out = interpreter::run_program(
             &[("result", crate::bundled_module("result").unwrap()), ("main", client)],
@@ -9691,7 +9691,7 @@ import list
 
 fn main(console: Console):
     let xs = list.map(list.range(4), fn(n: Int): (n + 1))
-    print(console, to_string(list.fold(xs, 0, fn(a: Int, b: Int): (a + b))))
+    print(console, __render(list.fold(xs, 0, fn(a: Int, b: Int): (a + b))))
 "#;
         let out = interpreter::run_program(
             &[("list", crate::bundled_module("list").unwrap()), ("main", client)],
@@ -9727,7 +9727,7 @@ fn main(console: Console):
 
     #[test]
     fn string_interpolation_backends_agree() {
-        // `${expr}` desugars to `<> to_string(expr) <>`, so interpolation works
+        // `${expr}` desugars to `<> __render(expr) <>`, so interpolation works
         // in both backends: String pass-through, Int/Bool via to_string, embedded
         // calls/arithmetic, `\$` for a literal `$`, and adjacent interpolations.
         let src = r#"
@@ -9735,7 +9735,7 @@ fn main(console: Console):
     let name = "witchy"
     let age = 3
     print(console, "hi ${name}, age ${age}")
-    print(console, "sum: ${to_string(age + 10)}")
+    print(console, "sum: ${__render(age + 10)}")
     print(console, "flag ${age > 1}")
     print(console, "literal \${x} stays")
     print(console, "${name}${name}")
@@ -9793,8 +9793,8 @@ fn main(console: Console):
         fs = list.push(fs, fn(x: Int): (x + i))
     let f0 = list.at(fs, 0)
     let f2 = list.at(fs, 2)
-    print(console, to_string(f0(10)))
-    print(console, to_string(f2(10)))
+    print(console, __render(f0(10)))
+    print(console, __render(f2(10)))
 "#;
         assert_eq!(interp(src), run_on_wasm(src));
         assert_eq!(run_on_wasm(src), vec!["11", "13"]);
@@ -9808,9 +9808,9 @@ fn call0(f: fn() -> Int) -> Int:
     f()
 
 fn main(console: Console):
-    print(console, to_string(call0(fn(): 42)))
+    print(console, __render(call0(fn(): 42)))
     let base = 100
-    print(console, to_string(call0(fn(): (base + 1))))
+    print(console, __render(call0(fn(): (base + 1))))
 "#;
         assert_eq!(interp(src), run_on_wasm(src));
         assert_eq!(run_on_wasm(src), vec!["42", "101"]);
@@ -9827,8 +9827,8 @@ fn apply(f: fn(Int) -> Int, x: Int) -> Int:
 fn main(console: Console):
     let g = fn(x: Int): (x + 1)
     let h = fn(y: Int): (apply(g, y) * 2)
-    print(console, to_string(apply(h, 5)))
-    print(console, to_string(apply(h, 20)))
+    print(console, __render(apply(h, 5)))
+    print(console, __render(apply(h, 20)))
 "#;
         assert_eq!(interp(src), run_on_wasm(src));
         assert_eq!(run_on_wasm(src), vec!["12", "42"]); // (5+1)*2, (20+1)*2
@@ -9845,13 +9845,13 @@ fn main(console: Console):
     while (i < 5):
         sum = (sum + i)
         i = (i + 1)
-    print(console, to_string(sum))
+    print(console, __render(sum))
     var x = 100
     x = (x - 30)
     x = (x * 2)
     x = (x / 7)
     x = (x % 5)
-    print(console, to_string(x))
+    print(console, __render(x))
 "#;
         assert_eq!(interp(src), run_on_wasm(src));
         assert_eq!(run_on_wasm(src), vec!["10", "0"]);
@@ -9874,9 +9874,9 @@ fn main(console: Console):
     d = dict.insert(d, 1, 100)
     d = dict.insert(d, 2, 200)
     d = dict.insert(d, 1, 111)
-    print(console, to_string(dict.get_or(d, 1, 0)))
-    print(console, to_string(dict.get_or(d, 2, 0)))
-    print(console, to_string(dict.size(d)))
+    print(console, __render(dict.get_or(d, 1, 0)))
+    print(console, __render(dict.get_or(d, 2, 0)))
+    print(console, __render(dict.size(d)))
 "#;
         assert_eq!(interp(src), run_on_wasm(src), "replace/int-key dict diverged");
     }
@@ -9889,19 +9889,19 @@ fn main(console: Console):
     fn negative_arithmetic_and_dict_mutation_backends_agree() {
         let src = r#"
 fn main(console: Console):
-    print(console, to_string((0 - (7 / 2))))
-    print(console, to_string(((0 - 7) % 2)))
-    print(console, to_string((7 / (0 - 2))))
-    print(console, to_string((7 % (0 - 2))))
-    print(console, to_string(((0 - 7) / (0 - 2))))
+    print(console, __render((0 - (7 / 2))))
+    print(console, __render(((0 - 7) % 2)))
+    print(console, __render((7 / (0 - 2))))
+    print(console, __render((7 % (0 - 2))))
+    print(console, __render(((0 - 7) / (0 - 2))))
     var d = dict.new()
     d = dict.insert(d, "k", 1)
     d = dict.insert(d, "k", 2)
-    print(console, to_string(dict.get_or(d, "k", 0)))
-    print(console, to_string(dict.size(d)))
+    print(console, __render(dict.get_or(d, "k", 0)))
+    print(console, __render(dict.size(d)))
     d = dict.remove(d, "missing")
-    print(console, to_string(dict.size(d)))
-    print(console, to_string(dict.get_or(d, "absent", 99)))
+    print(console, __render(dict.size(d)))
+    print(console, __render(dict.get_or(d, "absent", 99)))
 "#;
         assert_eq!(interp(src), run_on_wasm(src), "int/dict edges diverged");
     }
@@ -9929,12 +9929,12 @@ type Box:
 
 fn main(console: Console):
     let fns = [fn(x: Int): (x + 1), fn(x: Int): (x * 10)]
-    print(console, to_string((list.at(fns, 0))(5)))
-    print(console, to_string((list.at(fns, 1))(5)))
+    print(console, __render((list.at(fns, 0))(5)))
+    print(console, __render((list.at(fns, 1))(5)))
     let pick = true
-    print(console, to_string((if pick: fn(x: Int): (x + 100) else: fn(x: Int): x)(7)))
+    print(console, __render((if pick: fn(x: Int): (x + 100) else: fn(x: Int): x)(7)))
     let b = Box(fn(x: Int): (x * 3), 7)
-    print(console, to_string(((b).f)((b).n)))
+    print(console, __render(((b).f)((b).n)))
 "#;
         assert_eq!(interp(src), run_on_wasm(src), "fn-values-in-data diverged");
         assert_eq!(run_on_wasm(src), vec!["6", "50", "107", "21"]);
@@ -9973,8 +9973,8 @@ fn main(console: Console):
     print(console, describe(Yep(50)))
     print(console, describe(Yep(3)))
     print(console, describe(Nope))
-    print(console, to_string(if is_even(10): 1 else: 0))
-    print(console, to_string(if is_odd(7): 1 else: 0))
+    print(console, __render(if is_even(10): 1 else: 0))
+    print(console, __render(if is_odd(7): 1 else: 0))
 "#;
         assert_eq!(interp(src), run_on_wasm(src), "adt guards / mutual recursion diverged");
         assert_eq!(run_on_wasm(src), vec!["big", "small", "none", "1", "1"]);
@@ -10031,12 +10031,12 @@ type Line:
 
 fn main(console: Console):
     let l = Line(Point(1, 2), Point(3, 4))
-    print(console, to_string(((l).from).x))
-    print(console, to_string(((l).to).y))
+    print(console, __render(((l).from).x))
+    print(console, __render(((l).to).y))
     let l2 = Line(from: Point(10, 20), ..l)
-    print(console, to_string(((l2).from).x))
-    print(console, to_string(((l2).to).y))
-    print(console, to_string(((l).from).x))
+    print(console, __render(((l2).from).x))
+    print(console, __render(((l2).to).y))
+    print(console, __render(((l).from).x))
 "#;
         assert_eq!(interp(src), run_on_wasm(src), "nested records / update diverged");
         assert_eq!(run_on_wasm(src), vec!["1", "4", "10", "4", "1"]);
@@ -10068,8 +10068,8 @@ fn depth(t: Tree) -> Int:
 
 fn main(console: Console):
     let t = Node(Node(Leaf, 1, Node(Leaf, 5, Leaf)), 2, Node(Leaf, 3, Leaf))
-    print(console, to_string(sum_tree(t)))
-    print(console, to_string(depth(t)))
+    print(console, __render(sum_tree(t)))
+    print(console, __render(depth(t)))
 "#;
         assert_eq!(interp(src), run_on_wasm(src), "recursive tree ADT diverged");
         assert_eq!(run_on_wasm(src), vec!["11", "3"]);
@@ -10099,7 +10099,7 @@ fn main(console: Console):
         print(console, n)
     let qtys = [it.qty * 10 for it in cart]
     for q in qtys:
-        print(console, to_string(q))
+        print(console, __render(q))
 "#;
         let sources = [("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
@@ -10122,12 +10122,12 @@ fn main(console: Console):
 import list
 fn main(console: Console):
     let triples = [(a, b, c) for a in 1..=20 for b in a..=20 for c in b..=20 if a * a + b * b == c * c]
-    print(console, to_string(list.length(triples)))
+    print(console, __render(list.length(triples)))
     var total = 0
     for t in triples:
         let (a, b, c) = t
         total = total + c
-    print(console, to_string(total))
+    print(console, __render(total))
 "#;
         let sources = [("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
@@ -10142,10 +10142,10 @@ fn main(console: Console):
 fn main(console: Console):
     let pairs = [x * 10 + y for x in [1, 2] for y in [3, 4]]
     for p in pairs:
-        print(console, to_string(p))
+        print(console, __render(p))
     let upper = [x * 10 + y for x in [1, 2, 3] for y in [1, 2, 3] if y > x]
     for p in upper:
-        print(console, to_string(p))
+        print(console, __render(p))
 "#;
         assert_eq!(interp(src), run_on_wasm(src), "multi-generator comprehension diverged");
         assert_eq!(
@@ -10170,7 +10170,7 @@ fn main(console: Console):
                 break
             _ ->
                 total = (total + x)
-    print(console, to_string(total))
+    print(console, __render(total))
     var kept = 0
     for y in [1, 2, 3, 4]:
         match y:
@@ -10178,7 +10178,7 @@ fn main(console: Console):
                 continue
             _ -> 0
         kept = (kept + y)
-    print(console, to_string(kept))
+    print(console, __render(kept))
 "#;
         assert_eq!(interp(src), run_on_wasm(src), "break/continue in match diverged");
         assert_eq!(run_on_wasm(src), vec!["3", "8"]);
@@ -10195,7 +10195,7 @@ fn main(console: Console):
         if ((x % 2) == 0):
             continue
         sum = (sum + x)
-    print(console, to_string(sum))
+    print(console, __render(sum))
     var i = 0
     var found = 0
     while (i < 100):
@@ -10204,14 +10204,14 @@ fn main(console: Console):
             continue
         found = i
         break
-    print(console, to_string(found))
+    print(console, __render(found))
     var count = 0
     for a in [1, 2, 3]:
         for b in [1, 2, 3]:
             if (b == 2):
                 break
             count = (count + 1)
-    print(console, to_string(count))
+    print(console, __render(count))
 "#;
         assert_eq!(interp(src), run_on_wasm(src), "break/continue diverged");
         assert_eq!(run_on_wasm(src), vec!["9", "10", "3"]);
@@ -10226,10 +10226,10 @@ fn main(console: Console):
         let src = r#"
 fn main(console: Console):
     for i in 1..=5:
-        print(console, to_string(i))
-    print(console, to_string(list.length(0..=0)))
-    print(console, to_string(list.length(5..=2)))
-    print(console, to_string(list.length([n for n in 1..=4])))
+        print(console, __render(i))
+    print(console, __render(list.length(0..=0)))
+    print(console, __render(list.length(5..=2)))
+    print(console, __render(list.length([n for n in 1..=4])))
 "#;
         assert_eq!(interp(src), run_on_wasm(src), "inclusive range diverged");
         assert_eq!(run_on_wasm(src), vec!["1", "2", "3", "4", "5", "1", "0", "4"]);
@@ -10240,12 +10240,12 @@ fn main(console: Console):
         let src = r#"
 fn main(console: Console):
     for i in 0..5:
-        print(console, to_string(i))
+        print(console, __render(i))
     let squares = [x * x for x in 1..5]
     for s in squares:
-        print(console, to_string(s))
-    print(console, to_string(list.length(3..3)))
-    print(console, to_string(list.length(2..(1 + 4))))
+        print(console, __render(s))
+    print(console, __render(list.length(3..3)))
+    print(console, __render(list.length(2..(1 + 4))))
 "#;
         assert_eq!(interp(src), run_on_wasm(src), "range operator diverged");
         assert_eq!(
@@ -10260,11 +10260,11 @@ fn main(console: Console):
 fn main(console: Console):
     let squares = [n * n for n in [1, 2, 3, 4]]
     for s in squares:
-        print(console, to_string(s))
+        print(console, __render(s))
     let evens = [n for n in [1, 2, 3, 4, 5, 6] if n % 2 == 0]
     for e in evens:
-        print(console, to_string(e))
-    print(console, to_string(list.length([x for x in [] if x > 0])))
+        print(console, __render(e))
+    print(console, __render(list.length([x for x in [] if x > 0])))
 "#;
         assert_eq!(interp(src), run_on_wasm(src), "list comprehension diverged");
         assert_eq!(run_on_wasm(src), vec!["1", "4", "9", "16", "2", "4", "6", "0"]);
@@ -10283,8 +10283,8 @@ fn quadrant(x: Int, y: Int) -> String:
 fn describe(pair: (Int, String)) -> String:
     match pair:
         (0, s) -> ("zero:" <> s)
-        (n, "stop") -> ("stop@" <> to_string(n))
-        (n, s) -> ((s <> "=") <> to_string(n))
+        (n, "stop") -> ("stop@" <> __render(n))
+        (n, s) -> ((s <> "=") <> __render(n))
 
 fn main(console: Console):
     print(console, quadrant(0, 0))
@@ -10317,7 +10317,7 @@ fn main(console: Console):
         fns = list.push(fns, fn(x: Int): (x + captured))
         i = (i + 1)
     for f in fns:
-        print(console, to_string(f(10)))
+        print(console, __render(f(10)))
 "#;
         assert_eq!(interp(src), run_on_wasm(src), "loop-captured closures diverged");
         assert_eq!(run_on_wasm(src), vec!["10", "11", "12"]);
@@ -10345,10 +10345,10 @@ fn main(console: Console):
     let pi = pair_up(1, 2)
     let ps = pair_up("a", "b")
     let pm = pair_up(7, "mixed")
-    print(console, to_string(first_of(pi)))
+    print(console, __render(first_of(pi)))
     print(console, first_of(ps))
     print(console, second_of(ps))
-    print(console, to_string(first_of(pm)))
+    print(console, __render(first_of(pm)))
     print(console, second_of(pm))
 "#;
         assert_eq!(interp(src), run_on_wasm(src), "multi-type generics diverged");
@@ -10374,15 +10374,15 @@ type Line:
 fn main(console: Console):
     let l = Line(Point(1, 2), Point(3, 4))
     let p2 = Point(x: 100, ..(l).from)
-    print(console, to_string((p2).x))
-    print(console, to_string((p2).y))
+    print(console, __render((p2).x))
+    print(console, __render((p2).y))
     let cond = true
     let p3 = Point(y: 99, ..(if cond: (l).from else: (l).to))
-    print(console, to_string((p3).x))
-    print(console, to_string((p3).y))
+    print(console, __render((p3).x))
+    print(console, __render((p3).y))
     let l2 = Line(from: Point(x: 7, ..(l).to), ..l)
-    print(console, to_string(((l2).from).x))
-    print(console, to_string(((l2).from).y))
+    print(console, __render(((l2).from).x))
+    print(console, __render(((l2).from).y))
 "#;
         assert_eq!(interp(src), run_on_wasm(src), "record update on expression base diverged");
         assert_eq!(run_on_wasm(src), vec!["100", "2", "1", "99", "7", "4"]);
@@ -10404,9 +10404,9 @@ fn mk() -> List(P):
 
 fn main(console: Console):
     for p in mk():
-        print(console, to_string(((p).x + (p).y)))
+        print(console, __render(((p).x + (p).y)))
     for q in [P(10, 1), P(20, 2)]:
-        print(console, to_string((q).x))
+        print(console, __render((q).x))
 "#;
         assert_eq!(interp(src), run_on_wasm(src), "for over non-var record list diverged");
         assert_eq!(run_on_wasm(src), vec!["3", "7", "11", "10", "20"]);
@@ -10423,7 +10423,7 @@ fn main(console: Console):
     let neg = fn(x: Int): (0 - x)
     let pipeline = [inc, dbl, neg]
     let result = list.fold(pipeline, 5, fn(acc: Int, f: fn(Int) -> Int): f(acc))
-    print(console, to_string(result))
+    print(console, __render(result))
 "#;
         let sources = [("list", crate::bundled_module("list").unwrap()), ("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
@@ -10439,11 +10439,11 @@ fn main(console: Console):
     fn char_count_vs_string_length_backends_agree() {
         let src = r#"
 fn main(console: Console):
-    print(console, to_string(string.char_count("hello")))
-    print(console, to_string(string.length("hello")))
-    print(console, to_string(string.char_count("café")))
-    print(console, to_string(string.length("café")))
-    print(console, to_string(string.char_count("")))
+    print(console, __render(string.char_count("hello")))
+    print(console, __render(string.length("hello")))
+    print(console, __render(string.char_count("café")))
+    print(console, __render(string.length("café")))
+    print(console, __render(string.char_count("")))
 "#;
         assert_eq!(interp(src), run_on_wasm(src), "char_count diverged");
         assert_eq!(run_on_wasm(src), vec!["5", "5", "4", "5", "0"]);
@@ -10549,11 +10549,11 @@ import string
 
 fn main(console: Console):
     let ws = string.words("the  quick\tbrown\nfox ")
-    print(console, to_string(list.length(ws)))
+    print(console, __render(list.length(ws)))
     for w in ws:
         print(console, w)
-    print(console, to_string(list.length(string.words("   "))))
-    print(console, to_string(list.length(string.words(""))))
+    print(console, __render(list.length(string.words("   "))))
+    print(console, __render(list.length(string.words(""))))
 "#;
         let sources = [("string", crate::bundled_module("string").unwrap()), ("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
@@ -10569,10 +10569,10 @@ import string
 
 fn main(console: Console):
     let cs = string.chars("café")
-    print(console, to_string(list.length(cs)))
+    print(console, __render(list.length(cs)))
     for c in cs:
         print(console, c)
-    print(console, to_string(list.length(string.chars(""))))
+    print(console, __render(list.length(string.chars(""))))
 "#;
         let sources = [("string", crate::bundled_module("string").unwrap()), ("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
@@ -10590,14 +10590,14 @@ fn main(console: Console):
 import string
 
 fn main(console: Console):
-    print(console, to_string(string.is_empty("")))
-    print(console, to_string(string.is_empty("x")))
-    print(console, to_string(string.count("banana", "a")))
-    print(console, to_string(string.count("banana", "an")))
-    print(console, to_string(string.count("aaaa", "aa")))
-    print(console, to_string(string.count("abc", "x")))
-    print(console, to_string(string.count("abc", "")))
-    print(console, to_string(string.count("aéaéa", "éa")))
+    print(console, __render(string.is_empty("")))
+    print(console, __render(string.is_empty("x")))
+    print(console, __render(string.count("banana", "a")))
+    print(console, __render(string.count("banana", "an")))
+    print(console, __render(string.count("aaaa", "aa")))
+    print(console, __render(string.count("abc", "x")))
+    print(console, __render(string.count("abc", "")))
+    print(console, __render(string.count("aéaéa", "éa")))
 "#;
         let sources = [("string", crate::bundled_module("string").unwrap()), ("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
@@ -10640,9 +10640,9 @@ fn main(console: Console):
     var d = dict.new()
     d = put(d, "apple", 1)
     d = put(d, "banana", 2)
-    print(console, to_string(lookup(d, ("ap" <> "ple"))))
-    print(console, to_string(lookup(d, "banana")))
-    print(console, to_string(lookup(d, "cherry")))
+    print(console, __render(lookup(d, ("ap" <> "ple"))))
+    print(console, __render(lookup(d, "banana")))
+    print(console, __render(lookup(d, "cherry")))
 "#;
         assert_eq!(interp(src), run_on_wasm(src), "dict string-key via helpers diverged");
         assert_eq!(run_on_wasm(src), vec!["1", "2", "-1"]);
@@ -10661,7 +10661,7 @@ fn size(n: Int) -> Int:
 fn main(console: Console):
     var size = 3
     size = (size + 4)
-    print(console, to_string(size))
+    print(console, __render(size))
 "#;
         let sources = [("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
@@ -10680,7 +10680,7 @@ fn main(console: Console):
 import list
 
 fn main(console: Console):
-    print(console, to_string(list.sum(list.range(5))))
+    print(console, __render(list.sum(list.range(5))))
 "#;
         let sources = [("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
@@ -10707,10 +10707,10 @@ import option
 import result
 
 fn main(console: Console):
-    print(console, to_string(result.unwrap_or(option.ok_or(Some(5), "none"), 0)))
-    print(console, to_string(result.is_err(option.ok_or(None, "none"))))
-    print(console, to_string(result.unwrap_or(option.ok_or_else(Some(9), fn(): "none"), 0)))
-    print(console, to_string(result.is_err(option.ok_or_else(None, fn(): "none"))))
+    print(console, __render(result.unwrap_or(option.ok_or(Some(5), "none"), 0)))
+    print(console, __render(result.is_err(option.ok_or(None, "none"))))
+    print(console, __render(result.unwrap_or(option.ok_or_else(Some(9), fn(): "none"), 0)))
+    print(console, __render(result.is_err(option.ok_or_else(None, fn(): "none"))))
 "#;
         let sources = [("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
@@ -10733,8 +10733,8 @@ fn nested(n: Int) -> Result(Result(Int, String), String):
         Ok(Err("inner"))
 
 fn main(console: Console):
-    print(console, to_string(result.unwrap_or(result.flatten(nested(5)), 0)))
-    print(console, to_string(result.is_err(result.flatten(nested(0)))))
+    print(console, __render(result.unwrap_or(result.flatten(nested(5)), 0)))
+    print(console, __render(result.is_err(result.flatten(nested(0)))))
 "#;
         let sources = [("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
@@ -10756,10 +10756,10 @@ fn check(n: Int) -> Result(Int, String):
         Err("bad")
 
 fn main(console: Console):
-    print(console, to_string(option.unwrap_or(result.ok(check(5)), 0)))
-    print(console, to_string(option.is_none(result.ok(check((0 - 1))))))
-    print(console, to_string(option.is_none(result.err(check(5)))))
-    print(console, to_string(string.length(option.unwrap_or(result.err(check((0 - 1))), ""))))
+    print(console, __render(option.unwrap_or(result.ok(check(5)), 0)))
+    print(console, __render(option.is_none(result.ok(check((0 - 1))))))
+    print(console, __render(option.is_none(result.err(check(5)))))
+    print(console, __render(string.length(option.unwrap_or(result.err(check((0 - 1))), ""))))
 "#;
         let sources = [("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
@@ -10778,11 +10778,11 @@ import list
 fn main(console: Console):
     let s = list.sort([3, 1, 4, 1, 5, 9, 2, 6])
     for x in s:
-        print(console, to_string(x))
+        print(console, __render(x))
     let u = list.unique([1, 2, 2, 3, 1, 4, 3])
-    print(console, to_string(list.length(u)))
+    print(console, __render(list.length(u)))
     for x in u:
-        print(console, to_string(x))
+        print(console, __render(x))
 "#;
         let sources = [("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
@@ -10833,11 +10833,11 @@ fn mk() -> List(P):
 fn main(console: Console):
     let o = lookup(7)
     match o:
-        Some(a) -> print(console, to_string((a).balance))
+        Some(a) -> print(console, __render((a).balance))
         None -> print(console, "none")
     let xs = mk()
     for p in xs:
-        print(console, to_string((p).x))
+        print(console, __render((p).x))
 "#;
         let sources = [("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
@@ -10883,10 +10883,10 @@ fn process(n: Int) -> Result(Int, String):
 
 fn main(console: Console):
     match process(5):
-        Ok(v) -> print(console, to_string(v))
+        Ok(v) -> print(console, __render(v))
         Err(e) -> print(console, e)
     match process((0 - 1)):
-        Ok(v) -> print(console, to_string(v))
+        Ok(v) -> print(console, __render(v))
         Err(e) -> print(console, e)
 "#;
         let sources = [("main", client)];
@@ -10917,7 +10917,7 @@ fn render(j: Json) -> String:
     match j:
         JNull -> "null"
         JBool(b) -> if b: "true" else: "false"
-        JNum(n) -> to_string(n)
+        JNum(n) -> __render(n)
         JStr(s) -> (("\"" <> s) <> "\"")
         JArr(items) -> (("[" <> string.join(list.map(items, render), ",")) <> "]")
 
@@ -10949,7 +10949,7 @@ fn line_total(it: Item) -> Int:
 fn main(console: Console):
     let cart = [Item("apple", 50, 3), Item("bread", 200, 1), Item("milk", 150, 2)]
     let total = list.fold(cart, 0, fn(acc: Int, it: Item): (acc + line_total(it)))
-    print(console, to_string(total))
+    print(console, __render(total))
     match list.max_by(cart, fn(a: Item, b: Item): (line_total(a) < line_total(b))):
         Some(it) -> print(console, (it).name)
         None -> print(console, "none")
@@ -10957,7 +10957,7 @@ fn main(console: Console):
     for it in multi:
         print(console, (it).name)
     match list.find(cart, fn(it: Item): ((it).name == "bread")):
-        Some(it) -> print(console, to_string((it).price))
+        Some(it) -> print(console, __render((it).price))
         None -> print(console, "0")
 "#;
         let sources = [("main", client)];
@@ -10984,9 +10984,9 @@ fn main(console: Console):
     let raws = [Raw(1, 2), Raw(3, 4)]
     let pts = list.map(raws, fn(r: Raw): Point(((r).a + (r).b), ((r).a * (r).b)))
     for p in pts:
-        print(console, to_string((p).x))
+        print(console, __render((p).x))
     for p in list.map(raws, fn(r: Raw): Point((r).b, (r).a)):
-        print(console, to_string((p).y))
+        print(console, __render((p).y))
 "#;
         let sources = [("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
@@ -11008,9 +11008,9 @@ fn main(console: Console):
     let ps = [P(1, 10), P(2, 20), P(3, 30)]
     let evens = list.filter(ps, fn(p: P): (((p).x % 2) == 0))
     for p in evens:
-        print(console, to_string((p).y))
+        print(console, __render((p).y))
     for p in list.reverse(ps):
-        print(console, to_string((p).x))
+        print(console, __render((p).x))
 "#;
         let sources = [("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
@@ -11032,13 +11032,13 @@ type Account:
 fn main(console: Console):
     let accounts = [Account(1, 100), Account(2, 200), Account(3, 300)]
     match list.find(accounts, fn(a: Account): ((a).balance > 150)):
-        Some(acc) -> print(console, to_string((acc).balance))
+        Some(acc) -> print(console, __render((acc).balance))
         None -> print(console, "none")
     match list.head(accounts):
-        Some(acc) -> print(console, to_string((acc).id))
+        Some(acc) -> print(console, __render((acc).id))
         None -> print(console, "none")
     match list.find(accounts, fn(a: Account): ((a).balance > 999)):
-        Some(acc) -> print(console, to_string((acc).id))
+        Some(acc) -> print(console, __render((acc).id))
         None -> print(console, "none")
 "#;
         let sources = [("main", client)];
@@ -11065,10 +11065,10 @@ fn lookup(n: Int) -> Option(Account):
 
 fn main(console: Console):
     match lookup(5):
-        Some(a) -> print(console, to_string((a).balance))
+        Some(a) -> print(console, __render((a).balance))
         None -> print(console, "none")
     match lookup((0 - 1)):
-        Some(a) -> print(console, to_string((a).balance))
+        Some(a) -> print(console, __render((a).balance))
         None -> print(console, "none")
 "#;
         let sources = [("main", client)];
@@ -11097,9 +11097,9 @@ fn f(s: Shape) -> Int:
         Origin -> 0
 
 fn main(console: Console):
-    print(console, to_string(f(Circle(Point(3, 4)))))
-    print(console, to_string(f(Circle(Point(10, 1)))))
-    print(console, to_string(f(Origin)))
+    print(console, __render(f(Circle(Point(3, 4)))))
+    print(console, __render(f(Circle(Point(10, 1)))))
+    print(console, __render(f(Origin)))
 "#;
         assert_eq!(interp(src), run_on_wasm(src), "nested constructor pattern diverged");
         assert_eq!(run_on_wasm(src), vec!["7", "11", "0"]);
@@ -11122,8 +11122,8 @@ fn describe(s: Shape) -> Int:
         Rect(w, h) -> (w * h)
 
 fn main(console: Console):
-    print(console, to_string(describe(Circle(Point(3, 4)))))
-    print(console, to_string(describe(Rect(5, 6))))
+    print(console, __render(describe(Circle(Point(3, 4)))))
+    print(console, __render(describe(Rect(5, 6))))
 "#;
         assert_eq!(interp(src), run_on_wasm(src), "match record-field bind diverged");
         assert_eq!(run_on_wasm(src), vec!["7", "30"]);
@@ -11141,10 +11141,10 @@ import option
 
 fn main(console: Console):
     let mx = list.reduce([3, 1, 4, 1, 5], fn(a: Int, b: Int): if (a > b): a else: b)
-    print(console, to_string(option.unwrap_or(mx, 0)))
-    print(console, to_string(option.is_none(list.reduce([], fn(a: Int, b: Int): (a + b)))))
+    print(console, __render(option.unwrap_or(mx, 0)))
+    print(console, __render(option.is_none(list.reduce([], fn(a: Int, b: Int): (a + b)))))
     let sum = list.reduce([10, 20, 30], fn(a: Int, b: Int): (a + b))
-    print(console, to_string(option.unwrap_or(sum, 0)))
+    print(console, __render(option.unwrap_or(sum, 0)))
 "#;
         let sources = [("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
@@ -11161,9 +11161,9 @@ import option
 
 fn main(console: Console):
     let r = list.find_map([3, 5, 8, 10], fn(x: Int): if ((x % 2) == 0): Some((x / 2)) else: None)
-    print(console, to_string(option.unwrap_or(r, (0 - 1))))
+    print(console, __render(option.unwrap_or(r, (0 - 1))))
     let none = list.find_map([1, 3, 5], fn(x: Int): if (x > 100): Some(x) else: None)
-    print(console, to_string(option.is_none(none)))
+    print(console, __render(option.is_none(none)))
 "#;
         let sources = [("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
@@ -11180,10 +11180,10 @@ import option
 
 fn main(console: Console):
     let xs = [3, 1, 4, 1, 5, 9, 2]
-    print(console, to_string(option.unwrap_or(list.max_by(xs, fn(a: Int, b: Int): (a < b)), 0)))
-    print(console, to_string(option.unwrap_or(list.min_by(xs, fn(a: Int, b: Int): (a < b)), 0)))
-    print(console, to_string(option.unwrap_or(list.max_by(xs, fn(a: Int, b: Int): ((0 - a) < (0 - b))), 0)))
-    print(console, to_string(option.is_none(list.max_by([], fn(a: Int, b: Int): (a < b)))))
+    print(console, __render(option.unwrap_or(list.max_by(xs, fn(a: Int, b: Int): (a < b)), 0)))
+    print(console, __render(option.unwrap_or(list.min_by(xs, fn(a: Int, b: Int): (a < b)), 0)))
+    print(console, __render(option.unwrap_or(list.max_by(xs, fn(a: Int, b: Int): ((0 - a) < (0 - b))), 0)))
+    print(console, __render(option.is_none(list.max_by([], fn(a: Int, b: Int): (a < b)))))
 "#;
         let sources = [("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
@@ -11199,11 +11199,11 @@ import list
 import option
 
 fn main(console: Console):
-    print(console, to_string(option.unwrap_or(list.min([3, 1, 4, 1, 5]), 0)))
-    print(console, to_string(option.unwrap_or(list.max([3, 1, 4, 1, 5]), 0)))
-    print(console, to_string(option.is_none(list.min([]))))
-    print(console, to_string(option.unwrap_or(list.position([10, 20, 30], 20), (0 - 1))))
-    print(console, to_string(option.is_none(list.position([10, 20], 99))))
+    print(console, __render(option.unwrap_or(list.min([3, 1, 4, 1, 5]), 0)))
+    print(console, __render(option.unwrap_or(list.max([3, 1, 4, 1, 5]), 0)))
+    print(console, __render(option.is_none(list.min([]))))
+    print(console, __render(option.unwrap_or(list.position([10, 20, 30], 20), (0 - 1))))
+    print(console, __render(option.is_none(list.position([10, 20], 99))))
 "#;
         let sources = [("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
@@ -11219,13 +11219,13 @@ import list
 import option
 
 fn main(console: Console):
-    print(console, to_string(option.unwrap_or(list.head([10, 20]), 0)))
-    print(console, to_string(option.unwrap_or(list.head([]), (0 - 1))))
-    print(console, to_string(option.unwrap_or(list.last([10, 20]), 0)))
-    print(console, to_string(option.unwrap_or(list.get([10, 20, 30], 1), 0)))
-    print(console, to_string(option.unwrap_or(list.get([10], 5), (0 - 1))))
-    print(console, to_string(option.unwrap_or(list.find([1, 3, 4], fn(n: Int): ((n % 2) == 0)), (0 - 1))))
-    print(console, to_string(option.is_none(list.find([1, 3, 5], fn(n: Int): ((n % 2) == 0)))))
+    print(console, __render(option.unwrap_or(list.head([10, 20]), 0)))
+    print(console, __render(option.unwrap_or(list.head([]), (0 - 1))))
+    print(console, __render(option.unwrap_or(list.last([10, 20]), 0)))
+    print(console, __render(option.unwrap_or(list.get([10, 20, 30], 1), 0)))
+    print(console, __render(option.unwrap_or(list.get([10], 5), (0 - 1))))
+    print(console, __render(option.unwrap_or(list.find([1, 3, 4], fn(n: Int): ((n % 2) == 0)), (0 - 1))))
+    print(console, __render(option.is_none(list.find([1, 3, 5], fn(n: Int): ((n % 2) == 0)))))
 "#;
         let sources = [("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
@@ -11243,12 +11243,12 @@ fn main(console: Console):
 import list
 
 fn main(console: Console):
-    print(console, to_string(list.head_or([10, 20, 30], 0)))
-    print(console, to_string(list.head_or([], (0 - 1))))
-    print(console, to_string(list.last_or([10, 20, 30], 0)))
-    print(console, to_string(list.last_or([], (0 - 1))))
-    print(console, to_string(list.find_or([1, 3, 4, 7], fn(n: Int): ((n % 2) == 0), (0 - 1))))
-    print(console, to_string(list.find_or([1, 3, 5], fn(n: Int): ((n % 2) == 0), (0 - 1))))
+    print(console, __render(list.head_or([10, 20, 30], 0)))
+    print(console, __render(list.head_or([], (0 - 1))))
+    print(console, __render(list.last_or([10, 20, 30], 0)))
+    print(console, __render(list.last_or([], (0 - 1))))
+    print(console, __render(list.find_or([1, 3, 4, 7], fn(n: Int): ((n % 2) == 0), (0 - 1))))
+    print(console, __render(list.find_or([1, 3, 5], fn(n: Int): ((n % 2) == 0), (0 - 1))))
 "#;
         let sources = [("list", crate::bundled_module("list").unwrap()), ("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
@@ -11266,11 +11266,11 @@ import list
 
 fn main(console: Console):
     let ws = list.windows([1, 2, 3, 4], 2)
-    print(console, to_string(list.length(ws)))
+    print(console, __render(list.length(ws)))
     for w in ws:
-        print(console, to_string(list.sum(w)))
-    print(console, to_string(list.length(list.windows([1, 2], 5))))
-    print(console, to_string(list.length(list.windows([1, 2, 3], 0))))
+        print(console, __render(list.sum(w)))
+    print(console, __render(list.length(list.windows([1, 2], 5))))
+    print(console, __render(list.length(list.windows([1, 2, 3], 0))))
 "#;
         let sources = [("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
@@ -11288,14 +11288,14 @@ import list
 
 fn main(console: Console):
     let (a, b) = list.split_at([1, 2, 3, 4, 5], 2)
-    print(console, to_string(list.sum(a)))
-    print(console, to_string(list.sum(b)))
+    print(console, __render(list.sum(a)))
+    print(console, __render(list.sum(b)))
     let (c, d) = list.split_at([1, 2], 5)
-    print(console, to_string(list.sum(c)))
-    print(console, to_string(list.length(d)))
+    print(console, __render(list.sum(c)))
+    print(console, __render(list.length(d)))
     let (e, f) = list.split_at([1, 2, 3], 0)
-    print(console, to_string(list.length(e)))
-    print(console, to_string(list.sum(f)))
+    print(console, __render(list.length(e)))
+    print(console, __render(list.sum(f)))
 "#;
         let sources = [("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
@@ -11314,13 +11314,13 @@ import list
 
 fn main(console: Console):
     let cs = list.chunks([1, 2, 3, 4, 5], 2)
-    print(console, to_string(list.length(cs)))
+    print(console, __render(list.length(cs)))
     for c in cs:
-        print(console, to_string(list.sum(c)))
-    print(console, to_string(list.sum(list.tail([1, 2, 3]))))
-    print(console, to_string(list.sum(list.drop_last([1, 2, 3]))))
-    print(console, to_string(list.length(list.tail([]))))
-    print(console, to_string(list.length(list.drop_last([]))))
+        print(console, __render(list.sum(c)))
+    print(console, __render(list.sum(list.tail([1, 2, 3]))))
+    print(console, __render(list.sum(list.drop_last([1, 2, 3]))))
+    print(console, __render(list.length(list.tail([]))))
+    print(console, __render(list.length(list.drop_last([]))))
 "#;
         let sources = [("list", crate::bundled_module("list").unwrap()), ("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
@@ -11342,9 +11342,9 @@ type Item:
 
 fn main(console: Console):
     let cart = [Item(50, 3), Item(200, 1), Item(150, 2)]
-    print(console, to_string(list.sum_by(cart, fn(it: Item): ((it).price * (it).qty))))
-    print(console, to_string(list.sum_by([1, 2, 3, 4], fn(n: Int): (n * n))))
-    print(console, to_string(list.sum_by([], fn(n: Int): n)))
+    print(console, __render(list.sum_by(cart, fn(it: Item): ((it).price * (it).qty))))
+    print(console, __render(list.sum_by([1, 2, 3, 4], fn(n: Int): (n * n))))
+    print(console, __render(list.sum_by([], fn(n: Int): n)))
 "#;
         let sources = [("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
@@ -11361,14 +11361,14 @@ fn main(console: Console):
 import list
 
 fn main(console: Console):
-    print(console, to_string(list.product([1, 2, 3, 4])))
-    print(console, to_string(list.product([])))
+    print(console, __render(list.product([1, 2, 3, 4])))
+    print(console, __render(list.product([])))
     let s = list.slice([10, 20, 30, 40, 50], 1, 4)
     for x in s:
-        print(console, to_string(x))
+        print(console, __render(x))
     let running = list.scan([1, 2, 3], 0, fn(acc: Int, n: Int): (acc + n))
     for x in running:
-        print(console, to_string(x))
+        print(console, __render(x))
 "#;
         let sources = [("list", crate::bundled_module("list").unwrap()), ("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
@@ -11397,10 +11397,10 @@ fn sub(a: Int, b: Int) -> Int:
 
 fn main(console: Console):
     let h = func.compose(double, inc)
-    print(console, to_string(h(10)))
-    print(console, to_string((func.flip(sub))(3, 10)))
-    print(console, to_string((func.constant(42))(999)))
-    print(console, to_string(func.identity(7)))
+    print(console, __render(h(10)))
+    print(console, __render((func.flip(sub))(3, 10)))
+    print(console, __render((func.constant(42))(999)))
+    print(console, __render(func.identity(7)))
 "#;
         let sources = [("func", crate::bundled_module("func").unwrap()), ("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
@@ -11427,8 +11427,8 @@ fn inc(x: Int) -> Int:
 
 fn main(console: Console):
     let h = compose(double, inc)
-    print(console, to_string(h(10)))
-    print(console, to_string((compose(inc, double))(10)))
+    print(console, __render(h(10)))
+    print(console, __render((compose(inc, double))(10)))
 "#;
         assert_eq!(interp(src), run_on_wasm(src), "compose diverged");
         assert_eq!(run_on_wasm(src), vec!["22", "21"]);
@@ -11448,9 +11448,9 @@ fn inc(x: Int) -> Int:
 
 fn main(console: Console):
     let f = double
-    print(console, to_string(f(5)))
+    print(console, __render(f(5)))
     let g = inc
-    print(console, to_string(g(g(g(0)))))
+    print(console, __render(g(g(g(0)))))
 "#;
         assert_eq!(interp(src), run_on_wasm(src), "function-as-value diverged");
         assert_eq!(run_on_wasm(src), vec!["10", "3"]);
@@ -11470,7 +11470,7 @@ fn triple(x: Int) -> Int:
 fn main(console: Console):
     let ys = list.map([1, 2, 3], triple)
     for y in ys:
-        print(console, to_string(y))
+        print(console, __render(y))
 "#;
         let sources = [("list", crate::bundled_module("list").unwrap()), ("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
@@ -11488,11 +11488,11 @@ fn twice(f: fn(Int) -> Int, x: Int) -> Int:
 fn main(console: Console):
     let make_adder = fn(x: Int): fn(y: Int): (x + y)
     let make_mul = fn(a: Int): fn(b: Int): fn(c: Int): ((a * b) * c)
-    print(console, to_string((make_adder(10))(5)))
-    print(console, to_string(((make_mul(2))(3))(4)))
-    print(console, to_string((fn(n: Int): (n * n))(7)))
-    print(console, to_string(twice(make_adder(1), 10)))
-    print(console, to_string((make_adder(10))((make_adder(2))(3))))
+    print(console, __render((make_adder(10))(5)))
+    print(console, __render(((make_mul(2))(3))(4)))
+    print(console, __render((fn(n: Int): (n * n))(7)))
+    print(console, __render(twice(make_adder(1), 10)))
+    print(console, __render((make_adder(10))((make_adder(2))(3))))
 "#;
         assert_eq!(interp(src), run_on_wasm(src), "immediate application diverged");
         assert_eq!(run_on_wasm(src), vec!["15", "24", "49", "12", "15"]);
@@ -11509,11 +11509,11 @@ fn main(console: Console):
     while (i < 5):
         total = (total + add(i))
         i = (i + 1)
-    print(console, to_string(total))
+    print(console, __render(total))
     let make_adder = fn(x: Int): fn(y: Int): (x + y)
     let add3 = make_adder(3)
-    print(console, to_string(add3(4)))
-    print(console, to_string((make_adder(100))(1)))
+    print(console, __render(add3(4)))
+    print(console, __render((make_adder(100))(1)))
     if ("abc" < "abcd"):
         print(console, "lt1")
     else:
@@ -11538,16 +11538,16 @@ fn main(console: Console):
     fn string_edge_cases_backends_agree() {
         let src = r#"
 fn main(console: Console):
-    print(console, to_string(list.length(string.split("abc", ""))))
-    print(console, to_string(list.length(string.split("abc", "x"))))
-    print(console, to_string(list.length(string.split("a,b,c", ","))))
+    print(console, __render(list.length(string.split("abc", ""))))
+    print(console, __render(list.length(string.split("abc", "x"))))
+    print(console, __render(list.length(string.split("a,b,c", ","))))
     print(console, (("[" <> string.substring("", 0, 5)) <> "]"))
     print(console, (("[" <> string.substring("hello", 3, 1)) <> "]"))
     print(console, string.substring("hello", 2, 100))
-    print(console, to_string(string.index_of("hello", "")))
-    print(console, to_string(string.index_of("hello", "z")))
+    print(console, __render(string.index_of("hello", "")))
+    print(console, __render(string.index_of("hello", "z")))
     print(console, (("[" <> (("" <> "x") <> "")) <> "]"))
-    print(console, to_string(string.length("")))
+    print(console, __render(string.length("")))
 "#;
         assert_eq!(interp(src), run_on_wasm(src), "string edge cases diverged");
     }
@@ -11562,7 +11562,7 @@ fn main(console: Console):
     print(console, string.trim("\t\nfoo\r\n"))
     print(console, string.trim("nospaces"))
     print(console, string.trim("   "))
-    print(console, to_string(string.length(string.trim("  a b  "))))
+    print(console, __render(string.length(string.trim("  a b  "))))
 "#;
         assert_eq!(interp(src), run_on_wasm(src));
         assert_eq!(run_on_wasm(src), vec!["hello", "foo", "nospaces", "", "3"]);
@@ -11587,7 +11587,7 @@ fn main(console: Console):
     match json.decode("{\"user\":{\"name\":\"witchy\",\"age\":1},\"tags\":[\"a\"]}"):
         Ok(j) ->
             print(console, str_at(j, "user.name"))
-            print(console, to_string(int_at(j, "user.age")))
+            print(console, __render(int_at(j, "user.age")))
             print(console, str_at(j, "user.missing"))
         Err(e) -> print(console, e)
 "#;
@@ -11608,7 +11608,7 @@ import list
 
 fn main(console: Console):
     let xs = list.map([1, 2, 3], fn(x: Int): (x * 2))
-    print(console, to_string(list.sum(xs)))
+    print(console, __render(list.sum(xs)))
 "#;
         let mods = vec![("main".to_string(), parser::parse_module(client).expect("parse"))];
         let linked = crate::linker::link(mods, "main").expect("link");
@@ -11633,7 +11633,7 @@ fn main(console: Console):
 import url
 fn describe(s: String) -> String:
     match url.parse(s):
-        Ok(u) -> url.scheme(u) <> " " <> url.host(u) <> " " <> to_string(url.port(u)) <> " " <> url.path(u)
+        Ok(u) -> url.scheme(u) <> " " <> url.host(u) <> " " <> __render(url.port(u)) <> " " <> url.path(u)
         Err(e) -> "invalid: " <> e
 fn main(console: Console):
     print(console, describe("http://example.com"))
@@ -11732,7 +11732,7 @@ trait Show:
 
 impl Show for Int:
     fn show(self) -> String:
-        to_string(self)
+        __render(self)
 
 impl Show for Bool:
     fn show(self) -> String:
@@ -11770,8 +11770,8 @@ impl Area for Shape:
             Square(s) -> (s * s)
 
 fn main(console: Console):
-    print(console, to_string(area(Circle(2))))
-    print(console, to_string(area(Square(3))))
+    print(console, __render(area(Circle(2))))
+    print(console, __render(area(Square(3))))
 "#;
         assert_eq!(interp(src), run_on_wasm(src), "trait ADT dispatch diverged");
         assert_eq!(run_on_wasm(src), vec!["12", "9"]);
@@ -11819,7 +11819,7 @@ trait Show:
 
 impl Show for Int:
     fn show(self) -> String:
-        to_string(self)
+        __render(self)
 
 impl Show for Bool:
     fn show(self) -> String:
@@ -11861,14 +11861,14 @@ impl Ord for Money:
                 Money(b) -> if (a < b): (-1) else: if (a > b): 1 else: 0
 
 fn main(console: Console):
-    print(console, to_string(compare(3, 5)))
-    print(console, to_string(less(3, 5)))
-    print(console, to_string(greater_equal(5, 5)))
-    print(console, to_string(compare(1.5, 0.5)))
-    print(console, to_string(less(1.5, 2.5)))
-    print(console, to_string(compare(Money(10), Money(4))))
-    print(console, to_string(greater(Money(10), Money(4))))
-    print(console, to_string(equal(Money(7), Money(7))))
+    print(console, __render(compare(3, 5)))
+    print(console, __render(less(3, 5)))
+    print(console, __render(greater_equal(5, 5)))
+    print(console, __render(compare(1.5, 0.5)))
+    print(console, __render(less(1.5, 2.5)))
+    print(console, __render(compare(Money(10), Money(4))))
+    print(console, __render(greater(Money(10), Money(4))))
+    print(console, __render(equal(Money(7), Money(7))))
 "#;
         let sources = [("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
@@ -11894,7 +11894,7 @@ type Point:
 impl Show for Point:
     fn show(self) -> String:
         match self:
-            Point(x, y) -> (((("(" <> to_string(x)) <> ", ") <> to_string(y)) <> ")")
+            Point(x, y) -> (((("(" <> __render(x)) <> ", ") <> __render(y)) <> ")")
 
 fn main(console: Console):
     print(console, show(42))
@@ -11938,9 +11938,9 @@ fn unbox(b: Box) -> Int:
         Box(n) -> n
 
 fn main(console: Console):
-    print(console, to_string(pick_max(3, 7)))
-    print(console, to_string(pick_max(20, 5)))
-    print(console, to_string(unbox(pick_max(Box(4), Box(11)))))
+    print(console, __render(pick_max(3, 7)))
+    print(console, __render(pick_max(20, 5)))
+    print(console, __render(unbox(pick_max(Box(4), Box(11)))))
 "#;
         let sources = [("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
@@ -11972,11 +11972,11 @@ fn unbox(b: Box) -> Int:
         Box(n) -> n
 
 fn main(console: Console):
-    print(console, to_string(ord.max_of((-5), 3)))
-    print(console, to_string(ord.min_of(8, 2)))
-    print(console, to_string(ord.clamp(10, 0, 5)))
-    print(console, to_string(ord.clamp(0, 3, 9)))
-    print(console, to_string(unbox(ord.max_of(Box(4), Box(11)))))
+    print(console, __render(ord.max_of((-5), 3)))
+    print(console, __render(ord.min_of(8, 2)))
+    print(console, __render(ord.clamp(10, 0, 5)))
+    print(console, __render(ord.clamp(0, 3, 9)))
+    print(console, __render(unbox(ord.max_of(Box(4), Box(11)))))
 "#;
         let sources = [("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
@@ -12009,10 +12009,10 @@ fn unbox(b: Box) -> Int:
         Box(n) -> n
 
 fn main(console: Console):
-    print(console, to_string(ord.maximum([3, 7, 2, 9, 4], 0)))
-    print(console, to_string(ord.minimum([3, 7, 2, 9, 4], 100)))
-    print(console, to_string(ord.maximum([], 42)))
-    print(console, to_string(unbox(ord.maximum([Box(2), Box(8), Box(5)], Box(0)))))
+    print(console, __render(ord.maximum([3, 7, 2, 9, 4], 0)))
+    print(console, __render(ord.minimum([3, 7, 2, 9, 4], 100)))
+    print(console, __render(ord.maximum([], 42)))
+    print(console, __render(unbox(ord.maximum([Box(2), Box(8), Box(5)], Box(0)))))
 "#;
         let sources = [("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
@@ -12042,7 +12042,7 @@ fn main(console: Console):
     var total = 0
     for x in xs:
         total = total + x
-    print(console, to_string(total))
+    print(console, __render(total))
 "#;
         assert_eq!(interp(src), run_on_wasm(src), "indentation backends diverged");
         assert_eq!(run_on_wasm(src), vec!["24"]);
@@ -12057,7 +12057,7 @@ trait Show:
 
 impl Show for Int:
     fn show(self) -> String:
-        to_string(self)
+        __render(self)
 
 impl Show for Bool:
     fn show(self) -> String:
@@ -12089,8 +12089,8 @@ fn pair(n: Int) -> (Int, Int):
 
 fn main(console: Console):
     let (x, y) = pair(10)
-    print(console, to_string(x))
-    print(console, to_string(y))
+    print(console, __render(x))
+    print(console, __render(y))
 "#;
         assert_eq!(interp(src), run_on_wasm(src), "block-then-paren diverged");
         assert_eq!(run_on_wasm(src), vec!["6", "10"]);
@@ -12129,7 +12129,7 @@ fn main(console: Console):
 import http
 fn main(console: Console, net: Net):
     let r = http.get(net, "127.0.0.1", {port}, "/")
-    print(console, to_string(http.status(r)))
+    print(console, __render(http.status(r)))
     print(console, http.body(r))
 "#
         );
@@ -12176,7 +12176,7 @@ fn main(console: Console, net: Net):
 import http
 fn main(console: Console, net: Net):
     let r = http.get(net, "127.0.0.1", {port}, "/")
-    print(console, to_string(http.status(r)))
+    print(console, __render(http.status(r)))
     print(console, http.body(r))
 "#
         );
@@ -12239,7 +12239,7 @@ fn main(console: Console, net: Net):
 import http
 fn main(console: Console, net: Net):
     let r = http.post(net, "127.0.0.1", {port}, "/echo", "hello body")
-    print(console, to_string(http.status(r)))
+    print(console, __render(http.status(r)))
     print(console, http.body(r))
 "#
         );
@@ -12379,8 +12379,8 @@ fn main(console: Console):
     match json.decode("{\"name\":\"witchy\",\"version\":3,\"items\":[10,20,30]}"):
         Ok(j) ->
             print(console, option.unwrap_or(json.as_string(field(j, "name")), "?"))
-            print(console, to_string(option.unwrap_or(json.as_int(field(j, "version")), 0)))
-            print(console, to_string(elem_int(j, "items", 1)))
+            print(console, __render(option.unwrap_or(json.as_int(field(j, "version")), 0)))
+            print(console, __render(elem_int(j, "items", 1)))
         Err(e) -> print(console, e)
 "#;
         let sources = [("main", client)];
@@ -12396,11 +12396,11 @@ fn main(console: Console):
     fn hex_binary_literals_backends_agree() {
         let src = r#"
 fn main(console: Console):
-    print(console, to_string(255))
-    print(console, to_string(10))
-    print(console, to_string((255 & 15)))
-    print(console, to_string((12 | 3)))
-    print(console, to_string(65535))
+    print(console, __render(255))
+    print(console, __render(10))
+    print(console, __render((255 & 15)))
+    print(console, __render((12 | 3)))
+    print(console, __render(65535))
 "#;
         assert_eq!(interp(src), run_on_wasm(src), "hex/binary literals diverged");
         assert_eq!(run_on_wasm(src), vec!["255", "10", "15", "15", "65535"]);
@@ -12412,12 +12412,12 @@ fn main(console: Console):
         // are honored, and the parsed value feeds straight into arithmetic.
         let src = r#"
 fn main(console: Console):
-    print(console, to_string(string.to_int("42")))
-    print(console, to_string(string.to_int("-17")))
-    print(console, to_string(string.to_int("  123  ")))
-    print(console, to_string(string.to_int("+8")))
-    print(console, to_string(string.to_int("0")))
-    print(console, to_string((string.to_int("1000000") + 1)))
+    print(console, __render(string.to_int("42")))
+    print(console, __render(string.to_int("-17")))
+    print(console, __render(string.to_int("  123  ")))
+    print(console, __render(string.to_int("+8")))
+    print(console, __render(string.to_int("0")))
+    print(console, __render((string.to_int("1000000") + 1)))
 "#;
         assert_eq!(interp(src), run_on_wasm(src));
         assert_eq!(run_on_wasm(src), vec!["42", "-17", "123", "8", "0", "1000001"]);
@@ -12428,10 +12428,10 @@ fn main(console: Console):
         // ~x = -x-1 (width-independent), so it agrees across backends.
         let src = r#"
 fn main(console: Console):
-    print(console, to_string((~0)))
-    print(console, to_string((~5)))
-    print(console, to_string((~(0 - 1))))
-    print(console, to_string((255 & (~15))))
+    print(console, __render((~0)))
+    print(console, __render((~5)))
+    print(console, __render((~(0 - 1))))
+    print(console, __render((255 & (~15))))
 "#;
         assert_eq!(interp(src), run_on_wasm(src));
         assert_eq!(run_on_wasm(src), vec!["-1", "-6", "0", "240"]);
@@ -12451,13 +12451,13 @@ fn classify(n: Int) -> String:
         _ -> "other"
 
 fn main(console: Console):
-    print(console, to_string((12 & 10)))
-    print(console, to_string((12 | 10)))
-    print(console, to_string((12 ^ 10)))
-    print(console, to_string((1 << 4)))
-    print(console, to_string((256 >> 2)))
-    print(console, to_string(((5 & 3) | 8)))
-    print(console, to_string(((5 & 4) == 4)))
+    print(console, __render((12 & 10)))
+    print(console, __render((12 | 10)))
+    print(console, __render((12 ^ 10)))
+    print(console, __render((1 << 4)))
+    print(console, __render((256 >> 2)))
+    print(console, __render(((5 & 3) | 8)))
+    print(console, __render(((5 & 4) == 4)))
     print(console, classify(2))
     print(console, classify(3))
 "#;
@@ -12498,9 +12498,9 @@ fn main(console: Console):
     print(console, classify(2))
     print(console, classify(5))
     print(console, classify(10))
-    print(console, to_string(side(Circle(5))))
-    print(console, to_string(side(Square(7))))
-    print(console, to_string(side(Rect(3, 4))))
+    print(console, __render(side(Circle(5))))
+    print(console, __render(side(Square(7))))
+    print(console, __render(side(Rect(3, 4))))
 "#;
         assert_eq!(interp(src), run_on_wasm(src));
         assert_eq!(
@@ -12535,8 +12535,8 @@ fn main(console: Console):
     let x = 1
     if true:
         let x = 2
-        print(console, to_string(x))
-    print(console, to_string(x))
+        print(console, __render(x))
+    print(console, __render(x))
 "#;
         assert_eq!(interp(src), run_on_wasm(src));
         assert_eq!(run_on_wasm(src), vec!["2", "1"]);
@@ -12555,12 +12555,12 @@ type Bag:
 fn main(console: Console):
     let b = Bag([10, 20, 30], "nums")
     print(console, (b).label)
-    print(console, to_string(list.length((b).items)))
+    print(console, __render(list.length((b).items)))
     var total = 0
     for x in (b).items:
         total = (total + x)
-    print(console, to_string(total))
-    print(console, to_string(list.at((b).items, 1)))
+    print(console, __render(total))
+    print(console, __render(list.at((b).items, 1)))
 "#;
         assert_eq!(interp(src), run_on_wasm(src));
         assert_eq!(run_on_wasm(src), vec!["nums", "3", "60", "20"]);
@@ -12581,11 +12581,11 @@ type Outer:
 
 fn main(console: Console):
     let o = Outer("x", Inner(42))
-    print(console, to_string(((o).inner).v))
+    print(console, __render(((o).inner).v))
     let o2 = Outer(inner: Inner((((o).inner).v + 1)), ..o)
-    print(console, to_string(((o2).inner).v))
+    print(console, __render(((o2).inner).v))
     print(console, (o).name)
-    print(console, to_string(((o).inner).v))
+    print(console, __render(((o).inner).v))
 "#;
         assert_eq!(interp(src), run_on_wasm(src));
         assert_eq!(run_on_wasm(src), vec!["42", "43", "x", "42"]);
@@ -12609,14 +12609,14 @@ fn main(console: Console):
     var x = 3
     var y = 8
     swap(x, y)
-    print(console, to_string(x))
-    print(console, to_string(y))
+    print(console, __render(x))
+    print(console, __render(y))
     var acc = 0
     var i = 1
     while (i < 5):
         bump_by(acc, i)
         i = (i + 1)
-    print(console, to_string(acc))
+    print(console, __render(acc))
 "#;
         assert_eq!(interp(src), run_on_wasm(src));
         // And the concrete values, to be sure both compute the right thing.

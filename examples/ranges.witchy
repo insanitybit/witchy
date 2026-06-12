@@ -30,6 +30,6 @@ fn grade(score: Int) -> String:
 
 fn main(console: Console):
     for code in [200, 204, 301, 404, 503, 600]:
-        print(console, to_string(code) <> " -> " <> http_class(code))
+        print(console, "${code}" <> " -> " <> http_class(code))
     for score in [95, 83, 71, 42]:
-        print(console, to_string(score) <> " -> " <> grade(score))
+        print(console, "${score}" <> " -> " <> grade(score))

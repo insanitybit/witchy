@@ -10,4 +10,4 @@ fn main(console: Console):
 
     print(console, key)
     print(console, value)
-    print(console, to_string(string.ends_with(setting, "30")))
+    print(console, "${string.ends_with(setting, "30")}")

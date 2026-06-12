@@ -71,7 +71,7 @@ fn eval(s: String) -> Int:
     value
 
 fn main(console: Console):
-    print(console, "2 + 3 * 4        = " <> to_string(eval("2 + 3 * 4")))
-    print(console, "(2 + 3) * 4      = " <> to_string(eval("(2 + 3) * 4")))
-    print(console, "100 - 2 * (3 + 4) = " <> to_string(eval("100 - 2 * (3 + 4)")))
-    print(console, "7 + 6 / 2 - 1    = " <> to_string(eval("7 + 6 / 2 - 1")))
+    print(console, "2 + 3 * 4        = " <> "${eval("2 + 3 * 4")}")
+    print(console, "(2 + 3) * 4      = " <> "${eval("(2 + 3) * 4")}")
+    print(console, "100 - 2 * (3 + 4) = " <> "${eval("100 - 2 * (3 + 4)")}")
+    print(console, "7 + 6 / 2 - 1    = " <> "${eval("7 + 6 / 2 - 1")}")

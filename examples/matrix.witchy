@@ -20,7 +20,7 @@ fn show(console: Console, m: List(List(Int))):
     for row in m:
         var cells = []
         for value in row:
-            cells = list.push(cells, string.pad_left(to_string(value), width, " "))
+            cells = list.push(cells, string.pad_left("${value}", width, " "))
         print(console, "[ " <> string.join(cells, " ") <> " ]")
 
 // The widest decimal cell, so every column lines up.
@@ -28,7 +28,7 @@ fn cell_width(m: List(List(Int))) -> Int:
     var width = 1
     for row in m:
         for value in row:
-            let len = string.length(to_string(value))
+            let len = string.length("${value}")
             if len > width:
                 width = len
     width

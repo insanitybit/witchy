@@ -22,9 +22,9 @@ fn record(out: Option(Dir[Write]), name: String, line: String) -> Bool:
 
 fn main(console: Console, dir: Dir[Write]):
     let wrote = record(Some(dir), "log.txt", "started")
-    print(console, to_string(wrote))
+    print(console, "${wrote}")
     let skipped = record(None, "log.txt", "goes nowhere")
-    print(console, to_string(skipped))
+    print(console, "${skipped}")
 ```
 
 You construct the values with `Some(dir)` and `None` like any other option — a

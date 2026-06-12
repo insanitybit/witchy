@@ -6,7 +6,7 @@
 //   witchy examples/queens.witchy
 fn main(console: Console):
     let n = 8
-    print(console, to_string(n) <> "-queens solutions: " <> to_string(count(n, [])))
+    print(console, "${n}" <> "-queens solutions: " <> "${count(n, [])}")
     print(console, "first solution:")
     for queen_col in solve(n, []):
         print(console, row_string(queen_col, n))

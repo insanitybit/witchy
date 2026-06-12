@@ -90,7 +90,7 @@ fn main(console: Console, clock: Clock):
         // Only `console` survives; every other capability is dropped.
         print(console, "this region can print and nothing else")
 
-    print(console, to_string(now(clock)))   // outside, clock is back
+    print(console, "${now(clock)}")
 ```
 
 `retain:` with no names is a complete sandbox — no authority survives, so the

@@ -11,4 +11,4 @@ fn area(s: Shape) -> Int:
         Square(w) -> w * w
 
 fn main(console: Console):
-    print(console, to_string(area(Circle(10)) + area(Square(5))))
+    print(console, "${area(Circle(10)) + area(Square(5))}")

@@ -1451,7 +1451,7 @@ Render a list as "[a, b, c]" using each element's Show impl — reach for this w
 
 #### `fn say(console: Console, x: impl Show)`
 
-Print any `Show` value without converting it by hand — `say(console, 42)`, `say(console, point)`. The Show-accepting `print` you reach for instead of `print(console, to_string(n))`. (A thin wrapper kept out of the `print` builtin so a builtin never depends on a std trait.)
+Print any `Show` value without converting it by hand — `say(console, 42)`, `say(console, point)`. The Show-accepting `print` you reach for instead of `print(console, "${n}")`. (A thin wrapper kept out of the `print` builtin so a builtin never depends on a std trait.)
 
 ## `string`
 
@@ -1599,7 +1599,7 @@ The witchy test support module. `witchy test <file>` discovers every zero-parame
 
   import testing
 
-  fn test_addition():       testing.assert_eq(to_string(2 + 2), "4")
+  fn test_addition():       testing.assert_eq("${2 + 2}", "4")
 
   fn test_truth():       testing.assert(1 < 2, "one is less than two")
 

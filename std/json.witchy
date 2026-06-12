@@ -24,8 +24,8 @@ pub fn encode(j: Json) -> String:
     match j:
         JsonNull -> "null"
         JsonBool(b) -> if b: "true" else: "false"
-        JsonInt(n) -> to_string(n)
-        JsonFloat(x) -> to_string(x)
+        JsonInt(n) -> "${n}"
+        JsonFloat(x) -> "${x}"
         JsonString(s) -> encode_string(s)
         JsonArray(items) -> encode_array(items)
         JsonObject(pairs) -> encode_object(pairs)
@@ -39,8 +39,8 @@ fn encode_indent(j: Json, depth: Int) -> String:
     match j:
         JsonNull -> "null"
         JsonBool(b) -> if b: "true" else: "false"
-        JsonInt(n) -> to_string(n)
-        JsonFloat(x) -> to_string(x)
+        JsonInt(n) -> "${n}"
+        JsonFloat(x) -> "${x}"
         JsonString(s) -> encode_string(s)
         JsonArray(items) -> pretty_array(items, depth)
         JsonObject(pairs) -> pretty_object(pairs, depth)
@@ -144,7 +144,7 @@ pub fn decode(s: String) -> Result(Json, String):
     let (v, rest) = r
     let end = skip_ws(s, rest)
     if end < string.char_count(s):
-        Err("unexpected trailing content at " <> to_string(end))
+        Err("unexpected trailing content at " <> "${end}")
     else:
         Ok(v)
 
@@ -186,7 +186,7 @@ fn parse_lit(s: String, i: Int, word: String, value: Json) -> Result((Json, Int)
     if i + n <= string.char_count(s) && string.substring(s, i, i + n) == word:
         Ok((value, i + n))
     else:
-        Err("invalid literal at " <> to_string(i))
+        Err("invalid literal at " <> "${i}")
 
 fn is_digit(c: String) -> Bool:
     c == "0" || c == "1" || c == "2" || c == "3" || c == "4" || c == "5" || c == "6" || c == "7" || c == "8" || c == "9"
@@ -201,7 +201,7 @@ fn parse_number(s: String, i: Int) -> Result((Json, Int), String):
         j = j + 1
         digits = digits + 1
     if digits == 0:
-        Err("invalid number at " <> to_string(i))
+        Err("invalid number at " <> "${i}")
     else if j < n && is_float_tail(string.substring(s, j, j + 1)):
         parse_float_tail(s, i, j)
     else:
@@ -222,7 +222,7 @@ fn parse_float_tail(s: String, start: Int, ip_end: Int) -> Result((Json, Int), S
             frac_digits = frac_digits + 1
             j = j + 1
         if frac_digits == 0:
-            return Err("invalid number at " <> to_string(start))
+            return Err("invalid number at " <> "${start}")
     var exp = 0
     var exp_neg = false
     if j < n && (string.substring(s, j, j + 1) == "e" || string.substring(s, j, j + 1) == "E"):
@@ -238,7 +238,7 @@ fn parse_float_tail(s: String, start: Int, ip_end: Int) -> Result((Json, Int), S
             exp_digits = exp_digits + 1
             j = j + 1
         if exp_digits == 0:
-            return Err("invalid number at " <> to_string(start))
+            return Err("invalid number at " <> "${start}")
     let ip = string.to_int(string.substring(s, start, ip_end))
     let negative = string.substring(s, start, start + 1) == "-"
     var x = math.to_float(ip)

@@ -75,12 +75,12 @@ import ord
 fn largest(xs: List(a)) -> a where a: Ord:
     var best = list.at(xs, 0)
     for x in xs:
-        if greater(x, best):     // `greater` comes from the Ord trait
+        if greater(x, best):
             best = x
     best
 
 fn main(console: Console):
-    print(console, to_string(largest([3, 9, 2, 7])))
+    print(console, "${largest([3, 9, 2, 7])}")
     print(console, largest(["apple", "pear", "fig"]))
 ```
 
@@ -129,8 +129,8 @@ count: 42
 ```
 
 `say(console, x)` is the `Show`-accepting `print` — reach for it instead of
-`print(console, to_string(x))`. Note the division of labor: interpolation and the
-built-in `to_string` already render *every* value structurally (including bare
+`print(console, "${x}")`. Note the division of labor: interpolation and the
+built-in rendering already covers *every* value structurally (including bare
 lists, tuples, and dicts, which can't carry a `Show` impl); `Show` is for giving
 *your own* types a rendering you choose.
 

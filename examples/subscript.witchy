@@ -20,11 +20,11 @@ fn dot(a: List(Int), b: List(Int)) -> Int:
 fn main(console: Console):
     let u = [1, 2, 3]
     let v = [4, 5, 6]
-    print(console, "dot = " <> to_string(dot(u, v)))
+    print(console, "dot = " <> "${dot(u, v)}")
 
     // A 2D grid, indexed row-then-column with chained subscripts.
     let grid = [[1, 2, 3], [4, 5, 6], [7, 8, 9]]
-    print(console, "grid[1][2] = " <> to_string(grid[1][2]))
+    print(console, "grid[1][2] = " <> "${grid[1][2]}")
 
     // Sum of the main diagonal: grid[i][i].
     var diag = 0
@@ -32,4 +32,4 @@ fn main(console: Console):
     while i < list.length(grid):
         diag = diag + grid[i][i]
         i = i + 1
-    print(console, "diagonal sum = " <> to_string(diag))
+    print(console, "diagonal sum = " <> "${diag}")

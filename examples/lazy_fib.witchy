@@ -19,7 +19,7 @@ fn fib_step(p: (Int, Int)) -> Option((Int, (Int, Int))):
 fn show(xs: List(Int)) -> String:
     var parts = []
     for x in xs:
-        parts = list.push(parts, to_string(x))
+        parts = list.push(parts, "${x}")
     string.join(parts, ", ")
 
 fn main(console: Console):
@@ -30,10 +30,10 @@ fn main(console: Console):
     // sum, all lazy over the infinite stream.
     let small = iter.take_while(fibs(), fn(n: Int): n < 1000)
     let evens = iter.filter(small, fn(n: Int): n % 2 == 0)
-    print(console, "even fib sum < 1000: " <> to_string(iter.sum(evens)))
+    print(console, "even fib sum < 1000: " <> "${iter.sum(evens)}")
 
     // The first Fibonacci number past 1000 — found by scanning an infinite
     // iterator that stops at the first match.
     match iter.find(fibs(), fn(n: Int): n > 1000):
-        Some(n) -> print(console, "first fib > 1000: " <> to_string(n))
+        Some(n) -> print(console, "first fib > 1000: " <> "${n}")
         None -> print(console, "none")

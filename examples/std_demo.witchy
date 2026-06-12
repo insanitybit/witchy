@@ -8,8 +8,8 @@ fn main(console: Console):
     let ns = list.range(5)
     let squares = list.map(ns, fn(n: Int): n * n)
     let total = list.fold(squares, 0, fn(acc: Int, n: Int): acc + n)
-    print(console, to_string(total))
+    print(console, "${total}")
 
     let odds = list.filter(ns, fn(n: Int): n % 2 == 1)
     let rev = list.reverse(odds)
-    print(console, to_string(list.at(rev, 0)))
+    print(console, "${list.at(rev, 0)}")

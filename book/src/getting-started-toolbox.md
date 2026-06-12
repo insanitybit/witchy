@@ -19,7 +19,7 @@ canonical formatter; it preserves your comments and is idempotent, so there's
 one true layout and no style arguments.
 
 Know that `fmt` canonicalizes *forms*, not just whitespace: a
-`"a " <> to_string(x)` chain prints back as the interpolation `"a ${x}"`,
+pre-migration rendering call prints back as the interpolation `"a ${x}"`,
 escaped quotes inside `${...}` become bare, nullary constructors lose their
 `()`, single-statement match arms go inline, and `if let` survives as
 `if let`. Every rewrite is meaning-preserving — the formatter refuses to emit

@@ -14,10 +14,10 @@ type Account:
     balance: Int
 
 fn main(console: Console):
-    let a = Account("ada", 100)                 // positional
-    let b = Account(name: "bob", balance: 5)    // by name
-    print(console, a.name)                       // field access
-    print(console, to_string(b.balance))
+    let a = Account("ada", 100)
+    let b = Account(name: "bob", balance: 5)
+    print(console, a.name)
+    print(console, "${b.balance}")
 ```
 
 ```text
@@ -39,8 +39,8 @@ fn deposit(a: Account, amount: Int) -> Account:
 fn main(console: Console):
     let a = Account("ada", 100)
     let richer = deposit(a, 50)
-    print(console, to_string(richer.balance))
-    print(console, to_string(a.balance))      // the original is untouched
+    print(console, "${richer.balance}")
+    print(console, "${a.balance}")
 ```
 
 ```text
@@ -70,9 +70,9 @@ fn area(s: Shape) -> Int:
         Rectangle(w, h) -> w * h
 
 fn main(console: Console):
-    print(console, to_string(North == North))
-    print(console, to_string(area(Circle(2))))
-    print(console, to_string(area(Rectangle(3, 4))))
+    print(console, "${North == North}")
+    print(console, "${area(Circle(2))}")
+    print(console, "${area(Rectangle(3, 4))}")
 ```
 
 ```text
@@ -95,7 +95,7 @@ type Event:
 
 fn describe(e: Event) -> String:
     match e:
-        Click(x, y) -> "click at " <> to_string(x) <> "," <> to_string(y)
+        Click(x, y) -> "click at " <> "${x}" <> "," <> "${y}"
         Key(k) -> "key " <> k
         Close -> "close"
 
@@ -118,8 +118,8 @@ destructure lists (`[]`, `[first, ..rest]`), and add a guard condition:
 fn head(xs: List(Int)) -> String:
     match xs:
         [] -> "empty"
-        [only] -> "one: " <> to_string(only)
-        [first, ..rest] -> "first " <> to_string(first) <> " then " <> to_string(list.length(rest))
+        [only] -> "one: " <> "${only}"
+        [first, ..rest] -> "first " <> "${first}" <> " then " <> "${list.length(rest)}"
 
 fn sign(n: Int) -> String:
     match n:

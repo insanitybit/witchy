@@ -7,7 +7,7 @@
 //   import testing
 //
 //   fn test_addition():
-//       testing.assert_eq(to_string(2 + 2), "4")
+//       testing.assert_eq("${2 + 2}", "4")
 //
 //   fn test_truth():
 //       testing.assert(1 < 2, "one is less than two")
@@ -31,7 +31,7 @@ pub fn assert_ne(got: String, other: String):
 // Abort unless the two Ints are equal, showing both.
 pub fn assert_int_eq(got: Int, want: Int):
     if got != want:
-        fail("assertion failed: got ${got}, want " <> to_string(want))
+        fail("assertion failed: got ${got}, want " <> "${want}")
 
 // Unconditional failure with a message (e.g. an unreachable branch).
 pub fn fail_with(msg: String):

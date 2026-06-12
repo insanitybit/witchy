@@ -26,7 +26,7 @@ fn encode(text: String) -> String:
         while i < n && list.at(chars, i) == run_char:
             count = count + 1
             i = i + 1
-        out = out <> to_string(count) <> run_char
+        out = out <> "${count}" <> run_char
     out
 
 // Expand each "<count><char>" run back to the original characters.

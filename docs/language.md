@@ -45,11 +45,11 @@ types and constructors. A lowercase, argument-less name in type position
 | Form | Type | Notes |
 |---|---|---|
 | `42`, `-7` | `Int` | 64-bit signed; arithmetic **wraps** on overflow (two's complement, both backends) |
-| `3.5`, `0.5` | `Float` | IEEE-754 double; `to_string` renders the shortest round-trip form |
+| `3.5`, `0.5` | `Float` | IEEE-754 double; `${...}` renders the shortest round-trip form |
 | `true` / `false` | `Bool` | |
 | `"hi\n"` | `String` | UTF-8; escapes `\n \t \r \0 \\ \" \$` |
 | `"sum: ${a + b}"` | `String` | interpolation — `${expr}` renders *any* value (see below); inner strings may be bare (`"${f("x")}"`) or escaped (`"${f(\"x\")}"`) |
-| `30s`, `250ms`, `5m`, `2h`/`2hr`, `1d`, `1w` | `Duration` | a distinct type carried as milliseconds; not mixable with bare `Int`; `${d}`/`to_string` print the raw milliseconds — `duration.human`/`clock` (or `say`) for display |
+| `30s`, `250ms`, `5m`, `2h`/`2hr`, `1d`, `1w` | `Duration` | a distinct type carried as milliseconds; not mixable with bare `Int`; `${d}` prints the raw milliseconds — `duration.human`/`clock` (or `say`) for display |
 | `[1, 2, 3]` | `List(Int)` | immutable |
 | `(1, "a")` | tuple | fixed arity, mixed types; elements read by position (`pair.0`, `grid.0.1`) or destructured (`let (n, s) = pair`) |
 
@@ -67,7 +67,7 @@ fn main(console: Console):
 **Rendering values to strings.** Reach for interpolation first: `"${x}"` renders
 *any* value — scalars, record fields, lists, tuples, records, sum types, dicts,
 and any nesting — identically on both backends. You rarely need to call
-`to_string` by hand; it is what `${…}` desugars to. To print
+a conversion by hand. To print
 one value, `print(console, "${x}")`, or `say(console, x)` — the `Show`-accepting
 `print` from `import show`, for any `Show` value (the built-in scalars and your
 own types). The **`Show` trait** (`fn show(self) -> String`) is the trait-method
@@ -85,27 +85,27 @@ Builtins: `Int`, `Float`, `Bool`, `String`, `Duration`, `Nil` (the unit type),
 and records:
 
 ```witchy
-type Color:                 // enum: nullary variants
+type Color:
     Red
     Green
     Blue
 
-type Shape:                 // sum type: variants with positional fields
+type Shape:
     Circle(Int)
     Square(Int)
 
-type Account:               // record: a single variant with named fields
+type Account:
     name: String
     balance: Int
 
 fn main(console: Console):
-    print(console, to_string(Red == Red))
-    let acc = Account("ada", 100)                 // positional construction
-    let named = Account(name: "bob", balance: 5)  // by-name construction
-    print(console, acc.name)                       // field access
-    let richer = Account(balance: acc.balance + 1, ..acc)  // functional update
-    print(console, to_string(richer.balance))
-    print(console, to_string(named.balance))
+    print(console, "${Red == Red}")
+    let acc = Account("ada", 100)
+    let named = Account(name: "bob", balance: 5)
+    print(console, acc.name)
+    let richer = Account(balance: acc.balance + 1, ..acc)
+    print(console, "${richer.balance}")
+    print(console, "${named.balance}")
 ```
 
 Records construct positionally (`Account("ada", 100)`) or by name; field access
@@ -124,11 +124,11 @@ fn bounds(xs: List(Int)) -> (Int, Int):
     (list.at(xs, 0), list.at(xs, list.length(xs) - 1))
 
 fn main(console: Console):
-    let x = 1          // immutable binding
-    var count = 0      // mutable binding
-    count = count + 1  // assignment (only to `var`)
-    let (lo, hi) = bounds([3, 5, 9])   // tuple destructuring
-    print(console, to_string(x + count))
+    let x = 1
+    var count = 0
+    count = count + 1
+    let (lo, hi) = bounds([3, 5, 9])
+    print(console, "${x + count}")
     print(console, "${lo}..${hi}")
 ```
 
@@ -162,18 +162,18 @@ fn double(n: Int) -> Int:
     n * 2
 
 fn main(console: Console):
-    print(console, to_string(7 % 3))
+    print(console, "${7 % 3}")
     print(console, "a" <> "b")
-    print(console, to_string([1, 2] == [1, 2]))     // structural equality
-    print(console, to_string(2.5 < 3.0))
+    print(console, "${[1, 2] == [1, 2]}")
+    print(console, "${2.5 < 3.0}")
     let xs = [10, 20, 30]
-    print(console, to_string(xs[1]))            // indexing sugar
+    print(console, "${xs[1]}")
 ```
 
 Float notes: `0.0 / 0.0` is NaN; `1.0 / 0.0` is infinity; NaN `==` anything is
 `false` (IEEE), while NaN *ordering* errors. Conversions: `math.to_float`,
 `math.to_int` (saturating truncation), `string.to_int` (strict; ABORTS on
-junk or overflow — `string.parse_int` is the `Option`-returning version), `math.sqrt`, `to_string`.
+junk or overflow — `string.parse_int` is the `Option`-returning version), `math.sqrt`, and `${...}` for rendering to strings.
 
 ## 5. Control flow
 
@@ -188,18 +188,18 @@ fn main(console: Console):
         print(console, "small")
 
     var total = 0
-    for x in [1, 2, 3, 4]:        // lists, ranges (0..n), and dict views
+    for x in [1, 2, 3, 4]:
         if x == 2:
             continue
         if x > 3:
             break
         total = total + x
-    print(console, to_string(total))   // 1 + 3 = 4
+    print(console, "${total}")
 
     var i = 0
     while i < 3:
         i = i + 1
-    print(console, to_string(i))
+    print(console, "${i}")
 ```
 
 `if let PAT = e:` binds and runs only on a match (with an optional `else`);
@@ -260,13 +260,13 @@ type Shape:
 fn describe(s: Shape) -> String:
     match s:
         Circle(r) if r > 100 -> "big circle"
-        Circle(r) -> "circle " <> to_string(r)
-        Square(w) -> "square " <> to_string(w)
+        Circle(r) -> "circle " <> "${r}"
+        Square(w) -> "square " <> "${w}"
 
 fn head(xs: List(Int)) -> String:
     match xs:
         [] -> "empty"
-        [first, ..rest] -> "first " <> to_string(first) <> ", " <> to_string(list.length(rest)) <> " more"
+        [first, ..rest] -> "first " <> "${first}" <> ", " <> "${list.length(rest)}" <> " more"
 
 fn main(console: Console):
     print(console, describe(Circle(2)))
@@ -282,14 +282,14 @@ type Shape:
     Circle(Int)
     Square(Int)
 
-pub fn area(s: Shape) -> Int:      // `pub` exports from the module
+pub fn area(s: Shape) -> Int:
     match s:
         Circle(r) -> 3 * r * r
         Square(w) -> w * w
 
 fn main(console: Console):
-    print(console, to_string(area(Circle(2))))
-    print(console, to_string(area(Square(3))))
+    print(console, "${area(Circle(2))}")
+    print(console, "${area(Square(3))}")
 ```
 
 Parameter annotations are required; the return type may be inferred for
@@ -307,13 +307,13 @@ an occurs check).
 | `move e` | explicitly transfer a binding at a call site; pairs with `sink`/`own` |
 
 ```witchy
-fn bump(inout n: Int):
+fn bump(var n: Int):
     n = n + 1
 
 fn main(console: Console):
     var counter = 41
-    bump(counter)            // counter is written back
-    print(console, to_string(counter))   // 42
+    bump(counter)
+    print(console, "${counter}")
 ```
 
 **Closures.** `fn(n: Int): n + by` captures by value; you call through a
@@ -329,7 +329,7 @@ fn adder(by: Int) -> fn(Int) -> Int:
 
 fn main(console: Console):
     let add10 = adder(10)
-    print(console, to_string(apply(add10, 5)))   // 15
+    print(console, "${apply(add10, 5)}")
 ```
 
 ## 8. Generics and traits
@@ -340,12 +340,12 @@ import ord
 fn largest(xs: List(a)) -> a where a: Ord:
     var best = list.at(xs, 0)
     for x in xs:
-        if greater(x, best):      // `greater` comes from the Ord trait
+        if greater(x, best):
             best = x
     best
 
 fn main(console: Console):
-    print(console, to_string(largest([3, 9, 2, 7])))
+    print(console, "${largest([3, 9, 2, 7])}")
     print(console, largest(["apple", "pear", "fig"]))
 ```
 
@@ -424,7 +424,7 @@ fn main(console: Console):
     print(console, "${less(Point(1, 2), Point(1, 3))}")
 ```
 
-`Show` renders structurally (`to_string`), `Eq` is structural equality, and
+`Show` renders structurally (the `${...}` form), `Eq` is structural equality, and
 `Ord` compares record fields lexicographically (records only).
 
 ### `comptime:` — compile-time item generation
@@ -464,12 +464,12 @@ fn checked_div(a: Int, b: Int) -> Result(Int, String):
         Ok(a / b)
 
 fn ratio(a: Int, b: Int, c: Int) -> Result(Int, String):
-    let first = checked_div(a, b)?      // Err short-circuits to the caller
+    let first = checked_div(a, b)?
     checked_div(first, c)
 
 fn show(r: Result(Int, String)) -> String:
     match r:
-        Ok(v) -> "ok: " <> to_string(v)
+        Ok(v) -> "ok: " <> "${v}"
         Err(e) -> "err: " <> e
 
 fn main(console: Console):
@@ -492,13 +492,13 @@ import list
 import string
 
 fn show(xs: List(Int)) -> String:
-    string.join(list.map(xs, fn(n: Int): to_string(n)), " ")
+    string.join(list.map(xs, fn(n: Int): "${n}"), " ")
 
 fn main(console: Console):
     let squares = [n * n for n in 1..6]
-    print(console, show(squares))                 // 1 4 9 16 25
+    print(console, show(squares))
     let evens = [n for n in 1..11 if n % 2 == 0]
-    print(console, show(evens))                   // 2 4 6 8 10
+    print(console, show(evens))
 ```
 
 ## 11. Generators
@@ -523,8 +523,9 @@ gen fn fibs() -> Iter(Int):
 
 fn main(console: Console):
     let first8 = iter.collect(iter.take(fibs(), 8))
-    print(console, string.join(list.map(first8, fn(n: Int): to_string(n)), " "))
-    // 0 1 1 2 3 5 8 13
+    print(console, string.join(list.map(first8, fn(n: Int): "${n}"), " "))
+
+// 0 1 1 2 3 5 8 13
 ```
 
 ## 12. Modules and the standard library
@@ -542,8 +543,9 @@ The core data modules — `list`, `string`, `dict`, `math`, `option`,
 `result` — are **the prelude**: always available, no import line needed
 (`list.push(xs, 1)` works anywhere). Pure data operations live ONLY in
 modules; the global namespace is capability operations (`print`, `read`,
-`send`, `now`, …), `to_string`, and `fail` — authority is loud and
-unprefixed, everything else says where it came from. For other modules,
+`send`, `now`, …) and `fail` — authority is loud and unprefixed, everything
+else says where it came from. (Rendering needs no function at all: `${...}`
+interpolation is the rendering.) For other modules,
 `import name` brings the module in under its name; **function** calls are
 module-qualified (`list.map`). A module's `pub` **types and their constructors**,
 however, come into scope *unqualified* — after `import json` you write

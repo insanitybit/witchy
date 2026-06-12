@@ -974,7 +974,7 @@ fn builtin_arg_liveness(name: &str, argc: usize) -> Option<Vec<bool>> {
         ("send", _) => read_all(argc),
         ("fail", 1) => read_all(1),
         // Strings: every operation reads content and builds fresh results.
-        ("to_string", 1)
+        ("__render", 1)
         | ("string.to_int", 1)
         | ("string.chars", 1)
         | ("string.trim", 1)

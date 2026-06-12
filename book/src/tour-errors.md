@@ -17,10 +17,11 @@ fn first_even(xs: List(Int)) -> Option(Int):
 
 fn main(console: Console):
     match first_even([1, 3, 4, 7]):
-        Some(n) -> print(console, "found " <> to_string(n))
+        Some(n) -> print(console, "found " <> "${n}")
         None -> print(console, "none")
+
     match first_even([1, 3, 5]):
-        Some(n) -> print(console, "found " <> to_string(n))
+        Some(n) -> print(console, "found " <> "${n}")
         None -> print(console, "none")
 ```
 
@@ -40,7 +41,7 @@ fn lookup(xs: List(Int), i: Int) -> Option(Int):
 
 fn main(console: Console):
     if let Some(v) = lookup([10, 20, 30], 1):
-        print(console, "got " <> to_string(v))
+        print(console, "got " <> "${v}")
     else:
         print(console, "out of range")
 ```
@@ -63,7 +64,7 @@ fn checked_div(a: Int, b: Int) -> Result(Int, String):
 
 fn show(r: Result(Int, String)) -> String:
     match r:
-        Ok(v) -> "ok: " <> to_string(v)
+        Ok(v) -> "ok: " <> "${v}"
         Err(e) -> "error: " <> e
 
 fn main(console: Console):
@@ -91,13 +92,13 @@ fn checked_div(a: Int, b: Int) -> Result(Int, String):
         Ok(a / b)
 
 fn average_of_ratios(a: Int, b: Int, c: Int) -> Result(Int, String):
-    let first = checked_div(a, b)?       // bail out here if b == 0
-    let second = checked_div(first, c)?  // ...or here if c == 0
+    let first = checked_div(a, b)?
+    let second = checked_div(first, c)?
     Ok(second)
 
 fn show(r: Result(Int, String)) -> String:
     match r:
-        Ok(v) -> "ok: " <> to_string(v)
+        Ok(v) -> "ok: " <> "${v}"
         Err(e) -> "error: " <> e
 
 fn main(console: Console):
@@ -133,8 +134,9 @@ fn safe_sqrt_input(n: Int) -> Int:
     n
 
 fn main(console: Console):
-    print(console, to_string(safe_sqrt_input(9)))
-    // safe_sqrt_input(0 - 1) would abort the program here.
+    print(console, "${safe_sqrt_input(9)}")
+
+// safe_sqrt_input(0 - 1) would abort the program here.
 ```
 
 ```text

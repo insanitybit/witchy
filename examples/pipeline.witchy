@@ -13,9 +13,9 @@ fn main(console: Console):
     let evens = list.filter(list.range(10), fn(n: Int): n % 2 == 0)
     let total = list.sum(list.map(evens, fn(n: Int): n * n))
 
-    print(console, to_string(total))
+    print(console, "${total}")
 
     // The first five numbers, doubled, rendered and comma-joined.
-    let doubled = list.map(list.map(list.range(5), fn(n: Int): n * 2), fn(n: Int): to_string(n))
+    let doubled = list.map(list.map(list.range(5), fn(n: Int): n * 2), fn(n: Int): "${n}")
 
     print(console, string.join(doubled, ","))

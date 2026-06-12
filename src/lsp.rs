@@ -71,7 +71,7 @@ const BUILTINS: &[&str] = &[
     // (list./string./dict./math., offered via the prelude completion below).
     "print", "now", "get_env", "read", "write", "append", "exists", "is_dir", "list", "subdir",
     "make_dir", "connect", "listen", "accept", "send_line", "send_bytes", "recv_line",
-    "recv_all", "recv_bytes", "close", "restrict", "send", "to_string", "fail",
+    "recv_all", "recv_bytes", "close", "restrict", "send", "fail",
 ];
 
 /// The prelude's module-qualified core operations, completed without an
@@ -466,7 +466,7 @@ mod tests {
     #[test]
     fn hover_shows_signature_and_doc() {
         let mut docs = HashMap::new();
-        let src = "// Doubles a number.\n// Twice the input.\nfn double(n: Int) -> Int:\n    n * 2\n\nfn main(console: Console):\n    print(console, to_string(double(3)))\n";
+        let src = "// Doubles a number.\n// Twice the input.\nfn double(n: Int) -> Int:\n    n * 2\n\nfn main(console: Console):\n    print(console, __render(double(3)))\n";
         docs.insert("file:///t.witchy".to_string(), src.to_string());
         // Hover over `double` in the call on line 6 (0-based), col 35.
         let col = src.lines().nth(6).unwrap().find("double").unwrap() as u64;

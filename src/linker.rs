@@ -39,7 +39,7 @@ const BUILTINS: &[&str] = &[
     "print",
     "print_int",
     "print_float",
-    "to_string",
+    "__render",
     "int_to_string",
     "string_length",
     "to_upper",

@@ -14,11 +14,11 @@ fn main(console: Console):
     let ok = true
     let name = "witchy"
     let timeout = 30s
-    print(console, to_string(answer))
-    print(console, to_string(half))
-    print(console, to_string(ok))
+    print(console, "${answer}")
+    print(console, "${half}")
+    print(console, "${ok}")
     print(console, name)
-    print(console, to_string(timeout < 1m))
+    print(console, "${timeout < 1m}")
 ```
 
 ```text
@@ -35,7 +35,7 @@ backends. Division or modulo by zero is a runtime error, loudly, on every
 backend.
 
 One display gotcha worth knowing now: a `Duration` is carried as whole
-milliseconds, and that is what `${timeout}` and `to_string(timeout)` print —
+milliseconds, and that is what `${timeout}` prints —
 `30000`, not `30s`. For human output, reach for `duration.human(timeout)`
 (`"30s"`, `"1m30s"`) or `duration.clock(timeout)` (`"0:00:30"`), or `say` it —
 `Duration` implements `Show` with the human form.
@@ -58,9 +58,9 @@ n is 3, doubled 6
 ```
 
 `${expr}` renders *any* value — scalars, lists, tuples, records, sum types,
-dicts, and any nesting — identically on both backends (it is sugar for the
-built-in `to_string`). So you rarely call `to_string` by hand;
-reach for `"${x}"`. Strings are UTF-8 and the common operations
+dicts, and any nesting — identically on both backends. There is no separate
+`to_string` function to remember: interpolation IS the rendering.
+Strings are UTF-8 and the common operations
 (`string.length`, `string.char_count`, `string.split`, `string.contains`, …)
 live in the `string` module — part of the prelude, so no import line is
 needed; the [stdlib reference](appendix-stdlib.md) has the full list.
@@ -71,10 +71,10 @@ Crossing between types is always explicit — there's no silent coercion:
 
 ```witchy
 fn main(console: Console):
-    print(console, to_string(7))
-    print(console, to_string(math.to_float(7)))
-    print(console, to_string(math.to_int(7.9)))   // truncates toward zero
-    print(console, to_string(string.to_int("123")))
+    print(console, "${7}")
+    print(console, "${math.to_float(7)}")
+    print(console, "${math.to_int(7.9)}")
+    print(console, "${string.to_int("123")}")
 ```
 
 ```text
@@ -96,22 +96,22 @@ Three built-in compound types. **Lists** are homogeneous and immutable;
 
 ```witchy
 fn show(xs: List(Int)) -> String:
-    string.join(list.map(xs, fn(n: Int): to_string(n)), " ")
+    string.join(list.map(xs, fn(n: Int): "${n}"), " ")
 
 fn main(console: Console):
     let xs = [1, 2, 3]
     print(console, show(xs))
-    print(console, to_string(list.length(xs)))
-    print(console, to_string(xs[0]))     // indexing is sugar for list.at(xs, 0)
+    print(console, "${list.length(xs)}")
+    print(console, "${xs[0]}")
 
     let pair = (1, "one")
-    let (n, word) = pair                      // destructure...
+    let (n, word) = pair
     print(console, "${n} = ${word}")
-    print(console, "${pair.0} = ${pair.1}")   // ...or read by position
+    print(console, "${pair.0} = ${pair.1}")
 
     let ages = dict.insert(dict.insert(dict.new(), "ada", 36), "bob", 41)
-    print(console, to_string(dict.get_or(ages, "ada", 0)))
-    print(console, to_string(dict.get_or(ages, "nobody", 0)))   // default
+    print(console, "${dict.get_or(ages, "ada", 0)}")
+    print(console, "${dict.get_or(ages, "nobody", 0)}")
 ```
 
 ```text
@@ -136,7 +136,7 @@ A couple of practical notes you'll bump into:
   prelude**: their functions are available in every program with no `import`
   line. That's why none of the examples above import anything.
 - Intrinsics like `to_string` aren't first-class function values, so to pass
-  one to `list.map` you wrap it in a lambda: `fn(n: Int): to_string(n)`.
+  one to `list.map` you wrap it in a lambda: `fn(n: Int): "${n}"`.
 
 Indexing out of bounds (`xs[9]`) is a runtime error on every backend, never a
 garbage value.
@@ -151,7 +151,7 @@ fn main(console: Console):
     let xs = [1, 2, 3, 4, 5]
     print(console, "${[n * n for n in xs]}")
     print(console, "${[n for n in xs if n % 2 == 1]}")
-    print(console, "${[to_string(n) for n in xs if n > 3]}")
+    print(console, "${["${n}" for n in xs if n > 3]}")
 ```
 
 ```text
@@ -172,10 +172,10 @@ lists, tuples, records, enums, `Option`, dicts — not identity:
 
 ```witchy
 fn main(console: Console):
-    print(console, to_string([1, 2, 3] == [1, 2, 3]))
-    print(console, to_string((1, "a") == (1, "a")))
-    print(console, to_string(Some(5) == Some(5)))
-    print(console, to_string(Some(5) == None))
+    print(console, "${[1, 2, 3] == [1, 2, 3]}")
+    print(console, "${(1, "a") == (1, "a")}")
+    print(console, "${Some(5) == Some(5)}")
+    print(console, "${Some(5) == None}")
 ```
 
 ```text

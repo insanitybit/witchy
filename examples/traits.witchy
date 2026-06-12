@@ -43,7 +43,7 @@ impl Shape for RightTriangle:
 
 // Works for ANY Shape — the trait is the only thing it knows about `s`.
 fn describe(shape: s) -> String where s: Shape:
-    name(shape) <> " with area " <> to_string(area(shape))
+    name(shape) <> " with area " <> "${area(shape)}"
 
 // Generic over a list of one Shape type.
 fn total_area(shapes: List(s)) -> Int where s: Shape:
@@ -56,4 +56,4 @@ fn main(console: Console):
     print(console, describe(Square(5)))
     print(console, describe(Rect(3, 4)))
     print(console, describe(RightTriangle(6, 4)))
-    print(console, "total of three squares: " <> to_string(total_area([Square(2), Square(3), Square(4)])))
+    print(console, "total of three squares: " <> "${total_area([Square(2), Square(3), Square(4)])}")

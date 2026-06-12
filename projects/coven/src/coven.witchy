@@ -32,7 +32,7 @@ fn main(console: Console, net: Net, root: Dir, key: Secret, clock: Clock, args: 
     let store = subdir(root, "registry")
     let app = server.router().get("/coven/rootpub", h_rootpub(key)).get("/coven/index", h_index(store)).get("/coven/versions", h_versions(store)).get("/coven/record", h_record(store)).get("/coven/source", h_source(store)).get("/coven/snapshot", h_snapshot(store, key, clock)).get("/coven/timestamp", h_timestamp(store, key, clock)).post("/coven/publish", h_publish(store, key, clock, issuers)).post("/coven/promote", h_promote(store, key, clock, issuers)).post("/coven/yank", h_yank(store, key, clock))
 
-    print(console, "coven serving at http://" <> addr <> "  (root key " <> crypto.public_key(key) <> "; " <> to_string(list.length(issuers)) <> " trusted issuer(s))")
+    print(console, "coven serving at http://" <> addr <> "  (root key " <> crypto.public_key(key) <> "; " <> "${list.length(issuers)}" <> " trusted issuer(s))")
     server.serve(net, addr, app)
 
 // Parse trailing `issuer=pubkeyhex` args into (issuer, pubkey) pairs.
@@ -450,7 +450,7 @@ fn insert_json_pair(sorted: List((String, Json)), item: (String, Json)) -> List(
 // the signature. Byte-identical to src/pm/registry.rs::Record::signing_payload,
 // so a witchy-signed record verifies under the Rust ed25519 verifier.
 fn signing_payload(name: String, version: String, state: String, hash: String, rt: List(String), uploaded_by: String, promoted_by: String, factor: String, provenance: String, released_at: Int) -> String:
-    "coven-v1\nname=" <> name <> "\nversion=" <> version <> "\nstate=" <> state <> "\nhash=" <> hash <> "\nrt=" <> string.join(rt, ",") <> "\nbuild=\nuploaded_by=" <> uploaded_by <> "\npromoted_by=" <> promoted_by <> "\nfactor=" <> factor <> "\nprovenance=" <> provenance <> "\nreleased_at=" <> to_string(released_at)
+    "coven-v1\nname=" <> name <> "\nversion=" <> version <> "\nstate=" <> state <> "\nhash=" <> hash <> "\nrt=" <> string.join(rt, ",") <> "\nbuild=\nuploaded_by=" <> uploaded_by <> "\npromoted_by=" <> promoted_by <> "\nfactor=" <> factor <> "\nprovenance=" <> provenance <> "\nreleased_at=" <> "${released_at}"
 
 // Build + sign a record, returning its coven.json text. `released_at` (unix
 // seconds; 0 = not yet released) starts the consumer-side staging cooldown, so

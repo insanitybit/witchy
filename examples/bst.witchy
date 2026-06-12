@@ -50,6 +50,6 @@ fn from_list(xs: List(Int)) -> Tree:
 fn main(console: Console):
     let tree = from_list([5, 3, 8, 1, 4, 7, 9, 2, 6])
     let sorted = inorder(tree)
-    print(console, string.join(list.map(sorted, fn(n: Int): to_string(n)), " "))
-    print(console, "contains 7: " <> to_string(contains(tree, 7)))
-    print(console, "contains 10: " <> to_string(contains(tree, 10)))
+    print(console, string.join(list.map(sorted, fn(n: Int): "${n}"), " "))
+    print(console, "contains 7: " <> "${contains(tree, 7)}")
+    print(console, "contains 10: " <> "${contains(tree, 10)}")

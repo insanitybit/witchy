@@ -788,6 +788,18 @@ fn expr(e: &Expr) -> String {
             // pre-migration tree in place (docs/language-evolution.md Phase 2).
             // A function the module DEFINES under that name is the user's own
             // and keeps its spelling.
+            if !local_fn(name)
+                && matches!(name.as_str(), "to_string" | "int_to_string")
+                && args.len() == 1
+            {
+                // Rendering's only surface spelling is interpolation. Inline
+                // arguments only; anything multiline falls through and the
+                // round-trip guard skips the file rather than mangle it.
+                let inner = expr(&args[0]);
+                if !inner.contains('\n') {
+                    return format!("\"${{{inner}}}\"");
+                }
+            }
             let name = if local_fn(name) {
                 name
             } else {
@@ -1092,9 +1104,9 @@ fn comprehension_sugar(b: &Block) -> Option<String> {
 
 /// Print a `<>` chain back as the string interpolation it desugared from.
 ///
-/// The lexer expands `"a ${x} b"` to `("a " <> to_string(x) <> " b")` at the
+/// The lexer expands `"a ${x} b"` to `("a " <> __render(x) <> " b")` at the
 /// TOKEN level, so the AST has no interpolation node; this is its inverse.
-/// The shape is strict — literal segments alternating with `to_string(expr)`
+/// The shape is strict — literal segments alternating with `__render(expr)`
 /// pieces, starting and ending with a literal (the lexer always emits the
 /// trailing literal, even when empty) — and the two spellings parse to the
 /// same AST, so re-sugaring is pure canonicalization: a hand-written chain of
@@ -1125,7 +1137,7 @@ fn interpolation_sugar(e: &Expr) -> Option<String> {
             out.push_str(&interp_segment(text));
         } else {
             let Expr::Call { name, args } = p else { return None };
-            if name != "to_string" || args.len() != 1 {
+            if name != "__render" || args.len() != 1 {
                 return None;
             }
             let inner = expr(&args[0]);
@@ -1295,6 +1307,28 @@ fn canon_stmt(s: &mut Stmt) {
 }
 
 fn canon_expr(e: &mut Expr) {
+    // A rendering call in any spelling canonicalizes to the interpolation
+    // DESUGAR (`"" <> __render(e) <> ""`), the exact tree `"${e}"` parses to —
+    // so the printer's interpolation rewrite reads as equality, not a change.
+    if let Expr::Call { name, args } = e {
+        if !local_fn(name)
+            && matches!(name.as_str(), "to_string" | "int_to_string")
+            && args.len() == 1
+        {
+            let mut arg = args.remove(0);
+            canon_expr(&mut arg);
+            *e = Expr::Binary {
+                op: BinOp::Concat,
+                lhs: Box::new(Expr::Binary {
+                    op: BinOp::Concat,
+                    lhs: Box::new(Expr::Str(String::new())),
+                    rhs: Box::new(Expr::Call { name: "__render".into(), args: vec![arg] }),
+                }),
+                rhs: Box::new(Expr::Str(String::new())),
+            };
+            return;
+        }
+    }
     match e {
         Expr::Call { name, args } => {
             if !name.contains('.') && !local_fn(name) {
@@ -1568,7 +1602,7 @@ mod tests {
         // Ranges used to fail to format (they desugared to a synthetic block at
         // parse time); now they round-trip and print back as `lo..hi` / `lo..=hi`,
         // including when used as a value or with operator operands.
-        let src = "fn main(console: Console):\n    for i in 0..3:\n        print(console, to_string(i))\n    let xs = 1..=n\n    let ys = a + 1..b * 2\n";
+        let src = "fn main(console: Console):\n    for i in 0..3:\n        print(console, __render(i))\n    let xs = 1..=n\n    let ys = a + 1..b * 2\n";
         let out = reformat(src).expect("ranges round-trip");
         assert!(out.contains("for i in 0..3:"), "{out}");
         assert!(out.contains("let xs = 1..=n"), "{out}");
@@ -1580,7 +1614,7 @@ mod tests {
     fn preserves_subscripts() {
         // Subscripts used to de-sugar to `list.at(xs, i)` on format; now they round-trip
         // and print back as `base[index]`, including nested and computed indices.
-        let src = "fn main(console: Console):\n    let xs = [1, 2, 3]\n    let grid = [[1], [2]]\n    print(console, to_string(xs[0] + grid[1][0]))\n";
+        let src = "fn main(console: Console):\n    let xs = [1, 2, 3]\n    let grid = [[1], [2]]\n    print(console, __render(xs[0] + grid[1][0]))\n";
         let out = reformat(src).expect("subscripts round-trip");
         assert!(out.contains("xs[0]"), "{out}");
         assert!(out.contains("grid[1][0]"), "{out}");
@@ -1591,7 +1625,7 @@ mod tests {
     fn preserves_while_let() {
         // `while let` used to de-sugar to `while true / match / break` on format;
         // now it round-trips and prints back as `while let PAT = SCRUT:`.
-        let src = "fn main(console: Console):\n    var o = Some(1)\n    while let Some(n) = o:\n        print(console, to_string(n))\n        o = None\n";
+        let src = "fn main(console: Console):\n    var o = Some(1)\n    while let Some(n) = o:\n        print(console, __render(n))\n        o = None\n";
         let out = reformat(src).expect("while let round-trips");
         assert!(out.contains("while let Some(n) = o:"), "{out}");
         assert!(!out.contains("while true"), "while let must not de-sugar: {out}");

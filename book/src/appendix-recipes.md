@@ -79,7 +79,7 @@ import http
 
 fn main(console: Console, net: Net):
     let resp = http.get(net, "localhost", 80, "/")
-    print(console, "status " <> to_string(http.status(resp)))
+    print(console, "status " <> "${http.status(resp)}")
     if http.is_success(resp):
         print(console, http.body(resp))
 ```

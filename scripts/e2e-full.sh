@@ -80,12 +80,12 @@ fn main(console: Console):
         total = total + area(s)
     print(console, "total: ${total}")
     let add = fn(n: Int): n + total
-    print(console, to_string(add(1)))
-    print(console, to_string([1, 2] == [1, 2]))
-    print(console, to_string(Some("a") == Some("a")))
+    print(console, "${add(1)}")
+    print(console, "${[1, 2] == [1, 2]}")
+    print(console, "${Some("a") == Some("a")}")
     let d = dict.insert(dict.insert(dict.new(), "k", 1), "j", 2)
-    print(console, to_string(dict.get_or(d, "j", 0)))
-    print(console, to_string(1500ms < 2s))
+    print(console, "${dict.get_or(d, "j", 0)}")
+    print(console, "${1500ms < 2s}")
 EOF
 WANT="$(printf 'total: 21\n22\ntrue\ntrue\n2\ntrue')"
 GOT_INTERP="$("$BIN" "$WORK/lang.witchy")"

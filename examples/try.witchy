@@ -19,7 +19,7 @@ fn compute(x: Int, y: Int, z: Int) -> Result(Int, String):
 
 fn show(r: Result(Int, String)) -> String:
     match r:
-        Ok(n) -> "= " <> to_string(n)
+        Ok(n) -> "= " <> "${n}"
         Err(e) -> "error: " <> e
 
 fn main(console: Console):

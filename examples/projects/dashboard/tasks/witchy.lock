@@ -2,11 +2,11 @@
 # Pins content hashes + capability footprints for reproducible,
 # supply-chain-safe builds. Commit this file.
 [[rune]]
-name = "money"
+name = "bars"
 version = "0.1.0"
-source = "path:./../money"
-hash = "sha256:920ac528bfa348d18d0110e51ce954626b78a48ea6d0edd3d9130270ef3d43be"
+source = "path:./../bars"
+hash = "sha256:7a31ddfced7767bc0edf72ac37cafd80135afa740f9034c2f9da736a3ffe3a55"
 runtime_footprint = []
 build_footprint = []
 determinism = "guaranteed"
-provenance = "path:./../money"
+provenance = "path:./../bars"

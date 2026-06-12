@@ -19,7 +19,7 @@ fn main(console: Console):
     print(console, "shortest distances from " <> list.at(names, source) <> ":")
     var i = 0
     while i < list.length(names):
-        print(console, "  " <> list.at(names, i) <> " = " <> to_string(list.at(dist, i)))
+        print(console, "  " <> list.at(names, i) <> " = " <> "${list.at(dist, i)}")
         i = i + 1
     print(console, "path to " <> list.at(names, target) <> ": " <> string.join(path_to(names, prev, target), " -> "))
 

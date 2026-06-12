@@ -14,7 +14,7 @@
         "print read write exists is_dir list subdir make_dir connect listen " +
         "accept send_line send_bytes recv_line recv_all recv_bytes close " +
         "restrict now get_env send length at push concat dict_new insert " +
-        "get_or has remove update keys values pairs size to_string " +
+        "get_or has remove update keys values pairs size " +
         "int_to_string string_length char_count index_of split string_chars " +
         "replace substring to_upper to_lower trim starts_with ends_with " +
         "contains int_to_float float_to_int int_to_duration duration_to_int " +

@@ -848,7 +848,7 @@ impl Interpreter {
                 _ => err("send expects an actor subject and a message: send(actor, Msg(..))"),
             },
             // Pure builtins need no capability.
-            "to_string" => Ok(Some(Value::Str(one(args)?.to_string()))),
+            "__render" => Ok(Some(Value::Str(one(args)?.to_string()))),
             // String stdlib.
             "string.length" => match one(args)? {
                 Value::Str(s) => Ok(Some(Value::Int(s.len() as i64))),
@@ -2572,7 +2572,7 @@ mod tests {
     fn evaluates_arithmetic_and_precedence() {
         let out = run(r#"
 fn main(console: Console):
-    print(console, to_string((1 + (2 * 3))))
+    print(console, __render((1 + (2 * 3))))
 "#)
             .unwrap();
         assert_eq!(out, vec!["7"]);
@@ -2835,7 +2835,7 @@ fn double(n: Int) -> Int:
     (n * 2)
 
 fn main(console: Console):
-    print(console, ("doubled: " <> to_string(double(21))))
+    print(console, ("doubled: " <> __render(double(21))))
 "#;
         assert_eq!(run(src).unwrap(), vec!["doubled: 42"]);
     }
@@ -2847,7 +2847,7 @@ fn double(n: Int) -> Int:
     (n * 2)
 
 fn main(console: Console):
-    let result = to_string(double(4))
+    let result = __render(double(4))
     print(console, result)
 "#;
         assert_eq!(run(src).unwrap(), vec!["8"]);
@@ -2897,7 +2897,7 @@ fn fact(n: Int) -> Int:
         _ -> (n * fact((n - 1)))
 
 fn main(console: Console):
-    print(console, to_string(fact(5)))
+    print(console, __render(fact(5)))
 "#;
         assert_eq!(run(src).unwrap(), vec!["120"]);
     }
@@ -3168,9 +3168,9 @@ fn main(console: Console, net: Net):
         .with_query("q", "hi")
     match req.send(net):
         Ok(resp) ->
-            print(console, to_string(http.status(resp)))
+            print(console, __render(http.status(resp)))
             print(console, http.body(resp))
-            print(console, to_string(http.is_success(resp)))
+            print(console, __render(http.is_success(resp)))
         Err(e) -> print(console, "err: " <> e)
 "#
         );
@@ -3713,7 +3713,7 @@ fn half(x: Float) -> Float:
     (x / 2.0)
 
 fn main(console: Console):
-    print(console, to_string(half(7.0)))
+    print(console, __render(half(7.0)))
 "#;
         assert_eq!(run(src).unwrap(), vec!["3.5"]);
     }
@@ -3748,11 +3748,11 @@ fn divmod(a: Int, b: Int) -> (Int, Int):
 
 fn main(console: Console):
     let (q, r) = divmod(17, 5)
-    print(console, to_string(q))
-    print(console, to_string(r))
+    print(console, __render(q))
+    print(console, __render(r))
     let pair = (1, "one")
     match pair:
-        (n, name) -> print(console, ((to_string(n) <> "=") <> name))
+        (n, name) -> print(console, ((__render(n) <> "=") <> name))
 "#;
         assert_eq!(run(src).unwrap(), vec!["3", "2", "1=one"]);
     }
@@ -3765,7 +3765,7 @@ fn id(x: a) -> a:
 
 fn main(console: Console):
     print(console, id("hi"))
-    print(console, to_string(id(5)))
+    print(console, __render(id(5)))
 "#;
         assert_eq!(run(src).unwrap(), vec!["hi", "5"]);
     }
@@ -3779,7 +3779,7 @@ type Result:
 
 fn show(r: Result(Int, String)) -> String:
     match r:
-        Ok(n) -> ("ok " <> to_string(n))
+        Ok(n) -> ("ok " <> __render(n))
         Err(msg) -> ("err " <> msg)
 
 fn main(console: Console):
@@ -3810,8 +3810,8 @@ fn first_even(xs: List(Int)) -> Int:
     (0 - 1)
 
 fn main(console: Console):
-    print(console, to_string(first_even([1, 3, 8, 5])))
-    print(console, to_string(first_even([1, 3, 5])))
+    print(console, __render(first_even([1, 3, 8, 5])))
+    print(console, __render(first_even([1, 3, 5])))
 "#;
         assert_eq!(run(src).unwrap(), vec!["8", "-1"]);
     }
@@ -3845,7 +3845,7 @@ fn rec(n: Int) -> Int:
         rec((n - 1))
 
 fn main(console: Console):
-    print(console, to_string(rec(5000000)))
+    print(console, __render(rec(5000000)))
 "#;
         let e = run(src).unwrap_err();
         assert!(e.message.contains("too deep"), "got: {}", e.message);
@@ -3862,7 +3862,7 @@ fn rec(n: Int) -> Int:
         rec((n - 1))
 
 fn main(console: Console):
-    print(console, to_string(rec(10000)))
+    print(console, __render(rec(10000)))
 "#;
         assert_eq!(run(src).unwrap(), vec!["0"]);
     }
@@ -3874,7 +3874,7 @@ fn main(console: Console):
         let src = r#"
 fn main(console: Console):
     let big = 9999999999
-    print(console, to_string((big * big)))
+    print(console, __render((big * big)))
 "#;
         assert_eq!(run(src).unwrap(), vec!["7766279611452241921"]);
     }
@@ -3886,7 +3886,7 @@ fn main(console: Console):
         let src = r#"
 fn main(console: Console):
     let lo = ((0 - 9223372036854775807) - 1)
-    print(console, to_string((-lo)))
+    print(console, __render((-lo)))
 "#;
         assert_eq!(run(src).unwrap(), vec!["-9223372036854775808"]);
     }
@@ -3894,7 +3894,7 @@ fn main(console: Console):
     #[test]
     fn runtime_errors_report_their_source_line() {
         // Division by zero happens on the third line.
-        let src = "fn main(console: Console):\n    let a = 1\n    print(console, to_string(a / 0))\n";
+        let src = "fn main(console: Console):\n    let a = 1\n    print(console, __render(a / 0))\n";
         let e = run(src).unwrap_err();
         assert!(e.message.contains("line 3"), "got: {}", e.message);
     }
@@ -3907,7 +3907,7 @@ fn risky(n: Int) -> Int:
     (n / 0)
 
 fn main(console: Console):
-    print(console, to_string(risky(5)))
+    print(console, __render(risky(5)))
 "#;
         let e = run(src).unwrap_err();
         assert!(e.message.contains("risky"), "got: {}", e.message);
@@ -3951,11 +3951,11 @@ fn main(console: Console):
     var sum = 0
     for v in dict.values(d):
         sum = (sum + v)
-    print(console, to_string(sum))
+    print(console, __render(sum))
     var report = ""
     for e in dict.pairs(d):
         let (k, v) = e
-        report = ((((report <> k) <> "=") <> to_string(v)) <> ";")
+        report = ((((report <> k) <> "=") <> __render(v)) <> ";")
     print(console, report)
 "#;
         assert_eq!(run(src).unwrap(), vec!["30", "a=10;b=20;"]);
@@ -3968,13 +3968,13 @@ fn main(console: Console):
     let a = dict.insert(dict.new(), "x", 1)
     let b = dict.insert(a, "y", 2)
     let c = dict.insert(b, "x", 9)
-    print(console, to_string(dict.get_or(c, "x", 0)))
-    print(console, to_string(dict.get_or(c, "y", 0)))
-    print(console, to_string(dict.get_or(c, "z", 0)))
-    print(console, to_string(dict.size(c)))
-    print(console, to_string(dict.get_or(a, "x", 0)))
-    print(console, to_string(dict.has(c, "y")))
-    print(console, to_string(list.length(dict.keys(c))))
+    print(console, __render(dict.get_or(c, "x", 0)))
+    print(console, __render(dict.get_or(c, "y", 0)))
+    print(console, __render(dict.get_or(c, "z", 0)))
+    print(console, __render(dict.size(c)))
+    print(console, __render(dict.get_or(a, "x", 0)))
+    print(console, __render(dict.has(c, "y")))
+    print(console, __render(list.length(dict.keys(c))))
 "#;
         assert_eq!(
             run(src).unwrap(),
@@ -3986,8 +3986,8 @@ fn main(console: Console):
     fn sqrt_builtin_computes() {
         let src = r#"
 fn main(console: Console):
-    print(console, to_string(math.sqrt(2.0)))
-    print(console, to_string(math.to_int(math.sqrt(144.0))))
+    print(console, __render(math.sqrt(2.0)))
+    print(console, __render(math.to_int(math.sqrt(144.0))))
 "#;
         assert_eq!(
             run(src).unwrap(),
@@ -4003,9 +4003,9 @@ fn main(console: Console):
     print(console, string.substring(s, 1, 4))
     print(console, string.substring(s, 4, 100))
     print(console, string.substring(s, 3, 1))
-    print(console, to_string(string.index_of(s, "cd")))
-    print(console, to_string(string.index_of(s, "z")))
-    print(console, to_string(string.ends_with(s, "ef")))
+    print(console, __render(string.index_of(s, "cd")))
+    print(console, __render(string.index_of(s, "z")))
+    print(console, __render(string.ends_with(s, "ef")))
 "#;
         assert_eq!(
             run(src).unwrap(),
@@ -4029,10 +4029,10 @@ fn main(console: Console):
         let src = r#"
 fn main(console: Console):
     let parts = string.split("a,b,c", ",")
-    print(console, to_string(list.length(parts)))
+    print(console, __render(list.length(parts)))
     print(console, list.at(parts, 1))
     print(console, string.replace("a,b,c", ",", "-"))
-    print(console, to_string(string.contains("hello", "ell")))
+    print(console, __render(string.contains("hello", "ell")))
 "#;
         assert_eq!(run(src).unwrap(), vec!["3", "b", "a-b-c", "true"]);
     }
@@ -4043,10 +4043,10 @@ fn main(console: Console):
 fn main(console: Console):
     let a = [1, 2]
     let b = list.push(a, 3)
-    print(console, to_string(list.length(a)))
-    print(console, to_string(list.length(b)))
+    print(console, __render(list.length(a)))
+    print(console, __render(list.length(b)))
     let c = list.concat(a, [9, 9])
-    print(console, to_string(list.at(c, 3)))
+    print(console, __render(list.at(c, 3)))
 "#;
         assert_eq!(run(src).unwrap(), vec!["2", "3", "9"]);
     }
@@ -4063,8 +4063,8 @@ fn apply(f: fn(Int) -> Int, x: Int) -> Int:
 fn main(console: Console):
     let inc = adder(1)
     let plus100 = adder(100)
-    print(console, to_string(apply(inc, 5)))
-    print(console, to_string(apply(plus100, 5)))
+    print(console, __render(apply(inc, 5)))
+    print(console, __render(apply(plus100, 5)))
 "#;
         assert_eq!(run(src).unwrap(), vec!["6", "105"]);
     }
@@ -4080,7 +4080,7 @@ fn run(f: fn(Option(Int)) -> Option(Int), o: Option(Int)) -> Option(Int):
     f(o)
 fn render(o: Option(Int)) -> String:
     match o:
-        Some(n) -> to_string(n)
+        Some(n) -> __render(n)
         None -> "none"
 fn main(console: Console):
     let g = fn(o: Option(Int)):
@@ -4102,8 +4102,8 @@ type Point:
 fn main(console: Console):
     let p = Point(1, 2)
     let q = Point(x: 10, y: ((p).y + 1), ..p)
-    print(console, (to_string((p).x) <> to_string((p).y)))
-    print(console, (to_string((q).x) <> to_string((q).y)))
+    print(console, (__render((p).x) <> __render((p).y)))
+    print(console, (__render((q).x) <> __render((q).y)))
 "#;
         assert_eq!(run(src).unwrap(), vec!["12", "103"]);
     }
@@ -4117,7 +4117,7 @@ type Person:
 
 fn main(console: Console):
     let p = Person("witchy", 7)
-    print(console, (((p).name <> " is ") <> to_string((p).age)))
+    print(console, (((p).name <> " is ") <> __render((p).age)))
 "#;
         assert_eq!(run(src).unwrap(), vec!["witchy is 7"]);
     }
@@ -4131,7 +4131,7 @@ fn len(xs: List(Int)) -> Int:
         [_, ..tail] -> (1 + len(tail))
 
 fn main(console: Console):
-    print(console, to_string(len([5, 6, 7, 8])))
+    print(console, __render(len([5, 6, 7, 8])))
 "#;
         assert_eq!(run(src).unwrap(), vec!["4"]);
     }
@@ -4143,7 +4143,7 @@ fn main(console: Console):
     var total = 0
     for n in [10, 20, 30]:
         total = (total + n)
-    print(console, to_string(total))
+    print(console, __render(total))
 "#;
         assert_eq!(run(src).unwrap(), vec!["60"]);
     }
@@ -4162,7 +4162,7 @@ fn head(o: Option(Int)) -> Option(Int):
 
 fn render(o: Option(Int)) -> String:
     match o:
-        Some(n) -> to_string(n)
+        Some(n) -> __render(n)
         None -> "none"
 
 fn main(console: Console):
@@ -4176,9 +4176,9 @@ fn main(console: Console):
     fn conversions() {
         let src = r#"
 fn main(console: Console):
-    print(console, to_string(math.to_float(7)))
-    print(console, to_string(math.to_int(3.9)))
-    print(console, to_string(string.to_int("42")))
+    print(console, __render(math.to_float(7)))
+    print(console, __render(math.to_int(3.9)))
+    print(console, __render(string.to_int("42")))
 "#;
         assert_eq!(run(src).unwrap(), vec!["7", "3", "42"]);
     }
@@ -4188,7 +4188,7 @@ fn main(console: Console):
         let src = r#"
 fn main(console: Console):
     print(console, string.to_upper("witchy"))
-    print(console, to_string(string.length("hello")))
+    print(console, __render(string.length("hello")))
     print(console, string.trim("  hi  "))
     if string.starts_with("witchy", "wit"):
         print(console, "yes")
@@ -4207,8 +4207,8 @@ fn main(console: Console):
     while (i <= 5):
         total = (total + i)
         i = (i + 1)
-    print(console, to_string(total))
-    print(console, to_string((10 % 3)))
+    print(console, __render(total))
+    print(console, __render((10 % 3)))
 "#;
         assert_eq!(run(src).unwrap(), vec!["15", "1"]);
     }
@@ -4233,8 +4233,8 @@ fn main(console: Console):
         let src = r#"
 fn main(console: Console):
     let xs = [10, 20, 30]
-    print(console, to_string(list.length(xs)))
-    print(console, to_string(list.at(xs, 1)))
+    print(console, __render(list.length(xs)))
+    print(console, __render(list.at(xs, 1)))
 "#;
         assert_eq!(run(src).unwrap(), vec!["3", "20"]);
     }
@@ -4251,7 +4251,7 @@ actor Logger:
 impl Logger:
     on Log(msg: String):
         count = (count + 1)
-        print(console, ((("[" <> to_string(count)) <> "] ") <> msg))
+        print(console, ((("[" <> __render(count)) <> "] ") <> msg))
 
 fn main(console: Console):
     let logger = spawn Logger(console)
@@ -4328,7 +4328,7 @@ fn main(console: Console):
 fn main(console: Console):
     var x = 1
     x = (x + 41)
-    print(console, to_string(x))
+    print(console, __render(x))
 "#;
         assert_eq!(run(src).unwrap(), vec!["42"]);
     }
@@ -4344,7 +4344,7 @@ fn bump(inout n: Int):
 fn main(console: Console):
     var x = 41
     bump(x)
-    print(console, to_string(x))
+    print(console, __render(x))
 "#;
         assert_eq!(run(src).unwrap(), vec!["42"]);
     }

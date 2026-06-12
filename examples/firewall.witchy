@@ -23,7 +23,7 @@ fn main(console: Console):
     let kept = without console:
         list.filter(names, fn(n: String): is_valid(n))
 
-    print(console, "kept ${list.length(kept)} of " <> to_string(list.length(names)))
+    print(console, "kept ${list.length(kept)} of " <> "${list.length(names)}")
     for n in kept:
         print(console, "  ok: " <> n)
 
@@ -34,4 +34,4 @@ fn main(console: Console):
         for n in kept:
             sum = sum + string.length(n)
         sum
-    print(console, "total chars: " <> to_string(total))
+    print(console, "total chars: " <> "${total}")

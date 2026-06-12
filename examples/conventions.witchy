@@ -30,24 +30,24 @@ actor Adder:
 impl Adder:
     on Add(own xs: List(Int)):
         sum = sum + sum_from(xs, 0)
-        print(console, "running sum: " <> to_string(sum))
+        print(console, "running sum: " <> "${sum}")
 
 fn main(console: Console):
     var count = 0
     bump(count)
     bump(count)
-    print(console, "count: " <> to_string(count))
+    print(console, "count: " <> "${count}")
 
     let nums = [1, 2, 3, 4]
-    print(console, "sum: " <> to_string(sum_from(nums, 0)))
-    print(console, "doubled first: " <> to_string(doubled_first(nums)))
-    print(console, "nums still here, length: " <> to_string(list.length(nums)))
+    print(console, "sum: " <> "${sum_from(nums, 0)}")
+    print(console, "doubled first: " <> "${doubled_first(nums)}")
+    print(console, "nums still here, length: " <> "${list.length(nums)}")
 
     let bag = Bag([10, 20, 30])
-    print(console, "bag total: " <> to_string(bag.total()))
+    print(console, "bag total: " <> "${bag.total()}")
 
     let gone = [5, 6, 7]
-    print(console, "drained length: " <> to_string(drain(move gone)))
+    print(console, "drained length: " <> "${drain(move gone)}")
 
     let adder = spawn Adder(console)
     send(adder, Add([100, 200]))

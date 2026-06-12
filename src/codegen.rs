@@ -622,7 +622,7 @@ struct Codegen {
     /// `local_tuple_slots` path cannot. Closes the gap for both `==` and
     /// `to_string`.
     local_shape: HashMap<String, EqShape>,
-    /// Function name -> the value type it returns, so `to_string(f(...))` can be
+    /// Function name -> the value type it returns, so `__render(f(...))` can be
     /// rendered. Populated from return-type annotations.
     fn_ret_valtype: HashMap<String, ValType>,
     /// Function name -> its DECLARED return type, resolved lazily to an
@@ -916,7 +916,7 @@ impl Codegen {
                 | "list.length" | "dict.size" | "string.to_int" | "int_to_duration"
                 | "duration_to_int" | "now" => Kind::I64,
                 "list.at" => self.elem_kind_of_list_arg(e),
-                "to_string" | "int_to_string" | "print" => Kind::I32,
+                "__render" | "int_to_string" | "print" => Kind::I32,
                 // A closure-local called by name returns the universal i64 slot,
                 // recovered at its tracked return kind (see the call emission).
                 other if self.local_fn_ret_kind.contains_key(other) => {
@@ -1056,7 +1056,7 @@ impl Codegen {
                 self.val_type_of(&args[2])
             }
             Expr::Call { name, .. } => match name.as_str() {
-                "to_string" | "string.to_upper" | "string.to_lower" | "string.trim"
+                "__render" | "string.to_upper" | "string.to_lower" | "string.trim"
                 | "string.replace" | "string.substring" | "crypto.sha256" | "crypto.sign"
                 | "crypto.public_key" | "read" | "crypto.rune_hash" | "compiler.footprint"
                 | "compiler.diff" | "recv_line" | "recv_all" | "recv_bytes" => ValType::Str,
@@ -1072,7 +1072,7 @@ impl Codegen {
             // a `?`-unwrapped value renders correctly and `==` picks `$str_eq`.
             Expr::Try(inner) => self.match_payload_valtype(inner).unwrap_or(ValType::Other),
             // A record field access (`p.x`): the field's declared value type — so
-            // `"${p.x}"` / `to_string(p.x)` and `==` on a field resolve.
+            // `"${p.x}"` / `__render(p.x)` and `==` on a field resolve.
             Expr::Field { base, field } => {
                 self.field_type_of(base, field).map(|t| ty_to_valtype(&t)).unwrap_or(ValType::Other)
             }
@@ -1141,8 +1141,8 @@ impl Codegen {
     }
 
     /// The declared type of `base.field`, where `base`'s record type is known —
-    /// so a field access resolves its value type (`to_string(p.x)`) and its
-    /// structural shape (`to_string(p.tags)`), not just whether it is a record.
+    /// so a field access resolves its value type (`__render(p.x)`) and its
+    /// structural shape (`__render(p.tags)`), not just whether it is a record.
     fn field_type_of(&self, base: &Expr, field: &str) -> Option<Type> {
         let rec = self.record_type_of(base)?;
         let names = self.record_fields.get(&rec)?;
@@ -2348,7 +2348,7 @@ impl Codegen {
                 _ => {}
             }
             // A compound-typed parameter resolves its full structural shape from
-            // the declared type (authoritative), so `to_string(p)` / `p == q`
+            // the declared type (authoritative), so `__render(p)` / `p == q`
             // work even when the slots are themselves compound. Bare type
             // variables resolve to nothing, preserving the loud error.
             if let Some(shape) = p.ty.as_ref().and_then(|t| self.eq_shape_of_type(t)) {
@@ -5248,11 +5248,11 @@ impl Codegen {
                 let msg = self.compile_expr(&args[1])?;
                 Ok(format!("{msg}    call $print_str\n    i32.const 0\n"))
             }
-            // to_string(x): render by the argument's compile-time value type. A
+            // __render(x): render by the argument's compile-time value type. A
             // String passes through; an Int reuses `$int_to_string`; a Bool picks
             // an interned "true"/"false". Floats and undetermined types error
             // (rather than silently mis-rendering).
-            ("to_string", 1) => match self.val_type_of(&args[0]) {
+            ("__render", 1) => match self.val_type_of(&args[0]) {
                 ValType::Str => self.compile_expr(&args[0]),
                 ValType::Int => {
                     self.uses_int_to_string = true;
@@ -8549,7 +8549,7 @@ const PRINT_STR_WAT: &str = r#"  (func $print_str (param $s i32)
     call $print)
 "#;
 
-// to_string(n): the decimal text of `n`, with a leading '-' for negatives.
+// __render(n): the decimal text of `n`, with a leading '-' for negatives.
 // Digits are extracted from the magnitude with unsigned div/rem (so a negative
 // `n` works), written back-to-front after the optional sign. 15 bytes covers
 // any i32 ("-2147483648" plus the 4-byte header).
@@ -9625,7 +9625,7 @@ actor Counter:
 impl Counter:
     on Tick():
         count = (count + 1)
-        print(console, ("n=" <> to_string(count)))
+        print(console, ("n=" <> __render(count)))
 "#;
         let module = parse_module(src).unwrap();
         let Item::Actor(actor) = &module.items[0] else {
@@ -9684,7 +9684,7 @@ fn main(console: Console):
     fn compiles_int_to_string() {
         let src = r#"
 fn main(console: Console):
-    print(console, to_string(12345))
+    print(console, __render(12345))
 "#;
         assert_eq!(run_str(src), vec!["12345"]);
     }
@@ -9693,7 +9693,7 @@ fn main(console: Console):
     fn int_to_string_handles_zero() {
         let src = r#"
 fn main(console: Console):
-    print(console, to_string(0))
+    print(console, __render(0))
 "#;
         assert_eq!(run_str(src), vec!["0"]);
     }
@@ -9710,7 +9710,7 @@ actor Counter:
 impl Counter:
     on Tick():
         count = (count + 1)
-        print(console, ("count is " <> to_string(count)))
+        print(console, ("count is " <> __render(count)))
 "#;
         let module = parse_module(src).unwrap();
         let Item::Actor(actor) = &module.items[0] else {

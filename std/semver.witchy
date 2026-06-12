@@ -60,7 +60,7 @@ fn component(parts: List(String), i: Int) -> Result(Int, String):
             None -> Err("bad version component `" <> list.at(parts, i) <> "`")
 
 pub fn format(v: Version) -> String:
-    to_string(major(v)) <> "." <> to_string(minor(v)) <> "." <> to_string(patch(v))
+    "${major(v)}" <> "." <> "${minor(v)}" <> "." <> "${patch(v)}"
 
 // --- ordering ----------------------------------------------------------------
 

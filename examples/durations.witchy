@@ -28,5 +28,5 @@ fn main(console: Console):
         attempt = attempt + 1
     // Combine and compare durations directly.
     print(console, duration.clock(1h + 30m))
-    print(console, to_string(90s < 2m))
+    print(console, "${90s < 2m}")
     print(console, duration.human(duration.from_clock(0, 2, 30)))

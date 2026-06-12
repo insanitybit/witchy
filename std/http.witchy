@@ -57,12 +57,12 @@ pub fn get_url(net: Net[Connect, Tcp], raw: String) -> Result(Response, String):
 // behind the method helpers — use it when you need to set headers (auth,
 // content-type, ...). `Connection: close` ends `recv_all` after the body.
 pub fn request_with(net: Net[Connect, Tcp], method: String, host: String, port: Int, path: String, headers: List((String, String)), body: String) -> Response:
-    let sock = connect(net, host <> ":" <> to_string(port))
+    let sock = connect(net, host <> ":" <> "${port}")
     var head = method <> " " <> path <> " HTTP/1.1\r\n" <> "Host: " <> host <> "\r\n"
     for h in headers:
         let (k, v) = h
         head = head <> k <> ": " <> v <> "\r\n"
-    let req = head <> "Content-Length: " <> to_string(string.length(body)) <> "\r\n" <> "Connection: close\r\n\r\n" <> body
+    let req = head <> "Content-Length: " <> "${string.length(body)}" <> "\r\n" <> "Connection: close\r\n\r\n" <> body
 
     send_bytes(sock, req)
     parse_response(recv_all(sock))

@@ -1,7 +1,7 @@
 // Iterating a Dict. `values` walks the values and `pairs` walks `(key, value)`
 // entries (destructured with `let (k, v) = ...`), so you can aggregate over a
 // map's contents — not just look keys up. The results are reported with string
-// interpolation: `${expr}` splices `to_string(expr)` into the string.
+// interpolation: `${expr}` renders the value and splices it into the string.
 fn main(console: Console):
     var prices = dict.new()
     prices = dict.insert(prices, "apple", 3)

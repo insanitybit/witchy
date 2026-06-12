@@ -376,7 +376,7 @@ fn render_response(resp: Response) -> String:
             for h in headers:
                 let (k, v) = h
                 out = out <> k <> ": " <> v <> "\r\n"
-            out = out <> "Content-Length: " <> to_string(string.length(b)) <> "\r\n"
+            out = out <> "Content-Length: " <> "${string.length(b)}" <> "\r\n"
             out = out <> "Connection: close\r\n\r\n"
             out <> b
 

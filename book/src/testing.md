@@ -65,7 +65,7 @@ The `testing` module gives you:
 | `assert_int_eq(got, want)` | the two `Int`s are equal |
 | `fail_with(msg)` | (always — an unconditional failure) |
 
-Convert values to strings at the call site (`int_to_string`, `to_string`) so the
+Render values to strings at the call site (`"${x}"`) so the
 failure message stays readable. Under the hood these all call the `fail`
 primitive you met in the errors chapter, so a failing assertion is just a loud,
 message-carrying abort — and because aborts are part of parity, a test behaves

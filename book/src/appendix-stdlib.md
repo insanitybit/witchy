@@ -76,7 +76,7 @@ chapter.
 ## A reminder about portability
 
 Most of the library works on every backend — including rendering whole compound
-values with `to_string`/interpolation, which is identical on both. A few
+values with `${...}` interpolation, which is identical on both. A few
 things are interpreter-only by nature (e.g. Unicode-aware operations the
 WebAssembly backend scopes to ASCII). The compiler tells you — loudly — if you
 use one in code headed for the sandbox, so you never have to guess.

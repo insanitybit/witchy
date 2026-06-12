@@ -89,7 +89,7 @@ fn other_param(ty: &str) -> Param {
     }
 }
 
-/// `impl Show for T: fn show(self) -> String: to_string(self)` — the
+/// `impl Show for T: fn show(self) -> String: __render(self)` — the
 /// structural rendering as the derived default.
 fn impl_show(t: &TypeDef) -> Item {
     Item::Impl(ImplDef {
@@ -101,7 +101,7 @@ fn impl_show(t: &TypeDef) -> Item {
             vec![self_param()],
             Type::Named("String".into(), Vec::new()),
             Expr::Call {
-                name: "to_string".into(),
+                name: "__render".into(),
                 args: vec![Expr::Var("self".into())],
             },
         )],

@@ -45,7 +45,7 @@ fn run_tokens(tokens: List(Token)) -> String:
 
 fn render(result: Result(Int, String)) -> String:
     match result:
-        Ok(value) -> to_string(value)
+        Ok(value) -> "${value}"
         Err(message) -> "error: " <> message
 
 // --- lexer -------------------------------------------------------------------

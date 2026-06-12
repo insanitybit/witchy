@@ -13,5 +13,5 @@ fn main(console: Console):
     var f = 0
     while f <= 300:
         let c = to_celsius(math.to_float(f))
-        print(console, to_string(f) <> "F = " <> math.format_float(c, 1) <> "C")
+        print(console, "${f}" <> "F = " <> math.format_float(c, 1) <> "C")
         f = f + 60

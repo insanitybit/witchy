@@ -109,6 +109,6 @@ fn render(board: List(List(Int))) -> String:
     for row in board:
         var cells = []
         for v in row:
-            cells = list.push(cells, to_string(v))
+            cells = list.push(cells, "${v}")
         lines = list.push(lines, string.join(cells, ""))
     string.join(lines, "\n")
