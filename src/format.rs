@@ -509,7 +509,15 @@ fn block_stmt(s: &mut String, e: &Expr, depth: usize, c: &mut Comments) {
             pad(s, depth);
             multiline(s, e, depth, c);
         }
-        Expr::Block(b) => block(s, b, depth, c),
+        Expr::Block(b) => {
+            if let Some(sugar) = comprehension_sugar(b) {
+                pad(s, depth);
+                s.push_str(&sugar);
+                s.push('\n');
+            } else {
+                block(s, b, depth, c);
+            }
+        }
         Expr::Lambda { params, body } => {
             pad(s, depth);
             lambda_at(s, params, body, depth, c);
@@ -858,13 +866,21 @@ fn expr(e: &Expr) -> String {
             format!("update {}: {}", expr(base), fs.join(" "))
         }
         Expr::Spawn { actor, args } => format!("spawn {actor}({})", comma(args)),
+        // A block in expression position is a comprehension's desugar (the
+        // only block with an inline surface form) — print the literal back.
+        Expr::Block(b) => {
+            if let Some(sugar) = comprehension_sugar(b) {
+                return sugar;
+            }
+            "0".to_string()
+        }
         // No inline form — caller should have routed these multi-line. Emit a
-        // best-effort block expression so output still parses.
+        // best-effort placeholder; the reformat round-trip guard rejects the
+        // output if one of these ever leaks into it.
         Expr::Match { .. }
         | Expr::While { .. }
         | Expr::WhileLet { .. }
-        | Expr::For { .. }
-        | Expr::Block(_) => "0".to_string(),
+        | Expr::For { .. } => "0".to_string(),
     }
 }
 
@@ -1017,6 +1033,63 @@ fn operand(e: &Expr, parent: u8, is_right: bool) -> String {
     }
 }
 
+/// Print a comprehension's desugar back as the literal it came from.
+///
+/// `[elem for x in xs if c ...]` parses to a block of the exact shape
+/// `{ var __comprN = []; <for/if nest ending in __comprN = list.push(__comprN,
+/// elem)>; __comprN }`; this is its inverse. The shape is strict (single-
+/// statement nesting, the accumulator name, the push call), and both
+/// spellings parse to the same AST modulo the fresh accumulator counter, so a
+/// hand-written block of this shape prints as a comprehension too.
+fn comprehension_sugar(b: &Block) -> Option<String> {
+    if b.restrict.is_some() || b.region.is_some() || b.stmts.len() != 3 {
+        return None;
+    }
+    let Stmt::Let { name: acc, mutable: true, value: Expr::List(init) } = &b.stmts[0] else {
+        return None;
+    };
+    if !acc.starts_with("__compr") || !init.is_empty() {
+        return None;
+    }
+    if !matches!(&b.stmts[2], Stmt::Expr(Expr::Var(v)) if v == acc) {
+        return None;
+    }
+    let mut clauses = String::new();
+    let mut cur = &b.stmts[1];
+    loop {
+        match cur {
+            Stmt::Expr(Expr::For { var, iter, body })
+                if body.stmts.len() == 1 && body.restrict.is_none() && body.region.is_none() =>
+            {
+                clauses.push_str(&format!(" for {var} in {}", expr(iter)));
+                cur = &body.stmts[0];
+            }
+            Stmt::Expr(Expr::If { cond, then_block, else_block: None })
+                if then_block.stmts.len() == 1
+                    && then_block.restrict.is_none()
+                    && then_block.region.is_none() =>
+            {
+                clauses.push_str(&format!(" if {}", expr(cond)));
+                cur = &then_block.stmts[0];
+            }
+            Stmt::Assign { name, value: Expr::Call { name: push, args } } => {
+                if name != acc || push != "list.push" || args.len() != 2 {
+                    return None;
+                }
+                if !matches!(&args[0], Expr::Var(v) if v == acc) {
+                    return None;
+                }
+                // The nest must contain at least one `for` clause.
+                if !clauses.starts_with(" for") {
+                    return None;
+                }
+                return Some(format!("[{}{clauses}]", expr(&args[1])));
+            }
+            _ => return None,
+        }
+    }
+}
+
 /// Print a `<>` chain back as the string interpolation it desugared from.
 ///
 /// The lexer expands `"a ${x} b"` to `("a " <> to_string(x) <> " b")` at the
@@ -1152,6 +1225,169 @@ fn local_fn(name: &str) -> bool {
 /// returning `None` unless the output re-parses and formats to itself
 /// (idempotence). That guard makes the printer safe to apply in bulk: anything
 /// it cannot yet render faithfully is simply left untouched.
+// --- Round-trip canonicalization -----------------------------------------
+//
+// The semantic guard in `reformat` compares the input AST to the output's,
+// after canonicalizing BOTH: source-line metadata is cleared (layout shifts
+// freely), and the formatter's one tree-changing rewrite — the moved-builtin
+// rename — is applied, so it doesn't read as a difference. Everything else
+// the printer does (re-sugaring comprehensions/interpolation/if-let, inline
+// arms, bare nullary constructors) parses back to an identical tree and needs
+// no allowance here.
+
+fn canon_module(m: &mut Module) {
+    m.import_lines.clear();
+    m.item_lines.clear();
+    for it in &mut m.items {
+        canon_item(it);
+    }
+}
+
+fn canon_item(it: &mut Item) {
+    match it {
+        Item::Function(f) => canon_block(&mut f.body),
+        Item::Actor(a) => {
+            for fld in &mut a.fields {
+                if let Some(e) = &mut fld.init {
+                    canon_expr(e);
+                }
+            }
+            for h in &mut a.handlers {
+                canon_block(&mut h.body);
+            }
+        }
+        Item::Type(_) | Item::TypeAlias { .. } => {}
+        Item::Const { value, .. } => canon_expr(value),
+        Item::Trait(t) => {
+            for m in &mut t.methods {
+                if let Some(b) = &mut m.default {
+                    canon_block(b);
+                }
+            }
+        }
+        Item::Impl(im) => {
+            for f in &mut im.methods {
+                canon_block(&mut f.body);
+            }
+            for h in &mut im.handlers {
+                canon_block(&mut h.body);
+            }
+        }
+        Item::Comptime(b) => canon_block(b),
+    }
+}
+
+fn canon_block(b: &mut Block) {
+    b.lines.clear();
+    for s in &mut b.stmts {
+        canon_stmt(s);
+    }
+}
+
+fn canon_stmt(s: &mut Stmt) {
+    match s {
+        Stmt::Let { value, .. } | Stmt::Assign { value, .. } | Stmt::LetTuple { value, .. } => {
+            canon_expr(value)
+        }
+        Stmt::Return(Some(e)) | Stmt::Expr(e) | Stmt::Yield(e) => canon_expr(e),
+        _ => {}
+    }
+}
+
+fn canon_expr(e: &mut Expr) {
+    match e {
+        Expr::Call { name, args } => {
+            if !name.contains('.') && !local_fn(name) {
+                if let Some(q) = crate::typeck::moved_builtin(name) {
+                    *name = q.to_string();
+                }
+            }
+            for x in args {
+                canon_expr(x);
+            }
+        }
+        Expr::List(xs) | Expr::Tuple(xs) | Expr::Ctor { args: xs, .. }
+        | Expr::Spawn { args: xs, .. } => {
+            for x in xs {
+                canon_expr(x);
+            }
+        }
+        Expr::Apply { func, args } => {
+            canon_expr(func);
+            for x in args {
+                canon_expr(x);
+            }
+        }
+        Expr::Unary { expr, .. }
+        | Expr::Try(expr)
+        | Expr::As { expr, .. }
+        | Expr::Field { base: expr, .. } => canon_expr(expr),
+        Expr::Binary { lhs, rhs, .. } => {
+            canon_expr(lhs);
+            canon_expr(rhs);
+        }
+        Expr::Range { lo, hi, .. } => {
+            canon_expr(lo);
+            canon_expr(hi);
+        }
+        Expr::Index { base, index } => {
+            canon_expr(base);
+            canon_expr(index);
+        }
+        Expr::MethodCall { receiver, args, .. } => {
+            canon_expr(receiver);
+            for a in args {
+                canon_expr(a);
+            }
+        }
+        Expr::WhileLet { scrutinee, body, .. } => {
+            canon_expr(scrutinee);
+            canon_block(body);
+        }
+        Expr::Lambda { body, .. } => canon_block(body),
+        Expr::RecordUpdate { base, fields } => {
+            canon_expr(base);
+            for (_, v) in fields {
+                canon_expr(v);
+            }
+        }
+        Expr::Record { fields, spread, .. } => {
+            for (_, v) in fields {
+                canon_expr(v);
+            }
+            if let Some(s) = spread {
+                canon_expr(s);
+            }
+        }
+        Expr::If { cond, then_block, else_block } => {
+            canon_expr(cond);
+            canon_block(then_block);
+            if let Some(b) = else_block {
+                canon_block(b);
+            }
+        }
+        Expr::Match { scrutinee, arms } => {
+            canon_expr(scrutinee);
+            for a in arms {
+                if let Some(g) = &mut a.guard {
+                    canon_expr(g);
+                }
+                canon_expr(&mut a.body);
+            }
+        }
+        Expr::Block(b) => canon_block(b),
+        Expr::While { cond, body } => {
+            canon_expr(cond);
+            canon_block(body);
+        }
+        Expr::For { iter, body, .. } => {
+            canon_expr(iter);
+            canon_block(body);
+        }
+        _ => {}
+    }
+}
+
 pub fn reformat(src: &str) -> Option<String> {
     let original = crate::parser::parse_module(src).ok()?;
     LOCAL_FNS.with(|s| {
@@ -1177,13 +1413,22 @@ pub fn reformat(src: &str) -> Option<String> {
         }
     });
     let out = module(&original, &crate::lexer::own_line_comments(src));
-    // Verified by IDEMPOTENCE: the output re-parses and formats to itself.
-    // (Plain AST equality with the input would reject the formatter's own
-    // canonicalizations — the moved-builtin rewrite, interpolation
-    // re-sugaring — which deliberately change the tree while preserving the
-    // program. Idempotence still catches a formatter that mangles code: a
-    // mangled program won't reproduce itself.)
+    // Two guards, both required:
+    //  1. SEMANTICS — the output must parse back to the same program as the
+    //     input (modulo the canonicalization `canon_module` applies to both
+    //     sides). Idempotence alone is NOT enough: a printer bug that mangles
+    //     a construct stably (e.g. printing a placeholder for a shape it
+    //     doesn't know) is idempotent and would silently ship wrong code.
+    //  2. STABILITY — the output formats to itself, so fmt converges in one
+    //     pass and `--check` is meaningful.
     let reparsed = crate::parser::parse_module(&out).ok()?;
+    let mut want = original;
+    let mut got = reparsed.clone();
+    canon_module(&mut want);
+    canon_module(&mut got);
+    if want != got {
+        return None;
+    }
     let again = module(&reparsed, &crate::lexer::own_line_comments(&out));
     if out == again {
         Some(out)
@@ -1220,6 +1465,71 @@ mod tests {
 
     fn roundtrips(src: &str) -> bool {
         reformat(src).is_some()
+    }
+
+    #[test]
+    fn comprehensions_survive_formatting_everywhere() {
+        // Learner round-3 BLOCKER: `let ys = [n * n for n in xs]` used to print
+        // as `let ys = 0` (the inline renderer's placeholder leaked), and the
+        // idempotence-only guard shipped it. Comprehensions must print back as
+        // the literal — in value position, at a function tail, with filters,
+        // and with multiple generators.
+        let src = "fn squares(xs: List(Int)) -> List(Int):\n    [n * n for n in xs]\n\nfn main(console: Console):\n    let xs = [1, 2, 3]\n    let ys = [n * n for n in xs]\n    let odds = [n for n in xs if n % 2 == 1]\n    let pairs = [(a, b) for a in xs for b in xs if a < b]\n    print(console, \"${ys} ${odds} ${pairs} ${squares(xs)}\")\n";
+        let out = reformat(src).expect("comprehensions round-trip");
+        assert_eq!(out, src, "comprehensions are already canonical");
+    }
+
+    #[test]
+    fn the_semantic_guard_rejects_a_mangling_printer() {
+        // The guard must compare programs, not just check idempotence. A block
+        // value the printer can't render (here: forced via a synthetic AST
+        // whose printed placeholder `0` differs from the original program)
+        // must make reformat return None rather than ship the placeholder.
+        use crate::ast::*;
+        // let x = { var __zzz = []; __zzz }  — NOT comprehension-shaped (no
+        // loop), so the printer has no faithful inline form for it.
+        let block = Expr::Block(Block {
+            stmts: vec![
+                Stmt::Let { name: "__zzz".into(), mutable: true, value: Expr::List(vec![]) },
+                Stmt::Expr(Expr::Var("__zzz".into())),
+            ],
+            lines: vec![0, 0],
+            restrict: None,
+            region: None,
+        });
+        let m = Module {
+            imports: vec![],
+            items: vec![Item::Function(Function {
+                public: false,
+                name: "main".into(),
+                params: vec![Param {
+                    name: "console".into(),
+                    ty: Some(Type::Named("Console".into(), vec![])),
+                    convention: Default::default(),
+                }],
+                ret: None,
+                body: Block {
+                    stmts: vec![Stmt::Let { name: "x".into(), mutable: false, value: block }],
+                    lines: vec![0],
+                    restrict: None,
+                    region: None,
+                },
+                bounds: vec![],
+                is_gen: false,
+            })],
+            import_lines: vec![],
+            item_lines: vec![],
+        };
+        let printed = module(&m, &[]);
+        // The printed form parses, but to a DIFFERENT program (`let x = 0`);
+        // reformat over the printed source still succeeds (it is self-faithful),
+        // while the original AST and the reparse of `printed` must disagree —
+        // exactly what the guard checks.
+        let mut want = m.clone();
+        let mut got = crate::parser::parse_module(&printed).expect("placeholder parses");
+        canon_module(&mut want);
+        canon_module(&mut got);
+        assert_ne!(want, got, "the placeholder changed the program — guard must see it");
     }
 
     #[test]
