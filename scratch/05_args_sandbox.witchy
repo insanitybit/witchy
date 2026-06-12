@@ -1,0 +1,23 @@
+// 05_args_sandbox — accept argv, validate, return exit codes.
+// Run unconfined: witchy scratch/05_args_sandbox.witchy alice 30
+// Run confined: witchy sandbox --dir /tmp scratch/05_args_sandbox.witchy alice 30
+
+import string
+
+fn main(console: Console, args: List(String)) -> Int:
+    if list.length(args) < 2:
+        print(console, "usage: greet <name> <age-int>")
+        2
+    else:
+        let name = list.at(args, 0)
+        match string.parse_int(list.at(args, 1)):
+            Some(age) ->
+                if age < 0:
+                    print(console, "age must be non-negative")
+                    3
+                else:
+                    print(console, "hello ${name}, age ${age}, in ${100 - age} years you'll be 100")
+                    0
+            None ->
+                print(console, "couldn't parse age '${list.at(args, 1)}'")
+                4

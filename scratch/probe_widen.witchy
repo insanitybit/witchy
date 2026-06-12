@@ -1,7 +1,0 @@
-// PROBE: try to widen a narrowed cap; should be a compile error.
-fn try_widen(d: Dir[Read]) -> Bool:
-    let upgraded = d as Dir[Write]
-    true
-
-fn main(console: Console, dir: Dir):
-    print(console, "${try_widen(dir as Dir[Read])}")

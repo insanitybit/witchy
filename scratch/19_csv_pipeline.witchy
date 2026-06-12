@@ -1,0 +1,77 @@
+// 19_csv_pipeline — generate a few thousand rows synthetically inside
+// the program and run a small analytics pipeline over them.
+// Uses the std `csv` module for encoding the result.
+
+import csv
+import string
+
+fn generate(n: Int) -> List(List(String)):
+    var rows = [["area", "product", "qty", "price_cents"]]
+    var i = 0
+    var areas = ["us-east", "us-west", "eu-west", "ap-east"]
+    var products = ["widget", "sprocket", "cog", "gear", "bolt"]
+    while i < n:
+        let r = list.at(areas, i % 4)
+        let p = list.at(products, i % 5)
+        let q = i % 7 + 1
+        let pr = i * 13 % 90 + 100
+        rows = list.push(rows, [r, p, to_string(q), to_string(pr)])
+        i = i + 1
+    rows
+
+type Sale derive(Show, Eq):
+    area: String
+    product: String
+    qty: Int
+    price_cents: Int
+
+fn parse_rows(rows: List(List(String))) -> List(Sale):
+    var out = []
+    var seen_header = false
+    for row in rows:
+        if !seen_header:
+            seen_header = true
+        else if list.length(row) == 4:
+            match string.parse_int(list.at(row, 2)):
+                Some(q) ->
+                    match string.parse_int(list.at(row, 3)):
+                        Some(p) -> out = list.push(out, Sale(list.at(row, 0), list.at(row, 1), q, p))
+                        None -> out = out
+                None -> out = out
+    out
+
+fn revenue(sales: List(Sale), area: String) -> Int:
+    var total = 0
+    for s in sales:
+        if s.area == area:
+            total = total + s.qty * s.price_cents
+    total
+
+fn top_product(sales: List(Sale)) -> String:
+    var counts = dict.new()
+    for s in sales:
+        let prior = dict.get_or(counts, s.product, 0)
+        counts = dict.insert(counts, s.product, prior + s.qty)
+    var best_name = ""
+    var best_count = 0 - 1
+    for (k, v) in dict.pairs(counts):
+        if v > best_count:
+            best_count = v
+            best_name = k
+    "${best_name} (${best_count} units)"
+
+fn main(console: Console):
+    let raw = generate(3000)
+    let sales = parse_rows(raw)
+    print(console, "parsed ${list.length(sales)} sales")
+
+    let areas = ["us-east", "us-west", "eu-west", "ap-east"]
+    for r in areas:
+        print(console, "  ${r}: revenue=${revenue(sales, r)}c")
+
+    print(console, "top product overall: ${top_product(sales)}")
+
+    // Re-encode a small sample.
+    let sample = [["area", "product", "qty"], ["us-east", "widget", "3"], ["eu-west", "cog", "5"]]
+    print(console, "csv sample:")
+    print(console, csv.encode(sample))

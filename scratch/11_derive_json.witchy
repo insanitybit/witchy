@@ -1,0 +1,24 @@
+// 11_derive_json — derive(Json) and round-trip.
+
+import json
+import string
+
+type Person derive(Show, Eq, Json):
+    name: String
+    age: Int
+    pets: List(String)
+
+fn main(console: Console):
+    let p = Person("ada", 36, ["bess", "millie"])
+    let j = p.to_json()
+    let encoded = json.encode(j)
+    print(console, "encoded: ${encoded}")
+    print(console, "pretty:")
+    print(console, json.encode_pretty(j))
+
+    // Round-trip: encode -> decode -> manual extract -> compare
+    match json.decode(encoded):
+        Ok(doc) ->
+            print(console, "decoded match: ${doc == j}")
+            print(console, "has name: ${json.has_key(doc, "name")}")
+        Err(e) -> print(console, "decode err: ${e}")

@@ -1,0 +1,61 @@
+// 07_time_duration_json — round-trip a structured record through json,
+// using time and duration types along the way.
+
+import json
+import time
+import duration
+import string
+
+type Event derive(Show, Eq):
+    ts: Int
+    name: String
+    duration_ms: Int
+
+fn event_to_json(e: Event) -> Json:
+    JsonObject([("ts", JsonInt(e.ts)), ("name", JsonString(e.name)), ("duration_ms", JsonInt(e.duration_ms))])
+
+fn json_to_event(j: Json) -> Result(Event, String):
+    match json.get(j, "ts"):
+        Some(jts) ->
+            match json.as_int(jts):
+                Some(ts) ->
+                    match json.get(j, "name"):
+                        Some(jname) ->
+                            match json.as_string(jname):
+                                Some(name) ->
+                                    match json.get(j, "duration_ms"):
+                                        Some(jd) ->
+                                            match json.as_int(jd):
+                                                Some(d) -> Ok(Event(ts, name, d))
+                                                None -> Err("duration_ms not int")
+                                        None -> Err("missing duration_ms")
+                                None -> Err("name not string")
+                        None -> Err("missing name")
+                None -> Err("ts not int")
+        None -> Err("missing ts")
+
+fn main(console: Console):
+    let events = [Event(1700000000, "build", 4250), Event(1700000310, "test", 12750), Event(1700000990, "deploy", 600250)]
+
+    // Encode the list to a JSON array.
+    var arr = []
+    for e in events:
+        arr = list.push(arr, event_to_json(e))
+    let text = json.encode(JsonArray(arr))
+    print(console, "encoded length: ${string.length(text)}")
+    print(console, text)
+
+    // Decode and use both time and duration.
+    match json.decode(text):
+        Ok(doc) ->
+            match json.as_array(doc):
+                Some(items) ->
+                    for j in items:
+                        match json_to_event(j):
+                            Ok(e) ->
+                                let dur = duration.milliseconds(e.duration_ms)
+                                let dt = time.from_unix(e.ts)
+                                print(console, "${e.name} at ${time.iso8601(dt)} took ${duration.human(dur)}")
+                            Err(err) -> print(console, "decode err: ${err}")
+                None -> print(console, "top-level not array")
+        Err(e) -> print(console, "parse err: ${e}")

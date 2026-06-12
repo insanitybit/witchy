@@ -1,0 +1,34 @@
+// core — shared types for the metrics pipeline. No dependencies, no caps.
+type Reading derive(Show, Eq):
+    ts: Int
+    host: String
+    metric: String
+    value: Int
+
+type Bucket derive(Show, Eq):
+    host: String
+    metric: String
+    count: Int
+    sum: Int
+    min: Int
+    max: Int
+
+pub fn empty_bucket(host: String, metric: String) -> Bucket:
+    Bucket(host, metric, 0, 0, 0, 0)
+
+pub fn bucket_key(host: String, metric: String) -> String:
+    host <> "|" <> metric
+
+pub fn add_reading(b: Bucket, value: Int) -> Bucket:
+    if b.count == 0:
+        Bucket(b.host, b.metric, 1, value, value, value)
+    else:
+        let new_min = if value < b.min: value else: b.min
+        let new_max = if value > b.max: value else: b.max
+        Bucket(b.host, b.metric, b.count + 1, b.sum + value, new_min, new_max)
+
+pub fn bucket_avg(b: Bucket) -> Int:
+    if b.count == 0:
+        0
+    else:
+        b.sum / b.count

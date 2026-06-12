@@ -1,0 +1,54 @@
+// 14_results_chain — chaining ? with custom errors across functions.
+// We parse "USER:host:port" tokens into a Connection record.
+
+import string
+import option
+import result
+
+type Connection derive(Show, Eq):
+    user: String
+    host: String
+    port: Int
+
+fn parse_connection(s: String) -> Result(Connection, String):
+    let (user, rest) = split_or_err(s, ":", "missing ':' between user and host")?
+    let (host, ps) = split_or_err(rest, ":", "missing ':' between host and port")?
+    let p = parse_port(ps)?
+    if string.is_empty(user):
+        Err("empty user")
+    else if string.is_empty(host):
+        Err("empty host")
+    else:
+        Ok(Connection(user, host, p))
+
+fn split_or_err(s: String, sep: String, msg: String) -> Result((String, String), String):
+    if string.contains(s, sep):
+        Ok(string.split_once(s, sep))
+    else:
+        Err(msg)
+
+fn parse_port(s: String) -> Result(Int, String):
+    match string.parse_int(s):
+        Some(n) ->
+            if n < 1:
+                Err("port must be >= 1")
+            else if n > 65535:
+                Err("port must be <= 65535")
+            else:
+                Ok(n)
+        None -> Err("port not an integer: '${s}'")
+
+fn try_show(console: Console, input: String):
+    match parse_connection(input):
+        Ok(c) -> print(console, "ok: ${c}")
+        Err(e) -> print(console, "ERR for '${input}': ${e}")
+
+fn main(console: Console):
+    try_show(console, "alice:db.local:5432")
+    try_show(console, "bob:web:80")
+    try_show(console, "no_colons_at_all")
+    try_show(console, "u:h:")
+    try_show(console, ":h:80")
+    try_show(console, "u::80")
+    try_show(console, "u:h:65536")
+    try_show(console, "u:h:abc")

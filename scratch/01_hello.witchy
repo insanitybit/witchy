@@ -1,4 +1,0 @@
-// 01 — hello, witchy: smallest sanity check.
-fn main(console: Console):
-    print(console, "hello, witchy")
-    print(console, "${2 + 2}")

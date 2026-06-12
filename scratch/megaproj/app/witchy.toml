@@ -1,0 +1,9 @@
+[rune]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+"core" = { path = "../core" }
+"parsing" = { path = "../parsing" }
+"analytics" = { path = "../analytics" }
+"formatting" = { path = "../formatting" }

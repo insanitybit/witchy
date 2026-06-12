@@ -1,0 +1,40 @@
+// 18_brands_narrow — a fan-out where the same Dir capability is split
+// into two narrowed views (read-only inbox, write-only outbox) and handed
+// to two different actors with NO overlap of authority.
+
+import string
+
+actor Reader:
+    inbox: Dir[Read]
+    out: Subject
+
+impl Reader:
+    on Scan(name: String):
+        let text = read(inbox, name)
+        send(out, Got(name, string.length(text)))
+
+actor Notifier:
+    console: Console
+
+impl Notifier:
+    on Got(name: String, n: Int):
+        print(console, "read ${name} -> ${n} bytes")
+
+actor Writer:
+    outbox: Dir[Write]
+    var seq: Int = 0
+
+impl Writer:
+    on Drop(payload: String):
+        seq = seq + 1
+        write(outbox, "msg-${seq}.txt", payload)
+
+fn main(console: Console, root: Dir):
+    let notifier = spawn Notifier(console)
+    let reader = spawn Reader(subdir(root, "in") as Dir[Read], notifier)
+    let writer = spawn Writer(subdir(root, "out") as Dir[Write])
+
+    send(reader, Scan("greeting.txt"))
+    send(writer, Drop("hello"))
+    send(writer, Drop("world"))
+    print(console, "fanned out")

@@ -1,0 +1,48 @@
+// analytics — aggregate Readings into per-(host, metric) Buckets,
+// and compute simple top-K queries over them.
+
+import core
+import string
+import ord
+
+// Aggregate a list of readings into a Dict keyed by "host|metric".
+pub fn aggregate(readings: List(Reading)) -> Dict(String, Bucket):
+    var acc = dict.new()
+    for r in readings:
+        let key = bucket_key(r.host, r.metric)
+        let prior = dict.get_or(acc, key, empty_bucket(r.host, r.metric))
+        acc = dict.insert(acc, key, add_reading(prior, r.value))
+    acc
+
+pub fn buckets_list(d: Dict(String, Bucket)) -> List(Bucket):
+    dict.values(d)
+
+// Sort buckets by total sum, descending; ties broken by host then metric.
+pub fn top_by_sum(d: Dict(String, Bucket), k: Int) -> List(Bucket):
+    let xs = dict.values(d)
+    let sorted = list.sort_by(xs, fn(a: Bucket, b: Bucket): bucket_less(a, b))
+    list.take(sorted, k)
+
+// "less than" for sorting: higher sum is "less" so it comes first.
+fn bucket_less(a: Bucket, b: Bucket) -> Bool:
+    if a.sum != b.sum:
+        a.sum > b.sum
+    else if a.host != b.host:
+        a.host < b.host
+    else:
+        a.metric < b.metric
+
+// Sum across all buckets of a particular metric name.
+pub fn metric_total(d: Dict(String, Bucket), metric: String) -> Int:
+    var total = 0
+    for b in dict.values(d):
+        if b.metric == metric:
+            total = total + b.sum
+    total
+
+pub fn unique_hosts(d: Dict(String, Bucket)) -> List(String):
+    var seen = []
+    for b in dict.values(d):
+        if !list.contains(seen, b.host):
+            seen = list.push(seen, b.host)
+    list.sort_by(seen, fn(x: String, y: String): x < y)

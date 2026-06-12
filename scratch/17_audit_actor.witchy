@@ -1,0 +1,23 @@
+// 17_audit_actor — capability-narrowed actor.
+// Auditor holds Dir[Write] over /tmp/witchy_audit only; everything else
+// it can't touch.  Main also holds Console; Auditor cannot print.
+
+import string
+
+actor Auditor:
+    out: Dir[Write]
+    var n: Int = 0
+
+impl Auditor:
+    on Record(label: String):
+        n = n + 1
+        write(out, "${label}.log", "entry #${n} for '${label}'\n")
+
+fn main(console: Console, root: Dir):
+    // Subdir narrowed to write-only; Auditor will never see Read or root.
+    let area = subdir(root, "audit") as Dir[Write]
+    let aud = spawn Auditor(area)
+    send(aud, Record("login"))
+    send(aud, Record("checkout"))
+    send(aud, Record("logout"))
+    print(console, "dispatched 3 audit records")

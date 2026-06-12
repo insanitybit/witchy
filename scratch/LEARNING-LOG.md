@@ -1,255 +1,76 @@
-# Witchy Learning Log — LLM author tour
+# LEARNING-LOG — round 5, ambitious mode
 
-A new-user (LLM) attempt at writing witchy programs after reading the book.
-Each entry records: program, expectation, actuality, fix, severity.
+Each entry: what I tried, what I expected, error verbatim (or behavior), what fixed it, severity.
+Severities: Blocker / Friction / Papercut / Worked-well.
 
-Severity tags:
+## Setup
 
-- **Blocker** — couldn't proceed; doc misleading; or fmt changed behavior.
-- **Friction** — slowed me down; doc unclear or stdlib surprised me.
-- **Papercut** — minor annoyance; quickly recovered.
-- **Worked-well** — noteworthy positive, kept me moving.
+- witchy binary already built at `target/debug/witchy`.
+- Read all book chapters + appendices + the example projects (todo, ledger, report, dashboard, config) before writing code.
+- Key surfaces I will exercise: multi-module path-deps, multi-actor topologies, traits w/ bounds + derive, JSON round-trip, time/duration, comptime emit, capability narrowing through several layers, sandbox + args, big-data parse/transform.
 
----
+## Summary (filled in at the end)
 
-## Program index
+- **21 programs total** (20 single-file scripts: `01_`–`21_` minus `04_` which is the megaproj, plus the megaproj's 5 runes wired together).
+- **First-try successes**: 12 of 21 ran clean on the first attempt (01, 05, 06, 07, 08, 11, 12, 14, 15, 17, 18, 21). The other 9 hit at least one friction or blocker.
+- **All 20 single-file programs are parity-clean after fixes**, and the megaproj's output is byte-identical pre- and post-fmt.
+- **Blockers found**: 2 — (a) **interpreter step-budget vs WASM** divergence on a 5000-element iterator workload (program 09); (b) **actor `Int` field without default** rejected by the WASM codegen but accepted by the interpreter (program 13). Both are loud (parity reports DIVERGE and the codegen error names the field), not silent-wrong.
+- **fmt behavior change**: zero — every formatted program produced identical output to the pre-fmt run (verified by diff in the megaproj case).
 
-| #  | File                                | What it exercises                      | First-try?       | Output stable after fmt?       |
-|----|-------------------------------------|----------------------------------------|------------------|--------------------------------|
-| 01 | `01_hello.witchy`                   | hello/print/interpolation              | yes              | yes                            |
-| 02 | `02_pure_math.witchy`               | recursion, gcd, fib                    | yes              | yes                            |
-| 03 | `03_lists_dicts.witchy`             | lists/comprehensions/dicts/tuples      | yes              | yes (fmt un-escaped strings)   |
-| 04 | `04_records_enums.witchy`           | records, sum types, match, inline arm  | yes              | yes (fmt -> interpolation)     |
-| 05 | `05_errors_option.witchy`           | Option/Result/?/if-let                 | yes              | yes                            |
-| 06 | `06_patterns.witchy`                | list patterns, guards, nested          | yes              | yes                            |
-| 07 | `07_generics_traits.witchy`         | trait/impl, where, derive, impl Show   | yes              | yes                            |
-| 08 | `08_json_derive.witchy`             | derive(Json), json.encode/decode       | yes              | yes                            |
-| 09 | `09_iter_gen.witchy`                | gen fn / iter (Fibonacci, Collatz)     | yes              | yes                            |
-| 10 | `10_comptime.witchy`                | comptime emit                          | yes              | yes                            |
-| 11 | `11_caps_narrowing.witchy`          | Dir as Read, retain/without            | yes              | yes                            |
-| 12 | `12_duration_time.witchy`           | Duration literals, time.parse/format   | required fix     | yes                            |
-| 13 | `13_actors.witchy`                  | Counter + Boss/Worker                  | yes              | yes                            |
-| 14 | `14_scan.witchy`                    | confined log scanner under sandbox     | yes              | yes                            |
-| 15 | `15_tests.witchy`                   | std/testing assertions                 | yes              | yes                            |
-| 16 | `16_branded_caps.witchy`            | Optional(Dir), Access sum type         | yes              | yes                            |
-| 17 | `17_which_probe.witchy`             | split/sort_by/fold/join                | yes              | yes                            |
-| 18 | `18_inout_own.witchy`               | inout/own+move/let-borrow              | yes              | yes (fmt -> `var` synonym)     |
-| 19 | `19_http_caps.witchy`               | Net[Connect, Tcp] capability shape     | required tweak   | yes                            |
-| 20 | `20_wordcount.witchy`               | dict reduce + Dir[Read] sandbox        | yes              | yes (fmt collapsed lambda)     |
-| 21 | `21_match_exhaustive_nested.witchy` | nested match, ? across Result          | yes              | yes                            |
-| PM | `mathapp/` + `mathlib/`             | two-rune path-dep project              | partial          | n/a (no fmt round-trip on toml) |
+## Top frictions (one line each)
 
-Probes (deliberate-error programs):
+1. Interpreter step-budget (~1M) hard-limits programs that the WASM backend runs to completion → parity reports DIVERGE for programs that are merely "too big" — no flag to raise it.
+2. Actor `Int` field without `= default` parses+runs on interpreter but errors in WASM codegen — feels like an undocumented constraint.
+3. `where a: Trait` resolves trait calls on direct params + for-loop vars, NOT on `match`-pattern bindings, NOT on call results — the error is "unknown function" with no signpost.
+4. Reserved keywords (`sink`, `region`, etc.) collide with intuitive field/parameter names — error is generic ("expected identifier"), with no hint that the name is reserved.
+5. `match` no-op arm: there's no `pass`/`()` idiom shown anywhere; `None -> {}` errors helpfully, but the "right" thing to write is unclear; I used `None -> out = out`.
 
-| # | File                                | Goal                  | Compiler said                                      |
-|---|-------------------------------------|-----------------------|----------------------------------------------------|
-| - | `probe_errors.witchy`               | print without Console | `unbound variable 'console'` — clean               |
-| - | `probe_widen.witchy`                | widen narrowed Dir    | `'as' can only drop rights: Dir[Write] not subset` |
-| - | `probe_match_nonexhaustive.witchy`  | drop a Color variant  | `non-exhaustive match on 'Color': missing Blue`    |
+## Entries
 
-Counts:
-- **22 programs/projects written** (21 standalone + 1 two-rune project).
-- **20/22 first-try successes.** The two that needed touch-up: `12_duration_time.witchy` (Duration interpolation surprise — see entry below) and `19_http_caps.witchy` (idiomatic phrasing tweak — initial scaffold compiled but read awkwardly).
-- **0 fmt-induced behavior changes** on the 21 runnable programs. (The 3 deliberate-error probes show different *line numbers* in their compile errors after fmt collapses a blank line, but the error class and message text are identical — not a behavior change.)
+### 13_worker_pool — Blocker (real backend divergence)
+- Wrote `actor Worker:\n    id: Int\n    collector: Subject` (positional-no-default Int field). Interpreter accepted it. WASM codegen errored: `codegen error: field 'id': Int state needs an initializer in codegen`. **Blocker**: this is a language-level backend divergence — an actor declaration that the interpreter compiles & runs is rejected by the WASM compiler. The error names the right field but no signpost in the book mentions this constraint.
+- Workaround: convert `id` from constructor positional → message parameter (`on Work(my_id: Int, x: Int)`); spawn no longer needs an `id`. Lost a bit of expressivity (each worker no longer "knows its own id" privately) but functionally equivalent. Adding `var id: Int = 0` would have made it a default field — removed from the constructor entirely; can't set per-instance.
+- Output bug (mine): drain ordering across actors — same cross-actor FIFO gotcha as program 03. Fixed by routing Drain through each Worker and counting 3 drains in Collector before reporting.
 
----
+### 19_csv_pipeline — Friction (reserved word)
+- Named a record field `region: String`. Error: `parse error at 22:5: expected an identifier, found 'region'`. `region` is a reserved word (Performance appendix: "Regions: scoping your allocations"). Renamed all to `area`; works. **Papercut**: error message doesn't say "reserved keyword" — same shape as the `sink` collision in program 3. Listing reserved words near the keywords table would help (the table on the appendix-operators page lists `actor`, `on`, `spawn` and many others, but not `region`, `sink`, `move`, `own` — well `sink`/`own`/`move` ARE there. `region` may be reserved only in some contexts).
 
-## Entries — by severity
+### 16_generic_linked — Friction (trait dispatch on match-pattern vars)
+- Wrote `match l: LCons(x, rest) -> weight(x) + weights(rest)` in a `where a: Counter` fn. Error: `call to unknown function weight`. **Friction**: trait dispatch resolves on direct params and for-loop vars, NOT on match-pattern bindings (consistent with the documented constraint). The error message is the same as for any unbound function — it doesn't mention the dispatch limitation, so I spent a few minutes guessing whether the trait was somehow not in scope.
+- Also tried calling another bounded-generic helper from within a bounded-generic function — also fails (`call to unknown function describe_one`). So the workaround must be: write the bounded function so all trait calls happen on the direct param (or for-loop var), AND the entry point is called from a concrete-type site.
+- Once I converted everything to operate over `List(a)` + `for x in xs`, all calls dispatched. **Worked-well** in the end. The book's generics chapter doesn't mention this constraint — adding a sentence on it would save real time. **Papercut documentation gap.**
 
-### Blocker
+### 10_kv_with_tests — Papercut
+- `testing.assert_eq` is `String`-only. Calling it with `Int`s gave `type error: ... expected 'String', found 'Int'`. The right tool is `testing.assert_int_eq`. **Papercut**: separate-function-per-type is a small papercut when most assertion libraries would use a polymorphic generic Eq-bounded `assert_eq`.
 
-**B-1. `witchy run` does not forward argv to `main`.**
-*Encountered: `scratch/mathapp` (project example).*
+### 07 — duration display Papercut
+- `duration.human(milliseconds(4250))` rendered `4s`, not `4s250ms`. Looking at duration.human, sub-second remainder appears dropped for non-zero higher units. Not a bug per spec (book says human form is "30s"/"1m30s"), just less precise than `clock` or raw ms. **Papercut** if you wanted sub-second precision in human form.
 
-I scaffolded a two-rune project (`mathlib` library + `mathapp` consumer with a
-path dep). The app's `main(console: Console, args: List(String))` reads CLI
-arguments. Per memory: "`run` forwards arguments to the program". I ran:
+### 09_big_gen — Blocker for the parity tool (with workaround), then Worked-well
+- Wrote a generator (`gen fn lcg`) feeding 5000-element iterator pipelines. Interpreter aborted: `runtime error: '09_big_gen.__gen_lcg', line 12: evaluation step budget exceeded (possible infinite loop)`. WASM ran to completion and produced clean output. `parity` flagged DIVERGE.
+- **Blocker (parity)**: the interpreter has a hard step budget (~1M steps, found in src/interpreter.rs). For programs that legitimately do real work — 5000 iterations through 3 nested iter pipelines easily exceeds it — interpreter + WASM diverge in OUTCOME (one errors, the other succeeds). For users this means: a programmatic workload that compiles & runs on WASM may not be runnable via the interpreter, which the book frames as semantically identical. There's no CLI flag to raise the limit. The error itself is good ("possible infinite loop") but misleading when the program is finite.
+- **Severity reasoning**: it's a blocker for parity because the harness reports divergence even though the WASM result is correct. It's not a silent-wrong: parity does correctly detect the mismatch and the user is told. So a "loud divergence" rather than "silent wrong", but I'd still call it a Blocker for round-5's stated criterion that fmt/parity behavior changes are blockers — because the interpreter+compiler are supposed to agree.
+- **Mitigation**: dialed inputs down to 400/200 — parity-clean. Documented limit in code comment.
 
-```text
-$ witchy run 3 1 4 1 5 9 2 6
-usage: mathapp <int>...
-```
+### 04_megaproj — multi-rune diamond+, 4 lib + 1 app — Worked-well
+- 5 runes: `core` (types) -> `parsing`/`analytics`/`formatting` -> `app`.  All path deps; `witchy tree` shows the diamond on `core` cleanly.
+- `witchy new --lib NAME` and `witchy new NAME` scaffold cleanly; just needed to add `[dependencies]` entries by hand.
+- **Friction**: used `None -> {}` for the no-op match arm. Error: `parse error at 13:22: braces are not part of witchy syntax — use indentation`. Great error message — tells you what's wrong AND what to use. Workaround was `None -> out = out` (clumsy). **Papercut**: there is no explicit Unit literal / pass syntax I could find. Documenting "what is the no-op arm idiom?" would help — I don't think it's in the book.
+- **Friction**: I wrote `pub type Reading derive(Show, Eq):`.  fmt silently STRIPPED the `pub`.  Cross-module use of the type kept working — so `type` defaults to public, the `pub` was a syntax error that fmt salvaged. **Papercut**: book/appendix could say "types are exported by default; `pub` only applies to `fn`". Also: the compiler did not flag `pub type` BEFORE fmt — it parsed and worked. So this looks tolerant of `pub type` at parse time but fmt-normalizes it out. Not a Blocker because the program ran with identical output before and after fmt (verified by diff). 
+- **Friction**: after `fmt` rewrote sources, `witchy run` blocked on a hash mismatch on the path dep: `path dependency analytics changed: hash sha256:… != locked …`. The message tells you to run `witchy update`; one command fixed it. **Worked-well** as a guard, **Papercut** as a flow when you've just `fmt`ed your own path deps. (Could plausibly be auto-relaxed when caps don't widen.)
+- After update + rerun, output identical to pre-fmt — no behavior change.
+- `witchy caps` reports `Console, Dir` on main as expected; `audit` shows the deps demand no caps.
 
-`list.length(args) == 0` inside the program. Tried `--` separator too, same.
+### 03_actor_pipeline — Friction (mental model), then Worked-well
+- Named a Subject field `sink`. Error: `parse error at 41:5: expected an identifier, found 'sink'`. `sink` is a keyword (ownership transfer). Renamed to `downstream`. **Papercut**: the error pinpoints the line but doesn't explicitly say "reserved keyword". Easy fix once known.
+- Logic mistake (mine): sending `Flush` directly to `agg` from `main` while Sample messages were still queued at upstream actors produced `sum => 0`. Mailboxes are per-actor FIFO, not global. Fixed by routing the Flush through the Producer→Filter→Aggregator pipeline so cross-actor ordering is preserved. **Worked-well**: the mailbox semantics are exactly what the book describes; my bug.
+- After fix: parity-clean, both backends agreed.
 
-Root cause (verified in source): `src/pm/cli.rs::cmd_run` calls
-`interpreter::run_module(a.linked, Path::new("."), args)` — but
-`run_module`'s third parameter is `net_allow: Vec<String>`, not the program's
-argv. It should be `run_module_args(...)`. The help text says
-`run [args...]         build and run the program (args become main's 'args')`,
-so the docs imply it works.
+### 02_traits_bounds — Friction (then Worked-well)
+- Tried trait method with a `where` bound: `fn plus(self, other: a) -> a where a: Summable`. Error: `parse error at 11:20: expected 'fn', found 'where'`. **Friction**: traits can't carry `where`-bound methods in their decl (or at least not with this syntax). Removed the unused `Summable` trait. Book examples never bound a trait method's own type variable; my mistake.
+- After fix: parity-clean, both backends agreed. derive(Show, Eq) on records works; `${...}` interpolation renders the derived `Show`. fmt rewrote `<> to_string(x) <>` patterns into `${x}` — semantics preserved; matches the "interpolation as idiom" recent commit. **Worked-well**.
 
-**Severity: Blocker** for any project that wants CLI args via `witchy run`.
-Workaround inside the repo would be to invoke the single-file form directly,
-but path-dep linkage requires the project flow. (I didn't fix it per the
-"don't modify outside scratch/" rule.)
+### 01_json_round_trip — Worked-well
+- First try: encode/decode + nested `match` for unwrapping a `Some(JsonString(...))` worked correctly on both backends; `parity` agrees.
+- fmt observation: fmt collapsed a multi-line `[..., ..., ...]` list literal onto a single long line. Not a behavior change, just a style choice. **Papercut**: very long lines are harder to read but no semantic impact.
 
----
-
-### Friction
-
-**F-1. `Duration` interpolation renders the raw millisecond integer.**
-*Encountered: `12_duration_time.witchy`.*
-
-I expected `"${t + 1m}"` to render `1m30s` (or similar human form), since the
-book repeatedly says `${x}` "renders any value identically on both backends".
-Actual output: `90000`. The `to_string` of a `Duration` exposes its underlying
-`i64` ms. The fix is to reach for `duration.human(...)` or `duration.clock(...)`.
-
-This was the only stdlib surprise where I expected one thing and got another
-that wasn't documented loudly enough. The book's "values render structurally"
-language and the Duration-is-a-distinct-type guarantee combined to imply
-"the duration prints as a duration". `appendix-stdlib.md` mentions `duration`
-helpers in a table but doesn't flag the interpolation default. **`witchy which
-human` and `witchy which duration` got me unstuck quickly** (well, `which
-duration` returned "no std function matches" — the search is over function
-names, not module names; I had to think of `human`/`clock`/`to_ms` first).
-
-**Severity: Friction.** A line in `tour-values.md` or `appendix-stdlib.md` like
-"Duration interpolates as a raw millisecond integer; use `duration.human` /
-`duration.clock` for friendly labels" would prevent this.
-
-**F-2. `witchy which <module-name>` returns "no match".**
-*Encountered while looking for the Duration module.*
-
-`./target/debug/witchy which duration` -> `no std function matches 'duration'`.
-The CLI is documented as "find a function in the standard library by (partial)
-name", so this is technically correct — but a new user's first instinct is
-"what's in the duration module?". `witchy which human` found
-`duration.human(...)` immediately, so I recovered, but a module-name match
-would be a small win.
-
-**Severity: Friction.**
-
-**F-3. Errors module name confusion: `string.to_int` returns `Int` not `Result`?**
-*Encountered while writing `mathapp`.*
-
-I wrote `string.to_int(s)` expecting `Result(Int, String)` based on the book
-("strict — it errors on non-numeric input"). The signature really is
-`String -> Int` and "errors" means aborts via `fail`, not returns `Err`. The
-book says "errors on … rather than silently returning a wrong number", which I
-parsed as "returns `Err(_)`". This is consistent with `fail`-the-program
-semantics, but the wording "errors" is ambiguous between "aborts" and "returns
-`Err`" in a language where both exist. I wrote `parse_args` accepting non-int
-input would crash the program; the book's intent is clearly that this is
-correct for "loud" parsing, but spelling it `aborts on non-numeric input` would
-remove the ambiguity.
-
-**Severity: Friction.**
-
----
-
-### Papercut
-
-**P-1. `fmt` is aggressively opinionated and rewrites code beyond whitespace.**
-*Encountered on most programs.*
-
-`witchy fmt` did several non-whitespace rewrites I didn't expect from the
-"canonical layout" framing in the toolbox doc:
-
-- Strips a blank line between a top-of-file comment and the first `fn`.
-- Un-escapes `\"` inside `${...}` interpolations (`"${dict.get_or(d, \"k\", 0)}"`
-  becomes `"${dict.get_or(d, "k", 0)}"`).
-- Rewrites `"a " <> to_string(x) <> ","` into `"a ${x},"` interpolation form.
-- Rewrites `inout n: Int` -> `var n: Int` (the docs note these are synonyms
-  but the formatter picks one canonical spelling — `var` — for params).
-- Collapses a multi-line lambda body onto a single line when it fits.
-
-None changed program output, so this is correct as fmt's job — but the book's
-"reformat in place (canonical layout)" undersells just how much rewriting
-happens. The `inout -> var` rewrite especially could confuse someone reading
-`tour-functions.md` and then seeing their code change spelling on save. A note
-like "`fmt` also normalizes synonyms (`inout` -> `var`), unnecessary escapes,
-and `<> to_string(x)` chains into interpolation" in `getting-started-toolbox.md`
-would set expectations.
-
-**Severity: Papercut.**
-
-**P-2. Help text for `witchy run [args]` doesn't appear in `witchy --help`.**
-*Encountered when looking for arg-forwarding syntax.*
-
-`witchy --help` lists the single-file/sandbox/test/etc. commands but says only
-"Package commands (add, build, publish, ...) are also available." — no link or
-hint that `witchy run [args...]` exists. I had to dig into `src/pm/cli.rs`
-to confirm what was supposed to work. A `witchy pm --help` (or `witchy help
-pm`) hint at the bottom of the main `--help` would orient newcomers faster.
-
-**Severity: Papercut.**
-
-**P-3. `witchy run --help` is consumed by `main`'s args.**
-*Encountered while diagnosing Blocker B-1.*
-
-Calling `witchy run --help` from inside a project printed my program's
-`usage:` line, because (per `cmd_run`) everything after `run` is forwarded as
-argv. That makes sense given the design, but means there's no obvious way to
-get help for `run` itself from the CLI. Once I knew the design, I just read
-the source.
-
-**Severity: Papercut.**
-
----
-
-### Worked-well
-
-**W-1. `witchy parity <file>` is genuinely confidence-building.** Every
-pure-or-Console program I wrote passed parity on the first try; I never had to
-think about backend differences.
-
-**W-2. `witchy caps <file>` is the killer feature in practice.** When I
-wrote `19_http_caps.witchy` and it reported `fetch_root  Net[Connect, Tcp]`
-without my having to think about it, the supply-chain story stopped feeling
-like marketing and started feeling like a reflex.
-
-**W-3. Compile errors are short and exact.** "non-exhaustive match on
-`Color`: missing Blue", "`as` can only drop rights: `Dir[Write]` is not a
-subset of `Dir[Read]`", "unbound variable `console`" — each tells me precisely
-what to do without scrolling.
-
-**W-4. Sandbox + `--dir` is the easiest "give a program some files" UX
-I've used.** No `chroot`, no container — `witchy sandbox --dir /tmp/foo
-scan.witchy QUERY app.log` Just Works and the program proves it isn't
-escaping.
-
-**W-5. The PM scaffold is fast.** `witchy new mathlib --lib && witchy new
-mathapp && cd mathapp && witchy add mathlib --path ../mathlib && witchy
-build` took seconds, including the cap-widening audit ("demands no
-capabilities. tree max authority now: none"). Everything except B-1
-(`run`-forwarded args) worked perfectly: `audit`, `tree`, the lockfile
-content, the `provenance = "path:./../mathlib"` entry.
-
-**W-6. `derive(Json)` is dead-simple.** `derive(Show, Eq, Json)` on a nested
-record, `json.encode(my.to_json())`, done. Round-trip via `json.decode`
-returned a structurally-inspectable `Json` sum type that prints clearly.
-
-**W-7. Actors with `spawn`/`send` Just Work.** Three messages on a `Counter`,
-a `Worker`/`Boss` pair — both ran identically on the interpreter and parity
-agreed.
-
----
-
-## Things I tried and could not find
-
-- A way to print a `Duration` in its literal form (`"1m30s"`) directly via
-  `${dur}` without reaching for `duration.human`. (Possibly intentional; see F-1.)
-- A `witchy run --help` that prints PM-command help. (P-3.)
-- A way to make `string.to_int` return `Result(Int, _)` rather than aborting.
-  (Maybe I missed it; F-3 may indicate it doesn't exist.)
-
-## Things I never tried (would in a longer session)
-
-- `witchy build-step` with a real `src/build.witchy`. (The PM chapter implies
-  this exists end-to-end; my project didn't need codegen.)
-- `Secret`-typed capability or signing via `crypto`.
-- `witchy publish` against a local `coven-serve` — covered by the local
-  registry demo script, but out of scope for this short tour.
-- `regex` and `csv` modules.
-
----
-
-## Summary for the maintainer
-
-Headline: **zero fmt-induced behavior changes** across all 22 programs.
-`witchy parity` succeeded everywhere I tried. The one real blocker is the
-`witchy run` argv-forwarding bug, which is small but visible — anyone trying
-to follow the book's "real software lives in projects" advice will hit it the
-first time they want a CLI tool that takes input.

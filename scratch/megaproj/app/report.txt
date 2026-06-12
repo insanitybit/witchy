@@ -1,0 +1,11 @@
+Top 5 buckets by sum
+====================
+host        metric   count     sum   min   max   avg
+web02       disk       110    6530     2   100    59
+cache02     cpu        111    5809     3    99    52
+web01       mem        107    5599     1    99    52
+worker03    cpu        106    5596     4   100    52
+web02       cpu        110    5464     2   100    49
+
+cpu total: 50616
+mem total: 47816
