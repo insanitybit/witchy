@@ -1,0 +1,41 @@
+// Actors with spawn-supplied state and capability passing.
+actor Counter:
+    console: Console
+    id: Int
+    var n: Int = 0
+
+impl Counter:
+    on Inc():
+        n = n + 1
+        print(console, "counter ${id}: ${n}")
+    on Add(by: Int):
+        n = n + by
+        print(console, "counter ${id} += ${by}: ${n}")
+
+actor Worker:
+    boss: Subject
+
+impl Worker:
+    on Task(label: String, value: Int):
+        send(boss, Done(label, value * value))
+
+actor Boss:
+    console: Console
+
+impl Boss:
+    on Done(label: String, result: Int):
+        print(console, "${label} -> ${result}")
+
+fn main(console: Console):
+    let c1 = spawn Counter(console, 1)
+    let c2 = spawn Counter(console, 2)
+    send(c1, Inc)
+    send(c1, Inc)
+    send(c2, Add(10))
+    send(c1, Add(5))
+    send(c2, Inc)
+
+    let boss = spawn Boss(console)
+    let worker = spawn Worker(boss)
+    send(worker, Task("sq 5", 5))
+    send(worker, Task("sq 9", 9))

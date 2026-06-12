@@ -1,0 +1,67 @@
+import ord
+import show
+
+fn first(xs: List(a)) -> a:
+    list.at(xs, 0)
+
+fn pair_up(x: a, y: a) -> (a, a):
+    (x, y)
+
+fn largest(xs: List(a)) -> a where a: Ord:
+    var best = list.at(xs, 0)
+    for x in xs:
+        if greater(x, best):
+            best = x
+    best
+
+trait Greet:
+    fn greet(self) -> String
+
+type Dog:
+    Dog
+
+type Robot:
+    Robot
+
+impl Greet for Dog:
+    fn greet(self) -> String:
+        "woof"
+
+impl Greet for Robot:
+    fn greet(self) -> String:
+        "beep boop"
+
+type Temp:
+    celsius: Int
+
+impl Show for Temp:
+    fn show(self) -> String:
+        "${self.celsius} deg C"
+
+fn announce(console: Console, label: String, x: impl Show):
+    print(console, "${label}: ${show(x)}")
+
+type Score derive(Show, Eq, Ord):
+    points: Int
+    label: String
+
+fn main(console: Console):
+    let (lo, hi) = pair_up(1, 2)
+    print(console, "${lo}, ${hi}")
+    print(console, first(["alpha", "beta"]))
+
+    print(console, "${largest([3, 9, 2, 7])}")
+    print(console, largest(["apple", "pear", "fig"]))
+
+    print(console, Dog.greet())
+    print(console, Robot.greet())
+
+    announce(console, "now", Temp(21))
+    announce(console, "count", 42)
+    show.say(console, Temp(5))
+
+    let a = Score(10, "alpha")
+    let b = Score(12, "beta")
+    print(console, "eq: ${a == Score(10, "alpha")}")
+    print(console, "max: ${ord.max_of(a, b)}")
+    say(console, a)

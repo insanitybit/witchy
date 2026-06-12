@@ -1,0 +1,5 @@
+fn quote(s: String) -> String:
+    "\"" + s + "\""
+
+fn main(console: Console):
+    print(console, "${quote("escaped quote in string")}")

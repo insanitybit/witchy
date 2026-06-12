@@ -1491,6 +1491,9 @@ fn string_lit(v: &str) -> String {
             '\t' => s.push_str("\\t"),
             '\r' => s.push_str("\\r"),
             '\0' => s.push_str("\\0"),
+            // `$` prints escaped: a bare `${` in the output would re-parse
+            // as interpolation — a different program.
+            '$' => s.push_str("\\$"),
             _ => s.push(c),
         }
     }

@@ -37,7 +37,15 @@ pub fn second(d: DateTime) -> Int:
 
 // --- construction ------------------------------------------------------------
 
-// The civil UTC date/time at `secs` seconds since the unix epoch.
+// The civil UTC date/time at `ms` MILLISECONDS since the unix epoch — what
+// `now(clock)` returns, so `time.from_millis(now(clock))` is the idiom for
+// "the current date/time".
+pub fn from_millis(ms: Int) -> DateTime:
+    from_unix(floor_div(ms, 1000))
+
+// The civil UTC date/time at `secs` SECONDS since the unix epoch (a classic
+// unix timestamp). `now(clock)` returns milliseconds — use `from_millis`
+// for it, or this becomes the year 58000.
 pub fn from_unix(secs: Int) -> DateTime:
     let days = floor_div(secs, 86400)
     let sod = secs - days * 86400

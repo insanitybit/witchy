@@ -1,0 +1,39 @@
+import time
+import duration
+import show
+
+fn main(console: Console, clock: Clock):
+    // `now(clock)` returns MILLISECONDS since the unix epoch. `time.from_unix`
+    // takes SECONDS — divide. (Discovered the hard way: passing ms straight in
+    // gave a date in the year 58416 with NO error. See LEARNING-LOG.md.)
+    let t_ms = now(clock)
+    let t_s = t_ms / 1000
+    print(console, "unix ms (suppressed for stability)")
+
+    let dt = time.from_unix(t_s)
+    // Suppress the actual current date so parity stays deterministic.
+    let _yr = dt
+
+    // Round-trip a known timestamp.
+    let known = 1700000000
+    let dt2 = time.from_unix(known)
+    print(console, "known iso: ${time.iso8601(dt2)}")
+
+    // Civil constructor, validated.
+    match time.civil(2026, 6, 12, 9, 30, 0):
+        Ok(d) -> print(console, "civil: ${time.iso8601(d)}")
+        Err(e) -> print(console, "civil err: ${e}")
+
+    // Parse, then reformat.
+    match time.parse_iso8601("2026-06-12T09:30:00Z"):
+        Ok(d) -> print(console, "round-trip: ${time.iso8601(d)}")
+        Err(e) -> print(console, "parse err: ${e}")
+
+    // Duration literals and helpers.
+    let timeout = 1m + 30s
+    print(console, "timeout human: ${duration.human(timeout)}")
+    print(console, "timeout clock: ${duration.clock(timeout)}")
+    print(console, "1h > 30m? ${1h > 30m}")
+    print(console, "say-duration: ")
+    say(console, 30s)
+    say(console, 1h + 30s)

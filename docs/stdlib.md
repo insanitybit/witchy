@@ -1645,9 +1645,13 @@ time — civil (UTC) date/time from a unix timestamp.
 
 #### `fn second(d: DateTime) -> Int`
 
+#### `fn from_millis(ms: Int) -> DateTime`
+
+The civil UTC date/time at `ms` MILLISECONDS since the unix epoch — what `now(clock)` returns, so `time.from_millis(now(clock))` is the idiom for "the current date/time".
+
 #### `fn from_unix(secs: Int) -> DateTime`
 
-The civil UTC date/time at `secs` seconds since the unix epoch.
+The civil UTC date/time at `secs` SECONDS since the unix epoch (a classic unix timestamp). `now(clock)` returns milliseconds — use `from_millis` for it, or this becomes the year 58000.
 
 #### `fn to_unix(d: DateTime) -> Int`
 

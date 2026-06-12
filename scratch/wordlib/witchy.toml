@@ -1,0 +1,5 @@
+[rune]
+name = "wordlib"
+version = "0.1.0"
+
+[dependencies]

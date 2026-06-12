@@ -1,0 +1,4 @@
+fn main(console: Console):
+    let a = "hello, "
+    let b = "world"
+    print(console, a <> b)

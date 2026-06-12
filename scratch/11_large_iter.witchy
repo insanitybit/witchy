@@ -1,0 +1,40 @@
+import iter
+
+// Sum the squares of the odd numbers in [1, 5000), then count primes < 2000.
+gen fn ints_from(start: Int) -> Iter(Int):
+    var n = start
+    while true:
+        yield n
+        n = n + 1
+
+fn is_prime(n: Int) -> Bool:
+    if n < 2:
+        false
+    else if n < 4:
+        true
+    else if n % 2 == 0:
+        false
+    else:
+        var i = 3
+        var ok = true
+        while i * i <= n:
+            if n % i == 0:
+                ok = false
+                break
+            i = i + 2
+        ok
+
+fn main(console: Console):
+    let odds = iter.filter(iter.range(1, 5000), fn(n: Int): n % 2 == 1)
+    let squares = iter.map(odds, fn(n: Int): n * n)
+    let total = iter.fold(squares, 0, fn(acc: Int, x: Int): acc + x)
+    print(console, "sum of odd squares < 5000: ${total}")
+
+    // Use a take on an infinite generator to count primes < 2000.
+    let primes = iter.filter(iter.take_while(ints_from(2), fn(n: Int): n < 2000), is_prime)
+    print(console, "primes < 2000: ${iter.count(primes)}")
+
+    // Show the first ten primes via collect/take.
+    let primes2 = iter.filter(ints_from(2), is_prime)
+    let first10 = iter.collect(iter.take(primes2, 10))
+    print(console, "first 10 primes: ${first10}")

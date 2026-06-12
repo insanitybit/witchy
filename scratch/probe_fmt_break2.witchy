@@ -1,0 +1,3 @@
+fn main(console: Console):
+    let n = 5
+    print(console, "${n}")

@@ -1,0 +1,2 @@
+fn main(console: Console):
+    print(console, "hello, witchy")

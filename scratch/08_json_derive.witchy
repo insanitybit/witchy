@@ -1,0 +1,25 @@
+import json
+
+type Tag derive(Json):
+    name: String
+    weight: Int
+
+type Item derive(Json):
+    id: Int
+    title: String
+    tags: List(Tag)
+    note: Option(String)
+
+fn main(console: Console):
+    let item = Item(7, "Hello, World", [Tag("rust", 3), Tag("witchy", 9)], Some("draft"))
+
+    let item2 = Item(8, "untitled", [], None)
+
+    print(console, json.encode(item.to_json()))
+    print(console, json.encode(item2.to_json()))
+
+    // Round-trip: parse a JSON literal back into the Json sum type.
+    let raw = "{\"id\":42,\"title\":\"x\"}"
+    match json.decode(raw):
+        Ok(j) -> print(console, "decoded: ${json.encode(j)}")
+        Err(e) -> print(console, "decode err: ${e}")

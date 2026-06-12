@@ -1,0 +1,41 @@
+// More collections: dict iteration, set ops, sorting, string utilities.
+
+import set
+
+fn main(console: Console):
+    // Dict iteration
+    let scores = dict.insert(dict.insert(dict.insert(dict.new(), "ada", 90), "bob", 75), "cleo", 82)
+
+    var total = 0
+    for k in dict.keys(scores):
+        total = total + dict.get_or(scores, k, 0)
+    print(console, "total: ${total}")
+    print(console, "average (int): ${total / list.length(dict.keys(scores))}")
+
+    // dict via comprehension on a pair list
+    let names = ["ada", "bob", "cleo", "drew"]
+    print(console, "names: ${names}")
+    print(console, "uppercased: ${[string.to_upper(n) for n in names]}")
+
+    // sort
+    let unsorted = [5, 1, 4, 2, 3]
+    let sorted = list.sort(unsorted)
+    print(console, "sorted: ${sorted}")
+    let desc = list.sort_by(unsorted, fn(a: Int, b: Int): a > b)
+    print(console, "desc:   ${desc}")
+
+    // set operations
+    let a = [1, 2, 3, 4]
+    let b = [3, 4, 5, 6]
+    print(console, "intersection: ${set.intersection(a, b)}")
+    print(console, "union:        ${set.union(a, b)}")
+    print(console, "difference:   ${set.difference(a, b)}")
+
+    // string utilities
+    let s = "  hello, witchy world  "
+    print(console, "trim:    \"${string.trim(s)}\"")
+    print(console, "lower:   ${string.to_lower(string.trim(s))}")
+    print(console, "split:   ${string.split(string.trim(s), ", ")}")
+    print(console, "replace: ${string.replace(string.trim(s), "witchy", "ROCKS")}")
+    print(console, "starts:  ${string.starts_with(string.trim(s), "hello")}")
+    print(console, "ends:    ${string.ends_with(string.trim(s), "world")}")

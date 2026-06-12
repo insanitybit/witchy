@@ -1,0 +1,36 @@
+fn squares(xs: List(Int)) -> List(Int):
+    [n * n for n in xs]
+
+fn odds(xs: List(Int)) -> List(Int):
+    [n for n in xs if n % 2 == 1]
+
+fn show_join(xs: List(Int)) -> String:
+    string.join(list.map(xs, fn(n: Int): "${n}"), ", ")
+
+fn main(console: Console):
+    let xs = [1, 2, 3, 4, 5]
+    print(console, "xs        = ${xs}")
+    print(console, "squares   = ${squares(xs)}")
+    print(console, "odds      = ${odds(xs)}")
+    print(console, "len       = ${list.length(xs)}")
+    print(console, "joined    = ${show_join(xs)}")
+
+    let pair = (1, "one")
+    let (n, word) = pair
+    print(console, "pair      = ${pair}")
+    print(console, "n,word    = ${n}, ${word}")
+    print(console, ".0,.1     = ${pair.0}, ${pair.1}")
+
+    let ages = dict.insert(dict.insert(dict.insert(dict.new(), "ada", 36), "bob", 41), "cleo", 28)
+    print(console, "ages      = ${ages}")
+    print(console, "get ada   = ${dict.get_or(ages, "ada", 0)}")
+    print(console, "get none  = ${dict.get_or(ages, "none", 0)}")
+
+    // structural equality
+    print(console, "[1,2,3]==[1,2,3]: ${[1, 2, 3] == [1, 2, 3]}")
+    print(console, "Some(5)==Some(5): ${Some(5) == Some(5)}")
+    print(console, "Some(5)==None   : ${Some(5) == None}")
+
+    // nested interpolation rendering
+    let xss = [[1, 2], [3, 4], [5]]
+    print(console, "nested    = ${xss}")
