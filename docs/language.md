@@ -51,7 +51,7 @@ types and constructors. A lowercase, argument-less name in type position
 | `"sum: ${a + b}"` | `String` | interpolation — `${expr}` renders *any* value (see below); inner strings may be bare (`"${f("x")}"`) or escaped (`"${f(\"x\")}"`) |
 | `30s`, `250ms`, `5m`, `2h`/`2hr`, `1d`, `1w` | `Duration` | a distinct type carried as milliseconds; not mixable with bare `Int` |
 | `[1, 2, 3]` | `List(Int)` | immutable |
-| `(1, "a")` | tuple | fixed arity, mixed types |
+| `(1, "a")` | tuple | fixed arity, mixed types; elements read by position (`pair.0`, `grid.0.1`) or destructured (`let (n, s) = pair`) |
 
 ```witchy
 fn main(console: Console):

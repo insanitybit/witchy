@@ -880,6 +880,9 @@ impl Codegen {
                 _ => Kind::I32,
             },
             Expr::Field { base, field } => {
+                if field.parse::<usize>().is_ok() {
+                    return valtype_kind(self.val_type_of(e));
+                }
                 if let Some(bt) = self.record_type_of(base) {
                     if let Some(fields) = self.record_fields.get(&bt) {
                         if let Some((_, ft)) = fields.iter().find(|(n, _)| n == field) {
@@ -3299,6 +3302,18 @@ impl Codegen {
                 ))
             }
             Expr::Field { base, field } => {
+                // `pair.N` — a tuple element: tuples share the record layout
+                // (8-byte universal slots at 4 + 8*i), so this is one slot load,
+                // recovered at the element's kind (the type table knows it).
+                if let Ok(i) = field.parse::<usize>() {
+                    let k = valtype_kind(self.val_type_of(expr));
+                    let offset = 4 + 8 * i;
+                    let base_wat = self.compile_expr(base)?;
+                    return Ok(format!(
+                        "{base_wat}    i32.const {offset}\n    i32.add\n    i64.load\n{}",
+                        from_slot(k)
+                    ));
+                }
                 // A record value is a heap record `[tag][field0][field1]...`, so
                 // a field is `*(base + 4 + 4*index)`. The base may be any
                 // record-producing expression (a variable, a nested field, an

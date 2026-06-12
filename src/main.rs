@@ -12698,7 +12698,7 @@ pub fn serve(console: Console, net: Net) -> Int:
     fn tuples_example() {
         assert_eq!(
             interp(include_str!("../examples/tuples.witchy")),
-            vec!["3 remainder 2"]
+            vec!["3 remainder 2", "7 spells seven", "just the remainder: 2", "2 3"]
         );
     }
 

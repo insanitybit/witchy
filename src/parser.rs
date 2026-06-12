@@ -802,6 +802,16 @@ impl Parser {
                     args,
                 };
             } else if self.eat(&Tok::Dot) {
+                // Tuple element access: `pair.0` (the lexer guarantees digits
+                // after a field-access dot arrive as a plain Int).
+                if let Tok::Int(n) = self.kind().clone() {
+                    self.advance();
+                    e = Expr::Field {
+                        base: Box::new(e),
+                        field: n.to_string(),
+                    };
+                    continue;
+                }
                 let member = self.ident()?;
                 if self.at(&Tok::LParen) {
                     let args = self.call_args()?;

@@ -304,6 +304,12 @@ impl Lexer {
                 continue;
             }
             let kind = match c {
+                // Digits directly after a `.` are a tuple element index
+                // (`pair.0`, `nested.0.1`), never a number with a fractional
+                // part — so `.0.1` lexes as two indices, not the float `0.1`.
+                '0'..='9' if matches!(out.last().map(|t| &t.kind), Some(Tok::Dot)) => {
+                    self.integer_index()?
+                }
                 '0'..='9' => self.number()?,
                 'a'..='z' | 'A'..='Z' | '_' => self.ident_or_keyword(),
                 _ => self.operator()?,
@@ -369,6 +375,24 @@ impl Lexer {
                 _ => return,
             }
         }
+    }
+
+    /// A digit run after a field-access `.` — a tuple element index. Plain
+    /// digits only: no fractional part, no duration suffix.
+    fn integer_index(&mut self) -> Result<Tok, LexError> {
+        let mut text = String::new();
+        while let Some(c) = self.peek() {
+            if c.is_ascii_digit() {
+                text.push(c);
+                self.bump();
+            } else {
+                break;
+            }
+        }
+        let value = text
+            .parse::<i64>()
+            .map_err(|_| self.err(format!("invalid tuple index `{text}`")))?;
+        Ok(Tok::Int(value))
     }
 
     fn number(&mut self) -> Result<Tok, LexError> {

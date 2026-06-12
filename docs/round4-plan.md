@@ -37,12 +37,10 @@ Fixed same-day, all verified by the suite + e2e:
 
 ## Round 4 — the loop graduates from fixing to expanding
 
-### A. Surface: tuple field access
-`pair.0` / `pair.1` is a parse error today; the learner reached for it
-immediately (Rust habit) and fell back to a record. Postfix integer fields on
-tuples are cheap to lower (tuple index is already a runtime shape on both
-backends) and remove the last "why doesn't this obvious thing work" from the
-tour types.
+### A. Surface: tuple field access — SHIPPED
+`pair.0` / `pair.1` works on both backends (digits after a field-access dot
+lex as indices, so `grid.0.1` chains); typed via the table, loud on arity and
+non-tuple bases; `examples/tuples.witchy` pins it.
 
 ### B. Stdlib: the next Go-parity slice
 Round 3's misses were all *discovery*, not absence — the functions existed

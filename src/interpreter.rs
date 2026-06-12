@@ -1951,6 +1951,20 @@ impl Interpreter {
             }
             Expr::Field { base, field } => {
                 let v = self.eval(base, env)?;
+                if let Ok(i) = field.parse::<usize>() {
+                    return match v {
+                        Value::Tuple(items) => match items.get(i) {
+                            Some(item) => Ok(item.clone()),
+                            None => err(format!(
+                                "tuple has no element `.{i}` (it has {})",
+                                items.len()
+                            )),
+                        },
+                        other => {
+                            err(format!("element access `.{i}` on a non-tuple value `{other}`"))
+                        }
+                    };
+                }
                 match v {
                     Value::Ctor { name, fields } => {
                         let idx = self

@@ -2000,6 +2000,21 @@ impl Checker {
             Expr::Field { base, field } => {
                 let bt = self.infer(base)?;
                 let resolved = self.resolve(&bt);
+                // `pair.0` — a tuple element, by position.
+                if let Ok(i) = field.parse::<usize>() {
+                    let Ty::Tuple(ts) = &resolved else {
+                        return terr(format!(
+                            "element access `.{field}` requires a tuple, found `{resolved}`"
+                        ));
+                    };
+                    let Some(t) = ts.get(i) else {
+                        return terr(format!(
+                            "tuple `{resolved}` has no element `.{i}` (it has {})",
+                            ts.len()
+                        ));
+                    };
+                    return Ok(t.clone());
+                }
                 let Ty::Named(tyname, args) = &resolved else {
                     return terr(format!(
                         "field access `.{field}` requires a record, found `{resolved}`"

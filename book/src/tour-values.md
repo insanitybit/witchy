@@ -97,8 +97,9 @@ fn main(console: Console):
     print(console, to_string(xs[0]))     // indexing is sugar for list.at(xs, 0)
 
     let pair = (1, "one")
-    let (n, word) = pair                      // destructure
+    let (n, word) = pair                      // destructure...
     print(console, "${n} = ${word}")
+    print(console, "${pair.0} = ${pair.1}")   // ...or read by position
 
     let ages = dict.insert(dict.insert(dict.new(), "ada", 36), "bob", 41)
     print(console, to_string(dict.get_or(ages, "ada", 0)))
@@ -109,6 +110,7 @@ fn main(console: Console):
 1 2 3
 3
 1
+1 = one
 1 = one
 36
 0
