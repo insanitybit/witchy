@@ -58,8 +58,7 @@ n is 3, doubled 6
 ```
 
 `${expr}` renders *any* value — scalars, lists, tuples, records, sum types,
-dicts, and any nesting — identically on both backends. There is no separate
-`to_string` function to remember: interpolation IS the rendering.
+dicts, and any nesting — identically on both backends.
 Strings are UTF-8 and the common operations
 (`string.length`, `string.char_count`, `string.split`, `string.contains`, …)
 live in the `string` module — part of the prelude, so no import line is
@@ -127,10 +126,10 @@ fn main(console: Console):
 A couple of practical notes you'll bump into:
 
 - Interpolation renders compounds directly on every backend — `"${xs}"` prints
-  `[1, 2, 3]`, `"${pair}"` prints `(1, one)`, and a dict prints `{ada: 36}`. The
-  hand-rolled `show` above isn't *needed* to print a list anymore; it's there
-  when you want a **custom** format (here, space-separated and unbracketed)
-  instead of that structural default. For a type of your own, implement the
+  `[1, 2, 3]`, `"${pair}"` prints `(1, one)`, and a dict prints `{ada: 36}`.
+  The hand-rolled `show` above exists for when you want a **custom** format
+  (here, space-separated and unbracketed) instead of that structural
+  default. For a type of your own, implement the
   `Show` trait to give it a custom rendering (see [Generics](tour-generics.md)).
 - `list`, `dict`, `string`, `math`, `option`, and `result` form **the
   prelude**: their functions are available in every program with no `import`

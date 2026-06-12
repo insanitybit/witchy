@@ -16,11 +16,10 @@ witchy sandbox program.witchy    # WebAssembly, granted exactly its footprint
 The split is deliberate: the interpreter optimizes for being *obviously
 correct* (it defines the semantics), the WASM tier for being *fast and
 confined* (the capability boundary is the VM boundary — an ungranted host
-function isn't denied, it simply does not exist in the instance). There used
-to be a third, native backend (transpilation to Rust); it was retired once
-the WASM tier reached native-class performance, because a third
-implementation of the semantics bought speed witchy no longer needed at the
-price of a wider parity surface.
+function isn't denied, it simply does not exist in the instance). Two is
+also the right number: every backend added is another implementation of the
+semantics that parity has to hold to zero divergence, so witchy spends that
+budget on exactly one fast tier.
 
 ## Parity: the invariant that makes it safe
 
