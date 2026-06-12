@@ -58,7 +58,7 @@ cat > lib/src/shout.witchy <<'EOF'
 // Uppercase greeting helpers. Pure: no capability parameters, so this rune's
 // computed footprint is empty — the consumer can verify that.
 pub fn shout(s: String) -> String:
-    "HEY " <> to_upper(s)
+    "HEY " <> string.to_upper(s)
 EOF
 
 step "4. Publish via TRUSTED PUBLISHING (a short-lived CI identity token)"

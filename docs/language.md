@@ -104,8 +104,8 @@ fn main(console: Console):
     let named = Account(name: "bob", balance: 5)  // by-name construction
     print(console, acc.name)                       // field access
     let richer = Account(balance: acc.balance + 1, ..acc)  // functional update
-    print(console, int_to_string(richer.balance))
-    print(console, int_to_string(named.balance))
+    print(console, to_string(richer.balance))
+    print(console, to_string(named.balance))
 ```
 
 Records construct positionally (`Account("ada", 100)`) or by name; field access
@@ -121,14 +121,14 @@ from `import option` / `import result`.
 
 ```witchy
 fn bounds(xs: List(Int)) -> (Int, Int):
-    (at(xs, 0), at(xs, length(xs) - 1))
+    (list.at(xs, 0), list.at(xs, list.length(xs) - 1))
 
 fn main(console: Console):
     let x = 1          // immutable binding
     var count = 0      // mutable binding
     count = count + 1  // assignment (only to `var`)
     let (lo, hi) = bounds([3, 5, 9])   // tuple destructuring
-    print(console, int_to_string(x + count))
+    print(console, to_string(x + count))
     print(console, "${lo}..${hi}")
 ```
 
@@ -149,7 +149,7 @@ Everything is an expression; a block's value is its final expression.
 | `&& \|\|` | short-circuit boolean |
 | `!` | negation |
 | `& \| ^ ~ << >>` | bitwise on `Int` (shifts mask the count to 6 bits) |
-| `xs[i]` | list indexing, sugar for `at(xs, i)`; out of bounds is a runtime error on every backend |
+| `xs[i]` | list indexing, sugar for `list.at(xs, i)`; out of bounds is a runtime error on every backend |
 | `lo..hi` | a half-open range (for-loop iteration; never materialized) |
 | `x.f(args)` | method-call sugar for `f(x, args)` (UFCS) |
 | `e?` | unwrap `Ok`/`Some` or return the `Err`/`None` from the enclosing function |
@@ -160,13 +160,13 @@ fn double(n: Int) -> Int:
     n * 2
 
 fn main(console: Console):
-    print(console, int_to_string(7 % 3))
+    print(console, to_string(7 % 3))
     print(console, "a" <> "b")
     print(console, to_string([1, 2] == [1, 2]))     // structural equality
     print(console, to_string(2.5 < 3.0))
     let xs = [10, 20, 30]
-    print(console, int_to_string(xs[1]))            // indexing sugar
-    print(console, int_to_string(8.double()))       // UFCS: double(8)
+    print(console, to_string(xs[1]))            // indexing sugar
+    print(console, to_string(8.double()))       // UFCS: double(8)
 ```
 
 Float notes: `0.0 / 0.0` is NaN; `1.0 / 0.0` is infinity; NaN `==` anything is
@@ -193,12 +193,12 @@ fn main(console: Console):
         if x > 3:
             break
         total = total + x
-    print(console, int_to_string(total))   // 1 + 3 = 4
+    print(console, to_string(total))   // 1 + 3 = 4
 
     var i = 0
     while i < 3:
         i = i + 1
-    print(console, int_to_string(i))
+    print(console, to_string(i))
 ```
 
 `if let PAT = e:` binds and runs only on a match (with an optional `else`);
@@ -255,13 +255,13 @@ type Shape:
 fn describe(s: Shape) -> String:
     match s:
         Circle(r) if r > 100 -> "big circle"
-        Circle(r) -> "circle " <> int_to_string(r)
-        Square(w) -> "square " <> int_to_string(w)
+        Circle(r) -> "circle " <> to_string(r)
+        Square(w) -> "square " <> to_string(w)
 
 fn head(xs: List(Int)) -> String:
     match xs:
         [] -> "empty"
-        [first, ..rest] -> "first " <> int_to_string(first) <> ", " <> int_to_string(length(rest)) <> " more"
+        [first, ..rest] -> "first " <> to_string(first) <> ", " <> to_string(list.length(rest)) <> " more"
 
 fn main(console: Console):
     print(console, describe(Circle(2)))
@@ -283,8 +283,8 @@ pub fn area(s: Shape) -> Int:      // `pub` exports from the module
         Square(w) -> w * w
 
 fn main(console: Console):
-    print(console, int_to_string(area(Circle(2))))
-    print(console, int_to_string(area(Square(3))))
+    print(console, to_string(area(Circle(2))))
+    print(console, to_string(area(Square(3))))
 ```
 
 Parameter annotations are required; the return type may be inferred for
@@ -308,7 +308,7 @@ fn bump(inout n: Int):
 fn main(console: Console):
     var counter = 41
     bump(counter)            // counter is written back
-    print(console, int_to_string(counter))   // 42
+    print(console, to_string(counter))   // 42
 ```
 
 **Closures.** `fn(n: Int): n + by` captures by value; you call through a
@@ -324,7 +324,7 @@ fn adder(by: Int) -> fn(Int) -> Int:
 
 fn main(console: Console):
     let add10 = adder(10)
-    print(console, int_to_string(apply(add10, 5)))   // 15
+    print(console, to_string(apply(add10, 5)))   // 15
 ```
 
 ## 8. Generics and traits
@@ -333,14 +333,14 @@ fn main(console: Console):
 import ord
 
 fn largest(xs: List(a)) -> a where a: Ord:
-    var best = at(xs, 0)
+    var best = list.at(xs, 0)
     for x in xs:
         if greater(x, best):      // `greater` comes from the Ord trait
             best = x
     best
 
 fn main(console: Console):
-    print(console, int_to_string(largest([3, 9, 2, 7])))
+    print(console, to_string(largest([3, 9, 2, 7])))
     print(console, largest(["apple", "pear", "fig"]))
 ```
 
@@ -417,7 +417,7 @@ fn ratio(a: Int, b: Int, c: Int) -> Result(Int, String):
 
 fn show(r: Result(Int, String)) -> String:
     match r:
-        Ok(v) -> "ok: " <> int_to_string(v)
+        Ok(v) -> "ok: " <> to_string(v)
         Err(e) -> "err: " <> e
 
 fn main(console: Console):
@@ -440,7 +440,7 @@ import list
 import string
 
 fn show(xs: List(Int)) -> String:
-    string.join(list.map(xs, fn(n: Int): int_to_string(n)), " ")
+    string.join(list.map(xs, fn(n: Int): to_string(n)), " ")
 
 fn main(console: Console):
     let squares = [n * n for n in 1..6]
@@ -471,7 +471,7 @@ gen fn fibs() -> Iter(Int):
 
 fn main(console: Console):
     let first8 = iter.collect(iter.take(fibs(), 8))
-    print(console, string.join(list.map(first8, fn(n: Int): int_to_string(n)), " "))
+    print(console, string.join(list.map(first8, fn(n: Int): to_string(n)), " "))
     // 0 1 1 2 3 5 8 13
 ```
 
@@ -482,7 +482,7 @@ import list
 import string
 
 fn main(console: Console):
-    let shouted = list.map(["a", "b", "c"], fn(s: String): to_upper(s))
+    let shouted = list.map(["a", "b", "c"], fn(s: String): string.to_upper(s))
     print(console, string.join(shouted, "-"))   // A-B-C
 ```
 
@@ -503,7 +503,7 @@ and may return `Nil` or `Int` (the process exit code):
 
 ```witchy
 fn main(console: Console, dir: Dir[Read], args: List(String)) -> Int:
-    print(console, "running with ${length(args)} arg(s)")
+    print(console, "running with ${list.length(args)} arg(s)")
     0
 ```
 

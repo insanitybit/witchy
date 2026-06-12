@@ -7,4 +7,4 @@ import string
 pub fn format(cents: Int) -> String:
     let dollars = cents / 100
     let rem = cents % 100
-    "$" <> int_to_string(dollars) <> "." <> string.pad_left(int_to_string(rem), 2, "0")
+    "\$${dollars}." <> string.pad_left(to_string(rem), 2, "0")

@@ -23,10 +23,10 @@ fn average(rs: Readings) -> Celsius:
     var total = 0
     for r in rs:
         total = total + r
-    total / length(rs)
+    total / list.length(rs)
 
 fn main(console: Console):
     let week = [18, 21, 25, 23, 20, 19, 22]
-    print(console, "avg C = " <> int_to_string(average(week)))
-    print(console, "25C = " <> int_to_string(to_fahrenheit(25)) <> "F")
-    print(console, "0C  = " <> int_to_string(to_fahrenheit(0)) <> "F")
+    print(console, "avg C = " <> to_string(average(week)))
+    print(console, "25C = ${to_fahrenheit(25)}F")
+    print(console, "0C  = ${to_fahrenheit(0)}F")

@@ -12,10 +12,10 @@ pub fn union(xs: List(a), ys: List(a)) -> List(a) where a: Eq:
     var out = []
     for x in xs:
         if !eq.member(out, x):
-            out = push(out, x)
+            out = list.push(out, x)
     for y in ys:
         if !eq.member(out, y):
-            out = push(out, y)
+            out = list.push(out, y)
     out
 
 // Elements appearing in BOTH lists, de-duplicated, in xs order.
@@ -23,7 +23,7 @@ pub fn intersection(xs: List(a), ys: List(a)) -> List(a) where a: Eq:
     var out = []
     for x in xs:
         if eq.member(ys, x) && !eq.member(out, x):
-            out = push(out, x)
+            out = list.push(out, x)
     out
 
 // Elements in xs but NOT in ys, de-duplicated, in xs order.
@@ -31,7 +31,7 @@ pub fn difference(xs: List(a), ys: List(a)) -> List(a) where a: Eq:
     var out = []
     for x in xs:
         if !eq.member(ys, x) && !eq.member(out, x):
-            out = push(out, x)
+            out = list.push(out, x)
     out
 
 // Whether every element of xs appears in ys.
@@ -47,10 +47,10 @@ pub fn symmetric_difference(xs: List(a), ys: List(a)) -> List(a) where a: Eq:
     var out = []
     for x in xs:
         if !eq.member(ys, x) && !eq.member(out, x):
-            out = push(out, x)
+            out = list.push(out, x)
     for y in ys:
         if !eq.member(xs, y) && !eq.member(out, y):
-            out = push(out, y)
+            out = list.push(out, y)
     out
 
 // Whether the two lists share no elements at all.

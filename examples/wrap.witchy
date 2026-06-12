@@ -9,7 +9,7 @@ import string
 fn main(console: Console):
     let text = "The quick brown fox jumps over the lazy dog and then keeps on running far away"
     let width = 20
-    print(console, "wrapped to " <> int_to_string(width) <> " columns:")
+    print(console, "wrapped to ${width} columns:")
     for line in wrap(text, width):
         print(console, "| " <> string.pad_right(line, width, " ") <> " |")
 
@@ -17,13 +17,13 @@ fn wrap(text: String, width: Int) -> List(String):
     var lines = []
     var current = ""
     for word in string.words(text):
-        if string_length(current) == 0:
+        if string.length(current) == 0:
             current = word
-        else if string_length(current) + 1 + string_length(word) <= width:
+        else if string.length(current) + 1 + string.length(word) <= width:
             current = current <> " " <> word
         else:
-            lines = push(lines, current)
+            lines = list.push(lines, current)
             current = word
-    if string_length(current) > 0:
-        lines = push(lines, current)
+    if string.length(current) > 0:
+        lines = list.push(lines, current)
     lines

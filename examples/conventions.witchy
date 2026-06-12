@@ -4,16 +4,16 @@ fn bump(var n: Int):
     n = n + 1
 
 fn sum_from(let xs: List(Int), i: Int) -> Int:
-    if i >= length(xs):
+    if i >= list.length(xs):
         0
     else:
-        at(xs, i) + sum_from(xs, i + 1)
+        list.at(xs, i) + sum_from(xs, i + 1)
 
 fn doubled_first(xs: List(Int)) -> Int:
-    at(xs, 0) * 2
+    list.at(xs, 0) * 2
 
 fn drain(own xs: List(Int)) -> Int:
-    length(xs)
+    list.length(xs)
 
 type Bag:
     Bag(List(Int))
@@ -30,24 +30,24 @@ actor Adder:
 impl Adder:
     on Add(own xs: List(Int)):
         sum = sum + sum_from(xs, 0)
-        print(console, "running sum: " <> int_to_string(sum))
+        print(console, "running sum: " <> to_string(sum))
 
 fn main(console: Console):
     var count = 0
     bump(count)
     bump(count)
-    print(console, "count: " <> int_to_string(count))
+    print(console, "count: " <> to_string(count))
 
     let nums = [1, 2, 3, 4]
-    print(console, "sum: " <> int_to_string(sum_from(nums, 0)))
-    print(console, "doubled first: " <> int_to_string(doubled_first(nums)))
-    print(console, "nums still here, length: " <> int_to_string(length(nums)))
+    print(console, "sum: " <> to_string(sum_from(nums, 0)))
+    print(console, "doubled first: " <> to_string(doubled_first(nums)))
+    print(console, "nums still here, length: " <> to_string(list.length(nums)))
 
     let bag = Bag([10, 20, 30])
-    print(console, "bag total: " <> int_to_string(bag.total()))
+    print(console, "bag total: " <> to_string(bag.total()))
 
     let gone = [5, 6, 7]
-    print(console, "drained length: " <> int_to_string(drain(move gone)))
+    print(console, "drained length: " <> to_string(drain(move gone)))
 
     let adder = spawn Adder(console)
     send(adder, Add([100, 200]))

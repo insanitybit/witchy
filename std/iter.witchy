@@ -60,7 +60,7 @@ pub fn repeat(x: a) -> Iter(a):
 
 // A list's elements, in order.
 pub fn from_list(xs: List(a)) -> Iter(a):
-    unfold(0, fn(i: Int): if i < length(xs): Some((at(xs, i), i + 1)) else: None)
+    unfold(0, fn(i: Int): if i < list.length(xs): Some((list.at(xs, i), i + 1)) else: None)
 
 // Build an iterator from an index function: `f(0)`, `f(1)`, ... each `Some(x)`
 // is the next element and the first `None` ends it. This is the de-sugaring
@@ -217,7 +217,7 @@ pub fn collect(it: Iter(a)) -> List(a):
             Empty ->
                 more = false
             Item(x, rest) ->
-                out = push(out, x)
+                out = list.push(out, x)
                 cur = rest
     out
 

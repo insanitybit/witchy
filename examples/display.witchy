@@ -11,7 +11,7 @@ type Coord:
 impl Show for Coord:
     fn show(self) -> String:
         match self:
-            Coord(x, y) -> "(" <> int_to_string(x) <> ", " <> int_to_string(y) <> ")"
+            Coord(x, y) -> "(${x}, ${y})"
 
 fn main(console: Console):
     print(console, show.show_list([1, 2, 3]))

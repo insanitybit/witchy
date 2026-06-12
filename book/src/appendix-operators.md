@@ -14,7 +14,7 @@ has the precise semantics; this is the cheat sheet.
 | `&& \|\|` | short-circuit boolean and/or |
 | `!` | boolean not |
 | `& \| ^ ~ << >>` | bitwise on `Int` (shift counts masked to 6 bits) |
-| `xs[i]` | list indexing (sugar for `at(xs, i)`); out of bounds errors |
+| `xs[i]` | list indexing (sugar for `list.at(xs, i)`); out of bounds errors |
 | `lo..hi` | half-open range, for iteration only |
 | `x.f(a)` | method-call sugar for `f(x, a)` |
 | `${expr}` | string interpolation (sugar for `to_string(expr)`) |

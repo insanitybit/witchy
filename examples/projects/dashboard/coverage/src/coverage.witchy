@@ -6,4 +6,4 @@ import string
 
 // "coverage [######--]  75%"
 pub fn summary(passed: Int, total: Int) -> String:
-    string.pad_right("coverage", 9, " ") <> bars.bar(passed, total, 8) <> " " <> string.pad_left(int_to_string(bars.pct(passed, total)), 3, " ") <> "%"
+    string.pad_right("coverage", 9, " ") <> bars.bar(passed, total, 8) <> " " <> string.pad_left(to_string(bars.pct(passed, total)), 3, " ") <> "%"

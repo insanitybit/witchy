@@ -16,16 +16,16 @@ fn is_digit(c: String) -> Bool:
 // The index of the next non-space character at or after `i`.
 fn skip(s: String, i: Int) -> Int:
     var j = i
-    while j < string_length(s) && string.char_at(s, j) == " ":
+    while j < string.length(s) && string.char_at(s, j) == " ":
         j = j + 1
     j
 
 // A run of digits starting at `i`, as (value, index past it).
 fn read_number(s: String, i: Int) -> (Int, Int):
     var j = i
-    while j < string_length(s) && is_digit(string.char_at(s, j)):
+    while j < string.length(s) && is_digit(string.char_at(s, j)):
         j = j + 1
-    (string_to_int(substring(s, i, j)), j)
+    (string.to_int(string.substring(s, i, j)), j)
 
 // factor := number | "(" expr ")"
 fn factor(s: String, i: Int) -> (Int, Int):
@@ -41,7 +41,7 @@ fn term(s: String, i: Int) -> (Int, Int):
     let (lhs, start) = factor(s, i)
     var acc = lhs
     var p = skip(s, start)
-    while p < string_length(s) && (string.char_at(s, p) == "*" || string.char_at(s, p) == "/"):
+    while p < string.length(s) && (string.char_at(s, p) == "*" || string.char_at(s, p) == "/"):
         let op = string.char_at(s, p)
         let (rhs, q) = factor(s, p + 1)
         if op == "*":
@@ -56,7 +56,7 @@ fn expr(s: String, i: Int) -> (Int, Int):
     let (lhs, start) = term(s, i)
     var acc = lhs
     var p = skip(s, start)
-    while p < string_length(s) && (string.char_at(s, p) == "+" || string.char_at(s, p) == "-"):
+    while p < string.length(s) && (string.char_at(s, p) == "+" || string.char_at(s, p) == "-"):
         let op = string.char_at(s, p)
         let (rhs, q) = term(s, p + 1)
         if op == "+":
@@ -71,7 +71,7 @@ fn eval(s: String) -> Int:
     value
 
 fn main(console: Console):
-    print(console, "2 + 3 * 4        = " <> int_to_string(eval("2 + 3 * 4")))
-    print(console, "(2 + 3) * 4      = " <> int_to_string(eval("(2 + 3) * 4")))
-    print(console, "100 - 2 * (3 + 4) = " <> int_to_string(eval("100 - 2 * (3 + 4)")))
-    print(console, "7 + 6 / 2 - 1    = " <> int_to_string(eval("7 + 6 / 2 - 1")))
+    print(console, "2 + 3 * 4        = " <> to_string(eval("2 + 3 * 4")))
+    print(console, "(2 + 3) * 4      = " <> to_string(eval("(2 + 3) * 4")))
+    print(console, "100 - 2 * (3 + 4) = " <> to_string(eval("100 - 2 * (3 + 4)")))
+    print(console, "7 + 6 / 2 - 1    = " <> to_string(eval("7 + 6 / 2 - 1")))

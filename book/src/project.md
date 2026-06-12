@@ -18,17 +18,17 @@ import string
 fn matches(query: String, contents: String) -> List(String):
     var hits = []
     for line in string.lines(contents):
-        if contains(line, query):
-            hits = push(hits, line)
+        if string.contains(line, query):
+            hits = list.push(hits, line)
     hits
 
 // Case-insensitive variant: fold both sides to lower case first.
 fn matches_ci(query: String, contents: String) -> List(String):
     var hits = []
-    let needle = to_lower(query)
+    let needle = string.to_lower(query)
     for line in string.lines(contents):
-        if contains(to_lower(line), needle):
-            hits = push(hits, line)
+        if string.contains(string.to_lower(line), needle):
+            hits = list.push(hits, line)
     hits
 
 fn main(console: Console):
@@ -62,23 +62,23 @@ import string
 fn matches(query: String, contents: String) -> List(String):
     var hits = []
     for line in string.lines(contents):
-        if contains(line, query):
-            hits = push(hits, line)
+        if string.contains(line, query):
+            hits = list.push(hits, line)
     hits
 
 fn matches_ci(query: String, contents: String) -> List(String):
     var hits = []
-    let needle = to_lower(query)
+    let needle = string.to_lower(query)
     for line in string.lines(contents):
-        if contains(to_lower(line), needle):
-            hits = push(hits, line)
+        if string.contains(string.to_lower(line), needle):
+            hits = list.push(hits, line)
     hits
 
 // The entry point: Console to print, Dir[Read] to read the log, Env to check a
 // setting, and the command-line arguments. Returns an Int exit code.
 fn main(console: Console, dir: Dir[Read], env: Env, args: List(String)) -> Int:
-    let query = at(args, 0)
-    let path = at(args, 1)
+    let query = list.at(args, 0)
+    let path = list.at(args, 1)
     let contents = read(dir, path)
     let insensitive = match get_env(env, "SCAN_IGNORE_CASE"):
         Some(_) -> true

@@ -92,17 +92,17 @@ fn insert_ord(sorted: List(a), x: a) -> List(a) where a: Ord:
     var placed = false
     for y in sorted:
         if placed:
-            out = push(out, y)
+            out = list.push(out, y)
         else if less(x, y):
-            out = push(out, x)
-            out = push(out, y)
+            out = list.push(out, x)
+            out = list.push(out, y)
             placed = true
         else:
-            out = push(out, y)
+            out = list.push(out, y)
     if placed:
         out
     else:
-        push(out, x)
+        list.push(out, x)
 
 // Sort any list of an `Ord` type ascending — a stable insertion sort that
 // dispatches through the element type's `Ord` impl, so it is content-correct on

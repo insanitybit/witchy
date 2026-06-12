@@ -61,5 +61,5 @@ pub fn unique(xs: List(a)) -> List(a) where a: Eq:
     var out = []
     for x in xs:
         if !member(out, x):
-            out = push(out, x)
+            out = list.push(out, x)
     out

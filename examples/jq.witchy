@@ -26,7 +26,7 @@ fn render(selected: Option(Json)) -> String:
 // segment looks up an object key. A miss anywhere yields None.
 fn navigate(root: Json, path: String) -> Option(Json):
     var current = Some(root)
-    for segment in split(path, "."):
+    for segment in string.split(path, "."):
         current = descend(current, segment)
     current
 

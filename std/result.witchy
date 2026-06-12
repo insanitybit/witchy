@@ -111,7 +111,7 @@ fn combine(acc: Result(List(a), e), x: Result(a, e)) -> Result(List(a), e):
         Err(e) -> Err(e)
         Ok(vs) ->
             match x:
-                Ok(v) -> Ok(push(vs, v))
+                Ok(v) -> Ok(list.push(vs, v))
                 Err(e) -> Err(e)
 
 // Split a list of Results into the Ok values and the Err values, each in order —
@@ -125,5 +125,5 @@ pub fn partition(xs: List(Result(a, e))) -> (List(a), List(e)):
 fn partition_step(acc: (List(a), List(e)), x: Result(a, e)) -> (List(a), List(e)):
     let (oks, errs) = acc
     match x:
-        Ok(v) -> (push(oks, v), errs)
-        Err(er) -> (oks, push(errs, er))
+        Ok(v) -> (list.push(oks, v), errs)
+        Err(er) -> (oks, list.push(errs, er))

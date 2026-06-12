@@ -9,11 +9,33 @@
 import option
 
 // [0, 1, ..., n-1].
+// --- Native primitives (intercepted by both backends; the bodies below are
+// self-recursive placeholders that give the type checker the signatures and
+// are never executed). These were once GLOBAL builtins; the spellings are
+// now module-qualified, like everything else in the standard library. ---
+
+// The number of elements.
+pub fn length(xs: List(a)) -> Int:
+    list.length(xs)
+
+// The element at `index` (0-based). Out of bounds is a runtime error on
+// every backend.
+pub fn at(xs: List(a), index: Int) -> a:
+    list.at(xs, index)
+
+// A new list with `x` appended (lists are values; the original is unchanged).
+pub fn push(xs: List(a), x: a) -> List(a):
+    list.push(xs, x)
+
+// A new list that is `xs` followed by `ys`.
+pub fn concat(xs: List(a), ys: List(a)) -> List(a):
+    list.concat(xs, ys)
+
 pub fn range(n: Int) -> List(Int):
     var out = []
     var i = 0
     while i < n:
-        out = push(out, i)
+        out = list.push(out, i)
         i = i + 1
     out
 
@@ -22,7 +44,7 @@ pub fn range_between(lo: Int, hi: Int) -> List(Int):
     var out = []
     var i = lo
     while i < hi:
-        out = push(out, i)
+        out = list.push(out, i)
         i = i + 1
     out
 
@@ -34,12 +56,12 @@ pub fn range_step(start: Int, stop: Int, step: Int) -> List(Int):
     if step > 0:
         var i = start
         while i < stop:
-            out = push(out, i)
+            out = list.push(out, i)
             i = i + step
     else if step < 0:
         var i = start
         while i > stop:
-            out = push(out, i)
+            out = list.push(out, i)
             i = i + step
     out
 
@@ -47,7 +69,7 @@ pub fn range_step(start: Int, stop: Int, step: Int) -> List(Int):
 pub fn map(xs: List(a), f: fn(a) -> b) -> List(b):
     var out = []
     for x in xs:
-        out = push(out, f(x))
+        out = list.push(out, f(x))
     out
 
 // Keep only the elements for which `keep` returns true.
@@ -55,7 +77,7 @@ pub fn filter(xs: List(a), keep: fn(a) -> Bool) -> List(a):
     var out = []
     for x in xs:
         if keep(x):
-            out = push(out, x)
+            out = list.push(out, x)
     out
 
 // Split `xs` into (matching, non-matching) by `pred`, each preserving the
@@ -65,9 +87,9 @@ pub fn partition(xs: List(a), pred: fn(a) -> Bool) -> (List(a), List(a)):
     var no = []
     for x in xs:
         if pred(x):
-            yes = push(yes, x)
+            yes = list.push(yes, x)
         else:
-            no = push(no, x)
+            no = list.push(no, x)
     (yes, no)
 
 // Reduce the list to a single value, left to right.
@@ -86,9 +108,9 @@ pub fn reduce(xs: List(a), f: fn(a, a) -> a) -> Option(a):
         Some(first) ->
             var acc = first
             var i = 1
-            let n = length(xs)
+            let n = list.length(xs)
             while i < n:
-                acc = f(acc, at(xs, i))
+                acc = f(acc, list.at(xs, i))
                 i = i + 1
             Some(acc)
 
@@ -121,12 +143,12 @@ pub fn scan(xs: List(a), init: b, f: fn(b, a) -> b) -> List(b):
     var out = [init]
     for x in xs:
         acc = f(acc, x)
-        out = push(out, acc)
+        out = list.push(out, acc)
     out
 
 // Whether the list has no elements.
 pub fn is_empty(xs: List(a)) -> Bool:
-    length(xs) == 0
+    list.length(xs) == 0
 
 // The first element, or `default` when the list is empty. (A total accessor in
 // the style of `get_or`/`unwrap_or`, so it never indexes out of bounds.)
@@ -134,14 +156,14 @@ pub fn head_or(xs: List(a), default: a) -> a:
     if is_empty(xs):
         default
     else:
-        at(xs, 0)
+        list.at(xs, 0)
 
 // The last element, or `default` when the list is empty.
 pub fn last_or(xs: List(a), default: a) -> a:
     if is_empty(xs):
         default
     else:
-        at(xs, length(xs) - 1)
+        list.at(xs, list.length(xs) - 1)
 
 // The first element satisfying `pred`, or `default` if none do.
 pub fn find_or(xs: List(a), pred: fn(a) -> Bool, default: a) -> a:
@@ -155,20 +177,20 @@ pub fn head(xs: List(a)) -> Option(a):
     if is_empty(xs):
         None
     else:
-        Some(at(xs, 0))
+        Some(list.at(xs, 0))
 
 // The last element as `Some`, or `None` for the empty list.
 pub fn last(xs: List(a)) -> Option(a):
     if is_empty(xs):
         None
     else:
-        Some(at(xs, length(xs) - 1))
+        Some(list.at(xs, list.length(xs) - 1))
 
 // The element at index `i` as `Some`, or `None` when `i` is out of range — a
 // total, bounds-checked alternative to the `at` builtin.
 pub fn get(xs: List(a), i: Int) -> Option(a):
-    if i >= 0 && i < length(xs):
-        Some(at(xs, i))
+    if i >= 0 && i < list.length(xs):
+        Some(list.at(xs, i))
     else:
         None
 
@@ -193,7 +215,7 @@ pub fn min(xs: List(Int)) -> Option(Int):
     if is_empty(xs):
         None
     else:
-        var m = at(xs, 0)
+        var m = list.at(xs, 0)
         for x in xs:
             if x < m:
                 m = x
@@ -204,7 +226,7 @@ pub fn max(xs: List(Int)) -> Option(Int):
     if is_empty(xs):
         None
     else:
-        var m = at(xs, 0)
+        var m = list.at(xs, 0)
         for x in xs:
             if x > m:
                 m = x
@@ -217,7 +239,7 @@ pub fn max_by(xs: List(a), less: fn(a, a) -> Bool) -> Option(a):
     if is_empty(xs):
         None
     else:
-        var best = at(xs, 0)
+        var best = list.at(xs, 0)
         for x in xs:
             if less(best, x):
                 best = x
@@ -228,7 +250,7 @@ pub fn min_by(xs: List(a), less: fn(a, a) -> Bool) -> Option(a):
     if is_empty(xs):
         None
     else:
-        var best = at(xs, 0)
+        var best = list.at(xs, 0)
         for x in xs:
             if less(x, best):
                 best = x
@@ -248,21 +270,21 @@ pub fn position(xs: List(a), target: a) -> Option(Int):
 pub fn flatten(xss: List(List(a))) -> List(a):
     var out = []
     for xs in xss:
-        out = concat(out, xs)
+        out = list.concat(out, xs)
     out
 
 // Map each element to a list, then concatenate the results.
 pub fn flat_map(xs: List(a), f: fn(a) -> List(b)) -> List(b):
     var out = []
     for x in xs:
-        out = concat(out, f(x))
+        out = list.concat(out, f(x))
     out
 
 // Turn a list of rows into a list of columns. Rows are read only up to the
 // length of the SHORTEST row, so a ragged tail is dropped and the result stays
 // rectangular: `transpose([[1, 2, 3], [4, 5, 6]])` is `[[1, 4], [2, 5], [3, 6]]`.
 pub fn transpose(xss: List(List(a))) -> List(List(a)):
-    if length(xss) == 0:
+    if list.length(xss) == 0:
         []
     else:
         let cols = min_len(xss)
@@ -271,15 +293,15 @@ pub fn transpose(xss: List(List(a))) -> List(List(a)):
         while c < cols:
             var col = []
             for row in xss:
-                col = push(col, at(row, c))
-            out = push(out, col)
+                col = list.push(col, list.at(row, c))
+            out = list.push(out, col)
             c = c + 1
         out
 
 fn min_len(xss: List(List(a))) -> Int:
     var m = 0 - 1
     for row in xss:
-        let l = length(row)
+        let l = list.length(row)
         if m < 0 || l < m:
             m = l
     m
@@ -299,7 +321,7 @@ pub fn take_while(xs: List(a), pred: fn(a) -> Bool) -> List(a):
     for x in xs:
         if taking:
             if pred(x):
-                out = push(out, x)
+                out = list.push(out, x)
             else:
                 taking = false
     out
@@ -312,9 +334,9 @@ pub fn drop_while(xs: List(a), pred: fn(a) -> Bool) -> List(a):
         if dropping:
             if !pred(x):
                 dropping = false
-                out = push(out, x)
+                out = list.push(out, x)
         else:
-            out = push(out, x)
+            out = list.push(out, x)
     out
 
 // A list of `n` copies of `x` (empty when `n <= 0`).
@@ -322,7 +344,7 @@ pub fn repeat(x: a, n: Int) -> List(a):
     var out = []
     var i = 0
     while i < n:
-        out = push(out, x)
+        out = list.push(out, x)
         i = i + 1
     out
 
@@ -340,8 +362,8 @@ pub fn find_index(xs: List(a), pred: fn(a) -> Bool) -> Int:
 pub fn zip_with(xs: List(a), ys: List(b), f: fn(a, b) -> c) -> List(c):
     var out = []
     var i = 0
-    while i < length(xs) && i < length(ys):
-        out = push(out, f(at(xs, i), at(ys, i)))
+    while i < list.length(xs) && i < list.length(ys):
+        out = list.push(out, f(list.at(xs, i), list.at(ys, i)))
         i = i + 1
     out
 
@@ -351,18 +373,18 @@ pub fn intersperse(xs: List(a), sep: a) -> List(a):
     var first = true
     for x in xs:
         if first:
-            out = push(out, x)
+            out = list.push(out, x)
             first = false
         else:
-            out = push(out, sep)
-            out = push(out, x)
+            out = list.push(out, sep)
+            out = list.push(out, x)
     out
 
 // The list, reversed.
 pub fn reverse(xs: List(a)) -> List(a):
     var out = []
     for x in xs:
-        out = concat([x], out)
+        out = list.concat([x], out)
     out
 
 // Insert `x` into an already-sorted list, keeping it ordered by `less`.
@@ -372,20 +394,20 @@ fn merge(a: List(a), b: List(a), less: fn(a, a) -> Bool) -> List(a):
     var out = []
     var i = 0
     var j = 0
-    let na = length(a)
-    let nb = length(b)
+    let na = list.length(a)
+    let nb = list.length(b)
     while i < na && j < nb:
-        if less(at(b, j), at(a, i)):
-            out = push(out, at(b, j))
+        if less(list.at(b, j), list.at(a, i)):
+            out = list.push(out, list.at(b, j))
             j = j + 1
         else:
-            out = push(out, at(a, i))
+            out = list.push(out, list.at(a, i))
             i = i + 1
     while i < na:
-        out = push(out, at(a, i))
+        out = list.push(out, list.at(a, i))
         i = i + 1
     while j < nb:
-        out = push(out, at(b, j))
+        out = list.push(out, list.at(b, j))
         j = j + 1
     out
 
@@ -393,7 +415,7 @@ fn merge(a: List(a), b: List(a), less: fn(a, a) -> Bool) -> List(a):
 // (O(n log n)), so equal elements keep their original order. Generic over the
 // element type.
 pub fn sort_by(xs: List(a), less: fn(a, a) -> Bool) -> List(a):
-    let n = length(xs)
+    let n = list.length(xs)
     if n <= 1:
         xs
     else:
@@ -419,7 +441,7 @@ pub fn unique(xs: List(a)) -> List(a):
     var out = []
     for x in xs:
         if !contains(out, x):
-            out = push(out, x)
+            out = list.push(out, x)
     out
 
 // Whether at least one element satisfies `pred`.
@@ -451,7 +473,7 @@ pub fn take(xs: List(a), n: Int) -> List(a):
     var i = 0
     for x in xs:
         if i < n:
-            out = push(out, x)
+            out = list.push(out, x)
         i = i + 1
     out
 
@@ -466,7 +488,7 @@ pub fn drop(xs: List(a), n: Int) -> List(a):
     var i = 0
     for x in xs:
         if i >= n:
-            out = push(out, x)
+            out = list.push(out, x)
         i = i + 1
     out
 
@@ -476,7 +498,7 @@ pub fn tail(xs: List(a)) -> List(a):
 
 // All elements except the last; the empty list maps to the empty list.
 pub fn drop_last(xs: List(a)) -> List(a):
-    take(xs, length(xs) - 1)
+    take(xs, list.length(xs) - 1)
 
 // Split `xs` into consecutive sublists of length `n` (the final one may be
 // shorter). `chunks([1,2,3,4,5], 2)` is `[[1,2],[3,4],[5]]`.
@@ -485,14 +507,14 @@ pub fn chunks(xs: List(a), n: Int) -> List(List(a)):
     var cur = []
     var count = 0
     for x in xs:
-        cur = push(cur, x)
+        cur = list.push(cur, x)
         count = count + 1
         if count == n:
-            out = push(out, cur)
+            out = list.push(out, cur)
             cur = []
             count = 0
     if count > 0:
-        out = push(out, cur)
+        out = list.push(out, cur)
     out
 
 // The elements in the half-open index range [start, end), clamped to bounds.
@@ -502,7 +524,7 @@ pub fn slice(xs: List(a), start: Int, end: Int) -> List(a):
     var i = 0
     for x in xs:
         if i >= start && i < end:
-            out = push(out, x)
+            out = list.push(out, x)
         i = i + 1
     out
 
@@ -514,9 +536,9 @@ pub fn set_at(xs: List(a), index: Int, value: a) -> List(a):
     var i = 0
     for x in xs:
         if i == index:
-            out = push(out, value)
+            out = list.push(out, value)
         else:
-            out = push(out, x)
+            out = list.push(out, x)
         i = i + 1
     out
 
@@ -527,9 +549,9 @@ pub fn update_at(xs: List(a), index: Int, f: fn(a) -> a) -> List(a):
     var i = 0
     for x in xs:
         if i == index:
-            out = push(out, f(x))
+            out = list.push(out, f(x))
         else:
-            out = push(out, x)
+            out = list.push(out, x)
         i = i + 1
     out
 
@@ -542,8 +564,8 @@ pub fn windows(xs: List(a), n: Int) -> List(List(a)):
     else:
         var out = []
         var i = 0
-        while i + n <= length(xs):
-            out = push(out, slice(xs, i, i + n))
+        while i + n <= list.length(xs):
+            out = list.push(out, slice(xs, i, i + n))
             i = i + 1
         out
 
@@ -551,8 +573,8 @@ pub fn windows(xs: List(a), n: Int) -> List(List(a)):
 pub fn zip(xs: List(a), ys: List(b)) -> List((a, b)):
     var out = []
     var i = 0
-    while i < length(xs) && i < length(ys):
-        out = push(out, (at(xs, i), at(ys, i)))
+    while i < list.length(xs) && i < list.length(ys):
+        out = list.push(out, (list.at(xs, i), list.at(ys, i)))
         i = i + 1
     out
 
@@ -562,8 +584,8 @@ pub fn unzip(xs: List((a, b))) -> (List(a), List(b)):
     var seconds = []
     for x in xs:
         let (a, b) = x
-        firsts = push(firsts, a)
-        seconds = push(seconds, b)
+        firsts = list.push(firsts, a)
+        seconds = list.push(seconds, b)
     (firsts, seconds)
 
 // Pair each element with its index: `[a, b]` -> `[(0, a), (1, b)]`.
@@ -571,6 +593,6 @@ pub fn enumerate(xs: List(a)) -> List((Int, a)):
     var out = []
     var i = 0
     for x in xs:
-        out = push(out, (i, x))
+        out = list.push(out, (i, x))
         i = i + 1
     out

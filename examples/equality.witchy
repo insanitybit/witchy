@@ -31,6 +31,6 @@ impl Eq for Color:
 fn main(console: Console):
     let palette = [Red, Green, Blue]
     print(console, to_string(eq.member(palette, Green)))
-    print(console, int_to_string(eq.index_of(palette, Blue)))
+    print(console, to_string(eq.index_of(palette, Blue)))
     print(console, to_string(eq.member([1, 2, 3], 4)))
     print(console, to_string(ne(Red, Blue)))

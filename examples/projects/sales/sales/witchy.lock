@@ -5,7 +5,7 @@
 name = "salelib"
 version = "0.1.0"
 source = "path:./../salelib"
-hash = "sha256:2f159c42c010bffdc44ae312c24d4bcffea74ca9666a2c0551482db0b71dc998"
+hash = "sha256:262c59c8701b8e8e4d1cbd35e7eea8698205d409b47446db86c56ca77907f0e0"
 runtime_footprint = []
 build_footprint = []
 determinism = "guaranteed"

@@ -21,9 +21,9 @@ pub fn title(task: Task) -> String:
 // (a heading, a blank line) is not a task and yields None.
 pub fn parse_line(line: String) -> Option(Task):
     let t = string.trim(line)
-    if starts_with(t, "- [x] "):
+    if string.starts_with(t, "- [x] "):
         Some(Task(true, string.strip_prefix(t, "- [x] ")))
-    else if starts_with(t, "- [ ] "):
+    else if string.starts_with(t, "- [ ] "):
         Some(Task(false, string.strip_prefix(t, "- [ ] ")))
     else:
         None
@@ -33,7 +33,7 @@ pub fn parse(text: String) -> List(Task):
     var out = []
     for line in string.lines(text):
         if let Some(task) = parse_line(line):
-            out = push(out, task)
+            out = list.push(out, task)
     out
 
 // Total number of tasks.
@@ -56,5 +56,5 @@ pub fn render(tasks: List(Task)) -> String:
     var out = []
     for task in tasks:
         let mark = if is_done(task): "[x]" else: "[ ]"
-        out = push(out, mark <> " " <> title(task))
+        out = list.push(out, mark <> " " <> title(task))
     string.join(out, "\n")

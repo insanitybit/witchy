@@ -10,7 +10,7 @@ fn main(console: Console):
     var grid = glider(8)
     var generation = 0
     while generation < 4:
-        print(console, "generation " <> int_to_string(generation) <> ":")
+        print(console, "generation ${generation}:")
         print(console, render(grid))
         grid = step(grid)
         generation = generation + 1
@@ -23,9 +23,9 @@ fn glider(size: Int) -> List(List(Bool)):
         var row = []
         var c = 0
         while c < size:
-            row = push(row, glider_cell(r, c))
+            row = list.push(row, glider_cell(r, c))
             c = c + 1
-        rows = push(rows, row)
+        rows = list.push(rows, row)
         r = r + 1
     rows
 
@@ -37,8 +37,8 @@ fn glider_cell(r: Int, c: Int) -> Bool:
 
 // Advance the board one generation.
 fn step(grid: List(List(Bool))) -> List(List(Bool)):
-    let height = length(grid)
-    let width = length(at(grid, 0))
+    let height = list.length(grid)
+    let width = list.length(list.at(grid, 0))
     var next = []
     var r = 0
     while r < height:
@@ -47,9 +47,9 @@ fn step(grid: List(List(Bool))) -> List(List(Bool)):
         while c < width:
             let n = neighbours(grid, r, c)
             let born_or_survives = if cell_at(grid, r, c): n == 2 || n == 3 else: n == 3
-            row = push(row, born_or_survives)
+            row = list.push(row, born_or_survives)
             c = c + 1
-        next = push(next, row)
+        next = list.push(next, row)
         r = r + 1
     next
 
@@ -68,14 +68,14 @@ fn neighbours(grid: List(List(Bool)), r: Int, c: Int) -> Int:
 
 // A cell's state, with anything off the board counted as dead.
 fn cell_at(grid: List(List(Bool)), r: Int, c: Int) -> Bool:
-    if r < 0 || r >= length(grid):
+    if r < 0 || r >= list.length(grid):
         false
     else:
-        let row = at(grid, r)
-        if c < 0 || c >= length(row):
+        let row = list.at(grid, r)
+        if c < 0 || c >= list.length(row):
             false
         else:
-            at(row, c)
+            list.at(row, c)
 
 fn render(grid: List(List(Bool))) -> String:
     var lines = []
@@ -83,5 +83,5 @@ fn render(grid: List(List(Bool))) -> String:
         var line = ""
         for live in row:
             line = line <> if live: "#" else: "."
-        lines = push(lines, line)
+        lines = list.push(lines, line)
     string.join(lines, "\n")

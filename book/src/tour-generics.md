@@ -10,7 +10,7 @@ fn pair_up(x: a, y: a) -> (a, a):
     (x, y)
 
 fn first(xs: List(a)) -> a:
-    at(xs, 0)
+    list.at(xs, 0)
 
 fn main(console: Console):
     let (lo, hi) = pair_up(1, 2)
@@ -73,14 +73,14 @@ ordering; here's a generic "biggest element" for anything orderable:
 import ord
 
 fn largest(xs: List(a)) -> a where a: Ord:
-    var best = at(xs, 0)
+    var best = list.at(xs, 0)
     for x in xs:
         if greater(x, best):     // `greater` comes from the Ord trait
             best = x
     best
 
 fn main(console: Console):
-    print(console, int_to_string(largest([3, 9, 2, 7])))
+    print(console, to_string(largest([3, 9, 2, 7])))
     print(console, largest(["apple", "pear", "fig"]))
 ```
 

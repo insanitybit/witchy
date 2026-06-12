@@ -14,7 +14,7 @@ fn safe_div(a: Int, b: Int) -> Result(Int, String):
 
 fn show(r: Result(Int, String)) -> String:
     match r:
-        Ok(n) -> "ok " <> int_to_string(n)
+        Ok(n) -> "ok " <> to_string(n)
         Err(msg) -> "err " <> msg
 
 fn main(console: Console):

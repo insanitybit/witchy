@@ -30,7 +30,7 @@ feature parity-testable for free.
 3. **No outer pointer assignments.** Assigning a variable declared outside the
    region is a TYPE ERROR unless the variable's type is scalar (Int, Float,
    Bool, Duration). This includes the linear-update forms
-   (`acc = push(acc, x)`): they are assignments. Host-side state (actor
+   (`acc = list.push(acc, x)`): they are assignments. Host-side state (actor
    fields) is exempt — those writes copy content out by construction.
    Unlike the loop optimizer (which silently skips the reset), `region:` is
    explicit, so violations are loud, at check time, on both backends.

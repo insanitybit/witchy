@@ -90,10 +90,10 @@ pub fn part_milliseconds(d: Duration) -> Int:
 // A clock string "H:MM:SS": minutes and seconds zero-padded, hours in full (so a
 // long span reads as e.g. "100:00:00"); the sub-second part is dropped.
 pub fn clock(d: Duration) -> String:
-    int_to_string(part_hours(d)) <> ":" <> pad2(part_minutes(d)) <> ":" <> pad2(part_seconds(d))
+    to_string(part_hours(d)) <> ":" <> pad2(part_minutes(d)) <> ":" <> pad2(part_seconds(d))
 
 fn pad2(n: Int) -> String:
-    string.pad_left(int_to_string(n), 2, "0")
+    string.pad_left(to_string(n), 2, "0")
 
 // A compact label that omits leading zero units: `1h1m1s`, `1m30s`, `5s`, and
 // `500ms` for a pure sub-second span.
@@ -103,13 +103,13 @@ pub fn human(d: Duration) -> String:
     let s = part_seconds(d)
     let r = part_milliseconds(d)
     if h > 0:
-        int_to_string(h) <> "h" <> int_to_string(m) <> "m" <> int_to_string(s) <> "s"
+        to_string(h) <> "h" <> to_string(m) <> "m" <> to_string(s) <> "s"
     else if m > 0:
-        int_to_string(m) <> "m" <> int_to_string(s) <> "s"
+        to_string(m) <> "m" <> to_string(s) <> "s"
     else if s > 0:
-        int_to_string(s) <> "s"
+        to_string(s) <> "s"
     else:
-        int_to_string(r) <> "ms"
+        to_string(r) <> "ms"
 
 // Parse a duration string to a `Duration` — the inverse of `human`. Accepts
 // unit-tagged input ("1h2m3s", "500ms", "2hr", any subset) using ms/s/m/h/hr/d/w,
@@ -121,12 +121,12 @@ pub fn parse(s: String) -> Option(Duration):
     var seen_digit = false
     var seen_unit = false
     var i = 0
-    let n = char_count(s)
+    let n = string.char_count(s)
     while i < n:
-        let c = substring(s, i, i + 1)
-        let two = if i + 1 < n: substring(s, i, i + 2) else: ""
+        let c = string.substring(s, i, i + 1)
+        let two = if i + 1 < n: string.substring(s, i, i + 2) else: ""
         if c >= "0" && c <= "9":
-            cur = cur * 10 + string_to_int(c)
+            cur = cur * 10 + string.to_int(c)
             seen_digit = true
             i = i + 1
         else if two == "ms":

@@ -14,6 +14,6 @@ fn shift(p: Point, dx: Int) -> Point:
 fn main(console: Console):
     let origin = Point(2, 3)
     let moved = shift(origin, 10)
-    print(console, "origin.x = " <> int_to_string(origin.x))
-    print(console, "moved = (" <> int_to_string(moved.x) <> ", " <> int_to_string(moved.y) <> ")")
-    print(console, "manhattan(moved) = " <> int_to_string(manhattan(moved)))
+    print(console, "origin.x = " <> to_string(origin.x))
+    print(console, "moved = (${moved.x}, ${moved.y})")
+    print(console, "manhattan(moved) = " <> to_string(manhattan(moved)))

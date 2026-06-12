@@ -90,17 +90,53 @@ Parse with the first row as a header: each remaining row becomes a Dict keyed by
 
 ## `dict`
 
-dict — higher-level operations over the builtin associative Dict.
+dict — the associative map.
 
-The core operations are builtins: `dict_new`, `insert(d, k, v)`, `get_or(d, k, default)`, `update(d, k, default, f)`, `has(d, k)`, `remove(d, k)`, `keys(d)`, `values(d)`, `pairs(d)`, `size(d)`. This module adds the compositional layer they lack — a lookup returning `Option`, constructors from pairs, and the map/filter/merge transforms — so a Dict reads like a first-class value, not a bag of global calls.
+The core operations are native primitives (intercepted by both backends; the bodies are self-recursive placeholders giving the type checker their signatures): `dict.new`, `dict.insert`, `dict.get_or`, `dict.update`, `dict.has`, `dict.remove`, `dict.keys`, `dict.values`, `dict.pairs`, `dict.size`. The rest is the compositional layer — a lookup returning `Option`, constructors from pairs, and the map/filter/merge transforms.
+
+#### `fn new() -> Dict(k, v)`
+
+An empty Dict.
+
+#### `fn insert(d: Dict(k, v), key: k, val: v) -> Dict(k, v)`
+
+A new dict with `key` set to `val` (replacing any existing entry). Insertion order of first appearance is preserved.
+
+#### `fn get_or(d: Dict(k, v), key: k, default: v) -> v`
+
+The value for `key`, or `default` when absent.
+
+#### `fn update(d: Dict(k, v), key: k, default: v, f: fn(v) -> v) -> Dict(k, v)`
+
+Single-lookup upsert: apply `f` to the current value (or `default` when `key` is absent) and store the result under `key`.
+
+#### `fn has(d: Dict(k, v), key: k) -> Bool`
+
+Whether `key` is present.
+
+#### `fn remove(d: Dict(k, v), key: k) -> Dict(k, v)`
+
+A new dict with `key` (and its value) removed; unchanged when absent.
+
+#### `fn keys(d: Dict(k, v)) -> List(k)`
+
+The keys, in insertion order.
+
+#### `fn values(d: Dict(k, v)) -> List(v)`
+
+The values, in insertion order.
+
+#### `fn pairs(d: Dict(k, v)) -> List((k, v))`
+
+The (key, value) pairs, in insertion order.
+
+#### `fn size(d: Dict(k, v)) -> Int`
+
+The number of entries.
 
 #### `fn get(d: Dict(k, v), key: k) -> Option(v)`
 
 A lookup that says whether the key was present, rather than forcing a default.
-
-#### `fn empty() -> Dict(k, v)`
-
-An empty Dict (a readable alias for `dict_new`).
 
 #### `fn is_empty(d: Dict(k, v)) -> Bool`
 
@@ -592,9 +628,23 @@ Follow a dotted path of object keys, e.g. `get_path(resp, "user.name")`. Any mis
 
 The witchy standard list library. Every function here is pure: the module declares no capability parameters, so importing it grants no authority — it can only transform data. This is the capability model in miniature: a library you didn't hand a Console/Dir/Net to literally cannot reach them.
 
-#### `fn range(n: Int) -> List(Int)`
+#### `fn length(xs: List(a)) -> Int`
 
-[0, 1, ..., n-1].
+The number of elements.
+
+#### `fn at(xs: List(a), index: Int) -> a`
+
+The element at `index` (0-based). Out of bounds is a runtime error on every backend.
+
+#### `fn push(xs: List(a), x: a) -> List(a)`
+
+A new list with `x` appended (lists are values; the original is unchanged).
+
+#### `fn concat(xs: List(a), ys: List(a)) -> List(a)`
+
+A new list that is `xs` followed by `ys`.
+
+#### `fn range(n: Int) -> List(Int)`
 
 #### `fn range_between(lo: Int, hi: Int) -> List(Int)`
 
@@ -822,11 +872,21 @@ Pair each element with its index: `[a, b]` -> `[(0, a), (1, b)]`.
 
 ## `math`
 
-The witchy standard math library: small integer helpers, pure and capability-free. (Comparison can't be generic without type classes, so these are Int-specific.)
+The witchy standard math library: small integer helpers, pure and capability-free. (Comparison can't be generic without type classes, so these are Int-specific.) --- Native primitives (intercepted by both backends; self-recursive placeholder bodies give the type checker the signatures). ---
+
+#### `fn to_float(n: Int) -> Float`
+
+Int -> Float, exactly (within f64 precision).
+
+#### `fn to_int(x: Float) -> Int`
+
+Float -> Int, truncating toward zero; NaN -> 0; out-of-range saturates.
+
+#### `fn sqrt(x: Float) -> Float`
+
+The square root.
 
 #### `fn min(a: Int, b: Int) -> Int`
-
-The witchy standard math library: small integer helpers, pure and capability-free. (Comparison can't be generic without type classes, so these are Int-specific.)
 
 #### `fn max(a: Int, b: Int) -> Int`
 
@@ -874,7 +934,7 @@ Whether `n` is odd.
 
 #### `fn is_prime(n: Int) -> Bool`
 
-Whether `n` is prime (trial division up to sqrt(n); n < 2 is not prime).
+Whether `n` is prime (trial division up to math.sqrt(n); n < 2 is not prime).
 
 #### `fn isqrt(n: Int) -> Int`
 
@@ -1228,7 +1288,7 @@ A version constraint (requirement).
 
 Parse `major.minor.patch` (missing trailing components default to 0). Errors on a non-numeric component or more than three components.
 
-#### `fn to_string(v: Version) -> String`
+#### `fn format(v: Version) -> String`
 
 #### `fn compare(a: Version, b: Version) -> Int`
 
@@ -1430,15 +1490,63 @@ Render a list as "[a, b, c]" using each element's Show impl — reach for this w
 
 #### `fn say(console: Console, x: impl Show)`
 
-Print any `Show` value without converting it by hand — `say(console, 42)`, `say(console, point)`. The Show-accepting `print` you reach for instead of `print(console, int_to_string(n))`. (A thin wrapper kept out of the `print` builtin so a builtin never depends on a std trait.)
+Print any `Show` value without converting it by hand — `say(console, 42)`, `say(console, point)`. The Show-accepting `print` you reach for instead of `print(console, to_string(n))`. (A thin wrapper kept out of the `print` builtin so a builtin never depends on a std trait.)
 
 ## `string`
 
 The witchy standard string library. Like `list`, it is pure: it declares no capability parameters, so importing it grants no authority. The primitive string operations (`split`, `replace`, `contains`, `to_upper`, ...) are builtins; these are the conveniences built on top of them.
 
-#### `fn join(parts: List(String), sep: String) -> String`
+#### `fn length(s: String) -> Int`
 
-Join a list of strings with a separator between each.
+The string's length in BYTES (UTF-8). For user-perceived characters, see `char_count`.
+
+#### `fn char_count(s: String) -> Int`
+
+The number of Unicode scalar values.
+
+#### `fn chars(s: String) -> List(String)`
+
+The characters, each as a single-character String — one O(n) pass, so callers can index characters in O(1).
+
+#### `fn split(s: String, sep: String) -> List(String)`
+
+Split on every occurrence of `sep`.
+
+#### `fn contains(s: String, needle: String) -> Bool`
+
+Whether `needle` occurs in `s`.
+
+#### `fn starts_with(s: String, prefix: String) -> Bool`
+
+#### `fn ends_with(s: String, suffix: String) -> Bool`
+
+#### `fn index_of(s: String, needle: String) -> Int`
+
+The byte index of the first occurrence of `needle`, or -1.
+
+#### `fn replace(s: String, from: String, to: String) -> String`
+
+Replace every occurrence of `from` with `to`.
+
+#### `fn substring(s: String, start: Int, end: Int) -> String`
+
+The substring from byte `start` (inclusive) to `end` (exclusive).
+
+#### `fn to_upper(s: String) -> String`
+
+ASCII case mapping (the portable set both backends share).
+
+#### `fn to_lower(s: String) -> String`
+
+#### `fn trim(s: String) -> String`
+
+Strip leading and trailing ASCII whitespace.
+
+#### `fn to_int(s: String) -> Int`
+
+Parse a decimal integer; junk, overflow, or an empty string is a runtime error on every backend. For a total version, see `parse_int`.
+
+#### `fn join(parts: List(String), sep: String) -> String`
 
 #### `fn repeat(s: String, n: Int) -> String`
 
@@ -1471,10 +1579,6 @@ The single character at character index `i` (counted by Unicode scalar), or "" w
 #### `fn is_empty(s: String) -> Bool`
 
 Whether the string has no characters.
-
-#### `fn to_chars(s: String) -> List(String)`
-
-The string's characters as a list of single-character strings, counted by Unicode scalar: `to_chars("café")` is `["c", "a", "f", "é"]`. Backed by the `string_chars` primitive, which builds the list in a single pass (rather than the O(n²) of a `char_at` loop, where each index walks the string from the start), so callers can then index characters in O(1).
 
 #### `fn reverse(s: String) -> String`
 
@@ -1528,17 +1632,13 @@ Remove leading whitespace.
 
 Remove trailing whitespace.
 
-#### `fn trim(s: String) -> String`
-
-Remove leading and trailing whitespace.
-
 ## `testing`
 
 The witchy test support module. `witchy test <file>` discovers every zero-parameter function named `test_*`, runs each one, and reports it as passing unless it aborts — which these assertions do, with a message, via the `fail` primitive. Tests are pure functions: they take no capabilities, so a test suite provably has no effects.
 
   import testing
 
-  fn test_addition():       testing.assert_eq(int_to_string(2 + 2), "4")
+  fn test_addition():       testing.assert_eq(to_string(2 + 2), "4")
 
   fn test_truth():       testing.assert(1 < 2, "one is less than two")
 

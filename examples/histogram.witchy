@@ -6,9 +6,9 @@
 //   witchy parity examples/histogram.witchy
 fn main(console: Console):
     let text = "the cat sat on the mat the cat ran"
-    var counts = dict_new()
-    for word in split(text, " "):
-        counts = insert(counts, word, get_or(counts, word, 0) + 1)
+    var counts = dict.new()
+    for word in string.split(text, " "):
+        counts = dict.insert(counts, word, dict.get_or(counts, word, 0) + 1)
 
-    for word in keys(counts):
-        print(console, word <> ": " <> int_to_string(get_or(counts, word, 0)))
+    for word in dict.keys(counts):
+        print(console, word <> ": " <> to_string(dict.get_or(counts, word, 0)))

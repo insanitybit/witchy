@@ -30,5 +30,5 @@ fn functional(upper: Int) -> Int:
 
 fn main(console: Console):
     let upper = 1000
-    print(console, "imperative: " <> int_to_string(imperative(upper)))
-    print(console, "functional: " <> int_to_string(functional(upper)))
+    print(console, "imperative: " <> to_string(imperative(upper)))
+    print(console, "functional: " <> to_string(functional(upper)))

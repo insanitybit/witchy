@@ -6,4 +6,4 @@ fn divmod(a: Int, b: Int) -> (Int, Int):
 
 fn main(console: Console):
     let (q, r) = divmod(17, 5)
-    print(console, int_to_string(q) <> " remainder " <> int_to_string(r))
+    print(console, to_string(q) <> " remainder " <> to_string(r))

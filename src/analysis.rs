@@ -87,7 +87,7 @@ impl Facts {
 /// `xs = push(xs, e)`: the appended element.
 pub fn self_push_elem<'a>(name: &str, value: &'a Expr) -> Option<&'a Expr> {
     if let Expr::Call { name: f, args } = value {
-        if f == "push" && args.len() == 2 {
+        if f == "list.push" && args.len() == 2 {
             if matches!(&args[0], Expr::Var(v) if v == name) {
                 return Some(&args[1]);
             }
@@ -99,7 +99,7 @@ pub fn self_push_elem<'a>(name: &str, value: &'a Expr) -> Option<&'a Expr> {
 /// `d = insert(d, k, v)`: the key and value.
 pub fn self_insert_args<'a>(name: &str, value: &'a Expr) -> Option<(&'a Expr, &'a Expr)> {
     if let Expr::Call { name: f, args } = value {
-        if f == "insert" && args.len() == 3 {
+        if f == "dict.insert" && args.len() == 3 {
             if matches!(&args[0], Expr::Var(v) if v == name) {
                 return Some((&args[1], &args[2]));
             }
@@ -114,7 +114,7 @@ pub fn self_update_args<'a>(
     value: &'a Expr,
 ) -> Option<(&'a Expr, &'a Expr, &'a Expr)> {
     if let Expr::Call { name: f, args } = value {
-        if f == "update" && args.len() == 4 {
+        if f == "dict.update" && args.len() == 4 {
             if matches!(&args[0], Expr::Var(v) if v == name) {
                 return Some((&args[1], &args[2], &args[3]));
             }
@@ -949,57 +949,45 @@ fn builtin_arg_liveness(name: &str, argc: usize) -> Option<Vec<bool>> {
     let read_all = |n: usize| Some(vec![false; n]);
     match (name, argc) {
         // Collections: content reads and part-alias reads.
-        ("length", 1)
-        | ("size", 1)
-        | ("string_length", 1)
-        | ("char_count", 1)
-        | ("at", 2)
-        | ("has", 2)
-        | ("contains", 2)
-        | ("index_of", 2)
-        | ("keys", 1)
-        | ("values", 1)
-        | ("pairs", 1)
-        | ("remove", 2)
-        | ("concat", 2)
-        | ("first", 1)
-        | ("last", 1)
-        | ("reverse", 1)
-        | ("sort", 1)
-        | ("take", 2)
-        | ("drop", 2) => read_all(argc),
+        ("list.length", 1)
+        | ("dict.size", 1)
+        | ("string.length", 1)
+        | ("string.char_count", 1)
+        | ("list.at", 2)
+        | ("dict.has", 2)
+        | ("string.contains", 2)
+        | ("string.index_of", 2)
+        | ("dict.keys", 1)
+        | ("dict.values", 1)
+        | ("dict.pairs", 1)
+        | ("dict.remove", 2)
+        | ("list.concat", 2) => read_all(argc),
         // get_or reads the dict and key; the DEFAULT may be returned.
-        ("get_or", 3) => Some(vec![false, false, true]),
+        ("dict.get_or", 3) => Some(vec![false, false, true]),
         // push/insert/update store their value operands by slot. (The
         // self-assign shape is special-cased before this table is consulted.)
-        ("push", 2) => Some(vec![false, true]),
-        ("insert", 3) => Some(vec![false, true, true]),
-        ("update", 4) => Some(vec![false, true, true, true]),
+        ("list.push", 2) => Some(vec![false, true]),
+        ("dict.insert", 3) => Some(vec![false, true, true]),
+        ("dict.update", 4) => Some(vec![false, true, true, true]),
         // Output and messaging copy content out to the host.
         ("print", 2) => read_all(2),
         ("send", _) => read_all(argc),
         ("fail", 1) => read_all(1),
         // Strings: every operation reads content and builds fresh results.
         ("to_string", 1)
-        | ("int_to_string", 1)
-        | ("string_to_int", 1)
-        | ("to_chars", 1)
-        | ("string_chars", 1)
-        | ("trim", 1)
-        | ("to_upper", 1)
-        | ("to_lower", 1)
-        | ("split", 2)
-        | ("join", 2)
-        | ("starts_with", 2)
-        | ("ends_with", 2)
-        | ("substr", 3)
-        | ("replace", 3)
-        | ("repeat", 2) => read_all(argc),
-        // Conversions / scalar math never retain buffers.
-        ("int_to_float", 1) | ("float_to_int", 1) | ("abs", 1) | ("min", 2) | ("max", 2) => {
-            read_all(argc)
-        }
-        ("dict_new", 0) => Some(Vec::new()),
+        | ("string.to_int", 1)
+        | ("string.chars", 1)
+        | ("string.trim", 1)
+        | ("string.to_upper", 1)
+        | ("string.to_lower", 1)
+        | ("string.split", 2)
+        | ("string.starts_with", 2)
+        | ("string.ends_with", 2)
+        | ("string.substring", 3)
+        | ("string.replace", 3) => read_all(argc),
+        // Conversions never retain buffers.
+        ("math.to_float", 1) | ("math.to_int", 1) | ("math.sqrt", 1) => read_all(argc),
+        ("dict.new", 0) => Some(Vec::new()),
         _ => None,
     }
 }

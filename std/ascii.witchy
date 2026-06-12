@@ -25,21 +25,21 @@ pub fn is_space(c: String) -> Bool:
 // The numeric value of a single decimal digit, or -1 when `c` is not a digit.
 pub fn to_digit(c: String) -> Int:
     if is_digit(c):
-        string_to_int(c)
+        string.to_int(c)
     else:
         0 - 1
 
 // True when `s` is non-empty and every character is an ASCII digit — a safe
 // guard before `string_to_int`, which traps on non-numeric input.
 pub fn all_digits(s: String) -> Bool:
-    let n = char_count(s)
+    let n = string.char_count(s)
     if n == 0:
         false
     else:
         var ok = true
         var i = 0
         while i < n:
-            if !is_digit(substring(s, i, i + 1)):
+            if !is_digit(string.substring(s, i, i + 1)):
                 ok = false
             i = i + 1
         ok

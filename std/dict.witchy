@@ -1,74 +1,116 @@
-// dict — higher-level operations over the builtin associative Dict.
+// dict — the associative map.
 //
-// The core operations are builtins: `dict_new`, `insert(d, k, v)`,
-// `get_or(d, k, default)`, `update(d, k, default, f)`, `has(d, k)`,
-// `remove(d, k)`, `keys(d)`, `values(d)`, `pairs(d)`, `size(d)`. This module adds
-// the compositional layer they lack — a lookup returning `Option`, constructors
-// from pairs, and the map/filter/merge transforms — so a Dict reads like a
-// first-class value, not a bag of global calls.
+// The core operations are native primitives (intercepted by both backends;
+// the bodies are self-recursive placeholders giving the type checker their
+// signatures): `dict.new`, `dict.insert`, `dict.get_or`, `dict.update`,
+// `dict.has`, `dict.remove`, `dict.keys`, `dict.values`, `dict.pairs`,
+// `dict.size`. The rest is the compositional layer — a lookup returning
+// `Option`, constructors from pairs, and the map/filter/merge transforms.
+
+// --- native primitives ---
+
+// An empty Dict.
+pub fn new() -> Dict(k, v):
+    dict.new()
+
+// A new dict with `key` set to `val` (replacing any existing entry).
+// Insertion order of first appearance is preserved.
+pub fn insert(d: Dict(k, v), key: k, val: v) -> Dict(k, v):
+    dict.insert(d, key, val)
+
+// The value for `key`, or `default` when absent.
+pub fn get_or(d: Dict(k, v), key: k, default: v) -> v:
+    dict.get_or(d, key, default)
+
+// Single-lookup upsert: apply `f` to the current value (or `default` when
+// `key` is absent) and store the result under `key`.
+pub fn update(d: Dict(k, v), key: k, default: v, f: fn(v) -> v) -> Dict(k, v):
+    dict.update(d, key, default, f)
+
+// Whether `key` is present.
+pub fn has(d: Dict(k, v), key: k) -> Bool:
+    dict.has(d, key)
+
+// A new dict with `key` (and its value) removed; unchanged when absent.
+pub fn remove(d: Dict(k, v), key: k) -> Dict(k, v):
+    dict.remove(d, key)
+
+// The keys, in insertion order.
+pub fn keys(d: Dict(k, v)) -> List(k):
+    dict.keys(d)
+
+// The values, in insertion order.
+pub fn values(d: Dict(k, v)) -> List(v):
+    dict.values(d)
+
+// The (key, value) pairs, in insertion order.
+pub fn pairs(d: Dict(k, v)) -> List((k, v)):
+    dict.pairs(d)
+
+// The number of entries.
+pub fn size(d: Dict(k, v)) -> Int:
+    dict.size(d)
+
+// --- the compositional layer ---
 
 // A lookup that says whether the key was present, rather than forcing a default.
 pub fn get(d: Dict(k, v), key: k) -> Option(v):
     var found = None
-    for entry in pairs(d):
+    for entry in dict.pairs(d):
         let (k, v) = entry
         if k == key:
             found = Some(v)
     found
 
-// An empty Dict (a readable alias for `dict_new`).
-pub fn empty() -> Dict(k, v):
-    dict_new()
-
 pub fn is_empty(d: Dict(k, v)) -> Bool:
-    size(d) == 0
+    dict.size(d) == 0
 
 // Build a Dict from (key, value) pairs; a later pair overrides an earlier one.
 pub fn from_pairs(entries: List((k, v))) -> Dict(k, v):
-    var d = dict_new()
+    var d = dict.new()
     for entry in entries:
         let (k, v) = entry
-        d = insert(d, k, v)
+        d = dict.insert(d, k, v)
     d
 
 // A new Dict with every value passed through `f` (keys unchanged).
 pub fn map_values(d: Dict(k, v), f: fn(v) -> w) -> Dict(k, w):
-    var out = dict_new()
-    for entry in pairs(d):
+    var out = dict.new()
+    for entry in dict.pairs(d):
         let (k, v) = entry
-        out = insert(out, k, f(v))
+        out = dict.insert(out, k, f(v))
     out
 
 // Keep only the entries for which `keep(key, value)` holds.
 pub fn filter(d: Dict(k, v), keep: fn(k, v) -> Bool) -> Dict(k, v):
-    var out = dict_new()
-    for entry in pairs(d):
+    var out = dict.new()
+    for entry in dict.pairs(d):
         let (k, v) = entry
         if keep(k, v):
-            out = insert(out, k, v)
+            out = dict.insert(out, k, v)
     out
 
 // `a` with `b`'s entries laid over it (on a key collision, `b` wins).
 pub fn merge(a: Dict(k, v), b: Dict(k, v)) -> Dict(k, v):
     var out = a
-    for entry in pairs(b):
+    for entry in dict.pairs(b):
         let (k, v) = entry
-        out = insert(out, k, v)
+        out = dict.insert(out, k, v)
     out
 
 // Swap keys and values. With duplicate values, a later entry wins.
 pub fn invert(d: Dict(k, v)) -> Dict(v, k):
-    var out = dict_new()
-    for entry in pairs(d):
+    var out = dict.new()
+    for entry in dict.pairs(d):
         let (k, v) = entry
-        out = insert(out, v, k)
+        out = dict.insert(out, v, k)
     out
 
 // The values whose keys satisfy `pred`, in the Dict's iteration order.
 pub fn values_where(d: Dict(k, v), pred: fn(k) -> Bool) -> List(v):
     var out = []
-    for entry in pairs(d):
+    for entry in dict.pairs(d):
         let (k, v) = entry
         if pred(k):
-            out = push(out, v)
+            out = list.push(out, v)
     out

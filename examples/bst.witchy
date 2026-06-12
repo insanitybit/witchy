@@ -39,7 +39,7 @@ fn contains(t: Tree, x: Int) -> Bool:
 fn inorder(t: Tree) -> List(Int):
     match t:
         Leaf -> []
-        Node(l, v, r) -> concat(inorder(l), concat([v], inorder(r)))
+        Node(l, v, r) -> list.concat(inorder(l), list.concat([v], inorder(r)))
 
 fn from_list(xs: List(Int)) -> Tree:
     var t = Leaf
@@ -50,6 +50,6 @@ fn from_list(xs: List(Int)) -> Tree:
 fn main(console: Console):
     let tree = from_list([5, 3, 8, 1, 4, 7, 9, 2, 6])
     let sorted = inorder(tree)
-    print(console, string.join(list.map(sorted, fn(n: Int): int_to_string(n)), " "))
+    print(console, string.join(list.map(sorted, fn(n: Int): to_string(n)), " "))
     print(console, "contains 7: " <> to_string(contains(tree, 7)))
     print(console, "contains 10: " <> to_string(contains(tree, 10)))

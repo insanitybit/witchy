@@ -1,11 +1,11 @@
 fn main(console: Console):
-    var d = dict_new()
+    var d = dict.new()
     var i = 0
     while i < 3000000:
         let k = i % 1000
-        d = insert(d, k, get_or(d, k, 0) + 1)
+        d = dict.insert(d, k, dict.get_or(d, k, 0) + 1)
         i = i + 1
     var total = 0
-    for k in keys(d):
-        total = total + get_or(d, k, 0)
-    print(console, int_to_string(total))
+    for k in dict.keys(d):
+        total = total + dict.get_or(d, k, 0)
+    print(console, to_string(total))

@@ -39,7 +39,7 @@ pub fn extract(pattern: String, text: String) -> List(String):
     var out = []
     for span in find_all(pattern, text):
         let (s, e) = span
-        out = push(out, substring(text, s, e))
+        out = list.push(out, string.substring(text, s, e))
     out
 
 // `text` with every match replaced: replace_all("\\s+", "a  b", "-") is "a-b".
@@ -48,9 +48,9 @@ pub fn replace_all(pattern: String, text: String, replacement: String) -> String
     var prev = 0
     for span in find_all(pattern, text):
         let (s, e) = span
-        out = out <> substring(text, prev, s) <> replacement
+        out = out <> string.substring(text, prev, s) <> replacement
         prev = e
-    out <> substring(text, prev, string_length(text))
+    out <> string.substring(text, prev, string.length(text))
 
 // `text` split on every match: split(",\\s*", "a, b,c") is ["a", "b", "c"].
 pub fn split(pattern: String, text: String) -> List(String):
@@ -58,13 +58,13 @@ pub fn split(pattern: String, text: String) -> List(String):
     var prev = 0
     for span in find_all(pattern, text):
         let (s, e) = span
-        out = push(out, substring(text, prev, s))
+        out = list.push(out, string.substring(text, prev, s))
         prev = e
-    push(out, substring(text, prev, string_length(text)))
+    list.push(out, string.substring(text, prev, string.length(text)))
 
 // --- the engine --------------------------------------------------------------
 fn anchored(pattern: String) -> Bool:
-    string_length(pattern) > 0 && string.char_at(pattern, 0) == "^"
+    string.length(pattern) > 0 && string.char_at(pattern, 0) == "^"
 
 fn pattern_start(pattern: String) -> Int:
     if anchored(pattern):
@@ -76,31 +76,31 @@ fn find_from(pattern: String, ps: Int, text: String, ti: Int, anchor: Bool) -> O
     let e = match_here_end(pattern, ps, text, ti)
     if e >= 0:
         Some((ti, e))
-    else if !anchor && ti < string_length(text):
+    else if !anchor && ti < string.length(text):
         find_from(pattern, ps, text, ti + 1, anchor)
     else:
         None
 
 fn find_all_from(pattern: String, ps: Int, text: String, ti: Int, anchor: Bool) -> List((Int, Int)):
-    if ti > string_length(text):
+    if ti > string.length(text):
         []
     else:
         let e = match_here_end(pattern, ps, text, ti)
         if e >= 0:
             let next = if e > ti: e else: ti + 1
             let rest = if anchor: [] else: find_all_from(pattern, ps, text, next, anchor)
-            concat([(ti, e)], rest)
-        else if !anchor && ti < string_length(text):
+            list.concat([(ti, e)], rest)
+        else if !anchor && ti < string.length(text):
             find_all_from(pattern, ps, text, ti + 1, anchor)
         else:
             []
 
 // The end position of a match of `pattern[pi..]` at `text[ti..]`, or -1.
 fn match_here_end(pattern: String, pi: Int, text: String, ti: Int) -> Int:
-    if pi >= string_length(pattern):
+    if pi >= string.length(pattern):
         ti
-    else if string.char_at(pattern, pi) == "$" && pi + 1 >= string_length(pattern):
-        if ti >= string_length(text):
+    else if string.char_at(pattern, pi) == "$" && pi + 1 >= string.length(pattern):
+        if ti >= string.length(text):
             ti
         else:
             0 - 1
@@ -152,7 +152,7 @@ fn atom_len(pattern: String, pi: Int) -> Int:
 
 // True if the atom at `pattern[pi..]` matches the text character at `ti`.
 fn atom_match(pattern: String, pi: Int, text: String, ti: Int) -> Bool:
-    if ti >= string_length(text):
+    if ti >= string.length(text):
         false
     else:
         let tc = string.char_at(text, ti)
@@ -196,7 +196,7 @@ fn members_match(pattern: String, i: Int, close: Int, tc: String) -> Bool:
 
 // The index of the class's closing `]` (scanning from just past the `[`).
 fn class_close(pattern: String, i: Int) -> Int:
-    if i >= string_length(pattern):
+    if i >= string.length(pattern):
         fail("regex: unclosed character class")
         0 - 1
     else if string.char_at(pattern, i) == "]":
@@ -205,7 +205,7 @@ fn class_close(pattern: String, i: Int) -> Int:
         class_close(pattern, i + 1)
 
 fn next_char(pattern: String, pi: Int) -> String:
-    if pi < string_length(pattern):
+    if pi < string.length(pattern):
         string.char_at(pattern, pi)
     else:
         ""

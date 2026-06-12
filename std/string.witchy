@@ -6,6 +6,65 @@
 import option
 
 // Join a list of strings with a separator between each.
+// --- Native primitives (intercepted by both backends; self-recursive
+// placeholder bodies give the type checker the signatures). ---
+
+// The string's length in BYTES (UTF-8). For user-perceived characters, see
+// `char_count`.
+pub fn length(s: String) -> Int:
+    string.length(s)
+
+// The number of Unicode scalar values.
+pub fn char_count(s: String) -> Int:
+    string.char_count(s)
+
+// The characters, each as a single-character String — one O(n) pass, so
+// callers can index characters in O(1).
+pub fn chars(s: String) -> List(String):
+    string.chars(s)
+
+// Split on every occurrence of `sep`.
+pub fn split(s: String, sep: String) -> List(String):
+    string.split(s, sep)
+
+// Whether `needle` occurs in `s`.
+pub fn contains(s: String, needle: String) -> Bool:
+    string.contains(s, needle)
+
+pub fn starts_with(s: String, prefix: String) -> Bool:
+    string.starts_with(s, prefix)
+
+pub fn ends_with(s: String, suffix: String) -> Bool:
+    string.ends_with(s, suffix)
+
+// The byte index of the first occurrence of `needle`, or -1.
+pub fn index_of(s: String, needle: String) -> Int:
+    string.index_of(s, needle)
+
+// Replace every occurrence of `from` with `to`.
+pub fn replace(s: String, from: String, to: String) -> String:
+    string.replace(s, from, to)
+
+// The substring from byte `start` (inclusive) to `end` (exclusive).
+pub fn substring(s: String, start: Int, end: Int) -> String:
+    string.substring(s, start, end)
+
+// ASCII case mapping (the portable set both backends share).
+pub fn to_upper(s: String) -> String:
+    string.to_upper(s)
+
+pub fn to_lower(s: String) -> String:
+    string.to_lower(s)
+
+// Strip leading and trailing ASCII whitespace.
+pub fn trim(s: String) -> String:
+    string.trim(s)
+
+// Parse a decimal integer; junk, overflow, or an empty string is a runtime
+// error on every backend. For a total version, see `parse_int`.
+pub fn to_int(s: String) -> Int:
+    string.to_int(s)
+
 pub fn join(parts: List(String), sep: String) -> String:
     var s = ""
     var first = true
@@ -30,149 +89,141 @@ pub fn repeat(s: String, n: Int) -> String:
 // The padding is trimmed to fit exactly, so any fill width yields a result of
 // exactly `width` chars; `s` is returned unchanged when already that long.
 pub fn pad_left(s: String, width: Int, fill: String) -> String:
-    let len = char_count(s)
+    let len = string.char_count(s)
     if len >= width:
         s
     else:
         let needed = width - len
-        substring(repeat(fill, needed), 0, needed) <> s
+        string.substring(repeat(fill, needed), 0, needed) <> s
 
 // Right-pad `s` with copies of `fill` until it is `width` characters wide.
 pub fn pad_right(s: String, width: Int, fill: String) -> String:
-    let len = char_count(s)
+    let len = string.char_count(s)
     if len >= width:
         s
     else:
         let needed = width - len
-        s <> substring(repeat(fill, needed), 0, needed)
+        s <> string.substring(repeat(fill, needed), 0, needed)
 
 // Center `s` in a field `width` characters wide, padding both sides with `fill`;
 // an odd remainder goes on the right. `s` is returned unchanged when already at
 // least that wide.
 pub fn center(s: String, width: Int, fill: String) -> String:
-    let len = char_count(s)
+    let len = string.char_count(s)
     if len >= width:
         s
     else:
         let total = width - len
         let left = total / 2
         let right = total - left
-        substring(repeat(fill, left), 0, left) <> s <> substring(repeat(fill, right), 0, right)
+        string.substring(repeat(fill, left), 0, left) <> s <> string.substring(repeat(fill, right), 0, right)
 
 // Remove `prefix` from the front of `s` when present; otherwise return `s`
 // unchanged. The complement of the `starts_with` builtin.
 pub fn strip_prefix(s: String, prefix: String) -> String:
-    if starts_with(s, prefix):
-        substring(s, string_length(prefix), string_length(s))
+    if string.starts_with(s, prefix):
+        string.substring(s, string.length(prefix), string.length(s))
     else:
         s
 
 // Remove `suffix` from the end of `s` when present; otherwise return `s`
 // unchanged. The complement of the `ends_with` builtin.
 pub fn strip_suffix(s: String, suffix: String) -> String:
-    if ends_with(s, suffix):
-        substring(s, 0, string_length(s) - string_length(suffix))
+    if string.ends_with(s, suffix):
+        string.substring(s, 0, string.length(s) - string.length(suffix))
     else:
         s
 
 // The single character at character index `i` (counted by Unicode scalar), or
 // "" when `i` is out of range. A readable shorthand over `substring`.
 pub fn char_at(s: String, i: Int) -> String:
-    substring(s, i, i + 1)
+    string.substring(s, i, i + 1)
 
 // Whether the string has no characters.
 pub fn is_empty(s: String) -> Bool:
-    string_length(s) == 0
-
-// The string's characters as a list of single-character strings, counted by
-// Unicode scalar: `to_chars("café")` is `["c", "a", "f", "é"]`. Backed by the
-// `string_chars` primitive, which builds the list in a single pass (rather than
-// the O(n²) of a `char_at` loop, where each index walks the string from the
-// start), so callers can then index characters in O(1).
-pub fn to_chars(s: String) -> List(String):
-    string_chars(s)
+    string.length(s) == 0
 
 // The string with its characters in reverse order. Counted by Unicode scalar
 // (via `char_count`/`substring`), so multi-byte characters stay intact:
 // `reverse("café")` is `"éfac"`.
 pub fn reverse(s: String) -> String:
     var out = ""
-    var i = char_count(s) - 1
+    var i = string.char_count(s) - 1
     while i >= 0:
-        out = out <> substring(s, i, i + 1)
+        out = out <> string.substring(s, i, i + 1)
         i = i - 1
     out
 
 // The first `n` characters (the whole string if it is shorter, "" if n <= 0).
 pub fn take(s: String, n: Int) -> String:
-    substring(s, 0, n)
+    string.substring(s, 0, n)
 
 // All characters after the first `n` ("" if n covers the whole string).
 pub fn drop(s: String, n: Int) -> String:
-    substring(s, n, char_count(s))
+    string.substring(s, n, string.char_count(s))
 
 // The number of non-overlapping occurrences of `sub` in `s` (0 for an empty
 // `sub`). After each match the search resumes past it.
 pub fn count(s: String, sub: String) -> Int:
-    if char_count(sub) == 0:
+    if string.char_count(sub) == 0:
         0
     else:
         var total = 0
         var rest = s
-        var i = index_of(rest, sub)
+        var i = string.index_of(rest, sub)
         while i >= 0:
             total = total + 1
-            rest = substring(rest, i + char_count(sub), char_count(rest))
-            i = index_of(rest, sub)
+            rest = string.substring(rest, i + string.char_count(sub), string.char_count(rest))
+            i = string.index_of(rest, sub)
         total
 
 // The whitespace-separated words of `text`: tabs, newlines, and carriage
 // returns are treated as spaces, and empty pieces (from runs of whitespace) are
 // dropped. `words("the  quick\tfox")` is `["the", "quick", "fox"]`.
 pub fn words(text: String) -> List(String):
-    let a = replace(text, "\t", " ")
-    let b = replace(a, "\n", " ")
-    let c = replace(b, "\r", " ")
+    let a = string.replace(text, "\t", " ")
+    let b = string.replace(a, "\n", " ")
+    let c = string.replace(b, "\r", " ")
     var out = []
-    for w in split(c, " "):
-        if string_length(w) > 0:
-            out = push(out, w)
+    for w in string.split(c, " "):
+        if string.length(w) > 0:
+            out = list.push(out, w)
     out
 
 // Replace only the first occurrence of `from` with `to`; return `s` unchanged
 // when `from` is absent. (The `replace` builtin replaces every occurrence.)
 pub fn replace_first(s: String, from: String, to: String) -> String:
-    let i = index_of(s, from)
+    let i = string.index_of(s, from)
     if i < 0:
         s
     else:
-        substring(s, 0, i) <> to <> substring(s, i + char_count(from), char_count(s))
+        string.substring(s, 0, i) <> to <> string.substring(s, i + string.char_count(from), string.char_count(s))
 
 // Split at the first occurrence of `sep` into `(before, after)`, with `sep`
 // itself dropped. When `sep` is absent, returns `(s, "")`. Handy for parsing
 // `key=value` or `host:port`. Counted by Unicode scalar.
 pub fn split_once(s: String, sep: String) -> (String, String):
-    let i = index_of(s, sep)
+    let i = string.index_of(s, sep)
     if i < 0:
         (s, "")
     else:
-        (substring(s, 0, i), substring(s, i + char_count(sep), char_count(s)))
+        (string.substring(s, 0, i), string.substring(s, i + string.char_count(sep), string.char_count(s)))
 
 // The index of the LAST occurrence of `sep` in `s`, or -1 when absent (and -1
 // for an empty `sep`). The right-to-left companion of the `index_of` builtin.
 pub fn last_index_of(s: String, sep: String) -> Int:
-    if string_length(sep) == 0:
+    if string.length(sep) == 0:
         0 - 1
     else:
         var last = 0 - 1
         var base = 0
         var rest = s
-        var i = index_of(rest, sep)
+        var i = string.index_of(rest, sep)
         while i >= 0:
             last = base + i
-            base = base + i + char_count(sep)
-            rest = substring(rest, i + char_count(sep), char_count(rest))
-            i = index_of(rest, sep)
+            base = base + i + string.char_count(sep)
+            rest = string.substring(rest, i + string.char_count(sep), string.char_count(rest))
+            i = string.index_of(rest, sep)
         last
 
 // Split on the LAST occurrence of `sep` (e.g. a file extension): `rsplit_once`
@@ -183,13 +234,13 @@ pub fn rsplit_once(s: String, sep: String) -> (String, String):
     if i < 0:
         ("", s)
     else:
-        (substring(s, 0, i), substring(s, i + char_count(sep), char_count(s)))
+        (string.substring(s, 0, i), string.substring(s, i + string.char_count(sep), string.char_count(s)))
 
 // Safely parse a base-10 integer: an optional leading `-`/`+` then one or more
 // digits. Returns None for empty, sign-only, or non-digit input — so it never
 // traps on bad input the way the raw `string_to_int` builtin can.
 pub fn parse_int(s: String) -> Option(Int):
-    let n = char_count(s)
+    let n = string.char_count(s)
     if n == 0:
         None
     else:
@@ -208,13 +259,13 @@ pub fn parse_int(s: String) -> Option(Int):
                     ok = false
                 i = i + 1
             if ok:
-                Some(string_to_int(s))
+                Some(string.to_int(s))
             else:
                 None
 
 // Split text into its newline-separated lines.
 pub fn lines(text: String) -> List(String):
-    split(text, "\n")
+    string.split(text, "\n")
 
 // Whether `c` is an ASCII whitespace character (space, tab, newline, return).
 fn is_space(c: String) -> Bool:
@@ -223,18 +274,14 @@ fn is_space(c: String) -> Bool:
 // Remove leading whitespace.
 pub fn trim_start(s: String) -> String:
     var i = 0
-    let n = char_count(s)
+    let n = string.char_count(s)
     while i < n && is_space(char_at(s, i)):
         i = i + 1
-    substring(s, i, n)
+    string.substring(s, i, n)
 
 // Remove trailing whitespace.
 pub fn trim_end(s: String) -> String:
-    var j = char_count(s)
+    var j = string.char_count(s)
     while j > 0 && is_space(char_at(s, j - 1)):
         j = j - 1
-    substring(s, 0, j)
-
-// Remove leading and trailing whitespace.
-pub fn trim(s: String) -> String:
-    trim_end(trim_start(s))
+    string.substring(s, 0, j)

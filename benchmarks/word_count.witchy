@@ -2,17 +2,17 @@
 // string-keyed dict, then sum the counts. Stresses string formatting and
 // string hashing — the bread-and-butter of Go log/text processors.
 //
-// `update(d, w, 0, fn(n): n + 1)` is the single-lookup upsert — one hash, like
+// `dict.update(d, w, 0, fn(n): n + 1)` is the single-lookup upsert — one hash, like
 // Go's `m[w]++`.
 
 fn main(console: Console):
-    var d = dict_new()
+    var d = dict.new()
     var i = 0
     while i < 1000000:
         let w = f"word{i % 1000}"
-        d = update(d, w, 0, fn(n: Int): n + 1)
+        d = dict.update(d, w, 0, fn(n: Int): n + 1)
         i = i + 1
     var total = 0
-    for v in values(d):
+    for v in dict.values(d):
         total = total + v
-    print(console, int_to_string(total + size(d)))
+    print(console, to_string(total + dict.size(d)))

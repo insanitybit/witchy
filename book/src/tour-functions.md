@@ -9,7 +9,7 @@ fn add(a: Int, b: Int) -> Int:
     a + b
 
 fn main(console: Console):
-    print(console, int_to_string(add(2, 3)))
+    print(console, to_string(add(2, 3)))
 ```
 
 ```text
@@ -32,7 +32,7 @@ fn inc(n: Int) -> Int:
     n + 1
 
 fn main(console: Console):
-    print(console, int_to_string(3.double().inc().double()))
+    print(console, to_string(3.double().inc().double()))
 ```
 
 ```text
@@ -75,7 +75,7 @@ fn main(console: Console):
     var total = 0
     for n in 1..5:           // 1, 2, 3, 4
         total = total + n
-    print(console, int_to_string(total))
+    print(console, to_string(total))
 
     var count = 0
     for x in [10, 20, 30, 40]:
@@ -84,7 +84,7 @@ fn main(console: Console):
         if x > 30:
             break
         count = count + 1
-    print(console, int_to_string(count))
+    print(console, to_string(count))
 ```
 
 ```text
@@ -110,8 +110,8 @@ fn adder(by: Int) -> fn(Int) -> Int:
 
 fn main(console: Console):
     let add10 = adder(10)
-    print(console, int_to_string(apply(add10, 5)))
-    print(console, int_to_string(apply(fn(n: Int): n * n, 6)))
+    print(console, to_string(apply(add10, 5)))
+    print(console, to_string(apply(fn(n: Int): n * n, 6)))
 ```
 
 ```text
@@ -137,7 +137,7 @@ fn bump(inout n: Int):
 fn main(console: Console):
     var counter = 41
     bump(counter)
-    print(console, int_to_string(counter))
+    print(console, to_string(counter))
 ```
 
 ```text
@@ -161,15 +161,15 @@ error — which is what lets backends share it without a defensive copy.
 
 ```witchy
 fn sum(let xs: List(Int), i: Int) -> Int:
-    if i >= length(xs):
+    if i >= list.length(xs):
         0
     else:
-        at(xs, i) + sum(xs, i + 1)
+        list.at(xs, i) + sum(xs, i + 1)
 
 fn main(console: Console):
     let xs = [1, 2, 3, 4]
-    print(console, int_to_string(sum(xs, 0)))
-    print(console, int_to_string(length(xs)))   // xs is untouched
+    print(console, to_string(sum(xs, 0)))
+    print(console, to_string(list.length(xs)))   // xs is untouched
 ```
 
 ```text

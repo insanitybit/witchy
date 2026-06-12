@@ -66,14 +66,26 @@ const KEYWORDS: &[&str] = &[
 ];
 
 const BUILTINS: &[&str] = &[
+    // Capability operations (authority is loud and unprefixed) + the two
+    // universal staples. Pure data operations live in their modules
+    // (list./string./dict./math., offered via the prelude completion below).
     "print", "now", "get_env", "read", "write", "exists", "is_dir", "list", "subdir",
     "make_dir", "connect", "listen", "accept", "send_line", "send_bytes", "recv_line",
-    "recv_all", "recv_bytes", "close", "restrict", "send", "length", "at", "push", "concat",
-    "dict_new", "insert", "get_or", "has", "remove", "update", "keys", "values", "pairs",
-    "size", "to_string", "int_to_string", "string_length", "char_count", "index_of", "split",
-    "string_chars", "replace", "substring", "to_upper", "to_lower", "trim", "starts_with",
-    "ends_with", "contains", "int_to_float", "float_to_int", "int_to_duration",
-    "duration_to_int", "sqrt", "string_to_int", "fail",
+    "recv_all", "recv_bytes", "close", "restrict", "send", "to_string", "fail",
+];
+
+/// The prelude's module-qualified core operations, completed without an
+/// import line (the linker always bundles these modules).
+const PRELUDE_FNS: &[&str] = &[
+    "list.push", "list.at", "list.length", "list.concat", "list.map", "list.filter",
+    "list.fold", "list.sort_by", "list.contains", "list.index_of",
+    "string.split", "string.trim", "string.length", "string.char_count", "string.chars",
+    "string.contains", "string.starts_with", "string.ends_with", "string.replace",
+    "string.substring", "string.index_of", "string.to_upper", "string.to_lower",
+    "string.to_int", "string.parse_int", "string.join",
+    "dict.new", "dict.insert", "dict.get_or", "dict.get", "dict.has", "dict.remove",
+    "dict.update", "dict.keys", "dict.values", "dict.pairs", "dict.size",
+    "math.to_float", "math.to_int", "math.sqrt", "math.min", "math.max", "math.abs",
 ];
 
 /// Completion items: keywords, builtins, this document's functions, and the
@@ -83,6 +95,9 @@ fn completion_response(docs: &HashMap<String, String>, params: &Value) -> Value 
         return json!([]);
     };
     let mut items: Vec<Value> = Vec::new();
+    for f in PRELUDE_FNS {
+        items.push(json!({ "label": f, "kind": 3 }));
+    }
     for k in KEYWORDS {
         items.push(json!({ "label": k, "kind": 14 })); // Keyword
     }
@@ -318,6 +333,10 @@ fn compute_diagnostics(uri: &str, text: &str) -> Vec<Value> {
             // accumulation that reverts to the copying path inside a loop.
             crate::analysis::module_cliffs(&linked)
                 .into_iter()
+                // Only the user's own functions: linked-in module functions
+                // carry qualified (`module.fn`) names — their cliffs belong
+                // to that module's author, not this buffer.
+                .filter(|(func, _)| !func.contains('.'))
                 .map(|(func, c)| {
                     let line0 = c.line.saturating_sub(1);
                     let end = line_len(text, line0);
@@ -447,7 +466,7 @@ mod tests {
     #[test]
     fn hover_shows_signature_and_doc() {
         let mut docs = HashMap::new();
-        let src = "// Doubles a number.\n// Twice the input.\nfn double(n: Int) -> Int:\n    n * 2\n\nfn main(console: Console):\n    print(console, int_to_string(double(3)))\n";
+        let src = "// Doubles a number.\n// Twice the input.\nfn double(n: Int) -> Int:\n    n * 2\n\nfn main(console: Console):\n    print(console, to_string(double(3)))\n";
         docs.insert("file:///t.witchy".to_string(), src.to_string());
         // Hover over `double` in the call on line 6 (0-based), col 35.
         let col = src.lines().nth(6).unwrap().find("double").unwrap() as u64;

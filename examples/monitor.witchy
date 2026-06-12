@@ -14,7 +14,7 @@ impl Monitor:
     on Reading(value: Int):
         if value > high:
             high = value
-        print(console, "reading " <> int_to_string(value) <> "  (high " <> int_to_string(high) <> ")")
+        print(console, "reading ${value}  (high ${high})")
 
 fn main(console: Console):
     let monitor = spawn Monitor(console)

@@ -125,7 +125,7 @@ Unlocks, in order of value:
 
 ```
 note: `xs` is rebuilt by copy on every iteration of this loop — O(n²)
-  --> sim.witchy:14    xs = push(xs, step(xs, i))
+  --> sim.witchy:14    xs = list.push(xs, step(xs, i))
   because `xs` is passed to `step`, which may retain or return it
   (declare `step`'s parameter `let` to certify it only reads)
 ```

@@ -11,9 +11,9 @@ fn main(console: Console):
     // Sum of the squares of the even numbers in 0..10.
     let total = list.range(10).filter(fn(n: Int): n % 2 == 0).map(fn(n: Int): n * n).sum()
 
-    print(console, int_to_string(total))
+    print(console, to_string(total))
 
     // The first five numbers, doubled, rendered and comma-joined.
-    let doubled = list.range(5).map(fn(n: Int): n * 2).map(fn(n: Int): int_to_string(n))
+    let doubled = list.range(5).map(fn(n: Int): n * 2).map(fn(n: Int): to_string(n))
 
     print(console, string.join(doubled, ","))

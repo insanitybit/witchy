@@ -1,6 +1,21 @@
 // The witchy standard math library: small integer helpers, pure and
 // capability-free. (Comparison can't be generic without type classes, so these
 // are Int-specific.)
+// --- Native primitives (intercepted by both backends; self-recursive
+// placeholder bodies give the type checker the signatures). ---
+
+// Int -> Float, exactly (within f64 precision).
+pub fn to_float(n: Int) -> Float:
+    math.to_float(n)
+
+// Float -> Int, truncating toward zero; NaN -> 0; out-of-range saturates.
+pub fn to_int(x: Float) -> Int:
+    math.to_int(x)
+
+// The square root.
+pub fn sqrt(x: Float) -> Float:
+    math.sqrt(x)
+
 pub fn min(a: Int, b: Int) -> Int:
     if a < b:
         a
@@ -95,7 +110,7 @@ pub fn factorial(n: Int) -> Int:
         i = i + 1
     r
 
-// Whether `n` is prime (trial division up to sqrt(n); n < 2 is not prime).
+// Whether `n` is prime (trial division up to math.sqrt(n); n < 2 is not prime).
 pub fn is_prime(n: Int) -> Bool:
     if n < 2:
         false
@@ -153,7 +168,7 @@ fn to_base_pos(n: Int, base: Int) -> String:
         to_base_pos(n / base, base) <> base_digit(n % base)
 
 fn base_digit(d: Int) -> String:
-    substring("0123456789abcdef", d, d + 1)
+    string.substring("0123456789abcdef", d, d + 1)
 
 // `n` in hexadecimal (e.g. 255 -> "ff").
 pub fn to_hex(n: Int) -> String:
@@ -194,16 +209,16 @@ pub fn float_clamp(x: Float, lo: Float, hi: Float) -> Float:
 pub fn format_float(x: Float, decimals: Int) -> String:
     let d = if decimals < 0: 0 else: decimals
     let scale = pow(10, d)
-    let scaled = float_to_int(float_abs(x) * int_to_float(scale) + 0.5)
+    let scaled = math.to_int(float_abs(x) * math.to_float(scale) + 0.5)
     let sign = if x < 0.0 && scaled > 0: "-" else: ""
     if d == 0:
-        sign <> int_to_string(scaled)
+        sign <> to_string(scaled)
     else:
-        sign <> int_to_string(scaled / scale) <> "." <> zero_pad(scaled % scale, d)
+        sign <> to_string(scaled / scale) <> "." <> zero_pad(scaled % scale, d)
 
 // `n` as a decimal string left-padded with zeros to at least `width` digits.
 fn zero_pad(n: Int, width: Int) -> String:
-    var s = int_to_string(n)
-    while string_length(s) < width:
+    var s = to_string(n)
+    while string.length(s) < width:
         s = "0" <> s
     s

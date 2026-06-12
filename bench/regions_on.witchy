@@ -7,8 +7,8 @@ fn main(console: Console):
             var row = []
             var j = 0
             for j in 0..500:
-                row = push(row, j * 3)
-            at(row, 499)
+                row = list.push(row, j * 3)
+            list.at(row, 499)
         total = total + last
-        keep = push(keep, i)
-    print(console, int_to_string(total))
+        keep = list.push(keep, i)
+    print(console, to_string(total))

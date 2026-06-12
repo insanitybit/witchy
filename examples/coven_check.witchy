@@ -40,5 +40,5 @@ fn string_items(field: Option(Json)) -> List(String):
         if let Some(items) = json.as_array(j):
             for it in items:
                 if let Some(s) = json.as_string(it):
-                    out = push(out, s)
+                    out = list.push(out, s)
     out

@@ -4,13 +4,13 @@
 // value, so the same word lands in the same bucket.
 fn main(console: Console):
     let text = "the cat the dog the bird"
-    let words = split(text, " ")
+    let words = string.split(text, " ")
 
-    var counts = dict_new()
+    var counts = dict.new()
     for w in words:
-        counts = insert(counts, w, get_or(counts, w, 0) + 1)
+        counts = dict.insert(counts, w, dict.get_or(counts, w, 0) + 1)
 
-    print(console, int_to_string(get_or(counts, "the", 0)))
-    print(console, int_to_string(get_or(counts, "cat", 0)))
-    print(console, int_to_string(get_or(counts, "missing", 0)))
-    print(console, int_to_string(size(counts)))
+    print(console, to_string(dict.get_or(counts, "the", 0)))
+    print(console, to_string(dict.get_or(counts, "cat", 0)))
+    print(console, to_string(dict.get_or(counts, "missing", 0)))
+    print(console, to_string(dict.size(counts)))

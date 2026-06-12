@@ -5,7 +5,7 @@
 name = "money"
 version = "0.1.0"
 source = "path:./../money"
-hash = "sha256:1bf3aa437c23a9dbea67384c02c04e0145e648db1121a1ebaf57e122357ce938"
+hash = "sha256:2acb4f52de5078923a93556e9a1f70293f31527e97b8e49fc90adeca67638c16"
 runtime_footprint = []
 build_footprint = []
 determinism = "guaranteed"

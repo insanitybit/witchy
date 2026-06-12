@@ -12,16 +12,16 @@ pub fn parse(text: String) -> List((String, String)):
         let t = string.trim(line)
         if is_entry(t):
             let (k, v) = string.split_once(t, "=")
-            out = push(out, (string.trim(k), string.trim(v)))
+            out = list.push(out, (string.trim(k), string.trim(v)))
     out
 
 fn is_entry(line: String) -> Bool:
     if string.is_empty(line):
         false
-    else if starts_with(line, "#"):
+    else if string.starts_with(line, "#"):
         false
     else:
-        contains(line, "=")
+        string.contains(line, "=")
 
 // Look up a key's value, or an Err naming the missing key.
 pub fn lookup(pairs: List((String, String)), key: String) -> Result(String, String):

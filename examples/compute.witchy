@@ -20,4 +20,4 @@ fn main(console: Console):
     let a = double(21)
     let b = fib(10)
     let c = fact(5)
-    print(console, int_to_string(a + b + c))
+    print(console, to_string(a + b + c))

@@ -57,12 +57,12 @@ pub fn get_url(net: Net, raw: String) -> Result(Response, String):
 // behind the method helpers — use it when you need to set headers (auth,
 // content-type, ...). `Connection: close` ends `recv_all` after the body.
 pub fn request_with(net: Net, method: String, host: String, port: Int, path: String, headers: List((String, String)), body: String) -> Response:
-    let sock = connect(net, host <> ":" <> int_to_string(port))
+    let sock = connect(net, host <> ":" <> to_string(port))
     var head = method <> " " <> path <> " HTTP/1.1\r\n" <> "Host: " <> host <> "\r\n"
     for h in headers:
         let (k, v) = h
         head = head <> k <> ": " <> v <> "\r\n"
-    let req = head <> "Content-Length: " <> int_to_string(string_length(body)) <> "\r\n" <> "Connection: close\r\n\r\n" <> body
+    let req = head <> "Content-Length: " <> to_string(string.length(body)) <> "\r\n" <> "Connection: close\r\n\r\n" <> body
 
     send_bytes(sock, req)
     parse_response(recv_all(sock))
@@ -99,7 +99,7 @@ pub fn patch_request(url: String) -> RequestBuilder:
 // Add a request header (chainable: `|> with_header("Authorization", "...")`).
 pub fn with_header(rb: RequestBuilder, name: String, value: String) -> RequestBuilder:
     match rb:
-        RequestBuilder(m, u, hs, b) -> RequestBuilder(m, u, push(hs, (name, value)), b)
+        RequestBuilder(m, u, hs, b) -> RequestBuilder(m, u, list.push(hs, (name, value)), b)
 
 // Set the request body (e.g. a JSON document); also sets nothing else.
 pub fn with_body(rb: RequestBuilder, b: String) -> RequestBuilder:
@@ -111,7 +111,7 @@ pub fn with_body(rb: RequestBuilder, b: String) -> RequestBuilder:
 pub fn with_query(rb: RequestBuilder, key: String, value: String) -> RequestBuilder:
     match rb:
         RequestBuilder(m, u, hs, b) ->
-            let sep = if contains(u, "?"): "&" else: "?"
+            let sep = if string.contains(u, "?"): "&" else: "?"
             RequestBuilder(m, u <> sep <> key <> "=" <> value, hs, b)
 
 // Send the assembled request, parsing host/port/path from its URL. An Err is
@@ -142,7 +142,7 @@ pub fn body(r: Response) -> String:
 // The value of a response header, looked up case-insensitively, or None.
 pub fn header(r: Response, name: String) -> Option(String):
     match r:
-        Response(_code, hdrs, _body) -> find_header(hdrs, to_lower(name))
+        Response(_code, hdrs, _body) -> find_header(hdrs, string.to_lower(name))
 
 // Look up a header by its (already-lowercased) name. Shared with `server`.
 pub fn find_header(hdrs: List((String, String)), name: String) -> Option(String):
@@ -155,35 +155,35 @@ pub fn find_header(hdrs: List((String, String)), name: String) -> Option(String)
 // Split the raw response at the blank line separating headers from body, and
 // parse the header lines into (lowercased name, trimmed value) pairs.
 fn parse_response(raw: String) -> Response:
-    let sep = index_of(raw, "\r\n\r\n")
-    let head = if sep < 0: raw else: substring(raw, 0, sep)
-    let bdy = if sep < 0: "" else: substring(raw, sep + 4, char_count(raw))
-    let lines = split(head, "\r\n")
-    let status_line = if length(lines) > 0: at(lines, 0) else: ""
+    let sep = string.index_of(raw, "\r\n\r\n")
+    let head = if sep < 0: raw else: string.substring(raw, 0, sep)
+    let bdy = if sep < 0: "" else: string.substring(raw, sep + 4, string.char_count(raw))
+    let lines = string.split(head, "\r\n")
+    let status_line = if list.length(lines) > 0: list.at(lines, 0) else: ""
     var hdrs = []
     var i = 1
-    while i < length(lines):
-        let line = at(lines, i)
-        let colon = index_of(line, ":")
+    while i < list.length(lines):
+        let line = list.at(lines, i)
+        let colon = string.index_of(line, ":")
         if colon >= 0:
-            let name = to_lower(substring(line, 0, colon))
-            let value = trim(substring(line, colon + 1, char_count(line)))
-            hdrs = push(hdrs, (name, value))
+            let name = string.to_lower(string.substring(line, 0, colon))
+            let value = string.trim(string.substring(line, colon + 1, string.char_count(line)))
+            hdrs = list.push(hdrs, (name, value))
         i = i + 1
     Response(status_code(status_line), hdrs, bdy)
 
 // Pull the numeric code out of a status line like "HTTP/1.1 200 OK".
 fn status_code(line: String) -> Int:
-    let sp = index_of(line, " ")
+    let sp = string.index_of(line, " ")
     if sp < 0:
         0
     else:
-        let rest = substring(line, sp + 1, char_count(line))
-        let sp2 = index_of(rest, " ")
-        let code = if sp2 < 0: rest else: substring(rest, 0, sp2)
+        let rest = string.substring(line, sp + 1, string.char_count(line))
+        let sp2 = string.index_of(rest, " ")
+        let code = if sp2 < 0: rest else: string.substring(rest, 0, sp2)
         // A malformed/non-HTTP response can carry a non-numeric code; don't let
         // it trap `string_to_int` and crash the client — report 0 instead.
         if ascii.all_digits(code):
-            string_to_int(code)
+            string.to_int(code)
         else:
             0

@@ -7,7 +7,7 @@ actor Printer:
 
 impl Printer:
     on Show(n: Int):
-        print(console, "printer got " <> int_to_string(n))
+        print(console, "printer got " <> to_string(n))
 
 actor Forwarder:
     target: Subject

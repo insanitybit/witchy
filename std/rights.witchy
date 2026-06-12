@@ -35,16 +35,16 @@ pub fn uncovered(declared: List(String), demanded: List(String)) -> List(String)
     var missing = []
     for cap in demanded:
         if !covered(declared, cap):
-            missing = push(missing, cap)
+            missing = list.push(missing, cap)
     missing
 
 // A bracket-free capability ("Net") is the full authority of its kind.
 pub fn is_full(cap: String) -> Bool:
-    !contains(cap, "[")
+    !string.contains(cap, "[")
 
 // The base kind: "Dir[Read]" -> "Dir"; "Console" -> "Console".
 pub fn base_name(cap: String) -> String:
-    if contains(cap, "["):
+    if string.contains(cap, "["):
         let (name, _rest) = string.split_once(cap, "[")
         name
     else:
@@ -55,10 +55,10 @@ pub fn rights_of(cap: String) -> List(String):
     let (_kind, rest) = string.split_once(cap, "[")
     let inner = string.strip_suffix(rest, "]")
     var out = []
-    for part in split(inner, ","):
-        let r = trim(part)
+    for part in string.split(inner, ","):
+        let r = string.trim(part)
         if !string.is_empty(r):
-            out = push(out, r)
+            out = list.push(out, r)
     out
 
 fn subset(xs: List(String), ys: List(String)) -> Bool:

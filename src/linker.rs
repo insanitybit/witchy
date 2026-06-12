@@ -236,6 +236,20 @@ pub fn link(mut modules: Vec<(String, Module)>, entry: &str) -> Result<Module, L
         .collect::<Result<_, _>>()
         .map_err(|message| LinkError { message })?;
 
+    // THE PRELUDE: the core data modules are always in the link set, so the
+    // module-qualified spellings (`list.push`, `string.split`, `dict.insert`,
+    // `math.sqrt`) resolve without an import line. Locally provided modules
+    // still take precedence; dead-code elimination strips what goes unused.
+    for prelude in ["list", "string", "dict", "math", "option", "result"] {
+        if !modules.iter().any(|(n, _)| n == prelude) {
+            if let Some(src) = std_source(prelude) {
+                if let Ok(m) = crate::parser::parse_module(src) {
+                    modules.push((prelude.to_string(), m));
+                }
+            }
+        }
+    }
+
     // Pull in any imported standard-library module not already provided (the
     // std registry is a built-in search path), transitively — so a std module
     // can import another (e.g. `list` importing `option`) and callers need not
@@ -923,7 +937,10 @@ fn resolve_call(
     bound: &HashSet<String>,
 ) -> Result<String, LinkError> {
     if let Some((modname, fname)) = name.split_once('.') {
-        if !imps.iter().any(|i| i == modname) {
+        // The prelude modules are importable-by-default everywhere (the link
+        // set always carries them), including from inside one another.
+        let prelude = matches!(modname, "list" | "string" | "dict" | "math" | "option" | "result");
+        if !prelude && !imps.iter().any(|i| i == modname) {
             return lerr(format!(
                 "module `{m}` calls `{modname}.{fname}` but does not `import {modname}`"
             ));

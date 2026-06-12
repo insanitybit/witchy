@@ -23,7 +23,7 @@ import string
 import rights
 
 fn main(console: Console, net: Net, root: Dir, key: Secret, clock: Clock, args: List(String)):
-    let addr = if length(args) > 0: at(args, 0) else: "127.0.0.1:8787"
+    let addr = if list.length(args) > 0: list.at(args, 0) else: "127.0.0.1:8787"
     // Trailing args are trusted issuers as `issuer=pubkeyhex` (a JWKS stand-in).
     // With at least one, publish/promote require a short-lived identity token
     // (trusted publishing); with none, the registry is anonymous (local mode).
@@ -32,7 +32,7 @@ fn main(console: Console, net: Net, root: Dir, key: Secret, clock: Clock, args: 
     let store = subdir(root, "registry")
     let app = server.router().get("/coven/rootpub", h_rootpub(key)).get("/coven/index", h_index(store)).get("/coven/versions", h_versions(store)).get("/coven/record", h_record(store)).get("/coven/source", h_source(store)).get("/coven/snapshot", h_snapshot(store, key, clock)).get("/coven/timestamp", h_timestamp(store, key, clock)).post("/coven/publish", h_publish(store, key, clock, issuers)).post("/coven/promote", h_promote(store, key, clock, issuers)).post("/coven/yank", h_yank(store, key, clock))
 
-    print(console, "coven serving at http://" <> addr <> "  (root key " <> crypto.public_key(key) <> "; " <> int_to_string(length(issuers)) <> " trusted issuer(s))")
+    print(console, "coven serving at http://" <> addr <> "  (root key " <> crypto.public_key(key) <> "; " <> to_string(list.length(issuers)) <> " trusted issuer(s))")
     server.serve(net, addr, app)
 
 // Parse trailing `issuer=pubkeyhex` args into (issuer, pubkey) pairs.
@@ -40,8 +40,8 @@ fn parse_issuers(args: List(String)) -> List((String, String)):
     var out = []
     var i = 0
     for a in args:
-        if i > 0 && contains(a, "="):
-            out = push(out, string.split_once(a, "="))
+        if i > 0 && string.contains(a, "="):
+            out = list.push(out, string.split_once(a, "="))
         i = i + 1
     out
 
@@ -60,7 +60,7 @@ fn h_versions(store: Dir) -> fn(Request) -> Response:
         var recs = []
         for v in versions_of(store, name):
             if let Some(r) = read_record(store, name, v):
-                recs = push(recs, parse_or_null(r))
+                recs = list.push(recs, parse_or_null(r))
         server.json(200, json.encode(JsonObject([("records", JsonArray(recs))])))
 
 // --- GET /coven/record?name=&version= : one signed record --------------------
@@ -92,7 +92,7 @@ fn source_response(store: Dir, name: String, version: String) -> Response:
         var pairs = []
         for f in files:
             let (path, text) = f
-            pairs = push(pairs, JsonArray([JsonString(path), JsonString(text)]))
+            pairs = list.push(pairs, JsonArray([JsonString(path), JsonString(text)]))
         server.json(200, json.encode(JsonObject([("files", JsonArray(pairs))])))
 
 // --- POST /coven/publish : stage a new immutable version ---------------------
@@ -274,11 +274,11 @@ fn insert_sorted(sorted: List((String, Json)), item: (String, Json)) -> List((St
     for q in sorted:
         let (qk, _qv) = q
         if !placed && ik < qk:
-            out = push(out, item)
+            out = list.push(out, item)
             placed = true
-        out = push(out, q)
+        out = list.push(out, q)
     if !placed:
-        out = push(out, item)
+        out = list.push(out, item)
     out
 
 fn jint(doc: Json, key: String) -> Int:
@@ -303,7 +303,7 @@ fn jint(doc: Json, key: String) -> Int:
 // first trusted publish to a namespace *binds* its policy (issuer + repository +
 // workflow_ref); later publishes must match — defeating namespace squatting.
 fn authorized_publisher(store: Dir, issuers: List((String, String)), doc: Json, now: Int, name: String) -> Result(String, (Int, String)):
-    if length(issuers) == 0:
+    if list.length(issuers) == 0:
         Ok(nonempty(jstr(doc, "uploaded_by"), "anonymous"))
     else:
         match verified_claims(issuers, doc, now, "publishing to a trusted registry requires a short-lived identity token (long-lived API tokens are not accepted)"):
@@ -334,7 +334,7 @@ fn enforce_publish_policy(policy: Json, claims: Json, ns: String) -> Result(Stri
 // registered maintainer of the namespace (403). The first promoter becomes a
 // maintainer (TOFU); machines stage, humans release.
 fn authorized_promoter(store: Dir, issuers: List((String, String)), doc: Json, now: Int, name: String) -> Result(String, (Int, String)):
-    if length(issuers) == 0:
+    if list.length(issuers) == 0:
         Ok(jstr(doc, "promoted_by"))
     else:
         match verified_claims(issuers, doc, now, "promoting on a trusted registry requires a short-lived identity token"):
@@ -373,7 +373,7 @@ fn claim(claims: Json, key: String) -> String:
         None -> ""
 
 fn namespace_of(name: String) -> String:
-    if contains(name, "/"):
+    if string.contains(name, "/"):
         let (ns, _rest) = string.split_once(name, "/")
         ns
     else:
@@ -385,7 +385,7 @@ fn string_array(text: String) -> List(String):
         if let Some(items) = json.as_array(doc):
             for it in items:
                 if let Some(s) = json.as_string(it):
-                    out = push(out, s)
+                    out = list.push(out, s)
     out
 
 // Verify an identity token: signature against the trusted issuer's pinned key,
@@ -438,11 +438,11 @@ fn insert_json_pair(sorted: List((String, Json)), item: (String, Json)) -> List(
     for q in sorted:
         let (qk, _qv) = q
         if !placed && ik < qk:
-            res = push(res, item)
+            res = list.push(res, item)
             placed = true
-        res = push(res, q)
+        res = list.push(res, q)
     if !placed:
-        res = push(res, item)
+        res = list.push(res, item)
     res
 
 // --- record signing ----------------------------------------------------------
@@ -450,7 +450,7 @@ fn insert_json_pair(sorted: List((String, Json)), item: (String, Json)) -> List(
 // the signature. Byte-identical to src/pm/registry.rs::Record::signing_payload,
 // so a witchy-signed record verifies under the Rust ed25519 verifier.
 fn signing_payload(name: String, version: String, state: String, hash: String, rt: List(String), uploaded_by: String, promoted_by: String, factor: String, provenance: String, released_at: Int) -> String:
-    "coven-v1\nname=" <> name <> "\nversion=" <> version <> "\nstate=" <> state <> "\nhash=" <> hash <> "\nrt=" <> string.join(rt, ",") <> "\nbuild=\nuploaded_by=" <> uploaded_by <> "\npromoted_by=" <> promoted_by <> "\nfactor=" <> factor <> "\nprovenance=" <> provenance <> "\nreleased_at=" <> int_to_string(released_at)
+    "coven-v1\nname=" <> name <> "\nversion=" <> version <> "\nstate=" <> state <> "\nhash=" <> hash <> "\nrt=" <> string.join(rt, ",") <> "\nbuild=\nuploaded_by=" <> uploaded_by <> "\npromoted_by=" <> promoted_by <> "\nfactor=" <> factor <> "\nprovenance=" <> provenance <> "\nreleased_at=" <> to_string(released_at)
 
 // Build + sign a record, returning its coven.json text. `released_at` (unix
 // seconds; 0 = not yet released) starts the consumer-side staging cooldown, so
@@ -480,9 +480,9 @@ fn read_source(store: Dir, name: String, version: String) -> List((String, Strin
     var out = []
     let base = name <> "/" <> version <> "/rune"
     if exists(store, base <> "/witchy.toml"):
-        out = push(out, ("witchy.toml", read(store, base <> "/witchy.toml")))
+        out = list.push(out, ("witchy.toml", read(store, base <> "/witchy.toml")))
     for f in fs.collect_files(store, base <> "/src", "src", ".witchy"):
-        out = push(out, f)
+        out = list.push(out, f)
     out
 
 // The content address of a rune's source — coven's store hash (matches
@@ -492,8 +492,8 @@ fn content_hash(files: List((String, String))) -> String:
     var texts = []
     for f in files:
         let (p, t) = f
-        paths = push(paths, p)
-        texts = push(texts, t)
+        paths = list.push(paths, p)
+        texts = list.push(texts, t)
     crypto.rune_hash(paths, texts)
 
 // --- server-side footprint recomputation -------------------------------------
@@ -509,7 +509,7 @@ fn computed_footprint(files: List((String, String))) -> List(String):
     out
 
 fn is_src_module(path: String) -> Bool:
-    starts_with(path, "src/") && ends_with(path, ".witchy")
+    string.starts_with(path, "src/") && string.ends_with(path, ".witchy")
 
 fn footprint_total(report: String) -> List(String):
     match json.decode(report):
@@ -535,9 +535,9 @@ fn read_record(store: Dir, name: String, version: String) -> Option(String):
 fn all_names(store: Dir) -> List(String):
     var out = []
     for ns in list(store):
-        if !ends_with(ns, ".json") && !starts_with(ns, "_"):
+        if !string.ends_with(ns, ".json") && !string.starts_with(ns, "_"):
             for nm in list(subdir(store, ns)):
-                out = push(out, ns <> "/" <> nm)
+                out = list.push(out, ns <> "/" <> nm)
     out
 
 // The runtime footprint of the highest RELEASED version other than the one
@@ -593,7 +593,7 @@ fn parse_source(doc: Json) -> List((String, String)):
         if let Some(arr) = json.get(src, "files"):
             if let Some(items) = json.as_array(arr):
                 for it in items:
-                    out = push(out, file_pair(it))
+                    out = list.push(out, file_pair(it))
     out
 
 fn file_pair(it: Json) -> (String, String):
@@ -617,7 +617,7 @@ fn jstr(doc: Json, key: String) -> String:
 fn strs_json(xs: List(String)) -> List(Json):
     var out = []
     for x in xs:
-        out = push(out, JsonString(x))
+        out = list.push(out, JsonString(x))
     out
 
 fn opt_json(s: String) -> Json:
@@ -638,29 +638,29 @@ fn err_json(code: Int, msg: String) -> Response:
 
 // Rune names contain `/`; the wire encodes it as `~` for use in a query value.
 fn unwire(n: String) -> String:
-    string.join(split(n, "~"), "/")
+    string.join(string.split(n, "~"), "/")
 
 // `namespace/name`, lowercase, exactly one `/`, no `..` traversal.
 fn valid_name(name: String) -> Bool:
-    if contains(name, "..") || starts_with(name, "/"):
+    if string.contains(name, "..") || string.starts_with(name, "/"):
         false
     else:
         match split_once_opt(name, "/"):
             Some(parts) ->
                 let (ns, nm) = parts
-                !string.is_empty(ns) && !string.is_empty(nm) && !contains(nm, "/")
+                !string.is_empty(ns) && !string.is_empty(nm) && !string.contains(nm, "/")
             None -> false
 
 fn split_once_opt(s: String, sep: String) -> Option((String, String)):
-    if contains(s, sep):
+    if string.contains(s, sep):
         Some(string.split_once(s, sep))
     else:
         None
 
 // A version is strict `major.minor.patch` — digits and dots only (no traversal).
 fn valid_version(version: String) -> Bool:
-    let parts = split(version, ".")
-    if length(parts) != 3:
+    let parts = string.split(version, ".")
+    if list.length(parts) != 3:
         false
     else:
         var ok = true
@@ -671,7 +671,7 @@ fn valid_version(version: String) -> Bool:
 
 fn all_digits(s: String) -> Bool:
     var ok = !string.is_empty(s)
-    for ch in string.to_chars(s):
+    for ch in string.chars(s):
         if !is_digit(ch):
             ok = false
     ok
@@ -695,7 +695,7 @@ fn add_unique(xs: List(String), x: String) -> List(String):
     if member(xs, x):
         xs
     else:
-        push(xs, x)
+        list.push(xs, x)
 
 fn member(xs: List(String), x: String) -> Bool:
     var found = false

@@ -114,5 +114,5 @@ fn combine(acc: Option(List(a)), x: Option(a)) -> Option(List(a)):
         None -> None
         Some(vs) ->
             match x:
-                Some(v) -> Some(push(vs, v))
+                Some(v) -> Some(list.push(vs, v))
                 None -> None

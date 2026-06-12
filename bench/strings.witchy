@@ -4,4 +4,4 @@ fn main(console: Console):
     var s = ""
     for i in 0..20000:
         s = s <> "ab"
-    print(console, int_to_string(string_length(s)))
+    print(console, to_string(string.length(s)))

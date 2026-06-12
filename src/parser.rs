@@ -104,7 +104,13 @@ impl Parser {
             pos: 0,
             in_match_arm: false,
             compr_counter: 0,
-            imports: std::collections::HashSet::new(),
+            // The prelude modules qualify without an import line (the linker
+            // always bundles them): `list.push(...)` parses as a qualified
+            // call everywhere, including inside the std modules themselves.
+            imports: ["list", "string", "dict", "math", "option", "result"]
+                .into_iter()
+                .map(String::from)
+                .collect(),
             pending_impl_bounds: Vec::new(),
         }
     }
@@ -743,7 +749,7 @@ impl Parser {
                 let ty = self.ty()?;
                 e = Expr::As { expr: Box::new(e), ty };
             } else if self.at(&Tok::LBracket) && self.on_same_line_as_prev() {
-                // `xs[i]` — list subscript: sugar for `at(xs, i)`. Requiring the
+                // `xs[i]` — list subscript: sugar for `list.at(xs, i)`. Requiring the
                 // `[` on the same line as the receiver avoids swallowing a list
                 // literal that begins the next statement (no statement terminators).
                 self.advance();
@@ -1021,7 +1027,7 @@ impl Parser {
     /// Desugar a list comprehension with one or more generators and filters —
     /// `[elem for x in xs (if c)* (for y in ys)* ...]` — into a block that builds
     /// the list with nested loops/conditionals: `{ var acc = []; for x in xs {
-    /// (if c) (for y in ys { ... acc = push(acc, elem) }) }; acc }`. The clauses
+    /// (if c) (for y in ys { ... acc = list.push(acc, elem) }) }; acc }`. The clauses
     /// nest in source order, so later generators see earlier loop variables.
     fn list_comprehension(&mut self, elem: Expr) -> Result<Expr, ParseError> {
         enum Clause {
@@ -1048,7 +1054,7 @@ impl Parser {
         let mut inner = Stmt::Assign {
             name: acc.clone(),
             value: Expr::Call {
-                name: "push".to_string(),
+                name: "list.push".to_string(),
                 args: vec![Expr::Var(acc.clone()), elem],
             },
         };
@@ -1450,7 +1456,7 @@ fn compound_assign_op(t: &Tok) -> Option<BinOp> {
 
 /// Desugar `lo..hi` (half-open) or `lo..=hi` (inclusive) integer ranges into a
 /// block that builds the list: `{ var acc = []; var i = lo; let end = hi;
-/// while i < end (or i <= end) { acc = push(acc, i); i = i + 1 }; acc }`. `hi`
+/// while i < end (or i <= end) { acc = list.push(acc, i); i = i + 1 }; acc }`. `hi`
 /// is bound once so it isn't re-evaluated each iteration. Self-contained.
 ///
 /// A free function (not a parser method) because the parser keeps ranges as
@@ -1479,7 +1485,7 @@ pub(crate) fn desugar_range(lo: Expr, hi: Expr, inclusive: bool) -> Expr {
             Stmt::Assign {
                 name: acc.clone(),
                 value: Expr::Call {
-                    name: "push".to_string(),
+                    name: "list.push".to_string(),
                     args: vec![Expr::Var(acc.clone()), Expr::Var(idx.clone())],
                 },
             },
@@ -1510,12 +1516,12 @@ pub(crate) fn desugar_range(lo: Expr, hi: Expr, inclusive: bool) -> Expr {
     })
 }
 
-/// Lower `base[index]` to the call `at(base, index)`. A free function for the
+/// Lower `base[index]` to the call `list.at(base, index)`. A free function for the
 /// same reason as [`desugar_range`]: the parser keeps subscripts as
 /// `Expr::Index` for the formatter, and every other consumer lowers them here.
 pub(crate) fn desugar_index(base: Expr, index: Expr) -> Expr {
     Expr::Call {
-        name: "at".into(),
+        name: "list.at".into(),
         args: vec![base, index],
     }
 }
@@ -2052,7 +2058,7 @@ fn f(n: Int) -> Int:
     #[test]
     fn subscript_parses_to_index_and_lowers_to_at_call() {
         // `xs[i]` parses to `Expr::Index` (kept for the formatter) and lowers to
-        // `at(xs, i)`; `grid[r][c]` nests.
+        // `list.at(xs, i)`; `grid[r][c]` nests.
         let stmts = fn_body(
             r#"
 fn f(xs: List(Int)) -> Int:
@@ -2069,7 +2075,7 @@ fn f(xs: List(Int)) -> Int:
         assert_eq!(
             lowered,
             Expr::Call {
-                name: "at".into(),
+                name: "list.at".into(),
                 args: vec![Expr::Var("xs".into()), Expr::Int(2)],
             }
         );

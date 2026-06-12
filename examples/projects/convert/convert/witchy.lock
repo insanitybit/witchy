@@ -5,7 +5,7 @@
 name = "convertlib"
 version = "0.1.0"
 source = "path:./../convertlib"
-hash = "sha256:f91dfd77827b375730bc92d09a17f01475d9f15e2b0b6192a974cbc7bf41cd84"
+hash = "sha256:b80c45a63f7478e1d8a9ba6e5c8805af89eaded04f8c4547caf35f773ead2a28"
 runtime_footprint = []
 build_footprint = []
 determinism = "guaranteed"

@@ -42,9 +42,9 @@ pub fn next_bool(r: Rng) -> (Bool, Rng):
 
 // A uniformly-chosen element of `xs` (None if empty) and the next state.
 pub fn choice(xs: List(a), r: Rng) -> (Option(a), Rng):
-    let len = length(xs)
+    let len = list.length(xs)
     if len == 0:
         (None, r)
     else:
         let (i, r2) = next_below(r, len)
-        (Some(at(xs, i)), r2)
+        (Some(list.at(xs, i)), r2)

@@ -6,27 +6,27 @@
 //   witchy examples/queens.witchy
 fn main(console: Console):
     let n = 8
-    print(console, int_to_string(n) <> "-queens solutions: " <> int_to_string(count(n, [])))
+    print(console, to_string(n) <> "-queens solutions: " <> to_string(count(n, [])))
     print(console, "first solution:")
     for queen_col in solve(n, []):
         print(console, row_string(queen_col, n))
 
 // Total number of complete placements reachable from `placed`.
 fn count(n: Int, placed: List(Int)) -> Int:
-    if length(placed) == n:
+    if list.length(placed) == n:
         1
     else:
         var total = 0
         var col = 0
         while col < n:
             if safe(placed, col):
-                total = total + count(n, push(placed, col))
+                total = total + count(n, list.push(placed, col))
             col = col + 1
         total
 
 // The first complete placement found, or an empty list if none exists.
 fn solve(n: Int, placed: List(Int)) -> List(Int):
-    if length(placed) == n:
+    if list.length(placed) == n:
         placed
     else:
         var result = []
@@ -34,8 +34,8 @@ fn solve(n: Int, placed: List(Int)) -> List(Int):
         var col = 0
         while col < n && !found:
             if safe(placed, col):
-                let attempt = solve(n, push(placed, col))
-                if length(attempt) == n:
+                let attempt = solve(n, list.push(placed, col))
+                if list.length(attempt) == n:
                     result = attempt
                     found = true
             col = col + 1
@@ -43,11 +43,11 @@ fn solve(n: Int, placed: List(Int)) -> List(Int):
 
 // Can a queen sit in `col` of the next row without attacking those placed?
 fn safe(placed: List(Int), col: Int) -> Bool:
-    let row = length(placed)
+    let row = list.length(placed)
     var ok = true
     var r = 0
     while r < row:
-        let c = at(placed, r)
+        let c = list.at(placed, r)
         if c == col || row - r == col - c || row - r == c - col:
             ok = false
         r = r + 1

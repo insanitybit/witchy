@@ -715,11 +715,11 @@ impl Interpreter {
             .iter()
             .map(|a| self.eval(a, env))
             .collect::<Result<Vec<_>, _>>()?;
-        // `update(dict, key, default, f)`: a single-lookup upsert. Handled here
+        // `dict.update(dict, key, default, f)`: a single-lookup upsert. Handled here
         // (not in the pure builtin table) because it applies the updater closure
         // `f` to the current value — or `default` when the key is absent — which
         // needs the interpreter. Arguments are evaluated exactly once (above).
-        if name == "update" && argvals.len() == 4 {
+        if name == "dict.update" && argvals.len() == 4 {
             let Value::Dict(entries) = &argvals[0] else {
                 return err("update expects a Dict as its first argument");
             };
@@ -849,29 +849,25 @@ impl Interpreter {
             },
             // Pure builtins need no capability.
             "to_string" => Ok(Some(Value::Str(one(args)?.to_string()))),
-            "int_to_string" => match one(args)? {
-                Value::Int(n) => Ok(Some(Value::Str(n.to_string()))),
-                other => err(format!("int_to_string expects an Int, got `{other}`")),
-            },
             // String stdlib.
-            "string_length" => match one(args)? {
+            "string.length" => match one(args)? {
                 Value::Str(s) => Ok(Some(Value::Int(s.len() as i64))),
                 other => err(format!("string_length expects a String, got `{other}`")),
             },
             // The number of Unicode scalars — the character count, as opposed to
             // `string_length`'s byte count (they agree for ASCII).
-            "char_count" => match one(args)? {
+            "string.char_count" => match one(args)? {
                 Value::Str(s) => Ok(Some(Value::Int(s.chars().count() as i64))),
                 other => err(format!("char_count expects a String, got `{other}`")),
             },
             // ASCII case mapping (a-z <-> A-Z); non-ASCII bytes are unchanged.
             // Deliberately ASCII-only so the WASM backend can match it byte-for-
             // byte (full Unicode case folding would need large tables).
-            "to_upper" => match one(args)? {
+            "string.to_upper" => match one(args)? {
                 Value::Str(s) => Ok(Some(Value::Str(s.to_ascii_uppercase()))),
                 other => err(format!("to_upper expects a String, got `{other}`")),
             },
-            "to_lower" => match one(args)? {
+            "string.to_lower" => match one(args)? {
                 Value::Str(s) => Ok(Some(Value::Str(s.to_ascii_lowercase()))),
                 other => err(format!("to_lower expects a String, got `{other}`")),
             },
@@ -881,7 +877,7 @@ impl Interpreter {
                 Value::Str(msg) => Err(RuntimeError { message: msg.clone() }),
                 other => err(format!("fail expects a String message, got `{other}`")),
             },
-            "trim" => match one(args)? {
+            "string.trim" => match one(args)? {
                 // ASCII whitespace only — exactly the byte set the WASM `$is_ws`
                 // helper strips (space, tab, LF, VT, FF, CR). Rust's `str::trim`
                 // would additionally strip Unicode whitespace (NBSP, …), which the
@@ -894,13 +890,13 @@ impl Interpreter {
                 }
                 other => err(format!("trim expects a String, got `{other}`")),
             },
-            "starts_with" => match args {
+            "string.starts_with" => match args {
                 [Value::Str(s), Value::Str(prefix)] => {
                     Ok(Some(Value::Bool(s.starts_with(prefix.as_str()))))
                 }
                 _ => err("starts_with expects two Strings"),
             },
-            "contains" => match args {
+            "string.contains" => match args {
                 [Value::Str(s), Value::Str(sub)] => {
                     Ok(Some(Value::Bool(s.contains(sub.as_str()))))
                 }
@@ -908,7 +904,7 @@ impl Interpreter {
             },
             // Split on a separator into a list of pieces (the separator itself is
             // dropped); the empty separator yields the whole string unchanged.
-            "split" => match args {
+            "string.split" => match args {
                 [Value::Str(s), Value::Str(sep)] => {
                     let parts: Vec<Value> = if sep.is_empty() {
                         vec![Value::Str(s.clone())]
@@ -920,26 +916,26 @@ impl Interpreter {
                 _ => err("split expects two Strings"),
             },
             // The characters of a string, each as a single-char String (one pass).
-            "string_chars" => match one(args)? {
+            "string.chars" => match one(args)? {
                 Value::Str(s) => {
                     Ok(Some(Value::List(s.chars().map(|c| Value::Str(c.to_string())).collect())))
                 }
                 _ => err("string_chars expects a String"),
             },
-            "replace" => match args {
+            "string.replace" => match args {
                 [Value::Str(s), Value::Str(from), Value::Str(to)] => {
                     Ok(Some(Value::Str(s.replace(from.as_str(), to.as_str()))))
                 }
                 _ => err("replace expects three Strings"),
             },
-            "ends_with" => match args {
+            "string.ends_with" => match args {
                 [Value::Str(s), Value::Str(suffix)] => {
                     Ok(Some(Value::Bool(s.ends_with(suffix.as_str()))))
                 }
                 _ => err("ends_with expects two Strings"),
             },
             // Char index of the first occurrence of `sub`, or -1 if absent.
-            "index_of" => match args {
+            "string.index_of" => match args {
                 [Value::Str(s), Value::Str(sub)] => {
                     let idx = s
                         .find(sub.as_str())
@@ -951,7 +947,7 @@ impl Interpreter {
             },
             // Characters in the half-open range [start, end), clamped to bounds
             // (counted by Unicode scalar, so slicing never splits a character).
-            "substring" => match args {
+            "string.substring" => match args {
                 [Value::Str(s), Value::Int(start), Value::Int(end)] => {
                     let chars: Vec<char> = s.chars().collect();
                     let lo = (*start).max(0) as usize;
@@ -968,11 +964,11 @@ impl Interpreter {
                 _ => err("substring expects a String and two Int indices"),
             },
             // Conversions.
-            "int_to_float" => match one(args)? {
+            "math.to_float" => match one(args)? {
                 Value::Int(n) => Ok(Some(Value::Float(n as f64))),
                 other => err(format!("int_to_float expects an Int, got `{other}`")),
             },
-            "float_to_int" => match one(args)? {
+            "math.to_int" => match one(args)? {
                 Value::Float(x) => Ok(Some(Value::Int(x as i64))),
                 other => err(format!("float_to_int expects a Float, got `{other}`")),
             },
@@ -982,22 +978,22 @@ impl Interpreter {
                 Value::Int(n) => Ok(Some(Value::Int(n))),
                 other => err(format!("{name} expects an Int/Duration, got `{other}`")),
             },
-            "sqrt" => match one(args)? {
+            "math.sqrt" => match one(args)? {
                 Value::Float(x) => Ok(Some(Value::Float(x.sqrt()))),
                 other => err(format!("sqrt expects a Float, got `{other}`")),
             },
-            "string_to_int" => match one(args)? {
+            "string.to_int" => match one(args)? {
                 Value::Str(s) => match s.trim().parse::<i64>() {
                     Ok(n) => Ok(Some(Value::Int(n))),
                     Err(_) => err(format!("cannot parse `{s}` as an Int")),
                 },
                 other => err(format!("string_to_int expects a String, got `{other}`")),
             },
-            "length" => match args {
+            "list.length" => match args {
                 [Value::List(items)] => Ok(Some(Value::Int(items.len() as i64))),
                 _ => err("length expects a list"),
             },
-            "at" => match args {
+            "list.at" => match args {
                 [Value::List(items), Value::Int(i)] => match items.get(*i as usize) {
                     Some(v) => Ok(Some(v.clone())),
                     None => err(format!("list index {i} out of bounds (length {})", items.len())),
@@ -1006,7 +1002,7 @@ impl Interpreter {
             },
             // Return a new list with `x` appended (lists are values, so this does
             // not mutate the original).
-            "push" => match args {
+            "list.push" => match args {
                 [Value::List(items), x] => {
                     let mut out = items.clone();
                     out.push(x.clone());
@@ -1015,7 +1011,7 @@ impl Interpreter {
                 _ => err("push expects a list and a value"),
             },
             // Return a new list that is the two given lists joined.
-            "concat" => match args {
+            "list.concat" => match args {
                 [Value::List(a), Value::List(b)] => {
                     let mut out = a.clone();
                     out.extend(b.clone());
@@ -1024,12 +1020,12 @@ impl Interpreter {
                 _ => err("concat expects two lists"),
             },
             // --- Dict: an immutable association map ---
-            "dict_new" => match args {
+            "dict.new" => match args {
                 [] => Ok(Some(Value::Dict(Vec::new()))),
                 _ => err("dict_new takes no arguments"),
             },
             // Return a new dict with `k` set to `v` (replacing any existing entry).
-            "insert" => match args {
+            "dict.insert" => match args {
                 [Value::Dict(entries), k, v] => {
                     let mut out = entries.clone();
                     match out.iter_mut().find(|(ek, _)| ek == k) {
@@ -1041,21 +1037,21 @@ impl Interpreter {
                 _ => err("insert expects a Dict, a key, and a value"),
             },
             // Value for `k`, or `default` if absent.
-            "get_or" => match args {
+            "dict.get_or" => match args {
                 [Value::Dict(entries), k, default] => {
                     let found = entries.iter().find(|(ek, _)| ek == k);
                     Ok(Some(found.map(|(_, v)| v.clone()).unwrap_or_else(|| default.clone())))
                 }
                 _ => err("get_or expects a Dict, a key, and a default value"),
             },
-            "has" => match args {
+            "dict.has" => match args {
                 [Value::Dict(entries), k] => {
                     Ok(Some(Value::Bool(entries.iter().any(|(ek, _)| ek == k))))
                 }
                 _ => err("has expects a Dict and a key"),
             },
             // A new dict with `k` (and its value) removed; unchanged if absent.
-            "remove" => match args {
+            "dict.remove" => match args {
                 [Value::Dict(entries), k] => {
                     let out: Vec<(Value, Value)> =
                         entries.iter().filter(|(ek, _)| ek != k).cloned().collect();
@@ -1063,20 +1059,20 @@ impl Interpreter {
                 }
                 _ => err("remove expects a Dict and a key"),
             },
-            "keys" => match args {
+            "dict.keys" => match args {
                 [Value::Dict(entries)] => {
                     Ok(Some(Value::List(entries.iter().map(|(k, _)| k.clone()).collect())))
                 }
                 _ => err("keys expects a Dict"),
             },
-            "values" => match args {
+            "dict.values" => match args {
                 [Value::Dict(entries)] => {
                     Ok(Some(Value::List(entries.iter().map(|(_, v)| v.clone()).collect())))
                 }
                 _ => err("values expects a Dict"),
             },
             // Each entry as a `(key, value)` tuple, in insertion order.
-            "pairs" => match args {
+            "dict.pairs" => match args {
                 [Value::Dict(entries)] => Ok(Some(Value::List(
                     entries
                         .iter()
@@ -1085,7 +1081,7 @@ impl Interpreter {
                 ))),
                 _ => err("pairs expects a Dict"),
             },
-            "size" => match args {
+            "dict.size" => match args {
                 [Value::Dict(entries)] => Ok(Some(Value::Int(entries.len() as i64))),
                 _ => err("size expects a Dict"),
             },
@@ -1572,8 +1568,8 @@ impl Interpreter {
     }
 
     /// The interpreter-side linear-update fast path: a self-assignment of an
-    /// accumulation shape — `xs = push(xs, e)`, `d = insert(d, k, v)`,
-    /// `d = update(d, k, dflt, f)`, `s = s <> p` (any left spine) — mutates the
+    /// accumulation shape — `xs = list.push(xs, e)`, `d = dict.insert(d, k, v)`,
+    /// `d = dict.update(d, k, dflt, f)`, `s = s <> p` (any left spine) — mutates the
     /// variable's slot in place instead of cloning the whole collection per
     /// step, turning accumulate-in-loop from O(n²) into O(n). Sound because
     /// values are fully owned (binding one clones it; no two bindings share
@@ -1589,7 +1585,7 @@ impl Interpreter {
     ) -> Result<bool, Flow> {
         match rhs {
             Expr::Call { name: f, args }
-                if f == "push" && args.len() == 2
+                if f == "list.push" && args.len() == 2
                     && matches!(&args[0], Expr::Var(v) if v == name)
                     && !expr_mentions(&args[1], name)
                     && !matches!(env.get(f), Some(Value::Closure { .. })) =>
@@ -1605,7 +1601,7 @@ impl Interpreter {
                 Ok(true)
             }
             Expr::Call { name: f, args }
-                if f == "insert" && args.len() == 3
+                if f == "dict.insert" && args.len() == 3
                     && matches!(&args[0], Expr::Var(v) if v == name)
                     && !expr_mentions(&args[1], name)
                     && !expr_mentions(&args[2], name)
@@ -1627,7 +1623,7 @@ impl Interpreter {
             }
             // `update` is matched before locals in `eval_call`, so no shadow check.
             Expr::Call { name: f, args }
-                if f == "update" && args.len() == 4
+                if f == "dict.update" && args.len() == 4
                     && matches!(&args[0], Expr::Var(v) if v == name)
                     && args[1..].iter().all(|a| !expr_mentions(a, name)) =>
             {
@@ -1813,7 +1809,7 @@ impl Interpreter {
                 let d = crate::parser::desugar_range((**lo).clone(), (**hi).clone(), *inclusive);
                 self.eval(&d, env)
             }
-            // A subscript lowers to an `at(base, index)` call; evaluate that.
+            // A subscript lowers to an `list.at(base, index)` call; evaluate that.
             Expr::Index { base, index } => {
                 let d = crate::parser::desugar_index((**base).clone(), (**index).clone());
                 self.eval(&d, env)
@@ -2547,7 +2543,7 @@ mod tests {
     fn evaluates_arithmetic_and_precedence() {
         let out = run(r#"
 fn main(console: Console):
-    print(console, int_to_string((1 + (2 * 3))))
+    print(console, to_string((1 + (2 * 3))))
 "#)
             .unwrap();
         assert_eq!(out, vec!["7"]);
@@ -2810,7 +2806,7 @@ fn double(n: Int) -> Int:
     (n * 2)
 
 fn main(console: Console):
-    print(console, ("doubled: " <> int_to_string(double(21))))
+    print(console, ("doubled: " <> to_string(double(21))))
 "#;
         assert_eq!(run(src).unwrap(), vec!["doubled: 42"]);
     }
@@ -2822,7 +2818,7 @@ fn double(n: Int) -> Int:
     (n * 2)
 
 fn main(console: Console):
-    let result = int_to_string(double(4))
+    let result = to_string(double(4))
     print(console, result)
 "#;
         assert_eq!(run(src).unwrap(), vec!["8"]);
@@ -2872,7 +2868,7 @@ fn fact(n: Int) -> Int:
         _ -> (n * fact((n - 1)))
 
 fn main(console: Console):
-    print(console, int_to_string(fact(5)))
+    print(console, to_string(fact(5)))
 "#;
         assert_eq!(run(src).unwrap(), vec!["120"]);
     }
@@ -3143,7 +3139,7 @@ fn main(console: Console, net: Net):
         .with_query("q", "hi")
     match http.send(req, net):
         Ok(resp) ->
-            print(console, int_to_string(http.status(resp)))
+            print(console, to_string(http.status(resp)))
             print(console, http.body(resp))
             print(console, to_string(http.is_success(resp)))
         Err(e) -> print(console, "err: " <> e)
@@ -3733,11 +3729,11 @@ fn divmod(a: Int, b: Int) -> (Int, Int):
 
 fn main(console: Console):
     let (q, r) = divmod(17, 5)
-    print(console, int_to_string(q))
-    print(console, int_to_string(r))
+    print(console, to_string(q))
+    print(console, to_string(r))
     let pair = (1, "one")
     match pair:
-        (n, name) -> print(console, ((int_to_string(n) <> "=") <> name))
+        (n, name) -> print(console, ((to_string(n) <> "=") <> name))
 "#;
         assert_eq!(run(src).unwrap(), vec!["3", "2", "1=one"]);
     }
@@ -3750,7 +3746,7 @@ fn id(x: a) -> a:
 
 fn main(console: Console):
     print(console, id("hi"))
-    print(console, int_to_string(id(5)))
+    print(console, to_string(id(5)))
 "#;
         assert_eq!(run(src).unwrap(), vec!["hi", "5"]);
     }
@@ -3764,7 +3760,7 @@ type Result:
 
 fn show(r: Result(Int, String)) -> String:
     match r:
-        Ok(n) -> ("ok " <> int_to_string(n))
+        Ok(n) -> ("ok " <> to_string(n))
         Err(msg) -> ("err " <> msg)
 
 fn main(console: Console):
@@ -3795,8 +3791,8 @@ fn first_even(xs: List(Int)) -> Int:
     (0 - 1)
 
 fn main(console: Console):
-    print(console, int_to_string(first_even([1, 3, 8, 5])))
-    print(console, int_to_string(first_even([1, 3, 5])))
+    print(console, to_string(first_even([1, 3, 8, 5])))
+    print(console, to_string(first_even([1, 3, 5])))
 "#;
         assert_eq!(run(src).unwrap(), vec!["8", "-1"]);
     }
@@ -3830,7 +3826,7 @@ fn rec(n: Int) -> Int:
         rec((n - 1))
 
 fn main(console: Console):
-    print(console, int_to_string(rec(5000000)))
+    print(console, to_string(rec(5000000)))
 "#;
         let e = run(src).unwrap_err();
         assert!(e.message.contains("too deep"), "got: {}", e.message);
@@ -3847,7 +3843,7 @@ fn rec(n: Int) -> Int:
         rec((n - 1))
 
 fn main(console: Console):
-    print(console, int_to_string(rec(10000)))
+    print(console, to_string(rec(10000)))
 "#;
         assert_eq!(run(src).unwrap(), vec!["0"]);
     }
@@ -3859,7 +3855,7 @@ fn main(console: Console):
         let src = r#"
 fn main(console: Console):
     let big = 9999999999
-    print(console, int_to_string((big * big)))
+    print(console, to_string((big * big)))
 "#;
         assert_eq!(run(src).unwrap(), vec!["7766279611452241921"]);
     }
@@ -3871,7 +3867,7 @@ fn main(console: Console):
         let src = r#"
 fn main(console: Console):
     let lo = ((0 - 9223372036854775807) - 1)
-    print(console, int_to_string((-lo)))
+    print(console, to_string((-lo)))
 "#;
         assert_eq!(run(src).unwrap(), vec!["-9223372036854775808"]);
     }
@@ -3879,7 +3875,7 @@ fn main(console: Console):
     #[test]
     fn runtime_errors_report_their_source_line() {
         // Division by zero happens on the third line.
-        let src = "fn main(console: Console):\n    let a = 1\n    print(console, int_to_string(a / 0))\n";
+        let src = "fn main(console: Console):\n    let a = 1\n    print(console, to_string(a / 0))\n";
         let e = run(src).unwrap_err();
         assert!(e.message.contains("line 3"), "got: {}", e.message);
     }
@@ -3892,7 +3888,7 @@ fn risky(n: Int) -> Int:
     (n / 0)
 
 fn main(console: Console):
-    print(console, int_to_string(risky(5)))
+    print(console, to_string(risky(5)))
 "#;
         let e = run(src).unwrap_err();
         assert!(e.message.contains("risky"), "got: {}", e.message);
@@ -3930,17 +3926,17 @@ fn main() -> Int:
     fn dict_values_and_pairs_iterate() {
         let src = r#"
 fn main(console: Console):
-    var d = dict_new()
-    d = insert(d, "a", 10)
-    d = insert(d, "b", 20)
+    var d = dict.new()
+    d = dict.insert(d, "a", 10)
+    d = dict.insert(d, "b", 20)
     var sum = 0
-    for v in values(d):
+    for v in dict.values(d):
         sum = (sum + v)
-    print(console, int_to_string(sum))
+    print(console, to_string(sum))
     var report = ""
-    for e in pairs(d):
+    for e in dict.pairs(d):
         let (k, v) = e
-        report = ((((report <> k) <> "=") <> int_to_string(v)) <> ";")
+        report = ((((report <> k) <> "=") <> to_string(v)) <> ";")
     print(console, report)
 "#;
         assert_eq!(run(src).unwrap(), vec!["30", "a=10;b=20;"]);
@@ -3950,16 +3946,16 @@ fn main(console: Console):
     fn dict_insert_get_has_keys_and_immutability() {
         let src = r#"
 fn main(console: Console):
-    let a = insert(dict_new(), "x", 1)
-    let b = insert(a, "y", 2)
-    let c = insert(b, "x", 9)
-    print(console, int_to_string(get_or(c, "x", 0)))
-    print(console, int_to_string(get_or(c, "y", 0)))
-    print(console, int_to_string(get_or(c, "z", 0)))
-    print(console, int_to_string(size(c)))
-    print(console, int_to_string(get_or(a, "x", 0)))
-    print(console, to_string(has(c, "y")))
-    print(console, int_to_string(length(keys(c))))
+    let a = dict.insert(dict.new(), "x", 1)
+    let b = dict.insert(a, "y", 2)
+    let c = dict.insert(b, "x", 9)
+    print(console, to_string(dict.get_or(c, "x", 0)))
+    print(console, to_string(dict.get_or(c, "y", 0)))
+    print(console, to_string(dict.get_or(c, "z", 0)))
+    print(console, to_string(dict.size(c)))
+    print(console, to_string(dict.get_or(a, "x", 0)))
+    print(console, to_string(dict.has(c, "y")))
+    print(console, to_string(list.length(dict.keys(c))))
 "#;
         assert_eq!(
             run(src).unwrap(),
@@ -3971,8 +3967,8 @@ fn main(console: Console):
     fn sqrt_builtin_computes() {
         let src = r#"
 fn main(console: Console):
-    print(console, to_string(sqrt(2.0)))
-    print(console, to_string(float_to_int(sqrt(144.0))))
+    print(console, to_string(math.sqrt(2.0)))
+    print(console, to_string(math.to_int(math.sqrt(144.0))))
 "#;
         assert_eq!(
             run(src).unwrap(),
@@ -3985,12 +3981,12 @@ fn main(console: Console):
         let src = r#"
 fn main(console: Console):
     let s = "abcdef"
-    print(console, substring(s, 1, 4))
-    print(console, substring(s, 4, 100))
-    print(console, substring(s, 3, 1))
-    print(console, int_to_string(index_of(s, "cd")))
-    print(console, int_to_string(index_of(s, "z")))
-    print(console, to_string(ends_with(s, "ef")))
+    print(console, string.substring(s, 1, 4))
+    print(console, string.substring(s, 4, 100))
+    print(console, string.substring(s, 3, 1))
+    print(console, to_string(string.index_of(s, "cd")))
+    print(console, to_string(string.index_of(s, "z")))
+    print(console, to_string(string.ends_with(s, "ef")))
 "#;
         assert_eq!(
             run(src).unwrap(),
@@ -4004,7 +4000,7 @@ fn main(console: Console):
         let src = r#"
 fn main(console: Console):
     let s = "héllo"
-    print(console, substring(s, 0, 2))
+    print(console, string.substring(s, 0, 2))
 "#;
         assert_eq!(run(src).unwrap(), vec!["hé"]);
     }
@@ -4013,11 +4009,11 @@ fn main(console: Console):
     fn string_split_contains_replace() {
         let src = r#"
 fn main(console: Console):
-    let parts = split("a,b,c", ",")
-    print(console, int_to_string(length(parts)))
-    print(console, at(parts, 1))
-    print(console, replace("a,b,c", ",", "-"))
-    print(console, to_string(contains("hello", "ell")))
+    let parts = string.split("a,b,c", ",")
+    print(console, to_string(list.length(parts)))
+    print(console, list.at(parts, 1))
+    print(console, string.replace("a,b,c", ",", "-"))
+    print(console, to_string(string.contains("hello", "ell")))
 "#;
         assert_eq!(run(src).unwrap(), vec!["3", "b", "a-b-c", "true"]);
     }
@@ -4027,11 +4023,11 @@ fn main(console: Console):
         let src = r#"
 fn main(console: Console):
     let a = [1, 2]
-    let b = push(a, 3)
-    print(console, int_to_string(length(a)))
-    print(console, int_to_string(length(b)))
-    let c = concat(a, [9, 9])
-    print(console, int_to_string(at(c, 3)))
+    let b = list.push(a, 3)
+    print(console, to_string(list.length(a)))
+    print(console, to_string(list.length(b)))
+    let c = list.concat(a, [9, 9])
+    print(console, to_string(list.at(c, 3)))
 "#;
         assert_eq!(run(src).unwrap(), vec!["2", "3", "9"]);
     }
@@ -4048,8 +4044,8 @@ fn apply(f: fn(Int) -> Int, x: Int) -> Int:
 fn main(console: Console):
     let inc = adder(1)
     let plus100 = adder(100)
-    print(console, int_to_string(apply(inc, 5)))
-    print(console, int_to_string(apply(plus100, 5)))
+    print(console, to_string(apply(inc, 5)))
+    print(console, to_string(apply(plus100, 5)))
 "#;
         assert_eq!(run(src).unwrap(), vec!["6", "105"]);
     }
@@ -4065,7 +4061,7 @@ fn run(f: fn(Option(Int)) -> Option(Int), o: Option(Int)) -> Option(Int):
     f(o)
 fn render(o: Option(Int)) -> String:
     match o:
-        Some(n) -> int_to_string(n)
+        Some(n) -> to_string(n)
         None -> "none"
 fn main(console: Console):
     let g = fn(o: Option(Int)):
@@ -4087,8 +4083,8 @@ type Point:
 fn main(console: Console):
     let p = Point(1, 2)
     let q = Point(x: 10, y: ((p).y + 1), ..p)
-    print(console, (int_to_string((p).x) <> int_to_string((p).y)))
-    print(console, (int_to_string((q).x) <> int_to_string((q).y)))
+    print(console, (to_string((p).x) <> to_string((p).y)))
+    print(console, (to_string((q).x) <> to_string((q).y)))
 "#;
         assert_eq!(run(src).unwrap(), vec!["12", "103"]);
     }
@@ -4102,7 +4098,7 @@ type Person:
 
 fn main(console: Console):
     let p = Person("witchy", 7)
-    print(console, (((p).name <> " is ") <> int_to_string((p).age)))
+    print(console, (((p).name <> " is ") <> to_string((p).age)))
 "#;
         assert_eq!(run(src).unwrap(), vec!["witchy is 7"]);
     }
@@ -4116,7 +4112,7 @@ fn len(xs: List(Int)) -> Int:
         [_, ..tail] -> (1 + len(tail))
 
 fn main(console: Console):
-    print(console, int_to_string(len([5, 6, 7, 8])))
+    print(console, to_string(len([5, 6, 7, 8])))
 "#;
         assert_eq!(run(src).unwrap(), vec!["4"]);
     }
@@ -4128,7 +4124,7 @@ fn main(console: Console):
     var total = 0
     for n in [10, 20, 30]:
         total = (total + n)
-    print(console, int_to_string(total))
+    print(console, to_string(total))
 "#;
         assert_eq!(run(src).unwrap(), vec!["60"]);
     }
@@ -4147,7 +4143,7 @@ fn head(o: Option(Int)) -> Option(Int):
 
 fn render(o: Option(Int)) -> String:
     match o:
-        Some(n) -> int_to_string(n)
+        Some(n) -> to_string(n)
         None -> "none"
 
 fn main(console: Console):
@@ -4161,9 +4157,9 @@ fn main(console: Console):
     fn conversions() {
         let src = r#"
 fn main(console: Console):
-    print(console, to_string(int_to_float(7)))
-    print(console, int_to_string(float_to_int(3.9)))
-    print(console, int_to_string(string_to_int("42")))
+    print(console, to_string(math.to_float(7)))
+    print(console, to_string(math.to_int(3.9)))
+    print(console, to_string(string.to_int("42")))
 "#;
         assert_eq!(run(src).unwrap(), vec!["7", "3", "42"]);
     }
@@ -4172,10 +4168,10 @@ fn main(console: Console):
     fn string_stdlib() {
         let src = r#"
 fn main(console: Console):
-    print(console, to_upper("witchy"))
-    print(console, int_to_string(string_length("hello")))
-    print(console, trim("  hi  "))
-    if starts_with("witchy", "wit"):
+    print(console, string.to_upper("witchy"))
+    print(console, to_string(string.length("hello")))
+    print(console, string.trim("  hi  "))
+    if string.starts_with("witchy", "wit"):
         print(console, "yes")
     else:
         print(console, "no")
@@ -4192,8 +4188,8 @@ fn main(console: Console):
     while (i <= 5):
         total = (total + i)
         i = (i + 1)
-    print(console, int_to_string(total))
-    print(console, int_to_string((10 % 3)))
+    print(console, to_string(total))
+    print(console, to_string((10 % 3)))
 "#;
         assert_eq!(run(src).unwrap(), vec!["15", "1"]);
     }
@@ -4218,8 +4214,8 @@ fn main(console: Console):
         let src = r#"
 fn main(console: Console):
     let xs = [10, 20, 30]
-    print(console, int_to_string(length(xs)))
-    print(console, int_to_string(at(xs, 1)))
+    print(console, to_string(list.length(xs)))
+    print(console, to_string(list.at(xs, 1)))
 "#;
         assert_eq!(run(src).unwrap(), vec!["3", "20"]);
     }
@@ -4236,7 +4232,7 @@ actor Logger:
 impl Logger:
     on Log(msg: String):
         count = (count + 1)
-        print(console, ((("[" <> int_to_string(count)) <> "] ") <> msg))
+        print(console, ((("[" <> to_string(count)) <> "] ") <> msg))
 
 fn main(console: Console):
     let logger = spawn Logger(console)
@@ -4313,7 +4309,7 @@ fn main(console: Console):
 fn main(console: Console):
     var x = 1
     x = (x + 41)
-    print(console, int_to_string(x))
+    print(console, to_string(x))
 "#;
         assert_eq!(run(src).unwrap(), vec!["42"]);
     }
@@ -4329,7 +4325,7 @@ fn bump(inout n: Int):
 fn main(console: Console):
     var x = 41
     bump(x)
-    print(console, int_to_string(x))
+    print(console, to_string(x))
 "#;
         assert_eq!(run(src).unwrap(), vec!["42"]);
     }

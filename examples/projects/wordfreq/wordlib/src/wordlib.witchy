@@ -10,17 +10,17 @@ import list
 
 // How many times each normalized word occurs in the text.
 pub fn word_counts(text: String) -> Dict(String, Int):
-    var counts = dict_new()
+    var counts = dict.new()
     for raw in string.words(text):
         let word = normalize(raw)
-        if string_length(word) > 0:
-            counts = update(counts, word, 0, fn(running: Int): running + 1)
+        if string.length(word) > 0:
+            counts = dict.update(counts, word, 0, fn(running: Int): running + 1)
     counts
 
 // The `limit` most frequent words, most frequent first, ties broken by spelling
 // so the ranking is deterministic. Returns (word, count) pairs.
 pub fn top_words(text: String, limit: Int) -> List((String, Int)):
-    let ranked = list.sort_by(pairs(word_counts(text)), more_common)
+    let ranked = list.sort_by(dict.pairs(word_counts(text)), more_common)
     list.take(ranked, limit)
 
 fn more_common(a: (String, Int), b: (String, Int)) -> Bool:
@@ -35,7 +35,7 @@ fn more_common(a: (String, Int), b: (String, Int)) -> Bool:
 // punctuation like commas, periods, and semicolons).
 fn normalize(word: String) -> String:
     var kept = ""
-    for ch in string.to_chars(word):
+    for ch in string.chars(word):
         if ascii.is_alpha(ch) || ascii.is_digit(ch):
             kept = kept <> ch
-    to_lower(kept)
+    string.to_lower(kept)

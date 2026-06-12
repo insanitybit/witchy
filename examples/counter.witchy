@@ -7,4 +7,4 @@ actor Counter:
 impl Counter:
     on Tick():
         count = count + 1
-        print(console, "count is " <> int_to_string(count) <> "\n")
+        print(console, "count is ${count}\n")

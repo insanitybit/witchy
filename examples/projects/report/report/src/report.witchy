@@ -20,8 +20,8 @@ fn report(text: String) -> String:
 fn render(records: List(Json)) -> String:
     var scores = []
     for r in records:
-        scores = push(scores, score_of(r))
-    string.join(["records: " <> int_to_string(stats.count(scores)), "total:   " <> int_to_string(stats.total(scores)), "max:     " <> int_to_string(stats.max(scores)), "average: " <> int_to_string(stats.average(scores))], "\n")
+        scores = list.push(scores, score_of(r))
+    string.join(["records: " <> to_string(stats.count(scores)), "total:   " <> to_string(stats.total(scores)), "max:     " <> to_string(stats.max(scores)), "average: " <> to_string(stats.average(scores))], "\n")
 
 // The integer "score" field of one record, defaulting to 0 if absent / non-int.
 fn score_of(record: Json) -> Int:

@@ -2,8 +2,8 @@
 fn main(console: Console):
     var xs = []
     for i in 0..300000:
-        xs = push(xs, i * 3)
+        xs = list.push(xs, i * 3)
     var total = 0
     for x in xs:
         total = total + x % 7
-    print(console, int_to_string(total))
+    print(console, to_string(total))

@@ -5,21 +5,21 @@ fn range(n: Int) -> List(Int):
     var out = []
     var i = 0
     while i < n:
-        out = push(out, i)
+        out = list.push(out, i)
         i = i + 1
     out
 
 fn map(xs: List(a), f: fn(a) -> b) -> List(b):
     var out = []
     for x in xs:
-        out = push(out, f(x))
+        out = list.push(out, f(x))
     out
 
 fn filter(xs: List(Int), keep: fn(Int) -> Bool) -> List(Int):
     var out = []
     for x in xs:
         if keep(x):
-            out = push(out, x)
+            out = list.push(out, x)
     out
 
 fn sum(xs: List(Int)) -> Int:
@@ -43,7 +43,7 @@ fn main(console: Console):
     let ns = range(6)
     let squares = map(ns, fn(n: Int): n * n)
     let evens = filter(ns, fn(n: Int): n % 2 == 0)
-    print(console, int_to_string(sum(squares)))
-    print(console, int_to_string(sum(evens)))
-    let labels = map(evens, fn(n: Int): int_to_string(n))
+    print(console, to_string(sum(squares)))
+    print(console, to_string(sum(evens)))
+    let labels = map(evens, fn(n: Int): to_string(n))
     print(console, join(labels, "-"))

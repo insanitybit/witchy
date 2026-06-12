@@ -10,7 +10,7 @@ actor Reporter:
 impl Reporter:
     on Alert(source: String, value: Float):
         alerts = alerts + 1
-        print(console, "[alert " <> int_to_string(alerts) <> "] " <> source <> " at " <> to_string(value))
+        print(console, "[alert ${alerts}] " <> source <> " at " <> to_string(value))
     on Summary(lines: List(String)):
         for line in lines:
             print(console, "summary: " <> line)
@@ -24,7 +24,7 @@ impl Gauge:
     on Sample(x: Float):
         total = total + x
         count = count + 1
-        print(console, "mean " <> to_string(total / int_to_float(count)))
+        print(console, "mean " <> to_string(total / math.to_float(count)))
 
 actor Router:
     console: Console

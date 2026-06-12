@@ -54,10 +54,10 @@ pub fn weekday(d: DateTime) -> Int:
     pmod(days_from_civil(year(d), month(d), day(d)) + 4, 7)
 
 pub fn weekday_name(d: DateTime) -> String:
-    at(["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"], weekday(d))
+    list.at(["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"], weekday(d))
 
 pub fn month_name(d: DateTime) -> String:
-    at(["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"], month(d) - 1)
+    list.at(["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"], month(d) - 1)
 
 // --- formatting --------------------------------------------------------------
 
@@ -118,16 +118,16 @@ fn pmod(a: Int, b: Int) -> Int:
 
 fn pad2(n: Int) -> String:
     if n < 10:
-        "0" <> int_to_string(n)
+        "0" <> to_string(n)
     else:
-        int_to_string(n)
+        to_string(n)
 
 fn pad4(n: Int) -> String:
     if n < 10:
-        "000" <> int_to_string(n)
+        "000" <> to_string(n)
     else if n < 100:
-        "00" <> int_to_string(n)
+        "00" <> to_string(n)
     else if n < 1000:
-        "0" <> int_to_string(n)
+        "0" <> to_string(n)
     else:
-        int_to_string(n)
+        to_string(n)

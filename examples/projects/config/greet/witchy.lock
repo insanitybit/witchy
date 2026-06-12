@@ -5,7 +5,7 @@
 name = "kv"
 version = "0.1.0"
 source = "path:./../kv"
-hash = "sha256:461d03aa97e53021d7f5f007c1520fda9f5eff92701a41c8605e28d7bc817a96"
+hash = "sha256:c82ed42d8ada4e6b970412bedba22916696266fb7f724f54f7d0e2da6822c441"
 runtime_footprint = []
 build_footprint = []
 determinism = "guaranteed"

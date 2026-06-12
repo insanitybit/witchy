@@ -33,7 +33,7 @@ pub fn table(text: String, section: String) -> List((String, String)):
             in_section = header_name(t) == section
         else if in_section:
             if let Some(pair) = key_value(t):
-                out = push(out, pair)
+                out = list.push(out, pair)
     out
 
 // Each `[[name]]` array-of-tables entry as its own block of body text — the lines
@@ -49,18 +49,18 @@ pub fn array_tables(text: String, name: String) -> List(String):
         let t = string.trim(line)
         if t == marker:
             if collecting:
-                blocks = push(blocks, current)
+                blocks = list.push(blocks, current)
             current = ""
             collecting = true
         else if is_header(t):
             if collecting:
-                blocks = push(blocks, current)
+                blocks = list.push(blocks, current)
             current = ""
             collecting = false
         else if collecting:
             current = current <> line <> "\n"
     if collecting:
-        blocks = push(blocks, current)
+        blocks = list.push(blocks, current)
     blocks
 
 // Just the keys of `[section]` (unquoted), in file order.
@@ -68,7 +68,7 @@ pub fn keys(text: String, section: String) -> List(String):
     var out = []
     for pair in table(text, section):
         let (k, _v) = pair
-        out = push(out, k)
+        out = list.push(out, k)
     out
 
 // Read `key` from an inline table value like `{ path = "../money", version = "1" }`.
@@ -76,7 +76,7 @@ pub fn keys(text: String, section: String) -> List(String):
 pub fn inline_get(inline: String, key: String) -> Option(String):
     let body = string.strip_suffix(string.strip_prefix(string.trim(inline), "{"), "}")
     var found = None
-    for part in split(body, ","):
+    for part in string.split(body, ","):
         if let Some((k, v)) = key_value(string.trim(part)):
             if k == key:
                 found = Some(unquote(v))
@@ -84,7 +84,7 @@ pub fn inline_get(inline: String, key: String) -> Option(String):
 
 // If `line` is `key = value` (and not a comment), return (unquoted key, raw value).
 fn key_value(line: String) -> Option((String, String)):
-    if starts_with(line, "#") || !contains(line, "="):
+    if string.starts_with(line, "#") || !string.contains(line, "="):
         None
     else:
         let (k, v) = string.split_once(line, "=")
@@ -93,7 +93,7 @@ fn key_value(line: String) -> Option((String, String)):
 // A bare key is itself; a quoted key has its surrounding quotes stripped (so a
 // scoped name like `"acme/money"` reads back as `acme/money`).
 fn unquote_key(k: String) -> String:
-    if starts_with(k, "\"") && ends_with(k, "\""):
+    if string.starts_with(k, "\"") && string.ends_with(k, "\""):
         string.strip_suffix(string.strip_prefix(k, "\""), "\"")
     else:
         k
@@ -114,20 +114,20 @@ fn lookup(text: String, path: String) -> Option(String):
 
 // "rune.name" -> ("rune", "name"); a bare "name" -> ("", "name").
 fn split_path(path: String) -> (String, String):
-    if contains(path, "."):
+    if string.contains(path, "."):
         string.rsplit_once(path, ".")
     else:
         ("", path)
 
 fn is_header(line: String) -> Bool:
-    starts_with(line, "[") && ends_with(line, "]")
+    string.starts_with(line, "[") && string.ends_with(line, "]")
 
 fn header_name(line: String) -> String:
     string.strip_suffix(string.strip_prefix(line, "["), "]")
 
 // If `line` is `key = value`, return the trimmed raw value (still quoted).
 fn match_key(line: String, key: String) -> Option(String):
-    if contains(line, "="):
+    if string.contains(line, "="):
         let (k, v) = string.split_once(line, "=")
         if string.trim(k) == key:
             Some(string.trim(v))
@@ -141,7 +141,7 @@ fn match_key(line: String, key: String) -> Option(String):
 // quote, so a `#` *inside* the string is preserved; for a bare value we cut at
 // the first `#`.
 fn unquote(s: String) -> String:
-    if starts_with(s, "\""):
+    if string.starts_with(s, "\""):
         let (inner, _rest) = string.split_once(string.strip_prefix(s, "\""), "\"")
         inner
     else:
@@ -155,8 +155,8 @@ fn parse_array(raw: String) -> List(String):
     let (body, _comment) = string.rsplit_once(string.trim(raw), "]")
     let inner = string.strip_prefix(body, "[")
     var out = []
-    for part in split(inner, ","):
+    for part in string.split(inner, ","):
         let t = string.trim(part)
         if !string.is_empty(t):
-            out = push(out, unquote(t))
+            out = list.push(out, unquote(t))
     out

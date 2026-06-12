@@ -80,11 +80,11 @@ fn main(console: Console):
         total = total + area(s)
     print(console, "total: ${total}")
     let add = fn(n: Int): n + total
-    print(console, int_to_string(add(1)))
+    print(console, to_string(add(1)))
     print(console, to_string([1, 2] == [1, 2]))
     print(console, to_string(Some("a") == Some("a")))
-    let d = insert(insert(dict_new(), "k", 1), "j", 2)
-    print(console, int_to_string(get_or(d, "j", 0)))
+    let d = dict.insert(dict.insert(dict.new(), "k", 1), "j", 2)
+    print(console, to_string(dict.get_or(d, "j", 0)))
     print(console, to_string(1500ms < 2s))
 EOF
 WANT="$(printf 'total: 21\n22\ntrue\ntrue\n2\ntrue')"
@@ -158,8 +158,8 @@ fn main(console: Console, env: Env, dir: Dir[Read], args: List(String)) -> Int:
     let label = match get_env(env, "E2E_LABEL"):
         Some(v) -> v
         None -> "unset"
-    for line in string.lines(read(dir, at(args, 0))):
-        if contains(line, "needle"):
+    for line in string.lines(read(dir, list.at(args, 0))):
+        if string.contains(line, "needle"):
             print(console, label <> ": " <> line)
     0
 EOF

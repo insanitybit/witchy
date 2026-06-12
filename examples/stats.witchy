@@ -12,10 +12,10 @@ fn main(console: Console):
     let data = [2.0, 4.0, 4.0, 4.0, 5.0, 5.0, 7.0, 9.0]
     let avg = mean(data)
     let population_variance = variance(data, avg)
-    report(console, "count", int_to_string(length(data)))
+    report(console, "count", to_string(list.length(data)))
     report(console, "mean", math.format_float(avg, 2))
     report(console, "variance", math.format_float(population_variance, 2))
-    report(console, "stddev", math.format_float(sqrt(population_variance), 2))
+    report(console, "stddev", math.format_float(math.sqrt(population_variance), 2))
     report(console, "min", math.format_float(minimum(data), 2))
     report(console, "max", math.format_float(maximum(data), 2))
 
@@ -26,23 +26,23 @@ fn mean(xs: List(Float)) -> Float:
     var total = 0.0
     for x in xs:
         total = total + x
-    total / int_to_float(length(xs))
+    total / math.to_float(list.length(xs))
 
 fn variance(xs: List(Float), avg: Float) -> Float:
     var total = 0.0
     for x in xs:
         let diff = x - avg
         total = total + diff * diff
-    total / int_to_float(length(xs))
+    total / math.to_float(list.length(xs))
 
 fn minimum(xs: List(Float)) -> Float:
-    var lo = at(xs, 0)
+    var lo = list.at(xs, 0)
     for x in xs:
         lo = math.float_min(lo, x)
     lo
 
 fn maximum(xs: List(Float)) -> Float:
-    var hi = at(xs, 0)
+    var hi = list.at(xs, 0)
     for x in xs:
         hi = math.float_max(hi, x)
     hi

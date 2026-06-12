@@ -20,8 +20,8 @@ fn adder(by: Int) -> fn(Int) -> Int:
 
 fn main(console: Console):
     // A non-capturing lambda, lifted and invoked via call_indirect.
-    print(console, int_to_string(apply(fn(n: Int): n * n, 9)))
+    print(console, to_string(apply(fn(n: Int): n * n, 9)))
     // The same machinery through two layers of higher-order calls.
-    print(console, int_to_string(twice(fn(n: Int): n + 3, 10)))
+    print(console, to_string(twice(fn(n: Int): n + 3, 10)))
     // A closure returned from a function, carrying its captured `by = 100`.
-    print(console, int_to_string(apply(adder(100), 5)))
+    print(console, to_string(apply(adder(100), 5)))

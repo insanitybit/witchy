@@ -11,14 +11,14 @@ fn main(console: Console):
 
     // map then fold: sum of squares = 25+9+64+1+81+4+49 = 233.
     let squares = list.map(xs, fn(n: Int): n * n)
-    print(console, int_to_string(list.fold(squares, 0, fn(acc: Int, n: Int): acc + n)))
+    print(console, to_string(list.fold(squares, 0, fn(acc: Int, n: Int): acc + n)))
 
     // filter the evens, then sort ascending with a comparator closure: [2, 8].
     let evens = list.filter(xs, fn(n: Int): n % 2 == 0)
     let sorted = list.sort_by(evens, fn(a: Int, b: Int): a < b)
-    print(console, int_to_string(at(sorted, 0)) <> " " <> int_to_string(at(sorted, 1)))
+    print(console, to_string(list.at(sorted, 0)) <> " " <> to_string(list.at(sorted, 1)))
 
     // A *capturing* closure handed to a library function: `bonus` is closed over
     // and added on every step. sum(xs)=35, plus 7*100 = 735.
     let bonus = 100
-    print(console, int_to_string(list.fold(xs, 0, fn(acc: Int, n: Int): acc + n + bonus)))
+    print(console, to_string(list.fold(xs, 0, fn(acc: Int, n: Int): acc + n + bonus)))

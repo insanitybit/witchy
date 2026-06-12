@@ -16,32 +16,32 @@ fn main(console: Console):
 
 // Collapse each maximal run into "<count><char>".
 fn encode(text: String) -> String:
-    let chars = string.to_chars(text)
-    let n = length(chars)
+    let chars = string.chars(text)
+    let n = list.length(chars)
     var out = ""
     var i = 0
     while i < n:
-        let run_char = at(chars, i)
+        let run_char = list.at(chars, i)
         var count = 0
-        while i < n && at(chars, i) == run_char:
+        while i < n && list.at(chars, i) == run_char:
             count = count + 1
             i = i + 1
-        out = out <> int_to_string(count) <> run_char
+        out = out <> to_string(count) <> run_char
     out
 
 // Expand each "<count><char>" run back to the original characters.
 fn decode(encoded: String) -> String:
-    let chars = string.to_chars(encoded)
-    let n = length(chars)
+    let chars = string.chars(encoded)
+    let n = list.length(chars)
     var out = ""
     var i = 0
     while i < n:
         var count = 0
-        while i < n && ascii.is_digit(at(chars, i)):
-            count = count * 10 + ascii.to_digit(at(chars, i))
+        while i < n && ascii.is_digit(list.at(chars, i)):
+            count = count * 10 + ascii.to_digit(list.at(chars, i))
             i = i + 1
         if i < n:
-            out = out <> string.repeat(at(chars, i), count)
+            out = out <> string.repeat(list.at(chars, i), count)
             i = i + 1
     out
 

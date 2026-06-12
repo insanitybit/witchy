@@ -114,7 +114,7 @@ fn unused_caps(declared: List(String), demanded: List(String)) -> List(String):
     var extra = []
     for d in declared:
         if !admits_any(d, demanded):
-            extra = push(extra, d)
+            extra = list.push(extra, d)
     extra
 
 fn admits_any(declared: String, demanded: List(String)) -> Bool:
@@ -151,7 +151,7 @@ fn cmd_deps(console: Console, root: Dir, dir: String):
     else:
         let manifest = read(root, join_path(dir, "witchy.toml"))
         let deps = toml.table(manifest, "dependencies")
-        if length(deps) == 0:
+        if list.length(deps) == 0:
             print(console, "(no dependencies)")
         else:
             for pair in deps:
@@ -177,7 +177,7 @@ fn cmd_lock(console: Console, root: Dir, dir: String) -> Int:
         1
     else:
         let manifest = read(root, join_path(dir, "witchy.toml"))
-        let n = length(toml.table(manifest, "dependencies"))
+        let n = list.length(toml.table(manifest, "dependencies"))
         let lockpath = join_path(dir, "witchy.lock")
         write(root, lockpath, generate_lock(root, dir))
         print(console, "locked ${n} dependencies -> ${lockpath}")
@@ -201,7 +201,7 @@ fn cmd_verify(console: Console, root: Dir, dir: String) -> Int:
         report_verify(console, hash_mismatches(root, dir, manifest, lock))
 
 fn report_verify(console: Console, bad: List(String)) -> Int:
-    if length(bad) == 0:
+    if list.length(bad) == 0:
         print(console, "OK: every locked hash matches the dependency sources")
         0
     else:
@@ -216,7 +216,7 @@ fn hash_mismatches(root: Dir, dir: String, manifest: String, lock: String) -> Li
         if let Some(rel) = toml.inline_get(inline, "path"):
             let dep_dir = normalize_path(join_path(dir, rel))
             if rune_hash(root, dep_dir) != locked_hash(lock, name):
-                bad = push(bad, name)
+                bad = list.push(bad, name)
     bad
 
 // The `hash` field of the `[[rune]]` entry named `name`, or "(absent)".
@@ -259,7 +259,7 @@ fn cmd_gate(console: Console, root: Dir, args: List(String)) -> Int:
         report_gate(console, root, dir, manifest, rights.uncovered(baseline, demanded))
 
 fn report_gate(console: Console, root: Dir, dir: String, manifest: String, widened: List(String)) -> Int:
-    if length(widened) == 0:
+    if list.length(widened) == 0:
         print(console, "OK: dependencies demand no authority beyond witchy.lock")
         0
     else:
@@ -294,7 +294,7 @@ fn gate_contributors(root: Dir, dir: String, manifest: String, cap: String) -> L
         let (name, inline) = pair
         if let Some(rel) = toml.inline_get(inline, "path"):
             if rights.covered(rune_footprint(root, normalize_path(join_path(dir, rel))), cap):
-                who = push(who, name)
+                who = list.push(who, name)
     who
 
 fn allowed_from(let args: List(String), start: Int) -> List(String):
@@ -302,7 +302,7 @@ fn allowed_from(let args: List(String), start: Int) -> List(String):
     var i = 0
     for a in args:
         if i >= start:
-            out = push(out, a)
+            out = list.push(out, a)
         i = i + 1
     out
 
@@ -316,7 +316,7 @@ fn add_unique(xs: List(String), x: String) -> List(String):
     if has(xs, x):
         xs
     else:
-        push(xs, x)
+        list.push(xs, x)
 
 // The canonical lockfile text for a rune: a `[[rune]]` block per dependency,
 // pinning its resolved version, source, content hash, and runtime footprint.
@@ -347,33 +347,33 @@ fn path_entry(root: Dir, dir: String, name: String, rel: String) -> String:
 fn rune_hash(root: Dir, dir: String) -> String:
     var files = [("witchy.toml", read(root, join_path(dir, "witchy.toml")))]
     for f in fs.collect_files(root, join_path(dir, "src"), "src", ".witchy"):
-        files = push(files, f)
+        files = list.push(files, f)
     content_hash(files)
 
 fn footprint_toml(caps: List(String)) -> String:
     var parts = []
     for c in caps:
-        parts = push(parts, "\"" <> c <> "\"")
+        parts = list.push(parts, "\"" <> c <> "\"")
     string.join(parts, ", ")
 
 // Collapse `a/b/../c` to `a/c`, dropping `.` and empty segments — the confined
 // Dir capability rejects `..`, so a relative dep path must be resolved first.
 fn normalize_path(let p: String) -> String:
     var stack = []
-    for seg in split(p, "/"):
+    for seg in string.split(p, "/"):
         if seg == "..":
             stack = drop_last(stack)
         else if seg != "" && seg != ".":
-            stack = push(stack, seg)
+            stack = list.push(stack, seg)
     string.join(stack, "/")
 
 fn drop_last(xs: List(String)) -> List(String):
     var out = []
-    let last = length(xs) - 1
+    let last = list.length(xs) - 1
     var i = 0
     for x in xs:
         if i < last:
-            out = push(out, x)
+            out = list.push(out, x)
         i = i + 1
     out
 
@@ -442,7 +442,7 @@ fn pick_version(body: String, req: String) -> Result(String, String):
 
 fn choose(versions: List(Version), r: Req, req: String) -> Result(String, String):
     match semver.best(versions, r):
-        Some(v) -> Ok(semver.to_string(v))
+        Some(v) -> Ok(semver.format(v))
         None -> Err("no released version satisfies `" <> req <> "`")
 
 // The released versions in a /coven/versions response, parsed.
@@ -454,7 +454,7 @@ fn released_versions(body: String) -> List(Version):
                 for rec in items:
                     if jget(rec, "state") == "released":
                         if let Ok(v) = semver.parse(jget(rec, "version")):
-                            out = push(out, v)
+                            out = list.push(out, v)
     out
 
 // Fetch a version, verifying the full trust chain before writing anything: the
@@ -502,7 +502,7 @@ fn source_files(body: String) -> List((String, String)):
         if let Some(files) = json.get(doc, "files"):
             if let Some(items) = json.as_array(files):
                 for entry in items:
-                    out = push(out, (json_index_str(entry, 0), json_index_str(entry, 1)))
+                    out = list.push(out, (json_index_str(entry, 0), json_index_str(entry, 1)))
     out
 
 // The content address of an in-memory rune source (matches coven / crypto.rune_hash).
@@ -511,8 +511,8 @@ fn content_hash(files: List((String, String))) -> String:
     var texts = []
     for f in files:
         let (p, t) = f
-        paths = push(paths, p)
-        texts = push(texts, t)
+        paths = list.push(paths, p)
+        texts = list.push(texts, t)
     crypto.rune_hash(paths, texts)
 
 fn recorded_hash(text: String) -> String:
@@ -561,10 +561,10 @@ fn verdict_vendor(console: Console, total: Int, failed: Int) -> Int:
         print(console, "no vendored runes (no coven.json) found")
         1
     else if failed == 0:
-        print(console, "OK: all " <> int_to_string(total) <> " vendored runes verified")
+        print(console, "OK: all ${total} vendored runes verified")
         0
     else:
-        print(console, "BLOCK: " <> int_to_string(failed) <> " of " <> int_to_string(total) <> " vendored runes failed verification")
+        print(console, "BLOCK: ${failed} of ${total} vendored runes failed verification")
         2
 
 fn report_rune_verify(console: Console, root: Dir, dir: String, rootpub: String, record: String) -> Int:
@@ -589,7 +589,7 @@ fn record_signature_valid(rootpub: String, text: String) -> Bool:
         Err(e) -> false
 
 fn record_payload(doc: Json) -> String:
-    "coven-v1\nname=" <> jget(doc, "name") <> "\nversion=" <> jget(doc, "version") <> "\nstate=" <> jget(doc, "state") <> "\nhash=" <> jget(doc, "hash") <> "\nrt=" <> string.join(json.get_strings(doc, "runtime_footprint"), ",") <> "\nbuild=\nuploaded_by=" <> jget(doc, "uploaded_by") <> "\npromoted_by=" <> jget(doc, "promoted_by") <> "\nfactor=" <> jget(doc, "second_factor") <> "\nprovenance=" <> jget(doc, "provenance") <> "\nreleased_at=" <> int_to_string(jget_int(doc, "released_at"))
+    "coven-v1\nname=" <> jget(doc, "name") <> "\nversion=" <> jget(doc, "version") <> "\nstate=" <> jget(doc, "state") <> "\nhash=" <> jget(doc, "hash") <> "\nrt=" <> string.join(json.get_strings(doc, "runtime_footprint"), ",") <> "\nbuild=\nuploaded_by=" <> jget(doc, "uploaded_by") <> "\npromoted_by=" <> jget(doc, "promoted_by") <> "\nfactor=" <> jget(doc, "second_factor") <> "\nprovenance=" <> jget(doc, "provenance") <> "\nreleased_at=" <> to_string(jget_int(doc, "released_at"))
 
 fn jget_int(doc: Json, key: String) -> Int:
     match json.get(doc, key):
@@ -601,14 +601,14 @@ fn jget_int(doc: Json, key: String) -> Int:
 // --- registry/url helpers ----------------------------------------------------
 fn hostport(addr: String) -> (String, Int):
     let (host, portstr) = string.split_once(addr, ":")
-    (host, string_to_int(portstr))
+    (host, string.to_int(portstr))
 
 // Rune names contain `/`; the wire encodes it as `~` for a query value.
 fn wire(name: String) -> String:
-    string.join(split(name, "/"), "~")
+    string.join(string.split(name, "/"), "~")
 
 fn basename(name: String) -> String:
-    if contains(name, "/"):
+    if string.contains(name, "/"):
         let (_ns, base) = string.rsplit_once(name, "/")
         base
     else:
@@ -661,7 +661,7 @@ fn rune_footprint(root: Dir, dir: String) -> List(String):
 fn first_witchy(let files: List(String)) -> Option(String):
     var found = None
     for f in files:
-        if is_none(found) && ends_with(f, ".witchy"):
+        if is_none(found) && string.ends_with(f, ".witchy"):
             found = Some(f)
     found
 
@@ -695,8 +695,8 @@ fn added(doc: Json) -> String:
 
 // --- small generic helpers ---------------------------------------------------
 fn arg(let args: List(String), i: Int) -> String:
-    if i < length(args):
-        at(args, i)
+    if i < list.length(args):
+        list.at(args, i)
     else:
         ""
 

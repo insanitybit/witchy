@@ -2,9 +2,9 @@ fn main(console: Console):
     var acc = []
     var i = 0
     while i < 3000000:
-        acc = push(acc, i)
+        acc = list.push(acc, i)
         i = i + 1
     var total = 0
     for x in acc:
         total = total + x
-    print(console, int_to_string(total))
+    print(console, to_string(total))

@@ -8,7 +8,7 @@ import string
 
 // Whether `p` is absolute (rooted at `/`).
 pub fn is_abs(p: String) -> Bool:
-    starts_with(p, "/")
+    string.starts_with(p, "/")
 
 // Join two path pieces with a single `/`. An empty piece is ignored; an absolute
 // `b` replaces `a`.
@@ -17,7 +17,7 @@ pub fn join(a: String, b: String) -> String:
         b
     else if string.is_empty(b):
         a
-    else if ends_with(a, "/"):
+    else if string.ends_with(a, "/"):
         a <> b
     else:
         a <> "/" <> b
@@ -27,7 +27,7 @@ pub fn base(p: String) -> String:
     let t = trim_slashes(p)
     if string.is_empty(t):
         "/"
-    else if contains(t, "/"):
+    else if string.contains(t, "/"):
         let (_head, b) = string.rsplit_once(t, "/")
         b
     else:
@@ -36,7 +36,7 @@ pub fn base(p: String) -> String:
 // Everything before the final component: "a/b/c" -> "a/b", "c" -> "", "/x" -> "/".
 pub fn dir(p: String) -> String:
     let t = trim_slashes(p)
-    if !contains(t, "/"):
+    if !string.contains(t, "/"):
         ""
     else:
         let (head, _b) = string.rsplit_once(t, "/")
@@ -51,7 +51,7 @@ pub fn ext(p: String) -> String:
     let b = base(p)
     let i = string.last_index_of(b, ".")
     if i > 0:
-        substring(b, i + 1, char_count(b))
+        string.substring(b, i + 1, string.char_count(b))
     else:
         ""
 
@@ -70,14 +70,14 @@ pub fn stem(p: String) -> String:
 pub fn normalize(p: String) -> String:
     let absolute = is_abs(p)
     var stack = []
-    for seg in split(p, "/"):
+    for seg in string.split(p, "/"):
         if seg == "..":
-            if length(stack) > 0 && last(stack) != "..":
+            if list.length(stack) > 0 && last(stack) != "..":
                 stack = drop_last(stack)
             else if !absolute:
-                stack = push(stack, "..")
+                stack = list.push(stack, "..")
         else if seg != "" && seg != ".":
-            stack = push(stack, seg)
+            stack = list.push(stack, seg)
     let joined = string.join(stack, "/")
     if absolute:
         "/" <> joined
@@ -89,22 +89,22 @@ pub fn normalize(p: String) -> String:
 // --- internals ---------------------------------------------------------------
 fn trim_slashes(p: String) -> String:
     var t = p
-    while char_count(t) > 1 && ends_with(t, "/"):
+    while string.char_count(t) > 1 && string.ends_with(t, "/"):
         t = string.strip_suffix(t, "/")
     t
 
 fn last(xs: List(String)) -> String:
-    if length(xs) == 0:
+    if list.length(xs) == 0:
         ""
     else:
-        at(xs, length(xs) - 1)
+        list.at(xs, list.length(xs) - 1)
 
 fn drop_last(xs: List(String)) -> List(String):
     var out = []
-    let keep = length(xs) - 1
+    let keep = list.length(xs) - 1
     var i = 0
     for x in xs:
         if i < keep:
-            out = push(out, x)
+            out = list.push(out, x)
         i = i + 1
     out

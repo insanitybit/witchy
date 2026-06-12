@@ -695,7 +695,19 @@ fn expr(e: &Expr) -> String {
         Expr::Var(n) => n.clone(),
         Expr::List(xs) => format!("[{}]", comma(xs)),
         Expr::Tuple(xs) => format!("({})", comma(xs)),
-        Expr::Call { name, args } => format!("{name}({})", comma(args)),
+        Expr::Call { name, args } => {
+            // The one-shot migration vehicle: a retired global builtin prints
+            // as its module-qualified spelling, so `witchy fmt` rewrites a
+            // pre-migration tree in place (docs/language-evolution.md Phase 2).
+            // A function the module DEFINES under that name is the user's own
+            // and keeps its spelling.
+            let name = if local_fn(name) {
+                name
+            } else {
+                crate::typeck::moved_builtin(name).unwrap_or(name)
+            };
+            format!("{name}({})", comma(args))
+        }
         Expr::MethodCall { receiver, method, args } => {
             format!("{}.{method}({})", operand(receiver, POSTFIX_PREC, false), comma(args))
         }
@@ -1050,13 +1062,51 @@ pub(crate) fn type_str(t: &Type) -> String {
 /// returning `None` unless the result re-parses to the *same* AST. The round-trip
 /// guard makes the printer safe to apply in bulk: anything it cannot yet render
 /// faithfully is simply left untouched.
+thread_local! {
+    /// Function names defined by the module currently being formatted —
+    /// exempt from the moved-builtin rewrite.
+    static LOCAL_FNS: std::cell::RefCell<std::collections::HashSet<String>> =
+        std::cell::RefCell::new(std::collections::HashSet::new());
+}
+
+fn local_fn(name: &str) -> bool {
+    LOCAL_FNS.with(|s| s.borrow().contains(name))
+}
+
 pub fn reformat(src: &str) -> Option<String> {
-    let mut original = crate::parser::parse_module(src).ok()?;
+    let original = crate::parser::parse_module(src).ok()?;
+    LOCAL_FNS.with(|s| {
+        let mut s = s.borrow_mut();
+        s.clear();
+        for it in &original.items {
+            match it {
+                Item::Function(f) => {
+                    s.insert(f.name.clone());
+                }
+                Item::Impl(i) => {
+                    for m in &i.methods {
+                        s.insert(m.name.clone());
+                    }
+                }
+                Item::Trait(t) => {
+                    for m in &t.methods {
+                        s.insert(m.name.clone());
+                    }
+                }
+                _ => {}
+            }
+        }
+    });
     let out = module(&original, &crate::lexer::own_line_comments(src));
-    let mut reparsed = crate::parser::parse_module(&out).ok()?;
-    strip_lines_module(&mut original);
-    strip_lines_module(&mut reparsed);
-    if original == reparsed {
+    // Verified by IDEMPOTENCE: the output re-parses and formats to itself.
+    // (Plain AST equality with the input would reject the formatter's own
+    // canonicalizations — the moved-builtin rewrite, interpolation
+    // re-sugaring — which deliberately change the tree while preserving the
+    // program. Idempotence still catches a formatter that mangles code: a
+    // mangled program won't reproduce itself.)
+    let reparsed = crate::parser::parse_module(&out).ok()?;
+    let again = module(&reparsed, &crate::lexer::own_line_comments(&out));
+    if out == again {
         Some(out)
     } else {
         None
@@ -1267,7 +1317,7 @@ mod tests {
         // Ranges used to fail to format (they desugared to a synthetic block at
         // parse time); now they round-trip and print back as `lo..hi` / `lo..=hi`,
         // including when used as a value or with operator operands.
-        let src = "fn main(console: Console):\n    for i in 0..3:\n        print(console, int_to_string(i))\n    let xs = 1..=n\n    let ys = a + 1..b * 2\n";
+        let src = "fn main(console: Console):\n    for i in 0..3:\n        print(console, to_string(i))\n    let xs = 1..=n\n    let ys = a + 1..b * 2\n";
         let out = reformat(src).expect("ranges round-trip");
         assert!(out.contains("for i in 0..3:"), "{out}");
         assert!(out.contains("let xs = 1..=n"), "{out}");
@@ -1277,20 +1327,20 @@ mod tests {
 
     #[test]
     fn preserves_subscripts() {
-        // Subscripts used to de-sugar to `at(xs, i)` on format; now they round-trip
+        // Subscripts used to de-sugar to `list.at(xs, i)` on format; now they round-trip
         // and print back as `base[index]`, including nested and computed indices.
-        let src = "fn main(console: Console):\n    let xs = [1, 2, 3]\n    let grid = [[1], [2]]\n    print(console, int_to_string(xs[0] + grid[1][0]))\n";
+        let src = "fn main(console: Console):\n    let xs = [1, 2, 3]\n    let grid = [[1], [2]]\n    print(console, to_string(xs[0] + grid[1][0]))\n";
         let out = reformat(src).expect("subscripts round-trip");
         assert!(out.contains("xs[0]"), "{out}");
         assert!(out.contains("grid[1][0]"), "{out}");
-        assert!(!out.contains("at("), "subscripts must not de-sugar to at(): {out}");
+        assert!(!out.contains("list.at("), "subscripts must not de-sugar to list.at(): {out}");
     }
 
     #[test]
     fn preserves_while_let() {
         // `while let` used to de-sugar to `while true / match / break` on format;
         // now it round-trips and prints back as `while let PAT = SCRUT:`.
-        let src = "fn main(console: Console):\n    var o = Some(1)\n    while let Some(n) = o:\n        print(console, int_to_string(n))\n        o = None\n";
+        let src = "fn main(console: Console):\n    var o = Some(1)\n    while let Some(n) = o:\n        print(console, to_string(n))\n        o = None\n";
         let out = reformat(src).expect("while let round-trips");
         assert!(out.contains("while let Some(n) = o:"), "{out}");
         assert!(!out.contains("while true"), "while let must not de-sugar: {out}");

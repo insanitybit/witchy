@@ -23,6 +23,6 @@ fn to_seconds(days: Int, hours: Int, minutes: Int, seconds: Int) -> Int:
     days * SECONDS_PER_DAY + hours * SECONDS_PER_HOUR + minutes * SECONDS_PER_MINUTE + seconds
 
 fn main(console: Console):
-    print(console, "1 hour      = " <> int_to_string(SECONDS_PER_HOUR) <> "s")
-    print(console, "1 day       = " <> int_to_string(SECONDS_PER_DAY) <> "s")
-    print(console, "1d 2h 3m 4s = " <> int_to_string(to_seconds(1, 2, 3, 4)) <> "s")
+    print(console, "1 hour      = ${SECONDS_PER_HOUR}s")
+    print(console, "1 day       = ${SECONDS_PER_DAY}s")
+    print(console, "1d 2h 3m 4s = ${to_seconds(1, 2, 3, 4)}s")

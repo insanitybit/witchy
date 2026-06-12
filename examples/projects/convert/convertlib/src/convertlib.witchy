@@ -11,14 +11,14 @@ import string
 // CSV (with a header row) as pretty-printed JSON: one object per data row.
 pub fn csv_to_json(csv_text: String) -> String:
     let rows = csv.parse(csv_text)
-    if length(rows) == 0:
+    if list.length(rows) == 0:
         "[]"
     else:
-        let header = at(rows, 0)
+        let header = list.at(rows, 0)
         var objects = []
         var i = 1
-        while i < length(rows):
-            objects = push(objects, row_object(header, at(rows, i)))
+        while i < list.length(rows):
+            objects = list.push(objects, row_object(header, list.at(rows, i)))
             i = i + 1
         json.encode_pretty(JsonArray(objects))
 
@@ -26,8 +26,8 @@ pub fn csv_to_json(csv_text: String) -> String:
 fn row_object(header: List(String), row: List(String)) -> Json:
     var fields = []
     var c = 0
-    while c < length(header):
-        fields = push(fields, (at(header, c), to_json_value(at(row, c))))
+    while c < list.length(header):
+        fields = list.push(fields, (list.at(header, c), to_json_value(list.at(row, c))))
         c = c + 1
     JsonObject(fields)
 

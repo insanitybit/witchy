@@ -17,4 +17,4 @@ fn main(console: Console):
     apply(total, Inc)
     apply(total, Inc)
     apply(total, Dec)
-    print(console, "total is " <> int_to_string(total))
+    print(console, "total is " <> to_string(total))

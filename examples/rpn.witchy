@@ -18,7 +18,7 @@ fn main(console: Console):
 
 fn run(expr: String) -> String:
     match eval(string.words(expr)):
-        Ok(value) -> int_to_string(value)
+        Ok(value) -> to_string(value)
         Err(message) -> "error: " <> message
 
 fn eval(tokens: List(String)) -> Result(Int, String):
@@ -34,18 +34,18 @@ fn step(outcome: Outcome, token: String) -> Outcome:
 
 fn push_or_apply(stack: List(Int), token: String) -> Outcome:
     match string.parse_int(token):
-        Some(n) -> Stack(push(stack, n))
+        Some(n) -> Stack(list.push(stack, n))
         None -> apply_operator(stack, token)
 
 fn apply_operator(stack: List(Int), op: String) -> Outcome:
-    let n = length(stack)
+    let n = list.length(stack)
     if n < 2:
         Failure("stack underflow at `" <> op <> "`")
     else:
-        let b = at(stack, n - 1)
-        let a = at(stack, n - 2)
+        let b = list.at(stack, n - 1)
+        let a = list.at(stack, n - 2)
         match compute(op, a, b):
-            Ok(result) -> Stack(push(prefix(stack, n - 2), result))
+            Ok(result) -> Stack(list.push(prefix(stack, n - 2), result))
             Err(message) -> Failure(message)
 
 fn compute(op: String, a: Int, b: Int) -> Result(Int, String):
@@ -67,10 +67,10 @@ fn finish(outcome: Outcome) -> Result(Int, String):
     match outcome:
         Failure(message) -> Err(message)
         Stack(stack) ->
-            if length(stack) == 1:
-                Ok(at(stack, 0))
+            if list.length(stack) == 1:
+                Ok(list.at(stack, 0))
             else:
-                Err("expected a single result, the stack has " <> int_to_string(length(stack)))
+                Err("expected a single result, the stack has " <> to_string(list.length(stack)))
 
 // The first `k` elements of `xs` (the stack below the two consumed operands).
 fn prefix(xs: List(Int), k: Int) -> List(Int):
@@ -78,6 +78,6 @@ fn prefix(xs: List(Int), k: Int) -> List(Int):
     var i = 0
     for x in xs:
         if i < k:
-            out = push(out, x)
+            out = list.push(out, x)
         i = i + 1
     out

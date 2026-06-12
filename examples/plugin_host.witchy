@@ -31,7 +31,7 @@ fn run_pipeline(plugins: List(fn(Int) -> Int), x: Int) -> Int:
 fn main(console: Console):
     let plugins = [double, bonus]
     for n in [1, 5, 10]:
-        print(console, int_to_string(n) <> " -> " <> int_to_string(run_pipeline(plugins, n)))
+        print(console, to_string(n) <> " -> " <> to_string(run_pipeline(plugins, n)))
     // Granting authority is by capture: this logger closes over `console`, so the
     // host can hand a *logging* power to otherwise-pure code without surrendering
     // the Console itself.

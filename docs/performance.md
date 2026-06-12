@@ -50,7 +50,7 @@ recorded run, so regressions fail loudly.
    Touches every consumer of the `[len][slots]` layout (at/iterate/equality/
    to_string/message marshaling) — mechanical but wide.
 2. **Ownership-driven in-place mutation** — the critical companion. Capacity
-   alone cannot fix `xs = push(xs, x)` under value semantics (the result must
+   alone cannot fix `xs = list.push(xs, x)` under value semantics (the result must
    be a fresh value if anyone else can observe `xs`). But the conventions
    system already proves uniqueness: when the assignment target IS the pushed
    operand and the binding is an unaliased `var` (the same analysis the native
@@ -85,7 +85,7 @@ bench went from an OOM trap to Go parity.
 wholesale by the **uniqueness pass** ([ownership-analysis.md](ownership-analysis.md)):
 share-event/dirty-site analysis with function summaries, so aliases cost one
 re-own instead of disqualifying, read-only calls don't break accumulation,
-`d = update(…)` upserts and `x = f(move x)` own-ABI pipelines run in place,
+`d = dict.update(…)` upserts and `x = f(move x)` own-ABI pipelines run in place,
 and the remaining copy-path cliffs are flagged by `witchy check`/the LSP.
 
 **Scoreboard vs Go (measured, bench/BASELINE.md):** strings 4–5.7× faster;

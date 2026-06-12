@@ -14,7 +14,7 @@ fn main(console: Console):
     let ok = true
     let name = "witchy"
     let timeout = 30s
-    print(console, int_to_string(answer))
+    print(console, to_string(answer))
     print(console, to_string(half))
     print(console, to_string(ok))
     print(console, name)
@@ -65,10 +65,10 @@ Crossing between types is always explicit — there's no silent coercion:
 
 ```witchy
 fn main(console: Console):
-    print(console, int_to_string(7))
-    print(console, to_string(int_to_float(7)))
-    print(console, int_to_string(float_to_int(7.9)))   // truncates toward zero
-    print(console, int_to_string(string_to_int("123")))
+    print(console, to_string(7))
+    print(console, to_string(math.to_float(7)))
+    print(console, to_string(math.to_int(7.9)))   // truncates toward zero
+    print(console, to_string(string.to_int("123")))
 ```
 
 ```text
@@ -91,21 +91,21 @@ import list
 import string
 
 fn show(xs: List(Int)) -> String:
-    string.join(list.map(xs, fn(n: Int): int_to_string(n)), " ")
+    string.join(list.map(xs, fn(n: Int): to_string(n)), " ")
 
 fn main(console: Console):
     let xs = [1, 2, 3]
     print(console, show(xs))
-    print(console, int_to_string(length(xs)))
-    print(console, int_to_string(xs[0]))     // indexing is sugar for at(xs, 0)
+    print(console, to_string(list.length(xs)))
+    print(console, to_string(xs[0]))     // indexing is sugar for list.at(xs, 0)
 
     let pair = (1, "one")
     let (n, word) = pair                      // destructure
     print(console, "${n} = ${word}")
 
-    let ages = insert(insert(dict_new(), "ada", 36), "bob", 41)
-    print(console, int_to_string(get_or(ages, "ada", 0)))
-    print(console, int_to_string(get_or(ages, "nobody", 0)))   // default
+    let ages = dict.insert(dict.insert(dict.new(), "ada", 36), "bob", 41)
+    print(console, to_string(dict.get_or(ages, "ada", 0)))
+    print(console, to_string(dict.get_or(ages, "nobody", 0)))   // default
 ```
 
 ```text
@@ -126,7 +126,7 @@ A couple of practical notes you'll bump into:
   instead of that structural default. For a type of your own, implement the
   `Show` trait to give it a custom rendering (see [Generics](tour-generics.md)).
 - Builtins like `int_to_string` aren't first-class function values, so to pass
-  one to `list.map` you wrap it in a lambda: `fn(n: Int): int_to_string(n)`.
+  one to `list.map` you wrap it in a lambda: `fn(n: Int): to_string(n)`.
 
 Indexing out of bounds (`xs[9]`) is a runtime error on every backend, never a
 garbage value.

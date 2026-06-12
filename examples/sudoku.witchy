@@ -56,7 +56,7 @@ fn consistent(board: List(List(Int)), r: Int, c: Int, n: Int) -> Bool:
 
 fn in_row(board: List(List(Int)), r: Int, n: Int) -> Bool:
     var hit = false
-    for v in at(board, r):
+    for v in list.at(board, r):
         if v == n:
             hit = true
     hit
@@ -64,7 +64,7 @@ fn in_row(board: List(List(Int)), r: Int, n: Int) -> Bool:
 fn in_col(board: List(List(Int)), c: Int, n: Int) -> Bool:
     var hit = false
     for row in board:
-        if at(row, c) == n:
+        if list.at(row, c) == n:
             hit = true
     hit
 
@@ -76,7 +76,7 @@ fn in_box(board: List(List(Int)), r: Int, c: Int, n: Int) -> Bool:
     while i < 3:
         var j = 0
         while j < 3:
-            if at(at(board, r0 + i), c0 + j) == n:
+            if list.at(list.at(board, r0 + i), c0 + j) == n:
                 hit = true
             j = j + 1
         i = i + 1
@@ -87,7 +87,7 @@ fn place(board: List(List(Int)), r: Int, c: Int, n: Int) -> List(List(Int)):
     var out = []
     var i = 0
     for row in board:
-        out = push(out, if i == r: set_at(row, c, n) else: row)
+        out = list.push(out, if i == r: set_at(row, c, n) else: row)
         i = i + 1
     out
 
@@ -95,7 +95,7 @@ fn set_at(row: List(Int), c: Int, n: Int) -> List(Int):
     var out = []
     var j = 0
     for v in row:
-        out = push(out, if j == c: n else: v)
+        out = list.push(out, if j == c: n else: v)
         j = j + 1
     out
 
@@ -109,6 +109,6 @@ fn render(board: List(List(Int))) -> String:
     for row in board:
         var cells = []
         for v in row:
-            cells = push(cells, int_to_string(v))
-        lines = push(lines, string.join(cells, ""))
+            cells = list.push(cells, to_string(v))
+        lines = list.push(lines, string.join(cells, ""))
     string.join(lines, "\n")

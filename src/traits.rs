@@ -210,7 +210,7 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
     // specializations are emitted, generated next.
     let mut templates: HashMap<String, Function> = HashMap::new();
     items.retain(|it| match it {
-        Item::Function(f) if !f.bounds.is_empty() => {
+        Item::Function(f) if !f.bounds.is_empty() && !crate::typeck::intrinsic(&f.name) => {
             templates.insert(f.name.clone(), f.clone());
             false
         }
@@ -223,7 +223,10 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
     if mono_unbounded {
         for it in &items {
             if let Item::Function(f) = it {
-                if f.bounds.is_empty() && !signature_type_vars(f).is_empty() {
+                if f.bounds.is_empty()
+                    && !signature_type_vars(f).is_empty()
+                    && !crate::typeck::intrinsic(&f.name)
+                {
                     templates.entry(f.name.clone()).or_insert_with(|| f.clone());
                 }
             }
@@ -372,7 +375,11 @@ impl Ctx<'_> {
                                 // exists; unless a plain function of this name
                                 // can take the call, that is a bound the
                                 // program cannot satisfy — report it cleanly.
-                                None if !self.free_fns.contains(name.as_str()) => {
+                                // A TYPE-VARIABLE receiver (lowercase name) is
+                                // a bounded generic: dispatch resolves after
+                                // monomorphization, never an error here.
+                                None if !self.free_fns.contains(name.as_str())
+                                    && !tn.chars().next().is_some_and(|c| c.is_lowercase()) => {
                                     self.missing_impls.borrow_mut().push(format!(
                                         "`{tn}` does not implement `{trait_name}` \
                                          (no `impl {trait_name} for {tn}`) — required by a call to `{name}`"

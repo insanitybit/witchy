@@ -10,4 +10,4 @@ fn main(console: Console):
     bump(total)
     bump(total)
     bump(total)
-    print(console, "bumped to " <> int_to_string(total))
+    print(console, "bumped to " <> to_string(total))

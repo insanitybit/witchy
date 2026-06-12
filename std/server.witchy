@@ -41,7 +41,7 @@ pub fn query(req: Request, name: String) -> String:
 // A request header, looked up case-insensitively, or None.
 pub fn request_header(req: Request, name: String) -> Option(String):
     match req:
-        Request(_m, _p, _pa, _q, h, _b) -> http.find_header(h, to_lower(name))
+        Request(_m, _p, _pa, _q, h, _b) -> http.find_header(h, string.to_lower(name))
 
 pub fn request_body(req: Request) -> String:
     match req:
@@ -124,7 +124,7 @@ pub fn redirect(location: String) -> Response:
 // a response (e.g. add a `set-cookie` or a tracing header).
 pub fn with_header(resp: Response, name: String, value: String) -> Response:
     match resp:
-        Response(code, hdrs, body) -> Response(code, push(hdrs, (name, value)), body)
+        Response(code, hdrs, body) -> Response(code, list.push(hdrs, (name, value)), body)
 
 // Return `resp` with its status code replaced.
 pub fn with_status(resp: Response, code: Int) -> Response:
@@ -147,7 +147,7 @@ pub fn router() -> Router:
 
 pub fn route(r: Router, m: String, p: String, h: fn(Request) -> Response) -> Router:
     match r:
-        Router(routes, layers) -> Router(push(routes, Route(m, p, h)), layers)
+        Router(routes, layers) -> Router(list.push(routes, Route(m, p, h)), layers)
 
 pub fn get(r: Router, p: String, h: fn(Request) -> Response) -> Router:
     route(r, "GET", p, h)
@@ -187,7 +187,7 @@ pub fn nest(r: Router, prefix: String, sub: Router) -> Router:
 // dispatch (so it sees every request, 404s included).
 pub fn layer(r: Router, mw: fn(fn(Request) -> Response) -> fn(Request) -> Response) -> Router:
     match r:
-        Router(routes, layers) -> Router(routes, push(layers, mw))
+        Router(routes, layers) -> Router(routes, list.push(layers, mw))
 
 // ---- Dispatch + path matching ----
 fn dispatch(routes: List(Route)) -> fn(Request) -> Response:
@@ -241,27 +241,27 @@ fn match_path(pattern: String, p: String) -> Option(List((String, String))):
 
 fn split_path(p: String) -> List(String):
     var out = []
-    for seg in split(p, "/"):
+    for seg in string.split(p, "/"):
         if seg != "":
-            out = push(out, seg)
+            out = list.push(out, seg)
     out
 
 fn match_segs(pat: List(String), segs: List(String), acc: List((String, String))) -> Option(List((String, String))):
-    if length(pat) == 0:
-        if length(segs) == 0:
+    if list.length(pat) == 0:
+        if list.length(segs) == 0:
             Some(acc)
         else:
             None
     else:
-        let ps = at(pat, 0)
-        if starts_with(ps, "*"):
-            Some(push(acc, (substring(ps, 1, char_count(ps)), join_segs(segs))))
-        else if length(segs) == 0:
+        let ps = list.at(pat, 0)
+        if string.starts_with(ps, "*"):
+            Some(list.push(acc, (string.substring(ps, 1, string.char_count(ps)), join_segs(segs))))
+        else if list.length(segs) == 0:
             None
         else:
-            let seg = at(segs, 0)
-            if starts_with(ps, ":"):
-                match_segs(rest(pat), rest(segs), push(acc, (substring(ps, 1, char_count(ps)), seg)))
+            let seg = list.at(segs, 0)
+            if string.starts_with(ps, ":"):
+                match_segs(rest(pat), rest(segs), list.push(acc, (string.substring(ps, 1, string.char_count(ps)), seg)))
             else if ps == seg:
                 match_segs(rest(pat), rest(segs), acc)
             else:
@@ -270,8 +270,8 @@ fn match_segs(pat: List(String), segs: List(String), acc: List((String, String))
 fn rest(xs: List(a)) -> List(a):
     var out = []
     var i = 1
-    while i < length(xs):
-        out = push(out, at(xs, i))
+    while i < list.length(xs):
+        out = list.push(out, list.at(xs, i))
         i = i + 1
     out
 
@@ -302,22 +302,22 @@ fn read_headers(sock: Socket) -> List((String, String)):
     var hdrs = []
     var done = false
     while !done:
-        let line = trim(recv_line(sock))
+        let line = string.trim(recv_line(sock))
         if line == "":
             done = true
         else:
-            let colon = index_of(line, ":")
+            let colon = string.index_of(line, ":")
             if colon >= 0:
-                let name = to_lower(trim(substring(line, 0, colon)))
-                let value = trim(substring(line, colon + 1, char_count(line)))
-                hdrs = push(hdrs, (name, value))
+                let name = string.to_lower(string.trim(string.substring(line, 0, colon)))
+                let value = string.trim(string.substring(line, colon + 1, string.char_count(line)))
+                hdrs = list.push(hdrs, (name, value))
     hdrs
 
 fn content_length(headers: List((String, String))) -> Int:
     // The header is attacker-controlled; a non-numeric value must not trap
     // `string_to_int` and take down the server — treat it as no body.
     match http.find_header(headers, "content-length"):
-        Some(v) -> if ascii.all_digits(v): string_to_int(v) else: 0
+        Some(v) -> if ascii.all_digits(v): string.to_int(v) else: 0
         None -> 0
 
 fn parse_query(q: String) -> List((String, String)):
@@ -325,56 +325,56 @@ fn parse_query(q: String) -> List((String, String)):
         []
     else:
         var out = []
-        for pair in split(q, "&"):
-            let eq = index_of(pair, "=")
+        for pair in string.split(q, "&"):
+            let eq = string.index_of(pair, "=")
             if eq >= 0:
-                out = push(out, (substring(pair, 0, eq), substring(pair, eq + 1, char_count(pair))))
+                out = list.push(out, (string.substring(pair, 0, eq), string.substring(pair, eq + 1, string.char_count(pair))))
             else:
-                out = push(out, (pair, ""))
+                out = list.push(out, (pair, ""))
         out
 
 fn first_word(s: String) -> String:
-    let sp = index_of(s, " ")
+    let sp = string.index_of(s, " ")
     if sp < 0:
         s
     else:
-        substring(s, 0, sp)
+        string.substring(s, 0, sp)
 
 fn second_word(s: String) -> String:
-    let sp = index_of(s, " ")
+    let sp = string.index_of(s, " ")
     if sp < 0:
         ""
     else:
-        let r = substring(s, sp + 1, char_count(s))
-        let sp2 = index_of(r, " ")
+        let r = string.substring(s, sp + 1, string.char_count(s))
+        let sp2 = string.index_of(r, " ")
         if sp2 < 0:
             r
         else:
-            substring(r, 0, sp2)
+            string.substring(r, 0, sp2)
 
 fn before(s: String, sep: String) -> String:
-    let i = index_of(s, sep)
+    let i = string.index_of(s, sep)
     if i < 0:
         s
     else:
-        substring(s, 0, i)
+        string.substring(s, 0, i)
 
 fn after(s: String, sep: String) -> String:
-    let i = index_of(s, sep)
+    let i = string.index_of(s, sep)
     if i < 0:
         ""
     else:
-        substring(s, i + char_count(sep), char_count(s))
+        string.substring(s, i + string.char_count(sep), string.char_count(s))
 
 // ---- Rendering + the serve loop ----
 fn render_response(resp: Response) -> String:
     match resp:
         Response(code, headers, b) ->
-            var out = "HTTP/1.1 " <> int_to_string(code) <> " " <> reason(code) <> "\r\n"
+            var out = "HTTP/1.1 ${code} " <> reason(code) <> "\r\n"
             for h in headers:
                 let (k, v) = h
                 out = out <> k <> ": " <> v <> "\r\n"
-            out = out <> "Content-Length: " <> int_to_string(string_length(b)) <> "\r\n"
+            out = out <> "Content-Length: " <> to_string(string.length(b)) <> "\r\n"
             out = out <> "Connection: close\r\n\r\n"
             out <> b
 

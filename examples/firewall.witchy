@@ -12,7 +12,7 @@ import list
 
 // A pure validator: it takes no capabilities, so it provably performs no I/O.
 fn is_valid(name: String) -> Bool:
-    let n = string_length(name)
+    let n = string.length(name)
     n > 0 && n <= 12
 
 fn main(console: Console):
@@ -23,7 +23,7 @@ fn main(console: Console):
     let kept = without console:
         list.filter(names, fn(n: String): is_valid(n))
 
-    print(console, "kept " <> int_to_string(length(kept)) <> " of " <> int_to_string(length(names)))
+    print(console, "kept ${list.length(kept)} of " <> to_string(list.length(names)))
     for n in kept:
         print(console, "  ok: " <> n)
 
@@ -32,6 +32,6 @@ fn main(console: Console):
     let total = retain:
         var sum = 0
         for n in kept:
-            sum = sum + string_length(n)
+            sum = sum + string.length(n)
         sum
-    print(console, "total chars: " <> int_to_string(total))
+    print(console, "total chars: " <> to_string(total))

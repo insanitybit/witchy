@@ -45,30 +45,30 @@ fn run_tokens(tokens: List(Token)) -> String:
 
 fn render(result: Result(Int, String)) -> String:
     match result:
-        Ok(value) -> int_to_string(value)
+        Ok(value) -> to_string(value)
         Err(message) -> "error: " <> message
 
 // --- lexer -------------------------------------------------------------------
 fn tokenize(source: String) -> Result(List(Token), String):
-    let chars = string.to_chars(source)
-    let n = length(chars)
+    let chars = string.chars(source)
+    let n = list.length(chars)
     var tokens = []
     var failure = ""
     var i = 0
     while i < n && string.is_empty(failure):
-        let c = at(chars, i)
+        let c = list.at(chars, i)
         if c == " ":
             i = i + 1
         else if ascii.is_digit(c):
             var value = 0
-            while i < n && ascii.is_digit(at(chars, i)):
-                value = value * 10 + ascii.to_digit(at(chars, i))
+            while i < n && ascii.is_digit(list.at(chars, i)):
+                value = value * 10 + ascii.to_digit(list.at(chars, i))
                 i = i + 1
-            tokens = push(tokens, Num(value))
+            tokens = list.push(tokens, Num(value))
         else:
             match symbol(c):
                 Some(tok) ->
-                    tokens = push(tokens, tok)
+                    tokens = list.push(tokens, tok)
                     i = i + 1
                 None ->
                     failure = "unexpected character `" <> c <> "`"
@@ -96,7 +96,7 @@ fn symbol(c: String) -> Option(Token):
 // --- parser (recursive descent, precedence-climbing) -------------------------
 fn parse(tokens: List(Token)) -> Result(Expr, String):
     match parse_expr(tokens, 0):
-        Ok2(tree, pos) -> if pos == length(tokens): Ok(tree) else: Err("unexpected trailing input")
+        Ok2(tree, pos) -> if pos == list.length(tokens): Ok(tree) else: Err("unexpected trailing input")
         Bad(message) -> Err(message)
 
 // expr := term (('+' | '-') term)*   (lowest precedence, left-associative)
@@ -152,8 +152,8 @@ fn close_group(inner: Expr, tokens: List(Token), pos: Int) -> Parse:
         _ -> Bad("expected `)`")
 
 fn peek(tokens: List(Token), pos: Int) -> Option(Token):
-    if pos < length(tokens):
-        Some(at(tokens, pos))
+    if pos < list.length(tokens):
+        Some(list.at(tokens, pos))
     else:
         None
 

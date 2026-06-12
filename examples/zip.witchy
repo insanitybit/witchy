@@ -10,12 +10,12 @@ fn main(console: Console):
     var labelled = []
     for pair in list.enumerate(names):
         let (i, name) = pair
-        labelled = push(labelled, int_to_string(i) <> ":" <> name)
+        labelled = list.push(labelled, to_string(i) <> ":" <> name)
     print(console, string.join(labelled, " "))
 
     let ages = [30, 25, 40]
     var joined = []
     for entry in list.zip(names, ages):
         let (name, age) = entry
-        joined = push(joined, name <> "=" <> int_to_string(age))
+        joined = list.push(joined, name <> "=" <> to_string(age))
     print(console, string.join(joined, " "))

@@ -22,19 +22,19 @@ fn main(console: Console):
     let found = Some(42)
     match found:
         Some(x) ->
-            print(console, "found: " <> int_to_string(x))
+            print(console, "found: " <> to_string(x))
         _ ->
             print(console, "nothing")
 
     // if let with no else is a statement: the body runs, or nothing happens.
     if let Some(x) = pop([7, 8, 9]):
         let (head, _rest) = x
-        print(console, "head is " <> int_to_string(head))
+        print(console, "head is " <> to_string(head))
 
     // while let: keep matching until the pattern fails — here, until the list
     // is empty and `pop` returns None.
     var stack = [1, 2, 3, 4]
     while let Some((top, rest)) = pop(stack):
-        print(console, "pop " <> int_to_string(top))
+        print(console, "pop " <> to_string(top))
         stack = rest
     print(console, "drained")

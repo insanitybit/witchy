@@ -39,8 +39,8 @@ pub fn patch(v: Version) -> Int:
 // Parse `major.minor.patch` (missing trailing components default to 0). Errors on
 // a non-numeric component or more than three components.
 pub fn parse(s: String) -> Result(Version, String):
-    let parts = split(string.trim(s), ".")
-    if length(parts) == 0 || length(parts) > 3:
+    let parts = string.split(string.trim(s), ".")
+    if list.length(parts) == 0 || list.length(parts) > 3:
         Err("bad version `" <> s <> "`: expected major.minor.patch")
     else:
         match component(parts, 0):
@@ -52,15 +52,15 @@ pub fn parse(s: String) -> Result(Version, String):
             Err(e) -> Err(e)
 
 fn component(parts: List(String), i: Int) -> Result(Int, String):
-    if i >= length(parts):
+    if i >= list.length(parts):
         Ok(0)
     else:
-        match string.parse_int(at(parts, i)):
+        match string.parse_int(list.at(parts, i)):
             Some(n) -> Ok(n)
-            None -> Err("bad version component `" <> at(parts, i) <> "`")
+            None -> Err("bad version component `" <> list.at(parts, i) <> "`")
 
-pub fn to_string(v: Version) -> String:
-    int_to_string(major(v)) <> "." <> int_to_string(minor(v)) <> "." <> int_to_string(patch(v))
+pub fn format(v: Version) -> String:
+    to_string(major(v)) <> "." <> to_string(minor(v)) <> "." <> to_string(patch(v))
 
 // --- ordering ----------------------------------------------------------------
 
@@ -101,11 +101,11 @@ pub fn parse_req(s: String) -> Result(Req, String):
     let t = string.trim(s)
     if t == "*":
         Ok(Any)
-    else if starts_with(t, "^"):
+    else if string.starts_with(t, "^"):
         wrap_caret(parse(string.drop(t, 1)))
-    else if starts_with(t, "~"):
+    else if string.starts_with(t, "~"):
         wrap_tilde(parse(string.drop(t, 1)))
-    else if starts_with(t, ">="):
+    else if string.starts_with(t, ">="):
         wrap_atleast(parse(string.drop(t, 2)))
     else:
         wrap_exact(parse(t))

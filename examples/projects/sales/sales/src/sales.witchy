@@ -11,6 +11,6 @@ import string
 fn main(console: Console, root: Dir[Read]):
     let totals = salelib.revenue_by_product(read(root, "sales.csv"))
     print(console, "Revenue by product:")
-    for product in list.sort_by(keys(totals), fn(a: String, b: String): a < b):
-        print(console, "  " <> string.pad_right(product, 16, " ") <> "$" <> int_to_string(get_or(totals, product, 0)))
-    print(console, "Total: $" <> int_to_string(salelib.grand_total(totals)))
+    for product in list.sort_by(dict.keys(totals), fn(a: String, b: String): a < b):
+        print(console, "  " <> string.pad_right(product, 16, " ") <> "$" <> to_string(dict.get_or(totals, product, 0)))
+    print(console, "Total: $" <> to_string(salelib.grand_total(totals)))

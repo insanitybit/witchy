@@ -1105,33 +1105,32 @@ impl Checker {
             }
             "fetch_build" => Some((vec![Ty::BuildNet, Ty::String, Ty::String], Ty::String)),
             "run_tool" => Some((vec![Ty::BuildExec, Ty::String, Ty::String], Ty::String)),
-            "int_to_string" => Some((vec![Ty::Int], Ty::String)),
-            "string_length" => Some((vec![Ty::String], Ty::Int)),
-            "char_count" => Some((vec![Ty::String], Ty::Int)),
-            "to_upper" | "to_lower" | "trim" => Some((vec![Ty::String], Ty::String)),
+            "string.length" => Some((vec![Ty::String], Ty::Int)),
+            "string.char_count" => Some((vec![Ty::String], Ty::Int)),
+            "string.to_upper" | "string.to_lower" | "string.trim" => Some((vec![Ty::String], Ty::String)),
             // Abort with a message (the primitive behind std/testing).
             "fail" => Some((vec![Ty::String], Ty::Nil)),
-            "starts_with" | "contains" | "ends_with" => {
+            "string.starts_with" | "string.contains" | "string.ends_with" => {
                 Some((vec![Ty::String, Ty::String], Ty::Bool))
             }
-            "index_of" => Some((vec![Ty::String, Ty::String], Ty::Int)),
-            "split" => Some((
+            "string.index_of" => Some((vec![Ty::String, Ty::String], Ty::Int)),
+            "string.split" => Some((
                 vec![Ty::String, Ty::String],
                 Ty::List(Box::new(Ty::String)),
             )),
             // The characters of a string, each as a single-char String — built in
             // one O(n) pass (unlike a char_at loop), so callers can index chars in
             // O(1). The primitive behind a fast `std/string.to_chars`.
-            "string_chars" => Some((vec![Ty::String], Ty::List(Box::new(Ty::String)))),
-            "replace" => Some((vec![Ty::String, Ty::String, Ty::String], Ty::String)),
-            "substring" => Some((vec![Ty::String, Ty::Int, Ty::Int], Ty::String)),
-            "int_to_float" => Some((vec![Ty::Int], Ty::Float)),
-            "float_to_int" => Some((vec![Ty::Float], Ty::Int)),
+            "string.chars" => Some((vec![Ty::String], Ty::List(Box::new(Ty::String)))),
+            "string.replace" => Some((vec![Ty::String, Ty::String, Ty::String], Ty::String)),
+            "string.substring" => Some((vec![Ty::String, Ty::Int, Ty::Int], Ty::String)),
+            "math.to_float" => Some((vec![Ty::Int], Ty::Float)),
+            "math.to_int" => Some((vec![Ty::Float], Ty::Int)),
             // Duration <-> Int(milliseconds) bridge for the std `duration` module.
             "int_to_duration" => Some((vec![Ty::Int], Ty::Duration)),
             "duration_to_int" => Some((vec![Ty::Duration], Ty::Int)),
-            "sqrt" => Some((vec![Ty::Float], Ty::Float)),
-            "string_to_int" => Some((vec![Ty::String], Ty::Int)),
+            "math.sqrt" => Some((vec![Ty::Float], Ty::Float)),
+            "string.to_int" => Some((vec![Ty::String], Ty::Int)),
             "to_string" => {
                 let a = self.fresh();
                 Some((vec![a], Ty::String))
@@ -1140,86 +1139,86 @@ impl Checker {
                 let msg = self.fresh();
                 Some((vec![Ty::Subject, msg], Ty::Nil))
             }
-            "length" => {
+            "list.length" => {
                 let elem = self.fresh();
                 Some((vec![Ty::List(Box::new(elem))], Ty::Int))
             }
-            "at" => {
+            "list.at" => {
                 let elem = self.fresh();
                 Some((vec![Ty::List(Box::new(elem.clone())), Ty::Int], elem))
             }
-            "push" => {
+            "list.push" => {
                 let elem = self.fresh();
                 Some((
                     vec![Ty::List(Box::new(elem.clone())), elem.clone()],
                     Ty::List(Box::new(elem)),
                 ))
             }
-            "concat" => {
+            "list.concat" => {
                 let elem = self.fresh();
                 let list = Ty::List(Box::new(elem));
                 Some((vec![list.clone(), list.clone()], list))
             }
             // Dict(k, v) is an ordinary parameterized Named type; these builtins
             // are generic in its key and value types.
-            "dict_new" => {
+            "dict.new" => {
                 let k = self.fresh();
                 let v = self.fresh();
                 Some((vec![], Ty::Named("Dict".into(), vec![k, v])))
             }
-            "insert" => {
+            "dict.insert" => {
                 let k = self.fresh();
                 let v = self.fresh();
                 let d = Ty::Named("Dict".into(), vec![k.clone(), v.clone()]);
                 Some((vec![d.clone(), k, v], d))
             }
-            "get_or" => {
+            "dict.get_or" => {
                 let k = self.fresh();
                 let v = self.fresh();
                 let d = Ty::Named("Dict".into(), vec![k.clone(), v.clone()]);
                 Some((vec![d, k, v.clone()], v))
             }
-            // update(dict, key, default, f) -> dict: a single-lookup upsert. `f`
+            // dict.update(dict, key, default, f) -> dict: a single-lookup upsert. `f`
             // maps the current value (or `default` when the key is absent) to the
             // new value — like Go's `m[k]++` in one operation.
-            "update" => {
+            "dict.update" => {
                 let k = self.fresh();
                 let v = self.fresh();
                 let d = Ty::Named("Dict".into(), vec![k.clone(), v.clone()]);
                 let f = Ty::Fn(vec![v.clone()], Box::new(v.clone()));
                 Some((vec![d.clone(), k, v, f], d))
             }
-            "has" => {
+            "dict.has" => {
                 let k = self.fresh();
                 let v = self.fresh();
                 let d = Ty::Named("Dict".into(), vec![k.clone(), v]);
                 Some((vec![d, k], Ty::Bool))
             }
-            "remove" => {
+            "dict.remove" => {
                 let k = self.fresh();
                 let v = self.fresh();
                 let d = Ty::Named("Dict".into(), vec![k.clone(), v]);
                 Some((vec![d.clone(), k], d))
             }
-            "keys" => {
+            "dict.keys" => {
                 let k = self.fresh();
                 let v = self.fresh();
                 let d = Ty::Named("Dict".into(), vec![k.clone(), v]);
                 Some((vec![d], Ty::List(Box::new(k))))
             }
-            "values" => {
+            "dict.values" => {
                 let k = self.fresh();
                 let v = self.fresh();
                 let d = Ty::Named("Dict".into(), vec![k, v.clone()]);
                 Some((vec![d], Ty::List(Box::new(v))))
             }
-            "pairs" => {
+            "dict.pairs" => {
                 let k = self.fresh();
                 let v = self.fresh();
                 let d = Ty::Named("Dict".into(), vec![k.clone(), v.clone()]);
                 Some((vec![d], Ty::List(Box::new(Ty::Tuple(vec![k, v])))))
             }
-            "size" => {
+            "dict.size" => {
                 let k = self.fresh();
                 let v = self.fresh();
                 Some((vec![Ty::Named("Dict".into(), vec![k, v])], Ty::Int))
@@ -1678,7 +1677,7 @@ impl Checker {
                 let d = crate::parser::desugar_range((**lo).clone(), (**hi).clone(), *inclusive);
                 self.infer(&d)
             }
-            // A subscript lowers to an `at(base, index)` call; type it as that.
+            // A subscript lowers to an `list.at(base, index)` call; type it as that.
             Expr::Index { base, index } => {
                 let d = crate::parser::desugar_index((**base).clone(), (**index).clone());
                 self.infer(&d)
@@ -1830,6 +1829,15 @@ impl Checker {
                     return self.check_send(args);
                 }
                 let Some((params, ret)) = self.call_sig(name) else {
+                    // A retired global builtin: name the module-qualified
+                    // spelling that replaced it (the one-cut migration).
+                    if let Some(moved) = moved_builtin(name) {
+                        return terr(format!(
+                            "`{name}` moved to `{moved}` — pure data operations are \
+                             module-qualified now (no import needed; the core modules \
+                             are always available)"
+                        ));
+                    }
                     // If the name is an unimported stdlib function, point the way;
                     // otherwise suggest a near-miss stdlib name (a likely typo).
                     let hint = match crate::linker::std_modules_for_function(name).as_slice() {
@@ -2713,6 +2721,64 @@ fn run_check(module: &Module, record: bool) -> Result<Option<TypeTable>, TypeErr
     Ok(None)
 }
 
+/// The module-qualified NATIVE INTRINSICS: declared in std as self-recursive
+/// placeholders (signatures for the checker), intercepted by name on both
+/// backends, never templated by monomorphization, never compiled as bodies.
+pub fn intrinsic(name: &str) -> bool {
+    matches!(
+        name,
+        "list.push" | "list.at" | "list.length" | "list.concat"
+            | "dict.new" | "dict.insert" | "dict.get_or" | "dict.has" | "dict.remove"
+            | "dict.update" | "dict.keys" | "dict.values" | "dict.pairs" | "dict.size"
+            | "string.split" | "string.trim" | "string.contains" | "string.starts_with"
+            | "string.ends_with" | "string.replace" | "string.index_of" | "string.substring"
+            | "string.length" | "string.char_count" | "string.chars" | "string.to_upper"
+            | "string.to_lower" | "string.to_int"
+            | "math.to_float" | "math.to_int" | "math.sqrt"
+    )
+}
+
+/// The retired global builtins and the module-qualified spellings that
+/// replaced them (docs/language-evolution.md Phase 2 — one cut, no aliases).
+pub fn moved_builtin(bare: &str) -> Option<&'static str> {
+    Some(match bare {
+        "push" => "list.push",
+        "at" => "list.at",
+        "length" => "list.length",
+        "concat" => "list.concat",
+        "dict_new" => "dict.new",
+        "insert" => "dict.insert",
+        "get_or" => "dict.get_or",
+        "has" => "dict.has",
+        "remove" => "dict.remove",
+        "update" => "dict.update",
+        "keys" => "dict.keys",
+        "values" => "dict.values",
+        "pairs" => "dict.pairs",
+        "size" => "dict.size",
+        "split" => "string.split",
+        "trim" => "string.trim",
+        "contains" => "string.contains",
+        "starts_with" => "string.starts_with",
+        "ends_with" => "string.ends_with",
+        "replace" => "string.replace",
+        "index_of" => "string.index_of",
+        "substring" => "string.substring",
+        "string_length" => "string.length",
+        "char_count" => "string.char_count",
+        "string_chars" => "string.chars",
+        "to_chars" => "string.chars",
+        "to_upper" => "string.to_upper",
+        "to_lower" => "string.to_lower",
+        "string_to_int" => "string.to_int",
+        "int_to_float" => "math.to_float",
+        "float_to_int" => "math.to_int",
+        "sqrt" => "math.sqrt",
+        "int_to_string" => "to_string",
+        _ => return None,
+    })
+}
+
 /// Convenience: parse then type-check.
 pub fn check_str(src: &str) -> Result<(), String> {
     let module = crate::parser::parse_module(src).map_err(|e| e.to_string())?;
@@ -2768,7 +2834,7 @@ mod tests {
             "fn main(console: Console, clock: Clock):\n    without clock:\n        print(console, \"ok\")\n";
         check_str(drop_clock).expect("console still usable when only clock is dropped");
         let use_dropped =
-            "fn main(console: Console, clock: Clock):\n    without clock:\n        let t = now(clock)\n        print(console, int_to_string(t))\n";
+            "fn main(console: Console, clock: Clock):\n    without clock:\n        let t = now(clock)\n        print(console, to_string(t))\n";
         let err = check_str(use_dropped).expect_err("using a dropped capability must fail");
         assert!(err.contains("walled off"), "got: {err}");
 
@@ -2777,7 +2843,7 @@ mod tests {
             "fn main(console: Console, clock: Clock):\n    retain console:\n        print(console, \"ok\")\n";
         check_str(retain_console).expect("the retained capability is usable");
         let retain_drops_rest =
-            "fn main(console: Console, clock: Clock):\n    retain console:\n        let t = now(clock)\n        print(console, int_to_string(t))\n";
+            "fn main(console: Console, clock: Clock):\n    retain console:\n        let t = now(clock)\n        print(console, to_string(t))\n";
         let err = check_str(retain_drops_rest).expect_err("a non-retained capability must be hidden");
         assert!(err.contains("walled off"), "got: {err}");
 
@@ -2832,7 +2898,7 @@ mod tests {
         // A nested re-binding legitimately shadows the firewall: re-using the name
         // for a fresh value is fine (you still can't reach the dropped capability).
         let shadow =
-            "fn use_int(n: Int):\n    fail(int_to_string(n))\nfn main(console: Console):\n    without console:\n        let console = 42\n        use_int(console)\n";
+            "fn use_int(n: Int):\n    fail(to_string(n))\nfn main(console: Console):\n    without console:\n        let console = 42\n        use_int(console)\n";
         check_str(shadow).expect("re-binding a dropped name to a fresh value is allowed");
     }
 
@@ -2914,7 +2980,7 @@ mod tests {
     #[test]
     fn unknown_stdlib_function_suggests_import() {
         // Calling an unimported stdlib function points at the module to import.
-        let err = check_str("fn main(console: Console):\n    print(console, int_to_string(minimum([1], 0)))\n")
+        let err = check_str("fn main(console: Console):\n    print(console, to_string(minimum([1], 0)))\n")
             .expect_err("minimum is unimported");
         assert!(err.contains("import ord"), "{err}");
         // A genuine typo (no stdlib match) gets no misleading hint.
@@ -2935,7 +3001,7 @@ fn double(n: Int) -> Int:
     (n * 2)
 
 fn main(console: Console):
-    print(console, int_to_string(double(21)))
+    print(console, to_string(double(21)))
 "#;
         assert!(check_str(src).is_ok(), "{:?}", check_str(src));
     }
@@ -3006,7 +3072,7 @@ fn id(x: a) -> a:
 
 fn main(console: Console):
     print(console, id("hi"))
-    print(console, int_to_string(id(5)))
+    print(console, to_string(id(5)))
 "#;
         assert!(check_str(src).is_ok(), "{:?}", check_str(src));
     }
@@ -3048,7 +3114,7 @@ fn unwrap_str(b: Box(String)) -> String:
         Wrap(s) -> s
 
 fn main(console: Console):
-    print(console, int_to_string(unwrap_int(Wrap(5))))
+    print(console, to_string(unwrap_int(Wrap(5))))
     print(console, unwrap_str(Wrap("hi")))
 "#;
         assert!(check_str(src).is_ok(), "{:?}", check_str(src));
@@ -3069,7 +3135,7 @@ fn unwrap(b: Box(a), default: a) -> a:
         Wrap(v) -> v
 
 fn main(console: Console):
-    print(console, int_to_string(unwrap(Wrap(5), 0)))
+    print(console, to_string(unwrap(Wrap(5), 0)))
     print(console, unwrap(Wrap("hi"), "none"))
 "#;
         assert!(check_str(src).is_ok(), "{:?}", check_str(src));
@@ -3155,10 +3221,10 @@ fn f(a: (Int, Int), b: (Int, Int)) -> Bool:
     fn dict_builtins_are_generic() {
         let src = r#"
 fn tally(words: List(String)) -> Int:
-    var d = dict_new()
+    var d = dict.new()
     for w in words:
-        d = insert(d, w, (get_or(d, w, 0) + 1))
-    size(d)
+        d = dict.insert(d, w, (dict.get_or(d, w, 0) + 1))
+    dict.size(d)
 "#;
         assert!(check_str(src).is_ok(), "{:?}", check_str(src));
     }
@@ -3169,8 +3235,8 @@ fn tally(words: List(String)) -> Int:
         // looking it up with an Int key must fail.
         let src = r#"
 fn f() -> Int:
-    let d = insert(dict_new(), "a", 1)
-    get_or(d, 2, 0)
+    let d = dict.insert(dict.new(), "a", 1)
+    dict.get_or(d, 2, 0)
 "#;
         assert!(check_str(src).is_err());
     }
@@ -3179,30 +3245,30 @@ fn f() -> Int:
     fn string_builtins_type() {
         let src = r#"
 fn first_field(row: String) -> String:
-    at(split(row, ","), 0)
+    list.at(string.split(row, ","), 0)
 
 fn has(s: String, sub: String) -> Bool:
-    contains(s, sub)
+    string.contains(s, sub)
 
 fn fix(s: String) -> String:
-    replace(s, "a", "b")
+    string.replace(s, "a", "b")
 "#;
         assert!(check_str(src).is_ok(), "{:?}", check_str(src));
     }
 
     #[test]
     fn rejects_split_on_non_string() {
-        assert!(check_str("fn f() -> List(String) { split(5, \",\") }").is_err());
+        assert!(check_str("fn f() -> List(String) { string.split(5, \",\") }").is_err());
     }
 
     #[test]
     fn push_and_concat_are_generic() {
         let src = r#"
 fn ints() -> List(Int):
-    push([1, 2], 3)
+    list.push([1, 2], 3)
 
 fn strs() -> List(String):
-    concat(["a"], ["b", "c"])
+    list.concat(["a"], ["b", "c"])
 "#;
         assert!(check_str(src).is_ok(), "{:?}", check_str(src));
     }
@@ -3210,7 +3276,7 @@ fn strs() -> List(String):
     #[test]
     fn rejects_push_element_type_mismatch() {
         // Pushing a String onto a List(Int) must fail.
-        assert!(check_str("fn f() -> List(Int) { push([1, 2], \"x\") }").is_err());
+        assert!(check_str("fn f() -> List(Int) { list.push([1, 2], \"x\") }").is_err());
     }
 
     #[test]
@@ -3220,7 +3286,7 @@ fn apply(f: fn(Int) -> Int, x: Int) -> Int:
     f(x)
 
 fn main(console: Console):
-    print(console, int_to_string(apply(fn(n: Int): (n + 1), 10)))
+    print(console, to_string(apply(fn(n: Int): (n + 1), 10)))
 "#;
         assert!(check_str(src).is_ok(), "{:?}", check_str(src));
     }
@@ -3235,7 +3301,7 @@ fn apply(f: fn(a) -> a, x: a) -> a:
 
 fn main(console: Console):
     print(console, apply(fn(s: String): s, "hi"))
-    print(console, int_to_string(apply(fn(n: Int): n, 5)))
+    print(console, to_string(apply(fn(n: Int): n, 5)))
 "#;
         assert!(check_str(src).is_ok(), "{:?}", check_str(src));
     }
@@ -3391,7 +3457,7 @@ fn f(xs: List(Int)) -> String:
         let src = r#"
 fn main(console: Console):
     for n in [1, 2, 3]:
-        print(console, int_to_string(n))
+        print(console, to_string(n))
 "#;
         assert!(check_str(src).is_ok(), "{:?}", check_str(src));
     }
@@ -3414,7 +3480,7 @@ type Result:
     Err(e)
 
 fn parse(s: String) -> Result(Int, String):
-    Ok(string_to_int(s))
+    Ok(string.to_int(s))
 
 fn add(a: String, b: String) -> Result(Int, String):
     let x = (parse(a))?
@@ -3637,7 +3703,7 @@ type Event:
 
 fn describe(e: Event) -> String:
     match e:
-        Click(x, _) -> int_to_string(x)
+        Click(x, _) -> to_string(x)
         Closed -> "closed"
 "#;
         assert!(check_str(src).is_ok(), "{:?}", check_str(src));
@@ -3681,7 +3747,7 @@ actor Logger:
 impl Logger:
     on Log(msg: String):
         count = (count + 1)
-        print(console, ((("[" <> int_to_string(count)) <> "] ") <> msg))
+        print(console, ((("[" <> to_string(count)) <> "] ") <> msg))
 
 fn main(console: Console):
     let logger = spawn Logger(console)

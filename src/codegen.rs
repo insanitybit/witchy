@@ -901,14 +901,15 @@ impl Codegen {
                 .fold(Kind::I32, |acc, a| promote_kind(acc, self.kind_of(&a.body))),
             // `get_or(d, k, default)` returns the dict's value at the default's
             // kind (the i64 value slot is recovered to it at the call site).
-            Expr::Call { name, args } if name == "get_or" && args.len() == 3 => {
+            Expr::Call { name, args } if name == "dict.get_or" && args.len() == 3 => {
                 self.kind_of(&args[2])
             }
             Expr::Call { name, .. } => match name.as_str() {
-                "int_to_float" => Kind::F64,
-                "float_to_int" | "string_length" | "char_count" | "index_of" | "length"
-                | "string_to_int" | "int_to_duration" | "duration_to_int" | "now" => Kind::I64,
-                "at" => self.elem_kind_of_list_arg(e),
+                "math.to_float" => Kind::F64,
+                "math.to_int" | "string.length" | "string.char_count" | "string.index_of"
+                | "list.length" | "dict.size" | "string.to_int" | "int_to_duration"
+                | "duration_to_int" | "now" => Kind::I64,
+                "list.at" => self.elem_kind_of_list_arg(e),
                 "to_string" | "int_to_string" | "print" => Kind::I32,
                 // A closure-local called by name returns the universal i64 slot,
                 // recovered at its tracked return kind (see the call emission).
@@ -958,7 +959,7 @@ impl Codegen {
     /// width always agree.
     fn elem_kind_of_list_arg(&self, e: &Expr) -> Kind {
         if let Expr::Call { name, args } = e {
-            if name == "at" {
+            if name == "list.at" {
                 if let Some(arg) = args.first() {
                     return self.list_elem_kind(arg);
                 }
@@ -1039,25 +1040,26 @@ impl Codegen {
                 .unwrap_or(ValType::Other),
             // `at(xs, i)` has the list's element type, so a String element
             // compares by content (`$str_eq`) rather than by pointer.
-            Expr::Call { name, args } if name == "at" && !args.is_empty() => {
+            Expr::Call { name, args } if name == "list.at" && !args.is_empty() => {
                 self.elem_val_type_of(&args[0])
             }
             // `get_or(d, k, default)` returns the Dict's value type, which is the
             // default's type — so a `let v = get_or(d, k, 0)` (or a String default)
             // tracks `v`, and `v` can in turn be used as a Dict key.
-            Expr::Call { name, args } if name == "get_or" && args.len() == 3 => {
+            Expr::Call { name, args } if name == "dict.get_or" && args.len() == 3 => {
                 self.val_type_of(&args[2])
             }
             Expr::Call { name, .. } => match name.as_str() {
-                "int_to_string" | "to_string" | "to_upper" | "to_lower" | "trim" | "replace"
-                | "substring" | "crypto.sha256" | "crypto.sign" | "crypto.public_key" | "read"
-                | "crypto.rune_hash" | "compiler.footprint" | "compiler.diff"
-                | "recv_line" | "recv_all" | "recv_bytes" => ValType::Str,
-                "starts_with" | "ends_with" | "contains" | "has" | "exists" | "is_dir"
-                | "crypto.ed25519_verify" => ValType::Bool,
-                "string_length" | "char_count" | "index_of" | "length" | "size" | "float_to_int"
-                | "string_to_int" | "int_to_duration" | "duration_to_int" | "now" => ValType::Int,
-                "int_to_float" | "sqrt" => ValType::Float,
+                "to_string" | "string.to_upper" | "string.to_lower" | "string.trim"
+                | "string.replace" | "string.substring" | "crypto.sha256" | "crypto.sign"
+                | "crypto.public_key" | "read" | "crypto.rune_hash" | "compiler.footprint"
+                | "compiler.diff" | "recv_line" | "recv_all" | "recv_bytes" => ValType::Str,
+                "string.starts_with" | "string.ends_with" | "string.contains" | "dict.has"
+                | "exists" | "is_dir" | "crypto.ed25519_verify" => ValType::Bool,
+                "string.length" | "string.char_count" | "string.index_of" | "list.length"
+                | "dict.size" | "math.to_int" | "string.to_int" | "int_to_duration"
+                | "duration_to_int" | "now" => ValType::Int,
+                "math.to_float" | "math.sqrt" => ValType::Float,
                 other => self.fn_ret_valtype.get(other).copied().unwrap_or(ValType::Other),
             },
             // `inner?` yields the Ok/Some payload's value type, so `to_string` of
@@ -1091,9 +1093,9 @@ impl Codegen {
             Expr::Call { name, args } => {
                 if let Some(ty) = self.fn_ret_records.get(name) {
                     Some(ty.clone())
-                } else if name == "get_or" {
+                } else if name == "dict.get_or" {
                     args.get(2).and_then(|d| self.record_type_of(d))
-                } else if name == "at" {
+                } else if name == "list.at" {
                     match args.first() {
                         Some(Expr::Var(v)) => self.local_list_elem.get(v).cloned(),
                         _ => None,
@@ -1180,7 +1182,7 @@ impl Codegen {
     /// v)` gives it from `v`; a Dict variable carries its tracked type.
     fn dict_value_valtype_of(&self, value: &Expr) -> Option<ValType> {
         match value {
-            Expr::Call { name, args } if name == "insert" && args.len() == 3 => {
+            Expr::Call { name, args } if name == "dict.insert" && args.len() == 3 => {
                 match self.val_type_of(&args[2]) {
                     ValType::Other => None,
                     vt => Some(vt),
@@ -1195,7 +1197,7 @@ impl Codegen {
     /// tracked key type), so `pairs(d)` destructures the key slot correctly.
     fn dict_key_valtype_of(&self, value: &Expr) -> Option<ValType> {
         match value {
-            Expr::Call { name, args } if name == "insert" && args.len() == 3 => {
+            Expr::Call { name, args } if name == "dict.insert" && args.len() == 3 => {
                 match self.val_type_of(&args[1]) {
                     ValType::Other => None,
                     vt => Some(vt),
@@ -1306,7 +1308,7 @@ impl Codegen {
             },
             // `pairs(d)` yields `(key, value)` tuples; their slot types are the
             // Dict's tracked key and value types.
-            Expr::Call { name, args } if name == "pairs" && args.len() == 1 => {
+            Expr::Call { name, args } if name == "dict.pairs" && args.len() == 1 => {
                 if let Expr::Var(d) = &args[0] {
                     let k = self.local_dict_key_valtype.get(d).copied().unwrap_or(ValType::Other);
                     let v = self.local_dict_value_valtype.get(d).copied().unwrap_or(ValType::Other);
@@ -1354,7 +1356,7 @@ impl Codegen {
                         .map(|s| (1, NestBottom::Scalar(*s)))
                 }),
             Expr::List(_) => self.literal_nesting(e),
-            Expr::Call { name, args } if name == "at" && args.len() == 2 => {
+            Expr::Call { name, args } if name == "list.at" && args.len() == 2 => {
                 match self.list_nesting(&args[0]) {
                     Some((d, b)) if d >= 2 => Some((d - 1, b)),
                     _ => None,
@@ -1392,16 +1394,15 @@ impl Codegen {
             // Builtins that yield `List(String)` regardless of input. (`list` is
             // the Dir directory listing.)
             Expr::Call { name, .. }
-                if name == "split"
-                    || name == "to_chars"
-                    || name == "string_chars"
+                if name == "string.split"
+                    || name == "string.chars"
                     || name == "list" =>
             {
                 ValType::Str
             }
             // `values(d)` yields a list of the Dict's values; carry their type so
             // `for v in values(d)` recovers an Int value as i64.
-            Expr::Call { name, args } if name == "values" && args.len() == 1 => match &args[0] {
+            Expr::Call { name, args } if name == "dict.values" && args.len() == 1 => match &args[0] {
                 Expr::Var(d) => self
                     .local_dict_value_valtype
                     .get(d)
@@ -1412,7 +1413,7 @@ impl Codegen {
             // `keys(d)` yields a list of the Dict's keys; carry their type so
             // `for k in keys(d)` can in turn use `k` as a Dict key (e.g.
             // `get_or(d, k, 0)`) without the key type going unknown.
-            Expr::Call { name, args } if name == "keys" && args.len() == 1 => match &args[0] {
+            Expr::Call { name, args } if name == "dict.keys" && args.len() == 1 => match &args[0] {
                 Expr::Var(d) => self
                     .local_dict_key_valtype
                     .get(d)
@@ -1423,7 +1424,7 @@ impl Codegen {
             // `at(L, i)` where `L` is itself a (possibly deeply) nested list: the
             // element is a scalar exactly when the at-result is a depth-1 list.
             // Peeling via `list_nesting` handles any nesting depth.
-            Expr::Call { name, args } if name == "at" && args.len() == 2 => {
+            Expr::Call { name, args } if name == "list.at" && args.len() == 2 => {
                 match self.list_nesting(iter) {
                     Some((1, NestBottom::Scalar(s))) => s,
                     _ => ValType::Other,
@@ -1510,7 +1511,7 @@ impl Codegen {
                         self.local_tuple_slots
                             .insert(name.clone(), items.iter().map(|e| self.val_type_of(e)).collect());
                     } else if let Expr::Call { name: fname, args } = value {
-                        if fname == "at" && args.len() == 2 {
+                        if fname == "list.at" && args.len() == 2 {
                             // `at(list_of_tuples, i)`: the result tuple's slots are
                             // the list's element-tuple slot types.
                             if let Expr::Var(list) = &args[0] {
@@ -1606,7 +1607,7 @@ impl Codegen {
                             .cloned()
                             .unwrap_or_else(|| vec![ValType::Other; names.len()])
                     } else if let Expr::Call { name: fname, args } = value {
-                        if fname == "at" && args.len() == 2 {
+                        if fname == "list.at" && args.len() == 2 {
                             // `let (a, b) = at(list_of_tuples, i)`: the element-tuple
                             // slot types of the list (variable or literal).
                             self.list_elem_tuple_slots(&args[0])
@@ -4365,7 +4366,7 @@ impl Codegen {
             }
         }
         if let Expr::Call { name, args } = e {
-            if name == "insert" && args.len() == 3 {
+            if name == "dict.insert" && args.len() == 3 {
                 return Some(EqShape::Dict(
                     Box::new(EqShape::scalar(self.val_type_of(&args[1]))?),
                     Box::new(self.eq_operand_shape(&args[2])?),
@@ -4480,7 +4481,7 @@ impl Codegen {
                     || self.local_dict_value_valtype.contains_key(v)
             }
             Expr::Call { name, .. } => {
-                matches!(name.as_str(), "dict_new" | "insert" | "remove" | "update")
+                matches!(name.as_str(), "dict.new" | "dict.insert" | "dict.remove" | "dict.update")
             }
             _ => false,
         }
@@ -5247,13 +5248,13 @@ impl Codegen {
                 },
             },
             // The string record's header is its byte length (i32) -> Int (i64).
-            ("string_length", 1) => {
+            ("string.length", 1) => {
                 let arg = self.compile_expr(&args[0])?;
                 Ok(format!("{arg}    i32.load\n    i64.extend_i32_u\n"))
             }
             // char_count(s): Unicode scalars in `s`. Evaluate `s` once into a
             // scratch slot, then `$byte_to_char(s, byte_length(s))`.
-            ("char_count", 1) => {
+            ("string.char_count", 1) => {
                 self.uses_byte_to_char = true;
                 let level = self.apply_level;
                 if level >= APPLY_POOL {
@@ -5265,7 +5266,7 @@ impl Codegen {
                     "{arg}    local.set ${tmp}\n    local.get ${tmp}\n    local.get ${tmp}\n    i32.load\n    call $byte_to_char\n    i64.extend_i32_u\n"
                 ))
             }
-            ("int_to_float", 1) => {
+            ("math.to_float", 1) => {
                 let k = self.kind_of(&args[0]);
                 Ok(format!(
                     "{}{}    f64.convert_i64_s\n",
@@ -5273,7 +5274,7 @@ impl Codegen {
                     kind_convert(k, Kind::I64)
                 ))
             }
-            ("float_to_int", 1) => {
+            ("math.to_int", 1) => {
                 // Saturating (non-trapping) truncation to match the interpreter's
                 // Rust `as i64`: NaN -> 0, +inf -> i64::MAX, -inf -> i64::MIN, and
                 // out-of-range floats clamp. Plain `i64.trunc_f64_s` would instead
@@ -5283,25 +5284,25 @@ impl Codegen {
             // Duration <-> Int(ms) is a no-op at runtime (both are i64).
             ("int_to_duration", 1) | ("duration_to_int", 1) => self.compile_expr(&args[0]),
             // sqrt(x): WASM has a native f64 square root.
-            ("sqrt", 1) => Ok(format!("{}    f64.sqrt\n", self.compile_expr(&args[0])?)),
+            ("math.sqrt", 1) => Ok(format!("{}    f64.sqrt\n", self.compile_expr(&args[0])?)),
             // string_to_int(s): parse a well-formed decimal integer — optional
             // surrounding ASCII whitespace, an optional sign, then digits. The
             // interpreter trims and rejects malformed input; the compiled parser
             // matches the interpreter's `trim().parse::<i64>()` (i64 accumulation,
             // strict: traps on junk / no digits), so the backends agree.
-            ("string_to_int", 1) => {
+            ("string.to_int", 1) => {
                 self.uses_str_to_int = true;
                 let s = self.compile_expr(&args[0])?;
                 Ok(format!("{s}    call $str_to_int\n"))
             }
             // Prefix/suffix tests over the string's bytes (`[len][bytes]`).
-            ("starts_with", 2) => {
+            ("string.starts_with", 2) => {
                 self.uses_starts_with = true;
                 let s = self.compile_expr(&args[0])?;
                 let p = self.compile_expr(&args[1])?;
                 Ok(format!("{s}{p}    call $starts_with\n"))
             }
-            ("ends_with", 2) => {
+            ("string.ends_with", 2) => {
                 self.uses_ends_with = true;
                 let s = self.compile_expr(&args[0])?;
                 let p = self.compile_expr(&args[1])?;
@@ -5309,7 +5310,7 @@ impl Codegen {
             }
             // split(text, sep) -> List(String): pieces between separators (the
             // separator dropped); an empty separator yields the whole string.
-            ("split", 2) => {
+            ("string.split", 2) => {
                 self.uses_split = true;
                 self.uses_substr = true; // each piece is allocated with `$substr`
                 self.uses_list_push = true; // `$split` builds its result with it
@@ -5320,7 +5321,7 @@ impl Codegen {
             // string_chars(s): list of single-character strings. Built by walking
             // the chars via `$str_substring`; reuses the existing char-correct
             // helpers (no new UTF-8 logic).
-            ("string_chars", 1) => {
+            ("string.chars", 1) => {
                 self.uses_str_chars = true;
                 self.uses_byte_to_char = true; // counts chars
                 self.uses_substring = true; // emits $char_to_byte + $str_substring
@@ -5330,14 +5331,14 @@ impl Codegen {
                 Ok(format!("{s}    call $str_chars\n"))
             }
             // contains(s, sub): does `sub` occur in `s`? (UTF-8-safe byte match.)
-            ("contains", 2) => {
+            ("string.contains", 2) => {
                 self.uses_find_byte = true;
                 let s = self.compile_expr(&args[0])?;
                 let sub = self.compile_expr(&args[1])?;
                 Ok(format!("{s}{sub}    call $find_byte\n    i32.const -1\n    i32.ne\n"))
             }
             // index_of(s, sub): character index of the first occurrence, or -1.
-            ("index_of", 2) => {
+            ("string.index_of", 2) => {
                 self.uses_find_byte = true;
                 self.uses_index_of = true;
                 let s = self.compile_expr(&args[0])?;
@@ -5346,7 +5347,7 @@ impl Codegen {
             }
             // substring(s, start, end): the half-open character range [start, end),
             // clamped to bounds (counted by Unicode scalar).
-            ("substring", 3) => {
+            ("string.substring", 3) => {
                 self.uses_substring = true;
                 self.uses_substr = true;
                 // start/end are Int (i64) but the helper indexes with i32.
@@ -5362,7 +5363,7 @@ impl Codegen {
                 ))
             }
             // replace(s, from, to): all non-overlapping occurrences of `from`.
-            ("replace", 3) => {
+            ("string.replace", 3) => {
                 self.uses_replace = true;
                 let s = self.compile_expr(&args[0])?;
                 let from = self.compile_expr(&args[1])?;
@@ -5373,28 +5374,28 @@ impl Codegen {
             // safe for UTF-8 since whitespace bytes never appear inside a
             // multi-byte scalar; this matches the interpreter on ASCII edges
             // (Unicode-whitespace trimming remains interpreter-only).
-            ("trim", 1) => {
+            ("string.trim", 1) => {
                 self.uses_trim = true;
                 self.uses_substr = true;
                 let s = self.compile_expr(&args[0])?;
                 Ok(format!("{s}    call $trim\n"))
             }
             // ASCII case mapping, matching the interpreter's ASCII fold.
-            ("to_upper", 1) | ("to_lower", 1) => {
+            ("string.to_upper", 1) | ("string.to_lower", 1) => {
                 self.uses_ascii_case = true;
-                let up = if name == "to_upper" { 1 } else { 0 };
+                let up = if name == "string.to_upper" { 1 } else { 0 };
                 let s = self.compile_expr(&args[0])?;
                 Ok(format!("{s}    i32.const {up}\n    call $ascii_case\n"))
             }
             // --- Dict (immutable association map) ---
-            ("dict_new", 0) => {
+            ("dict.new", 0) => {
                 self.uses_dict = true;
                 self.uses_str_eq = true; // `$key_eq` references `$str_eq`
                 Ok("    call $dict_new\n".to_string())
             }
             // Dicts use the i32 ABI for keys and values (a concrete i64 Int key
             // or value is narrowed at the boundary).
-            ("insert", 3) => {
+            ("dict.insert", 3) => {
                 let mode = self.dict_key_mode(&args[1])?;
                 self.uses_dict = true;
                 self.uses_str_eq = true;
@@ -5410,7 +5411,7 @@ impl Codegen {
                     to_slot(vk)
                 ))
             }
-            ("get_or", 3) => {
+            ("dict.get_or", 3) => {
                 let mode = self.dict_key_mode(&args[1])?;
                 self.uses_dict = true;
                 self.uses_str_eq = true;
@@ -5428,7 +5429,7 @@ impl Codegen {
                     from_slot(dk)
                 ))
             }
-            ("has", 2) => {
+            ("dict.has", 2) => {
                 let mode = self.dict_key_mode(&args[1])?;
                 self.uses_dict = true;
                 self.uses_str_eq = true;
@@ -5446,7 +5447,7 @@ impl Codegen {
             // and runs the read + `call_indirect` + write in its own frame, so the
             // mid-op closure call composes with the existing closure ABI. Matches
             // the interpreter's `insert(d, k, f(get_or(d, k, default)))` exactly.
-            ("update", 4) => {
+            ("dict.update", 4) => {
                 let mode = self.dict_key_mode(&args[1])?;
                 self.uses_dict = true;
                 self.uses_str_eq = true; // `$key_eq` references `$str_eq`
@@ -5466,7 +5467,7 @@ impl Codegen {
                 ))
             }
             // remove(dict, k): a fresh map with `k` (and its value) dropped.
-            ("remove", 2) => {
+            ("dict.remove", 2) => {
                 let mode = self.dict_key_mode(&args[1])?;
                 self.uses_dict = true;
                 self.uses_str_eq = true;
@@ -5478,37 +5479,38 @@ impl Codegen {
                     to_slot(kk)
                 ))
             }
-            // size(dict): the entry count is the map's header word.
-            ("size", 1) => {
+            // size(dict): the entry count is the map's header word, widened
+            // to the i64 its declared `Int` result implies.
+            ("dict.size", 1) => {
                 let d = self.compile_expr(&args[0])?;
-                Ok(format!("{d}    i32.load\n"))
+                Ok(format!("{d}    i32.load\n    i64.extend_i32_s\n"))
             }
             // keys/values/pairs(dict): a fresh List in insertion order.
-            ("keys", 1) => {
+            ("dict.keys", 1) => {
                 self.uses_dict_iter = true;
                 let d = self.compile_expr(&args[0])?;
                 Ok(format!("{d}    call $dict_keys\n"))
             }
-            ("values", 1) => {
+            ("dict.values", 1) => {
                 self.uses_dict_iter = true;
                 let d = self.compile_expr(&args[0])?;
                 Ok(format!("{d}    call $dict_values\n"))
             }
-            ("pairs", 1) => {
+            ("dict.pairs", 1) => {
                 self.uses_dict_iter = true;
                 let d = self.compile_expr(&args[0])?;
                 Ok(format!("{d}    call $dict_pairs\n"))
             }
             // length(list): the record header is the length.
             // The list header is its element count (i32) -> Int (i64).
-            ("length", 1) => {
+            ("list.length", 1) => {
                 let arg = self.compile_expr(&args[0])?;
                 Ok(format!("{arg}    i32.load\n    i64.extend_i32_u\n"))
             }
             // at(list, i): load the 8-byte slot at ptr + 4 + i*8 (index is an
             // i64 Int, wrapped to an i32 address offset), then recover the
             // element's kind from the universal i64 slot rep.
-            ("at", 2) => {
+            ("list.at", 2) => {
                 // Recover the element at its kind, via the SAME `list_elem_kind`
                 // that types the `at` expression — otherwise codegen would expect
                 // one width and load another.
@@ -5529,14 +5531,14 @@ impl Codegen {
                 ))
             }
             // push(list, x) / concat(a, b): allocate a new list (runtime helper).
-            ("push", 2) => {
+            ("list.push", 2) => {
                 self.uses_list_push = true;
                 let xk = self.kind_of(&args[1]);
                 let list = self.compile_expr(&args[0])?;
                 let x = self.compile_expr(&args[1])?;
                 Ok(format!("{list}{x}{}    call $list_push\n", to_slot(xk)))
             }
-            ("concat", 2) => {
+            ("list.concat", 2) => {
                 self.uses_list_concat = true;
                 let a = self.compile_expr(&args[0])?;
                 let b = self.compile_expr(&args[1])?;
@@ -6190,7 +6192,7 @@ fn register_module_items(cg: &mut Codegen, module: &Module) {
                         }
                     }
                     // `List(String)` etc.: record the scalar element value type so
-                    // `at(f(...), i)` is typed (e.g. a String element compares by
+                    // `list.at(f(...), i)` is typed (e.g. a String element compares by
                     // content). Skips `Other` (generic / non-scalar elements).
                     if let Some(elem) = args.first() {
                         let evt = ty_to_valtype(elem);
@@ -6198,7 +6200,7 @@ fn register_module_items(cg: &mut Codegen, module: &Module) {
                             cg.fn_ret_list_elem_valtype.insert(f.name.clone(), evt);
                         }
                         // `List((T, U))` (e.g. zip): record the element tuple's
-                        // slot types so a destructure of `at(f(...), i)` is typed.
+                        // slot types so a destructure of `list.at(f(...), i)` is typed.
                         if let Type::Tuple(slots) = elem {
                             cg.fn_ret_list_elem_tuple_slots
                                 .insert(f.name.clone(), slots.iter().map(ty_to_valtype).collect());
@@ -6303,7 +6305,7 @@ pub fn compile_module_with(
                         main_param_is_args.push(is_args);
                     }
                 }
-                if reachable.contains(&f.name) {
+                if reachable.contains(&f.name) && !crate::typeck::intrinsic(&f.name) {
                     func_wat.push_str(&cg.compile_function(f)?);
                 }
             }
@@ -6773,7 +6775,7 @@ fn compile_actor_in(
     let mut helper_wat = String::new();
     for item in &parent.items {
         if let Item::Function(f) = item {
-            if needed.contains(&f.name) {
+            if needed.contains(&f.name) && !crate::typeck::intrinsic(&f.name) {
                 helper_wat.push_str(&cg.compile_function(f)?);
             }
         }
@@ -6943,6 +6945,7 @@ fn compile_actor_in(
             }
         };
         cg.globals.insert(field.name.clone());
+        cg.local_val_types.insert(field.name.clone(), ValType::Int);
         state_globals.push_str(&format!(
             "  (global ${} (mut i32) (i32.const {init}))\n",
             field.name
@@ -7283,7 +7286,7 @@ const CONCAT_WAT: &str = r#"  (func $concat (param $a i32) (param $b i32) (resul
     local.get $res)
 "#;
 
-// at(list, i): the i-th element slot, bounds-checked. A list is `[len:i32]` then
+// list.at(list, i): the i-th element slot, bounds-checked. A list is `[len:i32]` then
 // `len` 8-byte slots, so element i is at `list + 4 + 8*i`. An out-of-range index
 // (negative or >= len) traps — matching the interpreter's "index out of bounds"
 // error instead of silently reading adjacent heap.
@@ -7297,7 +7300,7 @@ const LIST_AT_WAT: &str = r#"  (func $list_at (param $list i32) (param $i i32) (
                (i32.mul (local.get $i) (i32.const 8)))))
 "#;
 
-// push(list, x): a fresh list `[len+1][elems...][x]`. Elements are 4-byte i32s,
+// list.push(list, x): a fresh list `[len+1][elems...][x]`. Elements are 4-byte i32s,
 // so the element block is copied with `memory.copy`.
 const LIST_PUSH_WAT: &str = r#"  (func $list_push (param $list i32) (param $x i64) (result i32)
     (local $len i32) (local $new i32)
@@ -7383,7 +7386,7 @@ const STR_APPEND_CAP_WAT: &str = r#"  (func $str_append_cap (param $s i32) (para
     local.get $new local.get $newcap)
 "#;
 
-// concat(a, b): a fresh list `[alen+blen][a elems][b elems]` (8-byte slots).
+// list.concat(a, b): a fresh list `[alen+blen][a elems][b elems]` (8-byte slots).
 const LIST_CONCAT_WAT: &str = r#"  (func $list_concat (param $a i32) (param $b i32) (result i32)
     (local $alen i32) (local $blen i32) (local $new i32)
     local.get $a i32.load local.set $alen
@@ -7418,7 +7421,7 @@ const LIST_DROP_WAT: &str = r#"  (func $list_drop (param $list i32) (param $k i3
     local.get $new)
 "#;
 
-// starts_with(s, p): do s's first p.len bytes equal p?
+// string.starts_with(s, p): do s's first p.len bytes equal p?
 const STARTS_WITH_WAT: &str = r#"  (func $starts_with (param $s i32) (param $p i32) (result i32)
     (local $plen i32) (local $i i32)
     (local.set $plen (i32.load (local.get $p)))
@@ -7782,7 +7785,7 @@ const MATCH_AT_WAT: &str = r#"  (func $match_at (param $s i32) (param $from i32)
     (i32.const 1))
 "#;
 
-// replace(s, from, to): every non-overlapping occurrence of `from` replaced by
+// string.replace(s, from, to): every non-overlapping occurrence of `from` replaced by
 // `to` (Rust's str::replace). A non-empty `from` is matched on bytes (UTF-8 safe)
 // in two passes — count, then fill. An empty `from` inserts `to` at every UTF-8
 // character boundary (and at both ends).
@@ -7986,7 +7989,7 @@ const KEY_EQ_WAT: &str = r#"  (func $key_eq (param $a i64) (param $b i64) (param
         (else (f64.eq (f64.reinterpret_i64 (local.get $a)) (f64.reinterpret_i64 (local.get $b))))))))
 "#;
 
-// insert(d, k, v): a fresh map like `d` with `k` set to `v` — the matching
+// dict.insert(d, k, v): a fresh map like `d` with `k` set to `v` — the matching
 // entry's value replaced, or `(k, v)` appended (count+1) if `k` is absent.
 // insert_cap(d, k, v, mode, cap): the linear-update dict insert. With owned
 // slack (cap = entry capacity from the shadow local), an existing key updates
@@ -8056,7 +8059,7 @@ const DICT_INSERT_WAT: &str = r#"  (func $dict_insert (param $d i32) (param $k i
         (local.get $new))))
 "#;
 
-// get_or(d, k, default): the value for `k`, or `default` if absent.
+// dict.get_or(d, k, default): the value for `k`, or `default` if absent.
 const DICT_GET_OR_WAT: &str = r#"  (func $dict_get_or (param $d i32) (param $k i64) (param $default i64) (param $mode i32) (result i64)
     (local $found i32)
     (local.set $found (call $dict_find (local.get $d) (local.get $k) (local.get $mode)))
@@ -8065,12 +8068,12 @@ const DICT_GET_OR_WAT: &str = r#"  (func $dict_get_or (param $d i32) (param $k i
     (i64.load (i32.add (i32.add (local.get $d) (i32.const 12)) (i32.mul (local.get $found) (i32.const 16)))))
 "#;
 
-// has(d, k): whether `k` is present.
+// dict.has(d, k): whether `k` is present.
 const DICT_HAS_WAT: &str = r#"  (func $dict_has (param $d i32) (param $k i64) (param $mode i32) (result i32)
     (i32.ge_s (call $dict_find (local.get $d) (local.get $k) (local.get $mode)) (i32.const 0)))
 "#;
 
-// remove(d, k): a fresh map with the entry for `k` dropped (unchanged if
+// dict.remove(d, k): a fresh map with the entry for `k` dropped (unchanged if
 // absent). Copies every entry whose key isn't `k` into a new map.
 const DICT_REMOVE_WAT: &str = r#"  (func $dict_remove (param $d i32) (param $k i64) (param $mode i32) (result i32)
     (local $count i32) (local $i i32) (local $new i32) (local $n i32)
@@ -8099,10 +8102,10 @@ const DICT_REMOVE_WAT: &str = r#"  (func $dict_remove (param $d i32) (param $k i
     (local.get $new))
 "#;
 
-// update(d, k, default, f): the upsert. Read the current value (or `default` if
+// dict.update(d, k, default, f): the upsert. Read the current value (or `default` if
 // `k` is absent) as a universal i64 slot, apply the updater closure `f` to it
 // (env = the closure pointer, code index = its first word), then reinsert under
-// `k`. Equivalent to `insert(d, k, f(get_or(d, k, default)))`, but the closure
+// `k`. Equivalent to `dict.insert(d, k, f(dict.get_or(d, k, default)))`, but the closure
 // call lives in this helper's own frame so call-site arg evaluation stays
 // single-shot and nests cleanly.
 // The in-place upsert: apply the updater closure to the current value (or
@@ -8128,7 +8131,7 @@ const DICT_UPDATE_WAT: &str = r#"  (func $dict_update (param $d i32) (param $k i
     (call $dict_insert (local.get $d) (local.get $k) (local.get $new) (local.get $mode)))
 "#;
 
-// keys(d) / values(d): a fresh List (8-byte i64 slots) of the keys (or values),
+// dict.keys(d) / dict.values(d): a fresh List (8-byte i64 slots) of the keys (or values),
 // in insertion order — copied straight across (both are i64 slots already).
 const DICT_KEYS_WAT: &str = r#"  (func $dict_keys (param $d i32) (result i32)
     (local $count i32) (local $i i32) (local $new i32)
@@ -8168,7 +8171,7 @@ const DICT_VALUES_WAT: &str = r#"  (func $dict_values (param $d i32) (result i32
     (local.get $new))
 "#;
 
-// pairs(d): a List of `(key, value)` 2-tuples in insertion order. Each tuple is
+// dict.pairs(d): a List of `(key, value)` 2-tuples in insertion order. Each tuple is
 // the codegen layout `[0][k][v]` with 8-byte slots, so `let (k, v) = entry`
 // destructures it; the list itself holds the tuple pointers in 8-byte slots.
 const DICT_PAIRS_WAT: &str = r#"  (func $dict_pairs (param $d i32) (result i32)
@@ -8197,7 +8200,7 @@ const DICT_PAIRS_WAT: &str = r#"  (func $dict_pairs (param $d i32) (result i32)
     (local.get $list))
 "#;
 
-// split(s, sep): a List(String) of the pieces between (non-overlapping)
+// string.split(s, sep): a List(String) of the pieces between (non-overlapping)
 // occurrences of `sep`, the separator dropped. Leading/trailing empty pieces
 // are kept (matching Rust's str::split); an empty separator yields `[s]`. The
 // result list is grown one piece at a time with `$list_push`.
@@ -8312,7 +8315,7 @@ const BYTE_TO_CHAR_WAT: &str = r#"  (func $byte_to_char (param $s i32) (param $b
     (local.get $count))
 "#;
 
-// index_of(s, sub): the character index of the first occurrence, or -1.
+// string.index_of(s, sub): the character index of the first occurrence, or -1.
 const STR_INDEX_OF_WAT: &str = r#"  (func $str_index_of (param $s i32) (param $sub i32) (result i32)
     (local $b i32)
     (local.set $b (call $find_byte (local.get $s) (local.get $sub)))
@@ -8344,7 +8347,7 @@ const CHAR_TO_BYTE_WAT: &str = r#"  (func $char_to_byte (param $s i32) (param $n
     (local.get $i))
 "#;
 
-// substring(s, start, end): the [start, end) character range as a fresh string.
+// string.substring(s, start, end): the [start, end) character range as a fresh string.
 const STR_SUBSTRING_WAT: &str = r#"  (func $str_substring (param $s i32) (param $start i32) (param $end i32) (result i32)
     (local $lo i32) (local $hi i32)
     (local.set $lo (call $char_to_byte (local.get $s) (local.get $start)))
@@ -8443,7 +8446,7 @@ const IS_WS_WAT: &str = r#"  (func $is_ws (param $b i32) (result i32)
               (i32.eq (local.get $b) (i32.const 12))))))))
 "#;
 
-// trim(s): a fresh string with leading/trailing ASCII whitespace removed.
+// string.trim(s): a fresh string with leading/trailing ASCII whitespace removed.
 const TRIM_WAT: &str = r#"  (func $trim (param $s i32) (result i32)
     (local $len i32) (local $lo i32) (local $hi i32)
     (local.set $len (i32.load (local.get $s)))
@@ -8466,7 +8469,7 @@ const TRIM_WAT: &str = r#"  (func $trim (param $s i32) (result i32)
     (call $substr (local.get $s) (local.get $lo) (i32.sub (local.get $hi) (local.get $lo))))
 "#;
 
-// ends_with(s, p): do s's last p.len bytes equal p?
+// string.ends_with(s, p): do s's last p.len bytes equal p?
 const ENDS_WITH_WAT: &str = r#"  (func $ends_with (param $s i32) (param $p i32) (result i32)
     (local $plen i32) (local $off i32) (local $i i32)
     (local.set $plen (i32.load (local.get $p)))
@@ -8492,7 +8495,7 @@ const PRINT_STR_WAT: &str = r#"  (func $print_str (param $s i32)
     call $print)
 "#;
 
-// int_to_string(n): the decimal text of `n`, with a leading '-' for negatives.
+// to_string(n): the decimal text of `n`, with a leading '-' for negatives.
 // Digits are extracted from the magnitude with unsigned div/rem (so a negative
 // `n` works), written back-to-front after the optional sign. 15 bytes covers
 // any i32 ("-2147483648" plus the 4-byte header).
@@ -9193,7 +9196,7 @@ type Vec2:
 
 fn main() -> Int:
     let v = Vec2(1.5, 2.5)
-    float_to_int((v).x)
+    math.to_int((v).x)
 "#;
         assert_eq!(run_int(src), 1);
     }
@@ -9204,7 +9207,7 @@ fn main() -> Int:
         let src = r#"
 fn main() -> Int:
     let xs = [1.5, 2.5]
-    length(xs)
+    list.length(xs)
 "#;
         assert_eq!(run_int(src), 2);
     }
@@ -9395,9 +9398,9 @@ fn main() -> Int:
 
     #[test]
     fn compiles_int_float_conversions() {
-        // int_to_float(7) / 2.0 = 3.5; float_to_int(3.5) = 3
+        // math.to_float(7) / 2.0 = 3.5; math.to_int(3.5) = 3
         assert_eq!(
-            run_int("fn main() -> Int:\n    float_to_int(int_to_float(7) / 2.0)\n"),
+            run_int("fn main() -> Int:\n    math.to_int(math.to_float(7) / 2.0)\n"),
             3
         );
     }
@@ -9406,7 +9409,7 @@ fn main() -> Int:
     fn compiles_string_length() {
         assert_eq!(run_int(r#"
 fn main() -> Int:
-    string_length("hello")
+    string.length("hello")
 "#), 5);
     }
 
@@ -9486,7 +9489,7 @@ fn main() -> Int:
         let src = r#"
 fn main() -> Int:
     let xs = [10, 20, 30]
-    ((length(xs) + at(xs, 0)) + at(xs, 2))
+    ((list.length(xs) + list.at(xs, 0)) + list.at(xs, 2))
 "#;
         assert_eq!(run_int(src), 43); // 3 + 10 + 30
     }
@@ -9568,7 +9571,7 @@ actor Counter:
 impl Counter:
     on Tick():
         count = (count + 1)
-        print(console, ("n=" <> int_to_string(count)))
+        print(console, ("n=" <> to_string(count)))
 "#;
         let module = parse_module(src).unwrap();
         let Item::Actor(actor) = &module.items[0] else {
@@ -9627,7 +9630,7 @@ fn main(console: Console):
     fn compiles_int_to_string() {
         let src = r#"
 fn main(console: Console):
-    print(console, int_to_string(12345))
+    print(console, to_string(12345))
 "#;
         assert_eq!(run_str(src), vec!["12345"]);
     }
@@ -9636,7 +9639,7 @@ fn main(console: Console):
     fn int_to_string_handles_zero() {
         let src = r#"
 fn main(console: Console):
-    print(console, int_to_string(0))
+    print(console, to_string(0))
 "#;
         assert_eq!(run_str(src), vec!["0"]);
     }
@@ -9653,7 +9656,7 @@ actor Counter:
 impl Counter:
     on Tick():
         count = (count + 1)
-        print(console, ("count is " <> int_to_string(count)))
+        print(console, ("count is " <> to_string(count)))
 "#;
         let module = parse_module(src).unwrap();
         let Item::Actor(actor) = &module.items[0] else {

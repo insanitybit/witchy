@@ -5,4 +5,4 @@ fn main(console: Console):
         var j = 0
         for j in 0..2000:
             total = total + (i * 7 + j) % 13
-    print(console, int_to_string(total))
+    print(console, to_string(total))
