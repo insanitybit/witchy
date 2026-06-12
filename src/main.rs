@@ -167,11 +167,21 @@ fn main() -> wasmtime::Result<()> {
         print!("{out}");
         return Ok(());
     }
-    // `witchy caps <file>` reports the program's host-capability footprint.
+    // `witchy caps [file]` reports the host-capability footprint. With no
+    // file, inside a project, it analyzes the project's entry module (the
+    // whole dependency tree's footprint is `witchy audit`).
     if std::env::args().nth(1).as_deref() == Some("caps") {
-        let Some(path) = std::env::args().nth(2) else {
-            eprintln!("usage: witchy caps <file>");
-            std::process::exit(1);
+        let path = match std::env::args().nth(2) {
+            Some(p) => p,
+            None => match pm::project_entry_file() {
+                Some(p) => p,
+                None => {
+                    eprintln!(
+                        "usage: witchy caps <file>  (or run inside a project — no witchy.toml here)"
+                    );
+                    std::process::exit(1);
+                }
+            },
         };
         if let Err(e) = report_capabilities(&path) {
             eprintln!("{e}");

@@ -1071,7 +1071,30 @@ impl Checker {
                 let msg = if self.lookup(name).is_some() {
                     format!("`{name}` is not a capability, so it can't appear in a `{kw}` block")
                 } else {
-                    format!("no capability `{name}` is in scope to {verb} here")
+                    let mut msg = format!("no capability `{name}` is in scope to {verb} here");
+                    // A capitalized name is probably the capability's TYPE
+                    // (`without Dir:`) — point at the binding of that type.
+                    if name.chars().next().is_some_and(|c| c.is_uppercase()) {
+                        let same_type: Vec<&String> = visible
+                            .iter()
+                            .filter(|b| {
+                                self.lookup(b).is_some_and(|t| {
+                                    let shown = t.to_string();
+                                    shown == *name
+                                        || shown
+                                            .split(['[', '('])
+                                            .next()
+                                            .is_some_and(|head| head == name)
+                                })
+                            })
+                            .collect();
+                        if let [binding] = same_type.as_slice() {
+                            msg.push_str(&format!(
+                                " — `{kw}` names the binding, not its type; did you mean `{binding}`?"
+                            ));
+                        }
+                    }
+                    msg
                 };
                 return terr(msg);
             }

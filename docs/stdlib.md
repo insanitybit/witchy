@@ -348,27 +348,27 @@ An outgoing request being assembled: method, full URL, headers, and body. Build 
 
 - `RequestBuilder(String, String, List((String, String)), String)`
 
-#### `fn get(net: Net, host: String, port: Int, path: String) -> Response`
+#### `fn get(net: Net[Connect, Tcp], host: String, port: Int, path: String) -> Response`
 
 Perform a GET request to `host:port` for `path`, returning the response.
 
-#### `fn post(net: Net, host: String, port: Int, path: String, body: String) -> Response`
+#### `fn post(net: Net[Connect, Tcp], host: String, port: Int, path: String, body: String) -> Response`
 
 Perform a POST request with `body` (e.g. a JSON document). The body's byte length is sent as Content-Length.
 
-#### `fn put(net: Net, host: String, port: Int, path: String, body: String) -> Response`
+#### `fn put(net: Net[Connect, Tcp], host: String, port: Int, path: String, body: String) -> Response`
 
-#### `fn delete(net: Net, host: String, port: Int, path: String) -> Response`
+#### `fn delete(net: Net[Connect, Tcp], host: String, port: Int, path: String) -> Response`
 
-#### `fn patch(net: Net, host: String, port: Int, path: String, body: String) -> Response`
+#### `fn patch(net: Net[Connect, Tcp], host: String, port: Int, path: String, body: String) -> Response`
 
-#### `fn head(net: Net, host: String, port: Int, path: String) -> Response`
+#### `fn head(net: Net[Connect, Tcp], host: String, port: Int, path: String) -> Response`
 
-#### `fn get_url(net: Net, raw: String) -> Result(Response, String)`
+#### `fn get_url(net: Net[Connect, Tcp], raw: String) -> Result(Response, String)`
 
 GET a full URL string (`http://host[:port]/path`), or an error if it doesn't parse. Saves splitting host/port/path by hand.
 
-#### `fn request_with(net: Net, method: String, host: String, port: Int, path: String, headers: List((String, String)), body: String) -> Response`
+#### `fn request_with(net: Net[Connect, Tcp], method: String, host: String, port: Int, path: String, headers: List((String, String)), body: String) -> Response`
 
 Send a request with custom headers, returning the response. The generic form behind the method helpers — use it when you need to set headers (auth, content-type, ...). `Connection: close` ends `recv_all` after the body.
 
@@ -1405,11 +1405,11 @@ Return `resp` with its status code replaced.
 
 #### `fn route(r: Router, m: String, p: String, h: fn(Request) -> Response) -> Router`
 
-#### `fn serve(net: Net, addr: String, app: Router)`
+#### `fn serve(net: Net[Listen, Tcp], addr: String, app: Router)`
 
 Serve `app` on `addr` forever. Needs the `Net` capability to listen; handlers never receive it.
 
-#### `fn serve_n(net: Net, addr: String, app: Router, n: Int)`
+#### `fn serve_n(net: Net[Listen, Tcp], addr: String, app: Router, n: Int)`
 
 Serve exactly `n` requests then return — for tests and one-shot servers.
 

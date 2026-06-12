@@ -86,7 +86,10 @@ fn main(console: Console, net: Net):
 
 To narrow the network capability itself — a client that can dial out but never
 listen — ask for `Net[Connect, Tcp]` instead of a full `Net`, exactly as the
-[narrowing chapter](capabilities-narrowing.md) describes.
+[narrowing chapter](capabilities-narrowing.md) describes. The client composes
+with that narrowing: `http.get` itself demands only `Net[Connect, Tcp]` (and
+`server.serve` only `Net[Listen, Tcp]`), so a narrowed handle passes straight
+through.
 
 For everything else — string manipulation, lists, dicts, sorting, JSON, time —
 see the [standard library reference](appendix-stdlib.md) and the `examples/`

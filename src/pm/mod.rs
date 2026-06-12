@@ -48,3 +48,14 @@ pub type PmResult<T> = Result<T, PmError>;
 pub fn err<T>(msg: impl Into<String>) -> PmResult<T> {
     Err(PmError(msg.into()))
 }
+
+/// The current directory's project entry source file (`src/<module>.witchy`
+/// per the manifest's rune name), if we're inside a project at all. Lets
+/// file-oriented commands (`witchy caps`) default to the project entry.
+pub fn project_entry_file() -> Option<String> {
+    let dir = std::path::Path::new(".");
+    let manifest = manifest::Manifest::load(dir).ok()?;
+    let module = manifest.rune.name.rsplit('/').next().unwrap_or("").replace('-', "_");
+    let path = dir.join("src").join(format!("{module}.witchy"));
+    path.exists().then(|| path.display().to_string())
+}

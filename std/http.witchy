@@ -26,29 +26,29 @@ type Request:
     Request(String, String, List((String, String)), List((String, String)), List((String, String)), String)
 
 // Perform a GET request to `host:port` for `path`, returning the response.
-pub fn get(net: Net, host: String, port: Int, path: String) -> Response:
+pub fn get(net: Net[Connect, Tcp], host: String, port: Int, path: String) -> Response:
     request(net, "GET", host, port, path, "")
 
 // Perform a POST request with `body` (e.g. a JSON document). The body's byte
 // length is sent as Content-Length.
-pub fn post(net: Net, host: String, port: Int, path: String, body: String) -> Response:
+pub fn post(net: Net[Connect, Tcp], host: String, port: Int, path: String, body: String) -> Response:
     request(net, "POST", host, port, path, body)
 
-pub fn put(net: Net, host: String, port: Int, path: String, body: String) -> Response:
+pub fn put(net: Net[Connect, Tcp], host: String, port: Int, path: String, body: String) -> Response:
     request(net, "PUT", host, port, path, body)
 
-pub fn delete(net: Net, host: String, port: Int, path: String) -> Response:
+pub fn delete(net: Net[Connect, Tcp], host: String, port: Int, path: String) -> Response:
     request(net, "DELETE", host, port, path, "")
 
-pub fn patch(net: Net, host: String, port: Int, path: String, body: String) -> Response:
+pub fn patch(net: Net[Connect, Tcp], host: String, port: Int, path: String, body: String) -> Response:
     request(net, "PATCH", host, port, path, body)
 
-pub fn head(net: Net, host: String, port: Int, path: String) -> Response:
+pub fn head(net: Net[Connect, Tcp], host: String, port: Int, path: String) -> Response:
     request(net, "HEAD", host, port, path, "")
 
 // GET a full URL string (`http://host[:port]/path`), or an error if it doesn't
 // parse. Saves splitting host/port/path by hand.
-pub fn get_url(net: Net, raw: String) -> Result(Response, String):
+pub fn get_url(net: Net[Connect, Tcp], raw: String) -> Result(Response, String):
     match url.parse(raw):
         Ok(u) -> Ok(get(net, url.host(u), url.port(u), url.path(u)))
         Err(e) -> Err("invalid URL: " <> e)
@@ -56,7 +56,7 @@ pub fn get_url(net: Net, raw: String) -> Result(Response, String):
 // Send a request with custom headers, returning the response. The generic form
 // behind the method helpers — use it when you need to set headers (auth,
 // content-type, ...). `Connection: close` ends `recv_all` after the body.
-pub fn request_with(net: Net, method: String, host: String, port: Int, path: String, headers: List((String, String)), body: String) -> Response:
+pub fn request_with(net: Net[Connect, Tcp], method: String, host: String, port: Int, path: String, headers: List((String, String)), body: String) -> Response:
     let sock = connect(net, host <> ":" <> to_string(port))
     var head = method <> " " <> path <> " HTTP/1.1\r\n" <> "Host: " <> host <> "\r\n"
     for h in headers:
@@ -67,7 +67,7 @@ pub fn request_with(net: Net, method: String, host: String, port: Int, path: Str
     send_bytes(sock, req)
     parse_response(recv_all(sock))
 
-fn request(net: Net, method: String, host: String, port: Int, path: String, body: String) -> Response:
+fn request(net: Net[Connect, Tcp], method: String, host: String, port: Int, path: String, body: String) -> Response:
     request_with(net, method, host, port, path, [], body)
 
 // ---- Request builder (reqwest-style fluent client) ----
@@ -117,7 +117,7 @@ impl RequestBuilder:
                 let sep = if string.contains(u, "?"): "&" else: "?"
                 RequestBuilder(m, u <> sep <> key <> "=" <> value, hs, b)
 
-    fn send(self, net: Net) -> Result(Response, String):
+    fn send(self, net: Net[Connect, Tcp]) -> Result(Response, String):
         // Send the assembled request, parsing host/port/path from its URL. An Err
         // is returned (rather than a panic) when the URL doesn't parse.
         match self:

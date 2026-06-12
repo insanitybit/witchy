@@ -25,11 +25,15 @@ always current — is
 | `iter` | lazy iterator combinators (`take`, `collect`, …) |
 | `option` / `result` *(prelude)* | helpers for `Option` / `Result` |
 
+Ordering-aware functions (`list.sort_by`, `list.min_by`, …) take a *less-than
+predicate* `fn(a, a) -> Bool`, not a three-way compare. Hash functions
+(`crypto.sha256`, …) return lowercase hex strings.
+
 ## Formats
 
 | Module | What it gives you |
 |---|---|
-| `json` | parse and encode JSON |
+| `json` | parse and encode JSON — `json.decode(s)` returns the `Json` sum type |
 | `csv` | RFC 4180 CSV |
 | `toml` | TOML parsing |
 | `url` | URL parsing |

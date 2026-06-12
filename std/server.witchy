@@ -424,7 +424,7 @@ fn handle_one(server: Listener, handler: fn(Request) -> Response):
 
 // Serve `app` on `addr` forever. Needs the `Net` capability to listen; handlers
 // never receive it.
-pub fn serve(net: Net, addr: String, app: Router):
+pub fn serve(net: Net[Listen, Tcp], addr: String, app: Router):
     let server = listen(net, addr)
     let handler = handler_of(app)
     var running = true
@@ -432,7 +432,7 @@ pub fn serve(net: Net, addr: String, app: Router):
         handle_one(server, handler)
 
 // Serve exactly `n` requests then return — for tests and one-shot servers.
-pub fn serve_n(net: Net, addr: String, app: Router, n: Int):
+pub fn serve_n(net: Net[Listen, Tcp], addr: String, app: Router, n: Int):
     let server = listen(net, addr)
     let handler = handler_of(app)
     var i = 0

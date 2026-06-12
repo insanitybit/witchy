@@ -78,7 +78,10 @@ pub fn run(args: &[String]) -> PmResult<()> {
     // `witchy why pkg -C path` both work from anywhere — CI, editor tooling,
     // and agents that can't freely chdir.
     let mut rest: Vec<String> = rest.to_vec();
-    if let Some(i) = rest.iter().position(|a| a == "-C") {
+    // Never read past a `--`: everything after it belongs to the program
+    // (`witchy run -- -C ...` must not chdir).
+    let scan_end = rest.iter().position(|a| a == "--").unwrap_or(rest.len());
+    if let Some(i) = rest[..scan_end].iter().position(|a| a == "-C") {
         let dir = rest
             .get(i + 1)
             .cloned()
@@ -123,7 +126,7 @@ fn print_help() -> PmResult<()> {
            init                  add a manifest to the current directory\n  \
            add <pkg>[@ver]       add a dependency (blocks on capability widening)\n  \
            build                 resolve + link + type-check (offline)\n  \
-           run                   build and run the program\n  \
+           run [args...]         build and run the program (args become main's `args`)\n  \
            update [pkg]          re-resolve within constraints\n  \
            vendor                materialize resolved sources into ./vendor\n\n\
          Audit:\n  \
@@ -797,7 +800,13 @@ fn cmd_build(rest: &[String]) -> PmResult<()> {
 }
 
 fn cmd_run(rest: &[String]) -> PmResult<()> {
-    let _ = rest;
+    // Everything after `run` (minus an optional `--` separator) is the
+    // program's argv, surfaced as `main`'s `args: List(String)` — the same
+    // contract as `witchy <file> [args...]` and `witchy sandbox ... [args...]`.
+    let args: Vec<String> = match rest {
+        [first, tail @ ..] if first == "--" => tail.to_vec(),
+        _ => rest.to_vec(),
+    };
     let env = CovenEnv::load();
     let a = assemble(Path::new("."), &env)?;
     if !a.has_main {
@@ -806,7 +815,7 @@ fn cmd_run(rest: &[String]) -> PmResult<()> {
             a.manifest.rune.name, a.entry
         ));
     }
-    let output = interpreter::run_module(a.linked, Path::new("."), Vec::new())
+    let output = interpreter::run_module(a.linked, Path::new("."), args)
         .map_err(|e| super::PmError(e.to_string()))?;
     for line in output {
         println!("{line}");
