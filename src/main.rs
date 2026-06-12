@@ -130,7 +130,11 @@ USAGE:
     witchy lsp                                    run the language server
     witchy demo                                   built-in capability/runtime demonstration
 
-Package commands (add, build, publish, ...) are also available."
+Package commands: new, init, add, build, run [args...], update, audit, tree,
+outdated, why, why-cap, verify, vendor, publish, promote, yank, list — run
+`witchy coven` for the full package-manager help. All of them accept
+`-C <dir>`; `witchy run` passes everything after `run` (or after `--`) to the
+program as `main`'s `args`, including `--help`."
     );
 }
 
@@ -176,6 +180,13 @@ fn main() -> wasmtime::Result<()> {
             eprintln!("usage: witchy which <function-name>");
             std::process::exit(1);
         };
+        // A module name lists that module's exports.
+        if linker::STD_MODULES.contains(&name.as_str()) {
+            for s in linker::module_exports(&name) {
+                println!("{s}");
+            }
+            return Ok(());
+        }
         let sigs = linker::std_signatures(&name);
         if !sigs.is_empty() {
             for s in sigs {

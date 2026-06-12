@@ -18,6 +18,14 @@ capability and exhaustiveness errors — without running anything. `fmt` is the
 canonical formatter; it preserves your comments and is idempotent, so there's
 one true layout and no style arguments.
 
+Know that `fmt` canonicalizes *forms*, not just whitespace: a
+`"a " <> to_string(x)` chain prints back as the interpolation `"a ${x}"`,
+escaped quotes inside `${...}` become bare, nullary constructors lose their
+`()`, single-statement match arms go inline, and `if let` survives as
+`if let`. Every rewrite is meaning-preserving — the formatter refuses to emit
+anything that doesn't parse back to the same program — but the bytes may
+change more than you expect the first time you run it.
+
 ## The parity harness (you'll likely never need it)
 
 ```sh

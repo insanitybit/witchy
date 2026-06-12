@@ -34,6 +34,12 @@ deliberate choice for portability, which we'll revisit when we talk about
 backends. Division or modulo by zero is a runtime error, loudly, on every
 backend.
 
+One display gotcha worth knowing now: a `Duration` is carried as whole
+milliseconds, and that is what `${timeout}` and `to_string(timeout)` print —
+`30000`, not `30s`. For human output, reach for `duration.human(timeout)`
+(`"30s"`, `"1m30s"`) or `duration.clock(timeout)` (`"0:00:30"`), or `say` it —
+`Duration` implements `Show` with the human form.
+
 ## Strings
 
 Strings concatenate with `<>` and interpolate with `${...}`:
@@ -78,8 +84,10 @@ fn main(console: Console):
 123
 ```
 
-`string.to_int` is strict: it errors on non-numeric input or on a value that
-won't fit in an `Int`, rather than silently returning a wrong number.
+`string.to_int` is strict: it **aborts the program** on non-numeric input or
+on a value that won't fit in an `Int`, rather than silently returning a wrong
+number — it does not return an `Err`. When bad input is expected (user input,
+file contents), use `string.parse_int`, which returns `Option(Int)`.
 
 ## Lists, tuples, and dicts
 

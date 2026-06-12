@@ -60,8 +60,9 @@ pub fn to_lower(s: String) -> String:
 pub fn trim(s: String) -> String:
     string.trim(s)
 
-// Parse a decimal integer; junk, overflow, or an empty string is a runtime
-// error on every backend. For a total version, see `parse_int`.
+// Parse a decimal integer; junk, overflow, or an empty string ABORTS the
+// program (a runtime error, not an `Err`) on every backend. For the total
+// version that returns `Option(Int)`, see `parse_int`.
 pub fn to_int(s: String) -> Int:
     string.to_int(s)
 

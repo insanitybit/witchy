@@ -49,7 +49,7 @@ types and constructors. A lowercase, argument-less name in type position
 | `true` / `false` | `Bool` | |
 | `"hi\n"` | `String` | UTF-8; escapes `\n \t \r \0 \\ \" \$` |
 | `"sum: ${a + b}"` | `String` | interpolation — `${expr}` renders *any* value (see below); inner strings may be bare (`"${f("x")}"`) or escaped (`"${f(\"x\")}"`) |
-| `30s`, `250ms`, `5m`, `2h`/`2hr`, `1d`, `1w` | `Duration` | a distinct type carried as milliseconds; not mixable with bare `Int` |
+| `30s`, `250ms`, `5m`, `2h`/`2hr`, `1d`, `1w` | `Duration` | a distinct type carried as milliseconds; not mixable with bare `Int`; `${d}`/`to_string` print the raw milliseconds — `duration.human`/`clock` (or `say`) for display |
 | `[1, 2, 3]` | `List(Int)` | immutable |
 | `(1, "a")` | tuple | fixed arity, mixed types; elements read by position (`pair.0`, `grid.0.1`) or destructured (`let (n, s) = pair`) |
 
@@ -172,8 +172,8 @@ fn main(console: Console):
 
 Float notes: `0.0 / 0.0` is NaN; `1.0 / 0.0` is infinity; NaN `==` anything is
 `false` (IEEE), while NaN *ordering* errors. Conversions: `math.to_float`,
-`math.to_int` (saturating truncation), `string.to_int` (strict; errors on
-junk or overflow), `math.sqrt`, `to_string`.
+`math.to_int` (saturating truncation), `string.to_int` (strict; ABORTS on
+junk or overflow — `string.parse_int` is the `Option`-returning version), `math.sqrt`, `to_string`.
 
 ## 5. Control flow
 

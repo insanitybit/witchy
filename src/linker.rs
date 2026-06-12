@@ -193,6 +193,24 @@ fn is_subsequence(needle: &str, hay: &str) -> bool {
     needle.chars().all(|c| it.any(|h| h == c))
 }
 
+/// Every `pub fn` of one std module, as signature lines — `witchy which time`
+/// lists what the `time` module exports.
+pub fn module_exports(module: &str) -> Vec<String> {
+    let Some(src) = std_source(module) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for line in src.lines() {
+        let t = line.trim_start();
+        if let Some(rest) = t.strip_prefix("pub fn ") {
+            if rest.contains('(') {
+                out.push(format!("{module}.{}", rest.trim_end().trim_end_matches(':')));
+            }
+        }
+    }
+    out
+}
+
 /// The closest std-library function name to `name` within a small edit distance —
 /// used to suggest a likely-misspelled stdlib call. Returns `(function, module)`.
 pub fn closest_std_function(name: &str) -> Option<(String, &'static str)> {

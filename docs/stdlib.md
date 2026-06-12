@@ -1505,7 +1505,7 @@ Strip leading and trailing ASCII whitespace.
 
 #### `fn to_int(s: String) -> Int`
 
-Parse a decimal integer; junk, overflow, or an empty string is a runtime error on every backend. For a total version, see `parse_int`.
+Parse a decimal integer; junk, overflow, or an empty string ABORTS the program (a runtime error, not an `Err`) on every backend. For the total version that returns `Option(Int)`, see `parse_int`.
 
 #### `fn join(parts: List(String), sep: String) -> String`
 

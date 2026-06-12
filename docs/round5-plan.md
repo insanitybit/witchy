@@ -20,7 +20,13 @@ not the type, is the guard there.
 Zero language-level findings for the second round running. Every remaining
 item is polish:
 
-## Round 5 — small, ordered by learner pain
+## Round 5 — small, ordered by learner pain — ALL SHIPPED 2026-06-12
+
+(1 went the documentation route: Durations erase to their millisecond Int at
+runtime on BOTH backends, so a human `${d}` could not be made total — a
+Duration inside a list would still print as ms, a silent inconsistency worse
+than the documented default. `Value`-level Duration distinction is future
+language work if this keeps biting.)
 
 1. **`Duration` interpolation** prints raw milliseconds (`30000`), not `30s`.
    Decide: make `to_string`/`${}` of a Duration render `duration.human` form
