@@ -38,6 +38,8 @@ filing a compiler bug — its output is the perfect reproduction).
 ```sh
 witchy caps program.witchy                  # the capability footprint (runtime + build)
 witchy caps-diff old.witchy new.witchy      # exit 2 if authority widened on either axis
+witchy which split                          # where a function lives: string.split(s, sep), with its doc
+
 witchy sandbox program.witchy               # run confined in the WASM VM
 witchy build-step gen.witchy --out gen/     # run a build step under confined grants
 ```

@@ -51,12 +51,13 @@ under proper names. So grow breadth where programs actually stalled:
 - `string`: `pad_left`/`pad_right`/`repeat` (the learner wrote all three by
   hand for table rendering).
 
-### C. Tooling: discovery aids
-- `witchy doc --search <name>` (or `witchy which split`): given a bare name,
-  print the module-qualified candidates with signatures — the round-3 naming
-  frictions (to_milliseconds, decode, sort_by) all die here.
-- The unknown-function suggester already does closest-match; extend it to
-  search across modules ("`to_ms`? `duration.to_milliseconds` exists").
+### C. Tooling: discovery aids — SHIPPED
+`witchy which <name>`: exact → substring → abbreviation (subsequence) tiers
+over every std `pub fn`, printing module-qualified signatures with their doc
+line; a final levenshtein fallback suggests near-misses. `which pad` lists
+both pads; `which to_ms` finds `duration.to_milliseconds`. (B's string item
+turned out to already exist — pad_left/pad_right/repeat have been in
+std/string all along; discovery WAS the gap.)
 
 ### D. Round 5 setup
 Re-run the learner after A–C with the same prompt. Target: a round whose

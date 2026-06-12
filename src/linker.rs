@@ -127,6 +127,72 @@ fn std_pub_fns() -> Vec<(String, &'static str)> {
     out
 }
 
+/// std `pub fn`s whose name matches `query` — exact matches if any, else
+/// substring matches — rendered as module-qualified signature lines (with the
+/// immediately-preceding doc comment, when there is one) for `witchy which`.
+pub fn std_signatures(query: &str) -> Vec<String> {
+    let mut exact = Vec::new();
+    let mut partial = Vec::new();
+    for m in STD_MODULES {
+        let Some(src) = std_source(m) else { continue };
+        let lines: Vec<&str> = src.lines().collect();
+        for (i, line) in lines.iter().enumerate() {
+            let t = line.trim_start();
+            let Some(rest) = t.strip_prefix("pub fn ") else { continue };
+            let Some(paren) = rest.find('(') else { continue };
+            let fname = rest[..paren].trim();
+            let bucket = if fname == query {
+                &mut exact
+            } else if fname.contains(query) {
+                &mut partial
+            } else {
+                continue;
+            };
+            let sig = rest.trim_end().trim_end_matches(':');
+            let mut entry = format!("{m}.{sig}");
+            // The doc is the contiguous `//` block above; its FIRST line is
+            // the sentence that describes the function.
+            let mut start = i;
+            while start > 0 && lines[start - 1].trim_start().starts_with("//") {
+                start -= 1;
+            }
+            if start < i {
+                if let Some(doc) = lines[start].trim_start().strip_prefix("//") {
+                    entry.push_str(&format!("\n    {}", doc.trim()));
+                }
+            }
+            bucket.push(entry);
+        }
+    }
+    if !exact.is_empty() {
+        return exact;
+    }
+    if !partial.is_empty() {
+        return partial;
+    }
+    // Abbreviation tier: `to_ms` finds `to_milliseconds` — the query is a
+    // subsequence of the name and they share the first few characters.
+    let prefix: String = query.chars().take(3).collect();
+    let mut abbrev = Vec::new();
+    for (cand, m) in std_pub_fns() {
+        if cand.starts_with(&prefix) && is_subsequence(query, &cand) {
+            abbrev.extend(std_signatures(&cand).into_iter().filter(|s| {
+                s.starts_with(&format!("{m}.{cand}("))
+            }));
+        }
+    }
+    abbrev.sort();
+    abbrev.dedup();
+    abbrev.truncate(5);
+    abbrev
+}
+
+/// Whether the characters of `needle` appear in `hay` in order.
+fn is_subsequence(needle: &str, hay: &str) -> bool {
+    let mut it = hay.chars();
+    needle.chars().all(|c| it.any(|h| h == c))
+}
+
 /// The closest std-library function name to `name` within a small edit distance —
 /// used to suggest a likely-misspelled stdlib call. Returns `(function, module)`.
 pub fn closest_std_function(name: &str) -> Option<(String, &'static str)> {
@@ -1005,5 +1071,23 @@ mod tests {
         // `map` lives in list (and option); a near miss resolves to a real name.
         assert!(closest_std_function("mep").is_some());
         assert_eq!(closest_std_function("zzzzzz"), None);
+    }
+
+    #[test]
+    fn which_finds_functions_by_name_fragment_and_abbreviation() {
+        // Exact: module-qualified signature with its doc line.
+        let split = std_signatures("split");
+        assert!(split.iter().any(|s| s.starts_with("string.split(")), "{split:?}");
+        // Substring: `pad` lists both pads.
+        let pad = std_signatures("pad");
+        assert!(pad.iter().any(|s| s.starts_with("string.pad_left(")), "{pad:?}");
+        assert!(pad.iter().any(|s| s.starts_with("string.pad_right(")), "{pad:?}");
+        // Abbreviation: the round-3 learner guessed `to_ms`.
+        let ms = std_signatures("to_ms");
+        assert!(
+            ms.iter().any(|s| s.starts_with("duration.to_milliseconds(")),
+            "{ms:?}"
+        );
+        assert!(std_signatures("zzz_nothing").is_empty());
     }
 }

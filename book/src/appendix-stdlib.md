@@ -29,6 +29,10 @@ Ordering-aware functions (`list.sort_by`, `list.min_by`, …) take a *less-than
 predicate* `fn(a, a) -> Bool`, not a three-way compare. Hash functions
 (`crypto.sha256`, …) return lowercase hex strings.
 
+Can't find a name? `witchy which <fragment>` searches the whole library —
+`witchy which pad` lists both pads with their signatures, and `witchy which
+to_ms` finds `duration.to_milliseconds`.
+
 ## Formats
 
 | Module | What it gives you |

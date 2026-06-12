@@ -123,8 +123,9 @@ USAGE:
     witchy sandbox [--dir <root>] [--net <addr>]... <file.witchy> [args...]
                                                   compile and run in a VM granted exactly its footprint
     witchy emit-wat <file.witchy>                 print the compiled WebAssembly text (the module sandbox runs)
-    witchy caps     <file.witchy>                 report the capability footprint
+    witchy caps     [file.witchy]                 report the capability footprint (defaults to the project entry)
     witchy caps-diff <old.witchy> <new.witchy>    fail if the footprint widened
+    witchy which    <name>                        find a function in the standard library by (partial) name
     witchy fmt [--check] <file.witchy>            reformat in place (--check: verify only, exit 1 if not)
     witchy lsp                                    run the language server
     witchy demo                                   built-in capability/runtime demonstration
@@ -166,6 +167,35 @@ fn main() -> wasmtime::Result<()> {
         }
         print!("{out}");
         return Ok(());
+    }
+    // `witchy which <name>` — where does a function live in the standard
+    // library? Exact (or substring) matches print module-qualified signatures
+    // with their doc line; a near-miss falls back to the closest name.
+    if std::env::args().nth(1).as_deref() == Some("which") {
+        let Some(name) = std::env::args().nth(2) else {
+            eprintln!("usage: witchy which <function-name>");
+            std::process::exit(1);
+        };
+        let sigs = linker::std_signatures(&name);
+        if !sigs.is_empty() {
+            for s in sigs {
+                println!("{s}");
+            }
+            return Ok(());
+        }
+        match linker::closest_std_function(&name) {
+            Some((f, m)) => {
+                println!("no std function named `{name}` — did you mean `{m}.{f}`?");
+                for s in linker::std_signatures(&f) {
+                    println!("{s}");
+                }
+                return Ok(());
+            }
+            None => {
+                eprintln!("no std function matches `{name}`");
+                std::process::exit(1);
+            }
+        }
     }
     // `witchy caps [file]` reports the host-capability footprint. With no
     // file, inside a project, it analyzes the project's entry module (the
