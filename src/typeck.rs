@@ -2481,6 +2481,7 @@ impl TypeTable {
     pub fn type_of(&self, e: &Expr) -> Option<&Ty> {
         self.types.get(&(e as *const Expr as usize))
     }
+    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.types.is_empty()
     }

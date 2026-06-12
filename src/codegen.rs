@@ -4840,7 +4840,11 @@ impl Codegen {
             }
             _ => unreachable!("scalar shapes have no helper"),
         };
-        self.eq_helpers.insert(name.clone(), body);
+        // Value semantics allow ONE invisible optimization: pointer-equal
+        // implies value-equal (immutable data), so every structural helper
+        // short-circuits on identical operands; pointer-UNEQUAL always falls
+        // through to the structural walk.
+        self.eq_helpers.insert(name.clone(), inject_ptr_fast_path(body));
         Ok(name)
     }
 
@@ -5883,6 +5887,23 @@ const WM_POOL: usize = 4;
 /// buffer, so the variable keeps the copying push. This is the linear-update
 /// optimization: value semantics are preserved because no one else can
 /// observe the mutated block.
+/// Insert the pointer-equality short-circuit at the top of a structural-
+/// equality helper (after its local declarations, as WAT requires).
+fn inject_ptr_fast_path(body: String) -> String {
+    const FAST: &str =
+        "    (if (i32.eq (local.get $a) (local.get $b)) (then (return (i32.const 1))))\n";
+    let mut out = String::with_capacity(body.len() + FAST.len());
+    let mut inserted = false;
+    for (i, line) in body.split_inclusive('\n').enumerate() {
+        if !inserted && i > 0 && !line.trim_start().starts_with("(local ") {
+            out.push_str(FAST);
+            inserted = true;
+        }
+        out.push_str(line);
+    }
+    out
+}
+
 /// Does the type mention a bare lowercase type variable anywhere?
 fn type_has_var(t: &Type) -> bool {
     match t {
@@ -7164,6 +7185,7 @@ fn and_chain(conds: &[String]) -> String {
 /// String equality over two length-prefixed records `[len][bytes]`.
 const STR_EQ_WAT: &str = r#"  (func $str_eq (param $a i32) (param $b i32) (result i32)
     (local $len i32) (local $i i32)
+    (if (i32.eq (local.get $a) (local.get $b)) (then (return (i32.const 1))))
     (if (i32.ne (i32.load (local.get $a)) (i32.load (local.get $b)))
       (then (return (i32.const 0))))
     (local.set $len (i32.load (local.get $a)))
