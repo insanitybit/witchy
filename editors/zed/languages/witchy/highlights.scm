@@ -8,6 +8,7 @@
 
 (integer) @number
 (float) @number
+(duration) @number
 (boolean) @boolean
 (string) @string
 (escape_sequence) @string.escape
@@ -25,11 +26,13 @@
 [
   "import" "type" "actor" "on"
   "trait" "impl" "where"
-  "fn" "pub" "let" "var" "update" "spawn"
-  "return"
+  "fn" "gen" "pub" "let" "var" "update" "spawn"
+  "return" "yield"
   "if" "else" "match"
   "for" "while" "in"
-  "inout" "sink"
+  "inout" "sink" "own" "move"
+  "as" "retain" "without" "region"
+  "comptime" "derive"
 ] @keyword
 
 ; `break`/`continue` are whole-rule tokens, so capture the statement nodes.
