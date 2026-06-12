@@ -73,17 +73,21 @@ pub fn run(args: &[String]) -> PmResult<()> {
     let Some((cmd, rest)) = args.split_first() else {
         return print_help();
     };
-    // `-C <dir>` (first, like make/git): run the command from that project
-    // directory, so `witchy -C path/to/rune build` works from anywhere —
-    // CI, editor tooling, and agents that can't freely chdir.
-    let mut rest = rest;
-    if let [flag, dir, tail @ ..] = rest {
-        if flag == "-C" {
-            std::env::set_current_dir(dir)
-                .map_err(|e| super::PmError(format!("-C {dir}: {e}")))?;
-            rest = tail;
-        }
+    // `-C <dir>` (anywhere in the arguments, for every subcommand): run the
+    // command from that project directory, so `witchy build -C path` and
+    // `witchy why pkg -C path` both work from anywhere — CI, editor tooling,
+    // and agents that can't freely chdir.
+    let mut rest: Vec<String> = rest.to_vec();
+    if let Some(i) = rest.iter().position(|a| a == "-C") {
+        let dir = rest
+            .get(i + 1)
+            .cloned()
+            .ok_or_else(|| super::PmError("-C needs a directory".into()))?;
+        std::env::set_current_dir(&dir)
+            .map_err(|e| super::PmError(format!("-C {dir}: {e}")))?;
+        rest.drain(i..=i + 1);
     }
+    let rest: &[String] = &rest;
     match cmd.as_str() {
         "coven" => run(rest), // allow `witchy coven <subcommand>` too
         "coven-serve" => cmd_serve(rest),
@@ -315,16 +319,37 @@ fn cmd_new(rest: &[String]) -> PmResult<()> {
     std::fs::create_dir_all(dir.join("src"))?;
     let manifest = format!("[rune]\nname = \"{name}\"\nversion = \"0.1.0\"\n\n[dependencies]\n");
     std::fs::write(dir.join("witchy.toml"), manifest)?;
-    let starter = format!(
-        "// {name} — a witchy rune.\n\
-         // `main` is the root actor: the host mints the capabilities it declares\n\
-         // (here, Console) and nothing else can perform effects.\n\n\
-         fn main(console: Console):\n    \
-           print(console, \"hello from {name}\")\n"
-    );
+    let lib = a.bools.contains("--lib");
+    let starter = if lib {
+        format!(
+            "// {name} — a witchy library rune.\n\
+             // A library exports `pub fn`s and has no `main`; any effect it\n\
+             // performs must arrive as a capability parameter, so its footprint\n\
+             // is visible in its signatures (`witchy caps`).\n\n\
+             pub fn greeting(who: String) -> String:\n    \
+               \"hello, ${{who}}\"\n"
+        )
+    } else {
+        format!(
+            "// {name} — a witchy rune.\n\
+             // `main` is the root actor: the host mints the capabilities it declares\n\
+             // (here, Console) and nothing else can perform effects.\n\n\
+             fn main(console: Console):\n    \
+               print(console, \"hello from {name}\")\n"
+        )
+    };
     std::fs::write(dir.join("src").join(format!("{module}.witchy")), starter)?;
-    println!("created rune `{name}` in {}/", dir.display());
-    println!("  cd {} && witchy run", dir.display());
+    println!(
+        "created {} `{name}` in {}/",
+        if lib { "library rune" } else { "rune" },
+        dir.display()
+    );
+    if lib {
+        println!("  cd {} && witchy build", dir.display());
+    } else {
+        println!("  cd {} && witchy run", dir.display());
+        println!("  (libraries: `witchy new <name> --lib` scaffolds pub fns and no main)");
+    }
     Ok(())
 }
 

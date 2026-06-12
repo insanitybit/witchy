@@ -224,6 +224,7 @@ fn brand_map(
 /// One entry point: the host capabilities (with rights) it requires, plus the
 /// names of any capability brands it receives them through (a display-only
 /// refinement).
+#[derive(Clone)]
 pub struct Entry {
     pub name: String,
     pub capabilities: CapSet,
@@ -234,6 +235,12 @@ pub struct Entry {
 /// union across all of them (the maximum host authority the module can wield).
 pub struct Footprint {
     pub entries: Vec<Entry>,
+    /// Every capability-touching function in declaration order — the entry
+    /// points plus private helpers whose signatures carry capability types.
+    /// Display-only (`witchy caps`): the gate and the published footprint
+    /// records use `entries`/`total`, where private helpers are subsumed by
+    /// whichever entry point reaches them.
+    pub per_function: Vec<Entry>,
     pub total: CapSet,
     /// The capability brands (refinements) used anywhere in the module — the
     /// union of every entry's brands. Authority-equivalent to their host caps,
@@ -363,14 +370,17 @@ pub fn analyze(module: &Module) -> Footprint {
     let taint = taint_map(module);
     let brands = brand_map(module, &taint);
     let mut entries = Vec::new();
+    let mut per_function = Vec::new();
     let mut total = CapSet::new();
     for item in &module.items {
         // The capability-bearing types at this entry point: a public function's
-        // (or `main`'s) parameters, or an actor's spawn-granted fields.
-        let (name, types): (String, Vec<&Type>) = match item {
-            Item::Function(f) if f.public || f.name == "main" => (
+        // (or `main`'s) parameters, or an actor's spawn-granted fields. Private
+        // functions get the same signature scan, but report-only.
+        let (name, types, is_entry): (String, Vec<&Type>, bool) = match item {
+            Item::Function(f) => (
                 f.name.clone(),
                 f.params.iter().filter_map(|p| p.ty.as_ref()).collect(),
+                f.public || f.name == "main",
             ),
             Item::Actor(a) => (
                 format!("actor {}", a.name),
@@ -379,6 +389,7 @@ pub fn analyze(module: &Module) -> Footprint {
                     .filter(|fl| fl.init.is_none())
                     .map(|fl| &fl.ty)
                     .collect(),
+                true,
             ),
             _ => continue,
         };
@@ -398,12 +409,18 @@ pub fn analyze(module: &Module) -> Footprint {
                 }
             }
         }
-        merge_into(&mut total, &capabilities);
-        entries.push(Entry {
+        let entry = Entry {
             name,
             capabilities,
             brands: entry_brands,
-        });
+        };
+        if is_entry {
+            merge_into(&mut total, &entry.capabilities);
+            per_function.push(entry.clone());
+            entries.push(entry);
+        } else if !entry.capabilities.is_empty() {
+            per_function.push(entry);
+        }
     }
     let brands = entries.iter().flat_map(|e| e.brands.iter().cloned()).collect();
     // The build axis: the build capabilities the `build` entrypoint demands,
@@ -417,6 +434,7 @@ pub fn analyze(module: &Module) -> Footprint {
     }
     Footprint {
         entries,
+        per_function,
         total,
         brands,
         build,

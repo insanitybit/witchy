@@ -427,6 +427,7 @@ pub(crate) fn link_capability_imports(
     }
     if caps.dir_root.is_some() && caps.dir_write {
         linker.func_wrap("witchy", "dir_write", host_dir_write)?;
+        linker.func_wrap("witchy", "dir_append", host_dir_append)?;
         linker.func_wrap("witchy", "dir_make_dir", host_dir_make_dir)?;
     }
     // The Net family, linked per VERB right. Socket I/O carries no authority
@@ -899,6 +900,29 @@ fn host_dir_write(
     let path = confine(crate::interpreter::resolve_write(&base, &rel))?;
     std::fs::write(&path, contents)
         .map_err(|e| Error::msg(format!("write failed for `{}`: {e}", path.display())))
+}
+
+/// `dir_append(h, rel, contents)`: append to a confined file, creating it if
+/// absent — `dir_write`'s confinement without clobbering existing contents.
+fn host_dir_append(
+    mut caller: Caller<'_, ActorState>,
+    h: i32,
+    rel_ptr: i32,
+    contents_ptr: i32,
+) -> Result<()> {
+    let mem = memory_of(&mut caller)?;
+    let data = mem.data(&caller);
+    let rel = read_wstr(data, rel_ptr)?;
+    let contents = read_wstr(data, contents_ptr)?;
+    let base = dir_base(&caller, h)?;
+    let path = confine(crate::interpreter::resolve_write(&base, &rel))?;
+    use std::io::Write as _;
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .and_then(|mut f| f.write_all(contents.as_bytes()))
+        .map_err(|e| Error::msg(format!("append failed for `{}`: {e}", path.display())))
 }
 
 /// `dir_make_dir(h, name)`: create a confined subdirectory (idempotent).

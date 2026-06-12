@@ -519,7 +519,7 @@ struct Codegen {
     /// Whether the `env_len`/`env_fill` host imports + `$get_env` guest helper
     /// are needed (`Env` capability).
     uses_get_env: bool,
-    /// Which `Dir` operations the program uses ("read"/"write"/"exists"/
+    /// Which `Dir` operations the program uses ("read"/"write"/"append"/"exists"/
     /// "is_dir"/"list"/"subdir"/"make_dir"). Each pulls in exactly its own host
     /// import, so a read-only program never imports a write op (and therefore
     /// instantiates under a read-only grant).
@@ -1998,6 +1998,9 @@ impl Codegen {
         }
         if self.used_dir_ops.contains("write") {
             s.push_str("  (import \"witchy\" \"dir_write\" (func $dir_write_host (param i32 i32 i32)))\n");
+        }
+        if self.used_dir_ops.contains("append") {
+            s.push_str("  (import \"witchy\" \"dir_append\" (func $dir_append_host (param i32 i32 i32)))\n");
         }
         if self.used_dir_ops.contains("make_dir") {
             s.push_str("  (import \"witchy\" \"dir_make_dir\" (func $dir_make_dir_host (param i32 i32)))\n");
@@ -5230,12 +5233,6 @@ impl Codegen {
                 let msg = self.compile_expr(&args[1])?;
                 Ok(format!("{msg}    call $print_str\n    i32.const 0\n"))
             }
-            ("int_to_string", 1) => {
-                self.uses_int_to_string = true;
-                let ak = self.kind_of(&args[0]);
-                let arg = self.compile_expr(&args[0])?;
-                Ok(format!("{arg}{}    call $int_to_string\n", kind_convert(ak, Kind::I64)))
-            }
             // to_string(x): render by the argument's compile-time value type. A
             // String passes through; an Int reuses `$int_to_string`; a Bool picks
             // an interned "true"/"false". Floats and undetermined types error
@@ -5275,7 +5272,8 @@ impl Codegen {
                         Ok(format!("{arg}    call ${h}\n"))
                     }
                     _ => cerr(
-                        "to_string could not determine the value's type for WASM; convert it explicitly (e.g. int_to_string) or implement `Show`",
+                        "to_string could not determine the value's type for WASM; \
+                         annotate the value's type or implement `Show` for it",
                     ),
                 },
             },
@@ -5631,6 +5629,15 @@ impl Codegen {
                 let rel = self.compile_expr(&args[1])?;
                 let contents = self.compile_expr(&args[2])?;
                 Ok(format!("{d}{rel}{contents}    call $dir_write_host\n    i32.const 0\n"))
+            }
+            ("append", 3) => {
+                self.used_dir_ops.insert("append");
+                let d = self.compile_expr(&args[0])?;
+                let rel = self.compile_expr(&args[1])?;
+                let contents = self.compile_expr(&args[2])?;
+                Ok(format!(
+                    "{d}{rel}{contents}    call $dir_append_host\n    i32.const 0\n"
+                ))
             }
             ("make_dir", 2) => {
                 self.used_dir_ops.insert("make_dir");

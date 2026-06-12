@@ -1116,6 +1116,24 @@ impl Interpreter {
                 }
                 _ => err("write expects a Dir, a relative path, and contents"),
             },
+            // Append to a file (creating it if absent) — `write`'s confinement
+            // and rights, without clobbering existing contents.
+            "append" => match args {
+                [Value::Dir(base), Value::Str(rel), Value::Str(contents)] => {
+                    let path = resolve_write(base, rel)?;
+                    use std::io::Write as _;
+                    let res = std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(&path)
+                        .and_then(|mut f| f.write_all(contents.as_bytes()));
+                    match res {
+                        Ok(()) => Ok(Some(Value::Nil)),
+                        Err(e) => err(format!("append failed for `{}`: {e}", path.display())),
+                    }
+                }
+                _ => err("append expects a Dir, a relative path, and contents"),
+            },
             // Whether a file exists within the Dir capability's subtree — total
             // (never errors), so a path outside the subtree, or a missing file,
             // simply reads as `false`. Lets `read` callers avoid a crash.

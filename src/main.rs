@@ -1378,20 +1378,21 @@ fn run_build_step_file(
     interpreter::run_build_step(linked, grants).map_err(|e| e.message)
 }
 
-/// Print the host-capability footprint of a single source file: which of
-/// `Console`/`Dir`/`Net` each entry point requires, and the union.
+/// Print the host-capability footprint of a single source file: every
+/// capability-touching function (entry points and private helpers), and the
+/// union over the entry points.
 fn report_capabilities(path: &str) -> Result<(), String> {
     let fp = analyze_file(path)?;
     let show = capabilities::show_caps;
     println!("Host-capability footprint of {path}:");
     let width = fp
-        .entries
+        .per_function
         .iter()
         .map(|e| e.name.len())
         .max()
         .unwrap_or(0)
         .max("total".len());
-    for e in &fp.entries {
+    for e in &fp.per_function {
         let refined = if e.brands.is_empty() {
             String::new()
         } else {
