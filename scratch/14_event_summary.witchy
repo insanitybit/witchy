@@ -1,0 +1,63 @@
+// Putting it together: read a CSV-ish events log, classify into severity buckets,
+// and report a summary. Pure logic in functions; thin capability shell in `main`.
+// Uses: records, methods (impl with self), derive(Show), comprehensions,
+// Result/?, dict accumulation, narrowed Dir[Read].
+
+import string
+import list
+import dict
+import option
+import result
+import show
+
+type Event derive(Show):
+    severity: String
+    component: String
+    detail: String
+
+impl Event:
+    fn parse_line(line: String) -> Option(Event):
+        let parts = string.split(line, "|")
+        if list.length(parts) < 3:
+            None
+        else:
+            Some(Event(
+                string.trim(list.at(parts, 0)),
+                string.trim(list.at(parts, 1)),
+                string.trim(list.at(parts, 2))))
+
+fn parse_events(contents: String) -> List(Event):
+    var out = []
+    for line in string.lines(contents):
+        let line2 = string.trim(line)
+        if !string.is_empty(line2):
+            if let Some(e) = Event.parse_line(line2):
+                out = list.push(out, e)
+    out
+
+fn tally_severities(events: List(Event)) -> Dict(String, Int):
+    var t = dict.new()
+    for e in events:
+        t = dict.insert(t, e.severity, dict.get_or(t, e.severity, 0) + 1)
+    t
+
+fn errors_only(events: List(Event)) -> List(Event):
+    [e for e in events if e.severity == "ERROR"]
+
+fn summary(events: List(Event)) -> String:
+    let total = list.length(events)
+    let counts = tally_severities(events)
+    "${total} events, by severity: ${counts}"
+
+fn main(console: Console, dir: Dir[Read], args: List(String)) -> Int:
+    if list.length(args) == 0:
+        print(console, "usage: events.witchy <path>")
+        return 1
+    let path = list.at(args, 0)
+    let contents = read(dir, path)
+    let events = parse_events(contents)
+    print(console, summary(events))
+    print(console, "errors:")
+    for e in errors_only(events):
+        show.say(console, e)
+    0

@@ -1,0 +1,12 @@
+// myapp — consumes the local `mylib` rune.
+import mylib
+import string
+import list
+
+fn main(console: Console):
+    print(console, mylib.shout("hello world"))
+    let xs = mylib.squares_up_to(6)
+    var parts = []
+    for x in xs:
+        parts = list.push(parts, to_string(x))
+    print(console, string.join(parts, ", "))

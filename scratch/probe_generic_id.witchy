@@ -1,5 +1,0 @@
-fn id(x: a) -> a:
-    x
-
-fn main(console: Console):
-    print(console, "id: ${id(5)}")

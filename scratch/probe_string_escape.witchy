@@ -1,0 +1,7 @@
+// Probe: string escapes & interpolation edge cases.
+fn main(console: Console):
+    let q = "\""
+    print(console, "quote: ${q}")
+    print(console, "backslash: \\")
+    print(console, "newline embedded:\nsecond line")
+    print(console, "no nested string lit")

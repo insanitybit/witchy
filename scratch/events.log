@@ -1,0 +1,6 @@
+INFO  | app    | started
+WARN  | disk   | low space
+ERROR | net    | connection refused
+INFO  | app    | retry
+ERROR | net    | timeout
+INFO  | app    | done

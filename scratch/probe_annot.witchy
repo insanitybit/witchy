@@ -1,5 +1,0 @@
-import iter
-
-fn main(console: Console):
-    let collected: List(Int) = iter.collect(iter.take(iter.range(1, 100), 3))
-    print(console, "annotated collected: ${collected}")

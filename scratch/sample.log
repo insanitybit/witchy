@@ -1,0 +1,5 @@
+INFO started
+WARN disk low
+info retry
+ERROR boom
+INFO done

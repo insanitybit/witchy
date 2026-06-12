@@ -1,0 +1,12 @@
+// Probe: try to trigger a "copy-path" perf note by aliasing a list inside a loop.
+import list
+
+fn main(console: Console):
+    var xs = []
+    var i = 0
+    while i < 5:
+        let alias = xs
+        xs = list.push(xs, i)
+        // `alias` still observes the previous version, so the chain must copy.
+        print(console, "${alias} -> ${xs}")
+        i = i + 1

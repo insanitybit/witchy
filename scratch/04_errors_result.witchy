@@ -1,0 +1,46 @@
+// Probe: Option, Result, ?, fail.
+
+import option
+import result
+import list
+
+fn first_even(xs: List(Int)) -> Option(Int):
+    for x in xs:
+        if x % 2 == 0:
+            return Some(x)
+    None
+
+fn checked_div(a: Int, b: Int) -> Result(Int, String):
+    if b == 0:
+        Err("division by zero")
+    else:
+        Ok(a / b)
+
+fn average_of_ratios(a: Int, b: Int, c: Int) -> Result(Int, String):
+    let first = checked_div(a, b)?
+    let second = checked_div(first, c)?
+    Ok(second)
+
+fn show_r(r: Result(Int, String)) -> String:
+    match r:
+        Ok(v) -> "ok: ${v}"
+        Err(e) -> "error: ${e}"
+
+fn main(console: Console):
+    match first_even([1, 3, 4, 7]):
+        Some(n) -> print(console, "found ${n}")
+        None -> print(console, "none")
+
+    match first_even([1, 3, 5]):
+        Some(n) -> print(console, "found ${n}")
+        None -> print(console, "none")
+
+    print(console, show_r(average_of_ratios(100, 5, 2)))
+    print(console, show_r(average_of_ratios(100, 0, 2)))
+    print(console, show_r(average_of_ratios(100, 5, 0)))
+
+    match first_even([1, 2, 3]):
+        Some(v) ->
+            print(console, "if-let got ${v}")
+        _ ->
+            print(console, "if-let nope")

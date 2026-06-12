@@ -1,0 +1,38 @@
+// Probe: actors, spawn, send, Subject delegation.
+actor Counter:
+    console: Console
+    var n: Int = 0
+
+impl Counter:
+    on Inc():
+        n = n + 1
+        print(console, "count is ${n}")
+    on Reset(to: Int):
+        n = to
+        print(console, "reset to ${n}")
+
+actor Worker:
+    boss: Subject
+
+impl Worker:
+    on Task(label: String, work: Int):
+        send(boss, Done(label, work * work))
+
+actor Boss:
+    console: Console
+
+impl Boss:
+    on Done(label: String, result: Int):
+        print(console, "${label} -> ${result}")
+
+fn main(console: Console):
+    let counter = spawn Counter(console)
+    send(counter, Inc)
+    send(counter, Inc)
+    send(counter, Reset(10))
+    send(counter, Inc)
+
+    let boss = spawn Boss(console)
+    let worker = spawn Worker(boss)
+    send(worker, Task("square 5", 5))
+    send(worker, Task("square 9", 9))

@@ -1,0 +1,5 @@
+[rune]
+name = "genlib"
+version = "0.1.0"
+
+[dependencies]

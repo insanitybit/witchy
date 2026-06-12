@@ -1,0 +1,45 @@
+// Probe: impl with self, statics, derive(Show, Eq, Ord), method chaining.
+
+import show
+import ord
+import eq
+
+type Score derive(Show, Eq, Ord):
+    points: Int
+    label: String
+
+impl Score:
+    fn zero() -> Score:
+        Score(0, "init")
+
+    fn doubled(self) -> Score:
+        Score(self.points * 2, self.label)
+
+    fn bumped(self) -> Score:
+        Score(self.points + 1, self.label)
+
+    fn relabel(self, name: String) -> Score:
+        Score(self.points, name)
+
+fn main(console: Console):
+    // Static constructor + method chain
+    let s = Score.zero().bumped().doubled().relabel("final")
+    say(console, s)
+
+    // derived Show
+    let a = Score(3, "a")
+    say(console, a)
+
+    // derived Eq
+    let x1 = Score(1, "x")
+    let x1b = Score(1, "x")
+    let x2 = Score(2, "x")
+    print(console, "${equal(x1, x1b)}")
+    print(console, "${equal(x1, x2)}")
+
+    // derived Ord
+    let p1a = Score(1, "a")
+    let p2a = Score(2, "a")
+    let p1b = Score(1, "b")
+    print(console, "${less(p1a, p2a)}")
+    print(console, "${less(p1b, p1a)}")

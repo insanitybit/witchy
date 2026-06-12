@@ -1,4 +1,0 @@
-fn main(console: Console):
-    let pair = (10, "ten")
-    print(console, int_to_string(pair.0))
-    print(console, pair.1)

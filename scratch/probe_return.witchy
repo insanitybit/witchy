@@ -1,0 +1,18 @@
+// Probe: where can `return` appear?
+import result
+
+fn from_if(n: Int) -> Result(Int, String):
+    if n < 0:
+        return Err("neg")
+    Ok(n * 2)
+
+fn from_match_inside_block(n: Int) -> Result(Int, String):
+    match n:
+        0 ->
+            return Err("zero")
+        _ ->
+            Ok(n * 2)
+
+fn main(console: Console):
+    print(console, "${from_if(5)} ${from_if(0 - 1)}")
+    print(console, "${from_match_inside_block(5)} ${from_match_inside_block(0)}")

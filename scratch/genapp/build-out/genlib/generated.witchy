@@ -1,0 +1,2 @@
+pub fn generated_message() -> String:
+    "hello from a build step!"

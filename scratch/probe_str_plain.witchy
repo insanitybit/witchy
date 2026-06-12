@@ -1,6 +1,0 @@
-fn main(console: Console):
-    let s = "hello"
-    print(console, "plain local: ${s}")
-    let pair = ("world", 1)
-    let (w, n) = pair
-    print(console, "tuple-bound: ${w}")

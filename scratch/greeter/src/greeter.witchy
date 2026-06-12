@@ -1,6 +1,0 @@
-// scratch/greeter — a witchy rune.
-// `main` is the root actor: the host mints the capabilities it declares
-// (here, Console) and nothing else can perform effects.
-
-fn main(console: Console):
-    print(console, "hello from scratch/greeter")

@@ -1,0 +1,8 @@
+// Probe: attempt to write through a Dir[Read] -- should NOT compile.
+fn try_write(dir: Dir[Read]):
+    write(dir, "x.txt", "nope")
+
+fn main(console: Console, dir: Dir):
+    let ro = dir as Dir[Read]
+    try_write(ro)
+    print(console, "should not reach here")

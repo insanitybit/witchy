@@ -1,0 +1,11 @@
+fn double(n: Int) -> Int:
+    n * 2
+
+fn classify(n: Int) -> String:
+    match n:
+        0 -> "zero"
+        _ -> if n > 0: "positive" else: "negative"
+
+fn main(console: Console):
+    print(console, classify(double(0)))
+    print(console, "${double(21)}")
