@@ -1749,6 +1749,33 @@ impl Codegen {
                             }
                         }
                     }
+                    // ANY constructor pattern with DECLARED field types binds
+                    // its variables at those types (a `JsonFloat(x)` payload is
+                    // f64, not the default i32 that would mangle the bits).
+                    if let Pattern::Ctor { name, args } = &arm.pattern {
+                        let fields = self
+                            .ctors
+                            .get(name)
+                            .map(|&(tag, _)| tag as usize)
+                            .and_then(|tag| {
+                                let ty = self.ctor_type_name.get(name)?;
+                                self.adt_variants.get(ty)?.get(tag).cloned()
+                            });
+                        if let Some(fields) = fields {
+                            for (i, sub) in args.iter().enumerate() {
+                                let (Pattern::Var(v), Some(ft)) = (sub, fields.get(i)) else {
+                                    continue;
+                                };
+                                let vt = ty_to_valtype(ft);
+                                if vt != ValType::Other
+                                    && !self.local_val_types.contains_key(v)
+                                {
+                                    self.locals.insert(v.clone(), valtype_kind(vt));
+                                    self.local_val_types.insert(v.clone(), vt);
+                                }
+                            }
+                        }
+                    }
                     self.infer_locals_expr(&arm.body);
                 }
             }

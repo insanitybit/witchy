@@ -2203,6 +2203,22 @@ mod example_tests {
         assert_eq!(wasm_run(src), want, "wasm");
     }
 
+    /// Tuple patterns in `for` (the learning log's F4): `for (k, v) in
+    /// dict.pairs(d):` destructures per element, round-trips through fmt,
+    /// and agrees on both backends.
+    #[test]
+    fn for_tuple_patterns_destructure() {
+        let src = "fn main(console: Console):\n    var d = dict.new()\n    d = dict.insert(d, \"a\", 1)\n    d = dict.insert(d, \"b\", 2)\n    for (k, v) in dict.pairs(d):\n        print(console, \"${k}=${v}\")\n";
+        let want: Vec<String> = ["a=1", "b=2"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(link_run(src), want, "interpreter");
+        assert_eq!(wasm_run(src), want, "wasm");
+        assert_eq!(
+            crate::format::reformat(src).as_deref(),
+            Some(src),
+            "the sugar must round-trip through fmt"
+        );
+    }
+
     /// VALUE EQUALITY, ALWAYS (the learning log's F15): dict lookups with
     /// RUNTIME-BUILT keys (trim/split/concat-sourced) — the case literal-key
     /// tests pass vacuously through interning. dict.get/has must find them
@@ -5805,38 +5821,30 @@ fn main(console: Console):
     }
 
     #[test]
-    fn json_decode_rejects_floats_with_a_clear_message_backends_agree() {
-        // The decoder is integer-only; a fractional/exponent number must be
-        // rejected with a clear message, not mis-parsed into "expected , or }".
+    fn json_floats_decode_and_round_trip_on_both_backends() {
+        // JSON numbers with fractions/exponents decode to JsonFloat and
+        // re-encode through the shared float formatter — identical on both
+        // backends (the learning log's F12).
         let client = r#"
 import json
-fn classify(s: String) -> String:
+fn round_trip(s: String) -> String:
     match json.decode(s):
-        Ok(j) ->
-            match json.as_int(j):
-                Some(n) -> "int:" <> to_string(n)
-                None -> "ok"
-        Err(e) ->
-            if string.contains(e, "floats are not supported"):
-                "float-err"
-            else:
-                "err:" <> e
+        Ok(j) -> json.encode(j)
+        Err(e) -> "err:" <> e
 fn main(console: Console):
-    print(console, classify("10"))
-    print(console, classify("-3"))
-    print(console, classify("2.5"))
-    print(console, classify("-2.5"))
-    print(console, classify("1e3"))
-    print(console, classify("{\"a\": 2.5}"))
+    print(console, round_trip("10"))
+    print(console, round_trip("-3"))
+    print(console, round_trip("3.25"))
+    print(console, round_trip("-0.5"))
+    print(console, round_trip("1.5e3"))
+    print(console, round_trip("{\"pi\": 3.25}"))
 "#;
-        let sources = [("json", crate::bundled_module("json").unwrap()), ("main", client)];
-        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
-        let compiled = run_linked_on_wasm(&sources, "main");
-        assert_eq!(interpreted, compiled, "float rejection diverged");
-        assert_eq!(
-            compiled,
-            vec!["int:10", "int:-3", "float-err", "float-err", "float-err", "float-err"]
-        );
+        let want: Vec<String> = ["10", "-3", "3.25", "-0.5", "1500", "{\"pi\":3.25}"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(link_run(client), want, "interpreter");
+        assert_eq!(wasm_run(client), want, "wasm");
     }
 
     #[test]

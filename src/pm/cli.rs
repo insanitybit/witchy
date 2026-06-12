@@ -73,6 +73,17 @@ pub fn run(args: &[String]) -> PmResult<()> {
     let Some((cmd, rest)) = args.split_first() else {
         return print_help();
     };
+    // `-C <dir>` (first, like make/git): run the command from that project
+    // directory, so `witchy -C path/to/rune build` works from anywhere —
+    // CI, editor tooling, and agents that can't freely chdir.
+    let mut rest = rest;
+    if let [flag, dir, tail @ ..] = rest {
+        if flag == "-C" {
+            std::env::set_current_dir(dir)
+                .map_err(|e| super::PmError(format!("-C {dir}: {e}")))?;
+            rest = tail;
+        }
+    }
     match cmd.as_str() {
         "coven" => run(rest), // allow `witchy coven <subcommand>` too
         "coven-serve" => cmd_serve(rest),
@@ -284,12 +295,19 @@ fn cmd_mint_token(rest: &[String]) -> PmResult<()> {
 
 fn cmd_new(rest: &[String]) -> PmResult<()> {
     let a = parse_args(rest);
-    let name = a
+    let arg = a
         .positional
         .first()
-        .ok_or_else(|| super::PmError("usage: witchy new <name>".into()))?;
-    let dir_name = name.rsplit('/').next().unwrap_or(name);
-    let dir = PathBuf::from(dir_name);
+        .ok_or_else(|| super::PmError("usage: witchy new <name-or-path>".into()))?;
+    // A path-like argument creates the rune AT that path; the rune NAME is
+    // always the basename (a `/` in a rune name is invalid).
+    let dir = PathBuf::from(arg);
+    let name = dir
+        .file_name()
+        .and_then(|s| s.to_str())
+        .ok_or_else(|| super::PmError(format!("`{arg}` has no rune name component")))?
+        .to_string();
+    let name = &name;
     if dir.exists() {
         return err(format!("`{}` already exists", dir.display()));
     }
@@ -306,7 +324,7 @@ fn cmd_new(rest: &[String]) -> PmResult<()> {
     );
     std::fs::write(dir.join("src").join(format!("{module}.witchy")), starter)?;
     println!("created rune `{name}` in {}/", dir.display());
-    println!("  cd {dir_name} && witchy run");
+    println!("  cd {} && witchy run", dir.display());
     Ok(())
 }
 

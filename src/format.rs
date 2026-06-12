@@ -583,6 +583,27 @@ fn multiline(s: &mut String, e: &Expr, depth: usize, c: &mut Comments) {
             block(s, body, depth + 1, c);
         }
         Expr::For { var, iter, body } => {
+            // `for (k, v) in e:` desugars at parse to a synthetic element
+            // variable plus a leading destructure; print the sugar back.
+            if var.starts_with("__fortuple") {
+                if let Some(Stmt::LetTuple { names, value: Expr::Var(v) }) = body.stmts.first() {
+                    if v == var {
+                        let inner = Block {
+                            stmts: body.stmts[1..].to_vec(),
+                            lines: body.lines.get(1..).map(<[u32]>::to_vec).unwrap_or_default(),
+                            restrict: body.restrict.clone(),
+                            region: body.region.clone(),
+                        };
+                        s.push_str("for (");
+                        s.push_str(&names.join(", "));
+                        s.push_str(") in ");
+                        s.push_str(&expr(iter));
+                        s.push_str(":\n");
+                        block(s, &inner, depth + 1, c);
+                        return;
+                    }
+                }
+            }
             s.push_str("for ");
             s.push_str(var);
             s.push_str(" in ");

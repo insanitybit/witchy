@@ -548,6 +548,7 @@ A JSON library — the witchy take on Go's encoding/json. This slice is the valu
 - `JsonNull`
 - `JsonBool(Bool)`
 - `JsonInt(Int)`
+- `JsonFloat(Float)`
 - `JsonString(String)`
 - `JsonArray(List(Json))`
 - `JsonObject(List((String, Json)))`

@@ -879,6 +879,38 @@ impl Parser {
             }
             Tok::For => {
                 self.advance();
+                // `for (k, v) in pairs:` — a tuple pattern destructures each
+                // element: sugar for a fresh element variable plus a leading
+                // `let (k, v) = element` in the body.
+                if self.at(&Tok::LParen) {
+                    self.advance();
+                    let mut names = Vec::new();
+                    loop {
+                        names.push(self.ident()?);
+                        if !self.eat(&Tok::Comma) {
+                            break;
+                        }
+                    }
+                    self.expect(&Tok::RParen)?;
+                    self.expect(&Tok::In)?;
+                    let iter = self.expr(0)?;
+                    let mut body = self.block()?;
+                    let var = {
+                        let v = format!("__fortuple{}", self.compr_counter);
+                        self.compr_counter += 1;
+                        v
+                    };
+                    body.stmts.insert(
+                        0,
+                        Stmt::LetTuple { names, value: Expr::Var(var.clone()) },
+                    );
+                    if let Some(first) = body.lines.first().copied() {
+                        body.lines.insert(0, first);
+                    } else {
+                        body.lines.push(0);
+                    }
+                    return Ok(Expr::For { var, iter: Box::new(iter), body });
+                }
                 let var = self.ident()?;
                 self.expect(&Tok::In)?;
                 let iter = self.expr(0)?;
