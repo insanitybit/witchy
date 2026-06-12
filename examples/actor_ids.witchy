@@ -1,0 +1,21 @@
+// Spawn-supplied actor state: a field with no default (`id: Int`) is set
+// from the spawn arguments, per instance — the same path a capability or
+// Subject field takes. Runs identically interpreted and compiled:
+//   witchy examples/actor_ids.witchy
+//   witchy parity examples/actor_ids.witchy
+actor Worker:
+    console: Console
+    id: Int
+    var done: Int = 0
+
+impl Worker:
+    on Job(n: Int):
+        done = done + 1
+        print(console, "worker ${id} job ${n} (done ${done})")
+
+fn main(console: Console):
+    let a = spawn Worker(console, 7)
+    let b = spawn Worker(console, 9)
+    send(a, Job(1))
+    send(b, Job(2))
+    send(a, Job(3))

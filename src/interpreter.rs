@@ -524,7 +524,17 @@ const DEFAULT_DEPTH_LIMIT: u32 = 25_000;
 /// Default ceiling on evaluation steps for one program run. High enough that no
 /// realistic program reaches it, low enough that an infinite loop fails in
 /// seconds rather than hanging forever.
-const DEFAULT_STEP_LIMIT: u64 = 100_000_000;
+// Programs run UNBUDGETED: the compiled backend has no step ceiling, so an
+// interpreter ceiling would make `parity` diverge on legitimately large (but
+// finite) workloads — an artificial difference, the exact thing parity
+// exists to catch. An infinite loop hangs on both backends alike. The budget
+// survives where termination is part of the CONTRACT: `comptime:` blocks
+// (a compile must finish) and tests that pin the runaway-loop diagnostic.
+const DEFAULT_STEP_LIMIT: u64 = u64::MAX;
+
+/// The step budget for `comptime:` blocks — compile-time execution must
+/// terminate, so the contract keeps a (generous) ceiling there.
+pub const COMPTIME_STEP_LIMIT: u64 = 500_000_000;
 
 impl Interpreter {
     pub fn new(module: Module) -> Self {
@@ -2366,6 +2376,22 @@ pub fn run_module(
     run_module_args(module, root, net_allow, Vec::new())
 }
 
+/// Like [`run_module`], but with an evaluation step ceiling — the `comptime:`
+/// path, where termination is part of the contract.
+pub fn run_module_budgeted(
+    module: Module,
+    root: impl AsRef<Path>,
+    step_limit: u64,
+) -> Result<Vec<String>, RuntimeError> {
+    let module = crate::records::lower(module).map_err(|message| RuntimeError { message })?;
+    let module = crate::traits::lower(module);
+    let root = root.as_ref().to_path_buf();
+    run_on_deep_stack(move || {
+        run_module_inner_limited(module, root, Vec::new(), Vec::new(), None, step_limit)
+    })
+    .map(|(output, _)| output)
+}
+
 /// Like [`run_module`], but also hands command-line `args` to a `main` that
 /// declares a `List(String)` parameter to receive them (argv is input data, not
 /// authority, so it is an ordinary value parameter — not a capability).
@@ -2461,7 +2487,19 @@ fn run_module_inner(
     args: Vec<String>,
     signing_key: Option<[u8; 32]>,
 ) -> Result<(Vec<String>, i32), RuntimeError> {
+    run_module_inner_limited(module, root, net_allow, args, signing_key, DEFAULT_STEP_LIMIT)
+}
+
+fn run_module_inner_limited(
+    module: Module,
+    root: PathBuf,
+    net_allow: Vec<String>,
+    args: Vec<String>,
+    signing_key: Option<[u8; 32]>,
+    step_limit: u64,
+) -> Result<(Vec<String>, i32), RuntimeError> {
     let mut interp = Interpreter::new(module);
+    interp.step_limit = step_limit;
     interp.root = root;
     interp.net_allow = net_allow;
     interp.signing_key = signing_key;

@@ -6992,10 +6992,17 @@ fn compile_actor_in(
             Some(Expr::Int(n)) => *n,
             Some(_) => return cerr(format!("field `{}`: initializer must be an Int literal", field.name)),
             None => {
-                return cerr(format!(
-                    "field `{}`: Int state needs an initializer in codegen",
+                // No initializer = SPAWN-SUPPLIED: the global is exported and
+                // the host writes the spawn argument into it (the same path a
+                // Subject id takes), so `actor W: id: Int` matches the
+                // interpreter.
+                cg.globals.insert(field.name.clone());
+                cg.local_val_types.insert(field.name.clone(), ValType::Int);
+                state_globals.push_str(&format!(
+                    "  (global ${0} (export \"{0}\") (mut i32) (i32.const 0))\n",
                     field.name
-                ))
+                ));
+                continue;
             }
         };
         cg.globals.insert(field.name.clone());

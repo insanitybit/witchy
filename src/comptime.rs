@@ -102,7 +102,11 @@ pub fn expand(name: &str, module: &mut Module) -> Result<(), String> {
             .map_err(|e| format!("module `{name}`: comptime block: {e}"))?;
         crate::typeck::check(&linked)
             .map_err(|e| format!("module `{name}`: comptime block: {e}"))?;
-        let lines = crate::interpreter::run_module(linked, ".", Vec::new())
+        let lines = crate::interpreter::run_module_budgeted(
+            linked,
+            ".",
+            crate::interpreter::COMPTIME_STEP_LIMIT,
+        )
             .map_err(|e| format!("module `{name}`: comptime block: {e}"))?;
         let src = lines.join("\n");
         let emitted = crate::parser::parse_module(&src).map_err(|e| {

@@ -38,7 +38,9 @@ Three things are happening here:
 
 - **`spawn Counter(console)`** creates a new actor, initializing its state. The
   fields with no default (`console`) are supplied as arguments, in order; fields
-  with a default (`var n: Int = 0`) may be omitted. `spawn` returns a `Subject` —
+  with a default (`var n: Int = 0`) may be omitted. Data fields work the same
+  way — `id: Int` with no default is filled from its spawn argument, giving
+  each instance its own value. `spawn` returns a `Subject` —
   a typed handle to the actor's mailbox, not the actor itself.
 - **`send(counter, Inc)`** drops an `Inc` message (a nullary message is written bare, like any nullary constructor) into that mailbox and returns
   immediately. The handler runs later, on its own.
