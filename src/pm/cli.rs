@@ -800,27 +800,34 @@ fn cmd_build(rest: &[String]) -> PmResult<()> {
 }
 
 fn cmd_run(rest: &[String]) -> PmResult<()> {
-    // Everything after `run` (minus an optional `--` separator) is the
-    // program's argv, surfaced as `main`'s `args: List(String)` — the same
-    // contract as `witchy <file> [args...]` and `witchy sandbox ... [args...]`.
+    for line in run_project(Path::new("."), rest)? {
+        println!("{line}");
+    }
+    Ok(())
+}
+
+/// Build and run the project at `dir`. Everything in `rest` (minus an
+/// optional `--` separator) is the program's argv, surfaced as `main`'s
+/// `args: List(String)` — the same contract as `witchy <file> [args...]`.
+fn run_project(dir: &Path, rest: &[String]) -> PmResult<Vec<String>> {
     let args: Vec<String> = match rest {
         [first, tail @ ..] if first == "--" => tail.to_vec(),
         _ => rest.to_vec(),
     };
     let env = CovenEnv::load();
-    let a = assemble(Path::new("."), &env)?;
+    let a = assemble(dir, &env)?;
     if !a.has_main {
         return err(format!(
             "`{}` is a library (no `main` in module `{}`) — nothing to run",
             a.manifest.rune.name, a.entry
         ));
     }
-    let output = interpreter::run_module(a.linked, Path::new("."), args)
-        .map_err(|e| super::PmError(e.to_string()))?;
-    for line in output {
-        println!("{line}");
-    }
-    Ok(())
+    // Vec::new() is the NET ALLOWLIST (deny-all) — argv is the fourth
+    // parameter. Round 3's "fix" passed argv as the allowlist, which both
+    // dropped the args and let `witchy run host:port` widen the program's
+    // reachable network; the round-4 learner caught it.
+    interpreter::run_module_args(a.linked, dir, Vec::new(), args)
+        .map_err(|e| super::PmError(e.to_string()))
 }
 
 // ---------------------------------------------------------------------------
@@ -1547,4 +1554,36 @@ fn vec_or_none(v: &[String]) -> String {
 fn short(hash: &str) -> String {
     let h = hash.strip_prefix("sha256:").unwrap_or(hash);
     format!("sha256:{}", &h[..h.len().min(12)])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `witchy run a b` surfaces argv as `main`'s `args` — and NOT as the
+    /// interpreter's net allowlist, which is what a positional mix-up once
+    /// produced (args dropped AND `witchy run host:port` would have widened
+    /// the program's reachable network).
+    #[test]
+    fn run_forwards_argv_to_main_args() {
+        let tmp = std::env::temp_dir().join("witchy_run_argv_test");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(tmp.join("src")).unwrap();
+        std::fs::write(
+            tmp.join("witchy.toml"),
+            "[rune]\nname = \"argvtest\"\nversion = \"0.1.0\"\n\n[dependencies]\n",
+        )
+        .unwrap();
+        std::fs::write(
+            tmp.join("src/argvtest.witchy"),
+            "fn main(console: Console, args: List(String)):\n    print(console, \"got ${args}\")\n",
+        )
+        .unwrap();
+        let out = run_project(&tmp, &["alpha".into(), "beta:42".into()]).expect("run");
+        assert_eq!(out, vec!["got [alpha, beta:42]"]);
+        // A leading `--` separates witchy's own arguments from the program's.
+        let out = run_project(&tmp, &["--".into(), "-C".into()]).expect("run");
+        assert_eq!(out, vec!["got [-C]"]);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
 }

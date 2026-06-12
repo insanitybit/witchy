@@ -1,7 +1,0 @@
-// 18_caps_diff_b.witchy — same shape, plus a Net dependency. Should widen.
-
-import http
-
-fn main(console: Console, net: Net):
-    let r = http.get(net, "example.com", 80, "/")
-    print(console, "v2: status ${http.status(r)}")

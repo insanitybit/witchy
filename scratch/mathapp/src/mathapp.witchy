@@ -1,0 +1,24 @@
+// mathapp — uses mathlib (a path dep). Takes CLI args as integers.
+
+import mathlib
+import string
+
+fn parse_args(args: List(String)) -> List(Int):
+    var out = []
+    for s in args:
+        out = list.push(out, string.to_int(s))
+    out
+
+fn main(console: Console, args: List(String)) -> Int:
+    if list.length(args) == 0:
+        print(console, "usage: mathapp <int>...")
+        return 1
+    let nums = parse_args(args)
+    print(console, "input: ${nums}")
+    print(console, "sum:   ${mathlib.sum(nums)}")
+    match mathlib.mean(nums):
+        Some(m) -> print(console, "mean:  ${m}")
+        None -> print(console, "mean:  (empty)")
+    let squares = [mathlib.square(n) for n in nums]
+    print(console, "sq:    ${squares}")
+    0

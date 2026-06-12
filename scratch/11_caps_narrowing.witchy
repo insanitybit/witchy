@@ -1,0 +1,19 @@
+// 11 — capabilities, narrowing, retain/without.
+fn read_only(d: Dir[Read], name: String) -> String:
+    if exists(d, name):
+        read(d, name)
+    else:
+        "(not found: ${name})"
+
+fn main(console: Console, dir: Dir, clock: Clock):
+    let ro = dir as Dir[Read]
+    print(console, read_only(ro, "hello.txt"))
+
+    retain console:
+        // only console survives here; clock + dir are walled off
+        print(console, "in retain block: no clock, no dir")
+
+    without clock:
+        print(console, "in without block: no clock")
+
+    print(console, "outside, clock works: ${now(clock) > 0}")

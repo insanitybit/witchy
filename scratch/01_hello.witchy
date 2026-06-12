@@ -1,9 +1,4 @@
-// 01_hello.witchy — the obligatory hello, plus a quick taste of strings,
-// interpolation, and a pure helper.
-fn greet(name: String) -> String:
-    "hello, " <> name <> "!"
-
+// 01 — hello, witchy: smallest sanity check.
 fn main(console: Console):
-    print(console, greet("witchy"))
-    let n = 7
-    print(console, "n=${n}, n*n=${n * n}")
+    print(console, "hello, witchy")
+    print(console, "${2 + 2}")

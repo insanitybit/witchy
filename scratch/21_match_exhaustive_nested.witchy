@@ -1,0 +1,36 @@
+// 21 — nested match + record destructuring + ?-propagation across Result chain.
+type User derive(Show):
+    name: String
+    role: String
+
+fn parse_user(line: String) -> Result(User, String):
+    let parts = string.split(line, ",")
+    if list.length(parts) != 2:
+        Err("expected name,role; got ${list.length(parts)} fields")
+    else:
+        Ok(User(string.trim(list.at(parts, 0)), string.trim(list.at(parts, 1))))
+
+fn parse_all(lines: List(String)) -> Result(List(User), String):
+    var out = []
+    for line in lines:
+        let l = string.trim(line)
+        if string.length(l) > 0:
+            let u = parse_user(l)?
+            out = list.push(out, u)
+    Ok(out)
+
+fn promote(u: User) -> User:
+    User(name: u.name, role: "senior " <> u.role)
+
+fn main(console: Console):
+    let raw = "ada, eng\nbob , ops\nclaire ,  pm"
+    match parse_all(string.lines(raw)):
+        Ok(users) ->
+            for u in users:
+                print(console, "${u} -> ${promote(u)}")
+        Err(e) -> print(console, "parse failed: ${e}")
+
+    let bad = "ada, eng\nmalformedline\nclaire ,  pm"
+    match parse_all(string.lines(bad)):
+        Ok(_) -> print(console, "unexpected ok")
+        Err(e) -> print(console, "got expected err: ${e}")

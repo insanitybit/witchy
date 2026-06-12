@@ -1,5 +1,0 @@
-[ ] write the LEARNING-LOG
-[!] file the silent-fmt bug
-[x] read the book
-[ ] try comptime
-[!] try actors

@@ -1,3 +1,0 @@
-1: started
-2: step 2
-3: done

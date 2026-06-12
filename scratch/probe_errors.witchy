@@ -1,0 +1,8 @@
+// PROBE: deliberate errors to see the compiler's messages.
+fn pure_compute(x: Int) -> Int:
+    // Try to print without a Console — should fail.
+    print(console, "${x}")
+    x
+
+fn main(console: Console):
+    print(console, "${pure_compute(3)}")

@@ -1,4 +1,0 @@
-// 18_caps_diff_a.witchy — baseline footprint.
-
-fn main(console: Console):
-    print(console, "v1: console only")

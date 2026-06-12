@@ -1,0 +1,34 @@
+// 14 — confined log scanner: pure core + capability shell. Exit code 0/1.
+fn matches(query: String, contents: String) -> List(String):
+    var hits = []
+    for line in string.lines(contents):
+        if string.contains(line, query):
+            hits = list.push(hits, line)
+    hits
+
+fn matches_ci(query: String, contents: String) -> List(String):
+    var hits = []
+    let needle = string.to_lower(query)
+    for line in string.lines(contents):
+        if string.contains(string.to_lower(line), needle):
+            hits = list.push(hits, line)
+    hits
+
+fn main(console: Console, dir: Dir[Read], env: Env, args: List(String)) -> Int:
+    if list.length(args) < 2:
+        print(console, "usage: scan <query> <path>")
+        return 1
+    let query = list.at(args, 0)
+    let path = list.at(args, 1)
+    if !exists(dir, path):
+        print(console, "no such file: ${path}")
+        return 1
+    let contents = read(dir, path)
+    let insensitive = match get_env(env, "SCAN_IGNORE_CASE"):
+        Some(_) -> true
+        None -> false
+
+    let hits = if insensitive: matches_ci(query, contents) else: matches(query, contents)
+    for line in hits:
+        print(console, line)
+    0

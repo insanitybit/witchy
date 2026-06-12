@@ -1,0 +1,27 @@
+// 06 — pattern matching: list patterns, guards, nested patterns.
+fn describe(xs: List(Int)) -> String:
+    match xs:
+        [] -> "empty"
+        [only] -> "one: ${only}"
+        [a, b] -> "two: ${a}, ${b}"
+        [first, ..rest] -> "first ${first}, rest len ${list.length(rest)}"
+
+fn classify_pair(p: (Int, Int)) -> String:
+    match p:
+        (0, 0) -> "origin"
+        (0, y) -> "on y-axis at ${y}"
+        (x, 0) -> "on x-axis at ${x}"
+        (x, y) if x == y -> "diagonal at ${x}"
+        (x, y) -> "(${x}, ${y})"
+
+fn main(console: Console):
+    print(console, describe([]))
+    print(console, describe([42]))
+    print(console, describe([1, 2]))
+    print(console, describe([1, 2, 3, 4]))
+
+    print(console, classify_pair((0, 0)))
+    print(console, classify_pair((0, 5)))
+    print(console, classify_pair((7, 0)))
+    print(console, classify_pair((3, 3)))
+    print(console, classify_pair((2, 5)))

@@ -1,0 +1,23 @@
+// 02 — pure helpers: factorial, gcd, fib. No capabilities.
+fn factorial(n: Int) -> Int:
+    if n <= 1:
+        1
+    else:
+        n * factorial(n - 1)
+
+fn gcd(a: Int, b: Int) -> Int:
+    if b == 0:
+        a
+    else:
+        gcd(b, a % b)
+
+fn fib(n: Int) -> Int:
+    if n < 2:
+        n
+    else:
+        fib(n - 1) + fib(n - 2)
+
+fn main(console: Console):
+    print(console, "10! = ${factorial(10)}")
+    print(console, "gcd(48, 18) = ${gcd(48, 18)}")
+    print(console, "fib(15) = ${fib(15)}")

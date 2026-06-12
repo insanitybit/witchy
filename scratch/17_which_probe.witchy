@@ -1,0 +1,19 @@
+// 17 — using stdlib via module-qualified names; `witchy which` helped me find
+// these. Demonstrates string.split, string.trim, list.sort, list.fold,
+// string.join.
+fn main(console: Console):
+    let parts = string.split("alpha,beta, gamma ,delta", ",")
+    var clean = []
+    for p in parts:
+        clean = list.push(clean, string.trim(p))
+    print(console, "${clean}")
+
+    // sorted descending using a custom less-than (strict)
+    let sorted = list.sort_by([4, 2, 8, 1, 7, 3], fn(a: Int, b: Int): a > b)
+    print(console, "${sorted}")
+
+    // fold a sum
+    let total = list.fold([1, 2, 3, 4, 5], 0, fn(acc: Int, x: Int): acc + x)
+    print(console, "fold sum: ${total}")
+
+    print(console, string.join(clean, " | "))

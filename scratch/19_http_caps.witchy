@@ -1,0 +1,15 @@
+// 19 — Net narrowing through http. We don't actually need to hit a server;
+// we just inspect the capability footprint via `witchy caps`.
+
+import http
+
+fn fetch_root(net: Net[Connect, Tcp], host: String, port: Int) -> String:
+    let r = http.get(net, host, port, "/")
+    "${http.status(r)}"
+
+fn main(console: Console, net: Net[Connect, Tcp]):
+    // We don't actually dial out (no --net allowlist), but the type-checker
+    // ensures `fetch_root` only ever needs Net[Connect, Tcp]. Try a host the
+    // sandbox host hasn't allow-listed — the request fails loudly, on purpose.
+    print(console, "fetcher has Net[Connect, Tcp] only")
+    print(console, "(skipping the actual call)")

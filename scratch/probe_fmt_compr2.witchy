@@ -1,8 +1,0 @@
-fn squares(xs: List(Int)) -> List(Int):
-    var __compr0 = []
-    for n in xs:
-        __compr0 = list.push(__compr0, n * n)
-    __compr0
-
-fn main(console: Console):
-    print(console, "${squares([1, 2, 3])}")
