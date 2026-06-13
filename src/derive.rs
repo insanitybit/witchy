@@ -98,7 +98,6 @@ fn impl_show(t: &TypeDef) -> Item {
         trait_name: Some("Show".into()),
         type_name: t.name.clone(),
         bounds: Vec::new(),
-        handlers: Vec::new(),
         methods: vec![method(
             "show",
             vec![self_param()],
@@ -119,7 +118,6 @@ fn impl_eq(t: &TypeDef) -> Item {
         trait_name: Some("Eq".into()),
         type_name: t.name.clone(),
         bounds: Vec::new(),
-        handlers: Vec::new(),
         methods: vec![method(
             "eq",
             vec![self_param(), other_param(&t.name)],
@@ -201,7 +199,6 @@ fn impl_ord(t: &TypeDef) -> Result<Item, String> {
         trait_name: Some("Ord".into()),
         type_name: t.name.clone(),
         bounds: Vec::new(),
-        handlers: Vec::new(),
         methods: vec![method(
             "compare",
             vec![self_param(), other_param(&t.name)],
@@ -247,7 +244,6 @@ fn impl_json(t: &TypeDef) -> Result<Item, String> {
         trait_name: None,
         type_name: t.name.clone(),
         bounds: Vec::new(),
-        handlers: Vec::new(),
         methods: vec![method(
             "to_json",
             vec![self_param()],

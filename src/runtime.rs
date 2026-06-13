@@ -196,15 +196,6 @@ impl Actor {
             .and_then(|g| g.get(&mut self.store).i64())
     }
 
-    /// Invoke a no-argument exported message handler (used by compiled actors).
-    pub fn invoke(&mut self, handler: &str) -> Result<()> {
-        let func = self
-            .instance
-            .get_typed_func::<(), ()>(&mut self.store, handler)?;
-        func.call(&mut self.store, ())?;
-        Ok(())
-    }
-
     /// Everything this actor has printed so far, in order. (Used by tests to
     /// assert a compiled program's behavior end to end.)
     #[allow(dead_code)]

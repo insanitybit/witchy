@@ -8510,9 +8510,6 @@ fn flip_string_add_module(m: &mut Module, table: &crate::typeck::TypeTable) {
                 for f in &mut im.methods {
                     walk_block(&mut f.body, table);
                 }
-                for h in &mut im.handlers {
-                    walk_block(&mut h.body, table);
-                }
             }
             Item::Trait(t) => {
                 for msig in &mut t.methods {
@@ -8552,7 +8549,6 @@ fn alpha_rename(body: &Block, params: &[Param]) -> Block {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::Item;
     use crate::parser::parse_module;
     use std::sync::{Arc, Mutex};
     use wasmtime::{Caller, Engine, Linker, Module as WtModule, Store};

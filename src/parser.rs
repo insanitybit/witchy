@@ -305,7 +305,6 @@ impl Parser {
             type_name,
             bounds,
             methods,
-            handlers: Vec::new(),
         })
     }
 

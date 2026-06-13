@@ -697,7 +697,6 @@ struct Checker {
     /// actual type arguments on access.
     record_fields: HashMap<String, RecordInfo>,
     adt_variants: HashMap<String, Vec<String>>,
-    actor_field_sigs: HashMap<String, Vec<Ty>>,
     /// Message name -> the declared handler parameter-type lists, across every
     /// actor (`on Log(line: String)` registers `Log -> [[Some(String)]]`).
     /// `send(subject, Msg(...))` is validated against these.
@@ -2661,7 +2660,6 @@ fn run_check(module: &Module, record: bool) -> Result<Option<TypeTable>, TypeErr
         ctor_typarams: HashMap::new(),
         record_fields: HashMap::new(),
         adt_variants: HashMap::new(),
-        actor_field_sigs: HashMap::new(),
         actor_handler_sigs: HashMap::new(),
         actor_messages: HashMap::new(),
         fn_typarams: HashMap::new(),

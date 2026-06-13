@@ -86,10 +86,6 @@ pub struct ImplDef {
     /// method so its body's bounded calls type-check and monomorphize.
     pub bounds: Vec<(String, String, Vec<Type>)>,
     pub methods: Vec<Function>,
-    /// Message handlers (`on Msg(...) { ... }`) for an inherent impl on an actor
-    /// type. Merged into the target `ActorDef` right after parsing, so later
-    /// stages see them on the actor; empty for ordinary trait/struct impls.
-    pub handlers: Vec<Handler>,
 }
 
 /// A sum type: `type Event { Click(Int, Int) Closed }`.
@@ -117,39 +113,6 @@ pub struct Variant {
     /// field, parallel to `fields`. Empty for ordinary positional variants
     /// (`Circle(Int)`). A record is a single constructor with named fields.
     pub field_names: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct ActorDef {
-    pub name: String,
-    pub fields: Vec<Field>,
-    pub handlers: Vec<Handler>,
-}
-
-/// Actor state. A field with an initializer (`var count: Int = 0`) defaults at
-/// spawn; a field without one (`console: Console`) must be supplied at spawn —
-/// this is how capabilities are granted to an actor.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Field {
-    pub name: String,
-    pub ty: Type,
-    pub mutable: bool,
-    pub init: Option<Expr>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct Handler {
-    pub message: String,
-    pub params: Vec<Param>,
-    /// Whether the handler declares an explicit `self` first parameter
-    /// (`on Msg(self, ...)`). When true, `self` (the actor's own `Subject`) is in
-    /// scope in the body; when false, referencing `self` is an error. `self` is
-    /// not a message argument, so it is stripped from `params`.
-    pub has_self: bool,
-    /// The ownership convention on the `self` parameter (`var`/`let`/`own`/plain),
-    /// e.g. `var self` binds a mutable `self`. Ignored when `has_self` is false.
-    pub self_conv: Convention,
-    pub body: Block,
 }
 
 #[derive(Debug, Clone, PartialEq)]

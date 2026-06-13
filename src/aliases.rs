@@ -127,14 +127,6 @@ pub fn resolve(mut module: Module) -> Module {
                 for m in &mut im.methods {
                     resolve_function(m, &map);
                 }
-                for h in &mut im.handlers {
-                    for p in &mut h.params {
-                        if let Some(t) = &mut p.ty {
-                            resolve_type(t, &map);
-                        }
-                    }
-                    resolve_in_block(&mut h.body, &map);
-                }
             }
             Item::TypeAlias { .. } | Item::Const { .. } | Item::Comptime(_) => {}
         }

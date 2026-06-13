@@ -1324,9 +1324,6 @@ fn canon_item(it: &mut Item) {
             for f in &mut im.methods {
                 canon_block(&mut f.body);
             }
-            for h in &mut im.handlers {
-                canon_block(&mut h.body);
-            }
         }
         Item::Comptime(b) => canon_block(b),
     }

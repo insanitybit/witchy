@@ -4,7 +4,7 @@
 //! so we can iterate on language behaviour. Compiling to WASM actors on the
 //! proven runtime is a later phase.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -24,8 +24,6 @@ pub enum Value {
     Tuple(Vec<Value>),
     Ctor { name: String, fields: Vec<Value> },
     Cap(Capability),
-    /// A handle to an actor — the authority to send it messages.
-    Subject(usize),
     /// An unforgeable capability to a directory subtree (cap-std `Dir` style).
     /// Carries the host path it is rooted at; can only be obtained from the root
     /// grant or by attenuation (`subdir`).
@@ -143,7 +141,6 @@ impl fmt::Display for Value {
                 Ok(())
             }
             Value::Cap(c) => write!(f, "<capability {c:?}>"),
-            Value::Subject(id) => write!(f, "<actor #{id}>"),
             Value::Dir(_) => write!(f, "<dir>"),
             Value::Net(_) => write!(f, "<net>"),
             Value::Secret(_) => write!(f, "<signing key>"),
@@ -484,27 +481,10 @@ fn concat_spine<'a>(mut e: &'a Expr, name: &str) -> Option<Vec<&'a Expr>> {
     }
 }
 
-/// A live actor: which definition it is, plus its current state (fields).
-struct ActorInstance {
-    def: String,
-    state: HashMap<String, Value>,
-}
-
 pub struct Interpreter {
     // `Rc` so a call clones a pointer, not the whole function AST (this is the
     // hot path for recursion).
     functions: HashMap<String, Rc<Function>>,
-    actor_defs: HashMap<String, ActorDef>,
-    actors: Vec<ActorInstance>,
-    queue: VecDeque<(usize, Value)>,
-    /// Actor ids currently mid-delivery (on the call stack). Mirrors the WASM
-    /// backend, where a delivering actor is taken OUT of the actor table: a
-    /// synchronous `ask` that targets a busy actor is the same error on both.
-    executing: HashSet<usize>,
-    /// Reply frames for synchronous `ask`: each `ask` pushes a `None`; the
-    /// target handler's `reply(v)` sets the top frame; `ask` pops it as the
-    /// result. A stack so nested asks target the innermost handler.
-    reply_stack: Vec<Option<Value>>,
     /// Host directory the root `Dir` capability is rooted at.
     root: PathBuf,
     /// Allow-list backing the root `Net` capability.
@@ -560,7 +540,6 @@ pub const COMPTIME_STEP_LIMIT: u64 = 500_000_000;
 impl Interpreter {
     pub fn new(module: Module) -> Self {
         let mut functions = HashMap::new();
-        let mut actor_defs = HashMap::new();
         let mut record_fields = HashMap::new();
         for item in module.items {
             match item {
@@ -583,11 +562,6 @@ impl Interpreter {
         }
         Self {
             functions,
-            actor_defs,
-            actors: Vec::new(),
-            queue: VecDeque::new(),
-            executing: HashSet::new(),
-            reply_stack: Vec::new(),
             root: PathBuf::from("."),
             net_allow: Vec::new(),
             signing_key: None,
@@ -867,37 +841,6 @@ impl Interpreter {
                 }
                 [_, _] => err("print requires a Console capability as its first argument"),
                 _ => err("print expects a Console capability and a message: print(console, msg)"),
-            },
-            // Deliver a message to an actor. Holding the Subject IS the
-            // authority to send to it.
-            "send" => match args {
-                [Value::Subject(id), msg] => {
-                    self.queue.push_back((*id, msg.clone()));
-                    Ok(Some(Value::Nil))
-                }
-                _ => err("send expects an actor subject and a message: send(actor, Msg(..))"),
-            },
-            // Synchronous request/response: run the target's handler now and
-            // return its `reply(...)` value. Unlike `send`, `ask` does not
-            // queue — it is how `main` (the root actor) gets a result back.
-            "ask" => match args {
-                [Value::Subject(id), msg] => {
-                    let v = self.ask_actor(*id, msg.clone())?;
-                    Ok(Some(v))
-                }
-                _ => err("ask expects an actor subject and a message: ask(actor, Msg(..))"),
-            },
-            // Inside a handler reached by `ask`, hand a value back to the
-            // asker. Outside an `ask` (a plain `send` delivery) it is a no-op,
-            // since there is no one waiting on a reply.
-            "reply" => match args {
-                [v] => {
-                    if let Some(frame) = self.reply_stack.last_mut() {
-                        *frame = Some(v.clone());
-                    }
-                    Ok(Some(Value::Nil))
-                }
-                _ => err("reply expects exactly one value: reply(v)"),
             },
             // Pure builtins need no capability.
             "__render" => Ok(Some(Value::Str(one(args)?.to_string()))),
@@ -1543,136 +1486,6 @@ impl Interpreter {
             },
             _ => Ok(None),
         }
-    }
-
-    /// Spawn an actor: build its initial state from field initializers and the
-    /// positional spawn arguments (which supply the non-defaulted fields, e.g.
-    /// capabilities). Returns a Subject handle.
-    fn spawn_actor(&mut self, name: &str, args: Vec<Value>) -> Result<Value, RuntimeError> {
-        let Some(def) = self.actor_defs.get(name).cloned() else {
-            return err(format!("cannot spawn unknown actor `{name}`"));
-        };
-        let mut state = HashMap::new();
-        let mut supplied = args.into_iter();
-        for field in &def.fields {
-            let value = match &field.init {
-                Some(init) => finish(self.eval(init, &mut Env::new()))?,
-                None => match supplied.next() {
-                    Some(v) => v,
-                    None => {
-                        return err(format!(
-                            "spawn {name}: missing value for field `{}`",
-                            field.name
-                        ))
-                    }
-                },
-            };
-            state.insert(field.name.clone(), value);
-        }
-        let id = self.actors.len();
-        self.actors.push(ActorInstance {
-            def: name.to_string(),
-            state,
-        });
-        Ok(Value::Subject(id))
-    }
-
-    /// Process queued messages until the system is quiescent. Each handler runs
-    /// to completion before the next message is dispatched (BEAM-style).
-    pub fn run_to_completion(&mut self) -> Result<(), RuntimeError> {
-        let mut steps = 0u64;
-        while let Some((id, msg)) = self.queue.pop_front() {
-            steps += 1;
-            if steps > 1_000_000 {
-                return err("actor scheduler exceeded its step budget");
-            }
-            self.handle_message(id, msg)?;
-        }
-        Ok(())
-    }
-
-    /// Async delivery (a queued `send`): run the handler to completion,
-    /// tracking the actor as busy for the duration so a synchronous `ask`
-    /// targeting it mid-flight fails identically to the WASM backend.
-    fn handle_message(&mut self, id: usize, msg: Value) -> Result<(), RuntimeError> {
-        self.executing.insert(id);
-        let r = self.deliver(id, msg);
-        self.executing.remove(&id);
-        r
-    }
-
-    /// Synchronous request/response: deliver `msg` to actor `id`, run its
-    /// handler to completion, and return the value the handler passed to
-    /// `reply(...)`. The target must not be mid-delivery (no `ask` cycles) and
-    /// must reply. This is how the root actor (`main`) collects a result.
-    fn ask_actor(&mut self, id: usize, msg: Value) -> Result<Value, RuntimeError> {
-        if self.executing.contains(&id) {
-            return err(format!(
-                "ask: actor #{id} is busy — a synchronous `ask` cannot re-enter an actor that is mid-delivery"
-            ));
-        }
-        self.executing.insert(id);
-        self.reply_stack.push(None);
-        let r = self.deliver(id, msg);
-        let replied = self.reply_stack.pop().flatten();
-        self.executing.remove(&id);
-        r?;
-        match replied {
-            Some(v) => Ok(v),
-            None => err("ask: the handler returned without calling `reply(...)`"),
-        }
-    }
-
-    fn deliver(&mut self, id: usize, msg: Value) -> Result<(), RuntimeError> {
-        let Value::Ctor { name: msg_name, fields } = msg else {
-            return err("a message must be a constructor value, e.g. Log(\"hi\")");
-        };
-        let def_name = self.actors[id].def.clone();
-        let def = self.actor_defs.get(&def_name).cloned().unwrap();
-        let Some(handler) = def.handlers.iter().find(|h| h.message == msg_name) else {
-            return err(format!(
-                "actor `{def_name}` has no handler for message `{msg_name}`"
-            ));
-        };
-        if handler.params.len() != fields.len() {
-            return err(format!(
-                "message `{msg_name}` carries {} value(s) but the handler expects {}",
-                fields.len(),
-                handler.params.len()
-            ));
-        }
-        // State is the base scope; handler parameters layer on top. `var` fields
-        // are mutable; capability/immutable fields are not.
-        let field_mut: HashMap<&str, bool> =
-            def.fields.iter().map(|f| (f.name.as_str(), f.mutable)).collect();
-        let mut env = Env::new();
-        for (k, v) in &self.actors[id].state {
-            let mutable = field_mut.get(k.as_str()).copied().unwrap_or(false);
-            env.define(k.clone(), v.clone(), mutable);
-        }
-        env.push();
-        // `self` is the actor's own Subject — the authority to send to itself —
-        // in scope (with the declared mutability) only when the handler asks for
-        // it: `on Msg(self, ...)` / `var self` / `own self`.
-        if handler.has_self {
-            env.define("self".to_string(), Value::Subject(id), handler.self_conv.binds_mutable());
-        }
-        for (param, value) in handler.params.iter().zip(fields) {
-            env.define(
-                param.name.clone(),
-                value,
-                param.convention.binds_mutable(),
-            );
-        }
-        finish(self.eval_block(&handler.body, &mut env))?;
-        // Persist any state the handler mutated.
-        let field_names: Vec<String> = self.actors[id].state.keys().cloned().collect();
-        for k in field_names {
-            if let Some(v) = env.get(&k) {
-                self.actors[id].state.insert(k, v.clone());
-            }
-        }
-        Ok(())
     }
 
     /// The interpreter-side linear-update fast path: a self-assignment of an
@@ -2600,9 +2413,6 @@ fn run_module_inner_limited(
     let ret = interp
         .call("main", root_args)
         .map_err(|e| rt_at_line(e, interp.cur_line, &interp.cur_fn))?;
-    interp
-        .run_to_completion()
-        .map_err(|e| rt_at_line(e, interp.cur_line, &interp.cur_fn))?;
     // `main` returning an `Int` sets the process exit code (the C/Go/Rust
     // convention) — it is *not* printed; a program shows output via `print`.
     let exit_code = match ret {
@@ -2653,9 +2463,6 @@ pub fn run_build_step(module: Module, grants: BuildGrants) -> Result<Vec<String>
         .collect::<Result<Vec<_>, _>>()?;
     interp
         .call(&build.name, argv)
-        .map_err(|e| rt_at_line(e, interp.cur_line, &interp.cur_fn))?;
-    interp
-        .run_to_completion()
         .map_err(|e| rt_at_line(e, interp.cur_line, &interp.cur_fn))?;
     let mut generated: Vec<String> = std::fs::read_dir(&grants.out_dir)
         .map_err(|e| RuntimeError { message: format!("build: cannot read output dir: {e}") })?
@@ -3914,7 +3721,6 @@ fn main(console: Console):
         let mut interp = Interpreter::new(module);
         interp.step_limit = limit;
         interp.call("main", vec![])?;
-        interp.run_to_completion()?;
         Ok(interp.output)
     }
 
