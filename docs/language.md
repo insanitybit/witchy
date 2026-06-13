@@ -632,8 +632,9 @@ fn main(console: Console):
 
 An **actor** is just an `async fn` looping on `chan.recv()`, with its state in a
 recursive parameter; `chan.send(target, msg)` routes a message to another task's
-inbox. See the book's *Concurrency with Async and Channels* chapter and
-`std/chan` / `std/future` for the full model.
+inbox. `chan.serve(state, handler)` writes that receive-update-repeat loop for
+you, threading state through each message. See the book's *Concurrency with Async
+and Channels* chapter and `std/chan` / `std/future` for the full model.
 
 ## 15. In-language tests
 

@@ -111,6 +111,48 @@ fn main(console: Console):
 The `client` (`#1`) asks the `accumulator` (`#0`) for its running total; the
 accumulator replies on the client's inbox, and the client prints it.
 
+## The actor loop as a combinator: `chan.serve`
+
+Every actor above ends each branch with the same `await loop(next_state)` call —
+the recursion that carries state to the next message. `chan.serve` captures exactly
+that shape: give it the initial state and a handler, and it receives a message,
+runs the handler to get the next state, and repeats. The handler returns the next
+state *as a task*, so it can also send replies before carrying state forward.
+
+```witchy
+import chan
+
+type Msg:
+    Add(Int)
+    Get
+    Total(Int)
+
+async fn accumulator() -> Nil:
+    await chan.serve(0, fn(sum, m):
+        match m:
+            Add(n) -> chan.done(sum + n)
+            Get -> chan.and_then(chan.send(1, Total(sum)), fn(_u): chan.done(sum))
+            Total(_t) -> chan.done(sum)
+    )
+
+async fn client(console: Console) -> Nil:
+    await chan.send(0, Add(5))
+    await chan.send(0, Add(2))
+    await chan.send(0, Get)
+    let r = await chan.recv()
+    match r:
+        Total(t) -> print(console, "total is " + "${t}")
+        Add(_n) -> print(console, "(unreachable)")
+        Get -> print(console, "(unreachable)")
+
+fn main(console: Console):
+    chan.run([accumulator(), client(console)])
+```
+
+This is the same accumulator as the previous section, but the state recursion lives
+once inside `serve` instead of in every match arm. Like any actor, it runs until
+quiescence — when nothing more arrives in its inbox, the task goes inert.
+
 ## Why this stays deterministic
 
 The executor is ordinary witchy code (see `std/chan` and `std/future`): it owns the
