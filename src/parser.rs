@@ -911,6 +911,19 @@ impl Parser {
             }
             Tok::For => {
                 self.advance();
+                // `for await x in rx:` — a receive loop over a channel. Marked here
+                // by wrapping the iterator in `chan.__recv_stream(..)`, which the
+                // async lowering recognises and turns into a `chan.consume` loop
+                // (so the body may itself `await`). The marker only survives in a
+                // non-async fn, where it is rightly an "unknown function" error.
+                let stream = self.eat(&Tok::Await);
+                let wrap = |iter: Expr| -> Expr {
+                    if stream {
+                        Expr::Call { name: "chan.__recv_stream".into(), args: vec![iter] }
+                    } else {
+                        iter
+                    }
+                };
                 // `for (k, v) in pairs:` — a tuple pattern destructures each
                 // element: sugar for a fresh element variable plus a leading
                 // `let (k, v) = element` in the body.
@@ -945,7 +958,7 @@ impl Parser {
                     } else {
                         body.lines.push(0);
                     }
-                    return Ok(Expr::For { var, iter: Box::new(iter), body });
+                    return Ok(Expr::For { var, iter: Box::new(wrap(iter)), body });
                 }
                 let var = self.ident()?;
                 self.expect(&Tok::In)?;
@@ -953,7 +966,7 @@ impl Parser {
                 let body = self.block()?;
                 Ok(Expr::For {
                     var,
-                    iter: Box::new(iter),
+                    iter: Box::new(wrap(iter)),
                     body,
                 })
             }

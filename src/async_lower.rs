@@ -151,8 +151,17 @@ impl Ctx {
                 // rejected downstream (a closure can't mutate a captured var), so
                 // only loop-local state crosses an `await` here.
                 if let Expr::For { var, iter, body } = e {
-                    if block_contains_await(body) {
-                        let loop_future = self.cps_for(var, iter, body)?;
+                    // `for await x in rx:` (marked `chan.__recv_stream(rx)` by the
+                    // parser) — a receive loop, lowered whether or not the body
+                    // awaits; a plain `for` with an awaiting body becomes for_each.
+                    let loop_future = if let Some(src) = as_recv_stream(iter) {
+                        Some(self.cps_consume(var, src, body)?)
+                    } else if block_contains_await(body) {
+                        Some(self.cps_for(var, iter, body)?)
+                    } else {
+                        None
+                    };
+                    if let Some(loop_future) = loop_future {
                         return if is_last {
                             Ok(loop_future)
                         } else {
@@ -229,6 +238,21 @@ impl Ctx {
                 Err(self.err("`break`/`continue` across `await` is not yet supported"))
             }
         }
+    }
+
+    /// Lower `for await x in rx:` into `chan.consume(rx, fn(x): <body>)` — a
+    /// receive loop that runs the (CPS-transformed) body for each message until
+    /// the channel closes.
+    fn cps_consume(&mut self, var: &str, src: &Expr, body: &Block) -> Result<Expr, String> {
+        reject_await(src, &self.fname)?;
+        let body_future = self.cps_stmts(&body.stmts)?;
+        let discard = self.fresh();
+        let body_nil = and_then(body_future, discard, call("chan.ready_unit", vec![]));
+        let f = Expr::Lambda {
+            params: vec![Param { name: var.to_string(), ty: None, convention: Convention::Let }],
+            body: tail_block(body_nil),
+        };
+        Ok(call("chan.consume", vec![src.clone(), f]))
     }
 
     /// Lower a `for x in xs:` whose body awaits into a `chan.for_each(xs', fn(x):
@@ -309,6 +333,17 @@ fn for_iter_list(iter: &Expr) -> Expr {
             call("list.range_between", vec![(**lo).clone(), hi_expr])
         }
         other => other.clone(),
+    }
+}
+
+/// The receiver of a `for await x in rx:` loop — the parser marks it as
+/// `chan.__recv_stream(rx)`; this unwraps back to `rx`.
+fn as_recv_stream(e: &Expr) -> Option<&Expr> {
+    match e {
+        Expr::Call { name, args } if name == "chan.__recv_stream" && args.len() == 1 => {
+            Some(&args[0])
+        }
+        _ => None,
     }
 }
 

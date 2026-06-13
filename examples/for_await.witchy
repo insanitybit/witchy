@@ -1,24 +1,20 @@
-// `await` inside a `for` loop: the body runs as a task per element, in order, so
-// you iterate with `await` without hand-writing recursion. The producer sends a
-// batch with a for-await loop; the worker consumes the channel until it closes.
+// `for await x in rx:` — a receive loop over a channel. It runs the body for each
+// message until the channel closes, and the body may itself `await`. Two forms of
+// `for` appear here: the producer iterates a *list* (`for n in [...]`), the worker
+// iterates a *receiver* (`for await n in rx`). Both lower onto the same executor.
 //
 // Run:  witchy examples/for_await.witchy
 //       witchy parity examples/for_await.witchy
 
 import chan
 
-type Job:
-    Do(Int)
-
-async fn producer(tx: Sender(Job)) -> Nil:
+async fn producer(tx: Sender(Int)) -> Nil:
     for n in [2, 3, 4]:
-        await chan.send(tx, Do(n))
+        await chan.send(tx, n)
 
-async fn worker(console: Console, rx: Receiver(Job)) -> Nil:
-    await chan.consume(rx, fn(job):
-        match job:
-            Do(n) -> chan.done(print(console, "n*n = ${n * n}"))
-    )
+async fn worker(console: Console, rx: Receiver(Int)) -> Nil:
+    for await n in rx:
+        print(console, "n*n = ${n * n}")
 
 async fn main(console: Console):
     let (tx, rx) = await chan.channel(4)

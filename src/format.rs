@@ -626,6 +626,19 @@ fn multiline(s: &mut String, e: &Expr, depth: usize, c: &mut Comments) {
                     }
                 }
             }
+            // `for await x in rx:` — the parser marks the receiver as
+            // `chan.__recv_stream(rx)`; print the surface form back.
+            if let Expr::Call { name, args } = &**iter {
+                if name == "chan.__recv_stream" && args.len() == 1 {
+                    s.push_str("for await ");
+                    s.push_str(var);
+                    s.push_str(" in ");
+                    s.push_str(&expr(&args[0]));
+                    s.push_str(":\n");
+                    block(s, body, depth + 1, c);
+                    return;
+                }
+            }
             s.push_str("for ");
             s.push_str(var);
             s.push_str(" in ");

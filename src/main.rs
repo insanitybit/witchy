@@ -11724,6 +11724,40 @@ async fn main(console: Console):
         assert_eq!(interp_out, vec!["got 1", "got 2", "got 3"]);
     }
 
+    // `for await x in rx:` — a receive loop over a channel whose body may itself
+    // `await` (here it forwards a squared value). Lowers to chan.consume; both
+    // backends agree byte-for-byte.
+    #[test]
+    fn for_await_over_receiver_backends_agree() {
+        let src = r#"
+import chan
+
+async fn producer(tx: Sender(Int)) -> Nil:
+    for n in [1, 2, 3]:
+        await chan.send(tx, n)
+
+async fn relay(rx: Receiver(Int), out: Sender(Int)) -> Nil:
+    for await x in rx:
+        await chan.send(out, x * x)
+
+async fn main(console: Console):
+    let (tx, rx) = await chan.channel(4)
+    let (otx, orx) = await chan.channel(4)
+    await chan.spawn(producer(tx))
+    await chan.spawn(relay(rx, otx))
+    await chan.consume(orx, fn(v): chan.done(print(console, "got ${v}")))
+"#;
+        let module = parser::parse_module(src).expect("parse");
+        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        typeck::check(&linked).expect("typecheck");
+        let interp_out =
+            interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interp");
+        let wat = codegen::compile_module(&linked).expect("compile");
+        let wasm_out = crate::run_wat_capture(&wat).expect("wasm");
+        assert_eq!(interp_out, wasm_out, "for-await-over-receiver diverged across backends");
+        assert_eq!(interp_out, vec!["got 1", "got 4", "got 9"]);
+    }
+
     // The multi-actor case: each task has its OWN inbox, so several actors with
     // separate mailboxes run together (what a single shared channel cannot do).
     // A logger (#0), a forwarder (#1) that relays to the logger, and a driver (#2)

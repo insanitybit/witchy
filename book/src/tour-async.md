@@ -144,11 +144,35 @@ async fn main(console: Console):
 
 A `for` loop may `await` in its body. Each iteration runs to completion before the
 next begins, so a batch of asynchronous steps reads as an ordinary loop — that is
-how `source`/`worker` above send several messages. The loop lowers to
-`chan.for_each`. A `while` loop cannot `await` (it would need mutable state carried
-across the await point, which captured-by-value closures can't express) — for an
-open-ended loop, recurse with an async fn or loop on a receiver with
-`chan.consume`/`chan.serve`.
+how `source` above sends several messages with `for n in [...]`.
+
+`for await x in rx:` is the receiver form: it loops over a channel, binding each
+message in turn and stopping when the channel closes — and its body may `await`
+too, so a stage can receive, transform, and forward in a few plain lines:
+
+```witchy
+import chan
+
+async fn producer(tx: Sender(Int)) -> Nil:
+    for n in [1, 2, 3]:
+        await chan.send(tx, n)
+
+async fn squares(rx: Receiver(Int), out: Sender(Int)) -> Nil:
+    for await n in rx:
+        await chan.send(out, n * n)
+
+async fn main(console: Console):
+    let (tx, rx) = await chan.channel(4)
+    let (out_tx, out_rx) = await chan.channel(4)
+    await chan.spawn(producer(tx))
+    await chan.spawn(squares(rx, out_tx))
+    await chan.consume(out_rx, fn(v): chan.done(print(console, "got ${v}")))
+```
+
+The list form lowers to `chan.for_each`, the receiver form to `chan.consume`. A
+`while` loop cannot `await` (it would need mutable state carried across the await
+point, which captured-by-value closures can't express) — for an open-ended loop,
+recurse with an async fn, or use `for await`.
 
 ## Why this stays deterministic
 
