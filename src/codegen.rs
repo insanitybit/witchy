@@ -8298,7 +8298,22 @@ impl Renamer {
                     self.rename_expr(a);
                 }
             }
-            Expr::Call { args, .. } | Expr::Ctor { args, .. } => {
+            // A `Call` name may be a LOCAL closure variable (`cont(x)` where
+            // `cont` was bound by a `let`/parameter/match pattern), which
+            // lexically shadows any global of the same name — exactly as the
+            // type checker resolves it. Rename it like any other use: `resolve`
+            // is a no-op for a true global (never bound in a scope), so this
+            // only rewrites calls to a renamed local. Without this, a local
+            // closure that gets alpha-renamed (e.g. a `cont` reused across
+            // sibling match arms) loses its call sites. A `Ctor` name is always
+            // a global constructor, never a local.
+            Expr::Call { name, args } => {
+                *name = self.resolve(name);
+                for a in args {
+                    self.rename_expr(a);
+                }
+            }
+            Expr::Ctor { args, .. } => {
                 for a in args {
                     self.rename_expr(a);
                 }
@@ -8955,6 +8970,34 @@ fn main() -> Int:
     (area(Circle(10)) + area(Square(5)))
 "#;
         assert_eq!(run_int(src), 325);
+    }
+
+    #[test]
+    fn renames_calls_to_shadowed_local_closures() {
+        // A called LOCAL closure (`f(x)`, where `f` is bound by a match pattern)
+        // must keep its call site when alpha-rename gives it a unique name. Both
+        // arms bind `f`; the second is renamed so the two don't alias one WASM
+        // local, and the body's `f(x)` has to follow that rename. Before the fix
+        // the `Call` name was assumed to always be a global, so the renamed local
+        // lost its call site and compiled to a trap / unknown-function error —
+        // the bug that blocked `chan.address` (Recv + Whoami both bind `cont`).
+        let src = r#"
+type Box:
+    A(fn(Int) -> Int)
+    B(fn(Int) -> Int)
+
+fn dbl(n: Int) -> Int:
+    (n + n)
+
+fn apply_it(b: Box, x: Int) -> Int:
+    match b:
+        A(f) -> f(x)
+        B(f) -> f(x)
+
+fn main() -> Int:
+    (apply_it(A(dbl), 5) + apply_it(B(dbl), 10))
+"#;
+        assert_eq!(run_int(src), 30);
     }
 
     #[test]

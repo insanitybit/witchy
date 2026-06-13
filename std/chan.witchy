@@ -18,12 +18,14 @@
 import option
 
 // What a task does when the executor steps it: finish, yield cooperatively, send
-// a message to a target inbox, or block until its OWN inbox has a message.
+// a message to a target inbox, block until its OWN inbox has a message, or ask the
+// executor for its own address (`Whoami`).
 type Step(m, a):
     Done(a)
     Yield(Task(m, a))
     Emit(Int, m, Task(m, a))
     Recv(fn(m) -> Task(m, a))
+    Whoami(fn(Int) -> Task(m, a))
 
 // A task that communicates via messages of type `m` and produces an `a`.
 type Task(m, a):
@@ -60,6 +62,12 @@ pub fn send(target: Int, msg: m) -> Task(m, Nil):
 pub fn recv() -> Task(m, m):
     Task(fn(): Recv(fn(msg): Task(fn(): Done(msg))))
 
+// The current task's own address — its index in the `run` list, the same number
+// another task would `send` to. A request carries this so the responder can reply
+// to the asker's address instead of hardcoding its position.
+pub fn address() -> Task(m, Int):
+    Task(fn(): Whoami(fn(i): Task(fn(): Done(i))))
+
 // Sequence: run `t`, then continue with `k` applied to its result. `await` for
 // tasks — the continuation `k` is what would follow the await point.
 pub fn and_then(t: Task(m, a), k: fn(a) -> Task(m, b)) -> Task(m, b):
@@ -71,6 +79,7 @@ fn and_then_step(s: Step(m, a), k: fn(a) -> Task(m, b)) -> Step(m, b):
         Yield(t2) -> Yield(and_then(t2, k))
         Emit(target, msg, t2) -> Emit(target, msg, and_then(t2, k))
         Recv(cont) -> Recv(fn(msg): and_then(cont(msg), k))
+        Whoami(cont) -> Whoami(fn(i): and_then(cont(i), k))
 
 // Transform a task's result.
 pub fn map(t: Task(m, a), f: fn(a) -> b) -> Task(m, b):
@@ -116,8 +125,8 @@ fn deliver(i: Int, cont: fn(m) -> Task(m, a), slots: List(Slot(m, a)), inboxes: 
     else:
         (list.set_at(slots, i, Blocked(cont)), inboxes, false)
 
-// Step task #`i` once, routing any `Emit` to the target's inbox and any `Recv`
-// to task `i`'s own inbox.
+// Step task #`i` once, routing any `Emit` to the target's inbox, any `Recv` to
+// task `i`'s own inbox, and answering `Whoami` with `i` (the task's address).
 fn step_one(i: Int, slots: List(Slot(m, a)), inboxes: List(List(m))) -> (List(Slot(m, a)), List(List(m)), Bool):
     match list.at(slots, i):
         Finished(_v) -> (slots, inboxes, false)
@@ -130,6 +139,7 @@ fn step_one(i: Int, slots: List(Slot(m, a)), inboxes: List(List(m))) -> (List(Sl
                     let nb = list.update_at(inboxes, target, fn(q): list.push(q, msg))
                     (list.set_at(slots, i, Active(t2)), nb, true)
                 Recv(cont) -> deliver(i, cont, slots, inboxes)
+                Whoami(cont) -> (list.set_at(slots, i, Active(cont(i))), inboxes, true)
 
 // One round-robin pass over tasks 0..n, threading slots + inboxes and OR-ing
 // progress (to detect deadlock / quiescence).

@@ -40,6 +40,7 @@ Messages are generic (type `m`); all inboxes in one `run` share that type. The `
 - `Yield(Task(m, a))`
 - `Emit(Int, m, Task(m, a))`
 - `Recv(fn(m) -> Task(m, a))`
+- `Whoami(fn(Int) -> Task(m, a))`
 
 #### `type Task`
 
@@ -70,6 +71,10 @@ Send `msg` to the inbox of task #`target` (its index in the `run` list), then co
 #### `fn recv() -> Task(m, m)`
 
 Block until THIS task's inbox has a message, then continue with it.
+
+#### `fn address() -> Task(m, Int)`
+
+The current task's own address — its index in the `run` list, the same number another task would `send` to. A request carries this so the responder can reply to the asker's address instead of hardcoding its position.
 
 #### `fn and_then(t: Task(m, a), k: fn(a) -> Task(m, b)) -> Task(m, b)`
 
