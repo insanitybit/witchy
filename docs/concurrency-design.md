@@ -1,9 +1,11 @@
 # Concurrency redesign: async/await + channels
 
-> Status: **design, informed by withoutboats' *Why async Rust?*** (Oct 2023) and
-> the wasmtime-45 capability survey. Replaces the current `actor`/`on`/`spawn
-> ActorType`/`Subject`/`ask`/`reply` system. Not yet implemented; this is the
-> plan the implementation follows.
+> Status: **SHIPPED — all 6 phases complete (committed `accb1b8`).** The
+> `actor`/`on`/`Subject`/`ask`/`reply`/`spawn ActorType` system has been retired;
+> concurrency is now `async`/`await` over `std/chan` (a multi-inbox cooperative
+> executor) + `std/future`. An actor is an `async fn` looping on `recv`. Build
+> green, full suite passes. Informed by withoutboats' *Why async Rust?* (Oct 2023)
+> and the wasmtime-45 capability survey; this document records the design as built.
 
 ## Decision
 
@@ -180,8 +182,11 @@ intact. Two candidate lowerings were considered:
    the message type and collapsed it to `Nil`. Channels are **unified with `async`/`await`**:
    the CPS transform targets this substrate, so you write `await chan.send(x)` /
    `await chan.recv()` inside an `async fn` and run a list of them with `chan.run`
-   — an `async fn` looping (recursively) on `recv` IS an actor, ergonomically
-   (`examples/async_tasks.witchy`, `async_with_channels_backends_agree`). *Deferred:*
+   — an `async fn` looping on `recv` IS an actor, ergonomically
+   (`examples/async_tasks.witchy`, `async_with_channels_backends_agree`). The manual
+   recursion is now optional: `chan.serve(state, handle)` is the actor loop as a
+   combinator — it receives, runs `handle` to get the next state, and repeats,
+   threading state through every message (`examples/counter_serve.witchy`). *Deferred:*
    the `(tx, rx)` handle split and `for await v in rx` loop sugar.
 5. **`scope` + `select` + cancellation — DONE (primitive form).** `future.select`
    races tasks and returns the first to finish, dropping the losers — and because

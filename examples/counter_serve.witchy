@@ -1,0 +1,41 @@
+// The same counter actor as examples/actor_as_async.witchy, but its message loop
+// collapses to a single `chan.serve` call. `serve` IS the actor pattern as a
+// combinator: it receives a message, runs `handle` to get the next state, and
+// repeats — threading state through every message so you never write the manual
+// `await loop(next)` recursion yourself. Runs until quiescence (nothing left to
+// receive), exactly like an actor going inert. Deterministic and byte-identical
+// on both backends.
+//
+// Run:  witchy examples/counter_serve.witchy
+//       witchy parity examples/counter_serve.witchy
+
+import chan
+
+type Msg:
+    Bump
+    Get
+    Count(Int)
+
+// One message at the current state `n`; returns the next state as a task. `Get`
+// replies to the client (task #1) before carrying `n` forward unchanged.
+fn handle(n: Int, m: Msg) -> Task(Msg, Int):
+    match m:
+        Bump -> chan.done(n + 1)
+        Get -> chan.and_then(chan.send(1, Count(n)), fn(_u): chan.done(n))
+        Count(_c) -> chan.done(n)
+
+async fn counter() -> Nil:
+    await chan.serve(0, handle)
+
+async fn client(console: Console) -> Nil:
+    await chan.send(0, Bump)
+    await chan.send(0, Bump)
+    await chan.send(0, Get)
+    let r = await chan.recv()
+    match r:
+        Count(c) -> print(console, "count = ${c}")
+        Bump -> print(console, "(unreachable)")
+        Get -> print(console, "(unreachable)")
+
+fn main(console: Console):
+    chan.run([counter(), client(console)])

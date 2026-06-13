@@ -76,6 +76,14 @@ fn and_then_step(s: Step(m, a), k: fn(a) -> Task(m, b)) -> Step(m, b):
 pub fn map(t: Task(m, a), f: fn(a) -> b) -> Task(m, b):
     and_then(t, fn(x): Task(fn(): Done(f(x))))
 
+// The actor message loop as a combinator: receive a message, run `handler` with
+// the current `state` to get the next state, and repeat. State threads through
+// every message without manual recursion, so an actor is just `chan.serve` over
+// its state and a handler. Runs until quiescence — when nothing more messages
+// this task, it becomes inert (the actor lifecycle).
+pub fn serve(state: s, handler: fn(s, m) -> Task(m, s)) -> Task(m, Nil):
+    and_then(recv(), fn(msg): and_then(handler(state, msg), fn(next): serve(next, handler)))
+
 // Build the task `thunk()` lazily: nothing runs until the first poll, and then
 // exactly once. This is what makes an `async fn` LAZY — calling it yields a task
 // that does no work until driven.

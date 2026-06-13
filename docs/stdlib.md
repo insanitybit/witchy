@@ -79,6 +79,10 @@ Sequence: run `t`, then continue with `k` applied to its result. `await` for tas
 
 Transform a task's result.
 
+#### `fn serve(state: s, handler: fn(s, m) -> Task(m, s)) -> Task(m, Nil)`
+
+The actor message loop as a combinator: receive a message, run `handler` with the current `state` to get the next state, and repeat. State threads through every message without manual recursion, so an actor is just `chan.serve` over its state and a handler. Runs until quiescence — when nothing more messages this task, it becomes inert (the actor lifecycle).
+
 #### `fn lazy(thunk: fn() -> Task(m, a)) -> Task(m, a)`
 
 Build the task `thunk()` lazily: nothing runs until the first poll, and then exactly once. This is what makes an `async fn` LAZY — calling it yields a task that does no work until driven.
