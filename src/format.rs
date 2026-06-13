@@ -492,6 +492,14 @@ fn stmt(s: &mut String, st: &Stmt, depth: usize, c: &mut Comments) {
 
 /// A statement-position expression: control-flow forms expand multi-line.
 fn block_stmt(s: &mut String, e: &Expr, depth: usize, c: &mut Comments) {
+    // A trailing-block-lambda call, possibly behind `await`/`move`, renders
+    // multi-line with the prefix on the head line.
+    if let Some((prefix, call)) = unwrap_block_lambda_call(e) {
+        pad(s, depth);
+        s.push_str(&prefix);
+        call_block_lambda(s, &call_head(call).unwrap(), call_args(call), depth, c);
+        return;
+    }
     match e {
         Expr::If { .. }
         | Expr::Match { .. }
@@ -514,12 +522,6 @@ fn block_stmt(s: &mut String, e: &Expr, depth: usize, c: &mut Comments) {
             pad(s, depth);
             lambda_at(s, params, body, depth, c);
         }
-        Expr::Call { args, .. } | Expr::MethodCall { args, .. }
-            if has_trailing_block_lambda(args) =>
-        {
-            pad(s, depth);
-            call_block_lambda(s, &call_head(e).unwrap(), args, depth, c);
-        }
         _ => {
             pad(s, depth);
             s.push_str(&expr(e));
@@ -532,17 +534,17 @@ fn block_stmt(s: &mut String, e: &Expr, depth: usize, c: &mut Comments) {
 /// value is a `match` (no inline form) or a lambda with a block body, else an
 /// inline expr.
 fn value_or_block(s: &mut String, e: &Expr, depth: usize, c: &mut Comments) {
+    if let Some((prefix, call)) = unwrap_block_lambda_call(e) {
+        s.push_str(&prefix);
+        call_block_lambda(s, &call_head(call).unwrap(), call_args(call), depth, c);
+        return;
+    }
     match e {
         Expr::Match { .. } => {
             multiline(s, e, depth, c);
         }
         Expr::Lambda { params, body } => {
             lambda_at(s, params, body, depth, c);
-        }
-        Expr::Call { args, .. } | Expr::MethodCall { args, .. }
-            if has_trailing_block_lambda(args) =>
-        {
-            call_block_lambda(s, &call_head(e).unwrap(), args, depth, c);
         }
         // A `retain`/`without` block used as a value (`let x = without c: ...`):
         // the header follows `= ` on this line, the body indents below.
@@ -842,15 +844,7 @@ fn expr(e: &Expr) -> String {
         }
         Expr::Field { base, field } => format!("{}.{field}", operand(base, POSTFIX_PREC, false)),
         Expr::Unary { op, expr: inner } => {
-            // `move` is a word prefix (needs a space); the others are sigils.
-            let o = match op {
-                UnOp::Neg => "-",
-                UnOp::Not => "!",
-                UnOp::BitNot => "~",
-                UnOp::Move => "move ",
-                UnOp::Await => "await ",
-            };
-            format!("{o}{}", operand(inner, UNARY_PREC, false))
+            format!("{}{}", unary_prefix(*op), operand(inner, UNARY_PREC, false))
         }
         Expr::Binary { op, lhs, rhs } => {
             // A string-`+` chain in the canonical shape interpolation
@@ -977,6 +971,42 @@ fn comma(xs: &[Expr]) -> String {
 /// trailing-lambda shape that has to render across multiple lines.
 fn has_trailing_block_lambda(args: &[Expr]) -> bool {
     matches!(args.last(), Some(Expr::Lambda { body, .. }) if block_value_opt(body).is_none())
+}
+
+/// The printed prefix for a unary operator (`move`/`await` are word prefixes with
+/// a trailing space; the rest are sigils).
+fn unary_prefix(op: UnOp) -> &'static str {
+    match op {
+        UnOp::Neg => "-",
+        UnOp::Not => "!",
+        UnOp::BitNot => "~",
+        UnOp::Move => "move ",
+        UnOp::Await => "await ",
+    }
+}
+
+/// A call whose last argument is a block-bodied lambda, possibly behind unary
+/// prefixes (`await f(x, fn(p): <block>)`). Returns the printed prefix and the
+/// underlying call to render with `call_block_lambda` — this is what keeps the
+/// trailing-lambda multi-line form intact when an `await`/`move` sits in front.
+fn unwrap_block_lambda_call(e: &Expr) -> Option<(String, &Expr)> {
+    match e {
+        Expr::Call { args, .. } | Expr::MethodCall { args, .. }
+            if has_trailing_block_lambda(args) =>
+        {
+            Some((String::new(), e))
+        }
+        Expr::Unary { op, expr: inner } => unwrap_block_lambda_call(inner)
+            .map(|(p, call)| (format!("{}{p}", unary_prefix(*op)), call)),
+        _ => None,
+    }
+}
+
+fn call_args(e: &Expr) -> &[Expr] {
+    match e {
+        Expr::Call { args, .. } | Expr::MethodCall { args, .. } => args,
+        _ => &[],
+    }
 }
 
 /// Render a call whose last argument is a block-bodied lambda multi-line:
@@ -1799,6 +1829,13 @@ mod tests {
 
         let matchy = "type Opt:\n    Some(a)\n    None\n\nfn classify() -> fn(Opt(Int)) -> Int:\n    fn(o: Opt(Int)):\n        match o:\n            Some(n) -> n\n            None -> 0\n";
         assert!(reformat(matchy).is_some(), "match-body closure should round-trip");
+
+        // A trailing block-lambda call behind `await` (the `chan.serve(s, fn(..):
+        // match ...)` shape) keeps its multi-line form: the `await`/`move` prefix
+        // used to force the whole call inline and corrupt the block lambda.
+        let awaited = "async fn loop_it() -> Nil:\n    await serve(0, fn(n, m):\n        match m:\n            0 -> n + 1\n            _ -> n)\n";
+        let out = reformat(awaited).expect("await + block-lambda call round-trips");
+        assert!(out.contains("await serve(0, fn(n, m):"), "prefix lost: {out}");
     }
 
     #[test]

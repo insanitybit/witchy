@@ -16,16 +16,15 @@ type Msg:
     Get
     Count(Int)
 
-// One message at the current state `n`; returns the next state as a task. `Get`
-// replies to the client (task #1) before carrying `n` forward unchanged.
-fn handle(n: Int, m: Msg) -> Task(Msg, Int):
-    match m:
-        Bump -> chan.done(n + 1)
-        Get -> chan.and_then(chan.send(1, Count(n)), fn(_u): chan.done(n))
-        Count(_c) -> chan.done(n)
-
+// State `n` threads through the handler; each arm returns the next state as a
+// task. `Get` replies to the client (task #1) before carrying `n` forward.
 async fn counter() -> Nil:
-    await chan.serve(0, handle)
+    await chan.serve(0, fn(n, m):
+        match m:
+            Bump -> chan.done(n + 1)
+            Get -> chan.and_then(chan.send(1, Count(n)), fn(_u): chan.done(n))
+            Count(_c) -> chan.done(n)
+    )
 
 async fn client(console: Console) -> Nil:
     await chan.send(0, Bump)
