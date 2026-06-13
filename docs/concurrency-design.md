@@ -188,6 +188,19 @@ intact. Two candidate lowerings were considered:
    combinator — it receives, runs `handle` to get the next state, and repeats,
    threading state through every message (`examples/counter_serve.witchy`). *Deferred:*
    the `(tx, rx)` handle split and `for await v in rx` loop sugar.
+
+   *Codegen prerequisite for decoupled addressing.* `send`/`recv` address tasks by
+   their position in the `run` list, so a responder hardcodes the asker's index.
+   Decoupling it (a `chan.address()` returning the caller's own index, or first-class
+   channel handles) means the executor must hand a runtime value back to a task — a
+   new `Step` effect carrying a continuation, e.g. `Whoami(fn(Int) -> Task(m, a))`.
+   That collides with `Recv(fn(m) -> Task(m, a))` when the message type is `Int`: both
+   monomorphize to `fn(Int) -> Task(Int, a)`, and the WASM backend keys an ADT value's
+   type on its monomorphized field shape rather than its variant tag, so it can no
+   longer resolve a received `Int`'s type (it breaks every `Int`-message program). The
+   interpreter is tag-based and unaffected. So `(tx, rx)`, `address()`, and a
+   channel-`select` are all blocked on codegen distinguishing variants by tag, not
+   structural field type — fix that first, then the addressing features follow.
 5. **`scope` + `select` + cancellation — DONE (primitive form).** `future.select`
    races tasks and returns the first to finish, dropping the losers — and because
    futures are pure and lazy, dropping IS cancellation (no cleanup hook needed),
