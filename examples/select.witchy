@@ -1,0 +1,35 @@
+// `chan.select` races two receivers and takes from whichever is ready (a tie
+// favours the first), yielding `Closed` once neither can deliver. Here two
+// producers feed separate channels and a collector merges them — a single task
+// reacting to whichever source speaks next, which one receiver can't express.
+//
+// Run:  witchy examples/select.witchy
+//       witchy parity examples/select.witchy
+
+import chan
+
+async fn ticks(tx: Sender(Int)) -> Nil:
+    for n in [1, 2, 3]:
+        await chan.send(tx, n)
+
+async fn beats(tx: Sender(Int)) -> Nil:
+    await chan.send(tx, 100)
+    await chan.send(tx, 200)
+
+async fn collector(console: Console, a: Receiver(Int), b: Receiver(Int)) -> Nil:
+    let s = await chan.select(a, b)
+    match s:
+        First(x) ->
+            print(console, "tick ${x}")
+            await collector(console, a, b)
+        Second(y) ->
+            print(console, "beat ${y}")
+            await collector(console, a, b)
+        Closed -> print(console, "both done")
+
+async fn main(console: Console):
+    let (tick_tx, tick_rx) = await chan.channel(4)
+    let (beat_tx, beat_rx) = await chan.channel(4)
+    await chan.spawn(ticks(tick_tx))
+    await chan.spawn(beats(beat_tx))
+    await collector(console, tick_rx, beat_rx)

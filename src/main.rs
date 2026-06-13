@@ -11832,6 +11832,50 @@ async fn main(console: Console):
         assert_eq!(interp_out, vec!["hello alice", "hello bob"]);
     }
 
+    // `chan.select` races two receivers, taking from whichever is ready (a tie
+    // favours the first) and yielding `Closed` once neither can deliver. Both
+    // backends must agree on the merged order.
+    #[test]
+    fn chan_select_backends_agree() {
+        let src = r#"
+import chan
+
+async fn pa(tx: Sender(Int)) -> Nil:
+    await chan.send(tx, 1)
+    await chan.send(tx, 2)
+
+async fn pb(tx: Sender(Int)) -> Nil:
+    await chan.send(tx, 9)
+
+async fn collector(console: Console, a: Receiver(Int), b: Receiver(Int)) -> Nil:
+    let s = await chan.select(a, b)
+    match s:
+        First(x) ->
+            print(console, "a ${x}")
+            await collector(console, a, b)
+        Second(y) ->
+            print(console, "b ${y}")
+            await collector(console, a, b)
+        Closed -> print(console, "done")
+
+async fn main(console: Console):
+    let (atx, arx) = await chan.channel(4)
+    let (btx, brx) = await chan.channel(4)
+    await chan.spawn(pa(atx))
+    await chan.spawn(pb(btx))
+    await collector(console, arx, brx)
+"#;
+        let module = parser::parse_module(src).expect("parse");
+        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        typeck::check(&linked).expect("typecheck");
+        let interp_out =
+            interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interp");
+        let wat = codegen::compile_module(&linked).expect("compile");
+        let wasm_out = crate::run_wat_capture(&wat).expect("wasm");
+        assert_eq!(interp_out, wasm_out, "select schedule diverged across backends");
+        assert_eq!(interp_out, vec!["a 1", "a 2", "b 9", "done"]);
+    }
+
     // Phase 5 (racing): `future.select` drives tasks concurrently and returns the
     // first to finish, dropping the losers. Among tasks of length 5/2/8, the
     // index-1 task (length 2) wins first — deterministically on both backends.

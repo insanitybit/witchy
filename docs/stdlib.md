@@ -42,6 +42,7 @@ The `async`/`await` CPS transform lowers onto this substrate (chan.lazy/and_then
 - `Open(Int, fn(Int) -> Task(m, a))`
 - `Push(Int, m, fn(Nil) -> Task(m, a))`
 - `Pull(Int, fn(Option(m)) -> Task(m, a))`
+- `PullAny(List(Int), fn(Option((Int, m))) -> Task(m, a))`
 - `Wait(Int, fn(Nil) -> Task(m, a))`
 
 #### `type Task`
@@ -60,11 +61,18 @@ The `async`/`await` CPS transform lowers onto this substrate (chan.lazy/and_then
 
 - `Handle(Int)`
 
+#### `type Selected`
+
+- `First(m)`
+- `Second(m)`
+- `Closed`
+
 #### `type Slot`
 
 - `Active(Task(m, Nil))`
 - `WaitRecv(Int, fn(Option(m)) -> Task(m, Nil))`
 - `WaitSend(Int, m, fn(Nil) -> Task(m, Nil))`
+- `WaitAny(List(Int), fn(Option((Int, m))) -> Task(m, Nil))`
 - `WaitJoin(Int, fn(Nil) -> Task(m, Nil))`
 - `Ended`
 
@@ -119,6 +127,10 @@ Start `child` as a concurrent task; the returned handle completes when it does.
 #### `fn join(h: Handle) -> Task(m, Nil)`
 
 Block until the spawned task behind `h` finishes.
+
+#### `fn select(a: Receiver(m), b: Receiver(m)) -> Task(m, Selected(m))`
+
+Receive from whichever of `a` or `b` has a message first; a tie favours `a`. Yields `Closed` once both channels are closed.
 
 #### `fn consume(rx: Receiver(m), f: fn(m) -> Task(m, Nil)) -> Task(m, Nil)`
 
