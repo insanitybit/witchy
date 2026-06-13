@@ -26,22 +26,9 @@ pub fn lower(mut module: Module) -> Result<Module, String> {
     for item in &mut module.items {
         match item {
             Item::Function(f) => lower_block(&mut f.body, &orders)?,
-            Item::Actor(a) => {
-                for field in &mut a.fields {
-                    if let Some(init) = &mut field.init {
-                        lower_expr(init, &orders)?;
-                    }
-                }
-                for h in &mut a.handlers {
-                    lower_block(&mut h.body, &orders)?;
-                }
-            }
             Item::Impl(im) => {
                 for meth in &mut im.methods {
                     lower_block(&mut meth.body, &orders)?;
-                }
-                for h in &mut im.handlers {
-                    lower_block(&mut h.body, &orders)?;
                 }
             }
             Item::Const { value, .. } => lower_expr(value, &orders)?,
@@ -136,8 +123,7 @@ fn lower_expr(e: &mut Expr, orders: &Orders) -> Result<(), String> {
         Expr::List(xs)
         | Expr::Tuple(xs)
         | Expr::Call { args: xs, .. }
-        | Expr::Ctor { args: xs, .. }
-        | Expr::Spawn { args: xs, .. } => {
+        | Expr::Ctor { args: xs, .. } => {
             for x in xs {
                 lower_expr(x, orders)?;
             }

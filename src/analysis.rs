@@ -432,8 +432,7 @@ fn collect_accumulators_expr(
         Expr::Call { args, .. }
         | Expr::Ctor { args, .. }
         | Expr::List(args)
-        | Expr::Tuple(args)
-        | Expr::Spawn { args, .. } => {
+        | Expr::Tuple(args) => {
             for a in args {
                 collect_accumulators_expr(a, summaries, accs, loop_ptrs, loop_sites);
             }
@@ -727,12 +726,6 @@ impl<'a> Walker<'a> {
                     self.scan(v, live, "stored into a record", out);
                 }
             }
-            // Spawn arguments are capability handles/Subject ids (scalars).
-            Expr::Spawn { args, .. } => {
-                for a in args {
-                    self.scan(a, false, reason, out);
-                }
-            }
             // Binary operators READ their operands into a fresh result
             // (concat copies bytes, comparisons compare content, arithmetic
             // is scalar): operands are dead regardless of the result.
@@ -869,8 +862,7 @@ fn expr(e: &Expr, accs: &HashSet<String>, out: &mut HashSet<String>) {
             Expr::Call { args, .. }
             | Expr::Ctor { args, .. }
             | Expr::List(args)
-            | Expr::Tuple(args)
-            | Expr::Spawn { args, .. } => {
+            | Expr::Tuple(args) => {
                 for a in args {
                     expr(a, accs, out);
                 }
@@ -1007,13 +999,6 @@ pub fn module_cliffs(module: &Module) -> Vec<(String, Cliff)> {
             Item::Function(f) => {
                 for c in analyze(&f.body, &summaries).cliffs {
                     out.push((f.name.clone(), c));
-                }
-            }
-            Item::Actor(a) => {
-                for h in &a.handlers {
-                    for c in analyze(&h.body, &summaries).cliffs {
-                        out.push((format!("{}.{}", a.name, h.message), c));
-                    }
                 }
             }
             _ => {}

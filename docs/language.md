@@ -607,61 +607,33 @@ runs a build step under those confined grants. See
 [build-time-execution-plan.md](build-time-execution-plan.md) for status and
 [package-manager.md](package-manager.md) §7.1 for the full model.
 
-## 14. Actors
+## 14. Concurrency: async and channels
+
+Concurrency is **cooperative async tasks** that pass messages over **channels**. A
+function marked `async` may `await`; calling it yields a task that does nothing
+until an executor drives it. Tasks share no memory, so there are no locks or data
+races, and the round-robin schedule is deterministic — a concurrent program
+produces identical output on the interpreter and the compiled WebAssembly.
 
 ```witchy
-actor Logger:
-    console: Console            // immutable state field
-    var count: Int = 0          // mutable state field
+import chan
 
-    on Log(line: String):
-        count = count + 1
-        print(console, line)
+async fn worker(console: Console, n: Int) -> Nil:
+    if n <= 0:
+        print(console, "done")
+    else:
+        print(console, "tick ${n}")
+        await chan.yield_now()
+        await worker(console, n - 1)
 
 fn main(console: Console):
-    let logger = spawn Logger(console)
-    send(logger, Log("hello"))
-    send(logger, Log("world"))
+    chan.run([worker(console, 2)])
 ```
 
-`spawn Logger(...)` creates an actor with its declared state (capabilities are
-granted explicitly at spawn — attenuated, if you choose) and returns a
-`Subject(Logger)`: a *typed* mailbox handle. `send(subject, Msg(...))` is
-validated at check time against the declared handlers (unknown messages, wrong
-arity, and wrong field types are errors); a typed subject narrows that check to
-the named actor, so sending it a message that actor has no handler for is a
-compile error that names both. A bare `Subject` (no actor named) is the untyped
-form, checked against the program's handlers as a whole. Inside a handler,
-`self` is the actor's own `Subject` (`Subject(Logger)` here).
-
-`ask(subject, Msg(...)) -> Int` is synchronous request/response: it runs the
-target's handler to completion now and returns the `Int` the handler passes to
-`reply(...)` (where `send` is fire-and-forget and its handler runs later). It is
-how a driver collects a worker's result. An `ask` whose handler never replies,
-or that re-enters an actor already mid-delivery (an ask cycle), is an error —
-identically on both backends.
-
-Messages are copied; actors share nothing. Compiled actors run one VM per
-actor — own memory, own grant: the VM links only the host-import families
-the actor's capability fields entitle it to, and `Dir`/`Net` grants transfer
-at `spawn` by handle translation, so this works on both backends and in the
-sandbox:
-
-```witchy
-actor Confined:
-    console: Console
-    dir: Dir                       // this actor's whole filesystem view
-
-    on Read(name: String):
-        print(console, read(dir, name))
-
-fn main(console: Console, dir: Dir):
-    let worker = spawn Confined(console, subdir(dir, "data"))
-    send(worker, Read("notes.txt"))      // resolves inside data/ only
-```
-
-Capabilities travel at `spawn`, not in messages — a capability-typed message
-parameter is a compile error on the compiled backend.
+An **actor** is just an `async fn` looping on `chan.recv()`, with its state in a
+recursive parameter; `chan.send(target, msg)` routes a message to another task's
+inbox. See the book's *Concurrency with Async and Channels* chapter and
+`std/chan` / `std/future` for the full model.
 
 ## 15. In-language tests
 

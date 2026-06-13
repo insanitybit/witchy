@@ -154,43 +154,6 @@ pub struct ActorState {
     /// (`BuildRead`) — host-side, so a guest holds only an opaque handle.
     build_out: Option<std::path::PathBuf>,
     build_read_roots: Vec<std::path::PathBuf>,
-    /// Actor-system extension (message cells, etc.) — `None` for ordinary
-    /// single-module runs.
-    pub(crate) sys: Option<crate::actor_system::SysState>,
-}
-
-/// Construct the host state for one VM of the compiled ACTOR SYSTEM: shared
-/// output, capability tables seeded by the spawner's translated grants, and
-/// the system extension. The mailbox machinery is unused there (the system
-/// has its own typed queue) but kept inert for one state type.
-pub(crate) fn system_state(
-    caps: &Capabilities,
-    output: Arc<Mutex<Vec<String>>>,
-    dirs: Vec<std::path::PathBuf>,
-    nets: Vec<Vec<String>>,
-    sys: crate::actor_system::SysState,
-) -> ActorState {
-    let mailboxes = Arc::new(Mailboxes::default());
-    ActorState {
-        id: 0,
-        caps: caps.clone(),
-        mailbox: mailboxes.get_or_create(0),
-        mailboxes,
-        // The same 1 GiB ceiling as a `run` VM (RUN_MEMORY_PAGES): a runaway
-        // actor traps instead of consuming the host. The caller must attach
-        // the limiter (`store.limiter`) for this to bite.
-        limits: StoreLimitsBuilder::new().memory_size(16384 * 64 * 1024).build(),
-        output,
-        dirs,
-        pending: None,
-        pending_list: None,
-        nets,
-        sockets: Vec::new(),
-        listeners: Vec::new(),
-        build_out: caps.build_out.clone(),
-        build_read_roots: caps.build_read_roots.clone(),
-        sys: Some(sys),
-    }
 }
 
 /// A spawned actor: an isolated VM plus the entrypoint we can drive.
@@ -340,7 +303,6 @@ impl Runtime {
             listeners: Vec::new(),
             build_out: caps.build_out.clone(),
             build_read_roots: caps.build_read_roots.clone(),
-            sys: None,
         };
 
         let mut store = Store::new(&self.engine, state);

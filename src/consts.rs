@@ -49,7 +49,7 @@ fn collect_names(e: &Expr, out: &mut Vec<String>) {
             }
         }
         Expr::Int(_) | Expr::Float(_) | Expr::Duration(_) | Expr::Str(_) | Expr::Bool(_) => {}
-        Expr::List(xs) | Expr::Tuple(xs) | Expr::Call { args: xs, .. } | Expr::Spawn { args: xs, .. } => {
+        Expr::List(xs) | Expr::Tuple(xs) | Expr::Call { args: xs, .. } => {
             for x in xs {
                 collect_names(x, out);
             }
@@ -205,26 +205,6 @@ pub fn inline(mut module: Module) -> Module {
                         m.params.iter().map(|p| p.name.clone()).collect();
                     subst_block(&mut m.body, &consts, &cnames, &mut scope);
                 }
-                for h in &mut im.handlers {
-                    let mut scope: HashSet<String> =
-                        h.params.iter().map(|p| p.name.clone()).collect();
-                    subst_block(&mut h.body, &consts, &cnames, &mut scope);
-                }
-            }
-            Item::Actor(a) => {
-                let fields: HashSet<String> =
-                    a.fields.iter().map(|f| f.name.clone()).collect();
-                for fld in &mut a.fields {
-                    if let Some(init) = &mut fld.init {
-                        subst_expr(init, &consts, &cnames, &mut fields.clone());
-                    }
-                }
-                for h in &mut a.handlers {
-                    let mut scope: HashSet<String> =
-                        h.params.iter().map(|p| p.name.clone()).collect();
-                    scope.extend(fields.iter().cloned());
-                    subst_block(&mut h.body, &consts, &cnames, &mut scope);
-                }
             }
             Item::Const { .. } | Item::Type(_) | Item::Trait(_) | Item::TypeAlias { .. } | Item::Comptime(_) => {}
         }
@@ -314,7 +294,7 @@ fn subst_expr(
             }
             changed
         }
-        Expr::Call { args, .. } | Expr::Spawn { args, .. } => {
+        Expr::Call { args, .. } => {
             let mut changed = false;
             for a in args {
                 changed |= subst_expr(a, consts, cnames, scope);

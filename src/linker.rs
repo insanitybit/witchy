@@ -443,23 +443,6 @@ pub fn link(mut modules: Vec<(String, Module)>, entry: &str) -> Result<Module, L
                     rewrite_block(&mut f2.body, mname, &m.imports, &fns, &bound)?;
                     items.push(Item::Function(f2));
                 }
-                Item::Actor(a) => {
-                    let mut a2 = a.clone();
-                    for field in &mut a2.fields {
-                        if let Some(init) = &mut field.init {
-                            rewrite_expr(init, mname, &m.imports, &fns, &HashSet::new())?;
-                        }
-                    }
-                    for h in &mut a2.handlers {
-                        let mut bound = HashSet::new();
-                        for p in &h.params {
-                            bound.insert(p.name.clone());
-                        }
-                        collect_bound_block(&h.body, &mut bound);
-                        rewrite_block(&mut h.body, mname, &m.imports, &fns, &bound)?;
-                    }
-                    items.push(Item::Actor(a2));
-                }
                 Item::Type(t) => items.push(Item::Type(t.clone())),
                 // Constants and aliases were resolved per-module above, so none
                 // remain here.
@@ -548,17 +531,6 @@ fn resolve_methods(module: &mut Module) {
             Item::Function(f) => {
                 let mut vars = param_vars(&f.params);
                 resolve_in_block(&mut f.body, &sig, &by_base, &mut vars);
-            }
-            Item::Actor(a) => {
-                for field in &mut a.fields {
-                    if let Some(init) = &mut field.init {
-                        resolve_in_expr(init, &sig, &by_base, &mut HashMap::new());
-                    }
-                }
-                for h in &mut a.handlers {
-                    let mut vars = param_vars(&h.params);
-                    resolve_in_block(&mut h.body, &sig, &by_base, &mut vars);
-                }
             }
             Item::Trait(t) => {
                 for ms in &mut t.methods {
@@ -682,7 +654,7 @@ fn resolve_in_expr(
                 resolve_in_expr(a, sig, by_base, vars);
             }
         }
-        Expr::Ctor { args, .. } | Expr::List(args) | Expr::Tuple(args) | Expr::Spawn { args, .. } => {
+        Expr::Ctor { args, .. } | Expr::List(args) | Expr::Tuple(args) => {
             for a in args.iter_mut() {
                 resolve_in_expr(a, sig, by_base, vars);
             }
@@ -847,8 +819,7 @@ fn collect_bound_expr(e: &Expr, out: &mut HashSet<String>) {
         Expr::Call { args, .. }
         | Expr::Ctor { args, .. }
         | Expr::List(args)
-        | Expr::Tuple(args)
-        | Expr::Spawn { args, .. } => {
+        | Expr::Tuple(args) => {
             for a in args {
                 collect_bound_expr(a, out);
             }
@@ -952,7 +923,7 @@ fn rewrite_expr(
                 rewrite_expr(a, m, imps, fns, bound)?;
             }
         }
-        Expr::Ctor { args, .. } | Expr::List(args) | Expr::Tuple(args) | Expr::Spawn { args, .. } => {
+        Expr::Ctor { args, .. } | Expr::List(args) | Expr::Tuple(args) => {
             for a in args {
                 rewrite_expr(a, m, imps, fns, bound)?;
             }

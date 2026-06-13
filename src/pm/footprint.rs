@@ -279,16 +279,6 @@ pub fn compute(module: &Module) -> Footprint {
                     taint.collect(p.ty.as_ref(), &mut fp);
                 }
             }
-            Item::Actor(a) => {
-                for field in &a.fields {
-                    taint.collect(Some(&field.ty), &mut fp);
-                }
-                for h in &a.handlers {
-                    for p in &h.params {
-                        taint.collect(p.ty.as_ref(), &mut fp);
-                    }
-                }
-            }
             // Traits/impls are lowered to functions before this runs in the real
             // pipeline; type defs contribute only via taint, handled above.
             Item::Type(_) | Item::Trait(_) | Item::Impl(_) | Item::Const { .. } | Item::TypeAlias { .. } | Item::Comptime(_) => {}
@@ -505,20 +495,6 @@ fn f(o: Outer) -> String:
     (o).tag
 "#);
         assert!(f.runtime.contains("Net"), "taint must reach through two levels");
-    }
-
-    #[test]
-    fn actor_capability_field_counts() {
-        let f = fp(r#"
-actor Logger:
-    console: Console
-    var count: Int = 0
-
-impl Logger:
-    on log(msg: String):
-        print(msg)
-"#);
-        assert!(f.runtime.contains("Console"));
     }
 
     #[test]

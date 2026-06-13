@@ -276,18 +276,6 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
                     seed_params(&f.params, &mut scope);
                     ctx.rewrite_block(&mut f.body, &mut scope);
                 }
-                Item::Actor(a) => {
-                    for field in &mut a.fields {
-                        if let Some(init) = &mut field.init {
-                            ctx.rewrite_expr(init, &mut Scope::new());
-                        }
-                    }
-                    for h in &mut a.handlers {
-                        let mut scope = Scope::new();
-                        seed_params(&h.params, &mut scope);
-                        ctx.rewrite_block(&mut h.body, &mut scope);
-                    }
-                }
                 _ => {}
             }
         }
@@ -394,18 +382,6 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
                 let mut scope = Scope::new();
                 seed_params(&f.params, &mut scope);
                 ctx.rewrite_block(&mut f.body, &mut scope);
-            }
-            Item::Actor(a) => {
-                for field in &mut a.fields {
-                    if let Some(init) = &mut field.init {
-                        ctx.rewrite_expr(init, &mut Scope::new());
-                    }
-                }
-                for h in &mut a.handlers {
-                    let mut scope = Scope::new();
-                    seed_params(&h.params, &mut scope);
-                    ctx.rewrite_block(&mut h.body, &mut scope);
-                }
             }
             _ => {}
         }
@@ -529,8 +505,7 @@ impl Ctx<'_> {
             }
             Expr::Ctor { args, .. }
             | Expr::List(args)
-            | Expr::Tuple(args)
-            | Expr::Spawn { args, .. } => {
+            | Expr::Tuple(args) => {
                 for a in args.iter_mut() {
                     self.rewrite_expr(a, scope);
                 }
@@ -854,7 +829,6 @@ fn builtin_method_module(tn: &str) -> Option<&'static str> {
 fn module_needs_lowering(items: &[Item]) -> bool {
     items.iter().any(|it| match it {
         Item::Function(f) => block_needs_lowering(&f.body),
-        Item::Actor(a) => a.handlers.iter().any(|h| block_needs_lowering(&h.body)),
         Item::Const { value, .. } => expr_needs_lowering(value),
         _ => false,
     })
@@ -878,7 +852,7 @@ fn expr_needs_lowering(e: &Expr) -> bool {
         Expr::Int(_) | Expr::Float(_) | Expr::Duration(_) | Expr::Str(_) | Expr::Bool(_)
         | Expr::Var(_) => false,
         Expr::List(xs) | Expr::Tuple(xs) => xs.iter().any(expr_needs_lowering),
-        Expr::Call { args, .. } | Expr::Ctor { args, .. } | Expr::Spawn { args, .. } => {
+        Expr::Call { args, .. } | Expr::Ctor { args, .. } => {
             args.iter().any(expr_needs_lowering)
         }
         Expr::Apply { func, args } => {
@@ -1206,7 +1180,7 @@ fn subst_expr_types(e: &mut Expr, subst: &HashMap<&str, String>) {
             subst_expr_types(iter, subst);
             subst_block_types(body, subst);
         }
-        Expr::Call { args, .. } | Expr::Ctor { args, .. } | Expr::Spawn { args, .. } => {
+        Expr::Call { args, .. } | Expr::Ctor { args, .. } => {
             for a in args {
                 subst_expr_types(a, subst);
             }
@@ -1411,8 +1385,7 @@ fn rename_calls_block(b: &mut Block, renames: &HashMap<String, String>) {
                     walk_expr(a, renames);
                 }
             }
-            Expr::Ctor { args, .. } | Expr::List(args) | Expr::Tuple(args)
-            | Expr::Spawn { args, .. } => {
+            Expr::Ctor { args, .. } | Expr::List(args) | Expr::Tuple(args) => {
                 for a in args {
                     walk_expr(a, renames);
                 }
@@ -1557,18 +1530,6 @@ impl Mono<'_> {
                     let mut s = Scope::new();
                     seed_params(&f.params, &mut s);
                     self.walk_block(&mut f.body, &mut s);
-                }
-                Item::Actor(a) => {
-                    for field in &mut a.fields {
-                        if let Some(init) = &mut field.init {
-                            self.walk_expr(init, &mut Scope::new());
-                        }
-                    }
-                    for h in &mut a.handlers {
-                        let mut s = Scope::new();
-                        seed_params(&h.params, &mut s);
-                        self.walk_block(&mut h.body, &mut s);
-                    }
                 }
                 _ => {}
             }
@@ -1946,8 +1907,7 @@ impl Mono<'_> {
             }
             Expr::Ctor { args, .. }
             | Expr::List(args)
-            | Expr::Tuple(args)
-            | Expr::Spawn { args, .. } => {
+            | Expr::Tuple(args) => {
                 for a in args.iter_mut() {
                     self.walk_expr(a, scope);
                 }

@@ -11,7 +11,6 @@
 // intentional style choice here.
 #![allow(clippy::collapsible_if, clippy::collapsible_match, clippy::items_after_test_module)]
 
-mod actor_system;
 mod analysis;
 mod aliases;
 mod ast;
@@ -649,17 +648,11 @@ fn main() -> wasmtime::Result<()> {
     run_witchy("witchy early return (guard clauses)", include_str!("../examples/guard.witchy"));
     run_witchy("witchy negative-literal patterns", include_str!("../examples/signs.witchy"));
     run_witchy("witchy string slicing (substring/index_of)", include_str!("../examples/parse_kv.witchy"));
-    run_witchy("witchy actors", include_str!("../examples/actors.witchy"));
     run_witchy("witchy filesystem capability", include_str!("../examples/files.witchy"));
     run_compiled(&mut rt, "witchy compiled to WASM (ints)", include_str!("../examples/compute.witchy"));
     run_compiled(&mut rt, "witchy compiled to WASM (ADTs)", include_str!("../examples/shapes.witchy"));
     run_compiled(&mut rt, "witchy compiled to WASM (record field access)", include_str!("../examples/record_compiled.witchy"));
     run_compiled(&mut rt, "witchy compiled to WASM (strings)", include_str!("../examples/strings.witchy"));
-    run_compiled_actor(&mut rt, "witchy actor compiled to its own WASM VM", include_str!("../examples/counter.witchy"));
-    run_actor_system(
-        "witchy compiled actor system (driver + spawned VMs)",
-        include_str!("../examples/dispatch.witchy"),
-    );
     run_net_demo("witchy network capability");
     run_program_demo(
         "witchy modules (import)",
@@ -1003,22 +996,9 @@ fn execute_file_exit(
         .iter()
         .any(|it| matches!(it, ast::Item::Function(f) if f.name == "main"));
     if !has_main {
-        let actors: Vec<&str> = linked
-            .items
-            .iter()
-            .filter_map(|it| match it {
-                ast::Item::Actor(a) => Some(a.name.as_str()),
-                _ => None,
-            })
-            .collect();
-        let msg = if actors.is_empty() {
-            format!("`{entry_stem}` compiled OK — it's a library (no `main`); import it from another module.")
-        } else {
-            format!(
-                "`{entry_stem}` compiled OK — it defines actor(s) {} but no `main`; drive them from a `main` or the compiled runtime.",
-                actors.join(", ")
-            )
-        };
+        let msg = format!(
+            "`{entry_stem}` compiled OK — it's a library (no `main`); import it from another module."
+        );
         return Ok((vec![msg], 0));
     }
 
@@ -1145,23 +1125,9 @@ fn verify_file(path: &str) -> Result<(), String> {
     // An actor program runs on the compiled ACTOR SYSTEM (its main in a driver
     // VM, each spawned actor in its own); a plain program on the single-module
     // WASM runtime.
-    let has_actors = linked.items.iter().any(|it| matches!(it, ast::Item::Actor(_)));
-    let compiled_system = if has_actors {
-        let (driver, actors, sigs, specs) = codegen::compile_system(&linked)
-            .map_err(|e| format!("cannot compile to WASM (an interpreter-only feature?): {e}"))?;
-        Some(
-            actor_system::System::run_program(&driver, &actors, sigs, specs, &actor_system::dev_caps())
-                .map_err(|e| e.to_string()),
-        )
-    } else {
-        None
-    };
-    let wat = if has_actors {
-        String::new()
-    } else {
-        codegen::compile_module(&linked)
-            .map_err(|e| format!("cannot compile to WASM (an interpreter-only feature?): {e}"))?
-    };
+    let compiled_system: Option<Result<Vec<String>, String>> = None;
+    let wat = codegen::compile_module(&linked)
+        .map_err(|e| format!("cannot compile to WASM (an interpreter-only feature?): {e}"))?;
     // Run BOTH backends regardless of either failing: a program that errors on
     // one backend but produces a value on the other is itself a divergence (a
     // trap and a clean result are not the same behavior), so we must not return
@@ -1251,7 +1217,6 @@ fn run_file_sandboxed(
             "`{path}` needs a Secret, but the host granted none (provide `--signing-key <seed-file>`)"
         ));
     }
-    let has_actors = linked.items.iter().any(|it| matches!(it, ast::Item::Actor(_)));
     eprintln!(
         "sandboxing `{path}` \u{2014} granted exactly: {}",
         capabilities::show_caps(&footprint.total)
@@ -1289,12 +1254,7 @@ fn run_file_sandboxed(
     // the computed-footprint grant (above), and each spawned actor's VM links
     // only what its own capability fields entitle it to, with Dir/Net handles
     // translated at spawn. A plain program runs in the single-module VM.
-    let mut lines = if has_actors {
-        let (driver, actors, sigs, specs) = codegen::compile_system(&linked)
-            .map_err(|e| format!("cannot compile to WASM (an interpreter-only feature?): {e}"))?;
-        actor_system::System::run_program(&driver, &actors, sigs, specs, &caps)
-            .map_err(|e| e.root_cause().to_string())?
-    } else {
+    let mut lines = {
         let wat = codegen::compile_module(&linked)
             .map_err(|e| format!("cannot compile to WASM (an interpreter-only feature?): {e}"))?;
         let mut rt = Runtime::batch().map_err(|e| e.to_string())?;
@@ -1599,98 +1559,6 @@ fn main(console: Console, net: Net):
     }
 }
 
-/// Compile a whole actor PROGRAM and run it on the actor system: `main`
-/// executes in a driver VM, each `spawn` instantiates that actor's own WASM
-/// VM through a host import, and `send` routes across the isolated VMs.
-fn run_actor_system(title: &str, src: &str) {
-    println!("\n== {title} ==");
-    if let Err(e) = typeck::check_str(src) {
-        println!("{e}");
-        return;
-    }
-    let module = match parser::parse_module(src) {
-        Ok(m) => m,
-        Err(e) => {
-            println!("{e}");
-            return;
-        }
-    };
-    let (driver, actors, sigs, specs) = match codegen::compile_system(&module) {
-        Ok(v) => v,
-        Err(e) => {
-            println!("{e}");
-            return;
-        }
-    };
-    match actor_system::System::run_program(&driver, &actors, sigs, specs, &actor_system::dev_caps()) {
-        Ok(output) => {
-            for line in output {
-                println!("{line}");
-            }
-        }
-        Err(e) => println!("run failed: {e}"),
-    }
-}
-
-/// Compile an actor to its own WASM module and run it on the runtime: each
-/// `Tick` is delivered by invoking the actor's exported handler, state persists
-/// in a WASM global across messages, and without the capability the compiled
-/// module cannot instantiate.
-fn run_compiled_actor(rt: &mut Runtime, title: &str, src: &str) {
-    println!("\n== {title} ==");
-    if let Err(e) = typeck::check_str(src) {
-        println!("{e}");
-        return;
-    }
-    let module = match parser::parse_module(src) {
-        Ok(m) => m,
-        Err(e) => {
-            println!("{e}");
-            return;
-        }
-    };
-    let actor = module.items.iter().find_map(|i| match i {
-        ast::Item::Actor(a) => Some(a),
-        _ => None,
-    });
-    let Some(actor) = actor else {
-        println!("no actor to compile");
-        return;
-    };
-    let wat = match codegen::compile_actor_module(actor) {
-        Ok(w) => w,
-        Err(e) => {
-            println!("{e}");
-            return;
-        }
-    };
-
-    // Granted the Console capability (host `print`): deliver three Ticks.
-    match rt.spawn(
-        wat.as_bytes(),
-        Capabilities {
-            print: true,
-            ..Default::default()
-        },
-        4,
-    ) {
-        Ok(mut counter) => {
-            for _ in 0..3 {
-                if let Err(e) = counter.invoke("Tick") {
-                    println!("error: {e}");
-                    break;
-                }
-            }
-        }
-        Err(e) => println!("spawn failed: {e}"),
-    }
-
-    // Denied: the compiled actor cannot even instantiate.
-    match rt.spawn(wat.as_bytes(), Capabilities::none(), 4) {
-        Ok(_) => println!("!! SECURITY FAILURE: actor ran without the capability"),
-        Err(e) => println!("DENIED without capability (as designed): {e}"),
-    }
-}
 
 /// End-to-end coverage: every shipped example must type-check and produce the
 /// expected result (interpreted), or type-check and compile to valid WASM.
@@ -3581,7 +3449,7 @@ fn yn(b: Bool) -> String:
                 // Actors compile through a separate module path (and run on the
                 // demo scheduler), so the single-module run below doesn't apply —
                 // such examples are still fully parse + type-checked above.
-                let has_actor = linked.items.iter().any(|it| matches!(it, ast::Item::Actor(_)));
+                let has_actor = false;
                 // A `main` that declares an argv parameter (`args: List(String)`)
                 // is type-checked but not run here: argv isn't a capability (so the
                 // footprint still looks "Console-only"), yet the interpreter and
@@ -6945,16 +6813,6 @@ fn main(console: Console):
         crate::verify_file(path.to_str().unwrap()).expect("backends should agree");
     }
 
-    /// `witchy parity` covers ACTOR programs: the compiled side runs the whole
-    /// actor system (driver + per-actor VMs via guest spawn) and must agree
-    /// with the interpreter line for line.
-    #[test]
-    fn verify_file_covers_actor_programs() {
-        for example in ["examples/actors.witchy", "examples/dispatch.witchy"] {
-            crate::verify_file(example).expect("actor program backends should agree");
-        }
-    }
-
     #[test]
     fn every_example_type_checks() {
         // Every shipped example must link and type-check (this also exercises
@@ -8345,52 +8203,6 @@ fn main(console: Console):
         assert_eq!(out, vec!["neg", "nonneg"]);
     }
 
-    fn assert_actor_compiles(src: &str) {
-        assert!(typeck::check_str(src).is_ok(), "{:?}", typeck::check_str(src));
-        let module = parser::parse_module(src).expect("parse");
-        let actor = module
-            .items
-            .iter()
-            .find_map(|i| match i {
-                ast::Item::Actor(a) => Some(a),
-                _ => None,
-            })
-            .expect("an actor");
-        let wat = codegen::compile_actor_module(actor).expect("compile");
-        Module::new(&Engine::default(), &wat).expect("valid wasm");
-    }
-
-    #[test]
-    fn actor_handlers_in_impl_block() {
-        // Handlers written in a separate `impl Actor { on ... }` block are merged
-        // onto the actor (so the actor body holds only state) and compile exactly
-        // as inline handlers would.
-        let src = r#"
-actor Counter:
-    console: Console
-    var count: Int = 0
-
-impl Counter:
-    on Tick():
-        count = (count + 1)
-        print(console, __render(count))
-"#;
-        let module = parser::parse_module(src).expect("parse");
-        let actor = module
-            .items
-            .iter()
-            .find_map(|i| match i {
-                ast::Item::Actor(a) => Some(a),
-                _ => None,
-            })
-            .expect("actor");
-        assert_eq!(actor.handlers.len(), 1);
-        assert_eq!(actor.handlers[0].message, "Tick");
-        // The handler-only impl is consumed by the merge, leaving no impl item.
-        assert!(!module.items.iter().any(|i| matches!(i, ast::Item::Impl(_))));
-        assert_actor_compiles(src);
-    }
-
     /// Every example must at least compile (parse + link + type-check) and run
     /// to completion through the CLI without an error — whether it prints, just
     /// returns a value, or is a library/actor file with no `main`. Server demos
@@ -9465,8 +9277,6 @@ fn main(console: Console):
         ok("fn client(net: Net) -> Net[Connect]:\n    net\nfn main(c: Console, net: Net):\n    let s = connect(client(net), \"a:1\")\n");
         // (b) a constructor field that holds a narrowed capability.
         ok("type Client:\n    Client(Net[Connect])\nfn main(c: Console, net: Net):\n    let x = Client(net)\n");
-        // (c) an actor field granted at spawn.
-        ok("actor Cl:\n    n: Net[Connect]\nimpl Cl:\n    on Go(a: String):\n        let s = connect(n, a)\nfn main(c: Console, net: Net):\n    let x = spawn Cl(net)\n");
         // Both still reject *widening* (the type ceiling holds at every position).
         err(
             "fn bad(n: Net[Connect]) -> Net:\n    n\nfn main(c: Console, net: Net):\n    bad(net as Net[Connect])\n",
@@ -12958,69 +12768,6 @@ fn main(console: Console):
     }
 
     #[test]
-    fn actors_example() {
-        assert_eq!(
-            interp(include_str!("../examples/actors.witchy")),
-            vec!["[1] direct message", "[2] another direct", "[3] relayed message"]
-        );
-    }
-
-    /// The actor-lifetime example: `main` runs to completion FIRST (both its
-    /// prints land before any handler output), then the queue drains — the
-    /// Logger's three notes, then the self-driving Countdown — to quiescence.
-    #[test]
-    fn actor_lifetime_example_drains_after_main() {
-        assert_eq!(
-            interp(include_str!("../examples/actor_lifetime.witchy")),
-            vec![
-                "[main] enqueuing 3 notes",
-                "[main] returning — no handler has run yet",
-                "  handling note 1",
-                "  handling note 2",
-                "  handling note 3",
-                "  tick 2",
-                "  tick 1",
-                "  liftoff (queue drains to quiescence)",
-            ]
-        );
-    }
-
-    /// The ask-timing example: an `ask` runs inline during `main` and reads
-    /// state from BEFORE the queued sends (`n = 0`); the two queued `Bump`s and
-    /// the `Report` run afterward in the drain, so `Report` sees `n = 2`.
-    #[test]
-    fn actor_ask_timing_example_sees_pre_drain_state() {
-        assert_eq!(
-            interp(include_str!("../examples/actor_ask_timing.witchy")),
-            vec![
-                "ask (inline) sees n = 0",
-                "[main] done",
-                "after the drain, n = 2",
-            ]
-        );
-    }
-
-    /// The dispatch example: the full actor message model in one program —
-    /// Float and String fields, a List(String) summary, Float state averaging
-    /// across messages, and a Subject delivered IN a message (delegation: the
-    /// Router is introduced to the Reporter at runtime). The relayed Alert is
-    /// enqueued mid-drain, so it lands after the directly-queued Summary.
-    #[test]
-    fn dispatch_example_delegates_and_aggregates() {
-        assert_eq!(
-            interp(include_str!("../examples/dispatch.witchy")),
-            vec![
-                "mean 2.0",
-                "mean 3.0",
-                "routing thermostat",
-                "summary: 2 samples",
-                "summary: 1 alert",
-                "[alert 1] thermostat at 99.5",
-            ]
-        );
-    }
-
-    #[test]
     fn commands_example_runs_and_compiles() {
         let src = include_str!("../examples/commands.witchy");
         assert_eq!(interp(src), vec!["total is 1"]);
@@ -13259,10 +13006,6 @@ pub fn serve(console: Console, net: Net) -> Int:
         assert_fn_compiles(include_str!("../examples/shapes.witchy"));
     }
 
-    #[test]
-    fn counter_example_compiles() {
-        assert_actor_compiles(include_str!("../examples/counter.witchy"));
-    }
 }
 
 /// Compile a witchy program to WASM and run it on the runtime, demonstrating

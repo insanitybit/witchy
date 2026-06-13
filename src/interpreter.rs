@@ -364,7 +364,7 @@ fn idents_in_expr(e: &Expr, f: &mut dyn FnMut(&str)) {
                 idents_in_expr(a, f);
             }
         }
-        Expr::Ctor { args, .. } | Expr::Spawn { args, .. } => {
+        Expr::Ctor { args, .. } => {
             for a in args {
                 idents_in_expr(a, f);
             }
@@ -566,9 +566,6 @@ impl Interpreter {
             match item {
                 Item::Function(f) => {
                     functions.insert(f.name.clone(), Rc::new(f));
-                }
-                Item::Actor(a) => {
-                    actor_defs.insert(a.name.clone(), a);
                 }
                 // Types are erased at runtime, except a record's field names,
                 // which map `value.field` to a position in the constructor.
@@ -2210,13 +2207,6 @@ impl Interpreter {
                     env.pop();
                 }
                 err(format!("no match arm for value `{value}`"))
-            }
-            Expr::Spawn { actor, args } => {
-                let argvals = args
-                    .iter()
-                    .map(|a| self.eval(a, env))
-                    .collect::<Result<Vec<_>, _>>()?;
-                Ok(self.spawn_actor(actor, argvals)?)
             }
         }
     }
@@ -4365,78 +4355,6 @@ fn main(console: Console):
     print(console, __render(list.at(xs, 1)))
 "#;
         assert_eq!(run(src).unwrap(), vec!["3", "20"]);
-    }
-
-    /// An actor with mutable state and a granted capability handles messages in
-    /// order, run-to-completion.
-    #[test]
-    fn actor_handles_messages_with_state_and_capability() {
-        let src = r#"
-actor Logger:
-    console: Console
-    var count: Int = 0
-
-impl Logger:
-    on Log(msg: String):
-        count = (count + 1)
-        print(console, ((("[" + __render(count)) + "] ") + msg))
-
-fn main(console: Console):
-    let logger = spawn Logger(console)
-    send(logger, Log("first"))
-    send(logger, Log("second"))
-"#;
-        assert_eq!(run(src).unwrap(), vec!["[1] first", "[2] second"]);
-    }
-
-    /// The capability thesis through the actor boundary: an actor that was
-    /// never granted a Console cannot print.
-    #[test]
-    fn actor_without_capability_cannot_print() {
-        let src = r#"
-actor Sneaky:
-
-impl Sneaky:
-    on Go(msg: String):
-        print(msg)
-
-fn main(console: Console):
-    let s = spawn Sneaky()
-    send(s, Go("exfiltrate"))
-"#;
-        let e = run(src).unwrap_err();
-        assert!(
-            e.message.contains("Console capability"),
-            "expected a capability error, got: {}",
-            e.message
-        );
-    }
-
-    /// Actors can spawn and message other actors; the scheduler keeps draining
-    /// until quiescent.
-    #[test]
-    fn actors_can_message_other_actors() {
-        let src = r#"
-actor Printer:
-    console: Console
-
-impl Printer:
-    on Say(msg: String):
-        print(console, msg)
-
-actor Forwarder:
-    target: Subject
-
-impl Forwarder:
-    on Relay(msg: String):
-        send(target, Say(msg))
-
-fn main(console: Console):
-    let printer = spawn Printer(console)
-    let fwd = spawn Forwarder(printer)
-    send(fwd, Relay("relayed hello"))
-"#;
-        assert_eq!(run(src).unwrap(), vec!["relayed hello"]);
     }
 
     #[test]

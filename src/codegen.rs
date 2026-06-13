@@ -30,7 +30,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 use crate::ast::{
-    ActorDef, BinOp, Block, Convention, Expr, Function, Item, MatchArm, Module, Param, Pattern,
+    BinOp, Block, Convention, Expr, Function, Item, MatchArm, Module, Param, Pattern,
     Stmt, Type, UnOp,
 };
 
@@ -457,13 +457,6 @@ struct Codegen {
     /// state, list state lives in host cells; reads stage a fresh arena copy
     /// and writes copy the content out.
     list_fields: HashMap<String, (u32, ValType)>,
-    /// Spawnable actor kinds (driver module AND actor handlers): name -> the
-    /// spawn-argument spec, one entry per UNINITIALIZED field in order. Value
-    /// and Dir/Net arguments travel as i32s (a Subject id / the spawner's
-    /// capability handle, which the host translates); Erased ones don't.
-    spawnable: HashMap<String, Vec<(String, SpawnArgKind)>>,
-    /// Actor kinds actually spawned, for import emission.
-    used_spawns: std::collections::BTreeSet<String>,
     /// Variables in the CURRENT function/handler eligible for in-place push
     /// (the analysis's accumulator set); each carries a shadow `${name}__cap`
     /// ownership-token local.
@@ -805,8 +798,6 @@ impl Codegen {
             uses_str_field: false,
             list_fields: HashMap::new(),
             uses_list_field: false,
-            spawnable: HashMap::new(),
-            used_spawns: std::collections::BTreeSet::new(),
             inplace_push: HashSet::new(),
             facts_stack: Vec::new(),
             summaries: analysis::Summaries::empty(),
@@ -1912,19 +1903,6 @@ impl Codegen {
         if self.uses_reply {
             // reply(v): record this handler's reply to the current asker.
             s.push_str("  (import \"witchy\" \"reply\" (func $reply (param i32)))\n");
-        }
-        for name in &self.used_spawns {
-            // spawn_{Actor}(value args...) -> the new actor's Subject id; the
-            // host instantiates the actor's own VM (capability args erased).
-            let nvals = self
-                .spawnable
-                .get(name)
-                .map(|s| s.iter().filter(|(_, k)| *k != SpawnArgKind::Erased).count())
-                .unwrap_or(0);
-            let params = "(param i32) ".repeat(nvals);
-            s.push_str(&format!(
-                "  (import \"witchy\" \"spawn_{name}\" (func $spawn_{name} {params}(result i32)))\n"
-            ));
         }
         if self.uses_crypto_ed25519_verify {
             // crypto.ed25519_verify(pk_ptr, msg_ptr, sig_ptr) -> bool; each arg is
@@ -3474,29 +3452,6 @@ impl Codegen {
                 Ok(out)
             }
             Expr::Match { scrutinee, arms } => self.compile_match(scrutinee, arms),
-            Expr::Spawn { actor, args } => {
-                // Compiles in actor-system programs (the spawnable specs are
-                // seeded in the driver and every actor module): Console/Clock/
-                // Env arguments are erased — the spawnee's link gate carries
-                // that authority — while Subject ids and Dir/Net capability
-                // HANDLES travel as i32s (the host translates a handle into
-                // the new VM's own table). The host instantiates the actor's
-                // own VM and returns its id.
-                let Some(spec) = self.spawnable.get(actor).cloned() else {
-                    return cerr("`spawn` is not compiled to WASM yet (host-driven)");
-                };
-                self.used_spawns.insert(actor.clone());
-                let mut out = String::new();
-                for (a, (_, kind)) in args.iter().zip(&spec) {
-                    if *kind != SpawnArgKind::Erased {
-                        let k = self.kind_of(a);
-                        out.push_str(&self.compile_expr(a)?);
-                        out.push_str(kind_convert(k, Kind::I32));
-                    }
-                }
-                out.push_str(&format!("    call $spawn_{actor}\n"));
-                Ok(out)
-            }
         }
     }
 
@@ -4067,8 +4022,7 @@ impl Codegen {
             Expr::Call { args, .. }
             | Expr::Ctor { args, .. }
             | Expr::List(args)
-            | Expr::Tuple(args)
-            | Expr::Spawn { args, .. } => {
+            | Expr::Tuple(args) => {
                 for a in args {
                     self.scan_escapes_expr(a, inner, ok);
                 }
@@ -6112,8 +6066,7 @@ fn collect_fn_refs_expr(e: &Expr, out: &mut HashSet<String>) {
         }
         Expr::Ctor { args, .. }
         | Expr::List(args)
-        | Expr::Tuple(args)
-        | Expr::Spawn { args, .. } => {
+        | Expr::Tuple(args) => {
             for a in args {
                 collect_fn_refs_expr(a, out);
             }
@@ -6284,7 +6237,6 @@ fn register_module_items(cg: &mut Codegen, module: &Module) {
                     }
                 }
             }
-            Item::Actor(_) => {}
             Item::Trait(_) | Item::Impl(_) | Item::Const { .. } | Item::TypeAlias { .. } | Item::Comptime(_) => {}
         }
     }
@@ -6379,16 +6331,12 @@ fn register_module_items(cg: &mut Codegen, module: &Module) {
 }
 
 pub fn compile_module(module: &Module) -> Result<String, CodegenError> {
-    compile_module_with(module, &HashMap::new(), &HashMap::new())
+    compile_module_with(module, &HashMap::new())
 }
 
-/// `compile_module` seeded with an actor-system program's message tags and
-/// spawnable actor specs, so the DRIVER (the module holding `main`) can
-/// `spawn` actors and `send` them messages through the system's host imports.
 pub fn compile_module_with(
     module: &Module,
     tags: &HashMap<String, u32>,
-    spawnable: &HashMap<String, Vec<(String, SpawnArgKind)>>,
 ) -> Result<String, CodegenError> {
     // Desugar traits/impls to ordinary functions (no-op for trait-free modules)
     // so codegen, like the interpreter, only ever sees plain functions. Then
@@ -6401,7 +6349,6 @@ pub fn compile_module_with(
     alpha_rename_module(&mut lowered);
     let mut cg = Codegen::new();
     cg.message_tags = tags.clone();
-    cg.spawnable = spawnable.clone();
     // Types first, then the string-`+` flip (in place, so node identity — the
     // table's keys — survives), and only THEN the ownership analysis, which
     // matches concat shapes.
@@ -6448,7 +6395,6 @@ pub fn compile_module_with(
             // Actors compile to their OWN modules (`compile_program`); the
             // driver skips them. A `spawn` outside a seeded driver still fails
             // loudly at the expression.
-            Item::Actor(_) => {}
             Item::Trait(_) | Item::Impl(_) | Item::Const { .. } | Item::TypeAlias { .. } | Item::Comptime(_) => {}
         }
     }
@@ -6551,777 +6497,6 @@ pub fn compile_build_module(module: &Module) -> Result<String, CodegenError> {
         }
     }
     compile_module(&m)
-}
-
-/// Compile a single actor to its own WASM module. Int fields with literal
-/// initializers become mutable globals (state); capability fields are erased;
-/// each handler becomes an exported function.
-pub fn compile_actor_module(actor: &ActorDef) -> Result<String, CodegenError> {
-    compile_actor_with_tags(actor, &HashMap::new())
-}
-
-/// The host-visible type of one message field: how the actor system reads it
-/// out of the sender's memory and delivers it into the receiver's.
-#[derive(Debug, Clone, PartialEq)]
-pub enum MsgField {
-    /// A scalar copied by value.
-    Int,
-    /// A string: the slot is a pointer in the SENDER's memory; the host copies
-    /// the content and re-allocates it in the receiver before delivery.
-    Str,
-    /// An actor id copied by value — passing a Subject in a message hands the
-    /// receiver the authority to message that actor (capability delegation).
-    Subject,
-    /// An f64 copied by value (the full 8-byte slot).
-    Float,
-    /// A `List(Int)`: the host walks the sender's `[count][i64 slots]` and
-    /// re-lays it out in the receiver.
-    IntList,
-    /// A `List(String)`: walked by content like `Str`, re-laid out in the
-    /// receiver with absolute pointers (the `write_pending_list` layout).
-    StrList,
-    /// A tuple of Int/Float/String members (`[0 tag][i64 slots]` layout): each
-    /// member is read by its own kind and the tuple re-laid out in the
-    /// receiver, string members by content.
-    Tuple(Vec<MsgField>),
-}
-
-/// One routable message: its name and per-field wire types.
-pub type MessageSig = (String, Vec<MsgField>);
-
-/// Compile every actor in a module, assigning each distinct handler message a
-/// shared tag so the host can route inter-actor sends. Returns (actor name,
-/// WAT) pairs and the tag -> message-signature table.
-pub type CompiledActors = (Vec<(String, String)>, Vec<MessageSig>);
-
-fn message_sig_of(
-    h: &crate::ast::Handler,
-    records: &HashMap<String, Vec<Type>>,
-) -> Result<Vec<MsgField>, CodegenError> {
-    h.params
-        .iter()
-        .map(|p| match &p.ty {
-            Some(Type::Named(t, _)) if t == "Int" => Ok(MsgField::Int),
-            Some(Type::Named(t, _)) if t == "String" => Ok(MsgField::Str),
-            Some(Type::Named(t, _)) if t == "Subject" => Ok(MsgField::Subject),
-            Some(Type::Named(t, _)) if t == "Float" => Ok(MsgField::Float),
-            Some(Type::Named(t, args)) if t == "List" => match args.first() {
-                Some(Type::Named(e, _)) if e == "Int" => Ok(MsgField::IntList),
-                Some(Type::Named(e, _)) if e == "String" => Ok(MsgField::StrList),
-                _ => cerr(format!(
-                    "handler `{}` param `{}`: only List(Int) and List(String) list parameters compile yet",
-                    h.message, p.name
-                )),
-            },
-            Some(Type::Tuple(items)) => {
-                let elems: Result<Vec<MsgField>, CodegenError> = items
-                    .iter()
-                    .map(|t| match t {
-                        Type::Named(n, _) if n == "Int" => Ok(MsgField::Int),
-                        Type::Named(n, _) if n == "Float" => Ok(MsgField::Float),
-                        Type::Named(n, _) if n == "String" => Ok(MsgField::Str),
-                        _ => cerr(format!(
-                            "handler `{}` param `{}`: tuple members must be Int, Float, or String",
-                            h.message, p.name
-                        )),
-                    })
-                    .collect();
-                Ok(MsgField::Tuple(elems?))
-            }
-            // A RECORD travels on the tuple wire: same `[0 tag][slots]` layout,
-            // each field at its own kind, strings by content.
-            Some(Type::Named(t, _)) if records.contains_key(t) => {
-                let elems: Result<Vec<MsgField>, CodegenError> = records[t]
-                    .iter()
-                    .map(|ty| match ty {
-                        Type::Named(n, _) if n == "Int" => Ok(MsgField::Int),
-                        Type::Named(n, _) if n == "Float" => Ok(MsgField::Float),
-                        Type::Named(n, _) if n == "String" => Ok(MsgField::Str),
-                        _ => cerr(format!(
-                            "handler `{}` param `{}`: record fields must be Int, Float, or String",
-                            h.message, p.name
-                        )),
-                    })
-                    .collect();
-                Ok(MsgField::Tuple(elems?))
-            }
-            _ => cerr(format!(
-                "handler `{}` param `{}`: only Int, Float, String, Subject, List(Int), List(String), and scalar tuples compile as message parameters yet",
-                h.message, p.name
-            )),
-        })
-        .collect()
-}
-
-/// How one spawn argument travels to the new actor's VM.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SpawnArgKind {
-    /// A plain value (a Subject id): pushed as an i32 at the call site and
-    /// set on the spawnee's exported field global.
-    Value,
-    /// A `Dir` capability: the spawner pushes ITS i32 handle; the host
-    /// resolves the path in the spawner's table, installs it in the spawnee's
-    /// own table, and sets the field global to the new handle. Attenuation
-    /// (`subdir`) therefore survives the transfer.
-    Dir,
-    /// A `Net` capability: as `Dir`, with the allowlist.
-    Net,
-    /// Type-level only (Console/Clock/Env): nothing travels — the spawnee's
-    /// link gate (derived from its field types) carries the authority.
-    Erased,
-}
-
-/// Which host-import families an actor kind's VM is entitled to, derived
-/// from its declared capability fields. The system links exactly these: an
-/// actor without a `Console` field physically has no `print` import to call.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct KindGate {
-    pub print: bool,
-    pub clock: bool,
-    pub env: bool,
-    pub dir_read: bool,
-    pub dir_write: bool,
-    pub net_connect: bool,
-    pub net_listen: bool,
-}
-
-/// Derive an actor kind's link gate from its field types, honoring rights:
-/// a `Dir[Read]` field entitles the VM to the read family only; bare
-/// `Dir`/`Net` to the full family (mirroring typeck's rights default).
-fn kind_gate(actor: &ActorDef) -> KindGate {
-    let mut g = KindGate::default();
-    for f in &actor.fields {
-        let Type::Named(n, args) = &f.ty else { continue };
-        let names: Vec<&str> = args
-            .iter()
-            .filter_map(|a| match a {
-                Type::Named(r, _) => Some(r.as_str()),
-                _ => None,
-            })
-            .collect();
-        match n.as_str() {
-            "Console" => g.print = true,
-            "Clock" => g.clock = true,
-            "Env" => g.env = true,
-            "Dir" => {
-                let bare = names.is_empty();
-                g.dir_read |= bare || names.contains(&"Read");
-                g.dir_write |= bare || names.contains(&"Write");
-            }
-            "Net" => {
-                let no_verb = !names.contains(&"Connect") && !names.contains(&"Listen");
-                g.net_connect |= no_verb || names.contains(&"Connect");
-                g.net_listen |= no_verb || names.contains(&"Listen");
-            }
-            _ => {}
-        }
-    }
-    g
-}
-
-/// A whole compiled actor PROGRAM: the driver (the module's plain functions
-/// and `main`, with `spawn`/`send` bridged to the system), each actor's own
-/// module, the message signatures, and each actor's spawn spec — the
-/// per-UNINITIALIZED-field argument kinds plus the kind's capability gate.
-pub type CompiledSystem = (
-    String,
-    Vec<(String, String)>,
-    Vec<MessageSig>,
-    Vec<(String, Vec<(String, SpawnArgKind)>, KindGate)>,
-);
-
-pub fn compile_system(module: &Module) -> Result<CompiledSystem, CodegenError> {
-    let (actors, sigs) = compile_program(module)?;
-    let tags: HashMap<String, u32> =
-        sigs.iter().enumerate().map(|(i, (n, _))| (n.clone(), i as u32)).collect();
-    let spawnable = spawn_specs(module);
-    let specs: Vec<(String, Vec<(String, SpawnArgKind)>, KindGate)> = module
-        .items
-        .iter()
-        .filter_map(|it| match it {
-            Item::Actor(a) => Some((a.name.clone(), spawnable[&a.name].clone(), kind_gate(a))),
-            _ => None,
-        })
-        .collect();
-    let driver = compile_module_with(module, &tags, &spawnable)?;
-    Ok((driver, actors, sigs, specs))
-}
-
-/// Each actor's spawn-argument spec: one `(field name, kind)` per
-/// UNINITIALIZED field.
-fn spawn_specs(module: &Module) -> HashMap<String, Vec<(String, SpawnArgKind)>> {
-    let mut spawnable = HashMap::new();
-    for item in &module.items {
-        if let Item::Actor(a) = item {
-            let spec: Vec<(String, SpawnArgKind)> = a
-                .fields
-                .iter()
-                .filter(|f| f.init.is_none())
-                .map(|f| {
-                    let kind = match &f.ty {
-                        Type::Named(n, _) if n == "Console" || n == "Clock" || n == "Env" => {
-                            SpawnArgKind::Erased
-                        }
-                        Type::Named(n, _) if n == "Dir" => SpawnArgKind::Dir,
-                        Type::Named(n, _) if n == "Net" => SpawnArgKind::Net,
-                        _ => SpawnArgKind::Value,
-                    };
-                    (f.name.clone(), kind)
-                })
-                .collect();
-            spawnable.insert(a.name.clone(), spec);
-        }
-    }
-    spawnable
-}
-
-/// The module's RECORD types (single named-field constructor) -> field types,
-/// for message-signature derivation.
-fn record_types_of(module: &Module) -> HashMap<String, Vec<Type>> {
-    let mut out = HashMap::new();
-    for item in &module.items {
-        if let Item::Type(t) = item {
-            if let [variant] = t.variants.as_slice() {
-                if !variant.field_names.is_empty() {
-                    out.insert(t.name.clone(), variant.fields.clone());
-                }
-            }
-        }
-    }
-    out
-}
-
-pub fn compile_program(module: &Module) -> Result<CompiledActors, CodegenError> {
-    // Lower the WHOLE module once (records -> positional ctors, traits, sugar)
-    // so actor handler bodies and the helper functions they call agree with
-    // the driver on every synthetic name and shape.
-    let recs =
-        crate::records::lower(module.clone()).map_err(|message| CodegenError { message })?;
-    let mut parent = crate::traits::lower_for_wasm(recs);
-    crate::parser::lower_sugar_module(&mut parent);
-    alpha_rename_module(&mut parent);
-    let records = record_types_of(&parent);
-    let mut tag_of: HashMap<String, u32> = HashMap::new();
-    let mut sigs: Vec<MessageSig> = Vec::new();
-    for item in &parent.items {
-        if let Item::Actor(a) = item {
-            for h in &a.handlers {
-                let sig = message_sig_of(h, &records)?;
-                match tag_of.get(&h.message) {
-                    None => {
-                        tag_of.insert(h.message.clone(), sigs.len() as u32);
-                        sigs.push((h.message.clone(), sig));
-                    }
-                    // The host decodes a message by its tag's signature, so every
-                    // actor declaring the message must agree on its field types.
-                    Some(&tag) if sigs[tag as usize].1 != sig => {
-                        return cerr(format!(
-                            "message `{}` is declared with different parameter types by different actors",
-                            h.message
-                        ));
-                    }
-                    Some(_) => {}
-                }
-            }
-        }
-    }
-    // Each actor compiles FROM the lowered module (so record construction in
-    // handler bodies is already positional) and carries the parent module's
-    // plain functions its handlers (transitively) call.
-    let specs = spawn_specs(&parent);
-    let mut actors = Vec::new();
-    for item in &parent.items {
-        if let Item::Actor(a) = item {
-            actors.push((a.name.clone(), compile_actor_in(a, &tag_of, &parent, &specs)?));
-        }
-    }
-    Ok((actors, sigs))
-}
-
-fn compile_actor_with_tags(
-    actor: &ActorDef,
-    tags: &HashMap<String, u32>,
-) -> Result<String, CodegenError> {
-    let mut actor = actor.clone();
-    crate::parser::lower_sugar_actor(&mut actor);
-    for h in &mut actor.handlers {
-        h.body = alpha_rename(&h.body, &h.params);
-    }
-    compile_actor_in(
-        &actor,
-        tags,
-        &Module { imports: Vec::new(), items: Vec::new(), import_lines: Vec::new(), item_lines: Vec::new() },
-        &HashMap::new(),
-    )
-}
-
-fn compile_actor_in(
-    actor: &ActorDef,
-    tags: &HashMap<String, u32>,
-    parent: &Module,
-    spawnable: &HashMap<String, Vec<(String, SpawnArgKind)>>,
-) -> Result<String, CodegenError> {
-    // Callers pre-lower and pre-alpha-rename the actor (compile_program does
-    // it module-wide; compile_actor_with_tags on its own clone), so handler
-    // bodies here are the EXACT instances the type table and facts key on.
-    let mut cg = Codegen::new();
-    cg.message_tags = tags.clone();
-    // Handlers may spawn: a handler-context spawn instantiates through the
-    // same host imports the driver uses (delivery takes the spawning actor
-    // OUT of the table, so the new VM's registration cannot deadlock).
-    cg.spawnable = spawnable.clone();
-    // The module's plain functions travel WITH the actor: register their
-    // metadata, then compile every helper a handler (transitively) calls —
-    // before field/handler compilation, since compiling a function resets the
-    // per-function local tables the handlers rely on.
-    // `parent` arrives pre-flipped from the program pipeline (string `+` is
-    // already `Concat` here); the standalone-actor path is covered by the
-    // val-type net in the `Add` compile arm.
-    cg.type_table = crate::typeck::annotate(parent);
-    register_module_items(&mut cg, parent);
-    cg.summaries = analysis::Summaries::of_module(parent);
-    let bodies: HashMap<String, &Function> = parent
-        .items
-        .iter()
-        .filter_map(|it| match it {
-            Item::Function(f) => Some((f.name.clone(), f)),
-            _ => None,
-        })
-        .collect();
-    let mut needed: HashSet<String> = HashSet::new();
-    let mut work: Vec<String> = Vec::new();
-    for h in &actor.handlers {
-        let mut refs = HashSet::new();
-        collect_fn_refs_block(&h.body, &mut refs);
-        for n in refs {
-            if bodies.contains_key(&n) && needed.insert(n.clone()) {
-                work.push(n);
-            }
-        }
-    }
-    while let Some(n) = work.pop() {
-        if let Some(f) = bodies.get(&n) {
-            let mut refs = HashSet::new();
-            collect_fn_refs_block(&f.body, &mut refs);
-            for m in refs {
-                if bodies.contains_key(&m) && needed.insert(m.clone()) {
-                    work.push(m);
-                }
-            }
-        }
-    }
-    let mut helper_wat = String::new();
-    for item in &parent.items {
-        if let Item::Function(f) = item {
-            if needed.contains(&f.name) && !crate::typeck::intrinsic(&f.name) {
-                helper_wat.push_str(&cg.compile_function(f)?);
-            }
-        }
-    }
-
-    let mut state_globals = String::new();
-    let mut str_field_inits: Vec<(u32, u32)> = Vec::new();
-    let mut list_field_inits: Vec<(u32, ValType, String)> = Vec::new();
-    for field in &actor.fields {
-        let tname = match &field.ty {
-            Type::Named(n, _) => n.as_str(),
-            Type::Tuple(_) => {
-                return cerr(format!(
-                    "actor field `{}`: tuple-typed fields are not compiled yet",
-                    field.name
-                ))
-            }
-            Type::Fn(..) => {
-                return cerr(format!(
-                    "actor field `{}`: function-typed fields are not compiled yet",
-                    field.name
-                ))
-            }
-        };
-        // Console/Clock/Env are erased (their authority is the gated host
-        // import the kind's capability gate links — or doesn't).
-        if tname == "Console" || tname == "Clock" || tname == "Env" {
-            cg.cap_fields.insert(field.name.clone());
-            continue;
-        }
-        // A Subject is a real i32 (the target's id), exported so the host can
-        // set it at spawn. A Dir/Net capability field is likewise a real i32 —
-        // a HANDLE into this actor's host-side table — set at spawn after the
-        // host translates the spawner's handle, so attenuation carries over.
-        if tname == "Subject" || tname == "Dir" || tname == "Net" {
-            cg.globals.insert(field.name.clone());
-            state_globals.push_str(&format!(
-                "  (global ${0} (export \"{0}\") (mut i32) (i32.const 0))\n",
-                field.name
-            ));
-            continue;
-        }
-        // String state lives in host cells (the per-message arena reset would
-        // clobber a guest-heap string): reads stage through `field_str_len` +
-        // `fill_pending`, writes copy content out via `field_str_set`, and a
-        // start function sets the declared initializers at instantiation.
-        if tname == "String" {
-            let init_off = match &field.init {
-                Some(Expr::Str(s)) => {
-                    let s = s.clone();
-                    cg.intern(&s)
-                }
-                Some(_) => {
-                    return cerr(format!(
-                        "field `{}`: initializer must be a String literal",
-                        field.name
-                    ))
-                }
-                None => {
-                    return cerr(format!(
-                        "field `{}`: String state needs an initializer in codegen",
-                        field.name
-                    ))
-                }
-            };
-            let idx = (cg.str_fields.len() + cg.list_fields.len()) as u32;
-            cg.str_fields.insert(field.name.clone(), idx);
-            cg.uses_str_field = true;
-            cg.local_val_types.insert(field.name.clone(), ValType::Str);
-            str_field_inits.push((idx, init_off));
-            continue;
-        }
-        // List state shares the host-cell space with String state. v1 keeps
-        // initializers to the empty list (an unset cell reads back as empty),
-        // so no start-function registration is needed.
-        if tname == "List" {
-            let elem_vt = match &field.ty {
-                Type::Named(_, args) => match args.first() {
-                    Some(Type::Named(e, _)) if e == "Int" => ValType::Int,
-                    Some(Type::Named(e, _)) if e == "String" => ValType::Str,
-                    _ => {
-                        return cerr(format!(
-                            "actor field `{}`: only List(Int) and List(String) state compiles yet",
-                            field.name
-                        ))
-                    }
-                },
-                _ => unreachable!("List fields are Named types"),
-            };
-            let idx = (cg.str_fields.len() + cg.list_fields.len()) as u32;
-            match &field.init {
-                Some(Expr::List(items)) => {
-                    if !items.iter().all(|e| matches!(e, Expr::Int(_) | Expr::Str(_))) {
-                        return cerr(format!(
-                            "field `{}`: list state must initialize to a literal list of constants",
-                            field.name
-                        ));
-                    }
-                    // A non-empty initializer compiles into the start function:
-                    // build the literal in the arena, then copy it OUT to the
-                    // host cell (an unset cell already reads back as empty).
-                    if !items.is_empty() {
-                        let code = cg.compile_expr(&Expr::List(items.clone()))?;
-                        list_field_inits.push((idx, elem_vt, code));
-                    }
-                }
-                Some(_) => {
-                    return cerr(format!(
-                        "field `{}`: list state must initialize to a literal list in codegen",
-                        field.name
-                    ))
-                }
-                None => {
-                    return cerr(format!(
-                        "field `{}`: list state needs an initializer in codegen",
-                        field.name
-                    ))
-                }
-            }
-            cg.list_fields.insert(field.name.clone(), (idx, elem_vt));
-            cg.uses_list_field = true;
-            cg.local_list_elem_valtype.insert(field.name.clone(), elem_vt);
-            continue;
-        }
-        // A Float field is a real (mut f64) global — floats are values, so no
-        // host cell is needed. Its kind registers in `locals` so reads,
-        // assignments, and captures convert at f64.
-        if tname == "Float" {
-            let init = match &field.init {
-                Some(Expr::Float(x)) => *x,
-                Some(_) => {
-                    return cerr(format!(
-                        "field `{}`: initializer must be a Float literal",
-                        field.name
-                    ))
-                }
-                None => {
-                    return cerr(format!(
-                        "field `{}`: Float state needs an initializer in codegen",
-                        field.name
-                    ))
-                }
-            };
-            cg.globals.insert(field.name.clone());
-            cg.locals.insert(field.name.clone(), Kind::F64);
-            cg.local_val_types.insert(field.name.clone(), ValType::Float);
-            state_globals.push_str(&format!(
-                "  (global ${} (mut f64) (f64.const {init}))\n",
-                field.name
-            ));
-            continue;
-        }
-        if tname != "Int" {
-            return cerr(format!(
-                "actor field `{}`: only Int, Float, String, List, Subject, and capability (Console/Clock/Env/Dir/Net) fields compile yet",
-                field.name
-            ));
-        }
-        let init = match &field.init {
-            Some(Expr::Int(n)) => *n,
-            Some(_) => return cerr(format!("field `{}`: initializer must be an Int literal", field.name)),
-            None => {
-                // No initializer = SPAWN-SUPPLIED: the global is exported and
-                // the host writes the spawn argument into it (the same path a
-                // Subject id takes), so `actor W: id: Int` matches the
-                // interpreter.
-                cg.globals.insert(field.name.clone());
-                cg.local_val_types.insert(field.name.clone(), ValType::Int);
-                state_globals.push_str(&format!(
-                    "  (global ${0} (export \"{0}\") (mut i32) (i32.const 0))\n",
-                    field.name
-                ));
-                continue;
-            }
-        };
-        cg.globals.insert(field.name.clone());
-        cg.local_val_types.insert(field.name.clone(), ValType::Int);
-        state_globals.push_str(&format!(
-            "  (global ${} (mut i32) (i32.const {init}))\n",
-            field.name
-        ));
-    }
-
-    // `self` — the actor's own Subject — lowers to a read of the `$self`
-    // global. Register it so handler bodies resolve it; the global itself is
-    // declared below only if a handler actually uses it.
-    cg.globals.insert("self".to_string());
-    cg.local_val_types.insert("self".to_string(), ValType::Int);
-
-    let mut handlers: Vec<(String, String)> = Vec::new();
-    // Field kinds (e.g. a Float field's f64) persist across handlers; each
-    // handler's own params/lets start from this snapshot.
-    let field_kinds = cg.locals.clone();
-    for h in &actor.handlers {
-        let sig = message_sig_of(h, &record_types_of(parent))?;
-        cg.locals = field_kinds.clone();
-        let mut header = format!("  (func (export \"{}\") ", h.message);
-        for (p, kind) in h.params.iter().zip(&sig) {
-            // An Int or Subject travels by value; a Float as the full f64; a
-            // String param is a pointer to a `[len][bytes]` string the host
-            // re-allocated in THIS actor's memory (`__msg_alloc`) before
-            // delivery.
-            let wasm_ty = if *kind == MsgField::Float { "f64" } else { "i32" };
-            header.push_str(&format!("(param ${} {wasm_ty}) ", p.name));
-            // A record-typed param resolves `p.field` through the registered
-            // record metadata (it travels on the tuple wire).
-            if let Some(Type::Named(tn, _)) = &p.ty {
-                if cg.record_fields.contains_key(tn) {
-                    cg.local_records.insert(p.name.clone(), tn.clone());
-                }
-            }
-            match kind {
-                MsgField::Int => {
-                    cg.local_val_types.insert(p.name.clone(), ValType::Int);
-                }
-                MsgField::Float => {
-                    cg.locals.insert(p.name.clone(), Kind::F64);
-                    cg.local_val_types.insert(p.name.clone(), ValType::Float);
-                }
-                MsgField::Str => {
-                    cg.uses_msg_alloc = true;
-                    cg.local_val_types.insert(p.name.clone(), ValType::Str);
-                }
-                MsgField::IntList => {
-                    cg.uses_msg_alloc = true;
-                    cg.local_list_elem_valtype.insert(p.name.clone(), ValType::Int);
-                }
-                MsgField::StrList => {
-                    cg.uses_msg_alloc = true;
-                    cg.local_list_elem_valtype.insert(p.name.clone(), ValType::Str);
-                }
-                MsgField::Tuple(elems) => {
-                    cg.uses_msg_alloc = true;
-                    let slots: Vec<ValType> = elems
-                        .iter()
-                        .map(|e| match e {
-                            MsgField::Int => ValType::Int,
-                            MsgField::Float => ValType::Float,
-                            MsgField::Str => ValType::Str,
-                            _ => ValType::Other,
-                        })
-                        .collect();
-                    cg.local_tuple_slots.insert(p.name.clone(), slots);
-                }
-                // A Subject is an opaque actor id; it is a send target, not a
-                // printable value, so it gets no value type.
-                MsgField::Subject => {}
-            }
-        }
-        header.push('\n');
-        let renamed = &h.body;
-        // Infer each let's kind (as `compile_function` does) so e.g. an i64
-        // list element flowing into a local declares that local at i64.
-        cg.infer_locals(renamed);
-        // Inference treats assignment targets as locals, but a state FIELD is
-        // not one: an Int global stays i32 and a host-cell field's reads have
-        // their own kinds. Restore the field kinds (e.g. a Float's f64) and
-        // drop any other field name inference picked up.
-        let field_names: Vec<String> = cg
-            .globals
-            .iter()
-            .cloned()
-            .chain(cg.str_fields.keys().cloned())
-            .chain(cg.list_fields.keys().cloned())
-            .collect();
-        for fname in field_names {
-            match field_kinds.get(&fname) {
-                Some(&k) => {
-                    cg.locals.insert(fname, k);
-                }
-                None => {
-                    cg.locals.remove(&fname);
-                }
-            }
-        }
-        let mut lets = Vec::new();
-        collect_let_names(renamed, &mut lets);
-        lets.sort();
-        lets.dedup();
-        for name in &lets {
-            let k = cg.locals.get(name).copied().unwrap_or(Kind::I32);
-            header.push_str(&format!("    (local ${name} {})\n", wasm_ty(k)));
-        }
-        cg.begin_unit(renamed);
-        let mut cap_vars: Vec<String> = cg.inplace_push.iter().cloned().collect();
-        cap_vars.sort();
-        for v in cap_vars {
-            header.push_str(&format!("    (local ${v}__cap i32)\n"));
-        }
-        header.push_str("    (local $__witchy_owncap i32)\n");
-        // The same scratch slots ordinary functions get: tuple destructuring,
-        // `?`, `match` scrutinees, loop watermarks, and the call pool.
-        header.push_str(&format!("    (local ${TUPLE_TMP} i32)\n"));
-        header.push_str(&format!("    (local ${TRY_TMP} i32)\n"));
-        header.push_str(&format!("    (local ${MATCH_TMP} i64)\n"));
-        for i in 0..WM_POOL {
-            header.push_str(&format!("    (local $__witchy_wm_{i} i32)\n"));
-        }
-        for i in 0..APPLY_POOL {
-            header.push_str(&format!("    (local $__witchy_call_{i} i32)\n"));
-        }
-        cg.apply_level = 0;
-        cg.wm_level = 0;
-        let body = cg.compile_block(renamed)?;
-        cg.finish_unit(&format!("{}.{}", actor.name, h.message))?;
-        handlers.push((header, body));
-    }
-
-    // No-GC for actors: the host calls `__msg_prep` before each delivery to
-    // reset the heap arena, since a handler's heap allocations never escape
-    // (state lives in globals; sends copy). This bounds memory for long-running
-    // actors without a collector. `__msg_alloc` then re-allocates any String
-    // message fields in THIS actor's memory before the handler runs.
-    let mut extra_globals = state_globals;
-    // The `$self` global (the actor's own Subject id) — emitted only when a
-    // handler reads it. The host sets it to the actor's id at spawn
-    // (set-if-present), so actors that never mention `self` stay untouched.
-    if handlers.iter().any(|(_, body)| body.contains("global.get $self")) {
-        extra_globals.push_str("  (global $self (export \"self\") (mut i32) (i32.const -1))\n");
-    }
-    let mut msg_helpers = String::new();
-    if cg.need_heap() {
-        extra_globals.push_str(&format!(
-            "  (global $heap_base i32 (i32.const {}))\n",
-            cg.next_offset
-        ));
-        msg_helpers.push_str(
-            "  (func (export \"__msg_prep\")\n    global.get $heap_base\n    global.set $heap)\n",
-        );
-        if cg.uses_msg_alloc {
-            msg_helpers.push_str(
-                "  (func (export \"__msg_alloc\") (param $n i32) (result i32)\n    \
-                 (local $p i32)\n    \
-                 (call $ensure (i32.add (local.get $n) (i32.const 4)))\n    \
-                 (local.set $p (global.get $heap))\n    \
-                 (global.set $heap (i32.add (local.get $p) (i32.add (local.get $n) (i32.const 4))))\n    \
-                 (local.get $p))\n",
-            );
-        }
-    }
-
-    let mut wat = String::from("(module\n");
-    let mut arities: Vec<usize> = cg.clos_arities.iter().copied().collect();
-    arities.sort_unstable();
-    for n in &arities {
-        // One leading param for the closure environment, then the call's args.
-        let params = format!("(param i32) {}", "(param i64) ".repeat(*n));
-        wat.push_str(&format!("  (type $clos{n} (func {params}(result i64)))\n"));
-    }
-    wat.push_str(&cg.emit_imports());
-    wat.push_str("  (memory (export \"memory\") 1)\n");
-    // A function table is needed whenever a closure is *called* (`call_indirect`
-    // references table 0), even when the program constructs no lambdas — e.g. an
-    // imported, never-called closure-taking std function still has its body
-    // compiled. The table is then empty; `elem` only lists the actual lambdas.
-    if !cg.lambdas.is_empty() || !cg.clos_arities.is_empty() {
-        let count = cg.lambdas.len();
-        wat.push_str(&format!("  (table {count} funcref)\n"));
-        if !cg.lambdas.is_empty() {
-            let mut elem = String::from("  (elem (i32.const 0)");
-            for i in 0..count {
-                elem.push_str(&format!(" $__lam{i}"));
-            }
-            elem.push_str(")\n");
-            wat.push_str(&elem);
-        }
-    }
-    wat.push_str(&cg.emit_data_globals_helpers(&extra_globals));
-    for (header, body) in &handlers {
-        // Handlers return nothing; discard the block's trailing value.
-        wat.push_str(&format!("{header}{body}    drop\n  )\n"));
-    }
-    wat.push_str(&helper_wat);
-    wat.push_str(&msg_helpers);
-    if !str_field_inits.is_empty() || !list_field_inits.is_empty() {
-        // Set each String/list state cell to its declared initializer at
-        // instantiation, before any message is delivered: strings are interned
-        // literals; a list is built in the arena and copied OUT to its cell.
-        wat.push_str("  (func $__init_state_fields\n");
-        for (idx, off) in &str_field_inits {
-            wat.push_str(&format!(
-                "    (call $field_str_set_host (i32.const {idx}) (i32.const {off}))\n"
-            ));
-        }
-        for (idx, vt, code) in &list_field_inits {
-            let set = if *vt == ValType::Str {
-                "$field_strlist_set_host"
-            } else {
-                "$field_intlist_set_host"
-            };
-            wat.push_str(&format!("    i32.const {idx}\n{code}    call {set}\n"));
-        }
-        wat.push_str("  )\n  (start $__init_state_fields)\n");
-    }
-    for lam in &cg.lambdas {
-        wat.push_str(lam);
-    }
-    for body in cg.rcopy_helpers.values() {
-        wat.push_str(body);
-    }
-    for body in cg.eq_helpers.values() {
-        wat.push_str(body);
-    }
-    for body in cg.ts_helpers.values() {
-        wat.push_str(body);
-    }
-    wat.push_str(")\n");
-    Ok(wat)
 }
 
 fn data_segment(off: u32, s: &str) -> String {
@@ -8816,7 +7991,7 @@ fn fv_expr(e: &Expr, s: &mut LambdaScan) {
                 fv_expr(a, s);
             }
         }
-        Expr::Ctor { args, .. } | Expr::Spawn { args, .. } => {
+        Expr::Ctor { args, .. } => {
             for a in args {
                 fv_expr(a, s);
             }
@@ -8962,8 +8137,7 @@ fn collect_let_names_expr(expr: &Expr, out: &mut Vec<String>) {
         Expr::Call { args, .. }
         | Expr::Ctor { args, .. }
         | Expr::List(args)
-        | Expr::Tuple(args)
-        | Expr::Spawn { args, .. } => {
+        | Expr::Tuple(args) => {
             for a in args {
                 collect_let_names_expr(a, out);
             }
@@ -9124,7 +8298,7 @@ impl Renamer {
                     self.rename_expr(a);
                 }
             }
-            Expr::Call { args, .. } | Expr::Ctor { args, .. } | Expr::Spawn { args, .. } => {
+            Expr::Call { args, .. } | Expr::Ctor { args, .. } => {
                 for a in args {
                     self.rename_expr(a);
                 }
@@ -9239,7 +8413,7 @@ fn flip_string_add_module(m: &mut Module, table: &crate::typeck::TypeTable) {
                 }
             }
             Expr::List(xs) | Expr::Tuple(xs) | Expr::Ctor { args: xs, .. }
-            | Expr::Call { args: xs, .. } | Expr::Spawn { args: xs, .. } => {
+            | Expr::Call { args: xs, .. } => {
                 for x in xs {
                     walk_expr(x, table);
                 }
@@ -9332,16 +8506,6 @@ fn flip_string_add_module(m: &mut Module, table: &crate::typeck::TypeTable) {
     for item in &mut m.items {
         match item {
             Item::Function(f) => walk_block(&mut f.body, table),
-            Item::Actor(a) => {
-                for fl in &mut a.fields {
-                    if let Some(init) = &mut fl.init {
-                        walk_expr(init, table);
-                    }
-                }
-                for h in &mut a.handlers {
-                    walk_block(&mut h.body, table);
-                }
-            }
             Item::Impl(im) => {
                 for f in &mut im.methods {
                     walk_block(&mut f.body, table);
@@ -9368,11 +8532,6 @@ fn alpha_rename_module(m: &mut Module) {
         match item {
             Item::Function(f) => {
                 f.body = alpha_rename(&f.body, &f.params);
-            }
-            Item::Actor(a) => {
-                for h in &mut a.handlers {
-                    h.body = alpha_rename(&h.body, &h.params);
-                }
             }
             _ => {}
         }
@@ -9880,59 +9039,6 @@ fn main() -> Int:
     }
 
     #[test]
-    fn actor_arena_is_reset_each_message() {
-        let src = r#"
-actor Counter:
-    console: Console
-    var count: Int = 0
-
-impl Counter:
-    on Tick():
-        count = (count + 1)
-        print(console, ("n=" + __render(count)))
-"#;
-        let module = parse_module(src).unwrap();
-        let Item::Actor(actor) = &module.items[0] else {
-            panic!("expected actor");
-        };
-        let wat = compile_actor_module(actor).unwrap();
-        let engine = Engine::default();
-        let wt = WtModule::new(&engine, &wat).unwrap();
-        let captured: Arc<Mutex<Vec<(i32, String)>>> = Arc::new(Mutex::new(Vec::new()));
-        let mut linker = Linker::new(&engine);
-        let sink = Arc::clone(&captured);
-        linker
-            .func_wrap(
-                "witchy",
-                "print",
-                move |mut caller: Caller<'_, ()>, ptr: i32, len: i32| {
-                    let mem = caller.get_export("memory").unwrap().into_memory().unwrap();
-                    let data = mem.data(&caller);
-                    let s = String::from_utf8_lossy(&data[ptr as usize..(ptr + len) as usize])
-                        .into_owned();
-                    sink.lock().unwrap().push((ptr, s));
-                },
-            )
-            .unwrap();
-        let mut store = Store::new(&engine, ());
-        let instance = linker.instantiate(&mut store, &wt).unwrap();
-        // The host resets the arena via `__msg_prep` before each delivery
-        // (exactly what `actor_system::System::invoke` does).
-        let prep = instance.get_typed_func::<(), ()>(&mut store, "__msg_prep").unwrap();
-        let tick = instance.get_typed_func::<(), ()>(&mut store, "Tick").unwrap();
-        prep.call(&mut store, ()).unwrap();
-        tick.call(&mut store, ()).unwrap();
-        prep.call(&mut store, ()).unwrap();
-        tick.call(&mut store, ()).unwrap();
-        let c = captured.lock().unwrap();
-        // State persists (count is a global); the heap arena is reset, so the
-        // second message reuses the same addresses.
-        assert_eq!(c[0].1, "n=1");
-        assert_eq!(c[1].1, "n=2");
-        assert_eq!(c[0].0, c[1].0, "arena should be reset, reusing heap addresses");
-    }
-
-    #[test]
     fn compiles_string_concatenation() {
         let src = r#"
 fn shout(name: String) -> String:
@@ -9962,33 +9068,4 @@ fn main(console: Console):
         assert_eq!(run_str(src), vec!["0"]);
     }
 
-    /// The headline: an actor compiled to its own WASM VM, with Int state in a
-    /// global and a Console capability, handling messages run-to-completion.
-    #[test]
-    fn compiles_a_stateful_actor() {
-        let src = r#"
-actor Counter:
-    console: Console
-    var count: Int = 0
-
-impl Counter:
-    on Tick():
-        count = (count + 1)
-        print(console, ("count is " + __render(count)))
-"#;
-        let module = parse_module(src).unwrap();
-        let Item::Actor(actor) = &module.items[0] else {
-            panic!("expected actor");
-        };
-        let wat = compile_actor_module(actor).unwrap();
-        let (mut store, instance, captured) = instantiate_with_print(&wat);
-        let tick = instance.get_typed_func::<(), ()>(&mut store, "Tick").unwrap();
-        tick.call(&mut store, ()).unwrap();
-        tick.call(&mut store, ()).unwrap();
-        tick.call(&mut store, ()).unwrap();
-        assert_eq!(
-            *captured.lock().unwrap(),
-            vec!["count is 1", "count is 2", "count is 3"]
-        );
-    }
 }

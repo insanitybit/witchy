@@ -118,22 +118,6 @@ pub fn resolve(mut module: Module) -> Module {
                     }
                 }
             }
-            Item::Actor(a) => {
-                for fld in &mut a.fields {
-                    resolve_type(&mut fld.ty, &map);
-                    if let Some(init) = &mut fld.init {
-                        resolve_in_expr(init, &map);
-                    }
-                }
-                for h in &mut a.handlers {
-                    for p in &mut h.params {
-                        if let Some(t) = &mut p.ty {
-                            resolve_type(t, &map);
-                        }
-                    }
-                    resolve_in_block(&mut h.body, &map);
-                }
-            }
             Item::Trait(t) => {
                 for m in &mut t.methods {
                     resolve_methodsig(m, &map);
@@ -255,7 +239,7 @@ fn resolve_in_expr(e: &mut Expr, map: &HashMap<String, Type>) {
                 resolve_in_expr(x, map);
             }
         }
-        Expr::Call { args, .. } | Expr::Ctor { args, .. } | Expr::Spawn { args, .. } => {
+        Expr::Call { args, .. } | Expr::Ctor { args, .. } => {
             for a in args {
                 resolve_in_expr(a, map);
             }

@@ -162,7 +162,6 @@ fn item_str(s: &mut String, item: &Item, c: &mut Comments) {
         Item::Type(t) => type_def(s, t),
         Item::Trait(t) => trait_def(s, t, c),
         Item::Impl(im) => impl_def(s, im, c),
-        Item::Actor(a) => actor_def(s, a, c),
         Item::Const { name, value } => {
             s.push_str("let ");
             s.push_str(name);
@@ -364,64 +363,6 @@ fn impl_def(s: &mut String, im: &ImplDef, c: &mut Comments) {
         }
         function(s, m, true, c);
     }
-    for h in &im.handlers {
-        handler(s, h, c);
-    }
-}
-
-fn actor_def(s: &mut String, a: &ActorDef, c: &mut Comments) {
-    s.push_str("actor ");
-    s.push_str(&a.name);
-    s.push_str(":\n");
-    for f in &a.fields {
-        pad(s, 1);
-        if f.mutable {
-            s.push_str("var ");
-        }
-        s.push_str(&f.name);
-        s.push_str(": ");
-        s.push_str(&type_str(&f.ty));
-        if let Some(init) = &f.init {
-            s.push_str(" = ");
-            s.push_str(&expr(init));
-        }
-        s.push('\n');
-    }
-    // Handlers go in a separate `impl Actor:` block (re-merged on parse).
-    if !a.handlers.is_empty() {
-        s.push_str("\nimpl ");
-        s.push_str(&a.name);
-        s.push_str(":\n");
-        for h in &a.handlers {
-            handler(s, h, c);
-        }
-    }
-}
-
-fn handler(s: &mut String, h: &Handler, c: &mut Comments) {
-    pad(s, 1);
-    s.push_str("on ");
-    s.push_str(&h.message);
-    s.push('(');
-    let mut first = true;
-    if h.has_self {
-        s.push_str(match h.self_conv {
-            Convention::Let => "self",
-            Convention::Borrow => "let self",
-            Convention::Inout => "var self",
-            Convention::Sink => "own self",
-        });
-        first = false;
-    }
-    for p in &h.params {
-        if !first {
-            s.push_str(", ");
-        }
-        first = false;
-        s.push_str(&param(p));
-    }
-    s.push_str("):\n");
-    block(s, &h.body, 2, c);
 }
 
 /// Write a `retain`/`without` firewall header (`without a, b:`) with no leading
@@ -950,7 +891,6 @@ fn expr(e: &Expr) -> String {
                 .collect();
             format!("update {}: {}", expr(base), fs.join(" "))
         }
-        Expr::Spawn { actor, args } => format!("spawn {actor}({})", comma(args)),
         // A block in expression position is a comprehension's desugar (the
         // only block with an inline surface form) — print the literal back.
         Expr::Block(b) => {
@@ -1371,16 +1311,6 @@ fn canon_module(m: &mut Module) {
 fn canon_item(it: &mut Item) {
     match it {
         Item::Function(f) => canon_block(&mut f.body),
-        Item::Actor(a) => {
-            for fld in &mut a.fields {
-                if let Some(e) = &mut fld.init {
-                    canon_expr(e);
-                }
-            }
-            for h in &mut a.handlers {
-                canon_block(&mut h.body);
-            }
-        }
         Item::Type(_) | Item::TypeAlias { .. } => {}
         Item::Const { value, .. } => canon_expr(value),
         Item::Trait(t) => {
@@ -1463,8 +1393,7 @@ fn canon_expr(e: &mut Expr) {
                 canon_expr(x);
             }
         }
-        Expr::List(xs) | Expr::Tuple(xs) | Expr::Ctor { args: xs, .. }
-        | Expr::Spawn { args: xs, .. } => {
+        Expr::List(xs) | Expr::Tuple(xs) | Expr::Ctor { args: xs, .. } => {
             for x in xs {
                 canon_expr(x);
             }

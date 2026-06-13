@@ -34,50 +34,6 @@ pub fn parse_module(src: &str) -> Result<Module, ParseError> {
     Parser::new(tokens).module()
 }
 
-/// Move `on` handlers written in an inherent `impl Actor { ... }` block onto the
-/// matching `ActorDef`, so the rest of the compiler sees handlers on the actor
-/// regardless of whether they were written inline or in a separate impl block.
-/// An impl left with neither methods nor handlers is dropped — and its source
-/// line with it, in lockstep, so `item_lines` stays valid for the formatter's
-/// comment placement (dropping the lines wholesale silently discarded every
-/// comment in any file with an actor + impl pair).
-fn merge_actor_impls(items: Vec<Item>, lines: Vec<u32>) -> (Vec<Item>, Vec<u32>) {
-    use std::collections::HashSet;
-    let mut paired: Vec<(Item, u32)> = if items.len() == lines.len() {
-        items.into_iter().zip(lines).collect()
-    } else {
-        items.into_iter().map(|it| (it, 0)).collect()
-    };
-    let actors: HashSet<String> = paired
-        .iter()
-        .filter_map(|(it, _)| match it {
-            Item::Actor(a) => Some(a.name.clone()),
-            _ => None,
-        })
-        .collect();
-    let mut pulled: Vec<(String, Vec<Handler>)> = Vec::new();
-    for (it, _) in &mut paired {
-        if let Item::Impl(im) = it {
-            if actors.contains(&im.type_name) && !im.handlers.is_empty() {
-                pulled.push((im.type_name.clone(), std::mem::take(&mut im.handlers)));
-            }
-        }
-    }
-    for (name, handlers) in pulled {
-        for (it, _) in &mut paired {
-            if let Item::Actor(a) = it {
-                if a.name == name {
-                    a.handlers.extend(handlers);
-                    break;
-                }
-            }
-        }
-    }
-    paired.retain(
-        |(it, _)| !matches!(it, Item::Impl(im) if im.methods.is_empty() && im.handlers.is_empty()),
-    );
-    paired.into_iter().unzip()
-}
 
 struct Parser {
     toks: Vec<Token>,
@@ -206,7 +162,6 @@ impl Parser {
             item_lines.push(self.cur().line);
             items.push(self.item()?);
         }
-        let (items, item_lines) = merge_actor_impls(items, item_lines);
         Ok(Module {
             imports,
             items,
@@ -219,8 +174,6 @@ impl Parser {
         let public = self.eat(&Tok::Pub);
         if self.at(&Tok::Fn) || self.at(&Tok::Gen) || self.at(&Tok::Async) {
             Ok(Item::Function(self.function(public)?))
-        } else if self.at(&Tok::Actor) {
-            Ok(Item::Actor(self.actor_def()?))
         } else if self.at(&Tok::Type) {
             self.type_def()
         } else if self.at(&Tok::Trait) {
@@ -342,13 +295,8 @@ impl Parser {
         let bounds = self.where_clause()?;
         self.expect(&Tok::LBrace)?;
         let mut methods = Vec::new();
-        let mut handlers = Vec::new();
         while !self.at(&Tok::RBrace) && !self.at(&Tok::Eof) {
-            if self.at(&Tok::On) {
-                handlers.push(self.handler()?);
-            } else {
-                methods.push(self.function(false)?);
-            }
+            methods.push(self.function(false)?);
         }
         self.expect(&Tok::RBrace)?;
         Ok(ImplDef {
@@ -357,7 +305,7 @@ impl Parser {
             type_name,
             bounds,
             methods,
-            handlers,
+            handlers: Vec::new(),
         })
     }
 
@@ -447,70 +395,6 @@ impl Parser {
         } else {
             Ok(Item::Type(TypeDef { name, params, variants, derives }))
         }
-    }
-
-    fn actor_def(&mut self) -> Result<ActorDef, ParseError> {
-        self.expect(&Tok::Actor)?;
-        let name = self.ident()?;
-        self.expect(&Tok::LBrace)?;
-        let mut fields = Vec::new();
-        let mut handlers = Vec::new();
-        while !self.at(&Tok::RBrace) && !self.at(&Tok::Eof) {
-            if self.at(&Tok::On) {
-                handlers.push(self.handler()?);
-            } else {
-                fields.push(self.field()?);
-            }
-        }
-        self.expect(&Tok::RBrace)?;
-        Ok(ActorDef {
-            name,
-            fields,
-            handlers,
-        })
-    }
-
-    fn field(&mut self) -> Result<Field, ParseError> {
-        let mutable = self.eat(&Tok::Var);
-        let name = self.ident()?;
-        self.expect(&Tok::Colon)?;
-        let ty = self.ty()?;
-        let init = if self.eat(&Tok::Eq) {
-            Some(self.expr(0)?)
-        } else {
-            None
-        };
-        Ok(Field {
-            name,
-            ty,
-            mutable,
-            init,
-        })
-    }
-
-    fn handler(&mut self) -> Result<Handler, ParseError> {
-        self.expect(&Tok::On)?;
-        let message = self.ident()?;
-        self.expect(&Tok::LParen)?;
-        let mut params = self.params()?;
-        self.expect(&Tok::RParen)?;
-        // An explicit leading `self` makes the actor's own Subject available in
-        // the body; it is not a message argument, so strip it from `params`,
-        // keeping its ownership convention (`var self` binds a mutable `self`).
-        let has_self = params.first().is_some_and(|p| p.name == "self");
-        let self_conv = if has_self {
-            params.remove(0).convention
-        } else {
-            Convention::Let
-        };
-        let body = self.block()?;
-        Ok(Handler {
-            message,
-            params,
-            has_self,
-            self_conv,
-            body,
-        })
     }
 
     fn is_assignment(&self) -> bool {
@@ -1089,16 +973,6 @@ impl Parser {
             Tok::Region => self.region_block(),
             Tok::Retain => self.restrict_block(RestrictMode::Retain),
             Tok::Without => self.restrict_block(RestrictMode::Without),
-            Tok::Spawn => {
-                self.advance();
-                let actor = self.ident()?;
-                let args = if self.at(&Tok::LParen) {
-                    self.call_args()?
-                } else {
-                    vec![]
-                };
-                Ok(Expr::Spawn { actor, args })
-            }
             Tok::Ident(name) => {
                 self.advance();
                 self.name_application(name)
@@ -1771,29 +1645,14 @@ pub(crate) fn lower_sugar_module(m: &mut Module) {
     for item in &mut m.items {
         match item {
             Item::Function(f) => lower_sugar_block(&mut f.body),
-            Item::Actor(a) => lower_sugar_actor(a),
             Item::Impl(im) => {
                 for meth in &mut im.methods {
                     lower_sugar_block(&mut meth.body);
-                }
-                for h in &mut im.handlers {
-                    lower_sugar_block(&mut h.body);
                 }
             }
             Item::Const { value, .. } => lower_sugar_expr(value),
             Item::Type(_) | Item::Trait(_) | Item::TypeAlias { .. } | Item::Comptime(_) => {}
         }
-    }
-}
-
-pub(crate) fn lower_sugar_actor(a: &mut ActorDef) {
-    for f in &mut a.fields {
-        if let Some(init) = &mut f.init {
-            lower_sugar_expr(init);
-        }
-    }
-    for h in &mut a.handlers {
-        lower_sugar_block(&mut h.body);
     }
 }
 
@@ -1840,8 +1699,7 @@ fn lower_sugar_expr(e: &mut Expr) {
         Expr::List(xs)
         | Expr::Tuple(xs)
         | Expr::Call { args: xs, .. }
-        | Expr::Ctor { args: xs, .. }
-        | Expr::Spawn { args: xs, .. } => {
+        | Expr::Ctor { args: xs, .. } => {
             for x in xs {
                 lower_sugar_expr(x);
             }
@@ -2380,30 +2238,6 @@ fn f(n: Int) -> Int:
     }
 
     #[test]
-    fn parses_actor_with_fields_handlers_and_assignment() {
-        let src = r#"
-actor Counter:
-    console: Console
-    var count: Int = 0
-
-impl Counter:
-    on Inc(by: Int):
-        count = (count + by)
-"#;
-        let m = parse_module(src).unwrap();
-        let Item::Actor(a) = &m.items[0] else {
-            panic!("expected an actor");
-        };
-        assert_eq!(a.name, "Counter");
-        assert_eq!(a.fields.len(), 2);
-        assert!(!a.fields[0].mutable && a.fields[0].init.is_none()); // capability field
-        assert!(a.fields[1].mutable && a.fields[1].init.is_some()); // var with default
-        assert_eq!(a.handlers.len(), 1);
-        assert_eq!(a.handlers[0].message, "Inc");
-        assert!(matches!(a.handlers[0].body.stmts[0], Stmt::Assign { .. }));
-    }
-
-    #[test]
     fn parses_parameter_conventions() {
         let m = parse_module(r#"
 fn f(inout a: Int, sink b: Int, c: Int) -> Int:
@@ -2417,25 +2251,4 @@ fn f(inout a: Int, sink b: Int, c: Int) -> Int:
         assert_eq!(func.params[2].convention, Convention::Let);
     }
 
-    #[test]
-    fn parses_spawn_and_send() {
-        let stmts = {
-            let m = parse_module(r#"
-fn main():
-    let a = spawn Logger(x)
-    send(a, Log("hi"))
-"#).unwrap();
-            match &m.items[0] {
-                Item::Function(f) => f.body.stmts.clone(),
-                _ => panic!("expected a function"),
-            }
-        };
-        assert!(matches!(
-            stmts[0],
-            Stmt::Let {
-                value: Expr::Spawn { .. },
-                ..
-            }
-        ));
-    }
 }

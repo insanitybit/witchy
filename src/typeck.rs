@@ -16,7 +16,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 use crate::ast::{
-    self, ActorDef, Block, CapRestrict, Convention, Expr, Function, Item, MatchArm, Module, Pattern,
+    self, Block, CapRestrict, Convention, Expr, Function, Item, MatchArm, Module, Pattern,
     RestrictMode, Stmt, UnOp,
 };
 
@@ -389,9 +389,6 @@ fn check_type_names(module: &Module) -> Result<(), TypeError> {
             Item::Type(t) => {
                 known.insert(t.name.as_str());
             }
-            Item::Actor(a) => {
-                known.insert(a.name.as_str());
-            }
             _ => {}
         }
     }
@@ -408,18 +405,6 @@ fn check_type_names(module: &Module) -> Result<(), TypeError> {
                 }
                 if let Some(t) = &f.ret {
                     validate_type(t, &known).map_err(|e| in_ctx(e, &f.name))?;
-                }
-            }
-            Item::Actor(a) => {
-                for field in &a.fields {
-                    validate_type(&field.ty, &known).map_err(|e| in_ctx(e, &a.name))?;
-                }
-                for h in &a.handlers {
-                    for p in &h.params {
-                        if let Some(t) = &p.ty {
-                            validate_type(t, &known).map_err(|e| in_ctx(e, &a.name))?;
-                        }
-                    }
                 }
             }
             // A type's variant field types must also be known. The type's own
@@ -640,7 +625,7 @@ fn borrow_escape_check(func: &Function) -> Result<(), TypeError> {
                 scan_returns_expr(expr, borrowed, fname)
             }
             Expr::Call { args, .. } | Expr::Ctor { args, .. } | Expr::List(args)
-            | Expr::Tuple(args) | Expr::Spawn { args, .. } => {
+            | Expr::Tuple(args) => {
                 for a in args {
                     scan_returns_expr(a, borrowed, fname)?;
                 }
@@ -2232,29 +2217,6 @@ impl Checker {
                 Ok(Ty::Nil)
             }
             Expr::Match { scrutinee, arms } => self.infer_match(scrutinee, arms),
-            Expr::Spawn { actor, args } => {
-                let Some(field_tys) = self.actor_field_sigs.get(actor).cloned() else {
-                    return terr(format!("cannot spawn unknown actor `{actor}`"));
-                };
-                if field_tys.len() != args.len() {
-                    return terr(format!(
-                        "spawn {actor}: expects {} argument(s) but got {}",
-                        field_tys.len(),
-                        args.len()
-                    ));
-                }
-                for (arg, fty) in args.iter().zip(&field_tys) {
-                    let at = self.infer(arg)?;
-                    // An actor granted a narrowed capability field accepts a
-                    // broader argument (a full `Net` into a `Net[Connect]` field).
-                    self.coerce_arg(fty, &at).map_err(|e| TypeError {
-                        message: format!("spawning `{actor}`: {}", e.message),
-                    })?;
-                }
-                // `spawn Counter(...)` yields a `Subject(Counter)` — a typed
-                // handle, so a later `send`/`ask` of a wrong message is caught.
-                Ok(Ty::Subject(Some(actor.clone())))
-            }
         }
     }
 
@@ -2582,42 +2544,6 @@ impl Checker {
         Ok(())
     }
 
-    fn check_actor(&mut self, actor: &ActorDef) -> Result<(), TypeError> {
-        for handler in &actor.handlers {
-            self.scopes = vec![HashMap::new()];
-            self.hidden = vec![HashSet::new()];
-            self.consumed.clear();
-            self.current_ret = None;
-            self.cur_line = 0;
-            for field in &actor.fields {
-                let ty = self.to_ty(&field.ty);
-                self.define(field.name.clone(), ty, field.mutable);
-            }
-            // `self` (the actor's own Subject) is in scope only when the handler
-            // declares it explicitly: `on Msg(self, ...)`. Its ownership
-            // convention sets mutability (`var self` is reassignable).
-            if handler.has_self {
-                self.define(
-                    "self".to_string(),
-                    Ty::Subject(Some(actor.name.clone())),
-                    handler.self_conv.binds_mutable(),
-                );
-            }
-            self.push();
-            for param in &handler.params {
-                let ty = param
-                    .ty
-                    .as_ref()
-                    .map(|t| self.to_ty(t))
-                    .unwrap_or_else(|| self.fresh());
-                self.define(param.name.clone(), ty, param.convention.binds_mutable());
-            }
-            self.infer_block(&handler.body).map_err(|e| TypeError {
-                message: format!("actor `{}` handler `{}`: {}", actor.name, handler.message, e.message),
-            })?;
-        }
-        Ok(())
-    }
 }
 
 /// Type-check a whole module. Returns the first error found.
@@ -2832,24 +2758,6 @@ fn run_check(module: &Module, record: bool) -> Result<Option<TypeTable>, TypeErr
                 }
                 c.adt_variants.insert(t.name.clone(), names);
             }
-            Item::Actor(a) => {
-                // Fields without an initializer are supplied at spawn.
-                let field_tys = a
-                    .fields
-                    .iter()
-                    .filter(|f| f.init.is_none())
-                    .map(|f| c.to_ty(&f.ty))
-                    .collect();
-                c.actor_field_sigs.insert(a.name.clone(), field_tys);
-                let msgs = c.actor_messages.entry(a.name.clone()).or_default();
-                for h in &a.handlers {
-                    msgs.insert(h.message.clone());
-                    c.actor_handler_sigs
-                        .entry(h.message.clone())
-                        .or_default()
-                        .push(h.params.iter().map(|p| p.ty.clone()).collect());
-                }
-            }
             // Desugared to functions by `traits::lower` and constants inlined by
             // `crate::consts` before this point.
             Item::Trait(_) | Item::Impl(_) | Item::Const { .. } | Item::TypeAlias { .. } | Item::Comptime(_) => {}
@@ -2879,8 +2787,6 @@ fn run_check(module: &Module, record: bool) -> Result<Option<TypeTable>, TypeErr
             Item::Function(f) => {
                 c.check_function(f).map_err(|e| at_loc(e, c.cur_line, &f.name))?
             }
-            // Actor handler errors already carry actor/handler context.
-            Item::Actor(a) => c.check_actor(a).map_err(|e| at_loc(e, c.cur_line, ""))?,
             Item::Type(_) | Item::Trait(_) | Item::Impl(_) | Item::Const { .. } | Item::TypeAlias { .. } | Item::Comptime(_) => {}
         }
     }
@@ -3102,41 +3008,6 @@ mod tests {
         // A legitimate generic that nests its argument in a list is fine when
         // the return type grows with it.
         check_str("fn wrap(x: a) -> List(a):\n    [x]\n").expect("wrap is valid");
-    }
-
-    #[test]
-    fn send_messages_are_validated_against_handlers() {
-        let actor = "actor Logger:\n    console: Console\n\n    on Log(line: String):\n        print(console, line)\n\n";
-        // A well-formed send checks.
-        check_str(&format!(
-            "{actor}fn main(console: Console):\n    let logger = spawn Logger(console)\n    send(logger, Log(\"ok\"))\n"
-        ))
-        .expect("a well-typed message is fine");
-        // Wrong argument type.
-        let ty = check_str(&format!(
-            "{actor}fn main(console: Console):\n    let logger = spawn Logger(console)\n    send(logger, Log(42))\n"
-        ))
-        .expect_err("an Int into a String handler param must fail");
-        assert!(ty.contains("expected `String`"), "got: {ty}");
-        // Wrong arity.
-        let arity = check_str(&format!(
-            "{actor}fn main(console: Console):\n    let logger = spawn Logger(console)\n    send(logger, Log(\"a\", \"b\"))\n"
-        ))
-        .expect_err("a 2-argument Log must fail");
-        assert!(arity.contains("takes 1 argument"), "got: {arity}");
-        // A message the target actor doesn't handle. `logger` is a typed
-        // `Subject(Logger)` (from `spawn Logger`), so the error names the actor.
-        let unknown = check_str(&format!(
-            "{actor}fn main(console: Console):\n    let logger = spawn Logger(console)\n    send(logger, Logg(\"a\"))\n"
-        ))
-        .expect_err("an unhandled message name must fail");
-        assert!(unknown.contains("actor `Logger` has no handler `on Logg"), "got: {unknown}");
-        // Through an UNTYPED `Subject` parameter, the global check still applies.
-        let untyped = check_str(&format!(
-            "{actor}fn relay(s: Subject):\n    send(s, Logg(\"a\"))\n"
-        ))
-        .expect_err("an unhandled message name must fail even through a bare Subject");
-        assert!(untyped.contains("no actor declares a handler"), "got: {untyped}");
     }
 
     #[test]
@@ -3917,25 +3788,6 @@ fn f() -> Event:
     Click("not an int", 2)
 "#;
         assert!(check_str(src).is_err());
-    }
-
-    #[test]
-    fn accepts_the_actor_example() {
-        let src = r#"
-actor Logger:
-    console: Console
-    var count: Int = 0
-
-impl Logger:
-    on Log(msg: String):
-        count = (count + 1)
-        print(console, ((("[" + __render(count)) + "] ") + msg))
-
-fn main(console: Console):
-    let logger = spawn Logger(console)
-    send(logger, Log("hello"))
-"#;
-        assert!(check_str(src).is_ok(), "{:?}", check_str(src));
     }
 
     #[test]

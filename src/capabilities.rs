@@ -382,15 +382,6 @@ pub fn analyze(module: &Module) -> Footprint {
                 f.params.iter().filter_map(|p| p.ty.as_ref()).collect(),
                 f.public || f.name == "main",
             ),
-            Item::Actor(a) => (
-                format!("actor {}", a.name),
-                a.fields
-                    .iter()
-                    .filter(|fl| fl.init.is_none())
-                    .map(|fl| &fl.ty)
-                    .collect(),
-                true,
-            ),
             _ => continue,
         };
         let mut capabilities = CapSet::new();
@@ -738,21 +729,6 @@ pub fn serve(console: Console) -> Int:
         let d = diff(&old, &new);
         assert_eq!(d.added, cs(&[("Net", NET_FULL)]));
         assert!(d.widened());
-    }
-
-    #[test]
-    fn actor_spawn_fields_count_as_footprint() {
-        let src = r#"
-actor Logger:
-    console: Console
-    var count: Int = 0
-
-impl Logger:
-    on Log(msg: String):
-        count = (count + 1)
-"#;
-        let fp = footprint(src);
-        assert!(fp.total.contains_key("Console"));
     }
 
     /// Supply-chain regression net: the bundled std modules must keep the

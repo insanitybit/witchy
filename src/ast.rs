@@ -20,7 +20,6 @@ pub struct Module {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Item {
     Function(Function),
-    Actor(ActorDef),
     Type(TypeDef),
     /// A trait (interface): a set of method signatures a type can implement.
     /// `trait Show { fn show(self) -> String }`.
@@ -409,12 +408,6 @@ pub enum Expr {
         pattern: Pattern,
         scrutinee: Box<Expr>,
         body: Block,
-    },
-    /// `spawn ActorName(args)` — create an actor, granting it the args as its
-    /// initial (non-defaulted) fields. Evaluates to a `Subject`.
-    Spawn {
-        actor: String,
-        args: Vec<Expr>,
     },
 }
 
