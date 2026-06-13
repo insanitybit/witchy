@@ -1,34 +1,22 @@
-// Channels: cooperative message passing over a shared FIFO, driven by the
-// std/chan executor. A producer sends values; a consumer loops on `recv` until a
-// sentinel — which is exactly the actor idiom (an actor is a task that loops on
-// its inbox). The executor is pure witchy (an effect protocol — tasks yield
-// send/recv requests, the executor owns the buffer), so the run is byte-identical
-// on the interpreter and the compiled WASM, with no scheduler state in the
-// runtime. See docs/concurrency-design.md.
-//
-// First cut: messages are Int (a generic message type needs a monomorphizer
-// enhancement). The async/await sugar over channels comes in a later phase.
+// Channels: a producer sends values, a consumer receives them until the channel
+// closes (no task can send anymore). Spawning and the channel are independent —
+// the producer is `spawn`ed, and the channel is an ordinary value passed to both
+// sides, not a task's mailbox. Deterministic and byte-identical on both backends.
 //
 // Run:  witchy examples/channels.witchy
 //       witchy parity examples/channels.witchy
 
 import chan
 
-// Send 1, 2, 3, then a 0 sentinel meaning "no more".
-fn producer() -> Task(Int, Nil):
-    chan.and_then(chan.send(1, 1), fn(_a): chan.and_then(chan.send(1, 2), fn(_b): chan.and_then(chan.send(1, 3), fn(_c): chan.send(1, 0))))
+async fn producer(tx: Sender(Int)) -> Nil:
+    for n in [1, 2, 3]:
+        await chan.send(tx, n)
 
-// Loop on recv, printing each value, until the 0 sentinel. `print` returns Nil,
-// so `chan.done(print(...))` is the Task(Int, Nil) base case.
-fn consumer(console: Console) -> Task(Int, Nil):
-    chan.and_then(chan.recv(), fn(v):
-        if v == 0:
-            chan.done(print(console, "consumer: stop"))
-        else:
-            print(console, "got ${v}")
-            consumer(console)
-    )
+async fn consumer(console: Console, rx: Receiver(Int)) -> Nil:
+    await chan.consume(rx, fn(v): chan.done(print(console, "got ${v}")))
 
-fn main(console: Console):
-    chan.run([producer(), consumer(console)])
+async fn main(console: Console):
+    let (tx, rx) = await chan.channel(4)
+    await chan.spawn(producer(tx))
+    await consumer(console, rx)
     print(console, "channel drained")

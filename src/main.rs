@@ -11666,21 +11666,17 @@ async fn main(console: Console):
         let src = r#"
 import chan
 
-async fn producer() -> Nil:
-    await chan.send(1, 1)
-    await chan.send(1, 2)
-    await chan.send(1, 0)
+async fn producer(tx: Sender(Int)) -> Nil:
+    await chan.send(tx, 1)
+    await chan.send(tx, 2)
 
-async fn consumer(console: Console) -> Nil:
-    let v = await chan.recv()
-    if v == 0:
-        print(console, "stop")
-    else:
-        print(console, "got ${v}")
-        await consumer(console)
+async fn consumer(console: Console, rx: Receiver(Int)) -> Nil:
+    await chan.consume(rx, fn(v): chan.done(print(console, "got ${v}")))
 
-fn main(console: Console):
-    chan.run([producer(), consumer(console)])
+async fn main(console: Console):
+    let (tx, rx) = await chan.channel(4)
+    await chan.spawn(producer(tx))
+    await consumer(console, rx)
 "#;
         let module = parser::parse_module(src).expect("parse");
         let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
@@ -11690,7 +11686,7 @@ fn main(console: Console):
         let wat = codegen::compile_module(&linked).expect("compile");
         let wasm_out = crate::run_wat_capture(&wat).expect("wasm");
         assert_eq!(interp_out, wasm_out, "async+channel schedule diverged across backends");
-        assert_eq!(interp_out, vec!["got 1", "got 2", "stop"]);
+        assert_eq!(interp_out, vec!["got 1", "got 2"]);
     }
 
     // `await` inside a `for` loop — over a list (producer) and a range (consumer)
@@ -11701,18 +11697,21 @@ fn main(console: Console):
         let src = r#"
 import chan
 
-async fn producer() -> Nil:
+async fn producer(tx: Sender(Int)) -> Nil:
     for x in [1, 2, 3]:
-        await chan.send(1, x)
-    await chan.send(1, 0)
+        await chan.send(tx, x)
 
-async fn consumer(console: Console) -> Nil:
-    for _i in 0..4:
-        let v = await chan.recv()
-        print(console, "got ${v}")
+async fn consumer(console: Console, rx: Receiver(Int)) -> Nil:
+    for _i in 0..3:
+        let o = await chan.recv(rx)
+        match o:
+            Some(v) -> print(console, "got ${v}")
+            None -> print(console, "closed")
 
-fn main(console: Console):
-    chan.run([producer(), consumer(console)])
+async fn main(console: Console):
+    let (tx, rx) = await chan.channel(4)
+    await chan.spawn(producer(tx))
+    await consumer(console, rx)
 "#;
         let module = parser::parse_module(src).expect("parse");
         let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
@@ -11722,7 +11721,7 @@ fn main(console: Console):
         let wat = codegen::compile_module(&linked).expect("compile");
         let wasm_out = crate::run_wat_capture(&wat).expect("wasm");
         assert_eq!(interp_out, wasm_out, "for-await schedule diverged across backends");
-        assert_eq!(interp_out, vec!["got 1", "got 2", "got 3", "got 0"]);
+        assert_eq!(interp_out, vec!["got 1", "got 2", "got 3"]);
     }
 
     // The multi-actor case: each task has its OWN inbox, so several actors with
@@ -11736,22 +11735,24 @@ fn main(console: Console):
         let src = r#"
 import chan
 
-async fn logger(console: Console) -> Nil:
-    let a = await chan.recv()
-    print(console, "log ${a}")
-    let b = await chan.recv()
-    print(console, "log ${b}")
+async fn logger(console: Console, rx: Receiver(Int)) -> Nil:
+    await chan.consume(rx, fn(a): chan.done(print(console, "log ${a}")))
 
-async fn forwarder() -> Nil:
-    let m = await chan.recv()
-    await chan.send(0, m)
+async fn forwarder(rx: Receiver(Int), log_tx: Sender(Int)) -> Nil:
+    await chan.consume(rx, fn(m): chan.send(log_tx, m))
 
-async fn driver() -> Nil:
-    await chan.send(0, 100)
-    await chan.send(1, 200)
+async fn driver(log_tx: Sender(Int), fwd_tx: Sender(Int)) -> Nil:
+    await chan.send(log_tx, 100)
+    await chan.send(fwd_tx, 200)
 
-fn main(console: Console):
-    chan.run([logger(console), forwarder(), driver()])
+async fn main(console: Console):
+    let (log_tx, log_rx) = await chan.channel(4)
+    let (fwd_tx, fwd_rx) = await chan.channel(4)
+    let lh = await chan.spawn(logger(console, log_rx))
+    let fh = await chan.spawn(forwarder(fwd_rx, log_tx))
+    await driver(log_tx, fwd_tx)
+    await chan.join(fh)
+    await chan.join(lh)
 "#;
         let module = parser::parse_module(src).expect("parse");
         let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
@@ -11775,21 +11776,17 @@ fn main(console: Console):
         let src = r#"
 import chan
 
-fn producer() -> Task(Int, Nil):
-    chan.and_then(chan.send(1, 1), fn(_a):
-        chan.and_then(chan.send(1, 2), fn(_b):
-            chan.send(1, 0)))
+async fn producer(tx: Sender(Int)) -> Nil:
+    await chan.send(tx, 1)
+    await chan.send(tx, 2)
 
-fn consumer(console: Console) -> Task(Int, Nil):
-    chan.and_then(chan.recv(), fn(v):
-        if v == 0:
-            chan.done(print(console, "stop"))
-        else:
-            print(console, "got ${v}")
-            consumer(console))
+async fn consumer(console: Console, rx: Receiver(Int)) -> Nil:
+    await chan.consume(rx, fn(v): chan.done(print(console, "got ${v}")))
 
-fn main(console: Console):
-    chan.run([producer(), consumer(console)])
+async fn main(console: Console):
+    let (tx, rx) = await chan.channel(1)
+    await chan.spawn(producer(tx))
+    await consumer(console, rx)
     print(console, "drained")
 "#;
         let module = parser::parse_module(src).expect("parse");
@@ -11800,7 +11797,7 @@ fn main(console: Console):
         let wat = codegen::compile_module(&linked).expect("compile");
         let wasm_out = crate::run_wat_capture(&wat).expect("wasm");
         assert_eq!(interp_out, wasm_out, "channel schedule diverged across backends");
-        assert_eq!(interp_out, vec!["got 1", "got 2", "stop", "drained"]);
+        assert_eq!(interp_out, vec!["got 1", "got 2", "drained"]);
     }
 
     // The channel message type is GENERIC (here `String`), proving the explicit
@@ -11812,20 +11809,17 @@ fn main(console: Console):
         let src = r#"
 import chan
 
-fn producer() -> Task(String, Nil):
-    chan.and_then(chan.send(1, "alice"), fn(_a):
-        chan.and_then(chan.send(1, "bob"), fn(_b): chan.send(1, "STOP")))
+async fn producer(tx: Sender(String)) -> Nil:
+    await chan.send(tx, "alice")
+    await chan.send(tx, "bob")
 
-fn consumer(console: Console) -> Task(String, Nil):
-    chan.and_then(chan.recv(), fn(name):
-        if name == "STOP":
-            chan.done(print(console, "done"))
-        else:
-            print(console, "hello ${name}")
-            consumer(console))
+async fn consumer(console: Console, rx: Receiver(String)) -> Nil:
+    await chan.consume(rx, fn(name): chan.done(print(console, "hello ${name}")))
 
-fn main(console: Console):
-    chan.run([producer(), consumer(console)])
+async fn main(console: Console):
+    let (tx, rx) = await chan.channel(4)
+    await chan.spawn(producer(tx))
+    await consumer(console, rx)
 "#;
         let module = parser::parse_module(src).expect("parse");
         let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
@@ -11835,7 +11829,7 @@ fn main(console: Console):
         let wat = codegen::compile_module(&linked).expect("compile");
         let wasm_out = crate::run_wat_capture(&wat).expect("wasm");
         assert_eq!(interp_out, wasm_out, "generic-message channel diverged across backends");
-        assert_eq!(interp_out, vec!["hello alice", "hello bob", "done"]);
+        assert_eq!(interp_out, vec!["hello alice", "hello bob"]);
     }
 
     // Phase 5 (racing): `future.select` drives tasks concurrently and returns the

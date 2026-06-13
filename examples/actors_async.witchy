@@ -1,33 +1,32 @@
-// Multiple actors with SEPARATE mailboxes, in the async/channel model — the
-// replacement for the `actor`/`spawn`/`Subject` system (see
-// docs/concurrency-design.md). Compare examples/actors.witchy (Logger + Forwarder).
-//
-// Each task in `chan.run` gets its own inbox, addressed by its index: a Logger
-// (#0), a Forwarder (#1) that relays to the Logger, and a driver (#2) that sends
-// to both. `send(target, msg)` routes to a specific actor; `recv()` reads the
-// current task's inbox. The state of an actor (here the Logger's count) lives in
-// its recursive parameter — no mutable field needed. Cooperative, deterministic,
-// byte-identical on both backends.
+// Multiple independent server tasks, each with its OWN channel — what a single
+// shared channel can't give you. A logger owns a channel and prints; a forwarder
+// owns a channel and relays each message to the logger's channel; a driver sends
+// to both. Each channel is a separate value, passed where it's needed.
 //
 // Run:  witchy examples/actors_async.witchy
 //       witchy parity examples/actors_async.witchy
 
 import chan
 
-async fn logger(console: Console, count: Int) -> Nil:
-    let msg = await chan.recv()
-    print(console, "[${count}] " + msg)
-    await logger(console, count + 1)
+async fn logger(console: Console, rx: Receiver(String)) -> Nil:
+    await chan.serve(rx, 1, fn(count, msg):
+        print(console, "[${count}] " + msg)
+        chan.done(count + 1)
+    )
 
-async fn forwarder() -> Nil:
-    let msg = await chan.recv()
-    await chan.send(0, msg)
-    await forwarder()
+async fn forwarder(rx: Receiver(String), log_tx: Sender(String)) -> Nil:
+    await chan.consume(rx, fn(msg): chan.send(log_tx, msg))
 
-async fn driver() -> Nil:
-    await chan.send(0, "direct message")
-    await chan.send(1, "relayed message")
-    await chan.send(0, "another direct")
+async fn driver(log_tx: Sender(String), fwd_tx: Sender(String)) -> Nil:
+    await chan.send(log_tx, "direct message")
+    await chan.send(fwd_tx, "relayed message")
+    await chan.send(log_tx, "another direct")
 
-fn main(console: Console):
-    chan.run([logger(console, 1), forwarder(), driver()])
+async fn main(console: Console):
+    let (log_tx, log_rx) = await chan.channel(8)
+    let (fwd_tx, fwd_rx) = await chan.channel(8)
+    let lh = await chan.spawn(logger(console, log_rx))
+    let fh = await chan.spawn(forwarder(fwd_rx, log_tx))
+    await driver(log_tx, fwd_tx)
+    await chan.join(fh)
+    await chan.join(lh)

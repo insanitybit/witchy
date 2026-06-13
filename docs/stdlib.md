@@ -28,29 +28,45 @@ True when `s` is non-empty and every character is an ASCII digit — a safe guar
 
 ## `chan`
 
-std/chan — cooperative message-passing concurrency: tasks ("actors") with their OWN inbox, driven by a deterministic round-robin executor. This is the witchy replacement for the actor system: an actor is an `async fn` that loops on `recv`, addressed by its position in the task list; `ask`/`reply` is "send a reply back, recv it".
+std/chan — decoupled concurrency: `spawn` concurrent tasks, communicate over first-class `channel`s. Spawning and channels are independent — you can spawn without a channel, and a channel is a value you create and pass around, not a task's mailbox. Built on a pure-witchy cooperative executor with a deterministic round-robin schedule, so a concurrent run is byte-identical on the interpreter and the compiled WebAssembly — no scheduler state in the runtime, no `Pin`.
 
-Each task gets a private inbox. `send(target, msg)` routes a message to the inbox of task #target (its index in the `run` list); `recv()` reads the CURRENT task's inbox. The executor owns the inboxes and threads them through the schedule — so multiple actors with separate mailboxes need no shared mutable state, no `Pin`, no runtime primitive. Pure witchy (closures + sum types), so a concurrent run is byte-identical on both backends.
+Model: one message type `m` per program (a single `run`'s channels all carry `m`; union into a sum type if you need several shapes). Spawned tasks return `Nil`; a task reports a result by sending it on a channel, not by returning it (a typed `JoinHandle(T)` would force a native runtime and break the parity contract). `send`/`recv` are always `await`ed because messaging is an effect on the executor-owned buffer; a *bounded* channel additionally blocks the sender when full (backpressure), an unbounded one never does.
 
-Messages are generic (type `m`); all inboxes in one `run` share that type. The `async`/`await` CPS transform lowers onto this substrate (chan.lazy/and_then/ done/run), so `await chan.recv()` / `await chan.send(t, x)` work inside async fns.
+The `async`/`await` CPS transform lowers onto this substrate (chan.lazy/and_then/ done/run), so `await chan.recv(rx)` / `await chan.send(tx, x)` work in async fns.
 
 #### `type Step`
 
 - `Done(a)`
 - `Yield(Task(m, a))`
-- `Emit(Int, m, Task(m, a))`
-- `Recv(fn(m) -> Task(m, a))`
-- `Whoami(fn(Int) -> Task(m, a))`
+- `Fork(Task(m, Nil), fn(Int) -> Task(m, a))`
+- `Open(Int, fn(Int) -> Task(m, a))`
+- `Push(Int, m, fn(Nil) -> Task(m, a))`
+- `Pull(Int, fn(Option(m)) -> Task(m, a))`
+- `Wait(Int, fn(Nil) -> Task(m, a))`
 
 #### `type Task`
 
 - `Task(fn() -> Step(m, a))`
 
+#### `type Sender`
+
+- `Sender(Int)`
+
+#### `type Receiver`
+
+- `Receiver(Int)`
+
+#### `type Handle`
+
+- `Handle(Int)`
+
 #### `type Slot`
 
-- `Active(Task(m, a))`
-- `Blocked(fn(m) -> Task(m, a))`
-- `Finished(a)`
+- `Active(Task(m, Nil))`
+- `WaitRecv(Int, fn(Option(m)) -> Task(m, Nil))`
+- `WaitSend(Int, m, fn(Nil) -> Task(m, Nil))`
+- `WaitJoin(Int, fn(Nil) -> Task(m, Nil))`
+- `Ended`
 
 #### `fn done(x: a) -> Task(m, a)`
 
@@ -64,41 +80,57 @@ An already-complete `Task(m, Nil)` — the async/await lowering target for a bod
 
 Hand control back to the executor once, then continue.
 
-#### `fn send(target: Int, msg: m) -> Task(m, Nil)`
-
-Send `msg` to the inbox of task #`target` (its index in the `run` list), then continue. An actor replies to its caller by sending back to the caller's index.
-
-#### `fn recv() -> Task(m, m)`
-
-Block until THIS task's inbox has a message, then continue with it.
-
-#### `fn address() -> Task(m, Int)`
-
-The current task's own address — its index in the `run` list, the same number another task would `send` to. A request carries this so the responder can reply to the asker's address instead of hardcoding its position.
-
 #### `fn and_then(t: Task(m, a), k: fn(a) -> Task(m, b)) -> Task(m, b)`
 
-Sequence: run `t`, then continue with `k` applied to its result. `await` for tasks — the continuation `k` is what would follow the await point.
+Sequence: run `t`, then continue with `k` applied to its result. This is what `await` lowers to — the continuation `k` is the rest of the body.
 
 #### `fn map(t: Task(m, a), f: fn(a) -> b) -> Task(m, b)`
 
 Transform a task's result.
 
-#### `fn serve(state: s, handler: fn(s, m) -> Task(m, s)) -> Task(m, Nil)`
+#### `fn lazy(thunk: fn() -> Task(m, a)) -> Task(m, a)`
 
-The actor message loop as a combinator: receive a message, run `handler` with the current `state` to get the next state, and repeat. State threads through every message without manual recursion, so an actor is just `chan.serve` over its state and a handler. Runs until quiescence — when nothing more messages this task, it becomes inert (the actor lifecycle).
+Build the task `thunk()` lazily: nothing runs until the first poll. This is what makes an `async fn` LAZY — calling it yields a task that does no work until driven (by `run`, or by being `spawn`ed, or `await`ed).
 
 #### `fn for_each(xs: List(a), f: fn(a) -> Task(m, Nil)) -> Task(m, Nil)`
 
-Run `f(x)` as a task for each `x` in `xs`, in order — each iteration's task completes before the next begins. This is the lowering target for an `await` inside a `for` loop: `for x in xs: <body>` in an async fn becomes `for_each(xs, fn(x): <body as a task>)`, so iterating with `await` needs no hand-written recursion. The sequential, list-driven complement to `serve`.
+Run `f(x)` as a task for each `x` in `xs`, in order — the lowering target for an `await` inside a `for x in xs:` loop.
 
-#### `fn lazy(thunk: fn() -> Task(m, a)) -> Task(m, a)`
+#### `fn channel(capacity: Int) -> Task(m, (Sender(m), Receiver(m)))`
 
-Build the task `thunk()` lazily: nothing runs until the first poll, and then exactly once. This is what makes an `async fn` LAZY — calling it yields a task that does no work until driven.
+A bounded channel of `capacity` (the sender blocks when it is full); pass 0 for an unbounded channel that never blocks the sender.
 
-#### `fn run(tasks: List(Task(m, a)))`
+#### `fn unbounded() -> Task(m, (Sender(m), Receiver(m)))`
 
-Drive `tasks` concurrently — each with its own inbox — until they all finish (or no task can make progress: quiescence/deadlock, where the run stops with the effects produced so far). Deterministic round-robin, so both backends agree byte-for-byte. Task results are ignored (tasks communicate by effects and messages); `recv` to collect a value.
+An unbounded channel — `send` never blocks (the buffer grows without limit).
+
+#### `fn send(tx: Sender(m), msg: m) -> Task(m, Nil)`
+
+Send `msg`; on a bounded channel this blocks until there is room. Always awaited.
+
+#### `fn recv(rx: Receiver(m)) -> Task(m, Option(m))`
+
+Receive the next message, or `None` once the channel is closed — i.e. once no task can send to it anymore. `for await x in rx:` loops until this `None`.
+
+#### `fn spawn(child: Task(m, Nil)) -> Task(m, Handle)`
+
+Start `child` as a concurrent task; the returned handle completes when it does.
+
+#### `fn join(h: Handle) -> Task(m, Nil)`
+
+Block until the spawned task behind `h` finishes.
+
+#### `fn consume(rx: Receiver(m), f: fn(m) -> Task(m, Nil)) -> Task(m, Nil)`
+
+Receive from `rx`, run `f` on each message, until the channel closes. The stateless server loop; `for await x in rx:` lowers to this.
+
+#### `fn serve(rx: Receiver(m), state: s, handler: fn(s, m) -> Task(m, s)) -> Task(m, Nil)`
+
+The stateful server loop: receive a message, run `handler` with the current `state` to get the next state, and repeat until the channel closes. State threads through every message with no hand-written recursion.
+
+#### `fn run(root: Task(m, Nil))`
+
+Drive `root` (and everything it spawns) to completion on a deterministic round-robin schedule. An async `main` lowers to a single `run` of its body.
 
 ## `compiler`
 

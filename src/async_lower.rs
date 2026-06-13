@@ -79,9 +79,9 @@ fn lower_async_fn(f: Function) -> Result<Function, String> {
 
     if f.name == "main" {
         // The runtime calls `main` directly and cannot drive a task, so an async
-        // `main` IS the executor's entry point: run its body (a single task) to
-        // completion on the cooperative scheduler.
-        let driven = call("chan.run", vec![Expr::List(vec![lazy_body])]);
+        // `main` IS the executor's entry point: run its body (a single task, which
+        // may itself `spawn` more) to completion on the cooperative scheduler.
+        let driven = call("chan.run", vec![lazy_body]);
         return Ok(Function {
             public: f.public,
             name: f.name,
@@ -199,6 +199,23 @@ impl Ctx {
                 }
             }
             Stmt::Return(None) => Ok(call("chan.ready_unit", vec![])),
+            // `let (a, b) = await E` — await the value, then destructure it. The
+            // common shape for `let (tx, rx) = await chan.channel(..)`.
+            Stmt::LetTuple { names, value } if as_await(value).is_some() => {
+                let inner = as_await(value).unwrap();
+                reject_await(inner, &self.fname)?;
+                let tmp = self.fresh();
+                let k = self.cps_stmts(rest)?;
+                let destructure =
+                    Stmt::LetTuple { names: names.clone(), value: Expr::Var(tmp.clone()) };
+                let body = Expr::Block(Block {
+                    stmts: vec![destructure, Stmt::Expr(k)],
+                    lines: vec![0, 0],
+                    restrict: None,
+                    region: None,
+                });
+                Ok(and_then(inner.clone(), tmp, body))
+            }
             Stmt::Assign { value, .. } | Stmt::LetTuple { value, .. } => {
                 reject_await(value, &self.fname)?;
                 if is_last {

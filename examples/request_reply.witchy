@@ -1,9 +1,7 @@
-// Request/reply with NO hardcoded addresses. The client learns its own address
-// with `chan.address()` and sends it inside the request; the server replies to
-// whatever address the request carried. Neither side hardcodes the other's
-// position in the `run` list — contrast examples/actor_as_async.witchy, where the
-// server replies to a literal `send(1, ...)`. Reorder the `run` list and this
-// still works; the literal version would not.
+// Request/reply over a reply channel. The client makes its own one-shot channel
+// and sends the Sender end inside the request; the server replies on whatever
+// channel the request carried. No task indices, no hardcoded addresses — the
+// reply path is a first-class value the client chose.
 //
 // Run:  witchy examples/request_reply.witchy
 //       witchy parity examples/request_reply.witchy
@@ -11,25 +9,27 @@
 import chan
 
 type Msg:
-    Square(Int, Int)
+    Square(Int, Sender(Msg))
     Result(Int)
 
-// `seen` counts requests; the handler replies to the address the request carried
-// (`reply_to`) before carrying the count forward.
-async fn server() -> Nil:
-    await chan.serve(0, fn(seen, m):
+async fn server(inbox: Receiver(Msg)) -> Nil:
+    await chan.serve(inbox, 0, fn(seen, m):
         match m:
             Square(n, reply_to) -> chan.and_then(chan.send(reply_to, Result(n * n)), fn(_u): chan.done(seen + 1))
             Result(_r) -> chan.done(seen)
     )
 
-async fn client(console: Console) -> Nil:
-    let me = await chan.address()
-    await chan.send(0, Square(9, me))
-    let r = await chan.recv()
+async fn client(console: Console, srv: Sender(Msg)) -> Nil:
+    let (reply_tx, reply_rx) = await chan.channel(1)
+    await chan.send(srv, Square(9, reply_tx))
+    let r = await chan.recv(reply_rx)
     match r:
-        Result(v) -> print(console, "9 squared is ${v}")
-        Square(_n, _a) -> print(console, "(unreachable)")
+        Some(Result(v)) -> print(console, "9 squared is ${v}")
+        Some(Square(_n, _s)) -> print(console, "(unreachable)")
+        None -> print(console, "(no reply)")
 
-fn main(console: Console):
-    chan.run([server(), client(console)])
+async fn main(console: Console):
+    let (srv_tx, srv_rx) = await chan.channel(4)
+    let h = await chan.spawn(server(srv_rx))
+    await client(console, srv_tx)
+    await chan.join(h)

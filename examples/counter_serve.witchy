@@ -1,10 +1,8 @@
-// The same counter actor as examples/actor_as_async.witchy, but its message loop
-// collapses to a single `chan.serve` call. `serve` IS the actor pattern as a
-// combinator: it receives a message, runs `handle` to get the next state, and
-// repeats — threading state through every message so you never write the manual
-// `await loop(next)` recursion yourself. Runs until quiescence (nothing left to
-// receive), exactly like an actor going inert. Deterministic and byte-identical
-// on both backends.
+// A counter server, written with `chan.serve` — the stateful server loop as a
+// combinator. It receives a message, runs the handler to get the next state, and
+// repeats, threading `n` through every message so you never write the recv/recurse
+// loop yourself. The server holds the Receiver; clients hold a Sender. A `Get`
+// carries a reply Sender, so the answer comes back on a channel the client made.
 //
 // Run:  witchy examples/counter_serve.witchy
 //       witchy parity examples/counter_serve.witchy
@@ -13,28 +11,31 @@ import chan
 
 type Msg:
     Bump
-    Get
+    Get(Sender(Msg))
     Count(Int)
 
-// State `n` threads through the handler; each arm returns the next state as a
-// task. `Get` replies to the client (task #1) before carrying `n` forward.
-async fn counter() -> Nil:
-    await chan.serve(0, fn(n, m):
+async fn counter(inbox: Receiver(Msg)) -> Nil:
+    await chan.serve(inbox, 0, fn(n, m):
         match m:
             Bump -> chan.done(n + 1)
-            Get -> chan.and_then(chan.send(1, Count(n)), fn(_u): chan.done(n))
+            Get(reply) -> chan.and_then(chan.send(reply, Count(n)), fn(_u): chan.done(n))
             Count(_c) -> chan.done(n)
     )
 
-async fn client(console: Console) -> Nil:
-    await chan.send(0, Bump)
-    await chan.send(0, Bump)
-    await chan.send(0, Get)
-    let r = await chan.recv()
+async fn client(console: Console, srv: Sender(Msg)) -> Nil:
+    await chan.send(srv, Bump)
+    await chan.send(srv, Bump)
+    let (reply_tx, reply_rx) = await chan.channel(1)
+    await chan.send(srv, Get(reply_tx))
+    let r = await chan.recv(reply_rx)
     match r:
-        Count(c) -> print(console, "count = ${c}")
-        Bump -> print(console, "(unreachable)")
-        Get -> print(console, "(unreachable)")
+        Some(Count(c)) -> print(console, "count = ${c}")
+        Some(Bump) -> print(console, "(unreachable)")
+        Some(Get(_s)) -> print(console, "(unreachable)")
+        None -> print(console, "(no reply)")
 
-fn main(console: Console):
-    chan.run([counter(), client(console)])
+async fn main(console: Console):
+    let (srv_tx, srv_rx) = await chan.channel(8)
+    let h = await chan.spawn(counter(srv_rx))
+    await client(console, srv_tx)
+    await chan.join(h)

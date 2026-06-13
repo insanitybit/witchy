@@ -1,44 +1,45 @@
-// std/chan — cooperative message-passing concurrency: tasks ("actors") with their
-// OWN inbox, driven by a deterministic round-robin executor. This is the witchy
-// replacement for the actor system: an actor is an `async fn` that loops on
-// `recv`, addressed by its position in the task list; `ask`/`reply` is "send a
-// reply back, recv it".
+// std/chan — decoupled concurrency: `spawn` concurrent tasks, communicate over
+// first-class `channel`s. Spawning and channels are independent — you can spawn
+// without a channel, and a channel is a value you create and pass around, not a
+// task's mailbox. Built on a pure-witchy cooperative executor with a deterministic
+// round-robin schedule, so a concurrent run is byte-identical on the interpreter
+// and the compiled WebAssembly — no scheduler state in the runtime, no `Pin`.
 //
-// Each task gets a private inbox. `send(target, msg)` routes a message to the
-// inbox of task #target (its index in the `run` list); `recv()` reads the CURRENT
-// task's inbox. The executor owns the inboxes and threads them through the
-// schedule — so multiple actors with separate mailboxes need no shared mutable
-// state, no `Pin`, no runtime primitive. Pure witchy (closures + sum types), so a
-// concurrent run is byte-identical on both backends.
+// Model: one message type `m` per program (a single `run`'s channels all carry
+// `m`; union into a sum type if you need several shapes). Spawned tasks return
+// `Nil`; a task reports a result by sending it on a channel, not by returning it
+// (a typed `JoinHandle(T)` would force a native runtime and break the parity
+// contract). `send`/`recv` are always `await`ed because messaging is an effect on
+// the executor-owned buffer; a *bounded* channel additionally blocks the sender
+// when full (backpressure), an unbounded one never does.
 //
-// Messages are generic (type `m`); all inboxes in one `run` share that type. The
-// `async`/`await` CPS transform lowers onto this substrate (chan.lazy/and_then/
-// done/run), so `await chan.recv()` / `await chan.send(t, x)` work inside async fns.
+// The `async`/`await` CPS transform lowers onto this substrate (chan.lazy/and_then/
+// done/run), so `await chan.recv(rx)` / `await chan.send(tx, x)` work in async fns.
 
 import option
 
-// What a task does when the executor steps it: finish, yield cooperatively, send
-// a message to a target inbox, block until its OWN inbox has a message, or ask the
-// executor for its own address (`Whoami`).
+// What a task yields to the executor when stepped. `a` is the task's own result.
 type Step(m, a):
     Done(a)
     Yield(Task(m, a))
-    Emit(Int, m, Task(m, a))
-    Recv(fn(m) -> Task(m, a))
-    Whoami(fn(Int) -> Task(m, a))
+    Fork(Task(m, Nil), fn(Int) -> Task(m, a))
+    Open(Int, fn(Int) -> Task(m, a))
+    Push(Int, m, fn(Nil) -> Task(m, a))
+    Pull(Int, fn(Option(m)) -> Task(m, a))
+    Wait(Int, fn(Nil) -> Task(m, a))
 
-// A task that communicates via messages of type `m` and produces an `a`.
+// A task communicating via channels of message type `m`, producing an `a`.
 type Task(m, a):
     Task(fn() -> Step(m, a))
 
 fn poll(t: Task(m, a)) -> Step(m, a):
     match t:
-        Task(thunk) -> thunk()
+        Task(th) -> th()
 
 fn unit():
     let _ignore = 0
 
-// ---- constructors / combinators ----
+// ---- core combinators ----
 
 // A finished task.
 pub fn done(x: a) -> Task(m, a):
@@ -53,23 +54,8 @@ pub fn ready_unit() -> Task(m, Nil):
 pub fn yield_now() -> Task(m, Nil):
     Task(fn(): Yield(Task(fn(): Done(unit()))))
 
-// Send `msg` to the inbox of task #`target` (its index in the `run` list), then
-// continue. An actor replies to its caller by sending back to the caller's index.
-pub fn send(target: Int, msg: m) -> Task(m, Nil):
-    Task(fn(): Emit(target, msg, Task(fn(): Done(unit()))))
-
-// Block until THIS task's inbox has a message, then continue with it.
-pub fn recv() -> Task(m, m):
-    Task(fn(): Recv(fn(msg): Task(fn(): Done(msg))))
-
-// The current task's own address — its index in the `run` list, the same number
-// another task would `send` to. A request carries this so the responder can reply
-// to the asker's address instead of hardcoding its position.
-pub fn address() -> Task(m, Int):
-    Task(fn(): Whoami(fn(i): Task(fn(): Done(i))))
-
-// Sequence: run `t`, then continue with `k` applied to its result. `await` for
-// tasks — the continuation `k` is what would follow the await point.
+// Sequence: run `t`, then continue with `k` applied to its result. This is what
+// `await` lowers to — the continuation `k` is the rest of the body.
 pub fn and_then(t: Task(m, a), k: fn(a) -> Task(m, b)) -> Task(m, b):
     Task(fn(): and_then_step(poll(t), k))
 
@@ -77,102 +63,210 @@ fn and_then_step(s: Step(m, a), k: fn(a) -> Task(m, b)) -> Step(m, b):
     match s:
         Done(v) -> Yield(k(v))
         Yield(t2) -> Yield(and_then(t2, k))
-        Emit(target, msg, t2) -> Emit(target, msg, and_then(t2, k))
-        Recv(cont) -> Recv(fn(msg): and_then(cont(msg), k))
-        Whoami(cont) -> Whoami(fn(i): and_then(cont(i), k))
+        Fork(child, cont) -> Fork(child, fn(h): and_then(cont(h), k))
+        Open(cap, cont) -> Open(cap, fn(c): and_then(cont(c), k))
+        Push(ch, msg, cont) -> Push(ch, msg, fn(u): and_then(cont(u), k))
+        Pull(ch, cont) -> Pull(ch, fn(o): and_then(cont(o), k))
+        Wait(t2, cont) -> Wait(t2, fn(u): and_then(cont(u), k))
 
 // Transform a task's result.
 pub fn map(t: Task(m, a), f: fn(a) -> b) -> Task(m, b):
     and_then(t, fn(x): Task(fn(): Done(f(x))))
 
-// The actor message loop as a combinator: receive a message, run `handler` with
-// the current `state` to get the next state, and repeat. State threads through
-// every message without manual recursion, so an actor is just `chan.serve` over
-// its state and a handler. Runs until quiescence — when nothing more messages
-// this task, it becomes inert (the actor lifecycle).
-pub fn serve(state: s, handler: fn(s, m) -> Task(m, s)) -> Task(m, Nil):
-    and_then(recv(), fn(msg): and_then(handler(state, msg), fn(next): serve(next, handler)))
+// Build the task `thunk()` lazily: nothing runs until the first poll. This is what
+// makes an `async fn` LAZY — calling it yields a task that does no work until
+// driven (by `run`, or by being `spawn`ed, or `await`ed).
+pub fn lazy(thunk: fn() -> Task(m, a)) -> Task(m, a):
+    Task(fn(): poll(thunk()))
 
-// Run `f(x)` as a task for each `x` in `xs`, in order — each iteration's task
-// completes before the next begins. This is the lowering target for an `await`
-// inside a `for` loop: `for x in xs: <body>` in an async fn becomes
-// `for_each(xs, fn(x): <body as a task>)`, so iterating with `await` needs no
-// hand-written recursion. The sequential, list-driven complement to `serve`.
+// Run `f(x)` as a task for each `x` in `xs`, in order — the lowering target for an
+// `await` inside a `for x in xs:` loop.
 pub fn for_each(xs: List(a), f: fn(a) -> Task(m, Nil)) -> Task(m, Nil):
     if list.is_empty(xs):
         ready_unit()
     else:
         and_then(f(list.at(xs, 0)), fn(_done): for_each(list.tail(xs), f))
 
-// Build the task `thunk()` lazily: nothing runs until the first poll, and then
-// exactly once. This is what makes an `async fn` LAZY — calling it yields a task
-// that does no work until driven.
-pub fn lazy(thunk: fn() -> Task(m, a)) -> Task(m, a):
-    Task(fn(): poll(thunk()))
+// ---- spawn + channels (the surface) ----
+
+type Sender(m):
+    Sender(Int)
+
+type Receiver(m):
+    Receiver(Int)
+
+type Handle:
+    Handle(Int)
+
+// A bounded channel of `capacity` (the sender blocks when it is full); pass 0 for
+// an unbounded channel that never blocks the sender.
+pub fn channel(capacity: Int) -> Task(m, (Sender(m), Receiver(m))):
+    and_then(open_raw(capacity), fn(id): done((Sender(id), Receiver(id))))
+
+// An unbounded channel — `send` never blocks (the buffer grows without limit).
+pub fn unbounded() -> Task(m, (Sender(m), Receiver(m))):
+    channel(0)
+
+fn open_raw(capacity: Int) -> Task(m, Int):
+    Task(fn(): Open(capacity, fn(c): Task(fn(): Done(c))))
+
+// Send `msg`; on a bounded channel this blocks until there is room. Always awaited.
+pub fn send(tx: Sender(m), msg: m) -> Task(m, Nil):
+    match tx:
+        Sender(id) -> Task(fn(): Push(id, msg, fn(u): Task(fn(): Done(u))))
+
+// Receive the next message, or `None` once the channel is closed — i.e. once no
+// task can send to it anymore. `for await x in rx:` loops until this `None`.
+pub fn recv(rx: Receiver(m)) -> Task(m, Option(m)):
+    match rx:
+        Receiver(id) -> Task(fn(): Pull(id, fn(o): Task(fn(): Done(o))))
+
+// Start `child` as a concurrent task; the returned handle completes when it does.
+pub fn spawn(child: Task(m, Nil)) -> Task(m, Handle):
+    Task(fn(): Fork(child, fn(h): Task(fn(): Done(Handle(h)))))
+
+// Block until the spawned task behind `h` finishes.
+pub fn join(h: Handle) -> Task(m, Nil):
+    match h:
+        Handle(id) -> Task(fn(): Wait(id, fn(u): Task(fn(): Done(u))))
+
+// Receive from `rx`, run `f` on each message, until the channel closes. The
+// stateless server loop; `for await x in rx:` lowers to this.
+pub fn consume(rx: Receiver(m), f: fn(m) -> Task(m, Nil)) -> Task(m, Nil):
+    and_then(recv(rx), fn(o):
+        match o:
+            Some(x) -> and_then(f(x), fn(_u): consume(rx, f))
+            None -> ready_unit()
+    )
+
+// The stateful server loop: receive a message, run `handler` with the current
+// `state` to get the next state, and repeat until the channel closes. State
+// threads through every message with no hand-written recursion.
+pub fn serve(rx: Receiver(m), state: s, handler: fn(s, m) -> Task(m, s)) -> Task(m, Nil):
+    and_then(recv(rx), fn(o):
+        match o:
+            Some(msg) -> and_then(handler(state, msg), fn(next): serve(rx, next, handler))
+            None -> ready_unit()
+    )
 
 // ---- executor ----
 
-// A scheduling slot: running, blocked on `recv` (holding its continuation so it
-// is NOT re-run — re-running would repeat effects), or finished.
-type Slot(m, a):
-    Active(Task(m, a))
-    Blocked(fn(m) -> Task(m, a))
-    Finished(a)
+// A scheduling slot: running, parked on a channel recv/send or on a join, or done.
+type Slot(m):
+    Active(Task(m, Nil))
+    WaitRecv(Int, fn(Option(m)) -> Task(m, Nil))
+    WaitSend(Int, m, fn(Nil) -> Task(m, Nil))
+    WaitJoin(Int, fn(Nil) -> Task(m, Nil))
+    Ended
 
-fn slot_active(s: Slot(m, a)) -> Bool:
+fn is_live(s: Slot(m)) -> Bool:
     match s:
-        Finished(_) -> false
+        Ended -> false
         Active(_) -> true
-        Blocked(_) -> true
+        WaitRecv(_, _) -> true
+        WaitSend(_, _, _) -> true
+        WaitJoin(_, _) -> true
 
-// Try to wake task #`i` with a message from its own inbox. Returns the updated
-// slots, inboxes, and whether progress was made.
-fn deliver(i: Int, cont: fn(m) -> Task(m, a), slots: List(Slot(m, a)), inboxes: List(List(m))) -> (List(Slot(m, a)), List(List(m)), Bool):
-    let myq = list.at(inboxes, i)
-    if list.length(myq) > 0:
-        let msg = list.at(myq, 0)
-        let nb = list.set_at(inboxes, i, list.tail(myq))
-        (list.set_at(slots, i, Active(cont(msg))), nb, true)
+fn is_parked(s: Slot(m)) -> Bool:
+    match s:
+        WaitRecv(_, _) -> true
+        WaitSend(_, _, _) -> true
+        WaitJoin(_, _) -> true
+        Active(_) -> false
+        Ended -> false
+
+// Channels are `(buffer, capacity)` pairs; capacity 0 means unbounded.
+fn try_pull(i: Int, ch: Int, cont: fn(Option(m)) -> Task(m, Nil), slots: List(Slot(m)), channels: List((List(m), Int))) -> (List(Slot(m)), List((List(m), Int)), Bool):
+    let (buf, cap) = list.at(channels, ch)
+    if list.length(buf) > 0:
+        let channels2 = list.set_at(channels, ch, (list.tail(buf), cap))
+        (list.set_at(slots, i, Active(cont(Some(list.at(buf, 0))))), channels2, true)
     else:
-        (list.set_at(slots, i, Blocked(cont)), inboxes, false)
+        (list.set_at(slots, i, WaitRecv(ch, cont)), channels, false)
 
-// Step task #`i` once, routing any `Emit` to the target's inbox, any `Recv` to
-// task `i`'s own inbox, and answering `Whoami` with `i` (the task's address).
-fn step_one(i: Int, slots: List(Slot(m, a)), inboxes: List(List(m))) -> (List(Slot(m, a)), List(List(m)), Bool):
+fn try_push(i: Int, ch: Int, msg: m, cont: fn(Nil) -> Task(m, Nil), slots: List(Slot(m)), channels: List((List(m), Int))) -> (List(Slot(m)), List((List(m), Int)), Bool):
+    let (buf, cap) = list.at(channels, ch)
+    if cap == 0 || list.length(buf) < cap:
+        let channels2 = list.set_at(channels, ch, (list.push(buf, msg), cap))
+        (list.set_at(slots, i, Active(cont(unit()))), channels2, true)
+    else:
+        (list.set_at(slots, i, WaitSend(ch, msg, cont)), channels, false)
+
+fn try_join(i: Int, target: Int, cont: fn(Nil) -> Task(m, Nil), slots: List(Slot(m)), channels: List((List(m), Int))) -> (List(Slot(m)), List((List(m), Int)), Bool):
+    match list.at(slots, target):
+        Ended -> (list.set_at(slots, i, Active(cont(unit()))), channels, true)
+        Active(_) -> (list.set_at(slots, i, WaitJoin(target, cont)), channels, false)
+        WaitRecv(_, _) -> (list.set_at(slots, i, WaitJoin(target, cont)), channels, false)
+        WaitSend(_, _, _) -> (list.set_at(slots, i, WaitJoin(target, cont)), channels, false)
+        WaitJoin(_, _) -> (list.set_at(slots, i, WaitJoin(target, cont)), channels, false)
+
+fn step_one(i: Int, slots: List(Slot(m)), channels: List((List(m), Int))) -> (List(Slot(m)), List((List(m), Int)), Bool):
     match list.at(slots, i):
-        Finished(_v) -> (slots, inboxes, false)
-        Blocked(cont) -> deliver(i, cont, slots, inboxes)
-        Active(t) ->
-            match poll(t):
-                Done(v) -> (list.set_at(slots, i, Finished(v)), inboxes, true)
-                Yield(t2) -> (list.set_at(slots, i, Active(t2)), inboxes, true)
-                Emit(target, msg, t2) ->
-                    let nb = list.update_at(inboxes, target, fn(q): list.push(q, msg))
-                    (list.set_at(slots, i, Active(t2)), nb, true)
-                Recv(cont) -> deliver(i, cont, slots, inboxes)
-                Whoami(cont) -> (list.set_at(slots, i, Active(cont(i))), inboxes, true)
+        Ended -> (slots, channels, false)
+        WaitRecv(ch, cont) -> try_pull(i, ch, cont, slots, channels)
+        WaitSend(ch, msg, cont) -> try_push(i, ch, msg, cont, slots, channels)
+        WaitJoin(t, cont) -> try_join(i, t, cont, slots, channels)
+        Active(task) ->
+            match poll(task):
+                Done(_v) -> (list.set_at(slots, i, Ended), channels, true)
+                Yield(t2) -> (list.set_at(slots, i, Active(t2)), channels, true)
+                Fork(child, cont) ->
+                    let new_id = list.length(slots)
+                    let slots2 = list.push(slots, Active(child))
+                    (list.set_at(slots2, i, Active(cont(new_id))), channels, true)
+                Open(cap, cont) ->
+                    let cid = list.length(channels)
+                    (list.set_at(slots, i, Active(cont(cid))), list.push(channels, ([], cap)), true)
+                Push(ch, msg, cont) -> try_push(i, ch, msg, cont, slots, channels)
+                Pull(ch, cont) -> try_pull(i, ch, cont, slots, channels)
+                Wait(t, cont) -> try_join(i, t, cont, slots, channels)
 
-// One round-robin pass over tasks 0..n, threading slots + inboxes and OR-ing
-// progress (to detect deadlock / quiescence).
-fn step_round(i: Int, n: Int, slots: List(Slot(m, a)), inboxes: List(List(m)), progressed: Bool) -> (List(Slot(m, a)), List(List(m)), Bool):
+fn step_round(i: Int, n: Int, slots: List(Slot(m)), channels: List((List(m), Int)), prog: Bool) -> (List(Slot(m)), List((List(m), Int)), Bool):
     if i >= n:
-        (slots, inboxes, progressed)
+        (slots, channels, prog)
     else:
-        let (s2, b2, p) = step_one(i, slots, inboxes)
-        step_round(i + 1, n, s2, b2, progressed || p)
+        let (s2, c2, p) = step_one(i, slots, channels)
+        step_round(i + 1, n, s2, c2, prog || p)
 
-// Drive `tasks` concurrently — each with its own inbox — until they all finish
-// (or no task can make progress: quiescence/deadlock, where the run stops with
-// the effects produced so far). Deterministic round-robin, so both backends agree
-// byte-for-byte. Task results are ignored (tasks communicate by effects and
-// messages); `recv` to collect a value.
-pub fn run(tasks: List(Task(m, a))):
-    let n = list.length(tasks)
-    var slots = list.map(tasks, fn(t): Active(t))
-    var inboxes = list.map(tasks, fn(_t): [])
+// At quiescence nothing can deliver: closed receivers get `None`, blocked senders
+// and joiners are released so the run terminates instead of hanging.
+fn close_one(i: Int, slots: List(Slot(m)), channels: List((List(m), Int))) -> (List(Slot(m)), List((List(m), Int))):
+    match list.at(slots, i):
+        WaitRecv(_ch, cont) -> (list.set_at(slots, i, Active(cont(None))), channels)
+        WaitSend(ch, msg, cont) ->
+            let (buf, cap) = list.at(channels, ch)
+            (list.set_at(slots, i, Active(cont(unit()))), list.set_at(channels, ch, (list.push(buf, msg), cap)))
+        WaitJoin(_t, cont) -> (list.set_at(slots, i, Active(cont(unit()))), channels)
+        Active(_) -> (slots, channels)
+        Ended -> (slots, channels)
+
+fn close_round(i: Int, n: Int, slots: List(Slot(m)), channels: List((List(m), Int))) -> (List(Slot(m)), List((List(m), Int))):
+    if i >= n:
+        (slots, channels)
+    else:
+        let (s2, c2) = close_one(i, slots, channels)
+        close_round(i + 1, n, s2, c2)
+
+// Drive `root` (and everything it spawns) to completion on a deterministic
+// round-robin schedule. An async `main` lowers to a single `run` of its body.
+pub fn run(root: Task(m, Nil)):
+    var slots = [Active(root)]
+    var channels = []
     var go = true
     while go:
-        let (next_slots, next_inboxes, progressed) = step_round(0, n, slots, inboxes, false)
-        slots = next_slots
-        inboxes = next_inboxes
-        go = progressed && list.any(slots, fn(s): slot_active(s))
+        let n = list.length(slots)
+        let (s2, c2, prog) = step_round(0, n, slots, channels, false)
+        if prog:
+            slots = s2
+            channels = c2
+            go = list.any(s2, fn(s): is_live(s))
+        else:
+            if list.any(s2, fn(s): is_parked(s)):
+                let (s3, c3) = close_round(0, list.length(s2), s2, c2)
+                slots = s3
+                channels = c3
+                go = true
+            else:
+                slots = s2
+                channels = c2
+                go = false

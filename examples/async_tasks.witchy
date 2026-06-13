@@ -1,12 +1,11 @@
-// Ergonomic async/await on the unified std/chan substrate. Write straight-line
-// `async fn` code with `await`; the compiler lowers it to cooperative tasks
-// (CPS over closures — see docs/concurrency-design.md). `chan.run` drives a list
-// of tasks concurrently with a deterministic round-robin schedule, so the
-// interleaved output is byte-identical on the interpreter and the compiled WASM.
+// Ergonomic async/await: write straight-line `async fn` code with `await`; the
+// compiler lowers it to cooperative tasks (CPS over closures). `chan.spawn` starts
+// a concurrent task — no channel required — and the deterministic round-robin
+// schedule makes the interleaved output byte-identical on the interpreter and the
+// compiled WASM.
 //
 // Each `ticker` prints a line, then `await chan.yield_now()` hands control back to
-// the scheduler so the other task runs — hence the A/B interleaving. An async fn
-// returns a task and does NO work until driven.
+// the scheduler so the other task runs — hence the A/B interleaving.
 //
 // Run:  witchy examples/async_tasks.witchy
 //       witchy parity examples/async_tasks.witchy
@@ -17,9 +16,12 @@ async fn ticker(console: Console, name: String, n: Int) -> Nil:
     if n <= 0:
         print(console, name + " done")
     else:
-        print(console, name + " " + "${n}")
+        print(console, "${name} ${n}")
         await chan.yield_now()
         await ticker(console, name, n - 1)
 
-fn main(console: Console):
-    chan.run([ticker(console, "A", 3), ticker(console, "B", 3)])
+async fn main(console: Console):
+    let a = await chan.spawn(ticker(console, "A", 3))
+    let b = await chan.spawn(ticker(console, "B", 3))
+    await chan.join(a)
+    await chan.join(b)

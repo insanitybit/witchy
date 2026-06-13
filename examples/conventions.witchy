@@ -24,20 +24,21 @@ impl Bag:
         match self:
             Bag(items) -> sum_from(items, 0)
 
-// An accumulator task: its running `sum` lives in the recursive parameter, and
-// each batch of numbers arrives as a message (channels move values, so the task
-// owns each batch — the `own` convention, made concrete).
-async fn adder(console: Console, sum: Int) -> Nil:
-    let batch = await chan.recv()
-    let running = sum + sum_from(batch, 0)
-    print(console, "running sum: " + "${running}")
-    await adder(console, running)
+// An accumulator server: its running `sum` threads through `chan.serve`, and each
+// batch of numbers arrives as a message (channels move values, so the task owns
+// each batch — the `own` convention, made concrete).
+async fn adder(console: Console, rx: Receiver(List(Int))) -> Nil:
+    await chan.serve(rx, 0, fn(sum, batch):
+        let running = sum + sum_from(batch, 0)
+        print(console, "running sum: " + "${running}")
+        chan.done(running)
+    )
 
-async fn feeder() -> Nil:
-    await chan.send(0, [100, 200])
-    await chan.send(0, [1, 2, 3])
+async fn feeder(tx: Sender(List(Int))) -> Nil:
+    await chan.send(tx, [100, 200])
+    await chan.send(tx, [1, 2, 3])
 
-fn main(console: Console):
+async fn main(console: Console):
     var count = 0
     bump(count)
     bump(count)
@@ -54,4 +55,7 @@ fn main(console: Console):
     let gone = [5, 6, 7]
     print(console, "drained length: " + "${drain(move gone)}")
 
-    chan.run([adder(console, 0), feeder()])
+    let (tx, rx) = await chan.channel(4)
+    let h = await chan.spawn(adder(console, rx))
+    await feeder(tx)
+    await chan.join(h)

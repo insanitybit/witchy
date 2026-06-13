@@ -1,32 +1,35 @@
 import money
 import chan
 
-// A bank account as an async task ("actor"): its balance lives in the recursive
-// `cents` parameter — isolated, reachable only by sending it a message. The
-// driver sends Deposit/Withdraw operations to the account's inbox (task #0); the
-// account handles them in FIFO order. Amounts are formatted by the `money`
-// library rune (a path dependency).
+// A bank account as a server task: its balance threads through `chan.serve`,
+// reachable only by sending it a message. The driver sends Deposit/Withdraw
+// operations on the account's channel; the account handles them in FIFO order.
+// Amounts are formatted by the `money` library rune (a path dependency).
 type Op:
     Deposit(Int)
     Withdraw(Int)
 
-async fn account(console: Console, cents: Int) -> Nil:
-    let op = await chan.recv()
-    match op:
-        Deposit(amount) ->
-            let bal = cents + amount
-            print(console, "deposit  " + money.format(amount) + "  -> balance " + money.format(bal))
-            await account(console, bal)
-        Withdraw(amount) ->
-            let bal = cents - amount
-            print(console, "withdraw " + money.format(amount) + "  -> balance " + money.format(bal))
-            await account(console, bal)
+async fn account(console: Console, rx: Receiver(Op)) -> Nil:
+    await chan.serve(rx, 0, fn(cents, op):
+        match op:
+            Deposit(amount) ->
+                let bal = cents + amount
+                print(console, "deposit  " + money.format(amount) + "  -> balance " + money.format(bal))
+                chan.done(bal)
+            Withdraw(amount) ->
+                let bal = cents - amount
+                print(console, "withdraw " + money.format(amount) + "  -> balance " + money.format(bal))
+                chan.done(bal)
+    )
 
-async fn driver() -> Nil:
-    await chan.send(0, Deposit(1250))
-    await chan.send(0, Deposit(375))
-    await chan.send(0, Withdraw(500))
-    await chan.send(0, Deposit(99))
+async fn driver(tx: Sender(Op)) -> Nil:
+    await chan.send(tx, Deposit(1250))
+    await chan.send(tx, Deposit(375))
+    await chan.send(tx, Withdraw(500))
+    await chan.send(tx, Deposit(99))
 
-fn main(console: Console):
-    chan.run([account(console, 0), driver()])
+async fn main(console: Console):
+    let (tx, rx) = await chan.channel(8)
+    let h = await chan.spawn(account(console, rx))
+    await driver(tx)
+    await chan.join(h)

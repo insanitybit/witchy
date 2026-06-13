@@ -607,34 +607,37 @@ runs a build step under those confined grants. See
 [build-time-execution-plan.md](build-time-execution-plan.md) for status and
 [package-manager.md](package-manager.md) §7.1 for the full model.
 
-## 14. Concurrency: async and channels
+## 14. Concurrency: async, spawn, and channels
 
-Concurrency is **cooperative async tasks** that pass messages over **channels**. A
+Concurrency is **cooperative async tasks** that communicate over **channels**. A
 function marked `async` may `await`; calling it yields a task that does nothing
-until an executor drives it. Tasks share no memory, so there are no locks or data
-races, and the round-robin schedule is deterministic — a concurrent program
-produces identical output on the interpreter and the compiled WebAssembly.
+until driven. `chan.spawn` starts a task concurrently, and a `chan.channel` is a
+first-class value you create and pass to whichever tasks share it — spawning and
+channels are *independent* (no task has an implicit mailbox). Tasks share no
+memory, so there are no locks or data races, and the round-robin schedule is
+deterministic — identical output on the interpreter and the compiled WebAssembly.
 
 ```witchy
 import chan
 
-async fn worker(console: Console, n: Int) -> Nil:
-    if n <= 0:
-        print(console, "done")
-    else:
-        print(console, "tick ${n}")
-        await chan.yield_now()
-        await worker(console, n - 1)
+async fn producer(tx: Sender(Int)) -> Nil:
+    for n in [1, 2, 3]:
+        await chan.send(tx, n)
 
-fn main(console: Console):
-    chan.run([worker(console, 2)])
+async fn main(console: Console):
+    let (tx, rx) = await chan.channel(4)
+    await chan.spawn(producer(tx))
+    await chan.consume(rx, fn(n): chan.done(print(console, "got ${n}")))
 ```
 
-An **actor** is just an `async fn` looping on `chan.recv()`, with its state in a
-recursive parameter; `chan.send(target, msg)` routes a message to another task's
-inbox. `chan.serve(state, handler)` writes that receive-update-repeat loop for
-you, threading state through each message. See the book's *Concurrency with Async
-and Channels* chapter and `std/chan` / `std/future` for the full model.
+`chan.channel(cap)` is a bounded channel — the sender blocks when it is full;
+pass `0`, or use `chan.unbounded()`, for no backpressure. `await chan.recv(rx)`
+yields the next message or `None` once the channel closes (no task can send to it
+anymore). `chan.consume`/`chan.serve` write the receive-loop for you (`serve`
+threads state through each message). A channel can be shared by many receivers
+(a worker pool) or many senders. One message type per program; a spawned task
+returns `Nil`, reporting results over a channel. See the book's *Concurrency*
+chapter and `std/chan` for the full model.
 
 ## 15. In-language tests
 
