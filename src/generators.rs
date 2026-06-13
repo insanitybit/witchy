@@ -106,6 +106,7 @@ fn lower_gen(f: Function) -> (Function, Function) {
         body: Block { stmts, lines: Vec::new(), restrict: None, region: None },
         bounds: f.bounds.clone(),
         is_gen: false,
+        is_async: false,
     };
 
     // Wrapper: `f(params) -> Iter(a): iter.from_gen(fn(__t: Int): __gen_f(args, __t))`.
@@ -144,6 +145,7 @@ fn lower_gen(f: Function) -> (Function, Function) {
         },
         bounds: f.bounds,
         is_gen: false,
+        is_async: false,
     };
 
     (helper, wrapper)

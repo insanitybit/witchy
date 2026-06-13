@@ -83,6 +83,10 @@ struct Shared {
     /// Spawnable kinds: (name, compiled module, spawn-arg spec, capability gate).
     kinds: Arc<Vec<(String, Module, Vec<(String, SpawnArgKind)>, KindGate)>>,
     actors: Actors,
+    /// Reply frames for synchronous `ask`: each in-flight `ask` pushes a frame
+    /// that the target handler's `reply(v)` fills; nested asks stack, so a
+    /// `reply` always answers the innermost `ask`.
+    reply_frames: Arc<Mutex<Vec<Option<i32>>>>,
 }
 
 pub struct System {
@@ -156,6 +160,7 @@ impl System {
                 sigs: Arc::new(sigs),
                 kinds: Arc::new(kinds),
                 actors: Arc::new(Mutex::new(Vec::new())),
+                reply_frames: Arc::new(Mutex::new(Vec::new())),
             },
         }
     }
@@ -173,11 +178,126 @@ impl System {
         let caps = dev_caps();
         let dirs = caps.dir_root.iter().cloned().collect();
         let nets = caps.net_allow.iter().cloned().collect();
-        let (store, instance) = link_vm(&self.shared, &module, &caps, dirs, nets)?;
+        let (mut store, instance) = link_vm(&self.shared, &module, &caps, dirs, nets)?;
         let mut actors = self.shared.actors.lock().unwrap();
+        let new_id = actors.len();
+        if let Some(g) = instance.get_global(&mut store, "self") {
+            g.set(&mut store, Val::I32(new_id as i32))?;
+        }
         actors.push(Some((store, instance)));
-        Ok(actors.len() - 1)
+        Ok(new_id)
     }
+}
+
+/// Decode a packed `[count][f0]..[fN-1]` message record at `ptr` in the
+/// caller's memory into owned `FieldVal`s, per the message tag's signature.
+/// The fields are copied by VALUE (a String by content) so the message carries
+/// no pointers into the sender — shared by the async `send` and the
+/// synchronous `ask` imports.
+fn decode_message(
+    caller: &mut Caller<'_, ActorState>,
+    ptr: i32,
+    sig: &[MsgField],
+) -> Result<Vec<FieldVal>> {
+    let mem = caller
+        .get_export("memory")
+        .and_then(Extern::into_memory)
+        .ok_or_else(|| Error::msg("actor has no memory"))?;
+    let data = mem.data(&caller);
+    let read = |off: i32| -> Result<i32> {
+        let o = off as usize;
+        let b = data
+            .get(o..o + 4)
+            .ok_or_else(|| Error::msg("message field out of bounds"))?;
+        Ok(i32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+    };
+    let count = read(ptr)?.max(0);
+    let mut fs = Vec::with_capacity(count as usize);
+    for i in 0..count {
+        // Each element is an 8-byte slot: an Int, Subject id, or string pointer
+        // lives in the low 4 bytes; a Float is the full slot's f64 bits.
+        let off = ptr + 4 + 8 * i;
+        match sig.get(i as usize) {
+            Some(MsgField::Str) => {
+                let slot = read(off)?;
+                let len = read(slot)?.max(0) as usize;
+                let o = slot as usize + 4;
+                let bytes = data
+                    .get(o..o + len)
+                    .ok_or_else(|| Error::msg("message string out of bounds"))?;
+                fs.push(FieldVal::Str(String::from_utf8_lossy(bytes).into_owned()));
+            }
+            Some(MsgField::Float) => {
+                let o = off as usize;
+                let b = data
+                    .get(o..o + 8)
+                    .ok_or_else(|| Error::msg("message field out of bounds"))?;
+                fs.push(FieldVal::Float(f64::from_le_bytes(
+                    b.try_into().expect("8-byte slice"),
+                )));
+            }
+            Some(MsgField::IntList) => {
+                let list = read(off)?;
+                let n = read(list)?.max(0);
+                let mut xs = Vec::with_capacity(n as usize);
+                for j in 0..n {
+                    let o = (list + 4 + 8 * j) as usize;
+                    let b = data
+                        .get(o..o + 8)
+                        .ok_or_else(|| Error::msg("message list out of bounds"))?;
+                    xs.push(i64::from_le_bytes(b.try_into().expect("8 bytes")));
+                }
+                fs.push(FieldVal::IntList(xs));
+            }
+            Some(MsgField::StrList) => {
+                let list = read(off)?;
+                let n = read(list)?.max(0);
+                let mut xs = Vec::with_capacity(n as usize);
+                for j in 0..n {
+                    let sp = read(list + 4 + 8 * j)?;
+                    let len = read(sp)?.max(0) as usize;
+                    let o = sp as usize + 4;
+                    let bytes = data
+                        .get(o..o + len)
+                        .ok_or_else(|| Error::msg("message string out of bounds"))?;
+                    xs.push(String::from_utf8_lossy(bytes).into_owned());
+                }
+                fs.push(FieldVal::StrList(xs));
+            }
+            Some(MsgField::Tuple(elems)) => {
+                let tup = read(off)?;
+                let read64 = |o: i32| -> Result<i64> {
+                    let o = o as usize;
+                    let b = data
+                        .get(o..o + 8)
+                        .ok_or_else(|| Error::msg("message tuple out of bounds"))?;
+                    Ok(i64::from_le_bytes(b.try_into().expect("8 bytes")))
+                };
+                let mut xs = Vec::with_capacity(elems.len());
+                for (j, e) in elems.iter().enumerate() {
+                    let slot = tup + 4 + 8 * j as i32;
+                    match e {
+                        MsgField::Float => {
+                            xs.push(TupleElem::Float(f64::from_bits(read64(slot)? as u64)));
+                        }
+                        MsgField::Str => {
+                            let sp = read(slot)?;
+                            let len = read(sp)?.max(0) as usize;
+                            let o = sp as usize + 4;
+                            let bytes = data
+                                .get(o..o + len)
+                                .ok_or_else(|| Error::msg("message string out of bounds"))?;
+                            xs.push(TupleElem::Str(String::from_utf8_lossy(bytes).into_owned()));
+                        }
+                        _ => xs.push(TupleElem::Int(read64(slot)?)),
+                    }
+                }
+                fs.push(FieldVal::Tuple(xs));
+            }
+            _ => fs.push(FieldVal::Int(read(off)?)),
+        }
+    }
+    Ok(fs)
 }
 
 /// Build a VM (store + instance) wired to the system: the capability imports
@@ -340,113 +460,64 @@ fn link_vm(
                 .get(tag as usize)
                 .map(|(_, fields)| fields.clone())
                 .ok_or_else(|| Error::msg(format!("send with unknown tag {tag}")))?;
-            let fields = {
-                let mem = caller
-                    .get_export("memory")
-                    .and_then(Extern::into_memory)
-                    .ok_or_else(|| Error::msg("actor has no memory"))?;
-                let data = mem.data(&caller);
-                let read = |off: i32| -> Result<i32> {
-                    let o = off as usize;
-                    let b = data
-                        .get(o..o + 4)
-                        .ok_or_else(|| Error::msg("send field out of bounds"))?;
-                    Ok(i32::from_le_bytes([b[0], b[1], b[2], b[3]]))
-                };
-                let count = read(ptr)?.max(0);
-                let mut fs = Vec::with_capacity(count as usize);
-                for i in 0..count {
-                    // Each element is an 8-byte slot: an Int, Subject id, or
-                    // string pointer lives in the low 4 bytes; a Float is
-                    // the full slot's f64 bits.
-                    let off = ptr + 4 + 8 * i;
-                    match sig.get(i as usize) {
-                        Some(MsgField::Str) => {
-                            let slot = read(off)?;
-                            let len = read(slot)?.max(0) as usize;
-                            let o = slot as usize + 4;
-                            let bytes = data
-                                .get(o..o + len)
-                                .ok_or_else(|| Error::msg("send string out of bounds"))?;
-                            fs.push(FieldVal::Str(String::from_utf8_lossy(bytes).into_owned()));
-                        }
-                        Some(MsgField::Float) => {
-                            let o = off as usize;
-                            let b = data
-                                .get(o..o + 8)
-                                .ok_or_else(|| Error::msg("send field out of bounds"))?;
-                            fs.push(FieldVal::Float(f64::from_le_bytes(
-                                b.try_into().expect("8-byte slice"),
-                            )));
-                        }
-                        Some(MsgField::IntList) => {
-                            let list = read(off)?;
-                            let n = read(list)?.max(0);
-                            let mut xs = Vec::with_capacity(n as usize);
-                            for j in 0..n {
-                                let o = (list + 4 + 8 * j) as usize;
-                                let b = data
-                                    .get(o..o + 8)
-                                    .ok_or_else(|| Error::msg("send list out of bounds"))?;
-                                xs.push(i64::from_le_bytes(b.try_into().expect("8 bytes")));
-                            }
-                            fs.push(FieldVal::IntList(xs));
-                        }
-                        Some(MsgField::StrList) => {
-                            let list = read(off)?;
-                            let n = read(list)?.max(0);
-                            let mut xs = Vec::with_capacity(n as usize);
-                            for j in 0..n {
-                                let sp = read(list + 4 + 8 * j)?;
-                                let len = read(sp)?.max(0) as usize;
-                                let o = sp as usize + 4;
-                                let bytes = data
-                                    .get(o..o + len)
-                                    .ok_or_else(|| Error::msg("send string out of bounds"))?;
-                                xs.push(String::from_utf8_lossy(bytes).into_owned());
-                            }
-                            fs.push(FieldVal::StrList(xs));
-                        }
-                        Some(MsgField::Tuple(elems)) => {
-                            let tup = read(off)?;
-                            let read64 = |o: i32| -> Result<i64> {
-                                let o = o as usize;
-                                let b = data
-                                    .get(o..o + 8)
-                                    .ok_or_else(|| Error::msg("send tuple out of bounds"))?;
-                                Ok(i64::from_le_bytes(b.try_into().expect("8 bytes")))
-                            };
-                            let mut xs = Vec::with_capacity(elems.len());
-                            for (j, e) in elems.iter().enumerate() {
-                                let slot = tup + 4 + 8 * j as i32;
-                                match e {
-                                    MsgField::Float => {
-                                        xs.push(TupleElem::Float(f64::from_bits(
-                                            read64(slot)? as u64,
-                                        )));
-                                    }
-                                    MsgField::Str => {
-                                        let sp = read(slot)?;
-                                        let len = read(sp)?.max(0) as usize;
-                                        let o = sp as usize + 4;
-                                        let bytes = data.get(o..o + len).ok_or_else(|| {
-                                            Error::msg("send string out of bounds")
-                                        })?;
-                                        xs.push(TupleElem::Str(
-                                            String::from_utf8_lossy(bytes).into_owned(),
-                                        ));
-                                    }
-                                    _ => xs.push(TupleElem::Int(read64(slot)?)),
-                                }
-                            }
-                            fs.push(FieldVal::Tuple(xs));
-                        }
-                        _ => fs.push(FieldVal::Int(read(off)?)),
+            let fields = decode_message(&mut caller, ptr, &sig)?;
+            send_queue.lock().unwrap().push_back((target as usize, tag as u32, fields));
+            Ok(())
+        },
+    )?;
+
+    // --- synchronous `ask`: same wire as `send`, but the target's handler
+    // runs to completion NOW and the Int it `reply`d is returned. The target
+    // is taken OUT of the table for the call (lock released so the handler may
+    // spawn/send/ask), so asking an actor that is already mid-delivery — an
+    // ask cycle — fails, exactly as the interpreter's `executing` guard does. ---
+    let ask_shared = shared.clone();
+    linker.func_wrap(
+        "witchy",
+        "ask",
+        move |mut caller: Caller<'_, ActorState>, target: i32, tag: i32, ptr: i32| -> Result<i32> {
+            let (name, sig) = ask_shared
+                .sigs
+                .get(tag as usize)
+                .map(|(n, f)| (n.clone(), f.clone()))
+                .ok_or_else(|| Error::msg(format!("ask with unknown tag {tag}")))?;
+            let fields = decode_message(&mut caller, ptr, &sig)?;
+            let taken = {
+                let mut actors = ask_shared.actors.lock().unwrap();
+                match actors.get_mut(target as usize) {
+                    Some(slot) if slot.is_some() => slot.take().unwrap(),
+                    Some(_) => {
+                        return Err(Error::msg(format!(
+                            "ask: actor #{target} is busy — a synchronous `ask` cannot re-enter an actor that is mid-delivery"
+                        )))
+                    }
+                    None => {
+                        return Err(Error::msg(format!("ask to unknown actor id {target}")))
                     }
                 }
-                fs
             };
-            send_queue.lock().unwrap().push_back((target as usize, tag as u32, fields));
+            let (mut store, instance) = taken;
+            ask_shared.reply_frames.lock().unwrap().push(None);
+            let result = System::deliver(&mut store, &instance, &name, &fields);
+            ask_shared.actors.lock().unwrap()[target as usize] = Some((store, instance));
+            let replied = ask_shared.reply_frames.lock().unwrap().pop().flatten();
+            result?;
+            replied.ok_or_else(|| {
+                Error::msg("ask: the handler returned without calling `reply(...)`")
+            })
+        },
+    )?;
+
+    // `reply(v)`: fill the innermost in-flight `ask`'s frame. A no-op when no
+    // `ask` is pending (a handler reached by a plain `send` has no asker).
+    let reply_frames = Arc::clone(&shared.reply_frames);
+    linker.func_wrap(
+        "witchy",
+        "reply",
+        move |_caller: Caller<'_, ActorState>, v: i32| -> Result<()> {
+            if let Some(frame) = reply_frames.lock().unwrap().last_mut() {
+                *frame = Some(v);
+            }
             Ok(())
         },
     )?;
@@ -523,8 +594,14 @@ fn link_vm(
                     g.set(&mut store, val)?;
                 }
                 let mut actors = shared2.actors.lock().unwrap();
+                let new_id = actors.len();
+                // `self`: hand the new actor its own id (set-if-present, so
+                // actors that never mention `self` are unaffected).
+                if let Some(g) = instance.get_global(&mut store, "self") {
+                    g.set(&mut store, Val::I32(new_id as i32))?;
+                }
                 actors.push(Some((store, instance)));
-                results[0] = Val::I32((actors.len() - 1) as i32);
+                results[0] = Val::I32(new_id as i32);
                 Ok(())
             },
         )?;
@@ -992,6 +1069,27 @@ impl Forwarder:
         assert_eq!(sys.output(), vec!["got 42"]);
     }
 
+    /// `self` is the actor's own Subject: a handler re-sends to itself without
+    /// the spawner threading the subject in through a message.
+    #[test]
+    fn actor_self_subject_re_sends() {
+        let src = r#"
+actor Countdown:
+    console: Console
+
+impl Countdown:
+    on Tick(n: Int):
+        if n > 0:
+            print(console, ("tick " + __render(n)))
+            send(self, Tick(n - 1))
+        else:
+            print(console, "liftoff")
+"#;
+        let (mut sys, ids) = build(src);
+        sys.send(ids["Countdown"], "Tick", 3).unwrap();
+        assert_eq!(sys.output(), vec!["tick 3", "tick 2", "tick 1", "liftoff"]);
+    }
+
     /// String message fields cross the VM boundary by CONTENT: the host reads
     /// the bytes out of the sender's memory at send time and re-allocates them
     /// in the receiver (via its `__msg_alloc` export) at delivery — a literal,
@@ -1136,7 +1234,7 @@ impl Tally:
         let (mut sys, ids) = build(src);
         sys.send(ids["Tally"], "Bump", 0).unwrap();
         sys.send(ids["Tally"], "Bump", 0).unwrap();
-        assert_eq!(sys.output(), vec!["1.75", "3"]);
+        assert_eq!(sys.output(), vec!["1.75", "3.0"]);
     }
 
     /// List message fields cross the VM boundary by content: a List(Int) is
@@ -1224,6 +1322,50 @@ impl Source:
             let interp = crate::interpreter::run_with(src, ".", Vec::new()).expect("interp");
             assert_eq!(out, interp, "compiled actor system must match the interpreter");
         }
+    }
+
+    /// `ask`: the driver makes synchronous requests of a stateless worker and a
+    /// stateful counter, collecting each reply — the "spawn workers, gather
+    /// results in main" shape. Byte-identical on both backends.
+    #[test]
+    fn compiled_ask_collects_replies_matching_interpreter() {
+        let src = r#"
+actor Squarer:
+
+impl Squarer:
+    on Square(n: Int):
+        reply(n * n)
+
+actor Counter:
+    var total: Int = 0
+
+impl Counter:
+    on Add(n: Int):
+        total = total + n
+        reply(total)
+
+    on Get():
+        reply(total)
+
+fn main(console: Console):
+    let w = spawn Squarer()
+    var sum = 0
+    for i in [3, 5, 7]:
+        sum = sum + ask(w, Square(i))
+    print(console, ("sum " + __render(sum)))
+    let c = spawn Counter()
+    print(console, ("a " + __render(ask(c, Add(5)))))
+    print(console, ("b " + __render(ask(c, Add(3)))))
+    print(console, ("g " + __render(ask(c, Get))))
+"#;
+        let module = parser::parse_module(src).expect("parse");
+        let (driver, actors, sigs, specs) =
+            codegen::compile_system(&module).expect("compile system");
+        let out = System::run_program(&driver, &actors, sigs, specs, &dev_caps())
+            .expect("run program");
+        let interp = crate::interpreter::run_with(src, ".", Vec::new()).expect("interp");
+        assert_eq!(out, interp, "compiled ask must match the interpreter");
+        assert_eq!(out, vec!["sum 83", "a 5", "b 8", "g 8"]);
     }
 
     /// The PARALLEL drain: worker threads deliver to distinct actors

@@ -624,10 +624,23 @@ fn main(console: Console):
     send(logger, Log("world"))
 ```
 
-`spawn` creates an actor with its declared state (capabilities are granted
-explicitly at spawn — attenuated, if you choose) and returns a `Subject`.
-`send(subject, Msg(...))` is validated at check time against the declared
-handlers (unknown messages, wrong arity, and wrong field types are errors).
+`spawn Logger(...)` creates an actor with its declared state (capabilities are
+granted explicitly at spawn — attenuated, if you choose) and returns a
+`Subject(Logger)`: a *typed* mailbox handle. `send(subject, Msg(...))` is
+validated at check time against the declared handlers (unknown messages, wrong
+arity, and wrong field types are errors); a typed subject narrows that check to
+the named actor, so sending it a message that actor has no handler for is a
+compile error that names both. A bare `Subject` (no actor named) is the untyped
+form, checked against the program's handlers as a whole. Inside a handler,
+`self` is the actor's own `Subject` (`Subject(Logger)` here).
+
+`ask(subject, Msg(...)) -> Int` is synchronous request/response: it runs the
+target's handler to completion now and returns the `Int` the handler passes to
+`reply(...)` (where `send` is fire-and-forget and its handler runs later). It is
+how a driver collects a worker's result. An `ask` whose handler never replies,
+or that re-enters an actor already mid-delivery (an ask cycle), is an error —
+identically on both backends.
+
 Messages are copied; actors share nothing. Compiled actors run one VM per
 actor — own memory, own grant: the VM links only the host-import families
 the actor's capability fields entitle it to, and `Dir`/`Net` grants transfer

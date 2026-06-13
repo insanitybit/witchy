@@ -97,6 +97,7 @@ pub const STD_MODULES: &[&str] = &[
     "list", "string", "math", "result", "option", "func", "ord", "eq", "ascii", "set", "server",
     "show", "http", "json", "url", "duration", "random", "regex", "crypto", "compiler", "toml",
     "iter", "semver", "rights", "fs", "dict", "csv", "time", "encoding", "path", "testing",
+    "future", "chan",
 ];
 
 /// The bundled std modules that export a `pub fn` of the given name — used to
@@ -297,6 +298,8 @@ pub fn std_source(name: &str) -> Option<&'static str> {
         "time" => Some(include_str!("../std/time.witchy")),
         "encoding" => Some(include_str!("../std/encoding.witchy")),
         "path" => Some(include_str!("../std/path.witchy")),
+        "future" => Some(include_str!("../std/future.witchy")),
+        "chan" => Some(include_str!("../std/chan.witchy")),
         _ => None,
     }
 }
@@ -311,6 +314,14 @@ pub fn link(mut modules: Vec<(String, Module)>, entry: &str) -> Result<Module, L
         .into_iter()
         .map(|(n, m)| (n, crate::generators::lower(m)))
         .collect();
+
+    // Lower `async fn`/`await` to ordinary functions over `std/future` (CPS over
+    // closures), also before typeck — adds `import future` to any async module.
+    modules = modules
+        .into_iter()
+        .map(|(n, m)| crate::async_lower::lower(m).map(|m| (n, m)))
+        .collect::<Result<_, _>>()
+        .map_err(|message| LinkError { message })?;
 
     // Lower named-field record construction (`Point(x: 1, ..p)`) to positional
     // constructors / record updates, so later stages never see `Expr::Record`.

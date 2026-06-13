@@ -1,38 +1,42 @@
-// A small backtracking regular-expression engine over strings — the classic
-// Kernighan & Pike design grown a working toolkit, in pure witchy. Syntax:
-//   .          any single character
-//   *          zero or more of the preceding atom (greedy, with backtracking)
-//   +          one or more of the preceding atom (greedy)
-//   ?          zero or one of the preceding atom (greedy)
-//   ^          anchor to the start of the text (only as the first character)
-//   $          anchor to the end of the text (only as the last character)
-//   [abc]      character class; [a-z] ranges; [^...] negation. `]` cannot be a
-//              member and escapes are not recognized inside a class; a `-` first
-//              or last is literal.
-//   \d \w \s   digit / word (letter, digit, `_`) / whitespace, ASCII
-//   \. \* \+ \? \^ \$ \[ \] \\   literal metacharacters
-// Any other character matches itself. Positions are character indices.
-// Pure and capability-free; identical on the interpreter and compiled backends.
+// Regular expressions, powered by the Rust `regex` crate (RE2 semantics): linear
+// time, with full alternation `a|b` and grouping `(...)` — and a loud error, not
+// a silent non-match, on an invalid pattern. The engine itself is the native
+// `match_spans`, which returns the character spans of every match; the whole
+// public API here is built on those spans in plain witchy, so it runs the same
+// on the interpreter and the compiled backend. Positions are character indices.
 
-import ascii
-import option
 import string
+
+// The native engine: every non-overlapping match of `pattern` in `text`, as
+// character spans encoded "s,e;s,e;..." ("" when there is no match). Overridden
+// by the native registry / WASM host import; the body is an unreachable stub.
+fn match_spans(pattern: String, text: String) -> String:
+    text
+    ""
 
 // True if `pattern` matches anywhere in `text`.
 pub fn matches(pattern: String, text: String) -> Bool:
-    match find(pattern, text):
-        Some(_span) -> true
-        None -> false
+    !string.is_empty(match_spans(pattern, text))
 
-// The leftmost match as a (start, end) character span — end exclusive — or
-// None. Quantifiers are greedy, so `find("a+", "caat")` is Some((1, 3)).
+// The leftmost match as a (start, end) character span — end exclusive — or None.
 pub fn find(pattern: String, text: String) -> Option((Int, Int)):
-    find_from(pattern, pattern_start(pattern), text, 0, anchored(pattern))
+    let all = find_all(pattern, text)
+    if list.length(all) == 0:
+        None
+    else:
+        Some(list.at(all, 0))
 
-// Every non-overlapping match, leftmost first. An empty match advances one
-// character so the scan always terminates.
+// Every non-overlapping match, leftmost first.
 pub fn find_all(pattern: String, text: String) -> List((Int, Int)):
-    find_all_from(pattern, pattern_start(pattern), text, 0, anchored(pattern))
+    let encoded = match_spans(pattern, text)
+    if string.is_empty(encoded):
+        []
+    else:
+        var out = []
+        for part in string.split(encoded, ";"):
+            let pair = string.split(part, ",")
+            out = list.push(out, (string.to_int(list.at(pair, 0)), string.to_int(list.at(pair, 1))))
+        out
 
 // The matched substrings, leftmost first: extract("\\d+", "a1b22") is ["1", "22"].
 pub fn extract(pattern: String, text: String) -> List(String):
@@ -42,7 +46,8 @@ pub fn extract(pattern: String, text: String) -> List(String):
         out = list.push(out, string.substring(text, s, e))
     out
 
-// `text` with every match replaced: replace_all("\\s+", "a  b", "-") is "a-b".
+// `text` with every match replaced (the replacement is literal — no `$1` group
+// expansion): replace_all("\\s+", "a  b", "-") is "a-b".
 pub fn replace_all(pattern: String, text: String, replacement: String) -> String:
     var out = ""
     var prev = 0
@@ -61,151 +66,3 @@ pub fn split(pattern: String, text: String) -> List(String):
         out = list.push(out, string.substring(text, prev, s))
         prev = e
     list.push(out, string.substring(text, prev, string.length(text)))
-
-// --- the engine --------------------------------------------------------------
-fn anchored(pattern: String) -> Bool:
-    string.length(pattern) > 0 && string.char_at(pattern, 0) == "^"
-
-fn pattern_start(pattern: String) -> Int:
-    if anchored(pattern):
-        1
-    else:
-        0
-
-fn find_from(pattern: String, ps: Int, text: String, ti: Int, anchor: Bool) -> Option((Int, Int)):
-    let e = match_here_end(pattern, ps, text, ti)
-    if e >= 0:
-        Some((ti, e))
-    else if !anchor && ti < string.length(text):
-        find_from(pattern, ps, text, ti + 1, anchor)
-    else:
-        None
-
-fn find_all_from(pattern: String, ps: Int, text: String, ti: Int, anchor: Bool) -> List((Int, Int)):
-    if ti > string.length(text):
-        []
-    else:
-        let e = match_here_end(pattern, ps, text, ti)
-        if e >= 0:
-            let next = if e > ti: e else: ti + 1
-            let rest = if anchor: [] else: find_all_from(pattern, ps, text, next, anchor)
-            list.concat([(ti, e)], rest)
-        else if !anchor && ti < string.length(text):
-            find_all_from(pattern, ps, text, ti + 1, anchor)
-        else:
-            []
-
-// The end position of a match of `pattern[pi..]` at `text[ti..]`, or -1.
-fn match_here_end(pattern: String, pi: Int, text: String, ti: Int) -> Int:
-    if pi >= string.length(pattern):
-        ti
-    else if string.char_at(pattern, pi) == "$" && pi + 1 >= string.length(pattern):
-        if ti >= string.length(text):
-            ti
-        else:
-            0 - 1
-    else:
-        let al = atom_len(pattern, pi)
-        let nx = next_char(pattern, pi + al)
-        if nx == "*":
-            match_star_end(pattern, pi, al, text, ti)
-        else if nx == "+":
-            if atom_match(pattern, pi, text, ti):
-                match_star_end(pattern, pi, al, text, ti + 1)
-            else:
-                0 - 1
-        else if nx == "?":
-            let with_atom = if atom_match(pattern, pi, text, ti): match_here_end(pattern, pi + al + 1, text, ti + 1) else: 0 - 1
-            if with_atom >= 0:
-                with_atom
-            else:
-                match_here_end(pattern, pi + al + 1, text, ti)
-        else if atom_match(pattern, pi, text, ti):
-            match_here_end(pattern, pi + al, text, ti + 1)
-        else:
-            0 - 1
-
-// Greedy star: consume the atom as far as it will go, backtracking to the rest
-// of the pattern from the deepest position that lets the whole match succeed.
-fn match_star_end(pattern: String, pi: Int, al: Int, text: String, ti: Int) -> Int:
-    if atom_match(pattern, pi, text, ti):
-        let deeper = match_star_end(pattern, pi, al, text, ti + 1)
-        if deeper >= 0:
-            deeper
-        else:
-            match_here_end(pattern, pi + al + 1, text, ti)
-    else:
-        match_here_end(pattern, pi + al + 1, text, ti)
-
-// --- atoms --------------------------------------------------------------------
-
-// The character length of the atom at `pi`: an escape is 2, a class runs to its
-// closing bracket, anything else is a single character.
-fn atom_len(pattern: String, pi: Int) -> Int:
-    let pc = string.char_at(pattern, pi)
-    if pc == "\\":
-        2
-    else if pc == "[":
-        class_close(pattern, pi + 1) - pi + 1
-    else:
-        1
-
-// True if the atom at `pattern[pi..]` matches the text character at `ti`.
-fn atom_match(pattern: String, pi: Int, text: String, ti: Int) -> Bool:
-    if ti >= string.length(text):
-        false
-    else:
-        let tc = string.char_at(text, ti)
-        let pc = string.char_at(pattern, pi)
-        if pc == "\\":
-            escape_match(next_char(pattern, pi + 1), tc)
-        else if pc == "[":
-            class_match(pattern, pi, tc)
-        else:
-            pc == "." || pc == tc
-
-fn escape_match(e: String, tc: String) -> Bool:
-    if e == "d":
-        ascii.is_digit(tc)
-    else if e == "w":
-        ascii.is_alnum(tc) || tc == "_"
-    else if e == "s":
-        ascii.is_space(tc)
-    else:
-        e == tc
-
-fn class_match(pattern: String, pi: Int, tc: String) -> Bool:
-    let close = class_close(pattern, pi + 1)
-    let negated = string.char_at(pattern, pi + 1) == "^"
-    let start = if negated: pi + 2 else: pi + 1
-    let hit = members_match(pattern, start, close, tc)
-    if negated:
-        !hit
-    else:
-        hit
-
-// Walk the class members between `i` and the closing bracket: `a-z` is a range
-// (inclusive), anything else matches itself.
-fn members_match(pattern: String, i: Int, close: Int, tc: String) -> Bool:
-    if i >= close:
-        false
-    else if i + 2 < close && string.char_at(pattern, i + 1) == "-":
-        string.char_at(pattern, i) <= tc && tc <= string.char_at(pattern, i + 2) || members_match(pattern, i + 3, close, tc)
-    else:
-        string.char_at(pattern, i) == tc || members_match(pattern, i + 1, close, tc)
-
-// The index of the class's closing `]` (scanning from just past the `[`).
-fn class_close(pattern: String, i: Int) -> Int:
-    if i >= string.length(pattern):
-        fail("regex: unclosed character class")
-        0 - 1
-    else if string.char_at(pattern, i) == "]":
-        i
-    else:
-        class_close(pattern, i + 1)
-
-fn next_char(pattern: String, pi: Int) -> String:
-    if pi < string.length(pattern):
-        string.char_at(pattern, pi)
-    else:
-        ""

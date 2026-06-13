@@ -1,0 +1,30 @@
+// `ask` vs the drain: how `main` sees a result while actors are "running".
+//
+// A `.Msg()` send is queued and its handler runs LATER, during the drain after
+// `main` returns. `ask` is the exception: it runs a handler synchronously, inline,
+// right now — so `main` can read a value back. Because the queued sends haven't
+// run yet, an `ask` sees the actor's state from BEFORE them.
+//
+// Run:  witchy examples/actor_ask_timing.witchy
+actor Counter:
+    console: Console
+    var n: Int = 0
+
+impl Counter:
+    on Bump():
+        n = n + 1
+    on Current():
+        reply(n)
+    on Report():
+        print(console, "after the drain, n = " + "${n}")
+
+fn main(console: Console):
+    let c = spawn Counter(console)
+    c.Bump()
+    c.Bump()
+
+    // `ask` runs Current NOW; the two Bumps are still queued, so it reads n = 0.
+    print(console, "ask (inline) sees n = " + "${ask(c, Current)}")
+
+    c.Report()
+    print(console, "[main] done")

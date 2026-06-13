@@ -20,6 +20,8 @@ pub enum Tok {
     Fn,
     Gen,
     Yield,
+    Async,
+    Await,
     Let,
     Var,
     On,
@@ -114,6 +116,8 @@ impl fmt::Display for Tok {
             Fn => write!(f, "fn"),
             Gen => write!(f, "gen"),
             Yield => write!(f, "yield"),
+            Async => write!(f, "async"),
+            Await => write!(f, "await"),
             Let => write!(f, "let"),
             Var => write!(f, "var"),
             On => write!(f, "on"),
@@ -517,6 +521,8 @@ impl Lexer {
             "fn" => Tok::Fn,
             "gen" => Tok::Gen,
             "yield" => Tok::Yield,
+            "async" => Tok::Async,
+            "await" => Tok::Await,
             "let" => Tok::Let,
             "var" => Tok::Var,
             "on" => Tok::On,
@@ -856,19 +862,26 @@ fn vtok(kind: Tok, near: &Token) -> Token {
 /// dropped). The parser, typechecker, interpreter, and codegen are unchanged —
 /// they only ever see braces.
 ///
-/// Code that already uses explicit braces passes through untouched: inside `()`,
-/// `[]`, or `{}` layout is suppressed, and a line without a trailing `:` opens no
-/// block. So the two styles coexist, which is what lets the migration be gradual.
+/// Code that already uses explicit braces passes through untouched, and a line
+/// without a trailing `:`/`->` opens no block — so plain multi-line signatures,
+/// call arguments, and list literals (which open no block) are unaffected. A
+/// `:`/`->` header line that ends *inside* brackets DOES open a block, which is
+/// what lets a block-bodied lambda be passed as a call argument
+/// (`list.map(xs, fn(c):` then an indented `match`/body). Such an inner block is
+/// closed either by a dedent or by the bracket that encloses it closing.
 pub fn apply_layout(tokens: Vec<Token>) -> Vec<Token> {
     struct LayoutLine {
         indent: u32,
+        /// Bracket nesting depth at the line's first token.
+        bdepth_start: i32,
         toks: Vec<Token>,
     }
 
-    // Phase 1: group tokens into layout lines. A new line begins at a token that
-    // starts a fresh source line while at bracket depth 0 (brackets and explicit
-    // braces suppress layout, keeping multi-line signatures and brace blocks
-    // whole).
+    // Phase 1: group tokens into source lines, recording the bracket depth each
+    // line starts at. We DON'T suppress line breaks inside brackets — a header
+    // line that ends with `:`/`->` opens a block wherever it appears, while a
+    // continuation line (no trailing header) opens none, so ordinary multi-line
+    // calls and signatures still flow through as a single token sequence.
     let mut lines: Vec<LayoutLine> = Vec::new();
     let mut eof: Option<Token> = None;
     let mut depth: i32 = 0;
@@ -878,60 +891,91 @@ pub fn apply_layout(tokens: Vec<Token>) -> Vec<Token> {
             eof = Some(t);
             break;
         }
-        let starts_line = lines.is_empty() || (depth == 0 && t.line != prev_line);
+        let starts_line = lines.is_empty() || t.line != prev_line;
         prev_line = t.line;
-        match t.kind {
+        let kind = t.kind.clone();
+        if starts_line {
+            lines.push(LayoutLine { indent: t.col, bdepth_start: depth, toks: vec![t] });
+        } else {
+            lines.last_mut().unwrap().toks.push(t);
+        }
+        match kind {
             Tok::LParen | Tok::LBracket | Tok::LBrace => depth += 1,
             Tok::RParen | Tok::RBracket | Tok::RBrace => depth -= 1,
             _ => {}
         }
-        if starts_line {
-            lines.push(LayoutLine { indent: t.col, toks: vec![t] });
-        } else {
-            lines.last_mut().unwrap().toks.push(t);
-        }
     }
 
-    // Phase 2: open a virtual block after each `:`-terminated header and close
-    // blocks on dedent.
+    // Phase 2: open a virtual block after each `:`/`->` header; close blocks on
+    // dedent and when their enclosing bracket closes. `block_bd[i]` is the
+    // bracket depth `stack[i]`'s block opened at, so a block opened inside a call
+    // is torn down when that call's `)` is reached, and an indent-dedent never
+    // closes a block from a shallower bracket level than the current line (which
+    // would wrongly close an outer block on a dedented continuation line).
     let mut out: Vec<Token> = Vec::new();
     let mut stack: Vec<u32> = Vec::new(); // header indents of open virtual blocks
+    let mut block_bd: Vec<i32> = Vec::new(); // bracket depth each block opened at
     let mut pending: Option<u32> = None; // header indent awaiting its block body
+    let mut bdepth: i32 = 0;
     for line in &lines {
         let here = &line.toks[0];
         if let Some(header_indent) = pending.take() {
             if line.indent > header_indent {
                 out.push(vtok(Tok::LBrace, here));
                 stack.push(header_indent);
+                block_bd.push(bdepth);
             } else {
                 // A `:` header with no indented body: an empty block.
                 out.push(vtok(Tok::LBrace, here));
                 out.push(vtok(Tok::RBrace, here));
             }
         }
-        // A closing `}` is placed on the PREVIOUS token's line, never the
-        // dedent line's, so the parser doesn't read a following `(...)` as
-        // applying the block's value (e.g. `} \n (a, b)` must stay two
-        // statements, not `}(a, b)`).
-        while stack.last().is_some_and(|top| line.indent <= *top) {
+        // Indent-based dedent. Close the top block while this line is no more
+        // indented than its header AND the block was opened at this line's
+        // bracket level or deeper (so a dedented continuation line inside a call
+        // can't close a block that lives outside the call).
+        while stack.last().is_some_and(|top| line.indent <= *top)
+            && block_bd.last().is_some_and(|bd| *bd >= line.bdepth_start)
+        {
             let near = out.last().cloned().unwrap_or_else(|| here.clone());
             out.push(vtok(Tok::RBrace, &near));
             stack.pop();
+            block_bd.pop();
         }
-        // A trailing `:` or `->` opens a virtual block for the indented body. The
-        // `:` is a pure block header and is dropped; a match-arm `->` is part of
-        // the grammar, so it is kept and the block opens right after it (giving a
-        // multi-statement match-arm body without braces).
-        match line.toks.last().map(|t| &t.kind) {
-            Some(Tok::Colon) => {
-                out.extend(line.toks[..line.toks.len() - 1].iter().cloned());
+        // Emit the line's tokens, tracking bracket depth. Before a closing
+        // bracket drops the depth, tear down any block opened deeper than the new
+        // depth — the block-bodied-lambda case where the call paren closes on the
+        // same line as (or before) the block would otherwise dedent.
+        let n = line.toks.len();
+        let ends_with_arrow = matches!(line.toks.last().map(|t| &t.kind), Some(Tok::RArrow));
+        for (i, t) in line.toks.iter().enumerate() {
+            if i == n - 1 && t.kind == Tok::Colon {
+                // Drop a trailing `:` header; its block opens on the next line.
                 pending = Some(line.indent);
+                break;
             }
-            Some(Tok::RArrow) => {
-                out.extend(line.toks.iter().cloned());
-                pending = Some(line.indent);
+            match t.kind {
+                Tok::RParen | Tok::RBracket | Tok::RBrace => {
+                    let new_bd = bdepth - 1;
+                    while block_bd.last().is_some_and(|bd| *bd > new_bd) {
+                        let near = out.last().cloned().unwrap_or_else(|| t.clone());
+                        out.push(vtok(Tok::RBrace, &near));
+                        stack.pop();
+                        block_bd.pop();
+                    }
+                    bdepth = new_bd;
+                    out.push(t.clone());
+                }
+                Tok::LParen | Tok::LBracket | Tok::LBrace => {
+                    bdepth += 1;
+                    out.push(t.clone());
+                }
+                _ => out.push(t.clone()),
             }
-            _ => out.extend(line.toks.iter().cloned()),
+        }
+        if ends_with_arrow {
+            // A match-arm `->` is kept (part of the grammar); its block opens next.
+            pending = Some(line.indent);
         }
     }
 

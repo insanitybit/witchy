@@ -1,0 +1,31 @@
+// Cooperative concurrency on the `std/future` substrate — two tasks interleaving
+// under a deterministic round-robin executor.
+//
+// `future.join_all` drives a list of tasks concurrently, advancing each one poll-
+// step per round, until all finish. Each `ticker` prints a line then yields with
+// `future.pending`, so the executor can run the other task — the output
+// interleaves A/B. The schedule is fixed and single-threaded, so the interpreter
+// and the compiled WASM produce byte-identical output (concurrency WITH parity).
+// No scheduler state lives in the runtime and no WASM feature is needed: the whole
+// executor is ordinary witchy (see std/future.witchy).
+//
+// This is the executor the planned `async`/`await` + `spawn`/`scope` surface will
+// lower onto (see docs/concurrency-design.md). Today you write the futures by
+// hand; the sugar comes in a later phase.
+//
+// Run:  witchy examples/async_executor.witchy
+//       witchy parity examples/async_executor.witchy
+
+import future
+
+// Prints `name n`, `name n-1`, ... down to 1, yielding cooperatively after each
+// line. Returns a Future, so building it does no work until the executor polls.
+fn ticker(console: Console, name: String, n: Int) -> Future(Int):
+    if n <= 0:
+        future.ready(n)
+    else:
+        future.and_then(future.defer(fn(): print(console, name + " " + "${n}")), fn(_a): future.and_then(future.pending(0), fn(_b): ticker(console, name, n - 1)))
+
+fn main(console: Console):
+    let results = future.join_all([ticker(console, "A", 3), ticker(console, "B", 3)])
+    print(console, "done ${results}")

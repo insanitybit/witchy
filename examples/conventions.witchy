@@ -1,4 +1,5 @@
 import list
+import chan
 
 fn bump(var n: Int):
     n = n + 1
@@ -23,14 +24,18 @@ impl Bag:
         match self:
             Bag(items) -> sum_from(items, 0)
 
-actor Adder:
-    console: Console
-    var sum: Int = 0
+// An accumulator task: its running `sum` lives in the recursive parameter, and
+// each batch of numbers arrives as a message (channels move values, so the task
+// owns each batch — the `own` convention, made concrete).
+async fn adder(console: Console, sum: Int) -> Nil:
+    let batch = await chan.recv()
+    let running = sum + sum_from(batch, 0)
+    print(console, "running sum: " + "${running}")
+    await adder(console, running)
 
-impl Adder:
-    on Add(own xs: List(Int)):
-        sum = sum + sum_from(xs, 0)
-        print(console, "running sum: " + "${sum}")
+async fn feeder() -> Nil:
+    await chan.send(0, [100, 200])
+    await chan.send(0, [1, 2, 3])
 
 fn main(console: Console):
     var count = 0
@@ -49,6 +54,4 @@ fn main(console: Console):
     let gone = [5, 6, 7]
     print(console, "drained length: " + "${drain(move gone)}")
 
-    let adder = spawn Adder(console)
-    send(adder, Add([100, 200]))
-    send(adder, Add([1, 2, 3]))
+    chan.run([adder(console, 0), feeder()])

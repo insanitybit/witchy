@@ -1,3 +1,6 @@
+// Generators feeding a running computation: `readings` is an infinite `gen fn`
+// (a pseudo-random stream), bounded by `iter.take`, collected into a list, then
+// folded into a high-water mark as we print each sample.
 import iter
 
 gen fn readings(seed: Int) -> Iter(Int):
@@ -6,19 +9,10 @@ gen fn readings(seed: Int) -> Iter(Int):
         x = (x * 33 + 1) % 97
         yield x
 
-actor Monitor:
-    console: Console
-    var high: Int = 0
-
-impl Monitor:
-    on Reading(value: Int):
-        if value > high:
-            high = value
-        print(console, "reading ${value}  (high ${high})")
-
 fn main(console: Console):
-    let monitor = spawn Monitor(console)
-
     let sample: List(Int) = iter.collect(iter.take(readings(1), 6))
+    var high = 0
     for r in sample:
-        send(monitor, Reading(r))
+        if r > high:
+            high = r
+        print(console, "reading ${r}  (high ${high})")

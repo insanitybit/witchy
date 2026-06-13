@@ -426,6 +426,10 @@ struct Codegen {
     message_tags: HashMap<String, u32>,
     /// Whether the inter-actor `send` import is needed.
     uses_send: bool,
+    /// Whether the synchronous `ask` import is needed.
+    uses_ask: bool,
+    /// Whether the `reply` import is needed (a handler answering an `ask`).
+    uses_reply: bool,
     /// Whether the bounds-checked `$list_at` helper is needed (list indexing).
     uses_list_at: bool,
     /// Whether the list `push`/`concat`/`drop` runtime helpers are needed.
@@ -504,6 +508,9 @@ struct Codegen {
     uses_compiler_footprint: bool,
     /// Whether the `compiler.diff` host import + guest helper are needed.
     uses_compiler_diff: bool,
+    /// Whether the `regex.match_spans` host import + guest helper are needed (the
+    /// native regex engine; the rest of `std/regex` is witchy built on it).
+    uses_regex_spans: bool,
     /// Whether the `float_to_str` host import + guest helper are needed (float
     /// `to_string`).
     uses_float_to_str: bool,
@@ -751,6 +758,8 @@ impl Codegen {
             fn_ret_tuple_slot_list_elem: HashMap::new(),
             message_tags: HashMap::new(),
             uses_send: false,
+            uses_ask: false,
+            uses_reply: false,
             record_fields: HashMap::new(),
             record_field_types: HashMap::new(),
             adt_variants: HashMap::new(),
@@ -815,6 +824,7 @@ impl Codegen {
             uses_wm: false,
             uses_compiler_footprint: false,
             uses_compiler_diff: false,
+            uses_regex_spans: false,
             uses_float_to_str: false,
             uses_encoding: false,
             uses_float_ord: false,
@@ -861,7 +871,7 @@ impl Codegen {
             Expr::Unary { op, expr } => match op {
                 // `!x` is a bool (i32); negation/complement keep the operand kind.
                 UnOp::Not => Kind::I32,
-                UnOp::Neg | UnOp::BitNot | UnOp::Move => self.kind_of(expr),
+                UnOp::Neg | UnOp::BitNot | UnOp::Move | UnOp::Await => self.kind_of(expr),
             },
             Expr::Binary { op, lhs, rhs } => match op {
                 BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod | BinOp::BitAnd
@@ -1022,7 +1032,7 @@ impl Codegen {
             Expr::Str(_) => ValType::Str,
             Expr::Unary { op, expr } => match op {
                 UnOp::Not => ValType::Bool,
-                UnOp::Neg | UnOp::Move => self.val_type_of(expr),
+                UnOp::Neg | UnOp::Move | UnOp::Await => self.val_type_of(expr),
                 UnOp::BitNot => ValType::Int,
             },
             Expr::Binary { op, lhs, rhs } => match op {
@@ -1064,7 +1074,8 @@ impl Codegen {
                 "__render" | "string.to_upper" | "string.to_lower" | "string.trim"
                 | "string.replace" | "string.substring" | "crypto.sha256" | "crypto.sign"
                 | "crypto.public_key" | "read" | "crypto.rune_hash" | "compiler.footprint"
-                | "compiler.diff" | "recv_line" | "recv_all" | "recv_bytes" => ValType::Str,
+                | "compiler.diff" | "regex.match_spans" | "recv_line" | "recv_all"
+                | "recv_bytes" => ValType::Str,
                 "string.starts_with" | "string.ends_with" | "string.contains" | "dict.has"
                 | "exists" | "is_dir" | "crypto.ed25519_verify" => ValType::Bool,
                 "string.length" | "string.char_count" | "string.index_of" | "list.length"
@@ -1864,6 +1875,7 @@ impl Codegen {
             || self.uses_region
             || self.uses_compiler_footprint
             || self.uses_compiler_diff
+            || self.uses_regex_spans
             || self.uses_float_to_str
             || self.uses_encoding
             || self.uses_get_env
@@ -1891,6 +1903,15 @@ impl Codegen {
         if self.uses_send {
             // send(target_id, message_tag, arg)
             s.push_str("  (import \"witchy\" \"send\" (func $send (param i32 i32 i32)))\n");
+        }
+        if self.uses_ask {
+            // ask(target_id, message_tag, arg_ptr) -> reply: run the target's
+            // handler now and return the Int it `reply`d.
+            s.push_str("  (import \"witchy\" \"ask\" (func $ask (param i32 i32 i32) (result i32)))\n");
+        }
+        if self.uses_reply {
+            // reply(v): record this handler's reply to the current asker.
+            s.push_str("  (import \"witchy\" \"reply\" (func $reply (param i32)))\n");
         }
         for name in &self.used_spawns {
             // spawn_{Actor}(value args...) -> the new actor's Subject id; the
@@ -1931,6 +1952,12 @@ impl Codegen {
             // compiler_diff_len(old_ptr, new_ptr) -> JSON byte length: staged like
             // compiler_footprint_len.
             s.push_str("  (import \"witchy\" \"compiler_diff_len\" (func $compiler_diff_len_host (param i32 i32) (result i32)))\n");
+        }
+        if self.uses_regex_spans {
+            // regex_match_spans_len(pat_ptr, text_ptr) -> spans byte length: the
+            // host runs the regex crate (the same native the interpreter uses) and
+            // stages the encoded spans; `fill_pending` writes them.
+            s.push_str("  (import \"witchy\" \"regex_match_spans_len\" (func $regex_match_spans_len_host (param i32 i32) (result i32)))\n");
         }
         if self.uses_str_field {
             // String actor state: field_str_set(idx, str_ptr) copies the value
@@ -2062,6 +2089,7 @@ impl Codegen {
             || self.used_net_ops.contains("recv_bytes")
             || self.uses_compiler_footprint
             || self.uses_compiler_diff
+            || self.uses_regex_spans
             || self.uses_str_field
             || self.uses_list_field
         {
@@ -2168,6 +2196,9 @@ impl Codegen {
         }
         if self.uses_compiler_diff {
             s.push_str(COMPILER_DIFF_WAT);
+        }
+        if self.uses_regex_spans {
+            s.push_str(REGEX_SPANS_WAT);
         }
         if self.uses_float_to_str {
             s.push_str(FLOAT_TO_STR_WAT);
@@ -2867,8 +2898,10 @@ impl Codegen {
             }
             Expr::Unary { op, expr } => match op {
                 // `move x` is value-neutral on WASM (value semantics throughout) —
-                // just compile the operand.
-                UnOp::Move => self.compile_expr(expr),
+                // just compile the operand. `await e` is likewise value-neutral in
+                // Phase 1 (no executor): compile the operand, byte-identical to the
+                // interpreter.
+                UnOp::Move | UnOp::Await => self.compile_expr(expr),
                 UnOp::Not => Ok(format!("{}    i32.eqz\n", self.compile_expr(expr)?)),
                 UnOp::Neg => match self.kind_of(expr) {
                     Kind::F64 => Ok(format!("{}    f64.neg\n", self.compile_expr(expr)?)),
@@ -5229,6 +5262,12 @@ impl Codegen {
                 let new = self.compile_expr(&args[1])?;
                 Ok(format!("{old}{new}    call $compiler_diff\n"))
             }
+            ("regex.match_spans", 2) => {
+                self.uses_regex_spans = true;
+                let pat = self.compile_expr(&args[0])?;
+                let text = self.compile_expr(&args[1])?;
+                Ok(format!("{pat}{text}    call $regex_match_spans\n"))
+            }
             // Safety net: every registered native is bridged above; a future
             // native added without a bridge fails loudly here instead of
             // miscompiling as an unknown user function.
@@ -5618,6 +5657,31 @@ impl Codegen {
                 Ok(format!(
                     "{target}    i32.const {tag}\n{payload}    call $send\n    i32.const 0\n"
                 ))
+            }
+            // ask(subject, Message(arg)): synchronous request/response. Same
+            // wire as `send` (target, tag, packed field record), but `$ask`
+            // runs the target's handler to completion now and leaves the i32
+            // the handler passed to `reply(...)` on the stack.
+            ("ask", 2) => {
+                let Expr::Ctor { name: msg, args: fields } = &args[1] else {
+                    return cerr("ask expects a message constructor as its second argument");
+                };
+                let Some(&tag) = self.message_tags.get(msg) else {
+                    return cerr(format!("ask to unknown message `{msg}` (no handler declares it)"));
+                };
+                self.uses_ask = true;
+                let target = self.compile_expr(&args[0])?;
+                let payload = self.compile_expr(&Expr::List(fields.clone()))?;
+                Ok(format!(
+                    "{target}    i32.const {tag}\n{payload}    call $ask\n"
+                ))
+            }
+            // reply(v): inside a handler reached by `ask`, hand `v` (an Int)
+            // back to the asker. Returns Nil (i32 0).
+            ("reply", 1) => {
+                self.uses_reply = true;
+                let v = self.compile_expr(&args[0])?;
+                Ok(format!("{v}    call $reply\n    i32.const 0\n"))
             }
             ("spawn", _) => cerr("`spawn` is not compiled to WASM yet (host-driven)"),
             // --- the Dir capability family. A Dir value is an i32 handle into
@@ -7033,6 +7097,12 @@ fn compile_actor_in(
         ));
     }
 
+    // `self` — the actor's own Subject — lowers to a read of the `$self`
+    // global. Register it so handler bodies resolve it; the global itself is
+    // declared below only if a handler actually uses it.
+    cg.globals.insert("self".to_string());
+    cg.local_val_types.insert("self".to_string(), ValType::Int);
+
     let mut handlers: Vec<(String, String)> = Vec::new();
     // Field kinds (e.g. a Float field's f64) persist across handlers; each
     // handler's own params/lets start from this snapshot.
@@ -7158,6 +7228,12 @@ fn compile_actor_in(
     // actors without a collector. `__msg_alloc` then re-allocates any String
     // message fields in THIS actor's memory before the handler runs.
     let mut extra_globals = state_globals;
+    // The `$self` global (the actor's own Subject id) — emitted only when a
+    // handler reads it. The host sets it to the actor's id at spawn
+    // (set-if-present), so actors that never mention `self` stay untouched.
+    if handlers.iter().any(|(_, body)| body.contains("global.get $self")) {
+        extra_globals.push_str("  (global $self (export \"self\") (mut i32) (i32.const -1))\n");
+    }
     let mut msg_helpers = String::new();
     if cg.need_heap() {
         extra_globals.push_str(&format!(
@@ -7839,6 +7915,20 @@ const FIELD_STRLIST_GET_WAT: &str = r#"  (func $field_strlist_get (param $idx i3
 const COMPILER_DIFF_WAT: &str = r#"  (func $compiler_diff (param $old i32) (param $new i32) (result i32)
     (local $len i32) (local $res i32)
     (local.set $len (call $compiler_diff_len_host (local.get $old) (local.get $new)))
+    (call $ensure (i32.add (local.get $len) (i32.const 4)))
+    (local.set $res (global.get $heap))
+    (i32.store (local.get $res) (local.get $len))
+    (call $fill_pending_host (i32.add (local.get $res) (i32.const 4)))
+    (global.set $heap (i32.add (i32.add (local.get $res) (i32.const 4)) (local.get $len)))
+    (local.get $res))
+"#;
+
+// match_spans(pat, text): the regex crate's match spans as a fresh string. The
+// host runs the engine and stages the encoded spans at `regex_match_spans_len`;
+// the guest allocates `[len][bytes]` and `fill_pending` writes them.
+const REGEX_SPANS_WAT: &str = r#"  (func $regex_match_spans (param $pat i32) (param $text i32) (result i32)
+    (local $len i32) (local $res i32)
+    (local.set $len (call $regex_match_spans_len_host (local.get $pat) (local.get $text)))
     (call $ensure (i32.add (local.get $len) (i32.const 4)))
     (local.set $res (global.get $heap))
     (i32.store (local.get $res) (local.get $len))

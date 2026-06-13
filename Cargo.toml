@@ -30,6 +30,7 @@ native = ["dep:wasmtime", "dep:lsp-server", "dep:serde_json", "dep:serde", "dep:
 # Pure-Rust deps the interpreter library needs on every target (incl. wasm).
 sha2 = "0.11.0"
 ed25519-dalek = "2.2.0"
+regex = "1.11"
 # Native-only deps (the sandbox/PM/LSP layers); excluded from the wasm build.
 wasmtime = { version = "45.0.0", optional = true }
 lsp-server = { version = "0.7.9", optional = true }

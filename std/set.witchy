@@ -1,61 +1,128 @@
-// Set operations over lists, treating a list as a set of distinct elements
-// compared by the element type's Eq impl. Pure and capability-free. Like the
-// eq-based searches, these are content-correct on both backends — so they work
-// for lists of runtime-built strings and your own Eq types, not just interned
-// literals. (witchy has no separate hashed Set type; a deduplicated list IS the
-// set, which keeps element order deterministic.)
+// Set(a) — an unordered collection of distinct values. Members are compared by
+// value equality (a `where a: Eq` bound on every operation that compares), so
+// sets of Ints, Strings, tuples, or your own `Eq` types all work. Build one with
+// `set.new()` / `set.from_list(xs)`, test membership with `set.contains`, and
+// reach for `union`/`intersection`/`difference` for the algebra. `set.show(s)`
+// renders the members; `set.to_list(s)` returns them in insertion order.
 
 import eq
+import list
+import string
 
-// Elements appearing in either list, de-duplicated, xs-order then new ys.
-pub fn union(xs: List(a), ys: List(a)) -> List(a) where a: Eq:
-    var out = []
+type Set(a):
+    items: List(a)
+
+// The empty set.
+pub fn new() -> Set(a):
+    Set([])
+
+// A set of the distinct values in `xs` (duplicates collapse).
+pub fn from_list(xs: List(a)) -> Set(a) where a: Eq:
+    var s = new()
     for x in xs:
-        if !eq.member(out, x):
-            out = list.push(out, x)
-    for y in ys:
-        if !eq.member(out, y):
+        s = insert(s, x)
+    s
+
+// `s` with `x` added (a no-op if already present).
+pub fn insert(s: Set(a), x: a) -> Set(a) where a: Eq:
+    let items = s.items
+    if eq.member(items, x):
+        s
+    else:
+        Set(list.push(items, x))
+
+// `s` with `x` removed (a no-op if absent).
+pub fn remove(s: Set(a), x: a) -> Set(a) where a: Eq:
+    let items = s.items
+    var out = []
+    for y in items:
+        if !eq.member([x], y):
             out = list.push(out, y)
+    Set(out)
+
+// Whether `x` is a member of `s`.
+pub fn contains(s: Set(a), x: a) -> Bool where a: Eq:
+    let items = s.items
+    eq.member(items, x)
+
+// The number of distinct members.
+pub fn size(s: Set(a)) -> Int:
+    list.length(s.items)
+
+// Whether the set has no members.
+pub fn is_empty(s: Set(a)) -> Bool:
+    list.length(s.items) == 0
+
+// The members as a list, in insertion order.
+pub fn to_list(s: Set(a)) -> List(a):
+    s.items
+
+// Render the set as `{a, b, c}` (members in insertion order). Use this rather
+// than interpolating a `Set` directly: `${s}` falls back to the structural form
+// `Set([...])`, which the compiled backend can't render for a generic record.
+pub fn show(s: Set(a)) -> String:
+    var parts = []
+    for x in s.items:
+        parts = list.push(parts, "${x}")
+    "{" + string.join(parts, ", ") + "}"
+
+// Every member of either set.
+pub fn union(s: Set(a), t: Set(a)) -> Set(a) where a: Eq:
+    let titems = t.items
+    var out = s
+    for x in titems:
+        out = insert(out, x)
     out
 
-// Elements appearing in BOTH lists, de-duplicated, in xs order.
-pub fn intersection(xs: List(a), ys: List(a)) -> List(a) where a: Eq:
+// The members in both sets.
+pub fn intersection(s: Set(a), t: Set(a)) -> Set(a) where a: Eq:
+    let sitems = s.items
+    let titems = t.items
     var out = []
-    for x in xs:
-        if eq.member(ys, x) && !eq.member(out, x):
+    for x in sitems:
+        if eq.member(titems, x):
             out = list.push(out, x)
-    out
+    Set(out)
 
-// Elements in xs but NOT in ys, de-duplicated, in xs order.
-pub fn difference(xs: List(a), ys: List(a)) -> List(a) where a: Eq:
+// The members of `s` that are not in `t`.
+pub fn difference(s: Set(a), t: Set(a)) -> Set(a) where a: Eq:
+    let sitems = s.items
+    let titems = t.items
     var out = []
-    for x in xs:
-        if !eq.member(ys, x) && !eq.member(out, x):
+    for x in sitems:
+        if !eq.member(titems, x):
             out = list.push(out, x)
-    out
+    Set(out)
 
-// Whether every element of xs appears in ys.
-pub fn is_subset(xs: List(a), ys: List(a)) -> Bool where a: Eq:
-    for x in xs:
-        if !eq.member(ys, x):
-            return false
-    true
-
-// Elements in exactly one of the two lists (xs-only first, then ys-only),
-// de-duplicated — the set XOR.
-pub fn symmetric_difference(xs: List(a), ys: List(a)) -> List(a) where a: Eq:
+// The members in exactly one of the two sets.
+pub fn symmetric_difference(s: Set(a), t: Set(a)) -> Set(a) where a: Eq:
+    let sitems = s.items
+    let titems = t.items
     var out = []
-    for x in xs:
-        if !eq.member(ys, x) && !eq.member(out, x):
+    for x in sitems:
+        if !eq.member(titems, x):
             out = list.push(out, x)
-    for y in ys:
-        if !eq.member(xs, y) && !eq.member(out, y):
+    for y in titems:
+        if !eq.member(sitems, y):
             out = list.push(out, y)
-    out
+    Set(out)
 
-// Whether the two lists share no elements at all.
-pub fn is_disjoint(xs: List(a), ys: List(a)) -> Bool where a: Eq:
-    for x in xs:
-        if eq.member(ys, x):
-            return false
-    true
+// Whether every member of `s` is also in `t`.
+pub fn is_subset(s: Set(a), t: Set(a)) -> Bool where a: Eq:
+    let sitems = s.items
+    let titems = t.items
+    var ok = true
+    for x in sitems:
+        if !eq.member(titems, x):
+            ok = false
+    ok
+
+// Whether the two sets share no members.
+pub fn is_disjoint(s: Set(a), t: Set(a)) -> Bool where a: Eq:
+    let sitems = s.items
+    let titems = t.items
+    var ok = true
+    for x in sitems:
+        if eq.member(titems, x):
+            ok = false
+    ok

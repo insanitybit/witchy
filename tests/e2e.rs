@@ -1237,12 +1237,12 @@ fn example_todo_workspace_runs_with_a_path_dependency() {
     assert!(s.contains("3 / 5 done"), "summary missing: {s}");
 }
 
-/// The committed `examples/projects/ledger` workspace — a bank-account *actor*
-/// (granted Console at spawn, isolated balance state, FIFO message handlers) that
+/// The committed `examples/projects/ledger` workspace — a bank-account async task
+/// (balance isolated in a recursive parameter, FIFO messages over a channel) that
 /// formats amounts via a `money` library rune (a path dependency) — builds and
 /// runs end to end. Copied into a hermetic sandbox so the repo is never touched.
 #[test]
-fn example_ledger_workspace_runs_with_actors_and_a_path_dependency() {
+fn example_ledger_workspace_runs_with_async_and_a_path_dependency() {
     let sb = Sandbox::new("ex-ledger");
     let srcroot = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/projects/ledger");
     copy_tree(&srcroot, &sb.work);

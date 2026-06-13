@@ -1,10 +1,120 @@
-// toml — a small TOML reader for manifests (`witchy.toml`), written in pure
-// witchy (no native code). It supports what a package manifest needs: top-level
-// and `[section]` tables, `key = "string"` values, and `key = ["a", "b"]` string
-// arrays. Look values up by a `section.key` path (or just `key` for a top-level
-// value). Comments (`#`) — whole-line and trailing — and blank lines are ignored.
+// toml — a TOML reader written in pure witchy (no native code). Two ways in:
+// `toml.decode(text)` parses a whole document into a structured `Toml` tree (the
+// `json.decode` shape); or look individual values up by a `section.key` path with
+// `toml.get`/`get_array`/`table`/... It supports top-level and `[section]` (and
+// dotted `[a.b]`) tables, `key = value` for string/int/bool values, and
+// `["a", "b"]` arrays. Comments (`#`) — whole-line and trailing — and blank lines
+// are ignored. (Floats/dates decode as `TomlString`: witchy has no string->float
+// primitive yet.)
 
 import string
+
+// A decoded TOML value (`toml.decode`), the structured counterpart of the
+// string-query API below. A document decodes to a `TomlTable`. Floats, dates, and
+// other values witchy can't type are kept as `TomlString` (witchy has no
+// string->float primitive yet), so a round-trip never loses data.
+type Toml:
+    TomlString(String)
+    TomlInt(Int)
+    TomlBool(Bool)
+    TomlArray(List(Toml))
+    TomlTable(List((String, Toml)))
+
+// Parse a whole TOML document into a `Toml` tree (always a `TomlTable`).
+// Supports top-level keys, `[section]` and dotted `[a.b]` tables, `#` comments,
+// and `string`/`int`/`bool`/array values. Always succeeds — malformed lines are
+// skipped — so the result is `Ok`; the `Result` shape mirrors `json.decode`.
+pub fn decode(text: String) -> Result(Toml, String):
+    var root = TomlTable([])
+    var section = []
+    for line in string.lines(text):
+        let t = string.trim(line)
+        if is_header(t):
+            section = header_path(header_name(t))
+        else if !(string.is_empty(t) || string.starts_with(t, "#")):
+            root = match key_value(t):
+                Some((k, v)) -> insert_kv(root, section, k, parse_value(v))
+                None -> root
+    Ok(root)
+
+// "a.b.c" -> ["a", "b", "c"]; "" -> [].
+fn header_path(name: String) -> List(String):
+    var out = []
+    for seg in string.split(name, "."):
+        let s = string.trim(seg)
+        if !string.is_empty(s):
+            out = list.push(out, unquote_key(s))
+    out
+
+// Type a raw value string into a Toml leaf.
+fn parse_value(raw: String) -> Toml:
+    let v = string.trim(raw)
+    if string.starts_with(v, "\""):
+        TomlString(unquote(v))
+    else if string.starts_with(v, "["):
+        var elems = []
+        for e in parse_array(v):
+            elems = list.push(elems, parse_value(e))
+        TomlArray(elems)
+    else:
+        let bare = unquote(v)
+        if bare == "true":
+            TomlBool(true)
+        else if bare == "false":
+            TomlBool(false)
+        else:
+            match string.parse_int(bare):
+                Some(n) -> TomlInt(n)
+                None -> TomlString(bare)
+
+// Insert (key -> value) into `node` at the table reached by `path`, creating
+// intermediate tables as needed.
+fn insert_kv(node: Toml, path: List(String), key: String, value: Toml) -> Toml:
+    match node:
+        TomlTable(pairs) ->
+            if list.length(path) == 0:
+                TomlTable(upsert(pairs, key, value))
+            else:
+                let head = list.at(path, 0)
+                let sub = subtable(pairs, head)
+                TomlTable(upsert(pairs, head, insert_kv(sub, drop_first(path), key, value)))
+        _ -> node
+
+// Replace `key`'s pair if present, else append it.
+fn upsert(pairs: List((String, Toml)), key: String, value: Toml) -> List((String, Toml)):
+    var out = []
+    var found = false
+    for p in pairs:
+        let (k, _v) = p
+        if k == key:
+            out = list.push(out, (key, value))
+            found = true
+        else:
+            out = list.push(out, p)
+    if found:
+        out
+    else:
+        list.push(out, (key, value))
+
+// The existing sub-table at `head`, or a fresh empty one.
+fn subtable(pairs: List((String, Toml)), head: String) -> Toml:
+    var result = TomlTable([])
+    for p in pairs:
+        let (k, v) = p
+        if k == head:
+            match v:
+                TomlTable(_inner) -> result = v
+                _ -> result = TomlTable([])
+    result
+
+fn drop_first(xs: List(String)) -> List(String):
+    var out = []
+    var i = 0
+    for x in xs:
+        if i > 0:
+            out = list.push(out, x)
+        i = i + 1
+    out
 
 // The string value of `path` (e.g. "rune.name"), or None if absent. Surrounding
 // double quotes are stripped.

@@ -47,6 +47,15 @@ impl fmt::Display for DirRights {
     }
 }
 
+/// The actor kind a `Subject(Name)` targets, or `None` for a bare, untyped
+/// `Subject`. Only the first type argument's name is read.
+fn subject_target(args: &[ast::Type]) -> Option<String> {
+    match args.first() {
+        Some(ast::Type::Named(n, _)) => Some(n.clone()),
+        _ => None,
+    }
+}
+
 /// Interpret a `Dir`'s type arguments as its rights. Bare `Dir` (no args) is the
 /// full set; `Dir[Read]`/`Dir[Write]`/`Dir[Read, Write]` narrow it.
 fn dir_rights(args: &[ast::Type]) -> DirRights {
@@ -174,7 +183,11 @@ pub enum Ty {
     Clock,
     Env,
     Secret,
-    Subject,
+    /// A handle to an actor's mailbox. The optional name is the actor kind it
+    /// targets (`Subject(Counter)`); `None` is an untyped subject (bare
+    /// `Subject`), which accepts any message a handler declares. `spawn` yields
+    /// a typed subject, so `send`/`ask` to the wrong message is a compile error.
+    Subject(Option<String>),
     Dir(DirRights),
     Net(NetRights),
     Socket,
@@ -211,7 +224,8 @@ impl fmt::Display for Ty {
             Ty::Clock => write!(f, "Clock"),
             Ty::Env => write!(f, "Env"),
             Ty::Secret => write!(f, "Secret"),
-            Ty::Subject => write!(f, "Subject"),
+            Ty::Subject(None) => write!(f, "Subject"),
+            Ty::Subject(Some(a)) => write!(f, "Subject({a})"),
             Ty::Dir(r) => write!(f, "{r}"),
             Ty::Net(r) => write!(f, "{r}"),
             Ty::Socket => write!(f, "Socket"),
@@ -703,6 +717,9 @@ struct Checker {
     /// actor (`on Log(line: String)` registers `Log -> [[Some(String)]]`).
     /// `send(subject, Msg(...))` is validated against these.
     actor_handler_sigs: HashMap<String, Vec<Vec<Option<ast::Type>>>>,
+    /// Actor kind -> the message names it handles. Used to check a `send`/`ask`
+    /// to a *typed* `Subject(Actor)` targets a message that actor declares.
+    actor_messages: HashMap<String, std::collections::HashSet<String>>,
     fn_conventions: HashMap<String, Vec<Convention>>,
     /// Per-function type parameters (name, var id), from lowercase type names in
     /// signatures. Generalized: instantiated fresh at each call site.
@@ -766,7 +783,7 @@ impl Checker {
             "Clock" => Ty::Clock,
             "Env" => Ty::Env,
             "Secret" => Ty::Secret,
-            "Subject" => Ty::Subject,
+            "Subject" => Ty::Subject(subject_target(args)),
             "Dir" => Ty::Dir(dir_rights(args)),
             "Net" => Ty::Net(net_rights(args)),
             "Socket" => Ty::Socket,
@@ -810,7 +827,7 @@ impl Checker {
             "Clock" => Ty::Clock,
             "Env" => Ty::Env,
             "Secret" => Ty::Secret,
-                "Subject" => Ty::Subject,
+                "Subject" => Ty::Subject(subject_target(args)),
                 "Dir" => Ty::Dir(dir_rights(args)),
                 "Net" => Ty::Net(net_rights(args)),
                 "Socket" => Ty::Socket,
@@ -937,6 +954,13 @@ impl Checker {
                 }
                 self.unify(xr, yr)
             }
+            // A bare `Subject` (untyped) accepts any actor's subject; two typed
+            // subjects must name the same actor.
+            (Ty::Subject(x), Ty::Subject(y)) => match (x, y) {
+                (None, _) | (_, None) => Ok(()),
+                (Some(p), Some(q)) if p == q => Ok(()),
+                _ => terr(format!("expected `{a}`, found `{b}`")),
+            },
             _ if a == b => Ok(()),
             _ => terr(format!("expected `{a}`, found `{b}`")),
         }
@@ -1020,7 +1044,7 @@ impl Checker {
                 | Ty::Clock
                 | Ty::Env
                 | Ty::Secret
-                | Ty::Subject
+                | Ty::Subject(_)
                 | Ty::Dir(_)
                 | Ty::Net(_)
                 | Ty::Socket
@@ -1160,8 +1184,16 @@ impl Checker {
             }
             "send" => {
                 let msg = self.fresh();
-                Some((vec![Ty::Subject, msg], Ty::Nil))
+                Some((vec![Ty::Subject(None), msg], Ty::Nil))
             }
+            // `ask` is normally routed to `check_ask` (deep message validation);
+            // this fallback signature covers any path that reaches `call_sig`.
+            "ask" => {
+                let msg = self.fresh();
+                Some((vec![Ty::Subject(None), msg], Ty::Int))
+            }
+            // `reply(v)` hands a value back to an `ask`er. v1 replies are Int.
+            "reply" => Some((vec![Ty::Int], Ty::Nil)),
             "list.length" => {
                 let elem = self.fresh();
                 Some((vec![Ty::List(Box::new(elem))], Ty::Int))
@@ -1280,11 +1312,38 @@ impl Checker {
     /// message was a fresh type variable — field-count and type mistakes only
     /// surfaced at runtime.)
     fn check_send(&mut self, args: &[Expr]) -> Result<Ty, TypeError> {
+        self.check_delivery("send", args, Ty::Nil)
+    }
+
+    /// Validate `ask(subject, Msg(args...))`: same message check as `send`, but
+    /// `ask` is synchronous request/response and yields the handler's reply.
+    /// v1 replies are `Int` (the common "report a count back" case).
+    fn check_ask(&mut self, args: &[Expr]) -> Result<Ty, TypeError> {
+        self.check_delivery("ask", args, Ty::Int)
+    }
+
+    fn check_delivery(&mut self, verb: &str, args: &[Expr], ret: Ty) -> Result<Ty, TypeError> {
         let subj = self.infer(&args[0])?;
-        self.unify(&subj, &Ty::Subject).map_err(|e| TypeError {
-            message: format!("in call to `send`: {}", e.message),
+        self.unify(&subj, &Ty::Subject(None)).map_err(|e| TypeError {
+            message: format!("in call to `{verb}`: {}", e.message),
         })?;
+        // A typed subject (`Subject(Counter)`, e.g. from `spawn Counter()`)
+        // names the actor it targets, so the message must be one that actor
+        // actually handles — caught here, at compile time, not at delivery.
+        let target_actor = match self.resolve(&subj) {
+            Ty::Subject(Some(a)) => Some(a),
+            _ => None,
+        };
         if let Expr::Ctor { name, args: margs } = &args[1] {
+            if let Some(actor) = &target_actor {
+                if let Some(msgs) = self.actor_messages.get(actor) {
+                    if !msgs.contains(name) {
+                        return terr(format!(
+                            "actor `{actor}` has no handler `on {name}(...)` — `{verb}` to a `Subject({actor})` must use one of its messages"
+                        ));
+                    }
+                }
+            }
             if let Some(sigs) = self.actor_handler_sigs.get(name).cloned() {
                 let matching: Vec<&Vec<Option<ast::Type>>> =
                     sigs.iter().filter(|s| s.len() == margs.len()).collect();
@@ -1325,7 +1384,7 @@ impl Checker {
         } else {
             self.infer(&args[1])?;
         }
-        Ok(Ty::Nil)
+        Ok(ret)
     }
 
     /// Resolve a call's first argument as a `Dir` capability and yield its rights.
@@ -1864,6 +1923,9 @@ impl Checker {
                 if name == "send" && args.len() == 2 {
                     return self.check_send(args);
                 }
+                if name == "ask" && args.len() == 2 {
+                    return self.check_ask(args);
+                }
                 let Some((params, ret)) = self.call_sig(name) else {
                     // `to_string` was removed from the surface: interpolation
                     // IS the rendering (it desugars to the internal __render).
@@ -1999,6 +2061,9 @@ impl Checker {
                         }
                         Ok(t)
                     }
+                    // `await e` has the type of `e` (Phase 1: the awaited value is
+                    // the value itself; suspension is invisible to the type).
+                    UnOp::Await => Ok(t),
                     UnOp::Not => {
                         self.unify(&Ty::Bool, &t)?;
                         Ok(Ty::Bool)
@@ -2186,7 +2251,9 @@ impl Checker {
                         message: format!("spawning `{actor}`: {}", e.message),
                     })?;
                 }
-                Ok(Ty::Subject)
+                // `spawn Counter(...)` yields a `Subject(Counter)` — a typed
+                // handle, so a later `send`/`ask` of a wrong message is caught.
+                Ok(Ty::Subject(Some(actor.clone())))
             }
         }
     }
@@ -2526,6 +2593,16 @@ impl Checker {
                 let ty = self.to_ty(&field.ty);
                 self.define(field.name.clone(), ty, field.mutable);
             }
+            // `self` (the actor's own Subject) is in scope only when the handler
+            // declares it explicitly: `on Msg(self, ...)`. Its ownership
+            // convention sets mutability (`var self` is reassignable).
+            if handler.has_self {
+                self.define(
+                    "self".to_string(),
+                    Ty::Subject(Some(actor.name.clone())),
+                    handler.self_conv.binds_mutable(),
+                );
+            }
             self.push();
             for param in &handler.params {
                 let ty = param
@@ -2597,7 +2674,9 @@ pub fn ty_to_ast(t: &Ty) -> Option<crate::ast::Type> {
         Ty::Clock => T::Named("Clock".into(), Vec::new()),
         Ty::Env => T::Named("Env".into(), Vec::new()),
         Ty::Secret => T::Named("Secret".into(), Vec::new()),
-        Ty::Subject => T::Named("Subject".into(), Vec::new()),
+        // The actor name is erased for the backends — a Subject is always an
+        // i32 id, regardless of which actor it targets.
+        Ty::Subject(_) => T::Named("Subject".into(), Vec::new()),
         Ty::Dir(_) => T::Named("Dir".into(), Vec::new()),
         Ty::Net(_) => T::Named("Net".into(), Vec::new()),
         Ty::Socket => T::Named("Socket".into(), Vec::new()),
@@ -2658,6 +2737,7 @@ fn run_check(module: &Module, record: bool) -> Result<Option<TypeTable>, TypeErr
         adt_variants: HashMap::new(),
         actor_field_sigs: HashMap::new(),
         actor_handler_sigs: HashMap::new(),
+        actor_messages: HashMap::new(),
         fn_typarams: HashMap::new(),
         subst: HashMap::new(),
         next_var: 0,
@@ -2699,10 +2779,13 @@ fn run_check(module: &Module, record: bool) -> Result<Option<TypeTable>, TypeErr
                     .insert(f.name.clone(), f.params.iter().map(|p| p.convention).collect());
             }
             Item::Type(t) => {
-                // A type's parameters are the lowercase, argument-less names that
-                // appear in its variants' field types, in order of first
-                // appearance (so `type Option { Some(a) None }` has one param `a`).
-                let mut param_names: Vec<String> = Vec::new();
+                // A type's parameters: explicit ones (`type Step(m, a):`) FIX the
+                // order; otherwise infer them from the variant field types in order
+                // of first appearance (so `type Option { Some(a) None }` has one
+                // param `a`). Explicit params are required when a constructor omits
+                // one (e.g. `Done(a)` for `Step(m, a)`): inference would drop the
+                // omitted `m` from that constructor's result type, mis-aligning it.
+                let mut param_names: Vec<String> = t.params.clone();
                 for variant in &t.variants {
                     for ft in &variant.fields {
                         collect_type_params(ft, &mut param_names);
@@ -2758,7 +2841,9 @@ fn run_check(module: &Module, record: bool) -> Result<Option<TypeTable>, TypeErr
                     .map(|f| c.to_ty(&f.ty))
                     .collect();
                 c.actor_field_sigs.insert(a.name.clone(), field_tys);
+                let msgs = c.actor_messages.entry(a.name.clone()).or_default();
                 for h in &a.handlers {
+                    msgs.insert(h.message.clone());
                     c.actor_handler_sigs
                         .entry(h.message.clone())
                         .or_default()
@@ -3039,12 +3124,19 @@ mod tests {
         ))
         .expect_err("a 2-argument Log must fail");
         assert!(arity.contains("takes 1 argument"), "got: {arity}");
-        // A message no actor handles.
+        // A message the target actor doesn't handle. `logger` is a typed
+        // `Subject(Logger)` (from `spawn Logger`), so the error names the actor.
         let unknown = check_str(&format!(
             "{actor}fn main(console: Console):\n    let logger = spawn Logger(console)\n    send(logger, Logg(\"a\"))\n"
         ))
         .expect_err("an unhandled message name must fail");
-        assert!(unknown.contains("no actor declares a handler"), "got: {unknown}");
+        assert!(unknown.contains("actor `Logger` has no handler `on Logg"), "got: {unknown}");
+        // Through an UNTYPED `Subject` parameter, the global check still applies.
+        let untyped = check_str(&format!(
+            "{actor}fn relay(s: Subject):\n    send(s, Logg(\"a\"))\n"
+        ))
+        .expect_err("an unhandled message name must fail even through a bare Subject");
+        assert!(untyped.contains("no actor declares a handler"), "got: {untyped}");
     }
 
     #[test]

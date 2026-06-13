@@ -17,6 +17,7 @@ mod aliases;
 mod ast;
 mod capabilities;
 mod codegen;
+mod async_lower;
 mod consts;
 mod comptime;
 mod derive;
@@ -2626,6 +2627,24 @@ fn opt(o: Option(String)) -> String:
         );
     }
 
+    /// `toml.decode` builds a structured `Toml` tree — top-level keys, `[section]`
+    /// and dotted `[a.b]` tables, and typed string/int/bool/array values —
+    /// identically on both backends.
+    #[test]
+    fn toml_decode_builds_typed_tree_on_both_backends() {
+        let src = r#"import toml
+
+fn main(console: Console):
+    let doc = "title = \"demo\"\nport = 8080\nenabled = true\ntags = [\"a\", \"b\"]\n\n[server]\nhost = \"localhost\"\nworkers = 4\n\n[server.tls]\nenabled = false\n"
+    match toml.decode(doc):
+        Ok(t) -> print(console, "${t}")
+        Err(e) -> print(console, e)
+"#;
+        let want = vec!["TomlTable([(title, TomlString(demo)), (port, TomlInt(8080)), (enabled, TomlBool(true)), (tags, TomlArray([TomlString(a), TomlString(b)])), (server, TomlTable([(host, TomlString(localhost)), (workers, TomlInt(4)), (tls, TomlTable([(enabled, TomlBool(false))]))]))])".to_string()];
+        assert_eq!(link_run(src), want.clone(), "interpreter");
+        assert_eq!(wasm_run(src), want, "wasm");
+    }
+
     /// Trailing `# comments` on values and arrays are stripped, but a `#` inside a
     /// quoted string and a `]` inside an array element (e.g. "Dir[Read]") are
     /// preserved — real manifests carry comments, so the reader must tolerate them.
@@ -3168,6 +3187,20 @@ fn yn(b: Bool) -> String:
         .iter()
         .map(|s| s.to_string())
         .collect();
+        assert_eq!(link_run(src), want.clone(), "interpreter");
+        assert_eq!(wasm_run(src), want, "compiled WASM must agree");
+    }
+
+    /// Alternation `a|b` and grouping `(...)` — which the old hand-rolled engine
+    /// silently failed to match — now work (the `regex` crate), identically on
+    /// both backends, including grouped extract.
+    #[test]
+    fn regex_alternation_and_groups_agree_on_both_backends() {
+        let src = "import regex\n\nfn main(console: Console):\n    print(console, __render(regex.matches(\"cat|dog\", \"I have a dog\")))\n    print(console, __render(regex.matches(\"(cat|dog)s?\", \"cats\")))\n    print(console, __render(regex.extract(\"(foo|bar)\", \"foo bar baz\")))\n    print(console, regex.replace_all(\"(a|b)+\", \"abab x\", \"Z\"))\n    print(console, __render(regex.find(\"(cat|dog)\", \"a dog\")))\n";
+        let want: Vec<String> = ["true", "true", "[foo, bar]", "Z x", "Some((2, 5))"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
         assert_eq!(link_run(src), want.clone(), "interpreter");
         assert_eq!(wasm_run(src), want, "compiled WASM must agree");
     }
@@ -4253,11 +4286,11 @@ fn yn(b: Bool) -> String:
         let src = "fn main(console: Console):\n    print(console, __render(3.5))\n    print(console, __render(2.0))\n    print(console, __render(0.0 - 1.0 / 3.0))\n    print(console, __render(0.1 + 0.2))\n    print(console, __render(1000000.0))\n    print(console, __render(0.0))\n";
         let want = vec![
             "3.5".to_string(),
-            "2".to_string(),
+            "2.0".to_string(),
             "-0.3333333333333333".to_string(),
             "0.30000000000000004".to_string(),
-            "1000000".to_string(),
-            "0".to_string(),
+            "1000000.0".to_string(),
+            "0.0".to_string(),
         ];
         assert_eq!(interp(src), want.clone(), "interpreter");
         assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
@@ -5277,14 +5310,18 @@ fn build(s: String) -> String:
     acc
 
 fn main(console: Console):
-    let a = [build("x"), build("y"), build("x")]
-    let b = [build("y"), build("z")]
-    print(console, string.join(set.union(a, b), ","))
-    print(console, string.join(set.intersection(a, b), ","))
-    print(console, string.join(set.difference(a, b), ","))
-    print(console, __render(set.is_subset([build("y")], a)))
-    print(console, __render(set.is_subset([build("z")], a)))
-    print(console, __render(list.length(set.union([Id(1), Id(2), Id(1)], [Id(2), Id(3)]))))
+    let a = set.from_list([build("x"), build("y"), build("x")])
+    let b = set.from_list([build("y"), build("z")])
+    let u = set.union(a, b)
+    let i = set.intersection(a, b)
+    let d = set.difference(a, b)
+    print(console, string.join(set.to_list(u), ","))
+    print(console, string.join(set.to_list(i), ","))
+    print(console, string.join(set.to_list(d), ","))
+    print(console, __render(set.is_subset(set.from_list([build("y")]), a)))
+    print(console, __render(set.is_subset(set.from_list([build("z")]), a)))
+    let ids = set.union(set.from_list([Id(1), Id(2), Id(1)]), set.from_list([Id(2), Id(3)]))
+    print(console, __render(set.size(ids)))
 "#;
         let sources = [
             ("set", crate::bundled_module("set").unwrap()),
@@ -5299,6 +5336,27 @@ fn main(console: Console):
             compiled,
             vec!["x,y,z", "y", "x", "true", "false", "3"]
         );
+    }
+
+    /// The first-class `Set(a)` type: construction, membership, `for x in set`
+    /// iteration (IntoIter-style), removal, and collecting an iterator into a set
+    /// (`set.from_list(iter.collect(...))`) — identical on both backends.
+    #[test]
+    fn std_set_type_iteration_and_collect_agree() {
+        let client = "import set\nimport iter\n\nfn main(console: Console):\n    let s = set.from_list([3, 1, 2, 3, 1])\n    print(console, __render(set.size(s)))\n    print(console, __render(set.contains(s, 2)))\n    var total = 0\n    for x in s:\n        total = (total + x)\n    print(console, __render(total))\n    let r = set.remove(s, 2)\n    print(console, set.show(r))\n    let cs: Set(Int) = iter.collect(iter.range(1, 4))\n    print(console, set.show(cs))\n";
+        let sources = [
+            ("eq", crate::bundled_module("eq").unwrap()),
+            ("option", crate::bundled_module("option").unwrap()),
+            ("list", crate::bundled_module("list").unwrap()),
+            ("string", crate::bundled_module("string").unwrap()),
+            ("iter", crate::bundled_module("iter").unwrap()),
+            ("set", crate::bundled_module("set").unwrap()),
+            ("main", client),
+        ];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "set type diverged");
+        assert_eq!(compiled, vec!["3", "true", "6", "{3, 1}", "{1, 2, 3}"]);
     }
 
     #[test]
@@ -5634,10 +5692,13 @@ import string
 fn show_ints(xs: List(Int)) -> String:
     string.join(list.map(xs, fn(n: Int): __render(n)), ",")
 fn main(console: Console):
-    print(console, show_ints(set.symmetric_difference([1, 2, 3], [2, 3, 4])))
-    print(console, show_ints(set.symmetric_difference([1, 1, 2], [2, 2, 3])))
-    print(console, if set.is_disjoint([1, 2], [3, 4]): "yes" else: "no")
-    print(console, if set.is_disjoint([1, 2], [2, 3]): "yes" else: "no")
+    let sd1 = set.symmetric_difference(set.from_list([1, 2, 3]), set.from_list([2, 3, 4]))
+    let sd2 = set.symmetric_difference(set.from_list([1, 1, 2]), set.from_list([2, 2, 3]))
+    print(console, show_ints(set.to_list(sd1)))
+    print(console, show_ints(set.to_list(sd2)))
+    let d1a = set.from_list([1, 2])
+    print(console, if set.is_disjoint(d1a, set.from_list([3, 4])): "yes" else: "no")
+    print(console, if set.is_disjoint(d1a, set.from_list([2, 3])): "yes" else: "no")
 "#;
         let sources = [
             ("eq", crate::bundled_module("eq").unwrap()),
@@ -5939,7 +6000,7 @@ fn main(console: Console):
     print(console, round_trip("1.5e3"))
     print(console, round_trip("{\"pi\": 3.25}"))
 "#;
-        let want: Vec<String> = ["10", "-3", "3.25", "-0.5", "1500", "{\"pi\":3.25}"]
+        let want: Vec<String> = ["10", "-3", "3.25", "-0.5", "1500.0", "{\"pi\":3.25}"]
             .iter()
             .map(|s| s.to_string())
             .collect();
@@ -6889,13 +6950,7 @@ fn main(console: Console):
     /// with the interpreter line for line.
     #[test]
     fn verify_file_covers_actor_programs() {
-        // conventions.witchy is the case whose handler calls a top-level
-        // function — the actor module must carry the helper.
-        for example in [
-            "examples/actors.witchy",
-            "examples/dispatch.witchy",
-            "examples/conventions.witchy",
-        ] {
+        for example in ["examples/actors.witchy", "examples/dispatch.witchy"] {
             crate::verify_file(example).expect("actor program backends should agree");
         }
     }
@@ -7266,7 +7321,7 @@ fn main() -> Float:
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
         let compiled = run_linked_on_wasm(&sources, "main");
         assert_eq!(interpreted, compiled, "compiled float arithmetic diverged");
-        assert_eq!(compiled, vec!["3"]);
+        assert_eq!(compiled, vec!["3.0"]);
     }
 
     #[test]
@@ -9542,7 +9597,7 @@ fn main(console: Console):
     fn floats_run_via_cli() {
         assert_eq!(
             crate::execute_file("examples/floats.witchy", Vec::new()).unwrap(),
-            vec!["4", "3.5", "5", "1"]
+            vec!["4.0", "3.5", "5.0", "1.0"]
         );
     }
 
@@ -11758,6 +11813,263 @@ fn main(console: Console):
         assert_eq!(run_on_wasm(src), vec!["42", "yes", "7"]);
     }
 
+    // Phase 2 of the concurrency redesign: an `async fn` lowers (CPS over closures,
+    // `crate::async_lower`) to a cooperative `chan` task, and `await` chains
+    // continuations. An async `main` is the executor entry (lowers to `chan.run`).
+    // The lowering is ordinary closures + calls, so both backends agree.
+    #[test]
+    fn async_await_lowers_and_runs_backends_agree() {
+        let src = r#"
+async fn double(n: Int) -> Int:
+    n + n
+
+async fn pipeline(seed: Int) -> Int:
+    let a = await double(seed)
+    let b = await double(a)
+    a + b
+
+async fn main(console: Console):
+    let r = await pipeline(3)
+    print(console, "${r}")
+    let d = await double(10)
+    print(console, "${d}")
+"#;
+        let module = parser::parse_module(src).expect("parse");
+        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        typeck::check(&linked).expect("typecheck");
+        let interp_out =
+            interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interp");
+        let wat = codegen::compile_module(&linked).expect("compile");
+        let wasm_out = crate::run_wat_capture(&wat).expect("wasm");
+        assert_eq!(interp_out, wasm_out, "async lowering diverged across backends");
+        // pipeline(3): a=6, b=12, a+b=18.  double(10)=20.
+        assert_eq!(interp_out, vec!["18", "20"]);
+    }
+
+    // The headline of the unification: `async`/`await` and channels are ONE
+    // substrate. A producer and a consumer, both written as straight-line
+    // `async fn`s using `await chan.send`/`await chan.recv`, run concurrently under
+    // `chan.run`. The consumer loops on `recv` (recursively) — this is the actor
+    // idiom, now ergonomic — and the schedule is byte-identical on both backends.
+    #[test]
+    fn async_with_channels_backends_agree() {
+        let src = r#"
+import chan
+
+async fn producer() -> Nil:
+    await chan.send(1, 1)
+    await chan.send(1, 2)
+    await chan.send(1, 0)
+
+async fn consumer(console: Console) -> Nil:
+    let v = await chan.recv()
+    if v == 0:
+        print(console, "stop")
+    else:
+        print(console, "got ${v}")
+        await consumer(console)
+
+fn main(console: Console):
+    chan.run([producer(), consumer(console)])
+"#;
+        let module = parser::parse_module(src).expect("parse");
+        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        typeck::check(&linked).expect("typecheck");
+        let interp_out =
+            interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interp");
+        let wat = codegen::compile_module(&linked).expect("compile");
+        let wasm_out = crate::run_wat_capture(&wat).expect("wasm");
+        assert_eq!(interp_out, wasm_out, "async+channel schedule diverged across backends");
+        assert_eq!(interp_out, vec!["got 1", "got 2", "stop"]);
+    }
+
+    // The multi-actor case: each task has its OWN inbox, so several actors with
+    // separate mailboxes run together (what a single shared channel cannot do).
+    // A logger (#0), a forwarder (#1) that relays to the logger, and a driver (#2)
+    // that messages both — `send(target, msg)` routes by actor index. This is the
+    // shape `examples/actors.witchy` (Logger + Forwarder) needs, now in async/chan,
+    // byte-identical on both backends.
+    #[test]
+    fn chan_multi_actor_separate_inboxes_backends_agree() {
+        let src = r#"
+import chan
+
+async fn logger(console: Console) -> Nil:
+    let a = await chan.recv()
+    print(console, "log ${a}")
+    let b = await chan.recv()
+    print(console, "log ${b}")
+
+async fn forwarder() -> Nil:
+    let m = await chan.recv()
+    await chan.send(0, m)
+
+async fn driver() -> Nil:
+    await chan.send(0, 100)
+    await chan.send(1, 200)
+
+fn main(console: Console):
+    chan.run([logger(console), forwarder(), driver()])
+"#;
+        let module = parser::parse_module(src).expect("parse");
+        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        typeck::check(&linked).expect("typecheck");
+        let interp_out =
+            interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interp");
+        let wat = codegen::compile_module(&linked).expect("compile");
+        let wasm_out = crate::run_wat_capture(&wat).expect("wasm");
+        assert_eq!(interp_out, wasm_out, "multi-actor schedule diverged across backends");
+        assert_eq!(interp_out, vec!["log 100", "log 200"]);
+    }
+
+    // Phase 4 of the concurrency redesign: channels. `std/chan` is a cooperative
+    // message-passing executor written in pure witchy via an effect protocol
+    // (a task yields `Emit`/`Recv` requests; the executor owns the one FIFO buffer
+    // and threads it through the schedule — no shared mutable state, no runtime
+    // primitive). A producer sends, a consumer loops on `recv` (the actor idiom),
+    // and the run is byte-identical on both backends.
+    #[test]
+    fn chan_producer_consumer_backends_agree() {
+        let src = r#"
+import chan
+
+fn producer() -> Task(Int, Nil):
+    chan.and_then(chan.send(1, 1), fn(_a):
+        chan.and_then(chan.send(1, 2), fn(_b):
+            chan.send(1, 0)))
+
+fn consumer(console: Console) -> Task(Int, Nil):
+    chan.and_then(chan.recv(), fn(v):
+        if v == 0:
+            chan.done(print(console, "stop"))
+        else:
+            print(console, "got ${v}")
+            consumer(console))
+
+fn main(console: Console):
+    chan.run([producer(), consumer(console)])
+    print(console, "drained")
+"#;
+        let module = parser::parse_module(src).expect("parse");
+        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        typeck::check(&linked).expect("typecheck");
+        let interp_out =
+            interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interp");
+        let wat = codegen::compile_module(&linked).expect("compile");
+        let wasm_out = crate::run_wat_capture(&wat).expect("wasm");
+        assert_eq!(interp_out, wasm_out, "channel schedule diverged across backends");
+        assert_eq!(interp_out, vec!["got 1", "got 2", "stop", "drained"]);
+    }
+
+    // The channel message type is GENERIC (here `String`), proving the explicit
+    // type-parameter fix to the monomorphizer: a multi-param ADT whose constructor
+    // omits a param (`Done(a)` for `Step(m, a)`) now keeps that param generic
+    // because `type Step(m, a)` fixes the order. Byte-identical on both backends.
+    #[test]
+    fn chan_generic_message_type_backends_agree() {
+        let src = r#"
+import chan
+
+fn producer() -> Task(String, Nil):
+    chan.and_then(chan.send(1, "alice"), fn(_a):
+        chan.and_then(chan.send(1, "bob"), fn(_b): chan.send(1, "STOP")))
+
+fn consumer(console: Console) -> Task(String, Nil):
+    chan.and_then(chan.recv(), fn(name):
+        if name == "STOP":
+            chan.done(print(console, "done"))
+        else:
+            print(console, "hello ${name}")
+            consumer(console))
+
+fn main(console: Console):
+    chan.run([producer(), consumer(console)])
+"#;
+        let module = parser::parse_module(src).expect("parse");
+        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        typeck::check(&linked).expect("typecheck");
+        let interp_out =
+            interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interp");
+        let wat = codegen::compile_module(&linked).expect("compile");
+        let wasm_out = crate::run_wat_capture(&wat).expect("wasm");
+        assert_eq!(interp_out, wasm_out, "generic-message channel diverged across backends");
+        assert_eq!(interp_out, vec!["hello alice", "hello bob", "done"]);
+    }
+
+    // Phase 5 (racing): `future.select` drives tasks concurrently and returns the
+    // first to finish, dropping the losers. Among tasks of length 5/2/8, the
+    // index-1 task (length 2) wins first — deterministically on both backends.
+    #[test]
+    fn future_select_first_wins_backends_agree() {
+        let src = r#"
+import future
+
+fn counter(label: Int, steps: Int) -> Future(Int):
+    if steps <= 0:
+        future.ready(label)
+    else:
+        future.and_then(future.pending(0), fn(_a): counter(label, steps - 1))
+
+fn main(console: Console):
+    let (idx, val) = future.select([counter(10, 5), counter(20, 2), counter(30, 8)])
+    print(console, "winner ${idx} ${val}")
+"#;
+        let module = parser::parse_module(src).expect("parse");
+        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        typeck::check(&linked).expect("typecheck");
+        let interp_out =
+            interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interp");
+        let wat = codegen::compile_module(&linked).expect("compile");
+        let wasm_out = crate::run_wat_capture(&wat).expect("wasm");
+        assert_eq!(interp_out, wasm_out, "select diverged across backends");
+        assert_eq!(interp_out, vec!["winner 1 20"]);
+    }
+
+    // The coloring rule: `await` is a parse error outside an `async fn`.
+    #[test]
+    fn await_outside_async_is_a_parse_error() {
+        let src = "fn main(console: Console):\n    print(console, \"${await 5}\")\n";
+        let err = parser::parse_module(src).expect_err("await in a sync fn must not parse");
+        assert!(
+            format!("{err:?}").contains("async fn"),
+            "error should name the async-fn rule: {err:?}"
+        );
+    }
+
+    // Phase 3 of the concurrency redesign: the deterministic round-robin executor
+    // `future.join_all`, written in pure witchy over the `std/future` substrate.
+    // Two cooperative tasks (each yielding via `future.pending`) interleave at
+    // their yield points in a fixed schedule, so the interleaved output is
+    // byte-identical on both backends — concurrency with parity, no scheduler
+    // state in the runtime and no WASM feature.
+    #[test]
+    fn future_executor_interleaves_backends_agree() {
+        let src = r#"
+import future
+
+fn ticker(console: Console, name: String, n: Int) -> Future(Int):
+    if n <= 0:
+        future.ready(n)
+    else:
+        future.and_then(future.defer(fn(): print(console, name + " " + "${n}")), fn(_a):
+            future.and_then(future.pending(0), fn(_b):
+                ticker(console, name, n - 1)))
+
+fn main(console: Console):
+    let results = future.join_all([ticker(console, "A", 2), ticker(console, "B", 2)])
+    print(console, "done ${results}")
+"#;
+        let module = parser::parse_module(src).expect("parse");
+        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        typeck::check(&linked).expect("typecheck");
+        let interp_out =
+            interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interp");
+        let wat = codegen::compile_module(&linked).expect("compile");
+        let wasm_out = crate::run_wat_capture(&wat).expect("wasm");
+        assert_eq!(interp_out, wasm_out, "executor schedule diverged across backends");
+        assert_eq!(interp_out, vec!["A 2", "B 2", "A 1", "B 1", "done [0, 0]"]);
+    }
+
     // Traits over a user ADT: the receiver type comes from the constructor, and
     // the impl body matches on `self`. Both backends agree.
     #[test]
@@ -12653,6 +12965,41 @@ fn main(console: Console):
         );
     }
 
+    /// The actor-lifetime example: `main` runs to completion FIRST (both its
+    /// prints land before any handler output), then the queue drains — the
+    /// Logger's three notes, then the self-driving Countdown — to quiescence.
+    #[test]
+    fn actor_lifetime_example_drains_after_main() {
+        assert_eq!(
+            interp(include_str!("../examples/actor_lifetime.witchy")),
+            vec![
+                "[main] enqueuing 3 notes",
+                "[main] returning — no handler has run yet",
+                "  handling note 1",
+                "  handling note 2",
+                "  handling note 3",
+                "  tick 2",
+                "  tick 1",
+                "  liftoff (queue drains to quiescence)",
+            ]
+        );
+    }
+
+    /// The ask-timing example: an `ask` runs inline during `main` and reads
+    /// state from BEFORE the queued sends (`n = 0`); the two queued `Bump`s and
+    /// the `Report` run afterward in the drain, so `Report` sees `n = 2`.
+    #[test]
+    fn actor_ask_timing_example_sees_pre_drain_state() {
+        assert_eq!(
+            interp(include_str!("../examples/actor_ask_timing.witchy")),
+            vec![
+                "ask (inline) sees n = 0",
+                "[main] done",
+                "after the drain, n = 2",
+            ]
+        );
+    }
+
     /// The dispatch example: the full actor message model in one program —
     /// Float and String fields, a List(String) summary, Float state averaging
     /// across messages, and a Subject delivered IN a message (delegation: the
@@ -12663,8 +13010,8 @@ fn main(console: Console):
         assert_eq!(
             interp(include_str!("../examples/dispatch.witchy")),
             vec![
-                "mean 2",
-                "mean 3",
+                "mean 2.0",
+                "mean 3.0",
                 "routing thermostat",
                 "summary: 2 samples",
                 "summary: 1 alert",

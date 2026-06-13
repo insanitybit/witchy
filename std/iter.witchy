@@ -9,6 +9,7 @@
 // (The planned `gen`/`yield` syntax will de-sugar to these constructors.)
 
 import option
+import set
 
 // One pull: either exhausted, or a value plus the rest of the iterator.
 type Step:
@@ -239,6 +240,21 @@ impl FromIterator((k, v)) for Dict(k, v):
                     cur = rest
         out
 
+// A conditional impl: collecting into a `Set` needs `Eq` to deduplicate, so the
+// `where a: Eq` rides on the impl head (the trait method itself stays bound-free).
+impl FromIterator(a) for Set(a) where a: Eq:
+    fn from_iter(it: Iter(a)) -> Set(a):
+        var items: List(a) = []
+        var cur = it
+        var more = true
+        while more:
+            match next(cur):
+                Empty -> more = false
+                Item(x, rest) ->
+                    items = list.push(items, x)
+                    cur = rest
+        set.from_list(items)
+
 impl FromIterator(String) for String:
     fn from_iter(it: Iter(String)) -> String:
         var out = ""
@@ -256,6 +272,7 @@ impl FromIterator(String) for String:
 // type (drives the iterator to exhaustion — don't call on an unbounded one):
 //     let xs: List(Int) = iter.collect(it)
 //     let joined: String = iter.collect(pieces)
+//     let s: Set(Int) = iter.collect(it)        # de-duplicates; needs `a: Eq`
 pub fn collect(it: Iter(a)) -> c where c: FromIterator(a):
     from_iter(it)
 

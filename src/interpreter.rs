@@ -87,11 +87,24 @@ pub enum Capability {
     Env,
 }
 
+/// Render a `Float` to its canonical string. A finite, whole-valued float keeps
+/// a trailing `.0` (so `3.0` renders as `3.0`, visibly distinct from the `Int`
+/// `3`); other values use the shortest round-tripping form. Shared by both
+/// backends (the interpreter's `Display` and the WASM `float_to_str` host) so
+/// float rendering stays parity-identical.
+pub(crate) fn render_float(x: f64) -> String {
+    if x.is_finite() && x.fract() == 0.0 {
+        format!("{x:.1}")
+    } else {
+        format!("{x}")
+    }
+}
+
 impl fmt::Display for Value {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Value::Int(n) => write!(f, "{n}"),
-            Value::Float(x) => write!(f, "{x}"),
+            Value::Float(x) => write!(f, "{}", render_float(*x)),
             Value::Str(s) => write!(f, "{s}"),
             Value::Bool(b) => write!(f, "{b}"),
             Value::Nil => write!(f, "Nil"),
@@ -484,6 +497,14 @@ pub struct Interpreter {
     actor_defs: HashMap<String, ActorDef>,
     actors: Vec<ActorInstance>,
     queue: VecDeque<(usize, Value)>,
+    /// Actor ids currently mid-delivery (on the call stack). Mirrors the WASM
+    /// backend, where a delivering actor is taken OUT of the actor table: a
+    /// synchronous `ask` that targets a busy actor is the same error on both.
+    executing: HashSet<usize>,
+    /// Reply frames for synchronous `ask`: each `ask` pushes a `None`; the
+    /// target handler's `reply(v)` sets the top frame; `ask` pops it as the
+    /// result. A stack so nested asks target the innermost handler.
+    reply_stack: Vec<Option<Value>>,
     /// Host directory the root `Dir` capability is rooted at.
     root: PathBuf,
     /// Allow-list backing the root `Net` capability.
@@ -568,6 +589,8 @@ impl Interpreter {
             actor_defs,
             actors: Vec::new(),
             queue: VecDeque::new(),
+            executing: HashSet::new(),
+            reply_stack: Vec::new(),
             root: PathBuf::from("."),
             net_allow: Vec::new(),
             signing_key: None,
@@ -856,6 +879,28 @@ impl Interpreter {
                     Ok(Some(Value::Nil))
                 }
                 _ => err("send expects an actor subject and a message: send(actor, Msg(..))"),
+            },
+            // Synchronous request/response: run the target's handler now and
+            // return its `reply(...)` value. Unlike `send`, `ask` does not
+            // queue — it is how `main` (the root actor) gets a result back.
+            "ask" => match args {
+                [Value::Subject(id), msg] => {
+                    let v = self.ask_actor(*id, msg.clone())?;
+                    Ok(Some(v))
+                }
+                _ => err("ask expects an actor subject and a message: ask(actor, Msg(..))"),
+            },
+            // Inside a handler reached by `ask`, hand a value back to the
+            // asker. Outside an `ask` (a plain `send` delivery) it is a no-op,
+            // since there is no one waiting on a reply.
+            "reply" => match args {
+                [v] => {
+                    if let Some(frame) = self.reply_stack.last_mut() {
+                        *frame = Some(v.clone());
+                    }
+                    Ok(Some(Value::Nil))
+                }
+                _ => err("reply expects exactly one value: reply(v)"),
             },
             // Pure builtins need no capability.
             "__render" => Ok(Some(Value::Str(one(args)?.to_string()))),
@@ -1549,7 +1594,39 @@ impl Interpreter {
         Ok(())
     }
 
+    /// Async delivery (a queued `send`): run the handler to completion,
+    /// tracking the actor as busy for the duration so a synchronous `ask`
+    /// targeting it mid-flight fails identically to the WASM backend.
     fn handle_message(&mut self, id: usize, msg: Value) -> Result<(), RuntimeError> {
+        self.executing.insert(id);
+        let r = self.deliver(id, msg);
+        self.executing.remove(&id);
+        r
+    }
+
+    /// Synchronous request/response: deliver `msg` to actor `id`, run its
+    /// handler to completion, and return the value the handler passed to
+    /// `reply(...)`. The target must not be mid-delivery (no `ask` cycles) and
+    /// must reply. This is how the root actor (`main`) collects a result.
+    fn ask_actor(&mut self, id: usize, msg: Value) -> Result<Value, RuntimeError> {
+        if self.executing.contains(&id) {
+            return err(format!(
+                "ask: actor #{id} is busy — a synchronous `ask` cannot re-enter an actor that is mid-delivery"
+            ));
+        }
+        self.executing.insert(id);
+        self.reply_stack.push(None);
+        let r = self.deliver(id, msg);
+        let replied = self.reply_stack.pop().flatten();
+        self.executing.remove(&id);
+        r?;
+        match replied {
+            Some(v) => Ok(v),
+            None => err("ask: the handler returned without calling `reply(...)`"),
+        }
+    }
+
+    fn deliver(&mut self, id: usize, msg: Value) -> Result<(), RuntimeError> {
         let Value::Ctor { name: msg_name, fields } = msg else {
             return err("a message must be a constructor value, e.g. Log(\"hi\")");
         };
@@ -1577,6 +1654,12 @@ impl Interpreter {
             env.define(k.clone(), v.clone(), mutable);
         }
         env.push();
+        // `self` is the actor's own Subject — the authority to send to itself —
+        // in scope (with the declared mutability) only when the handler asks for
+        // it: `on Msg(self, ...)` / `var self` / `own self`.
+        if handler.has_self {
+            env.define("self".to_string(), Value::Subject(id), handler.self_conv.binds_mutable());
+        }
         for (param, value) in handler.params.iter().zip(fields) {
             env.define(
                 param.name.clone(),
@@ -1917,6 +2000,10 @@ impl Interpreter {
                     // ownership transfer it denotes only matters for the native
                     // backend's clone elision; the interpreter just yields the value.
                     (UnOp::Move, v) => Ok(v),
+                    // `await e` is value-neutral in Phase 1 (no executor yet): it
+                    // yields its operand and runs sequentially, identical on both
+                    // backends. Suspension semantics arrive with the executor.
+                    (UnOp::Await, v) => Ok(v),
                     // Negation wraps (matching the WASM backend's `0 - x`): so
                     // `-INT_MIN` is `INT_MIN`, not a host panic / divergence.
                     (UnOp::Neg, Value::Int(n)) => Ok(Value::Int(n.wrapping_neg())),
@@ -4221,7 +4308,7 @@ fn main(console: Console):
     print(console, __render(math.to_int(3.9)))
     print(console, __render(string.to_int("42")))
 "#;
-        assert_eq!(run(src).unwrap(), vec!["7", "3", "42"]);
+        assert_eq!(run(src).unwrap(), vec!["7.0", "3", "42"]);
     }
 
     #[test]

@@ -1,0 +1,149 @@
+// std/chan — cooperative message-passing concurrency: tasks ("actors") with their
+// OWN inbox, driven by a deterministic round-robin executor. This is the witchy
+// replacement for the actor system: an actor is an `async fn` that loops on
+// `recv`, addressed by its position in the task list; `ask`/`reply` is "send a
+// reply back, recv it".
+//
+// Each task gets a private inbox. `send(target, msg)` routes a message to the
+// inbox of task #target (its index in the `run` list); `recv()` reads the CURRENT
+// task's inbox. The executor owns the inboxes and threads them through the
+// schedule — so multiple actors with separate mailboxes need no shared mutable
+// state, no `Pin`, no runtime primitive. Pure witchy (closures + sum types), so a
+// concurrent run is byte-identical on both backends.
+//
+// Messages are generic (type `m`); all inboxes in one `run` share that type. The
+// `async`/`await` CPS transform lowers onto this substrate (chan.lazy/and_then/
+// done/run), so `await chan.recv()` / `await chan.send(t, x)` work inside async fns.
+
+import option
+
+// What a task does when the executor steps it: finish, yield cooperatively, send
+// a message to a target inbox, or block until its OWN inbox has a message.
+type Step(m, a):
+    Done(a)
+    Yield(Task(m, a))
+    Emit(Int, m, Task(m, a))
+    Recv(fn(m) -> Task(m, a))
+
+// A task that communicates via messages of type `m` and produces an `a`.
+type Task(m, a):
+    Task(fn() -> Step(m, a))
+
+fn poll(t: Task(m, a)) -> Step(m, a):
+    match t:
+        Task(thunk) -> thunk()
+
+fn unit():
+    let _ignore = 0
+
+// ---- constructors / combinators ----
+
+// A finished task.
+pub fn done(x: a) -> Task(m, a):
+    Task(fn(): Done(x))
+
+// An already-complete `Task(m, Nil)` — the async/await lowering target for a body
+// that falls off its end.
+pub fn ready_unit() -> Task(m, Nil):
+    Task(fn(): Done(unit()))
+
+// Hand control back to the executor once, then continue.
+pub fn yield_now() -> Task(m, Nil):
+    Task(fn(): Yield(Task(fn(): Done(unit()))))
+
+// Send `msg` to the inbox of task #`target` (its index in the `run` list), then
+// continue. An actor replies to its caller by sending back to the caller's index.
+pub fn send(target: Int, msg: m) -> Task(m, Nil):
+    Task(fn(): Emit(target, msg, Task(fn(): Done(unit()))))
+
+// Block until THIS task's inbox has a message, then continue with it.
+pub fn recv() -> Task(m, m):
+    Task(fn(): Recv(fn(msg): Task(fn(): Done(msg))))
+
+// Sequence: run `t`, then continue with `k` applied to its result. `await` for
+// tasks — the continuation `k` is what would follow the await point.
+pub fn and_then(t: Task(m, a), k: fn(a) -> Task(m, b)) -> Task(m, b):
+    Task(fn(): and_then_step(poll(t), k))
+
+fn and_then_step(s: Step(m, a), k: fn(a) -> Task(m, b)) -> Step(m, b):
+    match s:
+        Done(v) -> Yield(k(v))
+        Yield(t2) -> Yield(and_then(t2, k))
+        Emit(target, msg, t2) -> Emit(target, msg, and_then(t2, k))
+        Recv(cont) -> Recv(fn(msg): and_then(cont(msg), k))
+
+// Transform a task's result.
+pub fn map(t: Task(m, a), f: fn(a) -> b) -> Task(m, b):
+    and_then(t, fn(x): Task(fn(): Done(f(x))))
+
+// Build the task `thunk()` lazily: nothing runs until the first poll, and then
+// exactly once. This is what makes an `async fn` LAZY — calling it yields a task
+// that does no work until driven.
+pub fn lazy(thunk: fn() -> Task(m, a)) -> Task(m, a):
+    Task(fn(): poll(thunk()))
+
+// ---- executor ----
+
+// A scheduling slot: running, blocked on `recv` (holding its continuation so it
+// is NOT re-run — re-running would repeat effects), or finished.
+type Slot(m, a):
+    Active(Task(m, a))
+    Blocked(fn(m) -> Task(m, a))
+    Finished(a)
+
+fn slot_active(s: Slot(m, a)) -> Bool:
+    match s:
+        Finished(_) -> false
+        Active(_) -> true
+        Blocked(_) -> true
+
+// Try to wake task #`i` with a message from its own inbox. Returns the updated
+// slots, inboxes, and whether progress was made.
+fn deliver(i: Int, cont: fn(m) -> Task(m, a), slots: List(Slot(m, a)), inboxes: List(List(m))) -> (List(Slot(m, a)), List(List(m)), Bool):
+    let myq = list.at(inboxes, i)
+    if list.length(myq) > 0:
+        let msg = list.at(myq, 0)
+        let nb = list.set_at(inboxes, i, list.tail(myq))
+        (list.set_at(slots, i, Active(cont(msg))), nb, true)
+    else:
+        (list.set_at(slots, i, Blocked(cont)), inboxes, false)
+
+// Step task #`i` once, routing any `Emit` to the target's inbox and any `Recv`
+// to task `i`'s own inbox.
+fn step_one(i: Int, slots: List(Slot(m, a)), inboxes: List(List(m))) -> (List(Slot(m, a)), List(List(m)), Bool):
+    match list.at(slots, i):
+        Finished(_v) -> (slots, inboxes, false)
+        Blocked(cont) -> deliver(i, cont, slots, inboxes)
+        Active(t) ->
+            match poll(t):
+                Done(v) -> (list.set_at(slots, i, Finished(v)), inboxes, true)
+                Yield(t2) -> (list.set_at(slots, i, Active(t2)), inboxes, true)
+                Emit(target, msg, t2) ->
+                    let nb = list.update_at(inboxes, target, fn(q): list.push(q, msg))
+                    (list.set_at(slots, i, Active(t2)), nb, true)
+                Recv(cont) -> deliver(i, cont, slots, inboxes)
+
+// One round-robin pass over tasks 0..n, threading slots + inboxes and OR-ing
+// progress (to detect deadlock / quiescence).
+fn step_round(i: Int, n: Int, slots: List(Slot(m, a)), inboxes: List(List(m)), progressed: Bool) -> (List(Slot(m, a)), List(List(m)), Bool):
+    if i >= n:
+        (slots, inboxes, progressed)
+    else:
+        let (s2, b2, p) = step_one(i, slots, inboxes)
+        step_round(i + 1, n, s2, b2, progressed || p)
+
+// Drive `tasks` concurrently — each with its own inbox — until they all finish
+// (or no task can make progress: quiescence/deadlock, where the run stops with
+// the effects produced so far). Deterministic round-robin, so both backends agree
+// byte-for-byte. Task results are ignored (tasks communicate by effects and
+// messages); `recv` to collect a value.
+pub fn run(tasks: List(Task(m, a))):
+    let n = list.length(tasks)
+    var slots = list.map(tasks, fn(t): Active(t))
+    var inboxes = list.map(tasks, fn(_t): [])
+    var go = true
+    while go:
+        let (next_slots, next_inboxes, progressed) = step_round(0, n, slots, inboxes, false)
+        slots = next_slots
+        inboxes = next_inboxes
+        go = progressed && list.any(slots, fn(s): slot_active(s))

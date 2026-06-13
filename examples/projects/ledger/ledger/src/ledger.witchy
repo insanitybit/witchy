@@ -1,20 +1,32 @@
 import money
+import chan
 
-actor Account:
-    console: Console
-    var cents: Int = 0
+// A bank account as an async task ("actor"): its balance lives in the recursive
+// `cents` parameter — isolated, reachable only by sending it a message. The
+// driver sends Deposit/Withdraw operations to the account's inbox (task #0); the
+// account handles them in FIFO order. Amounts are formatted by the `money`
+// library rune (a path dependency).
+type Op:
+    Deposit(Int)
+    Withdraw(Int)
 
-impl Account:
-    on Deposit(amount: Int):
-        cents = cents + amount
-        print(console, "deposit  " + money.format(amount) + "  -> balance " + money.format(cents))
-    on Withdraw(amount: Int):
-        cents = cents - amount
-        print(console, "withdraw " + money.format(amount) + "  -> balance " + money.format(cents))
+async fn account(console: Console, cents: Int) -> Nil:
+    let op = await chan.recv()
+    match op:
+        Deposit(amount) ->
+            let bal = cents + amount
+            print(console, "deposit  " + money.format(amount) + "  -> balance " + money.format(bal))
+            await account(console, bal)
+        Withdraw(amount) ->
+            let bal = cents - amount
+            print(console, "withdraw " + money.format(amount) + "  -> balance " + money.format(bal))
+            await account(console, bal)
+
+async fn driver() -> Nil:
+    await chan.send(0, Deposit(1250))
+    await chan.send(0, Deposit(375))
+    await chan.send(0, Withdraw(500))
+    await chan.send(0, Deposit(99))
 
 fn main(console: Console):
-    let acct = spawn Account(console)
-    send(acct, Deposit(1250))
-    send(acct, Deposit(375))
-    send(acct, Withdraw(500))
-    send(acct, Deposit(99))
+    chan.run([account(console, 0), driver()])

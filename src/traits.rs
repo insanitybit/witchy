@@ -32,7 +32,14 @@ fn mangle(trait_name: Option<&str>, type_name: &str, method: &str) -> String {
 /// write `fn eq(self, other: Self) -> Bool`), and an unannotated receiver
 /// (`self`) takes the implementing type too. Without this, an untyped non-self
 /// parameter would default to i32 in codegen and clash with, e.g., an f64 arg.
-fn method_fn(name: String, mut params: Vec<Param>, ret: Option<Type>, body: Block, type_name: &str) -> Function {
+fn method_fn(
+    name: String,
+    mut params: Vec<Param>,
+    ret: Option<Type>,
+    body: Block,
+    type_name: &str,
+    bounds: Vec<(String, String, Vec<Type>)>,
+) -> Function {
     for p in &mut params {
         if let Some(t) = &p.ty {
             p.ty = Some(subst_self(t, type_name));
@@ -50,8 +57,12 @@ fn method_fn(name: String, mut params: Vec<Param>, ret: Option<Type>, body: Bloc
         params,
         ret,
         body,
-        bounds: Vec::new(),
+        // A conditional impl's `where` bounds become the generated method's
+        // bounds, so its body's bounded calls resolve and it monomorphizes per
+        // concrete type (discharging the bound).
+        bounds,
         is_gen: false,
+        is_async: false,
     }
 }
 
@@ -112,7 +123,7 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
         matches!(it, Item::Trait(_) | Item::Impl(_))
             || matches!(it, Item::Function(f) if !f.bounds.is_empty()
                 || (mono_unbounded && !signature_type_vars(f).is_empty()))
-    });
+    }) || module_needs_lowering(&module.items);
     if !needs_lowering {
         return (module, Vec::new());
     }
@@ -167,6 +178,7 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
                         method.ret.clone(),
                         method.body.clone(),
                         &im.type_name,
+                        im.bounds.clone(),
                     ));
                     continue;
                 }
@@ -182,6 +194,7 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
                     method.ret.clone(),
                     method.body.clone(),
                     &im.type_name,
+                    im.bounds.clone(),
                 ));
             }
             // Methods the impl omits but the trait provides a default for. Only
@@ -202,6 +215,7 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
                                 ms.ret.clone(),
                                 body.clone(),
                                 &im.type_name,
+                                im.bounds.clone(),
                             ));
                         }
                     }
@@ -341,6 +355,8 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
             fn_rets,
             memo: HashMap::new(),
             generated: Vec::new(),
+            generated_subst: Vec::new(),
+            cur_subst: HashMap::new(),
             table: &type_table,
         };
         mono.run(&mut items);
@@ -587,6 +603,17 @@ impl Ctx<'_> {
                         }
                     }
                 }
+                // Actor message send: `subject.Msg(args)` is sugar for
+                // `send(subject, Msg(args))`. An uppercased method name can only
+                // be a message constructor (impl/UFCS methods are lowercase), so
+                // this is unambiguous; the type checker still verifies the
+                // receiver is a `Subject` whose actor handles `Msg`.
+                if method.chars().next().is_some_and(char::is_uppercase) {
+                    let recv = std::mem::replace(receiver.as_mut(), Expr::Bool(false));
+                    let msg = Expr::Ctor { name: method.clone(), args: std::mem::take(args) };
+                    *e = Expr::Call { name: "send".to_string(), args: vec![recv, msg] };
+                    return;
+                }
                 let tn = self
                     .type_name(receiver, scope)
                     .or_else(|| {
@@ -615,6 +642,18 @@ impl Ctx<'_> {
                         vec![std::mem::replace(receiver.as_mut(), Expr::Bool(false))];
                     call_args.append(args);
                     *e = Expr::Call { name: method.clone(), args: call_args };
+                    return;
+                }
+                // UFCS fallback: on a built-in collection type, `recv.method(args)`
+                // lowers to the module-qualified free function
+                // `module.method(recv, args)` — so `d.keys()` is `dict.keys(d)`,
+                // `xs.length()` is `list.length(xs)`, and so on. A wrong name is
+                // validated downstream ("module `dict` has no function `keys`").
+                if let Some(module) = tn.as_deref().and_then(builtin_method_module) {
+                    let mut call_args =
+                        vec![std::mem::replace(receiver.as_mut(), Expr::Bool(false))];
+                    call_args.append(args);
+                    *e = Expr::Call { name: format!("{module}.{method}"), args: call_args };
                     return;
                 }
                 match tn {
@@ -652,6 +691,20 @@ impl Ctx<'_> {
             }
             Expr::For { var, iter, body } => {
                 self.rewrite_expr(iter, scope);
+                // `for ... in <dict>` iterates the dict's (key, value) pairs;
+                // `for x in <set>` iterates the set's members — rewrite the
+                // iterand to `dict.pairs(...)` / `set.to_list(...)` respectively.
+                let iter_head = self.type_name(iter, scope);
+                let head = iter_head.as_deref().and_then(|t| t.split('<').next());
+                let view = match head {
+                    Some("Dict") => Some("dict.pairs"),
+                    Some("Set") => Some("set.to_list"),
+                    _ => None,
+                };
+                if let Some(view_fn) = view {
+                    let inner = std::mem::replace(iter.as_mut(), Expr::Bool(false));
+                    *iter = Box::new(Expr::Call { name: view_fn.to_string(), args: vec![inner] });
+                }
                 let mut s = scope.clone();
                 bind_loop_var(var, self.type_name(iter, scope), &mut s);
                 self.rewrite_block(body, &mut s);
@@ -720,7 +773,7 @@ fn head_type_name(
         // `!` yields Bool; `-`/`~` preserve the operand's type (so `-5` is Int).
         Expr::Unary { op, expr } => match op {
             UnOp::Not => Some("Bool".into()),
-            UnOp::Neg | UnOp::BitNot | UnOp::Move => head_type_name(expr, scope, ctor_results, fn_rets, record_fields),
+            UnOp::Neg | UnOp::BitNot | UnOp::Move | UnOp::Await => head_type_name(expr, scope, ctor_results, fn_rets, record_fields),
         },
         // Comparisons/logic yield Bool; `<>` yields String; arithmetic and
         // bitwise ops have the type of their (left) operand.
@@ -747,12 +800,133 @@ fn head_type_name(
 }
 
 /// The element type encoded in a `List<...>` scope name, if any.
+/// Rewrite type-variable tokens in a scope-name string to their concrete types,
+/// e.g. `apply_subst("List<a>", {a: "Int"})` is `"List<Int>"`. Whole identifier
+/// tokens are matched, so only an exact type-variable name is replaced.
+fn apply_subst(name: &str, subst: &HashMap<String, String>) -> String {
+    if subst.is_empty() {
+        return name.to_string();
+    }
+    let mut out = String::with_capacity(name.len());
+    let mut tok = String::new();
+    let flush = |tok: &mut String, out: &mut String| {
+        if !tok.is_empty() {
+            out.push_str(subst.get(tok.as_str()).map_or(tok.as_str(), |s| s.as_str()));
+            tok.clear();
+        }
+    };
+    for c in name.chars() {
+        if c.is_alphanumeric() || c == '_' {
+            tok.push(c);
+        } else {
+            flush(&mut tok, &mut out);
+            out.push(c);
+        }
+    }
+    flush(&mut tok, &mut out);
+    out
+}
+
 fn list_elem(type_name: &str) -> Option<&str> {
     type_name.strip_prefix("List<")?.strip_suffix('>')
 }
 
 /// The scope name for a declared parameter type, encoding a list's element type
 /// (`List<Int>`) so loop-variable typing works on annotated list parameters.
+// The stdlib module that backs UFCS method calls on a built-in type, so
+// `recv.method(args)` can lower to `module.method(recv, args)`. `tn` may carry a
+// generic suffix (`List<Int>`), so match on the head.
+fn builtin_method_module(tn: &str) -> Option<&'static str> {
+    match tn.split('<').next().unwrap_or(tn) {
+        "List" => Some("list"),
+        "Dict" => Some("dict"),
+        "String" => Some("string"),
+        "Set" => Some("set"),
+        "Option" => Some("option"),
+        "Result" => Some("result"),
+        "Iter" => Some("iter"),
+        _ => None,
+    }
+}
+
+// A `MethodCall` anywhere means the lowering pass must run (to resolve it via
+// impl/trait/static dispatch or UFCS), even in a module with no traits or impls.
+fn module_needs_lowering(items: &[Item]) -> bool {
+    items.iter().any(|it| match it {
+        Item::Function(f) => block_needs_lowering(&f.body),
+        Item::Actor(a) => a.handlers.iter().any(|h| block_needs_lowering(&h.body)),
+        Item::Const { value, .. } => expr_needs_lowering(value),
+        _ => false,
+    })
+}
+
+fn block_needs_lowering(b: &Block) -> bool {
+    b.stmts.iter().any(|s| match s {
+        Stmt::Let { value, .. }
+        | Stmt::Assign { value, .. }
+        | Stmt::LetTuple { value, .. }
+        | Stmt::Yield(value)
+        | Stmt::Expr(value) => expr_needs_lowering(value),
+        Stmt::Return(opt) => opt.as_ref().is_some_and(expr_needs_lowering),
+        Stmt::Break | Stmt::Continue => false,
+    })
+}
+
+fn expr_needs_lowering(e: &Expr) -> bool {
+    match e {
+        Expr::MethodCall { .. } => true,
+        Expr::Int(_) | Expr::Float(_) | Expr::Duration(_) | Expr::Str(_) | Expr::Bool(_)
+        | Expr::Var(_) => false,
+        Expr::List(xs) | Expr::Tuple(xs) => xs.iter().any(expr_needs_lowering),
+        Expr::Call { args, .. } | Expr::Ctor { args, .. } | Expr::Spawn { args, .. } => {
+            args.iter().any(expr_needs_lowering)
+        }
+        Expr::Apply { func, args } => {
+            expr_needs_lowering(func) || args.iter().any(expr_needs_lowering)
+        }
+        Expr::Unary { expr, .. } | Expr::Try(expr) | Expr::As { expr, .. } => {
+            expr_needs_lowering(expr)
+        }
+        Expr::Field { base, .. } => expr_needs_lowering(base),
+        Expr::Lambda { body, .. } | Expr::Block(body) => block_needs_lowering(body),
+        Expr::RecordUpdate { base, fields } => {
+            expr_needs_lowering(base) || fields.iter().any(|(_, v)| expr_needs_lowering(v))
+        }
+        Expr::Record { fields, spread, .. } => {
+            fields.iter().any(|(_, v)| expr_needs_lowering(v))
+                || spread.as_deref().is_some_and(expr_needs_lowering)
+        }
+        Expr::Binary { lhs, rhs, .. } => {
+            expr_needs_lowering(lhs) || expr_needs_lowering(rhs)
+        }
+        Expr::If { cond, then_block, else_block } => {
+            expr_needs_lowering(cond)
+                || block_needs_lowering(then_block)
+                || else_block.as_ref().is_some_and(block_needs_lowering)
+        }
+        Expr::Match { scrutinee, arms } => {
+            expr_needs_lowering(scrutinee)
+                || arms.iter().any(|a| {
+                    a.guard.as_ref().is_some_and(expr_needs_lowering)
+                        || expr_needs_lowering(&a.body)
+                })
+        }
+        Expr::While { cond, body } => {
+            expr_needs_lowering(cond) || block_needs_lowering(body)
+        }
+        // A for-loop may iterate a dict, which the lowering pass desugars to
+        // `dict.pairs(...)`, so any for-loop needs the pass to run.
+        Expr::For { .. } => true,
+        Expr::Range { lo, hi, .. } => expr_needs_lowering(lo) || expr_needs_lowering(hi),
+        Expr::Index { base, index } => {
+            expr_needs_lowering(base) || expr_needs_lowering(index)
+        }
+        Expr::WhileLet { scrutinee, body, .. } => {
+            expr_needs_lowering(scrutinee) || block_needs_lowering(body)
+        }
+    }
+}
+
 fn type_to_scope_name(t: &Type) -> Option<String> {
     match t {
         Type::Named(n, args) if n == "List" => {
@@ -965,6 +1139,126 @@ fn decode_scope_type(name: &str) -> Type {
             }
         }
         _ => Type::Named(name.to_string(), vec![]),
+    }
+}
+
+/// Substitute type variables in a block's type ANNOTATIONS (`let x: T`, `e as T`)
+/// — the part `specialize` doesn't reach by rewriting only the signature.
+fn subst_block_types(b: &mut Block, subst: &HashMap<&str, String>) {
+    for stmt in &mut b.stmts {
+        match stmt {
+            Stmt::Let { ty, value, .. } => {
+                if let Some(t) = ty {
+                    *t = subst_vars(t, subst);
+                }
+                subst_expr_types(value, subst);
+            }
+            Stmt::Assign { value, .. }
+            | Stmt::LetTuple { value, .. }
+            | Stmt::Return(Some(value))
+            | Stmt::Expr(value)
+            | Stmt::Yield(value) => subst_expr_types(value, subst),
+            Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
+        }
+    }
+}
+
+fn subst_expr_types(e: &mut Expr, subst: &HashMap<&str, String>) {
+    match e {
+        Expr::Lambda { params, body } => {
+            for p in params.iter_mut() {
+                if let Some(t) = &p.ty {
+                    p.ty = Some(subst_vars(t, subst));
+                }
+            }
+            subst_block_types(body, subst);
+        }
+        Expr::Block(b) => subst_block_types(b, subst),
+        Expr::As { expr, ty } => {
+            *ty = subst_vars(ty, subst);
+            subst_expr_types(expr, subst);
+        }
+        Expr::If { cond, then_block, else_block } => {
+            subst_expr_types(cond, subst);
+            subst_block_types(then_block, subst);
+            if let Some(eb) = else_block {
+                subst_block_types(eb, subst);
+            }
+        }
+        Expr::Match { scrutinee, arms } => {
+            subst_expr_types(scrutinee, subst);
+            for a in arms.iter_mut() {
+                if let Some(g) = &mut a.guard {
+                    subst_expr_types(g, subst);
+                }
+                subst_expr_types(&mut a.body, subst);
+            }
+        }
+        Expr::While { cond, body } => {
+            subst_expr_types(cond, subst);
+            subst_block_types(body, subst);
+        }
+        Expr::WhileLet { scrutinee, body, .. } => {
+            subst_expr_types(scrutinee, subst);
+            subst_block_types(body, subst);
+        }
+        Expr::For { iter, body, .. } => {
+            subst_expr_types(iter, subst);
+            subst_block_types(body, subst);
+        }
+        Expr::Call { args, .. } | Expr::Ctor { args, .. } | Expr::Spawn { args, .. } => {
+            for a in args {
+                subst_expr_types(a, subst);
+            }
+        }
+        Expr::MethodCall { receiver, args, .. } => {
+            subst_expr_types(receiver, subst);
+            for a in args {
+                subst_expr_types(a, subst);
+            }
+        }
+        Expr::Apply { func, args } => {
+            subst_expr_types(func, subst);
+            for a in args {
+                subst_expr_types(a, subst);
+            }
+        }
+        Expr::List(xs) | Expr::Tuple(xs) => {
+            for x in xs {
+                subst_expr_types(x, subst);
+            }
+        }
+        Expr::Unary { expr, .. } | Expr::Try(expr) | Expr::Field { base: expr, .. } => {
+            subst_expr_types(expr, subst)
+        }
+        Expr::Binary { lhs, rhs, .. } => {
+            subst_expr_types(lhs, subst);
+            subst_expr_types(rhs, subst);
+        }
+        Expr::Range { lo, hi, .. } => {
+            subst_expr_types(lo, subst);
+            subst_expr_types(hi, subst);
+        }
+        Expr::Index { base, index } => {
+            subst_expr_types(base, subst);
+            subst_expr_types(index, subst);
+        }
+        Expr::RecordUpdate { base, fields } => {
+            subst_expr_types(base, subst);
+            for (_, v) in fields {
+                subst_expr_types(v, subst);
+            }
+        }
+        Expr::Record { fields, spread, .. } => {
+            for (_, v) in fields {
+                subst_expr_types(v, subst);
+            }
+            if let Some(s) = spread {
+                subst_expr_types(s, subst);
+            }
+        }
+        Expr::Int(_) | Expr::Float(_) | Expr::Duration(_) | Expr::Str(_) | Expr::Bool(_)
+        | Expr::Var(_) => {}
     }
 }
 
@@ -1242,6 +1536,14 @@ struct Mono<'a> {
     fn_rets: HashMap<String, String>,
     memo: HashMap<(String, Vec<String>), String>,
     generated: Vec<Function>,
+    /// Per-generated-instance type-variable substitution (var -> concrete scope
+    /// name), parallel to `generated`. Lets the walk of an instance resolve a
+    /// field-access type the head-name scope leaves generic (`s.items` on a
+    /// `Set(Int)` is `List(Int)`, not `List(a)`).
+    generated_subst: Vec<HashMap<String, String>>,
+    /// The substitution of the instance currently being walked — empty when
+    /// walking an original (non-specialized) function.
+    cur_subst: HashMap<String, String>,
     /// typeck's resolved types for this module instance: the fallback when
     /// the head-name scope can't resolve a type argument.
     table: &'a crate::typeck::TypeTable,
@@ -1282,7 +1584,11 @@ impl Mono<'_> {
             );
             let mut s = Scope::new();
             seed_params(&params, &mut s);
+            // This instance's type-variable substitution, so the body walk can
+            // make a generic field-access type concrete.
+            self.cur_subst = self.generated_subst[i].clone();
             self.walk_block(&mut body, &mut s);
+            self.cur_subst = HashMap::new();
             self.generated[i].body = body;
             i += 1;
         }
@@ -1290,6 +1596,13 @@ impl Mono<'_> {
 
     fn type_name(&self, e: &Expr, scope: &Scope) -> Option<String> {
         head_type_name(e, scope, self.ctor_results, &self.fn_rets, self.record_fields)
+    }
+
+    /// Like `type_name`, but rewrites the current instantiation's type variables
+    /// to their concrete types — so a field access whose declared type is generic
+    /// (`s.items: List(a)`) resolves concretely (`List(Int)`) inside `foo__Int`.
+    fn type_name_subst(&self, e: &Expr, scope: &Scope) -> Option<String> {
+        self.type_name(e, scope).map(|t| apply_subst(&t, &self.cur_subst))
     }
 
     /// The concrete type of field `pos` of the element TUPLE of a list argument,
@@ -1343,7 +1656,7 @@ impl Mono<'_> {
                 let Some(arg) = args.get(i) else { continue };
                 match &p.ty {
                     Some(Type::Named(n, a)) if *n == var && a.is_empty() => {
-                        if let Some(tn) = self.type_name(arg, scope) {
+                        if let Some(tn) = self.type_name_subst(arg, scope) {
                             found = Some(tn);
                             break;
                         }
@@ -1353,7 +1666,7 @@ impl Mono<'_> {
                             && matches!(a.first(), Some(Type::Named(vn, va)) if *vn == var && va.is_empty()) =>
                     {
                         if let Some(elem) = self
-                            .type_name(arg, scope)
+                            .type_name_subst(arg, scope)
                             .as_deref()
                             .and_then(list_elem)
                         {
@@ -1468,6 +1781,10 @@ impl Mono<'_> {
         let vars = type_var_list(&f);
         let subst: HashMap<&str, String> =
             vars.iter().map(|v| v.as_str()).zip(type_args).collect();
+        // Owned copy stored parallel to the generated function, so its body walk
+        // can resolve field-access types this instantiation makes concrete.
+        let owned_subst: HashMap<String, String> =
+            subst.iter().map(|(k, v)| (k.to_string(), v.clone())).collect();
         for p in &mut f.params {
             if let Some(t) = &p.ty {
                 p.ty = Some(subst_vars(t, &subst));
@@ -1477,6 +1794,9 @@ impl Mono<'_> {
         if let Some(Type::Named(n, _)) = &f.ret {
             self.fn_rets.insert(mangled.clone(), n.clone());
         }
+        // Substitute the body's type ANNOTATIONS too (`var items: List(a) = []`,
+        // `x as T`), so a specialization's body type-checks at the concrete type.
+        subst_block_types(&mut f.body, &subst);
         // Substitution-directed trait dispatch: a bound variable's trait
         // methods resolve by the SUBSTITUTED type — not by any argument — so a
         // constructor-style method (`from_iter`, which mentions its bound
@@ -1552,15 +1872,23 @@ impl Mono<'_> {
         // compiled backend, which has no notion of an unsatisfied generic bound.
         f.bounds = Vec::new();
         self.generated.push(f);
+        self.generated_subst.push(owned_subst);
         mangled
     }
 
     fn walk_block(&mut self, b: &mut Block, scope: &mut Scope) {
         for stmt in &mut b.stmts {
             match stmt {
-                Stmt::Let { name, value, .. } => {
+                Stmt::Let { name, ty, value, .. } => {
                     self.walk_expr(value, scope);
-                    match self.type_name(value, scope) {
+                    // Prefer the type ascription (`var items: List(a) = []`): it
+                    // carries the element type an empty/ambiguous value loses. The
+                    // value's inferred type is the fallback.
+                    let resolved = ty
+                        .as_ref()
+                        .and_then(type_to_scope_name)
+                        .or_else(|| self.type_name(value, scope));
+                    match resolved {
                         Some(t) => {
                             scope.insert(name.clone(), t);
                         }

@@ -1,13 +1,7 @@
-actor Reader:
-    console: Console
-    dir: Dir
-
-impl Reader:
-    on Read(name: String):
-        print(console, read(dir, name))
-
+// Filesystem capability: `main` receives a `Dir` and narrows it to a subdirectory
+// before reading a file. Authority flows by passing the capability down, never by
+// ambient access — to read elsewhere you would need a `Dir` for that location.
 fn main(console: Console, root: Dir):
     let examples = subdir(root, "examples")
     let data = subdir(examples, "data")
-    let reader = spawn Reader(console, data)
-    send(reader, Read("greeting.txt"))
+    print(console, read(data, "greeting.txt"))

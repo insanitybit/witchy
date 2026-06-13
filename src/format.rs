@@ -254,6 +254,9 @@ fn function(s: &mut String, f: &Function, indented: bool, c: &mut Comments) {
     if f.public {
         s.push_str("pub ");
     }
+    if f.is_async {
+        s.push_str("async ");
+    }
     if f.is_gen {
         s.push_str("gen ");
     }
@@ -266,6 +269,11 @@ fn function(s: &mut String, f: &Function, indented: bool, c: &mut Comments) {
 fn type_def(s: &mut String, t: &TypeDef) {
     s.push_str("type ");
     s.push_str(&t.name);
+    if !t.params.is_empty() {
+        s.push('(');
+        s.push_str(&t.params.join(", "));
+        s.push(')');
+    }
     if !t.derives.is_empty() {
         s.push_str(" derive(");
         s.push_str(&t.derives.join(", "));
@@ -333,6 +341,22 @@ fn impl_def(s: &mut String, im: &ImplDef, c: &mut Comments) {
         s.push_str(" for ");
     }
     s.push_str(&im.type_name);
+    // A conditional impl's `where` clause (`impl FromIterator(a) for Set(a) where a: Eq`).
+    if !im.bounds.is_empty() {
+        s.push_str(" where ");
+        for (i, (v, t, ta)) in im.bounds.iter().enumerate() {
+            if i > 0 {
+                s.push_str(", ");
+            }
+            s.push_str(v);
+            s.push_str(": ");
+            s.push_str(t);
+            if !ta.is_empty() {
+                let rendered: Vec<String> = ta.iter().map(type_str).collect();
+                s.push_str(&format!("({})", rendered.join(", ")));
+            }
+        }
+    }
     s.push_str(":\n");
     for (i, m) in im.methods.iter().enumerate() {
         if i > 0 {
@@ -379,10 +403,21 @@ fn handler(s: &mut String, h: &Handler, c: &mut Comments) {
     s.push_str("on ");
     s.push_str(&h.message);
     s.push('(');
-    for (i, p) in h.params.iter().enumerate() {
-        if i > 0 {
+    let mut first = true;
+    if h.has_self {
+        s.push_str(match h.self_conv {
+            Convention::Let => "self",
+            Convention::Borrow => "let self",
+            Convention::Inout => "var self",
+            Convention::Sink => "own self",
+        });
+        first = false;
+    }
+    for p in &h.params {
+        if !first {
             s.push_str(", ");
         }
+        first = false;
         s.push_str(&param(p));
     }
     s.push_str("):\n");
@@ -538,6 +573,12 @@ fn block_stmt(s: &mut String, e: &Expr, depth: usize, c: &mut Comments) {
             pad(s, depth);
             lambda_at(s, params, body, depth, c);
         }
+        Expr::Call { args, .. } | Expr::MethodCall { args, .. }
+            if has_trailing_block_lambda(args) =>
+        {
+            pad(s, depth);
+            call_block_lambda(s, &call_head(e).unwrap(), args, depth, c);
+        }
         _ => {
             pad(s, depth);
             s.push_str(&expr(e));
@@ -556,6 +597,11 @@ fn value_or_block(s: &mut String, e: &Expr, depth: usize, c: &mut Comments) {
         }
         Expr::Lambda { params, body } => {
             lambda_at(s, params, body, depth, c);
+        }
+        Expr::Call { args, .. } | Expr::MethodCall { args, .. }
+            if has_trailing_block_lambda(args) =>
+        {
+            call_block_lambda(s, &call_head(e).unwrap(), args, depth, c);
         }
         // A `retain`/`without` block used as a value (`let x = without c: ...`):
         // the header follows `= ` on this line, the body indents below.
@@ -799,6 +845,15 @@ fn expr(e: &Expr) -> String {
         Expr::List(xs) => format!("[{}]", comma(xs)),
         Expr::Tuple(xs) => format!("({})", comma(xs)),
         Expr::Call { name, args } => {
+            // An actor message send prints in method form: `send(subject,
+            // Msg(args))` is the canonical `subject.Msg(args)`, so `witchy fmt`
+            // rewrites the old call spelling to the method one in place.
+            if name == "send" && !local_fn("send") && args.len() == 2 {
+                if let Expr::Ctor { name: msg, args: margs } = &args[1] {
+                    let recv = operand(&args[0], POSTFIX_PREC, false);
+                    return format!("{recv}.{msg}({})", comma(margs));
+                }
+            }
             // The one-shot migration vehicle: a retired global builtin prints
             // as its module-qualified spelling, so `witchy fmt` rewrites a
             // pre-migration tree in place (docs/language-evolution.md Phase 2).
@@ -852,6 +907,7 @@ fn expr(e: &Expr) -> String {
                 UnOp::Not => "!",
                 UnOp::BitNot => "~",
                 UnOp::Move => "move ",
+                UnOp::Await => "await ",
             };
             format!("{o}{}", operand(inner, UNARY_PREC, false))
         }
@@ -975,6 +1031,46 @@ fn lambda_at(s: &mut String, params: &[Param], body: &Block, depth: usize, c: &m
 
 fn comma(xs: &[Expr]) -> String {
     xs.iter().map(expr).collect::<Vec<_>>().join(", ")
+}
+
+/// Whether a call's LAST argument is a block-bodied lambda (no inline form) — the
+/// trailing-lambda shape that has to render across multiple lines.
+fn has_trailing_block_lambda(args: &[Expr]) -> bool {
+    matches!(args.last(), Some(Expr::Lambda { body, .. }) if block_value_opt(body).is_none())
+}
+
+/// Render a call whose last argument is a block-bodied lambda multi-line:
+/// `head(lead.., fn(p):` then the indented body, then a dedented `)`. `s` is
+/// positioned where the call head begins.
+fn call_block_lambda(s: &mut String, head: &str, args: &[Expr], depth: usize, c: &mut Comments) {
+    s.push_str(head);
+    s.push('(');
+    let (lead, last) = args.split_at(args.len() - 1);
+    for a in lead {
+        s.push_str(&expr(a));
+        s.push_str(", ");
+    }
+    if let Expr::Lambda { params, body } = &last[0] {
+        lambda_at(s, params, body, depth, c);
+    }
+    pad(s, depth);
+    s.push_str(")\n");
+}
+
+/// The printed head of a call/method-call (everything before the `(`), for the
+/// multi-line trailing-lambda form.
+fn call_head(e: &Expr) -> Option<String> {
+    match e {
+        Expr::Call { name, .. } => Some(if local_fn(name) {
+            name.clone()
+        } else {
+            crate::typeck::moved_builtin(name).unwrap_or(name).to_string()
+        }),
+        Expr::MethodCall { receiver, method, .. } => {
+            Some(format!("{}.{method}", operand(receiver, POSTFIX_PREC, false)))
+        }
+        _ => None,
+    }
 }
 
 fn binop(op: BinOp) -> &'static str {
@@ -1346,6 +1442,16 @@ fn canon_expr(e: &mut Expr) {
             return;
         }
     }
+    // An actor message send canonicalizes to the `send(recv, Msg(args))` call, so
+    // the method spelling `recv.Msg(args)` and the legacy call spelling compare
+    // equal (the printer rewrites the latter to the former).
+    if let Expr::MethodCall { receiver, method, args } = e {
+        if method.chars().next().is_some_and(char::is_uppercase) {
+            let recv = std::mem::replace(receiver.as_mut(), Expr::Bool(false));
+            let msg = Expr::Ctor { name: method.clone(), args: std::mem::take(args) };
+            *e = Expr::Call { name: "send".into(), args: vec![recv, msg] };
+        }
+    }
     match e {
         Expr::Call { name, args } => {
             if !name.contains('.') && !local_fn(name) {
@@ -1574,6 +1680,7 @@ mod tests {
                 },
                 bounds: vec![],
                 is_gen: false,
+                is_async: false,
             })],
             import_lines: vec![],
             item_lines: vec![],

@@ -95,6 +95,7 @@ pub fn expand(name: &str, module: &mut Module) -> Result<(), String> {
                 body,
                 bounds: Vec::new(),
                 is_gen: false,
+                is_async: false,
             })],
             import_lines: Vec::new(),
             item_lines: Vec::new(),

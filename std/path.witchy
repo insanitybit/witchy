@@ -45,8 +45,10 @@ pub fn dir(p: String) -> String:
         else:
             head
 
-// The extension after the final `.` in the base name ("a/b.tar.gz" -> "gz"), or
-// "" when there is none. A dotfile base (".bashrc") has no extension.
+// The extension after the final `.` in the base name, WITHOUT the leading dot
+// ("a/b.tar.gz" -> "gz"), or "" when there is none — matching Rust's
+// `Path::extension` (not Node/Python, which keep the dot). A dotfile base
+// (".bashrc") has no extension.
 pub fn ext(p: String) -> String:
     let b = base(p)
     let i = string.last_index_of(b, ".")

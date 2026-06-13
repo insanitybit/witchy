@@ -26,6 +26,67 @@ The numeric value of a single decimal digit, or -1 when `c` is not a digit.
 
 True when `s` is non-empty and every character is an ASCII digit — a safe guard before `string_to_int`, which traps on non-numeric input.
 
+## `chan`
+
+std/chan — cooperative message-passing concurrency: tasks ("actors") with their OWN inbox, driven by a deterministic round-robin executor. This is the witchy replacement for the actor system: an actor is an `async fn` that loops on `recv`, addressed by its position in the task list; `ask`/`reply` is "send a reply back, recv it".
+
+Each task gets a private inbox. `send(target, msg)` routes a message to the inbox of task #target (its index in the `run` list); `recv()` reads the CURRENT task's inbox. The executor owns the inboxes and threads them through the schedule — so multiple actors with separate mailboxes need no shared mutable state, no `Pin`, no runtime primitive. Pure witchy (closures + sum types), so a concurrent run is byte-identical on both backends.
+
+Messages are generic (type `m`); all inboxes in one `run` share that type. The `async`/`await` CPS transform lowers onto this substrate (chan.lazy/and_then/ done/run), so `await chan.recv()` / `await chan.send(t, x)` work inside async fns.
+
+#### `type Step`
+
+- `Done(a)`
+- `Yield(Task(m, a))`
+- `Emit(Int, m, Task(m, a))`
+- `Recv(fn(m) -> Task(m, a))`
+
+#### `type Task`
+
+- `Task(fn() -> Step(m, a))`
+
+#### `type Slot`
+
+- `Active(Task(m, a))`
+- `Blocked(fn(m) -> Task(m, a))`
+- `Finished(a)`
+
+#### `fn done(x: a) -> Task(m, a)`
+
+A finished task.
+
+#### `fn ready_unit() -> Task(m, Nil)`
+
+An already-complete `Task(m, Nil)` — the async/await lowering target for a body that falls off its end.
+
+#### `fn yield_now() -> Task(m, Nil)`
+
+Hand control back to the executor once, then continue.
+
+#### `fn send(target: Int, msg: m) -> Task(m, Nil)`
+
+Send `msg` to the inbox of task #`target` (its index in the `run` list), then continue. An actor replies to its caller by sending back to the caller's index.
+
+#### `fn recv() -> Task(m, m)`
+
+Block until THIS task's inbox has a message, then continue with it.
+
+#### `fn and_then(t: Task(m, a), k: fn(a) -> Task(m, b)) -> Task(m, b)`
+
+Sequence: run `t`, then continue with `k` applied to its result. `await` for tasks — the continuation `k` is what would follow the await point.
+
+#### `fn map(t: Task(m, a), f: fn(a) -> b) -> Task(m, b)`
+
+Transform a task's result.
+
+#### `fn lazy(thunk: fn() -> Task(m, a)) -> Task(m, a)`
+
+Build the task `thunk()` lazily: nothing runs until the first poll, and then exactly once. This is what makes an `async fn` LAZY — calling it yields a task that does no work until driven.
+
+#### `fn run(tasks: List(Task(m, a)))`
+
+Drive `tasks` concurrently — each with its own inbox — until they all finish (or no task can make progress: quiescence/deadlock, where the run stops with the effects produced so far). Deterministic round-robin, so both backends agree byte-for-byte. Task results are ignored (tasks communicate by effects and messages); `recv` to collect a value.
+
 ## `compiler`
 
 compiler — witchy's own toolchain, exposed to witchy programs.
@@ -326,6 +387,80 @@ The first / second component of a pair — handy for the tuples `iter.zip` and `
 
 #### `fn second(p: (a, b)) -> b`
 
+## `future`
+
+std/future — cooperative single-threaded futures via CPS over closures.
+
+A `Future(a)` is a thunk that, when polled, either completes (`Done`) or hands back the rest of the work (`More`). This is the substrate the `async`/`await` surface lowers onto: an `await` becomes an `and_then`, and the awaited value's live state is the captured values of the continuation closure. Those captures are owned values, never internal references — so, unlike Rust, there is nothing self-referential and no `Pin`. Pure structure (closures + sum types), so it runs byte-identically on both backends.
+
+`More` is the cooperative yield point: an executor drives a future by polling it one step at a time, so several futures can interleave at their await points.
+
+#### `type Poll`
+
+The result of polling a future once: either the final value, or the rest.
+
+- `Done(a)`
+- `More(Future(a))`
+
+#### `type Future`
+
+A future is a thunk producing its next `Poll`. Pull it with `poll`.
+
+- `Future(fn() -> Poll(a))`
+
+#### `type Slot`
+
+A scheduling slot: a task still running, or its finished result.
+
+- `Running(Future(a))`
+- `Finished(a)`
+
+#### `fn poll(f: Future(a)) -> Poll(a)`
+
+#### `fn ready(x: a) -> Future(a)`
+
+An already-complete future.
+
+#### `fn pending(x: a) -> Future(a)`
+
+Completes with `x`, but yields control once first — a cooperative scheduling point an executor can interleave other tasks across.
+
+#### `fn and_then(f: Future(a), k: fn(a) -> Future(b)) -> Future(b)`
+
+Sequence: run `f` to completion, then continue with `k` applied to its result. This is what `let y = await f` lowers to (`k` is the continuation).
+
+#### `fn map(f: Future(a), g: fn(a) -> b) -> Future(b)`
+
+Transform the result of a future.
+
+#### `fn defer(thunk: fn() -> a) -> Future(a)`
+
+Run `thunk` at POLL time and complete with its result. Unlike `ready`, which captures an already-computed value, `defer` delays the work (and any effects in it) until the executor polls — so effects from concurrent tasks interleave in scheduling order instead of all firing when the task is built.
+
+#### `fn lazy(thunk: fn() -> Future(a)) -> Future(a)`
+
+Build the future `thunk()` lazily: nothing runs until the first poll, and then exactly once (the executor advances to that future's own continuation, never back through `lazy`). This is what makes an `async fn` LAZY — calling it yields a future that does no work, not even its pre-`await` statements, until driven.
+
+#### `fn ready_unit() -> Future(Nil)`
+
+An already-complete `Future(Nil)` — the lowering target for an async body that falls off its end.
+
+#### `fn yield_now() -> Future(Nil)`
+
+Yield control to the executor once, then continue. `await yield_now()` is a cooperative scheduling point an async task uses to let its peers run.
+
+#### `fn block_on(f: Future(a)) -> a`
+
+Drive a single future to completion and return its value. Recursive on `More` so it needs no initial `a` (there is no default value for a generic type).
+
+#### `fn join_all(tasks: List(Future(a))) -> List(a)`
+
+Drive every task in `tasks` concurrently to completion, returning their results in the original order. The schedule is a deterministic round-robin — one poll step per task per round — so it is single-threaded and fixed-order, and both backends produce byte-identical output. Tasks interleave at their `pending`/ `await` points. This is the structured-concurrency primitive (`scope`/`join`): hand it the task list and it fans them out, joining all before it returns.
+
+#### `fn select(tasks: List(Future(a))) -> (Int, a)`
+
+Race `tasks`: drive them concurrently until the FIRST one finishes, and return its index and value; the losers are simply dropped (no further polling — and because futures are pure and lazy, dropping is cancellation, no cleanup hook needed). On a tie within a round the lowest index wins, so the result is deterministic and both backends agree. This is the `select` of structured concurrency (e.g. race a task against `sleep` for a timeout).
+
 ## `http`
 
 HTTP types and a small HTTP/1.1 *client* over the `Net` capability — the witchy answer to a slice of Go's net/http (and reqwest's shape). Pure transport built on the capability-gated socket primitives: a module handed a `Net` restricted to some hosts can reach only those, and one handed no `Net` can't reach the network at all. The `server` module builds on the shared `Request`/`Response` types here. Runs on both backends: the socket primitives compile to capability-gated host imports, so a compiled module's import list IS its network footprint.
@@ -501,7 +636,7 @@ Call `f` on every element for its effect (drives to exhaustion). The right consu
 
 #### `fn collect(it: Iter(a)) -> c where c: FromIterator(a)`
 
-Collect into any FromIterator type, chosen by the call site's expected type (drives the iterator to exhaustion — don't call on an unbounded one):     let xs: List(Int) = iter.collect(it)     let joined: String = iter.collect(pieces)
+Collect into any FromIterator type, chosen by the call site's expected type (drives the iterator to exhaustion — don't call on an unbounded one):     let xs: List(Int) = iter.collect(it)     let joined: String = iter.collect(pieces)     let s: Set(Int) = iter.collect(it)        # de-duplicates; needs `a: Eq`
 
 #### `fn fold(it: Iter(a), init: b, f: fn(b, a) -> b) -> b`
 
@@ -1072,7 +1207,7 @@ Everything before the final component: "a/b/c" -> "a/b", "c" -> "", "/x" -> "/".
 
 #### `fn ext(p: String) -> String`
 
-The extension after the final `.` in the base name ("a/b.tar.gz" -> "gz"), or "" when there is none. A dotfile base (".bashrc") has no extension.
+The extension after the final `.` in the base name, WITHOUT the leading dot ("a/b.tar.gz" -> "gz"), or "" when there is none — matching Rust's `Path::extension` (not Node/Python, which keep the dot). A dotfile base (".bashrc") has no extension.
 
 #### `fn stem(p: String) -> String`
 
@@ -1112,7 +1247,7 @@ A uniformly-chosen element of `xs` (None if empty) and the next state.
 
 ## `regex`
 
-A small backtracking regular-expression engine over strings — the classic Kernighan & Pike design grown a working toolkit, in pure witchy. Syntax:   .          any single character   *          zero or more of the preceding atom (greedy, with backtracking)   +          one or more of the preceding atom (greedy)   ?          zero or one of the preceding atom (greedy)   ^          anchor to the start of the text (only as the first character)   $          anchor to the end of the text (only as the last character)   [abc]      character class; [a-z] ranges; [^...] negation. `]` cannot be a              member and escapes are not recognized inside a class; a `-` first              or last is literal.   \d \w \s   digit / word (letter, digit, `_`) / whitespace, ASCII   \. \* \+ \? \^ \$ \[ \] \\   literal metacharacters Any other character matches itself. Positions are character indices. Pure and capability-free; identical on the interpreter and compiled backends.
+Regular expressions, powered by the Rust `regex` crate (RE2 semantics): linear time, with full alternation `a|b` and grouping `(...)` — and a loud error, not a silent non-match, on an invalid pattern. The engine itself is the native `match_spans`, which returns the character spans of every match; the whole public API here is built on those spans in plain witchy, so it runs the same on the interpreter and the compiled backend. Positions are character indices.
 
 #### `fn matches(pattern: String, text: String) -> Bool`
 
@@ -1120,11 +1255,11 @@ True if `pattern` matches anywhere in `text`.
 
 #### `fn find(pattern: String, text: String) -> Option((Int, Int))`
 
-The leftmost match as a (start, end) character span — end exclusive — or None. Quantifiers are greedy, so `find("a+", "caat")` is Some((1, 3)).
+The leftmost match as a (start, end) character span — end exclusive — or None.
 
 #### `fn find_all(pattern: String, text: String) -> List((Int, Int))`
 
-Every non-overlapping match, leftmost first. An empty match advances one character so the scan always terminates.
+Every non-overlapping match, leftmost first.
 
 #### `fn extract(pattern: String, text: String) -> List(String)`
 
@@ -1132,7 +1267,7 @@ The matched substrings, leftmost first: extract("\\d+", "a1b22") is ["1", "22"].
 
 #### `fn replace_all(pattern: String, text: String, replacement: String) -> String`
 
-`text` with every match replaced: replace_all("\\s+", "a  b", "-") is "a-b".
+`text` with every match replaced (the replacement is literal — no `$1` group expansion): replace_all("\\s+", "a  b", "-") is "a-b".
 
 #### `fn split(pattern: String, text: String) -> List(String)`
 
@@ -1415,31 +1550,71 @@ Serve exactly `n` requests then return — for tests and one-shot servers.
 
 ## `set`
 
-Set operations over lists, treating a list as a set of distinct elements compared by the element type's Eq impl. Pure and capability-free. Like the eq-based searches, these are content-correct on both backends — so they work for lists of runtime-built strings and your own Eq types, not just interned literals. (witchy has no separate hashed Set type; a deduplicated list IS the set, which keeps element order deterministic.)
+Set(a) — an unordered collection of distinct values. Members are compared by value equality (a `where a: Eq` bound on every operation that compares), so sets of Ints, Strings, tuples, or your own `Eq` types all work. Build one with `set.new()` / `set.from_list(xs)`, test membership with `set.contains`, and reach for `union`/`intersection`/`difference` for the algebra. `set.show(s)` renders the members; `set.to_list(s)` returns them in insertion order.
 
-#### `fn union(xs: List(a), ys: List(a)) -> List(a) where a: Eq`
+#### `type Set`
 
-Elements appearing in either list, de-duplicated, xs-order then new ys.
+- `Set { items: List(a) }`
 
-#### `fn intersection(xs: List(a), ys: List(a)) -> List(a) where a: Eq`
+#### `fn new() -> Set(a)`
 
-Elements appearing in BOTH lists, de-duplicated, in xs order.
+The empty set.
 
-#### `fn difference(xs: List(a), ys: List(a)) -> List(a) where a: Eq`
+#### `fn from_list(xs: List(a)) -> Set(a) where a: Eq`
 
-Elements in xs but NOT in ys, de-duplicated, in xs order.
+A set of the distinct values in `xs` (duplicates collapse).
 
-#### `fn is_subset(xs: List(a), ys: List(a)) -> Bool where a: Eq`
+#### `fn insert(s: Set(a), x: a) -> Set(a) where a: Eq`
 
-Whether every element of xs appears in ys.
+`s` with `x` added (a no-op if already present).
 
-#### `fn symmetric_difference(xs: List(a), ys: List(a)) -> List(a) where a: Eq`
+#### `fn remove(s: Set(a), x: a) -> Set(a) where a: Eq`
 
-Elements in exactly one of the two lists (xs-only first, then ys-only), de-duplicated — the set XOR.
+`s` with `x` removed (a no-op if absent).
 
-#### `fn is_disjoint(xs: List(a), ys: List(a)) -> Bool where a: Eq`
+#### `fn contains(s: Set(a), x: a) -> Bool where a: Eq`
 
-Whether the two lists share no elements at all.
+Whether `x` is a member of `s`.
+
+#### `fn size(s: Set(a)) -> Int`
+
+The number of distinct members.
+
+#### `fn is_empty(s: Set(a)) -> Bool`
+
+Whether the set has no members.
+
+#### `fn to_list(s: Set(a)) -> List(a)`
+
+The members as a list, in insertion order.
+
+#### `fn show(s: Set(a)) -> String`
+
+Render the set as `{a, b, c}` (members in insertion order). Use this rather than interpolating a `Set` directly: `${s}` falls back to the structural form `Set([...])`, which the compiled backend can't render for a generic record.
+
+#### `fn union(s: Set(a), t: Set(a)) -> Set(a) where a: Eq`
+
+Every member of either set.
+
+#### `fn intersection(s: Set(a), t: Set(a)) -> Set(a) where a: Eq`
+
+The members in both sets.
+
+#### `fn difference(s: Set(a), t: Set(a)) -> Set(a) where a: Eq`
+
+The members of `s` that are not in `t`.
+
+#### `fn symmetric_difference(s: Set(a), t: Set(a)) -> Set(a) where a: Eq`
+
+The members in exactly one of the two sets.
+
+#### `fn is_subset(s: Set(a), t: Set(a)) -> Bool where a: Eq`
+
+Whether every member of `s` is also in `t`.
+
+#### `fn is_disjoint(s: Set(a), t: Set(a)) -> Bool where a: Eq`
+
+Whether the two sets share no members.
 
 ## `show`
 
@@ -1699,7 +1874,21 @@ A strftime-style layout: `%Y-%m-%d %H:%M:%S`, `%A %B %d` and friends. Directives
 
 ## `toml`
 
-toml — a small TOML reader for manifests (`witchy.toml`), written in pure witchy (no native code). It supports what a package manifest needs: top-level and `[section]` tables, `key = "string"` values, and `key = ["a", "b"]` string arrays. Look values up by a `section.key` path (or just `key` for a top-level value). Comments (`#`) — whole-line and trailing — and blank lines are ignored.
+toml — a TOML reader written in pure witchy (no native code). Two ways in: `toml.decode(text)` parses a whole document into a structured `Toml` tree (the `json.decode` shape); or look individual values up by a `section.key` path with `toml.get`/`get_array`/`table`/... It supports top-level and `[section]` (and dotted `[a.b]`) tables, `key = value` for string/int/bool values, and `["a", "b"]` arrays. Comments (`#`) — whole-line and trailing — and blank lines are ignored. (Floats/dates decode as `TomlString`: witchy has no string->float primitive yet.)
+
+#### `type Toml`
+
+A decoded TOML value (`toml.decode`), the structured counterpart of the string-query API below. A document decodes to a `TomlTable`. Floats, dates, and other values witchy can't type are kept as `TomlString` (witchy has no string->float primitive yet), so a round-trip never loses data.
+
+- `TomlString(String)`
+- `TomlInt(Int)`
+- `TomlBool(Bool)`
+- `TomlArray(List(Toml))`
+- `TomlTable(List((String, Toml)))`
+
+#### `fn decode(text: String) -> Result(Toml, String)`
+
+Parse a whole TOML document into a `Toml` tree (always a `TomlTable`). Supports top-level keys, `[section]` and dotted `[a.b]` tables, `#` comments, and `string`/`int`/`bool`/array values. Always succeeds — malformed lines are skipped — so the result is `Ok`; the `Result` shape mirrors `json.decode`.
 
 #### `fn get(text: String, path: String) -> Option(String)`
 

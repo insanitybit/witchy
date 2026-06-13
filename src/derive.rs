@@ -70,6 +70,7 @@ fn method(name: &str, params: Vec<Param>, ret: Type, body_expr: Expr) -> Functio
         },
         bounds: Vec::new(),
         is_gen: false,
+        is_async: false,
     }
 }
 
@@ -96,6 +97,7 @@ fn impl_show(t: &TypeDef) -> Item {
         trait_args: Vec::new(),
         trait_name: Some("Show".into()),
         type_name: t.name.clone(),
+        bounds: Vec::new(),
         handlers: Vec::new(),
         methods: vec![method(
             "show",
@@ -116,6 +118,7 @@ fn impl_eq(t: &TypeDef) -> Item {
         trait_args: Vec::new(),
         trait_name: Some("Eq".into()),
         type_name: t.name.clone(),
+        bounds: Vec::new(),
         handlers: Vec::new(),
         methods: vec![method(
             "eq",
@@ -197,6 +200,7 @@ fn impl_ord(t: &TypeDef) -> Result<Item, String> {
         trait_args: Vec::new(),
         trait_name: Some("Ord".into()),
         type_name: t.name.clone(),
+        bounds: Vec::new(),
         handlers: Vec::new(),
         methods: vec![method(
             "compare",
@@ -242,6 +246,7 @@ fn impl_json(t: &TypeDef) -> Result<Item, String> {
         trait_args: Vec::new(),
         trait_name: None,
         type_name: t.name.clone(),
+        bounds: Vec::new(),
         handlers: Vec::new(),
         methods: vec![method(
             "to_json",

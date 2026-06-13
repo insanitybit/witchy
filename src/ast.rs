@@ -80,6 +80,12 @@ pub struct ImplDef {
     /// impl. Empty for unparameterized traits.
     pub trait_args: Vec<Type>,
     pub type_name: String,
+    /// A `where` clause on the impl head — a CONDITIONAL impl that applies only
+    /// when its target's type variables satisfy these bounds (`impl FromIterator(a)
+    /// for Set(a) where a: Eq`). Each bound is `(var, trait, trait_args)`, the same
+    /// shape as `Function::bounds`; the bounds are copied onto every generated
+    /// method so its body's bounded calls type-check and monomorphize.
+    pub bounds: Vec<(String, String, Vec<Type>)>,
     pub methods: Vec<Function>,
     /// Message handlers (`on Msg(...) { ... }`) for an inherent impl on an actor
     /// type. Merged into the target `ActorDef` right after parsing, so later
@@ -91,6 +97,12 @@ pub struct ImplDef {
 #[derive(Debug, Clone, PartialEq)]
 pub struct TypeDef {
     pub name: String,
+    /// Explicit type parameters: `type Pair(m, a):` is `["m", "a"]`. When present,
+    /// these FIX the parameter order; otherwise the order is inferred from the
+    /// variants' field types (order of first appearance). Explicit params matter
+    /// when a constructor omits some of them (e.g. `Done(a)` for `Step(m, a)`) —
+    /// inference can't recover the intended position of the omitted one.
+    pub params: Vec<String>,
     pub variants: Vec<Variant>,
     /// `type T derive(Show, Eq, Ord):` — traits whose impls the compiler
     /// generates (additively, before checking; docs/language-evolution.md
@@ -130,6 +142,14 @@ pub struct Field {
 pub struct Handler {
     pub message: String,
     pub params: Vec<Param>,
+    /// Whether the handler declares an explicit `self` first parameter
+    /// (`on Msg(self, ...)`). When true, `self` (the actor's own `Subject`) is in
+    /// scope in the body; when false, referencing `self` is an error. `self` is
+    /// not a message argument, so it is stripped from `params`.
+    pub has_self: bool,
+    /// The ownership convention on the `self` parameter (`var`/`let`/`own`/plain),
+    /// e.g. `var self` binds a mutable `self`. Ignored when `has_self` is false.
+    pub self_conv: Convention,
     pub body: Block,
 }
 
@@ -149,6 +169,10 @@ pub struct Function {
     /// `gen fn` — a generator whose `yield`s build a lazy `iter.Iter`. Lowered to
     /// ordinary functions by `crate::generators` before any later stage.
     pub is_gen: bool,
+    /// `async fn` — a function that may `await`. Phase 1: surface + coloring only
+    /// (the body runs sequentially; `await e` is parsed as `e`). Later phases
+    /// lower an async fn to a resumable state machine driven by the executor.
+    pub is_async: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -404,6 +428,11 @@ pub enum UnOp {
     /// compile error). Carried as a unary op so every AST walker that already
     /// recurses through `Unary` handles it transparently.
     Move,
+    /// `await e` — a suspension point inside an `async fn`. Value-neutral like
+    /// `move` (Phase 1 has no executor, so it evaluates to its operand and runs
+    /// sequentially); carried as a unary op so it survives to `fmt` and so every
+    /// `Unary` walker handles it transparently until the executor lands.
+    Await,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

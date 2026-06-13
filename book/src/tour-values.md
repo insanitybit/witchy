@@ -78,7 +78,7 @@ fn main(console: Console):
 
 ```text
 7
-7
+7.0
 7
 123
 ```

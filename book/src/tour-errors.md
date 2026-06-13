@@ -147,4 +147,36 @@ fn main(console: Console):
 out to the world. It's the primitive the test framework's assertions are built
 on, too (we'll meet `witchy test` later).
 
+## Constructors that validate return `Result`
+
+A function that *checks* its input before building a value hands back a
+`Result`, not the bare value — so a bad input is a value you handle, not a
+crash. Several standard constructors work exactly this way, and `?` threads
+them cleanly:
+
+```witchy
+import time
+import semver
+
+fn parse_release(date: String, ver: String) -> Result(String, String):
+    let d = time.parse_iso8601(date)?      // Result(DateTime, String)
+    let v = semver.parse(ver)?             // Result(Version, String)
+    Ok(time.date_string(d) + " v" + semver.format(v))
+
+fn main(console: Console):
+    match parse_release("2026-06-12T00:00:00Z", "1.4.0"):
+        Ok(s) -> print(console, s)
+        Err(e) -> print(console, "error: " + e)
+```
+
+```text
+2026-06-12 v1.4.0
+```
+
+`time.civil(...)`, `time.parse_iso8601(...)`, `semver.parse(...)`, and
+`url.parse(...)` all follow this shape: they verify the input — a real calendar
+date, a well-formed version or URL — and report a bad one as `Err` instead of
+guessing. So you can't accidentally use an unvalidated `DateTime`; the type
+makes you unwrap the `Result` first.
+
 Next, the tools for writing code that works for *many* types at once.

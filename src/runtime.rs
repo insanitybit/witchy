@@ -484,6 +484,7 @@ pub(crate) fn link_capability_imports(
     // arguments — the toolchain exposed to witchy, same registry bridge.
     linker.func_wrap("witchy", "compiler_footprint_len", host_compiler_footprint_len)?;
     linker.func_wrap("witchy", "compiler_diff_len", host_compiler_diff_len)?;
+    linker.func_wrap("witchy", "regex_match_spans_len", host_regex_match_spans_len)?;
     // Float -> string formatting is pure; done in the host so it is byte-
     // identical to the interpreter's `Display` (no float formatter in WAT).
     linker.func_wrap("witchy", "float_to_str", host_float_to_str)?;
@@ -520,13 +521,14 @@ fn host_print_int(caller: Caller<'_, ActorState>, n: i64) -> Result<()> {
 }
 
 fn host_print_float(caller: Caller<'_, ActorState>, x: f64) -> Result<()> {
-    // `f64::to_string` is Rust's `{}` Display — the same formatting the
-    // interpreter uses for a Float (Value::Float Display), so the two backends
-    // agree on float output.
+    // The same canonical float formatting the interpreter uses (Value::Float
+    // Display via `render_float`), so the two backends agree on float output —
+    // including the trailing `.0` on a whole-valued float.
+    let s = crate::interpreter::render_float(x);
     if !caller.data().caps.quiet {
-        println!("[actor {}] {x}", caller.data().id);
+        println!("[actor {}] {s}", caller.data().id);
     }
-    caller.data().output.lock().unwrap().push(x.to_string());
+    caller.data().output.lock().unwrap().push(s);
     Ok(())
 }
 
@@ -589,7 +591,7 @@ fn host_ed25519_verify(
 /// `to_string`), write the bytes at `out_ptr`, and return the byte length. The
 /// guest reserves a generous buffer; an f64's decimal form never exceeds it.
 fn host_float_to_str(mut caller: Caller<'_, ActorState>, x: f64, out_ptr: i32) -> Result<i32> {
-    let s = format!("{x}");
+    let s = crate::interpreter::render_float(x);
     let bytes = s.into_bytes();
     let mem = memory_of(&mut caller)?;
     mem.write(&mut caller, out_ptr as usize, &bytes)
@@ -680,6 +682,30 @@ fn host_compiler_diff_len(
     };
     let len = json.len() as i32;
     caller.data_mut().pending = Some(json.into_bytes());
+    Ok(len)
+}
+
+/// `regex_match_spans_len(pat_ptr, text_ptr) -> Int`: run the regex crate (the
+/// same `regex.match_spans` native the interpreter uses) over two guest strings,
+/// stage the encoded match spans for `fill_pending`, and report their byte
+/// length. An invalid pattern traps — identical to the interpreter's error.
+fn host_regex_match_spans_len(
+    mut caller: Caller<'_, ActorState>,
+    pat_ptr: i32,
+    text_ptr: i32,
+) -> Result<i32> {
+    use crate::interpreter::Value;
+    let mem = memory_of(&mut caller)?;
+    let pattern = read_wstr(mem.data(&caller), pat_ptr)?;
+    let text = read_wstr(mem.data(&caller), text_ptr)?;
+    let f = crate::native::lookup("regex.match_spans")
+        .ok_or_else(|| Error::msg("regex.match_spans is not registered"))?;
+    let spans = match f(&[Value::Str(pattern), Value::Str(text)]).map_err(|e| Error::msg(e.message))? {
+        Value::Str(s) => s,
+        _ => return Err(Error::msg("regex.match_spans did not return a String")),
+    };
+    let len = spans.len() as i32;
+    caller.data_mut().pending = Some(spans.into_bytes());
     Ok(len)
 }
 

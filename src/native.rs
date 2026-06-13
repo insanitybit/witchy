@@ -34,6 +34,7 @@ pub fn lookup(qualified: &str) -> Option<NativeFn> {
         "encoding.hex_decode" => Some(encoding::hex_decode),
         "encoding.base64_encode" => Some(encoding::base64_encode),
         "encoding.base64_decode" => Some(encoding::base64_decode),
+        "regex.match_spans" => Some(regexp::match_spans),
         _ => None,
     }
 }
@@ -364,5 +365,42 @@ mod encoding {
             }
         }
         Ok(Value::Str(String::from_utf8_lossy(&bytes).into_owned()))
+    }
+}
+
+/// The `regex` module's engine: the Rust `regex` crate (RE2 semantics — linear
+/// time, full alternation `|` and grouping `(...)`). This single native carries
+/// the matching; the whole public `std/regex` API (matches/find/find_all/extract/
+/// replace_all/split) is built in witchy on the spans it returns. Positions are
+/// CHARACTER indices (witchy strings are char-indexed), converted from the
+/// crate's byte offsets, so they feed `string.substring` directly. An invalid
+/// pattern is a loud error on every backend, not a silent non-match.
+mod regexp {
+    use super::{type_error, Value};
+    use crate::interpreter::RuntimeError;
+
+    /// Character offset of `byte` within `text` (a byte index from the crate).
+    fn char_off(text: &str, byte: usize) -> i64 {
+        text[..byte].chars().count() as i64
+    }
+
+    /// Every non-overlapping match as char-index spans, encoded `"s,e;s,e;..."`
+    /// (empty string when there is no match). The host-bridged form used by the
+    /// WASM backend (`host_regex_spans`) calls straight through to this.
+    pub fn match_spans(args: &[Value]) -> Result<Value, RuntimeError> {
+        let [Value::Str(pattern), Value::Str(text)] = args else {
+            return Err(type_error("regex.match_spans expects (pattern, text) strings"));
+        };
+        let re = regex::Regex::new(pattern)
+            .map_err(|e| type_error(format!("regex: invalid pattern `{pattern}`: {e}")))?;
+        let mut out = String::new();
+        for m in re.find_iter(text) {
+            use std::fmt::Write;
+            if !out.is_empty() {
+                out.push(';');
+            }
+            let _ = write!(out, "{},{}", char_off(text, m.start()), char_off(text, m.end()));
+        }
+        Ok(Value::Str(out))
     }
 }

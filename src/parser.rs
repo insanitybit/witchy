@@ -95,6 +95,8 @@ struct Parser {
     /// params — `fn f(x: impl Show)` desugars to a fresh type var plus a
     /// `where`-style bound, reusing the whole trait/monomorphization path.
     pending_impl_bounds: Vec<(String, String, Vec<Type>)>,
+    /// True while parsing the body of an `async fn`; gates the `await` prefix.
+    in_async: bool,
 }
 
 impl Parser {
@@ -112,6 +114,7 @@ impl Parser {
                 .map(String::from)
                 .collect(),
             pending_impl_bounds: Vec::new(),
+            in_async: false,
         }
     }
 
@@ -214,7 +217,7 @@ impl Parser {
 
     fn item(&mut self) -> Result<Item, ParseError> {
         let public = self.eat(&Tok::Pub);
-        if self.at(&Tok::Fn) || self.at(&Tok::Gen) {
+        if self.at(&Tok::Fn) || self.at(&Tok::Gen) || self.at(&Tok::Async) {
             Ok(Item::Function(self.function(public)?))
         } else if self.at(&Tok::Actor) {
             Ok(Item::Actor(self.actor_def()?))
@@ -335,6 +338,8 @@ impl Parser {
             }
             (None, first)
         };
+        // `impl Trait for T where a: Bound:` — a conditional impl.
+        let bounds = self.where_clause()?;
         self.expect(&Tok::LBrace)?;
         let mut methods = Vec::new();
         let mut handlers = Vec::new();
@@ -350,6 +355,7 @@ impl Parser {
             trait_name,
             trait_args,
             type_name,
+            bounds,
             methods,
             handlers,
         })
@@ -358,12 +364,14 @@ impl Parser {
     fn type_def(&mut self) -> Result<Item, ParseError> {
         self.expect(&Tok::Type)?;
         let name = self.ident()?;
-        // Optional explicit type parameters: `type Pair(a, b):`. The type checker
-        // also infers the parameters from the variant field types, so these names
-        // are accepted for clarity/documentation and the inferred set is used.
+        // Optional explicit type parameters: `type Pair(a, b):`. These FIX the
+        // parameter order (needed when a constructor omits one — inference can't
+        // place the omitted param). When absent, the checker infers the params
+        // from the variant field types.
+        let mut params: Vec<String> = Vec::new();
         if self.eat(&Tok::LParen) {
             while !self.at(&Tok::RParen) {
-                self.ident()?;
+                params.push(self.ident()?);
                 if !self.eat(&Tok::Comma) {
                     break;
                 }
@@ -428,6 +436,7 @@ impl Parser {
             // its field types positional and field names recorded alongside.
             Ok(Item::Type(TypeDef {
                 name: name.clone(),
+                params,
                 variants: vec![Variant {
                     name,
                     fields: rec_types,
@@ -436,7 +445,7 @@ impl Parser {
                 derives,
             }))
         } else {
-            Ok(Item::Type(TypeDef { name, variants, derives }))
+            Ok(Item::Type(TypeDef { name, params, variants, derives }))
         }
     }
 
@@ -483,12 +492,23 @@ impl Parser {
         self.expect(&Tok::On)?;
         let message = self.ident()?;
         self.expect(&Tok::LParen)?;
-        let params = self.params()?;
+        let mut params = self.params()?;
         self.expect(&Tok::RParen)?;
+        // An explicit leading `self` makes the actor's own Subject available in
+        // the body; it is not a message argument, so strip it from `params`,
+        // keeping its ownership convention (`var self` binds a mutable `self`).
+        let has_self = params.first().is_some_and(|p| p.name == "self");
+        let self_conv = if has_self {
+            params.remove(0).convention
+        } else {
+            Convention::Let
+        };
         let body = self.block()?;
         Ok(Handler {
             message,
             params,
+            has_self,
+            self_conv,
             body,
         })
     }
@@ -509,6 +529,7 @@ impl Parser {
     }
 
     fn function(&mut self, public: bool) -> Result<Function, ParseError> {
+        let is_async = self.eat(&Tok::Async);
         let is_gen = self.eat(&Tok::Gen);
         self.expect(&Tok::Fn)?;
         let name = self.ident()?;
@@ -525,7 +546,10 @@ impl Parser {
         // them (a function may use both).
         let mut bounds = std::mem::take(&mut self.pending_impl_bounds);
         bounds.extend(self.where_clause()?);
+        // `await` is only legal inside an `async fn`; the body parse consults this.
+        let prev_async = std::mem::replace(&mut self.in_async, is_async);
         let body = self.block()?;
+        self.in_async = prev_async;
         Ok(Function {
             public,
             name,
@@ -534,6 +558,7 @@ impl Parser {
             body,
             bounds,
             is_gen,
+            is_async,
         })
     }
 
@@ -711,7 +736,13 @@ impl Parser {
                 self.advance();
                 let mut names = Vec::new();
                 while !self.at(&Tok::RParen) {
-                    names.push(self.ident()?);
+                    // `_` discards that element: store it as the name "_", which
+                    // is not a referenceable identifier, so the binding is dropped.
+                    if self.eat(&Tok::Underscore) {
+                        names.push("_".to_string());
+                    } else {
+                        names.push(self.ident()?);
+                    }
                     if !self.eat(&Tok::Comma) {
                         break;
                     }
@@ -821,6 +852,23 @@ impl Parser {
             let expr = self.prefix()?;
             return Ok(Expr::Unary {
                 op: UnOp::Move,
+                expr: Box::new(expr),
+            });
+        }
+        // `await e` — suspension point. Legal only inside an `async fn` (the
+        // capability-style coloring rule). Phase 1 has no executor yet, so it is
+        // value-neutral (like `move`) and runs sequentially; this keeps both
+        // backends byte-identical while the surface and coloring land first.
+        if self.at(&Tok::Await) {
+            if !self.in_async {
+                return Err(self.error(
+                    "`await` is only allowed inside an `async fn`".to_string(),
+                ));
+            }
+            self.advance();
+            let expr = self.prefix()?;
+            return Ok(Expr::Unary {
+                op: UnOp::Await,
                 expr: Box::new(expr),
             });
         }
@@ -987,7 +1035,11 @@ impl Parser {
                     self.advance();
                     let mut names = Vec::new();
                     loop {
-                        names.push(self.ident()?);
+                        if self.eat(&Tok::Underscore) {
+                            names.push("_".to_string());
+                        } else {
+                            names.push(self.ident()?);
+                        }
                         if !self.eat(&Tok::Comma) {
                             break;
                         }

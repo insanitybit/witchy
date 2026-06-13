@@ -17,6 +17,7 @@ pub mod aliases;
 pub mod ast;
 pub mod capabilities;
 pub mod codegen;
+pub mod async_lower;
 pub mod consts;
 pub mod comptime;
 pub mod derive;
