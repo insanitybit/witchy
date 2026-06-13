@@ -88,6 +88,10 @@ Transform a task's result.
 
 The actor message loop as a combinator: receive a message, run `handler` with the current `state` to get the next state, and repeat. State threads through every message without manual recursion, so an actor is just `chan.serve` over its state and a handler. Runs until quiescence — when nothing more messages this task, it becomes inert (the actor lifecycle).
 
+#### `fn for_each(xs: List(a), f: fn(a) -> Task(m, Nil)) -> Task(m, Nil)`
+
+Run `f(x)` as a task for each `x` in `xs`, in order — each iteration's task completes before the next begins. This is the lowering target for an `await` inside a `for` loop: `for x in xs: <body>` in an async fn becomes `for_each(xs, fn(x): <body as a task>)`, so iterating with `await` needs no hand-written recursion. The sequential, list-driven complement to `serve`.
+
 #### `fn lazy(thunk: fn() -> Task(m, a)) -> Task(m, a)`
 
 Build the task `thunk()` lazily: nothing runs until the first poll, and then exactly once. This is what makes an `async fn` LAZY — calling it yields a task that does no work until driven.

@@ -195,8 +195,15 @@ intact. Two candidate lowerings were considered:
    literal (`examples/request_reply.witchy`). It is a fifth `Step` effect, `Whoami`,
    answered by the executor with the task's index — the same shape as `Recv`.
 
-   *Deferred:* first-class `(tx, rx)` channel handles and `for await v in rx` loop
-   sugar, both of which can build on `address`.
+   *`await` inside a `for` loop.* `for x in xs:` with an awaiting body lowers to a
+   sequential `chan.for_each(xs, fn(x): <body>)` — each iteration's task completes
+   before the next, so iterating with `await` needs no hand-written recursion
+   (`examples/for_await.witchy`, `for_await_loop_backends_agree`). A `while` loop
+   with `await` stays unsupported: it would need mutable state carried across the
+   await, which captures-by-value can't express — recurse, or use a `for`.
+
+   *Deferred:* first-class `(tx, rx)` channel handles and a `for await v in rx`
+   form (a recv-loop over a channel handle), both of which can build on `address`.
 5. **`scope` + `select` + cancellation — DONE (primitive form).** `future.select`
    races tasks and returns the first to finish, dropping the losers — and because
    futures are pure and lazy, dropping IS cancellation (no cleanup hook needed),

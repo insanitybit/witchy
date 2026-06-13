@@ -11693,6 +11693,38 @@ fn main(console: Console):
         assert_eq!(interp_out, vec!["got 1", "got 2", "stop"]);
     }
 
+    // `await` inside a `for` loop — over a list (producer) and a range (consumer)
+    // — lowers to a sequential `chan.for_each`, so iterating with `await` needs no
+    // hand-written recursion. Both backends must agree, byte-for-byte.
+    #[test]
+    fn for_await_loop_backends_agree() {
+        let src = r#"
+import chan
+
+async fn producer() -> Nil:
+    for x in [1, 2, 3]:
+        await chan.send(1, x)
+    await chan.send(1, 0)
+
+async fn consumer(console: Console) -> Nil:
+    for _i in 0..4:
+        let v = await chan.recv()
+        print(console, "got ${v}")
+
+fn main(console: Console):
+    chan.run([producer(), consumer(console)])
+"#;
+        let module = parser::parse_module(src).expect("parse");
+        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        typeck::check(&linked).expect("typecheck");
+        let interp_out =
+            interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interp");
+        let wat = codegen::compile_module(&linked).expect("compile");
+        let wasm_out = crate::run_wat_capture(&wat).expect("wasm");
+        assert_eq!(interp_out, wasm_out, "for-await schedule diverged across backends");
+        assert_eq!(interp_out, vec!["got 1", "got 2", "got 3", "got 0"]);
+    }
+
     // The multi-actor case: each task has its OWN inbox, so several actors with
     // separate mailboxes run together (what a single shared channel cannot do).
     // A logger (#0), a forwarder (#1) that relays to the logger, and a driver (#2)

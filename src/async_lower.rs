@@ -31,12 +31,15 @@
 //! nothing self-referential and so (unlike Rust) no `Pin`.
 //!
 //! Scope of this pass (the rest is rejected with a clear error, to be lifted as
-//! the transform grows): `await` may appear only as the entire right-hand side of
-//! a `let`, as a bare statement, or in tail position (including the branches of a
-//! tail `if`/`match`). `await` inside a `while`/`for` loop, inside a condition or
-//! scrutinee, or nested within a larger expression is not yet supported. Carrying
-//! a mutable `var` across an `await` is likewise unsupported — and is caught for
-//! free by the existing rule that a closure may not assign to a captured variable.
+//! the transform grows): `await` may appear as the entire right-hand side of a
+//! `let`, as a bare statement, in tail position (including the branches of a tail
+//! `if`/`match`), or inside the body of a `for x in xs:` loop — which lowers to a
+//! sequential `chan.for_each` over the elements. `await` inside a `while` loop,
+//! inside a condition or scrutinee, or nested within a larger expression is not
+//! yet supported. Carrying a mutable `var` across an `await` is likewise
+//! unsupported — and is caught for free by the existing rule that a closure may
+//! not assign to a captured variable (which also bounds the `for` body to
+//! loop-local state).
 
 use crate::ast::*;
 
@@ -141,6 +144,37 @@ impl Ctx {
                 }
             }
             Stmt::Expr(e) => {
+                // A `for x in xs:` whose body awaits becomes a sequential
+                // `chan.for_each` over the elements — each iteration's body is a
+                // task, run to completion before the next. A range iterator
+                // becomes its list; assigning an outer `var` in the body is
+                // rejected downstream (a closure can't mutate a captured var), so
+                // only loop-local state crosses an `await` here.
+                if let Expr::For { var, iter, body } = e {
+                    if block_contains_await(body) {
+                        let loop_future = self.cps_for(var, iter, body)?;
+                        return if is_last {
+                            Ok(loop_future)
+                        } else {
+                            let bind = self.fresh();
+                            let k = self.cps_stmts(rest)?;
+                            Ok(and_then(loop_future, bind, k))
+                        };
+                    }
+                }
+                // A `while` loop needs mutable state carried across iterations to
+                // make progress, which can't cross an `await` (captures are by
+                // value) — so point at the supported forms instead of the generic
+                // "nested await" message.
+                if let Expr::While { cond, body } = e {
+                    if contains_await(cond) || block_contains_await(body) {
+                        return Err(self.err(
+                            "`await` inside a `while` loop is not yet supported — \
+                             iterate a list with `for x in xs:` (which supports \
+                             `await`), or loop by recursing with an async fn",
+                        ));
+                    }
+                }
                 if is_last {
                     // A tail `await E` yields E's value (`cps_value` returns the
                     // future itself), NOT the discard path below.
@@ -178,6 +212,23 @@ impl Ctx {
                 Err(self.err("`break`/`continue` across `await` is not yet supported"))
             }
         }
+    }
+
+    /// Lower a `for x in xs:` whose body awaits into a `chan.for_each(xs', fn(x):
+    /// <body>)` task. The body is CPS-transformed and coerced to `Task(m, Nil)`
+    /// (the loop discards each iteration's value); a range iterator is turned into
+    /// its list.
+    fn cps_for(&mut self, var: &str, iter: &Expr, body: &Block) -> Result<Expr, String> {
+        reject_await(iter, &self.fname)?;
+        let list_expr = for_iter_list(iter);
+        let body_future = self.cps_stmts(&body.stmts)?;
+        let discard = self.fresh();
+        let body_nil = and_then(body_future, discard, call("chan.ready_unit", vec![]));
+        let f = Expr::Lambda {
+            params: vec![Param { name: var.to_string(), ty: None, convention: Convention::Let }],
+            body: tail_block(body_nil),
+        };
+        Ok(call("chan.for_each", vec![list_expr, f]))
     }
 
     /// Transform an expression in VALUE position (the function's result) into a
@@ -224,6 +275,23 @@ impl Ctx {
                 Ok(call("chan.done", vec![e.clone()]))
             }
         }
+    }
+}
+
+/// The list a `for` iterator ranges over: a `lo..hi` / `lo..=hi` range becomes
+/// the equivalent `list.range_between` call (the loop runs over a real list, the
+/// shape `for_each` consumes); any other iterator is already a list expression.
+fn for_iter_list(iter: &Expr) -> Expr {
+    match iter {
+        Expr::Range { lo, hi, inclusive } => {
+            let hi_expr = if *inclusive {
+                Expr::Binary { op: BinOp::Add, lhs: hi.clone(), rhs: Box::new(Expr::Int(1)) }
+            } else {
+                (**hi).clone()
+            };
+            call("list.range_between", vec![(**lo).clone(), hi_expr])
+        }
+        other => other.clone(),
     }
 }
 

@@ -93,6 +93,17 @@ pub fn map(t: Task(m, a), f: fn(a) -> b) -> Task(m, b):
 pub fn serve(state: s, handler: fn(s, m) -> Task(m, s)) -> Task(m, Nil):
     and_then(recv(), fn(msg): and_then(handler(state, msg), fn(next): serve(next, handler)))
 
+// Run `f(x)` as a task for each `x` in `xs`, in order — each iteration's task
+// completes before the next begins. This is the lowering target for an `await`
+// inside a `for` loop: `for x in xs: <body>` in an async fn becomes
+// `for_each(xs, fn(x): <body as a task>)`, so iterating with `await` needs no
+// hand-written recursion. The sequential, list-driven complement to `serve`.
+pub fn for_each(xs: List(a), f: fn(a) -> Task(m, Nil)) -> Task(m, Nil):
+    if list.is_empty(xs):
+        ready_unit()
+    else:
+        and_then(f(list.at(xs, 0)), fn(_done): for_each(list.tail(xs), f))
+
 // Build the task `thunk()` lazily: nothing runs until the first poll, and then
 // exactly once. This is what makes an `async fn` LAZY — calling it yields a task
 // that does no work until driven.

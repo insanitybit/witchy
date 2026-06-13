@@ -153,6 +153,34 @@ This is the same accumulator as the previous section, but the state recursion li
 once inside `serve` instead of in every match arm. Like any actor, it runs until
 quiescence — when nothing more arrives in its inbox, the task goes inert.
 
+## Iterating with `await`
+
+A `for` loop may `await` in its body. Each iteration runs to completion before the
+next begins, so a sequence of asynchronous steps reads as an ordinary loop — no
+hand-written recursion:
+
+```witchy
+import chan
+
+async fn sender() -> Nil:
+    for x in [1, 2, 3]:
+        await chan.send(1, x)
+    await chan.send(1, 0)
+
+async fn receiver(console: Console) -> Nil:
+    for _i in 0..4:
+        let v = await chan.recv()
+        print(console, "got ${v}")
+
+fn main(console: Console):
+    chan.run([sender(), receiver(console)])
+```
+
+The loop lowers to `chan.for_each`. A `while` loop cannot `await`: it would need
+mutable state carried across the await point, which captured-by-value closures
+can't express — for an open-ended loop, recurse with an async fn (as the actors
+above do), or iterate a list with `for`.
+
 ## Why this stays deterministic
 
 The executor is ordinary witchy code (see `std/chan` and `std/future`): it owns the

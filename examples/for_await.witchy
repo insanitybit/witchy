@@ -1,0 +1,30 @@
+// `await` inside a `for` loop. The loop body runs as a task per element, in
+// order — so you iterate with `await` instead of hand-writing the recv/recurse
+// loop. It lowers to `chan.for_each`, the sequential list-driven complement to
+// `chan.serve`. (A `while` loop with `await` is not supported: it would need
+// mutable state carried across the await, which captures-by-value can't do —
+// recurse with an async fn, or restructure as a `for`.)
+//
+// Run:  witchy examples/for_await.witchy
+//       witchy parity examples/for_await.witchy
+
+import chan
+
+type Job:
+    Do(Int)
+    Stop
+
+async fn producer() -> Nil:
+    for n in [2, 3, 4]:
+        await chan.send(1, Do(n))
+    await chan.send(1, Stop)
+
+async fn worker(console: Console) -> Nil:
+    for _i in 0..4:
+        let job = await chan.recv()
+        match job:
+            Do(n) -> print(console, "n*n = ${n * n}")
+            Stop -> print(console, "done")
+
+fn main(console: Console):
+    chan.run([producer(), worker(console)])
