@@ -38,6 +38,8 @@ pub mod typeck;
 pub mod value;
 pub mod wir;
 pub mod wir_encode;
+#[cfg(feature = "native")]
+pub mod wir_prelude;
 
 /// Resolve a single-source program against the BUNDLED standard library only
 /// (no filesystem — the browser has none): parse the entry, then breadth-first

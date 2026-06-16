@@ -1826,8 +1826,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "437970b35b1a85cfde9c74b2398352d8d653f3bd8e3a3db0c063ea8f5b4b36ff"
 dependencies = [
  "bitflags",
+ "hashbrown 0.17.1",
  "indexmap",
  "semver",
+ "serde",
 ]
 
 [[package]]
@@ -2327,6 +2329,7 @@ dependencies = [
  "tiny_http",
  "toml 1.1.2+spec-1.1.0",
  "wasm-encoder 0.251.0",
+ "wasmparser 0.251.0",
  "wasmtime",
  "wat",
 ]

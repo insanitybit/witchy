@@ -40,6 +40,8 @@ mod typeck;
 mod value;
 mod wir;
 mod wir_encode;
+#[cfg(feature = "native")]
+mod wir_prelude;
 
 use std::time::Duration;
 
