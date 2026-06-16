@@ -2819,6 +2819,33 @@ pub fn encoding_helper() -> WirFunc {
     }
 }
 
+/// `$crypto_sha256(in) -> i32` — the lowercase-hex SHA-256 of `in`'s bytes (a
+/// 64-char String). Reserves the fixed 68-byte result, lets the host
+/// `crypto.sha256` import write the hex into `res+4`, and bumps `$heap`. The
+/// crypto import is host-provided unconditionally (hashing needs no capability).
+pub fn crypto_sha256_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    let i32c = E::ConstI32;
+    let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+    WirFunc {
+        name: "crypto_sha256".into(),
+        params: vec![WirLocal { name: "in".into(), ty: WirTy::Str }],
+        ret: vec![WirTy::Str],
+        locals: vec![WirLocal { name: "res".into(), ty: WirTy::Bool }],
+        body: vec![
+            N::Do(E::Call { func: "ensure".into(), args: vec![i32c(68)] }),
+            N::SetLocal { local: "res".into(), value: E::GetGlobal("heap".into()) },
+            N::Store { ptr: getl("res"), value: i32c(64), kind: Kind::I32, offset: 0 },
+            N::Do(E::CallHost { import: "crypto.sha256".into(), args: vec![getl("in"), b(BinOp::Add, getl("res"), i32c(4))] }),
+            N::SetGlobal { global: "heap".into(), value: b(BinOp::Add, getl("res"), i32c(68)) },
+            N::Push(getl("res")),
+        ],
+        raw_body: None,
+    }
+}
+
 /// A WIR-native prelude helper plus the module-level resources it needs (so a
 /// pruned module declares only the imports/globals/table its reached helpers
 /// actually touch — capability-minimal).
@@ -3005,6 +3032,13 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             func: encoding_helper(),
             helper_deps: &["ensure"],
             import_deps: &["encoding"],
+            uses_heap: true,
+            uses_table: false,
+        }),
+        "crypto_sha256" => Some(WirHelperSpec {
+            func: crypto_sha256_helper(),
+            helper_deps: &["ensure"],
+            import_deps: &["crypto.sha256"],
             uses_heap: true,
             uses_table: false,
         }),

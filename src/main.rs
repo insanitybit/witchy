@@ -8311,6 +8311,25 @@ fn main(console: Console):
         assert_eq!(link_run(src), want, "interpreter oracle");
     }
 
+    /// `$crypto_sha256` on the binary path — a host-import wrapper returning a
+    /// String. The "crypto.sha256" import is host-provided regardless of grant
+    /// (hashing needs no capability), so the print-only harness instantiates it.
+    /// Compared against the linked interpreter oracle (computes the real digest).
+    #[test]
+    fn wir_crypto_sha256_host_import_binary_path() {
+        let src = "import crypto\nfn main(console: Console):\n    print(console, crypto.sha256(\"abc\"))\n";
+        let module = parser::parse_module(src).expect("parse");
+        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        typeck::check(&linked).expect("typecheck");
+        let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+            .expect("compile_module_binary")
+            .expect("the WIR binary path should handle crypto.sha256 via the host import");
+        let want = link_run(src);
+        // SHA-256("abc") — the well-known vector — confirms the host wrote it.
+        assert_eq!(want, vec!["ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad".to_string()]);
+        assert_eq!(run_bytes_print_only(&bytes), want, "binary path vs oracle");
+    }
+
     /// Link a multi-module program, compile the flat module to WASM, run it on
     /// the runtime with output capabilities, and return what it printed.
     fn run_linked_on_wasm(sources: &[(&str, &str)], entry: &str) -> Vec<String> {
