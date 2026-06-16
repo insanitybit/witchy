@@ -8242,6 +8242,12 @@ fn main(console: Console):
                 "fn main(console: Console):\n    print(console, __render(string.to_int(\"123\") + string.to_int(\"-23\")))\n",
                 vec!["100".to_string()],
             ),
+            // string.replace ($replace + $match_at — count-then-fill) on the
+            // binary path, including a growing replacement.
+            (
+                "fn main(console: Console):\n    print(console, string.replace(\"hello world\", \"o\", \"0\"))\n    print(console, string.replace(\"a.b.c\", \".\", \"::\"))\n",
+                vec!["hell0 w0rld".to_string(), "a::b::c".to_string()],
+            ),
             // dict with String keys ($dict_new/insert/get_or/has/size →
             // $dict_find + $key_eq's $str_eq path) on the binary path.
             (

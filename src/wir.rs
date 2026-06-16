@@ -2580,6 +2580,205 @@ pub fn dict_remove_helper() -> WirFunc {
     }
 }
 
+/// `$match_at(s, from, pos) -> i32` — 1 iff `from` occurs in `s` starting at
+/// byte offset `pos`. Bails to 0 if `from` would run off the end or any byte
+/// differs.
+pub fn match_at_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    let i32c = E::ConstI32;
+    let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+    let load = |p: E| E::Load { ptr: Box::new(p), kind: Kind::I32, offset: 0 };
+    let setl = |n: &str, v: E| N::SetLocal { local: n.into(), value: v };
+    let s_byte = E::Load8U { ptr: Box::new(b(BinOp::Add, getl("s"), b(BinOp::Add, getl("pos"), getl("j")))), offset: 4 };
+    let from_byte = E::Load8U { ptr: Box::new(b(BinOp::Add, getl("from"), getl("j"))), offset: 4 };
+    let scan = N::Block {
+        label: "done".into(),
+        result: None,
+        body: vec![N::Loop {
+            label: "l".into(),
+            body: vec![
+                N::Br { target: "done".into(), cond: Some(b(BinOp::Ge, getl("j"), getl("flen"))) },
+                N::If { cond: b(BinOp::Ne, s_byte, from_byte), then_: vec![N::Return(Some(i32c(0)))], els: vec![], result: None },
+                setl("j", b(BinOp::Add, getl("j"), i32c(1))),
+                N::Br { target: "l".into(), cond: None },
+            ],
+        }],
+    };
+    WirFunc {
+        name: "match_at".into(),
+        params: vec![
+            WirLocal { name: "s".into(), ty: WirTy::Str },
+            WirLocal { name: "from".into(), ty: WirTy::Str },
+            WirLocal { name: "pos".into(), ty: WirTy::Bool },
+        ],
+        ret: vec![WirTy::Bool],
+        locals: ["flen", "j"].iter().map(|n| WirLocal { name: (*n).into(), ty: WirTy::Bool }).collect(),
+        body: vec![
+            setl("flen", load(getl("from"))),
+            N::If {
+                cond: b(BinOp::Gt, b(BinOp::Add, getl("pos"), getl("flen")), load(getl("s"))),
+                then_: vec![N::Return(Some(i32c(0)))],
+                els: vec![],
+                result: None,
+            },
+            setl("j", i32c(0)),
+            scan,
+            N::Push(i32c(1)),
+        ],
+        raw_body: None,
+    }
+}
+
+/// `$replace(s, from, to) -> i32` — `s` with every occurrence of `from` replaced
+/// by `to`. Empty `from` inserts `to` between every character (and at both ends),
+/// stepping by UTF-8 sequence length. Otherwise counts matches via `$match_at`,
+/// allocates the exact result, then copies through replacing each match.
+pub fn replace_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    let i32c = E::ConstI32;
+    let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+    let load = |p: E| E::Load { ptr: Box::new(p), kind: Kind::I32, offset: 0 };
+    let setl = |n: &str, v: E| N::SetLocal { local: n.into(), value: v };
+    let s_off = |off: E| b(BinOp::Add, b(BinOp::Add, getl("s"), i32c(4)), off);
+    let to_bytes = b(BinOp::Add, getl("to"), i32c(4));
+    let match_here = || E::Call { func: "match_at".into(), args: vec![getl("s"), getl("from"), getl("src")] };
+    // seqlen(b) into `clen` — UTF-8 lead-byte classification.
+    let seqlen = N::If {
+        cond: b(BinOp::LtU, getl("b"), i32c(0x80)),
+        then_: vec![setl("clen", i32c(1))],
+        els: vec![N::If {
+            cond: b(BinOp::LtU, getl("b"), i32c(0xe0)),
+            then_: vec![setl("clen", i32c(2))],
+            els: vec![N::If {
+                cond: b(BinOp::LtU, getl("b"), i32c(0xf0)),
+                then_: vec![setl("clen", i32c(3))],
+                els: vec![setl("clen", i32c(4))],
+                result: None,
+            }],
+            result: None,
+        }],
+        result: None,
+    };
+    // --- empty-`from` branch: insert `to` around every character. ---
+    let empty_loop = N::Block {
+        label: "cdone".into(),
+        result: None,
+        body: vec![N::Loop {
+            label: "cl".into(),
+            body: vec![
+                N::Br { target: "cdone".into(), cond: Some(b(BinOp::Ge, getl("src"), getl("slen"))) },
+                setl("b", E::Load8U { ptr: Box::new(b(BinOp::Add, getl("s"), getl("src"))), offset: 4 }),
+                seqlen,
+                N::MemoryCopy { dest: getl("dst"), src: s_off(getl("src")), len: getl("clen") },
+                setl("dst", b(BinOp::Add, getl("dst"), getl("clen"))),
+                N::MemoryCopy { dest: getl("dst"), src: to_bytes.clone(), len: getl("tlen") },
+                setl("dst", b(BinOp::Add, getl("dst"), getl("tlen"))),
+                setl("src", b(BinOp::Add, getl("src"), getl("clen"))),
+                N::Br { target: "cl".into(), cond: None },
+            ],
+        }],
+    };
+    let empty_branch = vec![
+        setl("res", E::GetGlobal("heap".into())),
+        setl("dst", b(BinOp::Add, getl("res"), i32c(4))),
+        N::MemoryCopy { dest: getl("dst"), src: to_bytes.clone(), len: getl("tlen") },
+        setl("dst", b(BinOp::Add, getl("dst"), getl("tlen"))),
+        setl("src", i32c(0)),
+        empty_loop,
+        setl("reslen", b(BinOp::Sub, getl("dst"), b(BinOp::Add, getl("res"), i32c(4)))),
+        N::Store { ptr: getl("res"), value: getl("reslen"), kind: Kind::I32, offset: 0 },
+        N::SetGlobal { global: "heap".into(), value: getl("dst") },
+        N::Return(Some(getl("res"))),
+    ];
+    // --- non-empty `from`: count matches, then fill. ---
+    let count_loop = N::Block {
+        label: "countdone".into(),
+        result: None,
+        body: vec![N::Loop {
+            label: "cl2".into(),
+            body: vec![
+                N::Br { target: "countdone".into(), cond: Some(b(BinOp::Gt, b(BinOp::Add, getl("src"), getl("flen")), getl("slen"))) },
+                N::If {
+                    cond: match_here(),
+                    then_: vec![setl("cnt", b(BinOp::Add, getl("cnt"), i32c(1))), setl("src", b(BinOp::Add, getl("src"), getl("flen")))],
+                    els: vec![setl("src", b(BinOp::Add, getl("src"), i32c(1)))],
+                    result: None,
+                },
+                N::Br { target: "cl2".into(), cond: None },
+            ],
+        }],
+    };
+    let fill_loop = N::Block {
+        label: "filldone".into(),
+        result: None,
+        body: vec![N::Loop {
+            label: "fl".into(),
+            body: vec![
+                N::Br { target: "filldone".into(), cond: Some(b(BinOp::Ge, getl("src"), getl("slen"))) },
+                N::If {
+                    cond: match_here(),
+                    then_: vec![
+                        N::MemoryCopy { dest: getl("dst"), src: to_bytes.clone(), len: getl("tlen") },
+                        setl("dst", b(BinOp::Add, getl("dst"), getl("tlen"))),
+                        setl("src", b(BinOp::Add, getl("src"), getl("flen"))),
+                    ],
+                    els: vec![
+                        N::Store8 { ptr: getl("dst"), value: E::Load8U { ptr: Box::new(b(BinOp::Add, getl("s"), getl("src"))), offset: 4 }, offset: 0 },
+                        setl("dst", b(BinOp::Add, getl("dst"), i32c(1))),
+                        setl("src", b(BinOp::Add, getl("src"), i32c(1))),
+                    ],
+                    result: None,
+                },
+                N::Br { target: "fl".into(), cond: None },
+            ],
+        }],
+    };
+    WirFunc {
+        name: "replace".into(),
+        params: vec![
+            WirLocal { name: "s".into(), ty: WirTy::Str },
+            WirLocal { name: "from".into(), ty: WirTy::Str },
+            WirLocal { name: "to".into(), ty: WirTy::Str },
+        ],
+        ret: vec![WirTy::Str],
+        locals: ["slen", "flen", "tlen", "cnt", "src", "dst", "res", "reslen", "b", "clen"]
+            .iter()
+            .map(|n| WirLocal { name: (*n).into(), ty: WirTy::Bool })
+            .collect(),
+        body: vec![
+            setl("slen", load(getl("s"))),
+            setl("flen", load(getl("from"))),
+            setl("tlen", load(getl("to"))),
+            N::Do(E::Call {
+                func: "ensure".into(),
+                args: vec![b(BinOp::Add, b(BinOp::Add, i32c(4), getl("slen")), b(BinOp::Mul, b(BinOp::Add, getl("slen"), i32c(1)), getl("tlen")))],
+            }),
+            N::If {
+                cond: E::Unary { op: UnOp::Not, kind: Kind::I32, arg: Box::new(getl("flen")) },
+                then_: empty_branch,
+                els: vec![],
+                result: None,
+            },
+            setl("cnt", i32c(0)),
+            setl("src", i32c(0)),
+            count_loop,
+            setl("reslen", b(BinOp::Add, getl("slen"), b(BinOp::Mul, getl("cnt"), b(BinOp::Sub, getl("tlen"), getl("flen"))))),
+            setl("res", E::GetGlobal("heap".into())),
+            N::Store { ptr: getl("res"), value: getl("reslen"), kind: Kind::I32, offset: 0 },
+            setl("dst", b(BinOp::Add, getl("res"), i32c(4))),
+            setl("src", i32c(0)),
+            fill_loop,
+            N::SetGlobal { global: "heap".into(), value: getl("dst") },
+            N::Push(getl("res")),
+        ],
+        raw_body: None,
+    }
+}
+
 /// A WIR-native prelude helper plus the module-level resources it needs (so a
 /// pruned module declares only the imports/globals/table its reached helpers
 /// actually touch — capability-minimal).
@@ -2751,6 +2950,20 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
         "ascii_case" => Some(WirHelperSpec {
             func: ascii_case_helper(),
             helper_deps: &["ensure"],
+            import_deps: &[],
+            uses_heap: true,
+            uses_table: false,
+        }),
+        "match_at" => Some(WirHelperSpec {
+            func: match_at_helper(),
+            helper_deps: &[],
+            import_deps: &[],
+            uses_heap: false,
+            uses_table: false,
+        }),
+        "replace" => Some(WirHelperSpec {
+            func: replace_helper(),
+            helper_deps: &["ensure", "match_at"],
             import_deps: &[],
             uses_heap: true,
             uses_table: false,

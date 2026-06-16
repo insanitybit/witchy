@@ -2188,6 +2188,66 @@ mod tests {
     }
 
     #[test]
+    fn replace_rewrites_matches() {
+        use crate::wir::{ensure_helper, match_at_helper, replace_helper};
+        let mk_str = |s: &str| {
+            let mut b = (s.len() as u32).to_le_bytes().to_vec();
+            b.extend_from_slice(s.as_bytes());
+            b
+        };
+        let data = vec![
+            DataSegment { offset: 200, bytes: mk_str("hello") },
+            DataSegment { offset: 220, bytes: mk_str("l") },
+            DataSegment { offset: 240, bytes: mk_str("L") },
+            DataSegment { offset: 260, bytes: mk_str("aaa") },
+            DataSegment { offset: 280, bytes: mk_str("a") },
+            DataSegment { offset: 300, bytes: mk_str("bb") },
+            DataSegment { offset: 320, bytes: mk_str("ab") },
+            DataSegment { offset: 340, bytes: mk_str("") },
+            DataSegment { offset: 360, bytes: mk_str("-") },
+        ];
+        let gl = |n: &str| WirExpr::GetLocal(n.into());
+        let rep = |s: i32, f: i32, t: i32| WirExpr::Call {
+            func: "replace".into(),
+            args: vec![WirExpr::ConstI32(s), WirExpr::ConstI32(f), WirExpr::ConstI32(t)],
+        };
+        let to_i64 = |e: WirExpr| WirExpr::Convert { from: Kind::I32, to: Kind::I64, arg: Box::new(e) };
+        let len = |name: &'static str| to_i64(WirExpr::Load { ptr: Box::new(gl(name)), kind: Kind::I32, offset: 0 });
+        let byte = |name: &'static str, off: u32| to_i64(WirExpr::Load8U { ptr: Box::new(gl(name)), offset: 4 + off });
+        let pi = |e: WirExpr| WirNode::Do(WirExpr::CallHost { import: "print_int".into(), args: vec![e] });
+        let run = WirFunc {
+            name: "run".into(),
+            params: vec![],
+            ret: vec![],
+            locals: vec![local("r1", WirTy::Bool), local("r2", WirTy::Bool), local("r3", WirTy::Bool)],
+            body: vec![
+                WirNode::SetLocal { local: "r1".into(), value: rep(200, 220, 240) }, // "hello"/l→L = "heLLo"
+                pi(len("r1")),       // 5
+                pi(byte("r1", 2)),   // 'L' 76
+                pi(byte("r1", 3)),   // 'L' 76
+                WirNode::SetLocal { local: "r2".into(), value: rep(260, 280, 300) }, // "aaa"/a→bb = "bbbbbb"
+                pi(len("r2")),       // 6
+                pi(byte("r2", 0)),   // 'b' 98
+                WirNode::SetLocal { local: "r3".into(), value: rep(320, 340, 360) }, // "ab"/""→- = "-a-b-"
+                pi(len("r3")),       // 5
+                pi(byte("r3", 0)),   // '-' 45
+                pi(byte("r3", 1)),   // 'a' 97
+            ],
+            raw_body: None,
+        };
+        let module = WirModule {
+            imports: vec![WirImport { name: "print_int".into(), params: vec![Kind::I64], results: vec![] }],
+            funcs: vec![ensure_helper(), match_at_helper(), replace_helper(), run],
+            memory_pages: 1,
+            data,
+            globals: vec![WirGlobal { name: "heap".into(), kind: Kind::I32, mutable: true, init: GlobalInit::I32(1024), export: None }],
+            table: None,
+            exports: vec![("run".into(), "run".into())],
+        };
+        assert_agrees(&module, &["5", "76", "76", "6", "98", "5", "45", "97"]);
+    }
+
+    #[test]
     fn arithmetic_roundtrips() {
         // fn add() -> Int: (2 + 3) * 4 == 20
         let add = WirFunc {
