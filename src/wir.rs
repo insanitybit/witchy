@@ -3066,6 +3066,15 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             uses_heap: true,
             uses_table: false,
         }),
+        "crypto_rune_hash" => Some(WirHelperSpec {
+            // paths + contents are List(String) pointers; the host hashes them
+            // into a fixed 71-char digest.
+            func: crypto_hash_helper("crypto_rune_hash", "crypto.rune_hash", 71, &["paths", "contents"]),
+            helper_deps: &["ensure"],
+            import_deps: &["crypto.rune_hash"],
+            uses_heap: true,
+            uses_table: false,
+        }),
         "replace" => Some(WirHelperSpec {
             func: replace_helper(),
             helper_deps: &["ensure", "match_at"],

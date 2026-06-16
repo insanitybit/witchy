@@ -8334,6 +8334,24 @@ fn main(console: Console):
         assert_eq!(run_bytes_print_only(&bytes), want, "binary path vs oracle");
     }
 
+    /// `$crypto_rune_hash` on the binary path — a host-import wrapper taking two
+    /// List(String) args (list literals lower fine) and returning a 71-char
+    /// digest String. Ungated, so the print-only harness instantiates it.
+    #[test]
+    fn wir_crypto_rune_hash_host_import_binary_path() {
+        let src = "import crypto\nfn main(console: Console):\n    print(console, crypto.rune_hash([\"a.witchy\", \"b.witchy\"], [\"fn one\", \"fn two\"]))\n";
+        let module = parser::parse_module(src).expect("parse");
+        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        typeck::check(&linked).expect("typecheck");
+        let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+            .expect("compile_module_binary")
+            .expect("the WIR binary path should handle crypto.rune_hash via the host import");
+        let want = link_run(src);
+        assert_eq!(want.len(), 1);
+        assert_eq!(want[0].len(), 71, "rune_hash digest is 71 chars");
+        assert_eq!(run_bytes_print_only(&bytes), want, "binary path vs oracle");
+    }
+
     /// Link a multi-module program, compile the flat module to WASM, run it on
     /// the runtime with output capabilities, and return what it printed.
     fn run_linked_on_wasm(sources: &[(&str, &str)], entry: &str) -> Vec<String> {
