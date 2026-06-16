@@ -3342,6 +3342,45 @@ impl Codegen {
                 };
                 (cond, binds)
             }
+            // An ADT constructor `[tag][f0][f1]...`: the condition is `tag == k`,
+            // and each field is the i64 slot at `ptr+4+8*i` (ptr = value wrapped to
+            // i32). To stay sound WITHOUT short-circuit evaluation, only handle
+            // sub-patterns that impose NO condition (Var/Wildcard) — so a field is
+            // never loaded-and-inspected for the wrong variant (which could deref a
+            // garbage pointer for a nested ctor). `Some(v)`/`None`/`Ok(x)` and plain
+            // enum-variant binds all qualify; richer field patterns bail to WAT.
+            Pattern::Ctor { name, args } => {
+                let &(tag, nfields) = self.ctors.get(name)?;
+                if nfields != args.len() {
+                    return None;
+                }
+                let ptr = W::FromSlot(Box::new(value.clone()), crate::wir::Kind::I32);
+                let mut binds: crate::wir::WirSeq = Vec::new();
+                for (i, sub) in args.iter().enumerate() {
+                    let field_value = W::Load {
+                        ptr: Box::new(W::Binary {
+                            op: crate::wir::BinOp::Add,
+                            kind: crate::wir::Kind::I32,
+                            lhs: Box::new(ptr.clone()),
+                            rhs: Box::new(W::ConstI32((4 + 8 * i) as i32)),
+                        }),
+                        kind: crate::wir::Kind::I64,
+                        offset: 0,
+                    };
+                    let (sc, sb) = self.lower_pattern(&field_value, sub)?;
+                    if !matches!(sc, W::ConstI32(1)) {
+                        return None; // field pattern needs short-circuit — defer to WAT
+                    }
+                    binds.extend(sb);
+                }
+                let tag_eq = W::Binary {
+                    op: crate::wir::BinOp::Eq,
+                    kind: crate::wir::Kind::I32,
+                    lhs: Box::new(W::Load { ptr: Box::new(ptr), kind: crate::wir::Kind::I32, offset: 0 }),
+                    rhs: Box::new(W::ConstI32(tag as i32)),
+                };
+                (tag_eq, binds)
+            }
             _ => return None,
         })
     }

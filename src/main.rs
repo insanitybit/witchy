@@ -8223,6 +8223,12 @@ fn main(console: Console):
                 "fn main(console: Console):\n    var i: Int = 0\n    while i < 3:\n        print(console, string.substring(\"abcdef\", i, i + 2))\n        i = i + 1\n",
                 vec!["ab".to_string(), "bc".to_string(), "cd".to_string()],
             ),
+            // match on an ADT constructor with a payload bind (Some(n)) / a
+            // nullary variant (None) — the new lower_pattern Ctor arm.
+            (
+                "fn pick(b: Bool) -> Option(Int):\n    if b:\n        Some(7)\n    else:\n        None\n\nfn main(console: Console):\n    print(console, __render(match pick(true):\n        Some(n) -> n\n        None -> 99))\n    print(console, __render(match pick(false):\n        Some(n) -> n\n        None -> 99))\n",
+                vec!["7".to_string(), "99".to_string()],
+            ),
             // string.chars ($str_chars → $byte_to_char + $str_substring +
             // $list_push) splitting a multibyte string into a List(String).
             (
