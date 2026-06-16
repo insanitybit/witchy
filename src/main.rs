@@ -8283,6 +8283,29 @@ fn main(console: Console):
         assert!(lowered_any, "the WIR binary path lowered nothing — convergence regressed");
     }
 
+    /// The first host-import helper ($encoding) on the binary path. Kept out of
+    /// the corpus above because `encoding.*` requires `import encoding`, which the
+    /// corpus's `run_on_wasm`/`typeck::check_str` leg can't resolve (it doesn't
+    /// pull in std modules); the linked interpreter oracle (`link_run`) can. So we
+    /// compare the pruned binary against the interpreter directly. The pruned
+    /// module must import "encoding" alongside "print".
+    #[test]
+    fn wir_encoding_host_import_binary_path() {
+        let src = "import encoding\nfn main(console: Console):\n    print(console, encoding.hex_encode(\"Hi\"))\n    print(console, encoding.base64_encode(\"Hi\"))\n";
+        let want = vec!["4869".to_string(), "SGk=".to_string()];
+        let module = parser::parse_module(src).expect("parse");
+        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        typeck::check(&linked).expect("typecheck");
+        let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+            .expect("compile_module_binary")
+            .expect("the WIR binary path should handle encoding via the host import");
+        // AST → WIR → binary runs identically to the interpreter oracle, under a
+        // print-only grant (proving the pruned module imports only print+encoding,
+        // and that `encoding` is host-provided regardless of the grant).
+        assert_eq!(run_bytes_print_only(&bytes), want, "binary path");
+        assert_eq!(link_run(src), want, "interpreter oracle");
+    }
+
     /// Link a multi-module program, compile the flat module to WASM, run it on
     /// the runtime with output capabilities, and return what it printed.
     fn run_linked_on_wasm(sources: &[(&str, &str)], entry: &str) -> Vec<String> {

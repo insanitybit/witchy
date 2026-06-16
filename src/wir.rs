@@ -2779,6 +2779,46 @@ pub fn replace_helper() -> WirFunc {
     }
 }
 
+/// `$encoding(op, in) -> i32` — a thin wrapper over the host `encoding` import,
+/// which does the actual hex/base64 transform (op 0 hex-encode, 1 hex-decode,
+/// 2 base64-encode, 3 base64-decode, 4 base64url-of-hex). Reserves a worst-case
+/// `2*len + 20` result buffer, lets the host write into `res+4`, and caps the
+/// length header to what it returned. The first migrated host-import helper.
+pub fn encoding_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    let i32c = E::ConstI32;
+    let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+    WirFunc {
+        name: "encoding".into(),
+        params: vec![
+            WirLocal { name: "op".into(), ty: WirTy::Bool },
+            WirLocal { name: "in".into(), ty: WirTy::Str },
+        ],
+        ret: vec![WirTy::Str],
+        locals: vec![
+            WirLocal { name: "res".into(), ty: WirTy::Bool },
+            WirLocal { name: "n".into(), ty: WirTy::Bool },
+        ],
+        body: vec![
+            N::Do(E::Call {
+                func: "ensure".into(),
+                args: vec![b(BinOp::Add, b(BinOp::Mul, E::Load { ptr: Box::new(getl("in")), kind: Kind::I32, offset: 0 }, i32c(2)), i32c(20))],
+            }),
+            N::SetLocal { local: "res".into(), value: E::GetGlobal("heap".into()) },
+            N::SetLocal {
+                local: "n".into(),
+                value: E::CallHost { import: "encoding".into(), args: vec![getl("op"), getl("in"), b(BinOp::Add, getl("res"), i32c(4))] },
+            },
+            N::Store { ptr: getl("res"), value: getl("n"), kind: Kind::I32, offset: 0 },
+            N::SetGlobal { global: "heap".into(), value: b(BinOp::Add, b(BinOp::Add, getl("res"), i32c(4)), getl("n")) },
+            N::Push(getl("res")),
+        ],
+        raw_body: None,
+    }
+}
+
 /// A WIR-native prelude helper plus the module-level resources it needs (so a
 /// pruned module declares only the imports/globals/table its reached helpers
 /// actually touch — capability-minimal).
@@ -2959,6 +2999,13 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             helper_deps: &[],
             import_deps: &[],
             uses_heap: false,
+            uses_table: false,
+        }),
+        "encoding" => Some(WirHelperSpec {
+            func: encoding_helper(),
+            helper_deps: &["ensure"],
+            import_deps: &["encoding"],
+            uses_heap: true,
             uses_table: false,
         }),
         "replace" => Some(WirHelperSpec {
