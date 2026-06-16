@@ -836,7 +836,11 @@ mod tests {
     /// Instantiate a wasm binary and run its `run` export, capturing `print_int`
     /// and `print` output as ordered lines. (Copied from `wir.rs`'s test setup.)
     fn run_binary(binary: &[u8]) -> Vec<String> {
-        let engine = wasmtime::Engine::default();
+        // Fuel-capped so a buggy helper loop TRAPS fast instead of hanging the
+        // suite (a runaway $find_byte/$str_eq once spun a test for 70 minutes).
+        let mut config = wasmtime::Config::new();
+        config.consume_fuel(true);
+        let engine = wasmtime::Engine::new(&config).expect("engine");
         let m = wasmtime::Module::new(&engine, binary)
             .unwrap_or_else(|e| panic!("encoded module invalid: {e}"));
         let out: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
@@ -862,9 +866,10 @@ mod tests {
             )
             .unwrap();
         let mut store = wasmtime::Store::new(&engine, ());
+        store.set_fuel(500_000_000).expect("fuel"); // ~5e8 ops — ample for tests, traps runaways
         let inst = linker.instantiate(&mut store, &m).expect("instantiate");
         let run = inst.get_typed_func::<(), ()>(&mut store, "run").expect("run export");
-        run.call(&mut store, ()).expect("run");
+        run.call(&mut store, ()).expect("run (or fuel-exhausted — likely a runaway loop)");
         let v = out.lock().unwrap().clone();
         v
     }
