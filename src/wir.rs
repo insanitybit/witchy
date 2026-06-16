@@ -2819,27 +2819,30 @@ pub fn encoding_helper() -> WirFunc {
     }
 }
 
-/// `$crypto_sha256(in) -> i32` — the lowercase-hex SHA-256 of `in`'s bytes (a
-/// 64-char String). Reserves the fixed 68-byte result, lets the host
-/// `crypto.sha256` import write the hex into `res+4`, and bumps `$heap`. The
-/// crypto import is host-provided unconditionally (hashing needs no capability).
-pub fn crypto_sha256_helper() -> WirFunc {
+/// Shared body for the fixed-length crypto digests: reserve `hexlen+4` bytes,
+/// write the length header, hand the inputs + `res+4` to the host `import`, and
+/// bump `$heap`. `inputs` are the string-pointer params (one for the plain
+/// hashes, two — key, msg — for HMAC). The crypto imports are host-provided
+/// unconditionally (hashing needs no capability).
+fn crypto_hash_helper(name: &str, import: &str, hexlen: i32, inputs: &[&str]) -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
     let getl = |n: &str| E::GetLocal(n.into());
     let i32c = E::ConstI32;
     let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+    let mut host_args: Vec<E> = inputs.iter().map(|n| getl(n)).collect();
+    host_args.push(b(BinOp::Add, getl("res"), i32c(4)));
     WirFunc {
-        name: "crypto_sha256".into(),
-        params: vec![WirLocal { name: "in".into(), ty: WirTy::Str }],
+        name: name.into(),
+        params: inputs.iter().map(|n| WirLocal { name: (*n).into(), ty: WirTy::Str }).collect(),
         ret: vec![WirTy::Str],
         locals: vec![WirLocal { name: "res".into(), ty: WirTy::Bool }],
         body: vec![
-            N::Do(E::Call { func: "ensure".into(), args: vec![i32c(68)] }),
+            N::Do(E::Call { func: "ensure".into(), args: vec![i32c(hexlen + 4)] }),
             N::SetLocal { local: "res".into(), value: E::GetGlobal("heap".into()) },
-            N::Store { ptr: getl("res"), value: i32c(64), kind: Kind::I32, offset: 0 },
-            N::Do(E::CallHost { import: "crypto.sha256".into(), args: vec![getl("in"), b(BinOp::Add, getl("res"), i32c(4))] }),
-            N::SetGlobal { global: "heap".into(), value: b(BinOp::Add, getl("res"), i32c(68)) },
+            N::Store { ptr: getl("res"), value: i32c(hexlen), kind: Kind::I32, offset: 0 },
+            N::Do(E::CallHost { import: import.into(), args: host_args }),
+            N::SetGlobal { global: "heap".into(), value: b(BinOp::Add, getl("res"), i32c(hexlen + 4)) },
             N::Push(getl("res")),
         ],
         raw_body: None,
@@ -3036,9 +3039,30 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             uses_table: false,
         }),
         "crypto_sha256" => Some(WirHelperSpec {
-            func: crypto_sha256_helper(),
+            func: crypto_hash_helper("crypto_sha256", "crypto.sha256", 64, &["in"]),
             helper_deps: &["ensure"],
             import_deps: &["crypto.sha256"],
+            uses_heap: true,
+            uses_table: false,
+        }),
+        "crypto_sha512" => Some(WirHelperSpec {
+            func: crypto_hash_helper("crypto_sha512", "crypto.sha512", 128, &["in"]),
+            helper_deps: &["ensure"],
+            import_deps: &["crypto.sha512"],
+            uses_heap: true,
+            uses_table: false,
+        }),
+        "crypto_sha3_256" => Some(WirHelperSpec {
+            func: crypto_hash_helper("crypto_sha3_256", "crypto.sha3_256", 64, &["in"]),
+            helper_deps: &["ensure"],
+            import_deps: &["crypto.sha3_256"],
+            uses_heap: true,
+            uses_table: false,
+        }),
+        "crypto_hmac_sha256" => Some(WirHelperSpec {
+            func: crypto_hash_helper("crypto_hmac_sha256", "crypto.hmac_sha256", 64, &["key", "msg"]),
+            helper_deps: &["ensure"],
+            import_deps: &["crypto.hmac_sha256"],
             uses_heap: true,
             uses_table: false,
         }),

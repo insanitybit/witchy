@@ -8523,9 +8523,12 @@ pub fn assemble_wir_module(
         let mut resolved: std::collections::BTreeMap<String, crate::wir::WirHelperSpec> =
             std::collections::BTreeMap::new();
         let mut all_registered = true;
+        // A called name is a prelude helper to pull in if the static prelude
+        // declares it OR the WIR registry resolves it — the latter covers helpers
+        // migrated to WIR that have no static-prelude body (e.g. crypto_sha512).
         let mut queue: Vec<String> = called
             .iter()
-            .filter(|n| helper_names.contains(n.as_str()))
+            .filter(|n| helper_names.contains(n.as_str()) || crate::wir::wir_helper(n).is_some())
             .cloned()
             .collect();
         while let Some(h) = queue.pop() {

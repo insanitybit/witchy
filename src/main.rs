@@ -8311,22 +8311,26 @@ fn main(console: Console):
         assert_eq!(link_run(src), want, "interpreter oracle");
     }
 
-    /// `$crypto_sha256` on the binary path — a host-import wrapper returning a
-    /// String. The "crypto.sha256" import is host-provided regardless of grant
-    /// (hashing needs no capability), so the print-only harness instantiates it.
-    /// Compared against the linked interpreter oracle (computes the real digest).
+    /// The crypto digest helpers ($crypto_sha256/sha512/sha3_256/hmac_sha256) on
+    /// the binary path — host-import wrappers returning a String. The crypto
+    /// imports are host-provided regardless of grant (hashing needs no
+    /// capability), so the print-only harness instantiates them. Compared against
+    /// the linked interpreter oracle (which computes the real digests).
     #[test]
-    fn wir_crypto_sha256_host_import_binary_path() {
-        let src = "import crypto\nfn main(console: Console):\n    print(console, crypto.sha256(\"abc\"))\n";
+    fn wir_crypto_digests_host_import_binary_path() {
+        let src = "import crypto\nfn main(console: Console):\n    print(console, crypto.sha256(\"abc\"))\n    print(console, crypto.sha512(\"abc\"))\n    print(console, crypto.sha3_256(\"abc\"))\n    print(console, crypto.hmac_sha256(\"abcdef\", \"msg\"))\n";
         let module = parser::parse_module(src).expect("parse");
         let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
         let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
             .expect("compile_module_binary")
-            .expect("the WIR binary path should handle crypto.sha256 via the host import");
+            .expect("the WIR binary path should handle the crypto digests via host imports");
         let want = link_run(src);
-        // SHA-256("abc") — the well-known vector — confirms the host wrote it.
-        assert_eq!(want, vec!["ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad".to_string()]);
+        // SHA-256("abc") — a well-known vector — confirms the host actually wrote it.
+        assert_eq!(want[0], "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+        assert_eq!(want[1].len(), 128, "sha512 hex is 128 chars");
+        assert_eq!(want[2].len(), 64, "sha3_256 hex is 64 chars");
+        assert_eq!(want[3].len(), 64, "hmac-sha256 hex is 64 chars");
         assert_eq!(run_bytes_print_only(&bytes), want, "binary path vs oracle");
     }
 
