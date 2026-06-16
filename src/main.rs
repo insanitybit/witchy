@@ -8179,6 +8179,12 @@ fn main(console: Console):
                 "fn main(console: Console):\n    print(console, __render(string.ends_with(\"hello\", \"llo\")))\n    print(console, __render(string.ends_with(\"hello\", \"hel\")))\n    print(console, __render(string.ends_with(\"hello\", \"\")))\n",
                 vec!["true".to_string(), "false".to_string(), "true".to_string()],
             ),
+            // string.index_of ($str_index_of → $find_byte + $byte_to_char, the
+            // byte-offset → char-index conversion) on the binary path.
+            (
+                "fn main(console: Console):\n    print(console, __render(string.index_of(\"hello\", \"ll\")))\n    print(console, __render(string.index_of(\"hello\", \"xyz\")))\n",
+                vec!["2".to_string(), "-1".to_string()],
+            ),
         ];
         let mut lowered_any = false;
         for (src, want) in cases {

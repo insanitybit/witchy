@@ -1421,6 +1421,58 @@ mod tests {
     }
 
     #[test]
+    fn str_index_of_returns_char_index() {
+        use crate::wir::{byte_to_char_helper, find_byte_helper, str_index_of_helper};
+        let mk_str = |s: &str| {
+            let mut b = (s.len() as u32).to_le_bytes().to_vec();
+            b.extend_from_slice(s.as_bytes());
+            b
+        };
+        let data = vec![
+            DataSegment { offset: 100, bytes: mk_str("hello") },
+            DataSegment { offset: 120, bytes: mk_str("ll") },
+            DataSegment { offset: 140, bytes: mk_str("xyz") },
+            // "héllo": the 'é' is two UTF-8 bytes, so "llo" sits at *byte* 3 but
+            // *char* index 2 — exercising byte_to_char's continuation-byte skip.
+            DataSegment { offset: 160, bytes: mk_str("héllo") },
+            DataSegment { offset: 180, bytes: mk_str("llo") },
+        ];
+        let ix = |s: i32, sub: i32| WirExpr::Call {
+            func: "str_index_of".into(),
+            args: vec![WirExpr::ConstI32(s), WirExpr::ConstI32(sub)],
+        };
+        let pi = |e: WirExpr| {
+            WirNode::Do(WirExpr::CallHost {
+                import: "print_int".into(),
+                args: vec![WirExpr::Convert { from: Kind::I32, to: Kind::I64, arg: Box::new(e) }],
+            })
+        };
+        let run = WirFunc {
+            name: "run".into(),
+            params: vec![],
+            ret: vec![],
+            locals: vec![],
+            body: vec![pi(ix(100, 120)), pi(ix(100, 140)), pi(ix(160, 180))],
+            raw_body: None,
+        };
+        let module = WirModule {
+            imports: vec![WirImport {
+                name: "print_int".into(),
+                params: vec![Kind::I64],
+                results: vec![],
+            }],
+            funcs: vec![find_byte_helper(), byte_to_char_helper(), str_index_of_helper(), run],
+            memory_pages: 1,
+            data,
+            globals: vec![],
+            table: None,
+            exports: vec![("run".into(), "run".into())],
+        };
+        // "ll" is char 2 of "hello"; "xyz" absent (-1); "llo" is char 2 of "héllo".
+        assert_agrees(&module, &["2", "-1", "2"]);
+    }
+
+    #[test]
     fn arithmetic_roundtrips() {
         // fn add() -> Int: (2 + 3) * 4 == 20
         let add = WirFunc {

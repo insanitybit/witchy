@@ -1251,6 +1251,86 @@ pub fn ends_with_helper() -> WirFunc {
     }
 }
 
+/// `$byte_to_char(s, bytelen) -> i32` — the count of UTF-8 *characters* in the
+/// first `bytelen` bytes of `s`. Continuation bytes (`0b10xxxxxx`) don't start a
+/// character, so they're skipped; every other byte increments the count.
+pub fn byte_to_char_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    let i32c = E::ConstI32;
+    let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+    let setl = |n: &str, v: E| N::SetLocal { local: n.into(), value: v };
+    let byte = E::Load8U { ptr: Box::new(b(BinOp::Add, getl("s"), getl("i"))), offset: 4 };
+    let scan_loop = N::Block {
+        label: "done".into(),
+        result: None,
+        body: vec![N::Loop {
+            label: "l".into(),
+            body: vec![
+                N::Br { target: "done".into(), cond: Some(b(BinOp::Ge, getl("i"), getl("bytelen"))) },
+                setl("b", byte),
+                N::If {
+                    cond: b(BinOp::Ne, b(BinOp::And, getl("b"), i32c(0xc0)), i32c(0x80)),
+                    then_: vec![setl("count", b(BinOp::Add, getl("count"), i32c(1)))],
+                    els: vec![],
+                    result: None,
+                },
+                setl("i", b(BinOp::Add, getl("i"), i32c(1))),
+                N::Br { target: "l".into(), cond: None },
+            ],
+        }],
+    };
+    WirFunc {
+        name: "byte_to_char".into(),
+        params: vec![
+            WirLocal { name: "s".into(), ty: WirTy::Str },
+            WirLocal { name: "bytelen".into(), ty: WirTy::Bool },
+        ],
+        ret: vec![WirTy::Bool],
+        locals: ["i", "count", "b"]
+            .iter()
+            .map(|n| WirLocal { name: (*n).into(), ty: WirTy::Bool })
+            .collect(),
+        body: vec![setl("i", i32c(0)), setl("count", i32c(0)), scan_loop, N::Push(getl("count"))],
+        raw_body: None,
+    }
+}
+
+/// `$str_index_of(s, sub) -> i32` — the *character* index where `sub` first
+/// occurs in `s`, or -1 if absent. `$find_byte` gives the byte offset; this maps
+/// it back to a character index via `$byte_to_char`.
+pub fn str_index_of_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    let i32c = E::ConstI32;
+    let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+    let setl = |n: &str, v: E| N::SetLocal { local: n.into(), value: v };
+    WirFunc {
+        name: "str_index_of".into(),
+        params: vec![
+            WirLocal { name: "s".into(), ty: WirTy::Str },
+            WirLocal { name: "sub".into(), ty: WirTy::Str },
+        ],
+        ret: vec![WirTy::Bool],
+        locals: vec![WirLocal { name: "bidx".into(), ty: WirTy::Bool }],
+        body: vec![
+            setl("bidx", E::Call { func: "find_byte".into(), args: vec![getl("s"), getl("sub")] }),
+            N::If {
+                cond: b(BinOp::Lt, getl("bidx"), i32c(0)),
+                then_: vec![N::Push(i32c(-1))],
+                els: vec![N::Push(E::Call {
+                    func: "byte_to_char".into(),
+                    args: vec![getl("s"), getl("bidx")],
+                })],
+                result: Some(WirTy::Bool),
+            },
+        ],
+        raw_body: None,
+    }
+}
+
 /// A WIR-native prelude helper plus the module-level resources it needs (so a
 /// pruned module declares only the imports/globals/table its reached helpers
 /// actually touch — capability-minimal).
@@ -1324,6 +1404,20 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
         "ends_with" => Some(WirHelperSpec {
             func: ends_with_helper(),
             helper_deps: &[],
+            import_deps: &[],
+            uses_heap: false,
+            uses_table: false,
+        }),
+        "byte_to_char" => Some(WirHelperSpec {
+            func: byte_to_char_helper(),
+            helper_deps: &[],
+            import_deps: &[],
+            uses_heap: false,
+            uses_table: false,
+        }),
+        "str_index_of" => Some(WirHelperSpec {
+            func: str_index_of_helper(),
+            helper_deps: &["find_byte", "byte_to_char"],
             import_deps: &[],
             uses_heap: false,
             uses_table: false,
