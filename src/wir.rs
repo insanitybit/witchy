@@ -1051,6 +1051,69 @@ pub fn list_push_cap_helper() -> WirFunc {
     }
 }
 
+/// `$list_push(list: i32, x: i64) -> i32` — the non-in-place append: always
+/// allocates a fresh `(len+1)`-element buffer, copies the existing elements,
+/// writes `x` in the new tail slot, and returns the new pointer. (The in-place
+/// optimization lives in `$list_push_cap`; this is the plain fallback used by
+/// helpers like `$split`/`$str_chars` that build lists internally.)
+pub fn list_push_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    let i32c = E::ConstI32;
+    let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+    WirFunc {
+        name: "list_push".into(),
+        params: vec![
+            WirLocal { name: "list".into(), ty: WirTy::Bool },
+            WirLocal { name: "x".into(), ty: WirTy::Int }, // i64 slot
+        ],
+        ret: vec![WirTy::Bool], // i32 pointer
+        locals: vec![
+            WirLocal { name: "len".into(), ty: WirTy::Bool },
+            WirLocal { name: "new".into(), ty: WirTy::Bool },
+        ],
+        body: vec![
+            N::SetLocal {
+                local: "len".into(),
+                value: E::Load { ptr: Box::new(getl("list")), kind: Kind::I32, offset: 0 },
+            },
+            N::Do(E::Call {
+                func: "ensure".into(),
+                args: vec![b(BinOp::Add, i32c(4), b(BinOp::Mul, b(BinOp::Add, getl("len"), i32c(1)), i32c(8)))],
+            }),
+            N::SetLocal { local: "new".into(), value: E::GetGlobal("heap".into()) },
+            N::Store {
+                ptr: getl("new"),
+                value: b(BinOp::Add, getl("len"), i32c(1)),
+                kind: Kind::I32,
+                offset: 0,
+            },
+            N::MemoryCopy {
+                dest: b(BinOp::Add, getl("new"), i32c(4)),
+                src: b(BinOp::Add, getl("list"), i32c(4)),
+                len: b(BinOp::Mul, getl("len"), i32c(8)),
+            },
+            N::Store {
+                ptr: b(BinOp::Add, getl("new"), b(BinOp::Mul, getl("len"), i32c(8))),
+                value: getl("x"),
+                kind: Kind::I64,
+                offset: 4,
+            },
+            N::SetGlobal {
+                global: "heap".into(),
+                value: b(
+                    BinOp::Add,
+                    b(BinOp::Add, getl("new"), i32c(4)),
+                    b(BinOp::Mul, b(BinOp::Add, getl("len"), i32c(1)), i32c(8)),
+                ),
+            },
+            N::Push(getl("new")),
+        ],
+        raw_body: None,
+    }
+}
+
 /// `$find_byte(s: i32, sub: i32) -> i32` — index of the first occurrence of
 /// `sub` in `s` (byte-wise), or `-1`; empty `sub` → 0. Mirrors `FIND_BYTE_WAT`
 /// (a scan loop with an inner byte-compare loop; the inner mismatch `br` lives
@@ -1575,6 +1638,112 @@ pub fn trim_helper() -> WirFunc {
     }
 }
 
+/// `$split(s, sep) -> i32` — a `List(String)` of the pieces of `s` between
+/// occurrences of `sep`. Empty `sep` yields `[s]`. Mirrors `$find_byte`'s
+/// scan/compare loop nest; on each match it `$substr`s the piece and `$list_push`es
+/// it, then `$substr`s the trailing piece after the loop. The substr pointer is
+/// zero-extended into the list's i64 slot (a pointer, so the sign of the extend
+/// is immaterial — the reader `i32.wrap_i64`s it back).
+pub fn split_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    let i32c = E::ConstI32;
+    let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+    let load = |p: E| E::Load { ptr: Box::new(p), kind: Kind::I32, offset: 0 };
+    let setl = |n: &str, v: E| N::SetLocal { local: n.into(), value: v };
+    let ext = |e: E| E::Convert { from: Kind::I32, to: Kind::I64, arg: Box::new(e) };
+    let push_piece = |start: E, len: E| E::Call {
+        func: "list_push".into(),
+        args: vec![getl("result"), ext(E::Call { func: "substr".into(), args: vec![getl("s"), start, len] })],
+    };
+    let s_byte = E::Load8U {
+        ptr: Box::new(b(BinOp::Add, getl("s"), b(BinOp::Add, getl("i"), getl("j")))),
+        offset: 4,
+    };
+    let sep_byte = E::Load8U { ptr: Box::new(b(BinOp::Add, getl("sep"), getl("j"))), offset: 4 };
+    let cmp_loop = N::Block {
+        label: "cmpdone".into(),
+        result: None,
+        body: vec![N::Loop {
+            label: "cmp".into(),
+            body: vec![
+                N::Br { target: "cmpdone".into(), cond: Some(b(BinOp::Ge, getl("j"), getl("seplen"))) },
+                N::If {
+                    cond: b(BinOp::Ne, s_byte, sep_byte),
+                    then_: vec![setl("match", i32c(0)), N::Br { target: "cmpdone".into(), cond: None }],
+                    els: vec![],
+                    result: None,
+                },
+                setl("j", b(BinOp::Add, getl("j"), i32c(1))),
+                N::Br { target: "cmp".into(), cond: None },
+            ],
+        }],
+    };
+    let scan_loop = N::Block {
+        label: "done".into(),
+        result: None,
+        body: vec![N::Loop {
+            label: "scan".into(),
+            body: vec![
+                N::Br {
+                    target: "done".into(),
+                    cond: Some(b(BinOp::Gt, getl("i"), b(BinOp::Sub, getl("slen"), getl("seplen")))),
+                },
+                setl("match", i32c(1)),
+                setl("j", i32c(0)),
+                cmp_loop,
+                N::If {
+                    cond: getl("match"),
+                    then_: vec![
+                        setl("result", push_piece(getl("start"), b(BinOp::Sub, getl("i"), getl("start")))),
+                        setl("i", b(BinOp::Add, getl("i"), getl("seplen"))),
+                        setl("start", getl("i")),
+                    ],
+                    els: vec![setl("i", b(BinOp::Add, getl("i"), i32c(1)))],
+                    result: None,
+                },
+                N::Br { target: "scan".into(), cond: None },
+            ],
+        }],
+    };
+    WirFunc {
+        name: "split".into(),
+        params: vec![
+            WirLocal { name: "s".into(), ty: WirTy::Str },
+            WirLocal { name: "sep".into(), ty: WirTy::Str },
+        ],
+        ret: vec![WirTy::Bool], // i32 list pointer
+        locals: ["slen", "seplen", "result", "start", "i", "j", "match"]
+            .iter()
+            .map(|n| WirLocal { name: (*n).into(), ty: WirTy::Bool })
+            .collect(),
+        body: vec![
+            setl("slen", load(getl("s"))),
+            setl("seplen", load(getl("sep"))),
+            N::Do(E::Call { func: "ensure".into(), args: vec![i32c(4)] }),
+            setl("result", E::GetGlobal("heap".into())),
+            N::Store { ptr: getl("result"), value: i32c(0), kind: Kind::I32, offset: 0 },
+            N::SetGlobal { global: "heap".into(), value: b(BinOp::Add, getl("result"), i32c(4)) },
+            N::If {
+                cond: E::Unary { op: UnOp::Not, kind: Kind::I32, arg: Box::new(getl("seplen")) },
+                then_: vec![N::Return(Some(E::Call {
+                    func: "list_push".into(),
+                    args: vec![getl("result"), ext(getl("s"))],
+                }))],
+                els: vec![],
+                result: None,
+            },
+            setl("start", i32c(0)),
+            setl("i", i32c(0)),
+            scan_loop,
+            setl("result", push_piece(getl("start"), b(BinOp::Sub, getl("slen"), getl("start")))),
+            N::Push(getl("result")),
+        ],
+        raw_body: None,
+    }
+}
+
 /// A WIR-native prelude helper plus the module-level resources it needs (so a
 /// pruned module declares only the imports/globals/table its reached helpers
 /// actually touch — capability-minimal).
@@ -1711,6 +1880,20 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
         "list_push_cap" => Some(WirHelperSpec {
             func: list_push_cap_helper(),
             helper_deps: &["ensure"],
+            import_deps: &[],
+            uses_heap: true,
+            uses_table: false,
+        }),
+        "list_push" => Some(WirHelperSpec {
+            func: list_push_helper(),
+            helper_deps: &["ensure"],
+            import_deps: &[],
+            uses_heap: true,
+            uses_table: false,
+        }),
+        "split" => Some(WirHelperSpec {
+            func: split_helper(),
+            helper_deps: &["ensure", "substr", "list_push"],
             import_deps: &[],
             uses_heap: true,
             uses_table: false,

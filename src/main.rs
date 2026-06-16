@@ -8197,6 +8197,13 @@ fn main(console: Console):
                 "fn main(console: Console):\n    print(console, string.trim(\"  hi  \"))\n    print(console, string.trim(\"abc\"))\n",
                 vec!["hi".to_string(), "abc".to_string()],
             ),
+            // string.split ($split → $substr + $list_push, nested scan/compare
+            // loops building a List(String)) on the binary path; indexed with
+            // the already-migrated $list_at.
+            (
+                "fn main(console: Console):\n    let parts = string.split(\"a,b,c\", \",\")\n    print(console, list.at(parts, 0))\n    print(console, list.at(parts, 1))\n    print(console, list.at(parts, 2))\n",
+                vec!["a".to_string(), "b".to_string(), "c".to_string()],
+            ),
         ];
         let mut lowered_any = false;
         for (src, want) in cases {

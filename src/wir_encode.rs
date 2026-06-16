@@ -1667,6 +1667,126 @@ mod tests {
     }
 
     #[test]
+    fn list_push_appends_elements() {
+        use crate::wir::{ensure_helper, list_push_helper};
+        // An empty list is a bare i32 length header of 0.
+        let data = vec![DataSegment { offset: 200, bytes: 0u32.to_le_bytes().to_vec() }];
+        let push = |list: WirExpr, x: i64| WirExpr::Call {
+            func: "list_push".into(),
+            args: vec![list, WirExpr::ConstI64(x)],
+        };
+        let gl = |n: &str| WirExpr::GetLocal(n.into());
+        let len_of = |p: WirExpr| WirExpr::Convert {
+            from: Kind::I32,
+            to: Kind::I64,
+            arg: Box::new(WirExpr::Load { ptr: Box::new(p), kind: Kind::I32, offset: 0 }),
+        };
+        let elem = |p: WirExpr, off: u32| WirExpr::Load { ptr: Box::new(p), kind: Kind::I64, offset: off };
+        let pi = |e: WirExpr| {
+            WirNode::Do(WirExpr::CallHost { import: "print_int".into(), args: vec![e] })
+        };
+        let run = WirFunc {
+            name: "run".into(),
+            params: vec![],
+            ret: vec![],
+            locals: vec![local("r1", WirTy::Bool), local("r2", WirTy::Bool)],
+            body: vec![
+                WirNode::SetLocal { local: "r1".into(), value: push(WirExpr::ConstI32(200), 42) },
+                WirNode::SetLocal { local: "r2".into(), value: push(gl("r1"), 99) },
+                pi(len_of(gl("r2"))),      // length 2
+                pi(elem(gl("r2"), 4)),     // element 0 → 42
+                pi(elem(gl("r2"), 12)),    // element 1 → 99
+            ],
+            raw_body: None,
+        };
+        let module = WirModule {
+            imports: vec![WirImport {
+                name: "print_int".into(),
+                params: vec![Kind::I64],
+                results: vec![],
+            }],
+            funcs: vec![ensure_helper(), list_push_helper(), run],
+            memory_pages: 1,
+            data,
+            globals: vec![WirGlobal {
+                name: "heap".into(),
+                kind: Kind::I32,
+                mutable: true,
+                init: GlobalInit::I32(1024),
+                export: None,
+            }],
+            table: None,
+            exports: vec![("run".into(), "run".into())],
+        };
+        assert_agrees(&module, &["2", "42", "99"]);
+    }
+
+    #[test]
+    fn split_breaks_on_separator() {
+        use crate::wir::{ensure_helper, list_push_helper, split_helper, substr_helper};
+        let mk_str = |s: &str| {
+            let mut b = (s.len() as u32).to_le_bytes().to_vec();
+            b.extend_from_slice(s.as_bytes());
+            b
+        };
+        let data = vec![
+            DataSegment { offset: 200, bytes: mk_str("a,b,c") },
+            DataSegment { offset: 220, bytes: mk_str(",") },
+        ];
+        let gl = |n: &str| WirExpr::GetLocal(n.into());
+        let to_i64 = |e: WirExpr| WirExpr::Convert { from: Kind::I32, to: Kind::I64, arg: Box::new(e) };
+        let wrap = |e: WirExpr| WirExpr::Convert { from: Kind::I64, to: Kind::I32, arg: Box::new(e) };
+        let load_i32 = |p: WirExpr| WirExpr::Load { ptr: Box::new(p), kind: Kind::I32, offset: 0 };
+        // The string pointer held in list slot `off` (an i64), wrapped to i32.
+        let elem_ptr = |off: u32| wrap(WirExpr::Load { ptr: Box::new(gl("r")), kind: Kind::I64, offset: off });
+        let byte0 = |p: WirExpr| WirExpr::Load8U { ptr: Box::new(p), offset: 4 };
+        let pi = |e: WirExpr| {
+            WirNode::Do(WirExpr::CallHost { import: "print_int".into(), args: vec![e] })
+        };
+        let run = WirFunc {
+            name: "run".into(),
+            params: vec![],
+            ret: vec![],
+            locals: vec![local("r", WirTy::Bool)],
+            body: vec![
+                WirNode::SetLocal {
+                    local: "r".into(),
+                    value: WirExpr::Call {
+                        func: "split".into(),
+                        args: vec![WirExpr::ConstI32(200), WirExpr::ConstI32(220)],
+                    },
+                },
+                pi(to_i64(load_i32(gl("r")))),         // list length 3
+                pi(to_i64(load_i32(elem_ptr(4)))),     // piece 0 "a" length 1
+                pi(to_i64(byte0(elem_ptr(4)))),        // piece 0 first byte 'a' 97
+                pi(to_i64(byte0(elem_ptr(20)))),       // piece 2 "c" first byte 'c' 99
+            ],
+            raw_body: None,
+        };
+        let module = WirModule {
+            imports: vec![WirImport {
+                name: "print_int".into(),
+                params: vec![Kind::I64],
+                results: vec![],
+            }],
+            funcs: vec![ensure_helper(), substr_helper(), list_push_helper(), split_helper(), run],
+            memory_pages: 1,
+            data,
+            globals: vec![WirGlobal {
+                name: "heap".into(),
+                kind: Kind::I32,
+                mutable: true,
+                init: GlobalInit::I32(1024),
+                export: None,
+            }],
+            table: None,
+            exports: vec![("run".into(), "run".into())],
+        };
+        // "a,b,c".split(",") → ["a","b","c"]: 3 pieces; piece0="a", piece2="c".
+        assert_agrees(&module, &["3", "1", "97", "99"]);
+    }
+
+    #[test]
     fn arithmetic_roundtrips() {
         // fn add() -> Int: (2 + 3) * 4 == 20
         let add = WirFunc {
