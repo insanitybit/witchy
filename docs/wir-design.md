@@ -757,24 +757,53 @@ M3 can flip the sink (after the prelude-blob work above).
 > M4 — without blocking the M3 sink-flip. This keeps the textual helpers byte-verbatim
 > (parity-safe).
 
-### Milestone 3 — flip the sink to `wasm-encoder` (binary, no WAT) 🟡 ENCODER BUILT
+### Milestone 3 — flip the sink to `wasm-encoder` (binary, no WAT) 🟡 PIPELINE BUILT & PROVEN; FLIP BLOCKED ON THE PRELUDE
 
-**Done:** the encoder exists — `src/wir_encode.rs` `pub fn encode(&WirModule) ->
-Vec<u8>` (built via `wasm-encoder` 0.251). Sections Type/Import/Function/Memory/
-Export/Code/Data; func index space = imports then defined funcs; type dedup; local
-name→index; `Br` relative depths via a label stack; the full `WirExpr`/`WirNode`
-instruction mapping (mirrors `print_*`, incl. signed `I64ExtendI32S` for I32→slot).
-Validated by 7 round-trip tests (encode → wasmtime, asserts output AND binary==WAT
-agreement) — all green in the suite. Unknown names / f64-arith-with-no-instr
-`panic!` loudly rather than miscompile.
+**Done — the AST → WIR → binary pipeline exists end-to-end and is oracle-proven.**
+- `src/wir_encode.rs` `encode(&WirModule) -> Vec<u8>` (wasm-encoder 0.251): sections
+  Type/Import/Function/Table/Memory/Global/Export/Element/Code/Data; multi-value;
+  raw-body splice path; func index space = imports then defined funcs; type dedup;
+  local name→index; `Br` relative depths. **`$clos0..MAX_CLOS` are reserved at type
+  indices `0..MAX_CLOS` FIRST**, so spliced prelude `call_indirect (type $closN)`
+  bodies validate (the prelude was assembled clos-types-first).
+- `codegen::assemble_wir_module` builds the whole `WirModule` — prelude raw-body
+  helpers (in the documented index order) + lowered user `WirFunc`s + the `run`
+  export + imports/globals(`$heap`,`$__witchy_reowns`)/data/table — or `None` when
+  any reachable function does not fully lower (→ WAT fallback). User functions are
+  captured as a side effect of `compile_function` (`assemble_wir_func`, gated by
+  `collect_wir`), reusing all its setup. `compile_module_binary` = assemble +
+  `wir_opt::optimize` + `encode` + `wasmparser::validate`.
+- `lower_expr` gained an `Expr::Call` arm (gated by `collect_wir` so the WAT path
+  keeps `compile_call`'s full dispatch + byte-identity); user calls discriminated by
+  an exact `emitted_funcs` set (never an intrinsic/native like `math.sqrt`).
+- Proven by `wir_binary_path_runs_and_agrees_with_oracle`: programs compiled
+  straight to binary run identically to the interpreter oracle AND the WAT path.
 
-**Remaining:** wire it into the pipeline — `compile_module` builds a `WirModule`
-(needs M2's `compile_function`/`compile_module` lowering) and, when the whole module
-lowers, returns `encode(&module)`; drop `wat::parse_str` from `lib::compile_source`;
-keep `WIR → WAT` printer as the `witchy emit-wat` debug view. **Exit:** no WAT text
-in the pipeline; `wat` crate out of the build.
+**Blocked — the flip cannot become the default yet, for TWO prelude reasons:**
+1. **Capability model.** The static prelude is "all features on": every binary
+   module imports the full host surface, including authority fns (`crypto.sign`,
+   dir/net/env). A minimal (e.g. print-only) program then can't instantiate under
+   its real, minimal capability grant. witchy's whole point is that a program's
+   imports = its authority, so the binary path must import ONLY what the program's
+   footprint uses.
+2. **`wat` removal.** The prelude blob is itself compiled via `wat::parse_str`
+   (lazily, in `wir_prelude`), so even after a flip the `wat` crate stays in the
+   build. The criterion needs it GONE.
 
-### Milestone 4 — turn on optimizations (the actual payoff)
+The raw-body prelude bakes import/func/`call_indirect` INDICES, so it can't be
+pruned incrementally (removing a helper shifts every later index). **Decided fix
+(unifies both blockers): lower the prelude HELPERS to WIR.** Then the encoder
+re-indexes by name → emit only the reached helpers+imports (capability-correct,
+unblocks the flip) AND no `wat` in the prelude (drops the crate). Needs new WIR
+nodes for the bulk-memory/memory ops the helpers use (`memory.copy/fill/grow/size`)
++ translating the ~64 `*_WAT` helpers. Tracked as task #35; prereq for the flip.
+
+**Remaining for the flip:** #35 (prelude → WIR) → `lib::compile_source` tries
+`compile_module_binary` first → once every construct lowers, drop `wat = "1"` from
+`Cargo.toml` and delete the WAT sink. Keep `WIR → WAT` printer as `witchy emit-wat`.
+**Exit:** no WAT text in the pipeline; `wat` crate out of the build.
+
+### Milestone 4 — turn on optimizations (the actual payoff) 🟡 SLOT-ELIMINATION SHIPPED; MEASURABLE WIN PENDING LOWERING
 
 Add the pass registry (`fn(&mut WirModule)` pipeline) and land passes in
 ascending risk: **redundant slot-conversion elimination** (§3.2, the clearest
@@ -782,10 +811,28 @@ win) → **DCE** → **CSE** → **`CallIndirect`→`Call` devirtualization** �
 **inlining**. Each pass: a unit test that lowers a snippet, runs the pass,
 asserts on resulting WIR; plus the corpus differential (optimized vs
 unoptimized output must match — a new metamorphic check in the family of
-`examples_agree_under_inplace_and_forced_copy`). The in-place pass is *already*
-expressed (Milestone 2); this milestone is about the optimizations WIR newly
-enables. **Exit:** contributors have "one place" to add a compiled-backend
-optimization, with a test harness that proves it parity-safe.
+`examples_agree_under_inplace_and_forced_copy`).
+
+**Done:** `src/wir_opt.rs` `optimize(&mut WirModule) -> OptStats` — redundant
+slot-conversion elimination (`FromSlot(ToSlot(x,k),k)` / `ToSlot(FromSlot)` /
+identity `Convert(k,k)`), fixpoint, skips raw-body funcs. Unit-tested on synthetic
+redundancy (node reduction asserted); integrated into `compile_module_binary`
+before encoding; behavior-preservation proven against the oracle
+(`wir_slot_elimination_is_behavior_preserving`).
+
+**Key finding — no measurable win yet.** The pass eliminates **0 nodes** on every
+program that currently lowers: the redundant `FromSlot(ToSlot)` round-trips it
+targets arise at **generic/monomorphization and closure boundaries** (args pushed
+as i64 slots, immediately consumed as typed) — exactly the constructs that DON'T
+lower yet (they hit the WAT fallback). The measurable payoff therefore depends on
+the M2 lowering tail reaching those constructs. Until then the pass is correct but
+inert on real programs.
+
+**Remaining:** the **in-place / ownership pass** (§3.1, the second headline win) is
+NOT built. DCE/CSE/devirt/inlining not built. Plus the lowering tail above, which
+is what actually surfaces the slot-elimination win. **Exit:** contributors have
+"one place" to add a compiled-backend optimization, with a test harness that proves
+it parity-safe, AND both headline passes show a measurable improvement.
 
 Milestones 0–1 are low-risk and independently shippable. Milestone 2 is the
 atomic/scary one (the recursive-core conversion) — but it ships *byte-identical
