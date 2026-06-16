@@ -2728,13 +2728,34 @@ impl Codegen {
     /// non-lowerable expression bails BEFORE any `take_kills` call — `take_kills`
     /// bumps a non-idempotent kill counter, so double-running it on the legacy
     /// fallback would corrupt the uniqueness accounting.
+    /// Lower a block, with TRANSACTIONAL uniqueness-facts accounting: snapshot the
+    /// `(kills, sites)` counters on entry and RESTORE them if lowering bails
+    /// (`None`). A nested loop-body block may succeed and consume its sites, but if
+    /// the enclosing block then fails to legacy, the whole tree rolls back so the
+    /// legacy fallback re-consumes from a clean slate (no double-count). Commit
+    /// (no restore) happens only on `Some` — the whole block lowered.
     fn lower_block(&mut self, block: &Block) -> Option<crate::wir::WirSeq> {
+        let snap = self.facts_stack.last().map(|(_, k, s)| (*k, *s));
+        let result = self.lower_block_inner(block);
+        if result.is_none() {
+            if let (Some((k, s)), Some(top)) = (snap, self.facts_stack.last_mut()) {
+                top.1 = k;
+                top.2 = s;
+            }
+        }
+        result
+    }
+
+    fn lower_block_inner(&mut self, block: &Block) -> Option<crate::wir::WirSeq> {
         use crate::wir::{WirExpr as W, WirNode as N};
         // In-place accumulators (`inplace_push`), `inout` writeback, and the
-        // own-ABI keep their legacy emission. (In-place accumulator lowering to
-        // the cap ABI is built but disabled pending a fix to the recursive `sites`
-        // accounting — a nested loop-body block consumes sites that the legacy
-        // fallback then re-consumes; tracked in #29.)
+        // own-ABI keep their legacy emission. The accumulator→cap-ABI lowering
+        // (self-push → CallStoreMulti) below is built but DISABLED: it consumes
+        // the uniqueness `sites` counter inside lower_block, which is invoked many
+        // times per compile (byte-identity probes, `kind_of`, the legacy
+        // fallback's `lower_expr`), so it over-counts (`6/4 sites`). The fix is to
+        // consume sites ONCE in `compile_function` on a successful capture, not
+        // per lower_block call — tracked in #29.
         if !self.inplace_push.is_empty()
             || !self.cur_fn_inout_params.is_empty()
             || self.cur_fn_own_param.is_some()
