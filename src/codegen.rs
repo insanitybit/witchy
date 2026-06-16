@@ -2598,6 +2598,12 @@ impl Codegen {
             let k = self.locals.get(name).copied().unwrap_or(Kind::I32);
             locals.push(WirLocal { name: name.clone(), ty: Self::wir_ty_for_kind(k) });
         }
+        // Shadow `${v}__cap` ownership-token slots for the in-place accumulators.
+        let mut cap_vars: Vec<&String> = self.inplace_push.iter().collect();
+        cap_vars.sort();
+        for v in cap_vars {
+            locals.push(WirLocal { name: format!("{v}__cap"), ty: i32t() });
+        }
         locals.push(WirLocal { name: "__witchy_owncap".into(), ty: i32t() });
         locals.push(WirLocal { name: TUPLE_TMP.into(), ty: i32t() });
         locals.push(WirLocal { name: TRY_TMP.into(), ty: i32t() });
@@ -2724,12 +2730,18 @@ impl Codegen {
     /// fallback would corrupt the uniqueness accounting.
     fn lower_block(&mut self, block: &Block) -> Option<crate::wir::WirSeq> {
         use crate::wir::{WirExpr as W, WirNode as N};
+        // In-place accumulators (`inplace_push`), `inout` writeback, and the
+        // own-ABI keep their legacy emission. (In-place accumulator lowering to
+        // the cap ABI is built but disabled pending a fix to the recursive `sites`
+        // accounting — a nested loop-body block consumes sites that the legacy
+        // fallback then re-consumes; tracked in #29.)
         if !self.inplace_push.is_empty()
             || !self.cur_fn_inout_params.is_empty()
             || self.cur_fn_own_param.is_some()
         {
             return None;
         }
+        let mut inplace_sites = 0usize;
         let last = block.stmts.len().saturating_sub(1);
         let mut seq: crate::wir::WirSeq = Vec::with_capacity(block.stmts.len() + 1);
         let mut tail_is_value = false;
@@ -2738,6 +2750,14 @@ impl Codegen {
                 Stmt::Let { name, value, .. } => {
                     let v = self.lower_expr(value)?;
                     seq.push(N::SetLocal { local: name.clone(), value: v });
+                    // An accumulator binding starts with a zero ownership token
+                    // (the first push re-owns).
+                    if self.collect_wir && self.inplace_push.contains(name) {
+                        seq.push(N::SetLocal {
+                            local: format!("{name}__cap"),
+                            value: W::ConstI32(0),
+                        });
+                    }
                     tail_is_value = false;
                 }
                 Stmt::Expr(e) => {
@@ -2814,35 +2834,100 @@ impl Codegen {
                 // accounting), a string/list state field, or a global. Those keep
                 // their bespoke legacy emission.
                 Stmt::Assign { name, value } => {
-                    if is_self_assign_shape(name, value, &self.summaries)
+                    // In-place accumulator fast path (binary only): `xs = list.push(
+                    // xs, e)` for an `inplace_push` var lowers to `$list_push_cap`
+                    // via CallStoreMulti — writing (new_ptr, new_cap) back into
+                    // `xs` and its `xs__cap` slot, amortized O(1).
+                    if self.collect_wir
+                        && self.inplace_push.contains(name)
+                        && is_self_assign_shape(name, value, &self.summaries)
+                    {
+                        // Only the list-push shape is modelled; dict/str self-assign
+                        // (`self_push_elem` is None) defers the whole function.
+                        let elem = self_push_elem(name, value)?;
+                        let xk = self.kind_of(elem);
+                        // A dirty site (its RHS embeds an aliasing share of `name`)
+                        // forces a zero token → re-own + copy; a clean site trusts
+                        // the runtime token. Read-only here; `sites` consumed at end.
+                        let dirty = match self.facts_stack.last() {
+                            Some((facts, _, _)) if facts.accumulators.contains(name) => {
+                                facts.is_dirty(stmt)
+                            }
+                            _ => true,
+                        };
+                        let cap = if dirty {
+                            W::ConstI32(0)
+                        } else {
+                            W::GetLocal(format!("{name}__cap"))
+                        };
+                        let e = self.lower_expr(elem)?;
+                        self.uses_list_push_cap = true;
+                        seq.push(N::CallStoreMulti {
+                            func: "list_push_cap".to_string(),
+                            args: vec![
+                                W::GetLocal(name.clone()),
+                                W::ToSlot(Box::new(e), Self::wir_kind(xk)),
+                                cap,
+                            ],
+                            dests: vec![name.clone(), format!("{name}__cap")],
+                        });
+                        inplace_sites += 1;
+                        tail_is_value = false;
+                    } else if is_self_assign_shape(name, value, &self.summaries)
                         || self.str_fields.contains_key(name)
                         || self.list_fields.contains_key(name)
                         || self.globals.contains(name)
                     {
                         return None;
+                    } else {
+                        let vk = self.kind_of(value);
+                        let target = self.locals.get(name).copied().unwrap_or(Kind::I32);
+                        let v = self.lower_expr(value)?;
+                        seq.push(N::SetLocal {
+                            local: name.clone(),
+                            value: Self::wir_convert(v, vk, target),
+                        });
+                        tail_is_value = false;
                     }
-                    let vk = self.kind_of(value);
-                    let target = self.locals.get(name).copied().unwrap_or(Kind::I32);
-                    let v = self.lower_expr(value)?;
-                    seq.push(N::SetLocal {
-                        local: name.clone(),
-                        value: Self::wir_convert(v, vk, target),
-                    });
-                    tail_is_value = false;
                 }
                 // Yield → legacy (rewritten away before codegen anyway).
                 _ => return None,
+            }
+            // Reset the cap of any inplace_push var killed AFTER this statement
+            // (binary path), positioned here in the seq. Read-only — the kills
+            // counter is consumed once by the `take_kills` loop below.
+            if self.collect_wir && !self.inplace_push.is_empty() {
+                let killed: Vec<String> = self
+                    .facts_stack
+                    .last()
+                    .map(|(f, _, _)| f.kills_after(stmt).to_vec())
+                    .unwrap_or_default();
+                for v in &killed {
+                    if self.inplace_push.contains(v) {
+                        seq.push(N::SetLocal {
+                            local: format!("{v}__cap"),
+                            value: W::ConstI32(0),
+                        });
+                    }
+                }
             }
         }
         // The block always leaves one value: the tail expression, or `i32.const 0`.
         if !tail_is_value {
             seq.push(N::Push(W::ConstI32(0)));
         }
-        // Preserve the per-statement kill-counter bump (its emission is empty since
-        // `inplace_push` is empty). Done only now that every statement lowered, so
-        // it runs exactly once per statement (never doubled by a fallback).
+        // Preserve the per-statement kill-counter bump. Done only now that every
+        // statement lowered, so it runs exactly once per statement (never doubled
+        // by a fallback). Its emitted cap-resets are discarded — already positioned
+        // in `seq` above.
         for stmt in &block.stmts {
             let _ = self.take_kills(stmt);
+        }
+        // Consume the self-push `sites` once, now the whole block has lowered.
+        if inplace_sites > 0 {
+            if let Some((_, _, sites)) = self.facts_stack.last_mut() {
+                *sites += inplace_sites;
+            }
         }
         Some(seq)
     }
@@ -2858,6 +2943,12 @@ impl Codegen {
             }
             return Ok(crate::wir::seq_to_wat(&seq));
         }
+        // The TOP block did not fully lower → this function falls back to the WAT
+        // path. Disarm capture so nested blocks compiled below (legacy control
+        // arms) are NOT mistaken for the function body — otherwise a function whose
+        // outer block bails but whose inner loop-body lowers would be captured as
+        // just that inner body (a silent miscompile of the whole function).
+        self.capture_top_seq = false;
         let mut out = String::new();
         let last = block.stmts.len().saturating_sub(1);
         let mut tail_is_value = false;

@@ -7956,6 +7956,30 @@ fn main(console: Console):
         actor.output()
     }
 
+    /// Regression: a function whose OUTER block does not fully lower (here a
+    /// for-list loop whose body allocates → arena-resettable → the for-list
+    /// lowering bails) must fall back to the WAT sink as a WHOLE. The binary-path
+    /// capture must NOT mistake the inner loop body for the function body — a bug
+    /// that silently compiled `for x in [..]: print(x)` to a single iteration.
+    #[test]
+    fn wir_partial_lower_falls_back_not_miscaptured() {
+        let src = "fn main(console: Console):\n    for x in [10, 20, 30]:\n        print(console, __render(x))\n";
+        let want = vec!["10".to_string(), "20".to_string(), "30".to_string()];
+        let module = parser::parse_module(src).expect("parse");
+        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        typeck::check(&linked).expect("typeck");
+        // Must DECLINE the binary path (return None) — not mis-capture & miscompile.
+        assert!(
+            codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+                .expect("compile")
+                .is_none(),
+            "a partially-lowering function must fall back to WAT, not be mis-captured"
+        );
+        assert_eq!(link_run(src), want, "interpreter oracle");
+        assert_eq!(run_on_wasm(src), want, "WAT path");
+    }
+
+
     /// Criterion-2: the slot-elimination pass shows a MEASURABLE improvement on a
     /// real lowered program. `[list.at(xs, 0)]` (with `xs: List(Bool)`) reads an
     /// i64 slot, narrows it to the bool's i32, then re-widens it to store in the
