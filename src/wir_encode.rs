@@ -2109,6 +2109,85 @@ mod tests {
     }
 
     #[test]
+    fn dict_keys_values_remove_int_keys() {
+        use crate::wir::{
+            dict_find_helper, dict_get_or_helper, dict_hash_helper, dict_insert_helper,
+            dict_new_helper, dict_project_helper, dict_remove_helper, ensure_helper, key_eq_helper,
+            str_eq_helper,
+        };
+        let gl = |n: &str| WirExpr::GetLocal(n.into());
+        let ins = |k: i64, v: i64| WirNode::SetLocal {
+            local: "d".into(),
+            value: WirExpr::Call {
+                func: "dict_insert".into(),
+                args: vec![gl("d"), WirExpr::ConstI64(k), WirExpr::ConstI64(v), WirExpr::ConstI32(0)],
+            },
+        };
+        let call1 = |f: &str, a: &str| WirExpr::Call { func: f.into(), args: vec![gl(a)] };
+        // list element `idx` (an i64 slot) of the list pointer held in `name`.
+        let elem = |name: &'static str, idx: u32| WirExpr::Load { ptr: Box::new(gl(name)), kind: Kind::I64, offset: 4 + idx * 8 };
+        let len = |name: &'static str| WirExpr::Convert {
+            from: Kind::I32,
+            to: Kind::I64,
+            arg: Box::new(WirExpr::Load { ptr: Box::new(gl(name)), kind: Kind::I32, offset: 0 }),
+        };
+        let get = |name: &'static str, k: i64| WirExpr::Call {
+            func: "dict_get_or".into(),
+            args: vec![gl(name), WirExpr::ConstI64(k), WirExpr::ConstI64(-1), WirExpr::ConstI32(0)],
+        };
+        let pi = |e: WirExpr| WirNode::Do(WirExpr::CallHost { import: "print_int".into(), args: vec![e] });
+        let run = WirFunc {
+            name: "run".into(),
+            params: vec![],
+            ret: vec![],
+            locals: vec![local("d", WirTy::Bool), local("ks", WirTy::Bool), local("vs", WirTy::Bool), local("rm", WirTy::Bool)],
+            body: vec![
+                WirNode::SetLocal { local: "d".into(), value: WirExpr::Call { func: "dict_new".into(), args: vec![] } },
+                ins(1, 100),
+                ins(2, 200),
+                ins(3, 300),
+                WirNode::SetLocal { local: "ks".into(), value: call1("dict_keys", "d") },
+                WirNode::SetLocal { local: "vs".into(), value: call1("dict_values", "d") },
+                WirNode::SetLocal {
+                    local: "rm".into(),
+                    value: WirExpr::Call { func: "dict_remove".into(), args: vec![gl("d"), WirExpr::ConstI64(2), WirExpr::ConstI32(0)] },
+                },
+                pi(len("ks")),     // 3 keys
+                pi(elem("ks", 0)), // key 1
+                pi(elem("ks", 2)), // key 3
+                pi(elem("vs", 1)), // value 200
+                pi(WirExpr::Convert { from: Kind::I32, to: Kind::I64, arg: Box::new(WirExpr::Load { ptr: Box::new(gl("rm")), kind: Kind::I32, offset: 0 }) }), // remove count 2
+                pi(get("rm", 1)),  // 100 (kept)
+                pi(get("rm", 2)),  // -1 (removed)
+            ],
+            raw_body: None,
+        };
+        let module = WirModule {
+            imports: vec![WirImport { name: "print_int".into(), params: vec![Kind::I64], results: vec![] }],
+            funcs: vec![
+                ensure_helper(),
+                str_eq_helper(),
+                key_eq_helper(),
+                dict_hash_helper(),
+                dict_find_helper(),
+                dict_new_helper(),
+                dict_insert_helper(),
+                dict_get_or_helper(),
+                dict_project_helper("dict_keys", 4),
+                dict_project_helper("dict_values", 12),
+                dict_remove_helper(),
+                run,
+            ],
+            memory_pages: 1,
+            data: vec![],
+            globals: vec![WirGlobal { name: "heap".into(), kind: Kind::I32, mutable: true, init: GlobalInit::I32(1024), export: None }],
+            table: None,
+            exports: vec![("run".into(), "run".into())],
+        };
+        assert_agrees(&module, &["3", "1", "3", "200", "2", "100", "-1"]);
+    }
+
+    #[test]
     fn arithmetic_roundtrips() {
         // fn add() -> Int: (2 + 3) * 4 == 20
         let add = WirFunc {

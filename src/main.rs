@@ -8248,6 +8248,13 @@ fn main(console: Console):
                 "fn main(console: Console):\n    let d = dict.insert(dict.insert(dict.new(), \"a\", 1), \"b\", 2)\n    print(console, __render(dict.get_or(d, \"a\", 0)))\n    print(console, __render(dict.get_or(d, \"z\", 99)))\n    print(console, __render(dict.has(d, \"b\")))\n    print(console, __render(dict.has(d, \"z\")))\n    print(console, __render(dict.size(d)))\n",
                 vec!["1".to_string(), "99".to_string(), "true".to_string(), "false".to_string(), "2".to_string()],
             ),
+            // dict iteration + remove ($dict_keys/values/pairs/remove). Asserts
+            // order-independent facts (lengths, post-remove membership) so it's
+            // robust to entry ordering.
+            (
+                "fn main(console: Console):\n    let d = dict.insert(dict.insert(dict.new(), \"a\", 1), \"b\", 2)\n    print(console, __render(list.length(dict.keys(d))))\n    print(console, __render(list.length(dict.values(d))))\n    print(console, __render(list.length(dict.pairs(d))))\n    let d2 = dict.remove(d, \"a\")\n    print(console, __render(dict.size(d2)))\n    print(console, __render(dict.has(d2, \"a\")))\n    print(console, __render(dict.has(d2, \"b\")))\n",
+                vec!["2".to_string(), "2".to_string(), "2".to_string(), "1".to_string(), "false".to_string(), "true".to_string()],
+            ),
         ];
         let mut lowered_any = false;
         for (src, want) in cases {
