@@ -1480,6 +1480,101 @@ pub fn str_substring_helper() -> WirFunc {
     }
 }
 
+/// `$is_ws(b) -> i32` — 1 iff byte `b` is ASCII whitespace (space, tab, LF, CR,
+/// VT, FF). A pure OR of equalities, no loop.
+pub fn is_ws_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    let i32c = E::ConstI32;
+    let or = |l: E, r: E| E::Binary { op: BinOp::Or, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+    let eq = |c: i32| E::Binary {
+        op: BinOp::Eq,
+        kind: Kind::I32,
+        lhs: Box::new(getl("b")),
+        rhs: Box::new(i32c(c)),
+    };
+    WirFunc {
+        name: "is_ws".into(),
+        params: vec![WirLocal { name: "b".into(), ty: WirTy::Bool }],
+        ret: vec![WirTy::Bool],
+        locals: vec![],
+        body: vec![N::Push(or(
+            eq(32),
+            or(eq(9), or(eq(10), or(eq(13), or(eq(11), eq(12))))),
+        ))],
+        raw_body: None,
+    }
+}
+
+/// `$trim(s) -> i32` — `s` with leading and trailing ASCII whitespace removed.
+/// Advances `lo` past leading whitespace and pulls `hi` in past trailing
+/// whitespace, then `$substr`s the `[lo, hi)` byte window.
+pub fn trim_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    let i32c = E::ConstI32;
+    let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+    let load = |p: E| E::Load { ptr: Box::new(p), kind: Kind::I32, offset: 0 };
+    let setl = |n: &str, v: E| N::SetLocal { local: n.into(), value: v };
+    let not = |e: E| E::Unary { op: UnOp::Not, kind: Kind::I32, arg: Box::new(e) };
+    let is_ws_at = |idx: E| E::Call {
+        func: "is_ws".into(),
+        args: vec![E::Load8U { ptr: Box::new(b(BinOp::Add, getl("s"), idx)), offset: 4 }],
+    };
+    let lo_loop = N::Block {
+        label: "lodone".into(),
+        result: None,
+        body: vec![N::Loop {
+            label: "l".into(),
+            body: vec![
+                N::Br { target: "lodone".into(), cond: Some(b(BinOp::Ge, getl("lo"), getl("hi"))) },
+                N::Br { target: "lodone".into(), cond: Some(not(is_ws_at(getl("lo")))) },
+                setl("lo", b(BinOp::Add, getl("lo"), i32c(1))),
+                N::Br { target: "l".into(), cond: None },
+            ],
+        }],
+    };
+    let hi_loop = N::Block {
+        label: "hidone".into(),
+        result: None,
+        body: vec![N::Loop {
+            label: "h".into(),
+            body: vec![
+                N::Br { target: "hidone".into(), cond: Some(b(BinOp::Le, getl("hi"), getl("lo"))) },
+                N::Br {
+                    target: "hidone".into(),
+                    cond: Some(not(is_ws_at(b(BinOp::Sub, getl("hi"), i32c(1))))),
+                },
+                setl("hi", b(BinOp::Sub, getl("hi"), i32c(1))),
+                N::Br { target: "h".into(), cond: None },
+            ],
+        }],
+    };
+    WirFunc {
+        name: "trim".into(),
+        params: vec![WirLocal { name: "s".into(), ty: WirTy::Str }],
+        ret: vec![WirTy::Str],
+        locals: ["len", "lo", "hi"]
+            .iter()
+            .map(|n| WirLocal { name: (*n).into(), ty: WirTy::Bool })
+            .collect(),
+        body: vec![
+            setl("len", load(getl("s"))),
+            setl("lo", i32c(0)),
+            setl("hi", getl("len")),
+            lo_loop,
+            hi_loop,
+            N::Push(E::Call {
+                func: "substr".into(),
+                args: vec![getl("s"), getl("lo"), b(BinOp::Sub, getl("hi"), getl("lo"))],
+            }),
+        ],
+        raw_body: None,
+    }
+}
+
 /// A WIR-native prelude helper plus the module-level resources it needs (so a
 /// pruned module declares only the imports/globals/table its reached helpers
 /// actually touch — capability-minimal).
@@ -1581,6 +1676,20 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
         "str_substring" => Some(WirHelperSpec {
             func: str_substring_helper(),
             helper_deps: &["char_to_byte", "substr"],
+            import_deps: &[],
+            uses_heap: false,
+            uses_table: false,
+        }),
+        "is_ws" => Some(WirHelperSpec {
+            func: is_ws_helper(),
+            helper_deps: &[],
+            import_deps: &[],
+            uses_heap: false,
+            uses_table: false,
+        }),
+        "trim" => Some(WirHelperSpec {
+            func: trim_helper(),
+            helper_deps: &["is_ws", "substr"],
             import_deps: &[],
             uses_heap: false,
             uses_table: false,

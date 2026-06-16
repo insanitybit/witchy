@@ -1603,6 +1603,70 @@ mod tests {
     }
 
     #[test]
+    fn trim_strips_surrounding_whitespace() {
+        use crate::wir::{ensure_helper, is_ws_helper, substr_helper, trim_helper};
+        let mk_str = |s: &str| {
+            let mut b = (s.len() as u32).to_le_bytes().to_vec();
+            b.extend_from_slice(s.as_bytes());
+            b
+        };
+        let data = vec![
+            DataSegment { offset: 200, bytes: mk_str("  hi  ") },
+            DataSegment { offset: 220, bytes: mk_str("abc") },
+            DataSegment { offset: 240, bytes: mk_str("   ") },
+        ];
+        let tr = |s: i32| WirExpr::Call { func: "trim".into(), args: vec![WirExpr::ConstI32(s)] };
+        let load_i32 = |p: WirExpr| WirExpr::Load { ptr: Box::new(p), kind: Kind::I32, offset: 0 };
+        let byte0 = |p: WirExpr| WirExpr::Load8U { ptr: Box::new(p), offset: 4 };
+        let pi = |e: WirExpr| {
+            WirNode::Do(WirExpr::CallHost {
+                import: "print_int".into(),
+                args: vec![WirExpr::Convert { from: Kind::I32, to: Kind::I64, arg: Box::new(e) }],
+            })
+        };
+        let gl = |n: &str| WirExpr::GetLocal(n.into());
+        let run = WirFunc {
+            name: "run".into(),
+            params: vec![],
+            ret: vec![],
+            locals: vec![local("r1", WirTy::Bool), local("r2", WirTy::Bool), local("r3", WirTy::Bool)],
+            body: vec![
+                WirNode::SetLocal { local: "r1".into(), value: tr(200) },
+                pi(load_i32(gl("r1"))),
+                pi(byte0(gl("r1"))),
+                WirNode::SetLocal { local: "r2".into(), value: tr(220) },
+                pi(load_i32(gl("r2"))),
+                pi(byte0(gl("r2"))),
+                // all-whitespace trims to empty (length 0).
+                WirNode::SetLocal { local: "r3".into(), value: tr(240) },
+                pi(load_i32(gl("r3"))),
+            ],
+            raw_body: None,
+        };
+        let module = WirModule {
+            imports: vec![WirImport {
+                name: "print_int".into(),
+                params: vec![Kind::I64],
+                results: vec![],
+            }],
+            funcs: vec![ensure_helper(), substr_helper(), is_ws_helper(), trim_helper(), run],
+            memory_pages: 1,
+            data,
+            globals: vec![WirGlobal {
+                name: "heap".into(),
+                kind: Kind::I32,
+                mutable: true,
+                init: GlobalInit::I32(1024),
+                export: None,
+            }],
+            table: None,
+            exports: vec![("run".into(), "run".into())],
+        };
+        // "  hi  " → "hi" (len 2, 'h'=104); "abc" → "abc" (len 3, 'a'=97); "   " → "" (len 0).
+        assert_agrees(&module, &["2", "104", "3", "97", "0"]);
+    }
+
+    #[test]
     fn arithmetic_roundtrips() {
         // fn add() -> Int: (2 + 3) * 4 == 20
         let add = WirFunc {

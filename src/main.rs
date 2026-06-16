@@ -8191,6 +8191,12 @@ fn main(console: Console):
                 "fn main(console: Console):\n    print(console, string.substring(\"hello world\", 0, 5))\n    print(console, string.substring(\"hello world\", 6, 11))\n",
                 vec!["hello".to_string(), "world".to_string()],
             ),
+            // string.trim ($trim → $is_ws + $substr, two whitespace scan loops)
+            // on the binary path.
+            (
+                "fn main(console: Console):\n    print(console, string.trim(\"  hi  \"))\n    print(console, string.trim(\"abc\"))\n",
+                vec!["hi".to_string(), "abc".to_string()],
+            ),
         ];
         let mut lowered_any = false;
         for (src, want) in cases {
