@@ -38,6 +38,7 @@ pub mod typeck;
 pub mod value;
 pub mod wir;
 pub mod wir_encode;
+pub mod wir_opt;
 #[cfg(feature = "native")]
 pub mod wir_prelude;
 

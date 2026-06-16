@@ -40,6 +40,7 @@ mod typeck;
 mod value;
 mod wir;
 mod wir_encode;
+mod wir_opt;
 #[cfg(feature = "native")]
 mod wir_prelude;
 
@@ -7822,6 +7823,85 @@ fn main(console: Console):
             .expect("spawn");
         actor.run().expect("run");
         actor.output()
+    }
+
+    /// M3 sink-flip: the WIR→binary path (`compile_module_binary`, NO
+    /// `wat::parse_str`) must, for every program whose whole module lowers,
+    /// assemble a VALID wasm module that runs identically to the interpreter
+    /// oracle and to the legacy WAT path. Programs are chosen from the lowering
+    /// subset (string literals + control flow + scalar helpers; no list-building,
+    /// string concat, `__render`, or Int/Float `main` yet).
+    #[test]
+    fn wir_binary_path_runs_and_agrees_with_oracle() {
+        let cases: &[(&str, Vec<String>)] = &[
+            (
+                "fn main(console: Console):\n    print(console, \"hello from WIR\")\n",
+                vec!["hello from WIR".to_string()],
+            ),
+            (
+                "fn main(console: Console):\n    print(console, \"one\")\n    print(console, \"two\")\n",
+                vec!["one".to_string(), "two".to_string()],
+            ),
+            (
+                "fn main(console: Console):\n    if true:\n        print(console, \"yes\")\n    else:\n        print(console, \"no\")\n",
+                vec!["yes".to_string()],
+            ),
+            (
+                "fn pick(b: Bool) -> Bool:\n    b\n\nfn main(console: Console):\n    if pick(true):\n        print(console, \"picked\")\n    else:\n        print(console, \"nope\")\n",
+                vec!["picked".to_string()],
+            ),
+        ];
+        // The static prelude is "all features on", so a binary-path module
+        // imports the full host surface; grant every capability so it
+        // instantiates. (Capability-minimal imports await prelude pruning — see
+        // `compile_module_binary`.)
+        fn run_bytes_all_caps(bytes: &[u8]) -> Vec<String> {
+            use crate::runtime::{Capabilities, Runtime};
+            let mut rt = Runtime::batch().expect("runtime");
+            let mut actor = rt
+                .spawn(
+                    bytes,
+                    Capabilities {
+                        print: true,
+                        print_int: true,
+                        quiet: true,
+                        clock: true,
+                        env: true,
+                        dir_root: Some(std::path::PathBuf::from(".")),
+                        dir_read: true,
+                        dir_write: true,
+                        net_allow: Some(Vec::new()),
+                        net_connect: true,
+                        net_listen: true,
+                        signing_key: Some([0u8; 32]),
+                        build_out: Some(std::env::temp_dir()),
+                        build_read_roots: vec![std::path::PathBuf::from(".")],
+                        ..Default::default()
+                    },
+                    crate::RUN_MEMORY_PAGES,
+                )
+                .expect("spawn");
+            actor.run().expect("run");
+            actor.output()
+        }
+        let mut lowered_any = false;
+        for (src, want) in cases {
+            let module = parser::parse_module(src).expect("parse");
+            let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+            typeck::check(&linked).expect("typecheck");
+            let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+                .expect("compile_module_binary")
+                .unwrap_or_else(|| {
+                    panic!("expected the WIR binary path to handle this program:\n{src}")
+                });
+            lowered_any = true;
+            // AST → WIR → binary (no wat::parse_str) runs identically to the
+            // interpreter oracle and to the legacy WAT sink.
+            assert_eq!(&run_bytes_all_caps(&bytes), want, "binary path:\n{src}");
+            assert_eq!(&link_run(src), want, "interpreter oracle:\n{src}");
+            assert_eq!(&run_on_wasm(src), want, "legacy WAT path:\n{src}");
+        }
+        assert!(lowered_any, "the WIR binary path lowered nothing — convergence regressed");
     }
 
     /// Link a multi-module program, compile the flat module to WASM, run it on

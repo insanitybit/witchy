@@ -375,6 +375,23 @@ struct Codegen {
     uses_print_int: bool,
     uses_concat: bool,
     uses_int_to_string: bool,
+    /// WIR migration (M3 sink-flip). `capture_top_seq` arms the outermost
+    /// `compile_block` to stash its fully-lowered body in `captured_seq`;
+    /// `compile_function` then moves it into `wir_funcs` (one `WirFunc` per
+    /// function whose whole body lowered to WIR). `compile_module_binary`
+    /// assembles those + the static prelude into a binary via `wir_encode`.
+    capture_top_seq: bool,
+    captured_seq: Option<crate::wir::WirSeq>,
+    wir_funcs: HashMap<String, crate::wir::WirFunc>,
+    /// Set by `compile_module_binary` to arm WIR capture; left `false` on the WAT
+    /// path so it pays no capture/clone overhead AND so `lower_expr`'s call arm
+    /// stays inert there (the legacy `compile_call` keeps full dispatch).
+    collect_wir: bool,
+    /// The exact set of names compiled to real `$name` functions (reachable,
+    /// non-intrinsic `Item::Function`s) — populated by `compile_module_binary`.
+    /// A call lowers to a direct `WirExpr::Call` only for a member; an intrinsic
+    /// or native (`math.sqrt`, `crypto.ed25519_verify`) is NOT one, so it defers.
+    emitted_funcs: HashSet<String>,
     /// Names that resolve to mutable WASM globals (actor state).
     globals: HashSet<String>,
     /// Capability field names (erased; referencing one yields a placeholder 0).
@@ -741,6 +758,11 @@ impl Codegen {
             uses_print_int: false,
             uses_concat: false,
             uses_int_to_string: false,
+            capture_top_seq: false,
+            captured_seq: None,
+            wir_funcs: HashMap::new(),
+            collect_wir: false,
+            emitted_funcs: HashSet::new(),
             globals: HashSet::new(),
             cap_fields: HashSet::new(),
             fn_conventions: HashMap::new(),
@@ -2515,10 +2537,24 @@ impl Codegen {
 
         self.apply_level = 0;
         self.wm_level = 0;
+        self.capture_top_seq = self.collect_wir;
+        self.captured_seq = None;
         let body = self.compile_block(renamed)?;
         // The body's tail value must match the declared result kind (a generic
         // i32 body returned from an `-> Int` function is widened, etc.).
-        let body = format!("{body}{}", kind_convert(self.block_kind(renamed), ret_kind));
+        let block_kind = self.block_kind(renamed);
+        let body = format!("{body}{}", kind_convert(block_kind, ret_kind));
+        // M3: if the whole body lowered to WIR and the function uses neither the
+        // inout move-out ABI nor the own-cap ABI (the binary sink models neither
+        // yet), keep a `WirFunc` so `compile_module_binary` can encode it.
+        if let Some(seq) = self.captured_seq.take() {
+            if self.cur_fn_inout_params.is_empty() && self.cur_fn_own_param.is_none() {
+                let seq = Self::convert_block_tail(seq, block_kind, ret_kind);
+                let wf = self.assemble_wir_func(f, ret_kind, seq);
+                self.wir_funcs.insert(f.name.clone(), wf);
+            }
+        }
+        self.capture_top_seq = false;
         // Move-out: append each `inout` parameter's final value (declaration order).
         let mut epilogue = self.inout_epilogue();
         let tail_expr = match renamed.stmts.last() {
@@ -2529,6 +2565,57 @@ impl Codegen {
         self.finish_unit(&f.name)?;
         self.cur_fn_own_param = None;
         Ok(format!("{header}{body}{epilogue}  )\n"))
+    }
+
+    /// Build the `WirFunc` for a fully-lowered function: its params, the body
+    /// locals (mirroring `compile_function`'s header — the same `let`s and
+    /// scratch slots the WIR body may reference), its single result, and the
+    /// captured body. `raw_body: None` — this is a node-walked function.
+    fn assemble_wir_func(
+        &self,
+        f: &Function,
+        ret_kind: Kind,
+        body: crate::wir::WirSeq,
+    ) -> crate::wir::WirFunc {
+        use crate::wir::{WirFunc, WirLocal, WirTy};
+        // `.kind()` is all the encoder reads: `Bool` => i32, `Int` => i64.
+        let i32t = || WirTy::Bool;
+        let i64t = || WirTy::Int;
+        let params: Vec<WirLocal> = f
+            .params
+            .iter()
+            .map(|p| WirLocal {
+                name: p.name.clone(),
+                ty: Self::wir_ty_for_kind(self.locals.get(&p.name).copied().unwrap_or(Kind::I32)),
+            })
+            .collect();
+        let mut locals: Vec<WirLocal> = Vec::new();
+        let mut lets = Vec::new();
+        collect_let_names(&f.body, &mut lets);
+        lets.sort();
+        lets.dedup();
+        for name in &lets {
+            let k = self.locals.get(name).copied().unwrap_or(Kind::I32);
+            locals.push(WirLocal { name: name.clone(), ty: Self::wir_ty_for_kind(k) });
+        }
+        locals.push(WirLocal { name: "__witchy_owncap".into(), ty: i32t() });
+        locals.push(WirLocal { name: TUPLE_TMP.into(), ty: i32t() });
+        locals.push(WirLocal { name: TRY_TMP.into(), ty: i32t() });
+        locals.push(WirLocal { name: MATCH_TMP.into(), ty: i64t() });
+        for i in 0..WM_POOL {
+            locals.push(WirLocal { name: format!("__witchy_wm_{i}"), ty: i32t() });
+        }
+        for i in 0..APPLY_POOL {
+            locals.push(WirLocal { name: format!("__witchy_call_{i}"), ty: i32t() });
+        }
+        WirFunc {
+            name: f.name.clone(),
+            params,
+            ret: vec![Self::wir_ty_for_kind(ret_kind)],
+            locals,
+            body,
+            raw_body: None,
+        }
     }
 
     /// The move-out epilogue for an `inout` function: push each inout param's
@@ -2762,6 +2849,13 @@ impl Codegen {
 
     fn compile_block(&mut self, block: &Block) -> Result<String, CodegenError> {
         if let Some(seq) = self.lower_block(block) {
+            // Stash the outermost fully-lowered body for binary encoding. Armed
+            // by `compile_function`; disarmed on the first capture so nested
+            // `compile_block` calls (legacy control arms) never clobber it.
+            if self.capture_top_seq {
+                self.capture_top_seq = false;
+                self.captured_seq = Some(seq.clone());
+            }
             return Ok(crate::wir::seq_to_wat(&seq));
         }
         let mut out = String::new();
@@ -3815,6 +3909,39 @@ impl Codegen {
                         result: Some(Self::wir_ty_for_kind(payload_kind)),
                     },
                 ])
+            }
+            // A call expression. Builtins/natives WIR can lower flow through
+            // `lower_call`; otherwise a plain top-level user call (no own-ABI
+            // token, no `inout` writeback, not a closure-typed local) lowers via
+            // `try_lower_user_call`. This mirrors `compile_call`'s dispatch
+            // precedence exactly, so the printed WAT stays byte-identical; any
+            // other call shape (closure `call_indirect`, own-ABI, `inout`)
+            // returns `None` to keep its bespoke legacy emission.
+            Expr::Call { name, args } => {
+                // Only the binary path lowers calls through here; the WAT path
+                // keeps `compile_call`'s full legacy dispatch (and byte-identity),
+                // since `lower_expr` cannot reproduce its builtin/native arm
+                // precedence (e.g. `math.sqrt` is an intrinsic, not a `$`-func).
+                if !self.collect_wir {
+                    return None;
+                }
+                if let Some(w) = self.lower_call(name, args) {
+                    return Some(w);
+                }
+                let has_inout = self
+                    .fn_conventions
+                    .get(name)
+                    .is_some_and(|cs| cs.iter().any(|c| *c == Convention::Inout));
+                // Exactly the compiled `$name` user functions — never an
+                // intrinsic/native (those have no emitted func to call), never a
+                // closure-typed local (that's a `call_indirect`).
+                let is_plain_user_fn = self.emitted_funcs.contains(name)
+                    && !self.locals.contains_key(name)
+                    && !self.local_fn_ret_kind.contains_key(name);
+                if is_plain_user_fn && self.summaries.own_abi(name).is_none() && !has_inout {
+                    return self.try_lower_user_call(name, args);
+                }
+                return None;
             }
             _ => return None,
         })
@@ -7984,6 +8111,244 @@ pub fn compile_module_with(
     }
     wat.push_str(")\n");
     Ok(wat)
+}
+
+/// M3 sink-flip: compile a module straight to a wasm **binary** via WIR +
+/// `wir_encode::encode`, with no `wat::parse_str` in the pipeline. Returns
+/// `Ok(Some(bytes))` only when every reachable function fully lowered to WIR and
+/// the program needs nothing outside the static prelude (no program-specific
+/// helpers — record `==`, `to_string`, region copy-out, lifted lambdas — and no
+/// host import the prelude does not declare); otherwise `Ok(None)`, so the
+/// caller falls back to the proven WAT sink. The assembled binary is
+/// wasm-validated before return — an assembly slip falls back rather than
+/// shipping a malformed module.
+#[cfg(feature = "native")]
+pub fn compile_module_binary(
+    module: &Module,
+    tags: &HashMap<String, u32>,
+) -> Result<Option<Vec<u8>>, CodegenError> {
+    use crate::wir::{
+        DataSegment, GlobalInit, Kind as WK, WirExpr, WirFunc, WirGlobal, WirImport, WirLocal,
+        WirModule, WirNode, WirTable, WirTy,
+    };
+    use crate::wir_prelude::WasmTy;
+    // Front-end, identical to `compile_module_with`.
+    let recs = crate::records::lower(module.clone()).map_err(|message| CodegenError { message })?;
+    let mut lowered = crate::traits::lower_for_wasm(recs);
+    crate::parser::lower_sugar_module(&mut lowered);
+    alpha_rename_module(&mut lowered);
+    let mut cg = Codegen::new();
+    cg.collect_wir = true;
+    cg.message_tags = tags.clone();
+    cg.type_table = crate::typeck::annotate(&lowered);
+    flip_string_add_module(&mut lowered, &cg.type_table);
+    let module = &lowered;
+    register_module_items(&mut cg, module);
+    cg.summaries = analysis::Summaries::of_module(module);
+
+    let reachable = reachable_functions(module);
+    // The exact `$name` functions this module emits — the discriminator
+    // `lower_expr`'s call arm uses to tell a user call from an intrinsic/native.
+    cg.emitted_funcs = module
+        .items
+        .iter()
+        .filter_map(|it| match it {
+            Item::Function(f)
+                if reachable.contains(&f.name) && !crate::typeck::intrinsic(&f.name) =>
+            {
+                Some(f.name.clone())
+            }
+            _ => None,
+        })
+        .collect();
+    let mut has_main = false;
+    let mut main_params = 0usize;
+    let mut main_param_is_args: Vec<bool> = Vec::new();
+    let mut main_returns_int = false;
+    let mut main_returns_float = false;
+    let mut user_order: Vec<String> = Vec::new();
+    for item in &module.items {
+        if let Item::Function(f) = item {
+            if f.name == "main" {
+                has_main = true;
+                main_params = f.params.len();
+                main_returns_int = matches!(&f.ret, Some(Type::Named(n, _)) if n == "Int");
+                main_returns_float = matches!(&f.ret, Some(Type::Named(n, _)) if n == "Float");
+                for p in &f.params {
+                    let is_args = matches!(&p.ty, Some(t) if crate::typeck::is_args_type(t));
+                    if is_args {
+                        cg.uses_args = true;
+                    }
+                    main_param_is_args.push(is_args);
+                }
+            }
+            if reachable.contains(&f.name) && !crate::typeck::intrinsic(&f.name) {
+                // Compiled for its side effects: stashes a `WirFunc` in
+                // `cg.wir_funcs` iff the whole body lowered, and sets the
+                // `uses_*` import-gating flags.
+                let _ = cg.compile_function(f)?;
+                user_order.push(f.name.clone());
+            }
+        }
+    }
+    if !has_main {
+        return Ok(None);
+    }
+    if main_returns_int {
+        cg.uses_print_int = true;
+    }
+    if main_returns_float {
+        cg.uses_print_float = true;
+    }
+
+    // Every reachable function must have fully lowered to WIR.
+    if !user_order.iter().all(|n| cg.wir_funcs.contains_key(n)) {
+        return Ok(None);
+    }
+    // Bail if the program needs program-specific helpers (not in the prelude),
+    // closure types beyond the reserved band, or an Int/Float `main` (whose
+    // `print_int`/`print_float` import the prelude does not declare).
+    if !cg.lambdas.is_empty()
+        || !cg.eq_helpers.is_empty()
+        || !cg.ts_helpers.is_empty()
+        || !cg.rcopy_helpers.is_empty()
+        || !cg.clos_arities.is_empty()
+        || main_returns_int
+        || main_returns_float
+    {
+        return Ok(None);
+    }
+    let prelude = crate::wir_prelude::prelude();
+    let prelude_imports: std::collections::HashSet<&str> =
+        prelude.imports.iter().map(|i| i.name.as_str()).collect();
+    // Any host import the program would declare but the prelude lacks → fall back.
+    for line in cg.emit_imports().lines() {
+        if let Some(rest) = line.split("\"witchy\" \"").nth(1) {
+            if let Some(field) = rest.split('"').next() {
+                if !prelude_imports.contains(field) {
+                    return Ok(None);
+                }
+            }
+        }
+    }
+
+    let wasmty_kind = |t: WasmTy| -> WK {
+        match t {
+            WasmTy::I32 => WK::I32,
+            WasmTy::I64 => WK::I64,
+            WasmTy::F64 | WasmTy::F32 => WK::F64,
+        }
+    };
+    let wasmty_ty = |t: WasmTy| -> WirTy {
+        match t {
+            WasmTy::I32 => WirTy::Bool, // `.kind()` == I32
+            WasmTy::I64 => WirTy::Int,
+            WasmTy::F64 | WasmTy::F32 => WirTy::Float,
+        }
+    };
+
+    let imports: Vec<WirImport> = prelude
+        .imports
+        .iter()
+        .map(|pi| WirImport {
+            name: pi.name.clone(),
+            params: pi.params.iter().copied().map(wasmty_kind).collect(),
+            results: pi.results.iter().copied().map(wasmty_kind).collect(),
+        })
+        .collect();
+
+    // Funcs: the prelude helpers (raw bodies, in prelude order — they must hold
+    // function indices `imports.len()..` so spliced `call`s resolve), then the
+    // user functions, then the `run` export.
+    let mut funcs: Vec<WirFunc> = Vec::with_capacity(prelude.funcs.len() + user_order.len() + 1);
+    for pf in &prelude.funcs {
+        funcs.push(WirFunc {
+            name: pf.name.clone(),
+            params: pf
+                .params
+                .iter()
+                .copied()
+                .enumerate()
+                .map(|(i, t)| WirLocal { name: format!("a{i}"), ty: wasmty_ty(t) })
+                .collect(),
+            ret: pf.results.iter().copied().map(wasmty_ty).collect(),
+            locals: Vec::new(),
+            body: Vec::new(),
+            raw_body: Some(pf.raw_body.clone()),
+        });
+    }
+    for name in &user_order {
+        funcs.push(cg.wir_funcs.remove(name).expect("checked present above"));
+    }
+    let main_args: Vec<WirExpr> = (0..main_params)
+        .map(|i| {
+            if main_param_is_args.get(i).copied().unwrap_or(false) {
+                WirExpr::Call { func: "build_args".into(), args: vec![] }
+            } else {
+                // A capability parameter is type-level only; 0 is the root handle.
+                WirExpr::ConstI32(0)
+            }
+        })
+        .collect();
+    let run_body = vec![WirNode::Drop(WirExpr::Call { func: "main".into(), args: main_args })];
+    funcs.push(WirFunc {
+        name: "run".into(),
+        params: Vec::new(),
+        ret: Vec::new(),
+        locals: Vec::new(),
+        body: run_body,
+        raw_body: None,
+    });
+
+    // Globals `$heap` (initialized to the program's data end) then
+    // `$__witchy_reowns` — the exact order/index the prelude bodies bake.
+    let globals = vec![
+        WirGlobal {
+            name: "heap".into(),
+            kind: WK::I32,
+            mutable: true,
+            init: GlobalInit::I32(cg.next_offset as i32),
+            export: None,
+        },
+        WirGlobal {
+            name: "__witchy_reowns".into(),
+            kind: WK::I64,
+            mutable: true,
+            init: GlobalInit::I64(0),
+            export: Some("__witchy_reowns".into()),
+        },
+    ];
+
+    let data: Vec<DataSegment> = cg
+        .strings
+        .iter()
+        .map(|(text, off)| {
+            let mut bytes = (text.len() as u32).to_le_bytes().to_vec();
+            bytes.extend_from_slice(text.as_bytes());
+            DataSegment { offset: *off, bytes }
+        })
+        .collect();
+
+    let mut wir_module = WirModule {
+        imports,
+        funcs,
+        memory_pages: 1,
+        data,
+        globals,
+        // Table 0 must exist (size 0): spliced `$dict_update*` bodies do
+        // `call_indirect (type $clos1)` against it.
+        table: Some(WirTable { funcs: Vec::new() }),
+        exports: vec![("run".into(), "run".into())],
+    };
+
+    crate::wir_opt::optimize(&mut wir_module);
+    let bytes = crate::wir_encode::encode(&wir_module);
+
+    // Validate before committing; a malformed assembly falls back to the WAT sink.
+    if wasmparser::validate(&bytes).is_err() {
+        return Ok(None);
+    }
+    Ok(Some(bytes))
 }
 
 /// Compile a rune's build step to a WASM module that runs in the zero-ambient

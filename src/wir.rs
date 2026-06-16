@@ -21,6 +21,12 @@
 
 use std::fmt::Write;
 
+/// The maximum closure arity the static prelude pre-declares (`$clos0..$clos4`).
+/// The binary encoder reserves type indices `0..=MAX_CLOS` for these signatures
+/// BEFORE any import/func type, because spliced prelude raw bodies bake those
+/// `call_indirect (type $closN)` type indices. MUST equal `wir_prelude::MAX_CLOS`.
+pub const MAX_CLOS: usize = 4;
+
 /// The wasm-level representation a value is carried as.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {

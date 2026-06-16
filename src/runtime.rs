@@ -486,6 +486,13 @@ pub(crate) fn link_capability_imports(
     linker.func_wrap("witchy", "fill_pending", host_fill_pending)?;
     linker.func_wrap("witchy", "write_pending_list", host_write_pending_list)?;
     linker.func_wrap("witchy", "args_size", host_args_size)?;
+    // Field-length staging helpers (`[len]` of a host cell's string/list field).
+    // They carry no authority — pure reads — and the WIR static prelude declares
+    // them unconditionally, so define harmless stubs here. Ordinary programs
+    // never call them, so the body is unreachable; returning 0 is a safe default.
+    linker.func_wrap("witchy", "field_str_len", |_: Caller<'_, ActorState>, _: i32| -> i32 { 0 })?;
+    linker.func_wrap("witchy", "field_intlist_len", |_: Caller<'_, ActorState>, _: i32| -> i32 { 0 })?;
+    linker.func_wrap("witchy", "field_strlist_size", |_: Caller<'_, ActorState>, _: i32| -> i32 { 0 })?;
     // Native-stdlib functions are pure (no authority), so they're always
     // available — the same `crypto` module the interpreter exposes, here as a
     // host import that bridges to the shared `native` registry.

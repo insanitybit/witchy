@@ -60,6 +60,20 @@ pub fn encode(module: &WirModule) -> Vec<u8> {
         }
     };
 
+    // Closure `$clos{N}` signatures (one i32 env-pointer param, N i64 slot args,
+    // one i64 slot result). `$clos0..=MAX_CLOS` are interned FIRST, so they hold
+    // type indices `0..=MAX_CLOS`: spliced prelude raw bodies were assembled
+    // against that exact layout and bake their `call_indirect (type $closN)`
+    // operands as those indices. Reserving them up front (even when no visible
+    // node references them) keeps a spliced `$dict_update`'s indirect call valid.
+    let mut clos_type_idx: HashMap<usize, u32> = HashMap::new();
+    for n in 0..=crate::wir::MAX_CLOS {
+        let mut params = vec![Kind::I32];
+        params.extend(std::iter::repeat_n(Kind::I64, n));
+        let idx = intern(params, vec![Kind::I64]);
+        clos_type_idx.insert(n, idx);
+    }
+
     // Type index for each import (in order).
     let import_type_idx: Vec<u32> = module
         .imports
@@ -78,20 +92,19 @@ pub fn encode(module: &WirModule) -> Vec<u8> {
         })
         .collect();
 
-    // Closure `$clos{N}` signatures referenced by `CallIndirect` nodes. The
-    // shape mirrors codegen: one i32 env-pointer param, then N i64 slot args, one
-    // i64 slot result. Collect the distinct arities used, intern a signature for
-    // each, and map arity -> type index (resolved at the `call_indirect` site).
+    // Any wider closure arity actually referenced by a visible `CallIndirect`
+    // (beyond the reserved prelude band) interns after the import/func types.
     let mut clos_arities: Vec<usize> = Vec::new();
     for f in &module.funcs {
         collect_clos_arities(&f.body, &mut clos_arities);
     }
-    let mut clos_type_idx: HashMap<usize, u32> = HashMap::new();
     for &n in &clos_arities {
-        let mut params = vec![Kind::I32];
-        params.extend(std::iter::repeat_n(Kind::I64, n));
-        let idx = intern(params, vec![Kind::I64]);
-        clos_type_idx.insert(n, idx);
+        if !clos_type_idx.contains_key(&n) {
+            let mut params = vec![Kind::I32];
+            params.extend(std::iter::repeat_n(Kind::I64, n));
+            let idx = intern(params, vec![Kind::I64]);
+            clos_type_idx.insert(n, idx);
+        }
     }
 
     let mut type_section = TypeSection::new();
