@@ -1107,10 +1107,9 @@ mod tests {
             table: None,
             exports: vec![("run".into(), "run".into())],
         };
-        assert_eq!(
-            run_encoded(&module),
-            vec!["2".to_string(), "20".to_string(), "2048".to_string(), "2".to_string()]
-        );
+        // Agreement gate: the encoder AND the WAT printer (multi-value func +
+        // CallStoreMulti arm) both run identically.
+        assert_agrees(&module, &["2", "20", "2048", "2"]);
     }
 
     /// CallStoreMulti calls a MULTI-result function and stores each result into a
@@ -1169,7 +1168,7 @@ mod tests {
             table: None,
             exports: vec![("run".into(), "run".into())],
         };
-        assert_eq!(run_encoded(&module), vec!["10".to_string(), "20".to_string()]);
+        assert_agrees(&module, &["10", "20"]);
     }
 
     /// The WIR-native `$int_to_string` helper renders signed integers correctly
