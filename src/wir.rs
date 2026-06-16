@@ -505,6 +505,59 @@ pub fn ensure_helper() -> WirFunc {
     }
 }
 
+/// The `$mk{n}` allocator for an `n`-field record/tuple/list: bump-allocate
+/// `4 + 8n` bytes, store the i32 tag/length header then each i64 field slot,
+/// advance `$heap`, return the pointer. Mirrors `wir_prelude::mk_helper` /
+/// `codegen::mk_helper`. Calls `$ensure`; uses the `$heap` global.
+pub fn mk_helper(n: usize) -> WirFunc {
+    let size = 4 + 8 * n;
+    let mut params = vec![WirLocal { name: "tag".into(), ty: WirTy::Bool }];
+    for i in 0..n {
+        params.push(WirLocal { name: format!("f{i}"), ty: WirTy::Int });
+    }
+    let mut body = vec![
+        WirNode::Do(WirExpr::Call {
+            func: "ensure".into(),
+            args: vec![WirExpr::ConstI32(size as i32)],
+        }),
+        WirNode::SetLocal { local: "p".into(), value: WirExpr::GetGlobal("heap".into()) },
+        // header: store the i32 tag at p+0.
+        WirNode::Store {
+            ptr: WirExpr::GetLocal("p".into()),
+            value: WirExpr::GetLocal("tag".into()),
+            kind: Kind::I32,
+            offset: 0,
+        },
+    ];
+    for i in 0..n {
+        body.push(WirNode::Store {
+            ptr: WirExpr::GetLocal("p".into()),
+            value: WirExpr::GetLocal(format!("f{i}")),
+            kind: Kind::I64,
+            offset: (4 + 8 * i) as u32,
+        });
+    }
+    // advance $heap past the allocation, then return the base pointer.
+    body.push(WirNode::SetGlobal {
+        global: "heap".into(),
+        value: WirExpr::Binary {
+            op: BinOp::Add,
+            kind: Kind::I32,
+            lhs: Box::new(WirExpr::GetLocal("p".into())),
+            rhs: Box::new(WirExpr::ConstI32(size as i32)),
+        },
+    });
+    body.push(WirNode::Push(WirExpr::GetLocal("p".into())));
+    WirFunc {
+        name: format!("mk{n}"),
+        params,
+        ret: vec![WirTy::Bool], // i32 pointer
+        locals: vec![WirLocal { name: "p".into(), ty: WirTy::Bool }],
+        body,
+        raw_body: None,
+    }
+}
+
 /// A WIR-native prelude helper plus the module-level resources it needs (so a
 /// pruned module declares only the imports/globals/table its reached helpers
 /// actually touch — capability-minimal).
@@ -540,7 +593,23 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             uses_heap: true,
             uses_table: false,
         }),
-        _ => None,
+        _ => {
+            // `$mk0` … `$mk8`: the aggregate allocators (each calls `$ensure`).
+            if let Some(rest) = name.strip_prefix("mk") {
+                if let Ok(n) = rest.parse::<usize>() {
+                    if n <= 8 {
+                        return Some(WirHelperSpec {
+                            func: mk_helper(n),
+                            helper_deps: &["ensure"],
+                            import_deps: &[],
+                            uses_heap: true,
+                            uses_table: false,
+                        });
+                    }
+                }
+            }
+            None
+        }
     }
 }
 

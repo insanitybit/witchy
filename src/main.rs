@@ -8016,6 +8016,12 @@ fn main(console: Console):
                 "fn pick(b: Bool) -> Bool:\n    b\n\nfn main(console: Console):\n    if pick(true):\n        print(console, \"picked\")\n    else:\n        print(console, \"nope\")\n",
                 vec!["picked".to_string()],
             ),
+            // An aggregate: builds a tuple ($mk2 → $ensure) and destructures it —
+            // exercises the migrated allocator helpers on the pruned binary path.
+            (
+                "fn main(console: Console):\n    let t = (1, 2)\n    let (a, b) = t\n    if a < b:\n        print(console, \"ordered\")\n    else:\n        print(console, \"no\")\n",
+                vec!["ordered".to_string()],
+            ),
         ];
         let mut lowered_any = false;
         for (src, want) in cases {
