@@ -8218,6 +8218,12 @@ fn main(console: Console):
                 "fn main(console: Console):\n    for i in 0..3:\n        print(console, string.substring(\"abcdef\", i, i + 2))\n",
                 vec!["ab".to_string(), "bc".to_string(), "cd".to_string()],
             ),
+            // string.chars ($str_chars → $byte_to_char + $str_substring +
+            // $list_push) splitting a multibyte string into a List(String).
+            (
+                "fn main(console: Console):\n    let cs = string.chars(\"héllo\")\n    print(console, list.at(cs, 0))\n    print(console, list.at(cs, 1))\n    print(console, list.at(cs, 4))\n",
+                vec!["h".to_string(), "é".to_string(), "o".to_string()],
+            ),
         ];
         let mut lowered_any = false;
         for (src, want) in cases {

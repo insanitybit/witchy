@@ -1744,6 +1744,66 @@ pub fn split_helper() -> WirFunc {
     }
 }
 
+/// `$str_chars(s) -> i32` — a `List(String)` of `s`'s individual characters.
+/// Counts characters via `$byte_to_char`, then `$str_substring`s each single-char
+/// `[i, i+1)` window and `$list_push`es it (the substring handles multibyte
+/// characters correctly).
+pub fn str_chars_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    let i32c = E::ConstI32;
+    let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+    let load = |p: E| E::Load { ptr: Box::new(p), kind: Kind::I32, offset: 0 };
+    let setl = |n: &str, v: E| N::SetLocal { local: n.into(), value: v };
+    let ext = |e: E| E::Convert { from: Kind::I32, to: Kind::I64, arg: Box::new(e) };
+    let scan_loop = N::Block {
+        label: "done".into(),
+        result: None,
+        body: vec![N::Loop {
+            label: "l".into(),
+            body: vec![
+                N::Br { target: "done".into(), cond: Some(b(BinOp::Ge, getl("i"), getl("n"))) },
+                setl(
+                    "result",
+                    E::Call {
+                        func: "list_push".into(),
+                        args: vec![
+                            getl("result"),
+                            ext(E::Call {
+                                func: "str_substring".into(),
+                                args: vec![getl("s"), getl("i"), b(BinOp::Add, getl("i"), i32c(1))],
+                            }),
+                        ],
+                    },
+                ),
+                setl("i", b(BinOp::Add, getl("i"), i32c(1))),
+                N::Br { target: "l".into(), cond: None },
+            ],
+        }],
+    };
+    WirFunc {
+        name: "str_chars".into(),
+        params: vec![WirLocal { name: "s".into(), ty: WirTy::Str }],
+        ret: vec![WirTy::Bool], // i32 list pointer
+        locals: ["n", "i", "result"]
+            .iter()
+            .map(|n| WirLocal { name: (*n).into(), ty: WirTy::Bool })
+            .collect(),
+        body: vec![
+            setl("n", E::Call { func: "byte_to_char".into(), args: vec![getl("s"), load(getl("s"))] }),
+            N::Do(E::Call { func: "ensure".into(), args: vec![i32c(4)] }),
+            setl("result", E::GetGlobal("heap".into())),
+            N::Store { ptr: getl("result"), value: i32c(0), kind: Kind::I32, offset: 0 },
+            N::SetGlobal { global: "heap".into(), value: b(BinOp::Add, getl("result"), i32c(4)) },
+            setl("i", i32c(0)),
+            scan_loop,
+            N::Push(getl("result")),
+        ],
+        raw_body: None,
+    }
+}
+
 /// A WIR-native prelude helper plus the module-level resources it needs (so a
 /// pruned module declares only the imports/globals/table its reached helpers
 /// actually touch — capability-minimal).
@@ -1894,6 +1954,13 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
         "split" => Some(WirHelperSpec {
             func: split_helper(),
             helper_deps: &["ensure", "substr", "list_push"],
+            import_deps: &[],
+            uses_heap: true,
+            uses_table: false,
+        }),
+        "str_chars" => Some(WirHelperSpec {
+            func: str_chars_helper(),
+            helper_deps: &["ensure", "byte_to_char", "str_substring", "list_push"],
             import_deps: &[],
             uses_heap: true,
             uses_table: false,
