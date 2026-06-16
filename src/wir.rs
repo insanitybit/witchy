@@ -558,6 +558,55 @@ pub fn mk_helper(n: usize) -> WirFunc {
     }
 }
 
+/// `$list_at(list: i32, i: i32) -> i64` — bounds-checked element read: trap on
+/// `i < 0 || i >= len`, else load the i64 slot at `(list+4) + i*8`. Mirrors
+/// `LIST_AT_WAT`. No heap/import/table.
+pub fn list_at_helper() -> WirFunc {
+    let getl = |n: &str| WirExpr::GetLocal(n.into());
+    let i32c = WirExpr::ConstI32;
+    let bin = |op: BinOp, l: WirExpr, r: WirExpr| WirExpr::Binary {
+        op,
+        kind: Kind::I32,
+        lhs: Box::new(l),
+        rhs: Box::new(r),
+    };
+    WirFunc {
+        name: "list_at".into(),
+        params: vec![
+            WirLocal { name: "list".into(), ty: WirTy::Bool },
+            WirLocal { name: "i".into(), ty: WirTy::Bool },
+        ],
+        ret: vec![WirTy::Int], // i64 slot
+        locals: vec![],
+        body: vec![
+            WirNode::If {
+                cond: bin(
+                    BinOp::Or,
+                    bin(BinOp::Lt, getl("i"), i32c(0)),
+                    bin(
+                        BinOp::Ge,
+                        getl("i"),
+                        WirExpr::Load { ptr: Box::new(getl("list")), kind: Kind::I32, offset: 0 },
+                    ),
+                ),
+                then_: vec![WirNode::Unreachable],
+                els: vec![],
+                result: None,
+            },
+            WirNode::Push(WirExpr::Load {
+                ptr: Box::new(bin(
+                    BinOp::Add,
+                    bin(BinOp::Add, getl("list"), i32c(4)),
+                    bin(BinOp::Mul, getl("i"), i32c(8)),
+                )),
+                kind: Kind::I64,
+                offset: 0,
+            }),
+        ],
+        raw_body: None,
+    }
+}
+
 /// A WIR-native prelude helper plus the module-level resources it needs (so a
 /// pruned module declares only the imports/globals/table its reached helpers
 /// actually touch — capability-minimal).
@@ -591,6 +640,13 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             helper_deps: &[],
             import_deps: &[],
             uses_heap: true,
+            uses_table: false,
+        }),
+        "list_at" => Some(WirHelperSpec {
+            func: list_at_helper(),
+            helper_deps: &[],
+            import_deps: &[],
+            uses_heap: false,
             uses_table: false,
         }),
         _ => {

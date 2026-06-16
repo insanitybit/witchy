@@ -7956,6 +7956,36 @@ fn main(console: Console):
         actor.output()
     }
 
+    /// Criterion-2: the slot-elimination pass shows a MEASURABLE improvement on a
+    /// real lowered program. `[list.at(xs, 0)]` (with `xs: List(Bool)`) reads an
+    /// i64 slot, narrows it to the bool's i32, then re-widens it to store in the
+    /// new list — a redundant `ToSlot(FromSlot(..))` the pass removes. The
+    /// optimized binary still runs identically to the interpreter oracle.
+    #[test]
+    fn wir_slot_elimination_shows_measurable_improvement() {
+        let src = "fn main(console: Console):\n    let xs = [true, false]\n    let ys = [list.at(xs, 0)]\n    if list.at(ys, 0):\n        print(console, \"t\")\n    else:\n        print(console, \"f\")\n";
+        let want = vec!["t".to_string()];
+        let module = parser::parse_module(src).expect("parse");
+        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        typeck::check(&linked).expect("typeck");
+        let m = codegen::assemble_wir_module(&linked, &std::collections::HashMap::new())
+            .expect("assemble")
+            .expect("program takes the WIR binary path");
+        // Measurable: the pass removes redundant slot conversions.
+        let mut opt_m = m.clone();
+        let stats = crate::wir_opt::optimize(&mut opt_m);
+        assert!(
+            stats.eliminated > 0,
+            "expected the slot-elimination pass to remove nodes, eliminated={}",
+            stats.eliminated
+        );
+        // Oracle-validated: both the unoptimized and optimized binaries match the
+        // interpreter (a behavior-preserving win, not a behavior change).
+        assert_eq!(run_bytes_print_only(&crate::wir_encode::encode(&m)), want, "unoptimized");
+        assert_eq!(run_bytes_print_only(&crate::wir_encode::encode(&opt_m)), want, "optimized");
+        assert_eq!(link_run(src), want, "interpreter oracle");
+    }
+
     /// The `wir_opt` slot-elimination pass is a SOUND, behavior-preserving
     /// rewrite: for every lowering-subset program, the unoptimized and optimized
     /// binaries both run identically to the interpreter oracle. (Node-count
@@ -8021,6 +8051,11 @@ fn main(console: Console):
             (
                 "fn main(console: Console):\n    let t = (1, 2)\n    let (a, b) = t\n    if a < b:\n        print(console, \"ordered\")\n    else:\n        print(console, \"no\")\n",
                 vec!["ordered".to_string()],
+            ),
+            // A list with indexing ($mk3 → $ensure, $list_at) on the binary path.
+            (
+                "fn main(console: Console):\n    let xs = [10, 20, 30]\n    if list.at(xs, 1) == 20:\n        print(console, \"twenty\")\n    else:\n        print(console, \"no\")\n",
+                vec!["twenty".to_string()],
             ),
         ];
         let mut lowered_any = false;
