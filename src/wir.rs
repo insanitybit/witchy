@@ -461,6 +461,89 @@ pub fn print_str_helper() -> WirFunc {
     }
 }
 
+/// `$ensure(size: i32)` — grow linear memory so `$heap + size` fits. Mirrors the
+/// `ENSURE_WAT` helper: `need = heap + size; have = memory.size * 65536; if need
+/// >u have: drop(memory.grow(ceil((need-have)/65536)))`. Uses the `$heap` global.
+pub fn ensure_helper() -> WirFunc {
+    let getl = |n: &str| WirExpr::GetLocal(n.into());
+    let i32c = WirExpr::ConstI32;
+    let bin = |op: BinOp, l: WirExpr, r: WirExpr| WirExpr::Binary {
+        op,
+        kind: Kind::I32,
+        lhs: Box::new(l),
+        rhs: Box::new(r),
+    };
+    WirFunc {
+        name: "ensure".into(),
+        params: vec![WirLocal { name: "size".into(), ty: WirTy::Bool }],
+        ret: vec![],
+        locals: vec![
+            WirLocal { name: "need".into(), ty: WirTy::Bool },
+            WirLocal { name: "have".into(), ty: WirTy::Bool },
+        ],
+        body: vec![
+            WirNode::SetLocal {
+                local: "need".into(),
+                value: bin(BinOp::Add, WirExpr::GetGlobal("heap".into()), getl("size")),
+            },
+            WirNode::SetLocal {
+                local: "have".into(),
+                value: bin(BinOp::Mul, WirExpr::MemorySize, i32c(65536)),
+            },
+            WirNode::If {
+                cond: bin(BinOp::GtU, getl("need"), getl("have")),
+                then_: vec![WirNode::Drop(WirExpr::MemoryGrow(Box::new(bin(
+                    BinOp::DivU,
+                    bin(BinOp::Add, bin(BinOp::Sub, getl("need"), getl("have")), i32c(65535)),
+                    i32c(65536),
+                ))))],
+                els: vec![],
+                result: None,
+            },
+        ],
+        raw_body: None,
+    }
+}
+
+/// A WIR-native prelude helper plus the module-level resources it needs (so a
+/// pruned module declares only the imports/globals/table its reached helpers
+/// actually touch — capability-minimal).
+pub struct WirHelperSpec {
+    pub func: WirFunc,
+    /// Other prelude helpers this one calls (transitively pulled in).
+    pub helper_deps: &'static [&'static str],
+    /// Host imports (the `witchy` field names) this helper calls directly.
+    pub import_deps: &'static [&'static str],
+    /// Whether it reads/writes the `$heap` / `$__witchy_reowns` globals.
+    pub uses_heap: bool,
+    /// Whether it does a `call_indirect` (needs table 0).
+    pub uses_table: bool,
+}
+
+/// The WIR-native prelude registry: the helpers migrated off the raw-body blob
+/// so far. `None` for a helper not yet migrated — `assemble_wir_module` then
+/// falls back to the raw-body prelude for any program that reaches it. Helpers
+/// migrate one at a time; each is a green step that grows binary-path coverage.
+pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
+    match name {
+        "print_str" => Some(WirHelperSpec {
+            func: print_str_helper(),
+            helper_deps: &[],
+            import_deps: &["print"],
+            uses_heap: false,
+            uses_table: false,
+        }),
+        "ensure" => Some(WirHelperSpec {
+            func: ensure_helper(),
+            helper_deps: &[],
+            import_deps: &[],
+            uses_heap: true,
+            uses_table: false,
+        }),
+        _ => None,
+    }
+}
+
 // --- WIR → WAT pretty-printer (the only lowering in M0) ----------------------
 
 /// Render a module to WAT text (`wat::parse_str`-assemblable, runtime-runnable).

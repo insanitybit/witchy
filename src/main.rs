@@ -7893,10 +7893,27 @@ fn main(console: Console):
         assert_eq!(actor.output(), vec!["hello".to_string()]);
     }
 
+    /// Run a WIR-assembled binary with ONLY `print` granted — nothing else. If
+    /// the module imported any other authority, instantiate would fail. Proves
+    /// the pruned WIR-helper path emits capability-minimal modules.
+    fn run_bytes_print_only(bytes: &[u8]) -> Vec<String> {
+        use crate::runtime::{Capabilities, Runtime};
+        let mut rt = Runtime::batch().expect("runtime");
+        let mut actor = rt
+            .spawn(
+                bytes,
+                Capabilities { print: true, quiet: true, ..Default::default() },
+                crate::RUN_MEMORY_PAGES,
+            )
+            .expect("spawn under a print-only grant");
+        actor.run().expect("run");
+        actor.output()
+    }
+
     /// Run a WIR-assembled binary with EVERY capability granted. The static
-    /// prelude is "all features on", so a binary-path module imports the full
-    /// host surface; granting everything lets it instantiate. (Capability-minimal
-    /// imports await prelude pruning — see `assemble_wir_module`.)
+    /// prelude is "all features on", so a raw-body-path module imports the full
+    /// host surface; granting everything lets it instantiate. (The pruned
+    /// WIR-helper path emits capability-minimal modules — see `run_bytes_print_only`.)
     fn run_bytes_all_caps(bytes: &[u8]) -> Vec<String> {
         use crate::runtime::{Capabilities, Runtime};
         let mut rt = Runtime::batch().expect("runtime");
@@ -8000,8 +8017,9 @@ fn main(console: Console):
                 });
             lowered_any = true;
             // AST → WIR → binary (no wat::parse_str) runs identically to the
-            // interpreter oracle and to the legacy WAT sink.
-            assert_eq!(&run_bytes_all_caps(&bytes), want, "binary path:\n{src}");
+            // interpreter oracle and to the legacy WAT sink — AND under a
+            // print-ONLY grant, proving the pruned module imports only `print`.
+            assert_eq!(&run_bytes_print_only(&bytes), want, "binary path (print-only):\n{src}");
             assert_eq!(&link_run(src), want, "interpreter oracle:\n{src}");
             assert_eq!(&run_on_wasm(src), want, "legacy WAT path:\n{src}");
         }

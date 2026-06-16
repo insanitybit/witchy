@@ -961,6 +961,55 @@ mod tests {
         assert_agrees(&module, &["99", "1", "1", "0"]);
     }
 
+    /// The WIR-native `$ensure` helper grows memory correctly: with `$heap = 0`,
+    /// `ensure(100000)` needs >1 page (65536 bytes), so memory grows from 1 to 2
+    /// pages. Runs identically through the encoder and the WAT path.
+    #[test]
+    fn ensure_helper_grows_memory() {
+        use crate::wir::ensure_helper;
+        let run = WirFunc {
+            name: "run".into(),
+            params: vec![],
+            ret: vec![],
+            locals: vec![],
+            body: vec![
+                WirNode::Do(WirExpr::Call {
+                    func: "ensure".into(),
+                    args: vec![WirExpr::ConstI32(100_000)],
+                }),
+                WirNode::Do(WirExpr::CallHost {
+                    import: "print_int".into(),
+                    args: vec![WirExpr::Convert {
+                        from: Kind::I32,
+                        to: Kind::I64,
+                        arg: Box::new(WirExpr::MemorySize),
+                    }],
+                }),
+            ],
+            raw_body: None,
+        };
+        let module = WirModule {
+            imports: vec![WirImport {
+                name: "print_int".into(),
+                params: vec![Kind::I64],
+                results: vec![],
+            }],
+            funcs: vec![ensure_helper(), run],
+            memory_pages: 1,
+            data: vec![],
+            globals: vec![WirGlobal {
+                name: "heap".into(),
+                kind: Kind::I32,
+                mutable: true,
+                init: GlobalInit::I32(0),
+                export: None,
+            }],
+            table: None,
+            exports: vec![("run".into(), "run".into())],
+        };
+        assert_agrees(&module, &["2"]);
+    }
+
     #[test]
     fn arithmetic_roundtrips() {
         // fn add() -> Int: (2 + 3) * 4 == 20

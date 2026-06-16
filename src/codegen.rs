@@ -8240,18 +8240,6 @@ pub fn assemble_wir_module(
         return Ok(None);
     }
     let prelude = crate::wir_prelude::prelude();
-    let prelude_imports: std::collections::HashSet<&str> =
-        prelude.imports.iter().map(|i| i.name.as_str()).collect();
-    // Any host import the program would declare but the prelude lacks → fall back.
-    for line in cg.emit_imports().lines() {
-        if let Some(rest) = line.split("\"witchy\" \"").nth(1) {
-            if let Some(field) = rest.split('"').next() {
-                if !prelude_imports.contains(field) {
-                    return Ok(None);
-                }
-            }
-        }
-    }
 
     let wasmty_kind = |t: WasmTy| -> WK {
         match t {
@@ -8267,6 +8255,157 @@ pub fn assemble_wir_module(
             WasmTy::F64 | WasmTy::F32 => WirTy::Float,
         }
     };
+
+    // --- Capability-minimal WIR-helper path (#35) -------------------------------
+    // If every prelude helper the program reaches has a WIR-native form (the
+    // `wir_helper` registry), build a PRUNED module that declares only those
+    // helpers and imports only their authority — instead of splicing the full
+    // "all features on" raw-body prelude (which would over-import and break the
+    // capability model). Falls through to the raw-body path otherwise.
+    {
+        let helper_names: std::collections::HashSet<&str> =
+            prelude.funcs.iter().map(|f| f.name.as_str()).collect();
+        let mut called = std::collections::HashSet::new();
+        for name in &user_order {
+            if let Some(wf) = cg.wir_funcs.get(name) {
+                collect_called_funcs(&wf.body, &mut called);
+            }
+        }
+        // A direct host call in user code (e.g. `now`) needs an import the helper
+        // registry can't account for — defer such programs to the raw-body path.
+        let no_direct_host = !called.iter().any(|n| n.starts_with("host:"));
+        if cg.uses_args {
+            called.insert("build_args".to_string());
+        }
+        // Resolve every reached helper through the registry (transitively).
+        let mut resolved: std::collections::BTreeMap<String, crate::wir::WirHelperSpec> =
+            std::collections::BTreeMap::new();
+        let mut all_registered = true;
+        let mut queue: Vec<String> = called
+            .iter()
+            .filter(|n| helper_names.contains(n.as_str()))
+            .cloned()
+            .collect();
+        while let Some(h) = queue.pop() {
+            if resolved.contains_key(&h) {
+                continue;
+            }
+            match crate::wir::wir_helper(&h) {
+                Some(spec) => {
+                    for d in spec.helper_deps {
+                        queue.push((*d).to_string());
+                    }
+                    resolved.insert(h, spec);
+                }
+                None => {
+                    all_registered = false;
+                    break;
+                }
+            }
+        }
+        if no_direct_host && all_registered {
+            let mut import_names: std::collections::BTreeSet<&str> =
+                std::collections::BTreeSet::new();
+            let mut uses_heap = false;
+            let mut uses_table = false;
+            for spec in resolved.values() {
+                for i in spec.import_deps {
+                    import_names.insert(i);
+                }
+                uses_heap |= spec.uses_heap;
+                uses_table |= spec.uses_table;
+            }
+            let pruned_imports: Vec<WirImport> = import_names
+                .iter()
+                .map(|iname| {
+                    let pi = prelude
+                        .imports
+                        .iter()
+                        .find(|p| p.name.as_str() == *iname)
+                        .expect("a helper's import_dep must be a prelude import");
+                    WirImport {
+                        name: pi.name.clone(),
+                        params: pi.params.iter().copied().map(wasmty_kind).collect(),
+                        results: pi.results.iter().copied().map(wasmty_kind).collect(),
+                    }
+                })
+                .collect();
+            let mut pruned_funcs: Vec<WirFunc> = resolved.into_values().map(|s| s.func).collect();
+            for name in &user_order {
+                pruned_funcs.push(cg.wir_funcs.get(name).expect("lowered above").clone());
+            }
+            let main_args: Vec<WirExpr> = (0..main_params)
+                .map(|i| {
+                    if main_param_is_args.get(i).copied().unwrap_or(false) {
+                        WirExpr::Call { func: "build_args".into(), args: vec![] }
+                    } else {
+                        WirExpr::ConstI32(0)
+                    }
+                })
+                .collect();
+            pruned_funcs.push(WirFunc {
+                name: "run".into(),
+                params: Vec::new(),
+                ret: Vec::new(),
+                locals: Vec::new(),
+                body: vec![WirNode::Drop(WirExpr::Call { func: "main".into(), args: main_args })],
+                raw_body: None,
+            });
+            let pruned_globals = if uses_heap {
+                vec![
+                    WirGlobal {
+                        name: "heap".into(),
+                        kind: WK::I32,
+                        mutable: true,
+                        init: GlobalInit::I32(cg.next_offset as i32),
+                        export: None,
+                    },
+                    WirGlobal {
+                        name: "__witchy_reowns".into(),
+                        kind: WK::I64,
+                        mutable: true,
+                        init: GlobalInit::I64(0),
+                        export: Some("__witchy_reowns".into()),
+                    },
+                ]
+            } else {
+                Vec::new()
+            };
+            let data: Vec<DataSegment> = cg
+                .strings
+                .iter()
+                .map(|(text, off)| {
+                    let mut bytes = (text.len() as u32).to_le_bytes().to_vec();
+                    bytes.extend_from_slice(text.as_bytes());
+                    DataSegment { offset: *off, bytes }
+                })
+                .collect();
+            return Ok(Some(WirModule {
+                imports: pruned_imports,
+                funcs: pruned_funcs,
+                memory_pages: 1,
+                data,
+                globals: pruned_globals,
+                table: if uses_table { Some(WirTable { funcs: Vec::new() }) } else { None },
+                exports: vec![("run".into(), "run".into())],
+            }));
+        }
+    }
+
+    // --- Raw-body "all features on" prelude path (fallback) ---------------------
+    // Any host import the program would declare but the prelude lacks → fall back
+    // (to the WAT sink) entirely.
+    let prelude_imports: std::collections::HashSet<&str> =
+        prelude.imports.iter().map(|i| i.name.as_str()).collect();
+    for line in cg.emit_imports().lines() {
+        if let Some(rest) = line.split("\"witchy\" \"").nth(1) {
+            if let Some(field) = rest.split('"').next() {
+                if !prelude_imports.contains(field) {
+                    return Ok(None);
+                }
+            }
+        }
+    }
 
     let imports: Vec<WirImport> = prelude
         .imports
@@ -8362,6 +8501,80 @@ pub fn assemble_wir_module(
         exports: vec![("run".into(), "run".into())],
     };
     Ok(Some(wir_module))
+}
+
+/// Collect every function name a `WirSeq` calls directly (`Call{func}`),
+/// recursively. Used by `assemble_wir_module` to find which prelude helpers a
+/// program reaches.
+#[cfg(feature = "native")]
+fn collect_called_funcs(seq: &crate::wir::WirSeq, out: &mut std::collections::HashSet<String>) {
+    use crate::wir::{WirExpr as E, WirNode as N};
+    fn expr(e: &E, out: &mut std::collections::HashSet<String>) {
+        match e {
+            E::Call { func, args } => {
+                out.insert(func.clone());
+                for a in args {
+                    expr(a, out);
+                }
+            }
+            E::CallHost { args, .. } => {
+                for a in args {
+                    expr(a, out);
+                }
+            }
+            E::CallIndirect { args, index, .. } => {
+                for a in args {
+                    expr(a, out);
+                }
+                expr(index, out);
+            }
+            E::ToSlot(i, _)
+            | E::FromSlot(i, _)
+            | E::Unary { arg: i, .. }
+            | E::Convert { arg: i, .. }
+            | E::Load { ptr: i, .. }
+            | E::MemoryGrow(i) => expr(i, out),
+            E::Binary { lhs, rhs, .. } => {
+                expr(lhs, out);
+                expr(rhs, out);
+            }
+            E::Control(n) => node(n, out),
+            E::Seq(s) => collect_called_funcs(s, out),
+            E::ConstI64(_) | E::ConstF64(_) | E::ConstI32(_) | E::StrPtr(_) | E::MemorySize
+            | E::GetLocal(_) | E::GetGlobal(_) => {}
+        }
+    }
+    fn node(n: &N, out: &mut std::collections::HashSet<String>) {
+        match n {
+            N::SetLocal { value, .. } | N::SetGlobal { value, .. } => expr(value, out),
+            N::Store { ptr, value, .. } => {
+                expr(ptr, out);
+                expr(value, out);
+            }
+            N::MemoryCopy { dest, src, len } => {
+                expr(dest, out);
+                expr(src, out);
+                expr(len, out);
+            }
+            N::MemoryFill { dest, value, len } => {
+                expr(dest, out);
+                expr(value, out);
+                expr(len, out);
+            }
+            N::If { cond, then_, els, .. } => {
+                expr(cond, out);
+                collect_called_funcs(then_, out);
+                collect_called_funcs(els, out);
+            }
+            N::Block { body, .. } | N::Loop { body, .. } => collect_called_funcs(body, out),
+            N::Br { cond: Some(c), .. } => expr(c, out),
+            N::Drop(e) | N::Do(e) | N::Push(e) | N::Return(Some(e)) => expr(e, out),
+            N::Br { cond: None, .. } | N::Return(None) | N::Unreachable => {}
+        }
+    }
+    for n in seq {
+        node(n, out);
+    }
 }
 
 /// Compile a rune's build step to a WASM module that runs in the zero-ambient
