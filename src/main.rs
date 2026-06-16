@@ -7957,16 +7957,15 @@ fn main(console: Console):
     }
 
     /// Regression: a function whose OUTER block does not fully lower (here a
-    /// `while` whose body allocates → arena-resettable, and the watermark for
-    /// `while` is not yet ported to WIR → the loop lowering bails) must fall back
-    /// to the WAT sink as a WHOLE. The binary-path capture must NOT mistake the
-    /// inner loop body for the function body — a bug that silently compiled a loop
-    /// to a single iteration. (The for-list/range loops now DO lower; `while`
-    /// remains the loop construct that still bails on an arena-resettable body.)
+    /// for-loop that lowers, followed by a lambda — which has no WIR lowering arm
+    /// and so bails) must fall back to the WAT sink as a WHOLE. The binary-path
+    /// capture must NOT mistake the inner loop body for the function body — a bug
+    /// that silently compiled a loop to a single iteration. (All loops now lower
+    /// their watermark; closures/lambdas are the construct that still bails.)
     #[test]
     fn wir_partial_lower_falls_back_not_miscaptured() {
-        let src = "fn main(console: Console):\n    var i: Int = 0\n    while i < 3:\n        let s = string.substring(\"abcdef\", i, i + 2)\n        print(console, s)\n        i = i + 1\n";
-        let want = vec!["ab".to_string(), "bc".to_string(), "cd".to_string()];
+        let src = "fn main(console: Console):\n    for x in [10, 20, 30]:\n        print(console, __render(x))\n    let f = fn(n: Int): n + 1\n    print(console, __render(f(5)))\n";
+        let want = vec!["10".to_string(), "20".to_string(), "30".to_string(), "6".to_string()];
         let module = parser::parse_module(src).expect("parse");
         let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typeck");
@@ -8216,6 +8215,12 @@ fn main(console: Console):
             // so it's watermarked) — exercises the range-for arena reset on WIR.
             (
                 "fn main(console: Console):\n    for i in 0..3:\n        print(console, string.substring(\"abcdef\", i, i + 2))\n",
+                vec!["ab".to_string(), "bc".to_string(), "cd".to_string()],
+            ),
+            // while-loop with an arena-resettable allocating body (the watermark
+            // now ported to WIR for `while` too).
+            (
+                "fn main(console: Console):\n    var i: Int = 0\n    while i < 3:\n        print(console, string.substring(\"abcdef\", i, i + 2))\n        i = i + 1\n",
                 vec!["ab".to_string(), "bc".to_string(), "cd".to_string()],
             ),
             // string.chars ($str_chars → $byte_to_char + $str_substring +

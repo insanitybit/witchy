@@ -3592,12 +3592,6 @@ impl Codegen {
             // is allocated in codegen's order (this loop's id BEFORE the body's
             // nested loops), and restored on a bail so the counter never desyncs.
             Expr::While { cond, body } => {
-                if !force_copy_mode()
-                    && self.wm_level < WM_POOL
-                    && self.loop_arena_resettable(body)
-                {
-                    return None;
-                }
                 let saved = self.next_label;
                 let id = self.next_label;
                 self.next_label += 1;
@@ -3608,9 +3602,15 @@ impl Codegen {
                         return None;
                     }
                 };
+                // Per-iteration arena reset (the watermark), if the body is
+                // resettable — same treatment as the for-loops.
+                let wm = self.loop_watermark_wir(body);
                 self.loop_labels.push((format!("$we{id}"), format!("$wl{id}")));
                 let body_res = self.lower_block(body);
                 self.loop_labels.pop();
+                if wm.is_some() {
+                    self.wm_level -= 1;
+                }
                 let body_seq = match body_res {
                     Some(b) => b,
                     None => {
@@ -3623,19 +3623,26 @@ impl Codegen {
                     kind: crate::wir::Kind::I32,
                     arg: Box::new(cond_w),
                 };
-                let loop_body = vec![
+                let mut loop_body = vec![
                     N::Br { target: format!("we{id}"), cond: Some(not_cond) },
                     N::Drop(W::Seq(body_seq)),
-                    N::Br { target: format!("wl{id}"), cond: None },
                 ];
-                W::Seq(vec![
-                    N::Block {
-                        label: format!("we{id}"),
-                        result: None,
-                        body: vec![N::Loop { label: format!("wl{id}"), body: loop_body }],
-                    },
-                    N::Push(W::ConstI32(0)),
-                ])
+                // reclaim per-iteration arena garbage before re-testing the cond.
+                if let Some((_, reset)) = &wm {
+                    loop_body.push(reset.clone());
+                }
+                loop_body.push(N::Br { target: format!("wl{id}"), cond: None });
+                let mut outer: crate::wir::WirSeq = Vec::new();
+                if let Some((capture, _)) = &wm {
+                    outer.push(capture.clone());
+                }
+                outer.push(N::Block {
+                    label: format!("we{id}"),
+                    result: None,
+                    body: vec![N::Loop { label: format!("wl{id}"), body: loop_body }],
+                });
+                outer.push(N::Push(W::ConstI32(0)));
+                W::Seq(outer)
             },
             // `for var in lo..hi { body }` — count without materializing a list.
             // i64 counter + bound in scratch locals; inclusive ranges add a
