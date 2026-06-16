@@ -51,7 +51,7 @@ struct Parser {
     /// params — `fn f(x: impl Show)` desugars to a fresh type var plus a
     /// `where`-style bound, reusing the whole trait/monomorphization path.
     pending_impl_bounds: Vec<(String, String, Vec<Type>)>,
-    /// True while parsing the body of an `async fn`; gates the `await` prefix.
+    /// True while parsing the body of an `async fn`; gates the `.await` postfix.
     in_async: bool,
 }
 
@@ -65,10 +65,15 @@ impl Parser {
             // The prelude modules qualify without an import line (the linker
             // always bundles them): `list.push(...)` parses as a qualified
             // call everywhere, including inside the std modules themselves.
-            imports: ["list", "string", "dict", "math", "option", "result"]
-                .into_iter()
-                .map(String::from)
-                .collect(),
+            // `task`/`chan` are seeded too: the `async`/`await` lowering implies
+            // and auto-imports them, so `task.spawn(...)` / `chan.send(...)` parse
+            // as qualified calls in async code without an explicit import line.
+            imports: [
+                "list", "string", "dict", "math", "option", "result", "task", "chan",
+            ]
+            .into_iter()
+            .map(String::from)
+            .collect(),
             pending_impl_bounds: Vec::new(),
             in_async: false,
         }
@@ -146,7 +151,29 @@ impl Parser {
     // --- top level ---
 
     fn module(&mut self) -> Result<Module, ParseError> {
-        // Imports come first: `import name` — declarations only, no code runs.
+        // Performance modes come first: `mode opt` / `mode strict` directives
+        // at the very top of the file. `mode` is a contextual keyword — it is
+        // recognized only here, so it stays usable as an ordinary identifier
+        // everywhere else. See docs/performance-modes.md.
+        let mut modes = Vec::new();
+        while self.at_ident("mode") {
+            self.advance();
+            loop {
+                let name = self.ident()?;
+                if name != "opt" && name != "strict" {
+                    return Err(self.error(format!(
+                        "unknown performance mode `{name}` — expected `opt` or `strict`"
+                    )));
+                }
+                if !modes.contains(&name) {
+                    modes.push(name);
+                }
+                if !self.eat(&Tok::Comma) {
+                    break;
+                }
+            }
+        }
+        // Imports come next: `import name` — declarations only, no code runs.
         let mut imports = Vec::new();
         let mut import_lines = Vec::new();
         while self.at(&Tok::Import) {
@@ -163,6 +190,7 @@ impl Parser {
             items.push(self.item()?);
         }
         Ok(Module {
+            modes,
             imports,
             items,
             import_lines,
@@ -195,7 +223,7 @@ impl Parser {
             Ok(Item::Comptime(body))
         } else {
             Err(self.error(format!(
-                "expected a top-level item (`fn`, `actor`, `type`, `trait`, `impl`, or `let`), found `{}`",
+                "expected a top-level item (`fn`, `type`, `trait`, `impl`, or `let`), found `{}`",
                 self.kind()
             )))
         }
@@ -738,23 +766,9 @@ impl Parser {
                 expr: Box::new(expr),
             });
         }
-        // `await e` — suspension point. Legal only inside an `async fn` (the
-        // capability-style coloring rule). Phase 1 has no executor yet, so it is
-        // value-neutral (like `move`) and runs sequentially; this keeps both
-        // backends byte-identical while the surface and coloring land first.
-        if self.at(&Tok::Await) {
-            if !self.in_async {
-                return Err(self.error(
-                    "`await` is only allowed inside an `async fn`".to_string(),
-                ));
-            }
-            self.advance();
-            let expr = self.prefix()?;
-            return Ok(Expr::Unary {
-                op: UnOp::Await,
-                expr: Box::new(expr),
-            });
-        }
+        // `await` is POSTFIX (`e.await`), handled in `postfix()` — not a prefix
+        // operator. A leading `await` is therefore a parse error (caught when
+        // `atom()` meets the keyword), which points authors at the postfix form.
         self.postfix()
     }
 
@@ -800,6 +814,20 @@ impl Parser {
                         base: Box::new(e),
                         field: n.to_string(),
                     };
+                    continue;
+                }
+                // `e.await` — postfix suspension point (Rust-style). Same node as
+                // any other `await`; only legal inside an `async fn`. Chains with
+                // `?` and `.method(...)` because it lives in the postfix loop:
+                // `f(x).await?` is `((f(x)).await)?`.
+                if self.at(&Tok::Await) {
+                    if !self.in_async {
+                        return Err(self.error(
+                            "`.await` is only allowed inside an `async fn`".to_string(),
+                        ));
+                    }
+                    self.advance();
+                    e = Expr::Unary { op: UnOp::Await, expr: Box::new(e) };
                     continue;
                 }
                 let member = self.ident()?;
@@ -1500,7 +1528,7 @@ fn infix_bp(t: &Tok) -> Option<(u8, u8)> {
         Caret => (11, 12),
         Amp => (13, 14),
         Shl | Shr => (15, 16),
-        Plus | Minus | Concat => (17, 18),
+        Plus | Minus => (17, 18),
         Star | Slash | Percent => (19, 20),
         _ => return None,
     })
@@ -1513,7 +1541,6 @@ fn bin_op(t: &Tok) -> BinOp {
         Tok::Star => BinOp::Mul,
         Tok::Slash => BinOp::Div,
         Tok::Percent => BinOp::Mod,
-        Tok::Concat => BinOp::Concat,
         Tok::EqEq => BinOp::Eq,
         Tok::NotEq => BinOp::NotEq,
         Tok::Lt => BinOp::Lt,

@@ -97,7 +97,7 @@ pub const STD_MODULES: &[&str] = &[
     "list", "string", "math", "result", "option", "func", "ord", "eq", "ascii", "set", "server",
     "show", "http", "json", "url", "duration", "random", "regex", "crypto", "compiler", "toml",
     "iter", "semver", "rights", "fs", "dict", "csv", "time", "encoding", "path", "testing",
-    "future", "chan",
+    "future", "task", "chan", "webauthn",
 ];
 
 /// The bundled std modules that export a `pub fn` of the given name — used to
@@ -287,6 +287,7 @@ pub fn std_source(name: &str) -> Option<&'static str> {
         "random" => Some(include_str!("../std/random.witchy")),
         "regex" => Some(include_str!("../std/regex.witchy")),
         "crypto" => Some(include_str!("../std/crypto.witchy")),
+        "webauthn" => Some(include_str!("../std/webauthn.witchy")),
         "compiler" => Some(include_str!("../std/compiler.witchy")),
         "toml" => Some(include_str!("../std/toml.witchy")),
         "iter" => Some(include_str!("../std/iter.witchy")),
@@ -299,6 +300,7 @@ pub fn std_source(name: &str) -> Option<&'static str> {
         "encoding" => Some(include_str!("../std/encoding.witchy")),
         "path" => Some(include_str!("../std/path.witchy")),
         "future" => Some(include_str!("../std/future.witchy")),
+        "task" => Some(include_str!("../std/task.witchy")),
         "chan" => Some(include_str!("../std/chan.witchy")),
         _ => None,
     }
@@ -315,8 +317,9 @@ pub fn link(mut modules: Vec<(String, Module)>, entry: &str) -> Result<Module, L
         .map(|(n, m)| (n, crate::generators::lower(m)))
         .collect();
 
-    // Lower `async fn`/`await` to ordinary functions over `std/future` (CPS over
-    // closures), also before typeck — adds `import future` to any async module.
+    // Lower `async fn`/`await` to ordinary functions over `std/task` (CPS over
+    // closures), also before typeck — adds `import task`/`import chan` to any
+    // async module.
     modules = modules
         .into_iter()
         .map(|(n, m)| crate::async_lower::lower(m).map(|m| (n, m)))
@@ -481,12 +484,22 @@ pub fn link(mut modules: Vec<(String, Module)>, entry: &str) -> Result<Module, L
         }
     }
     let mut module = Module {
+        // The entry module's performance modes carry onto the linked module;
+        // enforcement applies to the entry file's own (unqualified) functions.
+        modes: modules
+            .iter()
+            .find(|(n, _)| n == entry)
+            .map(|(_, m)| m.modes.clone())
+            .unwrap_or_default(),
         imports: Vec::new(),
         items,
         import_lines: Vec::new(),
         item_lines: Vec::new(),
     };
     resolve_methods(&mut module);
+    // Semantics-preserving constant folding over the single linked module both
+    // backends consume (parity-free by construction). See src/optimize.rs.
+    crate::optimize::optimize(&mut module);
     Ok(module)
 }
 

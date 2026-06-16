@@ -1,29 +1,29 @@
-//! Lower `async fn`/`await` into ordinary functions over `std/future`, by a
+//! Lower `async fn`/`await` into ordinary functions over `std/task`, by a
 //! CPS-over-closures transform run BEFORE typeck (like `crate::generators`), so
 //! typeck / codegen / the interpreter never see `async` or `await`.
 //!
 //! An async function
 //! ```text
 //! async fn pipe(seed: Int) -> Int:
-//!     let a = await step(seed)
+//!     let a = step(seed).await
 //!     print_it(a)
 //!     a + 1
 //! ```
-//! becomes a plain function returning a `Future`, where each `await` is the seam
+//! becomes a plain function returning a `Task`, where each `await` is the seam
 //! at which the rest of the body is captured as a continuation closure:
 //! ```text
-//! fn pipe(seed: Int) -> Future(Int):
-//!     future.lazy(fn():
-//!         future.and_then(step(seed), fn(a):
+//! fn pipe(seed: Int) -> Task(m, Int):
+//!     task.lazy(fn():
+//!         task.and_then(step(seed), fn(a):
 //!             {
 //!                 print_it(a)
-//!                 future.ready(a + 1)
+//!                 task.done(a + 1)
 //!             }))
 //! ```
-//! `await E` lowers to `future.and_then(E, fn(x): <rest>)`; a statement with no
+//! `await E` lowers to `task.and_then(E, fn(x): <rest>)`; a statement with no
 //! `await` is kept verbatim (so ordinary `let`/`var`/effect semantics are
 //! untouched) and the continuation rides as the block's tail. The whole body is
-//! wrapped in `future.lazy` so calling an async fn does NO work until the future
+//! wrapped in `task.lazy` so calling an async fn does NO work until the task
 //! is driven.
 //!
 //! Because the body's live locals become the captured values of continuation
@@ -34,7 +34,7 @@
 //! the transform grows): `await` may appear as the entire right-hand side of a
 //! `let`, as a bare statement, in tail position (including the branches of a tail
 //! `if`/`match`), or inside the body of a `for x in xs:` loop — which lowers to a
-//! sequential `chan.for_each` over the elements. `await` inside a `while` loop,
+//! sequential `task.for_each` over the elements. `await` inside a `while` loop,
 //! inside a condition or scrutinee, or nested within a larger expression is not
 //! yet supported. Carrying a mutable `var` across an `await` is likewise
 //! unsupported — and is caught for free by the existing rule that a closure may
@@ -55,8 +55,13 @@ pub fn lower(mut module: Module) -> Result<Module, String> {
         }
     }
     module.items = items;
-    if !module.imports.iter().any(|m| m == "chan") {
-        module.imports.push("chan".to_string());
+    // The lowering uses the `task` substrate (lazy/and_then/done/run) always, and
+    // `chan` for receive loops (`for await`); the user's body may use either, so
+    // make both available. Unused imports are harmless declarations.
+    for needed in ["task", "chan"] {
+        if !module.imports.iter().any(|m| m == needed) {
+            module.imports.push(needed.to_string());
+        }
     }
     while module.import_lines.len() < module.imports.len() {
         module.import_lines.push(0);
@@ -73,7 +78,7 @@ fn lower_async_fn(f: Function) -> Result<Function, String> {
     let mut ctx = Ctx { counter: 0, fname: f.name.clone() };
     let body_future = ctx.cps_stmts(&f.body.stmts)?;
     let lazy_body = call(
-        "chan.lazy",
+        "task.lazy",
         vec![Expr::Lambda { params: vec![], body: tail_block(body_future) }],
     );
 
@@ -81,7 +86,7 @@ fn lower_async_fn(f: Function) -> Result<Function, String> {
         // The runtime calls `main` directly and cannot drive a task, so an async
         // `main` IS the executor's entry point: run its body (a single task, which
         // may itself `spawn` more) to completion on the cooperative scheduler.
-        let driven = call("chan.run", vec![lazy_body]);
+        let driven = call("task.run", vec![lazy_body]);
         return Ok(Function {
             public: f.public,
             name: f.name,
@@ -126,10 +131,10 @@ impl Ctx {
         format!("async fn `{}`: {msg}", self.fname)
     }
 
-    /// Transform a statement sequence into a `Future`-valued expression.
+    /// Transform a statement sequence into a `Task`-valued expression.
     fn cps_stmts(&mut self, stmts: &[Stmt]) -> Result<Expr, String> {
         let Some((head, rest)) = stmts.split_first() else {
-            return Ok(call("chan.ready_unit", vec![]));
+            return Ok(call("task.ready_unit", vec![]));
         };
         let is_last = rest.is_empty();
         match head {
@@ -145,7 +150,7 @@ impl Ctx {
             }
             Stmt::Expr(e) => {
                 // A `for x in xs:` whose body awaits becomes a sequential
-                // `chan.for_each` over the elements — each iteration's body is a
+                // `task.for_each` over the elements — each iteration's body is a
                 // task, run to completion before the next. A range iterator
                 // becomes its list; assigning an outer `var` in the body is
                 // rejected downstream (a closure can't mutate a captured var), so
@@ -207,9 +212,9 @@ impl Ctx {
                     self.cps_value(e)
                 }
             }
-            Stmt::Return(None) => Ok(call("chan.ready_unit", vec![])),
+            Stmt::Return(None) => Ok(call("task.ready_unit", vec![])),
             // `let (a, b) = await E` — await the value, then destructure it. The
-            // common shape for `let (tx, rx) = await chan.channel(..)`.
+            // common shape for `let (tx, rx) = chan.channel(..).await`.
             Stmt::LetTuple { names, value } if as_await(value).is_some() => {
                 let inner = as_await(value).unwrap();
                 reject_await(inner, &self.fname)?;
@@ -228,7 +233,7 @@ impl Ctx {
             Stmt::Assign { value, .. } | Stmt::LetTuple { value, .. } => {
                 reject_await(value, &self.fname)?;
                 if is_last {
-                    Ok(prefix_stmt(head.clone(), call("chan.ready_unit", vec![])))
+                    Ok(prefix_stmt(head.clone(), call("task.ready_unit", vec![])))
                 } else {
                     Ok(prefix_stmt(head.clone(), self.cps_stmts(rest)?))
                 }
@@ -247,7 +252,7 @@ impl Ctx {
         reject_await(src, &self.fname)?;
         let body_future = self.cps_stmts(&body.stmts)?;
         let discard = self.fresh();
-        let body_nil = and_then(body_future, discard, call("chan.ready_unit", vec![]));
+        let body_nil = and_then(body_future, discard, call("task.ready_unit", vec![]));
         let f = Expr::Lambda {
             params: vec![Param { name: var.to_string(), ty: None, convention: Convention::Let }],
             body: tail_block(body_nil),
@@ -264,17 +269,17 @@ impl Ctx {
         let list_expr = for_iter_list(iter);
         let body_future = self.cps_stmts(&body.stmts)?;
         let discard = self.fresh();
-        let body_nil = and_then(body_future, discard, call("chan.ready_unit", vec![]));
+        let body_nil = and_then(body_future, discard, call("task.ready_unit", vec![]));
         let f = Expr::Lambda {
             params: vec![Param { name: var.to_string(), ty: None, convention: Convention::Let }],
             body: tail_block(body_nil),
         };
-        Ok(call("chan.for_each", vec![list_expr, f]))
+        Ok(call("task.for_each", vec![list_expr, f]))
     }
 
     /// Transform an expression in VALUE position (the function's result) into a
-    /// `Future`-valued expression: `await E` -> `E`; a tail `if`/`match` ->
-    /// branches each made into a future; a plain value -> `future.ready(value)`.
+    /// `Task`-valued expression: `await E` -> `E`; a tail `if`/`match` ->
+    /// branches each made into a task; a plain value -> `task.done(value)`.
     fn cps_value(&mut self, e: &Expr) -> Result<Expr, String> {
         if let Some(inner) = as_await(e) {
             reject_await(inner, &self.fname)?;
@@ -288,7 +293,7 @@ impl Ctx {
                 let then_f = self.cps_stmts(&then_block.stmts)?;
                 let else_f = match else_block {
                     Some(b) => self.cps_stmts(&b.stmts)?,
-                    None => call("chan.ready_unit", vec![]),
+                    None => call("task.ready_unit", vec![]),
                 };
                 Ok(Expr::If {
                     cond: cond.clone(),
@@ -313,7 +318,7 @@ impl Ctx {
             Expr::Block(b) => self.cps_stmts(&b.stmts),
             _ => {
                 reject_await(e, &self.fname)?;
-                Ok(call("chan.done", vec![e.clone()]))
+                Ok(call("task.done", vec![e.clone()]))
             }
         }
     }
@@ -438,13 +443,13 @@ fn stmt_contains_await(s: &Stmt) -> bool {
     }
 }
 
-/// `future.and_then(inner, fn(bind): k)`.
+/// `task.and_then(inner, fn(bind): k)`.
 fn and_then(inner: Expr, bind: String, k: Expr) -> Expr {
     let lambda = Expr::Lambda {
         params: vec![Param { name: bind, ty: None, convention: Convention::Let }],
         body: tail_block(k),
     };
-    call("chan.and_then", vec![inner, lambda])
+    call("task.and_then", vec![inner, lambda])
 }
 
 /// A block whose value is `head` (a normal statement) followed by the

@@ -1155,6 +1155,7 @@ impl Checker {
             "string.chars" => Some((vec![Ty::String], Ty::List(Box::new(Ty::String)))),
             "string.replace" => Some((vec![Ty::String, Ty::String, Ty::String], Ty::String)),
             "string.substring" => Some((vec![Ty::String, Ty::Int, Ty::Int], Ty::String)),
+            "string.from_code" => Some((vec![Ty::Int], Ty::String)),
             "math.to_float" => Some((vec![Ty::Int], Ty::Float)),
             "math.to_int" => Some((vec![Ty::Float], Ty::Int)),
             // Duration <-> Int(milliseconds) bridge for the std `duration` module.
@@ -1494,7 +1495,7 @@ impl Checker {
     /// Returns `Ok(None)` when `name` is not a Net op.
     fn check_net_op(&mut self, name: &str, args: &[Expr]) -> Result<Option<Ty>, TypeError> {
         let arity = match name {
-            "connect" | "listen" | "restrict" => 2,
+            "connect" | "try_connect" | "listen" | "restrict" => 2,
             _ => return Ok(None),
         };
         if args.len() != arity {
@@ -1524,6 +1525,22 @@ impl Checker {
                     ));
                 }
                 Ty::Socket
+            }
+            // Like `connect` but total: returns `Option(Socket)` — `None` on a failed
+            // dial instead of trapping. Lets a server (e.g. a proxy) survive a down
+            // upstream. Same rights as `connect`.
+            "try_connect" => {
+                if !rights.connect {
+                    return terr(format!(
+                        "`try_connect` needs `Connect` but the capability is `{rights}`"
+                    ));
+                }
+                if !rights.tcp {
+                    return terr(format!(
+                        "`try_connect` is only implemented over `Tcp`, but the capability is `{rights}`"
+                    ));
+                }
+                Ty::Named("Option".into(), vec![Ty::Socket])
             }
             "listen" => {
                 if !rights.listen {

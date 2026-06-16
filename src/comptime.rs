@@ -82,6 +82,7 @@ pub fn expand(name: &str, module: &mut Module) -> Result<(), String> {
             body.lines.push(0);
         }
         let prog = Module {
+            modes: Vec::new(),
             imports: module.imports.clone(),
             items: vec![Item::Function(Function {
                 public: false,

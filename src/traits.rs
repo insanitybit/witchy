@@ -283,6 +283,7 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
 
     let (items_back, type_table) = {
         let probe = Module {
+            modes: Vec::new(),
             imports: imports.clone(),
             items,
             import_lines: Vec::new(),
@@ -388,7 +389,7 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
     }
 
     (
-        Module { imports, items, import_lines: Vec::new(), item_lines: Vec::new() },
+        Module { modes: Vec::new(), imports, items, import_lines: Vec::new(), item_lines: Vec::new() },
         {
             let mut d = missing_impls.into_inner();
             d.extend(mono_diags);

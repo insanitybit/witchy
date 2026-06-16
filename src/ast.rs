@@ -6,6 +6,12 @@
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Module {
+    /// Performance modes declared at the top of the file (`mode opt` /
+    /// `mode strict`). Empty for an ordinary file. The linker copies the entry
+    /// module's modes onto the linked module; enforcement (cliffs → errors)
+    /// then applies to the entry file's own functions. See
+    /// docs/performance-modes.md.
+    pub modes: Vec<String>,
     /// Names of modules imported (side-effect-free: brings declarations into
     /// scope, runs no code, grants no authority).
     pub imports: Vec<String>,

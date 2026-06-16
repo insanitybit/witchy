@@ -116,6 +116,15 @@ pub fn module(m: &Module, comments: &[(u32, String)]) -> String {
         cursor: 0,
     };
 
+    // Performance-mode directives lead the file (`mode opt` / `mode strict`).
+    // The following block (imports or the first item) supplies the blank-line
+    // separator, so we emit no trailing blank here.
+    for mode in &m.modes {
+        s.push_str("mode ");
+        s.push_str(mode);
+        s.push('\n');
+    }
+
     if !m.imports.is_empty() {
         // The comments before the first import are the file header.
         c.before(&mut s, 0, m.import_lines.first().copied().unwrap_or(u32::MAX));
@@ -494,10 +503,10 @@ fn stmt(s: &mut String, st: &Stmt, depth: usize, c: &mut Comments) {
 fn block_stmt(s: &mut String, e: &Expr, depth: usize, c: &mut Comments) {
     // A trailing-block-lambda call, possibly behind `await`/`move`, renders
     // multi-line with the prefix on the head line.
-    if let Some((prefix, call)) = unwrap_block_lambda_call(e) {
+    if let Some((prefix, call, suffix)) = unwrap_block_lambda_call(e) {
         pad(s, depth);
         s.push_str(&prefix);
-        call_block_lambda(s, &call_head(call).unwrap(), call_args(call), depth, c);
+        call_block_lambda(s, &call_head(call).unwrap(), call_args(call), &suffix, depth, c);
         return;
     }
     match e {
@@ -534,9 +543,9 @@ fn block_stmt(s: &mut String, e: &Expr, depth: usize, c: &mut Comments) {
 /// value is a `match` (no inline form) or a lambda with a block body, else an
 /// inline expr.
 fn value_or_block(s: &mut String, e: &Expr, depth: usize, c: &mut Comments) {
-    if let Some((prefix, call)) = unwrap_block_lambda_call(e) {
+    if let Some((prefix, call, suffix)) = unwrap_block_lambda_call(e) {
         s.push_str(&prefix);
-        call_block_lambda(s, &call_head(call).unwrap(), call_args(call), depth, c);
+        call_block_lambda(s, &call_head(call).unwrap(), call_args(call), &suffix, depth, c);
         return;
     }
     match e {
@@ -856,6 +865,10 @@ fn expr(e: &Expr) -> String {
             format!("{}({})", operand(func, POSTFIX_PREC, false), comma(args))
         }
         Expr::Field { base, field } => format!("{}.{field}", operand(base, POSTFIX_PREC, false)),
+        Expr::Unary { op: UnOp::Await, expr: inner } => {
+            // `await` is POSTFIX: `e.await` (binds at postfix precedence).
+            format!("{}.await", operand(inner, POSTFIX_PREC, false))
+        }
         Expr::Unary { op, expr: inner } => {
             format!("{}{}", unary_prefix(*op), operand(inner, UNARY_PREC, false))
         }
@@ -998,19 +1011,23 @@ fn unary_prefix(op: UnOp) -> &'static str {
     }
 }
 
-/// A call whose last argument is a block-bodied lambda, possibly behind unary
-/// prefixes (`await f(x, fn(p): <block>)`). Returns the printed prefix and the
+/// A call whose last argument is a block-bodied lambda, possibly behind a postfix `.await`
+/// (`f(x, fn(p): <block>).await`). Returns the printed prefix and the
 /// underlying call to render with `call_block_lambda` — this is what keeps the
 /// trailing-lambda multi-line form intact when an `await`/`move` sits in front.
-fn unwrap_block_lambda_call(e: &Expr) -> Option<(String, &Expr)> {
+fn unwrap_block_lambda_call(e: &Expr) -> Option<(String, &Expr, String)> {
     match e {
         Expr::Call { args, .. } | Expr::MethodCall { args, .. }
             if has_trailing_block_lambda(args) =>
         {
-            Some((String::new(), e))
+            Some((String::new(), e, String::new()))
         }
+        // `e.await` is postfix: the `.await` rides as a SUFFIX, after the call's
+        // closing `)`. Other unaries (`move`) stay prefixes.
+        Expr::Unary { op: UnOp::Await, expr: inner } => unwrap_block_lambda_call(inner)
+            .map(|(p, call, suf)| (p, call, format!("{suf}.await"))),
         Expr::Unary { op, expr: inner } => unwrap_block_lambda_call(inner)
-            .map(|(p, call)| (format!("{}{p}", unary_prefix(*op)), call)),
+            .map(|(p, call, suf)| (format!("{}{p}", unary_prefix(*op)), call, suf)),
         _ => None,
     }
 }
@@ -1025,7 +1042,7 @@ fn call_args(e: &Expr) -> &[Expr] {
 /// Render a call whose last argument is a block-bodied lambda multi-line:
 /// `head(lead.., fn(p):` then the indented body, then a dedented `)`. `s` is
 /// positioned where the call head begins.
-fn call_block_lambda(s: &mut String, head: &str, args: &[Expr], depth: usize, c: &mut Comments) {
+fn call_block_lambda(s: &mut String, head: &str, args: &[Expr], suffix: &str, depth: usize, c: &mut Comments) {
     s.push_str(head);
     s.push('(');
     let (lead, last) = args.split_at(args.len() - 1);
@@ -1037,7 +1054,9 @@ fn call_block_lambda(s: &mut String, head: &str, args: &[Expr], depth: usize, c:
         lambda_at(s, params, body, depth, c);
     }
     pad(s, depth);
-    s.push_str(")\n");
+    s.push(')');
+    s.push_str(suffix);
+    s.push('\n');
 }
 
 /// The printed head of a call/method-call (everything before the `(`), for the
@@ -1114,6 +1133,7 @@ fn expr_prec(e: &Expr) -> u8 {
     match e {
         Expr::Binary { op, .. } => binop_prec(*op),
         Expr::Range { .. } => RANGE_PREC,
+        Expr::Unary { op: UnOp::Await, .. } => POSTFIX_PREC,
         Expr::Unary { .. } => UNARY_PREC,
         Expr::Field { .. } | Expr::Try(_) | Expr::Apply { .. } | Expr::As { .. } | Expr::Index { .. } | Expr::MethodCall { .. } => POSTFIX_PREC,
         _ => 100,
@@ -1631,6 +1651,7 @@ mod tests {
             region: None,
         });
         let m = Module {
+            modes: Vec::new(),
             imports: vec![],
             items: vec![Item::Function(Function {
                 public: false,
@@ -1843,12 +1864,14 @@ mod tests {
         let matchy = "type Opt:\n    Some(a)\n    None\n\nfn classify() -> fn(Opt(Int)) -> Int:\n    fn(o: Opt(Int)):\n        match o:\n            Some(n) -> n\n            None -> 0\n";
         assert!(reformat(matchy).is_some(), "match-body closure should round-trip");
 
-        // A trailing block-lambda call behind `await` (the `chan.serve(s, fn(..):
-        // match ...)` shape) keeps its multi-line form: the `await`/`move` prefix
-        // used to force the whole call inline and corrupt the block lambda.
-        let awaited = "async fn loop_it() -> Nil:\n    await serve(0, fn(n, m):\n        match m:\n            0 -> n + 1\n            _ -> n)\n";
-        let out = reformat(awaited).expect("await + block-lambda call round-trips");
-        assert!(out.contains("await serve(0, fn(n, m):"), "prefix lost: {out}");
+        // A trailing block-lambda call with a postfix `.await` (the
+        // `chan.serve(s, fn(..): match ...).await` shape) keeps its multi-line
+        // form: the `.await` rides as a suffix after the closing `)`, and must
+        // not force the whole call inline and corrupt the block lambda.
+        let awaited = "async fn loop_it() -> Nil:\n    serve(0, fn(n, m):\n        match m:\n            0 -> n + 1\n            _ -> n).await\n";
+        let out = reformat(awaited).expect("block-lambda call + .await round-trips");
+        assert!(out.contains("serve(0, fn(n, m):"), "block lambda lost: {out}");
+        assert!(out.contains(").await"), "postfix .await lost: {out}");
     }
 
     #[test]

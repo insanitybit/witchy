@@ -507,6 +507,9 @@ struct Codegen {
     /// Whether the `float_to_str` host import + guest helper are needed (float
     /// `to_string`).
     uses_float_to_str: bool,
+    /// Whether the `string.from_code` host import + guest helper are needed (a
+    /// Unicode code point -> its UTF-8 character; powers the JSON `\u` decoder).
+    uses_string_from_code: bool,
     /// Whether the `encoding` host import + `$encoding` guest helper are needed
     /// (hex/base64 encode/decode, all `String -> String`).
     uses_encoding: bool,
@@ -531,6 +534,11 @@ struct Codegen {
     /// ("connect"/"restrict" under Connect; "listen"/"accept" under Listen;
     /// socket I/O under either).
     used_net_ops: std::collections::BTreeSet<&'static str>,
+    /// The aws-lc-rs-backed crypto natives beyond the legacy set — `sha512`,
+    /// `sha3_256`, `hmac_sha256`, `ecdsa_p256_verify`, `ecdsa_p256_verify_hex`.
+    /// Each is bridged to the SAME native registry the interpreter calls, so the
+    /// backends agree; tracked as a set rather than a bool-per-op.
+    used_crypto_ops: std::collections::BTreeSet<&'static str>,
     /// Whether `main` declares an argv parameter (`args: List(String)`); the
     /// run export then builds the host-provided list via `$build_args`.
     uses_args: bool,
@@ -817,6 +825,7 @@ impl Codegen {
             uses_compiler_diff: false,
             uses_regex_spans: false,
             uses_float_to_str: false,
+            uses_string_from_code: false,
             uses_encoding: false,
             uses_float_ord: false,
             uses_now: false,
@@ -824,6 +833,7 @@ impl Codegen {
             used_dir_ops: std::collections::BTreeSet::new(),
             used_build_ops: std::collections::BTreeSet::new(),
             used_net_ops: std::collections::BTreeSet::new(),
+            used_crypto_ops: std::collections::BTreeSet::new(),
             uses_args: false,
             uses_crypto_sign: false,
             uses_crypto_public_key: false,
@@ -1066,9 +1076,11 @@ impl Codegen {
                 | "string.replace" | "string.substring" | "crypto.sha256" | "crypto.sign"
                 | "crypto.public_key" | "read" | "crypto.rune_hash" | "compiler.footprint"
                 | "compiler.diff" | "regex.match_spans" | "recv_line" | "recv_all"
+                | "crypto.sha512" | "crypto.sha3_256" | "crypto.hmac_sha256"
                 | "recv_bytes" => ValType::Str,
                 "string.starts_with" | "string.ends_with" | "string.contains" | "dict.has"
-                | "exists" | "is_dir" | "crypto.ed25519_verify" => ValType::Bool,
+                | "exists" | "is_dir" | "crypto.ed25519_verify"
+                | "crypto.ecdsa_p256_verify" | "crypto.ecdsa_p256_verify_hex" => ValType::Bool,
                 "string.length" | "string.char_count" | "string.index_of" | "list.length"
                 | "dict.size" | "math.to_int" | "string.to_int" | "int_to_duration"
                 | "duration_to_int" | "now" => ValType::Int,
@@ -1855,6 +1867,7 @@ impl Codegen {
             || self.uses_dict_iter
             || self.uses_crypto_sha256
             || self.uses_crypto_rune_hash
+            || !self.used_crypto_ops.is_empty()
             || self.uses_msg_alloc
             || self.uses_str_field
             || self.uses_list_field
@@ -1868,6 +1881,7 @@ impl Codegen {
             || self.uses_compiler_diff
             || self.uses_regex_spans
             || self.uses_float_to_str
+            || self.uses_string_from_code
             || self.uses_encoding
             || self.uses_get_env
             || self.used_dir_ops.contains("read")
@@ -1914,6 +1928,23 @@ impl Codegen {
             // bytes at out_data_ptr (the guest pre-allocates the result string).
             s.push_str("  (import \"witchy\" \"crypto.sha256\" (func $crypto_sha256_host (param i32 i32)))\n");
         }
+        // The aws-lc-rs crypto extensions. The verifies read string headers and
+        // return an i32 bool (like ed25519_verify); the digests take input
+        // header pointer(s) plus an out-data pointer the guest pre-allocated.
+        for op in &self.used_crypto_ops {
+            s.push_str(&match *op {
+                "ecdsa_p256_verify" | "ecdsa_p256_verify_hex" => format!(
+                    "  (import \"witchy\" \"crypto.{op}\" (func $crypto_{op} (param i32 i32 i32) (result i32)))\n"
+                ),
+                "hmac_sha256" => format!(
+                    "  (import \"witchy\" \"crypto.{op}\" (func $crypto_{op}_host (param i32 i32 i32)))\n"
+                ),
+                // sha512 / sha3_256: one input header, one out pointer.
+                _ => format!(
+                    "  (import \"witchy\" \"crypto.{op}\" (func $crypto_{op}_host (param i32 i32)))\n"
+                ),
+            });
+        }
         if self.uses_crypto_rune_hash {
             // crypto.rune_hash(paths_ptr, contents_ptr, out_data_ptr): the host
             // walks both guest string lists and writes the fixed 71-byte
@@ -1958,6 +1989,12 @@ impl Codegen {
             // float_to_str(x, out_data_ptr) -> byte length: the host formats `x`
             // (Rust Display) into the guest's pre-allocated buffer.
             s.push_str("  (import \"witchy\" \"float_to_str\" (func $float_to_str_host (param f64 i32) (result i32)))\n");
+        }
+        if self.uses_string_from_code {
+            // string_from_code(codepoint, out_data_ptr) -> byte length: the host
+            // writes the code point's 1–4 UTF-8 bytes into the guest buffer (the
+            // SAME `char::from_u32` the interpreter's native uses).
+            s.push_str("  (import \"witchy\" \"string_from_code\" (func $string_from_code_host (param i64 i32) (result i32)))\n");
         }
         if self.uses_encoding {
             // encoding(op, in_header_ptr, out_data_ptr) -> byte length. op selects
@@ -2030,6 +2067,9 @@ impl Codegen {
         // host's tables; the import list is the program's network footprint.
         if self.used_net_ops.contains("restrict") {
             s.push_str("  (import \"witchy\" \"net_restrict\" (func $net_restrict_host (param i32 i32) (result i32)))\n");
+        }
+        if self.used_net_ops.contains("try_connect") {
+            s.push_str("  (import \"witchy\" \"net_try_connect\" (func $net_try_connect_host (param i32 i32) (result i32)))\n");
         }
         if self.used_net_ops.contains("connect") {
             s.push_str("  (import \"witchy\" \"net_connect\" (func $net_connect_host (param i32 i32) (result i32)))\n");
@@ -2159,6 +2199,18 @@ impl Codegen {
         if self.uses_crypto_sha256 {
             s.push_str(CRYPTO_SHA256_WAT);
         }
+        // The digest extensions allocate a fixed-length hex result and let the
+        // host fill it (the verifies need no helper — they call the host import
+        // directly). Output sizes: sha512 → 128 hex, sha3_256 / hmac → 64.
+        if self.used_crypto_ops.contains("sha512") {
+            s.push_str(CRYPTO_SHA512_WAT);
+        }
+        if self.used_crypto_ops.contains("sha3_256") {
+            s.push_str(CRYPTO_SHA3_256_WAT);
+        }
+        if self.used_crypto_ops.contains("hmac_sha256") {
+            s.push_str(CRYPTO_HMAC_SHA256_WAT);
+        }
         if self.uses_crypto_rune_hash {
             s.push_str(CRYPTO_RUNE_HASH_WAT);
         }
@@ -2180,6 +2232,9 @@ impl Codegen {
         }
         if self.uses_float_to_str {
             s.push_str(FLOAT_TO_STR_WAT);
+        }
+        if self.uses_string_from_code {
+            s.push_str(STRING_FROM_CODE_WAT);
         }
         if self.uses_encoding {
             s.push_str(ENCODING_WAT);
@@ -2570,7 +2625,145 @@ impl Codegen {
         }
     }
 
+    /// M2 (first step): lower a SIMPLE block to a `WirSeq`. Only functions without
+    /// in-place/cap machinery qualify — no `inplace_push` vars, no `inout` params,
+    /// no own-ABI param — and only `Let`/`Expr`/`Return` statements (the cap-kill,
+    /// dict/list fast-path, tuple-destructure, and break/continue cases stay in
+    /// legacy). Byte-identical to `compile_block` for the qualifying case.
+    ///
+    /// Statements are pre-lowered (idempotent `intern`/flag mutations) so that a
+    /// non-lowerable expression bails BEFORE any `take_kills` call — `take_kills`
+    /// bumps a non-idempotent kill counter, so double-running it on the legacy
+    /// fallback would corrupt the uniqueness accounting.
+    fn lower_block(&mut self, block: &Block) -> Option<crate::wir::WirSeq> {
+        use crate::wir::{WirExpr as W, WirNode as N};
+        if !self.inplace_push.is_empty()
+            || !self.cur_fn_inout_params.is_empty()
+            || self.cur_fn_own_param.is_some()
+        {
+            return None;
+        }
+        let last = block.stmts.len().saturating_sub(1);
+        let mut seq: crate::wir::WirSeq = Vec::with_capacity(block.stmts.len() + 1);
+        let mut tail_is_value = false;
+        for (i, stmt) in block.stmts.iter().enumerate() {
+            match stmt {
+                Stmt::Let { name, value, .. } => {
+                    let v = self.lower_expr(value)?;
+                    seq.push(N::SetLocal { local: name.clone(), value: v });
+                    tail_is_value = false;
+                }
+                Stmt::Expr(e) => {
+                    let v = self.lower_expr(e)?;
+                    if i == last {
+                        seq.push(N::Push(v));
+                        tail_is_value = true;
+                    } else {
+                        seq.push(N::Drop(v));
+                        tail_is_value = false;
+                    }
+                }
+                Stmt::Return(opt) => {
+                    let value = match opt {
+                        Some(e) => {
+                            let ek = self.kind_of(e);
+                            let w = self.lower_expr(e)?;
+                            if self.cur_fn_ret_slot {
+                                W::ToSlot(Box::new(w), Self::wir_kind(ek))
+                            } else {
+                                Self::wir_convert(w, ek, self.cur_fn_ret_kind)
+                            }
+                        }
+                        None if self.cur_fn_ret_slot => W::ConstI64(0),
+                        None => match self.cur_fn_ret_kind {
+                            Kind::I64 => W::ConstI64(0),
+                            Kind::F64 => W::ConstF64(0.0),
+                            Kind::I32 => W::ConstI32(0),
+                        },
+                    };
+                    seq.push(N::Return(Some(value)));
+                    tail_is_value = false;
+                }
+                // `let (a, b, ..) = tuple`: store once, then load each 8-byte slot.
+                Stmt::LetTuple { names, value } => {
+                    let v = self.lower_expr(value)?;
+                    seq.push(N::SetLocal { local: TUPLE_TMP.to_string(), value: v });
+                    for (i, name) in names.iter().enumerate() {
+                        let k = self.locals.get(name).copied().unwrap_or(Kind::I32);
+                        let addr = W::Binary {
+                            op: crate::wir::BinOp::Add,
+                            kind: crate::wir::Kind::I32,
+                            lhs: Box::new(W::GetLocal(TUPLE_TMP.to_string())),
+                            rhs: Box::new(W::ConstI32((4 + 8 * i) as i32)),
+                        };
+                        seq.push(N::SetLocal {
+                            local: name.clone(),
+                            value: W::FromSlot(
+                                Box::new(W::Load {
+                                    ptr: Box::new(addr),
+                                    kind: crate::wir::Kind::I64,
+                                    offset: 0,
+                                }),
+                                Self::wir_kind(k),
+                            ),
+                        });
+                    }
+                    tail_is_value = false;
+                }
+                // `break`/`continue` -> a `br` to the enclosing loop's exit/continue
+                // label. Outside a loop -> `None` (legacy emits the loud error).
+                Stmt::Break | Stmt::Continue => {
+                    let (brk, cont) = {
+                        let (b, c) = self.loop_labels.last()?;
+                        (b.clone(), c.clone())
+                    };
+                    let label = if matches!(stmt, Stmt::Break) { brk } else { cont };
+                    let target = label.strip_prefix('$').unwrap_or(&label).to_string();
+                    seq.push(N::Br { target, cond: None });
+                    tail_is_value = false;
+                }
+                // `x = value` — only the simplest case: a plain LOCAL reassignment
+                // that is NOT a self-assign shape (no in-place fast path / site
+                // accounting), a string/list state field, or a global. Those keep
+                // their bespoke legacy emission.
+                Stmt::Assign { name, value } => {
+                    if is_self_assign_shape(name, value, &self.summaries)
+                        || self.str_fields.contains_key(name)
+                        || self.list_fields.contains_key(name)
+                        || self.globals.contains(name)
+                    {
+                        return None;
+                    }
+                    let vk = self.kind_of(value);
+                    let target = self.locals.get(name).copied().unwrap_or(Kind::I32);
+                    let v = self.lower_expr(value)?;
+                    seq.push(N::SetLocal {
+                        local: name.clone(),
+                        value: Self::wir_convert(v, vk, target),
+                    });
+                    tail_is_value = false;
+                }
+                // Yield → legacy (rewritten away before codegen anyway).
+                _ => return None,
+            }
+        }
+        // The block always leaves one value: the tail expression, or `i32.const 0`.
+        if !tail_is_value {
+            seq.push(N::Push(W::ConstI32(0)));
+        }
+        // Preserve the per-statement kill-counter bump (its emission is empty since
+        // `inplace_push` is empty). Done only now that every statement lowered, so
+        // it runs exactly once per statement (never doubled by a fallback).
+        for stmt in &block.stmts {
+            let _ = self.take_kills(stmt);
+        }
+        Some(seq)
+    }
+
     fn compile_block(&mut self, block: &Block) -> Result<String, CodegenError> {
+        if let Some(seq) = self.lower_block(block) {
+            return Ok(crate::wir::seq_to_wat(&seq));
+        }
         let mut out = String::new();
         let last = block.stmts.len().saturating_sub(1);
         let mut tail_is_value = false;
@@ -2826,16 +3019,831 @@ impl Codegen {
         Ok(out)
     }
 
+    /// Map codegen's `Kind` to the WIR `Kind` (the same three cases).
+    fn wir_kind(k: Kind) -> crate::wir::Kind {
+        match k {
+            Kind::I32 => crate::wir::Kind::I32,
+            Kind::I64 => crate::wir::Kind::I64,
+            Kind::F64 => crate::wir::Kind::F64,
+        }
+    }
+
+    /// A `WirTy` whose `.kind()` is `k` — used for a control node's `result`
+    /// block-type, where only the wasm kind matters (`i64`/`f64`/`i32`).
+    fn wir_ty_for_kind(k: Kind) -> crate::wir::WirTy {
+        match k {
+            Kind::I64 => crate::wir::WirTy::Int,
+            Kind::F64 => crate::wir::WirTy::Float,
+            Kind::I32 => crate::wir::WirTy::Bool,
+        }
+    }
+
+    /// Lower an aggregate literal (list/tuple/constructor) to the shared
+    /// `$mkN` allocator call: push the i32 `header` (length, `0`, or ctor tag),
+    /// then each element in the universal i64 slot, then `call $mkN`. Byte-identical
+    /// to the legacy emission; `None` if any element isn't lowerable.
+    fn lower_aggregate(&mut self, header: i32, items: &[Expr]) -> Option<crate::wir::WirExpr> {
+        use crate::wir::WirExpr as W;
+        let n = items.len();
+        self.mk_arities.insert(n);
+        let mut args = Vec::with_capacity(n + 1);
+        args.push(W::ConstI32(header));
+        for item in items {
+            let k = self.kind_of(item);
+            let w = self.lower_expr(item)?;
+            args.push(W::ToSlot(Box::new(w), Self::wir_kind(k)));
+        }
+        Some(W::Call { func: format!("mk{n}"), args })
+    }
+
+    /// Lower a SCALAR pattern test against `value` (the matched value as an i64
+    /// slot — `local.get $MATCH_TMP`). Returns `(cond, binds)`: an i32 condition
+    /// expression and the binding nodes. `None` for non-scalar patterns
+    /// (tuple/list/ctor/string/…), which keep their bespoke legacy emission.
+    fn lower_pattern(
+        &self,
+        value: &crate::wir::WirExpr,
+        pat: &Pattern,
+    ) -> Option<(crate::wir::WirExpr, crate::wir::WirSeq)> {
+        use crate::wir::{WirExpr as W, WirNode as N};
+        let eq_i64 = |v: i64| W::Binary {
+            op: crate::wir::BinOp::Eq,
+            kind: crate::wir::Kind::I64,
+            lhs: Box::new(value.clone()),
+            rhs: Box::new(W::ConstI64(v)),
+        };
+        Some(match pat {
+            Pattern::Wildcard => (W::ConstI32(1), vec![]),
+            Pattern::Int(k) => (eq_i64(*k), vec![]),
+            Pattern::Bool(b) => (eq_i64(if *b { 1 } else { 0 }), vec![]),
+            Pattern::Var(name) => {
+                let k = self.locals.get(name).copied().unwrap_or(Kind::I32);
+                (
+                    W::ConstI32(1),
+                    vec![N::SetLocal {
+                        local: name.clone(),
+                        value: W::FromSlot(Box::new(value.clone()), Self::wir_kind(k)),
+                    }],
+                )
+            }
+            // A tuple `[0][e0][e1]...`: no tag, so the condition is the AND of the
+            // element-pattern conditions; element `i` is the i64 slot at `ptr+4+8*i`
+            // (ptr = value wrapped to i32). Recurses into sub-patterns.
+            Pattern::Tuple(pats) => {
+                let ptr = W::FromSlot(Box::new(value.clone()), crate::wir::Kind::I32);
+                let mut elem_conds: Vec<W> = Vec::new();
+                let mut binds: crate::wir::WirSeq = Vec::new();
+                for (i, sub) in pats.iter().enumerate() {
+                    let elem_value = W::Load {
+                        ptr: Box::new(W::Binary {
+                            op: crate::wir::BinOp::Add,
+                            kind: crate::wir::Kind::I32,
+                            lhs: Box::new(ptr.clone()),
+                            rhs: Box::new(W::ConstI32((4 + 8 * i) as i32)),
+                        }),
+                        kind: crate::wir::Kind::I64,
+                        offset: 0,
+                    };
+                    let (sc, sb) = self.lower_pattern(&elem_value, sub)?;
+                    if !matches!(sc, W::ConstI32(1)) {
+                        elem_conds.push(sc);
+                    }
+                    binds.extend(sb);
+                }
+                let cond = if elem_conds.is_empty() {
+                    W::ConstI32(1)
+                } else {
+                    wir_and_chain(&elem_conds)
+                };
+                (cond, binds)
+            }
+            _ => return None,
+        })
+    }
+
+    /// Lower a `match` to WIR — only when EVERY arm has a scalar pattern (and its
+    /// guard/body lower). Store the scrutinee in `$MATCH_TMP`, then an outer
+    /// value-`block $d` holding per-arm `block $a` (test → `br_if` skip; binds;
+    /// guard; body+convert; `br $d`), then `unreachable`. Byte-identical to
+    /// `compile_match`; `next_label` is restored on a bail.
+    fn lower_match(&mut self, scrutinee: &Expr, arms: &[MatchArm]) -> Option<crate::wir::WirExpr> {
+        use crate::wir::{WirExpr as W, WirNode as N};
+        let scrut_kind = self.kind_of(scrutinee);
+        let result_kind = arms.iter().fold(Kind::I32, |acc, a| {
+            let k = self.kind_of(&a.body);
+            if acc == Kind::F64 || k == Kind::F64 {
+                Kind::F64
+            } else if acc == Kind::I64 || k == Kind::I64 {
+                Kind::I64
+            } else {
+                Kind::I32
+            }
+        });
+        let saved = self.next_label;
+        let scrut_w = self.lower_expr(scrutinee)?;
+        let id = self.next_label;
+        self.next_label += 1;
+        let value = W::GetLocal(MATCH_TMP.to_string());
+        let not = |c: W| W::Unary {
+            op: crate::wir::UnOp::Not,
+            kind: crate::wir::Kind::I32,
+            arg: Box::new(c),
+        };
+        let mut arm_blocks: crate::wir::WirSeq = Vec::with_capacity(arms.len() + 1);
+        for (i, arm) in arms.iter().enumerate() {
+            let a_label = format!("a{id}_{i}");
+            let (cond, binds) = match self.lower_pattern(&value, &arm.pattern) {
+                Some(cb) => cb,
+                None => {
+                    self.next_label = saved;
+                    return None;
+                }
+            };
+            let mut arm_body: crate::wir::WirSeq = Vec::new();
+            arm_body.push(N::Br { target: a_label.clone(), cond: Some(not(cond)) });
+            arm_body.extend(binds);
+            if let Some(guard) = &arm.guard {
+                let g = match self.lower_expr(guard) {
+                    Some(w) => w,
+                    None => {
+                        self.next_label = saved;
+                        return None;
+                    }
+                };
+                arm_body.push(N::Br { target: a_label.clone(), cond: Some(not(g)) });
+            }
+            let body_kind = self.kind_of(&arm.body);
+            let b = match self.lower_expr(&arm.body) {
+                Some(w) => w,
+                None => {
+                    self.next_label = saved;
+                    return None;
+                }
+            };
+            arm_body.push(N::Push(Self::wir_convert(b, body_kind, result_kind)));
+            arm_body.push(N::Br { target: format!("d{id}"), cond: None });
+            arm_blocks.push(N::Block { label: a_label, result: None, body: arm_body });
+        }
+        arm_blocks.push(N::Unreachable);
+        Some(W::Seq(vec![
+            N::SetLocal {
+                local: MATCH_TMP.to_string(),
+                value: W::ToSlot(Box::new(scrut_w), Self::wir_kind(scrut_kind)),
+            },
+            N::Block {
+                label: format!("d{id}"),
+                result: Some(Self::wir_ty_for_kind(result_kind)),
+                body: arm_blocks,
+            },
+        ]))
+    }
+
+    /// Build the WIR for a plain direct user-function call: each argument lowered
+    /// and widened to its parameter's kind, then `call $name`. Returns `None` if
+    /// any argument isn't lowerable. ONLY sound to call from `compile_call`'s
+    /// `_ =>` fallback (all builtins/natives/closures already excluded there) and
+    /// only for functions WITHOUT an own-ABI token or `inout` writeback.
+    fn try_lower_user_call(&mut self, name: &str, args: &[Expr]) -> Option<crate::wir::WirExpr> {
+        let param_kinds: Vec<Kind> = self
+            .fn_params
+            .get(name)
+            .map(|ps| ps.iter().map(|p| p.ty.as_ref().map(ty_kind).unwrap_or(Kind::I32)).collect())
+            .unwrap_or_default();
+        let mut args_w = Vec::with_capacity(args.len());
+        for (i, arg) in args.iter().enumerate() {
+            let ak = self.kind_of(arg);
+            let w = self.lower_expr(arg)?;
+            args_w.push(match param_kinds.get(i) {
+                Some(&pk) => Self::wir_convert(w, ak, pk),
+                None => w,
+            });
+        }
+        Some(crate::wir::WirExpr::Call { func: name.to_string(), args: args_w })
+    }
+
+    /// Convert the value a lowered block leaves on the stack: a block's tail is
+    /// always a `Push`, so wrap its value in a `Convert` (a no-op when the kinds
+    /// match). Mirrors codegen appending `kind_convert(tk, ck)` after a
+    /// `compile_block` whose branch kind must be promoted to a common kind.
+    fn convert_block_tail(
+        mut seq: crate::wir::WirSeq,
+        from: Kind,
+        to: Kind,
+    ) -> crate::wir::WirSeq {
+        if from != to {
+            if let Some(crate::wir::WirNode::Push(v)) = seq.pop() {
+                seq.push(crate::wir::WirNode::Push(Self::wir_convert(v, from, to)));
+            }
+        }
+        seq
+    }
+
+    /// The WIR analogue of `kind_convert`: wrap `arg` in a `Convert` node when the
+    /// kinds differ (else return it unchanged).
+    fn wir_convert(arg: crate::wir::WirExpr, from: Kind, to: Kind) -> crate::wir::WirExpr {
+        if from == to {
+            arg
+        } else {
+            crate::wir::WirExpr::Convert {
+                from: Self::wir_kind(from),
+                to: Self::wir_kind(to),
+                arg: Box::new(arg),
+            }
+        }
+    }
+
+    /// Is `name` a plain function/body local — compiled to a bare `local.get`,
+    /// not a capability/string/list state field, a global, or a top-level
+    /// function used as a value? Mirrors the final `else` of the `Expr::Var`
+    /// arm in `compile_expr`, so `lower_expr` only claims that exact case.
+    fn is_plain_local_var(&self, name: &str) -> bool {
+        !self.cap_fields.contains(name)
+            && !self.str_fields.contains_key(name)
+            && !self.list_fields.contains_key(name)
+            && !self.globals.contains(name)
+            && self.locals.contains_key(name)
+    }
+
+    /// Does `e` have a compound (list/tuple/record) equality shape? Such operands
+    /// compare structurally (a helper), not by the bare `i32.eq` the numeric path
+    /// would emit — so `lower_expr` leaves them to the legacy arm.
+    fn operand_is_compound(&self, e: &Expr) -> bool {
+        self.eq_shape_of(e).map_or(false, |s| s.is_compound())
+    }
+
+    /// The generic-reference compare the legacy arm rejects loudly: in a
+    /// type-variable function, two `Other`/i32 operands would compare references,
+    /// which witchy has no notion of. Mirrors that exact guard.
+    fn is_generic_ref_compare(&self, lhs: &Expr, rhs: &Expr) -> bool {
+        self.cur_fn_has_type_vars
+            && self.val_type_of(lhs) == ValType::Other
+            && self.val_type_of(rhs) == ValType::Other
+            && self.kind_of(lhs) == Kind::I32
+            && self.kind_of(rhs) == Kind::I32
+    }
+
+    /// M1: build a `WirExpr` for the convertible subset of expressions, returning
+    /// `None` for any arm — or sub-expression — not yet lowered. `compile_expr`
+    /// falls back to legacy emission on `None`, so WIR coverage grows while the
+    /// tree stays green; the printed output is byte-identical to the legacy arms.
+    fn lower_expr(&mut self, e: &Expr) -> Option<crate::wir::WirExpr> {
+        use crate::wir::WirExpr as W;
+        use crate::wir::WirNode as N;
+        Some(match e {
+            Expr::Int(n) | Expr::Duration(n) => W::ConstI64(*n),
+            Expr::Float(x) => W::ConstF64(*x),
+            Expr::Bool(b) => W::ConstI32(if *b { 1 } else { 0 }),
+            Expr::Str(s) => W::StrPtr(self.intern(s)),
+            Expr::Var(name) if self.is_plain_local_var(name) => W::GetLocal(name.clone()),
+            Expr::Unary { op, expr } => match op {
+                // value-neutral on WASM (value semantics): lower the operand.
+                UnOp::Move | UnOp::Await => return self.lower_expr(expr),
+                UnOp::Not => W::Unary {
+                    op: crate::wir::UnOp::Not,
+                    kind: crate::wir::Kind::I32,
+                    arg: Box::new(self.lower_expr(expr)?),
+                },
+                UnOp::Neg => {
+                    let kind = Self::wir_kind(self.kind_of(expr));
+                    W::Unary { op: crate::wir::UnOp::Neg, kind, arg: Box::new(self.lower_expr(expr)?) }
+                }
+                UnOp::BitNot => {
+                    let kind = Self::wir_kind(self.kind_of(expr));
+                    W::Unary {
+                        op: crate::wir::UnOp::BitNot,
+                        kind,
+                        arg: Box::new(self.lower_expr(expr)?),
+                    }
+                }
+            },
+            // `e as T` (capability narrowing / type ascription) is value-neutral
+            // at codegen — exactly `compile_expr(inner)`.
+            Expr::As { expr, .. } => return self.lower_expr(expr),
+            // A bare block expression: its `WirSeq` leaves the block's value.
+            // (Region blocks keep their bespoke `compile_region` emission.)
+            Expr::Block(b) if b.region.is_none() => return Some(W::Seq(self.lower_block(b)?)),
+            // `match` on scalar patterns; non-scalar arms fall through to legacy.
+            Expr::Match { scrutinee, arms } => return self.lower_match(scrutinee, arms),
+            // `if cond { .. } else { .. }` value-if. CRITICAL: codegen lowers the
+            // branch blocks BEFORE the cond in the `else` case (and cond first in
+            // the no-`else` case); `intern` assigns string offsets in call order, so
+            // the lowering order here must match codegen's exactly or data offsets
+            // diverge.
+            Expr::If { cond, then_block, else_block } => match else_block {
+                Some(eb) => {
+                    let tk = self.block_kind(then_block);
+                    let ek = self.block_kind(eb);
+                    let ck = if tk == Kind::F64 || ek == Kind::F64 {
+                        Kind::F64
+                    } else if tk == Kind::I64 || ek == Kind::I64 {
+                        Kind::I64
+                    } else {
+                        Kind::I32
+                    };
+                    let then_ = Self::convert_block_tail(self.lower_block(then_block)?, tk, ck);
+                    let els = Self::convert_block_tail(self.lower_block(eb)?, ek, ck);
+                    let cond = self.lower_expr(cond)?;
+                    W::Control(Box::new(N::If {
+                        cond,
+                        then_,
+                        els,
+                        result: Some(Self::wir_ty_for_kind(ck)),
+                    }))
+                }
+                None => {
+                    let cond = self.lower_expr(cond)?;
+                    let then_ = self.lower_block(then_block)?;
+                    W::Control(Box::new(N::If {
+                        cond,
+                        then_,
+                        els: vec![N::Push(W::ConstI32(0))],
+                        result: Some(crate::wir::WirTy::Bool),
+                    }))
+                }
+            },
+            // `while cond { body }` — Nil-valued. Only the no-watermark variant
+            // (the arena isn't reset around the body) is lowered; the watermark
+            // framing (`global.get $heap` save/restore) stays in legacy. `next_label`
+            // is allocated in codegen's order (this loop's id BEFORE the body's
+            // nested loops), and restored on a bail so the counter never desyncs.
+            Expr::While { cond, body } => {
+                if !force_copy_mode()
+                    && self.wm_level < WM_POOL
+                    && self.loop_arena_resettable(body)
+                {
+                    return None;
+                }
+                let saved = self.next_label;
+                let id = self.next_label;
+                self.next_label += 1;
+                let cond_w = match self.lower_expr(cond) {
+                    Some(c) => c,
+                    None => {
+                        self.next_label = saved;
+                        return None;
+                    }
+                };
+                self.loop_labels.push((format!("$we{id}"), format!("$wl{id}")));
+                let body_res = self.lower_block(body);
+                self.loop_labels.pop();
+                let body_seq = match body_res {
+                    Some(b) => b,
+                    None => {
+                        self.next_label = saved;
+                        return None;
+                    }
+                };
+                let not_cond = W::Unary {
+                    op: crate::wir::UnOp::Not,
+                    kind: crate::wir::Kind::I32,
+                    arg: Box::new(cond_w),
+                };
+                let loop_body = vec![
+                    N::Br { target: format!("we{id}"), cond: Some(not_cond) },
+                    N::Drop(W::Seq(body_seq)),
+                    N::Br { target: format!("wl{id}"), cond: None },
+                ];
+                W::Seq(vec![
+                    N::Block {
+                        label: format!("we{id}"),
+                        result: None,
+                        body: vec![N::Loop { label: format!("wl{id}"), body: loop_body }],
+                    },
+                    N::Push(W::ConstI32(0)),
+                ])
+            },
+            // `for var in lo..hi { body }` — count without materializing a list.
+            // i64 counter + bound in scratch locals; inclusive ranges add a
+            // pre-increment `ctr == end` guard so `..=i64::MAX` halts.
+            Expr::For { var, iter, body } if matches!(iter.as_ref(), Expr::Range { .. }) => {
+                let Expr::Range { lo, hi, inclusive } = iter.as_ref() else { unreachable!() };
+                if !force_copy_mode()
+                    && self.wm_level < WM_POOL
+                    && self.loop_arena_resettable(body)
+                {
+                    return None;
+                }
+                let saved = self.next_label;
+                let id = self.next_label;
+                self.next_label += 1;
+                let ctr = format!("__forctr_{var}");
+                let end = format!("__forend_{var}");
+                let lo_k = self.kind_of(lo);
+                let lo_w = match self.lower_expr(lo) {
+                    Some(w) => Self::wir_convert(w, lo_k, Kind::I64),
+                    None => {
+                        self.next_label = saved;
+                        return None;
+                    }
+                };
+                let hi_k = self.kind_of(hi);
+                let hi_w = match self.lower_expr(hi) {
+                    Some(w) => Self::wir_convert(w, hi_k, Kind::I64),
+                    None => {
+                        self.next_label = saved;
+                        return None;
+                    }
+                };
+                self.loop_labels.push((format!("$fe{id}"), format!("$fc{id}")));
+                let body_res = self.lower_block(body);
+                self.loop_labels.pop();
+                let body_seq = match body_res {
+                    Some(b) => b,
+                    None => {
+                        self.next_label = saved;
+                        return None;
+                    }
+                };
+                let i64k = crate::wir::Kind::I64;
+                let cmp = |op, l: &str, r: &str| W::Binary {
+                    op,
+                    kind: i64k,
+                    lhs: Box::new(W::GetLocal(l.to_string())),
+                    rhs: Box::new(W::GetLocal(r.to_string())),
+                };
+                let exit_op = if *inclusive { crate::wir::BinOp::Gt } else { crate::wir::BinOp::Ge };
+                let mut loop_body: crate::wir::WirSeq = vec![
+                    N::Br { target: format!("fe{id}"), cond: Some(cmp(exit_op, &ctr, &end)) },
+                    N::SetLocal { local: var.clone(), value: W::GetLocal(ctr.clone()) },
+                    N::Block {
+                        label: format!("fc{id}"),
+                        result: None,
+                        body: vec![N::Drop(W::Seq(body_seq))],
+                    },
+                ];
+                if *inclusive {
+                    loop_body.push(N::Br {
+                        target: format!("fe{id}"),
+                        cond: Some(cmp(crate::wir::BinOp::Eq, &ctr, &end)),
+                    });
+                }
+                loop_body.push(N::SetLocal {
+                    local: ctr.clone(),
+                    value: W::Binary {
+                        op: crate::wir::BinOp::Add,
+                        kind: i64k,
+                        lhs: Box::new(W::GetLocal(ctr.clone())),
+                        rhs: Box::new(W::ConstI64(1)),
+                    },
+                });
+                loop_body.push(N::Br { target: format!("fl{id}"), cond: None });
+                W::Seq(vec![
+                    N::SetLocal { local: ctr, value: lo_w },
+                    N::SetLocal { local: end, value: hi_w },
+                    N::Block {
+                        label: format!("fe{id}"),
+                        result: None,
+                        body: vec![N::Loop { label: format!("fl{id}"), body: loop_body }],
+                    },
+                    N::Push(W::ConstI32(0)),
+                ])
+            },
+            // `for var in list { body }` — Nil-valued; iterate a `[len][e0]...` list
+            // with a pointer + index in scratch locals. The watermark framing stays
+            // in legacy.
+            Expr::For { var, iter, body } if !matches!(iter.as_ref(), Expr::Range { .. }) => {
+                if !force_copy_mode()
+                    && self.wm_level < WM_POOL
+                    && self.loop_arena_resettable(body)
+                {
+                    return None;
+                }
+                let saved = self.next_label;
+                let id = self.next_label;
+                self.next_label += 1;
+                let list_l = format!("__forlist_{var}");
+                let idx_l = format!("__fori_{var}");
+                let iter_w = match self.lower_expr(iter) {
+                    Some(w) => w,
+                    None => {
+                        self.next_label = saved;
+                        return None;
+                    }
+                };
+                if let Some(elem) = self.elem_record_type_of(iter) {
+                    self.local_records.insert(var.clone(), elem);
+                }
+                let elem_kind = self.iter_elem_kind(iter);
+                self.loop_labels.push((format!("$fe{id}"), format!("$fc{id}")));
+                let body_res = self.lower_block(body);
+                self.loop_labels.pop();
+                let body_seq = match body_res {
+                    Some(b) => b,
+                    None => {
+                        self.next_label = saved;
+                        return None;
+                    }
+                };
+                let i32 = crate::wir::Kind::I32;
+                let add = crate::wir::BinOp::Add;
+                // idx >= list.len  ->  br_if $fe
+                let exit = N::Br {
+                    target: format!("fe{id}"),
+                    cond: Some(W::Binary {
+                        op: crate::wir::BinOp::Ge,
+                        kind: i32,
+                        lhs: Box::new(W::GetLocal(idx_l.clone())),
+                        rhs: Box::new(W::Load {
+                            ptr: Box::new(W::GetLocal(list_l.clone())),
+                            kind: i32,
+                            offset: 0,
+                        }),
+                    }),
+                };
+                // var = from_slot( load( (list+4) + idx*8 ) )
+                let elem_addr = W::Binary {
+                    op: add,
+                    kind: i32,
+                    lhs: Box::new(W::Binary {
+                        op: add,
+                        kind: i32,
+                        lhs: Box::new(W::GetLocal(list_l.clone())),
+                        rhs: Box::new(W::ConstI32(4)),
+                    }),
+                    rhs: Box::new(W::Binary {
+                        op: crate::wir::BinOp::Mul,
+                        kind: i32,
+                        lhs: Box::new(W::GetLocal(idx_l.clone())),
+                        rhs: Box::new(W::ConstI32(8)),
+                    }),
+                };
+                let bind = N::SetLocal {
+                    local: var.clone(),
+                    value: W::FromSlot(
+                        Box::new(W::Load {
+                            ptr: Box::new(elem_addr),
+                            kind: crate::wir::Kind::I64,
+                            offset: 0,
+                        }),
+                        Self::wir_kind(elem_kind),
+                    ),
+                };
+                let body_block = N::Block {
+                    label: format!("fc{id}"),
+                    result: None,
+                    body: vec![N::Drop(W::Seq(body_seq))],
+                };
+                let advance = N::SetLocal {
+                    local: idx_l.clone(),
+                    value: W::Binary {
+                        op: add,
+                        kind: i32,
+                        lhs: Box::new(W::GetLocal(idx_l.clone())),
+                        rhs: Box::new(W::ConstI32(1)),
+                    },
+                };
+                let loop_body =
+                    vec![exit, bind, body_block, advance, N::Br { target: format!("fl{id}"), cond: None }];
+                W::Seq(vec![
+                    N::SetLocal { local: list_l, value: iter_w },
+                    N::SetLocal { local: idx_l, value: W::ConstI32(0) },
+                    N::Block {
+                        label: format!("fe{id}"),
+                        result: None,
+                        body: vec![N::Loop { label: format!("fl{id}"), body: loop_body }],
+                    },
+                    N::Push(W::ConstI32(0)),
+                ])
+            },
+            // Aggregate literals: a list is `[len][elems..]`, a tuple is
+            // `[0][elems..]`, a constructor is `[tag][fields..]` — all via `$mkN`.
+            Expr::List(items) => return self.lower_aggregate(items.len() as i32, items),
+            Expr::Tuple(items) => return self.lower_aggregate(0, items),
+            Expr::Ctor { name, args } => {
+                let &(tag, nfields) = self.ctors.get(name)?;
+                if nfields != args.len() {
+                    return None; // arity mismatch → legacy emits the loud error
+                }
+                return self.lower_aggregate(tag as i32, args);
+            }
+            // `update rec { field: v }` rebuilds the record: tag, then each field —
+            // an overridden value (in a slot) or the base's raw slot copied across.
+            // Only the bare-variable base is lowered (the base read directly); a
+            // non-`Var` base needs the scratch-local pool, so it stays in legacy.
+            Expr::RecordUpdate { base, fields } => {
+                let Expr::Var(v) = base.as_ref() else { return None };
+                let tyname = self.record_type_of(base)?;
+                let names = self.record_fields.get(&tyname)?.clone();
+                let &(tag, nfields) = self.ctors.get(&tyname)?;
+                self.mk_arities.insert(nfields);
+                let mut args = Vec::with_capacity(nfields + 1);
+                args.push(W::ConstI32(tag as i32));
+                for (i, (fname, _)) in names.iter().enumerate() {
+                    if let Some((_, vexpr)) = fields.iter().find(|(n, _)| n == fname) {
+                        let k = self.kind_of(vexpr);
+                        let w = self.lower_expr(vexpr)?;
+                        args.push(W::ToSlot(Box::new(w), Self::wir_kind(k)));
+                    } else {
+                        args.push(W::Load {
+                            ptr: Box::new(W::Binary {
+                                op: crate::wir::BinOp::Add,
+                                kind: crate::wir::Kind::I32,
+                                lhs: Box::new(W::GetLocal(v.clone())),
+                                rhs: Box::new(W::ConstI32((4 + 8 * i) as i32)),
+                            }),
+                            kind: crate::wir::Kind::I64,
+                            offset: 0,
+                        });
+                    }
+                }
+                return Some(W::Call { func: format!("mk{nfields}"), args });
+            }
+            Expr::Binary { op, lhs, rhs } => {
+                // `&&`/`||` are short-circuit control flow, not a wasm binary op:
+                // lower to a value-`if`, byte-identical to the legacy emission.
+                //   a && b  ->  if a { b } else { 0 }
+                //   a || b  ->  if a { 1 } else { b }
+                if matches!(op, BinOp::And | BinOp::Or) {
+                    let cond = self.lower_expr(lhs)?;
+                    let other = self.lower_expr(rhs)?;
+                    let (then_, els) = if matches!(op, BinOp::And) {
+                        (vec![crate::wir::WirNode::Push(other)], vec![
+                            crate::wir::WirNode::Push(W::ConstI32(0)),
+                        ])
+                    } else {
+                        (vec![crate::wir::WirNode::Push(W::ConstI32(1))], vec![
+                            crate::wir::WirNode::Push(other),
+                        ])
+                    };
+                    return Some(W::Control(Box::new(crate::wir::WirNode::If {
+                        cond,
+                        then_,
+                        els,
+                        result: Some(crate::wir::WirTy::Bool),
+                    })));
+                }
+                // Common-kind promotion (f64 > i64 > i32), exactly as the legacy
+                // numeric path; each operand is then widened to `ck` via a `Convert`
+                // node reproducing `kind_convert` (a no-op except i32<->i64). `ck`
+                // is computed first because the float-ordering guard below needs it.
+                let lk = self.kind_of(lhs);
+                let rk = self.kind_of(rhs);
+                let ck = if lk == Kind::F64 || rk == Kind::F64 {
+                    Kind::F64
+                } else if lk == Kind::I64 || rk == Kind::I64 {
+                    Kind::I64
+                } else {
+                    Kind::I32
+                };
+                // The plain numeric path only. Every special case returns `None` so
+                // the legacy arm keeps its exact emission.
+                let wop = match op {
+                    // `Add` is string concat when either operand is a `Str`.
+                    BinOp::Add
+                        if self.val_type_of(lhs) == ValType::Str
+                            || self.val_type_of(rhs) == ValType::Str =>
+                    {
+                        return None;
+                    }
+                    BinOp::Add => crate::wir::BinOp::Add,
+                    BinOp::Sub => crate::wir::BinOp::Sub,
+                    BinOp::Mul => crate::wir::BinOp::Mul,
+                    BinOp::Div => crate::wir::BinOp::Div,
+                    BinOp::Mod => crate::wir::BinOp::Rem,
+                    BinOp::BitAnd => crate::wir::BinOp::And,
+                    BinOp::BitOr => crate::wir::BinOp::Or,
+                    BinOp::BitXor => crate::wir::BinOp::Xor,
+                    BinOp::Shl => crate::wir::BinOp::Shl,
+                    BinOp::Shr => crate::wir::BinOp::Shr,
+                    BinOp::Eq | BinOp::NotEq | BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq => {
+                        // String compares ($str_eq/$str_cmp), the structural eq
+                        // helper for compounds, the loud rejects (dict ==, compound
+                        // ordering, generic-reference compares), and float *ordering*
+                        // ($f_lt/$f_le/$f_gt/$f_ge, NaN-trapping — not f64.lt) all
+                        // keep their bespoke legacy emission.
+                        if self.val_type_of(lhs) == ValType::Str
+                            || self.val_type_of(rhs) == ValType::Str
+                            || self.operand_is_compound(lhs)
+                            || self.operand_is_compound(rhs)
+                            || self.is_dict_operand(lhs)
+                            || self.is_dict_operand(rhs)
+                            || self.is_generic_ref_compare(lhs, rhs)
+                            || (ck == Kind::F64
+                                && matches!(op, BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq))
+                        {
+                            return None;
+                        }
+                        match op {
+                            BinOp::Eq => crate::wir::BinOp::Eq,
+                            BinOp::NotEq => crate::wir::BinOp::Ne,
+                            BinOp::Lt => crate::wir::BinOp::Lt,
+                            BinOp::LtEq => crate::wir::BinOp::Le,
+                            BinOp::Gt => crate::wir::BinOp::Gt,
+                            BinOp::GtEq => crate::wir::BinOp::Ge,
+                            _ => unreachable!(),
+                        }
+                    }
+                    // concat / `&&` / `||` keep their legacy emission.
+                    _ => return None,
+                };
+                let lhs_w = Self::wir_convert(self.lower_expr(lhs)?, lk, ck);
+                let rhs_w = Self::wir_convert(self.lower_expr(rhs)?, rk, ck);
+                W::Binary { op: wop, kind: Self::wir_kind(ck), lhs: Box::new(lhs_w), rhs: Box::new(rhs_w) }
+            }
+            // Tuple element (`pair.0`) or record field (`rec.name`): both read an
+            // i64 slot at `base + 4 + 8*idx`, recovered at the field's kind. The
+            // legacy emission is `base; i32.const off; i32.add; i64.load;
+            // from_slot(k)` — reproduced as `FromSlot(Load{Add(base, off)}, k)`.
+            Expr::Field { base, field } => {
+                let (offset, kind) = if let Ok(i) = field.parse::<usize>() {
+                    (4 + 8 * i, valtype_kind(self.val_type_of(e)))
+                } else {
+                    let base_ty = self.record_type_of(base)?;
+                    let names = self.record_fields.get(&base_ty)?;
+                    let idx = names.iter().position(|(n, _)| n == field)?;
+                    (4 + 8 * idx, name_kind(names[idx].1.as_deref()))
+                };
+                let addr = W::Binary {
+                    op: crate::wir::BinOp::Add,
+                    kind: crate::wir::Kind::I32,
+                    lhs: Box::new(self.lower_expr(base)?),
+                    rhs: Box::new(W::ConstI32(offset as i32)),
+                };
+                W::FromSlot(
+                    Box::new(W::Load {
+                        ptr: Box::new(addr),
+                        kind: crate::wir::Kind::I64,
+                        offset: 0,
+                    }),
+                    Self::wir_kind(kind),
+                )
+            }
+            // `e?`: store the operand once, then a value-`if` on its tag — take the
+            // success payload (tag 0, at `tmp+4`) or early-`return` the whole
+            // Err/None. The `inout` epilogue variant stays in legacy.
+            Expr::Try(inner) if self.cur_fn_inout_params.is_empty() => {
+                let payload_kind =
+                    self.match_payload_valtype(inner).map(valtype_kind).unwrap_or(Kind::I32);
+                let inner_w = self.lower_expr(inner)?;
+                let tmp = TRY_TMP.to_string();
+                let cond = W::Unary {
+                    op: crate::wir::UnOp::Not,
+                    kind: crate::wir::Kind::I32,
+                    arg: Box::new(W::Load {
+                        ptr: Box::new(W::GetLocal(tmp.clone())),
+                        kind: crate::wir::Kind::I32,
+                        offset: 0,
+                    }),
+                };
+                let payload = W::FromSlot(
+                    Box::new(W::Load {
+                        ptr: Box::new(W::Binary {
+                            op: crate::wir::BinOp::Add,
+                            kind: crate::wir::Kind::I32,
+                            lhs: Box::new(W::GetLocal(tmp.clone())),
+                            rhs: Box::new(W::ConstI32(4)),
+                        }),
+                        kind: crate::wir::Kind::I64,
+                        offset: 0,
+                    }),
+                    Self::wir_kind(payload_kind),
+                );
+                let zero = match payload_kind {
+                    Kind::I64 => W::ConstI64(0),
+                    Kind::F64 => W::ConstF64(0.0),
+                    Kind::I32 => W::ConstI32(0),
+                };
+                W::Seq(vec![
+                    crate::wir::WirNode::SetLocal { local: tmp.clone(), value: inner_w },
+                    crate::wir::WirNode::If {
+                        cond,
+                        then_: vec![crate::wir::WirNode::Push(payload)],
+                        els: vec![
+                            crate::wir::WirNode::Return(Some(W::GetLocal(tmp))),
+                            crate::wir::WirNode::Push(zero),
+                        ],
+                        result: Some(Self::wir_ty_for_kind(payload_kind)),
+                    },
+                ])
+            }
+            _ => return None,
+        })
+    }
+
     fn compile_expr(&mut self, expr: &Expr) -> Result<String, CodegenError> {
+        // M1: expressions WIR can lower flow through the structured IR (built by
+        // `lower_expr`, rendered by its printer); whatever `lower_expr` returns
+        // `None` for falls through to the legacy arms below. The convertible set
+        // grows until the whole expression layer is WIR, at which point the
+        // legacy arms retire (M2). See docs/wir-design.md §6.
+        if let Some(w) = self.lower_expr(expr) {
+            return Ok(crate::wir::expr_to_wat(&w));
+        }
         match expr {
             Expr::Range { .. } | Expr::Index { .. } | Expr::WhileLet { .. } | Expr::MethodCall { .. } | Expr::Record { .. } => {
                 unreachable!("range/index sugar is lowered before codegen (parser::lower_sugar_module)")
             }
-            Expr::Int(n) | Expr::Duration(n) => Ok(format!("    i64.const {n}\n")),
-            Expr::Bool(b) => Ok(format!("    i32.const {}\n", if *b { 1 } else { 0 })),
+            // M1: leaf arms build a WirExpr and print it (byte-identical to the
+            // former inline WAT). See docs/wir-design.md.
+            Expr::Int(n) | Expr::Duration(n) => {
+                Ok(crate::wir::expr_to_wat(&crate::wir::WirExpr::ConstI64(*n)))
+            }
+            Expr::Bool(b) => Ok(crate::wir::expr_to_wat(&crate::wir::WirExpr::ConstI32(
+                if *b { 1 } else { 0 },
+            ))),
             Expr::Str(s) => {
                 let off = self.intern(s);
-                Ok(format!("    i32.const {off}\n"))
+                Ok(crate::wir::expr_to_wat(&crate::wir::WirExpr::StrPtr(off)))
             }
             Expr::Var(name) => {
                 if self.cap_fields.contains(name) {
@@ -2857,7 +3865,9 @@ impl Codegen {
                     // record). Locals shadow functions, so this only fires when
                     // `name` is not a local binding.
                     let Some(params) = self.fn_params.get(name).cloned() else {
-                        return Ok(format!("    local.get ${name}\n"));
+                        return Ok(crate::wir::expr_to_wat(&crate::wir::WirExpr::GetLocal(
+                            name.clone(),
+                        )));
                     };
                     let args = params.iter().map(|p| Expr::Var(p.name.clone())).collect();
                     let body = Block {
@@ -2871,7 +3881,7 @@ impl Codegen {
                     };
                     self.compile_lambda(&params, &body)
                 } else {
-                    Ok(format!("    local.get ${name}\n"))
+                    Ok(crate::wir::expr_to_wat(&crate::wir::WirExpr::GetLocal(name.clone())))
                 }
             }
             Expr::Unary { op, expr } => match op {
@@ -5150,7 +6160,431 @@ impl Codegen {
         Ok(format!("    i32.const {op}\n{s}    call $encoding\n"))
     }
 
+    /// Lower a list of argument expressions, threading `None` if any isn't lowerable.
+    fn lower_args(&mut self, args: &[&Expr]) -> Option<Vec<crate::wir::WirExpr>> {
+        let mut v = Vec::with_capacity(args.len());
+        for a in args {
+            v.push(self.lower_expr(a)?);
+        }
+        Some(v)
+    }
+
+    /// M1: lower the simple builtin/native `Call` arms to a `WirExpr::Call` (each
+    /// `$helper` is a guest module function; the actual host import is `_host`-
+    /// suffixed and called from inside the helper). The `uses_*` side-effect flags
+    /// are set exactly as the legacy arms do. Returns `None` for unconverted arms.
+    fn lower_call(&mut self, name: &str, args: &[Expr]) -> Option<crate::wir::WirExpr> {
+        use crate::wir::WirExpr as W;
+        use crate::wir::WirNode as N;
+        let call = |func: &str, a: Vec<W>| W::Call { func: func.to_string(), args: a };
+        // A direct host-import call (a `_host` import is the authority surface).
+        let host = |import: &str, a: Vec<W>| W::CallHost { import: import.to_string(), args: a };
+        // A void effect that yields Nil: `{inner} ... i32.const 0`.
+        let nil0 = |inner: W| W::Seq(vec![N::Do(inner), N::Push(W::ConstI32(0))]);
+        Some(match (name, args.len()) {
+            ("crypto.ed25519_verify", 3) => {
+                self.uses_crypto_ed25519_verify = true;
+                call("crypto_ed25519_verify", self.lower_args(&[&args[0], &args[1], &args[2]])?)
+            }
+            ("crypto.sha256", 1) => {
+                self.uses_crypto_sha256 = true;
+                call("crypto_sha256", self.lower_args(&[&args[0]])?)
+            }
+            ("crypto.sign", 2) => {
+                // The Secret key is host-side; only the message travels.
+                self.uses_crypto_sign = true;
+                call("crypto_sign", self.lower_args(&[&args[1]])?)
+            }
+            ("crypto.public_key", 1) => {
+                self.uses_crypto_public_key = true;
+                call("crypto_public_key", vec![])
+            }
+            ("crypto.rune_hash", 2) => {
+                self.uses_crypto_rune_hash = true;
+                call("crypto_rune_hash", self.lower_args(&[&args[0], &args[1]])?)
+            }
+            ("crypto.ecdsa_p256_verify", 3) => {
+                self.used_crypto_ops.insert("ecdsa_p256_verify");
+                call("crypto_ecdsa_p256_verify", self.lower_args(&[&args[0], &args[1], &args[2]])?)
+            }
+            ("crypto.ecdsa_p256_verify_hex", 3) => {
+                self.used_crypto_ops.insert("ecdsa_p256_verify_hex");
+                call(
+                    "crypto_ecdsa_p256_verify_hex",
+                    self.lower_args(&[&args[0], &args[1], &args[2]])?,
+                )
+            }
+            ("crypto.sha512", 1) => {
+                self.used_crypto_ops.insert("sha512");
+                call("crypto_sha512", self.lower_args(&[&args[0]])?)
+            }
+            ("crypto.sha3_256", 1) => {
+                self.used_crypto_ops.insert("sha3_256");
+                call("crypto_sha3_256", self.lower_args(&[&args[0]])?)
+            }
+            ("crypto.hmac_sha256", 2) => {
+                self.used_crypto_ops.insert("hmac_sha256");
+                call("crypto_hmac_sha256", self.lower_args(&[&args[0], &args[1]])?)
+            }
+            ("compiler.footprint", 1) => {
+                self.uses_compiler_footprint = true;
+                call("compiler_footprint", self.lower_args(&[&args[0]])?)
+            }
+            ("compiler.diff", 2) => {
+                self.uses_compiler_diff = true;
+                call("compiler_diff", self.lower_args(&[&args[0], &args[1]])?)
+            }
+            ("regex.match_spans", 2) => {
+                self.uses_regex_spans = true;
+                call("regex_match_spans", self.lower_args(&[&args[0], &args[1]])?)
+            }
+            // The `encoding` transforms share one `$encoding` helper, selected by an
+            // i32 op pushed *before* the argument.
+            ("encoding.hex_encode", 1) => {
+                self.uses_encoding = true;
+                call("encoding", vec![W::ConstI32(0), self.lower_expr(&args[0])?])
+            }
+            ("encoding.hex_decode", 1) => {
+                self.uses_encoding = true;
+                call("encoding", vec![W::ConstI32(1), self.lower_expr(&args[0])?])
+            }
+            ("encoding.base64_encode", 1) => {
+                self.uses_encoding = true;
+                call("encoding", vec![W::ConstI32(2), self.lower_expr(&args[0])?])
+            }
+            ("encoding.base64_decode", 1) => {
+                self.uses_encoding = true;
+                call("encoding", vec![W::ConstI32(3), self.lower_expr(&args[0])?])
+            }
+            ("encoding.base64url_of_hex", 1) => {
+                self.uses_encoding = true;
+                call("encoding", vec![W::ConstI32(4), self.lower_expr(&args[0])?])
+            }
+            // `string.from_code(cp)`: the Int code point travels in the i64 ABI.
+            ("string.from_code", 1) => {
+                self.uses_string_from_code = true;
+                let ak = self.kind_of(&args[0]);
+                call(
+                    "string_from_code",
+                    vec![Self::wir_convert(self.lower_expr(&args[0])?, ak, Kind::I64)],
+                )
+            }
+            // String helpers over the `[len][bytes]` rep — pure `{args} call $h`.
+            ("string.to_int", 1) => {
+                self.uses_str_to_int = true;
+                call("str_to_int", self.lower_args(&[&args[0]])?)
+            }
+            ("string.starts_with", 2) => {
+                self.uses_starts_with = true;
+                call("starts_with", self.lower_args(&[&args[0], &args[1]])?)
+            }
+            ("string.ends_with", 2) => {
+                self.uses_ends_with = true;
+                call("ends_with", self.lower_args(&[&args[0], &args[1]])?)
+            }
+            ("string.split", 2) => {
+                self.uses_split = true;
+                self.uses_substr = true;
+                self.uses_list_push = true;
+                call("split", self.lower_args(&[&args[0], &args[1]])?)
+            }
+            ("string.chars", 1) => {
+                self.uses_str_chars = true;
+                self.uses_byte_to_char = true;
+                self.uses_substring = true;
+                self.uses_substr = true;
+                self.uses_list_push = true;
+                call("str_chars", self.lower_args(&[&args[0]])?)
+            }
+            // `now(clock)`: the Clock arg is type-level; the host import is the
+            // authority and takes no operands.
+            ("now", 1) => {
+                self.uses_now = true;
+                W::CallHost { import: "now_host".to_string(), args: vec![] }
+            }
+            // `get_env(env, name)`: only the name travels (the Env grant is the host).
+            ("get_env", 2) => {
+                self.uses_get_env = true;
+                call("get_env", self.lower_args(&[&args[1]])?)
+            }
+            // `print(console, msg)`: the Console arg is type-level; print the msg
+            // (a void host helper), then yield Nil as `i32.const 0`.
+            ("print", 2) => {
+                self.uses_print = true;
+                W::Seq(vec![
+                    crate::wir::WirNode::Do(W::Call {
+                        func: "print_str".to_string(),
+                        args: self.lower_args(&[&args[1]])?,
+                    }),
+                    crate::wir::WirNode::Push(W::ConstI32(0)),
+                ])
+            }
+            // Duration <-> Int(ms) is a runtime no-op (both i64) — value-neutral.
+            ("int_to_duration", 1) | ("duration_to_int", 1) => return self.lower_expr(&args[0]),
+            // `contains(s, sub)` == `find_byte(s, sub) != -1`.
+            ("string.contains", 2) => {
+                self.uses_find_byte = true;
+                let inner = self.lower_args(&[&args[0], &args[1]])?;
+                W::Binary {
+                    op: crate::wir::BinOp::Ne,
+                    kind: crate::wir::Kind::I32,
+                    lhs: Box::new(W::Call { func: "find_byte".to_string(), args: inner }),
+                    rhs: Box::new(W::ConstI32(-1)),
+                }
+            }
+            // `index_of(s, sub)` -> Int: the i32 index, sign-extended to i64.
+            ("string.index_of", 2) => {
+                self.uses_find_byte = true;
+                self.uses_index_of = true;
+                let inner = self.lower_args(&[&args[0], &args[1]])?;
+                W::ToSlot(
+                    Box::new(W::Call { func: "str_index_of".to_string(), args: inner }),
+                    crate::wir::Kind::I32,
+                )
+            }
+            // --- guest-helper calls: `{args} call $helper` ---
+            ("string.replace", 3) => {
+                self.uses_replace = true;
+                call("replace", self.lower_args(&[&args[0], &args[1], &args[2]])?)
+            }
+            ("string.trim", 1) => {
+                self.uses_trim = true;
+                self.uses_substr = true;
+                call("trim", self.lower_args(&[&args[0]])?)
+            }
+            ("list.concat", 2) => {
+                self.uses_list_concat = true;
+                call("list_concat", self.lower_args(&[&args[0], &args[1]])?)
+            }
+            ("dict.new", 0) => {
+                self.uses_dict = true;
+                self.uses_str_eq = true;
+                call("dict_new", vec![])
+            }
+            ("dict.keys", 1) => {
+                self.uses_dict_iter = true;
+                call("dict_keys", self.lower_args(&[&args[0]])?)
+            }
+            ("dict.values", 1) => {
+                self.uses_dict_iter = true;
+                call("dict_values", self.lower_args(&[&args[0]])?)
+            }
+            ("dict.pairs", 1) => {
+                self.uses_dict_iter = true;
+                call("dict_pairs", self.lower_args(&[&args[0]])?)
+            }
+            ("read", 2) => {
+                self.used_dir_ops.insert("read");
+                call("dir_read", self.lower_args(&[&args[0], &args[1]])?)
+            }
+            ("list", 1) => {
+                self.used_dir_ops.insert("list");
+                call("dir_list", self.lower_args(&[&args[0]])?)
+            }
+            ("read_build", 2) => {
+                self.used_build_ops.insert("read_build");
+                call("build_read", self.lower_args(&[&args[0], &args[1]])?)
+            }
+            ("recv_line", 1) => {
+                self.used_net_ops.insert("recv_line");
+                call("net_recv_line", self.lower_args(&[&args[0]])?)
+            }
+            ("recv_all", 1) => {
+                self.used_net_ops.insert("recv_all");
+                call("net_recv_all", self.lower_args(&[&args[0]])?)
+            }
+            // --- direct host-import calls: `{args} call $helper_host` ---
+            ("subdir", 2) => {
+                self.used_dir_ops.insert("subdir");
+                host("dir_subdir_host", self.lower_args(&[&args[0], &args[1]])?)
+            }
+            ("exists", 2) => {
+                self.used_dir_ops.insert("exists");
+                host("dir_exists_host", self.lower_args(&[&args[0], &args[1]])?)
+            }
+            ("is_dir", 2) => {
+                self.used_dir_ops.insert("is_dir");
+                host("dir_is_dir_host", self.lower_args(&[&args[0], &args[1]])?)
+            }
+            ("accept", 1) => {
+                self.used_net_ops.insert("accept");
+                host("net_accept_host", self.lower_args(&[&args[0]])?)
+            }
+            ("restrict", 2) => {
+                self.used_net_ops.insert("restrict");
+                host("net_restrict_host", self.lower_args(&[&args[0], &args[1]])?)
+            }
+            ("connect", 2) => {
+                self.used_net_ops.insert("connect");
+                host("net_connect_host", self.lower_args(&[&args[0], &args[1]])?)
+            }
+            ("listen", 2) => {
+                self.used_net_ops.insert("listen");
+                host("net_listen_host", self.lower_args(&[&args[0], &args[1]])?)
+            }
+            // --- void effects yielding Nil: `{args} call $h ... i32.const 0` ---
+            ("send_line", 2) => {
+                self.used_net_ops.insert("send_line");
+                nil0(host("net_send_line_host", self.lower_args(&[&args[0], &args[1]])?))
+            }
+            ("send_bytes", 2) => {
+                self.used_net_ops.insert("send_bytes");
+                nil0(host("net_send_bytes_host", self.lower_args(&[&args[0], &args[1]])?))
+            }
+            ("close", 1) => {
+                self.used_net_ops.insert("close");
+                nil0(host("net_close_host", self.lower_args(&[&args[0]])?))
+            }
+            ("write", 3) => {
+                self.used_dir_ops.insert("write");
+                nil0(host("dir_write_host", self.lower_args(&[&args[0], &args[1], &args[2]])?))
+            }
+            ("append", 3) => {
+                self.used_dir_ops.insert("append");
+                nil0(host("dir_append_host", self.lower_args(&[&args[0], &args[1], &args[2]])?))
+            }
+            ("make_dir", 2) => {
+                self.used_dir_ops.insert("make_dir");
+                nil0(host("dir_make_dir_host", self.lower_args(&[&args[0], &args[1]])?))
+            }
+            ("write_out", 3) => {
+                self.used_build_ops.insert("write_out");
+                nil0(host("build_out_write_host", self.lower_args(&[&args[0], &args[1], &args[2]])?))
+            }
+            ("reply", 1) => {
+                self.uses_reply = true;
+                nil0(call("reply", self.lower_args(&[&args[0]])?))
+            }
+            // --- calls with a pushed constant / slot conversions ---
+            ("string.to_upper", 1) | ("string.to_lower", 1) => {
+                self.uses_ascii_case = true;
+                let up = if name == "string.to_upper" { 1 } else { 0 };
+                call("ascii_case", vec![self.lower_expr(&args[0])?, W::ConstI32(up)])
+            }
+            ("string.substring", 3) => {
+                self.uses_substring = true;
+                self.uses_substr = true;
+                let sk = self.kind_of(&args[1]);
+                let ek = self.kind_of(&args[2]);
+                call("str_substring", vec![
+                    self.lower_expr(&args[0])?,
+                    Self::wir_convert(self.lower_expr(&args[1])?, sk, Kind::I32),
+                    Self::wir_convert(self.lower_expr(&args[2])?, ek, Kind::I32),
+                ])
+            }
+            ("list.push", 2) => {
+                self.uses_list_push = true;
+                let xk = self.kind_of(&args[1]);
+                call("list_push", vec![
+                    self.lower_expr(&args[0])?,
+                    W::ToSlot(Box::new(self.lower_expr(&args[1])?), Self::wir_kind(xk)),
+                ])
+            }
+            ("list.at", 2) => {
+                self.uses_list_at = true;
+                let ek = self.list_elem_kind(&args[0]);
+                let ik = self.kind_of(&args[1]);
+                let inner = vec![
+                    self.lower_expr(&args[0])?,
+                    Self::wir_convert(self.lower_expr(&args[1])?, ik, Kind::I32),
+                ];
+                W::FromSlot(Box::new(call("list_at", inner)), Self::wir_kind(ek))
+            }
+            ("recv_bytes", 2) => {
+                self.used_net_ops.insert("recv_bytes");
+                let nk = self.kind_of(&args[1]);
+                call("net_recv_bytes", vec![
+                    self.lower_expr(&args[0])?,
+                    Self::wir_convert(self.lower_expr(&args[1])?, nk, Kind::I64),
+                ])
+            }
+            // `dict.size(d)` -> Int: the i32 count at the header, sign-extended.
+            ("dict.size", 1) => W::ToSlot(
+                Box::new(W::Load {
+                    ptr: Box::new(self.lower_expr(&args[0])?),
+                    kind: crate::wir::Kind::I32,
+                    offset: 0,
+                }),
+                crate::wir::Kind::I32,
+            ),
+            // --- dict family: a key-mode i32 side-operand + slot conversions ---
+            ("dict.insert", 3) => {
+                self.uses_dict = true;
+                self.uses_str_eq = true;
+                let mode = self.dict_key_mode(&args[1]).ok()?;
+                let kk = self.kind_of(&args[1]);
+                let vk = self.kind_of(&args[2]);
+                call("dict_insert", vec![
+                    self.lower_expr(&args[0])?,
+                    W::ToSlot(Box::new(self.lower_expr(&args[1])?), Self::wir_kind(kk)),
+                    W::ToSlot(Box::new(self.lower_expr(&args[2])?), Self::wir_kind(vk)),
+                    W::ConstI32(mode as i32),
+                ])
+            }
+            ("dict.get_or", 3) => {
+                self.uses_dict = true;
+                self.uses_str_eq = true;
+                let mode = self.dict_key_mode(&args[1]).ok()?;
+                let kk = self.kind_of(&args[1]);
+                let dk = self.kind_of(&args[2]);
+                let inner = vec![
+                    self.lower_expr(&args[0])?,
+                    W::ToSlot(Box::new(self.lower_expr(&args[1])?), Self::wir_kind(kk)),
+                    W::ToSlot(Box::new(self.lower_expr(&args[2])?), Self::wir_kind(dk)),
+                    W::ConstI32(mode as i32),
+                ];
+                W::FromSlot(Box::new(call("dict_get_or", inner)), Self::wir_kind(dk))
+            }
+            ("dict.has", 2) => {
+                self.uses_dict = true;
+                self.uses_str_eq = true;
+                let mode = self.dict_key_mode(&args[1]).ok()?;
+                let kk = self.kind_of(&args[1]);
+                call("dict_has", vec![
+                    self.lower_expr(&args[0])?,
+                    W::ToSlot(Box::new(self.lower_expr(&args[1])?), Self::wir_kind(kk)),
+                    W::ConstI32(mode as i32),
+                ])
+            }
+            ("dict.remove", 2) => {
+                self.uses_dict = true;
+                self.uses_str_eq = true;
+                let mode = self.dict_key_mode(&args[1]).ok()?;
+                let kk = self.kind_of(&args[1]);
+                call("dict_remove", vec![
+                    self.lower_expr(&args[0])?,
+                    W::ToSlot(Box::new(self.lower_expr(&args[1])?), Self::wir_kind(kk)),
+                    W::ConstI32(mode as i32),
+                ])
+            }
+            ("dict.update", 4) => {
+                self.uses_dict = true;
+                self.uses_str_eq = true;
+                self.uses_dict_update = true;
+                self.clos_arities.insert(1);
+                let mode = self.dict_key_mode(&args[1]).ok()?;
+                let kk = self.kind_of(&args[1]);
+                let dk = self.kind_of(&args[2]);
+                call("dict_update", vec![
+                    self.lower_expr(&args[0])?,
+                    W::ToSlot(Box::new(self.lower_expr(&args[1])?), Self::wir_kind(kk)),
+                    W::ToSlot(Box::new(self.lower_expr(&args[2])?), Self::wir_kind(dk)),
+                    W::ConstI32(mode as i32),
+                    self.lower_expr(&args[3])?,
+                ])
+            }
+            _ => return None,
+        })
+    }
+
     fn compile_call(&mut self, name: &str, args: &[Expr]) -> Result<String, CodegenError> {
+        // M1: builtin/native arms WIR can lower flow through `lower_call`; the rest
+        // fall through to the legacy match below (which keeps full dispatch
+        // precedence). Each `lower_call` arm tests the same (name, arity) as its
+        // legacy twin, so converting one can't change which call it claims.
+        if let Some(w) = self.lower_call(name, args) {
+            return Ok(crate::wir::expr_to_wat(&w));
+        }
         match (name, args.len()) {
             // `crypto.ed25519_verify(pk, msg, sig) -> Bool`: a native-module
             // function bridged into the sandbox as a host import. Each string arg
@@ -5192,6 +6626,16 @@ impl Codegen {
             ("encoding.hex_decode", 1) => self.compile_encoding(1, &args[0]),
             ("encoding.base64_encode", 1) => self.compile_encoding(2, &args[0]),
             ("encoding.base64_decode", 1) => self.compile_encoding(3, &args[0]),
+            ("encoding.base64url_of_hex", 1) => self.compile_encoding(4, &args[0]),
+            // `string.from_code(cp) -> String`: a code point to its UTF-8
+            // character, bridged to the host (the SAME native the interpreter
+            // calls). The Int travels in the i64 ABI.
+            ("string.from_code", 1) => {
+                self.uses_string_from_code = true;
+                let ak = self.kind_of(&args[0]);
+                let cp = self.compile_expr(&args[0])?;
+                Ok(format!("{cp}{}    call $string_from_code\n", kind_convert(ak, Kind::I64)))
+            }
             // `crypto.rune_hash(paths, contents) -> String`: both args are guest
             // string lists; the host walks them and writes the fixed 71-byte
             // `sha256:<hex>` store hash into the guest-allocated result.
@@ -5200,6 +6644,40 @@ impl Codegen {
                 let paths = self.compile_expr(&args[0])?;
                 let contents = self.compile_expr(&args[1])?;
                 Ok(format!("{paths}{contents}    call $crypto_rune_hash\n"))
+            }
+            // The aws-lc-rs crypto extensions, bridged exactly like the legacy
+            // set: the verifies mirror `ed25519_verify` (three string headers ->
+            // i32 bool); the digests mirror `sha256` (a guest helper allocates
+            // the fixed-width hex result, the host fills it).
+            ("crypto.ecdsa_p256_verify", 3) => {
+                self.used_crypto_ops.insert("ecdsa_p256_verify");
+                let a = self.compile_expr(&args[0])?;
+                let b = self.compile_expr(&args[1])?;
+                let c = self.compile_expr(&args[2])?;
+                Ok(format!("{a}{b}{c}    call $crypto_ecdsa_p256_verify\n"))
+            }
+            ("crypto.ecdsa_p256_verify_hex", 3) => {
+                self.used_crypto_ops.insert("ecdsa_p256_verify_hex");
+                let a = self.compile_expr(&args[0])?;
+                let b = self.compile_expr(&args[1])?;
+                let c = self.compile_expr(&args[2])?;
+                Ok(format!("{a}{b}{c}    call $crypto_ecdsa_p256_verify_hex\n"))
+            }
+            ("crypto.sha512", 1) => {
+                self.used_crypto_ops.insert("sha512");
+                let s = self.compile_expr(&args[0])?;
+                Ok(format!("{s}    call $crypto_sha512\n"))
+            }
+            ("crypto.sha3_256", 1) => {
+                self.used_crypto_ops.insert("sha3_256");
+                let s = self.compile_expr(&args[0])?;
+                Ok(format!("{s}    call $crypto_sha3_256\n"))
+            }
+            ("crypto.hmac_sha256", 2) => {
+                self.used_crypto_ops.insert("hmac_sha256");
+                let key = self.compile_expr(&args[0])?;
+                let msg = self.compile_expr(&args[1])?;
+                Ok(format!("{key}{msg}    call $crypto_hmac_sha256\n"))
             }
             // `compiler.footprint(src)` / `compiler.diff(old, new)`: pure
             // toolchain analyses returning JSON of unpredictable size — the host
@@ -5709,6 +7187,25 @@ impl Codegen {
             }
             // --- the Net capability family. Net/Socket/Listener values are i32
             // handles into the host's tables; each op is its own gated import. ---
+            ("try_connect", 2) => {
+                self.used_net_ops.insert("try_connect");
+                self.mk_arities.insert(0);
+                self.mk_arities.insert(1);
+                let net = self.compile_expr(&args[0])?;
+                let addr = self.compile_expr(&args[1])?;
+                // Dial without trapping: the host returns the Socket handle, or
+                // the `-1` sentinel if the connection failed. Wrap it as
+                // `Option(Socket)` — `Some(handle)` (tag 0) on success, `None`
+                // (tag 1) on -1. A capability violation still traps host-side,
+                // exactly like `connect`.
+                Ok(format!(
+                    "{net}{addr}    call $net_try_connect_host\n    \
+                     local.tee ${TRY_TMP}\n    i32.const -1\n    i32.eq\n    \
+                     if (result i32)\n    i32.const 1\n    call $mk0\n    \
+                     else\n    i32.const 0\n    local.get ${TRY_TMP}\n    \
+                     i64.extend_i32_s\n    call $mk1\n    end\n"
+                ))
+            }
             ("restrict", 2) | ("connect", 2) | ("listen", 2) => {
                 let op: &'static str = match name {
                     "restrict" => "restrict",
@@ -5782,6 +7279,18 @@ impl Codegen {
                     out.push_str(from_slot(rk));
                     self.clos_arities.insert(n);
                     return Ok(out);
+                }
+                // WIR fast path: a plain user call with no own-ABI ownership token
+                // and no `inout` writeback lowers to a direct `WirExpr::Call`. Sound
+                // here because every builtin/native/closure was excluded above.
+                let has_inout = self
+                    .fn_conventions
+                    .get(name)
+                    .is_some_and(|cs| cs.iter().any(|c| *c == Convention::Inout));
+                if self.summaries.own_abi(name).is_none() && !has_inout {
+                    if let Some(w) = self.try_lower_user_call(name, args) {
+                        return Ok(crate::wir::expr_to_wat(&w));
+                    }
                 }
                 // Convert each argument to its parameter's kind (the only real
                 // crossing is a concrete i64 Int meeting a generic i32 param).
@@ -6517,6 +8026,21 @@ fn and_chain(conds: &[String]) -> String {
     }
 }
 
+/// The WIR analogue of `and_chain`: a short-circuit AND of i32 conditions, built
+/// as nested value-`if`s (`c0 ? (c1 ? … : 0) : 0`), byte-identical to `and_chain`.
+fn wir_and_chain(conds: &[crate::wir::WirExpr]) -> crate::wir::WirExpr {
+    use crate::wir::{WirExpr as W, WirNode as N};
+    match conds.split_first() {
+        None => W::ConstI32(1),
+        Some((first, rest)) => W::Control(Box::new(N::If {
+            cond: first.clone(),
+            then_: vec![N::Push(wir_and_chain(rest))],
+            els: vec![N::Push(W::ConstI32(0))],
+            result: Some(crate::wir::WirTy::Bool),
+        })),
+    }
+}
+
 /// String equality over two length-prefixed records `[len][bytes]`.
 const STR_EQ_WAT: &str = r#"  (func $str_eq (param $a i32) (param $b i32) (result i32)
     (local $len i32) (local $i i32)
@@ -6821,6 +8345,20 @@ const SUBSTR_WAT: &str = r#"  (func $substr (param $src i32) (param $start i32) 
 // float_to_str(x): a fresh string of `x` formatted by the host (Rust Display).
 // Reserve a generous body buffer (an f64's decimal form is well under 512
 // bytes), let the host write into it and return the length, then set the header.
+// string.from_code(cp): a fresh 1–4 byte UTF-8 string for the code point. A
+// scalar value needs at most 4 bytes, so reserve a 4-header + 4-body buffer,
+// let the host write the UTF-8 encoding and return its length, then set the
+// header.
+const STRING_FROM_CODE_WAT: &str = r#"  (func $string_from_code (param $cp i64) (result i32)
+    (local $res i32) (local $n i32)
+    (call $ensure (i32.const 8))
+    (local.set $res (global.get $heap))
+    (local.set $n (call $string_from_code_host (local.get $cp) (i32.add (local.get $res) (i32.const 4))))
+    (i32.store (local.get $res) (local.get $n))
+    (global.set $heap (i32.add (i32.add (local.get $res) (i32.const 4)) (local.get $n)))
+    (local.get $res))
+"#;
+
 const FLOAT_TO_STR_WAT: &str = r#"  (func $float_to_str (param $x f64) (result i32)
     (local $res i32) (local $n i32)
     (call $ensure (i32.const 516))
@@ -7014,6 +8552,42 @@ const CRYPTO_SHA256_WAT: &str = r#"  (func $crypto_sha256 (param $in i32) (resul
     (local.set $res (global.get $heap))
     (i32.store (local.get $res) (i32.const 64))
     (call $crypto_sha256_host (local.get $in) (i32.add (local.get $res) (i32.const 4)))
+    (global.set $heap (i32.add (local.get $res) (i32.const 68)))
+    (local.get $res))
+"#;
+
+// crypto.sha512(in): like $crypto_sha256 but a 132-byte result string
+// (`[len=128][128 hex bytes]`) — SHA-512's digest is twice as wide.
+const CRYPTO_SHA512_WAT: &str = r#"  (func $crypto_sha512 (param $in i32) (result i32)
+    (local $res i32)
+    (call $ensure (i32.const 132))
+    (local.set $res (global.get $heap))
+    (i32.store (local.get $res) (i32.const 128))
+    (call $crypto_sha512_host (local.get $in) (i32.add (local.get $res) (i32.const 4)))
+    (global.set $heap (i32.add (local.get $res) (i32.const 132)))
+    (local.get $res))
+"#;
+
+// crypto.sha3_256(in): identical shape to $crypto_sha256 (a 64-hex digest), but
+// the host fills it with SHA3-256 instead of SHA-256.
+const CRYPTO_SHA3_256_WAT: &str = r#"  (func $crypto_sha3_256 (param $in i32) (result i32)
+    (local $res i32)
+    (call $ensure (i32.const 68))
+    (local.set $res (global.get $heap))
+    (i32.store (local.get $res) (i32.const 64))
+    (call $crypto_sha3_256_host (local.get $in) (i32.add (local.get $res) (i32.const 4)))
+    (global.set $heap (i32.add (local.get $res) (i32.const 68)))
+    (local.get $res))
+"#;
+
+// crypto.hmac_sha256(key, msg): a 64-hex tag. Two input string headers (the hex
+// key and the raw message); the host computes HMAC-SHA256 and fills the result.
+const CRYPTO_HMAC_SHA256_WAT: &str = r#"  (func $crypto_hmac_sha256 (param $key i32) (param $msg i32) (result i32)
+    (local $res i32)
+    (call $ensure (i32.const 68))
+    (local.set $res (global.get $heap))
+    (i32.store (local.get $res) (i32.const 64))
+    (call $crypto_hmac_sha256_host (local.get $key) (local.get $msg) (i32.add (local.get $res) (i32.const 4)))
     (global.set $heap (i32.add (local.get $res) (i32.const 68)))
     (local.get $res))
 "#;

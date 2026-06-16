@@ -1,14 +1,23 @@
-//! Tree-walking evaluator for witchy.
+//! Tree-walking evaluator for witchy — the **reference oracle**.
 //!
-//! This is a semantics prototype: it runs witchy programs directly in the host
-//! so we can iterate on language behaviour. Compiling to WASM actors on the
-//! proven runtime is a later phase.
+//! User programs run on the compiled (WASM) backend: `witchy run`, `witchy
+//! sandbox`, build steps, and the browser playground all go through `codegen`.
+//! This evaluator's job is to *define* the semantics the compiled backend is
+//! checked against — it is the independent implementation `witchy parity` and the
+//! differential test suite diff the compiler against. It is reached at runtime
+//! only as: a transitional fallback for a program that does not yet compile
+//! (`WITCHY_INTERP=1`, or an automatic fall-through), the capability-sound
+//! executor for *effectful* build steps (BuildExec/BuildNet/BuildEnv, whose
+//! host-side I/O the WASM boundary can't sandbox — the grant allow-list is the
+//! confinement), and the `witchy demo` showcase. Its `Dir`/`Net` path-confinement
+//! logic is also reused by the sandbox, so it stays even as the evaluator role
+//! shrinks. See `docs/oracle-only-migration.md`.
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use crate::ast::*;
@@ -85,24 +94,11 @@ pub enum Capability {
     Env,
 }
 
-/// Render a `Float` to its canonical string. A finite, whole-valued float keeps
-/// a trailing `.0` (so `3.0` renders as `3.0`, visibly distinct from the `Int`
-/// `3`); other values use the shortest round-tripping form. Shared by both
-/// backends (the interpreter's `Display` and the WASM `float_to_str` host) so
-/// float rendering stays parity-identical.
-pub(crate) fn render_float(x: f64) -> String {
-    if x.is_finite() && x.fract() == 0.0 {
-        format!("{x:.1}")
-    } else {
-        format!("{x}")
-    }
-}
-
 impl fmt::Display for Value {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Value::Int(n) => write!(f, "{n}"),
-            Value::Float(x) => write!(f, "{}", render_float(*x)),
+            Value::Float(x) => write!(f, "{}", crate::fmt::render_float(*x)),
             Value::Str(s) => write!(f, "{s}"),
             Value::Bool(b) => write!(f, "{b}"),
             Value::Nil => write!(f, "Nil"),
@@ -820,7 +816,14 @@ impl Interpreter {
         // their qualified name (`crypto.sha256`). Dispatched through the registry
         // so adding one needs no change here — see `src/native.rs`.
         if let Some(f) = crate::native::lookup(name) {
-            return f(args).map(Some);
+            // `native` speaks `NativeValue` (it doesn't depend on the interpreter);
+            // bridge our `Value` across the call.
+            let nargs = args
+                .iter()
+                .map(value_to_native)
+                .collect::<Result<Vec<_>, RuntimeError>>()?;
+            let nresult = f(&nargs).map_err(|e| RuntimeError { message: e.message })?;
+            return Ok(Some(native_to_value(nresult)));
         }
         let one = |args: &[Value]| -> Result<Value, RuntimeError> {
             match args {
@@ -1354,6 +1357,25 @@ impl Interpreter {
                     }
                 }
                 _ => err("connect expects a Net and an address"),
+            },
+            "try_connect" => match args {
+                [Value::Net(allow), Value::Str(addr)] => {
+                    if !allow.iter().any(|a| a == addr) {
+                        return err(format!(
+                            "try_connect: `{addr}` is not permitted by this Net capability"
+                        ));
+                    }
+                    let v = match TcpStream::connect(addr) {
+                        Ok(stream) => {
+                            let id = self.sockets.len();
+                            self.sockets.push(BufReader::new(stream));
+                            Value::Ctor { name: "Some".into(), fields: vec![Value::Socket(id)] }
+                        }
+                        Err(_) => Value::Ctor { name: "None".into(), fields: Vec::new() },
+                    };
+                    Ok(Some(v))
+                }
+                _ => err("try_connect expects a Net and an address"),
             },
             "send_line" => match args {
                 [Value::Socket(id), Value::Str(line)] => {
@@ -2173,68 +2195,49 @@ fn compare(l: &Value, r: &Value) -> Result<std::cmp::Ordering, RuntimeError> {
 /// Note: canonicalize-then-use is mildly TOCTOU; the race-free fix is
 /// syscall-level confinement (openat2/O_NOFOLLOW, i.e. the cap-std crate), which
 /// is what the planned WASI-preopen substrate gives us.
-pub(crate) fn resolve(base: &Path, rel: &str) -> Result<PathBuf, RuntimeError> {
-    let p = Path::new(rel);
-    if p.is_absolute() {
-        return err("absolute paths are not allowed (a Dir capability is a subtree)");
-    }
-    for comp in p.components() {
-        match comp {
-            Component::Normal(_) | Component::CurDir => {}
-            Component::ParentDir => return err("`..` escapes the Dir capability"),
-            _ => return err("invalid path component in a Dir-relative path"),
+// Bridge between the interpreter's `Value` and the registry's `NativeValue` at
+// the single native-dispatch site. Native functions are typed (their `.witchy`
+// stubs), so they only ever receive the five shapes `NativeValue` carries; any
+// other `Value` is a caller bug surfaced as a runtime error.
+fn value_to_native(v: &Value) -> Result<crate::value::NativeValue, RuntimeError> {
+    use crate::value::NativeValue as N;
+    Ok(match v {
+        Value::Int(i) => N::Int(*i),
+        Value::Str(s) => N::Str(s.clone()),
+        Value::Bool(b) => N::Bool(*b),
+        Value::List(xs) => N::List(
+            xs.iter().map(value_to_native).collect::<Result<Vec<_>, RuntimeError>>()?,
+        ),
+        Value::Secret(s) => N::Secret(*s),
+        other => {
+            return Err(RuntimeError {
+                message: format!("native function received an unsupported argument: {other}"),
+            });
         }
-    }
-    let joined = base.join(rel);
-    let real = std::fs::canonicalize(&joined).map_err(|e| RuntimeError {
-        message: format!("cannot access `{}`: {e}", joined.display()),
-    })?;
-    let real_base = std::fs::canonicalize(base).map_err(|e| RuntimeError {
-        message: format!("invalid Dir base `{}`: {e}", base.display()),
-    })?;
-    if !real.starts_with(&real_base) {
-        return err("path escapes the Dir capability (via symlink)");
-    }
-    Ok(real)
+    })
 }
 
-/// Like `resolve`, but for writing: the target file need not exist, so
-/// confinement is checked against its parent directory (which must exist and lie
-/// within the capability's subtree). The lexical `..`/absolute checks still apply.
+fn native_to_value(v: crate::value::NativeValue) -> Value {
+    use crate::value::NativeValue as N;
+    match v {
+        N::Int(i) => Value::Int(i),
+        N::Str(s) => Value::Str(s),
+        N::Bool(b) => Value::Bool(b),
+        N::List(xs) => Value::List(xs.into_iter().map(native_to_value).collect()),
+        N::Secret(s) => Value::Secret(s),
+    }
+}
+
+// The `Dir` confinement lives in `crate::confine` — the single implementation the
+// compiled sandbox shares (see that module). These thin wrappers adapt its
+// `ConfineError` to the interpreter's `RuntimeError` so the eval call sites are
+// unchanged.
+pub(crate) fn resolve(base: &Path, rel: &str) -> Result<PathBuf, RuntimeError> {
+    crate::confine::resolve(base, rel).map_err(|e| RuntimeError { message: e.0 })
+}
+
 pub(crate) fn resolve_write(base: &Path, rel: &str) -> Result<PathBuf, RuntimeError> {
-    let p = Path::new(rel);
-    if p.is_absolute() {
-        return err("absolute paths are not allowed (a Dir capability is a subtree)");
-    }
-    for comp in p.components() {
-        match comp {
-            Component::Normal(_) | Component::CurDir => {}
-            Component::ParentDir => return err("`..` escapes the Dir capability"),
-            _ => return err("invalid path component in a Dir-relative path"),
-        }
-    }
-    let joined = base.join(rel);
-    let parent = joined.parent().unwrap_or(base);
-    let real_parent = std::fs::canonicalize(parent).map_err(|e| RuntimeError {
-        message: format!("cannot access `{}`: {e}", parent.display()),
-    })?;
-    let real_base = std::fs::canonicalize(base).map_err(|e| RuntimeError {
-        message: format!("invalid Dir base `{}`: {e}", base.display()),
-    })?;
-    if !real_parent.starts_with(&real_base) {
-        return err("path escapes the Dir capability (via symlink)");
-    }
-    // The parent is confined, but the final component itself could be a
-    // pre-existing symlink pointing outside the subtree (unlike `read`, we can't
-    // canonicalize a not-yet-existing target). Refuse to write *through* a
-    // symlink leaf. Same canonicalize-then-use TOCTOU caveat as `resolve` — the
-    // race-free fix is the planned `openat2`/WASI-preopen substrate.
-    if let Ok(meta) = std::fs::symlink_metadata(&joined) {
-        if meta.file_type().is_symlink() {
-            return err("path escapes the Dir capability (the target is a symlink)");
-        }
-    }
-    Ok(joined)
+    crate::confine::resolve_write(base, rel).map_err(|e| RuntimeError { message: e.0 })
 }
 
 pub fn run(src: &str) -> Result<Vec<String>, RuntimeError> {

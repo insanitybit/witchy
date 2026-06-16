@@ -30,6 +30,64 @@ fn compilation_cache() -> Option<Cache> {
     Cache::new(cfg).ok()
 }
 
+/// Directory for AOT-serialized compiled modules, keyed by a content hash of the
+/// wasm. Distinct from the Cranelift compile cache above: `Module::deserialize`
+/// loads an already-compiled artifact directly, skipping wasm parse/validate AND
+/// the cache lookup — the cold-start lever from docs/performance.md Phase 3.
+fn aot_cache_dir() -> Option<std::path::PathBuf> {
+    let base = std::env::var_os("XDG_CACHE_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".cache")))
+        .unwrap_or_else(std::env::temp_dir);
+    let dir = base.join("witchy").join("aot");
+    std::fs::create_dir_all(&dir).ok()?;
+    Some(dir)
+}
+
+/// Build a `Module`. On the cacheable (non-preempt) engine, a warm AOT artifact
+/// is loaded via `Module::deserialize` (skips wasm parse/validate/compile); a
+/// cold compile is persisted for next time. `cacheable` is false on the preempt
+/// engine, whose differing config must not share artifacts.
+fn build_module(engine: &Engine, opt_wasm: &[u8], cacheable: bool) -> Result<Module> {
+    if !cacheable {
+        return Module::new(engine, opt_wasm);
+    }
+    let path = aot_cache_dir().map(|dir| {
+        use sha2::{Digest, Sha256};
+        let mut h = Sha256::new();
+        h.update(opt_wasm);
+        let hex: String = h.finalize().iter().map(|b| format!("{b:02x}")).collect();
+        dir.join(format!("{hex}.cwasm"))
+    });
+    if let Some(p) = &path {
+        if let Ok(bytes) = std::fs::read(p) {
+            // SAFETY: the artifact was produced by this binary's own
+            // `Module::serialize` into a content-hash-named file under our cache
+            // dir; `deserialize` additionally rejects version/config mismatches
+            // (a wasmtime upgrade), in which case we fall through and recompile.
+            if let Ok(m) = unsafe { Module::deserialize(engine, &bytes) } {
+                return Ok(m);
+            }
+        }
+    }
+    let module = Module::new(engine, opt_wasm)?;
+    if let Some(p) = &path {
+        if let Ok(bytes) = module.serialize() {
+            // Write-then-rename so a reader never sees a partial file. The temp
+            // name carries a random suffix so two threads/processes compiling the
+            // same program don't race on one path (atomic rename publishes it).
+            let mut rnd = [0u8; 8];
+            getrandom::fill(&mut rnd).ok();
+            let suffix: String = rnd.iter().map(|b| format!("{b:02x}")).collect();
+            let tmp = p.with_extension(format!("{suffix}.tmp"));
+            if std::fs::write(&tmp, &bytes).is_ok() {
+                let _ = std::fs::rename(&tmp, p);
+            }
+        }
+    }
+    Ok(module)
+}
+
 pub type ActorId = u32;
 
 /// The set of capabilities granted to an actor at spawn time. Each `true` flag
@@ -271,7 +329,7 @@ impl Runtime {
         memory_pages_max: usize,
     ) -> Result<Actor> {
         let id = self.next_id;
-        let module = Module::new(&self.engine, optimize_module(wasm.as_ref()))?;
+        let module = build_module(&self.engine, &optimize_module(wasm.as_ref()), !self.preempt)?;
 
         let mailbox = self.mailboxes.get_or_create(id);
         let limits = StoreLimitsBuilder::new()
@@ -390,6 +448,7 @@ pub(crate) fn link_capability_imports(
     if net && caps.net_connect {
         linker.func_wrap("witchy", "net_restrict", host_net_restrict)?;
         linker.func_wrap("witchy", "net_connect", host_net_connect)?;
+        linker.func_wrap("witchy", "net_try_connect", host_net_try_connect)?;
     }
     if net && caps.net_listen {
         linker.func_wrap("witchy", "net_listen", host_net_listen)?;
@@ -432,6 +491,11 @@ pub(crate) fn link_capability_imports(
     // host import that bridges to the shared `native` registry.
     linker.func_wrap("witchy", "crypto.ed25519_verify", host_ed25519_verify)?;
     linker.func_wrap("witchy", "crypto.sha256", host_sha256)?;
+    linker.func_wrap("witchy", "crypto.ecdsa_p256_verify", host_ecdsa_p256_verify)?;
+    linker.func_wrap("witchy", "crypto.ecdsa_p256_verify_hex", host_ecdsa_p256_verify_hex)?;
+    linker.func_wrap("witchy", "crypto.sha512", host_sha512)?;
+    linker.func_wrap("witchy", "crypto.sha3_256", host_sha3_256)?;
+    linker.func_wrap("witchy", "crypto.hmac_sha256", host_hmac_sha256)?;
     linker.func_wrap("witchy", "crypto.rune_hash", host_crypto_rune_hash)?;
     // The compiler's footprint analyses are pure functions of their source
     // arguments — the toolchain exposed to witchy, same registry bridge.
@@ -441,6 +505,7 @@ pub(crate) fn link_capability_imports(
     // Float -> string formatting is pure; done in the host so it is byte-
     // identical to the interpreter's `Display` (no float formatter in WAT).
     linker.func_wrap("witchy", "float_to_str", host_float_to_str)?;
+    linker.func_wrap("witchy", "string_from_code", host_string_from_code)?;
     // hex/base64 transforms are pure; bridged to the same native registry the
     // interpreter uses (byte-for-byte parity, no byte-level work in WAT).
     linker.func_wrap("witchy", "encoding", host_encoding)?;
@@ -477,7 +542,7 @@ fn host_print_float(caller: Caller<'_, ActorState>, x: f64) -> Result<()> {
     // The same canonical float formatting the interpreter uses (Value::Float
     // Display via `render_float`), so the two backends agree on float output —
     // including the trailing `.0` on a whole-valued float.
-    let s = crate::interpreter::render_float(x);
+    let s = crate::fmt::render_float(x);
     if !caller.data().caps.quiet {
         println!("[actor {}] {s}", caller.data().id);
     }
@@ -521,7 +586,7 @@ fn host_ed25519_verify(
     msg: i32,
     sig: i32,
 ) -> Result<i32> {
-    use crate::interpreter::Value;
+    use crate::value::NativeValue as Value;
     let mem = memory_of(&mut caller)?;
     let data = mem.data(&caller);
     let args = [
@@ -544,7 +609,7 @@ fn host_ed25519_verify(
 /// `to_string`), write the bytes at `out_ptr`, and return the byte length. The
 /// guest reserves a generous buffer; an f64's decimal form never exceeds it.
 fn host_float_to_str(mut caller: Caller<'_, ActorState>, x: f64, out_ptr: i32) -> Result<i32> {
-    let s = crate::interpreter::render_float(x);
+    let s = crate::fmt::render_float(x);
     let bytes = s.into_bytes();
     let mem = memory_of(&mut caller)?;
     mem.write(&mut caller, out_ptr as usize, &bytes)
@@ -552,8 +617,27 @@ fn host_float_to_str(mut caller: Caller<'_, ActorState>, x: f64, out_ptr: i32) -
     Ok(bytes.len() as i32)
 }
 
+/// `string_from_code(codepoint, out_ptr) -> byte length`: encode a Unicode
+/// scalar value as UTF-8 into the guest buffer, via the shared native registry
+/// (the SAME `char::from_u32` the interpreter uses). An out-of-range or
+/// surrogate value becomes U+FFFD, never an error.
+fn host_string_from_code(mut caller: Caller<'_, ActorState>, cp: i64, out_ptr: i32) -> Result<i32> {
+    use crate::value::NativeValue as Value;
+    let f = crate::native::lookup("string.from_code")
+        .ok_or_else(|| Error::msg("string.from_code is not registered"))?;
+    let s = match f(&[Value::Int(cp)]).map_err(|e| Error::msg(e.message))? {
+        Value::Str(s) => s,
+        _ => return Err(Error::msg("string.from_code did not return a String")),
+    };
+    let bytes = s.into_bytes();
+    let mem = memory_of(&mut caller)?;
+    mem.write(&mut caller, out_ptr as usize, &bytes)
+        .map_err(|e| Error::msg(format!("writing string.from_code result into guest memory: {e}")))?;
+    Ok(bytes.len() as i32)
+}
+
 fn host_sha256(mut caller: Caller<'_, ActorState>, in_ptr: i32, out_ptr: i32) -> Result<()> {
-    use crate::interpreter::Value;
+    use crate::value::NativeValue as Value;
     let mem = memory_of(&mut caller)?;
     let input = read_wstr(mem.data(&caller), in_ptr)?;
     let f = crate::native::lookup("crypto.sha256")
@@ -569,6 +653,84 @@ fn host_sha256(mut caller: Caller<'_, ActorState>, in_ptr: i32, out_ptr: i32) ->
         .map_err(|e| Error::msg(format!("writing sha256 result into guest memory: {e}")))
 }
 
+/// Shared bridge for the three-string crypto verifies (`ecdsa_p256_verify` and
+/// its hex variant): read three string headers, dispatch through the shared
+/// native registry (the SAME aws-lc-rs impl the interpreter uses), return an
+/// i32 bool. Parameterized by the native name so each verify is a thin wrapper.
+fn host_crypto_verify3(
+    mut caller: Caller<'_, ActorState>,
+    native: &str,
+    pk: i32,
+    msg: i32,
+    sig: i32,
+) -> Result<i32> {
+    use crate::value::NativeValue as Value;
+    let mem = memory_of(&mut caller)?;
+    let data = mem.data(&caller);
+    let args = [
+        Value::Str(read_wstr(data, pk)?),
+        Value::Str(read_wstr(data, msg)?),
+        Value::Str(read_wstr(data, sig)?),
+    ];
+    let f = crate::native::lookup(native)
+        .ok_or_else(|| Error::msg(format!("{native} is not registered")))?;
+    match f(&args).map_err(|e| Error::msg(e.message))? {
+        Value::Bool(b) => Ok(b as i32),
+        _ => Err(Error::msg(format!("{native} did not return a Bool"))),
+    }
+}
+
+/// Shared bridge for the fixed-width hex digests (`sha512`, `sha3_256`,
+/// `hmac_sha256`): read one or two input string headers, compute via the shared
+/// native registry, and write the `expect`-length hex digest into the guest's
+/// pre-allocated buffer at `out_ptr`.
+fn host_crypto_digest(
+    mut caller: Caller<'_, ActorState>,
+    native: &str,
+    inputs: &[i32],
+    out_ptr: i32,
+    expect: usize,
+) -> Result<()> {
+    use crate::value::NativeValue as Value;
+    let mem = memory_of(&mut caller)?;
+    let data = mem.data(&caller);
+    let args: Vec<Value> = inputs
+        .iter()
+        .map(|&p| read_wstr(data, p).map(Value::Str))
+        .collect::<Result<_>>()?;
+    let f = crate::native::lookup(native)
+        .ok_or_else(|| Error::msg(format!("{native} is not registered")))?;
+    let hex = match f(&args).map_err(|e| Error::msg(e.message))? {
+        Value::Str(s) => s,
+        _ => return Err(Error::msg(format!("{native} did not return a String"))),
+    };
+    if hex.len() != expect {
+        return Err(Error::msg(format!("{native} hex digest is not {expect} bytes")));
+    }
+    mem.write(&mut caller, out_ptr as usize, hex.as_bytes())
+        .map_err(|e| Error::msg(format!("writing {native} result into guest memory: {e}")))
+}
+
+fn host_ecdsa_p256_verify(caller: Caller<'_, ActorState>, pk: i32, msg: i32, sig: i32) -> Result<i32> {
+    host_crypto_verify3(caller, "crypto.ecdsa_p256_verify", pk, msg, sig)
+}
+
+fn host_ecdsa_p256_verify_hex(caller: Caller<'_, ActorState>, pk: i32, msg: i32, sig: i32) -> Result<i32> {
+    host_crypto_verify3(caller, "crypto.ecdsa_p256_verify_hex", pk, msg, sig)
+}
+
+fn host_sha512(caller: Caller<'_, ActorState>, in_ptr: i32, out_ptr: i32) -> Result<()> {
+    host_crypto_digest(caller, "crypto.sha512", &[in_ptr], out_ptr, 128)
+}
+
+fn host_sha3_256(caller: Caller<'_, ActorState>, in_ptr: i32, out_ptr: i32) -> Result<()> {
+    host_crypto_digest(caller, "crypto.sha3_256", &[in_ptr], out_ptr, 64)
+}
+
+fn host_hmac_sha256(caller: Caller<'_, ActorState>, key_ptr: i32, msg_ptr: i32, out_ptr: i32) -> Result<()> {
+    host_crypto_digest(caller, "crypto.hmac_sha256", &[key_ptr, msg_ptr], out_ptr, 64)
+}
+
 /// `crypto.rune_hash(paths_ptr, contents_ptr, out_data_ptr)`: read both guest
 /// string lists, compute the store's content hash through the shared native
 /// registry, and write the fixed 71-byte `sha256:<hex>` result into the
@@ -579,7 +741,7 @@ fn host_crypto_rune_hash(
     contents_ptr: i32,
     out_ptr: i32,
 ) -> Result<()> {
-    use crate::interpreter::Value;
+    use crate::value::NativeValue as Value;
     let mem = memory_of(&mut caller)?;
     let paths = read_wstr_list(mem.data(&caller), paths_ptr)?;
     let contents = read_wstr_list(mem.data(&caller), contents_ptr)?;
@@ -601,7 +763,7 @@ fn host_crypto_rune_hash(
 /// JSON of the guest's source string through the shared native registry, stage
 /// it for `fill_pending`, and report its byte length.
 fn host_compiler_footprint_len(mut caller: Caller<'_, ActorState>, src_ptr: i32) -> Result<i32> {
-    use crate::interpreter::Value;
+    use crate::value::NativeValue as Value;
     let mem = memory_of(&mut caller)?;
     let src = read_wstr(mem.data(&caller), src_ptr)?;
     let f = crate::native::lookup("compiler.footprint")
@@ -623,7 +785,7 @@ fn host_compiler_diff_len(
     old_ptr: i32,
     new_ptr: i32,
 ) -> Result<i32> {
-    use crate::interpreter::Value;
+    use crate::value::NativeValue as Value;
     let mem = memory_of(&mut caller)?;
     let old_src = read_wstr(mem.data(&caller), old_ptr)?;
     let new_src = read_wstr(mem.data(&caller), new_ptr)?;
@@ -647,7 +809,7 @@ fn host_regex_match_spans_len(
     pat_ptr: i32,
     text_ptr: i32,
 ) -> Result<i32> {
-    use crate::interpreter::Value;
+    use crate::value::NativeValue as Value;
     let mem = memory_of(&mut caller)?;
     let pattern = read_wstr(mem.data(&caller), pat_ptr)?;
     let text = read_wstr(mem.data(&caller), text_ptr)?;
@@ -669,12 +831,13 @@ fn host_regex_match_spans_len(
 /// length. The guest reserves a sufficient buffer (`2*len + slack`) beforehand.
 /// `op`: 0 = hex_encode, 1 = hex_decode, 2 = base64_encode, 3 = base64_decode.
 fn host_encoding(mut caller: Caller<'_, ActorState>, op: i32, in_ptr: i32, out_ptr: i32) -> Result<i32> {
-    use crate::interpreter::Value;
+    use crate::value::NativeValue as Value;
     let name = match op {
         0 => "encoding.hex_encode",
         1 => "encoding.hex_decode",
         2 => "encoding.base64_encode",
         3 => "encoding.base64_decode",
+        4 => "encoding.base64url_of_hex",
         _ => return Err(Error::msg(format!("unknown encoding op {op}"))),
     };
     let mem = memory_of(&mut caller)?;
@@ -744,8 +907,8 @@ fn dir_base(caller: &Caller<'_, ActorState>, h: i32) -> Result<std::path::PathBu
         .ok_or_else(|| Error::msg(format!("invalid Dir handle {h}")))
 }
 
-fn confine(r: std::result::Result<std::path::PathBuf, crate::interpreter::RuntimeError>) -> Result<std::path::PathBuf> {
-    r.map_err(|e| Error::msg(e.message))
+fn confine(r: std::result::Result<std::path::PathBuf, crate::confine::ConfineError>) -> Result<std::path::PathBuf> {
+    r.map_err(|e| Error::msg(e.0))
 }
 
 /// `dir_subdir(h, name) -> handle`: attenuate to a confined subdirectory,
@@ -754,7 +917,7 @@ fn host_dir_subdir(mut caller: Caller<'_, ActorState>, h: i32, name_ptr: i32) ->
     let mem = memory_of(&mut caller)?;
     let name = read_wstr(mem.data(&caller), name_ptr)?;
     let base = dir_base(&caller, h)?;
-    let sub = confine(crate::interpreter::resolve(&base, &name))?;
+    let sub = confine(crate::confine::resolve(&base, &name))?;
     let dirs = &mut caller.data_mut().dirs;
     dirs.push(sub);
     Ok((dirs.len() - 1) as i32)
@@ -767,7 +930,7 @@ fn host_dir_read_len(mut caller: Caller<'_, ActorState>, h: i32, rel_ptr: i32) -
     let mem = memory_of(&mut caller)?;
     let rel = read_wstr(mem.data(&caller), rel_ptr)?;
     let base = dir_base(&caller, h)?;
-    let path = confine(crate::interpreter::resolve(&base, &rel))?;
+    let path = confine(crate::confine::resolve(&base, &rel))?;
     let contents = std::fs::read_to_string(&path)
         .map_err(|e| Error::msg(format!("read failed for `{}`: {e}", path.display())))?;
     let len = contents.len() as i32;
@@ -792,7 +955,7 @@ fn host_dir_exists(mut caller: Caller<'_, ActorState>, h: i32, rel_ptr: i32) -> 
     let mem = memory_of(&mut caller)?;
     let rel = read_wstr(mem.data(&caller), rel_ptr)?;
     let base = dir_base(&caller, h)?;
-    let ok = crate::interpreter::resolve(&base, &rel)
+    let ok = crate::confine::resolve(&base, &rel)
         .map(|p| p.exists())
         .unwrap_or(false);
     Ok(ok as i32)
@@ -803,7 +966,7 @@ fn host_dir_is_dir(mut caller: Caller<'_, ActorState>, h: i32, rel_ptr: i32) -> 
     let mem = memory_of(&mut caller)?;
     let rel = read_wstr(mem.data(&caller), rel_ptr)?;
     let base = dir_base(&caller, h)?;
-    let ok = crate::interpreter::resolve(&base, &rel)
+    let ok = crate::confine::resolve(&base, &rel)
         .map(|p| p.is_dir())
         .unwrap_or(false);
     Ok(ok as i32)
@@ -876,7 +1039,7 @@ fn host_dir_write(
     let rel = read_wstr(data, rel_ptr)?;
     let contents = read_wstr(data, contents_ptr)?;
     let base = dir_base(&caller, h)?;
-    let path = confine(crate::interpreter::resolve_write(&base, &rel))?;
+    let path = confine(crate::confine::resolve_write(&base, &rel))?;
     std::fs::write(&path, contents)
         .map_err(|e| Error::msg(format!("write failed for `{}`: {e}", path.display())))
 }
@@ -894,7 +1057,7 @@ fn host_dir_append(
     let rel = read_wstr(data, rel_ptr)?;
     let contents = read_wstr(data, contents_ptr)?;
     let base = dir_base(&caller, h)?;
-    let path = confine(crate::interpreter::resolve_write(&base, &rel))?;
+    let path = confine(crate::confine::resolve_write(&base, &rel))?;
     use std::io::Write as _;
     std::fs::OpenOptions::new()
         .create(true)
@@ -909,7 +1072,7 @@ fn host_dir_make_dir(mut caller: Caller<'_, ActorState>, h: i32, name_ptr: i32) 
     let mem = memory_of(&mut caller)?;
     let name = read_wstr(mem.data(&caller), name_ptr)?;
     let base = dir_base(&caller, h)?;
-    let path = confine(crate::interpreter::resolve_write(&base, &name))?;
+    let path = confine(crate::confine::resolve_write(&base, &name))?;
     std::fs::create_dir_all(&path)
         .map_err(|e| Error::msg(format!("make_dir failed for `{}`: {e}", path.display())))
 }
@@ -938,7 +1101,7 @@ fn host_build_out_write(
         .build_out
         .clone()
         .ok_or_else(|| Error::msg("write_out: no BuildOut grant"))?;
-    let path = confine(crate::interpreter::resolve_write(&base, &name))?;
+    let path = confine(crate::confine::resolve_write(&base, &name))?;
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
@@ -955,7 +1118,7 @@ fn host_build_read_len(mut caller: Caller<'_, ActorState>, _h: i32, rel_ptr: i32
     let roots = caller.data().build_read_roots.clone();
     let mut last = String::from("no granted read root");
     for base in &roots {
-        match crate::interpreter::resolve(base, &rel) {
+        match crate::confine::resolve(base, &rel) {
             Ok(path) => match std::fs::read_to_string(&path) {
                 Ok(contents) => {
                     let len = contents.len() as i32;
@@ -964,7 +1127,7 @@ fn host_build_read_len(mut caller: Caller<'_, ActorState>, _h: i32, rel_ptr: i32
                 }
                 Err(e) => last = format!("`{}`: {e}", path.display()),
             },
-            Err(e) => last = e.message,
+            Err(e) => last = e.0,
         }
     }
     Err(Error::msg(format!("read_build: `{rel}` not found in any granted read root ({last})")))
@@ -1013,6 +1176,28 @@ fn host_net_connect(mut caller: Caller<'_, ActorState>, h: i32, addr_ptr: i32) -
     let sockets = &mut caller.data_mut().sockets;
     sockets.push(std::io::BufReader::new(stream));
     Ok((sockets.len() - 1) as i32)
+}
+
+/// `net_try_connect(h, addr) -> Socket handle | -1`: dial like `net_connect`,
+/// but a failed connection yields the `-1` sentinel (witchy wraps it as
+/// `Option(Socket)`'s `None`) instead of trapping. A capability violation — an
+/// address outside the allowlist — still traps: that is a policy breach, not a
+/// transient dial failure.
+fn host_net_try_connect(mut caller: Caller<'_, ActorState>, h: i32, addr_ptr: i32) -> Result<i32> {
+    let mem = memory_of(&mut caller)?;
+    let addr = read_wstr(mem.data(&caller), addr_ptr)?;
+    let allow = net_allow(&caller, h)?;
+    if !allow.contains(&addr) {
+        bail!("try_connect: `{addr}` is not permitted by this Net capability");
+    }
+    match std::net::TcpStream::connect(&addr) {
+        Ok(stream) => {
+            let sockets = &mut caller.data_mut().sockets;
+            sockets.push(std::io::BufReader::new(stream));
+            Ok((sockets.len() - 1) as i32)
+        }
+        Err(_) => Ok(-1),
+    }
 }
 
 /// `net_listen(h, addr) -> Listener handle`: bind an allowlisted address.
@@ -1143,7 +1328,7 @@ fn host_net_close(mut caller: Caller<'_, ActorState>, sid: i32) -> Result<()> {
 /// pre-allocated string — through the same native registry the interpreter
 /// uses, so the output is byte-identical.
 fn host_crypto_sign(mut caller: Caller<'_, ActorState>, msg_ptr: i32, out_ptr: i32) -> Result<()> {
-    use crate::interpreter::Value;
+    use crate::value::NativeValue as Value;
     let seed = caller
         .data()
         .caps
@@ -1164,7 +1349,7 @@ fn host_crypto_sign(mut caller: Caller<'_, ActorState>, msg_ptr: i32, out_ptr: i
 /// `crypto.public_key(out_data_ptr)`: write the granted key's 64 hex public-key
 /// bytes (safe to publish) into the guest's pre-allocated string.
 fn host_crypto_public_key(mut caller: Caller<'_, ActorState>, out_ptr: i32) -> Result<()> {
-    use crate::interpreter::Value;
+    use crate::value::NativeValue as Value;
     let seed = caller
         .data()
         .caps

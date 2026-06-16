@@ -77,7 +77,6 @@ pub enum Tok {
     Star,    // *
     Slash,   // /
     Percent, // %
-    Concat, // <>
     Pipe,   // |>
     Bar,    // |  (or-patterns)
     PlusEq,    // +=
@@ -166,7 +165,6 @@ impl fmt::Display for Tok {
             Star => write!(f, "*"),
             Slash => write!(f, "/"),
             Percent => write!(f, "%"),
-            Concat => write!(f, "<>"),
             Pipe => write!(f, "|>"),
             Bar => write!(f, "|"),
             PlusEq => write!(f, "+="),
@@ -735,10 +733,6 @@ impl Lexer {
             ('>', Some('=')) => {
                 self.bump();
                 Tok::GtEq
-            }
-            ('<', Some('>')) => {
-                self.bump();
-                Tok::Concat
             }
             ('<', Some('-')) => {
                 self.bump();

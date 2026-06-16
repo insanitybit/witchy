@@ -31,6 +31,10 @@ native = ["dep:wasmtime", "dep:lsp-server", "dep:serde_json", "dep:serde", "dep:
 sha2 = "0.11.0"
 ed25519-dalek = "2.2.0"
 regex = "1.11"
+# Assembles codegen's WAT to a wasm binary; pure Rust, so the browser playground
+# can compile a witchy program to a module its own WebAssembly engine runs.
+wat = "1"
+wasm-encoder = "0.251"
 # Native-only deps (the sandbox/PM/LSP layers); excluded from the wasm build.
 wasmtime = { version = "45.0.0", optional = true }
 lsp-server = { version = "0.7.9", optional = true }
@@ -44,6 +48,13 @@ getrandom = { version = "0.4.2", optional = true }   # pm key generation (native
 # backend to link (our crypto is seed-only, so it is never actually called).
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 getrandom = { version = "0.2", features = ["js"] }
+
+# aws-lc-rs (the FIPS-capable AWS-LC binding) backs native crypto — SHA-256 and
+# Ed25519 here, FIPS-approved algorithms. It builds a C library (cmake), so it has
+# no wasm32 support; the wasm playground keeps the pure-Rust sha2/ed25519-dalek
+# path above (it never runs security-critical crypto). See native.rs `crypto`.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+aws-lc-rs = "1"
 
 [dev-dependencies]
 proptest = "1.11.0"

@@ -16,11 +16,13 @@ mod aliases;
 mod ast;
 mod capabilities;
 mod codegen;
+mod confine;
 mod async_lower;
 mod consts;
 mod comptime;
 mod derive;
 mod doc;
+mod fmt;
 mod format;
 mod generators;
 mod interpreter;
@@ -28,12 +30,16 @@ mod lexer;
 mod linker;
 mod lsp;
 mod native;
+mod optimize;
 mod parser;
 mod pm;
 mod records;
 mod runtime;
 mod traits;
 mod typeck;
+mod value;
+mod wir;
+mod wir_encode;
 
 use std::time::Duration;
 
@@ -139,6 +145,55 @@ program as `main`'s `args`, including `--help`."
 }
 
 fn main() -> wasmtime::Result<()> {
+    // A packaged executable (`witchy build-exe`) carries its program appended to
+    // this binary: run the embedded module instead of the CLI. The end user's
+    // flags grant concrete authority; everything else is passed to the program.
+    if let Some(wasm) = embedded_payload() {
+        let mut dir_root: Option<std::path::PathBuf> = None;
+        let mut net_allow: Vec<String> = Vec::new();
+        let mut signing_key: Option<[u8; 32]> = None;
+        let mut prog_args: Vec<String> = Vec::new();
+        let mut argv = std::env::args().skip(1);
+        while let Some(a) = argv.next() {
+            match a.as_str() {
+                "--dir" => dir_root = argv.next().map(std::path::PathBuf::from),
+                "--net" => {
+                    if let Some(addr) = argv.next() {
+                        net_allow.push(addr);
+                    }
+                }
+                "--signing-key" => {
+                    if let Some(file) = argv.next() {
+                        match load_signing_seed(&file) {
+                            Ok(seed) => signing_key = Some(seed),
+                            Err(e) => {
+                                eprintln!("--signing-key: {e}");
+                                std::process::exit(1);
+                            }
+                        }
+                    }
+                }
+                _ => prog_args.push(a),
+            }
+        }
+        match run_wasm_module(&wasm, dir_root, net_allow, prog_args, signing_key) {
+            Ok((lines, code)) => {
+                for line in lines {
+                    println!("{line}");
+                }
+                if let Some(c) = code {
+                    if c != 0 {
+                        std::process::exit(c);
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
+        }
+        return Ok(());
+    }
     // `witchy doc <file>...` prints Markdown API docs (one section per file) to
     // stdout — public functions, their signatures, and their doc comments.
     if std::env::args().nth(1).as_deref() == Some("doc") {
@@ -401,7 +456,14 @@ fn main() -> wasmtime::Result<()> {
             eprintln!("usage: witchy sandbox [--dir <root>] [--net <host:port>]... [--signing-key <seed-file>] <file.witchy> [args...]");
             std::process::exit(1);
         };
-        match run_file_sandboxed(&path, dir_root, net_allow, prog_args, signing_key) {
+        // A precompiled `.wasm` runs directly (authority from its imports); a
+        // `.witchy` source is compiled then run, granted its computed footprint.
+        let result = if path.ends_with(".wasm") {
+            run_wasm_file(&path, dir_root, net_allow, prog_args, signing_key)
+        } else {
+            run_file_sandboxed(&path, dir_root, net_allow, prog_args, signing_key)
+        };
+        match result {
             Ok((lines, exit_code)) => {
                 for line in lines {
                     println!("{line}");
@@ -428,6 +490,72 @@ fn main() -> wasmtime::Result<()> {
         };
         match emit_wat_file(&path) {
             Ok(wat) => print!("{wat}"),
+            Err(e) => {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
+        }
+        return Ok(());
+    }
+    // `witchy emit-wasm <file.witchy> [-o out.wasm]` compiles a program to a wasm
+    // BINARY — the Tier-1 distribution artifact. Run it with `witchy <out.wasm>`,
+    // which grants exactly the authority the module's imports declare.
+    if std::env::args().nth(1).as_deref() == Some("emit-wasm") {
+        let mut argv = std::env::args().skip(2);
+        let mut path: Option<String> = None;
+        let mut out: Option<String> = None;
+        while let Some(a) = argv.next() {
+            match a.as_str() {
+                "-o" | "--out" => out = argv.next(),
+                _ => path = path.or(Some(a)),
+            }
+        }
+        let Some(path) = path else {
+            eprintln!("usage: witchy emit-wasm <file.witchy> [-o out.wasm]");
+            std::process::exit(1);
+        };
+        let out = out.unwrap_or_else(|| {
+            std::path::Path::new(&path)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .map(|s| format!("{s}.wasm"))
+                .unwrap_or_else(|| "out.wasm".to_string())
+        });
+        match emit_wasm_file(&path, &out) {
+            Ok(()) => eprintln!("wrote {out}"),
+            Err(e) => {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
+        }
+        return Ok(());
+    }
+    // `witchy build-exe <file.witchy> [-o out]` packages a program into a
+    // self-contained executable (this binary + the appended program). Run the
+    // result directly: `./out --dir . --net host:port` — no witchy install needed.
+    if std::env::args().nth(1).as_deref() == Some("build-exe") {
+        let mut argv = std::env::args().skip(2);
+        let mut path: Option<String> = None;
+        let mut out: Option<String> = None;
+        while let Some(a) = argv.next() {
+            match a.as_str() {
+                "-o" | "--out" => out = argv.next(),
+                _ => path = path.or(Some(a)),
+            }
+        }
+        let Some(path) = path else {
+            eprintln!("usage: witchy build-exe <file.witchy> [-o out]");
+            std::process::exit(1);
+        };
+        let out = out.unwrap_or_else(|| {
+            std::path::Path::new(&path)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .map(String::from)
+                .unwrap_or_else(|| "app".to_string())
+        });
+        match build_exe_file(&path, &out) {
+            Ok(()) => eprintln!("wrote {out} (run it: ./{out} [--dir <root>] [--net <host:port>]...)"),
             Err(e) => {
                 eprintln!("{e}");
                 std::process::exit(1);
@@ -549,6 +677,27 @@ fn main() -> wasmtime::Result<()> {
                 eprintln!("witchy: `{path}` is not a known command or readable file");
                 eprintln!("run `witchy` with no arguments for usage");
                 std::process::exit(1);
+            }
+            // A precompiled program module (`witchy app.wasm`): run it directly,
+            // granted exactly the authority its imports declare (Dir rooted at cwd).
+            Some(path) if path.ends_with(".wasm") => {
+                match run_wasm_file(path, None, net_allow, prog_args, signing_key) {
+                    Ok((lines, code)) => {
+                        for line in lines {
+                            println!("{line}");
+                        }
+                        if let Some(c) = code {
+                            if c != 0 {
+                                std::process::exit(c);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("{e}");
+                        std::process::exit(1);
+                    }
+                }
+                return Ok(());
             }
             Some(path) => {
                 match execute_file_exit(path, net_allow, prog_args, signing_key) {
@@ -922,24 +1071,100 @@ fn link_file(path: &str) -> Result<(ast::Module, String), String> {
 /// for CI and for validating programs you don't want to run — e.g. servers,
 /// which never return.
 fn check_file(path: &str) -> Result<(), String> {
-    let (linked, _stem) = link_file(path)?;
+    let (linked, stem) = link_file(path)?;
     typeck::check(&linked).map_err(|e| e.to_string())?;
-    // Performance notes from the uniqueness analysis: accumulation that
-    // reverts to the copying path inside a loop (O(n²)). Never an error —
-    // the copying path IS the semantics — but the cliff should be visible
-    // at check time, not at a memory-cap trap.
-    for (func, c) in analysis::module_cliffs(&linked) {
-        // Linked-in modules' cliffs belong to their own files, not this one.
-        if func.contains('.') {
+    enforce_performance_modes(&linked, &stem)?;
+    Ok(())
+}
+
+/// Whether a linked function originated in the entry file. The linker keeps the
+/// entry module's `main` unqualified and qualifies everything else as
+/// `{stem}.name`, so the entry file's functions are exactly `main` and the
+/// `{stem}.`-prefixed ones; linked-in modules carry a different prefix.
+fn is_entry_function(name: &str, entry_stem: &str) -> bool {
+    name == "main" || name.starts_with(&format!("{entry_stem}."))
+}
+
+/// Performance-mode enforcement. The uniqueness analysis flags accumulation that
+/// reverts to the copying path inside a loop (O(n²)). In an ordinary file this is
+/// a check-time *note* — the copying path IS the semantics, so a perf-shape
+/// warning must never block a build. In a file that declares `mode opt`/`strict`
+/// the cliff is a hard error, AND every ownership-relevant parameter must carry
+/// an explicit `let`/`own`/`inout` convention — so the interprocedural summaries
+/// are declared contracts rather than inferences, and the optimization is powered
+/// by the annotation, not the fixpoint. Only the entry file's own functions are
+/// judged; linked-in modules keep their own policy. See docs/performance-modes.md.
+fn enforce_performance_modes(linked: &ast::Module, entry_stem: &str) -> Result<(), String> {
+    let enforce = !linked.modes.is_empty();
+    let mut errors = Vec::new();
+
+    // Body contract: accumulators must stay on the in-place fast path.
+    for (func, c) in analysis::module_cliffs(linked) {
+        if !is_entry_function(&func, entry_stem) {
             continue;
         }
-        eprintln!(
-            "note: in `{func}` (line {}): `{}` is rebuilt by copy on every \
-             iteration of this loop — it is {}",
-            c.line, c.var, c.reason
-        );
+        if enforce {
+            errors.push(format!(
+                "error: in `{func}` (line {}): `{}` is rebuilt by copy on every \
+                 iteration of this loop — it is {} [mode {}]\n  keep `{}` on the \
+                 in-place path: certify helper calls with `let`/`own` so they do \
+                 not alias it out, and do not share it mid-loop",
+                c.line, c.var, c.reason, linked.modes.join(", "), c.var,
+            ));
+        } else {
+            eprintln!(
+                "note: in `{func}` (line {}): `{}` is rebuilt by copy on every \
+                 iteration of this loop — it is {}",
+                c.line, c.var, c.reason
+            );
+        }
     }
-    Ok(())
+
+    // Signature contract (mode files only): ownership-relevant parameters must
+    // declare their convention, so the summaries are facts, not inferences.
+    if enforce {
+        for item in &linked.items {
+            if let ast::Item::Function(f) = item {
+                if !is_entry_function(&f.name, entry_stem) {
+                    continue;
+                }
+                for p in &f.params {
+                    if p.convention == ast::Convention::Let && ownership_relevant(&p.ty) {
+                        errors.push(format!(
+                            "error: in `{}`: parameter `{}` has no ownership \
+                             convention — `mode {}` requires an explicit `let` \
+                             (read-only borrow), `own` (consumed), or `inout` \
+                             (mutated in place)",
+                            f.name,
+                            p.name,
+                            linked.modes.join(", "),
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("\n"))
+    }
+}
+
+/// Whether a parameter type is one where an ownership convention changes the
+/// generated code (a heap buffer: String/List/Dict/tuple/record/ADT). Scalars,
+/// capabilities, and function values are exempt — annotating them is noise.
+fn ownership_relevant(ty: &Option<ast::Type>) -> bool {
+    match ty {
+        Some(ast::Type::Named(n, _)) => !matches!(
+            n.as_str(),
+            "Int" | "Float" | "Bool" | "Duration" | "Console" | "Dir" | "Net" | "Clock"
+                | "Env" | "Secret"
+        ),
+        Some(ast::Type::Tuple(_)) => true,
+        _ => false,
+    }
 }
 
 /// Read a 32-byte Ed25519 signing seed from a file holding 64 hex characters.
@@ -985,9 +1210,9 @@ fn execute_file_exit(
     args: Vec<String>,
     signing_key: Option<[u8; 32]>,
 ) -> Result<(Vec<String>, i32), String> {
-    use std::path::Path;
     let (linked, entry_stem) = link_file(path)?;
     typeck::check(&linked).map_err(|e| e.to_string())?;
+    enforce_performance_modes(&linked, &entry_stem)?;
 
     // No `main` means there's nothing to run directly — but the file still
     // compiled. Explain rather than failing with "unknown function `main`".
@@ -1002,10 +1227,12 @@ fn execute_file_exit(
         return Ok((vec![msg], 0));
     }
 
-    // The root `Dir` capability is anchored at the current directory (the same
-    // root the demos use), independent of where the source file lives.
-    interpreter::run_module_exit(linked, Path::new("."), net_allow, args, signing_key)
-        .map_err(|e| e.to_string())
+    // One run path: the compiled (WASM) backend. `witchy run` and `witchy sandbox`
+    // share one runtime, so dev == deploy by construction. The interpreter is only
+    // the differential oracle (`witchy parity`) and the comptime evaluator — never
+    // a user-program run path.
+    run_linked_compiled(&linked, None, net_allow, args, signing_key)
+        .map(|(lines, code)| (lines, code.unwrap_or(0)))
 }
 
 /// Run a program on BOTH backends — the tree-walking interpreter and compiled
@@ -1189,38 +1416,35 @@ fn emit_wat_file(path: &str) -> Result<String, String> {
         .map_err(|e| format!("cannot compile to WASM (an interpreter-only feature?): {e}"))
 }
 
-/// Compile a program and run it in the WASM VM granted EXACTLY its computed
-/// footprint: each capability kind in the footprint maps to its host-import
-/// family, with `Dir`/`Net` rights narrowing which operations are linked. The
-/// `Dir` root and `Net` allowlist are host policy (the `--dir`/`--net` flags);
-/// the program's footprint decides whether they are granted at all.
-fn run_file_sandboxed(
-    path: &str,
+/// Run an already-linked module on the compiled (WASM) backend with dev grants
+/// derived from its footprint: Console output and argv always, plus Clock / Env /
+/// Dir / Net / Secret each granted (at `dir_root` / `net_allow`) iff the footprint
+/// shows the program uses it. `Dir`/`Net` rights narrow which host ops are linked.
+/// This is the shared core of `witchy run` (dev, root at cwd) and `witchy sandbox`
+/// (strict, announced grant) — one runtime for both, so dev == deploy.
+fn run_linked_compiled(
+    linked: &ast::Module,
     dir_root: Option<std::path::PathBuf>,
     net_allow: Vec<String>,
     args: Vec<String>,
     signing_key: Option<[u8; 32]>,
 ) -> Result<(Vec<String>, Option<i32>), String> {
     use crate::runtime::{Capabilities, Runtime};
-    let (linked, _stem) = link_file(path)?;
-    typeck::check(&linked).map_err(|e| e.to_string())?;
-    let has_main = linked
-        .items
-        .iter()
-        .any(|it| matches!(it, ast::Item::Function(f) if f.name == "main"));
-    if !has_main {
-        return Err(format!("`{path}` has no `main` to run"));
+    let footprint = capabilities::analyze(linked);
+    // A Secret in the footprint is the whole-program union (e.g. coven CAN sign
+    // when publishing) — it does NOT mean THIS run signs. Mirror the interpreter,
+    // which requires a key only when `main` actually binds a `Secret` parameter;
+    // an unreached signing path needs none.
+    let main_binds_secret = linked.items.iter().any(|it| {
+        matches!(it, ast::Item::Function(f) if f.name == "main"
+            && f.params.iter().any(|p| matches!(&p.ty,
+                Some(ast::Type::Named(n, _)) if n == "Secret")))
+    });
+    if main_binds_secret && signing_key.is_none() {
+        return Err(
+            "this program needs a Secret, but the host granted none (provide `--signing-key <seed-file>`)".to_string(),
+        );
     }
-    let footprint = capabilities::analyze(&linked);
-    if footprint.total.contains_key("Secret") && signing_key.is_none() {
-        return Err(format!(
-            "`{path}` needs a Secret, but the host granted none (provide `--signing-key <seed-file>`)"
-        ));
-    }
-    eprintln!(
-        "sandboxing `{path}` \u{2014} granted exactly: {}",
-        capabilities::show_caps(&footprint.total)
-    );
     // Quiet: the captured lines are printed once by the caller (and an
     // Int-returning `main` surfaces its value as the LAST line, which the
     // caller turns into the process exit code, like the interpreter CLI).
@@ -1250,24 +1474,18 @@ fn run_file_sandboxed(
     if footprint.total.contains_key("Secret") {
         caps.signing_key = signing_key;
     }
-    // An ACTOR program runs on the compiled actor system: the driver VM gets
-    // the computed-footprint grant (above), and each spawned actor's VM links
-    // only what its own capability fields entitle it to, with Dir/Net handles
-    // translated at spawn. A plain program runs in the single-module VM.
-    let mut lines = {
-        let wat = codegen::compile_module(&linked)
-            .map_err(|e| format!("cannot compile to WASM (an interpreter-only feature?): {e}"))?;
-        let mut rt = Runtime::batch().map_err(|e| e.to_string())?;
-        let mut actor = rt
-            .spawn(wat.as_bytes(), caps, RUN_MEMORY_PAGES)
-            .map_err(|e| e.to_string())?;
-        // Surface the *root cause*, not wasmtime's outer "error while executing at
-        // wasm backtrace…" wrapper: a confinement violation then reads as the same
-        // clean "`..` escapes the Dir capability" both backends
-        // print, and a genuine trap reads as "wasm trap: …" rather than a stack dump.
-        actor.run().map_err(|e| e.root_cause().to_string())?;
-        actor.output()
-    };
+    let wat = codegen::compile_module(linked)
+        .map_err(|e| format!("cannot compile to WASM (an interpreter-only feature?): {e}"))?;
+    let mut rt = Runtime::batch().map_err(|e| e.to_string())?;
+    let mut actor = rt
+        .spawn(wat.as_bytes(), caps, RUN_MEMORY_PAGES)
+        .map_err(|e| e.to_string())?;
+    // Surface the *root cause*, not wasmtime's outer "error while executing at
+    // wasm backtrace…" wrapper: a confinement violation then reads as the same
+    // clean "`..` escapes the Dir capability" both backends print, and a genuine
+    // trap reads as "wasm trap: …" rather than a stack dump.
+    actor.run().map_err(|e| e.root_cause().to_string())?;
+    let mut lines = actor.output();
     // At the process boundary an Int-returning `main` is the exit code (the
     // run export surfaces it as the final print_int line; pop and convert).
     let main_returns_int = linked.items.iter().any(|it| {
@@ -1280,6 +1498,223 @@ fn run_file_sandboxed(
         None
     };
     Ok((lines, exit_code))
+}
+
+/// Compile a program and run it in the WASM VM granted EXACTLY its computed
+/// footprint, announcing the grant on stderr. The `Dir` root and `Net` allowlist
+/// are host policy (the `--dir`/`--net` flags); the program's footprint decides
+/// whether they are granted at all.
+fn run_file_sandboxed(
+    path: &str,
+    dir_root: Option<std::path::PathBuf>,
+    net_allow: Vec<String>,
+    args: Vec<String>,
+    signing_key: Option<[u8; 32]>,
+) -> Result<(Vec<String>, Option<i32>), String> {
+    let (linked, stem) = link_file(path)?;
+    typeck::check(&linked).map_err(|e| e.to_string())?;
+    enforce_performance_modes(&linked, &stem)?;
+    let has_main = linked
+        .items
+        .iter()
+        .any(|it| matches!(it, ast::Item::Function(f) if f.name == "main"));
+    if !has_main {
+        return Err(format!("`{path}` has no `main` to run"));
+    }
+    let footprint = capabilities::analyze(&linked);
+    if footprint.total.contains_key("Secret") && signing_key.is_none() {
+        return Err(format!(
+            "`{path}` needs a Secret, but the host granted none (provide `--signing-key <seed-file>`)"
+        ));
+    }
+    eprintln!(
+        "sandboxing `{path}` \u{2014} granted exactly: {}",
+        capabilities::show_caps(&footprint.total)
+    );
+    run_linked_compiled(&linked, dir_root, net_allow, args, signing_key)
+}
+
+/// The `witchy.*` host functions a compiled module imports — its authority
+/// surface. For a *precompiled* program (`app.wasm`) the imports ARE the
+/// footprint: there is no source to analyze, but a module physically cannot call
+/// a host op it does not import, so granting exactly the imported families is the
+/// distribution counterpart of `capabilities::analyze`.
+fn witchy_imports(bytes: &[u8]) -> Result<Vec<String>, String> {
+    use wasmtime::{Engine, Module};
+    let engine = Engine::default();
+    let module = Module::new(&engine, bytes).map_err(|e| format!("not a valid wasm module: {e}"))?;
+    Ok(module
+        .imports()
+        .filter(|i| i.module() == "witchy")
+        .map(|i| i.name().to_string())
+        .collect())
+}
+
+/// Run a PRECOMPILED program module (`app.wasm`) under the capability sandbox,
+/// granting exactly the authority its imports declare. `--dir`/`--net` supply the
+/// concrete roots; a module that imports a host op it is not granted simply fails
+/// to instantiate. This is the Tier-1 distribution runner: ship the `.wasm`, run
+/// it with `witchy`.
+fn run_wasm_file(
+    path: &str,
+    dir_root: Option<std::path::PathBuf>,
+    net_allow: Vec<String>,
+    args: Vec<String>,
+    signing_key: Option<[u8; 32]>,
+) -> Result<(Vec<String>, Option<i32>), String> {
+    let bytes = std::fs::read(path).map_err(|e| format!("cannot read `{path}`: {e}"))?;
+    run_wasm_module(&bytes, dir_root, net_allow, args, signing_key)
+}
+
+/// Like [`run_wasm_file`] but from in-memory wasm bytes — used by a `build-exe`
+/// launcher to run the program embedded in its own executable.
+fn run_wasm_module(
+    bytes: &[u8],
+    dir_root: Option<std::path::PathBuf>,
+    net_allow: Vec<String>,
+    args: Vec<String>,
+    signing_key: Option<[u8; 32]>,
+) -> Result<(Vec<String>, Option<i32>), String> {
+    use crate::runtime::{Capabilities, Runtime};
+    let needs = witchy_imports(bytes)?;
+    let has = |n: &str| needs.iter().any(|i| i == n);
+    let dir_read = ["dir_subdir", "dir_read_len", "dir_exists", "dir_is_dir", "dir_list_size"]
+        .iter()
+        .any(|n| has(n));
+    let dir_write = ["dir_write", "dir_append", "dir_make_dir"].iter().any(|n| has(n));
+    let net_connect = [
+        "net_connect", "net_try_connect", "net_restrict", "net_send_line", "net_send_bytes",
+        "net_recv_line_len", "net_recv_all_len", "net_recv_bytes_len", "net_close",
+    ]
+    .iter()
+    .any(|n| has(n));
+    let net_listen = ["net_listen", "net_accept"].iter().any(|n| has(n));
+    let needs_secret = has("crypto.sign") || has("crypto.public_key");
+    if needs_secret && signing_key.is_none() {
+        return Err(
+            "this module imports the Secret signing host, but no key was granted (use `--signing-key <seed-file>`)".to_string(),
+        );
+    }
+    let mut caps = Capabilities {
+        print: true,
+        print_int: true,
+        quiet: true,
+        args,
+        ..Default::default()
+    };
+    if has("now") {
+        caps.clock = true;
+    }
+    if has("env_len") || has("env_fill") {
+        caps.env = true;
+    }
+    if dir_read || dir_write {
+        caps.dir_root = Some(dir_root.unwrap_or_else(|| std::path::PathBuf::from(".")));
+        caps.dir_read = dir_read;
+        caps.dir_write = dir_write;
+    }
+    if net_connect || net_listen {
+        caps.net_allow = Some(net_allow);
+        caps.net_connect = net_connect;
+        caps.net_listen = net_listen;
+    }
+    if needs_secret {
+        caps.signing_key = signing_key;
+    }
+    let mut rt = Runtime::batch().map_err(|e| e.to_string())?;
+    let mut actor = rt
+        .spawn(bytes, caps, RUN_MEMORY_PAGES)
+        .map_err(|e| e.to_string())?;
+    actor.run().map_err(|e| e.root_cause().to_string())?;
+    // We can't see `main`'s return type from a bare binary, so an Int `main`'s
+    // value surfaces as a trailing output line rather than the process exit code
+    // (the source runners pop it because they have the AST). Acceptable for Tier 1.
+    Ok((actor.output(), None))
+}
+
+// --- `build-exe`: standalone distribution -----------------------------------
+//
+// A packaged executable is a copy of the `witchy` binary with the program's wasm
+// appended, followed by a 16-byte trailer: `[u64 LE wasm-length][8-byte magic]`.
+// On startup the binary checks its own tail for the magic (see `embedded_payload`)
+// and, if present, runs the embedded module instead of the normal CLI — so the
+// end user runs `./app --dir . --net host:port` with no `witchy` install.
+
+const EXE_MAGIC: &[u8; 8] = b"WiTcHyX1";
+
+/// If this executable has an appended witchy payload, return its wasm bytes. Reads
+/// only the 16-byte trailer in the common (unpackaged) case, so the check is cheap
+/// on every `witchy` invocation.
+fn embedded_payload() -> Option<Vec<u8>> {
+    use std::io::{Read, Seek, SeekFrom};
+    let exe = std::env::current_exe().ok()?;
+    let mut f = std::fs::File::open(&exe).ok()?;
+    let size = f.seek(SeekFrom::End(0)).ok()?;
+    if size < 16 {
+        return None;
+    }
+    f.seek(SeekFrom::End(-16)).ok()?;
+    let mut trailer = [0u8; 16];
+    f.read_exact(&mut trailer).ok()?;
+    if &trailer[8..] != EXE_MAGIC {
+        return None;
+    }
+    let wasm_len = u64::from_le_bytes(trailer[..8].try_into().ok()?);
+    if wasm_len == 0 || wasm_len + 16 > size {
+        return None;
+    }
+    f.seek(SeekFrom::Start(size - 16 - wasm_len)).ok()?;
+    let mut wasm = vec![0u8; wasm_len as usize];
+    f.read_exact(&mut wasm).ok()?;
+    Some(wasm)
+}
+
+/// `witchy build-exe <file.witchy> -o <out>`: compile the program and append it to
+/// a copy of this `witchy` binary, producing a self-contained, capability-enforcing
+/// executable. (Embeds the portable wasm — startup recompiles it; embedding a
+/// per-target `cwasm` for instant startup is a later optimization.)
+fn build_exe_file(path: &str, out: &str) -> Result<(), String> {
+    let (linked, stem) = link_file(path)?;
+    typeck::check(&linked).map_err(|e| e.to_string())?;
+    enforce_performance_modes(&linked, &stem)?;
+    let wat = codegen::compile_module(&linked)
+        .map_err(|e| format!("cannot compile to WASM (an interpreter-only feature?): {e}"))?;
+    let wasm = wat::parse_str(&wat).map_err(|e| format!("assembling wasm: {e}"))?;
+    let exe = std::env::current_exe().map_err(|e| format!("cannot locate the witchy binary: {e}"))?;
+    let mut bytes = std::fs::read(&exe).map_err(|e| format!("cannot read the witchy binary: {e}"))?;
+    // Don't stack payloads: if this witchy is itself already packaged, strip its
+    // trailer first so the new exe carries only the new program.
+    if bytes.len() >= 16 && &bytes[bytes.len() - 8..] == EXE_MAGIC {
+        let len_off = bytes.len() - 16;
+        let old = u64::from_le_bytes(bytes[len_off..len_off + 8].try_into().unwrap()) as usize;
+        bytes.truncate(len_off.saturating_sub(old));
+    }
+    bytes.extend_from_slice(&wasm);
+    bytes.extend_from_slice(&(wasm.len() as u64).to_le_bytes());
+    bytes.extend_from_slice(EXE_MAGIC);
+    std::fs::write(out, &bytes).map_err(|e| format!("cannot write `{out}`: {e}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(out).map_err(|e| e.to_string())?.permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(out, perms).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// Compile a `.witchy` program to a wasm binary and write it to `out`. The
+/// produced module is the Tier-1 distribution artifact: run it with
+/// `witchy <out>` (authority granted from its imports).
+fn emit_wasm_file(path: &str, out: &str) -> Result<(), String> {
+    let (linked, _stem) = link_file(path)?;
+    typeck::check(&linked).map_err(|e| e.to_string())?;
+    enforce_performance_modes(&linked, _stem.as_str())?;
+    let wat = codegen::compile_module(&linked)
+        .map_err(|e| format!("cannot compile to WASM (an interpreter-only feature?): {e}"))?;
+    let binary = wat::parse_str(&wat).map_err(|e| format!("assembling wasm: {e}"))?;
+    std::fs::write(out, &binary).map_err(|e| format!("cannot write `{out}`: {e}"))?;
+    Ok(())
 }
 
 /// Run a `build` step in the **zero-ambient WASM sandbox**: compile it (the
@@ -1329,13 +1764,22 @@ pub fn run_build_step_sandboxed(
 const RUN_MEMORY_PAGES: usize = 16384;
 
 fn run_wat_capture(wat: &str) -> Result<Vec<String>, String> {
+    // wasmtime accepts WAT text or a wasm binary; the WAT bytes go through the
+    // same path the assembled binary does (see `run_wasm_bytes`).
+    run_wasm_bytes(wat.as_bytes())
+}
+
+/// Instantiate a compiled module (WAT text OR an assembled wasm binary) under the
+/// dev grants and return its captured output. The browser playground assembles
+/// codegen's WAT to a binary and runs *that*; this is the native equivalent.
+fn run_wasm_bytes(bytes: &[u8]) -> Result<Vec<String>, String> {
     use crate::runtime::{Capabilities, Runtime};
     // Run-to-completion: no scheduler, so use the non-preempting engine, which
     // omits the per-backedge epoch check and runs tight loops at full speed.
     let mut rt = Runtime::batch().map_err(|e| e.to_string())?;
     let mut actor = rt
         .spawn(
-            wat.as_bytes(),
+            bytes,
             // The dev/differential path mirrors the interpreter's automatic
             // grants: output plus the read-only ambient capabilities (Clock/Env)
             // a `main` may declare. The `sandbox` command is the strict path
@@ -1380,8 +1824,24 @@ fn run_build_step_file(
 ) -> Result<Vec<String>, String> {
     let (linked, _) = link_file(path)?;
     typeck::check(&linked).map_err(|e| e.to_string())?;
+    let out = out_dir.unwrap_or_else(|| std::path::PathBuf::from("build-out"));
+    // Hard isolation when it adds value (matching the package manager): a
+    // *deterministic* step — only BuildOut/BuildRead, no granted env/exec/net —
+    // is a pure function of its inputs, so it runs in the zero-ambient WASM
+    // sandbox where a `..` write traps with no host import to call. Steps needing
+    // BuildExec/BuildNet/BuildEnv run on the capability-sound interpreter: their
+    // host process/socket/env I/O is confined by the grant allow-list, which the
+    // WASM boundary cannot itself enforce.
+    let footprint = capabilities::analyze(&linked);
+    let sandboxable = env_keys.is_empty()
+        && exec_tools.is_empty()
+        && !footprint.build.is_empty()
+        && footprint.build.keys().all(|k| *k == "BuildOut" || *k == "BuildRead");
+    if sandboxable {
+        return run_build_step_sandboxed(linked, out, read_roots);
+    }
     let grants = interpreter::BuildGrants {
-        out_dir: out_dir.unwrap_or_else(|| std::path::PathBuf::from("build-out")),
+        out_dir: out,
         read_roots,
         env_keys,
         exec_tools,
@@ -1583,6 +2043,74 @@ mod example_tests {
         let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
         interpreter::run_module(linked, ".", Vec::new()).expect("run")
+    }
+
+    /// Link a single source as the entry module `t`, for performance-mode tests.
+    fn link_mode(src: &str) -> ast::Module {
+        let module = parser::parse_module(src).expect("parse");
+        crate::linker::link(vec![("t".into(), module)], "t").expect("link")
+    }
+
+    /// `mode opt` / `mode strict` parse into `Module.modes`; an unknown mode is a
+    /// parse error.
+    #[test]
+    fn mode_directive_parses() {
+        let m = parser::parse_module("mode opt\n\nfn main(console: Console):\n    print(console, \"hi\")\n")
+            .expect("parse");
+        assert_eq!(m.modes, vec!["opt".to_string()]);
+        let m2 = parser::parse_module("mode strict\n\nfn main(console: Console):\n    print(console, \"hi\")\n")
+            .expect("parse");
+        assert_eq!(m2.modes, vec!["strict".to_string()]);
+        assert!(parser::parse_module("mode turbo\n\nfn main():\n    nil\n").is_err());
+        // `mode` stays usable as an ordinary identifier (contextual keyword).
+        assert!(parser::parse_module("fn main(console: Console):\n    let mode = 3\n    print(console, __render(mode))\n").is_ok());
+    }
+
+    /// In a `mode opt`/`strict` file, an ownership-relevant parameter (a heap
+    /// buffer) must carry an explicit `let`/`own`/`inout` convention; scalars and
+    /// capabilities are exempt; an ordinary file is never enforced.
+    #[test]
+    fn mode_requires_ownership_conventions() {
+        let unannotated = "mode opt\n\nfn tag(xs: List(Int)) -> Int:\n    list.length(xs)\n\nfn main(console: Console):\n    print(console, __render(tag([1, 2, 3])))\n";
+        let err = crate::enforce_performance_modes(&link_mode(unannotated), "t")
+            .expect_err("unannotated List param must be rejected in a mode file");
+        assert!(err.contains("ownership convention"), "{err}");
+
+        // The same code with `let` is accepted.
+        let annotated = unannotated.replace("fn tag(xs:", "fn tag(let xs:");
+        crate::enforce_performance_modes(&link_mode(&annotated), "t").expect("annotated param passes");
+
+        // A scalar param needs no annotation even in a mode file.
+        let scalar = "mode opt\n\nfn twice(n: Int) -> Int:\n    n + n\n\nfn main(console: Console):\n    print(console, __render(twice(3)))\n";
+        crate::enforce_performance_modes(&link_mode(scalar), "t").expect("scalar param is exempt");
+
+        // Without a mode directive, the unannotated param is fine.
+        let plain = unannotated.replacen("mode opt\n\n", "", 1);
+        crate::enforce_performance_modes(&link_mode(&plain), "t").expect("non-mode file is not enforced");
+    }
+
+    /// In a mode file, an accumulator that reverts to the copying path inside a
+    /// loop (a `Cliff`) is a hard error; in an ordinary file the same shape only
+    /// warns (no error).
+    #[test]
+    fn mode_rejects_accumulator_cliff() {
+        let cliff = "mode opt\n\nfn main(console: Console):\n    var xs = []\n    var snaps = []\n    for i in [1, 2, 3]:\n        snaps = list.push(snaps, xs)\n        xs = list.push(xs, i)\n    print(console, __render(list.length(xs)))\n";
+        let err = crate::enforce_performance_modes(&link_mode(cliff), "t")
+            .expect_err("a repeated copy-revert in a mode file must be rejected");
+        assert!(err.contains("rebuilt by copy"), "{err}");
+
+        // The same body without the mode directive is accepted (a note, not an error).
+        let plain = cliff.replacen("mode opt\n\n", "", 1);
+        crate::enforce_performance_modes(&link_mode(&plain), "t").expect("non-mode file only warns");
+    }
+
+    /// A clean `mode opt` program — properly annotated, accumulator stays
+    /// in-place — passes enforcement and runs.
+    #[test]
+    fn clean_mode_program_passes_and_runs() {
+        let src = "mode opt\n\nfn main(console: Console):\n    var xs = []\n    for i in [1, 2, 3]:\n        xs = list.push(xs, i)\n    print(console, __render(list.length(xs)))\n";
+        crate::enforce_performance_modes(&link_mode(src), "t").expect("clean mode program passes");
+        assert_eq!(interpreter::run(src).expect("interp"), vec!["3"]);
     }
 
     /// `crypto.sha256` — a native intrinsic of the `crypto` module, *not* a global
@@ -1987,6 +2515,150 @@ mod example_tests {
             "tampered message must fail"
         );
         assert_eq!(link_run(&prog(&pk, msg, "00")), vec!["bad"], "malformed sig must fail, not panic");
+    }
+
+    /// `crypto.ecdsa_p256_verify` (WebAuthn "ES256") verifies a real P-256/SHA-256
+    /// signature, rejects a tampered message, and is total on a malformed signature.
+    /// KAT: SEC1-uncompressed pubkey + ASN.1-DER sig (generated with the `cryptography` lib).
+    #[test]
+    fn crypto_ecdsa_p256_verify_checks_signatures() {
+        let pk = "048f81cd9fca785a42a6f5dd58972cc0f702e83b1c960b5912354471496597e227fec81ff1d52530b06d7091649e6beb49dba70968b4b727bb24e3ceb7dd01a039";
+        let msg = "webauthn-es256-test-message";
+        let sig = "304402203260029f4c6beb2e78afdd906c057c63f8828e2b03820de7053d97254577fb8c02204478b9b75f8fd7a1ce4298f0d119e12926dafda116ae4c197b0048dc117bc9de";
+        let prog = |pubk: &str, m: &str, s: &str| {
+            format!(
+                "import crypto\nfn main(console: Console):\n    print(console, if crypto.ecdsa_p256_verify(\"{pubk}\", \"{m}\", \"{s}\"): \"ok\" else: \"bad\")\n"
+            )
+        };
+        assert_eq!(link_run(&prog(pk, msg, sig)), vec!["ok"], "valid ES256 signature must verify");
+        assert_eq!(link_run(&prog(pk, "wrong-message", sig)), vec!["bad"], "tampered message must fail");
+        assert_eq!(link_run(&prog(pk, msg, "30060201010201ff")), vec!["bad"], "malformed sig must fail, not panic");
+    }
+
+    /// `crypto.sha512` and `crypto.hmac_sha256` against standard known-answer vectors
+    /// (SHA-512("abc"); HMAC-SHA256 RFC 4231 test case 1).
+    #[test]
+    fn crypto_sha512_and_hmac_match_known_vectors() {
+        let p1 = "import crypto\nfn main(console: Console):\n    print(console, crypto.sha512(\"abc\"))\n";
+        assert_eq!(
+            link_run(p1),
+            vec!["ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f"]
+        );
+        let key = "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b";
+        let p2 = format!(
+            "import crypto\nfn main(console: Console):\n    print(console, crypto.hmac_sha256(\"{key}\", \"Hi There\"))\n"
+        );
+        assert_eq!(link_run(&p2), vec!["b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7"]);
+    }
+
+    /// The aws-lc-rs crypto extensions (`sha512`, `sha3_256`, `hmac_sha256`,
+    /// `ecdsa_p256_verify`) produce byte-identical results on the interpreter and
+    /// the compiled WASM backend: the host imports bridge to the SAME native
+    /// registry the interpreter calls, so the backends agree by construction.
+    /// This guards the bridge that lets coven-web run fully sandboxed.
+    #[test]
+    fn crypto_extensions_backends_agree() {
+        let pk = "048f81cd9fca785a42a6f5dd58972cc0f702e83b1c960b5912354471496597e227fec81ff1d52530b06d7091649e6beb49dba70968b4b727bb24e3ceb7dd01a039";
+        let sig = "304402203260029f4c6beb2e78afdd906c057c63f8828e2b03820de7053d97254577fb8c02204478b9b75f8fd7a1ce4298f0d119e12926dafda116ae4c197b0048dc117bc9de";
+        let src = format!(
+"import crypto
+fn main(console: Console):
+    print(console, crypto.sha512(\"abc\"))
+    print(console, crypto.sha3_256(\"abc\"))
+    print(console, crypto.hmac_sha256(\"0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b\", \"Hi There\"))
+    print(console, if crypto.ecdsa_p256_verify(\"{pk}\", \"webauthn-es256-test-message\", \"{sig}\"): \"ok\" else: \"bad\")
+    print(console, if crypto.ecdsa_p256_verify(\"{pk}\", \"tampered\", \"{sig}\"): \"ok\" else: \"bad\")
+"
+        );
+        let expected = vec![
+            "ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f",
+            "3a985da74fe225b2045c172d6bd390bd855f086e3e9d525b46bfe24511431532",
+            "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7",
+            "ok",
+            "bad",
+        ];
+        assert_eq!(link_run(&src), expected, "interpreter");
+        assert_eq!(wasm_run(&src), expected, "wasm");
+    }
+
+    /// `string.from_code` (a code point -> its UTF-8 character) agrees across the
+    /// interpreter and the compiled WASM backend, for a 1-byte (ASCII), 2-byte
+    /// (é), 3-byte (中) and 4-byte (😀) encoding, and yields U+FFFD for a lone
+    /// surrogate (an invalid scalar value) rather than trapping.
+    #[test]
+    fn string_from_code_backends_agree() {
+        let src = "import string\nfn main(console: Console):\n    print(console, string.from_code(65) + string.from_code(233) + string.from_code(20013) + string.from_code(128512) + string.from_code(55296))\n";
+        let expected = vec!["A\u{e9}\u{4e2d}\u{1f600}\u{fffd}"];
+        assert_eq!(link_run(src), expected, "interpreter");
+        assert_eq!(wasm_run(src), expected, "wasm");
+    }
+
+    /// The JSON decoder unescapes `\uXXXX` — including astral characters spelled
+    /// as a UTF-16 surrogate pair (`😀` -> 😀) — identically on both
+    /// backends. Guards the `string.from_code`-powered `\u` path in `std/json`.
+    #[test]
+    fn json_unicode_escapes_backends_agree() {
+        let src = r#"import json
+import option
+
+fn show(o: Option(String)) -> String:
+    match o:
+        Some(s) -> s
+        None -> "none"
+
+fn main(console: Console):
+    match json.decode("{\"k\":\"caf\\u00e9 \\ud83d\\ude00 \\u4e2d\"}"):
+        Ok(j) ->
+            match json.get(j, "k"):
+                Some(v) -> print(console, show(json.as_string(v)))
+                None -> print(console, "nokey")
+        Err(e) -> print(console, "err")
+"#;
+        let expected = vec!["caf\u{e9} \u{1f600} \u{4e2d}"];
+        assert_eq!(link_run(src), expected, "interpreter");
+        assert_eq!(wasm_run(src), expected, "wasm");
+    }
+
+    /// `std/webauthn.verify_assertion` accepts a real ES256 WebAuthn assertion and
+    /// rejects a tampered signature and a missing user-verification flag. Vectors
+    /// generated with the `cryptography` lib (P-256, real authenticatorData).
+    #[test]
+    fn webauthn_verify_assertion_checks_an_es256_assertion() {
+        let pubkey = "045336195e14d40d2d2d3084160b8d776b7d6cdc2e0d162b8da57d8c87dcb6360b67c39ee3d657d7387cec773723df914e5547359511f051fbb6e327368723dba1";
+        let client = "{\\\"type\\\":\\\"webauthn.get\\\",\\\"challenge\\\":\\\"dGVzdC1jaGFsbGVuZ2U\\\",\\\"origin\\\":\\\"https://coven.example\\\"}";
+        let ad_uv = "fb829c116ec8fed5624aba5b473a0b3a93ca17f477ea91ab2c6ebc49166f860d0500000001";
+        let sig_uv = "304602210088b792258e9149557b201f677ffadeda762a2bbd819fb43a6aaff3940681f16e022100b0b770fd5d498d536a6a7d4e641becad007790eb01a85fb8fd9c6e8304ead0ec";
+        let ad_up = "fb829c116ec8fed5624aba5b473a0b3a93ca17f477ea91ab2c6ebc49166f860d0100000001";
+        let sig_up = "304402207cdb90e725b9051a0918c3a12b2d18e4c952e8e90acde4f49bd0cc7d0c8a18bd02200b9b3f40d586103527e3aa27677746366d62a200209c9a19a6547d515a49a1f8";
+        let prog = |ad: &str, sig: &str, uv: &str| {
+            format!(
+"import webauthn
+fn show(r: Result(Bool, String)) -> String:
+    match r:
+        Ok(_) -> \"ok\"
+        Err(e) -> e
+fn main(console: Console):
+    print(console, show(webauthn.verify_assertion(\"{pubkey}\", \"{ad}\", \"{client}\", \"{sig}\", \"dGVzdC1jaGFsbGVuZ2U\", \"https://coven.example\", \"coven.example\", {uv})))
+"
+            )
+        };
+        assert_eq!(link_run(&prog(ad_uv, sig_uv, "true")), vec!["ok"], "valid assertion must verify");
+        assert!(
+            link_run(&prog(ad_uv, &format!("00{sig_uv}"), "true")).join("").contains("signature"),
+            "tampered signature must be rejected"
+        );
+        assert!(
+            link_run(&prog(ad_up, sig_up, "true")).join("").contains("verification"),
+            "missing user-verification flag must be rejected when required"
+        );
+    }
+
+    /// `encoding.base64url_of_hex` — base64url (no padding) of bytes given as hex.
+    #[test]
+    fn encoding_base64url_of_hex_matches() {
+        // hex("test-challenge") -> base64url "dGVzdC1jaGFsbGVuZ2U" (WebAuthn challenge form).
+        let p = "import encoding\nfn main(console: Console):\n    print(console, encoding.base64url_of_hex(\"746573742d6368616c6c656e6765\"))\n";
+        assert_eq!(link_run(p), vec!["dGVzdC1jaGFsbGVuZ2U"]);
     }
 
     /// `crypto.ed25519_verify` runs in the *compiled WASM backend* too — bridged
@@ -6863,6 +7535,126 @@ fn main(console: Console):
     }
 
     #[test]
+    fn examples_agree_under_inplace_and_forced_copy() {
+        // Metamorphic, NO-ORACLE codegen check: the in-place update machinery and
+        // the forced-copy fallback are two lowerings of the same program and must
+        // produce identical output. This catches an in-place aliasing bug on the
+        // compiled backend WITHOUT consulting the interpreter — the kind of
+        // self-consistency guard that lets the differential oracle be retired.
+        // Restricted to console-only, `main`-bearing programs so output is
+        // self-contained and deterministic.
+        let mut diverged = Vec::new();
+        for entry in std::fs::read_dir("examples").unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().and_then(|e| e.to_str()) != Some("witchy") {
+                continue;
+            }
+            let p = path.to_str().unwrap();
+            let Ok((linked, _)) = crate::link_file(p) else {
+                continue;
+            };
+            if typeck::check(&linked).is_err() {
+                continue;
+            }
+            let has_main = linked
+                .items
+                .iter()
+                .any(|it| matches!(it, ast::Item::Function(f) if f.name == "main"));
+            let console_only = crate::capabilities::analyze(&linked)
+                .total
+                .keys()
+                .all(|k| *k == "Console");
+            if !has_main || !console_only {
+                continue;
+            }
+            let compile_with = |force_copy: bool| {
+                codegen::set_force_copy_for_tests(Some(force_copy));
+                let wat = codegen::compile_module(&linked);
+                codegen::set_force_copy_for_tests(None);
+                wat
+            };
+            if let (Ok(inplace), Ok(copy)) = (compile_with(false), compile_with(true)) {
+                let a = crate::run_wat_capture(&inplace);
+                let b = crate::run_wat_capture(&copy);
+                if a != b {
+                    diverged.push(format!("{p}: in-place {a:?} vs forced-copy {b:?}"));
+                }
+            }
+        }
+        assert!(
+            diverged.is_empty(),
+            "in-place and forced-copy codegen diverge:\n{}",
+            diverged.join("\n")
+        );
+    }
+
+    #[test]
+    fn assembled_binary_runs_like_the_wat() {
+        // The browser playground compiles a program to a wasm *binary* (codegen's
+        // WAT assembled by the `wat` crate) and runs THAT on the browser's own
+        // WebAssembly engine — no interpreter. Verify the assembly is faithful:
+        // for every console-only example the assembled binary must run identically
+        // to the WAT text on wasmtime. This is the native half of the Phase 4
+        // browser migration (the JS host shim is the browser half).
+        let mut diverged = Vec::new();
+        for entry in std::fs::read_dir("examples").unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().and_then(|e| e.to_str()) != Some("witchy") {
+                continue;
+            }
+            let p = path.to_str().unwrap();
+            let Ok((linked, _)) = crate::link_file(p) else {
+                continue;
+            };
+            if typeck::check(&linked).is_err() {
+                continue;
+            }
+            let has_main = linked
+                .items
+                .iter()
+                .any(|it| matches!(it, ast::Item::Function(f) if f.name == "main"));
+            let console_only = crate::capabilities::analyze(&linked)
+                .total
+                .keys()
+                .all(|k| *k == "Console");
+            if !has_main || !console_only {
+                continue;
+            }
+            let Ok(wat) = codegen::compile_module(&linked) else {
+                continue;
+            };
+            let binary = wat::parse_str(&wat).expect("assemble WAT to a wasm binary");
+            assert_eq!(&binary[..4], b"\0asm", "{p}: assembled output is not a wasm module");
+            let from_wat = crate::run_wat_capture(&wat);
+            let from_bin = crate::run_wasm_bytes(&binary);
+            if from_wat != from_bin {
+                diverged.push(format!("{p}: WAT {from_wat:?} vs binary {from_bin:?}"));
+            }
+        }
+        assert!(
+            diverged.is_empty(),
+            "assembled binary diverges from the WAT:\n{}",
+            diverged.join("\n")
+        );
+    }
+
+    #[test]
+    fn precompiled_wasm_runs_like_the_source() {
+        // C Tier 1 (distribution): a program emitted to a `.wasm` and run as a
+        // precompiled module — with authority derived from its imports — produces
+        // the same output as running the source. This is "ship the .wasm, run it
+        // with witchy".
+        let tmp = std::env::temp_dir().join("witchy_tier1_precompiled.wasm");
+        let out = tmp.to_str().unwrap();
+        crate::emit_wasm_file("examples/calc.witchy", out).expect("emit-wasm");
+        let (from_wasm, _) =
+            crate::run_wasm_file(out, None, Vec::new(), Vec::new(), None).expect("run .wasm");
+        let from_source = crate::execute_file("examples/calc.witchy", Vec::new()).expect("run source");
+        assert_eq!(from_wasm, from_source, "precompiled .wasm diverges from the source run");
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
     fn merge_sort_is_stable_on_both_backends() {
         // list.sort_by is a stable merge sort: equal keys keep their original
         // order. Sort (key, tag) items by key only; ties must preserve insertion
@@ -8975,7 +9767,7 @@ fn main(console: Console):
     /// self-hosted `lock`/`verify` interoperate with the Rust toolchain.
     #[test]
     fn rune_hash_native_matches_the_store_byte_for_byte() {
-        use crate::interpreter::Value;
+        use crate::value::NativeValue as Value;
         let dir = std::path::Path::new("examples/projects/ledger/money");
         let src = crate::pm::store::RuneSource::read_dir(dir).unwrap();
         let paths: Vec<Value> = src.files.iter().map(|(p, _)| Value::Str(p.clone())).collect();
@@ -11625,7 +12417,7 @@ fn main(console: Console):
 
     // Phase 2 of the concurrency redesign: an `async fn` lowers (CPS over closures,
     // `crate::async_lower`) to a cooperative `chan` task, and `await` chains
-    // continuations. An async `main` is the executor entry (lowers to `chan.run`).
+    // continuations. An async `main` is the executor entry (lowers to `task.run`).
     // The lowering is ordinary closures + calls, so both backends agree.
     #[test]
     fn async_await_lowers_and_runs_backends_agree() {
@@ -11634,14 +12426,14 @@ async fn double(n: Int) -> Int:
     n + n
 
 async fn pipeline(seed: Int) -> Int:
-    let a = await double(seed)
-    let b = await double(a)
+    let a = double(seed).await
+    let b = double(a).await
     a + b
 
 async fn main(console: Console):
-    let r = await pipeline(3)
+    let r = pipeline(3).await
     print(console, "${r}")
-    let d = await double(10)
+    let d = double(10).await
     print(console, "${d}")
 "#;
         let module = parser::parse_module(src).expect("parse");
@@ -11659,7 +12451,7 @@ async fn main(console: Console):
     // The headline of the unification: `async`/`await` and channels are ONE
     // substrate. A producer and a consumer, both written as straight-line
     // `async fn`s using `await chan.send`/`await chan.recv`, run concurrently under
-    // `chan.run`. The consumer loops on `recv` (recursively) — this is the actor
+    // `task.run`. The consumer loops on `recv` (recursively) — this is the actor
     // idiom, now ergonomic — and the schedule is byte-identical on both backends.
     #[test]
     fn async_with_channels_backends_agree() {
@@ -11667,16 +12459,16 @@ async fn main(console: Console):
 import chan
 
 async fn producer(tx: Sender(Int)) -> Nil:
-    await chan.send(tx, 1)
-    await chan.send(tx, 2)
+    chan.send(tx, 1).await
+    chan.send(tx, 2).await
 
 async fn consumer(console: Console, rx: Receiver(Int)) -> Nil:
-    await chan.consume(rx, fn(v): chan.done(print(console, "got ${v}")))
+    chan.consume(rx, fn(v): task.done(print(console, "got ${v}"))).await
 
 async fn main(console: Console):
-    let (tx, rx) = await chan.channel(4)
-    await chan.spawn(producer(tx))
-    await consumer(console, rx)
+    let (tx, rx) = chan.channel(4).await
+    task.spawn(producer(tx)).await
+    consumer(console, rx).await
 "#;
         let module = parser::parse_module(src).expect("parse");
         let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
@@ -11690,7 +12482,7 @@ async fn main(console: Console):
     }
 
     // `await` inside a `for` loop — over a list (producer) and a range (consumer)
-    // — lowers to a sequential `chan.for_each`, so iterating with `await` needs no
+    // — lowers to a sequential `task.for_each`, so iterating with `await` needs no
     // hand-written recursion. Both backends must agree, byte-for-byte.
     #[test]
     fn for_await_loop_backends_agree() {
@@ -11699,19 +12491,19 @@ import chan
 
 async fn producer(tx: Sender(Int)) -> Nil:
     for x in [1, 2, 3]:
-        await chan.send(tx, x)
+        chan.send(tx, x).await
 
 async fn consumer(console: Console, rx: Receiver(Int)) -> Nil:
     for _i in 0..3:
-        let o = await chan.recv(rx)
+        let o = chan.recv(rx).await
         match o:
             Some(v) -> print(console, "got ${v}")
             None -> print(console, "closed")
 
 async fn main(console: Console):
-    let (tx, rx) = await chan.channel(4)
-    await chan.spawn(producer(tx))
-    await consumer(console, rx)
+    let (tx, rx) = chan.channel(4).await
+    task.spawn(producer(tx)).await
+    consumer(console, rx).await
 "#;
         let module = parser::parse_module(src).expect("parse");
         let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
@@ -11734,18 +12526,18 @@ import chan
 
 async fn producer(tx: Sender(Int)) -> Nil:
     for n in [1, 2, 3]:
-        await chan.send(tx, n)
+        chan.send(tx, n).await
 
 async fn relay(rx: Receiver(Int), out: Sender(Int)) -> Nil:
     for await x in rx:
-        await chan.send(out, x * x)
+        chan.send(out, x * x).await
 
 async fn main(console: Console):
-    let (tx, rx) = await chan.channel(4)
-    let (otx, orx) = await chan.channel(4)
-    await chan.spawn(producer(tx))
-    await chan.spawn(relay(rx, otx))
-    await chan.consume(orx, fn(v): chan.done(print(console, "got ${v}")))
+    let (tx, rx) = chan.channel(4).await
+    let (otx, orx) = chan.channel(4).await
+    task.spawn(producer(tx)).await
+    task.spawn(relay(rx, otx)).await
+    chan.consume(orx, fn(v): task.done(print(console, "got ${v}"))).await
 "#;
         let module = parser::parse_module(src).expect("parse");
         let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
@@ -11770,23 +12562,23 @@ async fn main(console: Console):
 import chan
 
 async fn logger(console: Console, rx: Receiver(Int)) -> Nil:
-    await chan.consume(rx, fn(a): chan.done(print(console, "log ${a}")))
+    chan.consume(rx, fn(a): task.done(print(console, "log ${a}"))).await
 
 async fn forwarder(rx: Receiver(Int), log_tx: Sender(Int)) -> Nil:
-    await chan.consume(rx, fn(m): chan.send(log_tx, m))
+    chan.consume(rx, fn(m): chan.send(log_tx, m)).await
 
 async fn driver(log_tx: Sender(Int), fwd_tx: Sender(Int)) -> Nil:
-    await chan.send(log_tx, 100)
-    await chan.send(fwd_tx, 200)
+    chan.send(log_tx, 100).await
+    chan.send(fwd_tx, 200).await
 
 async fn main(console: Console):
-    let (log_tx, log_rx) = await chan.channel(4)
-    let (fwd_tx, fwd_rx) = await chan.channel(4)
-    let lh = await chan.spawn(logger(console, log_rx))
-    let fh = await chan.spawn(forwarder(fwd_rx, log_tx))
-    await driver(log_tx, fwd_tx)
-    await chan.join(fh)
-    await chan.join(lh)
+    let (log_tx, log_rx) = chan.channel(4).await
+    let (fwd_tx, fwd_rx) = chan.channel(4).await
+    let lh = task.spawn(logger(console, log_rx)).await
+    let fh = task.spawn(forwarder(fwd_rx, log_tx)).await
+    driver(log_tx, fwd_tx).await
+    task.join(fh).await
+    task.join(lh).await
 "#;
         let module = parser::parse_module(src).expect("parse");
         let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
@@ -11811,16 +12603,16 @@ async fn main(console: Console):
 import chan
 
 async fn producer(tx: Sender(Int)) -> Nil:
-    await chan.send(tx, 1)
-    await chan.send(tx, 2)
+    chan.send(tx, 1).await
+    chan.send(tx, 2).await
 
 async fn consumer(console: Console, rx: Receiver(Int)) -> Nil:
-    await chan.consume(rx, fn(v): chan.done(print(console, "got ${v}")))
+    chan.consume(rx, fn(v): task.done(print(console, "got ${v}"))).await
 
 async fn main(console: Console):
-    let (tx, rx) = await chan.channel(1)
-    await chan.spawn(producer(tx))
-    await consumer(console, rx)
+    let (tx, rx) = chan.channel(1).await
+    task.spawn(producer(tx)).await
+    consumer(console, rx).await
     print(console, "drained")
 "#;
         let module = parser::parse_module(src).expect("parse");
@@ -11844,16 +12636,16 @@ async fn main(console: Console):
 import chan
 
 async fn producer(tx: Sender(String)) -> Nil:
-    await chan.send(tx, "alice")
-    await chan.send(tx, "bob")
+    chan.send(tx, "alice").await
+    chan.send(tx, "bob").await
 
 async fn consumer(console: Console, rx: Receiver(String)) -> Nil:
-    await chan.consume(rx, fn(name): chan.done(print(console, "hello ${name}")))
+    chan.consume(rx, fn(name): task.done(print(console, "hello ${name}"))).await
 
 async fn main(console: Console):
-    let (tx, rx) = await chan.channel(4)
-    await chan.spawn(producer(tx))
-    await consumer(console, rx)
+    let (tx, rx) = chan.channel(4).await
+    task.spawn(producer(tx)).await
+    consumer(console, rx).await
 "#;
         let module = parser::parse_module(src).expect("parse");
         let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
@@ -11875,29 +12667,29 @@ async fn main(console: Console):
 import chan
 
 async fn pa(tx: Sender(Int)) -> Nil:
-    await chan.send(tx, 1)
-    await chan.send(tx, 2)
+    chan.send(tx, 1).await
+    chan.send(tx, 2).await
 
 async fn pb(tx: Sender(Int)) -> Nil:
-    await chan.send(tx, 9)
+    chan.send(tx, 9).await
 
 async fn collector(console: Console, a: Receiver(Int), b: Receiver(Int)) -> Nil:
-    let s = await chan.select(a, b)
+    let s = chan.select(a, b).await
     match s:
         First(x) ->
             print(console, "a ${x}")
-            await collector(console, a, b)
+            collector(console, a, b).await
         Second(y) ->
             print(console, "b ${y}")
-            await collector(console, a, b)
+            collector(console, a, b).await
         Closed -> print(console, "done")
 
 async fn main(console: Console):
-    let (atx, arx) = await chan.channel(4)
-    let (btx, brx) = await chan.channel(4)
-    await chan.spawn(pa(atx))
-    await chan.spawn(pb(btx))
-    await collector(console, arx, brx)
+    let (atx, arx) = chan.channel(4).await
+    let (btx, brx) = chan.channel(4).await
+    task.spawn(pa(atx)).await
+    task.spawn(pb(btx)).await
+    collector(console, arx, brx).await
 "#;
         let module = parser::parse_module(src).expect("parse");
         let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
@@ -11942,12 +12734,15 @@ fn main(console: Console):
     // The coloring rule: `await` is a parse error outside an `async fn`.
     #[test]
     fn await_outside_async_is_a_parse_error() {
-        let src = "fn main(console: Console):\n    print(console, \"${await 5}\")\n";
-        let err = parser::parse_module(src).expect_err("await in a sync fn must not parse");
+        // `.await` is postfix and legal only inside an `async fn`.
+        let src = "fn f():\n    let _x = (5).await\n";
+        let err = parser::parse_module(src).expect_err("`.await` in a sync fn must not parse");
         assert!(
             format!("{err:?}").contains("async fn"),
             "error should name the async-fn rule: {err:?}"
         );
+        // A leading `await` (the old prefix form) is no longer accepted at all.
+        assert!(parser::parse_module("async fn main():\n    await f()\n").is_err());
     }
 
     // Phase 3 of the concurrency redesign: the deterministic round-robin executor
