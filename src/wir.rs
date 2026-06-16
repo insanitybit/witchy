@@ -1858,6 +1858,76 @@ pub fn list_concat_helper() -> WirFunc {
     }
 }
 
+/// `$ascii_case(s, up) -> i32` — `s` with ASCII letters cased: `up != 0`
+/// uppercases (`a`–`z` → `A`–`Z`), else lowercases. Non-letters and non-ASCII
+/// bytes copy through unchanged (byte-wise, so multibyte UTF-8 is preserved).
+pub fn ascii_case_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    let i32c = E::ConstI32;
+    let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+    let load = |p: E| E::Load { ptr: Box::new(p), kind: Kind::I32, offset: 0 };
+    let setl = |n: &str, v: E| N::SetLocal { local: n.into(), value: v };
+    let in_range = |lo: i32, hi: i32| b(BinOp::And, b(BinOp::GeU, getl("b"), i32c(lo)), b(BinOp::LeU, getl("b"), i32c(hi)));
+    let scan_loop = N::Block {
+        label: "done".into(),
+        result: None,
+        body: vec![N::Loop {
+            label: "l".into(),
+            body: vec![
+                N::Br { target: "done".into(), cond: Some(b(BinOp::Ge, getl("i"), getl("len"))) },
+                setl("b", E::Load8U { ptr: Box::new(b(BinOp::Add, getl("s"), getl("i"))), offset: 4 }),
+                N::If {
+                    cond: getl("up"),
+                    then_: vec![N::If {
+                        cond: in_range(97, 122),
+                        then_: vec![setl("b", b(BinOp::Sub, getl("b"), i32c(32)))],
+                        els: vec![],
+                        result: None,
+                    }],
+                    els: vec![N::If {
+                        cond: in_range(65, 90),
+                        then_: vec![setl("b", b(BinOp::Add, getl("b"), i32c(32)))],
+                        els: vec![],
+                        result: None,
+                    }],
+                    result: None,
+                },
+                N::Store8 { ptr: b(BinOp::Add, getl("res"), getl("i")), value: getl("b"), offset: 4 },
+                setl("i", b(BinOp::Add, getl("i"), i32c(1))),
+                N::Br { target: "l".into(), cond: None },
+            ],
+        }],
+    };
+    WirFunc {
+        name: "ascii_case".into(),
+        params: vec![
+            WirLocal { name: "s".into(), ty: WirTy::Str },
+            WirLocal { name: "up".into(), ty: WirTy::Bool },
+        ],
+        ret: vec![WirTy::Str],
+        locals: ["len", "i", "res", "b"]
+            .iter()
+            .map(|n| WirLocal { name: (*n).into(), ty: WirTy::Bool })
+            .collect(),
+        body: vec![
+            setl("len", load(getl("s"))),
+            N::Do(E::Call { func: "ensure".into(), args: vec![b(BinOp::Add, i32c(4), getl("len"))] }),
+            setl("res", E::GetGlobal("heap".into())),
+            N::Store { ptr: getl("res"), value: getl("len"), kind: Kind::I32, offset: 0 },
+            setl("i", i32c(0)),
+            scan_loop,
+            N::SetGlobal {
+                global: "heap".into(),
+                value: b(BinOp::Add, b(BinOp::Add, getl("res"), i32c(4)), getl("len")),
+            },
+            N::Push(getl("res")),
+        ],
+        raw_body: None,
+    }
+}
+
 /// A WIR-native prelude helper plus the module-level resources it needs (so a
 /// pruned module declares only the imports/globals/table its reached helpers
 /// actually touch — capability-minimal).
@@ -2021,6 +2091,13 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
         }),
         "list_concat" => Some(WirHelperSpec {
             func: list_concat_helper(),
+            helper_deps: &["ensure"],
+            import_deps: &[],
+            uses_heap: true,
+            uses_table: false,
+        }),
+        "ascii_case" => Some(WirHelperSpec {
+            func: ascii_case_helper(),
             helper_deps: &["ensure"],
             import_deps: &[],
             uses_heap: true,

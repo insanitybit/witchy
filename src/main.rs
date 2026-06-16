@@ -8230,6 +8230,12 @@ fn main(console: Console):
                 "fn main(console: Console):\n    let xs = list.concat([10, 20], [30, 40])\n    print(console, __render(list.at(xs, 0)))\n    print(console, __render(list.at(xs, 2)))\n    print(console, __render(list.at(xs, 3)))\n",
                 vec!["10".to_string(), "30".to_string(), "40".to_string()],
             ),
+            // string.to_upper / to_lower ($ascii_case byte transform) on the
+            // binary path.
+            (
+                "fn main(console: Console):\n    print(console, string.to_upper(\"Hello, World!\"))\n    print(console, string.to_lower(\"Hello, World!\"))\n",
+                vec!["HELLO, WORLD!".to_string(), "hello, world!".to_string()],
+            ),
         ];
         let mut lowered_any = false;
         for (src, want) in cases {

@@ -1922,6 +1922,65 @@ mod tests {
     }
 
     #[test]
+    fn ascii_case_changes_letter_case() {
+        use crate::wir::{ascii_case_helper, ensure_helper};
+        let mk_str = |s: &str| {
+            let mut b = (s.len() as u32).to_le_bytes().to_vec();
+            b.extend_from_slice(s.as_bytes());
+            b
+        };
+        let data = vec![DataSegment { offset: 200, bytes: mk_str("aB1") }];
+        let gl = |n: &str| WirExpr::GetLocal(n.into());
+        let cased = |up: i32| WirExpr::Call {
+            func: "ascii_case".into(),
+            args: vec![WirExpr::ConstI32(200), WirExpr::ConstI32(up)],
+        };
+        let to_i64 = |e: WirExpr| WirExpr::Convert { from: Kind::I32, to: Kind::I64, arg: Box::new(e) };
+        // byte `off` of the string pointer held in local `name`.
+        let byte = |name: &'static str, off: u32| {
+            to_i64(WirExpr::Load8U { ptr: Box::new(gl(name)), offset: 4 + off })
+        };
+        let pi = |e: WirExpr| {
+            WirNode::Do(WirExpr::CallHost { import: "print_int".into(), args: vec![e] })
+        };
+        let run = WirFunc {
+            name: "run".into(),
+            params: vec![],
+            ret: vec![],
+            locals: vec![local("u", WirTy::Bool), local("d", WirTy::Bool)],
+            body: vec![
+                WirNode::SetLocal { local: "u".into(), value: cased(1) },
+                pi(byte("u", 0)), // 'a'→'A' = 65
+                pi(byte("u", 1)), // 'B' stays = 66
+                WirNode::SetLocal { local: "d".into(), value: cased(0) },
+                pi(byte("d", 0)), // 'a' stays = 97
+                pi(byte("d", 1)), // 'B'→'b' = 98
+            ],
+            raw_body: None,
+        };
+        let module = WirModule {
+            imports: vec![WirImport {
+                name: "print_int".into(),
+                params: vec![Kind::I64],
+                results: vec![],
+            }],
+            funcs: vec![ensure_helper(), ascii_case_helper(), run],
+            memory_pages: 1,
+            data,
+            globals: vec![WirGlobal {
+                name: "heap".into(),
+                kind: Kind::I32,
+                mutable: true,
+                init: GlobalInit::I32(1024),
+                export: None,
+            }],
+            table: None,
+            exports: vec![("run".into(), "run".into())],
+        };
+        assert_agrees(&module, &["65", "66", "97", "98"]);
+    }
+
+    #[test]
     fn arithmetic_roundtrips() {
         // fn add() -> Int: (2 + 3) * 4 == 20
         let add = WirFunc {
