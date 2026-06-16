@@ -81,6 +81,20 @@ pub fn resolve_std_only(src: &str) -> Result<ast::Module, String> {
 pub fn compile_source(src: &str) -> Result<Vec<u8>, String> {
     let linked = resolve_std_only(src)?;
     typeck::check(&linked).map_err(|e| e.to_string())?;
+    // Prefer the WIR → wasm-binary pipeline (no `wat::parse_str`): when the whole
+    // module lowers and reaches only WIR-native prelude helpers, it emits a
+    // capability-correct binary directly. Anything else falls back to the WAT
+    // sink. (Native only — the wasm playground has no wasmtime/wasmparser, so it
+    // keeps the WAT path.)
+    #[cfg(feature = "native")]
+    {
+        if let Some(bytes) =
+            codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+                .map_err(|e| format!("cannot compile to WASM: {e}"))?
+        {
+            return Ok(bytes);
+        }
+    }
     let wat =
         codegen::compile_module(&linked).map_err(|e| format!("cannot compile to WASM: {e}"))?;
     wat::parse_str(&wat).map_err(|e| format!("assembling wasm: {e}"))

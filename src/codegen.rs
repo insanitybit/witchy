@@ -8149,8 +8149,8 @@ pub fn assemble_wir_module(
     tags: &HashMap<String, u32>,
 ) -> Result<Option<crate::wir::WirModule>, CodegenError> {
     use crate::wir::{
-        DataSegment, GlobalInit, Kind as WK, WirExpr, WirFunc, WirGlobal, WirImport, WirLocal,
-        WirModule, WirNode, WirTable, WirTy,
+        DataSegment, GlobalInit, Kind as WK, WirExpr, WirFunc, WirGlobal, WirImport, WirModule,
+        WirNode, WirTable,
     };
     use crate::wir_prelude::WasmTy;
     // Front-end, identical to `compile_module_with`.
@@ -8246,13 +8246,6 @@ pub fn assemble_wir_module(
             WasmTy::I32 => WK::I32,
             WasmTy::I64 => WK::I64,
             WasmTy::F64 | WasmTy::F32 => WK::F64,
-        }
-    };
-    let wasmty_ty = |t: WasmTy| -> WirTy {
-        match t {
-            WasmTy::I32 => WirTy::Bool, // `.kind()` == I32
-            WasmTy::I64 => WirTy::Int,
-            WasmTy::F64 | WasmTy::F32 => WirTy::Float,
         }
     };
 
@@ -8392,115 +8385,14 @@ pub fn assemble_wir_module(
         }
     }
 
-    // --- Raw-body "all features on" prelude path (fallback) ---------------------
-    // Any host import the program would declare but the prelude lacks → fall back
-    // (to the WAT sink) entirely.
-    let prelude_imports: std::collections::HashSet<&str> =
-        prelude.imports.iter().map(|i| i.name.as_str()).collect();
-    for line in cg.emit_imports().lines() {
-        if let Some(rest) = line.split("\"witchy\" \"").nth(1) {
-            if let Some(field) = rest.split('"').next() {
-                if !prelude_imports.contains(field) {
-                    return Ok(None);
-                }
-            }
-        }
-    }
-
-    let imports: Vec<WirImport> = prelude
-        .imports
-        .iter()
-        .map(|pi| WirImport {
-            name: pi.name.clone(),
-            params: pi.params.iter().copied().map(wasmty_kind).collect(),
-            results: pi.results.iter().copied().map(wasmty_kind).collect(),
-        })
-        .collect();
-
-    // Funcs: the prelude helpers (raw bodies, in prelude order — they must hold
-    // function indices `imports.len()..` so spliced `call`s resolve), then the
-    // user functions, then the `run` export.
-    let mut funcs: Vec<WirFunc> = Vec::with_capacity(prelude.funcs.len() + user_order.len() + 1);
-    for pf in &prelude.funcs {
-        funcs.push(WirFunc {
-            name: pf.name.clone(),
-            params: pf
-                .params
-                .iter()
-                .copied()
-                .enumerate()
-                .map(|(i, t)| WirLocal { name: format!("a{i}"), ty: wasmty_ty(t) })
-                .collect(),
-            ret: pf.results.iter().copied().map(wasmty_ty).collect(),
-            locals: Vec::new(),
-            body: Vec::new(),
-            raw_body: Some(pf.raw_body.clone()),
-        });
-    }
-    for name in &user_order {
-        funcs.push(cg.wir_funcs.remove(name).expect("checked present above"));
-    }
-    let main_args: Vec<WirExpr> = (0..main_params)
-        .map(|i| {
-            if main_param_is_args.get(i).copied().unwrap_or(false) {
-                WirExpr::Call { func: "build_args".into(), args: vec![] }
-            } else {
-                // A capability parameter is type-level only; 0 is the root handle.
-                WirExpr::ConstI32(0)
-            }
-        })
-        .collect();
-    let run_body = vec![WirNode::Drop(WirExpr::Call { func: "main".into(), args: main_args })];
-    funcs.push(WirFunc {
-        name: "run".into(),
-        params: Vec::new(),
-        ret: Vec::new(),
-        locals: Vec::new(),
-        body: run_body,
-        raw_body: None,
-    });
-
-    // Globals `$heap` (initialized to the program's data end) then
-    // `$__witchy_reowns` — the exact order/index the prelude bodies bake.
-    let globals = vec![
-        WirGlobal {
-            name: "heap".into(),
-            kind: WK::I32,
-            mutable: true,
-            init: GlobalInit::I32(cg.next_offset as i32),
-            export: None,
-        },
-        WirGlobal {
-            name: "__witchy_reowns".into(),
-            kind: WK::I64,
-            mutable: true,
-            init: GlobalInit::I64(0),
-            export: Some("__witchy_reowns".into()),
-        },
-    ];
-
-    let data: Vec<DataSegment> = cg
-        .strings
-        .iter()
-        .map(|(text, off)| {
-            let mut bytes = (text.len() as u32).to_le_bytes().to_vec();
-            bytes.extend_from_slice(text.as_bytes());
-            DataSegment { offset: *off, bytes }
-        })
-        .collect();
-
-    let wir_module = WirModule {
-        imports,
-        funcs,
-        memory_pages: 1,
-        data,
-        globals,
-        // Table 0 must exist (size 0): spliced `$dict_update*` bodies do
-        // `call_indirect (type $clos1)` against it.
-        table: Some(WirTable { funcs: Vec::new() }),
-        exports: vec![("run".into(), "run".into())],
-    };
-    Ok(Some(wir_module))
+    // Otherwise the program reaches a prelude helper not yet migrated to a
+    // WIR-native form (or directly calls a host import), so no capability-correct
+    // binary can be built yet → defer to the WAT sink. The old raw-body
+    // "all features on" splice path is RETIRED: it over-imported the full host
+    // surface (incl. authority like crypto.sign/dir/net), which a minimal program
+    // cannot instantiate under its real grant — the opposite of witchy's
+    // capability model. Coverage grows by migrating helpers into `wir_helper`.
+    Ok(None)
 }
 
 /// Collect every function name a `WirSeq` calls directly (`Call{func}`),

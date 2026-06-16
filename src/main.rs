@@ -1477,11 +1477,10 @@ fn run_linked_compiled(
     if footprint.total.contains_key("Secret") {
         caps.signing_key = signing_key;
     }
-    let wat = codegen::compile_module(linked)
-        .map_err(|e| format!("cannot compile to WASM (an interpreter-only feature?): {e}"))?;
+    let wasm = compile_linked_to_wasm(linked)?;
     let mut rt = Runtime::batch().map_err(|e| e.to_string())?;
     let mut actor = rt
-        .spawn(wat.as_bytes(), caps, RUN_MEMORY_PAGES)
+        .spawn(&wasm, caps, RUN_MEMORY_PAGES)
         .map_err(|e| e.to_string())?;
     // Surface the *root cause*, not wasmtime's outer "error while executing at
     // wasm backtrace…" wrapper: a confinement violation then reads as the same
@@ -1501,6 +1500,21 @@ fn run_linked_compiled(
         None
     };
     Ok((lines, exit_code))
+}
+
+/// Compile a linked module to a wasm BINARY, preferring the WIR → wasm-binary
+/// pipeline (`compile_module_binary`, no `wat::parse_str`). When the whole module
+/// lowers and reaches only WIR-native prelude helpers it emits a capability-
+/// correct binary directly; anything else falls back to the legacy WAT sink.
+fn compile_linked_to_wasm(linked: &ast::Module) -> Result<Vec<u8>, String> {
+    if let Some(bytes) = codegen::compile_module_binary(linked, &std::collections::HashMap::new())
+        .map_err(|e| format!("cannot compile to WASM (an interpreter-only feature?): {e}"))?
+    {
+        return Ok(bytes);
+    }
+    let wat = codegen::compile_module(linked)
+        .map_err(|e| format!("cannot compile to WASM (an interpreter-only feature?): {e}"))?;
+    wat::parse_str(&wat).map_err(|e| format!("assembling wasm: {e}"))
 }
 
 /// Compile a program and run it in the WASM VM granted EXACTLY its computed
@@ -1713,9 +1727,7 @@ fn emit_wasm_file(path: &str, out: &str) -> Result<(), String> {
     let (linked, _stem) = link_file(path)?;
     typeck::check(&linked).map_err(|e| e.to_string())?;
     enforce_performance_modes(&linked, _stem.as_str())?;
-    let wat = codegen::compile_module(&linked)
-        .map_err(|e| format!("cannot compile to WASM (an interpreter-only feature?): {e}"))?;
-    let binary = wat::parse_str(&wat).map_err(|e| format!("assembling wasm: {e}"))?;
+    let binary = compile_linked_to_wasm(&linked)?;
     std::fs::write(out, &binary).map_err(|e| format!("cannot write `{out}`: {e}"))?;
     Ok(())
 }
