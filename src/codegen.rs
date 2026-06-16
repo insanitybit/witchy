@@ -6396,6 +6396,32 @@ impl Codegen {
                     vec![Self::wir_convert(self.lower_expr(&args[0])?, ak, Kind::I64)],
                 )
             }
+            // `__render` to a String for the scalar shapes: Str passes through,
+            // Int → `$int_to_string`, Bool → an interned "true"/"false" value-if.
+            // Float and compound shapes keep their bespoke legacy emission. Gated
+            // to the binary path (`collect_wir`) so the WAT path keeps the legacy
+            // `__render` emission and its byte-identity.
+            ("__render", 1) if self.collect_wir => match self.val_type_of(&args[0]) {
+                ValType::Str => return self.lower_expr(&args[0]),
+                ValType::Int => {
+                    self.uses_int_to_string = true;
+                    let ak = self.kind_of(&args[0]);
+                    let arg = self.lower_expr(&args[0])?;
+                    call("int_to_string", vec![Self::wir_convert(arg, ak, Kind::I64)])
+                }
+                ValType::Bool => {
+                    let t = self.intern("true");
+                    let f = self.intern("false");
+                    let arg = self.lower_expr(&args[0])?;
+                    W::Control(Box::new(crate::wir::WirNode::If {
+                        cond: arg,
+                        then_: vec![crate::wir::WirNode::Push(W::StrPtr(t))],
+                        els: vec![crate::wir::WirNode::Push(W::StrPtr(f))],
+                        result: Some(crate::wir::WirTy::Str),
+                    }))
+                }
+                _ => return None,
+            },
             // String helpers over the `[len][bytes]` rep — pure `{args} call $h`.
             ("string.to_int", 1) => {
                 self.uses_str_to_int = true;

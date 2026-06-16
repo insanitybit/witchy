@@ -617,6 +617,156 @@ pub fn list_at_helper() -> WirFunc {
     }
 }
 
+/// `$int_to_string(n: i64) -> i32` — render a signed integer to a fresh witchy
+/// string (`[i32 len][ascii]`). Mirrors `INT_TO_STRING_WAT`: `0` is a fast path;
+/// otherwise count digits (a div-by-10 loop), allocate `[len][digits]`, write the
+/// optional `-` then the digits back-to-front (a second div/rem loop). Calls
+/// `$ensure`; uses the `$heap` global; byte writes via `Store8`.
+pub fn int_to_string_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    let i32c = E::ConstI32;
+    let i64c = E::ConstI64;
+    let bin = |op: BinOp, k: Kind, l: E, r: E| E::Binary {
+        op,
+        kind: k,
+        lhs: Box::new(l),
+        rhs: Box::new(r),
+    };
+    // n == 0 → the single ascii '0'.
+    let then_zero = vec![
+        N::SetLocal { local: "res".into(), value: E::GetGlobal("heap".into()) },
+        N::Store { ptr: getl("res"), value: i32c(1), kind: Kind::I32, offset: 0 },
+        N::Store8 { ptr: getl("res"), value: i32c(48), offset: 4 },
+        N::SetGlobal {
+            global: "heap".into(),
+            value: bin(BinOp::Add, Kind::I32, getl("res"), i32c(5)),
+        },
+        N::Push(getl("res")),
+    ];
+    // Count digits of `t` (mutated to 0): `while t != 0 { ndigits++; t /= 10 }`.
+    let count_loop = N::Block {
+        label: "b1".into(),
+        result: None,
+        body: vec![N::Loop {
+            label: "l1".into(),
+            body: vec![
+                N::Br { target: "b1".into(), cond: Some(bin(BinOp::Eq, Kind::I64, getl("t"), i64c(0))) },
+                N::SetLocal {
+                    local: "ndigits".into(),
+                    value: bin(BinOp::Add, Kind::I32, getl("ndigits"), i32c(1)),
+                },
+                N::SetLocal {
+                    local: "t".into(),
+                    value: bin(BinOp::DivU, Kind::I64, getl("t"), i64c(10)),
+                },
+                N::Br { target: "l1".into(), cond: None },
+            ],
+        }],
+    };
+    // Write digits back-to-front at `p` (decremented): `store8(p, t%10 + '0')`.
+    let write_loop = N::Block {
+        label: "b2".into(),
+        result: None,
+        body: vec![N::Loop {
+            label: "l2".into(),
+            body: vec![
+                N::Br { target: "b2".into(), cond: Some(bin(BinOp::Eq, Kind::I64, getl("t"), i64c(0))) },
+                N::Store8 {
+                    ptr: getl("p"),
+                    value: bin(
+                        BinOp::Add,
+                        Kind::I32,
+                        E::Convert {
+                            from: Kind::I64,
+                            to: Kind::I32,
+                            arg: Box::new(bin(BinOp::RemU, Kind::I64, getl("t"), i64c(10))),
+                        },
+                        i32c(48),
+                    ),
+                    offset: 0,
+                },
+                N::SetLocal {
+                    local: "p".into(),
+                    value: bin(BinOp::Sub, Kind::I32, getl("p"), i32c(1)),
+                },
+                N::SetLocal {
+                    local: "t".into(),
+                    value: bin(BinOp::DivU, Kind::I64, getl("t"), i64c(10)),
+                },
+                N::Br { target: "l2".into(), cond: None },
+            ],
+        }],
+    };
+    let else_nonzero = vec![
+        N::SetLocal { local: "neg".into(), value: bin(BinOp::Lt, Kind::I64, getl("n"), i64c(0)) },
+        // mag = neg ? -n : n
+        N::SetLocal {
+            local: "mag".into(),
+            value: E::Control(Box::new(N::If {
+                cond: getl("neg"),
+                then_: vec![N::Push(bin(BinOp::Sub, Kind::I64, i64c(0), getl("n")))],
+                els: vec![N::Push(getl("n"))],
+                result: Some(WirTy::Int),
+            })),
+        },
+        N::SetLocal { local: "ndigits".into(), value: i32c(0) },
+        N::SetLocal { local: "t".into(), value: getl("mag") },
+        count_loop,
+        N::SetLocal {
+            local: "len".into(),
+            value: bin(BinOp::Add, Kind::I32, getl("ndigits"), getl("neg")),
+        },
+        N::SetLocal { local: "res".into(), value: E::GetGlobal("heap".into()) },
+        N::Store { ptr: getl("res"), value: getl("len"), kind: Kind::I32, offset: 0 },
+        N::If {
+            cond: getl("neg"),
+            then_: vec![N::Store8 { ptr: getl("res"), value: i32c(45), offset: 4 }],
+            els: vec![],
+            result: None,
+        },
+        // p = res + 4 + len - 1 (the last digit's byte)
+        N::SetLocal {
+            local: "p".into(),
+            value: bin(
+                BinOp::Sub,
+                Kind::I32,
+                bin(BinOp::Add, Kind::I32, bin(BinOp::Add, Kind::I32, getl("res"), i32c(4)), getl("len")),
+                i32c(1),
+            ),
+        },
+        N::SetLocal { local: "t".into(), value: getl("mag") },
+        write_loop,
+        N::SetGlobal {
+            global: "heap".into(),
+            value: bin(BinOp::Add, Kind::I32, bin(BinOp::Add, Kind::I32, getl("res"), i32c(4)), getl("len")),
+        },
+        N::Push(getl("res")),
+    ];
+    WirFunc {
+        name: "int_to_string".into(),
+        params: vec![WirLocal { name: "n".into(), ty: WirTy::Int }],
+        ret: vec![WirTy::Str], // i32 pointer
+        locals: vec![
+            WirLocal { name: "mag".into(), ty: WirTy::Int },
+            WirLocal { name: "t".into(), ty: WirTy::Int },
+            WirLocal { name: "ndigits".into(), ty: WirTy::Bool },
+            WirLocal { name: "len".into(), ty: WirTy::Bool },
+            WirLocal { name: "res".into(), ty: WirTy::Bool },
+            WirLocal { name: "p".into(), ty: WirTy::Bool },
+            WirLocal { name: "neg".into(), ty: WirTy::Bool },
+        ],
+        body: vec![N::If {
+            cond: bin(BinOp::Eq, Kind::I64, getl("n"), i64c(0)),
+            then_: then_zero,
+            els: else_nonzero,
+            result: Some(WirTy::Str),
+        }],
+        raw_body: None,
+    }
+}
+
 /// A WIR-native prelude helper plus the module-level resources it needs (so a
 /// pruned module declares only the imports/globals/table its reached helpers
 /// actually touch — capability-minimal).
@@ -657,6 +807,13 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             helper_deps: &[],
             import_deps: &[],
             uses_heap: false,
+            uses_table: false,
+        }),
+        "int_to_string" => Some(WirHelperSpec {
+            func: int_to_string_helper(),
+            helper_deps: &["ensure"],
+            import_deps: &[],
+            uses_heap: true,
             uses_table: false,
         }),
         _ => {

@@ -1027,6 +1027,46 @@ mod tests {
         assert_agrees(&module, &["65", "66"]);
     }
 
+    /// The WIR-native `$int_to_string` helper renders signed integers correctly
+    /// (zero, positive multi-digit, negative) — printed via `print` so the host
+    /// reads the produced `[len][ascii]` string. Both paths agree.
+    #[test]
+    fn int_to_string_helper_renders() {
+        use crate::wir::{ensure_helper, int_to_string_helper, print_str_helper};
+        // run(): print_str(int_to_string(N)) for a few N.
+        let mut body = Vec::new();
+        for n in [0i64, 7, 4096, -123] {
+            body.push(WirNode::Do(WirExpr::Call {
+                func: "print_str".into(),
+                args: vec![WirExpr::Call {
+                    func: "int_to_string".into(),
+                    args: vec![WirExpr::ConstI64(n)],
+                }],
+            }));
+        }
+        let run = WirFunc { name: "run".into(), params: vec![], ret: vec![], locals: vec![], body, raw_body: None };
+        let module = WirModule {
+            imports: vec![WirImport {
+                name: "print".into(),
+                params: vec![Kind::I32, Kind::I32],
+                results: vec![],
+            }],
+            funcs: vec![ensure_helper(), int_to_string_helper(), print_str_helper(), run],
+            memory_pages: 1,
+            data: vec![],
+            globals: vec![WirGlobal {
+                name: "heap".into(),
+                kind: Kind::I32,
+                mutable: true,
+                init: GlobalInit::I32(1024),
+                export: None,
+            }],
+            table: None,
+            exports: vec![("run".into(), "run".into())],
+        };
+        assert_agrees(&module, &["0", "7", "4096", "-123"]);
+    }
+
     /// The WIR-native `$ensure` helper grows memory correctly: with `$heap = 0`,
     /// `ensure(100000)` needs >1 page (65536 bytes), so memory grows from 1 to 2
     /// pages. Runs identically through the encoder and the WAT path.

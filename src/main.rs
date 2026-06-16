@@ -8057,6 +8057,11 @@ fn main(console: Console):
                 "fn main(console: Console):\n    let xs = [10, 20, 30]\n    if list.at(xs, 1) == 20:\n        print(console, \"twenty\")\n    else:\n        print(console, \"no\")\n",
                 vec!["twenty".to_string()],
             ),
+            // Integer rendering ($int_to_string → $ensure) on the binary path.
+            (
+                "fn main(console: Console):\n    print(console, __render(42))\n    print(console, __render(-7))\n",
+                vec!["42".to_string(), "-7".to_string()],
+            ),
         ];
         let mut lowered_any = false;
         for (src, want) in cases {
