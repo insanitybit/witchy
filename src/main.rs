@@ -8229,6 +8229,17 @@ fn main(console: Console):
                 "fn pick(b: Bool) -> Option(Int):\n    if b:\n        Some(7)\n    else:\n        None\n\nfn main(console: Console):\n    print(console, __render(match pick(true):\n        Some(n) -> n\n        None -> 99))\n    print(console, __render(match pick(false):\n        Some(n) -> n\n        None -> 99))\n",
                 vec!["7".to_string(), "99".to_string()],
             ),
+            // match on string-literal patterns (str_eq) with a wildcard fallback.
+            (
+                "fn classify(s: String) -> Int:\n    match s:\n        \"yes\" -> 1\n        \"no\" -> 0\n        _ -> 9\n\nfn main(console: Console):\n    print(console, __render(classify(\"yes\")))\n    print(console, __render(classify(\"no\")))\n    print(console, __render(classify(\"maybe\")))\n",
+                vec!["1".to_string(), "0".to_string(), "9".to_string()],
+            ),
+            // match with a LITERAL constructor field (Some(0)) — the short-circuit
+            // `if tag == Some: field == 0` path of the Ctor pattern arm.
+            (
+                "fn check(o: Option(Int)) -> Int:\n    match o:\n        Some(0) -> 100\n        Some(n) -> n\n        None -> 99\n\nfn main(console: Console):\n    print(console, __render(check(Some(0))))\n    print(console, __render(check(Some(5))))\n    print(console, __render(check(None)))\n",
+                vec!["100".to_string(), "5".to_string(), "99".to_string()],
+            ),
             // string.chars ($str_chars → $byte_to_char + $str_substring +
             // $list_push) splitting a multibyte string into a List(String).
             (

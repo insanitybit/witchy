@@ -3286,7 +3286,7 @@ impl Codegen {
     /// expression and the binding nodes. `None` for non-scalar patterns
     /// (tuple/list/ctor/string/…), which keep their bespoke legacy emission.
     fn lower_pattern(
-        &self,
+        &mut self,
         value: &crate::wir::WirExpr,
         pat: &Pattern,
     ) -> Option<(crate::wir::WirExpr, crate::wir::WirSeq)> {
@@ -3342,19 +3342,35 @@ impl Codegen {
                 };
                 (cond, binds)
             }
+            // A string literal: structural compare against the interned literal.
+            // Sound as a field pattern too — `$str_eq` reads the length header
+            // first, so a wrong-variant garbage pointer is bounded by its claimed
+            // length rather than dereferenced unboundedly (and field conditions are
+            // short-circuited under the tag check below anyway).
+            Pattern::Str(s) => {
+                self.uses_str_eq = true;
+                let off = self.intern(s);
+                (
+                    W::Call {
+                        func: "str_eq".into(),
+                        args: vec![W::FromSlot(Box::new(value.clone()), crate::wir::Kind::I32), W::StrPtr(off)],
+                    },
+                    vec![],
+                )
+            }
             // An ADT constructor `[tag][f0][f1]...`: the condition is `tag == k`,
             // and each field is the i64 slot at `ptr+4+8*i` (ptr = value wrapped to
-            // i32). To stay sound WITHOUT short-circuit evaluation, only handle
-            // sub-patterns that impose NO condition (Var/Wildcard) — so a field is
-            // never loaded-and-inspected for the wrong variant (which could deref a
-            // garbage pointer for a nested ctor). `Some(v)`/`None`/`Ok(x)` and plain
-            // enum-variant binds all qualify; richer field patterns bail to WAT.
+            // i32). Field conditions are evaluated under a short-circuit `if tag ==
+            // k` so a field is never loaded-and-inspected for the wrong variant
+            // (which could deref a garbage pointer for a nested ctor). Binds run in
+            // the arm body only after the whole condition passes, so they're safe.
             Pattern::Ctor { name, args } => {
                 let &(tag, nfields) = self.ctors.get(name)?;
                 if nfields != args.len() {
                     return None;
                 }
                 let ptr = W::FromSlot(Box::new(value.clone()), crate::wir::Kind::I32);
+                let mut field_conds: Vec<W> = Vec::new();
                 let mut binds: crate::wir::WirSeq = Vec::new();
                 for (i, sub) in args.iter().enumerate() {
                     let field_value = W::Load {
@@ -3369,7 +3385,7 @@ impl Codegen {
                     };
                     let (sc, sb) = self.lower_pattern(&field_value, sub)?;
                     if !matches!(sc, W::ConstI32(1)) {
-                        return None; // field pattern needs short-circuit — defer to WAT
+                        field_conds.push(sc);
                     }
                     binds.extend(sb);
                 }
@@ -3379,7 +3395,19 @@ impl Codegen {
                     lhs: Box::new(W::Load { ptr: Box::new(ptr), kind: crate::wir::Kind::I32, offset: 0 }),
                     rhs: Box::new(W::ConstI32(tag as i32)),
                 };
-                (tag_eq, binds)
+                let cond = if field_conds.is_empty() {
+                    tag_eq
+                } else {
+                    // `if tag == k: (field0 && field1 && …) else: 0` — fields are
+                    // only touched when the tag matches.
+                    W::Control(Box::new(N::If {
+                        cond: tag_eq,
+                        then_: vec![N::Push(wir_and_chain(&field_conds))],
+                        els: vec![N::Push(W::ConstI32(0))],
+                        result: Some(crate::wir::WirTy::Bool),
+                    }))
+                };
+                (cond, binds)
             }
             _ => return None,
         })
