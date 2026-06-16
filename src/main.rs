@@ -7825,6 +7825,75 @@ fn main(console: Console):
         actor.output()
     }
 
+    /// Run a WIR-assembled binary with EVERY capability granted. The static
+    /// prelude is "all features on", so a binary-path module imports the full
+    /// host surface; granting everything lets it instantiate. (Capability-minimal
+    /// imports await prelude pruning — see `assemble_wir_module`.)
+    fn run_bytes_all_caps(bytes: &[u8]) -> Vec<String> {
+        use crate::runtime::{Capabilities, Runtime};
+        let mut rt = Runtime::batch().expect("runtime");
+        let mut actor = rt
+            .spawn(
+                bytes,
+                Capabilities {
+                    print: true,
+                    print_int: true,
+                    quiet: true,
+                    clock: true,
+                    env: true,
+                    dir_root: Some(std::path::PathBuf::from(".")),
+                    dir_read: true,
+                    dir_write: true,
+                    net_allow: Some(Vec::new()),
+                    net_connect: true,
+                    net_listen: true,
+                    signing_key: Some([0u8; 32]),
+                    build_out: Some(std::env::temp_dir()),
+                    build_read_roots: vec![std::path::PathBuf::from(".")],
+                    ..Default::default()
+                },
+                crate::RUN_MEMORY_PAGES,
+            )
+            .expect("spawn");
+        actor.run().expect("run");
+        actor.output()
+    }
+
+    /// The `wir_opt` slot-elimination pass is a SOUND, behavior-preserving
+    /// rewrite: for every lowering-subset program, the unoptimized and optimized
+    /// binaries both run identically to the interpreter oracle. (Node-count
+    /// reduction is unit-tested in `wir_opt` on synthetic `FromSlot(ToSlot)`
+    /// redundancy; the current lowering emits no such round-trips — those arise
+    /// at generic/monomorphization boundaries that do not lower yet — so
+    /// `eliminated` is 0 on these real programs. The measurable payoff lands when
+    /// that lowering does, producing the redundancy the pass removes.)
+    #[test]
+    fn wir_slot_elimination_is_behavior_preserving() {
+        let progs = [
+            "fn main(console: Console):\n    print(console, \"hi\")\n",
+            "fn inc(n: Int) -> Int:\n    n + 1\n\nfn main(console: Console):\n    if inc(inc(0)) > 1:\n        print(console, \"ok\")\n    else:\n        print(console, \"no\")\n",
+            "fn classify(n: Int) -> Bool:\n    match n:\n        0 -> true\n        _ -> false\n\nfn main(console: Console):\n    if classify(0):\n        print(console, \"zero\")\n    else:\n        print(console, \"nonzero\")\n",
+        ];
+        for src in progs {
+            let module = parser::parse_module(src).expect("parse");
+            let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+            typeck::check(&linked).expect("typecheck");
+            let m = codegen::assemble_wir_module(&linked, &std::collections::HashMap::new())
+                .expect("assemble")
+                .unwrap_or_else(|| panic!("expected the WIR binary path to handle:\n{src}"));
+            let oracle = link_run(src);
+            // Unoptimized encoding runs like the oracle...
+            let unopt = crate::wir_encode::encode(&m);
+            assert_eq!(run_bytes_all_caps(&unopt), oracle, "unoptimized:\n{src}");
+            // ...and the optimized encoding runs identically (sound rewrite).
+            let mut opt_m = m.clone();
+            let stats = crate::wir_opt::optimize(&mut opt_m);
+            assert!(stats.nodes_after <= stats.nodes_before, "the pass never grows the tree");
+            let opt = crate::wir_encode::encode(&opt_m);
+            assert_eq!(run_bytes_all_caps(&opt), oracle, "optimized:\n{src}");
+        }
+    }
+
     /// M3 sink-flip: the WIR→binary path (`compile_module_binary`, NO
     /// `wat::parse_str`) must, for every program whose whole module lowers,
     /// assemble a VALID wasm module that runs identically to the interpreter
@@ -7851,39 +7920,6 @@ fn main(console: Console):
                 vec!["picked".to_string()],
             ),
         ];
-        // The static prelude is "all features on", so a binary-path module
-        // imports the full host surface; grant every capability so it
-        // instantiates. (Capability-minimal imports await prelude pruning — see
-        // `compile_module_binary`.)
-        fn run_bytes_all_caps(bytes: &[u8]) -> Vec<String> {
-            use crate::runtime::{Capabilities, Runtime};
-            let mut rt = Runtime::batch().expect("runtime");
-            let mut actor = rt
-                .spawn(
-                    bytes,
-                    Capabilities {
-                        print: true,
-                        print_int: true,
-                        quiet: true,
-                        clock: true,
-                        env: true,
-                        dir_root: Some(std::path::PathBuf::from(".")),
-                        dir_read: true,
-                        dir_write: true,
-                        net_allow: Some(Vec::new()),
-                        net_connect: true,
-                        net_listen: true,
-                        signing_key: Some([0u8; 32]),
-                        build_out: Some(std::env::temp_dir()),
-                        build_read_roots: vec![std::path::PathBuf::from(".")],
-                        ..Default::default()
-                    },
-                    crate::RUN_MEMORY_PAGES,
-                )
-                .expect("spawn");
-            actor.run().expect("run");
-            actor.output()
-        }
         let mut lowered_any = false;
         for (src, want) in cases {
             let module = parser::parse_module(src).expect("parse");

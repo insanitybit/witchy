@@ -8115,18 +8115,39 @@ pub fn compile_module_with(
 
 /// M3 sink-flip: compile a module straight to a wasm **binary** via WIR +
 /// `wir_encode::encode`, with no `wat::parse_str` in the pipeline. Returns
-/// `Ok(Some(bytes))` only when every reachable function fully lowered to WIR and
-/// the program needs nothing outside the static prelude (no program-specific
-/// helpers — record `==`, `to_string`, region copy-out, lifted lambdas — and no
-/// host import the prelude does not declare); otherwise `Ok(None)`, so the
-/// caller falls back to the proven WAT sink. The assembled binary is
-/// wasm-validated before return — an assembly slip falls back rather than
-/// shipping a malformed module.
+/// `Ok(Some(bytes))` only when the whole module assembles to WIR (see
+/// `assemble_wir_module`); otherwise `Ok(None)`, so the caller falls back to the
+/// proven WAT sink. The `wir_opt` slot-elimination pass runs before encoding,
+/// and the assembled binary is wasm-validated — an assembly slip falls back
+/// rather than shipping a malformed module.
 #[cfg(feature = "native")]
 pub fn compile_module_binary(
     module: &Module,
     tags: &HashMap<String, u32>,
 ) -> Result<Option<Vec<u8>>, CodegenError> {
+    let Some(mut wir_module) = assemble_wir_module(module, tags)? else {
+        return Ok(None);
+    };
+    crate::wir_opt::optimize(&mut wir_module);
+    let bytes = crate::wir_encode::encode(&wir_module);
+    // Validate before committing; a malformed assembly falls back to the WAT sink.
+    if wasmparser::validate(&bytes).is_err() {
+        return Ok(None);
+    }
+    Ok(Some(bytes))
+}
+
+/// Assemble the complete pre-optimization `WirModule` for a program — the static
+/// prelude raw-body helpers + the lowered user functions + the `run` export +
+/// imports/globals/data/table — or `Ok(None)` when any reachable function does
+/// not fully lower to WIR or the program needs something outside the static
+/// prelude. Split out from `compile_module_binary` so tests can compare the
+/// optimized vs. unoptimized encoding (the slot-elimination differential).
+#[cfg(feature = "native")]
+pub fn assemble_wir_module(
+    module: &Module,
+    tags: &HashMap<String, u32>,
+) -> Result<Option<crate::wir::WirModule>, CodegenError> {
     use crate::wir::{
         DataSegment, GlobalInit, Kind as WK, WirExpr, WirFunc, WirGlobal, WirImport, WirLocal,
         WirModule, WirNode, WirTable, WirTy,
@@ -8329,7 +8350,7 @@ pub fn compile_module_binary(
         })
         .collect();
 
-    let mut wir_module = WirModule {
+    let wir_module = WirModule {
         imports,
         funcs,
         memory_pages: 1,
@@ -8340,15 +8361,7 @@ pub fn compile_module_binary(
         table: Some(WirTable { funcs: Vec::new() }),
         exports: vec![("run".into(), "run".into())],
     };
-
-    crate::wir_opt::optimize(&mut wir_module);
-    let bytes = crate::wir_encode::encode(&wir_module);
-
-    // Validate before committing; a malformed assembly falls back to the WAT sink.
-    if wasmparser::validate(&bytes).is_err() {
-        return Ok(None);
-    }
-    Ok(Some(bytes))
+    Ok(Some(wir_module))
 }
 
 /// Compile a rune's build step to a WASM module that runs in the zero-ambient
