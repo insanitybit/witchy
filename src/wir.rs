@@ -2912,6 +2912,53 @@ pub fn dir_list_helper() -> WirFunc {
     }
 }
 
+/// `$get_env(name) -> i32` — the value of env var `name` as an `Option(String)`
+/// (`[tag][payload]`: tag 0 = Some with the string pointer in the i64 slot at +4,
+/// tag 1 = None). `env_len` reports the value's length (or <0 if absent); on
+/// presence `env_fill` copies the bytes. Needs the Env capability. (Reachable on
+/// the binary path now that `match` on its Option result lowers via the
+/// constructor-pattern arm.)
+pub fn get_env_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    let i32c = E::ConstI32;
+    let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+    WirFunc {
+        name: "get_env".into(),
+        params: vec![WirLocal { name: "name".into(), ty: WirTy::Str }],
+        ret: vec![WirTy::Bool],
+        locals: ["len", "str", "res"].iter().map(|n| WirLocal { name: (*n).into(), ty: WirTy::Bool }).collect(),
+        body: vec![
+            N::SetLocal { local: "len".into(), value: E::CallHost { import: "env_len".into(), args: vec![getl("name")] } },
+            N::If {
+                cond: b(BinOp::Lt, getl("len"), i32c(0)),
+                then_: vec![
+                    N::Do(E::Call { func: "ensure".into(), args: vec![i32c(4)] }),
+                    N::SetLocal { local: "res".into(), value: E::GetGlobal("heap".into()) },
+                    N::Store { ptr: getl("res"), value: i32c(1), kind: Kind::I32, offset: 0 },
+                    N::SetGlobal { global: "heap".into(), value: b(BinOp::Add, getl("res"), i32c(4)) },
+                    N::Return(Some(getl("res"))),
+                ],
+                els: vec![],
+                result: None,
+            },
+            N::Do(E::Call { func: "ensure".into(), args: vec![b(BinOp::Add, getl("len"), i32c(4))] }),
+            N::SetLocal { local: "str".into(), value: E::GetGlobal("heap".into()) },
+            N::Store { ptr: getl("str"), value: getl("len"), kind: Kind::I32, offset: 0 },
+            N::Do(E::CallHost { import: "env_fill".into(), args: vec![getl("name"), b(BinOp::Add, getl("str"), i32c(4))] }),
+            N::SetGlobal { global: "heap".into(), value: b(BinOp::Add, b(BinOp::Add, getl("str"), i32c(4)), getl("len")) },
+            N::Do(E::Call { func: "ensure".into(), args: vec![i32c(12)] }),
+            N::SetLocal { local: "res".into(), value: E::GetGlobal("heap".into()) },
+            N::Store { ptr: getl("res"), value: i32c(0), kind: Kind::I32, offset: 0 },
+            N::Store { ptr: getl("res"), value: E::Convert { from: Kind::I32, to: Kind::I64, arg: Box::new(getl("str")) }, kind: Kind::I64, offset: 4 },
+            N::SetGlobal { global: "heap".into(), value: b(BinOp::Add, getl("res"), i32c(12)) },
+            N::Push(getl("res")),
+        ],
+        raw_body: None,
+    }
+}
+
 /// A WIR-native prelude helper plus the module-level resources it needs (so a
 /// pruned module declares only the imports/globals/table its reached helpers
 /// actually touch — capability-minimal).
@@ -3166,6 +3213,13 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             func: dir_list_helper(),
             helper_deps: &["ensure"],
             import_deps: &["dir_list_size", "write_pending_list"],
+            uses_heap: true,
+            uses_table: false,
+        }),
+        "get_env" => Some(WirHelperSpec {
+            func: get_env_helper(),
+            helper_deps: &["ensure"],
+            import_deps: &["env_len", "env_fill"],
             uses_heap: true,
             uses_table: false,
         }),

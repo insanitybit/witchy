@@ -8461,6 +8461,34 @@ fn main(console: Console):
         assert_eq!(got, got_wat, "binary path matches WAT path");
     }
 
+    /// `$get_env` on the binary path — a host-import helper returning an
+    /// `Option(String)`, consumed via `match` (now lowering via the
+    /// constructor-pattern arm). The absent branch is deterministic ("unset");
+    /// the present branch (PATH) is compared binary-vs-WAT for parity. Env grant.
+    #[test]
+    fn wir_get_env_option_binary_path() {
+        use crate::runtime::{Capabilities, Runtime};
+        let src = "fn main(console: Console, env: Env):\n    match get_env(env, \"WITCHY_UNSET_XYZZY_VAR\"):\n        Some(v) -> print(console, v)\n        None -> print(console, \"unset\")\n    match get_env(env, \"PATH\"):\n        Some(v) -> print(console, \"has\")\n        None -> print(console, \"no-path\")\n";
+        let module = parser::parse_module(src).expect("parse");
+        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        typeck::check(&linked).expect("typecheck");
+        let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+            .expect("compile_module_binary")
+            .expect("the WIR binary path should handle get_env + match");
+        let wat = codegen::compile_module(&parser::parse_module(src).expect("parse")).expect("compile wat");
+        let run = |code: &[u8]| {
+            let mut rt = Runtime::batch().expect("runtime");
+            let mut actor = rt
+                .spawn(code, Capabilities { print: true, env: true, quiet: true, ..Default::default() }, crate::RUN_MEMORY_PAGES)
+                .expect("spawn with Env");
+            actor.run().expect("run");
+            actor.output()
+        };
+        let got = run(&bytes);
+        assert_eq!(got[0], "unset", "absent var → None → unset");
+        assert_eq!(got, run(wat.as_bytes()), "binary path matches WAT path");
+    }
+
     /// An Int-returning `main` on the binary path: the `run` wrapper prints the
     /// result via `print_int` (the exit-code convention), matching the WAT sink.
     /// Validated against the WAT path (both compiled paths use i32 `Int`, so they
