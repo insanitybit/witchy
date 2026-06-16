@@ -921,6 +921,136 @@ pub fn concat_helper() -> WirFunc {
     }
 }
 
+/// `$list_push_cap(list: i32, x: i64, cap: i32) -> (i32, i32)` — the in-place
+/// list append: if `cap > len` mutate `list` in place (return it + `cap`), else
+/// grow to a doubled buffer (return the new ptr + newcap). Increments the
+/// observable `$__witchy_reowns` counter when entered with a zero cap token (the
+/// re-own signal). Mirrors `LIST_PUSH_CAP_WAT`; the multi-value early `return` is
+/// restructured into `ret_ptr`/`ret_cap` locals + a dual tail `Push` (WIR has no
+/// multi-value `If`/`Return`). Calls `$ensure`; uses `$heap` + `$__witchy_reowns`.
+pub fn list_push_cap_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    let i32c = E::ConstI32;
+    let i64c = E::ConstI64;
+    let b32 = |op: BinOp, l: E, r: E| E::Binary {
+        op,
+        kind: Kind::I32,
+        lhs: Box::new(l),
+        rhs: Box::new(r),
+    };
+    // cap == 0 → bump the re-own counter.
+    let reowns_bump = N::If {
+        cond: E::Unary { op: UnOp::Not, kind: Kind::I32, arg: Box::new(getl("cap")) },
+        then_: vec![N::SetGlobal {
+            global: "__witchy_reowns".into(),
+            value: E::Binary {
+                op: BinOp::Add,
+                kind: Kind::I64,
+                lhs: Box::new(E::GetGlobal("__witchy_reowns".into())),
+                rhs: Box::new(i64c(1)),
+            },
+        }],
+        els: vec![],
+        result: None,
+    };
+    // cap > len: mutate `list` in place.
+    let inplace = vec![
+        N::Store {
+            ptr: b32(BinOp::Add, getl("list"), b32(BinOp::Mul, getl("len"), i32c(8))),
+            value: getl("x"),
+            kind: Kind::I64,
+            offset: 4,
+        },
+        N::Store {
+            ptr: getl("list"),
+            value: b32(BinOp::Add, getl("len"), i32c(1)),
+            kind: Kind::I32,
+            offset: 0,
+        },
+        N::SetLocal { local: "ret_ptr".into(), value: getl("list") },
+        N::SetLocal { local: "ret_cap".into(), value: getl("cap") },
+    ];
+    // else: grow to a doubled buffer.
+    let grow = vec![
+        N::SetLocal {
+            local: "newcap".into(),
+            value: b32(BinOp::Mul, b32(BinOp::Add, getl("len"), i32c(1)), i32c(2)),
+        },
+        N::If {
+            cond: b32(BinOp::Lt, getl("newcap"), i32c(8)),
+            then_: vec![N::SetLocal { local: "newcap".into(), value: i32c(8) }],
+            els: vec![],
+            result: None,
+        },
+        N::Do(E::Call {
+            func: "ensure".into(),
+            args: vec![b32(BinOp::Add, i32c(4), b32(BinOp::Mul, getl("newcap"), i32c(8)))],
+        }),
+        N::SetLocal { local: "new".into(), value: E::GetGlobal("heap".into()) },
+        N::Store {
+            ptr: getl("new"),
+            value: b32(BinOp::Add, getl("len"), i32c(1)),
+            kind: Kind::I32,
+            offset: 0,
+        },
+        N::MemoryCopy {
+            dest: b32(BinOp::Add, getl("new"), i32c(4)),
+            src: b32(BinOp::Add, getl("list"), i32c(4)),
+            len: b32(BinOp::Mul, getl("len"), i32c(8)),
+        },
+        N::Store {
+            ptr: b32(BinOp::Add, getl("new"), b32(BinOp::Mul, getl("len"), i32c(8))),
+            value: getl("x"),
+            kind: Kind::I64,
+            offset: 4,
+        },
+        N::SetGlobal {
+            global: "heap".into(),
+            value: b32(
+                BinOp::Add,
+                b32(BinOp::Add, getl("new"), i32c(4)),
+                b32(BinOp::Mul, getl("newcap"), i32c(8)),
+            ),
+        },
+        N::SetLocal { local: "ret_ptr".into(), value: getl("new") },
+        N::SetLocal { local: "ret_cap".into(), value: getl("newcap") },
+    ];
+    WirFunc {
+        name: "list_push_cap".into(),
+        params: vec![
+            WirLocal { name: "list".into(), ty: WirTy::Bool },
+            WirLocal { name: "x".into(), ty: WirTy::Int }, // i64 slot
+            WirLocal { name: "cap".into(), ty: WirTy::Bool },
+        ],
+        ret: vec![WirTy::Bool, WirTy::Bool], // (result i32 i32)
+        locals: vec![
+            WirLocal { name: "len".into(), ty: WirTy::Bool },
+            WirLocal { name: "new".into(), ty: WirTy::Bool },
+            WirLocal { name: "newcap".into(), ty: WirTy::Bool },
+            WirLocal { name: "ret_ptr".into(), ty: WirTy::Bool },
+            WirLocal { name: "ret_cap".into(), ty: WirTy::Bool },
+        ],
+        body: vec![
+            reowns_bump,
+            N::SetLocal {
+                local: "len".into(),
+                value: E::Load { ptr: Box::new(getl("list")), kind: Kind::I32, offset: 0 },
+            },
+            N::If {
+                cond: b32(BinOp::Gt, getl("cap"), getl("len")),
+                then_: inplace,
+                els: grow,
+                result: None,
+            },
+            N::Push(getl("ret_ptr")),
+            N::Push(getl("ret_cap")),
+        ],
+        raw_body: None,
+    }
+}
+
 /// A WIR-native prelude helper plus the module-level resources it needs (so a
 /// pruned module declares only the imports/globals/table its reached helpers
 /// actually touch — capability-minimal).
@@ -979,6 +1109,13 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
         }),
         "concat" => Some(WirHelperSpec {
             func: concat_helper(),
+            helper_deps: &["ensure"],
+            import_deps: &[],
+            uses_heap: true,
+            uses_table: false,
+        }),
+        "list_push_cap" => Some(WirHelperSpec {
+            func: list_push_cap_helper(),
             helper_deps: &["ensure"],
             import_deps: &[],
             uses_heap: true,

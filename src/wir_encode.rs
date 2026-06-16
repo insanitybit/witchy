@@ -1047,6 +1047,72 @@ mod tests {
         assert_agrees(&module, &["65", "66"]);
     }
 
+    /// `$list_push_cap` in-place path: a cap-2 list `[1][10]` with one slot to
+    /// spare appends `20` in place (no grow), returns (same ptr, cap). Exercises
+    /// the migrated multi-value helper + CallStoreMulti end-to-end.
+    #[test]
+    fn list_push_cap_in_place() {
+        use crate::wir::{ensure_helper, list_push_cap_helper};
+        use WirExpr::*;
+        let conv = |e: WirExpr| Convert { from: Kind::I32, to: Kind::I64, arg: Box::new(e) };
+        let pi = |e: WirExpr| WirNode::Do(CallHost { import: "print_int".into(), args: vec![e] });
+        let run = WirFunc {
+            name: "run".into(),
+            params: vec![],
+            ret: vec![],
+            locals: vec![local("rp", WirTy::Bool), local("rc", WirTy::Bool)],
+            body: vec![
+                // list at 2048: len=1, elem0=10 (cap 2 → one slot to spare)
+                WirNode::Store { ptr: ConstI32(2048), value: ConstI32(1), kind: Kind::I32, offset: 0 },
+                WirNode::Store { ptr: ConstI32(2048), value: ConstI64(10), kind: Kind::I64, offset: 4 },
+                WirNode::SetGlobal { global: "heap".into(), value: ConstI32(2068) },
+                WirNode::CallStoreMulti {
+                    func: "list_push_cap".into(),
+                    args: vec![ConstI32(2048), ConstI64(20), ConstI32(2)],
+                    dests: vec!["rp".into(), "rc".into()],
+                },
+                // new len (2), the appended elem (20), the returned ptr (2048) & cap (2)
+                pi(conv(Load { ptr: Box::new(ConstI32(2048)), kind: Kind::I32, offset: 0 })),
+                pi(Load { ptr: Box::new(ConstI32(2060)), kind: Kind::I64, offset: 0 }),
+                pi(conv(GetLocal("rp".into()))),
+                pi(conv(GetLocal("rc".into()))),
+            ],
+            raw_body: None,
+        };
+        let module = WirModule {
+            imports: vec![WirImport {
+                name: "print_int".into(),
+                params: vec![Kind::I64],
+                results: vec![],
+            }],
+            funcs: vec![ensure_helper(), list_push_cap_helper(), run],
+            memory_pages: 1,
+            data: vec![],
+            globals: vec![
+                WirGlobal {
+                    name: "heap".into(),
+                    kind: Kind::I32,
+                    mutable: true,
+                    init: GlobalInit::I32(2068),
+                    export: None,
+                },
+                WirGlobal {
+                    name: "__witchy_reowns".into(),
+                    kind: Kind::I64,
+                    mutable: true,
+                    init: GlobalInit::I64(0),
+                    export: Some("__witchy_reowns".into()),
+                },
+            ],
+            table: None,
+            exports: vec![("run".into(), "run".into())],
+        };
+        assert_eq!(
+            run_encoded(&module),
+            vec!["2".to_string(), "20".to_string(), "2048".to_string(), "2".to_string()]
+        );
+    }
+
     /// CallStoreMulti calls a MULTI-result function and stores each result into a
     /// local (reverse pop order). Exercises both the new node and a multi-value
     /// function (`pair` leaves two i32s via dual tail Push) — the shape the
