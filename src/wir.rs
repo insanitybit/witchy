@@ -1804,6 +1804,60 @@ pub fn str_chars_helper() -> WirFunc {
     }
 }
 
+/// `$list_concat(a, b) -> i32` — a fresh list holding `a`'s elements followed by
+/// `b`'s. Like the string `$concat`, but elements are 8-byte slots: allocate
+/// `(alen+blen)` slots, `memory.copy` each source array in turn, bump `$heap`.
+pub fn list_concat_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    let i32c = E::ConstI32;
+    let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+    let load = |p: E| E::Load { ptr: Box::new(p), kind: Kind::I32, offset: 0 };
+    let setl = |n: &str, v: E| N::SetLocal { local: n.into(), value: v };
+    let total = b(BinOp::Add, getl("alen"), getl("blen"));
+    WirFunc {
+        name: "list_concat".into(),
+        params: vec![
+            WirLocal { name: "a".into(), ty: WirTy::Bool },
+            WirLocal { name: "b".into(), ty: WirTy::Bool },
+        ],
+        ret: vec![WirTy::Bool], // i32 list pointer
+        locals: ["alen", "blen", "new"]
+            .iter()
+            .map(|n| WirLocal { name: (*n).into(), ty: WirTy::Bool })
+            .collect(),
+        body: vec![
+            setl("alen", load(getl("a"))),
+            setl("blen", load(getl("b"))),
+            N::Do(E::Call {
+                func: "ensure".into(),
+                args: vec![b(BinOp::Add, i32c(4), b(BinOp::Mul, total.clone(), i32c(8)))],
+            }),
+            setl("new", E::GetGlobal("heap".into())),
+            N::Store { ptr: getl("new"), value: total.clone(), kind: Kind::I32, offset: 0 },
+            // a's elements → new+4
+            N::MemoryCopy {
+                dest: b(BinOp::Add, getl("new"), i32c(4)),
+                src: b(BinOp::Add, getl("a"), i32c(4)),
+                len: b(BinOp::Mul, getl("alen"), i32c(8)),
+            },
+            // b's elements → new+4 + alen*8
+            N::MemoryCopy {
+                dest: b(BinOp::Add, b(BinOp::Add, getl("new"), i32c(4)), b(BinOp::Mul, getl("alen"), i32c(8))),
+                src: b(BinOp::Add, getl("b"), i32c(4)),
+                len: b(BinOp::Mul, getl("blen"), i32c(8)),
+            },
+            N::SetGlobal {
+                global: "heap".into(),
+                value: b(BinOp::Add, b(BinOp::Add, getl("new"), i32c(4)), b(BinOp::Mul, total, i32c(8))),
+            },
+            N::Push(getl("new")),
+        ],
+        raw_body: None,
+    }
+}
+
 /// A WIR-native prelude helper plus the module-level resources it needs (so a
 /// pruned module declares only the imports/globals/table its reached helpers
 /// actually touch — capability-minimal).
@@ -1961,6 +2015,13 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
         "str_chars" => Some(WirHelperSpec {
             func: str_chars_helper(),
             helper_deps: &["ensure", "byte_to_char", "str_substring", "list_push"],
+            import_deps: &[],
+            uses_heap: true,
+            uses_table: false,
+        }),
+        "list_concat" => Some(WirHelperSpec {
+            func: list_concat_helper(),
+            helper_deps: &["ensure"],
             import_deps: &[],
             uses_heap: true,
             uses_table: false,

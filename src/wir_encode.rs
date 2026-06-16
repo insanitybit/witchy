@@ -1858,6 +1858,70 @@ mod tests {
     }
 
     #[test]
+    fn list_concat_joins_two_lists() {
+        use crate::wir::{ensure_helper, list_concat_helper};
+        // A list is an i32 length header followed by 8-byte (i64) element slots.
+        let mk_list = |xs: &[i64]| {
+            let mut b = (xs.len() as u32).to_le_bytes().to_vec();
+            for x in xs {
+                b.extend_from_slice(&x.to_le_bytes());
+            }
+            b
+        };
+        let data = vec![
+            DataSegment { offset: 200, bytes: mk_list(&[10, 20]) },
+            DataSegment { offset: 240, bytes: mk_list(&[30]) },
+        ];
+        let gl = |n: &str| WirExpr::GetLocal(n.into());
+        let to_i64 = |e: WirExpr| WirExpr::Convert { from: Kind::I32, to: Kind::I64, arg: Box::new(e) };
+        let elem = |off: u32| WirExpr::Load { ptr: Box::new(gl("r")), kind: Kind::I64, offset: off };
+        let pi = |e: WirExpr| {
+            WirNode::Do(WirExpr::CallHost { import: "print_int".into(), args: vec![e] })
+        };
+        let run = WirFunc {
+            name: "run".into(),
+            params: vec![],
+            ret: vec![],
+            locals: vec![local("r", WirTy::Bool)],
+            body: vec![
+                WirNode::SetLocal {
+                    local: "r".into(),
+                    value: WirExpr::Call {
+                        func: "list_concat".into(),
+                        args: vec![WirExpr::ConstI32(200), WirExpr::ConstI32(240)],
+                    },
+                },
+                pi(to_i64(WirExpr::Load { ptr: Box::new(gl("r")), kind: Kind::I32, offset: 0 })), // length 3
+                pi(elem(4)),  // 10
+                pi(elem(12)), // 20
+                pi(elem(20)), // 30
+            ],
+            raw_body: None,
+        };
+        let module = WirModule {
+            imports: vec![WirImport {
+                name: "print_int".into(),
+                params: vec![Kind::I64],
+                results: vec![],
+            }],
+            funcs: vec![ensure_helper(), list_concat_helper(), run],
+            memory_pages: 1,
+            data,
+            globals: vec![WirGlobal {
+                name: "heap".into(),
+                kind: Kind::I32,
+                mutable: true,
+                init: GlobalInit::I32(1024),
+                export: None,
+            }],
+            table: None,
+            exports: vec![("run".into(), "run".into())],
+        };
+        // [10,20] ++ [30] = [10,20,30].
+        assert_agrees(&module, &["3", "10", "20", "30"]);
+    }
+
+    #[test]
     fn arithmetic_roundtrips() {
         // fn add() -> Int: (2 + 3) * 4 == 20
         let add = WirFunc {

@@ -8224,6 +8224,12 @@ fn main(console: Console):
                 "fn main(console: Console):\n    let cs = string.chars(\"héllo\")\n    print(console, list.at(cs, 0))\n    print(console, list.at(cs, 1))\n    print(console, list.at(cs, 4))\n",
                 vec!["h".to_string(), "é".to_string(), "o".to_string()],
             ),
+            // list.concat ($list_concat — two memory.copy's into a fresh slot
+            // array) on the binary path.
+            (
+                "fn main(console: Console):\n    let xs = list.concat([10, 20], [30, 40])\n    print(console, __render(list.at(xs, 0)))\n    print(console, __render(list.at(xs, 2)))\n    print(console, __render(list.at(xs, 3)))\n",
+                vec!["10".to_string(), "30".to_string(), "40".to_string()],
+            ),
         ];
         let mut lowered_any = false;
         for (src, want) in cases {
