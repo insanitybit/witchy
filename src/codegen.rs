@@ -8507,14 +8507,19 @@ pub fn assemble_wir_module(
         let helper_names: std::collections::HashSet<&str> =
             prelude.funcs.iter().map(|f| f.name.as_str()).collect();
         let mut called = std::collections::HashSet::new();
+        let mut user_host_imports = std::collections::HashSet::new();
         for name in &user_order {
             if let Some(wf) = cg.wir_funcs.get(name) {
                 collect_called_funcs(&wf.body, &mut called);
+                collect_called_host_imports(&wf.body, &mut user_host_imports);
             }
         }
-        // A direct host call in user code (e.g. `now`) needs an import the helper
-        // registry can't account for — defer such programs to the raw-body path.
-        let no_direct_host = !called.iter().any(|n| n.starts_with("host:"));
+        // A direct host call in user code (e.g. `now`, `dir.subdir`, `recv_*`)
+        // needs authority the capability-minimal helper registry can't account
+        // for — defer such programs to the WAT sink. (Host access that goes
+        // THROUGH a migrated helper is fine; its imports come from import_deps.)
+        let no_direct_host =
+            !called.iter().any(|n| n.starts_with("host:")) && user_host_imports.is_empty();
         if cg.uses_args {
             called.insert("build_args".to_string());
         }
@@ -8738,6 +8743,88 @@ fn collect_called_funcs(seq: &crate::wir::WirSeq, out: &mut std::collections::Ha
                 collect_called_funcs(els, out);
             }
             N::Block { body, .. } | N::Loop { body, .. } => collect_called_funcs(body, out),
+            N::Br { cond: Some(c), .. } => expr(c, out),
+            N::Drop(e) | N::Do(e) | N::Push(e) | N::Return(Some(e)) => expr(e, out),
+            N::Br { cond: None, .. } | N::Return(None) | N::Unreachable => {}
+        }
+    }
+    for n in seq {
+        node(n, out);
+    }
+}
+
+/// Collect every host import a `WirSeq` calls directly (`CallHost{import}`),
+/// recursively. Used by `assemble_wir_module` to detect direct host-authority
+/// calls in USER code (e.g. `dir.subdir`, `now`, `recv_*`) — which the pruned
+/// path can't account for, so such programs must defer to the WAT sink. (Helper
+/// host calls are accounted for via the registry's `import_deps` instead.)
+#[cfg(feature = "native")]
+fn collect_called_host_imports(seq: &crate::wir::WirSeq, out: &mut std::collections::HashSet<String>) {
+    use crate::wir::{WirExpr as E, WirNode as N};
+    fn expr(e: &E, out: &mut std::collections::HashSet<String>) {
+        match e {
+            E::CallHost { import, args } => {
+                out.insert(import.clone());
+                for a in args {
+                    expr(a, out);
+                }
+            }
+            E::Call { args, .. } => {
+                for a in args {
+                    expr(a, out);
+                }
+            }
+            E::CallIndirect { args, index, .. } => {
+                for a in args {
+                    expr(a, out);
+                }
+                expr(index, out);
+            }
+            E::ToSlot(i, _)
+            | E::FromSlot(i, _)
+            | E::Unary { arg: i, .. }
+            | E::Convert { arg: i, .. }
+            | E::Load { ptr: i, .. }
+            | E::Load8U { ptr: i, .. }
+            | E::MemoryGrow(i) => expr(i, out),
+            E::Binary { lhs, rhs, .. } => {
+                expr(lhs, out);
+                expr(rhs, out);
+            }
+            E::Control(n) => node(n, out),
+            E::Seq(s) => collect_called_host_imports(s, out),
+            E::ConstI64(_) | E::ConstF64(_) | E::ConstI32(_) | E::StrPtr(_) | E::MemorySize
+            | E::GetLocal(_) | E::GetGlobal(_) => {}
+        }
+    }
+    fn node(n: &N, out: &mut std::collections::HashSet<String>) {
+        match n {
+            N::SetLocal { value, .. } | N::SetGlobal { value, .. } => expr(value, out),
+            N::Store { ptr, value, .. } | N::Store8 { ptr, value, .. } => {
+                expr(ptr, out);
+                expr(value, out);
+            }
+            N::CallStoreMulti { args, .. } => {
+                for a in args {
+                    expr(a, out);
+                }
+            }
+            N::MemoryCopy { dest, src, len } => {
+                expr(dest, out);
+                expr(src, out);
+                expr(len, out);
+            }
+            N::MemoryFill { dest, value, len } => {
+                expr(dest, out);
+                expr(value, out);
+                expr(len, out);
+            }
+            N::If { cond, then_, els, .. } => {
+                expr(cond, out);
+                collect_called_host_imports(then_, out);
+                collect_called_host_imports(els, out);
+            }
+            N::Block { body, .. } | N::Loop { body, .. } => collect_called_host_imports(body, out),
             N::Br { cond: Some(c), .. } => expr(c, out),
             N::Drop(e) | N::Do(e) | N::Push(e) | N::Return(Some(e)) => expr(e, out),
             N::Br { cond: None, .. } | N::Return(None) | N::Unreachable => {}

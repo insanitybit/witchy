@@ -2849,6 +2849,40 @@ fn crypto_hash_helper(name: &str, import: &str, hexlen: i32, inputs: &[&str]) ->
     }
 }
 
+/// `$dir_read(h, rel) -> i32` — the contents of file `rel` under dir handle `h`,
+/// as a String. Two-phase host protocol: `dir_read_len` reads the file and
+/// reports its byte length (staging the bytes host-side), then `fill_pending`
+/// copies the staged bytes into `res+4`. Needs the Dir(Read) capability.
+pub fn dir_read_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    let i32c = E::ConstI32;
+    let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+    WirFunc {
+        name: "dir_read".into(),
+        params: vec![
+            WirLocal { name: "h".into(), ty: WirTy::Bool },
+            WirLocal { name: "rel".into(), ty: WirTy::Str },
+        ],
+        ret: vec![WirTy::Str],
+        locals: vec![
+            WirLocal { name: "len".into(), ty: WirTy::Bool },
+            WirLocal { name: "res".into(), ty: WirTy::Bool },
+        ],
+        body: vec![
+            N::SetLocal { local: "len".into(), value: E::CallHost { import: "dir_read_len".into(), args: vec![getl("h"), getl("rel")] } },
+            N::Do(E::Call { func: "ensure".into(), args: vec![b(BinOp::Add, getl("len"), i32c(4))] }),
+            N::SetLocal { local: "res".into(), value: E::GetGlobal("heap".into()) },
+            N::Store { ptr: getl("res"), value: getl("len"), kind: Kind::I32, offset: 0 },
+            N::Do(E::CallHost { import: "fill_pending".into(), args: vec![b(BinOp::Add, getl("res"), i32c(4))] }),
+            N::SetGlobal { global: "heap".into(), value: b(BinOp::Add, b(BinOp::Add, getl("res"), i32c(4)), getl("len")) },
+            N::Push(getl("res")),
+        ],
+        raw_body: None,
+    }
+}
+
 /// A WIR-native prelude helper plus the module-level resources it needs (so a
 /// pruned module declares only the imports/globals/table its reached helpers
 /// actually touch — capability-minimal).
@@ -3089,6 +3123,13 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             func: crypto_hash_helper("crypto_public_key", "crypto.public_key", 64, &[]),
             helper_deps: &["ensure"],
             import_deps: &["crypto.public_key"],
+            uses_heap: true,
+            uses_table: false,
+        }),
+        "dir_read" => Some(WirHelperSpec {
+            func: dir_read_helper(),
+            helper_deps: &["ensure"],
+            import_deps: &["dir_read_len", "fill_pending"],
             uses_heap: true,
             uses_table: false,
         }),

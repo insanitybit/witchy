@@ -8380,6 +8380,43 @@ fn main(console: Console):
         assert_eq!(got, run(wat.as_bytes()), "binary path matches WAT path (same seed)");
     }
 
+    /// `$dir_read` (read a file) on the binary path — the two-phase
+    /// `dir_read_len` + `fill_pending` host protocol, gated behind Dir(Read).
+    /// Sets up a sandbox dir with a file and compares the WIR binary against the
+    /// WAT path.
+    #[test]
+    fn wir_dir_read_host_import_binary_path() {
+        use crate::runtime::{Capabilities, Runtime};
+        let root = std::env::temp_dir().join(format!("witchy_wir_dirread_{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("mkdir");
+        std::fs::write(root.join("greeting.txt"), "hello from disk").expect("write file");
+        let src = "fn main(console: Console, dir: Dir[Read]):\n    print(console, read(dir, \"greeting.txt\"))\n";
+        let module = parser::parse_module(src).expect("parse");
+        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        typeck::check(&linked).expect("typecheck");
+        let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+            .expect("compile_module_binary")
+            .expect("the WIR binary path should handle dir read via the host imports");
+        let wat = codegen::compile_module(&parser::parse_module(src).expect("parse")).expect("compile wat");
+        let run = |code: &[u8]| {
+            let mut rt = Runtime::batch().expect("runtime");
+            let mut actor = rt
+                .spawn(
+                    code,
+                    Capabilities { print: true, dir_root: Some(root.clone()), dir_read: true, quiet: true, ..Default::default() },
+                    crate::RUN_MEMORY_PAGES,
+                )
+                .expect("spawn with Dir(Read)");
+            actor.run().expect("run");
+            actor.output()
+        };
+        let got = run(&bytes);
+        let got_wat = run(wat.as_bytes());
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(got, vec!["hello from disk".to_string()], "binary path");
+        assert_eq!(got, got_wat, "binary path matches WAT path");
+    }
+
     /// An Int-returning `main` on the binary path: the `run` wrapper prints the
     /// result via `print_int` (the exit-code convention), matching the WAT sink.
     /// Validated against the WAT path (both compiled paths use i32 `Int`, so they
