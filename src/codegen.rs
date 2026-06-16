@@ -8500,6 +8500,12 @@ fn collect_called_funcs(seq: &crate::wir::WirSeq, out: &mut std::collections::Ha
                 expr(ptr, out);
                 expr(value, out);
             }
+            N::CallStoreMulti { func, args, .. } => {
+                out.insert(func.clone());
+                for a in args {
+                    expr(a, out);
+                }
+            }
             N::MemoryCopy { dest, src, len } => {
                 expr(dest, out);
                 expr(src, out);

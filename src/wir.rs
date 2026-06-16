@@ -275,6 +275,17 @@ pub enum WirNode {
         kind: Kind,
         offset: u32,
     },
+    /// Call a MULTI-result function and store each result into a local. Evaluate
+    /// `args`, `call $func` (which leaves `dests.len()` values on the stack), then
+    /// `local.set` each `dest` — popped in REVERSE, matching wasm stack order
+    /// (the last result is on top). This is how the in-place/ownership cap ABI
+    /// (`$list_push_cap`/`$str_append_cap`/`$dict_*_cap`, all `(result i32 i32)`)
+    /// writes its `(new_ptr, new_cap)` back into the accumulator + its cap slot.
+    CallStoreMulti {
+        func: String,
+        args: Vec<WirExpr>,
+        dests: Vec<String>,
+    },
     /// `memory.copy` — copy `len` bytes from `src` to `dest` (operands pushed in
     /// the order dest, src, len). Used by `$concat` / `$list_push` / ….
     MemoryCopy {
@@ -1167,6 +1178,17 @@ fn print_node(s: &mut String, node: &WirNode, depth: usize) {
                 let _ = writeln!(s, "{}.store offset={offset}", kind.wat());
             }
         }
+        WirNode::CallStoreMulti { func, args, dests } => {
+            for a in args {
+                print_expr(s, a, depth);
+            }
+            indent(s, depth);
+            let _ = writeln!(s, "call ${func}");
+            for d in dests.iter().rev() {
+                indent(s, depth);
+                let _ = writeln!(s, "local.set ${d}");
+            }
+        }
         WirNode::MemoryCopy { dest, src, len } => {
             print_expr(s, dest, depth);
             print_expr(s, src, depth);
@@ -1466,6 +1488,11 @@ fn collect_clos_arities_seq(seq: &WirSeq, out: &mut Vec<usize>) {
             WirNode::Store { ptr, value, .. } | WirNode::Store8 { ptr, value, .. } => {
                 walk_expr(ptr, out);
                 walk_expr(value, out);
+            }
+            WirNode::CallStoreMulti { args, .. } => {
+                for a in args {
+                    walk_expr(a, out);
+                }
             }
             WirNode::MemoryCopy { dest, src, len } => {
                 walk_expr(dest, out);

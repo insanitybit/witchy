@@ -355,6 +355,11 @@ fn collect_clos_arities(seq: &WirSeq, out: &mut Vec<usize>) {
                 walk_expr(ptr, out);
                 walk_expr(value, out);
             }
+            WirNode::CallStoreMulti { args, .. } => {
+                for a in args {
+                    walk_expr(a, out);
+                }
+            }
             WirNode::MemoryCopy { dest, src, len } => {
                 walk_expr(dest, out);
                 walk_expr(src, out);
@@ -453,6 +458,21 @@ impl EncodeCtx<'_> {
                     Kind::F64 => Instruction::F64Store(mem),
                 };
                 func.instruction(&instr);
+            }
+            WirNode::CallStoreMulti { func: name, args, dests } => {
+                for a in args {
+                    self.encode_expr(func, a);
+                }
+                let idx = *self
+                    .func_index
+                    .get(name.as_str())
+                    .unwrap_or_else(|| panic!("call to unknown func ${name}"));
+                func.instruction(&Instruction::Call(idx));
+                // Results are popped top-first → store in reverse declaration order.
+                for d in dests.iter().rev() {
+                    let li = self.local(d);
+                    func.instruction(&Instruction::LocalSet(li));
+                }
             }
             WirNode::MemoryCopy { dest, src, len } => {
                 self.encode_expr(func, dest);
@@ -1025,6 +1045,65 @@ mod tests {
             exports: vec![("run".into(), "run".into())],
         };
         assert_agrees(&module, &["65", "66"]);
+    }
+
+    /// CallStoreMulti calls a MULTI-result function and stores each result into a
+    /// local (reverse pop order). Exercises both the new node and a multi-value
+    /// function (`pair` leaves two i32s via dual tail Push) — the shape the
+    /// in-place cap ABI ($list_push_cap) uses. Encoder path (the production sink).
+    #[test]
+    fn call_store_multi_roundtrip() {
+        let pair = WirFunc {
+            name: "pair".into(),
+            params: vec![],
+            ret: vec![WirTy::Bool, WirTy::Bool], // (result i32 i32)
+            locals: vec![],
+            body: vec![
+                WirNode::Push(WirExpr::ConstI32(10)),
+                WirNode::Push(WirExpr::ConstI32(20)),
+            ],
+            raw_body: None,
+        };
+        let pi = |name: &str| {
+            WirNode::Do(WirExpr::CallHost {
+                import: "print_int".into(),
+                args: vec![WirExpr::Convert {
+                    from: Kind::I32,
+                    to: Kind::I64,
+                    arg: Box::new(WirExpr::GetLocal(name.into())),
+                }],
+            })
+        };
+        let run = WirFunc {
+            name: "run".into(),
+            params: vec![],
+            ret: vec![],
+            locals: vec![local("a", WirTy::Bool), local("b", WirTy::Bool)],
+            body: vec![
+                WirNode::CallStoreMulti {
+                    func: "pair".into(),
+                    args: vec![],
+                    dests: vec!["a".into(), "b".into()],
+                },
+                pi("a"),
+                pi("b"),
+            ],
+            raw_body: None,
+        };
+        let module = WirModule {
+            imports: vec![WirImport {
+                name: "print_int".into(),
+                params: vec![Kind::I64],
+                results: vec![],
+            }],
+            funcs: vec![pair, run],
+            memory_pages: 1,
+            data: vec![],
+            globals: vec![],
+            table: None,
+            exports: vec![("run".into(), "run".into())],
+        };
+        assert_eq!(run_encoded(&module), vec!["10".to_string(), "20".to_string()]);
     }
 
     /// The WIR-native `$int_to_string` helper renders signed integers correctly
