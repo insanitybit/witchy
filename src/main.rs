@@ -8167,6 +8167,18 @@ fn main(console: Console):
                 "fn main(console: Console):\n    if string.contains(\"hello\", \"ell\"):\n        print(console, \"yes\")\n    else:\n        print(console, \"no\")\n    if string.contains(\"hello\", \"xyz\"):\n        print(console, \"yes2\")\n    else:\n        print(console, \"no2\")\n",
                 vec!["yes".to_string(), "no2".to_string()],
             ),
+            // string.starts_with ($starts_with — prefix byte-compare loop) on
+            // the binary path.
+            (
+                "fn main(console: Console):\n    print(console, __render(string.starts_with(\"hello\", \"hel\")))\n    print(console, __render(string.starts_with(\"hello\", \"lo\")))\n    print(console, __render(string.starts_with(\"hello\", \"\")))\n",
+                vec!["true".to_string(), "false".to_string(), "true".to_string()],
+            ),
+            // string.ends_with ($ends_with — suffix byte-compare loop) on the
+            // binary path.
+            (
+                "fn main(console: Console):\n    print(console, __render(string.ends_with(\"hello\", \"llo\")))\n    print(console, __render(string.ends_with(\"hello\", \"hel\")))\n    print(console, __render(string.ends_with(\"hello\", \"\")))\n",
+                vec!["true".to_string(), "false".to_string(), "true".to_string()],
+            ),
         ];
         let mut lowered_any = false;
         for (src, want) in cases {

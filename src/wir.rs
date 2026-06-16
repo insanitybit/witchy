@@ -1131,6 +1131,126 @@ pub fn find_byte_helper() -> WirFunc {
     }
 }
 
+/// `$starts_with(s, p) -> i32` — 1 iff string `s` begins with prefix `p`.
+/// Byte-compares `p`'s bytes against `s`'s leading bytes; bails to 0 the moment a
+/// byte differs or `p` is longer than `s`.
+pub fn starts_with_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    let i32c = E::ConstI32;
+    let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+    let load = |p: E| E::Load { ptr: Box::new(p), kind: Kind::I32, offset: 0 };
+    let setl = |n: &str, v: E| N::SetLocal { local: n.into(), value: v };
+    let s_byte = E::Load8U { ptr: Box::new(b(BinOp::Add, getl("s"), getl("i"))), offset: 4 };
+    let p_byte = E::Load8U { ptr: Box::new(b(BinOp::Add, getl("p"), getl("i"))), offset: 4 };
+    let scan_loop = N::Block {
+        label: "done".into(),
+        result: None,
+        body: vec![N::Loop {
+            label: "l".into(),
+            body: vec![
+                N::Br { target: "done".into(), cond: Some(b(BinOp::Ge, getl("i"), getl("plen"))) },
+                N::If {
+                    cond: b(BinOp::Ne, s_byte, p_byte),
+                    then_: vec![N::Return(Some(i32c(0)))],
+                    els: vec![],
+                    result: None,
+                },
+                setl("i", b(BinOp::Add, getl("i"), i32c(1))),
+                N::Br { target: "l".into(), cond: None },
+            ],
+        }],
+    };
+    WirFunc {
+        name: "starts_with".into(),
+        params: vec![
+            WirLocal { name: "s".into(), ty: WirTy::Str },
+            WirLocal { name: "p".into(), ty: WirTy::Str },
+        ],
+        ret: vec![WirTy::Bool],
+        locals: ["plen", "i"]
+            .iter()
+            .map(|n| WirLocal { name: (*n).into(), ty: WirTy::Bool })
+            .collect(),
+        body: vec![
+            setl("plen", load(getl("p"))),
+            N::If {
+                cond: b(BinOp::Gt, getl("plen"), load(getl("s"))),
+                then_: vec![N::Return(Some(i32c(0)))],
+                els: vec![],
+                result: None,
+            },
+            setl("i", i32c(0)),
+            scan_loop,
+            N::Push(i32c(1)),
+        ],
+        raw_body: None,
+    }
+}
+
+/// `$ends_with(s, p) -> i32` — 1 iff string `s` ends with suffix `p`.
+/// Like `$starts_with`, but the comparison window into `s` is shifted by
+/// `off = len(s) - len(p)`; bails to 0 if `p` is longer than `s`.
+pub fn ends_with_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    let i32c = E::ConstI32;
+    let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+    let load = |p: E| E::Load { ptr: Box::new(p), kind: Kind::I32, offset: 0 };
+    let setl = |n: &str, v: E| N::SetLocal { local: n.into(), value: v };
+    let s_byte = E::Load8U {
+        ptr: Box::new(b(BinOp::Add, getl("s"), b(BinOp::Add, getl("off"), getl("i")))),
+        offset: 4,
+    };
+    let p_byte = E::Load8U { ptr: Box::new(b(BinOp::Add, getl("p"), getl("i"))), offset: 4 };
+    let scan_loop = N::Block {
+        label: "done".into(),
+        result: None,
+        body: vec![N::Loop {
+            label: "l".into(),
+            body: vec![
+                N::Br { target: "done".into(), cond: Some(b(BinOp::Ge, getl("i"), getl("plen"))) },
+                N::If {
+                    cond: b(BinOp::Ne, s_byte, p_byte),
+                    then_: vec![N::Return(Some(i32c(0)))],
+                    els: vec![],
+                    result: None,
+                },
+                setl("i", b(BinOp::Add, getl("i"), i32c(1))),
+                N::Br { target: "l".into(), cond: None },
+            ],
+        }],
+    };
+    WirFunc {
+        name: "ends_with".into(),
+        params: vec![
+            WirLocal { name: "s".into(), ty: WirTy::Str },
+            WirLocal { name: "p".into(), ty: WirTy::Str },
+        ],
+        ret: vec![WirTy::Bool],
+        locals: ["plen", "off", "i"]
+            .iter()
+            .map(|n| WirLocal { name: (*n).into(), ty: WirTy::Bool })
+            .collect(),
+        body: vec![
+            setl("plen", load(getl("p"))),
+            setl("off", b(BinOp::Sub, load(getl("s")), getl("plen"))),
+            N::If {
+                cond: b(BinOp::Lt, getl("off"), i32c(0)),
+                then_: vec![N::Return(Some(i32c(0)))],
+                els: vec![],
+                result: None,
+            },
+            setl("i", i32c(0)),
+            scan_loop,
+            N::Push(i32c(1)),
+        ],
+        raw_body: None,
+    }
+}
+
 /// A WIR-native prelude helper plus the module-level resources it needs (so a
 /// pruned module declares only the imports/globals/table its reached helpers
 /// actually touch — capability-minimal).
@@ -1189,6 +1309,20 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
         }),
         "find_byte" => Some(WirHelperSpec {
             func: find_byte_helper(),
+            helper_deps: &[],
+            import_deps: &[],
+            uses_heap: false,
+            uses_table: false,
+        }),
+        "starts_with" => Some(WirHelperSpec {
+            func: starts_with_helper(),
+            helper_deps: &[],
+            import_deps: &[],
+            uses_heap: false,
+            uses_table: false,
+        }),
+        "ends_with" => Some(WirHelperSpec {
+            func: ends_with_helper(),
             helper_deps: &[],
             import_deps: &[],
             uses_heap: false,

@@ -1323,6 +1323,104 @@ mod tests {
     }
 
     #[test]
+    fn starts_with_matches_prefixes() {
+        use crate::wir::starts_with_helper;
+        let mk_str = |s: &str| {
+            let mut b = (s.len() as u32).to_le_bytes().to_vec();
+            b.extend_from_slice(s.as_bytes());
+            b
+        };
+        let data = vec![
+            DataSegment { offset: 100, bytes: mk_str("hello") },
+            DataSegment { offset: 120, bytes: mk_str("hel") },
+            DataSegment { offset: 140, bytes: mk_str("lo") },
+            DataSegment { offset: 160, bytes: mk_str("") },
+        ];
+        let sw = |s: i32, p: i32| WirExpr::Call {
+            func: "starts_with".into(),
+            args: vec![WirExpr::ConstI32(s), WirExpr::ConstI32(p)],
+        };
+        let pi = |e: WirExpr| {
+            WirNode::Do(WirExpr::CallHost {
+                import: "print_int".into(),
+                args: vec![WirExpr::Convert { from: Kind::I32, to: Kind::I64, arg: Box::new(e) }],
+            })
+        };
+        let run = WirFunc {
+            name: "run".into(),
+            params: vec![],
+            ret: vec![],
+            locals: vec![],
+            body: vec![pi(sw(100, 120)), pi(sw(100, 140)), pi(sw(100, 160))],
+            raw_body: None,
+        };
+        let module = WirModule {
+            imports: vec![WirImport {
+                name: "print_int".into(),
+                params: vec![Kind::I64],
+                results: vec![],
+            }],
+            funcs: vec![starts_with_helper(), run],
+            memory_pages: 1,
+            data,
+            globals: vec![],
+            table: None,
+            exports: vec![("run".into(), "run".into())],
+        };
+        // "hello" starts with "hel" → 1; with "lo" → 0; with "" → 1.
+        assert_agrees(&module, &["1", "0", "1"]);
+    }
+
+    #[test]
+    fn ends_with_matches_suffixes() {
+        use crate::wir::ends_with_helper;
+        let mk_str = |s: &str| {
+            let mut b = (s.len() as u32).to_le_bytes().to_vec();
+            b.extend_from_slice(s.as_bytes());
+            b
+        };
+        let data = vec![
+            DataSegment { offset: 100, bytes: mk_str("hello") },
+            DataSegment { offset: 120, bytes: mk_str("llo") },
+            DataSegment { offset: 140, bytes: mk_str("hel") },
+            DataSegment { offset: 160, bytes: mk_str("") },
+        ];
+        let ew = |s: i32, p: i32| WirExpr::Call {
+            func: "ends_with".into(),
+            args: vec![WirExpr::ConstI32(s), WirExpr::ConstI32(p)],
+        };
+        let pi = |e: WirExpr| {
+            WirNode::Do(WirExpr::CallHost {
+                import: "print_int".into(),
+                args: vec![WirExpr::Convert { from: Kind::I32, to: Kind::I64, arg: Box::new(e) }],
+            })
+        };
+        let run = WirFunc {
+            name: "run".into(),
+            params: vec![],
+            ret: vec![],
+            locals: vec![],
+            body: vec![pi(ew(100, 120)), pi(ew(100, 140)), pi(ew(100, 160))],
+            raw_body: None,
+        };
+        let module = WirModule {
+            imports: vec![WirImport {
+                name: "print_int".into(),
+                params: vec![Kind::I64],
+                results: vec![],
+            }],
+            funcs: vec![ends_with_helper(), run],
+            memory_pages: 1,
+            data,
+            globals: vec![],
+            table: None,
+            exports: vec![("run".into(), "run".into())],
+        };
+        // "hello" ends with "llo" → 1; with "hel" → 0; with "" → 1.
+        assert_agrees(&module, &["1", "0", "1"]);
+    }
+
+    #[test]
     fn arithmetic_roundtrips() {
         // fn add() -> Int: (2 + 3) * 4 == 20
         let add = WirFunc {
