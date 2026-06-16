@@ -3642,12 +3642,6 @@ impl Codegen {
             // pre-increment `ctr == end` guard so `..=i64::MAX` halts.
             Expr::For { var, iter, body } if matches!(iter.as_ref(), Expr::Range { .. }) => {
                 let Expr::Range { lo, hi, inclusive } = iter.as_ref() else { unreachable!() };
-                if !force_copy_mode()
-                    && self.wm_level < WM_POOL
-                    && self.loop_arena_resettable(body)
-                {
-                    return None;
-                }
                 let saved = self.next_label;
                 let id = self.next_label;
                 self.next_label += 1;
@@ -3669,9 +3663,16 @@ impl Codegen {
                         return None;
                     }
                 };
+                // Per-iteration arena reset (the watermark optimization): save
+                // `$heap` before the loop, restore it after each body. `None` when
+                // the body isn't resettable — the loop is still correct without it.
+                let wm = self.loop_watermark_wir(body);
                 self.loop_labels.push((format!("$fe{id}"), format!("$fc{id}")));
                 let body_res = self.lower_block(body);
                 self.loop_labels.pop();
+                if wm.is_some() {
+                    self.wm_level -= 1;
+                }
                 let body_seq = match body_res {
                     Some(b) => b,
                     None => {
@@ -3696,6 +3697,10 @@ impl Codegen {
                         body: vec![N::Drop(W::Seq(body_seq))],
                     },
                 ];
+                // reclaim per-iteration arena garbage before the counter advance.
+                if let Some((_, reset)) = &wm {
+                    loop_body.push(reset.clone());
+                }
                 if *inclusive {
                     loop_body.push(N::Br {
                         target: format!("fe{id}"),
@@ -3712,27 +3717,25 @@ impl Codegen {
                     },
                 });
                 loop_body.push(N::Br { target: format!("fl{id}"), cond: None });
-                W::Seq(vec![
+                let mut outer: crate::wir::WirSeq = vec![
                     N::SetLocal { local: ctr, value: lo_w },
                     N::SetLocal { local: end, value: hi_w },
-                    N::Block {
-                        label: format!("fe{id}"),
-                        result: None,
-                        body: vec![N::Loop { label: format!("fl{id}"), body: loop_body }],
-                    },
-                    N::Push(W::ConstI32(0)),
-                ])
+                ];
+                if let Some((capture, _)) = &wm {
+                    outer.push(capture.clone());
+                }
+                outer.push(N::Block {
+                    label: format!("fe{id}"),
+                    result: None,
+                    body: vec![N::Loop { label: format!("fl{id}"), body: loop_body }],
+                });
+                outer.push(N::Push(W::ConstI32(0)));
+                W::Seq(outer)
             },
             // `for var in list { body }` — Nil-valued; iterate a `[len][e0]...` list
-            // with a pointer + index in scratch locals. The watermark framing stays
-            // in legacy.
+            // with a pointer + index in scratch locals; an optional per-iteration
+            // arena reset (the watermark) reclaims body garbage each time around.
             Expr::For { var, iter, body } if !matches!(iter.as_ref(), Expr::Range { .. }) => {
-                if !force_copy_mode()
-                    && self.wm_level < WM_POOL
-                    && self.loop_arena_resettable(body)
-                {
-                    return None;
-                }
                 let saved = self.next_label;
                 let id = self.next_label;
                 self.next_label += 1;
@@ -3749,9 +3752,15 @@ impl Codegen {
                     self.local_records.insert(var.clone(), elem);
                 }
                 let elem_kind = self.iter_elem_kind(iter);
+                // Watermark AFTER the list is built (`iter_w`), so the list and its
+                // elements live below the reset point and survive each iteration.
+                let wm = self.loop_watermark_wir(body);
                 self.loop_labels.push((format!("$fe{id}"), format!("$fc{id}")));
                 let body_res = self.lower_block(body);
                 self.loop_labels.pop();
+                if wm.is_some() {
+                    self.wm_level -= 1;
+                }
                 let body_seq = match body_res {
                     Some(b) => b,
                     None => {
@@ -3817,18 +3826,27 @@ impl Codegen {
                         rhs: Box::new(W::ConstI32(1)),
                     },
                 };
-                let loop_body =
-                    vec![exit, bind, body_block, advance, N::Br { target: format!("fl{id}"), cond: None }];
-                W::Seq(vec![
+                let mut loop_body: crate::wir::WirSeq = vec![exit, bind, body_block];
+                // reclaim per-iteration arena garbage before advancing the index.
+                if let Some((_, reset)) = &wm {
+                    loop_body.push(reset.clone());
+                }
+                loop_body.push(advance);
+                loop_body.push(N::Br { target: format!("fl{id}"), cond: None });
+                let mut outer: crate::wir::WirSeq = vec![
                     N::SetLocal { local: list_l, value: iter_w },
                     N::SetLocal { local: idx_l, value: W::ConstI32(0) },
-                    N::Block {
-                        label: format!("fe{id}"),
-                        result: None,
-                        body: vec![N::Loop { label: format!("fl{id}"), body: loop_body }],
-                    },
-                    N::Push(W::ConstI32(0)),
-                ])
+                ];
+                if let Some((capture, _)) = &wm {
+                    outer.push(capture.clone());
+                }
+                outer.push(N::Block {
+                    label: format!("fe{id}"),
+                    result: None,
+                    body: vec![N::Loop { label: format!("fl{id}"), body: loop_body }],
+                });
+                outer.push(N::Push(W::ConstI32(0)));
+                W::Seq(outer)
             },
             // Aggregate literals: a list is `[len][elems..]`, a tuple is
             // `[0][elems..]`, a constructor is `[tag][fields..]` — all via `$mkN`.
@@ -5237,6 +5255,31 @@ impl Codegen {
             format!("    global.get $heap\n    local.set ${wm}\n"),
             format!("    local.get ${wm}\n    global.set $heap\n"),
         )
+    }
+
+    /// The WIR form of [`loop_watermark`]: returns the `(capture, reset)` pair as
+    /// WIR nodes — `capture` saves `$heap` into a pool slot before the loop, and
+    /// `reset` restores it at the end of each iteration so per-iteration arena
+    /// garbage is reclaimed. `None` when the loop body isn't arena-resettable or
+    /// the pool is exhausted (then the loop simply lowers without the reset, which
+    /// is still correct — just less memory-efficient). Bumps `wm_level`; the
+    /// caller decrements it once the body is lowered.
+    fn loop_watermark_wir(&mut self, body: &Block) -> Option<(crate::wir::WirNode, crate::wir::WirNode)> {
+        if force_copy_mode() || self.wm_level >= WM_POOL || !self.loop_arena_resettable(body) {
+            return None;
+        }
+        let wm = format!("__witchy_wm_{}", self.wm_level);
+        self.wm_level += 1;
+        self.uses_wm = true;
+        let capture = crate::wir::WirNode::SetLocal {
+            local: wm.clone(),
+            value: crate::wir::WirExpr::GetGlobal("heap".into()),
+        };
+        let reset = crate::wir::WirNode::SetGlobal {
+            global: "heap".into(),
+            value: crate::wir::WirExpr::GetLocal(wm),
+        };
+        Some((capture, reset))
     }
 
     fn loop_arena_resettable(&self, body: &Block) -> bool {
@@ -8507,6 +8550,9 @@ pub fn assemble_wir_module(
                 uses_heap |= spec.uses_heap;
                 uses_table |= spec.uses_table;
             }
+            // A watermarked loop in user code reads/writes `$heap` even when no
+            // reached helper allocates, so the global must still be declared.
+            uses_heap |= cg.uses_wm;
             let pruned_imports: Vec<WirImport> = import_names
                 .iter()
                 .map(|iname| {
