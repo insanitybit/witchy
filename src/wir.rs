@@ -370,6 +370,46 @@ pub struct WirModule {
     pub exports: Vec<(String, String)>,
 }
 
+// --- WIR-native prelude helpers (the #35 migration target) -------------------
+//
+// The static prelude (`wir_prelude.rs`) ships helpers as RAW wasm bodies that bake
+// import/func indices, forcing every binary module to import the full host surface
+// (breaking the capability model) and keeping `wat` in the build. Re-expressing
+// each helper as a `WirFunc` lets the encoder re-index by name, so a module emits
+// only the helpers it reaches and imports only their authority — capability-correct
+// AND wat-free. Helpers migrate one at a time; this is the first.
+
+/// `$print_str(s: i32)` — write a witchy string (a `[i32 len][utf-8]` record at
+/// `s`) to the host `print` import: `print(s + 4, [s])`. The ONLY authority it
+/// needs is `print`, so a module whose only helper is this imports nothing else.
+pub fn print_str_helper() -> WirFunc {
+    WirFunc {
+        name: "print_str".into(),
+        params: vec![WirLocal { name: "s".into(), ty: WirTy::Str }],
+        ret: vec![],
+        locals: vec![],
+        body: vec![WirNode::Do(WirExpr::CallHost {
+            import: "print".into(),
+            args: vec![
+                // ptr = s + 4 (skip the 4-byte length header)
+                WirExpr::Binary {
+                    op: BinOp::Add,
+                    kind: Kind::I32,
+                    lhs: Box::new(WirExpr::GetLocal("s".into())),
+                    rhs: Box::new(WirExpr::ConstI32(4)),
+                },
+                // len = [s] (the i32 length header)
+                WirExpr::Load {
+                    ptr: Box::new(WirExpr::GetLocal("s".into())),
+                    kind: Kind::I32,
+                    offset: 0,
+                },
+            ],
+        })],
+        raw_body: None,
+    }
+}
+
 // --- WIR → WAT pretty-printer (the only lowering in M0) ----------------------
 
 /// Render a module to WAT text (`wat::parse_str`-assemblable, runtime-runnable).

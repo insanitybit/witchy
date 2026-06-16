@@ -7825,6 +7825,74 @@ fn main(console: Console):
         actor.output()
     }
 
+    /// #35 keystone: a WIR-native prelude helper (vs the raw-body "all features
+    /// on" prelude) yields a CAPABILITY-MINIMAL module — it imports only the
+    /// authority the reached helpers need. A module whose only helper is
+    /// `print_str` imports only `print`, so it instantiates and runs under a
+    /// print-ONLY grant. (Were it the raw-body prelude, it would import
+    /// crypto.sign/dir/net/… and fail to instantiate here.) This proves the
+    /// incremental WIR-helper path that unblocks the M3 flip.
+    #[test]
+    fn wir_native_helper_yields_capability_minimal_module() {
+        use crate::wir::{
+            print_str_helper, DataSegment, Kind, WirExpr, WirFunc, WirImport, WirModule, WirNode,
+        };
+        // Intern "hello" at offset 1024: [i32 len=5]["hello"].
+        let off = 1024u32;
+        let text = "hello";
+        let mut bytes = (text.len() as u32).to_le_bytes().to_vec();
+        bytes.extend_from_slice(text.as_bytes());
+
+        let main = WirFunc {
+            name: "main".into(),
+            params: vec![],
+            ret: vec![],
+            locals: vec![],
+            body: vec![WirNode::Do(WirExpr::Call {
+                func: "print_str".into(),
+                args: vec![WirExpr::StrPtr(off)],
+            })],
+            raw_body: None,
+        };
+        let run = WirFunc {
+            name: "run".into(),
+            params: vec![],
+            ret: vec![],
+            locals: vec![],
+            body: vec![WirNode::Do(WirExpr::Call { func: "main".into(), args: vec![] })],
+            raw_body: None,
+        };
+        let module = WirModule {
+            imports: vec![WirImport {
+                name: "print".into(),
+                params: vec![Kind::I32, Kind::I32],
+                results: vec![],
+            }],
+            funcs: vec![print_str_helper(), main, run],
+            memory_pages: 1,
+            data: vec![DataSegment { offset: off, bytes }],
+            globals: vec![],
+            table: None,
+            exports: vec![("run".into(), "run".into())],
+        };
+        let wasm = crate::wir_encode::encode(&module);
+        assert!(wasmparser::validate(&wasm).is_ok(), "encoded module must validate");
+
+        // Run with ONLY `print` granted — nothing else. Success proves the module
+        // imports no other authority (else instantiate would fail).
+        use crate::runtime::{Capabilities, Runtime};
+        let mut rt = Runtime::batch().expect("runtime");
+        let mut actor = rt
+            .spawn(
+                &wasm,
+                Capabilities { print: true, quiet: true, ..Default::default() },
+                crate::RUN_MEMORY_PAGES,
+            )
+            .expect("spawn under a print-only grant");
+        actor.run().expect("run");
+        assert_eq!(actor.output(), vec!["hello".to_string()]);
+    }
+
     /// Run a WIR-assembled binary with EVERY capability granted. The static
     /// prelude is "all features on", so a binary-path module imports the full
     /// host surface; granting everything lets it instantiate. (Capability-minimal
