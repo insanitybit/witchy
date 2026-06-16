@@ -2059,6 +2059,354 @@ pub fn str_to_int_helper() -> WirFunc {
     }
 }
 
+// --- Dict helpers ------------------------------------------------------------
+// A Dict pointer `d` addresses an i32 `count` at offset 0, then `count` 16-byte
+// entries (i64 key at entry+0, i64 value at entry+8); entry i is at d+4+i*16.
+// A hidden word at d-4 is 0 (linear scan) or an open-addressing index pointer.
+// On the binary path only the non-`_cap` helpers are migrated, and none of them
+// build an index, so d-4 stays 0 and `$dict_find` always takes the linear path —
+// but the hash path is ported faithfully anyway so the helper is correct if a
+// future cap-insert migration starts hanging an index.
+
+/// `$key_eq(a, b, mode) -> i32` — slot equality under the key's compile-time
+/// type: mode 0 = raw i64 (Int/Bool), 1 = `$str_eq` on the pointers (String),
+/// else f64 (the slots reinterpreted as doubles).
+pub fn key_eq_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    let i32c = E::ConstI32;
+    let wrap = |n: &str| E::FromSlot(Box::new(getl(n)), Kind::I32);
+    WirFunc {
+        name: "key_eq".into(),
+        params: vec![
+            WirLocal { name: "a".into(), ty: WirTy::Int },
+            WirLocal { name: "b".into(), ty: WirTy::Int },
+            WirLocal { name: "mode".into(), ty: WirTy::Bool },
+        ],
+        ret: vec![WirTy::Bool],
+        locals: vec![],
+        body: vec![N::If {
+            cond: E::Unary { op: UnOp::Not, kind: Kind::I32, arg: Box::new(getl("mode")) },
+            then_: vec![N::Push(E::Binary {
+                op: BinOp::Eq,
+                kind: Kind::I64,
+                lhs: Box::new(getl("a")),
+                rhs: Box::new(getl("b")),
+            })],
+            els: vec![N::If {
+                cond: E::Binary { op: BinOp::Eq, kind: Kind::I32, lhs: Box::new(getl("mode")), rhs: Box::new(i32c(1)) },
+                then_: vec![N::Push(E::Call { func: "str_eq".into(), args: vec![wrap("a"), wrap("b")] })],
+                els: vec![N::Push(E::Binary {
+                    op: BinOp::Eq,
+                    kind: Kind::F64,
+                    lhs: Box::new(E::FromSlot(Box::new(getl("a")), Kind::F64)),
+                    rhs: Box::new(E::FromSlot(Box::new(getl("b")), Kind::F64)),
+                })],
+                result: Some(WirTy::Bool),
+            }],
+            result: Some(WirTy::Bool),
+        }],
+        raw_body: None,
+    }
+}
+
+/// `$dict_hash(k, mode) -> i32` — a 64-bit bit-mix for scalar keys (mode 0),
+/// FNV-1a over the bytes for string keys (mode 1, `k` = string pointer). Only
+/// consulted by `$dict_find`'s (binary-path-dormant) hash probe.
+pub fn dict_hash_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    let i32c = E::ConstI32;
+    let i64c = E::ConstI64;
+    let b32 = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+    let b64 = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I64, lhs: Box::new(l), rhs: Box::new(r) };
+    let setl = |n: &str, v: E| N::SetLocal { local: n.into(), value: v };
+    let fnv_loop = N::Block {
+        label: "done".into(),
+        result: None,
+        body: vec![N::Loop {
+            label: "l".into(),
+            body: vec![
+                N::Br { target: "done".into(), cond: Some(b32(BinOp::Ge, getl("i"), getl("len"))) },
+                setl("h", b32(BinOp::Xor, getl("h"), E::Load8U { ptr: Box::new(b32(BinOp::Add, getl("p"), getl("i"))), offset: 4 })),
+                setl("h", b32(BinOp::Mul, getl("h"), i32c(16777619))),
+                setl("i", b32(BinOp::Add, getl("i"), i32c(1))),
+                N::Br { target: "l".into(), cond: None },
+            ],
+        }],
+    };
+    WirFunc {
+        name: "dict_hash".into(),
+        params: vec![
+            WirLocal { name: "k".into(), ty: WirTy::Int },
+            WirLocal { name: "mode".into(), ty: WirTy::Bool },
+        ],
+        ret: vec![WirTy::Bool],
+        locals: vec![
+            WirLocal { name: "x".into(), ty: WirTy::Int },
+            WirLocal { name: "p".into(), ty: WirTy::Bool },
+            WirLocal { name: "len".into(), ty: WirTy::Bool },
+            WirLocal { name: "i".into(), ty: WirTy::Bool },
+            WirLocal { name: "h".into(), ty: WirTy::Bool },
+        ],
+        body: vec![
+            N::If {
+                cond: E::Unary { op: UnOp::Not, kind: Kind::I32, arg: Box::new(getl("mode")) },
+                then_: vec![
+                    setl("x", getl("k")),
+                    setl("x", b64(BinOp::Xor, getl("x"), b64(BinOp::ShrU, getl("x"), i64c(33)))),
+                    setl("x", b64(BinOp::Mul, getl("x"), i64c(-49064778989728563))),
+                    setl("x", b64(BinOp::Xor, getl("x"), b64(BinOp::ShrU, getl("x"), i64c(33)))),
+                    N::Return(Some(E::FromSlot(Box::new(getl("x")), Kind::I32))),
+                ],
+                els: vec![],
+                result: None,
+            },
+            setl("p", E::FromSlot(Box::new(getl("k")), Kind::I32)),
+            setl("len", E::Load { ptr: Box::new(getl("p")), kind: Kind::I32, offset: 0 }),
+            setl("h", i32c(-2128831035)),
+            setl("i", i32c(0)),
+            fnv_loop,
+            N::Push(getl("h")),
+        ],
+        raw_body: None,
+    }
+}
+
+/// `$dict_find(d, k, mode) -> i32` — the entry index of key `k`, or -1. Linear
+/// scan when the hidden index word is 0 (always, on the binary path); otherwise
+/// an open-addressing probe over the hash table.
+pub fn dict_find_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    let i32c = E::ConstI32;
+    let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+    let load = |p: E, off: u32| E::Load { ptr: Box::new(p), kind: Kind::I32, offset: off };
+    let setl = |n: &str, v: E| N::SetLocal { local: n.into(), value: v };
+    // key slot of entry `e`: d + 4 + e*16.
+    let key_at = |e: E| E::Load { ptr: Box::new(b(BinOp::Add, getl("d"), b(BinOp::Mul, e, i32c(16)))), kind: Kind::I64, offset: 4 };
+    let keq = |e: E| E::Call { func: "key_eq".into(), args: vec![key_at(e), getl("k"), getl("mode")] };
+    let linear = N::Block {
+        label: "done".into(),
+        result: None,
+        body: vec![N::Loop {
+            label: "l".into(),
+            body: vec![
+                N::Br { target: "done".into(), cond: Some(b(BinOp::Ge, getl("i"), getl("count"))) },
+                N::If { cond: keq(getl("i")), then_: vec![N::Return(Some(getl("i")))], els: vec![], result: None },
+                setl("i", b(BinOp::Add, getl("i"), i32c(1))),
+                N::Br { target: "l".into(), cond: None },
+            ],
+        }],
+    };
+    // slot value at index table position h: idx + 4 + h*4.
+    let slot_at_h = load(b(BinOp::Add, b(BinOp::Add, getl("idx"), i32c(4)), b(BinOp::Mul, getl("h"), i32c(4))), 0);
+    let probe = N::Block {
+        label: "miss".into(),
+        result: None,
+        body: vec![N::Loop {
+            label: "p".into(),
+            body: vec![
+                setl("e", slot_at_h),
+                N::Br { target: "miss".into(), cond: Some(E::Unary { op: UnOp::Not, kind: Kind::I32, arg: Box::new(getl("e")) }) },
+                N::If {
+                    cond: keq(b(BinOp::Sub, getl("e"), i32c(1))),
+                    then_: vec![N::Return(Some(b(BinOp::Sub, getl("e"), i32c(1))))],
+                    els: vec![],
+                    result: None,
+                },
+                setl("h", b(BinOp::And, b(BinOp::Add, getl("h"), i32c(1)), b(BinOp::Sub, getl("slots"), i32c(1)))),
+                N::Br { target: "p".into(), cond: None },
+            ],
+        }],
+    };
+    WirFunc {
+        name: "dict_find".into(),
+        params: vec![
+            WirLocal { name: "d".into(), ty: WirTy::Bool },
+            WirLocal { name: "k".into(), ty: WirTy::Int },
+            WirLocal { name: "mode".into(), ty: WirTy::Bool },
+        ],
+        ret: vec![WirTy::Bool],
+        locals: ["idx", "count", "i", "slots", "h", "e"]
+            .iter()
+            .map(|n| WirLocal { name: (*n).into(), ty: WirTy::Bool })
+            .collect(),
+        body: vec![
+            setl("idx", load(b(BinOp::Sub, getl("d"), i32c(4)), 0)),
+            N::If {
+                cond: E::Unary { op: UnOp::Not, kind: Kind::I32, arg: Box::new(getl("idx")) },
+                then_: vec![
+                    setl("count", load(getl("d"), 0)),
+                    setl("i", i32c(0)),
+                    linear,
+                    N::Return(Some(i32c(-1))),
+                ],
+                els: vec![],
+                result: None,
+            },
+            setl("slots", load(getl("idx"), 0)),
+            setl("h", b(BinOp::And, E::Call { func: "dict_hash".into(), args: vec![getl("k"), getl("mode")] }, b(BinOp::Sub, getl("slots"), i32c(1)))),
+            probe,
+            N::Push(i32c(-1)),
+        ],
+        raw_body: None,
+    }
+}
+
+/// `$dict_new() -> i32` — an empty dict: 8 reserved bytes holding a zero hidden
+/// word (at p-4) and a zero count (at p), with `p` returned.
+pub fn dict_new_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    let i32c = E::ConstI32;
+    let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+    WirFunc {
+        name: "dict_new".into(),
+        params: vec![],
+        ret: vec![WirTy::Bool],
+        locals: vec![WirLocal { name: "p".into(), ty: WirTy::Bool }],
+        body: vec![
+            N::Do(E::Call { func: "ensure".into(), args: vec![i32c(8)] }),
+            N::SetLocal { local: "p".into(), value: b(BinOp::Add, E::GetGlobal("heap".into()), i32c(4)) },
+            N::Store { ptr: b(BinOp::Sub, getl("p"), i32c(4)), value: i32c(0), kind: Kind::I32, offset: 0 },
+            N::Store { ptr: getl("p"), value: i32c(0), kind: Kind::I32, offset: 0 },
+            N::SetGlobal { global: "heap".into(), value: b(BinOp::Add, getl("p"), i32c(4)) },
+            N::Push(getl("p")),
+        ],
+        raw_body: None,
+    }
+}
+
+/// `$dict_insert(d, k, v, mode) -> i32` — a fresh dict like `d` with `k` set to
+/// `v`: the matching entry's value replaced, or `(k, v)` appended. Copies the
+/// existing block (resetting the hidden index word to 0), then writes in place.
+pub fn dict_insert_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    let i32c = E::ConstI32;
+    let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+    let setl = |n: &str, v: E| N::SetLocal { local: n.into(), value: v };
+    WirFunc {
+        name: "dict_insert".into(),
+        params: vec![
+            WirLocal { name: "d".into(), ty: WirTy::Bool },
+            WirLocal { name: "k".into(), ty: WirTy::Int },
+            WirLocal { name: "v".into(), ty: WirTy::Int },
+            WirLocal { name: "mode".into(), ty: WirTy::Bool },
+        ],
+        ret: vec![WirTy::Bool],
+        locals: ["count", "found", "new", "bytes"]
+            .iter()
+            .map(|n| WirLocal { name: (*n).into(), ty: WirTy::Bool })
+            .collect(),
+        body: vec![
+            setl("count", E::Load { ptr: Box::new(getl("d")), kind: Kind::I32, offset: 0 }),
+            N::Do(E::Call {
+                func: "ensure".into(),
+                args: vec![b(BinOp::Add, i32c(24), b(BinOp::Mul, getl("count"), i32c(16)))],
+            }),
+            setl("found", E::Call { func: "dict_find".into(), args: vec![getl("d"), getl("k"), getl("mode")] }),
+            setl("bytes", b(BinOp::Add, i32c(4), b(BinOp::Mul, getl("count"), i32c(16)))),
+            setl("new", b(BinOp::Add, E::GetGlobal("heap".into()), i32c(4))),
+            N::Store { ptr: b(BinOp::Sub, getl("new"), i32c(4)), value: i32c(0), kind: Kind::I32, offset: 0 },
+            N::MemoryCopy { dest: getl("new"), src: getl("d"), len: getl("bytes") },
+            N::If {
+                cond: b(BinOp::Ge, getl("found"), i32c(0)),
+                then_: vec![
+                    // replace value slot of the found entry: new + 12 + found*16.
+                    N::Store {
+                        ptr: b(BinOp::Add, getl("new"), b(BinOp::Mul, getl("found"), i32c(16))),
+                        value: getl("v"),
+                        kind: Kind::I64,
+                        offset: 12,
+                    },
+                    N::SetGlobal { global: "heap".into(), value: b(BinOp::Add, getl("new"), getl("bytes")) },
+                    N::Push(getl("new")),
+                ],
+                els: vec![
+                    N::Store { ptr: getl("new"), value: b(BinOp::Add, getl("count"), i32c(1)), kind: Kind::I32, offset: 0 },
+                    N::Store { ptr: b(BinOp::Add, getl("new"), getl("bytes")), value: getl("k"), kind: Kind::I64, offset: 0 },
+                    N::Store { ptr: b(BinOp::Add, getl("new"), getl("bytes")), value: getl("v"), kind: Kind::I64, offset: 8 },
+                    N::SetGlobal {
+                        global: "heap".into(),
+                        value: b(BinOp::Add, b(BinOp::Add, getl("new"), getl("bytes")), i32c(16)),
+                    },
+                    N::Push(getl("new")),
+                ],
+                result: Some(WirTy::Bool),
+            },
+        ],
+        raw_body: None,
+    }
+}
+
+/// `$dict_get_or(d, k, default, mode) -> i64` — the value slot for `k`, or
+/// `default` when absent.
+pub fn dict_get_or_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    let i32c = E::ConstI32;
+    let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+    WirFunc {
+        name: "dict_get_or".into(),
+        params: vec![
+            WirLocal { name: "d".into(), ty: WirTy::Bool },
+            WirLocal { name: "k".into(), ty: WirTy::Int },
+            WirLocal { name: "default".into(), ty: WirTy::Int },
+            WirLocal { name: "mode".into(), ty: WirTy::Bool },
+        ],
+        ret: vec![WirTy::Int],
+        locals: vec![WirLocal { name: "found".into(), ty: WirTy::Bool }],
+        body: vec![
+            N::SetLocal { local: "found".into(), value: E::Call { func: "dict_find".into(), args: vec![getl("d"), getl("k"), getl("mode")] } },
+            N::If {
+                cond: b(BinOp::Lt, getl("found"), i32c(0)),
+                then_: vec![N::Return(Some(getl("default")))],
+                els: vec![],
+                result: None,
+            },
+            // value slot: d + 12 + found*16.
+            N::Push(E::Load {
+                ptr: Box::new(b(BinOp::Add, getl("d"), b(BinOp::Mul, getl("found"), i32c(16)))),
+                kind: Kind::I64,
+                offset: 12,
+            }),
+        ],
+        raw_body: None,
+    }
+}
+
+/// `$dict_has(d, k, mode) -> i32` — whether `k` is present.
+pub fn dict_has_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    WirFunc {
+        name: "dict_has".into(),
+        params: vec![
+            WirLocal { name: "d".into(), ty: WirTy::Bool },
+            WirLocal { name: "k".into(), ty: WirTy::Int },
+            WirLocal { name: "mode".into(), ty: WirTy::Bool },
+        ],
+        ret: vec![WirTy::Bool],
+        locals: vec![],
+        body: vec![N::Push(E::Binary {
+            op: BinOp::Ge,
+            kind: Kind::I32,
+            lhs: Box::new(E::Call { func: "dict_find".into(), args: vec![getl("d"), getl("k"), getl("mode")] }),
+            rhs: Box::new(E::ConstI32(0)),
+        })],
+        raw_body: None,
+    }
+}
+
 /// A WIR-native prelude helper plus the module-level resources it needs (so a
 /// pruned module declares only the imports/globals/table its reached helpers
 /// actually touch — capability-minimal).
@@ -2237,6 +2585,55 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
         "str_to_int" => Some(WirHelperSpec {
             func: str_to_int_helper(),
             helper_deps: &["is_ws"],
+            import_deps: &[],
+            uses_heap: false,
+            uses_table: false,
+        }),
+        "key_eq" => Some(WirHelperSpec {
+            func: key_eq_helper(),
+            helper_deps: &["str_eq"],
+            import_deps: &[],
+            uses_heap: false,
+            uses_table: false,
+        }),
+        "dict_hash" => Some(WirHelperSpec {
+            func: dict_hash_helper(),
+            helper_deps: &[],
+            import_deps: &[],
+            uses_heap: false,
+            uses_table: false,
+        }),
+        "dict_find" => Some(WirHelperSpec {
+            func: dict_find_helper(),
+            helper_deps: &["key_eq", "dict_hash"],
+            import_deps: &[],
+            uses_heap: false,
+            uses_table: false,
+        }),
+        "dict_new" => Some(WirHelperSpec {
+            func: dict_new_helper(),
+            helper_deps: &["ensure"],
+            import_deps: &[],
+            uses_heap: true,
+            uses_table: false,
+        }),
+        "dict_insert" => Some(WirHelperSpec {
+            func: dict_insert_helper(),
+            helper_deps: &["ensure", "dict_find"],
+            import_deps: &[],
+            uses_heap: true,
+            uses_table: false,
+        }),
+        "dict_get_or" => Some(WirHelperSpec {
+            func: dict_get_or_helper(),
+            helper_deps: &["dict_find"],
+            import_deps: &[],
+            uses_heap: false,
+            uses_table: false,
+        }),
+        "dict_has" => Some(WirHelperSpec {
+            func: dict_has_helper(),
+            helper_deps: &["dict_find"],
             import_deps: &[],
             uses_heap: false,
             uses_table: false,

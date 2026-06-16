@@ -8242,6 +8242,12 @@ fn main(console: Console):
                 "fn main(console: Console):\n    print(console, __render(string.to_int(\"123\") + string.to_int(\"-23\")))\n",
                 vec!["100".to_string()],
             ),
+            // dict with String keys ($dict_new/insert/get_or/has/size →
+            // $dict_find + $key_eq's $str_eq path) on the binary path.
+            (
+                "fn main(console: Console):\n    let d = dict.insert(dict.insert(dict.new(), \"a\", 1), \"b\", 2)\n    print(console, __render(dict.get_or(d, \"a\", 0)))\n    print(console, __render(dict.get_or(d, \"z\", 99)))\n    print(console, __render(dict.has(d, \"b\")))\n    print(console, __render(dict.has(d, \"z\")))\n    print(console, __render(dict.size(d)))\n",
+                vec!["1".to_string(), "99".to_string(), "true".to_string(), "false".to_string(), "2".to_string()],
+            ),
         ];
         let mut lowered_any = false;
         for (src, want) in cases {
