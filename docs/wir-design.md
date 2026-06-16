@@ -803,7 +803,7 @@ nodes for the bulk-memory/memory ops the helpers use (`memory.copy/fill/grow/siz
 `Cargo.toml` and delete the WAT sink. Keep `WIR → WAT` printer as `witchy emit-wat`.
 **Exit:** no WAT text in the pipeline; `wat` crate out of the build.
 
-### Milestone 4 — turn on optimizations (the actual payoff) 🟡 SLOT-ELIMINATION SHIPPED; MEASURABLE WIN PENDING LOWERING
+### Milestone 4 — turn on optimizations (the actual payoff) 🟡 SLOT-ELIMINATION DONE (measurable); IN-PLACE PASS PENDING
 
 Add the pass registry (`fn(&mut WirModule)` pipeline) and land passes in
 ascending risk: **redundant slot-conversion elimination** (§3.2, the clearest
@@ -820,19 +820,24 @@ redundancy (node reduction asserted); integrated into `compile_module_binary`
 before encoding; behavior-preservation proven against the oracle
 (`wir_slot_elimination_is_behavior_preserving`).
 
-**Key finding — no measurable win yet.** The pass eliminates **0 nodes** on every
-program that currently lowers: the redundant `FromSlot(ToSlot)` round-trips it
-targets arise at **generic/monomorphization and closure boundaries** (args pushed
-as i64 slots, immediately consumed as typed) — exactly the constructs that DON'T
-lower yet (they hit the WAT fallback). The measurable payoff therefore depends on
-the M2 lowering tail reaching those constructs. Until then the pass is correct but
-inert on real programs.
+**Measurable win achieved** (`wir_slot_elimination_shows_measurable_improvement`).
+The redundant `ToSlot(FromSlot(..))` round-trips arise where a value crosses the
+i64-slot ABI and is immediately re-consumed as a typed i32 — e.g. re-slotting a
+`List(Bool)` element: `[list.at(xs, 0)]` reads the element's i64 slot, narrows it
+to the bool's i32, then re-widens it to store in the new list. Once `$mk{n}` and
+`$list_at` were migrated to WIR helpers (so such programs take the binary path),
+the pass removes those nodes (125 → 123 on that program) and the optimized binary
+still matches the interpreter oracle. (Generic/closure boundaries — not yet
+lowered — are a further source the win will grow with.)
 
 **Remaining:** the **in-place / ownership pass** (§3.1, the second headline win) is
-NOT built. DCE/CSE/devirt/inlining not built. Plus the lowering tail above, which
-is what actually surfaces the slot-elimination win. **Exit:** contributors have
-"one place" to add a compiled-backend optimization, with a test harness that proves
-it parity-safe, AND both headline passes show a measurable improvement.
+NOT yet a WIR pass. The in-place decision is currently baked into the LEGACY
+lowering (analyze-then-lower → `ListPushCap`), and accumulator/own-ABI functions
+do not lower to WIR yet (`lower_block` bails on `inplace_push`/own params), so they
+run on the WAT path. Criterion 3 needs those bodies lowered to WIR with the cap
+ABI, oracle-validated, carrying the reowns-counter measurable win (O(1) vs O(n)).
+DCE/CSE/devirt/inlining are not built (not required by the DONE criteria).
+**Exit:** both headline passes live, oracle-validated, measurable.
 
 Milestones 0–1 are low-risk and independently shippable. Milestone 2 is the
 atomic/scary one (the recursive-core conversion) — but it ships *byte-identical
