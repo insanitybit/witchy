@@ -8161,6 +8161,12 @@ fn main(console: Console):
                 "fn main(console: Console):\n    print(console, __render(string.length(\"hello\")))\n",
                 vec!["5".to_string()],
             ),
+            // string.contains ($find_byte — a conditional br inside a loop) on
+            // the binary path.
+            (
+                "fn main(console: Console):\n    if string.contains(\"hello\", \"ell\"):\n        print(console, \"yes\")\n    else:\n        print(console, \"no\")\n    if string.contains(\"hello\", \"xyz\"):\n        print(console, \"yes2\")\n    else:\n        print(console, \"no2\")\n",
+                vec!["yes".to_string(), "no2".to_string()],
+            ),
         ];
         let mut lowered_any = false;
         for (src, want) in cases {

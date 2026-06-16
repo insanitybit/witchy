@@ -507,13 +507,17 @@ impl EncodeCtx<'_> {
                     None => BlockType::Empty,
                 };
                 func.instruction(&Instruction::If(bt));
-                // `if`/`else` are not labeled targets; no frame pushed (br depth
-                // counts Block/Loop only, mirroring the named-label model where
-                // `if` carries no `$label`).
+                // An `if` IS a control frame in wasm: a `br N` INSIDE it counts the
+                // if as one level toward N. (The named-label WAT printer is immune —
+                // the assembler computes depths — but the numeric encoder must count
+                // it.) Push a sentinel frame that no real `Br` target ever matches,
+                // so `branch_depth` counts the if level without ever resolving to it.
+                self.label_stack.push("\u{0}if".to_string());
                 self.encode_seq(func, then_);
                 func.instruction(&Instruction::Else);
                 self.encode_seq(func, els);
                 func.instruction(&Instruction::End);
+                self.label_stack.pop();
             }
             WirNode::Block {
                 label,
@@ -1263,6 +1267,59 @@ mod tests {
             exports: vec![("run".into(), "run".into())],
         };
         assert_agrees(&module, &["2"]);
+    }
+
+    /// `$find_byte` (a scan loop with an inner byte-compare loop whose mismatch
+    /// `br` lives inside an `if`) finds substrings correctly — the regression test
+    /// for the encoder counting `if` as a branch frame. Fuel-capped, so a
+    /// mis-encoded `br` traps instead of spinning.
+    #[test]
+    fn find_byte_finds_substrings() {
+        use crate::wir::find_byte_helper;
+        let mk_str = |s: &str| {
+            let mut b = (s.len() as u32).to_le_bytes().to_vec();
+            b.extend_from_slice(s.as_bytes());
+            b
+        };
+        let data = vec![
+            DataSegment { offset: 100, bytes: mk_str("hello") },
+            DataSegment { offset: 120, bytes: mk_str("ell") },
+            DataSegment { offset: 140, bytes: mk_str("xyz") },
+            DataSegment { offset: 160, bytes: mk_str("") },
+        ];
+        let fb = |s: i32, sub: i32| WirExpr::Call {
+            func: "find_byte".into(),
+            args: vec![WirExpr::ConstI32(s), WirExpr::ConstI32(sub)],
+        };
+        let pi = |e: WirExpr| {
+            WirNode::Do(WirExpr::CallHost {
+                import: "print_int".into(),
+                args: vec![WirExpr::Convert { from: Kind::I32, to: Kind::I64, arg: Box::new(e) }],
+            })
+        };
+        let run = WirFunc {
+            name: "run".into(),
+            params: vec![],
+            ret: vec![],
+            locals: vec![],
+            body: vec![pi(fb(100, 120)), pi(fb(100, 140)), pi(fb(100, 160))],
+            raw_body: None,
+        };
+        let module = WirModule {
+            imports: vec![WirImport {
+                name: "print_int".into(),
+                params: vec![Kind::I64],
+                results: vec![],
+            }],
+            funcs: vec![find_byte_helper(), run],
+            memory_pages: 1,
+            data,
+            globals: vec![],
+            table: None,
+            exports: vec![("run".into(), "run".into())],
+        };
+        // "ell" is at index 1 of "hello"; "xyz" absent (-1); "" → 0.
+        assert_agrees(&module, &["1", "-1", "0"]);
     }
 
     #[test]

@@ -1051,6 +1051,86 @@ pub fn list_push_cap_helper() -> WirFunc {
     }
 }
 
+/// `$find_byte(s: i32, sub: i32) -> i32` — index of the first occurrence of
+/// `sub` in `s` (byte-wise), or `-1`; empty `sub` → 0. Mirrors `FIND_BYTE_WAT`
+/// (a scan loop with an inner byte-compare loop; the inner mismatch `br` lives
+/// inside an `if`, which the encoder must count as a branch frame). No
+/// heap/import/table.
+pub fn find_byte_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    let i32c = E::ConstI32;
+    let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+    let load = |p: E| E::Load { ptr: Box::new(p), kind: Kind::I32, offset: 0 };
+    let setl = |n: &str, v: E| N::SetLocal { local: n.into(), value: v };
+    let s_byte = E::Load8U { ptr: Box::new(b(BinOp::Add, getl("s"), b(BinOp::Add, getl("i"), getl("j")))), offset: 4 };
+    let sub_byte = E::Load8U { ptr: Box::new(b(BinOp::Add, getl("sub"), getl("j"))), offset: 4 };
+    let cmp_loop = N::Block {
+        label: "cmpdone".into(),
+        result: None,
+        body: vec![N::Loop {
+            label: "cmp".into(),
+            body: vec![
+                N::Br { target: "cmpdone".into(), cond: Some(b(BinOp::Ge, getl("j"), getl("sublen"))) },
+                N::If {
+                    cond: b(BinOp::Ne, s_byte, sub_byte),
+                    then_: vec![setl("match", i32c(0)), N::Br { target: "cmpdone".into(), cond: None }],
+                    els: vec![],
+                    result: None,
+                },
+                setl("j", b(BinOp::Add, getl("j"), i32c(1))),
+                N::Br { target: "cmp".into(), cond: None },
+            ],
+        }],
+    };
+    let scan_loop = N::Block {
+        label: "done".into(),
+        result: None,
+        body: vec![N::Loop {
+            label: "scan".into(),
+            body: vec![
+                N::Br {
+                    target: "done".into(),
+                    cond: Some(b(BinOp::Gt, getl("i"), b(BinOp::Sub, getl("slen"), getl("sublen")))),
+                },
+                setl("match", i32c(1)),
+                setl("j", i32c(0)),
+                cmp_loop,
+                N::If { cond: getl("match"), then_: vec![N::Return(Some(getl("i")))], els: vec![], result: None },
+                setl("i", b(BinOp::Add, getl("i"), i32c(1))),
+                N::Br { target: "scan".into(), cond: None },
+            ],
+        }],
+    };
+    WirFunc {
+        name: "find_byte".into(),
+        params: vec![
+            WirLocal { name: "s".into(), ty: WirTy::Str },
+            WirLocal { name: "sub".into(), ty: WirTy::Str },
+        ],
+        ret: vec![WirTy::Bool],
+        locals: ["slen", "sublen", "i", "j", "match"]
+            .iter()
+            .map(|n| WirLocal { name: (*n).into(), ty: WirTy::Bool })
+            .collect(),
+        body: vec![
+            setl("slen", load(getl("s"))),
+            setl("sublen", load(getl("sub"))),
+            N::If {
+                cond: E::Unary { op: UnOp::Not, kind: Kind::I32, arg: Box::new(getl("sublen")) },
+                then_: vec![N::Return(Some(i32c(0)))],
+                els: vec![],
+                result: None,
+            },
+            setl("i", i32c(0)),
+            scan_loop,
+            N::Push(i32c(-1)),
+        ],
+        raw_body: None,
+    }
+}
+
 /// A WIR-native prelude helper plus the module-level resources it needs (so a
 /// pruned module declares only the imports/globals/table its reached helpers
 /// actually touch — capability-minimal).
@@ -1102,6 +1182,13 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
         }),
         "str_eq" => Some(WirHelperSpec {
             func: str_eq_helper(),
+            helper_deps: &[],
+            import_deps: &[],
+            uses_heap: false,
+            uses_table: false,
+        }),
+        "find_byte" => Some(WirHelperSpec {
+            func: find_byte_helper(),
             helper_deps: &[],
             import_deps: &[],
             uses_heap: false,
