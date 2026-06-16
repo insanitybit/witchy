@@ -8352,6 +8352,34 @@ fn main(console: Console):
         assert_eq!(run_bytes_print_only(&bytes), want, "binary path vs oracle");
     }
 
+    /// `$crypto_sign` + `$crypto_public_key` on the binary path — the Secret
+    /// capability host imports (the seed never enters guest memory). Both need a
+    /// signing key granted; with a fixed seed the outputs are deterministic, so
+    /// the WIR binary is compared byte-for-byte against the WAT path.
+    #[test]
+    fn wir_crypto_signing_host_imports_binary_path() {
+        use crate::runtime::{Capabilities, Runtime};
+        let src = "import crypto\nfn main(console: Console, signer: Secret):\n    print(console, crypto.public_key(signer))\n    print(console, crypto.sign(signer, \"hello\"))\n";
+        let module = parser::parse_module(src).expect("parse");
+        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        typeck::check(&linked).expect("typecheck");
+        let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+            .expect("compile_module_binary")
+            .expect("the WIR binary path should handle the signing host imports");
+        let wat = codegen::compile_module(&parser::parse_module(src).expect("parse")).expect("compile wat");
+        let caps = || Capabilities { print: true, signing_key: Some([7u8; 32]), quiet: true, ..Default::default() };
+        let run = |code: &[u8]| {
+            let mut rt = Runtime::batch().expect("runtime");
+            let mut actor = rt.spawn(code, caps(), crate::RUN_MEMORY_PAGES).expect("spawn with signing key");
+            actor.run().expect("run");
+            actor.output()
+        };
+        let got = run(&bytes);
+        assert_eq!(got[0].len(), 64, "public key hex is 64 chars");
+        assert_eq!(got[1].len(), 128, "signature hex is 128 chars");
+        assert_eq!(got, run(wat.as_bytes()), "binary path matches WAT path (same seed)");
+    }
+
     /// An Int-returning `main` on the binary path: the `run` wrapper prints the
     /// result via `print_int` (the exit-code convention), matching the WAT sink.
     /// Validated against the WAT path (both compiled paths use i32 `Int`, so they

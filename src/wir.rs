@@ -3075,6 +3075,23 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             uses_heap: true,
             uses_table: false,
         }),
+        "crypto_sign" => Some(WirHelperSpec {
+            // The Secret capability: the host signs `msg` with the never-exposed
+            // seed and writes a 128-char hex signature.
+            func: crypto_hash_helper("crypto_sign", "crypto.sign", 128, &["msg"]),
+            helper_deps: &["ensure"],
+            import_deps: &["crypto.sign"],
+            uses_heap: true,
+            uses_table: false,
+        }),
+        "crypto_public_key" => Some(WirHelperSpec {
+            // No input — the host writes the seed's 64-char hex public key.
+            func: crypto_hash_helper("crypto_public_key", "crypto.public_key", 64, &[]),
+            helper_deps: &["ensure"],
+            import_deps: &["crypto.public_key"],
+            uses_heap: true,
+            uses_table: false,
+        }),
         "replace" => Some(WirHelperSpec {
             func: replace_helper(),
             helper_deps: &["ensure", "match_at"],
