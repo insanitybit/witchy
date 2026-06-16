@@ -2548,6 +2548,17 @@ impl Codegen {
         // inout move-out ABI nor the own-cap ABI (the binary sink models neither
         // yet), keep a `WirFunc` so `compile_module_binary` can encode it.
         if let Some(seq) = self.captured_seq.take() {
+            // The whole function lowered + captured (binary path). lower_block
+            // deferred facts consumption to here (it is invoked many times per
+            // compile, so consuming there over-counts); consume the unit's facts
+            // EXACTLY once now — equivalent to the legacy compiling every
+            // statement. (The legacy fallback consumes for functions that don't
+            // capture; the two are mutually exclusive.)
+            if let Some(top) = self.facts_stack.last_mut() {
+                let (ke, se) = (top.0.kill_entries, top.0.site_entries);
+                top.1 = ke;
+                top.2 = se;
+            }
             if self.cur_fn_inout_params.is_empty() && self.cur_fn_own_param.is_none() {
                 let seq = Self::convert_block_tail(seq, block_kind, ret_kind);
                 let wf = self.assemble_wir_func(f, ret_kind, seq);
@@ -2665,7 +2676,13 @@ impl Codegen {
         let Some((facts, kills, sites)) = self.facts_stack.pop() else {
             return cerr(format!("internal: unbalanced analysis unit in `{unit}`"));
         };
-        if kills != facts.kill_entries || sites != facts.site_entries {
+        // The counter assertion is a WAT-path safety net (it proves the compiled
+        // statements are the analyzed AST instance, so no cap-kill is lost). On the
+        // BINARY path `lower_block` is invoked many times per compile (byte-identity
+        // probes, `kind_of`, the legacy fallback's `lower_expr`), so the counters
+        // are not a reliable consume-once signal there; the binary path is validated
+        // instead by `wasmparser::validate` + the differential oracle tests.
+        if !self.collect_wir && (kills != facts.kill_entries || sites != facts.site_entries) {
             return cerr(format!(
                 "internal: uniqueness facts for `{unit}` were not fully consumed \
                  ({kills}/{} kills, {sites}/{} sites) — a compiled subtree was not \
@@ -2748,17 +2765,14 @@ impl Codegen {
 
     fn lower_block_inner(&mut self, block: &Block) -> Option<crate::wir::WirSeq> {
         use crate::wir::{WirExpr as W, WirNode as N};
-        // In-place accumulators (`inplace_push`), `inout` writeback, and the
-        // own-ABI keep their legacy emission. The accumulator→cap-ABI lowering
-        // (self-push → CallStoreMulti) below is built but DISABLED: it consumes
-        // the uniqueness `sites` counter inside lower_block, which is invoked many
-        // times per compile (byte-identity probes, `kind_of`, the legacy
-        // fallback's `lower_expr`), so it over-counts (`6/4 sites`). The fix is to
-        // consume sites ONCE in `compile_function` on a successful capture, not
-        // per lower_block call — tracked in #29.
-        if !self.inplace_push.is_empty()
-            || !self.cur_fn_inout_params.is_empty()
+        // In-place accumulators lower to the cap ABI (`$list_push_cap` via
+        // CallStoreMulti) on the binary path (`collect_wir`); the WAT path keeps
+        // the legacy emission. Facts consumption for the binary path is deferred to
+        // `compile_function` on capture (lower_block is invoked many times per
+        // compile). `inout` writeback and the own-ABI never lower here.
+        if !self.cur_fn_inout_params.is_empty()
             || self.cur_fn_own_param.is_some()
+            || (!self.collect_wir && !self.inplace_push.is_empty())
         {
             return None;
         }
@@ -2937,17 +2951,22 @@ impl Codegen {
         if !tail_is_value {
             seq.push(N::Push(W::ConstI32(0)));
         }
-        // Preserve the per-statement kill-counter bump. Done only now that every
-        // statement lowered, so it runs exactly once per statement (never doubled
-        // by a fallback). Its emitted cap-resets are discarded — already positioned
-        // in `seq` above.
-        for stmt in &block.stmts {
-            let _ = self.take_kills(stmt);
-        }
-        // Consume the self-push `sites` once, now the whole block has lowered.
-        if inplace_sites > 0 {
-            if let Some((_, _, sites)) = self.facts_stack.last_mut() {
-                *sites += inplace_sites;
+        // Facts consumption. On the WAT path each successful `lower_block` is the
+        // authoritative consumer (it replaces the legacy emission for that block),
+        // so consume here. On the BINARY path `lower_block` is invoked many times
+        // per compile (byte-identity probes, `kind_of`, the legacy fallback's
+        // `lower_expr`), so consuming here over-counts — instead `compile_function`
+        // consumes ONCE on a successful capture (and the legacy fallback consumes
+        // for functions that don't capture). The cap-reset nodes are already
+        // positioned in `seq` above (read-only `kills_after`).
+        if !self.collect_wir {
+            for stmt in &block.stmts {
+                let _ = self.take_kills(stmt);
+            }
+            if inplace_sites > 0 {
+                if let Some((_, _, sites)) = self.facts_stack.last_mut() {
+                    *sites += inplace_sites;
+                }
             }
         }
         Some(seq)

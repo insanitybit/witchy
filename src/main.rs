@@ -7980,6 +7980,61 @@ fn main(console: Console):
     }
 
 
+    /// Run a WIR-binary under a print-only grant and read the exported
+    /// `__witchy_reowns` counter — the timing-free proof of in-place (O(1)) vs
+    /// copying (O(n)) accumulation.
+    fn binary_run_reowns(bytes: &[u8]) -> (Vec<String>, i64) {
+        use crate::runtime::{Capabilities, Runtime};
+        let mut rt = Runtime::batch().expect("runtime");
+        let mut actor = rt
+            .spawn(
+                bytes,
+                Capabilities { print: true, quiet: true, ..Default::default() },
+                crate::RUN_MEMORY_PAGES,
+            )
+            .expect("spawn");
+        actor.run().expect("run");
+        let reowns = actor.reowns().unwrap_or(0);
+        (actor.output(), reowns)
+    }
+
+    /// Criterion-3 MEASURABLE: a clean in-place accumulator builds in place on the
+    /// binary path — amortized O(1) re-owns (the exported `__witchy_reowns`
+    /// counter ≤ 2), not O(n) copies — and prints the right element.
+    #[test]
+    fn wir_inplace_accumulator_is_o1_reowns() {
+        let src = "fn build(n: Int) -> List(Int):\n    var xs: List(Int) = []\n    for i in 0..n:\n        xs = list.push(xs, i)\n    xs\n\nfn main(console: Console):\n    let ys = build(500)\n    print(console, __render(list.at(ys, 499)))\n";
+        let want = vec!["499".to_string()];
+        let module = parser::parse_module(src).expect("parse");
+        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        typeck::check(&linked).expect("typeck");
+        let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+            .expect("compile")
+            .expect("the accumulator program takes the WIR binary path");
+        let (out, reowns) = binary_run_reowns(&bytes);
+        assert_eq!(out, want, "binary output");
+        assert!(reowns <= 2, "expected O(1) re-owns on the binary path, got {reowns}");
+    }
+
+    /// Criterion-3: an in-place accumulator (`xs = list.push(xs, i)` in a loop)
+    /// lowers to the cap ABI (`$list_push_cap` via CallStoreMulti) on the binary
+    /// path. Consumed via `list.at` so the whole program stays on the pruned
+    /// binary path; runs identically to the interpreter oracle AND the WAT path.
+    #[test]
+    fn wir_inplace_accumulator_runs_and_agrees() {
+        let src = "fn build(n: Int) -> List(Int):\n    var xs: List(Int) = []\n    for i in 0..n:\n        xs = list.push(xs, i)\n    xs\n\nfn main(console: Console):\n    let ys = build(3)\n    print(console, __render(list.at(ys, 0)))\n    print(console, __render(list.at(ys, 1)))\n    print(console, __render(list.at(ys, 2)))\n";
+        let want = vec!["0".to_string(), "1".to_string(), "2".to_string()];
+        let module = parser::parse_module(src).expect("parse");
+        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        typeck::check(&linked).expect("typeck");
+        assert_eq!(link_run(src), want, "interpreter oracle");
+        assert_eq!(run_on_wasm(src), want, "legacy WAT path");
+        let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+            .expect("compile_module_binary")
+            .expect("the accumulator program takes the WIR binary path");
+        assert_eq!(run_bytes_print_only(&bytes), want, "binary path (in-place accumulator)");
+    }
+
     /// Criterion-2: the slot-elimination pass shows a MEASURABLE improvement on a
     /// real lowered program. `[list.at(xs, 0)]` (with `xs: List(Bool)`) reads an
     /// i64 slot, narrows it to the bool's i32, then re-widens it to store in the
