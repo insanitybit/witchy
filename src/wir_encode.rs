@@ -328,6 +328,7 @@ fn collect_clos_arities(seq: &WirSeq, out: &mut Vec<usize>) {
                 walk_expr(rhs, out);
             }
             WirExpr::Load { ptr, .. } => walk_expr(ptr, out),
+            WirExpr::MemoryGrow(pages) => walk_expr(pages, out),
             WirExpr::Call { args, .. } | WirExpr::CallHost { args, .. } => {
                 for a in args {
                     walk_expr(a, out);
@@ -340,6 +341,7 @@ fn collect_clos_arities(seq: &WirSeq, out: &mut Vec<usize>) {
             | WirExpr::ConstF64(_)
             | WirExpr::ConstI32(_)
             | WirExpr::StrPtr(_)
+            | WirExpr::MemorySize
             | WirExpr::GetLocal(_)
             | WirExpr::GetGlobal(_) => {}
         }
@@ -348,6 +350,20 @@ fn collect_clos_arities(seq: &WirSeq, out: &mut Vec<usize>) {
         match node {
             WirNode::SetLocal { value, .. } | WirNode::SetGlobal { value, .. } => {
                 walk_expr(value, out)
+            }
+            WirNode::Store { ptr, value, .. } => {
+                walk_expr(ptr, out);
+                walk_expr(value, out);
+            }
+            WirNode::MemoryCopy { dest, src, len } => {
+                walk_expr(dest, out);
+                walk_expr(src, out);
+                walk_expr(len, out);
+            }
+            WirNode::MemoryFill { dest, value, len } => {
+                walk_expr(dest, out);
+                walk_expr(value, out);
+                walk_expr(len, out);
             }
             WirNode::If { cond, then_, els, .. } => {
                 walk_expr(cond, out);
@@ -422,6 +438,33 @@ impl EncodeCtx<'_> {
             WirNode::SetGlobal { global, value } => {
                 self.encode_expr(func, value);
                 func.instruction(&Instruction::GlobalSet(self.global(global)));
+            }
+            WirNode::Store { ptr, value, kind, offset } => {
+                self.encode_expr(func, ptr);
+                self.encode_expr(func, value);
+                let mem = MemArg {
+                    offset: *offset as u64,
+                    align: load_align(*kind),
+                    memory_index: 0,
+                };
+                let instr = match kind {
+                    Kind::I32 => Instruction::I32Store(mem),
+                    Kind::I64 => Instruction::I64Store(mem),
+                    Kind::F64 => Instruction::F64Store(mem),
+                };
+                func.instruction(&instr);
+            }
+            WirNode::MemoryCopy { dest, src, len } => {
+                self.encode_expr(func, dest);
+                self.encode_expr(func, src);
+                self.encode_expr(func, len);
+                func.instruction(&Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
+            }
+            WirNode::MemoryFill { dest, value, len } => {
+                self.encode_expr(func, dest);
+                self.encode_expr(func, value);
+                self.encode_expr(func, len);
+                func.instruction(&Instruction::MemoryFill(0));
             }
             WirNode::If {
                 cond,
@@ -585,6 +628,13 @@ impl EncodeCtx<'_> {
                 };
                 func.instruction(&instr);
             }
+            WirExpr::MemorySize => {
+                func.instruction(&Instruction::MemorySize(0));
+            }
+            WirExpr::MemoryGrow(pages) => {
+                self.encode_expr(func, pages);
+                func.instruction(&Instruction::MemoryGrow(0));
+            }
             WirExpr::Call { func: name, args } => {
                 for a in args {
                     self.encode_expr(func, a);
@@ -710,9 +760,24 @@ fn binop_instr(op: BinOp, kind: Kind) -> Instruction<'static> {
         (BinOp::Ge, Kind::F64) => Instruction::F64Ge,
         (BinOp::Ge, Kind::I32) => Instruction::I32GeS,
         (BinOp::Ge, Kind::I64) => Instruction::I64GeS,
+        // Unsigned forms (the helper layer's pointer/length math) — i32/i64 only.
+        (BinOp::DivU, Kind::I32) => Instruction::I32DivU,
+        (BinOp::DivU, Kind::I64) => Instruction::I64DivU,
+        (BinOp::RemU, Kind::I32) => Instruction::I32RemU,
+        (BinOp::RemU, Kind::I64) => Instruction::I64RemU,
+        (BinOp::ShrU, Kind::I32) => Instruction::I32ShrU,
+        (BinOp::ShrU, Kind::I64) => Instruction::I64ShrU,
+        (BinOp::LtU, Kind::I32) => Instruction::I32LtU,
+        (BinOp::LtU, Kind::I64) => Instruction::I64LtU,
+        (BinOp::LeU, Kind::I32) => Instruction::I32LeU,
+        (BinOp::LeU, Kind::I64) => Instruction::I64LeU,
+        (BinOp::GtU, Kind::I32) => Instruction::I32GtU,
+        (BinOp::GtU, Kind::I64) => Instruction::I64GtU,
+        (BinOp::GeU, Kind::I32) => Instruction::I32GeU,
+        (BinOp::GeU, Kind::I64) => Instruction::I64GeU,
         // The mnemonic for the missing arithmetic-on-f64 (And/Or/Xor/Shl/Shr/Rem
-        // on f64) is never produced by codegen — there are no such wasm ops. The
-        // printer would emit e.g. `f64.and` (invalid); reaching here is a bug.
+        // on f64, or any unsigned op on f64) is never produced — there are no such
+        // wasm ops. The printer would emit e.g. `f64.and` (invalid); a bug if hit.
         (op, kind) => panic!("no wasm instruction for {op:?} on {kind:?}"),
     }
 }
@@ -820,6 +885,80 @@ mod tests {
             table: None,
             exports: vec![("run".into(), "run".into())],
         }
+    }
+
+    /// The #35 memory primitives — Store / Load(offset) / MemoryCopy / MemoryFill /
+    /// MemorySize / MemoryGrow and an unsigned compare — encode AND print-via-WAT
+    /// identically and run correctly. These are the nodes the allocation helpers
+    /// ($ensure/$concat/$mkN) lower to.
+    #[test]
+    fn memory_ops_roundtrip() {
+        use WirExpr::*;
+        let i32c = |n: i32| ConstI32(n);
+        let run = WirFunc {
+            name: "run".into(),
+            params: vec![],
+            ret: vec![],
+            locals: vec![],
+            body: vec![
+                // mem[16] = 99 (i64), then copy those 8 bytes to mem[32].
+                WirNode::Store { ptr: i32c(16), value: ConstI64(99), kind: Kind::I64, offset: 0 },
+                WirNode::MemoryCopy { dest: i32c(32), src: i32c(16), len: i32c(8) },
+                // print the copied value (99).
+                WirNode::Do(CallHost {
+                    import: "print_int".into(),
+                    args: vec![Load { ptr: Box::new(i32c(32)), kind: Kind::I64, offset: 0 }],
+                }),
+                // memory.size >u 0  →  1.
+                WirNode::Do(CallHost {
+                    import: "print_int".into(),
+                    args: vec![Convert {
+                        from: Kind::I32,
+                        to: Kind::I64,
+                        arg: Box::new(Binary {
+                            op: BinOp::GtU,
+                            kind: Kind::I32,
+                            lhs: Box::new(MemorySize),
+                            rhs: Box::new(i32c(0)),
+                        }),
+                    }],
+                }),
+                // memory.grow(1) returns the previous size in pages (1).
+                WirNode::Do(CallHost {
+                    import: "print_int".into(),
+                    args: vec![Convert {
+                        from: Kind::I32,
+                        to: Kind::I64,
+                        arg: Box::new(MemoryGrow(Box::new(i32c(1)))),
+                    }],
+                }),
+                // memory.fill mem[64..72] = 0, then read one byte back (0).
+                WirNode::MemoryFill { dest: i32c(64), value: i32c(0), len: i32c(8) },
+                WirNode::Do(CallHost {
+                    import: "print_int".into(),
+                    args: vec![Convert {
+                        from: Kind::I32,
+                        to: Kind::I64,
+                        arg: Box::new(Load { ptr: Box::new(i32c(64)), kind: Kind::I32, offset: 0 }),
+                    }],
+                }),
+            ],
+            raw_body: None,
+        };
+        let module = WirModule {
+            imports: vec![WirImport {
+                name: "print_int".into(),
+                params: vec![Kind::I64],
+                results: vec![],
+            }],
+            funcs: vec![run],
+            memory_pages: 1,
+            data: vec![],
+            globals: vec![],
+            table: None,
+            exports: vec![("run".into(), "run".into())],
+        };
+        assert_agrees(&module, &["99", "1", "1", "0"]);
     }
 
     #[test]

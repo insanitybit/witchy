@@ -93,6 +93,15 @@ pub enum BinOp {
     Le,
     Gt,
     Ge,
+    // Unsigned forms — the helper layer's pointer/length arithmetic and bounds
+    // checks (the high-level expression layer only ever needs the signed ops).
+    DivU,
+    RemU,
+    ShrU,
+    LtU,
+    LeU,
+    GtU,
+    GeU,
 }
 
 impl BinOp {
@@ -100,7 +109,16 @@ impl BinOp {
     fn is_comparison(self) -> bool {
         matches!(
             self,
-            BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge
+            BinOp::Eq
+                | BinOp::Ne
+                | BinOp::Lt
+                | BinOp::Le
+                | BinOp::Gt
+                | BinOp::Ge
+                | BinOp::LtU
+                | BinOp::LeU
+                | BinOp::GtU
+                | BinOp::GeU
         )
     }
 
@@ -128,6 +146,13 @@ impl BinOp {
             (BinOp::Gt, _) => format!("{p}.gt_s"),
             (BinOp::Ge, Kind::F64) => "f64.ge".into(),
             (BinOp::Ge, _) => format!("{p}.ge_s"),
+            (BinOp::DivU, _) => format!("{p}.div_u"),
+            (BinOp::RemU, _) => format!("{p}.rem_u"),
+            (BinOp::ShrU, _) => format!("{p}.shr_u"),
+            (BinOp::LtU, _) => format!("{p}.lt_u"),
+            (BinOp::LeU, _) => format!("{p}.le_u"),
+            (BinOp::GtU, _) => format!("{p}.gt_u"),
+            (BinOp::GeU, _) => format!("{p}.ge_u"),
         }
     }
 }
@@ -185,6 +210,11 @@ pub enum WirExpr {
         kind: Kind,
         offset: u32,
     },
+    /// `memory.size` — current linear-memory size in 64KiB pages (i32).
+    MemorySize,
+    /// `memory.grow` — grow memory by `pages` (i32), pushing the PREVIOUS size in
+    /// pages (or `-1` on failure). Used by `$ensure`.
+    MemoryGrow(Box<WirExpr>),
 
     /// A direct call to a module function by name.
     Call {
@@ -233,6 +263,27 @@ pub enum WirNode {
     SetGlobal {
         global: String,
         value: WirExpr,
+    },
+    /// A typed memory store: evaluate `ptr` then `value`, `<kind>.store
+    /// offset=<offset>`.
+    Store {
+        ptr: WirExpr,
+        value: WirExpr,
+        kind: Kind,
+        offset: u32,
+    },
+    /// `memory.copy` — copy `len` bytes from `src` to `dest` (operands pushed in
+    /// the order dest, src, len). Used by `$concat` / `$list_push` / ….
+    MemoryCopy {
+        dest: WirExpr,
+        src: WirExpr,
+        len: WirExpr,
+    },
+    /// `memory.fill` — set `len` bytes at `dest` to the low byte of `value`.
+    MemoryFill {
+        dest: WirExpr,
+        value: WirExpr,
+        len: WirExpr,
     },
     /// `if (cond) then else els`. `result` is the value type (None = statement if).
     If {
@@ -574,6 +625,30 @@ fn print_node(s: &mut String, node: &WirNode, depth: usize) {
             indent(s, depth);
             let _ = writeln!(s, "global.set ${global}");
         }
+        WirNode::Store { ptr, value, kind, offset } => {
+            print_expr(s, ptr, depth);
+            print_expr(s, value, depth);
+            indent(s, depth);
+            if *offset == 0 {
+                let _ = writeln!(s, "{}.store", kind.wat());
+            } else {
+                let _ = writeln!(s, "{}.store offset={offset}", kind.wat());
+            }
+        }
+        WirNode::MemoryCopy { dest, src, len } => {
+            print_expr(s, dest, depth);
+            print_expr(s, src, depth);
+            print_expr(s, len, depth);
+            indent(s, depth);
+            s.push_str("memory.copy\n");
+        }
+        WirNode::MemoryFill { dest, value, len } => {
+            print_expr(s, dest, depth);
+            print_expr(s, value, depth);
+            print_expr(s, len, depth);
+            indent(s, depth);
+            s.push_str("memory.fill\n");
+        }
         WirNode::If {
             cond,
             then_,
@@ -727,6 +802,11 @@ fn print_expr(s: &mut String, e: &WirExpr, depth: usize) {
                 emit(s, depth, &format!("{}.load offset={offset}", kind.wat()));
             }
         }
+        WirExpr::MemorySize => emit(s, depth, "memory.size"),
+        WirExpr::MemoryGrow(pages) => {
+            print_expr(s, pages, depth);
+            emit(s, depth, "memory.grow");
+        }
         WirExpr::Call { func, args } => {
             for a in args {
                 print_expr(s, a, depth);
@@ -811,6 +891,7 @@ fn collect_clos_arities_seq(seq: &WirSeq, out: &mut Vec<usize>) {
                 walk_expr(rhs, out);
             }
             WirExpr::Load { ptr, .. } => walk_expr(ptr, out),
+            WirExpr::MemoryGrow(pages) => walk_expr(pages, out),
             WirExpr::Call { args, .. } | WirExpr::CallHost { args, .. } => {
                 for a in args {
                     walk_expr(a, out);
@@ -822,6 +903,7 @@ fn collect_clos_arities_seq(seq: &WirSeq, out: &mut Vec<usize>) {
             | WirExpr::ConstF64(_)
             | WirExpr::ConstI32(_)
             | WirExpr::StrPtr(_)
+            | WirExpr::MemorySize
             | WirExpr::GetLocal(_)
             | WirExpr::GetGlobal(_) => {}
         }
@@ -830,6 +912,20 @@ fn collect_clos_arities_seq(seq: &WirSeq, out: &mut Vec<usize>) {
         match node {
             WirNode::SetLocal { value, .. } | WirNode::SetGlobal { value, .. } => {
                 walk_expr(value, out)
+            }
+            WirNode::Store { ptr, value, .. } => {
+                walk_expr(ptr, out);
+                walk_expr(value, out);
+            }
+            WirNode::MemoryCopy { dest, src, len } => {
+                walk_expr(dest, out);
+                walk_expr(src, out);
+                walk_expr(len, out);
+            }
+            WirNode::MemoryFill { dest, value, len } => {
+                walk_expr(dest, out);
+                walk_expr(value, out);
+                walk_expr(len, out);
             }
             WirNode::If { cond, then_, els, .. } => {
                 walk_expr(cond, out);

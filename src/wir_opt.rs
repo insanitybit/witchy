@@ -84,6 +84,20 @@ fn simplify_node(node: &mut WirNode, changed: &mut bool) {
         WirNode::SetLocal { value, .. } | WirNode::SetGlobal { value, .. } => {
             simplify_expr(value, changed);
         }
+        WirNode::Store { ptr, value, .. } => {
+            simplify_expr(ptr, changed);
+            simplify_expr(value, changed);
+        }
+        WirNode::MemoryCopy { dest, src, len } => {
+            simplify_expr(dest, changed);
+            simplify_expr(src, changed);
+            simplify_expr(len, changed);
+        }
+        WirNode::MemoryFill { dest, value, len } => {
+            simplify_expr(dest, changed);
+            simplify_expr(value, changed);
+            simplify_expr(len, changed);
+        }
         WirNode::If { cond, then_, els, .. } => {
             simplify_expr(cond, changed);
             simplify_seq(then_, changed);
@@ -126,12 +140,14 @@ fn simplify_expr(expr: &mut WirExpr, changed: &mut bool) {
             }
             simplify_expr(index, changed);
         }
+        WirExpr::MemoryGrow(pages) => simplify_expr(pages, changed),
         WirExpr::Control(node) => simplify_node(node, changed),
         WirExpr::Seq(nodes) => simplify_seq(nodes, changed),
         WirExpr::ConstI64(_)
         | WirExpr::ConstF64(_)
         | WirExpr::ConstI32(_)
         | WirExpr::StrPtr(_)
+        | WirExpr::MemorySize
         | WirExpr::GetLocal(_)
         | WirExpr::GetGlobal(_) => {}
     }
@@ -199,6 +215,13 @@ fn seq_size(seq: &WirSeq) -> usize {
 fn node_size(node: &WirNode) -> usize {
     1 + match node {
         WirNode::SetLocal { value, .. } | WirNode::SetGlobal { value, .. } => expr_size(value),
+        WirNode::Store { ptr, value, .. } => expr_size(ptr) + expr_size(value),
+        WirNode::MemoryCopy { dest, src, len } => {
+            expr_size(dest) + expr_size(src) + expr_size(len)
+        }
+        WirNode::MemoryFill { dest, value, len } => {
+            expr_size(dest) + expr_size(value) + expr_size(len)
+        }
         WirNode::If { cond, then_, els, .. } => {
             expr_size(cond) + seq_size(then_) + seq_size(els)
         }
@@ -225,12 +248,14 @@ fn expr_size(expr: &WirExpr) -> usize {
         WirExpr::CallIndirect { args, index, .. } => {
             args.iter().map(expr_size).sum::<usize>() + expr_size(index)
         }
+        WirExpr::MemoryGrow(pages) => expr_size(pages),
         WirExpr::Control(node) => node_size(node),
         WirExpr::Seq(nodes) => seq_size(nodes),
         WirExpr::ConstI64(_)
         | WirExpr::ConstF64(_)
         | WirExpr::ConstI32(_)
         | WirExpr::StrPtr(_)
+        | WirExpr::MemorySize
         | WirExpr::GetLocal(_)
         | WirExpr::GetGlobal(_) => 0,
     }
