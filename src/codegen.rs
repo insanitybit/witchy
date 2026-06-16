@@ -3766,6 +3766,27 @@ impl Codegen {
                         result: Some(crate::wir::WirTy::Bool),
                     })));
                 }
+                // String content equality lowers to `$str_eq` (binary path only —
+                // the WAT path keeps its byte-identical legacy emission). `!=` is
+                // `i32.eqz` of the equality result.
+                if self.collect_wir
+                    && matches!(op, BinOp::Eq | BinOp::NotEq)
+                    && self.val_type_of(lhs) == ValType::Str
+                    && self.val_type_of(rhs) == ValType::Str
+                {
+                    self.uses_str_eq = true;
+                    let a = self.lower_expr(lhs)?;
+                    let b = self.lower_expr(rhs)?;
+                    let eq = W::Call { func: "str_eq".to_string(), args: vec![a, b] };
+                    return Some(match op {
+                        BinOp::Eq => eq,
+                        _ => W::Unary {
+                            op: crate::wir::UnOp::Not,
+                            kind: crate::wir::Kind::I32,
+                            arg: Box::new(eq),
+                        },
+                    });
+                }
                 // Common-kind promotion (f64 > i64 > i32), exactly as the legacy
                 // numeric path; each operand is then widened to `ck` via a `Convert`
                 // node reproducing `kind_convert` (a no-op except i32<->i64). `ck`

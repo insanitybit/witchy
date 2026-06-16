@@ -8062,6 +8062,11 @@ fn main(console: Console):
                 "fn main(console: Console):\n    print(console, __render(42))\n    print(console, __render(-7))\n",
                 vec!["42".to_string(), "-7".to_string()],
             ),
+            // String content equality ($str_eq) on the binary path.
+            (
+                "fn main(console: Console):\n    if \"abc\" == \"abc\":\n        print(console, \"eq\")\n    else:\n        print(console, \"ne\")\n    if \"abc\" == \"xyz\":\n        print(console, \"eq2\")\n    else:\n        print(console, \"ne2\")\n",
+                vec!["eq".to_string(), "ne2".to_string()],
+            ),
         ];
         let mut lowered_any = false;
         for (src, want) in cases {

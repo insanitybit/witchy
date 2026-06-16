@@ -767,6 +767,84 @@ pub fn int_to_string_helper() -> WirFunc {
     }
 }
 
+/// `$str_eq(a: i32, b: i32) -> i32` — content equality of two `[len][bytes]`
+/// strings: same pointer → 1; different length → 0; else compare bytes. Mirrors
+/// `STR_EQ_WAT`. Byte reads via `Load8U`; no heap/import/table.
+pub fn str_eq_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    let i32c = E::ConstI32;
+    let bin = |op: BinOp, l: E, r: E| E::Binary {
+        op,
+        kind: Kind::I32,
+        lhs: Box::new(l),
+        rhs: Box::new(r),
+    };
+    let load_i32 = |p: E| E::Load { ptr: Box::new(p), kind: Kind::I32, offset: 0 };
+    // byte a[4+i] vs b[4+i]
+    let byte_at = |base: &str| E::Load8U {
+        ptr: Box::new(bin(BinOp::Add, bin(BinOp::Add, getl(base), i32c(4)), getl("i"))),
+        offset: 0,
+    };
+    WirFunc {
+        name: "str_eq".into(),
+        params: vec![
+            WirLocal { name: "a".into(), ty: WirTy::Str },
+            WirLocal { name: "b".into(), ty: WirTy::Str },
+        ],
+        ret: vec![WirTy::Bool], // i32
+        locals: vec![
+            WirLocal { name: "len".into(), ty: WirTy::Bool },
+            WirLocal { name: "i".into(), ty: WirTy::Bool },
+        ],
+        body: vec![
+            // same pointer → equal
+            N::If {
+                cond: bin(BinOp::Eq, getl("a"), getl("b")),
+                then_: vec![N::Return(Some(i32c(1)))],
+                els: vec![],
+                result: None,
+            },
+            // different length → not equal
+            N::If {
+                cond: bin(BinOp::Ne, load_i32(getl("a")), load_i32(getl("b"))),
+                then_: vec![N::Return(Some(i32c(0)))],
+                els: vec![],
+                result: None,
+            },
+            N::SetLocal { local: "len".into(), value: load_i32(getl("a")) },
+            N::SetLocal { local: "i".into(), value: i32c(0) },
+            N::Block {
+                label: "done".into(),
+                result: None,
+                body: vec![N::Loop {
+                    label: "l".into(),
+                    body: vec![
+                        N::Br {
+                            target: "done".into(),
+                            cond: Some(bin(BinOp::Ge, getl("i"), getl("len"))),
+                        },
+                        N::If {
+                            cond: bin(BinOp::Ne, byte_at("a"), byte_at("b")),
+                            then_: vec![N::Return(Some(i32c(0)))],
+                            els: vec![],
+                            result: None,
+                        },
+                        N::SetLocal {
+                            local: "i".into(),
+                            value: bin(BinOp::Add, getl("i"), i32c(1)),
+                        },
+                        N::Br { target: "l".into(), cond: None },
+                    ],
+                }],
+            },
+            N::Push(i32c(1)),
+        ],
+        raw_body: None,
+    }
+}
+
 /// A WIR-native prelude helper plus the module-level resources it needs (so a
 /// pruned module declares only the imports/globals/table its reached helpers
 /// actually touch — capability-minimal).
@@ -814,6 +892,13 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             helper_deps: &["ensure"],
             import_deps: &[],
             uses_heap: true,
+            uses_table: false,
+        }),
+        "str_eq" => Some(WirHelperSpec {
+            func: str_eq_helper(),
+            helper_deps: &[],
+            import_deps: &[],
+            uses_heap: false,
             uses_table: false,
         }),
         _ => {
