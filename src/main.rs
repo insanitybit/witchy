@@ -8067,6 +8067,11 @@ fn main(console: Console):
                 "fn main(console: Console):\n    if \"abc\" == \"abc\":\n        print(console, \"eq\")\n    else:\n        print(console, \"ne\")\n    if \"abc\" == \"xyz\":\n        print(console, \"eq2\")\n    else:\n        print(console, \"ne2\")\n",
                 vec!["eq".to_string(), "ne2".to_string()],
             ),
+            // String concatenation ($concat → $ensure) on the binary path.
+            (
+                "fn main(console: Console):\n    print(console, \"hello, \" + \"world\")\n    print(console, \"x\" + \"y\" + \"z\")\n",
+                vec!["hello, world".to_string(), "xyz".to_string()],
+            ),
         ];
         let mut lowered_any = false;
         for (src, want) in cases {

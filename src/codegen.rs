@@ -3766,6 +3766,15 @@ impl Codegen {
                         result: Some(crate::wir::WirTy::Bool),
                     })));
                 }
+                // String concatenation (`+` flipped to `Concat`) lowers to
+                // `$concat` (binary path only — the WAT path keeps its legacy
+                // byte-identical emission).
+                if self.collect_wir && *op == BinOp::Concat {
+                    self.uses_concat = true;
+                    let a = self.lower_expr(lhs)?;
+                    let b = self.lower_expr(rhs)?;
+                    return Some(W::Call { func: "concat".to_string(), args: vec![a, b] });
+                }
                 // String content equality lowers to `$str_eq` (binary path only —
                 // the WAT path keeps its byte-identical legacy emission). `!=` is
                 // `i32.eqz` of the equality result.

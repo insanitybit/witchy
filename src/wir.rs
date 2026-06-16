@@ -845,6 +845,71 @@ pub fn str_eq_helper() -> WirFunc {
     }
 }
 
+/// `$concat(a: i32, b: i32) -> i32` — allocate a fresh `[alen+blen][a..b..]`
+/// string and `memory.copy` both operands in. Mirrors `CONCAT_WAT`. Calls
+/// `$ensure`; uses the `$heap` global.
+pub fn concat_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    let i32c = E::ConstI32;
+    let add = |l: E, r: E| E::Binary {
+        op: BinOp::Add,
+        kind: Kind::I32,
+        lhs: Box::new(l),
+        rhs: Box::new(r),
+    };
+    let load_i32 = |p: E| E::Load { ptr: Box::new(p), kind: Kind::I32, offset: 0 };
+    WirFunc {
+        name: "concat".into(),
+        params: vec![
+            WirLocal { name: "a".into(), ty: WirTy::Str },
+            WirLocal { name: "b".into(), ty: WirTy::Str },
+        ],
+        ret: vec![WirTy::Str], // i32 pointer
+        locals: vec![
+            WirLocal { name: "alen".into(), ty: WirTy::Bool },
+            WirLocal { name: "blen".into(), ty: WirTy::Bool },
+            WirLocal { name: "res".into(), ty: WirTy::Bool },
+        ],
+        body: vec![
+            N::SetLocal { local: "alen".into(), value: load_i32(getl("a")) },
+            N::SetLocal { local: "blen".into(), value: load_i32(getl("b")) },
+            N::Do(E::Call {
+                func: "ensure".into(),
+                args: vec![add(i32c(4), add(getl("alen"), getl("blen")))],
+            }),
+            N::SetLocal { local: "res".into(), value: E::GetGlobal("heap".into()) },
+            // header: total length at res+0
+            N::Store {
+                ptr: getl("res"),
+                value: add(getl("alen"), getl("blen")),
+                kind: Kind::I32,
+                offset: 0,
+            },
+            // copy a's bytes to res+4
+            N::MemoryCopy {
+                dest: add(getl("res"), i32c(4)),
+                src: add(getl("a"), i32c(4)),
+                len: getl("alen"),
+            },
+            // copy b's bytes to res+4+alen
+            N::MemoryCopy {
+                dest: add(add(getl("res"), i32c(4)), getl("alen")),
+                src: add(getl("b"), i32c(4)),
+                len: getl("blen"),
+            },
+            // heap = res + 4 + alen + blen
+            N::SetGlobal {
+                global: "heap".into(),
+                value: add(add(getl("res"), i32c(4)), add(getl("alen"), getl("blen"))),
+            },
+            N::Push(getl("res")),
+        ],
+        raw_body: None,
+    }
+}
+
 /// A WIR-native prelude helper plus the module-level resources it needs (so a
 /// pruned module declares only the imports/globals/table its reached helpers
 /// actually touch — capability-minimal).
@@ -899,6 +964,13 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             helper_deps: &[],
             import_deps: &[],
             uses_heap: false,
+            uses_table: false,
+        }),
+        "concat" => Some(WirHelperSpec {
+            func: concat_helper(),
+            helper_deps: &["ensure"],
+            import_deps: &[],
+            uses_heap: true,
             uses_table: false,
         }),
         _ => {
