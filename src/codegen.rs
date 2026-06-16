@@ -8475,16 +8475,15 @@ pub fn assemble_wir_module(
     if !user_order.iter().all(|n| cg.wir_funcs.contains_key(n)) {
         return Ok(None);
     }
-    // Bail if the program needs program-specific helpers (not in the prelude),
-    // closure types beyond the reserved band, or an Int/Float `main` (whose
-    // `print_int`/`print_float` import the prelude does not declare).
+    // Bail if the program needs program-specific helpers (not in the prelude) or
+    // closure types beyond the reserved band. An Int/Float `main` is fine now —
+    // the prelude declares `print_int`/`print_float` and the `run` wrapper prints
+    // the result.
     if !cg.lambdas.is_empty()
         || !cg.eq_helpers.is_empty()
         || !cg.ts_helpers.is_empty()
         || !cg.rcopy_helpers.is_empty()
         || !cg.clos_arities.is_empty()
-        || main_returns_int
-        || main_returns_float
     {
         return Ok(None);
     }
@@ -8563,6 +8562,13 @@ pub fn assemble_wir_module(
             // A watermarked loop in user code reads/writes `$heap` even when no
             // reached helper allocates, so the global must still be declared.
             uses_heap |= cg.uses_wm;
+            // An Int/Float-returning `main` prints its result in the `run`
+            // wrapper, so the corresponding host import must be declared.
+            if main_returns_int {
+                import_names.insert("print_int");
+            } else if main_returns_float {
+                import_names.insert("print_float");
+            }
             let pruned_imports: Vec<WirImport> = import_names
                 .iter()
                 .map(|iname| {
@@ -8591,12 +8597,23 @@ pub fn assemble_wir_module(
                     }
                 })
                 .collect();
+            // The `run` export calls `main`; an Int/Float result is printed (the
+            // exit-code convention), anything else is dropped — matching the WAT
+            // sink's `run` tail.
+            let main_call = WirExpr::Call { func: "main".into(), args: main_args };
+            let run_body = if main_returns_int {
+                vec![WirNode::Do(WirExpr::CallHost { import: "print_int".into(), args: vec![main_call] })]
+            } else if main_returns_float {
+                vec![WirNode::Do(WirExpr::CallHost { import: "print_float".into(), args: vec![main_call] })]
+            } else {
+                vec![WirNode::Drop(main_call)]
+            };
             pruned_funcs.push(WirFunc {
                 name: "run".into(),
                 params: Vec::new(),
                 ret: Vec::new(),
                 locals: Vec::new(),
-                body: vec![WirNode::Drop(WirExpr::Call { func: "main".into(), args: main_args })],
+                body: run_body,
                 raw_body: None,
             });
             let pruned_globals = if uses_heap {

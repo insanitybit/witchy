@@ -1425,11 +1425,13 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
   (import "witchy" "crypto.sha512" (func $crypto_sha512_host (param i32 i32)))
   (import "witchy" "crypto.sha3_256" (func $crypto_sha3_256_host (param i32 i32)))
   (import "witchy" "crypto.hmac_sha256" (func $crypto_hmac_sha256_host (param i32 i32 i32)))
+  (import "witchy" "print_int" (func $print_int (param i64)))
+  (import "witchy" "print_float" (func $print_float (param f64)))
 "#;
 
 /// The number of host imports the prelude declares (used to split function
 /// indices: imports `0..IMPORT_COUNT`, helpers after).
-pub const IMPORT_COUNT: usize = 26;
+pub const IMPORT_COUNT: usize = 28;
 
 /// Assemble the full prelude module TEXT. This is what gets compiled once.
 ///

@@ -8352,6 +8352,30 @@ fn main(console: Console):
         assert_eq!(run_bytes_print_only(&bytes), want, "binary path vs oracle");
     }
 
+    /// An Int-returning `main` on the binary path: the `run` wrapper prints the
+    /// result via `print_int` (the exit-code convention), matching the WAT sink.
+    /// Validated against the WAT path (both compiled paths use i32 `Int`, so they
+    /// agree exactly — unlike the i64 interpreter). Needs the `print_int` grant.
+    #[test]
+    fn wir_int_returning_main_prints_result() {
+        use crate::runtime::{Capabilities, Runtime};
+        let src = "fn main(console: Console) -> Int:\n    print(console, \"hi\")\n    42\n";
+        let module = parser::parse_module(src).expect("parse");
+        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        typeck::check(&linked).expect("typecheck");
+        let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+            .expect("compile_module_binary")
+            .expect("the WIR binary path should handle an Int-returning main");
+        let mut rt = Runtime::batch().expect("runtime");
+        let mut actor = rt
+            .spawn(&bytes, Capabilities { print: true, print_int: true, quiet: true, ..Default::default() }, crate::RUN_MEMORY_PAGES)
+            .expect("spawn with print_int");
+        actor.run().expect("run");
+        let got = actor.output();
+        assert_eq!(got, vec!["hi".to_string(), "42".to_string()], "binary path");
+        assert_eq!(got, run_on_wasm(src), "binary path matches WAT path");
+    }
+
     /// Link a multi-module program, compile the flat module to WASM, run it on
     /// the runtime with output capabilities, and return what it printed.
     fn run_linked_on_wasm(sources: &[(&str, &str)], entry: &str) -> Vec<String> {
