@@ -2883,6 +2883,35 @@ pub fn dir_read_helper() -> WirFunc {
     }
 }
 
+/// `$dir_list(h) -> i32` — the entries of directory handle `h`, as a
+/// `List(String)`. The host reports the total byte size of the marshaled list
+/// (`dir_list_size`), then writes the whole `[count][ptr..]` + payload structure
+/// into the reserved block (`write_pending_list`). Needs the Dir(Read) capability.
+pub fn dir_list_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+    WirFunc {
+        name: "dir_list".into(),
+        params: vec![WirLocal { name: "h".into(), ty: WirTy::Bool }],
+        ret: vec![WirTy::Bool],
+        locals: vec![
+            WirLocal { name: "size".into(), ty: WirTy::Bool },
+            WirLocal { name: "res".into(), ty: WirTy::Bool },
+        ],
+        body: vec![
+            N::SetLocal { local: "size".into(), value: E::CallHost { import: "dir_list_size".into(), args: vec![getl("h")] } },
+            N::Do(E::Call { func: "ensure".into(), args: vec![getl("size")] }),
+            N::SetLocal { local: "res".into(), value: E::GetGlobal("heap".into()) },
+            N::Do(E::CallHost { import: "write_pending_list".into(), args: vec![getl("res")] }),
+            N::SetGlobal { global: "heap".into(), value: b(BinOp::Add, getl("res"), getl("size")) },
+            N::Push(getl("res")),
+        ],
+        raw_body: None,
+    }
+}
+
 /// A WIR-native prelude helper plus the module-level resources it needs (so a
 /// pruned module declares only the imports/globals/table its reached helpers
 /// actually touch — capability-minimal).
@@ -3130,6 +3159,13 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             func: dir_read_helper(),
             helper_deps: &["ensure"],
             import_deps: &["dir_read_len", "fill_pending"],
+            uses_heap: true,
+            uses_table: false,
+        }),
+        "dir_list" => Some(WirHelperSpec {
+            func: dir_list_helper(),
+            helper_deps: &["ensure"],
+            import_deps: &["dir_list_size", "write_pending_list"],
             uses_heap: true,
             uses_table: false,
         }),

@@ -8417,6 +8417,44 @@ fn main(console: Console):
         assert_eq!(got, got_wat, "binary path matches WAT path");
     }
 
+    /// `$dir_list` (list a directory) on the binary path — the host reports the
+    /// marshaled-list size (`dir_list_size`) then writes it (`write_pending_list`),
+    /// gated behind Dir(Read). Counts entries and compares binary vs WAT.
+    #[test]
+    fn wir_dir_list_host_import_binary_path() {
+        use crate::runtime::{Capabilities, Runtime};
+        let root = std::env::temp_dir().join(format!("witchy_wir_dirlist_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("mkdir");
+        std::fs::write(root.join("one.txt"), "1").expect("write");
+        std::fs::write(root.join("two.txt"), "2").expect("write");
+        let src = "fn main(console: Console, dir: Dir[Read]):\n    print(console, __render(list.length(list(dir))))\n";
+        let module = parser::parse_module(src).expect("parse");
+        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        typeck::check(&linked).expect("typecheck");
+        let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+            .expect("compile_module_binary")
+            .expect("the WIR binary path should handle dir list via the host imports");
+        let wat = codegen::compile_module(&parser::parse_module(src).expect("parse")).expect("compile wat");
+        let run = |code: &[u8]| {
+            let mut rt = Runtime::batch().expect("runtime");
+            let mut actor = rt
+                .spawn(
+                    code,
+                    Capabilities { print: true, dir_root: Some(root.clone()), dir_read: true, quiet: true, ..Default::default() },
+                    crate::RUN_MEMORY_PAGES,
+                )
+                .expect("spawn with Dir(Read)");
+            actor.run().expect("run");
+            actor.output()
+        };
+        let got = run(&bytes);
+        let got_wat = run(wat.as_bytes());
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(got, vec!["2".to_string()], "binary path: 2 entries");
+        assert_eq!(got, got_wat, "binary path matches WAT path");
+    }
+
     /// An Int-returning `main` on the binary path: the `run` wrapper prints the
     /// result via `print_int` (the exit-code convention), matching the WAT sink.
     /// Validated against the WAT path (both compiled paths use i32 `Int`, so they
