@@ -84,7 +84,7 @@ fn simplify_node(node: &mut WirNode, changed: &mut bool) {
         WirNode::SetLocal { value, .. } | WirNode::SetGlobal { value, .. } => {
             simplify_expr(value, changed);
         }
-        WirNode::Store { ptr, value, .. } => {
+        WirNode::Store { ptr, value, .. } | WirNode::Store8 { ptr, value, .. } => {
             simplify_expr(ptr, changed);
             simplify_expr(value, changed);
         }
@@ -124,7 +124,8 @@ fn simplify_expr(expr: &mut WirExpr, changed: &mut bool) {
         | WirExpr::FromSlot(inner, _)
         | WirExpr::Unary { arg: inner, .. }
         | WirExpr::Convert { arg: inner, .. }
-        | WirExpr::Load { ptr: inner, .. } => simplify_expr(inner, changed),
+        | WirExpr::Load { ptr: inner, .. }
+        | WirExpr::Load8U { ptr: inner, .. } => simplify_expr(inner, changed),
         WirExpr::Binary { lhs, rhs, .. } => {
             simplify_expr(lhs, changed);
             simplify_expr(rhs, changed);
@@ -215,7 +216,9 @@ fn seq_size(seq: &WirSeq) -> usize {
 fn node_size(node: &WirNode) -> usize {
     1 + match node {
         WirNode::SetLocal { value, .. } | WirNode::SetGlobal { value, .. } => expr_size(value),
-        WirNode::Store { ptr, value, .. } => expr_size(ptr) + expr_size(value),
+        WirNode::Store { ptr, value, .. } | WirNode::Store8 { ptr, value, .. } => {
+            expr_size(ptr) + expr_size(value)
+        }
         WirNode::MemoryCopy { dest, src, len } => {
             expr_size(dest) + expr_size(src) + expr_size(len)
         }
@@ -240,7 +243,8 @@ fn expr_size(expr: &WirExpr) -> usize {
         | WirExpr::FromSlot(inner, _)
         | WirExpr::Unary { arg: inner, .. }
         | WirExpr::Convert { arg: inner, .. }
-        | WirExpr::Load { ptr: inner, .. } => expr_size(inner),
+        | WirExpr::Load { ptr: inner, .. }
+        | WirExpr::Load8U { ptr: inner, .. } => expr_size(inner),
         WirExpr::Binary { lhs, rhs, .. } => expr_size(lhs) + expr_size(rhs),
         WirExpr::Call { args, .. } | WirExpr::CallHost { args, .. } => {
             args.iter().map(expr_size).sum()

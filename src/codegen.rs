@@ -8425,6 +8425,7 @@ fn collect_called_funcs(seq: &crate::wir::WirSeq, out: &mut std::collections::Ha
             | E::Unary { arg: i, .. }
             | E::Convert { arg: i, .. }
             | E::Load { ptr: i, .. }
+            | E::Load8U { ptr: i, .. }
             | E::MemoryGrow(i) => expr(i, out),
             E::Binary { lhs, rhs, .. } => {
                 expr(lhs, out);
@@ -8439,7 +8440,7 @@ fn collect_called_funcs(seq: &crate::wir::WirSeq, out: &mut std::collections::Ha
     fn node(n: &N, out: &mut std::collections::HashSet<String>) {
         match n {
             N::SetLocal { value, .. } | N::SetGlobal { value, .. } => expr(value, out),
-            N::Store { ptr, value, .. } => {
+            N::Store { ptr, value, .. } | N::Store8 { ptr, value, .. } => {
                 expr(ptr, out);
                 expr(value, out);
             }

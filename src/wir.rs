@@ -215,6 +215,9 @@ pub enum WirExpr {
     /// `memory.grow` — grow memory by `pages` (i32), pushing the PREVIOUS size in
     /// pages (or `-1` on failure). Used by `$ensure`.
     MemoryGrow(Box<WirExpr>),
+    /// `i32.load8_u offset=<offset>` — read one byte from `ptr`, zero-extended to
+    /// i32. The byte-level read used by string helpers (`$str_eq`, `$find_byte`).
+    Load8U { ptr: Box<WirExpr>, offset: u32 },
 
     /// A direct call to a module function by name.
     Call {
@@ -284,6 +287,13 @@ pub enum WirNode {
         dest: WirExpr,
         value: WirExpr,
         len: WirExpr,
+    },
+    /// `i32.store8 offset=<offset>` — write the low byte of `value` to `ptr`. The
+    /// byte-level write used by `$int_to_string` and the string builders.
+    Store8 {
+        ptr: WirExpr,
+        value: WirExpr,
+        offset: u32,
     },
     /// `if (cond) then else els`. `result` is the value type (None = statement if).
     If {
@@ -857,6 +867,16 @@ fn print_node(s: &mut String, node: &WirNode, depth: usize) {
             indent(s, depth);
             s.push_str("memory.fill\n");
         }
+        WirNode::Store8 { ptr, value, offset } => {
+            print_expr(s, ptr, depth);
+            print_expr(s, value, depth);
+            indent(s, depth);
+            if *offset == 0 {
+                let _ = writeln!(s, "i32.store8");
+            } else {
+                let _ = writeln!(s, "i32.store8 offset={offset}");
+            }
+        }
         WirNode::If {
             cond,
             then_,
@@ -1015,6 +1035,14 @@ fn print_expr(s: &mut String, e: &WirExpr, depth: usize) {
             print_expr(s, pages, depth);
             emit(s, depth, "memory.grow");
         }
+        WirExpr::Load8U { ptr, offset } => {
+            print_expr(s, ptr, depth);
+            if *offset == 0 {
+                emit(s, depth, "i32.load8_u");
+            } else {
+                emit(s, depth, &format!("i32.load8_u offset={offset}"));
+            }
+        }
         WirExpr::Call { func, args } => {
             for a in args {
                 print_expr(s, a, depth);
@@ -1098,7 +1126,7 @@ fn collect_clos_arities_seq(seq: &WirSeq, out: &mut Vec<usize>) {
                 walk_expr(lhs, out);
                 walk_expr(rhs, out);
             }
-            WirExpr::Load { ptr, .. } => walk_expr(ptr, out),
+            WirExpr::Load { ptr, .. } | WirExpr::Load8U { ptr, .. } => walk_expr(ptr, out),
             WirExpr::MemoryGrow(pages) => walk_expr(pages, out),
             WirExpr::Call { args, .. } | WirExpr::CallHost { args, .. } => {
                 for a in args {
@@ -1121,7 +1149,7 @@ fn collect_clos_arities_seq(seq: &WirSeq, out: &mut Vec<usize>) {
             WirNode::SetLocal { value, .. } | WirNode::SetGlobal { value, .. } => {
                 walk_expr(value, out)
             }
-            WirNode::Store { ptr, value, .. } => {
+            WirNode::Store { ptr, value, .. } | WirNode::Store8 { ptr, value, .. } => {
                 walk_expr(ptr, out);
                 walk_expr(value, out);
             }

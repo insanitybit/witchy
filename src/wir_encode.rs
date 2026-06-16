@@ -327,7 +327,7 @@ fn collect_clos_arities(seq: &WirSeq, out: &mut Vec<usize>) {
                 walk_expr(lhs, out);
                 walk_expr(rhs, out);
             }
-            WirExpr::Load { ptr, .. } => walk_expr(ptr, out),
+            WirExpr::Load { ptr, .. } | WirExpr::Load8U { ptr, .. } => walk_expr(ptr, out),
             WirExpr::MemoryGrow(pages) => walk_expr(pages, out),
             WirExpr::Call { args, .. } | WirExpr::CallHost { args, .. } => {
                 for a in args {
@@ -351,7 +351,7 @@ fn collect_clos_arities(seq: &WirSeq, out: &mut Vec<usize>) {
             WirNode::SetLocal { value, .. } | WirNode::SetGlobal { value, .. } => {
                 walk_expr(value, out)
             }
-            WirNode::Store { ptr, value, .. } => {
+            WirNode::Store { ptr, value, .. } | WirNode::Store8 { ptr, value, .. } => {
                 walk_expr(ptr, out);
                 walk_expr(value, out);
             }
@@ -465,6 +465,15 @@ impl EncodeCtx<'_> {
                 self.encode_expr(func, value);
                 self.encode_expr(func, len);
                 func.instruction(&Instruction::MemoryFill(0));
+            }
+            WirNode::Store8 { ptr, value, offset } => {
+                self.encode_expr(func, ptr);
+                self.encode_expr(func, value);
+                func.instruction(&Instruction::I32Store8(MemArg {
+                    offset: *offset as u64,
+                    align: 0,
+                    memory_index: 0,
+                }));
             }
             WirNode::If {
                 cond,
@@ -634,6 +643,14 @@ impl EncodeCtx<'_> {
             WirExpr::MemoryGrow(pages) => {
                 self.encode_expr(func, pages);
                 func.instruction(&Instruction::MemoryGrow(0));
+            }
+            WirExpr::Load8U { ptr, offset } => {
+                self.encode_expr(func, ptr);
+                func.instruction(&Instruction::I32Load8U(MemArg {
+                    offset: *offset as u64,
+                    align: 0,
+                    memory_index: 0,
+                }));
             }
             WirExpr::Call { func: name, args } => {
                 for a in args {
@@ -959,6 +976,55 @@ mod tests {
             exports: vec![("run".into(), "run".into())],
         };
         assert_agrees(&module, &["99", "1", "1", "0"]);
+    }
+
+    /// Byte-level Store8 / Load8U round-trip through both paths: write two bytes,
+    /// read them back zero-extended. These back `$int_to_string` and the string
+    /// helpers.
+    #[test]
+    fn byte_ops_roundtrip() {
+        use WirExpr::*;
+        let run = WirFunc {
+            name: "run".into(),
+            params: vec![],
+            ret: vec![],
+            locals: vec![],
+            body: vec![
+                WirNode::Store8 { ptr: ConstI32(100), value: ConstI32(65), offset: 0 },
+                WirNode::Store8 { ptr: ConstI32(100), value: ConstI32(66), offset: 1 },
+                WirNode::Do(CallHost {
+                    import: "print_int".into(),
+                    args: vec![Convert {
+                        from: Kind::I32,
+                        to: Kind::I64,
+                        arg: Box::new(Load8U { ptr: Box::new(ConstI32(100)), offset: 0 }),
+                    }],
+                }),
+                WirNode::Do(CallHost {
+                    import: "print_int".into(),
+                    args: vec![Convert {
+                        from: Kind::I32,
+                        to: Kind::I64,
+                        arg: Box::new(Load8U { ptr: Box::new(ConstI32(101)), offset: 0 }),
+                    }],
+                }),
+            ],
+            raw_body: None,
+        };
+        let module = WirModule {
+            imports: vec![WirImport {
+                name: "print_int".into(),
+                params: vec![Kind::I64],
+                results: vec![],
+            }],
+            funcs: vec![run],
+            memory_pages: 1,
+            data: vec![],
+            globals: vec![],
+            table: None,
+            exports: vec![("run".into(), "run".into())],
+        };
+        assert_agrees(&module, &["65", "66"]);
     }
 
     /// The WIR-native `$ensure` helper grows memory correctly: with `$heap = 0`,
