@@ -1331,6 +1331,155 @@ pub fn str_index_of_helper() -> WirFunc {
     }
 }
 
+/// `$substr(src, start, len) -> i32` — a fresh string holding `len` bytes of
+/// `src` starting at *byte* offset `start`. Allocates `4 + len` via `$ensure`,
+/// writes the length header, `memory.copy`s the slice, and bumps `$heap`.
+pub fn substr_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    let i32c = E::ConstI32;
+    let add = |l: E, r: E| E::Binary { op: BinOp::Add, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+    WirFunc {
+        name: "substr".into(),
+        params: vec![
+            WirLocal { name: "src".into(), ty: WirTy::Str },
+            WirLocal { name: "start".into(), ty: WirTy::Bool },
+            WirLocal { name: "len".into(), ty: WirTy::Bool },
+        ],
+        ret: vec![WirTy::Str],
+        locals: vec![WirLocal { name: "res".into(), ty: WirTy::Bool }],
+        body: vec![
+            N::Do(E::Call { func: "ensure".into(), args: vec![add(i32c(4), getl("len"))] }),
+            N::SetLocal { local: "res".into(), value: E::GetGlobal("heap".into()) },
+            N::Store { ptr: getl("res"), value: getl("len"), kind: Kind::I32, offset: 0 },
+            N::MemoryCopy {
+                dest: add(getl("res"), i32c(4)),
+                src: add(add(getl("src"), i32c(4)), getl("start")),
+                len: getl("len"),
+            },
+            N::SetGlobal {
+                global: "heap".into(),
+                value: add(add(getl("res"), i32c(4)), getl("len")),
+            },
+            N::Push(getl("res")),
+        ],
+        raw_body: None,
+    }
+}
+
+/// `$char_to_byte(s, n) -> i32` — the *byte* offset of the `n`-th character of
+/// `s` (the inverse of `$byte_to_char`). Walks UTF-8 sequences, stepping the byte
+/// cursor by 1/2/3/4 per character based on the lead byte, until `n` chars (or
+/// the end) are consumed.
+pub fn char_to_byte_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    let i32c = E::ConstI32;
+    let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+    let load = |p: E| E::Load { ptr: Box::new(p), kind: Kind::I32, offset: 0 };
+    let setl = |n: &str, v: E| N::SetLocal { local: n.into(), value: v };
+    // seqlen = b<0x80 ? 1 : b<0xe0 ? 2 : b<0xf0 ? 3 : 4 — nested if-statements
+    // setting the `seqlen` local (avoids an expression-level conditional).
+    let seqlen = N::If {
+        cond: b(BinOp::LtU, getl("b"), i32c(0x80)),
+        then_: vec![setl("seqlen", i32c(1))],
+        els: vec![N::If {
+            cond: b(BinOp::LtU, getl("b"), i32c(0xe0)),
+            then_: vec![setl("seqlen", i32c(2))],
+            els: vec![N::If {
+                cond: b(BinOp::LtU, getl("b"), i32c(0xf0)),
+                then_: vec![setl("seqlen", i32c(3))],
+                els: vec![setl("seqlen", i32c(4))],
+                result: None,
+            }],
+            result: None,
+        }],
+        result: None,
+    };
+    let scan_loop = N::Block {
+        label: "done".into(),
+        result: None,
+        body: vec![N::Loop {
+            label: "l".into(),
+            body: vec![
+                N::Br { target: "done".into(), cond: Some(b(BinOp::Ge, getl("i"), getl("slen"))) },
+                N::Br { target: "done".into(), cond: Some(b(BinOp::Ge, getl("count"), getl("n"))) },
+                setl("b", E::Load8U { ptr: Box::new(b(BinOp::Add, getl("s"), getl("i"))), offset: 4 }),
+                seqlen,
+                setl("i", b(BinOp::Add, getl("i"), getl("seqlen"))),
+                setl("count", b(BinOp::Add, getl("count"), i32c(1))),
+                N::Br { target: "l".into(), cond: None },
+            ],
+        }],
+    };
+    WirFunc {
+        name: "char_to_byte".into(),
+        params: vec![
+            WirLocal { name: "s".into(), ty: WirTy::Str },
+            WirLocal { name: "n".into(), ty: WirTy::Bool },
+        ],
+        ret: vec![WirTy::Bool],
+        locals: ["slen", "i", "count", "b", "seqlen"]
+            .iter()
+            .map(|n| WirLocal { name: (*n).into(), ty: WirTy::Bool })
+            .collect(),
+        body: vec![
+            setl("slen", load(getl("s"))),
+            setl("i", i32c(0)),
+            setl("count", i32c(0)),
+            scan_loop,
+            N::Push(getl("i")),
+        ],
+        raw_body: None,
+    }
+}
+
+/// `$str_substring(s, start, end) -> i32` — the substring of `s` between the
+/// *character* indices `start` and `end`. Maps both ends to byte offsets via
+/// `$char_to_byte`, then `$substr`s the byte slice; an empty slice when the
+/// bounds cross.
+pub fn str_substring_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    let i32c = E::ConstI32;
+    let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+    let setl = |n: &str, v: E| N::SetLocal { local: n.into(), value: v };
+    let c2b = |idx: &str| E::Call { func: "char_to_byte".into(), args: vec![getl("s"), getl(idx)] };
+    WirFunc {
+        name: "str_substring".into(),
+        params: vec![
+            WirLocal { name: "s".into(), ty: WirTy::Str },
+            WirLocal { name: "start".into(), ty: WirTy::Bool },
+            WirLocal { name: "end".into(), ty: WirTy::Bool },
+        ],
+        ret: vec![WirTy::Str],
+        locals: vec![
+            WirLocal { name: "lo".into(), ty: WirTy::Bool },
+            WirLocal { name: "hi".into(), ty: WirTy::Bool },
+        ],
+        body: vec![
+            setl("lo", c2b("start")),
+            setl("hi", c2b("end")),
+            N::If {
+                cond: b(BinOp::Ge, getl("lo"), getl("hi")),
+                then_: vec![N::Push(E::Call {
+                    func: "substr".into(),
+                    args: vec![getl("s"), i32c(0), i32c(0)],
+                })],
+                els: vec![N::Push(E::Call {
+                    func: "substr".into(),
+                    args: vec![getl("s"), getl("lo"), b(BinOp::Sub, getl("hi"), getl("lo"))],
+                })],
+                result: Some(WirTy::Str),
+            },
+        ],
+        raw_body: None,
+    }
+}
+
 /// A WIR-native prelude helper plus the module-level resources it needs (so a
 /// pruned module declares only the imports/globals/table its reached helpers
 /// actually touch — capability-minimal).
@@ -1411,6 +1560,27 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
         "byte_to_char" => Some(WirHelperSpec {
             func: byte_to_char_helper(),
             helper_deps: &[],
+            import_deps: &[],
+            uses_heap: false,
+            uses_table: false,
+        }),
+        "substr" => Some(WirHelperSpec {
+            func: substr_helper(),
+            helper_deps: &["ensure"],
+            import_deps: &[],
+            uses_heap: true,
+            uses_table: false,
+        }),
+        "char_to_byte" => Some(WirHelperSpec {
+            func: char_to_byte_helper(),
+            helper_deps: &[],
+            import_deps: &[],
+            uses_heap: false,
+            uses_table: false,
+        }),
+        "str_substring" => Some(WirHelperSpec {
+            func: str_substring_helper(),
+            helper_deps: &["char_to_byte", "substr"],
             import_deps: &[],
             uses_heap: false,
             uses_table: false,

@@ -8185,6 +8185,12 @@ fn main(console: Console):
                 "fn main(console: Console):\n    print(console, __render(string.index_of(\"hello\", \"ll\")))\n    print(console, __render(string.index_of(\"hello\", \"xyz\")))\n",
                 vec!["2".to_string(), "-1".to_string()],
             ),
+            // string.substring ($str_substring → $char_to_byte + $substr, a
+            // heap-allocating slice) on the binary path.
+            (
+                "fn main(console: Console):\n    print(console, string.substring(\"hello world\", 0, 5))\n    print(console, string.substring(\"hello world\", 6, 11))\n",
+                vec!["hello".to_string(), "world".to_string()],
+            ),
         ];
         let mut lowered_any = false;
         for (src, want) in cases {

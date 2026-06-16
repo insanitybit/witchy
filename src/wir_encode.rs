@@ -1473,6 +1473,136 @@ mod tests {
     }
 
     #[test]
+    fn substr_copies_a_byte_slice() {
+        use crate::wir::{ensure_helper, substr_helper};
+        let mk_str = |s: &str| {
+            let mut b = (s.len() as u32).to_le_bytes().to_vec();
+            b.extend_from_slice(s.as_bytes());
+            b
+        };
+        let data = vec![DataSegment { offset: 200, bytes: mk_str("hello") }];
+        let sub = |src: i32, start: i32, len: i32| WirExpr::Call {
+            func: "substr".into(),
+            args: vec![WirExpr::ConstI32(src), WirExpr::ConstI32(start), WirExpr::ConstI32(len)],
+        };
+        let load_i32 = |p: WirExpr| WirExpr::Load { ptr: Box::new(p), kind: Kind::I32, offset: 0 };
+        let byte0 = |p: WirExpr| WirExpr::Load8U { ptr: Box::new(p), offset: 4 };
+        let pi = |e: WirExpr| {
+            WirNode::Do(WirExpr::CallHost {
+                import: "print_int".into(),
+                args: vec![WirExpr::Convert { from: Kind::I32, to: Kind::I64, arg: Box::new(e) }],
+            })
+        };
+        let run = WirFunc {
+            name: "run".into(),
+            params: vec![],
+            ret: vec![],
+            locals: vec![local("r1", WirTy::Bool), local("r2", WirTy::Bool)],
+            body: vec![
+                // "ell" = bytes 1..4 of "hello": length 3, first byte 'e' (101).
+                WirNode::SetLocal { local: "r1".into(), value: sub(200, 1, 3) },
+                pi(load_i32(WirExpr::GetLocal("r1".into()))),
+                pi(byte0(WirExpr::GetLocal("r1".into()))),
+                // "he" = bytes 0..2: length 2, first byte 'h' (104).
+                WirNode::SetLocal { local: "r2".into(), value: sub(200, 0, 2) },
+                pi(load_i32(WirExpr::GetLocal("r2".into()))),
+                pi(byte0(WirExpr::GetLocal("r2".into()))),
+            ],
+            raw_body: None,
+        };
+        let module = WirModule {
+            imports: vec![WirImport {
+                name: "print_int".into(),
+                params: vec![Kind::I64],
+                results: vec![],
+            }],
+            funcs: vec![ensure_helper(), substr_helper(), run],
+            memory_pages: 1,
+            data,
+            globals: vec![WirGlobal {
+                name: "heap".into(),
+                kind: Kind::I32,
+                mutable: true,
+                init: GlobalInit::I32(1024),
+                export: None,
+            }],
+            table: None,
+            exports: vec![("run".into(), "run".into())],
+        };
+        assert_agrees(&module, &["3", "101", "2", "104"]);
+    }
+
+    #[test]
+    fn str_substring_slices_by_char_index() {
+        use crate::wir::{char_to_byte_helper, ensure_helper, str_substring_helper, substr_helper};
+        let mk_str = |s: &str| {
+            let mut b = (s.len() as u32).to_le_bytes().to_vec();
+            b.extend_from_slice(s.as_bytes());
+            b
+        };
+        let data = vec![
+            DataSegment { offset: 200, bytes: mk_str("hello world") },
+            DataSegment { offset: 220, bytes: mk_str("héllo") },
+        ];
+        let ss = |s: i32, a: i32, b: i32| WirExpr::Call {
+            func: "str_substring".into(),
+            args: vec![WirExpr::ConstI32(s), WirExpr::ConstI32(a), WirExpr::ConstI32(b)],
+        };
+        let load_i32 = |p: WirExpr| WirExpr::Load { ptr: Box::new(p), kind: Kind::I32, offset: 0 };
+        let byte0 = |p: WirExpr| WirExpr::Load8U { ptr: Box::new(p), offset: 4 };
+        let pi = |e: WirExpr| {
+            WirNode::Do(WirExpr::CallHost {
+                import: "print_int".into(),
+                args: vec![WirExpr::Convert { from: Kind::I32, to: Kind::I64, arg: Box::new(e) }],
+            })
+        };
+        let run = WirFunc {
+            name: "run".into(),
+            params: vec![],
+            ret: vec![],
+            locals: vec![local("r1", WirTy::Bool), local("r2", WirTy::Bool)],
+            body: vec![
+                // "hello" = chars 0..5 of "hello world": 5 bytes, first byte 'h' (104).
+                WirNode::SetLocal { local: "r1".into(), value: ss(200, 0, 5) },
+                pi(load_i32(WirExpr::GetLocal("r1".into()))),
+                pi(byte0(WirExpr::GetLocal("r1".into()))),
+                // "él" = chars 1..3 of "héllo": é is 2 bytes so the slice is 3
+                // bytes, first byte 0xc3 (195) — the char→byte mapping at work.
+                WirNode::SetLocal { local: "r2".into(), value: ss(220, 1, 3) },
+                pi(load_i32(WirExpr::GetLocal("r2".into()))),
+                pi(byte0(WirExpr::GetLocal("r2".into()))),
+            ],
+            raw_body: None,
+        };
+        let module = WirModule {
+            imports: vec![WirImport {
+                name: "print_int".into(),
+                params: vec![Kind::I64],
+                results: vec![],
+            }],
+            funcs: vec![
+                ensure_helper(),
+                substr_helper(),
+                char_to_byte_helper(),
+                str_substring_helper(),
+                run,
+            ],
+            memory_pages: 1,
+            data,
+            globals: vec![WirGlobal {
+                name: "heap".into(),
+                kind: Kind::I32,
+                mutable: true,
+                init: GlobalInit::I32(1024),
+                export: None,
+            }],
+            table: None,
+            exports: vec![("run".into(), "run".into())],
+        };
+        assert_agrees(&module, &["5", "104", "3", "195"]);
+    }
+
+    #[test]
     fn arithmetic_roundtrips() {
         // fn add() -> Int: (2 + 3) * 4 == 20
         let add = WirFunc {
