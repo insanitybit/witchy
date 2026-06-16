@@ -1981,6 +1981,49 @@ mod tests {
     }
 
     #[test]
+    fn str_to_int_parses_signed_decimals() {
+        use crate::wir::{is_ws_helper, str_to_int_helper};
+        let mk_str = |s: &str| {
+            let mut b = (s.len() as u32).to_le_bytes().to_vec();
+            b.extend_from_slice(s.as_bytes());
+            b
+        };
+        let data = vec![
+            DataSegment { offset: 200, bytes: mk_str("123") },
+            DataSegment { offset: 220, bytes: mk_str("-45") },
+            DataSegment { offset: 240, bytes: mk_str("  7  ") },
+            DataSegment { offset: 260, bytes: mk_str("+9") },
+        ];
+        let parse = |off: i32| WirExpr::Call { func: "str_to_int".into(), args: vec![WirExpr::ConstI32(off)] };
+        let pi = |e: WirExpr| {
+            WirNode::Do(WirExpr::CallHost { import: "print_int".into(), args: vec![e] })
+        };
+        let run = WirFunc {
+            name: "run".into(),
+            params: vec![],
+            ret: vec![],
+            locals: vec![],
+            body: vec![pi(parse(200)), pi(parse(220)), pi(parse(240)), pi(parse(260))],
+            raw_body: None,
+        };
+        let module = WirModule {
+            imports: vec![WirImport {
+                name: "print_int".into(),
+                params: vec![Kind::I64],
+                results: vec![],
+            }],
+            funcs: vec![is_ws_helper(), str_to_int_helper(), run],
+            memory_pages: 1,
+            data,
+            globals: vec![],
+            table: None,
+            exports: vec![("run".into(), "run".into())],
+        };
+        // "123"→123, "-45"→-45, "  7  "→7 (whitespace trimmed), "+9"→9.
+        assert_agrees(&module, &["123", "-45", "7", "9"]);
+    }
+
+    #[test]
     fn arithmetic_roundtrips() {
         // fn add() -> Int: (2 + 3) * 4 == 20
         let add = WirFunc {

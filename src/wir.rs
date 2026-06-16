@@ -1928,6 +1928,137 @@ pub fn ascii_case_helper() -> WirFunc {
     }
 }
 
+/// `$str_to_int(s) -> i64` — parse a (optionally signed) decimal integer,
+/// tolerating leading/trailing ASCII whitespace. Traps (like Rust's checked
+/// parse) on overflow, on no digits, or on trailing non-whitespace garbage —
+/// matching the interpreter oracle, which errors on the same inputs.
+pub fn str_to_int_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    let i32c = E::ConstI32;
+    let i64c = E::ConstI64;
+    let b32 = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+    let b64 = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I64, lhs: Box::new(l), rhs: Box::new(r) };
+    let setl = |n: &str, v: E| N::SetLocal { local: n.into(), value: v };
+    let load = |p: E| E::Load { ptr: Box::new(p), kind: Kind::I32, offset: 0 };
+    let byte = || E::Load8U { ptr: Box::new(b32(BinOp::Add, getl("s"), getl("i"))), offset: 4 };
+    let not = |e: E| E::Unary { op: UnOp::Not, kind: Kind::I32, arg: Box::new(e) };
+    let is_ws_b = || not(E::Call { func: "is_ws".into(), args: vec![getl("b")] });
+    let inc_i = || setl("i", b32(BinOp::Add, getl("i"), i32c(1)));
+    // digit magnitude (b - '0') widened to i64.
+    let digit = || E::Convert { from: Kind::I32, to: Kind::I64, arg: Box::new(b32(BinOp::Sub, getl("b"), i32c(48))) };
+    let ws_skip = |done: &str, l: &str| N::Block {
+        label: done.into(),
+        result: None,
+        body: vec![N::Loop {
+            label: l.into(),
+            body: vec![
+                N::Br { target: done.into(), cond: Some(b32(BinOp::Ge, getl("i"), getl("len"))) },
+                setl("b", byte()),
+                N::Br { target: done.into(), cond: Some(is_ws_b()) },
+                inc_i(),
+                N::Br { target: l.into(), cond: None },
+            ],
+        }],
+    };
+    let digit_loop = N::Block {
+        label: "digdone".into(),
+        result: None,
+        body: vec![N::Loop {
+            label: "dig".into(),
+            body: vec![
+                N::Br { target: "digdone".into(), cond: Some(b32(BinOp::Ge, getl("i"), getl("len"))) },
+                setl("b", byte()),
+                N::Br {
+                    target: "digdone".into(),
+                    cond: Some(b32(BinOp::Or, b32(BinOp::LtU, getl("b"), i32c(48)), b32(BinOp::GtU, getl("b"), i32c(57)))),
+                },
+                // overflow: acc >u (limit - d) / 10  ->  trap.
+                N::If {
+                    cond: b64(
+                        BinOp::GtU,
+                        getl("acc"),
+                        b64(BinOp::DivU, b64(BinOp::Sub, getl("limit"), digit()), i64c(10)),
+                    ),
+                    then_: vec![N::Unreachable],
+                    els: vec![],
+                    result: None,
+                },
+                setl("acc", b64(BinOp::Add, b64(BinOp::Mul, getl("acc"), i64c(10)), digit())),
+                setl("got", i32c(1)),
+                inc_i(),
+                N::Br { target: "dig".into(), cond: None },
+            ],
+        }],
+    };
+    WirFunc {
+        name: "str_to_int".into(),
+        params: vec![WirLocal { name: "s".into(), ty: WirTy::Str }],
+        ret: vec![WirTy::Int],
+        locals: vec![
+            WirLocal { name: "len".into(), ty: WirTy::Bool },
+            WirLocal { name: "i".into(), ty: WirTy::Bool },
+            WirLocal { name: "b".into(), ty: WirTy::Bool },
+            WirLocal { name: "acc".into(), ty: WirTy::Int },
+            WirLocal { name: "neg".into(), ty: WirTy::Bool },
+            WirLocal { name: "got".into(), ty: WirTy::Bool },
+            WirLocal { name: "limit".into(), ty: WirTy::Int },
+        ],
+        body: vec![
+            setl("len", load(getl("s"))),
+            setl("i", i32c(0)),
+            setl("acc", i64c(0)),
+            setl("neg", i32c(0)),
+            setl("got", i32c(0)),
+            ws_skip("wsdone", "ws"),
+            // optional sign
+            N::If {
+                cond: b32(BinOp::Lt, getl("i"), getl("len")),
+                then_: vec![
+                    setl("b", byte()),
+                    N::If {
+                        cond: b32(BinOp::Eq, getl("b"), i32c(45)),
+                        then_: vec![setl("neg", i32c(1)), inc_i()],
+                        els: vec![N::If {
+                            cond: b32(BinOp::Eq, getl("b"), i32c(43)),
+                            then_: vec![inc_i()],
+                            els: vec![],
+                            result: None,
+                        }],
+                        result: None,
+                    },
+                ],
+                els: vec![],
+                result: None,
+            },
+            // magnitude bound: |i64::MIN| for negatives, i64::MAX otherwise.
+            N::If {
+                cond: getl("neg"),
+                then_: vec![setl("limit", i64c(i64::MIN))],
+                els: vec![setl("limit", i64c(i64::MAX))],
+                result: None,
+            },
+            digit_loop,
+            ws_skip("twsdone", "tws"),
+            // must have consumed at least one digit and reached the end.
+            N::If {
+                cond: b32(BinOp::Or, not(getl("got")), b32(BinOp::Lt, getl("i"), getl("len"))),
+                then_: vec![N::Unreachable],
+                els: vec![],
+                result: None,
+            },
+            N::If {
+                cond: getl("neg"),
+                then_: vec![N::Push(b64(BinOp::Sub, i64c(0), getl("acc")))],
+                els: vec![N::Push(getl("acc"))],
+                result: Some(WirTy::Int),
+            },
+        ],
+        raw_body: None,
+    }
+}
+
 /// A WIR-native prelude helper plus the module-level resources it needs (so a
 /// pruned module declares only the imports/globals/table its reached helpers
 /// actually touch — capability-minimal).
@@ -2101,6 +2232,13 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             helper_deps: &["ensure"],
             import_deps: &[],
             uses_heap: true,
+            uses_table: false,
+        }),
+        "str_to_int" => Some(WirHelperSpec {
+            func: str_to_int_helper(),
+            helper_deps: &["is_ws"],
+            import_deps: &[],
+            uses_heap: false,
             uses_table: false,
         }),
         _ => {

@@ -8236,6 +8236,12 @@ fn main(console: Console):
                 "fn main(console: Console):\n    print(console, string.to_upper(\"Hello, World!\"))\n    print(console, string.to_lower(\"Hello, World!\"))\n",
                 vec!["HELLO, WORLD!".to_string(), "hello, world!".to_string()],
             ),
+            // string.to_int ($str_to_int — whitespace/sign/overflow-checked parse)
+            // on the binary path.
+            (
+                "fn main(console: Console):\n    print(console, __render(string.to_int(\"123\") + string.to_int(\"-23\")))\n",
+                vec!["100".to_string()],
+            ),
         ];
         let mut lowered_any = false;
         for (src, want) in cases {
