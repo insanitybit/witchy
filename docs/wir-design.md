@@ -803,7 +803,7 @@ nodes for the bulk-memory/memory ops the helpers use (`memory.copy/fill/grow/siz
 `Cargo.toml` and delete the WAT sink. Keep `WIR → WAT` printer as `witchy emit-wat`.
 **Exit:** no WAT text in the pipeline; `wat` crate out of the build.
 
-### Milestone 4 — turn on optimizations (the actual payoff) 🟡 SLOT-ELIMINATION DONE (measurable); IN-PLACE PASS PENDING
+### Milestone 4 — turn on optimizations (the actual payoff) ✅ BOTH HEADLINES LIVE (measurable)
 
 Add the pass registry (`fn(&mut WirModule)` pipeline) and land passes in
 ascending risk: **redundant slot-conversion elimination** (§3.2, the clearest
@@ -830,14 +830,21 @@ the pass removes those nodes (125 → 123 on that program) and the optimized bin
 still matches the interpreter oracle. (Generic/closure boundaries — not yet
 lowered — are a further source the win will grow with.)
 
-**Remaining:** the **in-place / ownership pass** (§3.1, the second headline win) is
-NOT yet a WIR pass. The in-place decision is currently baked into the LEGACY
-lowering (analyze-then-lower → `ListPushCap`), and accumulator/own-ABI functions
-do not lower to WIR yet (`lower_block` bails on `inplace_push`/own params), so they
-run on the WAT path. Criterion 3 needs those bodies lowered to WIR with the cap
-ABI, oracle-validated, carrying the reowns-counter measurable win (O(1) vs O(n)).
+**In-place / ownership pass — DONE** (§3.1, the second headline win). Accumulator
+bodies (`xs = list.push(xs, i)` in a loop) lower to the cap ABI (`$list_push_cap`
+via `WirNode::CallStoreMulti`, which calls a multi-result helper and `local.set`s
+each result in reverse pop order). The self-push site reads the uniqueness verdict
+(clean → trust the runtime token; dirty → forced zero → re-own) and writes
+`(new_ptr, new_cap)` back into `xs`/`xs__cap`. Oracle-validated
+(`wir_inplace_accumulator_runs_and_agrees`) and **measurable**
+(`wir_inplace_accumulator_is_o1_reowns`: a clean 500-element accumulator shows ≤ 2
+re-owns on the binary path — amortized O(1), not O(n)). Facts subtlety: `lower_block`
+is invoked many times per compile, so the consume-once `sites`/`kills` assertion in
+`finish_unit` is skipped under `collect_wir` (the binary path is validated by
+`wasmparser::validate` + the differential oracle instead).
+
 DCE/CSE/devirt/inlining are not built (not required by the DONE criteria).
-**Exit:** both headline passes live, oracle-validated, measurable.
+**Exit:** both headline passes live, oracle-validated, measurable — DONE.
 
 Milestones 0–1 are low-risk and independently shippable. Milestone 2 is the
 atomic/scary one (the recursive-core conversion) — but it ships *byte-identical
