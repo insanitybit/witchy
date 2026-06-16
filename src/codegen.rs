@@ -6557,6 +6557,18 @@ impl Codegen {
                     vec![Self::wir_convert(self.lower_expr(&args[0])?, ak, Kind::I64)],
                 )
             }
+            // `list.length(xs)` — the i32 count header, widened to the Int's i64.
+            // Binary path only (the legacy emits `i64.extend_i32_u`; a count is
+            // non-negative so the signed `Convert` is identical, but the WAT path
+            // keeps its byte-identical legacy emission).
+            ("list.length", 1) if self.collect_wir => {
+                let arg = self.lower_expr(&args[0])?;
+                Self::wir_convert(
+                    W::Load { ptr: Box::new(arg), kind: crate::wir::Kind::I32, offset: 0 },
+                    Kind::I32,
+                    Kind::I64,
+                )
+            }
             // `__render` to a String for the scalar shapes: Str passes through,
             // Int → `$int_to_string`, Bool → an interned "true"/"false" value-if.
             // Float and compound shapes keep their bespoke legacy emission. Gated

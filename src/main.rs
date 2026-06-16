@@ -8151,6 +8151,11 @@ fn main(console: Console):
                 "fn main(console: Console):\n    print(console, \"hello, \" + \"world\")\n    print(console, \"x\" + \"y\" + \"z\")\n",
                 vec!["hello, world".to_string(), "xyz".to_string()],
             ),
+            // list.length on the binary path.
+            (
+                "fn main(console: Console):\n    let xs = [10, 20, 30]\n    print(console, __render(list.length(xs)))\n",
+                vec!["3".to_string()],
+            ),
         ];
         let mut lowered_any = false;
         for (src, want) in cases {
