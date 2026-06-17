@@ -8246,6 +8246,13 @@ fn main(console: Console):
                 "fn sum_head(xs: List(Int)) -> Int:\n    match xs:\n        [] -> 0\n        [a, b] -> a + b\n        [h, ..t] -> h + list.length(t)\n        _ -> 99\n\nfn main(console: Console):\n    print(console, __render(sum_head([])))\n    print(console, __render(sum_head([10, 20])))\n    print(console, __render(sum_head([5, 1, 2, 3])))\n",
                 vec!["0".to_string(), "30".to_string(), "8".to_string()],
             ),
+            // structural `==` on scalar-field compounds: a tuple (Tuple eq helper)
+            // and a list (List eq helper). Uses distinct literals so a stray
+            // pointer-compare would diverge from the structural result.
+            (
+                "fn main(console: Console):\n    print(console, __render((1, 2) == (1, 2)))\n    print(console, __render((1, 2) == (1, 3)))\n    print(console, __render([1, 2, 3] == [1, 2, 3]))\n    print(console, __render([1, 2] == [1, 9]))\n",
+                vec!["true".to_string(), "false".to_string(), "true".to_string(), "false".to_string()],
+            ),
             // string.chars ($str_chars → $byte_to_char + $str_substring +
             // $list_push) splitting a multibyte string into a List(String).
             (

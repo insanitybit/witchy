@@ -731,6 +731,13 @@ struct Codegen {
     /// `EqShape::id` so each shape is emitted once. A `BTreeMap` keeps emission
     /// order deterministic.
     eq_helpers: std::collections::BTreeMap<String, String>,
+    /// The WIR-native twin of `eq_helpers` for the binary path: per-shape
+    /// structural-equality `WirFunc`s, keyed identically (`eq_{id}`). Populated
+    /// only for shapes whose fields are all scalar (Int/Bool/Float) — those
+    /// helpers compare i64/f64 slots inline with no calls, so a program with such
+    /// a `==` lowers without the eq-helper bail. Str/nested-compound fields still
+    /// defer to WAT (their slot compare would need $str_eq / a nested eq call).
+    eq_wir_helpers: std::collections::BTreeMap<String, crate::wir::WirFunc>,
     /// Generated per-shape `to_string` renderers, keyed by `EqShape::id` (a
     /// `ts_` prefix on the function name). Parallels `eq_helpers`: each compound
     /// shape that flows into `to_string` (or string interpolation) gets one
@@ -877,6 +884,7 @@ impl Codegen {
             uses_dict_iter: false,
             lambdas: Vec::new(),
             eq_helpers: std::collections::BTreeMap::new(),
+            eq_wir_helpers: std::collections::BTreeMap::new(),
             ts_helpers: std::collections::BTreeMap::new(),
             adt_variant_names: HashMap::new(),
             clos_arities: HashSet::new(),
@@ -4072,6 +4080,29 @@ impl Codegen {
                         },
                     });
                 }
+                // Compound (record/tuple/list/enum) equality lowers to the
+                // per-shape WIR structural-equality helper (binary path only).
+                // Only scalar-field shapes are handled; a richer shape returns
+                // None from ensure_eq_wir_helper and falls through so the legacy
+                // arm keeps its bespoke emission.
+                if self.collect_wir
+                    && matches!(op, BinOp::Eq | BinOp::NotEq)
+                    && (self.operand_is_compound(lhs) || self.operand_is_compound(rhs))
+                {
+                    if let Some(shape) = self.eq_shape_of(lhs).or_else(|| self.eq_shape_of(rhs)) {
+                        if shape.is_compound() {
+                            if let Some(h) = self.ensure_eq_wir_helper(&shape) {
+                                let a = self.lower_expr(lhs)?;
+                                let b = self.lower_expr(rhs)?;
+                                let eq = W::Call { func: h, args: vec![a, b] };
+                                return Some(match op {
+                                    BinOp::Eq => eq,
+                                    _ => W::Unary { op: crate::wir::UnOp::Not, kind: crate::wir::Kind::I32, arg: Box::new(eq) },
+                                });
+                            }
+                        }
+                    }
+                }
                 // Common-kind promotion (f64 > i64 > i32), exactly as the legacy
                 // numeric path; each operand is then widened to `ck` via a `Convert`
                 // node reproducing `kind_convert` (a no-op except i32<->i64). `ck`
@@ -6367,6 +6398,126 @@ impl Codegen {
         Ok(name)
     }
 
+    /// WIR twin of [`slot_cmp`] for SCALAR slots only: the comparison of two
+    /// 8-byte slots at addresses `aa`/`bb`. `None` for Str/compound shapes (whose
+    /// compare would need `$str_eq` or a nested eq call) so the caller bails.
+    fn slot_cmp_wir(
+        &mut self,
+        shape: &EqShape,
+        aa: crate::wir::WirExpr,
+        bb: crate::wir::WirExpr,
+    ) -> Option<crate::wir::WirExpr> {
+        use crate::wir::{BinOp, Kind, WirExpr as W};
+        let load = |p: W| W::Load { ptr: Box::new(p), kind: Kind::I64, offset: 0 };
+        Some(match shape {
+            EqShape::Int | EqShape::Bool => {
+                W::Binary { op: BinOp::Eq, kind: Kind::I64, lhs: Box::new(load(aa)), rhs: Box::new(load(bb)) }
+            }
+            EqShape::Float => W::Binary {
+                op: BinOp::Eq,
+                kind: Kind::F64,
+                lhs: Box::new(W::FromSlot(Box::new(load(aa)), Kind::F64)),
+                rhs: Box::new(W::FromSlot(Box::new(load(bb)), Kind::F64)),
+            },
+            _ => return None,
+        })
+    }
+
+    /// WIR twin of [`ensure_eq_helper`], for shapes whose fields are all scalar
+    /// (so the body has no calls and no cycles). Builds the `WirFunc` into
+    /// `eq_wir_helpers` and returns its name; `None` (→ the caller bails to WAT)
+    /// for any shape or field `slot_cmp_wir` can't handle.
+    fn ensure_eq_wir_helper(&mut self, shape: &EqShape) -> Option<String> {
+        use crate::wir::{BinOp, Kind, UnOp, WirExpr as W, WirFunc, WirLocal, WirNode as N, WirTy};
+        let name = format!("eq_{}", shape.id());
+        if self.eq_wir_helpers.contains_key(&name) {
+            return Some(name);
+        }
+        let getl = |n: &str| W::GetLocal(n.into());
+        let i32c = W::ConstI32;
+        let add = |l: W, r: W| W::Binary { op: BinOp::Add, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+        let load_i32 = |p: W| W::Load { ptr: Box::new(p), kind: Kind::I32, offset: 0 };
+        let not = |e: W| W::Unary { op: UnOp::Not, kind: Kind::I32, arg: Box::new(e) };
+        let check = |cmp: W| N::If { cond: not(cmp), then_: vec![N::Return(Some(i32c(0)))], els: vec![], result: None };
+        let bool_local = |n: &str| WirLocal { name: n.into(), ty: WirTy::Bool };
+
+        // Build the per-field checks for a flat record/tuple/variant whose field
+        // shapes are `fields`, reading slots at `base+4+8*i`. None if any non-scalar.
+        let (body, locals): (crate::wir::WirSeq, Vec<WirLocal>) = match shape {
+            EqShape::Tuple(fields) => {
+                let mut b: crate::wir::WirSeq = Vec::new();
+                for (i, f) in fields.iter().enumerate() {
+                    let off = i32c((4 + 8 * i) as i32);
+                    let cmp = self.slot_cmp_wir(f, add(getl("a"), off.clone()), add(getl("b"), off))?;
+                    b.push(check(cmp));
+                }
+                b.push(N::Push(i32c(1)));
+                (b, vec![])
+            }
+            EqShape::Record(tyname) => {
+                let fields = self.record_field_types.get(tyname).cloned()?;
+                let mut b: crate::wir::WirSeq = Vec::new();
+                for (i, fty) in fields.iter().enumerate() {
+                    let fshape = self.eq_shape_of_type(fty)?;
+                    let off = i32c((4 + 8 * i) as i32);
+                    let cmp = self.slot_cmp_wir(&fshape, add(getl("a"), off.clone()), add(getl("b"), off))?;
+                    b.push(check(cmp));
+                }
+                b.push(N::Push(i32c(1)));
+                (b, vec![])
+            }
+            EqShape::List(elem) => {
+                let idx_off = |base: &str| {
+                    add(
+                        add(getl(base), i32c(4)),
+                        W::Binary { op: BinOp::Mul, kind: Kind::I32, lhs: Box::new(getl("i")), rhs: Box::new(i32c(8)) },
+                    )
+                };
+                let cmp = self.slot_cmp_wir(elem, idx_off("a"), idx_off("b"))?;
+                let b: crate::wir::WirSeq = vec![
+                    // lengths differ → not equal
+                    N::If {
+                        cond: W::Binary { op: BinOp::Ne, kind: Kind::I32, lhs: Box::new(load_i32(getl("a"))), rhs: Box::new(load_i32(getl("b"))) },
+                        then_: vec![N::Return(Some(i32c(0)))],
+                        els: vec![],
+                        result: None,
+                    },
+                    N::SetLocal { local: "n".into(), value: load_i32(getl("a")) },
+                    N::SetLocal { local: "i".into(), value: i32c(0) },
+                    N::Block {
+                        label: "done".into(),
+                        result: None,
+                        body: vec![N::Loop {
+                            label: "l".into(),
+                            body: vec![
+                                N::Br { target: "done".into(), cond: Some(W::Binary { op: BinOp::Ge, kind: Kind::I32, lhs: Box::new(getl("i")), rhs: Box::new(getl("n")) }) },
+                                check(cmp),
+                                N::SetLocal { local: "i".into(), value: add(getl("i"), i32c(1)) },
+                                N::Br { target: "l".into(), cond: None },
+                            ],
+                        }],
+                    },
+                    N::Push(i32c(1)),
+                ];
+                (b, vec![bool_local("n"), bool_local("i")])
+            }
+            // Adt/AdtInst (enum) eq is deferred: generic-payload field resolution
+            // and the tag-vs-variant-index mapping need more care, so those `==`
+            // keep the legacy WAT emission for now.
+            _ => return None,
+        };
+        let func = WirFunc {
+            name: name.clone(),
+            params: vec![bool_local("a"), bool_local("b")],
+            ret: vec![WirTy::Bool],
+            locals,
+            body,
+            raw_body: None,
+        };
+        self.eq_wir_helpers.insert(name.clone(), func);
+        Some(name)
+    }
+
     /// Render the value in an 8-byte slot at `addr` (a WAT i32 address
     /// expression) to a String pointer, byte-identical to the interpreter's
     /// `Display`. Scalars format inline; compounds load the slot's pointer and
@@ -8599,8 +8750,12 @@ pub fn assemble_wir_module(
     // closure types beyond the reserved band. An Int/Float `main` is fine now —
     // the prelude declares `print_int`/`print_float` and the `run` wrapper prints
     // the result.
+    // Structural `==` is fine when every legacy eq helper has a WIR twin (a
+    // scalar-field shape); a shape the WIR generator couldn't build leaves its
+    // `eq_helpers` key without a twin → bail to WAT.
+    let eq_all_wir = cg.eq_helpers.keys().all(|k| cg.eq_wir_helpers.contains_key(k));
     if !cg.lambdas.is_empty()
-        || !cg.eq_helpers.is_empty()
+        || !eq_all_wir
         || !cg.ts_helpers.is_empty()
         || !cg.rcopy_helpers.is_empty()
         || !cg.clos_arities.is_empty()
@@ -8710,6 +8865,11 @@ pub fn assemble_wir_module(
                 })
                 .collect();
             let mut pruned_funcs: Vec<WirFunc> = resolved.into_values().map(|s| s.func).collect();
+            // The program-specific structural-equality helpers (scalar-field
+            // shapes, no calls/imports/heap) reached by user `==`.
+            for f in cg.eq_wir_helpers.values() {
+                pruned_funcs.push(f.clone());
+            }
             for name in &user_order {
                 pruned_funcs.push(cg.wir_funcs.get(name).expect("lowered above").clone());
             }
