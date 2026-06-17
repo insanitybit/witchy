@@ -8253,6 +8253,12 @@ fn main(console: Console):
                 "fn main(console: Console):\n    print(console, __render((1, 2) == (1, 2)))\n    print(console, __render((1, 2) == (1, 3)))\n    print(console, __render([1, 2, 3] == [1, 2, 3]))\n    print(console, __render([1, 2] == [1, 9]))\n    print(console, __render((\"a\", 1) == (\"a\", 1)))\n    print(console, __render((\"a\", 1) == (\"b\", 1)))\n",
                 vec!["true".to_string(), "false".to_string(), "true".to_string(), "false".to_string(), "true".to_string(), "false".to_string()],
             ),
+            // NESTED structural `==`: a list of tuples and a tuple of (tuple, int)
+            // — slot_cmp_wir recurses into the field shapes' eq helpers.
+            (
+                "fn main(console: Console):\n    print(console, __render([(1, 2), (3, 4)] == [(1, 2), (3, 4)]))\n    print(console, __render([(1, 2)] == [(1, 9)]))\n    print(console, __render(((1, 2), 3) == ((1, 2), 3)))\n    print(console, __render(((1, 2), 3) == ((1, 9), 3)))\n",
+                vec!["true".to_string(), "false".to_string(), "true".to_string(), "false".to_string()],
+            ),
             // string.chars ($str_chars → $byte_to_char + $str_substring +
             // $list_push) splitting a multibyte string into a List(String).
             (

@@ -738,6 +738,9 @@ struct Codegen {
     /// a `==` lowers without the eq-helper bail. Str/nested-compound fields still
     /// defer to WAT (their slot compare would need $str_eq / a nested eq call).
     eq_wir_helpers: std::collections::BTreeMap<String, crate::wir::WirFunc>,
+    /// Names of eq helpers currently being built — a cycle guard so a recursive
+    /// type's structural eq bails to WAT instead of looping in codegen.
+    eq_building: std::collections::HashSet<String>,
     /// Generated per-shape `to_string` renderers, keyed by `EqShape::id` (a
     /// `ts_` prefix on the function name). Parallels `eq_helpers`: each compound
     /// shape that flows into `to_string` (or string interpolation) gets one
@@ -885,6 +888,7 @@ impl Codegen {
             lambdas: Vec::new(),
             eq_helpers: std::collections::BTreeMap::new(),
             eq_wir_helpers: std::collections::BTreeMap::new(),
+            eq_building: std::collections::HashSet::new(),
             ts_helpers: std::collections::BTreeMap::new(),
             adt_variant_names: HashMap::new(),
             clos_arities: HashSet::new(),
@@ -6422,7 +6426,13 @@ impl Codegen {
                 self.uses_str_eq = true;
                 W::Call { func: "str_eq".into(), args: vec![load_i32(aa), load_i32(bb)] }
             }
-            _ => return None,
+            // A compound field: the slot holds a pointer to the nested value;
+            // recurse into that shape's eq helper (None → the parent bails to WAT,
+            // e.g. an Adt/Dict field, or a recursive type via the cycle guard).
+            compound => {
+                let h = self.ensure_eq_wir_helper(compound)?;
+                W::Call { func: h, args: vec![load_i32(aa), load_i32(bb)] }
+            }
         })
     }
 
@@ -6431,11 +6441,38 @@ impl Codegen {
     /// `eq_wir_helpers` and returns its name; `None` (→ the caller bails to WAT)
     /// for any shape or field `slot_cmp_wir` can't handle.
     fn ensure_eq_wir_helper(&mut self, shape: &EqShape) -> Option<String> {
-        use crate::wir::{BinOp, Kind, UnOp, WirExpr as W, WirFunc, WirLocal, WirNode as N, WirTy};
         let name = format!("eq_{}", shape.id());
         if self.eq_wir_helpers.contains_key(&name) {
             return Some(name);
         }
+        // Cycle guard: a recursive type whose eq helper is mid-build bails to WAT
+        // (the structural recursion would otherwise loop in codegen).
+        if !self.eq_building.insert(name.clone()) {
+            return None;
+        }
+        let built = self.build_eq_wir_body(shape);
+        self.eq_building.remove(&name);
+        let (body, locals) = built?;
+        let func = crate::wir::WirFunc {
+            name: name.clone(),
+            params: vec![
+                crate::wir::WirLocal { name: "a".into(), ty: crate::wir::WirTy::Bool },
+                crate::wir::WirLocal { name: "b".into(), ty: crate::wir::WirTy::Bool },
+            ],
+            ret: vec![crate::wir::WirTy::Bool],
+            locals,
+            body,
+            raw_body: None,
+        };
+        self.eq_wir_helpers.insert(name.clone(), func);
+        Some(name)
+    }
+
+    /// Build the `(body, locals)` of a structural-eq helper for `shape`. `None`
+    /// for shapes/fields not yet handled (Adt, Dict, or a non-buildable nested
+    /// field). Recurses through `slot_cmp_wir` for compound fields.
+    fn build_eq_wir_body(&mut self, shape: &EqShape) -> Option<(crate::wir::WirSeq, Vec<crate::wir::WirLocal>)> {
+        use crate::wir::{BinOp, Kind, UnOp, WirExpr as W, WirLocal, WirNode as N, WirTy};
         let getl = |n: &str| W::GetLocal(n.into());
         let i32c = W::ConstI32;
         let add = |l: W, r: W| W::Binary { op: BinOp::Add, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
@@ -6510,16 +6547,7 @@ impl Codegen {
             // to WAT via the `?` in the lowering hook.
             _ => return None,
         };
-        let func = WirFunc {
-            name: name.clone(),
-            params: vec![bool_local("a"), bool_local("b")],
-            ret: vec![WirTy::Bool],
-            locals,
-            body,
-            raw_body: None,
-        };
-        self.eq_wir_helpers.insert(name.clone(), func);
-        Some(name)
+        Some((body, locals))
     }
 
     /// Render the value in an 8-byte slot at `addr` (a WAT i32 address
