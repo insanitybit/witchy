@@ -382,6 +382,12 @@ struct Codegen {
     /// assembles those + the static prelude into a binary via `wir_encode`.
     capture_top_seq: bool,
     captured_seq: Option<crate::wir::WirSeq>,
+    /// A HARD rejection raised mid-lowering (e.g. a closure that assigns a
+    /// captured variable — by-value capture can't write back). Lowering bails to
+    /// `None` like any unsupported construct, but `compile_function` turns this
+    /// into an `Err` so the program is rejected with a diagnostic, not silently
+    /// reported as "unsupported".
+    reject_reason: Option<CodegenError>,
     wir_funcs: HashMap<String, crate::wir::WirFunc>,
     /// Set by `compile_module_binary` to arm WIR capture; left `false` on the WAT
     /// path so it pays no capture/clone overhead AND so `lower_expr`'s call arm
@@ -782,6 +788,7 @@ impl Codegen {
             uses_int_to_string: false,
             capture_top_seq: false,
             captured_seq: None,
+            reject_reason: None,
             wir_funcs: HashMap::new(),
             collect_wir: false,
             emitted_funcs: HashSet::new(),
@@ -1900,7 +1907,7 @@ impl Codegen {
         off
     }
 
-    fn compile_function(&mut self, f: &Function) -> Result<String, CodegenError> {
+    fn compile_function(&mut self, f: &Function) -> Result<(), CodegenError> {
         self.locals.clear();
         self.local_records.clear();
         self.local_list_elem.clear();
@@ -1986,23 +1993,16 @@ impl Codegen {
         let renamed = &f.body;
         self.infer_locals(renamed);
 
-        let mut header = format!("  (func ${} ", f.name);
-        for p in &f.params {
-            header.push_str(&format!("(param ${} {}) ", p.name, wasm_ty(self.locals[&p.name])));
-        }
-        // The own-ABI: a single `own` collection parameter whose buffer may
-        // be returned carries the caller's ownership token across the call —
-        // an extra i32 cap param here, and an extra i32 cap result appended
-        // below. Decided from the module summaries, so every compile of this
-        // module agrees on the signature.
+        // The own-ABI: a single `own` collection parameter whose buffer may be
+        // returned carries the caller's ownership token across the call (an extra
+        // i32 cap param + i32 cap result, built into the WirFunc signature by
+        // `assemble_wir_func`). Decided from the module summaries, so every compile
+        // of this module agrees on the signature.
         self.cur_fn_own_param = self
             .summaries
             .own_abi(&f.name)
             .and_then(|i| f.params.get(i))
             .map(|p| p.name.clone());
-        if let Some(p) = &self.cur_fn_own_param {
-            header.push_str(&format!("(param ${p}__cap i32) "));
-        }
         // Result = the normal return value, then one slot per `inout` parameter
         // (moved back out to the caller).
         let ret_kind = match &f.ret {
@@ -2017,57 +2017,25 @@ impl Codegen {
             .filter(|p| p.convention == Convention::Inout)
             .map(|p| p.name.clone())
             .collect();
-        header.push_str(&format!("(result {}", wasm_ty(ret_kind)));
-        for p in &f.params {
-            if p.convention == Convention::Inout {
-                header.push_str(&format!(" {}", wasm_ty(self.locals[&p.name])));
-            }
-        }
-        if self.cur_fn_own_param.is_some() {
-            header.push_str(" i32");
-        }
-        header.push_str(")\n");
 
         self.begin_unit(renamed);
 
-        let mut lets = Vec::new();
-        collect_let_names(renamed, &mut lets);
-        lets.sort();
-        lets.dedup();
-        for name in &lets {
-            let k = self.locals.get(name).copied().unwrap_or(Kind::I32);
-            header.push_str(&format!("    (local ${name} {})\n", wasm_ty(k)));
-        }
-        // Shadow capacity slots for in-place push (zero = no owned slack).
-        // The own-ABI parameter's token is already a param, not a local.
-        let mut cap_vars: Vec<&String> = self.inplace_push.iter().collect();
-        cap_vars.sort();
-        for v in cap_vars {
-            if Some(v.as_str()) != self.cur_fn_own_param.as_deref() {
-                header.push_str(&format!("    (local ${v}__cap i32)\n"));
-            }
-        }
-        header.push_str("    (local $__witchy_owncap i32)\n");
-        // Scratch slots: tuple destructuring, `?`, and `match` scrutinees.
-        header.push_str(&format!("    (local ${TUPLE_TMP} i32)\n"));
-        header.push_str(&format!("    (local ${TRY_TMP} i32)\n"));
-        header.push_str(&format!("    (local ${MATCH_TMP} i64)\n"));
-        for i in 0..WM_POOL {
-            header.push_str(&format!("    (local $__witchy_wm_{i} i32)\n"));
-        }
-        for i in 0..APPLY_POOL {
-            header.push_str(&format!("    (local $__witchy_call_{i} i32)\n"));
-        }
-
         self.apply_level = 0;
         self.wm_level = 0;
-        self.capture_top_seq = self.collect_wir;
+        // Lower the body straight to WIR (the binary path is the only consumer —
+        // `assemble_wir_module` always sets `collect_wir`). The legacy per-function
+        // WAT emission is retired: `lower_block` IS what `compile_block` ran first,
+        // so this captures the same sequence with none of the discarded WAT text.
         self.captured_seq = None;
-        let body = self.compile_block(renamed)?;
-        // The body's tail value must match the declared result kind (a generic
-        // i32 body returned from an `-> Int` function is widened, etc.).
+        if let Some(seq) = self.lower_block(renamed) {
+            self.captured_seq = Some(seq);
+        }
+        // A hard rejection raised during lowering (e.g. a closure assigning a
+        // captured var) aborts the whole compile with a diagnostic.
+        if let Some(e) = self.reject_reason.take() {
+            return Err(e);
+        }
         let block_kind = self.block_kind(renamed);
-        let body = format!("{body}{}", kind_convert(block_kind, ret_kind));
         // M3: if the whole body lowered to WIR and the function uses neither the
         // inout move-out ABI nor the own-cap ABI (the binary sink models neither
         // yet), keep a `WirFunc` so `compile_module_binary` can encode it.
@@ -2095,17 +2063,9 @@ impl Codegen {
                 self.wir_funcs.insert(f.name.clone(), wf);
             }
         }
-        self.capture_top_seq = false;
-        // Move-out: append each `inout` parameter's final value (declaration order).
-        let mut epilogue = self.inout_epilogue();
-        let tail_expr = match renamed.stmts.last() {
-            Some(Stmt::Expr(e)) => Some(e),
-            _ => None,
-        };
-        epilogue.push_str(&self.own_cap_push(tail_expr));
         self.finish_unit(&f.name)?;
         self.cur_fn_own_param = None;
-        Ok(format!("{header}{body}{epilogue}  )\n"))
+        Ok(())
     }
 
     /// Build the `WirFunc` for a fully-lowered function: its params, the body
@@ -2556,7 +2516,7 @@ impl Codegen {
                         // rebind below copies the whole dict each insert — O(n²)
                         // memory that traps a large dict under a tight memory cap.
                         let (kexpr, vexpr) = self_insert_args(name, value).expect("guarded Some above");
-                        let mode = self.dict_key_mode(kexpr).ok()?;
+                        let mode = self.dict_key_mode_wir(kexpr)?;
                         let kk = self.kind_of(kexpr);
                         let vk = self.kind_of(vexpr);
                         if let Some(kvt) = self.dict_key_valtype_of(value) {
@@ -2638,7 +2598,7 @@ impl Codegen {
                         // plain rebind copies the whole dict each update.
                         let (kexpr, dexpr, fexpr) =
                             self_update_args(name, value).expect("guarded Some above");
-                        let mode = self.dict_key_mode(kexpr).ok()?;
+                        let mode = self.dict_key_mode_wir(kexpr)?;
                         let kk = self.kind_of(kexpr);
                         let dk = self.kind_of(dexpr);
                         if let Some(kvt) = self.dict_key_valtype_of(value) {
@@ -4127,7 +4087,19 @@ impl Codegen {
                 if self.collect_wir && matches!(op, BinOp::Eq | BinOp::NotEq) {
                     if let Some(shape) = self.eq_shape_of(lhs).or_else(|| self.eq_shape_of(rhs)) {
                         if shape.is_compound() {
-                            let h = self.ensure_eq_wir_helper(&shape)?;
+                            // A compound `==` MUST be structural; if the shape can't
+                            // be built (an unresolved generic payload, e.g. `Ok([])`)
+                            // it is a HARD rejection, never a fall-through to a bare
+                            // pointer compare.
+                            let Some(h) = self.ensure_eq_wir_helper(&shape) else {
+                                self.reject_reason.get_or_insert_with(|| CodegenError {
+                                    message: "could not resolve the structural-equality shape for a \
+                                              compound `==` (an unresolved generic payload, e.g. an \
+                                              empty list) — annotate the operands' element type"
+                                        .into(),
+                                });
+                                return None;
+                            };
                             let a = self.lower_expr(lhs)?;
                             let b = self.lower_expr(rhs)?;
                             let eq = W::Call { func: h, args: vec![a, b] };
@@ -5472,7 +5444,17 @@ impl Codegen {
             return None;
         }
         let scan = scan_lambda(params, body);
-        if !scan.assigns_outer().is_empty() {
+        let assigns_outer = scan.assigns_outer();
+        if !assigns_outer.is_empty() {
+            // A hard rejection (by-value capture can't propagate a write back), not
+            // an "unsupported" bail: record it so `compile_function` errors with a
+            // diagnostic instead of silently reporting the module as unsupported.
+            self.reject_reason.get_or_insert_with(|| CodegenError {
+                message: format!(
+                    "a closure that assigns to a captured variable is not compiled yet (assigns `{}`)",
+                    assigns_outer.join("`, `")
+                ),
+            });
             return None;
         }
         let captures: Vec<String> = scan
@@ -5756,6 +5738,20 @@ impl Codegen {
             ValType::Other => cerr(
                 "could not determine the Dict key type for WASM; use Int, Float, or String keys (annotate if needed)",
             ),
+        }
+    }
+
+    /// `dict_key_mode` for the WIR path: an undetermined key type is a HARD
+    /// rejection (a dict needs a comparable key), so record it as a `reject_reason`
+    /// — `compile_function` turns that into a diagnostic `Err` rather than letting
+    /// the function silently bail as "unsupported".
+    fn dict_key_mode_wir(&mut self, key: &Expr) -> Option<u32> {
+        match self.dict_key_mode(key) {
+            Ok(m) => Some(m),
+            Err(e) => {
+                self.reject_reason.get_or_insert(e);
+                None
+            }
         }
     }
 
@@ -8264,7 +8260,7 @@ impl Codegen {
             ("dict.insert", 3) => {
                 self.uses_dict = true;
                 self.uses_str_eq = true;
-                let mode = self.dict_key_mode(&args[1]).ok()?;
+                let mode = self.dict_key_mode_wir(&args[1])?;
                 let kk = self.kind_of(&args[1]);
                 let vk = self.kind_of(&args[2]);
                 call("dict_insert", vec![
@@ -8277,7 +8273,7 @@ impl Codegen {
             ("dict.get_or", 3) => {
                 self.uses_dict = true;
                 self.uses_str_eq = true;
-                let mode = self.dict_key_mode(&args[1]).ok()?;
+                let mode = self.dict_key_mode_wir(&args[1])?;
                 let kk = self.kind_of(&args[1]);
                 let dk = self.kind_of(&args[2]);
                 let inner = vec![
@@ -8291,7 +8287,7 @@ impl Codegen {
             ("dict.has", 2) => {
                 self.uses_dict = true;
                 self.uses_str_eq = true;
-                let mode = self.dict_key_mode(&args[1]).ok()?;
+                let mode = self.dict_key_mode_wir(&args[1])?;
                 let kk = self.kind_of(&args[1]);
                 call("dict_has", vec![
                     self.lower_expr(&args[0])?,
@@ -8302,7 +8298,7 @@ impl Codegen {
             ("dict.remove", 2) => {
                 self.uses_dict = true;
                 self.uses_str_eq = true;
-                let mode = self.dict_key_mode(&args[1]).ok()?;
+                let mode = self.dict_key_mode_wir(&args[1])?;
                 let kk = self.kind_of(&args[1]);
                 call("dict_remove", vec![
                     self.lower_expr(&args[0])?,
@@ -8315,7 +8311,7 @@ impl Codegen {
                 self.uses_str_eq = true;
                 self.uses_dict_update = true;
                 self.clos_arities.insert(1);
-                let mode = self.dict_key_mode(&args[1]).ok()?;
+                let mode = self.dict_key_mode_wir(&args[1])?;
                 let kk = self.kind_of(&args[1]);
                 let dk = self.kind_of(&args[2]);
                 call("dict_update", vec![
