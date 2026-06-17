@@ -10784,6 +10784,12 @@ fn collect_called_host_imports(seq: &crate::wir::WirSeq, out: &mut std::collecti
 /// which never appear in an ordinary program (so parity is untouched). The host
 /// links only `build_out_write`/`build_read_len`, confined to the granted output
 /// sandbox and read roots — nothing else exists for the guest to call.
+///
+/// NOTE: this stays on the WAT codegen (`compile_module`) deliberately — the
+/// build host ops (`build_read`/`build_out_write`) are not yet wired into the
+/// WIR/binary prelude, so `compile_module_binary` bails to `None` for a build
+/// step. Until those host imports land in the binary path, the build sandbox is
+/// the one remaining consumer of the WAT sink.
 pub fn compile_build_module(module: &Module) -> Result<String, CodegenError> {
     let mut m = module.clone();
     // A build module ships no `main`; promote its `build` entrypoint to `main`.
@@ -13177,7 +13183,8 @@ fn main() -> Int:
     run(add, 5)
 "#;
         let module = parse_module(src).expect("parse");
-        let err = compile_module(&module).expect_err("should reject outer assignment");
+        let err = compile_module_binary(&module, &std::collections::HashMap::new())
+            .expect_err("should reject outer assignment");
         assert!(
             err.to_string().contains("assigns `total`"),
             "unexpected error: {err}"

@@ -947,13 +947,15 @@ fn run_benchmarks() -> wasmtime::Result<()> {
 
     fn compiled_ms(src: &str, runs: u32) -> f64 {
         let module = parser::parse_module(src).expect("parse");
-        let wat = codegen::compile_module(&module).expect("compile");
+        let bytes = codegen::compile_module_binary(&module, &std::collections::HashMap::new())
+            .expect("compile")
+            .expect("the binary path lowers this benchmark");
         let mut rt = Runtime::new().expect("runtime");
         let start = Instant::now();
         for _ in 0..runs {
             let mut actor = rt
                 .spawn(
-                    wat.as_bytes(),
+                    &bytes,
                     runtime::Capabilities {
                         print: true,
                         print_int: true,
@@ -1356,8 +1358,13 @@ fn verify_file(path: &str) -> Result<(), String> {
     // VM, each spawned actor in its own); a plain program on the single-module
     // WASM runtime.
     let compiled_system: Option<Result<Vec<String>, String>> = None;
-    let wat = codegen::compile_module(&linked)
-        .map_err(|e| format!("cannot compile to WASM (an interpreter-only feature?): {e}"))?;
+    let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+        .map_err(|e| format!("cannot compile to WASM (an interpreter-only feature?): {e}"))?
+        .ok_or_else(|| {
+            "cannot compile to WASM: the program reached a construct the compiled backend \
+             does not support (an interpreter-only feature?)"
+                .to_string()
+        })?;
     // Run BOTH backends regardless of either failing: a program that errors on
     // one backend but produces a value on the other is itself a divergence (a
     // trap and a clean result are not the same behavior), so we must not return
@@ -1372,7 +1379,7 @@ fn verify_file(path: &str) -> Result<(), String> {
     let interp = interpreter::run_module(linked, Path::new("."), Vec::new()).map_err(|e| e.to_string());
     let compiled = match compiled_system {
         Some(result) => result,
-        None => run_wat_capture(&wat).map(|mut lines| {
+        None => run_wasm_bytes(&bytes).map(|mut lines| {
             if main_returns_int {
                 lines.pop();
             }
@@ -1785,15 +1792,9 @@ pub fn run_build_step_sandboxed(
 /// a separate, deliberate resource-limit demonstration.)
 const RUN_MEMORY_PAGES: usize = 16384;
 
-fn run_wat_capture(wat: &str) -> Result<Vec<String>, String> {
-    // wasmtime accepts WAT text or a wasm binary; the WAT bytes go through the
-    // same path the assembled binary does (see `run_wasm_bytes`).
-    run_wasm_bytes(wat.as_bytes())
-}
-
-/// Instantiate a compiled module (WAT text OR an assembled wasm binary) under the
-/// dev grants and return its captured output. The browser playground assembles
-/// codegen's WAT to a binary and runs *that*; this is the native equivalent.
+/// Instantiate a compiled wasm binary under the dev grants and return its
+/// captured output. The browser playground assembles the same binary and runs
+/// *that*; this is the native equivalent.
 fn run_wasm_bytes(bytes: &[u8]) -> Result<Vec<String>, String> {
     use crate::runtime::{Capabilities, Runtime};
     // Run-to-completion: no scheduler, so use the non-preempting engine, which
@@ -2187,9 +2188,11 @@ mod example_tests {
         .expect("parse");
         let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
-        let wat = codegen::compile_module(&linked).expect("compile");
+        let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+            .expect("compile")
+            .expect("the binary path lowers this program");
         assert_eq!(
-            crate::run_wat_capture(&wat).expect("wasm run"),
+            crate::run_wasm_bytes(&bytes).expect("wasm run"),
             vec!["ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"]
         );
     }
@@ -2730,8 +2733,10 @@ fn main(console: Console):
             let module = parser::parse_module(src).expect("parse");
             let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
             typeck::check(&linked).expect("typecheck");
-            let wat = codegen::compile_module(&linked).expect("compile");
-            crate::run_wat_capture(&wat).expect("wasm run")
+            let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+                .expect("compile")
+                .expect("the binary path lowers this program");
+            crate::run_wasm_bytes(&bytes).expect("wasm run")
         };
         // Genuine signature verifies in both backends; a tampered message fails
         // in both — the WASM host import and the interpreter agree.
@@ -3095,11 +3100,13 @@ fn main(console: Console):
             want,
             "interpreter"
         );
-        let wat = codegen::compile_module(&linked).expect("compile");
+        let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+            .expect("compile")
+            .expect("the binary path lowers this program");
         let mut rt = Runtime::batch().expect("runtime");
         let mut actor = rt
             .spawn(
-                wat.as_bytes(),
+                &bytes,
                 Capabilities {
                     print: true,
                     quiet: true,
@@ -3623,11 +3630,13 @@ fn yn(b: Bool) -> String:
         use crate::runtime::{Capabilities, Runtime};
         let run_and_count = |src: &str| -> (Vec<String>, i64) {
             let module = parser::parse_module(src).expect("parse");
-            let wat = codegen::compile_module(&module).expect("compile");
+            let bytes = codegen::compile_module_binary(&module, &std::collections::HashMap::new())
+                .expect("compile")
+                .expect("the binary path lowers this program");
             let mut rt = Runtime::batch().expect("rt");
             let mut actor = rt
                 .spawn(
-                    wat.as_bytes(),
+                    &bytes,
                     Capabilities { print: true, quiet: true, ..Default::default() },
                     64,
                 )
@@ -4102,11 +4111,13 @@ fn yn(b: Bool) -> String:
             interpreter::run_module_signed(linked.clone(), ".", Vec::new(), Vec::new(), Some(seed))
                 .expect("interp");
         assert_eq!(interp_out[2], "verified");
-        let wat = codegen::compile_module(&linked).expect("compile");
+        let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+            .expect("compile")
+            .expect("the binary path lowers this program");
         let mut rt = Runtime::batch().expect("runtime");
         let mut actor = rt
             .spawn(
-                wat.as_bytes(),
+                &bytes,
                 Capabilities {
                     print: true,
                     quiet: true,
@@ -4122,7 +4133,7 @@ fn yn(b: Bool) -> String:
         // Ungranted: the imports are absent, so instantiation fails.
         let mut rt = Runtime::batch().expect("runtime");
         let denied = rt.spawn(
-            wat.as_bytes(),
+            &bytes,
             Capabilities { print: true, quiet: true, ..Default::default() },
             64,
         );
@@ -4187,12 +4198,16 @@ fn yn(b: Bool) -> String:
                 let footprint = crate::capabilities::analyze(&linked);
                 let console_only = footprint.total.keys().all(|k| *k == "Console");
                 if has_main && console_only && !has_actor && !reads_argv {
+                    // Doc examples span the whole language, including constructs
+                    // that still bail from the WIR/binary path to the WAT sink, so
+                    // this sweep stays on the WAT codegen. wasmtime runs the WAT
+                    // bytes directly (the same path the assembled binary takes).
                     let wat = codegen::compile_module(&linked)
                         .unwrap_or_else(|e| panic!("{context} fails to compile to WASM: {e}"));
                     let interp =
                         interpreter::run_module(linked, std::path::Path::new("."), Vec::new())
                             .unwrap_or_else(|e| panic!("{context} fails on the interpreter: {e}"));
-                    let compiled = crate::run_wat_capture(&wat)
+                    let compiled = crate::run_wasm_bytes(wat.as_bytes())
                         .unwrap_or_else(|e| panic!("{context} fails on WASM: {e}"));
                     assert_eq!(interp, compiled, "{context}: the backends DIVERGE");
                     ran += 1;
@@ -4256,8 +4271,11 @@ fn yn(b: Bool) -> String:
         let err = interpreter::run(src).expect_err("interpreter must abort");
         assert!(err.message.contains("boom"));
         let module = parser::parse_module(src).expect("parse");
+        // `fail()` does not yet lower to the WIR/binary path (it bails to the WAT
+        // sink in production too), so this test stays on the WAT codegen. wasmtime
+        // accepts WAT bytes directly, so `run_wasm_bytes` runs them unchanged.
         let wat = codegen::compile_module(&module).expect("compile");
-        assert!(crate::run_wat_capture(&wat).is_err(), "WASM must trap on fail()");
+        assert!(crate::run_wasm_bytes(wat.as_bytes()).is_err(), "WASM must trap on fail()");
     }
 
     /// `now` (Clock) and `get_env` (Env) compile to capability-gated host
@@ -4275,9 +4293,11 @@ fn yn(b: Bool) -> String:
         let module = parser::parse_module(env_src).expect("parse");
         let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
-        let wat = codegen::compile_module(&linked).expect("compile");
+        let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+            .expect("compile")
+            .expect("the binary path lowers this program");
         assert_eq!(link_run(env_src), want.clone(), "interpreter");
-        assert_eq!(crate::run_wat_capture(&wat).expect("wasm"), want, "compiled WASM must agree");
+        assert_eq!(crate::run_wasm_bytes(&bytes).expect("wasm"), want, "compiled WASM must agree");
 
         // The clock: both backends must yield a plausible epoch-milliseconds.
         let clock_src = "fn main(console: Console, clock: Clock):\n    print(console, if now(clock) > 1500000000000: \"plausible\" else: \"implausible\")\n";
@@ -4314,11 +4334,13 @@ fn yn(b: Bool) -> String:
         let interp_out = interpreter::run_in(src, &root).expect("interp");
         assert_eq!(interp_out, want, "interpreter");
         let module = parser::parse_module(src).expect("parse");
-        let wat = codegen::compile_module(&module).expect("compile");
+        let bytes = codegen::compile_module_binary(&module, &std::collections::HashMap::new())
+            .expect("compile")
+            .expect("the binary path lowers this program");
         let mut rt = Runtime::batch().expect("runtime");
         let mut actor = rt
             .spawn(
-                wat.as_bytes(),
+                &bytes,
                 Capabilities {
                     print: true,
                     quiet: true,
@@ -4339,11 +4361,13 @@ fn yn(b: Bool) -> String:
             );
             assert!(interpreter::run_in(&esc, &root).is_err(), "interp must reject `{bad}`");
             let m = parser::parse_module(&esc).expect("parse");
-            let w = codegen::compile_module(&m).expect("compile");
+            let wbytes = codegen::compile_module_binary(&m, &std::collections::HashMap::new())
+                .expect("compile")
+                .expect("the binary path lowers this program");
             let mut rt = Runtime::batch().expect("runtime");
             let mut a = rt
                 .spawn(
-                    w.as_bytes(),
+                    &wbytes,
                     Capabilities {
                         print: true,
                         quiet: true,
@@ -4392,11 +4416,13 @@ fn yn(b: Bool) -> String:
             "interpreter"
         );
         let module = parser::parse_module(&src).expect("parse");
-        let wat = codegen::compile_module(&module).expect("compile");
+        let bytes = codegen::compile_module_binary(&module, &std::collections::HashMap::new())
+            .expect("compile")
+            .expect("the binary path lowers this program");
         let mut rt = Runtime::batch().expect("runtime");
         let mut actor = rt
             .spawn(
-                wat.as_bytes(),
+                &bytes,
                 Capabilities {
                     print: true,
                     quiet: true,
@@ -4418,11 +4444,13 @@ fn yn(b: Bool) -> String:
             "interp must reject a non-allowlisted address"
         );
         let m = parser::parse_module(bad).expect("parse");
-        let w = codegen::compile_module(&m).expect("compile");
+        let wbytes = codegen::compile_module_binary(&m, &std::collections::HashMap::new())
+            .expect("compile")
+            .expect("the binary path lowers this program");
         let mut rt = Runtime::batch().expect("runtime");
         let mut a = rt
             .spawn(
-                w.as_bytes(),
+                &wbytes,
                 Capabilities {
                     print: true,
                     quiet: true,
@@ -4444,10 +4472,12 @@ fn yn(b: Bool) -> String:
         use crate::runtime::{Capabilities, Runtime};
         let listener_src = "fn main(console: Console, net: Net):\n    let l = listen(net, \"127.0.0.1:39999\")\n    print(console, \"listening\")\n";
         let m = parser::parse_module(listener_src).expect("parse");
-        let w = codegen::compile_module(&m).expect("compile");
+        let wbytes = codegen::compile_module_binary(&m, &std::collections::HashMap::new())
+            .expect("compile")
+            .expect("the binary path lowers this program");
         let mut rt = Runtime::batch().expect("runtime");
         let denied = rt.spawn(
-            w.as_bytes(),
+            &wbytes,
             Capabilities {
                 print: true,
                 quiet: true,
@@ -4461,10 +4491,12 @@ fn yn(b: Bool) -> String:
         assert!(denied.is_err(), "listen import must not instantiate under connect-only");
         let client = "fn main(console: Console, net: Net):\n    let s = connect(net, \"127.0.0.1:1\")\n    print(console, \"x\")\n";
         let m = parser::parse_module(client).expect("parse");
-        let w = codegen::compile_module(&m).expect("compile");
+        let wbytes = codegen::compile_module_binary(&m, &std::collections::HashMap::new())
+            .expect("compile")
+            .expect("the binary path lowers this program");
         let mut rt = Runtime::batch().expect("runtime");
         let denied = rt.spawn(
-            w.as_bytes(),
+            &wbytes,
             Capabilities { print: true, quiet: true, ..Default::default() },
             64,
         );
@@ -4481,10 +4513,12 @@ fn yn(b: Bool) -> String:
         std::fs::create_dir_all(&root).expect("mkdir");
         let writer = "fn main(console: Console, dir: Dir):\n    write(dir, \"x.txt\", \"data\")\n    print(console, \"wrote\")\n";
         let module = parser::parse_module(writer).expect("parse");
-        let wat = codegen::compile_module(&module).expect("compile");
+        let bytes = codegen::compile_module_binary(&module, &std::collections::HashMap::new())
+            .expect("compile")
+            .expect("the binary path lowers this program");
         let mut rt = Runtime::batch().expect("runtime");
         let denied = rt.spawn(
-            wat.as_bytes(),
+            &bytes,
             Capabilities {
                 print: true,
                 quiet: true,
@@ -4498,10 +4532,12 @@ fn yn(b: Bool) -> String:
         assert!(denied.is_err(), "write import must not instantiate under a read-only grant");
         let reader = "fn main(console: Console, dir: Dir):\n    print(console, read(dir, \"x.txt\"))\n";
         let m = parser::parse_module(reader).expect("parse");
-        let w = codegen::compile_module(&m).expect("compile");
+        let wbytes = codegen::compile_module_binary(&m, &std::collections::HashMap::new())
+            .expect("compile")
+            .expect("the binary path lowers this program");
         let mut rt = Runtime::batch().expect("runtime");
         let denied = rt.spawn(
-            w.as_bytes(),
+            &wbytes,
             Capabilities { print: true, quiet: true, ..Default::default() },
             64,
         );
@@ -4522,10 +4558,12 @@ fn yn(b: Bool) -> String:
         for src in srcs {
             let module = parser::parse_module(src).expect("parse");
             let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
-            let wat = codegen::compile_module(&linked).expect("compile");
+            let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+                .expect("compile")
+                .expect("the binary path lowers this program");
             let mut rt = Runtime::batch().expect("runtime");
             let denied = rt.spawn(
-                wat.as_bytes(),
+                &bytes,
                 Capabilities { print: true, ..Default::default() },
                 4,
             );
@@ -4608,9 +4646,12 @@ fn yn(b: Bool) -> String:
         let module = parser::parse_module(src).expect("parse");
         let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
+        // Compound dict equality does not yet lower to the WIR/binary path (it
+        // bails to the WAT sink in production too), so this test stays on the WAT
+        // codegen. wasmtime runs the WAT bytes directly.
         let wat = codegen::compile_module(&linked).expect("compile");
         assert_eq!(link_run(src), want.clone(), "interpreter (linked)");
-        assert_eq!(crate::run_wat_capture(&wat).expect("wasm"), want, "compiled WASM must agree");
+        assert_eq!(crate::run_wasm_bytes(wat.as_bytes()).expect("wasm"), want, "compiled WASM must agree");
     }
 
     /// A MULTI-parameter generic ADT (`Result`, whose Ok and Err payloads are
@@ -4662,7 +4703,7 @@ fn yn(b: Bool) -> String:
         let rm = parser::parse_module(unresolvable).expect("parse");
         let linked = crate::linker::link(vec![("main".into(), rm)], "main").expect("link");
         assert!(
-            codegen::compile_module(&linked).is_err(),
+            codegen::compile_module_binary(&linked, &std::collections::HashMap::new()).is_err(),
             "an unresolvable generic payload must stay a loud codegen error"
         );
     }
@@ -4680,9 +4721,11 @@ fn yn(b: Bool) -> String:
                 "fn main(console: Console):\n    let nan = 0.0 / 0.0\n    print(console, __render({cmp}))\n"
             );
             let module = parser::parse_module(&src).expect("parse");
-            let wat = codegen::compile_module(&module).expect("compile");
+            let bytes = codegen::compile_module_binary(&module, &std::collections::HashMap::new())
+                .expect("compile")
+                .expect("the binary path lowers this program");
             assert!(interpreter::run(&src).is_err(), "interpreter must error on `{cmp}`");
-            assert!(crate::run_wat_capture(&wat).is_err(), "WASM must trap on `{cmp}`");
+            assert!(crate::run_wasm_bytes(&bytes).is_err(), "WASM must trap on `{cmp}`");
         }
         // Ordinary float ordering and NaN equality still agree.
         let ok = "fn main(console: Console):\n    let nan = 0.0 / 0.0\n    print(console, __render(1.5 < 2.5))\n    print(console, __render(2.5 <= 2.5))\n    print(console, __render(nan == nan))\n";
@@ -4709,9 +4752,11 @@ fn yn(b: Bool) -> String:
                 "fn main(console: Console):\n    print(console, __render(string.to_int(\"{v}\")))\n"
             );
             let module = parser::parse_module(&src).expect("parse");
-            let wat = codegen::compile_module(&module).expect("compile");
+            let bytes = codegen::compile_module_binary(&module, &std::collections::HashMap::new())
+                .expect("compile")
+                .expect("the binary path lowers this program");
             assert!(interpreter::run(&src).is_err(), "interpreter must error on `{v}`");
-            assert!(crate::run_wat_capture(&wat).is_err(), "WASM must trap on `{v}`");
+            assert!(crate::run_wasm_bytes(&bytes).is_err(), "WASM must trap on `{v}`");
         }
         // The exact i64 boundaries parse identically on both backends.
         let ok = "fn main(console: Console):\n    print(console, __render(string.to_int(\"9223372036854775807\")))\n    print(console, __render(string.to_int(\"-9223372036854775808\")))\n";
@@ -4732,15 +4777,19 @@ fn yn(b: Bool) -> String:
     fn list_index_out_of_bounds_errors_on_both_backends() {
         let oob = "fn main(console: Console):\n    let xs = [1, 2, 3]\n    print(console, __render(list.at(xs, 5)))\n";
         let module = parser::parse_module(oob).expect("parse");
-        let wat = codegen::compile_module(&module).expect("compile");
+        let bytes = codegen::compile_module_binary(&module, &std::collections::HashMap::new())
+            .expect("compile")
+            .expect("the binary path lowers this program");
         assert!(interpreter::run(oob).is_err(), "interpreter must error on OOB index");
-        assert!(crate::run_wat_capture(&wat).is_err(), "WASM must trap on OOB index");
+        assert!(crate::run_wasm_bytes(&bytes).is_err(), "WASM must trap on OOB index");
         // A negative index likewise traps (it used to read backwards into the heap).
         let neg = "fn main(console: Console):\n    let xs = [1, 2, 3]\n    print(console, __render(list.at(xs, 0 - 1)))\n";
         let nmod = parser::parse_module(neg).expect("parse");
-        let nwat = codegen::compile_module(&nmod).expect("compile");
+        let nbytes = codegen::compile_module_binary(&nmod, &std::collections::HashMap::new())
+            .expect("compile")
+            .expect("the binary path lowers this program");
         assert!(interpreter::run(neg).is_err(), "interpreter must error on negative index");
-        assert!(crate::run_wat_capture(&nwat).is_err(), "WASM must trap on negative index");
+        assert!(crate::run_wasm_bytes(&nbytes).is_err(), "WASM must trap on negative index");
         // In-bounds indexing still agrees.
         let ok = "fn main(console: Console):\n    let xs = [10, 20, 30]\n    print(console, __render(list.at(xs, 2)))\n";
         assert_eq!(interp(ok), vec!["30".to_string()], "interpreter");
@@ -4817,9 +4866,12 @@ fn yn(b: Bool) -> String:
         let module = parser::parse_module(src).expect("parse");
         let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
+        // `try` inside an `inout` fn does not yet lower to the WIR/binary path (it
+        // bails to the WAT sink in production too), so this test stays on the WAT
+        // codegen. wasmtime runs the WAT bytes directly.
         let wat = codegen::compile_module(&linked).expect("compile");
         assert_eq!(link_run(src), want.clone(), "interpreter (linked)");
-        assert_eq!(crate::run_wat_capture(&wat).expect("wasm run"), want, "compiled WASM must agree");
+        assert_eq!(crate::run_wasm_bytes(wat.as_bytes()).expect("wasm run"), want, "compiled WASM must agree");
     }
 
     /// The `encoding` module (hex/base64) must agree on both backends. WASM
@@ -4841,9 +4893,11 @@ fn yn(b: Bool) -> String:
         let module = parser::parse_module(src).expect("parse");
         let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
-        let wat = codegen::compile_module(&linked).expect("compile");
+        let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+            .expect("compile")
+            .expect("the binary path lowers this program");
         assert_eq!(link_run(src), want.clone(), "interpreter (linked)");
-        assert_eq!(crate::run_wat_capture(&wat).expect("wasm run"), want, "compiled WASM must agree");
+        assert_eq!(crate::run_wasm_bytes(&bytes).expect("wasm run"), want, "compiled WASM must agree");
     }
 
     /// Dict `update` (single-lookup upsert) must agree on both backends, including
@@ -7619,13 +7673,13 @@ fn main(console: Console):
             }
             let compile_with = |force_copy: bool| {
                 codegen::set_force_copy_for_tests(Some(force_copy));
-                let wat = codegen::compile_module(&linked);
+                let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new());
                 codegen::set_force_copy_for_tests(None);
-                wat
+                bytes
             };
-            if let (Ok(inplace), Ok(copy)) = (compile_with(false), compile_with(true)) {
-                let a = crate::run_wat_capture(&inplace);
-                let b = crate::run_wat_capture(&copy);
+            if let (Ok(Some(inplace)), Ok(Some(copy))) = (compile_with(false), compile_with(true)) {
+                let a = crate::run_wasm_bytes(&inplace);
+                let b = crate::run_wasm_bytes(&copy);
                 if a != b {
                     diverged.push(format!("{p}: in-place {a:?} vs forced-copy {b:?}"));
                 }
@@ -7784,8 +7838,10 @@ fn main(console: Console):
     fn assert_fn_compiles(src: &str) {
         assert!(typeck::check_str(src).is_ok(), "{:?}", typeck::check_str(src));
         let module = parser::parse_module(src).expect("parse");
-        let wat = codegen::compile_module(&module).expect("compile");
-        Module::new(&Engine::default(), &wat).expect("valid wasm");
+        let bytes = codegen::compile_module_binary(&module, &std::collections::HashMap::new())
+            .expect("compile")
+            .expect("the binary path lowers this program");
+        Module::new(&Engine::default(), &bytes).expect("valid wasm");
     }
 
     /// WIR migration progress meter (not an assertion): reports how many example
@@ -7866,7 +7922,7 @@ fn main(console: Console):
             .spawn(
                 &bytes,
                 // Mirror the interpreter's automatic grants (output + the
-                // read-only ambient Clock/Env), like `run_wat_capture`.
+                // read-only ambient Clock/Env), like `run_wasm_bytes`.
                 Capabilities {
                     print: true,
                     print_int: true,
@@ -9064,13 +9120,15 @@ fn main(console: Console):
             .collect();
         let linked = crate::linker::link(mods, entry).expect("link");
         assert!(typeck::check(&linked).is_ok(), "{:?}", typeck::check(&linked));
-        let wat = codegen::compile_module(&linked).expect("compile");
+        let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+            .expect("compile")
+            .expect("the binary path lowers this program");
         let mut rt = Runtime::new().expect("runtime");
         let mut actor = rt
             .spawn(
-                wat.as_bytes(),
+                &bytes,
                 // Mirror the interpreter's automatic grants (output + the
-                // read-only ambient Clock/Env), like `run_wat_capture`.
+                // read-only ambient Clock/Env), like `run_wasm_bytes`.
                 Capabilities {
                     print: true,
                     print_int: true,
@@ -9561,7 +9619,8 @@ fn main(console: Console):
     print(console, __render(dict.size(d)))
 "#;
         let module = parser::parse_module(src).expect("parse");
-        let err = codegen::compile_module(&module).expect_err("should reject");
+        let err = codegen::compile_module_binary(&module, &std::collections::HashMap::new())
+            .expect_err("should reject");
         assert!(
             err.to_string().contains("could not determine the Dict key type"),
             "unexpected error: {err}"
@@ -10160,9 +10219,11 @@ fn main() -> Int:
     fn compiled_program_without_capability_cannot_instantiate() {
         use crate::runtime::{Capabilities, Runtime};
         let module = parser::parse_module(include_str!("../examples/compute.witchy")).expect("parse");
-        let wat = codegen::compile_module(&module).expect("compile");
+        let bytes = codegen::compile_module_binary(&module, &std::collections::HashMap::new())
+            .expect("compile")
+            .expect("the binary path lowers this program");
         let mut rt = Runtime::new().expect("runtime");
-        let result = rt.spawn(wat.as_bytes(), Capabilities::none(), 4);
+        let result = rt.spawn(&bytes, Capabilities::none(), 4);
         assert!(result.is_err(), "ungranted module must fail to instantiate");
     }
 
@@ -13508,15 +13569,22 @@ fn main(console: Console):
 "#;
         let mods = vec![("main".to_string(), parser::parse_module(client).expect("parse"))];
         let linked = crate::linker::link(mods, "main").expect("link");
-        let wat = codegen::compile_module(&linked).expect("compile");
-        // Reachable functions are present.
-        assert!(wat.contains("$list.map"), "map should be compiled");
-        assert!(wat.contains("$list.sum"), "sum should be compiled");
-        // Unused ones are gone.
-        assert!(!wat.contains("$list.partition"), "partition should be eliminated");
-        assert!(!wat.contains("$list.windows"), "windows should be eliminated");
-        assert!(!wat.contains("$list.sort_by"), "sort_by should be eliminated");
-        assert!(!wat.contains("$option."), "unused option fns should be eliminated");
+        // Reachable functions are present and the unused ones are dropped: the
+        // binary path's `assemble_wir_module` runs the same `reachable_functions`
+        // DCE, so inspect the assembled WIR func names directly.
+        let wir = codegen::assemble_wir_module(&linked, &std::collections::HashMap::new())
+            .expect("assemble")
+            .expect("the binary path lowers this program");
+        // The binary path monomorphizes generics, so `list.map` appears as
+        // `list.map__Int__Int`; match on the `list.<fn>` prefix.
+        let names: Vec<&str> = wir.funcs.iter().map(|f| f.name.as_str()).collect();
+        let has = |fn_name: &str| names.iter().any(|n| *n == fn_name || n.starts_with(&format!("{fn_name}__")));
+        assert!(has("list.map"), "map should be compiled: {names:?}");
+        assert!(has("list.sum"), "sum should be compiled: {names:?}");
+        assert!(!has("list.partition"), "partition should be eliminated: {names:?}");
+        assert!(!has("list.windows"), "windows should be eliminated: {names:?}");
+        assert!(!has("list.sort_by"), "sort_by should be eliminated: {names:?}");
+        assert!(!names.iter().any(|n| n.starts_with("option.")), "unused option fns should be eliminated: {names:?}");
         // And it still runs correctly.
         assert_eq!(run_linked_on_wasm(&[("main", client)], "main"), vec!["12"]);
     }
@@ -13673,8 +13741,10 @@ async fn main(console: Console):
         typeck::check(&linked).expect("typecheck");
         let interp_out =
             interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interp");
-        let wat = codegen::compile_module(&linked).expect("compile");
-        let wasm_out = crate::run_wat_capture(&wat).expect("wasm");
+        let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+            .expect("compile")
+            .expect("the binary path lowers this program");
+        let wasm_out = crate::run_wasm_bytes(&bytes).expect("wasm");
         assert_eq!(interp_out, wasm_out, "async lowering diverged across backends");
         // pipeline(3): a=6, b=12, a+b=18.  double(10)=20.
         assert_eq!(interp_out, vec!["18", "20"]);
@@ -13707,8 +13777,10 @@ async fn main(console: Console):
         typeck::check(&linked).expect("typecheck");
         let interp_out =
             interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interp");
-        let wat = codegen::compile_module(&linked).expect("compile");
-        let wasm_out = crate::run_wat_capture(&wat).expect("wasm");
+        let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+            .expect("compile")
+            .expect("the binary path lowers this program");
+        let wasm_out = crate::run_wasm_bytes(&bytes).expect("wasm");
         assert_eq!(interp_out, wasm_out, "async+channel schedule diverged across backends");
         assert_eq!(interp_out, vec!["got 1", "got 2"]);
     }
@@ -13742,8 +13814,10 @@ async fn main(console: Console):
         typeck::check(&linked).expect("typecheck");
         let interp_out =
             interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interp");
-        let wat = codegen::compile_module(&linked).expect("compile");
-        let wasm_out = crate::run_wat_capture(&wat).expect("wasm");
+        let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+            .expect("compile")
+            .expect("the binary path lowers this program");
+        let wasm_out = crate::run_wasm_bytes(&bytes).expect("wasm");
         assert_eq!(interp_out, wasm_out, "for-await schedule diverged across backends");
         assert_eq!(interp_out, vec!["got 1", "got 2", "got 3"]);
     }
@@ -13776,8 +13850,10 @@ async fn main(console: Console):
         typeck::check(&linked).expect("typecheck");
         let interp_out =
             interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interp");
-        let wat = codegen::compile_module(&linked).expect("compile");
-        let wasm_out = crate::run_wat_capture(&wat).expect("wasm");
+        let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+            .expect("compile")
+            .expect("the binary path lowers this program");
+        let wasm_out = crate::run_wasm_bytes(&bytes).expect("wasm");
         assert_eq!(interp_out, wasm_out, "for-await-over-receiver diverged across backends");
         assert_eq!(interp_out, vec!["got 1", "got 4", "got 9"]);
     }
@@ -13817,8 +13893,10 @@ async fn main(console: Console):
         typeck::check(&linked).expect("typecheck");
         let interp_out =
             interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interp");
-        let wat = codegen::compile_module(&linked).expect("compile");
-        let wasm_out = crate::run_wat_capture(&wat).expect("wasm");
+        let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+            .expect("compile")
+            .expect("the binary path lowers this program");
+        let wasm_out = crate::run_wasm_bytes(&bytes).expect("wasm");
         assert_eq!(interp_out, wasm_out, "multi-actor schedule diverged across backends");
         assert_eq!(interp_out, vec!["log 100", "log 200"]);
     }
@@ -13852,8 +13930,10 @@ async fn main(console: Console):
         typeck::check(&linked).expect("typecheck");
         let interp_out =
             interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interp");
-        let wat = codegen::compile_module(&linked).expect("compile");
-        let wasm_out = crate::run_wat_capture(&wat).expect("wasm");
+        let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+            .expect("compile")
+            .expect("the binary path lowers this program");
+        let wasm_out = crate::run_wasm_bytes(&bytes).expect("wasm");
         assert_eq!(interp_out, wasm_out, "channel schedule diverged across backends");
         assert_eq!(interp_out, vec!["got 1", "got 2", "drained"]);
     }
@@ -13884,8 +13964,10 @@ async fn main(console: Console):
         typeck::check(&linked).expect("typecheck");
         let interp_out =
             interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interp");
-        let wat = codegen::compile_module(&linked).expect("compile");
-        let wasm_out = crate::run_wat_capture(&wat).expect("wasm");
+        let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+            .expect("compile")
+            .expect("the binary path lowers this program");
+        let wasm_out = crate::run_wasm_bytes(&bytes).expect("wasm");
         assert_eq!(interp_out, wasm_out, "generic-message channel diverged across backends");
         assert_eq!(interp_out, vec!["hello alice", "hello bob"]);
     }
@@ -13928,8 +14010,10 @@ async fn main(console: Console):
         typeck::check(&linked).expect("typecheck");
         let interp_out =
             interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interp");
-        let wat = codegen::compile_module(&linked).expect("compile");
-        let wasm_out = crate::run_wat_capture(&wat).expect("wasm");
+        let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+            .expect("compile")
+            .expect("the binary path lowers this program");
+        let wasm_out = crate::run_wasm_bytes(&bytes).expect("wasm");
         assert_eq!(interp_out, wasm_out, "select schedule diverged across backends");
         assert_eq!(interp_out, vec!["a 1", "a 2", "b 9", "done"]);
     }
@@ -13957,8 +14041,10 @@ fn main(console: Console):
         typeck::check(&linked).expect("typecheck");
         let interp_out =
             interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interp");
-        let wat = codegen::compile_module(&linked).expect("compile");
-        let wasm_out = crate::run_wat_capture(&wat).expect("wasm");
+        let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+            .expect("compile")
+            .expect("the binary path lowers this program");
+        let wasm_out = crate::run_wasm_bytes(&bytes).expect("wasm");
         assert_eq!(interp_out, wasm_out, "select diverged across backends");
         assert_eq!(interp_out, vec!["winner 1 20"]);
     }
@@ -14005,8 +14091,10 @@ fn main(console: Console):
         typeck::check(&linked).expect("typecheck");
         let interp_out =
             interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interp");
-        let wat = codegen::compile_module(&linked).expect("compile");
-        let wasm_out = crate::run_wat_capture(&wat).expect("wasm");
+        let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+            .expect("compile")
+            .expect("the binary path lowers this program");
+        let wasm_out = crate::run_wasm_bytes(&bytes).expect("wasm");
         assert_eq!(interp_out, wasm_out, "executor schedule diverged across backends");
         assert_eq!(interp_out, vec!["A 2", "B 2", "A 1", "B 1", "done [0, 0]"]);
     }
@@ -15155,8 +15243,12 @@ fn run_compiled(rt: &mut Runtime, title: &str, program: &str) {
             return;
         }
     };
-    let wat = match codegen::compile_module(&module) {
-        Ok(w) => w,
+    let bytes = match codegen::compile_module_binary(&module, &std::collections::HashMap::new()) {
+        Ok(Some(b)) => b,
+        Ok(None) => {
+            println!("cannot compile to WASM (an interpreter-only feature?)");
+            return;
+        }
         Err(e) => {
             println!("{e}");
             return;
@@ -15165,7 +15257,7 @@ fn run_compiled(rt: &mut Runtime, title: &str, program: &str) {
 
     // Granted the output capabilities: the compiled module runs and prints.
     match rt.spawn(
-        wat.as_bytes(),
+        &bytes,
         Capabilities {
             print: true,
             print_int: true,
@@ -15182,7 +15274,7 @@ fn run_compiled(rt: &mut Runtime, title: &str, program: &str) {
     }
 
     // Denied: the same compiled module cannot even instantiate.
-    match rt.spawn(wat.as_bytes(), Capabilities::none(), 4) {
+    match rt.spawn(&bytes, Capabilities::none(), 4) {
         Ok(_) => println!("!! SECURITY FAILURE: compiled module ran without the capability"),
         Err(e) => println!("DENIED without capability (as designed): {e}"),
     }
@@ -15212,15 +15304,19 @@ fn run_compiled_program(rt: &mut Runtime, title: &str, sources: &[(&str, &str)],
         println!("{e}");
         return;
     }
-    let wat = match codegen::compile_module(&linked) {
-        Ok(w) => w,
+    let bytes = match codegen::compile_module_binary(&linked, &std::collections::HashMap::new()) {
+        Ok(Some(b)) => b,
+        Ok(None) => {
+            println!("cannot compile to WASM (an interpreter-only feature?)");
+            return;
+        }
         Err(e) => {
             println!("{e}");
             return;
         }
     };
     match rt.spawn(
-        wat.as_bytes(),
+        &bytes,
         Capabilities {
             print: true,
             print_int: true,
