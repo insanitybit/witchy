@@ -4198,16 +4198,16 @@ fn yn(b: Bool) -> String:
                 let footprint = crate::capabilities::analyze(&linked);
                 let console_only = footprint.total.keys().all(|k| *k == "Console");
                 if has_main && console_only && !has_actor && !reads_argv {
-                    // Doc examples span the whole language, including constructs
-                    // that still bail from the WIR/binary path to the WAT sink, so
-                    // this sweep stays on the WAT codegen. wasmtime runs the WAT
-                    // bytes directly (the same path the assembled binary takes).
-                    let wat = codegen::compile_module(&linked)
-                        .unwrap_or_else(|e| panic!("{context} fails to compile to WASM: {e}"));
+                    // Every console-only doc example compiles on the binary path
+                    // (AST → WIR → wasm-binary) and runs identically to the
+                    // interpreter.
+                    let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+                        .unwrap_or_else(|e| panic!("{context} fails to compile to WASM: {e}"))
+                        .unwrap_or_else(|| panic!("{context}: the binary backend does not support a construct it uses"));
                     let interp =
                         interpreter::run_module(linked, std::path::Path::new("."), Vec::new())
                             .unwrap_or_else(|e| panic!("{context} fails on the interpreter: {e}"));
-                    let compiled = crate::run_wasm_bytes(wat.as_bytes())
+                    let compiled = crate::run_wasm_bytes(&bytes)
                         .unwrap_or_else(|e| panic!("{context} fails on WASM: {e}"));
                     assert_eq!(interp, compiled, "{context}: the backends DIVERGE");
                     ran += 1;
