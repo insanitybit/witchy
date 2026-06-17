@@ -9373,6 +9373,7 @@ pub fn assemble_wir_module(
         }
     }
     if !has_main {
+        if std::env::var_os("WIRDIAG").is_some() { eprintln!("WIRBAIL no-main"); }
         return Ok(None);
     }
     if main_returns_int {
@@ -9407,6 +9408,9 @@ pub fn assemble_wir_module(
     // nodes. A lambda the WIR couldn't lower already bailed its enclosing function
     // at the lower stage (so the user_order check below catches it).
     if !eq_all_wir || !ts_all_wir || !cg.rcopy_helpers.is_empty() {
+        if std::env::var_os("WIRDIAG").is_some() {
+            eprintln!("WIRBAIL eq_ts_rcopy: eq={eq_all_wir} ts={ts_all_wir} rcopy={}", cg.rcopy_helpers.len());
+        }
         return Ok(None);
     }
     let prelude = crate::wir_prelude::prelude();
@@ -9485,9 +9489,14 @@ pub fn assemble_wir_module(
                 }
                 None => {
                     all_registered = false;
+                    if std::env::var_os("WIRDIAG").is_some() { eprintln!("WIRBAIL unregistered-helper: {h}"); }
                     break;
                 }
             }
+        }
+        if std::env::var_os("WIRDIAG").is_some() && !(no_direct_host && all_registered) {
+            let hosts: Vec<&String> = called.iter().filter(|n| n.starts_with("host:")).collect();
+            eprintln!("WIRBAIL prune-fail: no_direct_host={no_direct_host} all_registered={all_registered} user_host={user_host_imports:?} hosts={hosts:?}");
         }
         if no_direct_host && all_registered {
             let mut import_names: std::collections::BTreeSet<&str> =
