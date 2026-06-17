@@ -4081,25 +4081,22 @@ impl Codegen {
                     });
                 }
                 // Compound (record/tuple/list/enum) equality lowers to the
-                // per-shape WIR structural-equality helper (binary path only).
-                // Only scalar-field shapes are handled; a richer shape returns
-                // None from ensure_eq_wir_helper and falls through so the legacy
-                // arm keeps its bespoke emission.
-                if self.collect_wir
-                    && matches!(op, BinOp::Eq | BinOp::NotEq)
-                    && (self.operand_is_compound(lhs) || self.operand_is_compound(rhs))
-                {
+                // per-shape WIR structural-equality helper (binary path only),
+                // gated exactly like the legacy arm (`eq_shape_of(..).is_compound`).
+                // A compound `==` MUST be structural, so once the shape is known to
+                // be compound we either build the helper or bail the whole function
+                // (`?`) — never fall through to a bare pointer compare.
+                if self.collect_wir && matches!(op, BinOp::Eq | BinOp::NotEq) {
                     if let Some(shape) = self.eq_shape_of(lhs).or_else(|| self.eq_shape_of(rhs)) {
                         if shape.is_compound() {
-                            if let Some(h) = self.ensure_eq_wir_helper(&shape) {
-                                let a = self.lower_expr(lhs)?;
-                                let b = self.lower_expr(rhs)?;
-                                let eq = W::Call { func: h, args: vec![a, b] };
-                                return Some(match op {
-                                    BinOp::Eq => eq,
-                                    _ => W::Unary { op: crate::wir::UnOp::Not, kind: crate::wir::Kind::I32, arg: Box::new(eq) },
-                                });
-                            }
+                            let h = self.ensure_eq_wir_helper(&shape)?;
+                            let a = self.lower_expr(lhs)?;
+                            let b = self.lower_expr(rhs)?;
+                            let eq = W::Call { func: h, args: vec![a, b] };
+                            return Some(match op {
+                                BinOp::Eq => eq,
+                                _ => W::Unary { op: crate::wir::UnOp::Not, kind: crate::wir::Kind::I32, arg: Box::new(eq) },
+                            });
                         }
                     }
                 }
@@ -6507,9 +6504,10 @@ impl Codegen {
                 ];
                 (b, vec![bool_local("n"), bool_local("i")])
             }
-            // Adt/AdtInst (enum) eq is deferred: generic-payload field resolution
-            // and the tag-vs-variant-index mapping need more care, so those `==`
-            // keep the legacy WAT emission for now.
+            // Adt/AdtInst (enum) eq is deferred — a faithful transcription of the
+            // legacy tag-dispatch still diverged on Option payloads (the
+            // boxed-vs-resolved field layout needs more care), so enum `==` bails
+            // to WAT via the `?` in the lowering hook.
             _ => return None,
         };
         let func = WirFunc {
