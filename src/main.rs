@@ -8192,6 +8192,25 @@ fn main(console: Console):
         assert!(reowns <= 2, "expected O(1) re-owns for the in-place dict update, got {reowns}");
     }
 
+    /// A RecordUpdate whose base is a non-Var EXPRESSION on the binary path:
+    /// `Point(x: 100, ..(l).from)` — the base `(l).from` (a field access) is
+    /// evaluated ONCE into the `$TUPLE_TMP` scratch, base-first, so each
+    /// un-updated field (`y`) reads it (was: the lowering required a Var base and
+    /// bailed to WAT). Compared against the interpreter oracle.
+    #[test]
+    fn wir_record_update_expr_base_binary_path() {
+        let src = "type Point:\n    x: Int\n    y: Int\n\ntype Line:\n    from: Point\n    to: Point\n\nfn main(console: Console):\n    let l = Line(Point(1, 2), Point(3, 4))\n    let p2 = Point(x: 100, ..(l).from)\n    print(console, \"${(p2).x}\")\n    print(console, \"${(p2).y}\")\n";
+        let want = vec!["100".to_string(), "2".to_string()];
+        let module = parser::parse_module(src).expect("parse");
+        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        typeck::check(&linked).expect("typeck");
+        let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+            .expect("compile_module_binary")
+            .expect("the WIR binary path should lower a RecordUpdate with an expression base");
+        assert_eq!(run_bytes_print_only(&bytes), want, "binary path");
+        assert_eq!(link_run(src), want, "interpreter oracle");
+    }
+
     /// Criterion-2: the slot-elimination pass shows a MEASURABLE improvement on a
     /// real lowered program. `[list.at(xs, 0)]` (with `xs: List(Bool)`) reads an
     /// i64 slot, narrows it to the bool's i32, then re-widens it to store in the

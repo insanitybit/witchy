@@ -4485,11 +4485,23 @@ impl Codegen {
             // Only the bare-variable base is lowered (the base read directly); a
             // non-`Var` base needs the scratch-local pool, so it stays in legacy.
             Expr::RecordUpdate { base, fields } => {
-                let Expr::Var(v) = base.as_ref() else { return None };
                 let tyname = self.record_type_of(base)?;
                 let names = self.record_fields.get(&tyname)?.clone();
                 let &(tag, nfields) = self.ctors.get(&tyname)?;
                 self.mk_arities.insert(nfields);
+                // A Var base is referenced directly; any other expression is
+                // evaluated ONCE into the `$TUPLE_TMP` scratch (base-first, as the
+                // interpreter does) so each un-updated field reads the same value.
+                let (prelude, base_ptr): (Option<crate::wir::WirNode>, W) =
+                    if let Expr::Var(v) = base.as_ref() {
+                        (None, W::GetLocal(v.clone()))
+                    } else {
+                        let bw = self.lower_expr(base)?;
+                        (
+                            Some(crate::wir::WirNode::SetLocal { local: TUPLE_TMP.into(), value: bw }),
+                            W::GetLocal(TUPLE_TMP.into()),
+                        )
+                    };
                 let mut args = Vec::with_capacity(nfields + 1);
                 args.push(W::ConstI32(tag as i32));
                 for (i, (fname, _)) in names.iter().enumerate() {
@@ -4502,7 +4514,7 @@ impl Codegen {
                             ptr: Box::new(W::Binary {
                                 op: crate::wir::BinOp::Add,
                                 kind: crate::wir::Kind::I32,
-                                lhs: Box::new(W::GetLocal(v.clone())),
+                                lhs: Box::new(base_ptr.clone()),
                                 rhs: Box::new(W::ConstI32((4 + 8 * i) as i32)),
                             }),
                             kind: crate::wir::Kind::I64,
@@ -4510,7 +4522,11 @@ impl Codegen {
                         });
                     }
                 }
-                return Some(W::Call { func: format!("mk{nfields}"), args });
+                let call = W::Call { func: format!("mk{nfields}"), args };
+                return Some(match prelude {
+                    Some(p) => W::Seq(vec![p, crate::wir::WirNode::Push(call)]),
+                    None => call,
+                });
             }
             Expr::Binary { op, lhs, rhs } => {
                 // `&&`/`||` are short-circuit control flow, not a wasm binary op:
