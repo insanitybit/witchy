@@ -8211,6 +8211,26 @@ fn main(console: Console):
         assert_eq!(link_run(src), want, "interpreter oracle");
     }
 
+    /// An `inout` fn with an EARLY `return` on the binary path: the return must
+    /// yield the full multi-result tuple (the declared value, then each inout
+    /// param's final value) so the arity matches the move-out ABI — a single
+    /// `N::Return` would mismatch and the whole module bailed to WAT. `clamp`
+    /// returns early when `n > 10`; both the early and fall-through exits write
+    /// `n` back into the caller's variable.
+    #[test]
+    fn wir_inout_early_return_binary_path() {
+        let src = "fn clamp(inout n: Int):\n    if (n > 10):\n        n = 10\n        return\n    n = n + 1\n\nfn main(console: Console):\n    var a = 5\n    clamp(a)\n    print(console, \"${a}\")\n    var b = 50\n    clamp(b)\n    print(console, \"${b}\")\n";
+        let want = vec!["6".to_string(), "10".to_string()];
+        let module = parser::parse_module(src).expect("parse");
+        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        typeck::check(&linked).expect("typeck");
+        let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+            .expect("compile_module_binary")
+            .expect("the WIR binary path should lower an inout fn with an early return");
+        assert_eq!(run_bytes_print_only(&bytes), want, "binary path");
+        assert_eq!(link_run(src), want, "interpreter oracle");
+    }
+
     /// Criterion-2: the slot-elimination pass shows a MEASURABLE improvement on a
     /// real lowered program. `[list.at(xs, 0)]` (with `xs: List(Bool)`) reads an
     /// i64 slot, narrows it to the bool's i32, then re-widens it to store in the

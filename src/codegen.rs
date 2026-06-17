@@ -2912,7 +2912,31 @@ impl Codegen {
                             Kind::I32 => W::ConstI32(0),
                         },
                     };
-                    seq.push(N::Return(Some(value)));
+                    if self.cur_fn_inout_params.is_empty() && self.cur_fn_own_param.is_none() {
+                        seq.push(N::Return(Some(value)));
+                    } else {
+                        // An `inout`/own-ABI function's early `return` must yield the
+                        // full multi-result tuple — the declared value, then each
+                        // inout param's value, then the own-cap — matching
+                        // `assemble_wir_func`'s tail ordering. Push them and use a
+                        // bare `return` (WIR `N::Return(Some)` carries one value).
+                        seq.push(N::Push(value));
+                        for name in &self.cur_fn_inout_params {
+                            seq.push(N::Push(W::GetLocal(name.clone())));
+                        }
+                        if let Some(p) = self.cur_fn_own_param.clone() {
+                            let returns_own = matches!(opt, Some(Expr::Var(v)) if *v == p)
+                                || matches!(opt, Some(Expr::Unary { op: UnOp::Move, expr })
+                                    if matches!(expr.as_ref(), Expr::Var(v) if *v == p));
+                            let cap = if returns_own && self.inplace_push.contains(&p) {
+                                W::GetLocal(format!("{p}__cap"))
+                            } else {
+                                W::ConstI32(0)
+                            };
+                            seq.push(N::Push(cap));
+                        }
+                        seq.push(N::Return(None));
+                    }
                     tail_is_value = false;
                 }
                 // `let (a, b, ..) = tuple`: store once, then load each 8-byte slot.
