@@ -8946,6 +8946,33 @@ fn main(console: Console):
         assert_eq!(got, run(wat.as_bytes()), "binary path matches WAT path (same seed)");
     }
 
+    /// `crypto.ed25519_verify` on the binary path — the signature verify the
+    /// self-hosted package manager (coven/pm) uses, and the construct whose
+    /// missing wir_helper made `pm.witchy` fall back to WAT. Sign a message with
+    /// the granted Secret, then verify: the valid (pubkey, message, signature)
+    /// triple verifies true, a tampered message false.
+    #[test]
+    fn wir_crypto_ed25519_verify_binary_path() {
+        use crate::runtime::{Capabilities, Runtime};
+        let src = "import crypto\nfn main(console: Console, signer: Secret):\n    let pk = crypto.public_key(signer)\n    let sig = crypto.sign(signer, \"hello\")\n    print(console, \"${crypto.ed25519_verify(pk, \"hello\", sig)}\")\n    print(console, \"${crypto.ed25519_verify(pk, \"tampered\", sig)}\")\n";
+        let module = parser::parse_module(src).expect("parse");
+        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        typeck::check(&linked).expect("typecheck");
+        let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+            .expect("compile_module_binary")
+            .expect("the WIR binary path should lower crypto.ed25519_verify");
+        let mut rt = Runtime::batch().expect("runtime");
+        let mut actor = rt
+            .spawn(
+                &bytes,
+                Capabilities { print: true, signing_key: Some([7u8; 32]), quiet: true, ..Default::default() },
+                crate::RUN_MEMORY_PAGES,
+            )
+            .expect("spawn with signing key");
+        actor.run().expect("run");
+        assert_eq!(actor.output(), vec!["true".to_string(), "false".to_string()]);
+    }
+
     /// `$dir_read` (read a file) on the binary path — the two-phase
     /// `dir_read_len` + `fill_pending` host protocol, gated behind Dir(Read).
     /// Sets up a sandbox dir with a file and compares the WIR binary against the

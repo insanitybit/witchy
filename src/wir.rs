@@ -4225,6 +4225,15 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             uses_heap: false,
             uses_table: false,
         }),
+        // ed25519 signature verify — three string headers → i32 bool, no
+        // capability. Reached by the self-hosted package manager (coven/pm).
+        "crypto_ed25519_verify" => Some(WirHelperSpec {
+            func: host_call_helper("crypto_ed25519_verify", "crypto.ed25519_verify", 3),
+            helper_deps: &[],
+            import_deps: &["crypto.ed25519_verify"],
+            uses_heap: false,
+            uses_table: false,
+        }),
         "regex_match_spans" => Some(WirHelperSpec {
             func: regex_match_spans_helper(),
             helper_deps: &["ensure"],

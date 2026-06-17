@@ -10217,12 +10217,19 @@ pub fn compile_module_binary(
             collect_called_funcs(&f.body, &mut called);
         }
         if !called.iter().all(|c| defined.contains(c)) {
+            if std::env::var_os("WIRDIAG").is_some() {
+                let missing: Vec<&String> = called.iter().filter(|c| !defined.contains(*c)).collect();
+                eprintln!("WIRBAIL called-undefined-func: {missing:?}");
+            }
             return Ok(None);
         }
     }
     let bytes = crate::wir_encode::encode(&wir_module);
     // Validate before committing; a malformed assembly falls back to the WAT sink.
-    if wasmparser::validate(&bytes).is_err() {
+    if let Err(e) = wasmparser::validate(&bytes) {
+        if std::env::var_os("WIRDIAG").is_some() {
+            eprintln!("WIRBAIL validate-failed: {e}");
+        }
         return Ok(None);
     }
     Ok(Some(bytes))
