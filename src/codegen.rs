@@ -7593,7 +7593,49 @@ impl Codegen {
                 let all = variant_shapes.clone();
                 self.build_variant_ts_wir(&names, &all)
             }
-            // AdtRec (self-recursive) + Dict render not generated yet → bail to WAT.
+            // A dict renders as `{k: v, ...}` over its `[count][key slot, value slot]…`
+            // entries (16-byte stride), matching the interpreter's `Value::Dict` order.
+            EqShape::Dict(k, v) => {
+                let (open, close, comma, colon) =
+                    (self.intern("{"), self.intern("}"), self.intern(", "), self.intern(": "));
+                let stride = |off: i32| {
+                    add(
+                        add(getl("p"), i32c(off)),
+                        W::Binary { op: BinOp::Mul, kind: Kind::I32, lhs: Box::new(getl("i")), rhs: Box::new(i32c(16)) },
+                    )
+                };
+                let krender = self.slot_render_wir(k, stride(4))?;
+                let vrender = self.slot_render_wir(v, stride(12))?;
+                let body: crate::wir::WirSeq = vec![
+                    setl("n", W::Load { ptr: Box::new(getl("p")), kind: Kind::I32, offset: 0 }),
+                    setl("acc", W::StrPtr(open)),
+                    setl("i", i32c(0)),
+                    N::Block {
+                        label: "done".into(),
+                        result: None,
+                        body: vec![N::Loop {
+                            label: "l".into(),
+                            body: vec![
+                                N::Br { target: "done".into(), cond: Some(W::Binary { op: BinOp::Ge, kind: Kind::I32, lhs: Box::new(getl("i")), rhs: Box::new(getl("n")) }) },
+                                N::If {
+                                    cond: W::Binary { op: BinOp::Gt, kind: Kind::I32, lhs: Box::new(getl("i")), rhs: Box::new(i32c(0)) },
+                                    then_: vec![setl("acc", concat(getl("acc"), W::StrPtr(comma)))],
+                                    els: vec![],
+                                    result: None,
+                                },
+                                setl("acc", concat(getl("acc"), krender)),
+                                setl("acc", concat(getl("acc"), W::StrPtr(colon))),
+                                setl("acc", concat(getl("acc"), vrender)),
+                                setl("i", add(getl("i"), i32c(1))),
+                                N::Br { target: "l".into(), cond: None },
+                            ],
+                        }],
+                    },
+                    N::Push(concat(getl("acc"), W::StrPtr(close))),
+                ];
+                Some((body, vec![bool_local("n"), bool_local("i"), bool_local("acc")]))
+            }
+            // AdtRec (self-recursive) render not generated yet → bail to WAT.
             _ => None,
         }
     }

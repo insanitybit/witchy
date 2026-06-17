@@ -8588,6 +8588,25 @@ fn main(console: Console):
         assert_eq!(link_run(src), want, "interpreter oracle");
     }
 
+    /// Dict `__render` on the binary path — the generated `$ts_dict_*` helper walks
+    /// the `[count][key, value]…` entries (16-byte stride) emitting `{k: v, ...}` in
+    /// insertion order. Kept OUT of the 3-way corpus because `dict.from_pairs` is a
+    /// std fn the corpus's `check_str`/`run_on_wasm` leg can't resolve (like the
+    /// encoding case); compared against the linked interpreter oracle directly.
+    #[test]
+    fn wir_dict_render_binary_path() {
+        let src = "fn main(console: Console):\n    let d = dict.from_pairs([(\"a\", 1), (\"b\", 2), (\"c\", 3)])\n    print(console, \"${d}\")\n";
+        let want = vec!["{a: 1, b: 2, c: 3}".to_string()];
+        let module = parser::parse_module(src).expect("parse");
+        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        typeck::check(&linked).expect("typecheck");
+        let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+            .expect("compile_module_binary")
+            .expect("the WIR binary path should render a dict");
+        assert_eq!(run_bytes_print_only(&bytes), want, "binary path");
+        assert_eq!(link_run(src), want, "interpreter oracle");
+    }
+
     /// The crypto digest helpers ($crypto_sha256/sha512/sha3_256/hmac_sha256) on
     /// the binary path — host-import wrappers returning a String. The crypto
     /// imports are host-provided regardless of grant (hashing needs no
