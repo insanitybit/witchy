@@ -6583,7 +6583,10 @@ impl Codegen {
                 }))
             }
             EqShape::Str => load_i32(addr),
-            EqShape::Float => return None,
+            EqShape::Float => {
+                self.uses_float_to_str = true;
+                W::Call { func: "float_to_str".into(), args: vec![W::FromSlot(Box::new(load_i64(addr)), Kind::F64)] }
+            }
             compound => {
                 let h = self.ensure_ts_wir_helper(compound)?;
                 W::Call { func: h, args: vec![load_i32(addr)] }

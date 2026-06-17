@@ -2996,6 +2996,35 @@ pub fn get_env_helper() -> WirFunc {
     }
 }
 
+/// `$float_to_str(x) -> i32` — render f64 `x` to a String via the host
+/// `float_to_str` import (writes into a reserved 512-byte buffer, returns the
+/// length). Used by the `$ts` renderer for Float fields. The import is ungated.
+pub fn float_to_str_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    let i32c = E::ConstI32;
+    let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+    WirFunc {
+        name: "float_to_str".into(),
+        params: vec![WirLocal { name: "x".into(), ty: WirTy::Float }],
+        ret: vec![WirTy::Str],
+        locals: vec![
+            WirLocal { name: "res".into(), ty: WirTy::Bool },
+            WirLocal { name: "n".into(), ty: WirTy::Bool },
+        ],
+        body: vec![
+            N::Do(E::Call { func: "ensure".into(), args: vec![i32c(516)] }),
+            N::SetLocal { local: "res".into(), value: E::GetGlobal("heap".into()) },
+            N::SetLocal { local: "n".into(), value: E::CallHost { import: "float_to_str".into(), args: vec![getl("x"), b(BinOp::Add, getl("res"), i32c(4))] } },
+            N::Store { ptr: getl("res"), value: getl("n"), kind: Kind::I32, offset: 0 },
+            N::SetGlobal { global: "heap".into(), value: b(BinOp::Add, b(BinOp::Add, getl("res"), i32c(4)), getl("n")) },
+            N::Push(getl("res")),
+        ],
+        raw_body: None,
+    }
+}
+
 /// A WIR-native prelude helper plus the module-level resources it needs (so a
 /// pruned module declares only the imports/globals/table its reached helpers
 /// actually touch — capability-minimal).
@@ -3189,6 +3218,13 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             func: encoding_helper(),
             helper_deps: &["ensure"],
             import_deps: &["encoding"],
+            uses_heap: true,
+            uses_table: false,
+        }),
+        "float_to_str" => Some(WirHelperSpec {
+            func: float_to_str_helper(),
+            helper_deps: &["ensure"],
+            import_deps: &["float_to_str"],
             uses_heap: true,
             uses_table: false,
         }),

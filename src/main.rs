@@ -8271,6 +8271,11 @@ fn main(console: Console):
                 "type Point:\n    x: Int\n    y: Int\n\nfn main(console: Console):\n    print(console, __render(Point(1, 2)))\n    print(console, __render(Point(1, 2) == Point(1, 2)))\n    print(console, __render(Point(1, 2) == Point(1, 9)))\n",
                 vec!["Point(1, 2)".to_string(), "true".to_string(), "false".to_string()],
             ),
+            // a tuple with a Float field renders via $float_to_str (host import).
+            (
+                "fn main(console: Console):\n    print(console, __render((1.5, 2)))\n",
+                vec!["(1.5, 2)".to_string()],
+            ),
             // string.chars ($str_chars → $byte_to_char + $str_substring +
             // $list_push) splitting a multibyte string into a List(String).
             (
