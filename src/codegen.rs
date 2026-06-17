@@ -4143,6 +4143,31 @@ impl Codegen {
                         },
                     });
                 }
+                // String ordering (`<`/`<=`/`>`/`>=`) lowers to a sign compare of
+                // `$str_cmp(a, b)` against 0 (binary path only) — lexicographic, not
+                // pointer order. `==`/`!=` were handled by the `$str_eq` block above.
+                if self.collect_wir
+                    && matches!(op, BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq)
+                    && (self.val_type_of(lhs) == ValType::Str
+                        || self.val_type_of(rhs) == ValType::Str)
+                {
+                    self.uses_str_cmp = true;
+                    let a = self.lower_expr(lhs)?;
+                    let b = self.lower_expr(rhs)?;
+                    let cmp = W::Call { func: "str_cmp".to_string(), args: vec![a, b] };
+                    let wop = match op {
+                        BinOp::Lt => crate::wir::BinOp::Lt,
+                        BinOp::LtEq => crate::wir::BinOp::Le,
+                        BinOp::Gt => crate::wir::BinOp::Gt,
+                        _ => crate::wir::BinOp::Ge,
+                    };
+                    return Some(W::Binary {
+                        op: wop,
+                        kind: crate::wir::Kind::I32,
+                        lhs: Box::new(cmp),
+                        rhs: Box::new(W::ConstI32(0)),
+                    });
+                }
                 // Compound (record/tuple/list/enum) equality lowers to the
                 // per-shape WIR structural-equality helper (binary path only),
                 // gated exactly like the legacy arm (`eq_shape_of(..).is_compound`).
@@ -4162,6 +4187,25 @@ impl Codegen {
                             });
                         }
                     }
+                }
+                // Float ordering (`<`/`<=`/`>`/`>=` on f64) lowers to the
+                // NaN-trapping helper `$f_lt`/`$f_le`/`$f_gt`/`$f_ge` (binary path
+                // only); the interpreter errors on ordering a NaN, so a bare
+                // `f64.lt` would diverge from the oracle.
+                if self.collect_wir
+                    && matches!(op, BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq)
+                    && (self.kind_of(lhs) == Kind::F64 || self.kind_of(rhs) == Kind::F64)
+                {
+                    self.uses_float_ord = true;
+                    let func = match op {
+                        BinOp::Lt => "f_lt",
+                        BinOp::LtEq => "f_le",
+                        BinOp::Gt => "f_gt",
+                        _ => "f_ge",
+                    };
+                    let a = self.lower_expr(lhs)?;
+                    let b = self.lower_expr(rhs)?;
+                    return Some(W::Call { func: func.to_string(), args: vec![a, b] });
                 }
                 // Logical `&&`/`||` lower to a short-circuit value-`If` (binary path
                 // only): `a && b` is `if a { b } else { false }`, `a || b` is

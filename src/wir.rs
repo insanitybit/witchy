@@ -856,6 +856,132 @@ pub fn str_eq_helper() -> WirFunc {
     }
 }
 
+/// `$f_lt`/`$f_le`/`$f_gt`/`$f_ge`(a: f64, b: f64) -> i32 — a NaN-trapping float
+/// ordering compare. Witchy errors on ordering a NaN (the interpreter oracle
+/// traps), so each helper first traps (`unreachable`) when either operand is NaN
+/// (`x != x`), then does the plain `f64.{lt,le,gt,ge}`. Mirrors `FLOAT_ORD_WAT`
+/// with the NaN guard inlined (the binary sink is independent of the WAT one).
+pub fn float_cmp_helper(name: &str, op: BinOp) -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    let is_nan = |n: &str| E::Binary {
+        op: BinOp::Ne,
+        kind: Kind::F64,
+        lhs: Box::new(getl(n)),
+        rhs: Box::new(getl(n)),
+    };
+    WirFunc {
+        name: name.into(),
+        params: vec![
+            WirLocal { name: "a".into(), ty: WirTy::Float },
+            WirLocal { name: "b".into(), ty: WirTy::Float },
+        ],
+        ret: vec![WirTy::Bool], // i32
+        locals: vec![],
+        body: vec![
+            // NaN on either side → trap (matches the interpreter).
+            N::If {
+                cond: E::Binary {
+                    op: BinOp::Or,
+                    kind: Kind::I32,
+                    lhs: Box::new(is_nan("a")),
+                    rhs: Box::new(is_nan("b")),
+                },
+                then_: vec![N::Unreachable],
+                els: vec![],
+                result: None,
+            },
+            N::Push(E::Binary {
+                op,
+                kind: Kind::F64,
+                lhs: Box::new(getl("a")),
+                rhs: Box::new(getl("b")),
+            }),
+        ],
+        raw_body: None,
+    }
+}
+
+/// `$str_cmp(a: i32, b: i32) -> i32` — byte-lexicographic comparison of two
+/// `[len][bytes]` strings: negative if `a < b`, zero if equal, positive if
+/// `a > b`. Compares up to the shorter length, then breaks ties by length.
+/// Mirrors `STR_CMP_WAT`; byte reads via `Load8U`, no heap/import/table.
+pub fn str_cmp_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    let i32c = E::ConstI32;
+    let bin = |op: BinOp, l: E, r: E| E::Binary {
+        op,
+        kind: Kind::I32,
+        lhs: Box::new(l),
+        rhs: Box::new(r),
+    };
+    let load_i32 = |p: E| E::Load { ptr: Box::new(p), kind: Kind::I32, offset: 0 };
+    let byte_at = |base: &str| E::Load8U {
+        ptr: Box::new(bin(BinOp::Add, bin(BinOp::Add, getl(base), i32c(4)), getl("i"))),
+        offset: 0,
+    };
+    WirFunc {
+        name: "str_cmp".into(),
+        params: vec![
+            WirLocal { name: "a".into(), ty: WirTy::Str },
+            WirLocal { name: "b".into(), ty: WirTy::Str },
+        ],
+        ret: vec![WirTy::Bool], // i32
+        locals: vec![
+            WirLocal { name: "alen".into(), ty: WirTy::Bool },
+            WirLocal { name: "blen".into(), ty: WirTy::Bool },
+            WirLocal { name: "n".into(), ty: WirTy::Bool },
+            WirLocal { name: "i".into(), ty: WirTy::Bool },
+            WirLocal { name: "ca".into(), ty: WirTy::Bool },
+            WirLocal { name: "cb".into(), ty: WirTy::Bool },
+        ],
+        body: vec![
+            N::SetLocal { local: "alen".into(), value: load_i32(getl("a")) },
+            N::SetLocal { local: "blen".into(), value: load_i32(getl("b")) },
+            // n = min(alen, blen)
+            N::SetLocal { local: "n".into(), value: getl("blen") },
+            N::If {
+                cond: bin(BinOp::Lt, getl("alen"), getl("blen")),
+                then_: vec![N::SetLocal { local: "n".into(), value: getl("alen") }],
+                els: vec![],
+                result: None,
+            },
+            N::SetLocal { local: "i".into(), value: i32c(0) },
+            N::Block {
+                label: "done".into(),
+                result: None,
+                body: vec![N::Loop {
+                    label: "l".into(),
+                    body: vec![
+                        N::Br {
+                            target: "done".into(),
+                            cond: Some(bin(BinOp::Ge, getl("i"), getl("n"))),
+                        },
+                        N::SetLocal { local: "ca".into(), value: byte_at("a") },
+                        N::SetLocal { local: "cb".into(), value: byte_at("b") },
+                        N::If {
+                            cond: bin(BinOp::Ne, getl("ca"), getl("cb")),
+                            then_: vec![N::Return(Some(bin(BinOp::Sub, getl("ca"), getl("cb"))))],
+                            els: vec![],
+                            result: None,
+                        },
+                        N::SetLocal {
+                            local: "i".into(),
+                            value: bin(BinOp::Add, getl("i"), i32c(1)),
+                        },
+                        N::Br { target: "l".into(), cond: None },
+                    ],
+                }],
+            },
+            N::Push(bin(BinOp::Sub, getl("alen"), getl("blen"))),
+        ],
+        raw_body: None,
+    }
+}
+
 /// `$concat(a: i32, b: i32) -> i32` — allocate a fresh `[alen+blen][a..b..]`
 /// string and `memory.copy` both operands in. Mirrors `CONCAT_WAT`. Calls
 /// `$ensure`; uses the `$heap` global.
@@ -3392,6 +3518,41 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             helper_deps: &["ensure", "key_eq"],
             import_deps: &[],
             uses_heap: true,
+            uses_table: false,
+        }),
+        "f_lt" => Some(WirHelperSpec {
+            func: float_cmp_helper("f_lt", BinOp::Lt),
+            helper_deps: &[],
+            import_deps: &[],
+            uses_heap: false,
+            uses_table: false,
+        }),
+        "f_le" => Some(WirHelperSpec {
+            func: float_cmp_helper("f_le", BinOp::Le),
+            helper_deps: &[],
+            import_deps: &[],
+            uses_heap: false,
+            uses_table: false,
+        }),
+        "f_gt" => Some(WirHelperSpec {
+            func: float_cmp_helper("f_gt", BinOp::Gt),
+            helper_deps: &[],
+            import_deps: &[],
+            uses_heap: false,
+            uses_table: false,
+        }),
+        "f_ge" => Some(WirHelperSpec {
+            func: float_cmp_helper("f_ge", BinOp::Ge),
+            helper_deps: &[],
+            import_deps: &[],
+            uses_heap: false,
+            uses_table: false,
+        }),
+        "str_cmp" => Some(WirHelperSpec {
+            func: str_cmp_helper(),
+            helper_deps: &[],
+            import_deps: &[],
+            uses_heap: false,
             uses_table: false,
         }),
         _ => {

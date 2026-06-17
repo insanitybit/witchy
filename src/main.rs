@@ -8348,6 +8348,18 @@ fn main(console: Console):
                 "fn main(console: Console):\n    let xs = [10, 20]\n    let n = list.length(xs)\n    var i = 0\n    var sum = 0\n    while i < n && list.at(xs, i) > 0:\n        sum = sum + list.at(xs, i)\n        i = i + 1\n    print(console, __render(sum))\n",
                 vec!["30".to_string()],
             ),
+            // float ordering (`<`/`<=`/`>`/`>=`) lowers to the NaN-trapping
+            // `$f_lt`/`$f_le`/`$f_gt`/`$f_ge` helpers on the binary path.
+            (
+                "fn main(console: Console):\n    print(console, __render(1.5 < 2.5))\n    print(console, __render(2.5 <= 2.5))\n    print(console, __render(3.5 > 2.5))\n    print(console, __render(1.5 >= 2.5))\n",
+                vec!["true".to_string(), "true".to_string(), "true".to_string(), "false".to_string()],
+            ),
+            // string ordering (`<`/`<=`/`>`/`>=`) lowers to `$str_cmp` sign
+            // compares — lexicographic, including the prefix tie-break by length.
+            (
+                "fn main(console: Console):\n    print(console, __render(\"abc\" < \"abd\"))\n    print(console, __render(\"abc\" < \"ab\"))\n    print(console, __render(\"abc\" <= \"abc\"))\n    print(console, __render(\"b\" > \"abc\"))\n    print(console, __render(\"abc\" >= \"abd\"))\n",
+                vec!["true".to_string(), "false".to_string(), "true".to_string(), "true".to_string(), "false".to_string()],
+            ),
         ];
         let mut lowered_any = false;
         for (src, want) in cases {
