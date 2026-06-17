@@ -8468,6 +8468,13 @@ fn main(console: Console):
                 "fn is_odd(n: Int) -> Bool:\n    n % 2 == 1\nfn count_if(xs: List(Int), pred: fn(Int) -> Bool) -> Int:\n    var c = 0\n    for x in xs:\n        if pred(x):\n            c = c + 1\n    c\nfn main(console: Console):\n    print(console, __render(count_if([1, 2, 3, 4, 5], is_odd)))\n",
                 vec!["3".to_string()],
             ),
+            // a `region:` block (both a scalar and a pointer/list result) — on the
+            // binary path it lowers as a plain block: the escaping VALUE is correct
+            // (reclamation is a deferred opt). Agrees with the reclaiming WAT path.
+            (
+                "fn main(console: Console):\n    let s = region -> Int:\n        var sum = 0\n        for i in 0..10:\n            sum = sum + i\n        sum\n    print(console, __render(s))\n    let xs = region -> List(Int):\n        var ys = []\n        for i in 0..5:\n            ys = list.push(ys, i * i)\n        ys\n    print(console, __render(list.at(xs, 3)))\n",
+                vec!["45".to_string(), "9".to_string()],
+            ),
         ];
         let mut lowered_any = false;
         for (src, want) in cases {

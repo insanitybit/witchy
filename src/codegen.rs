@@ -3729,6 +3729,14 @@ impl Codegen {
             // A bare block expression: its `WirSeq` leaves the block's value.
             // (Region blocks keep their bespoke `compile_region` emission.)
             Expr::Block(b) if b.region.is_none() => return Some(W::Seq(self.lower_block(b)?)),
+            // A `region:` block on the BINARY path lowers as a plain block: the body's
+            // value is correct (a region never changes behavior, only WHEN memory is
+            // reclaimed). The in-region heap reclamation — the WAT path's
+            // `compile_region` + `$rcopy_*` deep-copy — is an OPTIMIZATION, deferred to
+            // a future wir_opt pass (the same way slot-elim / in-place are passes), so
+            // binary region programs run correctly, just without the reclaim. WAT-path
+            // region blocks (`collect_wir == false`) fall through to `compile_region`.
+            Expr::Block(b) if self.collect_wir => return Some(W::Seq(self.lower_block(b)?)),
             // `match` on scalar patterns; non-scalar arms fall through to legacy.
             Expr::Match { scrutinee, arms } => return self.lower_match(scrutinee, arms),
             // A lambda lowers to its closure-object creation (`$mk{c}`); the lifted
