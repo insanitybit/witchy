@@ -8240,6 +8240,12 @@ fn main(console: Console):
                 "fn check(o: Option(Int)) -> Int:\n    match o:\n        Some(0) -> 100\n        Some(n) -> n\n        None -> 99\n\nfn main(console: Console):\n    print(console, __render(check(Some(0))))\n    print(console, __render(check(Some(5))))\n    print(console, __render(check(None)))\n",
                 vec!["100".to_string(), "5".to_string(), "99".to_string()],
             ),
+            // list patterns: empty, exact-length head bind, and a `[h, ..t]` tail
+            // bind (via $list_drop).
+            (
+                "fn sum_head(xs: List(Int)) -> Int:\n    match xs:\n        [] -> 0\n        [a, b] -> a + b\n        [h, ..t] -> h + list.length(t)\n        _ -> 99\n\nfn main(console: Console):\n    print(console, __render(sum_head([])))\n    print(console, __render(sum_head([10, 20])))\n    print(console, __render(sum_head([5, 1, 2, 3])))\n",
+                vec!["0".to_string(), "30".to_string(), "8".to_string()],
+            ),
             // string.chars ($str_chars → $byte_to_char + $str_substring +
             // $list_push) splitting a multibyte string into a List(String).
             (

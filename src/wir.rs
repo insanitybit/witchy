@@ -2912,6 +2912,43 @@ pub fn dir_list_helper() -> WirFunc {
     }
 }
 
+/// `$list_drop(list, k) -> i32` — a fresh list with the first `k` elements
+/// dropped. Allocates `(len-k)` slots and `memory.copy`s the tail. Used by the
+/// `[a, ..rest]` list pattern to bind the tail.
+pub fn list_drop_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    let i32c = E::ConstI32;
+    let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+    WirFunc {
+        name: "list_drop".into(),
+        params: vec![
+            WirLocal { name: "list".into(), ty: WirTy::Bool },
+            WirLocal { name: "k".into(), ty: WirTy::Bool },
+        ],
+        ret: vec![WirTy::Bool],
+        locals: vec![
+            WirLocal { name: "newlen".into(), ty: WirTy::Bool },
+            WirLocal { name: "new".into(), ty: WirTy::Bool },
+        ],
+        body: vec![
+            N::SetLocal { local: "newlen".into(), value: b(BinOp::Sub, E::Load { ptr: Box::new(getl("list")), kind: Kind::I32, offset: 0 }, getl("k")) },
+            N::Do(E::Call { func: "ensure".into(), args: vec![b(BinOp::Add, i32c(4), b(BinOp::Mul, getl("newlen"), i32c(8)))] }),
+            N::SetLocal { local: "new".into(), value: E::GetGlobal("heap".into()) },
+            N::Store { ptr: getl("new"), value: getl("newlen"), kind: Kind::I32, offset: 0 },
+            N::MemoryCopy {
+                dest: b(BinOp::Add, getl("new"), i32c(4)),
+                src: b(BinOp::Add, b(BinOp::Add, getl("list"), i32c(4)), b(BinOp::Mul, getl("k"), i32c(8))),
+                len: b(BinOp::Mul, getl("newlen"), i32c(8)),
+            },
+            N::SetGlobal { global: "heap".into(), value: b(BinOp::Add, b(BinOp::Add, getl("new"), i32c(4)), b(BinOp::Mul, getl("newlen"), i32c(8))) },
+            N::Push(getl("new")),
+        ],
+        raw_body: None,
+    }
+}
+
 /// `$get_env(name) -> i32` — the value of env var `name` as an `Option(String)`
 /// (`[tag][payload]`: tag 0 = Some with the string pointer in the i64 slot at +4,
 /// tag 1 = None). `env_len` reports the value's length (or <0 if absent); on
@@ -3122,6 +3159,13 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
         }),
         "list_concat" => Some(WirHelperSpec {
             func: list_concat_helper(),
+            helper_deps: &["ensure"],
+            import_deps: &[],
+            uses_heap: true,
+            uses_table: false,
+        }),
+        "list_drop" => Some(WirHelperSpec {
+            func: list_drop_helper(),
             helper_deps: &["ensure"],
             import_deps: &[],
             uses_heap: true,

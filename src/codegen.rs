@@ -3342,6 +3342,59 @@ impl Codegen {
                 };
                 (cond, binds)
             }
+            // A list `[len][e0]...`: check the length first (exact, or a minimum
+            // when there's a `..` tail), then — short-circuited under the length
+            // check so a short list never reads out of bounds — match each prefix
+            // element (the i64 slot at `ptr+4+8*i`). `..name` binds the tail as a
+            // freshly-allocated list via `$list_drop`.
+            Pattern::List { elems, rest } => {
+                let ptr = W::FromSlot(Box::new(value.clone()), crate::wir::Kind::I32);
+                let n = elems.len() as i32;
+                let len_op = if rest.is_some() { crate::wir::BinOp::Ge } else { crate::wir::BinOp::Eq };
+                let len_check = W::Binary {
+                    op: len_op,
+                    kind: crate::wir::Kind::I32,
+                    lhs: Box::new(W::Load { ptr: Box::new(ptr.clone()), kind: crate::wir::Kind::I32, offset: 0 }),
+                    rhs: Box::new(W::ConstI32(n)),
+                };
+                let mut elem_conds: Vec<W> = Vec::new();
+                let mut binds: crate::wir::WirSeq = Vec::new();
+                for (i, sub) in elems.iter().enumerate() {
+                    let elem_value = W::Load {
+                        ptr: Box::new(W::Binary {
+                            op: crate::wir::BinOp::Add,
+                            kind: crate::wir::Kind::I32,
+                            lhs: Box::new(ptr.clone()),
+                            rhs: Box::new(W::ConstI32((4 + 8 * i) as i32)),
+                        }),
+                        kind: crate::wir::Kind::I64,
+                        offset: 0,
+                    };
+                    let (sc, sb) = self.lower_pattern(&elem_value, sub)?;
+                    if !matches!(sc, W::ConstI32(1)) {
+                        elem_conds.push(sc);
+                    }
+                    binds.extend(sb);
+                }
+                if let Some(Some(name)) = rest {
+                    self.uses_list_drop = true;
+                    binds.push(N::SetLocal {
+                        local: name.clone(),
+                        value: W::Call { func: "list_drop".into(), args: vec![ptr.clone(), W::ConstI32(n)] },
+                    });
+                }
+                let cond = if elem_conds.is_empty() {
+                    len_check
+                } else {
+                    W::Control(Box::new(N::If {
+                        cond: len_check,
+                        then_: vec![N::Push(wir_and_chain(&elem_conds))],
+                        els: vec![N::Push(W::ConstI32(0))],
+                        result: Some(crate::wir::WirTy::Bool),
+                    }))
+                };
+                (cond, binds)
+            }
             // A string literal: structural compare against the interned literal.
             // Sound as a field pattern too — `$str_eq` reads the length header
             // first, so a wrong-variant garbage pointer is bounded by its claimed
