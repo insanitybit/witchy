@@ -6409,6 +6409,7 @@ impl Codegen {
     ) -> Option<crate::wir::WirExpr> {
         use crate::wir::{BinOp, Kind, WirExpr as W};
         let load = |p: W| W::Load { ptr: Box::new(p), kind: Kind::I64, offset: 0 };
+        let load_i32 = |p: W| W::Load { ptr: Box::new(p), kind: Kind::I32, offset: 0 };
         Some(match shape {
             EqShape::Int | EqShape::Bool => {
                 W::Binary { op: BinOp::Eq, kind: Kind::I64, lhs: Box::new(load(aa)), rhs: Box::new(load(bb)) }
@@ -6419,6 +6420,11 @@ impl Codegen {
                 lhs: Box::new(W::FromSlot(Box::new(load(aa)), Kind::F64)),
                 rhs: Box::new(W::FromSlot(Box::new(load(bb)), Kind::F64)),
             },
+            // String content equality: load each slot's i32 pointer and `$str_eq`.
+            EqShape::Str => {
+                self.uses_str_eq = true;
+                W::Call { func: "str_eq".into(), args: vec![load_i32(aa), load_i32(bb)] }
+            }
             _ => return None,
         })
     }
@@ -8788,6 +8794,12 @@ pub fn assemble_wir_module(
                 collect_called_funcs(&wf.body, &mut called);
                 collect_called_host_imports(&wf.body, &mut user_host_imports);
             }
+        }
+        // The generated structural-eq helpers (included below) may call prelude
+        // helpers themselves — a Str field compares via `$str_eq`. Pull those into
+        // the reached set so the resolution loop declares them.
+        for f in cg.eq_wir_helpers.values() {
+            collect_called_funcs(&f.body, &mut called);
         }
         // A direct host call in user code (e.g. `now`, `dir.subdir`, `recv_*`)
         // needs authority the capability-minimal helper registry can't account
