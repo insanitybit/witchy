@@ -7803,57 +7803,6 @@ fn main(console: Console):
         Module::new(&Engine::default(), &wat).expect("valid wasm");
     }
 
-    /// WIR migration progress meter (not an assertion): reports how many example
-    /// programs take the AST→WIR→wasm-binary path vs. still fall back to WAT.
-    /// Run with `cargo test --features native binary_path_coverage_report --
-    /// --ignored --nocapture`; add `WIRDIAG=1` to also print, per bailing program,
-    /// which function(s) didn't lower (the `assemble_wir_module` diagnostic).
-    #[test]
-    #[ignore]
-    fn binary_path_coverage_report() {
-        let mut dirs = vec![std::path::PathBuf::from("examples")];
-        let mut srcs: Vec<std::path::PathBuf> = vec![];
-        while let Some(d) = dirs.pop() {
-            for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
-                let p = e.path();
-                if p.is_dir() {
-                    dirs.push(p);
-                } else if p.extension().and_then(|s| s.to_str()) == Some("witchy") {
-                    srcs.push(p);
-                }
-            }
-        }
-        srcs.sort();
-        let (mut ok, mut total) = (0, 0);
-        let mut bailed: Vec<String> = vec![];
-        for p in srcs {
-            let ps = p.to_str().unwrap().to_string();
-            if p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("serve_")) {
-                continue;
-            }
-            let linked = match crate::link_file(&ps) {
-                Ok((m, _)) => m,
-                Err(_) => continue,
-            };
-            if typeck::check(&linked).is_err() {
-                continue;
-            }
-            total += 1;
-            if matches!(
-                codegen::compile_module_binary(&linked, &std::collections::HashMap::new()),
-                Ok(Some(_))
-            ) {
-                ok += 1;
-            } else {
-                bailed.push(ps);
-            }
-        }
-        eprintln!("\n=== WIR binary-path coverage: {ok}/{total} ===");
-        for b in &bailed {
-            eprintln!("  fallback: {b}");
-        }
-    }
-
     /// End-to-end through the *compiled* path: type-check, compile to WASM, run
     /// on the wasmtime runtime with the output capabilities granted, and return
     /// what the program printed.
@@ -8435,6 +8384,21 @@ fn main(console: Console):
             (
                 "fn main(console: Console):\n    print(console, string.from_code(65))\n    print(console, string.from_code(233))\n",
                 vec!["A".to_string(), "é".to_string()],
+            ),
+            // a closure bound from a MATCH pattern then called (`Box(f) -> f(x)`) —
+            // the `iter.next` shape (`Iter(thunk) -> thunk()`). Now lowers since a
+            // local in call position is always a closure (the guard is just `locals`).
+            (
+                "type Box:\n    Box(fn(Int) -> Int)\nfn apply(b: Box, x: Int) -> Int:\n    match b:\n        Box(f) -> f(x)\nfn main(console: Console):\n    let b = Box(fn(n: Int): n + 1)\n    print(console, __render(apply(b, 5)))\n",
+                vec!["6".to_string()],
+            ),
+            // nested lambdas: an outer lambda built inside another function's body,
+            // with two instances in a list — exercises the lifted-lambda index/name
+            // fix (a nested lambda lowered during the outer's build must not collide
+            // on the outer's table slot).
+            (
+                "type Adder:\n    Adder(fn(Int) -> Int)\nfn make(base: Int) -> Adder:\n    Adder(fn(x: Int): x + base)\nfn run(a: Adder, v: Int) -> Int:\n    match a:\n        Adder(f) -> f(v)\nfn main(console: Console):\n    let pair = [make(10), make(100)]\n    print(console, __render(run(list.at(pair, 0), 5)))\n    print(console, __render(run(list.at(pair, 1), 5)))\n",
+                vec!["15".to_string(), "105".to_string()],
             ),
         ];
         let mut lowered_any = false;

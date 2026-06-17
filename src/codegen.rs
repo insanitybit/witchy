@@ -4405,7 +4405,7 @@ impl Codegen {
                 // the i64-slot args, and `call_indirect` on the code index (the
                 // closure record's first word). Mirrors `compile_call`'s closure-local
                 // arm; the pointer is a bare `GetLocal`, so no scratch stash is needed.
-                if self.locals.contains_key(name) && self.local_fn_ret_kind.contains_key(name) {
+                if self.locals.contains_key(name) {
                     let n = args.len();
                     let mut ci_args: Vec<W> = vec![W::GetLocal(name.to_string())];
                     for a in args {
@@ -5545,8 +5545,16 @@ impl Codegen {
         let index = if let Some(&i) = self.lambda_wir_index.get(&key) {
             i
         } else {
-            let func = self.build_lambda_wir_func(params, body, &cap_info)?;
+            let mut func = self.build_lambda_wir_func(params, body, &cap_info)?;
+            // `build_lambda_wir_func` names itself `__lamw{len}` from the length at
+            // its START, but a NESTED lambda lowered during the build pushes to
+            // `lambda_wir_funcs` and shifts the length — so the actual push index
+            // below differs from that name. Rename to the real push index, or two
+            // lambdas collide on the same `__lamw{n}` and the table's name-keyed
+            // element segment routes both code indices to one body (a
+            // `call_indirect` arity/type mismatch at runtime).
             let i = self.lambda_wir_funcs.len();
+            func.name = format!("__lamw{i}");
             self.lambda_wir_funcs.push(func);
             self.lambda_wir_index.insert(key, i);
             self.clos_arities.insert(params.len());
