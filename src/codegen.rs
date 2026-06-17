@@ -7572,8 +7572,88 @@ impl Codegen {
                 body.push(N::Push(concat(getl("acc"), W::StrPtr(close))));
                 Some((body, vec![bool_local("acc")]))
             }
+            // Enum (Adt) render: dispatch on the tag to `Name` (nullary) or
+            // `Name(f0, f1, ...)`. Matches the interpreter's `Value::Ctor` Display
+            // (records are also Ctors, rendered positionally) AND the WAT path.
+            EqShape::Adt(tyname) => {
+                let variants = self.adt_variants.get(tyname).cloned()?;
+                let names = self.adt_variant_names.get(tyname).cloned()?;
+                let mut all: Vec<Vec<EqShape>> = Vec::new();
+                for fs in &variants {
+                    let mut shapes = Vec::new();
+                    for f in fs {
+                        shapes.push(self.eq_shape_of_type(f)?);
+                    }
+                    all.push(shapes);
+                }
+                self.build_variant_ts_wir(&names, &all)
+            }
+            EqShape::AdtInst(tyname, variant_shapes) => {
+                let names = self.adt_variant_names.get(tyname).cloned()?;
+                let all = variant_shapes.clone();
+                self.build_variant_ts_wir(&names, &all)
+            }
+            // AdtRec (self-recursive) + Dict render not generated yet → bail to WAT.
             _ => None,
         }
+    }
+
+    /// The tag-dispatch body of an enum `__render`: load the tag, and for the
+    /// matching variant emit `Name` (nullary) or `Name(f0, f1, ...)` accumulating
+    /// each field's `slot_render_wir` with `$concat`. `ctor_names`/`all` are the
+    /// per-variant names and resolved field shapes. Mirrors the WAT `ts_adt_body`.
+    fn build_variant_ts_wir(
+        &mut self,
+        ctor_names: &[String],
+        all: &[Vec<EqShape>],
+    ) -> Option<(crate::wir::WirSeq, Vec<crate::wir::WirLocal>)> {
+        use crate::wir::{BinOp, Kind, WirExpr as W, WirLocal, WirNode as N, WirTy};
+        let getl = |n: &str| W::GetLocal(n.into());
+        let i32c = W::ConstI32;
+        let add = |l: W, r: W| W::Binary { op: BinOp::Add, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+        let concat = |a: W, b: W| W::Call { func: "concat".into(), args: vec![a, b] };
+        let setl = |n: &str, v: W| N::SetLocal { local: n.into(), value: v };
+        let eqi = |l: W, r: W| W::Binary { op: BinOp::Eq, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+        let load_i32 = |p: W| W::Load { ptr: Box::new(p), kind: Kind::I32, offset: 0 };
+        self.uses_concat = true;
+        let (open, close, comma) = (self.intern("("), self.intern(")"), self.intern(", "));
+        let mut b: crate::wir::WirSeq = vec![setl("t", load_i32(getl("p")))];
+        for (tag, fields) in all.iter().enumerate() {
+            let label = self.intern(ctor_names.get(tag).map(|s| s.as_str()).unwrap_or("?"));
+            if fields.is_empty() {
+                b.push(N::If {
+                    cond: eqi(getl("t"), i32c(tag as i32)),
+                    then_: vec![N::Return(Some(W::StrPtr(label)))],
+                    els: vec![],
+                    result: None,
+                });
+                continue;
+            }
+            let mut arm: crate::wir::WirSeq = vec![
+                setl("acc", W::StrPtr(label)),
+                setl("acc", concat(getl("acc"), W::StrPtr(open))),
+            ];
+            for (i, fshape) in fields.iter().enumerate() {
+                let render = self.slot_render_wir(fshape, add(getl("p"), i32c((4 + 8 * i) as i32)))?;
+                if i > 0 {
+                    arm.push(setl("acc", concat(getl("acc"), W::StrPtr(comma))));
+                }
+                arm.push(setl("acc", concat(getl("acc"), render)));
+            }
+            arm.push(N::Return(Some(concat(getl("acc"), W::StrPtr(close)))));
+            b.push(N::If { cond: eqi(getl("t"), i32c(tag as i32)), then_: arm, els: vec![], result: None });
+        }
+        // For valid data the tag always matches a variant above; this tail is the
+        // unreachable fallback that keeps the function stack-typed.
+        let q = self.intern("?");
+        b.push(N::Push(W::StrPtr(q)));
+        Some((
+            b,
+            vec![
+                WirLocal { name: "t".into(), ty: WirTy::Bool },
+                WirLocal { name: "acc".into(), ty: WirTy::Bool },
+            ],
+        ))
     }
 
     /// Render the value in an 8-byte slot at `addr` (a WAT i32 address

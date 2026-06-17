@@ -8491,6 +8491,14 @@ fn main(console: Console):
                 "fn main(console: Console):\n    let xs = region -> List(String):\n        var ys = []\n        for i in 0..3:\n            ys = list.push(ys, \"n\" + __render(i))\n        ys\n    let after = \"OK\"\n    print(console, list.at(xs, 0))\n    print(console, list.at(xs, 2))\n    print(console, after)\n",
                 vec!["n0".to_string(), "n2".to_string(), "OK".to_string()],
             ),
+            // enum/record `__render`: the generated `$ts_*` tag-dispatch helper emits
+            // `Name` (nullary), `Name(f0, f1, ...)` (fields), and a record positionally
+            // (`Point(5, 6)`), matching the interpreter's `Value::Ctor` Display. Unlike
+            // enum `==`, the WAT path renders enums structurally too, so all three agree.
+            (
+                "type Color:\n    Red\n    Green\n    RGB(Int, Int, Int)\n\ntype Point:\n    x: Int\n    y: Int\n\nfn main(console: Console):\n    let c = RGB(1, 2, 3)\n    let p = Point(x: 5, y: 6)\n    let g = Green\n    print(console, \"${c}\")\n    print(console, \"${p}\")\n    print(console, \"${g}\")\n",
+                vec!["RGB(1, 2, 3)".to_string(), "Point(5, 6)".to_string(), "Green".to_string()],
+            ),
             // `inout` parameters (the multi-value move-out ABI): the callee returns
             // its declared value plus each inout param's final value, and the call
             // site (`CallStoreMulti`) writes them back into the caller's vars. Covers
