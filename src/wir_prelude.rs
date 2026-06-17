@@ -54,7 +54,6 @@
 #![allow(dead_code)]
 
 use std::sync::OnceLock;
-use wasmparser::{CompositeInnerType, Operator, Parser, Payload, TypeRef, ValType};
 
 const ENSURE_WAT: &str = r#"  (func $ensure (param $size i32)
     (local $need i32) (local $have i32)
@@ -1313,18 +1312,6 @@ pub enum WasmTy {
     F64,
 }
 
-impl WasmTy {
-    fn from_val(v: ValType) -> WasmTy {
-        match v {
-            ValType::I32 => WasmTy::I32,
-            ValType::I64 => WasmTy::I64,
-            ValType::F32 => WasmTy::F32,
-            ValType::F64 => WasmTy::F64,
-            other => panic!("prelude uses only numeric valtypes, got {other:?}"),
-        }
-    }
-}
-
 /// An imported host function the prelude depends on.
 #[derive(Debug, Clone)]
 pub struct PreludeImport {
@@ -1541,133 +1528,29 @@ fn parse_prelude_imports(wat: &str) -> Vec<PreludeImport> {
 }
 
 fn build_prelude() -> Prelude {
-    // The prelude is committed pre-assembled (`src/prelude.wasm`) so the runtime
-    // never depends on the `wat` crate. `prelude_wat` stays the source of truth;
-    // `committed_prelude_blob_is_current` guards the cache against drift.
-    let bin: &[u8] = include_bytes!("prelude.wasm");
-
-    let names = func_names();
-    // Type section: collect every function type so import/func type indices resolve.
-    let mut func_types: Vec<(Vec<WasmTy>, Vec<WasmTy>)> = Vec::new();
-    let mut imports: Vec<PreludeImport> = Vec::new();
-    let mut globals: Vec<PreludeGlobal> = Vec::new();
-    let mut defined_type_idx: Vec<u32> = Vec::new(); // type index per DEFINED func
-    let mut bodies: Vec<Vec<u8>> = Vec::new();
-    let mut table_size: u32 = 0;
-
-    for payload in Parser::new(0).parse_all(bin) {
-        match payload.expect("valid prelude wasm") {
-            Payload::TypeSection(reader) => {
-                for rec in reader {
-                    let rec = rec.expect("type rec group");
-                    for sub in rec.types() {
-                        if let CompositeInnerType::Func(ft) = &sub.composite_type.inner {
-                            func_types.push((
-                                ft.params().iter().copied().map(WasmTy::from_val).collect(),
-                                ft.results().iter().copied().map(WasmTy::from_val).collect(),
-                            ));
-                        } else {
-                            // Non-func types should not occur in the prelude.
-                            func_types.push((Vec::new(), Vec::new()));
-                        }
-                    }
-                }
-            }
-            Payload::ImportSection(reader) => {
-                // `into_imports` flattens any compact-import grouping to a flat
-                // stream of `Import`s in declaration order.
-                for imp in reader.into_imports() {
-                    let imp = imp.expect("import");
-                    if let TypeRef::Func(ti) = imp.ty {
-                        let (p, r) = func_types[ti as usize].clone();
-                        imports.push(PreludeImport {
-                            module: imp.module.to_string(),
-                            name: imp.name.to_string(),
-                            params: p,
-                            results: r,
-                        });
-                    }
-                }
-            }
-            Payload::FunctionSection(reader) => {
-                for ti in reader {
-                    defined_type_idx.push(ti.expect("func type idx"));
-                }
-            }
-            Payload::TableSection(reader) => {
-                for t in reader {
-                    let t = t.expect("table");
-                    table_size = table_size.max(t.ty.initial as u32);
-                }
-            }
-            Payload::GlobalSection(reader) => {
-                for g in reader {
-                    let g = g.expect("global");
-                    let init = const_i64(&g.init_expr);
-                    // Names are not in the binary; map by definition order to the
-                    // two globals the prelude declares.
-                    let name = match globals.len() {
-                        0 => "heap",
-                        1 => "__witchy_reowns",
-                        _ => "?",
-                    }
-                    .to_string();
-                    globals.push(PreludeGlobal {
-                        name,
-                        ty: WasmTy::from_val(g.ty.content_type),
-                        mutable: g.ty.mutable,
-                        init_i64: init,
-                    });
-                }
-            }
-            Payload::CodeSectionEntry(body) => {
-                bodies.push(body.as_bytes().to_vec());
-            }
-            _ => {}
-        }
-    }
-
-    assert_eq!(
-        bodies.len(),
-        names.len(),
-        "prelude func body count must match the controlled name list"
-    );
-    assert_eq!(
-        defined_type_idx.len(),
-        names.len(),
-        "function-section entry count must match defined bodies"
-    );
-
-    let funcs = names
-        .into_iter()
-        .enumerate()
-        .map(|(i, name)| {
-            let (params, results) = func_types[defined_type_idx[i] as usize].clone();
-            PreludeFunc {
-                name,
-                params,
-                results,
-                raw_body: bodies[i].clone(),
-            }
-        })
-        .collect();
-
+    // The binary codegen path reads ONLY the import signatures (for the pruned
+    // module's import declarations) and the helper NAMES (the resolution filter
+    // at codegen `helper_names`) — the helper BODIES are vestigial (the raw-body
+    // emit path is retired: `assemble_wir_module` either prunes from the
+    // `wir_helper` registry or bails), and globals/table/elems are unused (the
+    // pruned module builds its own heap/reowns/region globals + lambda table). So
+    // construct the prelude straight from Rust: imports parsed from
+    // `PRELUDE_IMPORTS_WAT` (no `wat` crate), funcs = the `HELPER_NAMES` set with
+    // empty stub bodies. No committed `prelude.wasm` blob, no WAT assembly.
     Prelude {
-        imports,
-        globals,
-        funcs,
-        table_size,
+        imports: parse_prelude_imports(PRELUDE_IMPORTS_WAT),
+        funcs: func_names()
+            .into_iter()
+            .map(|name| PreludeFunc {
+                name,
+                params: Vec::new(),
+                results: Vec::new(),
+                raw_body: Vec::new(),
+            })
+            .collect(),
+        globals: Vec::new(),
+        table_size: 0,
         elems: Vec::new(),
-    }
-}
-
-/// Read a single `i32.const` / `i64.const` global init expression as an i64.
-fn const_i64(expr: &wasmparser::ConstExpr) -> i64 {
-    let mut r = expr.get_operators_reader();
-    match r.read().expect("const-expr op") {
-        Operator::I32Const { value } => value as i64,
-        Operator::I64Const { value } => value,
-        other => panic!("prelude global init must be a numeric const, got {other:?}"),
     }
 }
 
@@ -1684,108 +1567,39 @@ pub fn prelude() -> &'static Prelude {
 mod tests {
     use super::*;
 
-    /// Ground-truth check for the pure-Rust import parser: parsing
-    /// `PRELUDE_IMPORTS_WAT` directly yields EXACTLY the imports the committed
-    /// `wat`-assembled blob does (same order, names, params, results). Lets
-    /// `build_prelude` eventually source its imports from Rust, not a WAT blob.
+    /// The pure-Rust import parser yields the complete prelude import set straight
+    /// from `PRELUDE_IMPORTS_WAT` — no `wat` crate, no committed blob. (It was once
+    /// checked byte-for-byte against the `wat`-assembled blob, commit 86bfda8,
+    /// before `build_prelude` switched to this parser; now guard the count + sigs.)
     #[test]
-    fn parsed_prelude_imports_match_the_blob() {
-        let blob = build_prelude().imports;
-        let parsed = parse_prelude_imports(PRELUDE_IMPORTS_WAT);
-        assert_eq!(parsed.len(), blob.len(), "import count: parsed {} vs blob {}", parsed.len(), blob.len());
-        for (p, b) in parsed.iter().zip(&blob) {
-            assert_eq!(
-                format!("{:?}", (&p.module, &p.name, &p.params, &p.results)),
-                format!("{:?}", (&b.module, &b.name, &b.params, &b.results)),
-                "import `{}` differs between the parser and the blob",
-                p.name,
-            );
-        }
+    fn parsed_prelude_imports_are_complete() {
+        let imports = parse_prelude_imports(PRELUDE_IMPORTS_WAT);
+        assert_eq!(imports.len(), IMPORT_COUNT, "parsed {} imports, expected {IMPORT_COUNT}", imports.len());
+        // The first import: `print` (two i32s, no result).
+        assert_eq!(imports[0].module, "witchy");
+        assert_eq!(imports[0].name, "print");
+        assert_eq!(imports[0].params, vec![WasmTy::I32, WasmTy::I32]);
+        assert!(imports[0].results.is_empty());
+        // A result-returning, param-less import: `now` -> i64.
+        let now = imports.iter().find(|i| i.name == "now").expect("the `now` import is present");
+        assert!(now.params.is_empty());
+        assert_eq!(now.results, vec![WasmTy::I64]);
     }
 
+    /// The prelude exposes the helper NAMES the binary path's resolution filter
+    /// needs (the `HELPER_NAMES` set). It no longer carries the helper bodies or
+    /// signatures — the binary path emits the `wir_helper` registry forms — so the
+    /// `Prelude` is built directly in Rust, with no `prelude.wasm` blob.
     #[test]
-    fn prelude_text_assembles() {
-        // The whole assembled prelude module is valid WAT -> wasm.
-        let wat = prelude_wat();
-        let bin = wat::parse_str(&wat).expect("prelude assembles");
-        assert!(bin.len() > 64, "assembled prelude is non-trivial");
-        assert_eq!(&bin[0..4], b"\0asm", "wasm magic");
-    }
-
-    /// The committed `src/prelude.wasm` cache (loaded by `build_prelude` so the
-    /// runtime never assembles WAT) must stay byte-identical to what `prelude_wat`
-    /// assembles. `prelude_wat` is the source of truth; this guard catches drift.
-    /// Regenerate after editing any `*_WAT` helper: `REGEN_PRELUDE=1 cargo test
-    /// --features native committed_prelude_blob_is_current`.
-    #[test]
-    fn committed_prelude_blob_is_current() {
-        let want = wat::parse_str(&prelude_wat()).expect("prelude assembles");
-        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/src/prelude.wasm");
-        if std::env::var("REGEN_PRELUDE").is_ok() {
-            std::fs::write(path, &want).expect("write prelude blob");
-        }
-        let have = std::fs::read(path).expect("read committed src/prelude.wasm");
-        assert_eq!(
-            have, want,
-            "src/prelude.wasm is stale — run `REGEN_PRELUDE=1 cargo test --features native committed_prelude_blob_is_current`"
-        );
-    }
-
-    #[test]
-    fn prelude_extracts_funcs_and_signatures() {
+    fn prelude_exposes_the_helper_names() {
         let p = prelude();
-        assert!(!p.funcs.is_empty(), "prelude has helper funcs");
-        // The fixed allocators and a few well-known helpers are present.
-        let by_name = |n: &str| p.funcs.iter().find(|f| f.name == n);
-
-        let mk1 = by_name("mk1").expect("mk1 present");
-        // mk1: (param $tag i32) (param $f0 i64) (result i32)
-        assert_eq!(mk1.params, vec![WasmTy::I32, WasmTy::I64]);
-        assert_eq!(mk1.results, vec![WasmTy::I32]);
-
-        let concat = by_name("concat").expect("concat present");
-        // concat: (param $a i32) (param $b i32) (result i32)
-        assert_eq!(concat.params, vec![WasmTy::I32, WasmTy::I32]);
-        assert_eq!(concat.results, vec![WasmTy::I32]);
-
-        let str_eq = by_name("str_eq").expect("str_eq present");
-        // str_eq: (param $a i32) (param $b i32) (result i32)
-        assert_eq!(str_eq.params, vec![WasmTy::I32, WasmTy::I32]);
-        assert_eq!(str_eq.results, vec![WasmTy::I32]);
-
-        // mk0..mk8 all present.
+        assert_eq!(p.funcs.len(), func_names().len(), "helper-name count");
+        let has = |n: &str| p.funcs.iter().any(|f| f.name == n);
+        for n in ["concat", "str_eq", "mk1"] {
+            assert!(has(n), "{n} present in the prelude helper names");
+        }
         for n in 0..=MAX_MK {
-            assert!(by_name(&format!("mk{n}")).is_some(), "mk{n} present");
+            assert!(has(&format!("mk{n}")), "mk{n} present");
         }
-    }
-
-    #[test]
-    fn raw_bodies_are_non_empty() {
-        let p = prelude();
-        for f in &p.funcs {
-            assert!(!f.raw_body.is_empty(), "{} has a raw body", f.name);
-        }
-        // A body begins with the locals-declaration count (a LEB u32); for a
-        // helper with locals it is non-zero, but every body has at least the
-        // count byte plus its end opcode.
-        let concat = p.funcs.iter().find(|f| f.name == "concat").unwrap();
-        assert!(concat.raw_body.len() > 2, "concat body has content");
-        assert_eq!(*concat.raw_body.last().unwrap(), 0x0b, "body ends with `end`");
-    }
-
-    #[test]
-    fn imports_and_globals_present() {
-        let p = prelude();
-        assert_eq!(p.imports.len(), IMPORT_COUNT, "import count matches");
-        assert_eq!(p.imports[0].module, "witchy");
-        assert_eq!(p.imports[0].name, "print");
-        assert_eq!(p.imports[0].params, vec![WasmTy::I32, WasmTy::I32]);
-        // Globals: $heap (mut i32) then $__witchy_reowns (mut i64).
-        assert_eq!(p.globals.len(), 2);
-        assert_eq!(p.globals[0].name, "heap");
-        assert_eq!(p.globals[0].ty, WasmTy::I32);
-        assert!(p.globals[0].mutable);
-        assert_eq!(p.globals[1].name, "__witchy_reowns");
-        assert_eq!(p.globals[1].ty, WasmTy::I64);
     }
 }
