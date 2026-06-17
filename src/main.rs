@@ -8373,6 +8373,12 @@ fn main(console: Console):
                 "fn main(console: Console):\n    print(console, __render(string.char_count(\"abc\")))\n    print(console, __render(string.char_count(\"héllo\")))\n",
                 vec!["3".to_string(), "5".to_string()],
             ),
+            // Int<->Float numeric conversions + sqrt (the new `ToFloat`/`ToInt`/`Sqrt`
+            // UnOps) and a scalar Float `__render` (via `$float_to_str`).
+            (
+                "fn main(console: Console):\n    print(console, __render(math.to_int(math.sqrt(16.0))))\n    print(console, __render(math.to_int(math.to_float(7) + 0.5)))\n    print(console, __render(3.5))\n",
+                vec!["4".to_string(), "7".to_string(), "3.5".to_string()],
+            ),
         ];
         let mut lowered_any = false;
         for (src, want) in cases {

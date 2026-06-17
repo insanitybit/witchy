@@ -632,6 +632,18 @@ impl EncodeCtx<'_> {
                     func.instruction(&const_neg_one(*kind));
                     func.instruction(&binop_instr(BinOp::Xor, *kind));
                 }
+                UnOp::ToFloat => {
+                    self.encode_expr(func, arg);
+                    func.instruction(&Instruction::F64ConvertI64S);
+                }
+                UnOp::ToInt => {
+                    self.encode_expr(func, arg);
+                    func.instruction(&Instruction::I64TruncSatF64S);
+                }
+                UnOp::Sqrt => {
+                    self.encode_expr(func, arg);
+                    func.instruction(&Instruction::F64Sqrt);
+                }
             },
             WirExpr::Convert { from, to, arg } => {
                 self.encode_expr(func, arg);

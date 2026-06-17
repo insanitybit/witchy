@@ -7465,6 +7465,23 @@ impl Codegen {
                     Kind::I64,
                 )
             }
+            // Int <-> Float numeric conversions and `sqrt` (binary path only) — the
+            // WAT path keeps its byte-identical `f64.convert_i64_s` / `i64.trunc_sat
+            // _f64_s` / `f64.sqrt` emission. `to_int` is SATURATING to match the
+            // interpreter's `as i64` (NaN -> 0, ±inf clamp), not the trapping trunc.
+            ("math.to_float", 1) if self.collect_wir => {
+                let ak = self.kind_of(&args[0]);
+                let arg = Self::wir_convert(self.lower_expr(&args[0])?, ak, Kind::I64);
+                W::Unary { op: crate::wir::UnOp::ToFloat, kind: crate::wir::Kind::F64, arg: Box::new(arg) }
+            }
+            ("math.to_int", 1) if self.collect_wir => {
+                let arg = self.lower_expr(&args[0])?;
+                W::Unary { op: crate::wir::UnOp::ToInt, kind: crate::wir::Kind::I64, arg: Box::new(arg) }
+            }
+            ("math.sqrt", 1) if self.collect_wir => {
+                let arg = self.lower_expr(&args[0])?;
+                W::Unary { op: crate::wir::UnOp::Sqrt, kind: crate::wir::Kind::F64, arg: Box::new(arg) }
+            }
             // `__render` to a String for the scalar shapes: Str passes through,
             // Int → `$int_to_string`, Bool → an interned "true"/"false" value-if.
             // Float and compound shapes keep their bespoke legacy emission. Gated
@@ -7489,9 +7506,17 @@ impl Codegen {
                         result: Some(crate::wir::WirTy::Str),
                     }))
                 }
+                // A scalar Float renders via the `$float_to_str` host-import wrapper
+                // (the same helper the compound `$ts` renderer uses for Float fields,
+                // so it agrees with the oracle).
+                ValType::Float => {
+                    self.uses_float_to_str = true;
+                    let arg = self.lower_expr(&args[0])?;
+                    call("float_to_str", vec![arg])
+                }
                 // Compound (tuple/list/...) `__render` builds its string with the
-                // per-shape WIR `$ts` renderer — or bails (`?`) for Float and
-                // shapes the renderer can't build (Record/Adt), keeping WAT.
+                // per-shape WIR `$ts` renderer — or bails (`?`) for shapes the
+                // renderer can't build (Record/Adt), keeping WAT.
                 _ => {
                     if let Some(shape) = self.eq_shape_of(&args[0]) {
                         if shape.is_compound() {
@@ -9236,6 +9261,26 @@ pub fn compile_module_binary(
         return Ok(None);
     };
     crate::wir_opt::optimize(&mut wir_module);
+    // Robustness net: if any reached `Call` names a func that didn't make it into
+    // the module — an unregistered guest helper like `$string_from_code`, which
+    // `assemble`'s prelude/wir-helper resolution doesn't account for — bail to the
+    // WAT sink rather than panic in the encoder's func-index lookup.
+    {
+        let mut defined: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for imp in &wir_module.imports {
+            defined.insert(imp.name.clone());
+        }
+        for f in &wir_module.funcs {
+            defined.insert(f.name.clone());
+        }
+        let mut called: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for f in &wir_module.funcs {
+            collect_called_funcs(&f.body, &mut called);
+        }
+        if !called.iter().all(|c| defined.contains(c)) {
+            return Ok(None);
+        }
+    }
     let bytes = crate::wir_encode::encode(&wir_module);
     // Validate before committing; a malformed assembly falls back to the WAT sink.
     if wasmparser::validate(&bytes).is_err() {

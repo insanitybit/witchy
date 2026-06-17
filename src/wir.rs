@@ -164,6 +164,13 @@ pub enum UnOp {
     Not,
     Neg,
     BitNot,
+    /// `i64 -> f64` numeric conversion (`f64.convert_i64_s`), for `math.to_float`.
+    ToFloat,
+    /// `f64 -> i64` saturating truncation (`i64.trunc_sat_f64_s`, non-trapping to
+    /// match the interpreter's `as i64`), for `math.to_int`.
+    ToInt,
+    /// `f64 -> f64` square root (`f64.sqrt`), for `math.sqrt`.
+    Sqrt,
 }
 
 /// The typed expression layer — witchy-semantic value nodes. Post-order emission
@@ -3952,6 +3959,18 @@ fn print_expr(s: &mut String, e: &WirExpr, depth: usize) {
                 print_expr(s, arg, depth);
                 emit(s, depth, &format!("{}.const -1", kind.wat()));
                 emit(s, depth, &format!("{}.xor", kind.wat()));
+            }
+            UnOp::ToFloat => {
+                print_expr(s, arg, depth);
+                emit(s, depth, "f64.convert_i64_s");
+            }
+            UnOp::ToInt => {
+                print_expr(s, arg, depth);
+                emit(s, depth, "i64.trunc_sat_f64_s");
+            }
+            UnOp::Sqrt => {
+                print_expr(s, arg, depth);
+                emit(s, depth, "f64.sqrt");
             }
         },
         WirExpr::Convert { from, to, arg } => {
