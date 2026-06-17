@@ -1415,8 +1415,18 @@ fn verify_file(path: &str) -> Result<(), String> {
 fn emit_wat_file(path: &str) -> Result<String, String> {
     let (linked, _stem) = link_file(path)?;
     typeck::check(&linked).map_err(|e| e.to_string())?;
-    codegen::compile_module(&linked)
-        .map_err(|e| format!("cannot compile to WASM (an interpreter-only feature?): {e}"))
+    // The WIR-as-WAT: the actual module the binary backend encodes and runs
+    // (optimization passes included), rendered back to text for inspection —
+    // not the retired `compile_module` string.
+    let mut wir = codegen::assemble_wir_module(&linked, &std::collections::HashMap::new())
+        .map_err(|e| format!("cannot compile to WASM (an interpreter-only feature?): {e}"))?
+        .ok_or_else(|| {
+            "cannot compile to WASM: the program reached a construct the compiled backend \
+             does not support (an interpreter-only feature?)"
+                .to_string()
+        })?;
+    wir_opt::optimize(&mut wir);
+    Ok(wir::to_wat(&wir))
 }
 
 /// Run an already-linked module on the compiled (WASM) backend with dev grants
