@@ -2596,12 +2596,13 @@ impl Codegen {
                 top.1 = ke;
                 top.2 = se;
             }
-            // Inout functions ARE captured now (the multi-value move-out ABI is built
-            // in `assemble_wir_func`); only the own-cap ABI still defers. An inout fn
-            // with an early `return` lowers a single-value `N::Return` into a
-            // multi-result signature — an arity mismatch the `wasmparser::validate`
-            // check rejects, so the whole module falls back to WAT gracefully.
-            if self.cur_fn_own_param.is_none() {
+            // Inout AND own-ABI functions are captured now: the multi-value
+            // move-out / own-cap signatures are built in `assemble_wir_func`. A
+            // function whose body lowered into a signature the call sites don't
+            // match (e.g. an early `return` that can't carry the extra results)
+            // is rejected by `wasmparser::validate`, so the whole module falls
+            // back to WAT gracefully.
+            {
                 let seq = Self::convert_block_tail(seq, block_kind, ret_kind);
                 let wf = self.assemble_wir_func(f, ret_kind, seq);
                 self.wir_funcs.insert(f.name.clone(), wf);
@@ -2634,7 +2635,7 @@ impl Codegen {
         // `.kind()` is all the encoder reads: `Bool` => i32, `Int` => i64.
         let i32t = || WirTy::Bool;
         let i64t = || WirTy::Int;
-        let params: Vec<WirLocal> = f
+        let mut params: Vec<WirLocal> = f
             .params
             .iter()
             .map(|p| WirLocal {
@@ -2642,6 +2643,12 @@ impl Codegen {
                 ty: Self::wir_ty_for_kind(self.locals.get(&p.name).copied().unwrap_or(Kind::I32)),
             })
             .collect();
+        // The own-ABI: the owned buffer's caller-supplied ownership token is an
+        // EXTRA trailing i32 param (mirroring the WAT header's `$p__cap`), so it
+        // is a param here, NOT a local (skipped in the cap-slot loop below).
+        if let Some(p) = &self.cur_fn_own_param {
+            params.push(WirLocal { name: format!("{p}__cap"), ty: i32t() });
+        }
         let mut locals: Vec<WirLocal> = Vec::new();
         let mut lets = Vec::new();
         collect_let_names(&f.body, &mut lets);
@@ -2652,10 +2659,13 @@ impl Codegen {
             locals.push(WirLocal { name: name.clone(), ty: Self::wir_ty_for_kind(k) });
         }
         // Shadow `${v}__cap` ownership-token slots for the in-place accumulators.
+        // The own-ABI parameter's token is a param (above), not a local.
         let mut cap_vars: Vec<&String> = self.inplace_push.iter().collect();
         cap_vars.sort();
         for v in cap_vars {
-            locals.push(WirLocal { name: format!("{v}__cap"), ty: i32t() });
+            if Some(v.as_str()) != self.cur_fn_own_param.as_deref() {
+                locals.push(WirLocal { name: format!("{v}__cap"), ty: i32t() });
+            }
         }
         locals.push(WirLocal { name: "__witchy_owncap".into(), ty: i32t() });
         locals.push(WirLocal { name: TUPLE_TMP.into(), ty: i32t() });
@@ -2678,6 +2688,26 @@ impl Codegen {
             let k = self.locals.get(name).copied().unwrap_or(Kind::I32);
             ret.push(Self::wir_ty_for_kind(k));
             body.push(crate::wir::WirNode::Push(crate::wir::WirExpr::GetLocal(name.clone())));
+        }
+        // own-ABI: append the returned buffer's ownership token (one i32 result).
+        // It is `$p__cap` when the function returns its own buffer AND that buffer
+        // is an in-place accumulator; otherwise 0 (the caller re-owns on its next
+        // mutation — one copy, never corruption). Mirrors `own_cap_push`.
+        if let Some(p) = self.cur_fn_own_param.clone() {
+            ret.push(i32t());
+            let returns_own = match f.body.stmts.last() {
+                Some(Stmt::Expr(Expr::Var(v))) => *v == p,
+                Some(Stmt::Expr(Expr::Unary { op: UnOp::Move, expr })) => {
+                    matches!(expr.as_ref(), Expr::Var(v) if *v == p)
+                }
+                _ => false,
+            };
+            let cap = if returns_own && self.inplace_push.contains(&p) {
+                crate::wir::WirExpr::GetLocal(format!("{p}__cap"))
+            } else {
+                crate::wir::WirExpr::ConstI32(0)
+            };
+            body.push(crate::wir::WirNode::Push(cap));
         }
         WirFunc {
             name: f.name.clone(),
@@ -2830,7 +2860,7 @@ impl Codegen {
         // The WAT path keeps the legacy emission — its move-out epilogue runs before
         // EVERY early `return`, which the WIR `N::Return` (single value) can't carry.
         if (!self.collect_wir && !self.cur_fn_inout_params.is_empty())
-            || self.cur_fn_own_param.is_some()
+            || (!self.collect_wir && self.cur_fn_own_param.is_some())
             || (!self.collect_wir && !self.inplace_push.is_empty())
         {
             return None;
@@ -2928,11 +2958,45 @@ impl Codegen {
                 // accounting), a string/list state field, or a global. Those keep
                 // their bespoke legacy emission.
                 Stmt::Assign { name, value } => {
-                    // In-place accumulator fast path (binary only): `xs = list.push(
-                    // xs, e)` for an `inplace_push` var lowers to `$list_push_cap`
-                    // via CallStoreMulti — writing (new_ptr, new_cap) back into
-                    // `xs` and its `xs__cap` slot, amortized O(1).
-                    if self.collect_wir
+                    // own-ABI self-call (binary only): `xs = grow(move xs, …)`
+                    // against a callee whose `own` buffer param may be returned.
+                    // The callee returns `(value, cap)` and takes the caller's
+                    // ownership token as a trailing i32 arg — so thread `xs__cap`
+                    // in and capture (value → xs, cap → xs__cap) via CallStoreMulti.
+                    if let Some((callee, _)) = self
+                        .collect_wir
+                        .then(|| analysis::self_own_call(name, value, &self.summaries))
+                        .flatten()
+                    {
+                        let callee = callee.to_string();
+                        let Expr::Call { args, .. } = value else { return None };
+                        let param_kinds: Vec<Kind> = self
+                            .fn_params
+                            .get(&callee)
+                            .map(|ps| {
+                                ps.iter()
+                                    .map(|p| p.ty.as_ref().map(ty_kind).unwrap_or(Kind::I32))
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        let mut args_w = Vec::with_capacity(args.len() + 1);
+                        for (i, arg) in args.iter().enumerate() {
+                            let ak = self.kind_of(arg);
+                            let w = self.lower_expr(arg)?;
+                            args_w.push(match param_kinds.get(i) {
+                                Some(&pk) => Self::wir_convert(w, ak, pk),
+                                None => w,
+                            });
+                        }
+                        // The trailing synthetic arg: our current ownership token.
+                        args_w.push(W::GetLocal(format!("{name}__cap")));
+                        seq.push(N::CallStoreMulti {
+                            func: callee,
+                            args: args_w,
+                            dests: vec![name.clone(), format!("{name}__cap")],
+                        });
+                        tail_is_value = false;
+                    } else if self.collect_wir
                         && self.inplace_push.contains(name)
                         && is_self_assign_shape(name, value, &self.summaries)
                         && self_push_elem(name, value).is_some()

@@ -8662,6 +8662,26 @@ fn main(console: Console):
         assert_eq!(link_run(src), want, "interpreter oracle");
     }
 
+    /// The own-ABI (`own` buffer param threaded through `move`) on the binary
+    /// path: `grow` takes `own xs`, appends in place, and returns it. The callee
+    /// gains a trailing `$xs__cap` i32 param and a second i32 result (the
+    /// ownership token); the self-call `xs = grow(move xs, i)` lowers to a
+    /// CallStoreMulti capturing (value → xs, cap → xs__cap). (2-way: `list.push`
+    /// isn't resolvable by the WAT-leg `check_str`, so compare binary vs oracle.)
+    #[test]
+    fn wir_own_abi_move_pipeline_binary_path() {
+        let src = "fn grow(own xs: List(Int), n: Int) -> List(Int):\n    xs = list.push(xs, n)\n    xs\n\nfn main(console: Console):\n    var xs = []\n    for i in 1..6:\n        xs = grow(move xs, i)\n    print(console, \"${xs}\")\n";
+        let want = vec!["[1, 2, 3, 4, 5]".to_string()];
+        let module = parser::parse_module(src).expect("parse");
+        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        typeck::check(&linked).expect("typecheck");
+        let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+            .expect("compile_module_binary")
+            .expect("the WIR binary path should lower the own-ABI move pipeline");
+        assert_eq!(run_bytes_print_only(&bytes), want, "binary path");
+        assert_eq!(link_run(src), want, "interpreter oracle");
+    }
+
     /// The crypto digest helpers ($crypto_sha256/sha512/sha3_256/hmac_sha256) on
     /// the binary path — host-import wrappers returning a String. The crypto
     /// imports are host-provided regardless of grant (hashing needs no
