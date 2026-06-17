@@ -2906,10 +2906,13 @@ impl Codegen {
                     if self.collect_wir
                         && self.inplace_push.contains(name)
                         && is_self_assign_shape(name, value, &self.summaries)
+                        && self_push_elem(name, value).is_some()
                     {
-                        // Only the list-push shape is modelled; dict/str self-assign
-                        // (`self_push_elem` is None) defers the whole function.
-                        let elem = self_push_elem(name, value)?;
+                        // Only the list-push shape has an in-place fast path. A dict/
+                        // string self-assign (`self_push_elem` is None) falls through
+                        // to the plain value-rebind below — correct value semantics,
+                        // just without the O(1) in-place mutation.
+                        let elem = self_push_elem(name, value).expect("guarded Some above");
                         let xk = self.kind_of(elem);
                         // A dirty site (its RHS embeds an aliasing share of `name`)
                         // forces a zero token → re-own + copy; a clean site trusts
@@ -2938,13 +2941,22 @@ impl Codegen {
                         });
                         inplace_sites += 1;
                         tail_is_value = false;
-                    } else if is_self_assign_shape(name, value, &self.summaries)
-                        || self.str_fields.contains_key(name)
+                    } else if self.str_fields.contains_key(name)
                         || self.list_fields.contains_key(name)
                         || self.globals.contains(name)
                     {
+                        // A string/list state field or a global is a real mutation of
+                        // shared cells, not a local rebind — keep the legacy emission.
                         return None;
                     } else {
+                        // A plain local reassignment, INCLUDING a self-assign
+                        // accumulator (`s = s + x`, `xs = list.push(xs, e)`) that the
+                        // in-place fast path above didn't claim: lower it as a
+                        // fresh-value rebind. That is exactly the interpreter's value
+                        // semantics — the RHS allocates a new value and rebinds the
+                        // local; the in-place mutation is only an optimization the
+                        // uniqueness/wir_opt pass layers on later. If the RHS itself
+                        // can't lower yet, the `?` defers the whole function as before.
                         let vk = self.kind_of(value);
                         let target = self.locals.get(name).copied().unwrap_or(Kind::I32);
                         let v = self.lower_expr(value)?;

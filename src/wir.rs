@@ -3556,10 +3556,14 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             uses_table: false,
         }),
         _ => {
-            // `$mk0` … `$mk8`: the aggregate allocators (each calls `$ensure`).
+            // `$mk{n}`: the n-field aggregate allocators (each calls `$ensure`).
+            // The WAT path emits one for any arity a tuple/record/closure needs, so
+            // the registry must too — a 9-field record or a closure with 8+ captures
+            // would otherwise reach an undeclared `$mk9`. The bound is a sanity cap
+            // on parsing, far above any realistic aggregate.
             if let Some(rest) = name.strip_prefix("mk") {
                 if let Ok(n) = rest.parse::<usize>() {
-                    if n <= 8 {
+                    if n <= 256 {
                         return Some(WirHelperSpec {
                             func: mk_helper(n),
                             helper_deps: &["ensure"],

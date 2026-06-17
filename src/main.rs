@@ -8360,6 +8360,13 @@ fn main(console: Console):
                 "fn main(console: Console):\n    print(console, __render(\"abc\" < \"abd\"))\n    print(console, __render(\"abc\" < \"ab\"))\n    print(console, __render(\"abc\" <= \"abc\"))\n    print(console, __render(\"b\" > \"abc\"))\n    print(console, __render(\"abc\" >= \"abd\"))\n",
                 vec!["true".to_string(), "false".to_string(), "true".to_string(), "true".to_string(), "false".to_string()],
             ),
+            // a string accumulator (`s = s + ..`) — a self-assign whose in-place fast
+            // path is list-only — lowers as a plain value-rebind (the `string.join`
+            // shape that blocked ~20 programs). The if/else picks first vs separator.
+            (
+                "fn main(console: Console):\n    var s = \"\"\n    var first = true\n    for w in [\"a\", \"b\", \"c\"]:\n        if first:\n            s = w\n            first = false\n        else:\n            s = s + \"-\" + w\n    print(console, s)\n",
+                vec!["a-b-c".to_string()],
+            ),
         ];
         let mut lowered_any = false;
         for (src, want) in cases {
