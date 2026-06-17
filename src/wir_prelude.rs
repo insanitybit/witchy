@@ -1441,11 +1441,12 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
   (import "witchy" "net_send_bytes" (func $net_send_bytes_host (param i32 i32)))
   (import "witchy" "net_close" (func $net_close_host (param i32)))
   (import "witchy" "now" (func $now_host (result i64)))
+  (import "witchy" "regex_match_spans_len" (func $regex_match_spans_len_host (param i32 i32) (result i32)))
 "#;
 
 /// The number of host imports the prelude declares (used to split function
 /// indices: imports `0..IMPORT_COUNT`, helpers after).
-pub const IMPORT_COUNT: usize = 43;
+pub const IMPORT_COUNT: usize = 44;
 
 /// Assemble the full prelude module TEXT. This is what gets compiled once.
 ///

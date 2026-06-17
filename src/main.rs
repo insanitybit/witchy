@@ -1512,6 +1512,9 @@ fn compile_linked_to_wasm(linked: &ast::Module) -> Result<Vec<u8>, String> {
     {
         return Ok(bytes);
     }
+    if std::env::var_os("WIRDIAG").is_some() {
+        eprintln!("WIRBAIL compile_linked_to_wasm-fallback-to-WAT-sink");
+    }
     let wat = codegen::compile_module(linked)
         .map_err(|e| format!("cannot compile to WASM (an interpreter-only feature?): {e}"))?;
     wat::parse_str(&wat).map_err(|e| format!("assembling wasm: {e}"))
@@ -8680,6 +8683,25 @@ fn main(console: Console):
             .expect("the WIR binary path should lower the own-ABI move pipeline");
         assert_eq!(run_bytes_print_only(&bytes), want, "binary path");
         assert_eq!(link_run(src), want, "interpreter oracle");
+    }
+
+    /// The native regex engine on the binary path: `regex.match_spans` is a host
+    /// import (the Rust `regex` crate, the same native the interpreter uses)
+    /// wrapped by `$regex_match_spans` (length-prefixed `fill_pending` read, like
+    /// `dir_read`). Ungated (matching needs no capability), so the print-only
+    /// harness instantiates it. Compared against the linked interpreter oracle.
+    #[test]
+    fn wir_regex_match_spans_binary_path() {
+        let src = "import regex\nfn main(console: Console):\n    print(console, \"${regex.matches(\"[0-9]+\", \"order 1234\")}\")\n    print(console, \"${regex.find_all(\"[0-9]+\", \"a1 b22 c333\")}\")\n    print(console, regex.replace_all(\"[0-9]+\", \"a1b22\", \"N\"))\n";
+        let module = parser::parse_module(src).expect("parse");
+        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        typeck::check(&linked).expect("typecheck");
+        let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+            .expect("compile_module_binary")
+            .expect("the WIR binary path should lower regex via the host engine");
+        let want = link_run(src);
+        assert_eq!(want[0], "true", "regex.matches sanity");
+        assert_eq!(run_bytes_print_only(&bytes), want, "binary path vs oracle");
     }
 
     /// The crypto digest helpers ($crypto_sha256/sha512/sha3_256/hmac_sha256) on

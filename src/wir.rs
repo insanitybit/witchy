@@ -3085,6 +3085,47 @@ pub fn dir_read_helper() -> WirFunc {
     }
 }
 
+/// `$regex_match_spans(pat, text) -> i32` — the regex engine's encoded match
+/// spans (`"s,e;s,e;…"`, "" on no match). The host (`regex_match_spans_len`,
+/// the same native `regex.match_spans` the interpreter uses) reports the byte
+/// length and stages the bytes; `$fill_pending` copies them into a fresh
+/// `[len][bytes]` String. The variable-length string host-wrapper shape.
+pub fn regex_match_spans_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    let i32c = E::ConstI32;
+    let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+    WirFunc {
+        name: "regex_match_spans".into(),
+        params: vec![
+            WirLocal { name: "pat".into(), ty: WirTy::Str },
+            WirLocal { name: "text".into(), ty: WirTy::Str },
+        ],
+        ret: vec![WirTy::Str],
+        locals: vec![
+            WirLocal { name: "len".into(), ty: WirTy::Bool },
+            WirLocal { name: "res".into(), ty: WirTy::Bool },
+        ],
+        body: vec![
+            N::SetLocal {
+                local: "len".into(),
+                value: E::CallHost {
+                    import: "regex_match_spans_len".into(),
+                    args: vec![getl("pat"), getl("text")],
+                },
+            },
+            N::Do(E::Call { func: "ensure".into(), args: vec![b(BinOp::Add, getl("len"), i32c(4))] }),
+            N::SetLocal { local: "res".into(), value: E::GetGlobal("heap".into()) },
+            N::Store { ptr: getl("res"), value: getl("len"), kind: Kind::I32, offset: 0 },
+            N::Do(E::CallHost { import: "fill_pending".into(), args: vec![b(BinOp::Add, getl("res"), i32c(4))] }),
+            N::SetGlobal { global: "heap".into(), value: b(BinOp::Add, b(BinOp::Add, getl("res"), i32c(4)), getl("len")) },
+            N::Push(getl("res")),
+        ],
+        raw_body: None,
+    }
+}
+
 /// `$dir_list(h) -> i32` — the entries of directory handle `h`, as a
 /// `List(String)`. The host reports the total byte size of the marshaled list
 /// (`dir_list_size`), then writes the whole `[count][ptr..]` + payload structure
@@ -3890,6 +3931,13 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             func: crypto_hash_helper("crypto_public_key", "crypto.public_key", 64, &[]),
             helper_deps: &["ensure"],
             import_deps: &["crypto.public_key"],
+            uses_heap: true,
+            uses_table: false,
+        }),
+        "regex_match_spans" => Some(WirHelperSpec {
+            func: regex_match_spans_helper(),
+            helper_deps: &["ensure"],
+            import_deps: &["regex_match_spans_len", "fill_pending"],
             uses_heap: true,
             uses_table: false,
         }),
