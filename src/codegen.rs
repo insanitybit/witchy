@@ -3034,6 +3034,53 @@ impl Codegen {
                         });
                         inplace_sites += 1;
                         tail_is_value = false;
+                    } else if self.collect_wir
+                        && self.inplace_push.contains(name)
+                        && is_self_assign_shape(name, value, &self.summaries)
+                        && self_insert_args(name, value).is_some()
+                    {
+                        // `d = dict.insert(d, k, v)`: the in-place dict upsert via
+                        // `$dict_insert_cap` (O(1) amortized into owned entry slack),
+                        // mirroring the list-push fast path. Without it the plain
+                        // rebind below copies the whole dict each insert — O(n²)
+                        // memory that traps a large dict under a tight memory cap.
+                        let (kexpr, vexpr) = self_insert_args(name, value).expect("guarded Some above");
+                        let mode = self.dict_key_mode(kexpr).ok()?;
+                        let kk = self.kind_of(kexpr);
+                        let vk = self.kind_of(vexpr);
+                        if let Some(kvt) = self.dict_key_valtype_of(value) {
+                            self.local_dict_key_valtype.insert(name.clone(), kvt);
+                        }
+                        if let Some(vvt) = self.dict_value_valtype_of(value) {
+                            self.local_dict_value_valtype.insert(name.clone(), vvt);
+                        }
+                        let dirty = match self.facts_stack.last() {
+                            Some((facts, _, _)) if facts.accumulators.contains(name) => {
+                                facts.is_dirty(stmt)
+                            }
+                            _ => true,
+                        };
+                        let cap = if dirty {
+                            W::ConstI32(0)
+                        } else {
+                            W::GetLocal(format!("{name}__cap"))
+                        };
+                        let kw = self.lower_expr(kexpr)?;
+                        let vw = self.lower_expr(vexpr)?;
+                        self.uses_dict_insert_cap = true;
+                        seq.push(N::CallStoreMulti {
+                            func: "dict_insert_cap".to_string(),
+                            args: vec![
+                                W::GetLocal(name.clone()),
+                                W::ToSlot(Box::new(kw), Self::wir_kind(kk)),
+                                W::ToSlot(Box::new(vw), Self::wir_kind(vk)),
+                                W::ConstI32(mode as i32),
+                                cap,
+                            ],
+                            dests: vec![name.clone(), format!("{name}__cap")],
+                        });
+                        inplace_sites += 1;
+                        tail_is_value = false;
                     } else if self.str_fields.contains_key(name)
                         || self.list_fields.contains_key(name)
                         || self.globals.contains(name)

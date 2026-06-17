@@ -2501,6 +2501,129 @@ pub fn dict_insert_helper() -> WirFunc {
     }
 }
 
+/// `$dict_insert_cap(d, k, v, mode, cap) -> (i32, i32)` — the in-place dict upsert.
+/// With owned entry slack (`cap`, the shadow-local capacity), an existing key
+/// updates its value slot in place and a new key appends an entry (count+1),
+/// returning `d` + `cap`; otherwise the table is copied once at double capacity.
+/// Bumps `$__witchy_reowns` when entered with a zero cap (the re-own signal).
+/// Mirrors `DICT_INSERT_CAP_WAT` MINUS the hash-index maintenance: the binary
+/// path never builds the `d-4` index (no `dict_index_*` helpers), so the index
+/// word stays 0 and `$dict_find` linear-scans — correct, same values as the WAT
+/// path. The multi-value early `return`s are restructured into `ret_ptr`/`ret_cap`
+/// locals + a dual tail Push (WIR has no multi-value If/Return). Calls `$dict_find`
+/// + `$ensure`; uses `$heap` + `$__witchy_reowns`.
+pub fn dict_insert_cap_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    let i32c = E::ConstI32;
+    let i64c = E::ConstI64;
+    let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+    let entry = |base: &str, idx: &str| b(BinOp::Add, getl(base), b(BinOp::Mul, getl(idx), i32c(16)));
+    let reowns_bump = N::If {
+        cond: E::Unary { op: UnOp::Not, kind: Kind::I32, arg: Box::new(getl("cap")) },
+        then_: vec![N::SetGlobal {
+            global: "__witchy_reowns".into(),
+            value: E::Binary {
+                op: BinOp::Add,
+                kind: Kind::I64,
+                lhs: Box::new(E::GetGlobal("__witchy_reowns".into())),
+                rhs: Box::new(i64c(1)),
+            },
+        }],
+        els: vec![],
+        result: None,
+    };
+    // found >= 0 && cap > 0: overwrite the existing value slot in place.
+    let update_inplace = vec![
+        N::Store { ptr: entry("d", "found"), value: getl("v"), kind: Kind::I64, offset: 12 },
+        N::SetLocal { local: "ret_ptr".into(), value: getl("d") },
+        N::SetLocal { local: "ret_cap".into(), value: getl("cap") },
+    ];
+    // found < 0 && cap > count: append a fresh entry into the owned slack.
+    let append_inplace = vec![
+        N::Store { ptr: entry("d", "count"), value: getl("k"), kind: Kind::I64, offset: 4 },
+        N::Store { ptr: entry("d", "count"), value: getl("v"), kind: Kind::I64, offset: 12 },
+        N::Store { ptr: getl("d"), value: b(BinOp::Add, getl("count"), i32c(1)), kind: Kind::I32, offset: 0 },
+        N::SetLocal { local: "ret_ptr".into(), value: getl("d") },
+        N::SetLocal { local: "ret_cap".into(), value: getl("cap") },
+    ];
+    // else: copy to a doubled buffer (index word reset to 0), then upsert.
+    let grow = vec![
+        N::SetLocal {
+            local: "newcap".into(),
+            value: b(BinOp::Mul, b(BinOp::Add, getl("count"), i32c(1)), i32c(2)),
+        },
+        N::If {
+            cond: b(BinOp::Lt, getl("newcap"), i32c(8)),
+            then_: vec![N::SetLocal { local: "newcap".into(), value: i32c(8) }],
+            els: vec![],
+            result: None,
+        },
+        N::Do(E::Call {
+            func: "ensure".into(),
+            args: vec![b(BinOp::Add, i32c(8), b(BinOp::Mul, getl("newcap"), i32c(16)))],
+        }),
+        N::SetLocal { local: "new".into(), value: b(BinOp::Add, E::GetGlobal("heap".into()), i32c(4)) },
+        N::Store { ptr: b(BinOp::Sub, getl("new"), i32c(4)), value: i32c(0), kind: Kind::I32, offset: 0 },
+        N::SetLocal { local: "bytes".into(), value: b(BinOp::Add, i32c(4), b(BinOp::Mul, getl("count"), i32c(16))) },
+        N::MemoryCopy { dest: getl("new"), src: getl("d"), len: getl("bytes") },
+        N::SetGlobal {
+            global: "heap".into(),
+            value: b(BinOp::Add, b(BinOp::Add, getl("new"), i32c(4)), b(BinOp::Mul, getl("newcap"), i32c(16))),
+        },
+        N::If {
+            cond: b(BinOp::Ge, getl("found"), i32c(0)),
+            then_: vec![N::Store { ptr: entry("new", "found"), value: getl("v"), kind: Kind::I64, offset: 12 }],
+            els: vec![
+                N::Store { ptr: entry("new", "count"), value: getl("k"), kind: Kind::I64, offset: 4 },
+                N::Store { ptr: entry("new", "count"), value: getl("v"), kind: Kind::I64, offset: 12 },
+                N::Store { ptr: getl("new"), value: b(BinOp::Add, getl("count"), i32c(1)), kind: Kind::I32, offset: 0 },
+            ],
+            result: None,
+        },
+        N::SetLocal { local: "ret_ptr".into(), value: getl("new") },
+        N::SetLocal { local: "ret_cap".into(), value: getl("newcap") },
+    ];
+    WirFunc {
+        name: "dict_insert_cap".into(),
+        params: vec![
+            WirLocal { name: "d".into(), ty: WirTy::Bool },
+            WirLocal { name: "k".into(), ty: WirTy::Int },
+            WirLocal { name: "v".into(), ty: WirTy::Int },
+            WirLocal { name: "mode".into(), ty: WirTy::Bool },
+            WirLocal { name: "cap".into(), ty: WirTy::Bool },
+        ],
+        ret: vec![WirTy::Bool, WirTy::Bool],
+        locals: ["count", "found", "new", "bytes", "newcap", "ret_ptr", "ret_cap"]
+            .iter()
+            .map(|n| WirLocal { name: (*n).into(), ty: WirTy::Bool })
+            .collect(),
+        body: vec![
+            reowns_bump,
+            N::SetLocal { local: "count".into(), value: E::Load { ptr: Box::new(getl("d")), kind: Kind::I32, offset: 0 } },
+            N::SetLocal {
+                local: "found".into(),
+                value: E::Call { func: "dict_find".into(), args: vec![getl("d"), getl("k"), getl("mode")] },
+            },
+            N::If {
+                cond: b(BinOp::And, b(BinOp::Ge, getl("found"), i32c(0)), b(BinOp::Gt, getl("cap"), i32c(0))),
+                then_: update_inplace,
+                els: vec![N::If {
+                    cond: b(BinOp::And, b(BinOp::Lt, getl("found"), i32c(0)), b(BinOp::Gt, getl("cap"), getl("count"))),
+                    then_: append_inplace,
+                    els: grow,
+                    result: None,
+                }],
+                result: None,
+            },
+            N::Push(getl("ret_ptr")),
+            N::Push(getl("ret_cap")),
+        ],
+        raw_body: None,
+    }
+}
+
 /// `$dict_get_or(d, k, default, mode) -> i64` — the value slot for `k`, or
 /// `default` when absent.
 pub fn dict_get_or_helper() -> WirFunc {
@@ -4040,6 +4163,13 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             import_deps: &[],
             uses_heap: true,
             uses_table: true,
+        }),
+        "dict_insert_cap" => Some(WirHelperSpec {
+            func: dict_insert_cap_helper(),
+            helper_deps: &["dict_find", "ensure"],
+            import_deps: &[],
+            uses_heap: true,
+            uses_table: false,
         }),
         "dict_has" => Some(WirHelperSpec {
             func: dict_has_helper(),

@@ -8101,6 +8101,28 @@ fn main(console: Console):
         assert_eq!(run_bytes_print_only(&bytes), want, "binary path (in-place accumulator)");
     }
 
+    /// The in-place DICT accumulator on the binary path: `d = dict.insert(d, k, v)`
+    /// in a loop lowers to `$dict_insert_cap` (O(1) amortized into owned entry
+    /// slack) instead of copying the whole dict each insert. Proven the same two
+    /// ways as the list accumulator: the values agree with the interpreter, AND
+    /// the observable `$__witchy_reowns` counter stays O(1) (one re-own, not one
+    /// per insert) — the timing-free proof the copy-per-insert path was avoided.
+    #[test]
+    fn wir_inplace_dict_insert_is_o1_reowns() {
+        let src = "fn build(n: Int) -> Dict(String, Int):\n    var d = dict.new()\n    for i in 0..n:\n        d = dict.insert(d, \"k\" + __render(i), i)\n    d\n\nfn main(console: Console):\n    let m = build(500)\n    print(console, __render(dict.get_or(m, \"k499\", 0 - 1)))\n    print(console, __render(dict.size(m)))\n";
+        let want = vec!["499".to_string(), "500".to_string()];
+        let module = parser::parse_module(src).expect("parse");
+        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        typeck::check(&linked).expect("typeck");
+        assert_eq!(link_run(src), want, "interpreter oracle");
+        let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+            .expect("compile_module_binary")
+            .expect("the dict accumulator program takes the WIR binary path");
+        let (out, reowns) = binary_run_reowns(&bytes);
+        assert_eq!(out, want, "binary output");
+        assert!(reowns <= 2, "expected O(1) re-owns for the in-place dict insert, got {reowns}");
+    }
+
     /// Criterion-2: the slot-elimination pass shows a MEASURABLE improvement on a
     /// real lowered program. `[list.at(xs, 0)]` (with `xs: List(Bool)`) reads an
     /// i64 slot, narrows it to the bool's i32, then re-widens it to store in the
