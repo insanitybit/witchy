@@ -7654,13 +7654,49 @@ impl Codegen {
                 }
                 return self.build_variant_eq_wir(&all);
             }
-            // Dict eq isn't generated yet; scalars never reach here (compared inline
-            // by `slot_cmp_wir`, never via a helper).
-            EqShape::Dict(..)
-            | EqShape::Int
-            | EqShape::Bool
-            | EqShape::Float
-            | EqShape::Str => return None,
+            // Dict `==`: insertion-order pairwise compare over the
+            // `[count][key slot, value slot]…` entries (16-byte stride), exactly
+            // the interpreter's `Vec<(K, V)>` equality and the WAT `$eq_dict_*`.
+            EqShape::Dict(k, v) => {
+                let entry = |base: &str, off: i32| {
+                    add(
+                        add(getl(base), i32c(off)),
+                        W::Binary { op: BinOp::Mul, kind: Kind::I32, lhs: Box::new(getl("i")), rhs: Box::new(i32c(16)) },
+                    )
+                };
+                let kcmp = self.slot_cmp_wir(k, entry("a", 4), entry("b", 4))?;
+                let vcmp = self.slot_cmp_wir(v, entry("a", 12), entry("b", 12))?;
+                let b: crate::wir::WirSeq = vec![
+                    // counts differ → not equal
+                    N::If {
+                        cond: W::Binary { op: BinOp::Ne, kind: Kind::I32, lhs: Box::new(load_i32(getl("a"))), rhs: Box::new(load_i32(getl("b"))) },
+                        then_: vec![N::Return(Some(i32c(0)))],
+                        els: vec![],
+                        result: None,
+                    },
+                    N::SetLocal { local: "n".into(), value: load_i32(getl("a")) },
+                    N::SetLocal { local: "i".into(), value: i32c(0) },
+                    N::Block {
+                        label: "done".into(),
+                        result: None,
+                        body: vec![N::Loop {
+                            label: "l".into(),
+                            body: vec![
+                                N::Br { target: "done".into(), cond: Some(W::Binary { op: BinOp::Ge, kind: Kind::I32, lhs: Box::new(getl("i")), rhs: Box::new(getl("n")) }) },
+                                check(kcmp),
+                                check(vcmp),
+                                N::SetLocal { local: "i".into(), value: add(getl("i"), i32c(1)) },
+                                N::Br { target: "l".into(), cond: None },
+                            ],
+                        }],
+                    },
+                    N::Push(i32c(1)),
+                ];
+                (b, vec![bool_local("n"), bool_local("i")])
+            }
+            // Scalars never reach here (compared inline by `slot_cmp_wir`, never
+            // via a helper).
+            EqShape::Int | EqShape::Bool | EqShape::Float | EqShape::Str => return None,
         };
         Some((body, locals))
     }

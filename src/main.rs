@@ -4643,15 +4643,10 @@ fn yn(b: Bool) -> String:
             "false".to_string(), // differing value
             "false".to_string(), // same pairs, different insertion order
         ];
-        let module = parser::parse_module(src).expect("parse");
-        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
-        typeck::check(&linked).expect("typecheck");
-        // Compound dict equality does not yet lower to the WIR/binary path (it
-        // bails to the WAT sink in production too), so this test stays on the WAT
-        // codegen. wasmtime runs the WAT bytes directly.
-        let wat = codegen::compile_module(&linked).expect("compile");
-        assert_eq!(link_run(src), want.clone(), "interpreter (linked)");
-        assert_eq!(crate::run_wasm_bytes(wat.as_bytes()).expect("wasm"), want, "compiled WASM must agree");
+        // Dict `==` now lowers on the binary path — an insertion-order pairwise
+        // compare of the entries, matching the interpreter.
+        assert_eq!(link_run(src), want.clone(), "interpreter");
+        assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
     }
 
     /// A MULTI-parameter generic ADT (`Result`, whose Ok and Err payloads are
