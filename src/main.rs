@@ -8468,12 +8468,28 @@ fn main(console: Console):
                 "fn is_odd(n: Int) -> Bool:\n    n % 2 == 1\nfn count_if(xs: List(Int), pred: fn(Int) -> Bool) -> Int:\n    var c = 0\n    for x in xs:\n        if pred(x):\n            c = c + 1\n    c\nfn main(console: Console):\n    print(console, __render(count_if([1, 2, 3, 4, 5], is_odd)))\n",
                 vec!["3".to_string()],
             ),
-            // a `region:` block (both a scalar and a pointer/list result) — on the
-            // binary path it lowers as a plain block: the escaping VALUE is correct
-            // (reclamation is a deferred opt). Agrees with the reclaiming WAT path.
+            // a `region:` block — a scalar result (reclaimed by stashing the value in
+            // a register and resetting `$heap`) and a `List(Int)` result (reclaimed via
+            // the generated `$rcopy_list_int`: scalar payload, one `memory.copy`).
             (
                 "fn main(console: Console):\n    let s = region -> Int:\n        var sum = 0\n        for i in 0..10:\n            sum = sum + i\n        sum\n    print(console, __render(s))\n    let xs = region -> List(Int):\n        var ys = []\n        for i in 0..5:\n            ys = list.push(ys, i * i)\n        ys\n    print(console, __render(list.at(xs, 3)))\n",
                 vec!["45".to_string(), "9".to_string()],
+            ),
+            // a `region -> (Int, String):` tuple — the generated `$rcopy_tuple_*`
+            // copies the tag, the scalar slot verbatim, and recurses through
+            // `$rcopy_str` for the string slot. The biased copy-out keeps `t.1`
+            // pointing at the reclaimed string; `after` reuses the freed space.
+            (
+                "fn main(console: Console):\n    let t = region -> (Int, String):\n        var acc = \"\"\n        for i in 0..3:\n            acc = acc + \"z\"\n        (7 * 6, acc)\n    let after = \"OK\"\n    print(console, __render(t))\n    print(console, t.1)\n    print(console, after)\n",
+                vec!["(42, zzz)".to_string(), "zzz".to_string(), "OK".to_string()],
+            ),
+            // a `region -> List(String):` — a list with a COMPOUND payload: the
+            // generated `$rcopy_list_str` writes the length header then deep-copies
+            // each element string through `$rcopy_str`, so every slot holds a biased
+            // pointer into the reclaimed block.
+            (
+                "fn main(console: Console):\n    let xs = region -> List(String):\n        var ys = []\n        for i in 0..3:\n            ys = list.push(ys, \"n\" + __render(i))\n        ys\n    let after = \"OK\"\n    print(console, list.at(xs, 0))\n    print(console, list.at(xs, 2))\n    print(console, after)\n",
+                vec!["n0".to_string(), "n2".to_string(), "OK".to_string()],
             ),
             // `inout` parameters (the multi-value move-out ABI): the callee returns
             // its declared value plus each inout param's final value, and the call

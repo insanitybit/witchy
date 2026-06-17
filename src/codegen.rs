@@ -748,6 +748,11 @@ struct Codegen {
     ts_wir_helpers: std::collections::BTreeMap<String, crate::wir::WirFunc>,
     /// Cycle guard for `ensure_ts_wir_helper`, mirroring `eq_building`.
     ts_building: std::collections::HashSet<String>,
+    /// WIR-native twin of `rcopy_helpers` (per-shape `region:` copy-out deep-copy),
+    /// keyed identically (`rcopy_{id}`), for the binary path.
+    rcopy_wir_helpers: std::collections::BTreeMap<String, crate::wir::WirFunc>,
+    /// Cycle guard for `ensure_rcopy_wir_helper`, mirroring `eq_building`.
+    rcopy_building: std::collections::HashSet<String>,
     /// Lifted lambda bodies for the binary path, in table-index order — the WIR
     /// twin of `lambdas`. Each is a `WirFunc $__lamw{i}`; the closure object
     /// stores `i` as its code index and `CallIndirect` uses it as the table slot.
@@ -905,6 +910,8 @@ impl Codegen {
             eq_building: std::collections::HashSet::new(),
             ts_wir_helpers: std::collections::BTreeMap::new(),
             ts_building: std::collections::HashSet::new(),
+            rcopy_wir_helpers: std::collections::BTreeMap::new(),
+            rcopy_building: std::collections::HashSet::new(),
             lambda_wir_funcs: Vec::new(),
             lambda_wir_index: std::collections::HashMap::new(),
             ts_helpers: std::collections::BTreeMap::new(),
@@ -3814,14 +3821,23 @@ impl Codegen {
                 };
                 let is_scalar =
                     matches!(shape, Some(EqShape::Int | EqShape::Bool | EqShape::Float));
+                if self.wm_level >= WM_POOL {
+                    return Some(W::Seq(self.lower_block(b)?));
+                }
                 // A POINTER result lives on the reclaimed heap, so it needs its
-                // per-shape `$rcopy_*` deep-copy (only String so far; other compound
-                // shapes still lower as a plain block until their generator lands).
-                let rcopy_helper = match &shape {
-                    Some(EqShape::Str) => Some("rcopy_str"),
-                    _ => None,
+                // per-shape `$rcopy_*` deep-copy. `ensure_rcopy_wir_helper` returns the
+                // helper name (Str/List/Tuple so far) or `None` (an unsupported shape
+                // or a recursive-type cycle) → fall back to a plain block (correct
+                // value, no reclaim).
+                let rcopy_helper: Option<String> = if is_scalar {
+                    None
+                } else {
+                    match &shape {
+                        Some(s) => self.ensure_rcopy_wir_helper(s),
+                        None => None,
+                    }
                 };
-                if self.wm_level >= WM_POOL || (!is_scalar && rcopy_helper.is_none()) {
+                if !is_scalar && rcopy_helper.is_none() {
                     return Some(W::Seq(self.lower_block(b)?));
                 }
                 let wm = format!("__witchy_wm_{}", self.wm_level);
@@ -3830,10 +3846,22 @@ impl Codegen {
                 self.uses_wm = true;
                 let mut body = self.lower_block(b)?;
                 self.wm_level -= 1;
-                // Split off the body's tail value (its last node is `Push(value)`).
+                // Split off the body's tail value. Its `Push(value)` is usually last,
+                // but the uniqueness pass appends self-healing `*__cap` token writes
+                // after it (block-scope cleanup); drain those, keeping them to run
+                // before reclaim (cap tokens are scalars, untouched by the heap slide).
+                let mut cap_heals: Vec<N> = vec![];
+                while matches!(
+                    body.last(),
+                    Some(N::SetLocal { local, .. }) if local.ends_with("__cap")
+                ) {
+                    cap_heals.push(body.pop().unwrap());
+                }
                 let Some(N::Push(tail)) = body.pop() else {
                     return Some(W::Seq(self.lower_block(b)?));
                 };
+                cap_heals.reverse();
+                body.extend(cap_heals);
                 let mut seq = vec![N::SetLocal {
                     local: wm.clone(),
                     value: W::GetGlobal("heap".to_string()),
@@ -3856,7 +3884,7 @@ impl Codegen {
                 // (the helper returns a pre-biased ptr), `memory.copy` the finished
                 // block down to the watermark, advance `$heap` past it, return the ptr.
                 self.uses_region = true;
-                let helper = rcopy_helper.expect("guarded pointer shape").to_string();
+                let helper = rcopy_helper.expect("guarded pointer shape");
                 let i32sub = |l: W, r: W| W::Binary {
                     op: crate::wir::BinOp::Sub,
                     kind: crate::wir::Kind::I32,
@@ -7065,6 +7093,176 @@ impl Codegen {
         Some(name)
     }
 
+    /// The i64 a copied-out slot holds, given the SOURCE slot ADDRESS `src`: a scalar
+    /// verbatim (`i64.load`), a pointer shape through its (biased) rcopy helper
+    /// (`i64.extend_i32_u(rcopy_h(i32.wrap_i64(i64.load src)))`). Mirrors `slot_rcopy`.
+    fn slot_rcopy_wir(
+        &mut self,
+        shape: &EqShape,
+        src: crate::wir::WirExpr,
+    ) -> Option<crate::wir::WirExpr> {
+        use crate::wir::{Kind as WK, WirExpr as W};
+        let load = W::Load { ptr: Box::new(src), kind: WK::I64, offset: 0 };
+        Some(match shape {
+            EqShape::Int | EqShape::Bool | EqShape::Float => load,
+            compound => {
+                let h = self.ensure_rcopy_wir_helper(compound)?;
+                W::Convert {
+                    from: WK::I32,
+                    to: WK::I64,
+                    arg: Box::new(W::Call {
+                        func: h,
+                        args: vec![W::Convert { from: WK::I64, to: WK::I32, arg: Box::new(load) }],
+                    }),
+                }
+            }
+        })
+    }
+
+    /// Ensure the WIR rcopy helper for `shape` exists, returning its name. `Str` uses
+    /// the registered `$rcopy_str`; scalars never get one. Compound shapes generate a
+    /// `WirFunc` into `rcopy_wir_helpers`. A recursive type mid-build (cycle) returns
+    /// `None` → the region arm falls back to a plain block (correct value, no reclaim).
+    fn ensure_rcopy_wir_helper(&mut self, shape: &EqShape) -> Option<String> {
+        if matches!(shape, EqShape::Str) {
+            return Some("rcopy_str".to_string());
+        }
+        let name = format!("rcopy_{}", shape.id());
+        if self.rcopy_wir_helpers.contains_key(&name) {
+            return Some(name);
+        }
+        if !self.rcopy_building.insert(name.clone()) {
+            return None;
+        }
+        let built = self.build_rcopy_wir_body(shape);
+        self.rcopy_building.remove(&name);
+        let (body, locals) = built?;
+        let func = crate::wir::WirFunc {
+            name: name.clone(),
+            params: vec![crate::wir::WirLocal { name: "p".into(), ty: crate::wir::WirTy::Str }],
+            ret: vec![crate::wir::WirTy::Bool],
+            locals,
+            body,
+            raw_body: None,
+        };
+        self.rcopy_wir_helpers.insert(name.clone(), func);
+        Some(name)
+    }
+
+    /// Build a per-shape rcopy `WirFunc` body (List/Tuple so far; other compound
+    /// shapes return `None` → plain-block fallback). Each: parent short-circuit, then
+    /// allocate above the live data, fill (recursing per slot), and return the ptr
+    /// pre-biased by `$rcopy_delta`. Mirrors `ensure_rcopy_helper`'s WAT emission.
+    fn build_rcopy_wir_body(
+        &mut self,
+        shape: &EqShape,
+    ) -> Option<(crate::wir::WirSeq, Vec<crate::wir::WirLocal>)> {
+        use crate::wir::{BinOp, Kind as WK, WirExpr as W, WirLocal, WirNode as N, WirTy};
+        let getl = |n: &str| W::GetLocal(n.into());
+        let getg = |n: &str| W::GetGlobal(n.into());
+        let i32c = W::ConstI32;
+        let bin = |op: BinOp, l: W, r: W| W::Binary { op, kind: WK::I32, lhs: Box::new(l), rhs: Box::new(r) };
+        let load_i32 = |p: W| W::Load { ptr: Box::new(p), kind: WK::I32, offset: 0 };
+        let i32l = || WirTy::Bool;
+        // `if p < rcopy_wm: return p` (parent-side value, shared not copied).
+        let prologue = N::If {
+            cond: bin(BinOp::LtU, getl("p"), getg("rcopy_wm")),
+            then_: vec![N::Return(Some(getl("p")))],
+            els: vec![],
+            result: None,
+        };
+        // Allocate `$size` bytes above the live data; record `$n` and count the bytes.
+        let alloc = |size_expr: W| -> Vec<N> {
+            vec![
+                N::SetLocal { local: "size".into(), value: size_expr },
+                N::Do(W::Call { func: "ensure".into(), args: vec![getl("size")] }),
+                N::SetLocal { local: "n".into(), value: getg("heap") },
+                N::SetGlobal { global: "heap".into(), value: bin(BinOp::Add, getl("n"), getl("size")) },
+                N::SetGlobal {
+                    global: "__region_copy_bytes".into(),
+                    value: W::Binary {
+                        op: BinOp::Add,
+                        kind: WK::I64,
+                        lhs: Box::new(getg("__region_copy_bytes")),
+                        rhs: Box::new(W::Convert { from: WK::I32, to: WK::I64, arg: Box::new(getl("size")) }),
+                    },
+                },
+            ]
+        };
+        let ret_biased = N::Push(bin(BinOp::Sub, getl("n"), getg("rcopy_delta")));
+        match shape {
+            EqShape::List(elem) => {
+                // size = 4 + 8*len; len = list length header.
+                let size = bin(BinOp::Add, i32c(4), bin(BinOp::Mul, load_i32(getl("p")), i32c(8)));
+                let mut body = vec![prologue, N::SetLocal { local: "len".into(), value: load_i32(getl("p")) }];
+                body.extend(alloc(size));
+                if matches!(**elem, EqShape::Int | EqShape::Bool | EqShape::Float) {
+                    // Scalar payload: one straight copy of `[len][payload]`.
+                    body.push(N::MemoryCopy { dest: getl("n"), src: getl("p"), len: getl("size") });
+                } else {
+                    // Compound payload: copy the length header, then rcopy each slot.
+                    let slot_src = bin(
+                        BinOp::Add,
+                        bin(BinOp::Add, getl("p"), i32c(4)),
+                        bin(BinOp::Mul, getl("i"), i32c(8)),
+                    );
+                    let slot_dst = bin(
+                        BinOp::Add,
+                        bin(BinOp::Add, getl("n"), i32c(4)),
+                        bin(BinOp::Mul, getl("i"), i32c(8)),
+                    );
+                    let slot_val = self.slot_rcopy_wir(elem, slot_src)?;
+                    body.push(N::Store { ptr: getl("n"), value: getl("len"), kind: WK::I32, offset: 0 });
+                    body.push(N::SetLocal { local: "i".into(), value: i32c(0) });
+                    body.push(N::Block {
+                        label: "done".into(),
+                        result: None,
+                        body: vec![N::Loop {
+                            label: "l".into(),
+                            body: vec![
+                                N::Br { target: "done".into(), cond: Some(bin(BinOp::Ge, getl("i"), getl("len"))) },
+                                N::Store { ptr: slot_dst, value: slot_val, kind: WK::I64, offset: 0 },
+                                N::SetLocal { local: "i".into(), value: bin(BinOp::Add, getl("i"), i32c(1)) },
+                                N::Br { target: "l".into(), cond: None },
+                            ],
+                        }],
+                    });
+                }
+                body.push(ret_biased);
+                Some((
+                    body,
+                    vec![
+                        WirLocal { name: "n".into(), ty: i32l() },
+                        WirLocal { name: "size".into(), ty: i32l() },
+                        WirLocal { name: "i".into(), ty: i32l() },
+                        WirLocal { name: "len".into(), ty: i32l() },
+                    ],
+                ))
+            }
+            EqShape::Tuple(shapes) => {
+                let nslots = shapes.len();
+                let mut body = vec![prologue];
+                body.extend(alloc(i32c((4 + 8 * nslots) as i32)));
+                // Copy the tag word (slot 0), then rcopy each field slot.
+                body.push(N::Store { ptr: getl("n"), value: load_i32(getl("p")), kind: WK::I32, offset: 0 });
+                for (i, fs) in shapes.iter().enumerate() {
+                    let off = (4 + 8 * i) as i32;
+                    let slot_val = self.slot_rcopy_wir(fs, bin(BinOp::Add, getl("p"), i32c(off)))?;
+                    body.push(N::Store { ptr: bin(BinOp::Add, getl("n"), i32c(off)), value: slot_val, kind: WK::I64, offset: 0 });
+                }
+                body.push(ret_biased);
+                Some((
+                    body,
+                    vec![
+                        WirLocal { name: "n".into(), ty: i32l() },
+                        WirLocal { name: "size".into(), ty: i32l() },
+                    ],
+                ))
+            }
+            _ => None,
+        }
+    }
+
     /// Build the `(body, locals)` of a structural-eq helper for `shape`. `None`
     /// for shapes/fields not yet handled (Adt, Dict, or a non-buildable nested
     /// field). Recurses through `slot_cmp_wir` for compound fields.
@@ -9655,6 +9853,15 @@ pub fn assemble_wir_module(
         for f in cg.ts_wir_helpers.values() {
             collect_called_funcs(&f.body, &mut called);
         }
+        // Generated rcopy helpers call `$ensure`, `$rcopy_str`, and each other.
+        // Only when a region actually reclaimed (so the `$rcopy_*` globals are
+        // declared); a helper generated for a region that then fell back to a plain
+        // block is an orphan and must not enter the module.
+        if cg.uses_region {
+            for f in cg.rcopy_wir_helpers.values() {
+                collect_called_funcs(&f.body, &mut called);
+            }
+        }
         // Lifted lambda bodies call `$mkN`/`$ensure`/prelude helpers and each
         // other; pull their reached helpers into the resolution set.
         for f in &cg.lambda_wir_funcs {
@@ -9748,6 +9955,15 @@ pub fn assemble_wir_module(
             }
             for f in cg.ts_wir_helpers.values() {
                 pruned_funcs.push(f.clone());
+            }
+            // Generated per-shape region copy-out helpers reached by a pointer
+            // `region:` reclaim. Gated on `uses_region` so a helper generated for a
+            // region that then fell back to a plain block stays out of the module
+            // (it references `$rcopy_*` globals only declared when `uses_region`).
+            if cg.uses_region {
+                for f in cg.rcopy_wir_helpers.values() {
+                    pruned_funcs.push(f.clone());
+                }
             }
             // Lifted lambda bodies, in table-index order (so `$__lamw{i}` lands at
             // table slot i, matching the code index baked into each closure object).
