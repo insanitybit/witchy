@@ -1443,6 +1443,28 @@ pub fn ends_with_helper() -> WirFunc {
 /// `$byte_to_char(s, bytelen) -> i32` — the count of UTF-8 *characters* in the
 /// first `bytelen` bytes of `s`. Continuation bytes (`0b10xxxxxx`) don't start a
 /// character, so they're skipped; every other byte increments the count.
+/// `$char_count(s: i32) -> i32` — the number of Unicode scalars in `s`: just
+/// `byte_to_char(s, len(s))`, reading the byte-length header itself so the caller
+/// evaluates `s` once. Mirrors the `string.char_count` legacy emission.
+pub fn char_count_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    WirFunc {
+        name: "char_count".into(),
+        params: vec![WirLocal { name: "s".into(), ty: WirTy::Str }],
+        ret: vec![WirTy::Bool], // i32
+        locals: vec![],
+        body: vec![N::Push(E::Call {
+            func: "byte_to_char".into(),
+            args: vec![
+                E::GetLocal("s".into()),
+                E::Load { ptr: Box::new(E::GetLocal("s".into())), kind: Kind::I32, offset: 0 },
+            ],
+        })],
+        raw_body: None,
+    }
+}
+
 pub fn byte_to_char_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
@@ -3231,6 +3253,13 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
         "byte_to_char" => Some(WirHelperSpec {
             func: byte_to_char_helper(),
             helper_deps: &[],
+            import_deps: &[],
+            uses_heap: false,
+            uses_table: false,
+        }),
+        "char_count" => Some(WirHelperSpec {
+            func: char_count_helper(),
+            helper_deps: &["byte_to_char"],
             import_deps: &[],
             uses_heap: false,
             uses_table: false,

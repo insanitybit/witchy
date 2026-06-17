@@ -7453,6 +7453,18 @@ impl Codegen {
                     Kind::I64,
                 )
             }
+            // `string.char_count(s)` — Unicode scalars in `s`, widened to the Int's
+            // i64. The `$char_count` helper reads the byte-length header itself, so
+            // `s` is evaluated once (binary path only; WAT keeps its legacy arm).
+            ("string.char_count", 1) if self.collect_wir => {
+                self.uses_byte_to_char = true;
+                let arg = self.lower_expr(&args[0])?;
+                Self::wir_convert(
+                    W::Call { func: "char_count".to_string(), args: vec![arg] },
+                    Kind::I32,
+                    Kind::I64,
+                )
+            }
             // `__render` to a String for the scalar shapes: Str passes through,
             // Int → `$int_to_string`, Bool → an interned "true"/"false" value-if.
             // Float and compound shapes keep their bespoke legacy emission. Gated

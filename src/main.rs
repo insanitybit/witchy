@@ -8367,6 +8367,12 @@ fn main(console: Console):
                 "fn main(console: Console):\n    var s = \"\"\n    var first = true\n    for w in [\"a\", \"b\", \"c\"]:\n        if first:\n            s = w\n            first = false\n        else:\n            s = s + \"-\" + w\n    print(console, s)\n",
                 vec!["a-b-c".to_string()],
             ),
+            // `string.char_count` (Unicode scalars, not bytes) via the `$char_count`
+            // → `$byte_to_char` helper — the blocker for parse_int/pad_*.
+            (
+                "fn main(console: Console):\n    print(console, __render(string.char_count(\"abc\")))\n    print(console, __render(string.char_count(\"héllo\")))\n",
+                vec!["3".to_string(), "5".to_string()],
+            ),
         ];
         let mut lowered_any = false;
         for (src, want) in cases {
