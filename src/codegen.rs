@@ -3682,6 +3682,26 @@ impl Codegen {
             Expr::Bool(b) => W::ConstI32(if *b { 1 } else { 0 }),
             Expr::Str(s) => W::StrPtr(self.intern(s)),
             Expr::Var(name) if self.is_plain_local_var(name) => W::GetLocal(name.clone()),
+            // A bare top-level function name used as a VALUE (`list.filter(xs,
+            // is_odd)`): materialize it as a forwarding closure `fn(p..): name(p..)`,
+            // reusing the lambda machinery — exactly as the WAT path's `Expr::Var`
+            // arm does. Only fires for a known function that isn't shadowed by a
+            // local; locals/globals/cap-state fields are handled elsewhere or bail.
+            Expr::Var(name)
+                if self.collect_wir
+                    && !self.locals.contains_key(name)
+                    && self.fn_params.contains_key(name) =>
+            {
+                let params = self.fn_params.get(name).cloned()?;
+                let args = params.iter().map(|p| Expr::Var(p.name.clone())).collect();
+                let body = Block {
+                    stmts: vec![Stmt::Expr(Expr::Call { name: name.clone(), args })],
+                    lines: vec![0],
+                    restrict: None,
+                    region: None,
+                };
+                return self.lower_lambda(&params, &body);
+            }
             Expr::Unary { op, expr } => match op {
                 // value-neutral on WASM (value semantics): lower the operand.
                 UnOp::Move | UnOp::Await => return self.lower_expr(expr),

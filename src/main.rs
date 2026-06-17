@@ -8462,6 +8462,12 @@ fn main(console: Console):
                 "type Adder:\n    Adder(fn(Int) -> Int)\nfn make(base: Int) -> Adder:\n    Adder(fn(x: Int): x + base)\nfn run(a: Adder, v: Int) -> Int:\n    match a:\n        Adder(f) -> f(v)\nfn main(console: Console):\n    let pair = [make(10), make(100)]\n    print(console, __render(run(list.at(pair, 0), 5)))\n    print(console, __render(run(list.at(pair, 1), 5)))\n",
                 vec!["15".to_string(), "105".to_string()],
             ),
+            // a bare top-level function name passed as a VALUE to a higher-order fn —
+            // materialized as a forwarding closure `fn(p): is_odd(p)`.
+            (
+                "fn is_odd(n: Int) -> Bool:\n    n % 2 == 1\nfn count_if(xs: List(Int), pred: fn(Int) -> Bool) -> Int:\n    var c = 0\n    for x in xs:\n        if pred(x):\n            c = c + 1\n    c\nfn main(console: Console):\n    print(console, __render(count_if([1, 2, 3, 4, 5], is_odd)))\n",
+                vec!["3".to_string()],
+            ),
         ];
         let mut lowered_any = false;
         for (src, want) in cases {
