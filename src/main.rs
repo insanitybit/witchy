@@ -4861,17 +4861,11 @@ fn yn(b: Bool) -> String:
             "101".to_string(),
             "err:nope".to_string(),
         ];
-        // `import result` brings the Result type's Ok/Err constructors into scope
-        // for codegen, so link first, then run each backend on the linked module.
-        let module = parser::parse_module(src).expect("parse");
-        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
-        typeck::check(&linked).expect("typecheck");
-        // `try` inside an `inout` fn does not yet lower to the WIR/binary path (it
-        // bails to the WAT sink in production too), so this test stays on the WAT
-        // codegen. wasmtime runs the WAT bytes directly.
-        let wat = codegen::compile_module(&linked).expect("compile");
-        assert_eq!(link_run(src), want.clone(), "interpreter (linked)");
-        assert_eq!(crate::run_wasm_bytes(wat.as_bytes()).expect("wasm run"), want, "compiled WASM must agree");
+        // `?` inside an `inout` fn now lowers on the binary path: the Err
+        // early-return carries the multi-result tuple (the Err value + each inout
+        // param), so the inout writeback still happens on the error path.
+        assert_eq!(link_run(src), want.clone(), "interpreter");
+        assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
     }
 
     /// The `encoding` module (hex/base64) must agree on both backends. WASM

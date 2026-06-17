@@ -4789,7 +4789,8 @@ impl Codegen {
             // `e?`: store the operand once, then a value-`if` on its tag — take the
             // success payload (tag 0, at `tmp+4`) or early-`return` the whole
             // Err/None. The `inout` epilogue variant stays in legacy.
-            Expr::Try(inner) if self.cur_fn_inout_params.is_empty() => {
+            Expr::Try(inner) => {
+                use crate::wir::WirNode as N;
                 let payload_kind =
                     self.match_payload_valtype(inner).map(valtype_kind).unwrap_or(Kind::I32);
                 let inner_w = self.lower_expr(inner)?;
@@ -4821,15 +4822,33 @@ impl Codegen {
                     Kind::F64 => W::ConstF64(0.0),
                     Kind::I32 => W::ConstI32(0),
                 };
+                // The Err path early-returns the Err Result. In an inout/own-ABI
+                // fn the return must carry the full multi-result tuple (the Err
+                // value, then each inout param's current value, then the own-cap),
+                // matching `assemble_wir_func`'s tail — so the inout writeback still
+                // happens on the `?` error path. Then a bare `Return(None)`.
+                let mut els: Vec<N> =
+                    if self.cur_fn_inout_params.is_empty() && self.cur_fn_own_param.is_none() {
+                        vec![N::Return(Some(W::GetLocal(tmp.clone())))]
+                    } else {
+                        let mut nodes = vec![N::Push(W::GetLocal(tmp.clone()))];
+                        for name in &self.cur_fn_inout_params {
+                            nodes.push(N::Push(W::GetLocal(name.clone())));
+                        }
+                        if self.cur_fn_own_param.is_some() {
+                            nodes.push(N::Push(W::ConstI32(0)));
+                        }
+                        nodes.push(N::Return(None));
+                        nodes
+                    };
+                // Unreachable, but keeps the `els` branch stack-typed at payload_kind.
+                els.push(N::Push(zero));
                 W::Seq(vec![
-                    crate::wir::WirNode::SetLocal { local: tmp.clone(), value: inner_w },
-                    crate::wir::WirNode::If {
+                    N::SetLocal { local: tmp.clone(), value: inner_w },
+                    N::If {
                         cond,
-                        then_: vec![crate::wir::WirNode::Push(payload)],
-                        els: vec![
-                            crate::wir::WirNode::Return(Some(W::GetLocal(tmp))),
-                            crate::wir::WirNode::Push(zero),
-                        ],
+                        then_: vec![N::Push(payload)],
+                        els,
                         result: Some(Self::wir_ty_for_kind(payload_kind)),
                     },
                 ])
