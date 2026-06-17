@@ -2063,6 +2063,32 @@ mod example_tests {
         interpreter::run_module(linked, ".", Vec::new()).expect("run")
     }
 
+    /// Resolve `src`'s `import`s against the bundled std and link the whole set —
+    /// the source-level analog of the CLI's `link_file` / the lib's
+    /// `resolve_std_only`. The COMPILED backend needs every reached std function
+    /// present (only builtins are inlined), so a single-module `linker::link` is
+    /// insufficient; the interpreter (`link_run`) tolerates it because it resolves
+    /// std at run time, but `compile_module_binary` does not.
+    fn resolve_std_src(src: &str) -> ast::Module {
+        use std::collections::{HashSet, VecDeque};
+        let entry = parser::parse_module(src).expect("parse");
+        let mut modules: Vec<(String, ast::Module)> = vec![("main".to_string(), entry.clone())];
+        let mut loaded: HashSet<String> = HashSet::from(["main".to_string()]);
+        let mut queue: VecDeque<ast::Module> = VecDeque::from([entry]);
+        while let Some(module) = queue.pop_front() {
+            for name in module.imports.clone() {
+                if !loaded.insert(name.clone()) {
+                    continue;
+                }
+                let source = crate::bundled_module(&name).expect("a bundled std module");
+                let parsed = parser::parse_module(source).expect("parse std module");
+                queue.push_back(parsed.clone());
+                modules.push((name, parsed));
+            }
+        }
+        crate::linker::link(modules, "main").expect("link")
+    }
+
     /// Link a single source as the entry module `t`, for performance-mode tests.
     fn link_mode(src: &str) -> ast::Module {
         let module = parser::parse_module(src).expect("parse");
@@ -2712,11 +2738,12 @@ fn main(console: Console):
     }
 
     fn wasm_run(src: &str) -> Vec<String> {
-        let module = parser::parse_module(src).expect("parse");
-        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        let linked = resolve_std_src(src);
         typeck::check(&linked).expect("typecheck");
-        let wat = codegen::compile_module(&linked).expect("compile");
-        crate::run_wat_capture(&wat).expect("wasm run")
+        let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+            .expect("compile")
+            .expect("the binary path lowers this program");
+        crate::run_wasm_bytes(&bytes).expect("wasm run")
     }
 
     /// `wasm_run` that also reads the exported `__witchy_reowns` counter —
@@ -2724,14 +2751,15 @@ fn main(console: Console):
     /// re-owns) or fell to the copying path (O(n) re-owns).
     fn wasm_run_reowns(src: &str) -> (Vec<String>, i64) {
         use crate::runtime::{Capabilities, Runtime};
-        let module = parser::parse_module(src).expect("parse");
-        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        let linked = resolve_std_src(src);
         typeck::check(&linked).expect("typecheck");
-        let wat = codegen::compile_module(&linked).expect("compile");
+        let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+            .expect("compile")
+            .expect("the binary path lowers this program");
         let mut rt = Runtime::batch().expect("runtime");
         let mut actor = rt
             .spawn(
-                wat.as_bytes(),
+                &bytes,
                 Capabilities { print: true, print_int: true, quiet: true, ..Default::default() },
                 crate::RUN_MEMORY_PAGES,
             )
