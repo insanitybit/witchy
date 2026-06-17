@@ -1184,6 +1184,105 @@ pub fn list_push_cap_helper() -> WirFunc {
     }
 }
 
+/// `$str_append_cap(s: i32, piece: i32, cap: i32) -> (i32, i32)` — the in-place
+/// string builder: a String is `[len(i32)][bytes]`. If the owned byte slack
+/// (`cap`) covers `len + plen`, copy `piece`'s bytes into `s` in place and bump
+/// its length (return `s` + `cap`); else grow to a doubled buffer. Bumps
+/// `$__witchy_reowns` on a zero cap. Mirrors `STR_APPEND_CAP_WAT`; multi-value
+/// early `return` restructured into `ret_ptr`/`ret_cap` + a dual tail Push.
+/// Calls `$ensure`; uses `$heap` + `$__witchy_reowns`.
+pub fn str_append_cap_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    let i32c = E::ConstI32;
+    let i64c = E::ConstI64;
+    let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+    let load = |p: E| E::Load { ptr: Box::new(p), kind: Kind::I32, offset: 0 };
+    let reowns_bump = N::If {
+        cond: E::Unary { op: UnOp::Not, kind: Kind::I32, arg: Box::new(getl("cap")) },
+        then_: vec![N::SetGlobal {
+            global: "__witchy_reowns".into(),
+            value: E::Binary {
+                op: BinOp::Add,
+                kind: Kind::I64,
+                lhs: Box::new(E::GetGlobal("__witchy_reowns".into())),
+                rhs: Box::new(i64c(1)),
+            },
+        }],
+        els: vec![],
+        result: None,
+    };
+    // cap >= need: append `piece`'s bytes at s+4+len in place.
+    let inplace = vec![
+        N::MemoryCopy {
+            dest: b(BinOp::Add, b(BinOp::Add, getl("s"), i32c(4)), getl("len")),
+            src: b(BinOp::Add, getl("piece"), i32c(4)),
+            len: getl("plen"),
+        },
+        N::Store { ptr: getl("s"), value: getl("need"), kind: Kind::I32, offset: 0 },
+        N::SetLocal { local: "ret_ptr".into(), value: getl("s") },
+        N::SetLocal { local: "ret_cap".into(), value: getl("cap") },
+    ];
+    // else: copy `s` then `piece` into a fresh doubled buffer.
+    let grow = vec![
+        N::SetLocal { local: "newcap".into(), value: b(BinOp::Mul, getl("need"), i32c(2)) },
+        N::If {
+            cond: b(BinOp::Lt, getl("newcap"), i32c(16)),
+            then_: vec![N::SetLocal { local: "newcap".into(), value: i32c(16) }],
+            els: vec![],
+            result: None,
+        },
+        N::Do(E::Call { func: "ensure".into(), args: vec![b(BinOp::Add, i32c(4), getl("newcap"))] }),
+        N::SetLocal { local: "new".into(), value: E::GetGlobal("heap".into()) },
+        N::Store { ptr: getl("new"), value: getl("need"), kind: Kind::I32, offset: 0 },
+        N::MemoryCopy {
+            dest: b(BinOp::Add, getl("new"), i32c(4)),
+            src: b(BinOp::Add, getl("s"), i32c(4)),
+            len: getl("len"),
+        },
+        N::MemoryCopy {
+            dest: b(BinOp::Add, b(BinOp::Add, getl("new"), i32c(4)), getl("len")),
+            src: b(BinOp::Add, getl("piece"), i32c(4)),
+            len: getl("plen"),
+        },
+        N::SetGlobal {
+            global: "heap".into(),
+            value: b(BinOp::Add, b(BinOp::Add, getl("new"), i32c(4)), getl("newcap")),
+        },
+        N::SetLocal { local: "ret_ptr".into(), value: getl("new") },
+        N::SetLocal { local: "ret_cap".into(), value: getl("newcap") },
+    ];
+    WirFunc {
+        name: "str_append_cap".into(),
+        params: vec![
+            WirLocal { name: "s".into(), ty: WirTy::Bool },
+            WirLocal { name: "piece".into(), ty: WirTy::Bool },
+            WirLocal { name: "cap".into(), ty: WirTy::Bool },
+        ],
+        ret: vec![WirTy::Bool, WirTy::Bool],
+        locals: ["len", "plen", "need", "new", "newcap", "ret_ptr", "ret_cap"]
+            .iter()
+            .map(|n| WirLocal { name: (*n).into(), ty: WirTy::Bool })
+            .collect(),
+        body: vec![
+            reowns_bump,
+            N::SetLocal { local: "len".into(), value: load(getl("s")) },
+            N::SetLocal { local: "plen".into(), value: load(getl("piece")) },
+            N::SetLocal { local: "need".into(), value: b(BinOp::Add, getl("len"), getl("plen")) },
+            N::If {
+                cond: b(BinOp::Ge, getl("cap"), getl("need")),
+                then_: inplace,
+                els: grow,
+                result: None,
+            },
+            N::Push(getl("ret_ptr")),
+            N::Push(getl("ret_cap")),
+        ],
+        raw_body: None,
+    }
+}
+
 /// `$list_push(list: i32, x: i64) -> i32` — the non-in-place append: always
 /// allocates a fresh `(len+1)`-element buffer, copies the existing elements,
 /// writes `x` in the new tail slot, and returns the new pointer. (The in-place
@@ -4167,6 +4266,13 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
         "dict_insert_cap" => Some(WirHelperSpec {
             func: dict_insert_cap_helper(),
             helper_deps: &["dict_find", "ensure"],
+            import_deps: &[],
+            uses_heap: true,
+            uses_table: false,
+        }),
+        "str_append_cap" => Some(WirHelperSpec {
+            func: str_append_cap_helper(),
+            helper_deps: &["ensure"],
             import_deps: &[],
             uses_heap: true,
             uses_table: false,

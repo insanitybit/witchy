@@ -3081,6 +3081,41 @@ impl Codegen {
                         });
                         inplace_sites += 1;
                         tail_is_value = false;
+                    } else if self.collect_wir
+                        && self.inplace_push.contains(name)
+                        && is_self_assign_shape(name, value, &self.summaries)
+                        && self_concat_pieces(name, value).is_some()
+                    {
+                        // `s = s + a + b`: the in-place string builder via
+                        // `$str_append_cap` (append each piece into owned byte
+                        // slack), mirroring the list/dict fast paths. Without it the
+                        // plain rebind re-concatenates the whole string each
+                        // statement — O(n²) bytes for a growing buffer. A dirty
+                        // first piece forces a zero token (re-own → grow-and-copy,
+                        // preserving any alias); later pieces reuse the fresh slack.
+                        let pieces = self_concat_pieces(name, value).expect("guarded Some above");
+                        let dirty = match self.facts_stack.last() {
+                            Some((facts, _, _)) if facts.accumulators.contains(name) => {
+                                facts.is_dirty(stmt)
+                            }
+                            _ => true,
+                        };
+                        self.uses_str_append_cap = true;
+                        for (i, piece) in pieces.into_iter().enumerate() {
+                            let pw = self.lower_expr(piece)?;
+                            let cap = if i == 0 && dirty {
+                                W::ConstI32(0)
+                            } else {
+                                W::GetLocal(format!("{name}__cap"))
+                            };
+                            seq.push(N::CallStoreMulti {
+                                func: "str_append_cap".to_string(),
+                                args: vec![W::GetLocal(name.clone()), pw, cap],
+                                dests: vec![name.clone(), format!("{name}__cap")],
+                            });
+                        }
+                        inplace_sites += 1;
+                        tail_is_value = false;
                     } else if self.str_fields.contains_key(name)
                         || self.list_fields.contains_key(name)
                         || self.globals.contains(name)

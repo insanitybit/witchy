@@ -8123,6 +8123,26 @@ fn main(console: Console):
         assert!(reowns <= 2, "expected O(1) re-owns for the in-place dict insert, got {reowns}");
     }
 
+    /// The in-place STRING builder on the binary path: `s = s + piece` in a loop
+    /// lowers to `$str_append_cap` (append bytes into owned slack) instead of
+    /// re-concatenating the whole string each statement. Proven both ways: values
+    /// agree with the interpreter, AND `$__witchy_reowns` stays O(1).
+    #[test]
+    fn wir_inplace_str_append_is_o1_reowns() {
+        let src = "fn build(n: Int) -> String:\n    var s = \"\"\n    var i = 0\n    while i < n:\n        s = s + \"x\"\n        i = i + 1\n    s\n\nfn main(console: Console):\n    let r = build(500)\n    print(console, \"${string.length(r)}\")\n";
+        let want = vec!["500".to_string()];
+        let module = parser::parse_module(src).expect("parse");
+        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        typeck::check(&linked).expect("typeck");
+        assert_eq!(link_run(src), want, "interpreter oracle");
+        let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+            .expect("compile_module_binary")
+            .expect("the string builder takes the WIR binary path");
+        let (out, reowns) = binary_run_reowns(&bytes);
+        assert_eq!(out, want, "binary output");
+        assert!(reowns <= 2, "expected O(1) re-owns for the in-place string builder, got {reowns}");
+    }
+
     /// Criterion-2: the slot-elimination pass shows a MEASURABLE improvement on a
     /// real lowered program. `[list.at(xs, 0)]` (with `xs: List(Bool)`) reads an
     /// i64 slot, narrows it to the bool's i32, then re-widens it to store in the
