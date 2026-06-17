@@ -3219,6 +3219,71 @@ pub fn string_from_code_helper() -> WirFunc {
     }
 }
 
+/// `$build_args() -> i32` — the `Args` list, sized by `args_size` and filled by
+/// `write_pending_list`. Mirrors `BUILD_ARGS_WAT`. Calls `$ensure`; uses `$heap`.
+pub fn build_args_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+    WirFunc {
+        name: "build_args".into(),
+        params: vec![],
+        ret: vec![WirTy::Bool],
+        locals: vec![
+            WirLocal { name: "size".into(), ty: WirTy::Bool },
+            WirLocal { name: "res".into(), ty: WirTy::Bool },
+        ],
+        body: vec![
+            N::SetLocal { local: "size".into(), value: E::CallHost { import: "args_size".into(), args: vec![] } },
+            N::Do(E::Call { func: "ensure".into(), args: vec![getl("size")] }),
+            N::SetLocal { local: "res".into(), value: E::GetGlobal("heap".into()) },
+            N::Do(E::CallHost { import: "write_pending_list".into(), args: vec![getl("res")] }),
+            N::SetGlobal { global: "heap".into(), value: b(BinOp::Add, getl("res"), getl("size")) },
+            N::Push(getl("res")),
+        ],
+        raw_body: None,
+    }
+}
+
+/// `$compiler_footprint(src: i32) -> i32` (and the 2-arg `$compiler_diff`): the
+/// host computes a JSON byte length, then fills a fresh `[len][bytes]` cell.
+/// Mirrors `COMPILER_FOOTPRINT_WAT` / `COMPILER_DIFF_WAT`. `name`/`import` select
+/// which; `nargs` is 1 (footprint) or 2 (diff). Calls `$ensure`; uses `$heap`.
+fn compiler_introspect_helper(name: &str, import: &str, nargs: usize) -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    let i32c = E::ConstI32;
+    let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+    let params: Vec<WirLocal> = (0..nargs)
+        .map(|i| WirLocal { name: format!("a{i}"), ty: WirTy::Bool })
+        .collect();
+    let host_args: Vec<E> = (0..nargs).map(|i| getl(&format!("a{i}"))).collect();
+    WirFunc {
+        name: name.into(),
+        params,
+        ret: vec![WirTy::Str],
+        locals: vec![
+            WirLocal { name: "len".into(), ty: WirTy::Bool },
+            WirLocal { name: "res".into(), ty: WirTy::Bool },
+        ],
+        body: vec![
+            N::SetLocal { local: "len".into(), value: E::CallHost { import: import.into(), args: host_args } },
+            N::Do(E::Call { func: "ensure".into(), args: vec![b(BinOp::Add, getl("len"), i32c(4))] }),
+            N::SetLocal { local: "res".into(), value: E::GetGlobal("heap".into()) },
+            N::Store { ptr: getl("res"), value: getl("len"), kind: Kind::I32, offset: 0 },
+            N::Do(E::CallHost { import: "fill_pending".into(), args: vec![b(BinOp::Add, getl("res"), i32c(4))] }),
+            N::SetGlobal {
+                global: "heap".into(),
+                value: b(BinOp::Add, b(BinOp::Add, getl("res"), i32c(4)), getl("len")),
+            },
+            N::Push(getl("res")),
+        ],
+        raw_body: None,
+    }
+}
+
 /// A WIR-native prelude helper plus the module-level resources it needs (so a
 /// pruned module declares only the imports/globals/table its reached helpers
 /// actually touch — capability-minimal).
@@ -3426,6 +3491,27 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             func: string_from_code_helper(),
             helper_deps: &["ensure"],
             import_deps: &["string_from_code"],
+            uses_heap: true,
+            uses_table: false,
+        }),
+        "build_args" => Some(WirHelperSpec {
+            func: build_args_helper(),
+            helper_deps: &["ensure"],
+            import_deps: &["args_size", "write_pending_list"],
+            uses_heap: true,
+            uses_table: false,
+        }),
+        "compiler_footprint" => Some(WirHelperSpec {
+            func: compiler_introspect_helper("compiler_footprint", "compiler_footprint_len", 1),
+            helper_deps: &["ensure"],
+            import_deps: &["compiler_footprint_len", "fill_pending"],
+            uses_heap: true,
+            uses_table: false,
+        }),
+        "compiler_diff" => Some(WirHelperSpec {
+            func: compiler_introspect_helper("compiler_diff", "compiler_diff_len", 2),
+            helper_deps: &["ensure"],
+            import_deps: &["compiler_diff_len", "fill_pending"],
             uses_heap: true,
             uses_table: false,
         }),
