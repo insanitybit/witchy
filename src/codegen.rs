@@ -3814,7 +3814,14 @@ impl Codegen {
                 };
                 let is_scalar =
                     matches!(shape, Some(EqShape::Int | EqShape::Bool | EqShape::Float));
-                if !is_scalar || self.wm_level >= WM_POOL {
+                // A POINTER result lives on the reclaimed heap, so it needs its
+                // per-shape `$rcopy_*` deep-copy (only String so far; other compound
+                // shapes still lower as a plain block until their generator lands).
+                let rcopy_helper = match &shape {
+                    Some(EqShape::Str) => Some("rcopy_str"),
+                    _ => None,
+                };
+                if self.wm_level >= WM_POOL || (!is_scalar && rcopy_helper.is_none()) {
                     return Some(W::Seq(self.lower_block(b)?));
                 }
                 let wm = format!("__witchy_wm_{}", self.wm_level);
@@ -3832,15 +3839,61 @@ impl Codegen {
                     value: W::GetGlobal("heap".to_string()),
                 }];
                 seq.extend(body);
-                seq.push(N::SetLocal {
-                    local: MATCH_TMP.to_string(),
-                    value: W::ToSlot(Box::new(tail), Self::wir_kind(body_kind)),
+                if is_scalar {
+                    seq.push(N::SetLocal {
+                        local: MATCH_TMP.to_string(),
+                        value: W::ToSlot(Box::new(tail), Self::wir_kind(body_kind)),
+                    });
+                    seq.push(N::SetGlobal { global: "heap".to_string(), value: W::GetLocal(wm) });
+                    seq.push(N::Push(W::FromSlot(
+                        Box::new(W::GetLocal(MATCH_TMP.to_string())),
+                        Self::wir_kind(body_kind),
+                    )));
+                    return Some(W::Seq(seq));
+                }
+                // Pointer reclaim: stash the result ptr, set the rcopy globals (wm /
+                // temp base = heap / slide delta), deep-copy it ABOVE the live data
+                // (the helper returns a pre-biased ptr), `memory.copy` the finished
+                // block down to the watermark, advance `$heap` past it, return the ptr.
+                self.uses_region = true;
+                let helper = rcopy_helper.expect("guarded pointer shape").to_string();
+                let i32sub = |l: W, r: W| W::Binary {
+                    op: crate::wir::BinOp::Sub,
+                    kind: crate::wir::Kind::I32,
+                    lhs: Box::new(l),
+                    rhs: Box::new(r),
+                };
+                let copied_len =
+                    || i32sub(W::GetGlobal("heap".to_string()), W::GetGlobal("rcopy_base".to_string()));
+                seq.push(N::SetLocal { local: TUPLE_TMP.to_string(), value: tail });
+                seq.push(N::SetGlobal { global: "rcopy_wm".to_string(), value: W::GetLocal(wm.clone()) });
+                seq.push(N::SetGlobal {
+                    global: "rcopy_base".to_string(),
+                    value: W::GetGlobal("heap".to_string()),
                 });
-                seq.push(N::SetGlobal { global: "heap".to_string(), value: W::GetLocal(wm) });
-                seq.push(N::Push(W::FromSlot(
-                    Box::new(W::GetLocal(MATCH_TMP.to_string())),
-                    Self::wir_kind(body_kind),
-                )));
+                seq.push(N::SetGlobal {
+                    global: "rcopy_delta".to_string(),
+                    value: i32sub(W::GetGlobal("heap".to_string()), W::GetLocal(wm.clone())),
+                });
+                seq.push(N::SetLocal {
+                    local: TUPLE_TMP.to_string(),
+                    value: W::Call { func: helper, args: vec![W::GetLocal(TUPLE_TMP.to_string())] },
+                });
+                seq.push(N::MemoryCopy {
+                    dest: W::GetLocal(wm.clone()),
+                    src: W::GetGlobal("rcopy_base".to_string()),
+                    len: copied_len(),
+                });
+                seq.push(N::SetGlobal {
+                    global: "heap".to_string(),
+                    value: W::Binary {
+                        op: crate::wir::BinOp::Add,
+                        kind: crate::wir::Kind::I32,
+                        lhs: Box::new(W::GetLocal(wm)),
+                        rhs: Box::new(copied_len()),
+                    },
+                });
+                seq.push(N::Push(W::GetLocal(TUPLE_TMP.to_string())));
                 return Some(W::Seq(seq));
             }
             // `match` on scalar patterns; non-scalar arms fall through to legacy.
@@ -9732,7 +9785,7 @@ pub fn assemble_wir_module(
                 body: run_body,
                 raw_body: None,
             });
-            let pruned_globals = if uses_heap {
+            let mut pruned_globals = if uses_heap {
                 vec![
                     WirGlobal {
                         name: "heap".into(),
@@ -9752,6 +9805,29 @@ pub fn assemble_wir_module(
             } else {
                 Vec::new()
             };
+            // Region copy-out scratch globals: the watermark / temp base / slide delta
+            // the `$rcopy_*` helpers read, and the exported `$__region_copy_bytes`
+            // counter. Declared only when a pointer `region:` reclaim is reached.
+            if cg.uses_region {
+                for (name, ex) in
+                    [("rcopy_wm", false), ("rcopy_base", false), ("rcopy_delta", false)]
+                {
+                    pruned_globals.push(WirGlobal {
+                        name: name.into(),
+                        kind: WK::I32,
+                        mutable: true,
+                        init: GlobalInit::I32(0),
+                        export: if ex { Some(name.into()) } else { None },
+                    });
+                }
+                pruned_globals.push(WirGlobal {
+                    name: "__region_copy_bytes".into(),
+                    kind: WK::I64,
+                    mutable: true,
+                    init: GlobalInit::I64(0),
+                    export: Some("__region_copy_bytes".into()),
+                });
+            }
             let data: Vec<DataSegment> = cg
                 .strings
                 .iter()

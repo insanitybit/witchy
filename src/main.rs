@@ -8483,6 +8483,14 @@ fn main(console: Console):
                 "fn bump(inout n: Int):\n    n = n + 1\nfn add(inout n: Int, by: Int):\n    n = n + by\nfn main(console: Console):\n    var a = 0\n    bump(a)\n    bump(a)\n    bump(a)\n    add(a, 10)\n    print(console, __render(a))\n",
                 vec!["13".to_string()],
             ),
+            // a `region -> String:` — a POINTER result reclaimed via `$rcopy_str`
+            // (deep-copy the region-born string down to the watermark, return the
+            // biased ptr). The following `let after` allocates right where the region
+            // was reclaimed, so a bad copy/slide would corrupt it.
+            (
+                "fn main(console: Console):\n    let s = region -> String:\n        var acc = \"\"\n        for i in 0..5:\n            acc = acc + \"x\"\n        acc\n    let after = \"ok\"\n    print(console, s)\n    print(console, after)\n",
+                vec!["xxxxx".to_string(), "ok".to_string()],
+            ),
         ];
         let mut lowered_any = false;
         for (src, want) in cases {

@@ -3306,6 +3306,54 @@ fn host_call_helper(name: &str, import: &str, nargs: usize) -> WirFunc {
     }
 }
 
+/// `$rcopy_str(p: i32) -> i32` — the region copy-out for a String. If `p` is below
+/// `$rcopy_wm` it's parent-side (shared, not copied) → return it. Otherwise copy the
+/// `[len][bytes]` cell to a fresh block above the live data (counting the bytes in
+/// `$__region_copy_bytes`), and return the pointer PRE-BIASED by `$rcopy_delta` to its
+/// post-slide address. Mirrors `EqShape::Str` in `ensure_rcopy_helper`. The compound
+/// shapes (List/Tuple/Record/Adt/Dict) get their own generated rcopy helpers later.
+pub fn rcopy_str_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    let i32c = E::ConstI32;
+    let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+    let load_i32 = |p: E| E::Load { ptr: Box::new(p), kind: Kind::I32, offset: 0 };
+    WirFunc {
+        name: "rcopy_str".into(),
+        params: vec![WirLocal { name: "p".into(), ty: WirTy::Str }],
+        ret: vec![WirTy::Bool],
+        locals: vec![
+            WirLocal { name: "n".into(), ty: WirTy::Bool },
+            WirLocal { name: "size".into(), ty: WirTy::Bool },
+        ],
+        body: vec![
+            N::If {
+                cond: b(BinOp::LtU, getl("p"), E::GetGlobal("rcopy_wm".into())),
+                then_: vec![N::Return(Some(getl("p")))],
+                els: vec![],
+                result: None,
+            },
+            N::SetLocal { local: "size".into(), value: b(BinOp::Add, i32c(4), load_i32(getl("p"))) },
+            N::Do(E::Call { func: "ensure".into(), args: vec![getl("size")] }),
+            N::SetLocal { local: "n".into(), value: E::GetGlobal("heap".into()) },
+            N::SetGlobal { global: "heap".into(), value: b(BinOp::Add, getl("n"), getl("size")) },
+            N::SetGlobal {
+                global: "__region_copy_bytes".into(),
+                value: E::Binary {
+                    op: BinOp::Add,
+                    kind: Kind::I64,
+                    lhs: Box::new(E::GetGlobal("__region_copy_bytes".into())),
+                    rhs: Box::new(E::Convert { from: Kind::I32, to: Kind::I64, arg: Box::new(getl("size")) }),
+                },
+            },
+            N::MemoryCopy { dest: getl("n"), src: getl("p"), len: getl("size") },
+            N::Push(b(BinOp::Sub, getl("n"), E::GetGlobal("rcopy_delta".into()))),
+        ],
+        raw_body: None,
+    }
+}
+
 /// A WIR-native prelude helper plus the module-level resources it needs (so a
 /// pruned module declares only the imports/globals/table its reached helpers
 /// actually touch — capability-minimal).
@@ -3556,6 +3604,15 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             helper_deps: &[],
             import_deps: &["dir_is_dir"],
             uses_heap: false,
+            uses_table: false,
+        }),
+        // The region globals ($rcopy_wm/$rcopy_base/$rcopy_delta/$__region_copy_bytes)
+        // this touches are declared by `assemble` when `cg.uses_region` is set.
+        "rcopy_str" => Some(WirHelperSpec {
+            func: rcopy_str_helper(),
+            helper_deps: &["ensure"],
+            import_deps: &[],
+            uses_heap: true,
             uses_table: false,
         }),
         "float_to_str" => Some(WirHelperSpec {
