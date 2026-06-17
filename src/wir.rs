@@ -3329,6 +3329,49 @@ fn host_void_helper(name: &str, import: &str, nargs: usize) -> WirFunc {
     }
 }
 
+/// `$net_recv_<kind>(s: i32 [, n: i64]) -> i32` — read a length-prefixed string off
+/// socket `s`: ask the host for the byte count (`$<len_import>`), `$ensure` room, write
+/// the `[len]` header, `$fill_pending` the bytes into the buffer, bump `$heap` past the
+/// cell, and return the string pointer. Mirrors the WAT `NET_RECV_*` prelude bodies.
+fn net_recv_helper(name: &str, len_import: &str, extra_n: bool) -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    let i32c = E::ConstI32;
+    let add = |l: E, r: E| E::Binary { op: BinOp::Add, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+    let mut params = vec![WirLocal { name: "s".into(), ty: WirTy::Bool }];
+    let mut len_args = vec![getl("s")];
+    if extra_n {
+        params.push(WirLocal { name: "n".into(), ty: WirTy::Int });
+        len_args.push(getl("n"));
+    }
+    WirFunc {
+        name: name.into(),
+        params,
+        ret: vec![WirTy::Bool],
+        locals: vec![
+            WirLocal { name: "len".into(), ty: WirTy::Bool },
+            WirLocal { name: "res".into(), ty: WirTy::Bool },
+        ],
+        body: vec![
+            N::SetLocal {
+                local: "len".into(),
+                value: E::CallHost { import: len_import.into(), args: len_args },
+            },
+            N::Do(E::Call { func: "ensure".into(), args: vec![add(getl("len"), i32c(4))] }),
+            N::SetLocal { local: "res".into(), value: E::GetGlobal("heap".into()) },
+            N::Store { ptr: getl("res"), value: getl("len"), kind: Kind::I32, offset: 0 },
+            N::Do(E::CallHost { import: "fill_pending".into(), args: vec![add(getl("res"), i32c(4))] }),
+            N::SetGlobal {
+                global: "heap".into(),
+                value: add(add(getl("res"), i32c(4)), getl("len")),
+            },
+            N::Push(getl("res")),
+        ],
+        raw_body: None,
+    }
+}
+
 /// `$rcopy_str(p: i32) -> i32` — the region copy-out for a String. If `p` is below
 /// `$rcopy_wm` it's parent-side (shared, not copied) → return it. Otherwise copy the
 /// `[len][bytes]` cell to a fresh block above the live data (counting the bytes in
@@ -3697,6 +3740,27 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             helper_deps: &[],
             import_deps: &["net_close"],
             uses_heap: false,
+            uses_table: false,
+        }),
+        "net_recv_line" => Some(WirHelperSpec {
+            func: net_recv_helper("net_recv_line", "net_recv_line_len", false),
+            helper_deps: &["ensure"],
+            import_deps: &["net_recv_line_len", "fill_pending"],
+            uses_heap: true,
+            uses_table: false,
+        }),
+        "net_recv_all" => Some(WirHelperSpec {
+            func: net_recv_helper("net_recv_all", "net_recv_all_len", false),
+            helper_deps: &["ensure"],
+            import_deps: &["net_recv_all_len", "fill_pending"],
+            uses_heap: true,
+            uses_table: false,
+        }),
+        "net_recv_bytes" => Some(WirHelperSpec {
+            func: net_recv_helper("net_recv_bytes", "net_recv_bytes_len", true),
+            helper_deps: &["ensure"],
+            import_deps: &["net_recv_bytes_len", "fill_pending"],
+            uses_heap: true,
             uses_table: false,
         }),
         // The region globals ($rcopy_wm/$rcopy_base/$rcopy_delta/$__region_copy_bytes)
