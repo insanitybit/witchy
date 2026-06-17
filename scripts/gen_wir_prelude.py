@@ -60,8 +60,6 @@ PRELUDE_HEADER = r'''//! Pre-compiled static runtime prelude for the WIR (witchy
 //! sync with codegen.rs; `scripts/gen_wir_prelude.py` regenerates this file
 //! from it (this file is GENERATED — edit the generator, not this output).
 
-#![cfg(feature = "native")]
-
 use std::sync::OnceLock;
 use wasmparser::{CompositeInnerType, Operator, Parser, Payload, TypeRef, ValType};
 

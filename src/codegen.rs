@@ -9890,7 +9890,6 @@ pub fn compile_module_with(
 /// proven WAT sink. The `wir_opt` slot-elimination pass runs before encoding,
 /// and the assembled binary is wasm-validated — an assembly slip falls back
 /// rather than shipping a malformed module.
-#[cfg(feature = "native")]
 pub fn compile_module_binary(
     module: &Module,
     tags: &HashMap<String, u32>,
@@ -9933,7 +9932,6 @@ pub fn compile_module_binary(
 /// not fully lower to WIR or the program needs something outside the static
 /// prelude. Split out from `compile_module_binary` so tests can compare the
 /// optimized vs. unoptimized encoding (the slot-elimination differential).
-#[cfg(feature = "native")]
 pub fn assemble_wir_module(
     module: &Module,
     tags: &HashMap<String, u32>,
@@ -10311,7 +10309,6 @@ pub fn assemble_wir_module(
 /// Collect every function name a `WirSeq` calls directly (`Call{func}`),
 /// recursively. Used by `assemble_wir_module` to find which prelude helpers a
 /// program reaches.
-#[cfg(feature = "native")]
 fn collect_called_funcs(seq: &crate::wir::WirSeq, out: &mut std::collections::HashSet<String>) {
     use crate::wir::{WirExpr as E, WirNode as N};
     fn expr(e: &E, out: &mut std::collections::HashSet<String>) {
@@ -10394,7 +10391,6 @@ fn collect_called_funcs(seq: &crate::wir::WirSeq, out: &mut std::collections::Ha
 /// calls in USER code (e.g. `dir.subdir`, `now`, `recv_*`) — which the pruned
 /// path can't account for, so such programs must defer to the WAT sink. (Helper
 /// host calls are accounted for via the registry's `import_deps` instead.)
-#[cfg(feature = "native")]
 fn collect_called_host_imports(seq: &crate::wir::WirSeq, out: &mut std::collections::HashSet<String>) {
     use crate::wir::{WirExpr as E, WirNode as N};
     fn expr(e: &E, out: &mut std::collections::HashSet<String>) {

@@ -47,7 +47,6 @@
 //! sync with codegen.rs; `scripts/gen_wir_prelude.py` regenerates this file
 //! from it (this file is GENERATED — edit the generator, not this output).
 
-#![cfg(feature = "native")]
 // The mirrored `*_WAT` helper consts are assembled into the prelude blob via the
 // generated module text; some are referenced only there, so they read as dead to
 // the compiler. (Mirrors `wir.rs`'s allow.) The prelude isn't wired into the

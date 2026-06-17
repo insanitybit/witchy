@@ -39,7 +39,6 @@ pub mod value;
 pub mod wir;
 pub mod wir_encode;
 pub mod wir_opt;
-#[cfg(feature = "native")]
 pub mod wir_prelude;
 
 /// Resolve a single-source program against the BUNDLED standard library only
@@ -83,17 +82,13 @@ pub fn compile_source(src: &str) -> Result<Vec<u8>, String> {
     typeck::check(&linked).map_err(|e| e.to_string())?;
     // Prefer the WIR → wasm-binary pipeline (no `wat::parse_str`): when the whole
     // module lowers and reaches only WIR-native prelude helpers, it emits a
-    // capability-correct binary directly. Anything else falls back to the WAT
-    // sink. (Native only — the wasm playground has no wasmtime/wasmparser, so it
-    // keeps the WAT path.)
-    #[cfg(feature = "native")]
+    // capability-correct binary directly. This now runs on EVERY target (the
+    // browser playground too: `wasmparser`/`wasm-encoder` are pure Rust). Anything
+    // not yet migrated still falls back to the WAT sink below.
+    if let Some(bytes) = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+        .map_err(|e| format!("cannot compile to WASM: {e}"))?
     {
-        if let Some(bytes) =
-            codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
-                .map_err(|e| format!("cannot compile to WASM: {e}"))?
-        {
-            return Ok(bytes);
-        }
+        return Ok(bytes);
     }
     let wat =
         codegen::compile_module(&linked).map_err(|e| format!("cannot compile to WASM: {e}"))?;
