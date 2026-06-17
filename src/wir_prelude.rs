@@ -1494,6 +1494,52 @@ fn func_names() -> Vec<String> {
     v
 }
 
+/// Parse the host-import declarations straight out of `PRELUDE_IMPORTS_WAT` — the
+/// same `Vec<PreludeImport>` the committed blob yields, but with NO `wat` crate.
+/// Each line is `(import "witchy" "<name>" (func $<alias> (param T…)* (result T…)?))`:
+/// `<name>` is the second quoted string; params/results are the whitespace-split
+/// valtypes inside the `(param …)` / `(result …)` groups. The step that lets
+/// `build_prelude` stop depending on a WAT-assembled blob.
+fn parse_prelude_imports(wat: &str) -> Vec<PreludeImport> {
+    fn ty(t: &str) -> WasmTy {
+        match t {
+            "i32" => WasmTy::I32,
+            "i64" => WasmTy::I64,
+            "f32" => WasmTy::F32,
+            "f64" => WasmTy::F64,
+            other => panic!("prelude import uses an unexpected valtype `{other}`"),
+        }
+    }
+    let mut out = Vec::new();
+    for line in wat.lines() {
+        let line = line.trim();
+        if !line.starts_with("(import") {
+            continue;
+        }
+        let mut quoted = line.split('"');
+        quoted.next(); // text before the first quote
+        let module = quoted.next().unwrap_or_default().to_string();
+        quoted.next(); // text between the two quoted strings
+        let name = quoted.next().unwrap_or_default().to_string();
+        let mut params = Vec::new();
+        let mut rest = line;
+        while let Some(i) = rest.find("(param ") {
+            let after = &rest[i + "(param ".len()..];
+            let end = after.find(')').expect("unterminated (param …) in a prelude import");
+            params.extend(after[..end].split_whitespace().map(ty));
+            rest = &after[end..];
+        }
+        let mut results = Vec::new();
+        if let Some(i) = line.find("(result ") {
+            let after = &line[i + "(result ".len()..];
+            let end = after.find(')').expect("unterminated (result …) in a prelude import");
+            results.extend(after[..end].split_whitespace().map(ty));
+        }
+        out.push(PreludeImport { module, name, params, results });
+    }
+    out
+}
+
 fn build_prelude() -> Prelude {
     // The prelude is committed pre-assembled (`src/prelude.wasm`) so the runtime
     // never depends on the `wat` crate. `prelude_wat` stays the source of truth;
@@ -1637,6 +1683,25 @@ pub fn prelude() -> &'static Prelude {
 #[cfg(feature = "native")]
 mod tests {
     use super::*;
+
+    /// Ground-truth check for the pure-Rust import parser: parsing
+    /// `PRELUDE_IMPORTS_WAT` directly yields EXACTLY the imports the committed
+    /// `wat`-assembled blob does (same order, names, params, results). Lets
+    /// `build_prelude` eventually source its imports from Rust, not a WAT blob.
+    #[test]
+    fn parsed_prelude_imports_match_the_blob() {
+        let blob = build_prelude().imports;
+        let parsed = parse_prelude_imports(PRELUDE_IMPORTS_WAT);
+        assert_eq!(parsed.len(), blob.len(), "import count: parsed {} vs blob {}", parsed.len(), blob.len());
+        for (p, b) in parsed.iter().zip(&blob) {
+            assert_eq!(
+                format!("{:?}", (&p.module, &p.name, &p.params, &p.results)),
+                format!("{:?}", (&b.module, &b.name, &b.params, &b.results)),
+                "import `{}` differs between the parser and the blob",
+                p.name,
+            );
+        }
+    }
 
     #[test]
     fn prelude_text_assembles() {
