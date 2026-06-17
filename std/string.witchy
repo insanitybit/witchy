@@ -23,6 +23,12 @@ pub fn char_count(s: String) -> Int:
 pub fn chars(s: String) -> List(String):
     string.chars(s)
 
+// The single character (as a String) for a Unicode scalar value — the inverse
+// of reading a code point. An out-of-range or surrogate value yields U+FFFD
+// (the replacement character), never an error. Powers the JSON `\u` decoder.
+pub fn from_code(code: Int) -> String:
+    string.from_code(code)
+
 // Split on every occurrence of `sep`.
 pub fn split(s: String, sep: String) -> List(String):
     string.split(s, sep)

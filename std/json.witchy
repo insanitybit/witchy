@@ -281,6 +281,11 @@ fn scan_string(s: String, start: Int) -> Result((String, Int), String):
         else if c == "\\":
             if j + 1 >= n:
                 return Err("unterminated escape")
+            else if string.substring(s, j + 1, j + 2) == "u":
+                let r = scan_unicode(s, j, n)?
+                let (decoded, k) = r
+                acc = acc + decoded
+                j = k
             else:
                 acc = acc + unescape(string.substring(s, j + 1, j + 2))
                 j = j + 2
@@ -300,6 +305,43 @@ fn unescape(e: String) -> String:
         "/"
     else:
         e
+
+// One hex digit (0-9, a-f, A-F) to its 0..15 value, or -1 if not a hex digit.
+fn hex_val(c: String) -> Int:
+    string.index_of("0123456789abcdef", string.to_lower(c))
+
+// The 16-bit value of the four hex digits at `j`, or -1 if any is not hex.
+fn hex4(s: String, j: Int) -> Int:
+    let a = hex_val(string.substring(s, j, j + 1))
+    let b = hex_val(string.substring(s, j + 1, j + 2))
+    let c = hex_val(string.substring(s, j + 2, j + 3))
+    let d = hex_val(string.substring(s, j + 3, j + 4))
+    if a < 0 || b < 0 || c < 0 || d < 0:
+        -1
+    else:
+        a * 4096 + b * 256 + c * 16 + d
+
+// Decode a `\uXXXX` escape (with `j` at the backslash). A high surrogate
+// (U+D800..U+DBFF) is combined with the following `\uXXXX` low surrogate into a
+// single astral code point — how JSON encodes characters beyond the BMP.
+// Returns the decoded character and the index just past the escape.
+fn scan_unicode(s: String, j: Int, n: Int) -> Result((String, Int), String):
+    if j + 6 > n:
+        return Err("incomplete \\u escape")
+    let cp = hex4(s, j + 2)
+    if cp < 0:
+        return Err("invalid \\u escape")
+    if cp >= 55296 && cp <= 56319:
+        if j + 12 > n || string.substring(s, j + 6, j + 8) != "\\u":
+            return Err("unpaired high surrogate")
+        let lo = hex4(s, j + 8)
+        if lo < 56320 || lo > 57343:
+            return Err("invalid low surrogate")
+        Ok((string.from_code(65536 + (cp - 55296) * 1024 + (lo - 56320)), j + 12))
+    else if cp >= 56320 && cp <= 57343:
+        Err("unexpected low surrogate")
+    else:
+        Ok((string.from_code(cp), j + 6))
 
 fn parse_array(s: String, i: Int) -> Result((Json, Int), String):
     let n = string.char_count(s)

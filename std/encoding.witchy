@@ -23,3 +23,9 @@ pub fn base64_encode(data: String) -> String:
 // Decode standard base64 back to text (lossy UTF-8); padding/whitespace tolerated.
 pub fn base64_decode(data: String) -> String:
     data
+
+// base64url (no padding; `-`/`_`) of the bytes given as a HEX string. The hex
+// indirection lets binary round-trip through UTF-8 strings — e.g. a WebAuthn
+// `clientDataJSON.challenge` is base64url of the raw challenge bytes.
+pub fn base64url_of_hex(hex: String) -> String:
+    hex
