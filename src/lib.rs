@@ -85,14 +85,13 @@ pub fn compile_source(src: &str) -> Result<Vec<u8>, String> {
     // capability-correct binary directly. This now runs on EVERY target (the
     // browser playground too: `wasmparser`/`wasm-encoder` are pure Rust). Anything
     // not yet migrated still falls back to the WAT sink below.
-    if let Some(bytes) = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+    codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
         .map_err(|e| format!("cannot compile to WASM: {e}"))?
-    {
-        return Ok(bytes);
-    }
-    let wat =
-        codegen::compile_module(&linked).map_err(|e| format!("cannot compile to WASM: {e}"))?;
-    wat::parse_str(&wat).map_err(|e| format!("assembling wasm: {e}"))
+        .ok_or_else(|| {
+            "cannot compile to WASM: the program reached a construct the compiled backend \
+             does not support (an interpreter-only feature?)"
+                .to_string()
+        })
 }
 
 /// The exact float formatting both backends share. The playground's host shim

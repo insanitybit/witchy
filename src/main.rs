@@ -1507,17 +1507,13 @@ fn run_linked_compiled(
 /// lowers and reaches only WIR-native prelude helpers it emits a capability-
 /// correct binary directly; anything else falls back to the legacy WAT sink.
 fn compile_linked_to_wasm(linked: &ast::Module) -> Result<Vec<u8>, String> {
-    if let Some(bytes) = codegen::compile_module_binary(linked, &std::collections::HashMap::new())
+    codegen::compile_module_binary(linked, &std::collections::HashMap::new())
         .map_err(|e| format!("cannot compile to WASM (an interpreter-only feature?): {e}"))?
-    {
-        return Ok(bytes);
-    }
-    if std::env::var_os("WIRDIAG").is_some() {
-        eprintln!("WIRBAIL compile_linked_to_wasm-fallback-to-WAT-sink");
-    }
-    let wat = codegen::compile_module(linked)
-        .map_err(|e| format!("cannot compile to WASM (an interpreter-only feature?): {e}"))?;
-    wat::parse_str(&wat).map_err(|e| format!("assembling wasm: {e}"))
+        .ok_or_else(|| {
+            "cannot compile to WASM: the program reached a construct the compiled backend \
+             does not support (an interpreter-only feature?)"
+                .to_string()
+        })
 }
 
 /// Compile a program and run it in the WASM VM granted EXACTLY its computed
@@ -1697,9 +1693,7 @@ fn build_exe_file(path: &str, out: &str) -> Result<(), String> {
     let (linked, stem) = link_file(path)?;
     typeck::check(&linked).map_err(|e| e.to_string())?;
     enforce_performance_modes(&linked, &stem)?;
-    let wat = codegen::compile_module(&linked)
-        .map_err(|e| format!("cannot compile to WASM (an interpreter-only feature?): {e}"))?;
-    let wasm = wat::parse_str(&wat).map_err(|e| format!("assembling wasm: {e}"))?;
+    let wasm = compile_linked_to_wasm(&linked)?;
     let exe = std::env::current_exe().map_err(|e| format!("cannot locate the witchy binary: {e}"))?;
     let mut bytes = std::fs::read(&exe).map_err(|e| format!("cannot read the witchy binary: {e}"))?;
     // Don't stack payloads: if this witchy is itself already packaged, strip its
