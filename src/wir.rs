@@ -2538,6 +2538,53 @@ pub fn dict_get_or_helper() -> WirFunc {
     }
 }
 
+/// `$dict_update(d, k, default, mode, clos) -> i32` — apply the updater closure
+/// to the current value (or `default` when absent) and reinsert. The closure is
+/// a 1-arg `$clos1` (`(param i32 env)(param i64 v)(result i64)`): its env pointer
+/// is the closure record itself and its code index is the record's first word.
+pub fn dict_update_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    WirFunc {
+        name: "dict_update".into(),
+        params: vec![
+            WirLocal { name: "d".into(), ty: WirTy::Bool },
+            WirLocal { name: "k".into(), ty: WirTy::Int },
+            WirLocal { name: "default".into(), ty: WirTy::Int },
+            WirLocal { name: "mode".into(), ty: WirTy::Bool },
+            WirLocal { name: "clos".into(), ty: WirTy::Bool },
+        ],
+        ret: vec![WirTy::Bool],
+        locals: vec![WirLocal { name: "new".into(), ty: WirTy::Int }],
+        body: vec![
+            N::SetLocal {
+                local: "new".into(),
+                value: E::CallIndirect {
+                    type_arity: 1,
+                    args: vec![
+                        getl("clos"),
+                        E::Call {
+                            func: "dict_get_or".into(),
+                            args: vec![getl("d"), getl("k"), getl("default"), getl("mode")],
+                        },
+                    ],
+                    index: Box::new(E::Load {
+                        ptr: Box::new(getl("clos")),
+                        kind: Kind::I32,
+                        offset: 0,
+                    }),
+                },
+            },
+            N::Push(E::Call {
+                func: "dict_insert".into(),
+                args: vec![getl("d"), getl("k"), getl("new"), getl("mode")],
+            }),
+        ],
+        raw_body: None,
+    }
+}
+
 /// `$dict_has(d, k, mode) -> i32` — whether `k` is present.
 pub fn dict_has_helper() -> WirFunc {
     use WirExpr as E;
@@ -3922,6 +3969,13 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             import_deps: &[],
             uses_heap: false,
             uses_table: false,
+        }),
+        "dict_update" => Some(WirHelperSpec {
+            func: dict_update_helper(),
+            helper_deps: &["dict_get_or", "dict_insert"],
+            import_deps: &[],
+            uses_heap: true,
+            uses_table: true,
         }),
         "dict_has" => Some(WirHelperSpec {
             func: dict_has_helper(),

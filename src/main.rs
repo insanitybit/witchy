@@ -8614,6 +8614,26 @@ fn main(console: Console):
         assert_eq!(link_run(src), want, "interpreter oracle");
     }
 
+    /// `dict.update` on the binary path — the closure-driven upsert. The updater
+    /// `fn(c: Int): c + 1` lowers to a lambda the table calls indirectly; the
+    /// `$dict_update` helper reads the current value (or `default`), applies the
+    /// closure via `call_indirect (type $clos1)`, and reinserts. (2-way: the
+    /// WAT-leg `check_str` can't resolve std `dict.*`, so compare binary vs
+    /// interpreter directly.)
+    #[test]
+    fn wir_dict_update_binary_path() {
+        let src = "fn main(console: Console):\n    var d = dict.new()\n    d = dict.update(d, \"a\", 0, fn(c: Int): c + 1)\n    d = dict.update(d, \"a\", 0, fn(c: Int): c + 1)\n    d = dict.update(d, \"a\", 0, fn(c: Int): c + 1)\n    d = dict.update(d, \"b\", 0, fn(c: Int): c + 1)\n    print(console, \"${d}\")\n    print(console, \"${dict.get_or(d, \"a\", -1)}\")\n";
+        let want = vec!["{a: 3, b: 1}".to_string(), "3".to_string()];
+        let module = parser::parse_module(src).expect("parse");
+        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        typeck::check(&linked).expect("typecheck");
+        let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+            .expect("compile_module_binary")
+            .expect("the WIR binary path should lower dict.update");
+        assert_eq!(run_bytes_print_only(&bytes), want, "binary path");
+        assert_eq!(link_run(src), want, "interpreter oracle");
+    }
+
     /// The crypto digest helpers ($crypto_sha256/sha512/sha3_256/hmac_sha256) on
     /// the binary path — host-import wrappers returning a String. The crypto
     /// imports are host-provided regardless of grant (hashing needs no
