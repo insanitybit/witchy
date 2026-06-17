@@ -12774,9 +12774,11 @@ mod tests {
 
     fn run_int(src: &str) -> i64 {
         let module = parse_module(src).expect("parse");
-        let wat = compile_module(&module).expect("compile");
+        let bytes = compile_module_binary(&module, &std::collections::HashMap::new())
+            .expect("compile")
+            .expect("the binary path lowers this program");
         let engine = Engine::default();
-        let wt = WtModule::new(&engine, &wat).expect("valid wat");
+        let wt = WtModule::new(&engine, &bytes).expect("valid wasm");
         let captured = Arc::new(Mutex::new(None));
         let mut linker = Linker::new(&engine);
         let sink = Arc::clone(&captured);
@@ -12798,9 +12800,11 @@ mod tests {
     /// Run a float program with a capturing `print_float`.
     fn run_float(src: &str) -> f64 {
         let module = parse_module(src).expect("parse");
-        let wat = compile_module(&module).expect("compile");
+        let bytes = compile_module_binary(&module, &std::collections::HashMap::new())
+            .expect("compile")
+            .expect("the binary path lowers this program");
         let engine = Engine::default();
-        let wt = WtModule::new(&engine, &wat).expect("valid wat");
+        let wt = WtModule::new(&engine, &bytes).expect("valid wasm");
         let captured = Arc::new(Mutex::new(None));
         let mut linker = Linker::new(&engine);
         let sink = Arc::clone(&captured);
@@ -13003,10 +13007,10 @@ fn main() -> Int:
 
     /// Build a wasmtime instance whose `print` captures strings from memory.
     fn instantiate_with_print(
-        wat: &str,
+        bytes: &[u8],
     ) -> (Store<()>, wasmtime::Instance, Arc<Mutex<Vec<String>>>) {
         let engine = Engine::default();
-        let wt = WtModule::new(&engine, wat).expect("valid wat");
+        let wt = WtModule::new(&engine, bytes).expect("valid wasm");
         let captured: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
         let mut linker = Linker::new(&engine);
         let sink = Arc::clone(&captured);
@@ -13031,8 +13035,10 @@ fn main() -> Int:
 
     fn run_str(src: &str) -> Vec<String> {
         let module = parse_module(src).expect("parse");
-        let wat = compile_module(&module).expect("compile");
-        let (mut store, instance, captured) = instantiate_with_print(&wat);
+        let bytes = compile_module_binary(&module, &std::collections::HashMap::new())
+            .expect("compile")
+            .expect("the binary path lowers this program");
+        let (mut store, instance, captured) = instantiate_with_print(&bytes);
         instance
             .get_typed_func::<(), ()>(&mut store, "run")
             .unwrap()
