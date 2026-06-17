@@ -8475,6 +8475,14 @@ fn main(console: Console):
                 "fn main(console: Console):\n    let s = region -> Int:\n        var sum = 0\n        for i in 0..10:\n            sum = sum + i\n        sum\n    print(console, __render(s))\n    let xs = region -> List(Int):\n        var ys = []\n        for i in 0..5:\n            ys = list.push(ys, i * i)\n        ys\n    print(console, __render(list.at(xs, 3)))\n",
                 vec!["45".to_string(), "9".to_string()],
             ),
+            // `inout` parameters (the multi-value move-out ABI): the callee returns
+            // its declared value plus each inout param's final value, and the call
+            // site (`CallStoreMulti`) writes them back into the caller's vars. Covers
+            // a bare inout, repeated calls, and an inout alongside a non-inout arg.
+            (
+                "fn bump(inout n: Int):\n    n = n + 1\nfn add(inout n: Int, by: Int):\n    n = n + by\nfn main(console: Console):\n    var a = 0\n    bump(a)\n    bump(a)\n    bump(a)\n    add(a, 10)\n    print(console, __render(a))\n",
+                vec!["13".to_string()],
+            ),
         ];
         let mut lowered_any = false;
         for (src, want) in cases {

@@ -2589,7 +2589,12 @@ impl Codegen {
                 top.1 = ke;
                 top.2 = se;
             }
-            if self.cur_fn_inout_params.is_empty() && self.cur_fn_own_param.is_none() {
+            // Inout functions ARE captured now (the multi-value move-out ABI is built
+            // in `assemble_wir_func`); only the own-cap ABI still defers. An inout fn
+            // with an early `return` lowers a single-value `N::Return` into a
+            // multi-result signature — an arity mismatch the `wasmparser::validate`
+            // check rejects, so the whole module falls back to WAT gracefully.
+            if self.cur_fn_own_param.is_none() {
                 let seq = Self::convert_block_tail(seq, block_kind, ret_kind);
                 let wf = self.assemble_wir_func(f, ret_kind, seq);
                 self.wir_funcs.insert(f.name.clone(), wf);
@@ -2655,10 +2660,22 @@ impl Codegen {
         for i in 0..APPLY_POOL {
             locals.push(WirLocal { name: format!("__witchy_call_{i}"), ty: i32t() });
         }
+        // An `inout` function returns its declared value FOLLOWED BY one result per
+        // inout param (the multi-value move-out ABI, mirroring `inout_epilogue` on the
+        // WAT path): after the declared tail, push each inout param's final value in
+        // declaration order. The call site (`CallStoreMulti`) pops them back into the
+        // caller's variables.
+        let mut ret = vec![Self::wir_ty_for_kind(ret_kind)];
+        let mut body = body;
+        for name in &self.cur_fn_inout_params {
+            let k = self.locals.get(name).copied().unwrap_or(Kind::I32);
+            ret.push(Self::wir_ty_for_kind(k));
+            body.push(crate::wir::WirNode::Push(crate::wir::WirExpr::GetLocal(name.clone())));
+        }
         WirFunc {
             name: f.name.clone(),
             params,
-            ret: vec![Self::wir_ty_for_kind(ret_kind)],
+            ret,
             locals,
             body,
             raw_body: None,
@@ -2799,8 +2816,13 @@ impl Codegen {
         // CallStoreMulti) on the binary path (`collect_wir`); the WAT path keeps
         // the legacy emission. Facts consumption for the binary path is deferred to
         // `compile_function` on capture (lower_block is invoked many times per
-        // compile). `inout` writeback and the own-ABI never lower here.
-        if !self.cur_fn_inout_params.is_empty()
+        // compile). The own-ABI never lowers here. `inout` lowers ONLY on the binary
+        // path (`collect_wir`): the param is a plain mutable local (`n = n + 1` is a
+        // `SetLocal`) and its final value is a multi-result at the tail (built by
+        // `assemble_wir_func`), the call site writing it back via `CallStoreMulti`.
+        // The WAT path keeps the legacy emission — its move-out epilogue runs before
+        // EVERY early `return`, which the WIR `N::Return` (single value) can't carry.
+        if (!self.collect_wir && !self.cur_fn_inout_params.is_empty())
             || self.cur_fn_own_param.is_some()
             || (!self.collect_wir && !self.inplace_push.is_empty())
         {
@@ -3606,6 +3628,49 @@ impl Codegen {
             });
         }
         Some(crate::wir::WirExpr::Call { func: name.to_string(), args: args_w })
+    }
+
+    /// Lower an `inout` user call. The callee returns `(declared, inout_1, …)`;
+    /// `CallStoreMulti` pops the results in reverse into `dests`, so dest[0] is a
+    /// scratch holding the declared value and the rest are the caller's inout-arg
+    /// locals (written back). We then push the scratch — the call's value. Each
+    /// inout arg must be a non-global local `Var` (CallStoreMulti uses `local.set`);
+    /// otherwise we defer to WAT (`None`).
+    fn lower_inout_call(&mut self, name: &str, args: &[Expr]) -> Option<crate::wir::WirExpr> {
+        use crate::wir::{WirExpr as W, WirNode as N};
+        let convs = self.fn_conventions.get(name).cloned()?;
+        let param_kinds: Vec<Kind> = self
+            .fn_params
+            .get(name)
+            .map(|ps| ps.iter().map(|p| p.ty.as_ref().map(ty_kind).unwrap_or(Kind::I32)).collect())
+            .unwrap_or_default();
+        let mut args_w = Vec::with_capacity(args.len());
+        for (i, arg) in args.iter().enumerate() {
+            let ak = self.kind_of(arg);
+            let w = self.lower_expr(arg)?;
+            args_w.push(match param_kinds.get(i) {
+                Some(&pk) => Self::wir_convert(w, ak, pk),
+                None => w,
+            });
+        }
+        // dest[0] = scratch for the declared return; then each inout arg's local.
+        let mut dests = vec![TUPLE_TMP.to_string()];
+        for (i, conv) in convs.iter().enumerate() {
+            if *conv == Convention::Inout {
+                match args.get(i) {
+                    Some(Expr::Var(v))
+                        if self.locals.contains_key(v) && !self.globals.contains(v) =>
+                    {
+                        dests.push(v.clone());
+                    }
+                    _ => return None,
+                }
+            }
+        }
+        Some(W::Seq(vec![
+            N::CallStoreMulti { func: name.to_string(), args: args_w, dests },
+            N::Push(W::GetLocal(TUPLE_TMP.to_string())),
+        ]))
     }
 
     /// Convert the value a lowered block leaves on the stack: a block's tail is
@@ -4499,6 +4564,17 @@ impl Codegen {
                     .fn_conventions
                     .get(name)
                     .is_some_and(|cs| cs.iter().any(|c| *c == Convention::Inout));
+                // An `inout` user call: the callee returns its declared value plus one
+                // result per inout param (the multi-value move-out ABI). Lower to a
+                // `CallStoreMulti` that writes each inout result back into the caller's
+                // local var, then yield the declared value.
+                if has_inout
+                    && self.emitted_funcs.contains(name)
+                    && !self.locals.contains_key(name)
+                    && self.summaries.own_abi(name).is_none()
+                {
+                    return self.lower_inout_call(name, args);
+                }
                 // Exactly the compiled `$name` user functions — never an
                 // intrinsic/native (those have no emitted func to call), never a
                 // closure-typed local (that's a `call_indirect`).
