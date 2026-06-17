@@ -3934,6 +3934,22 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             uses_heap: true,
             uses_table: false,
         }),
+        // The P-256 ECDSA verifies read three string headers (pubkey, message,
+        // signature) and return an i32 bool — no capability, no allocation.
+        "crypto_ecdsa_p256_verify" => Some(WirHelperSpec {
+            func: host_call_helper("crypto_ecdsa_p256_verify", "crypto.ecdsa_p256_verify", 3),
+            helper_deps: &[],
+            import_deps: &["crypto.ecdsa_p256_verify"],
+            uses_heap: false,
+            uses_table: false,
+        }),
+        "crypto_ecdsa_p256_verify_hex" => Some(WirHelperSpec {
+            func: host_call_helper("crypto_ecdsa_p256_verify_hex", "crypto.ecdsa_p256_verify_hex", 3),
+            helper_deps: &[],
+            import_deps: &["crypto.ecdsa_p256_verify_hex"],
+            uses_heap: false,
+            uses_table: false,
+        }),
         "regex_match_spans" => Some(WirHelperSpec {
             func: regex_match_spans_helper(),
             helper_deps: &["ensure"],

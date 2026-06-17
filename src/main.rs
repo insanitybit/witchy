@@ -8765,6 +8765,26 @@ fn main(console: Console):
         assert_eq!(run_bytes_print_only(&bytes), want, "binary path vs oracle");
     }
 
+    /// `crypto.ecdsa_p256_verify` on the binary path — a P-256 ECDSA verify host
+    /// import (`$crypto_ecdsa_p256_verify`, three string headers → i32 bool,
+    /// no capability). A valid (pubkey, message, signature) triple verifies; a
+    /// tampered message does not. Compared against the linked interpreter oracle.
+    #[test]
+    fn wir_crypto_ecdsa_verify_binary_path() {
+        let pk = "048f81cd9fca785a42a6f5dd58972cc0f702e83b1c960b5912354471496597e227fec81ff1d52530b06d7091649e6beb49dba70968b4b727bb24e3ceb7dd01a039";
+        let sig = "304402203260029f4c6beb2e78afdd906c057c63f8828e2b03820de7053d97254577fb8c02204478b9b75f8fd7a1ce4298f0d119e12926dafda116ae4c197b0048dc117bc9de";
+        let src = format!("import crypto\nfn main(console: Console):\n    print(console, if crypto.ecdsa_p256_verify(\"{pk}\", \"webauthn-es256-test-message\", \"{sig}\"): \"ok\" else: \"bad\")\n    print(console, if crypto.ecdsa_p256_verify(\"{pk}\", \"tampered\", \"{sig}\"): \"ok\" else: \"bad\")\n");
+        let module = parser::parse_module(&src).expect("parse");
+        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        typeck::check(&linked).expect("typecheck");
+        let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+            .expect("compile_module_binary")
+            .expect("the WIR binary path should lower crypto.ecdsa_p256_verify");
+        let want = vec!["ok".to_string(), "bad".to_string()];
+        assert_eq!(run_bytes_print_only(&bytes), want, "binary path");
+        assert_eq!(link_run(&src), want, "interpreter oracle");
+    }
+
     /// `$crypto_sign` + `$crypto_public_key` on the binary path — the Secret
     /// capability host imports (the seed never enters guest memory). Both need a
     /// signing key granted; with a fixed seed the outputs are deterministic, so
