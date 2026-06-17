@@ -4163,6 +4163,26 @@ impl Codegen {
                         }
                     }
                 }
+                // Logical `&&`/`||` lower to a short-circuit value-`If` (binary path
+                // only): `a && b` is `if a { b } else { false }`, `a || b` is
+                // `if a { true } else { b }`, so the right operand is evaluated only
+                // when the left doesn't already decide the result. This matches the
+                // interpreter and preserves guards like `i < n && list.at(xs, i)`
+                // that depend on the RHS not running when the LHS is false.
+                if self.collect_wir && matches!(op, BinOp::And | BinOp::Or) {
+                    let a = self.lower_expr(lhs)?;
+                    let b = self.lower_expr(rhs)?;
+                    let (then_, els) = match op {
+                        BinOp::And => (vec![N::Push(b)], vec![N::Push(W::ConstI32(0))]),
+                        _ => (vec![N::Push(W::ConstI32(1))], vec![N::Push(b)]),
+                    };
+                    return Some(W::Control(Box::new(N::If {
+                        cond: a,
+                        then_,
+                        els,
+                        result: Some(crate::wir::WirTy::Bool),
+                    })));
+                }
                 // Common-kind promotion (f64 > i64 > i32), exactly as the legacy
                 // numeric path; each operand is then widened to `ck` via a `Convert`
                 // node reproducing `kind_convert` (a no-op except i32<->i64). `ck`

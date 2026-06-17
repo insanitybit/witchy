@@ -8337,6 +8337,17 @@ fn main(console: Console):
                 "fn apply_twice(f: fn(Int) -> Int, x: Int) -> Int:\n    f(f(x))\nfn main(console: Console):\n    let k = 10\n    let g = fn(n: Int): n + k\n    print(console, __render(apply_twice(g, 1)))\n",
                 vec!["21".to_string()],
             ),
+            // short-circuit `&&`/`||` lower to a value-`If` on the binary path.
+            (
+                "fn main(console: Console):\n    print(console, __render(true && false))\n    print(console, __render(true || false))\n    print(console, __render(1 < 2 && 3 < 4))\n    print(console, __render(1 > 2 || 3 < 4))\n",
+                vec!["false".to_string(), "true".to_string(), "true".to_string(), "true".to_string()],
+            ),
+            // `&&` must short-circuit: the RHS index would be out of bounds when the
+            // LHS guard (`i < n`) is false, so it must NOT be evaluated.
+            (
+                "fn main(console: Console):\n    let xs = [10, 20]\n    let n = list.length(xs)\n    var i = 0\n    var sum = 0\n    while i < n && list.at(xs, i) > 0:\n        sum = sum + list.at(xs, i)\n        i = i + 1\n    print(console, __render(sum))\n",
+                vec!["30".to_string()],
+            ),
         ];
         let mut lowered_any = false;
         for (src, want) in cases {
