@@ -8133,9 +8133,11 @@ impl Codegen {
                 }
                 // Compound (tuple/list/...) `__render` builds its string with the
                 // per-shape WIR `$ts` renderer — or bails (`?`) for shapes the
-                // renderer can't build (Record/Adt), keeping WAT.
+                // renderer can't build, keeping WAT. `eq_operand_shape` (not just
+                // `eq_shape_of`) so an INLINE expression — e.g. `"${dict.keys(d)}"` —
+                // resolves its shape via typeck's type table, like a let-bound local.
                 _ => {
-                    if let Some(shape) = self.eq_shape_of(&args[0]) {
+                    if let Some(shape) = self.eq_operand_shape(&args[0]) {
                         if shape.is_compound() {
                             let h = self.ensure_ts_wir_helper(&shape)?;
                             let arg = self.lower_expr(&args[0])?;

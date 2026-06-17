@@ -8499,6 +8499,13 @@ fn main(console: Console):
                 "type Color:\n    Red\n    Green\n    RGB(Int, Int, Int)\n\ntype Point:\n    x: Int\n    y: Int\n\nfn main(console: Console):\n    let c = RGB(1, 2, 3)\n    let p = Point(x: 5, y: 6)\n    let g = Green\n    print(console, \"${c}\")\n    print(console, \"${p}\")\n    print(console, \"${g}\")\n",
                 vec!["RGB(1, 2, 3)".to_string(), "Point(5, 6)".to_string(), "Green".to_string()],
             ),
+            // `__render` of an INLINE call result (`"${mklist()}"`) — the shape comes
+            // from typeck's type table (eq_operand_shape), not just tracked locals, so
+            // a compound expression renders without being bound to a `let` first.
+            (
+                "fn mklist() -> List(Int):\n    [1, 2, 3]\n\nfn pair() -> (Int, String):\n    (7, \"x\")\n\nfn main(console: Console):\n    print(console, \"${mklist()}\")\n    print(console, \"${pair()}\")\n",
+                vec!["[1, 2, 3]".to_string(), "(7, x)".to_string()],
+            ),
             // `inout` parameters (the multi-value move-out ABI): the callee returns
             // its declared value plus each inout param's final value, and the call
             // site (`CallStoreMulti`) writes them back into the caller's vars. Covers
