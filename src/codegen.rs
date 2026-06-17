@@ -741,6 +741,13 @@ struct Codegen {
     /// Names of eq helpers currently being built — a cycle guard so a recursive
     /// type's structural eq bails to WAT instead of looping in codegen.
     eq_building: std::collections::HashSet<String>,
+    /// WIR-native twin of `ts_helpers` (per-shape `to_string`/`__render`
+    /// renderers), keyed identically (`ts_{id}`), for the binary path. Includes
+    /// tuples/lists with Int/Bool/String fields (built via `$concat` +
+    /// `$int_to_string`); Float/Record fields and enums defer to WAT.
+    ts_wir_helpers: std::collections::BTreeMap<String, crate::wir::WirFunc>,
+    /// Cycle guard for `ensure_ts_wir_helper`, mirroring `eq_building`.
+    ts_building: std::collections::HashSet<String>,
     /// Generated per-shape `to_string` renderers, keyed by `EqShape::id` (a
     /// `ts_` prefix on the function name). Parallels `eq_helpers`: each compound
     /// shape that flows into `to_string` (or string interpolation) gets one
@@ -889,6 +896,8 @@ impl Codegen {
             eq_helpers: std::collections::BTreeMap::new(),
             eq_wir_helpers: std::collections::BTreeMap::new(),
             eq_building: std::collections::HashSet::new(),
+            ts_wir_helpers: std::collections::BTreeMap::new(),
+            ts_building: std::collections::HashSet::new(),
             ts_helpers: std::collections::BTreeMap::new(),
             adt_variant_names: HashMap::new(),
             clos_arities: HashSet::new(),
@@ -6550,6 +6559,125 @@ impl Codegen {
         Some((body, locals))
     }
 
+    /// WIR twin of [`render_slot`]: the String pointer rendering the 8-byte slot
+    /// at `addr`. Int → `$int_to_string`, Bool → an interned "true"/"false"
+    /// value-if, Str → the pointer, compound → that shape's `$ts` helper. `None`
+    /// for Float (needs the `$float_to_str` host import) or an unbuildable nested.
+    fn slot_render_wir(&mut self, shape: &EqShape, addr: crate::wir::WirExpr) -> Option<crate::wir::WirExpr> {
+        use crate::wir::{Kind, WirExpr as W, WirNode as N, WirTy};
+        let load_i64 = |p: W| W::Load { ptr: Box::new(p), kind: Kind::I64, offset: 0 };
+        let load_i32 = |p: W| W::Load { ptr: Box::new(p), kind: Kind::I32, offset: 0 };
+        Some(match shape {
+            EqShape::Int => {
+                self.uses_int_to_string = true;
+                W::Call { func: "int_to_string".into(), args: vec![load_i64(addr)] }
+            }
+            EqShape::Bool => {
+                let t = self.intern("true");
+                let f = self.intern("false");
+                W::Control(Box::new(N::If {
+                    cond: W::FromSlot(Box::new(load_i64(addr)), Kind::I32),
+                    then_: vec![N::Push(W::StrPtr(t))],
+                    els: vec![N::Push(W::StrPtr(f))],
+                    result: Some(WirTy::Str),
+                }))
+            }
+            EqShape::Str => load_i32(addr),
+            EqShape::Float => return None,
+            compound => {
+                let h = self.ensure_ts_wir_helper(compound)?;
+                W::Call { func: h, args: vec![load_i32(addr)] }
+            }
+        })
+    }
+
+    /// WIR twin of [`ensure_ts_helper`], for Tuple/List shapes whose fields all
+    /// render via `slot_render_wir`. Cycle-guarded like the eq helpers.
+    fn ensure_ts_wir_helper(&mut self, shape: &EqShape) -> Option<String> {
+        self.uses_concat = true;
+        let name = format!("ts_{}", shape.id());
+        if self.ts_wir_helpers.contains_key(&name) {
+            return Some(name);
+        }
+        if !self.ts_building.insert(name.clone()) {
+            return None;
+        }
+        let built = self.build_ts_wir_body(shape);
+        self.ts_building.remove(&name);
+        let (body, locals) = built?;
+        let func = crate::wir::WirFunc {
+            name: name.clone(),
+            params: vec![crate::wir::WirLocal { name: "p".into(), ty: crate::wir::WirTy::Bool }],
+            ret: vec![crate::wir::WirTy::Str],
+            locals,
+            body,
+            raw_body: None,
+        };
+        self.ts_wir_helpers.insert(name.clone(), func);
+        Some(name)
+    }
+
+    /// Build the `(body, locals)` of a `$ts` renderer: a tuple `(f0, f1)` or a
+    /// list `[e0, e1]`, accumulating with `$concat`. `None` for Record/Adt/etc.
+    fn build_ts_wir_body(&mut self, shape: &EqShape) -> Option<(crate::wir::WirSeq, Vec<crate::wir::WirLocal>)> {
+        use crate::wir::{BinOp, Kind, WirExpr as W, WirLocal, WirNode as N, WirTy};
+        let getl = |n: &str| W::GetLocal(n.into());
+        let i32c = W::ConstI32;
+        let add = |l: W, r: W| W::Binary { op: BinOp::Add, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+        let concat = |a: W, b: W| W::Call { func: "concat".into(), args: vec![a, b] };
+        let setl = |n: &str, v: W| N::SetLocal { local: n.into(), value: v };
+        let bool_local = |n: &str| WirLocal { name: n.into(), ty: WirTy::Bool };
+        match shape {
+            EqShape::Tuple(fields) => {
+                let (open, close, comma) = (self.intern("("), self.intern(")"), self.intern(", "));
+                let mut body: crate::wir::WirSeq = vec![setl("acc", W::StrPtr(open))];
+                for (i, f) in fields.iter().enumerate() {
+                    let render = self.slot_render_wir(f, add(getl("p"), i32c((4 + 8 * i) as i32)))?;
+                    if i > 0 {
+                        body.push(setl("acc", concat(getl("acc"), W::StrPtr(comma))));
+                    }
+                    body.push(setl("acc", concat(getl("acc"), render)));
+                }
+                body.push(N::Push(concat(getl("acc"), W::StrPtr(close))));
+                Some((body, vec![bool_local("acc")]))
+            }
+            EqShape::List(elem) => {
+                let (open, close, comma) = (self.intern("["), self.intern("]"), self.intern(", "));
+                let render = self.slot_render_wir(
+                    elem,
+                    add(add(getl("p"), i32c(4)), W::Binary { op: BinOp::Mul, kind: Kind::I32, lhs: Box::new(getl("i")), rhs: Box::new(i32c(8)) }),
+                )?;
+                let body: crate::wir::WirSeq = vec![
+                    setl("n", W::Load { ptr: Box::new(getl("p")), kind: Kind::I32, offset: 0 }),
+                    setl("acc", W::StrPtr(open)),
+                    setl("i", i32c(0)),
+                    N::Block {
+                        label: "done".into(),
+                        result: None,
+                        body: vec![N::Loop {
+                            label: "l".into(),
+                            body: vec![
+                                N::Br { target: "done".into(), cond: Some(W::Binary { op: BinOp::Ge, kind: Kind::I32, lhs: Box::new(getl("i")), rhs: Box::new(getl("n")) }) },
+                                N::If {
+                                    cond: W::Binary { op: BinOp::Gt, kind: Kind::I32, lhs: Box::new(getl("i")), rhs: Box::new(i32c(0)) },
+                                    then_: vec![setl("acc", concat(getl("acc"), W::StrPtr(comma)))],
+                                    els: vec![],
+                                    result: None,
+                                },
+                                setl("acc", concat(getl("acc"), render)),
+                                setl("i", add(getl("i"), i32c(1))),
+                                N::Br { target: "l".into(), cond: None },
+                            ],
+                        }],
+                    },
+                    N::Push(concat(getl("acc"), W::StrPtr(close))),
+                ];
+                Some((body, vec![bool_local("n"), bool_local("i"), bool_local("acc")]))
+            }
+            _ => None,
+        }
+    }
+
     /// Render the value in an 8-byte slot at `addr` (a WAT i32 address
     /// expression) to a String pointer, byte-identical to the interpreter's
     /// `Display`. Scalars format inline; compounds load the slot's pointer and
@@ -6946,7 +7074,19 @@ impl Codegen {
                         result: Some(crate::wir::WirTy::Str),
                     }))
                 }
-                _ => return None,
+                // Compound (tuple/list/...) `__render` builds its string with the
+                // per-shape WIR `$ts` renderer — or bails (`?`) for Float and
+                // shapes the renderer can't build (Record/Adt), keeping WAT.
+                _ => {
+                    if let Some(shape) = self.eq_shape_of(&args[0]) {
+                        if shape.is_compound() {
+                            let h = self.ensure_ts_wir_helper(&shape)?;
+                            let arg = self.lower_expr(&args[0])?;
+                            return Some(W::Call { func: h, args: vec![arg] });
+                        }
+                    }
+                    return None;
+                }
             },
             // String helpers over the `[len][bytes]` rep — pure `{args} call $h`.
             ("string.to_int", 1) => {
@@ -8782,13 +8922,14 @@ pub fn assemble_wir_module(
     // closure types beyond the reserved band. An Int/Float `main` is fine now —
     // the prelude declares `print_int`/`print_float` and the `run` wrapper prints
     // the result.
-    // Structural `==` is fine when every legacy eq helper has a WIR twin (a
-    // scalar-field shape); a shape the WIR generator couldn't build leaves its
-    // `eq_helpers` key without a twin → bail to WAT.
+    // Structural `==` / `__render` are fine when every legacy eq/ts helper has a
+    // WIR twin; a shape the WIR generator couldn't build leaves its key without a
+    // twin → bail to WAT.
     let eq_all_wir = cg.eq_helpers.keys().all(|k| cg.eq_wir_helpers.contains_key(k));
+    let ts_all_wir = cg.ts_helpers.keys().all(|k| cg.ts_wir_helpers.contains_key(k));
     if !cg.lambdas.is_empty()
         || !eq_all_wir
-        || !cg.ts_helpers.is_empty()
+        || !ts_all_wir
         || !cg.rcopy_helpers.is_empty()
         || !cg.clos_arities.is_empty()
     {
@@ -8821,10 +8962,14 @@ pub fn assemble_wir_module(
                 collect_called_host_imports(&wf.body, &mut user_host_imports);
             }
         }
-        // The generated structural-eq helpers (included below) may call prelude
-        // helpers themselves — a Str field compares via `$str_eq`. Pull those into
+        // The generated structural-eq / render helpers (included below) call
+        // prelude helpers themselves — a Str field eq via `$str_eq`, a renderer via
+        // `$concat`/`$int_to_string`. Pull those (and nested eq_*/ts_* calls) into
         // the reached set so the resolution loop declares them.
         for f in cg.eq_wir_helpers.values() {
+            collect_called_funcs(&f.body, &mut called);
+        }
+        for f in cg.ts_wir_helpers.values() {
             collect_called_funcs(&f.body, &mut called);
         }
         // A direct host call in user code (e.g. `now`, `dir.subdir`, `recv_*`)
@@ -8903,9 +9048,12 @@ pub fn assemble_wir_module(
                 })
                 .collect();
             let mut pruned_funcs: Vec<WirFunc> = resolved.into_values().map(|s| s.func).collect();
-            // The program-specific structural-equality helpers (scalar-field
-            // shapes, no calls/imports/heap) reached by user `==`.
+            // The program-specific structural-equality / render helpers reached by
+            // user `==` / `__render`.
             for f in cg.eq_wir_helpers.values() {
+                pruned_funcs.push(f.clone());
+            }
+            for f in cg.ts_wir_helpers.values() {
                 pruned_funcs.push(f.clone());
             }
             for name in &user_order {

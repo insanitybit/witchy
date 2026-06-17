@@ -8259,6 +8259,12 @@ fn main(console: Console):
                 "fn main(console: Console):\n    print(console, __render([(1, 2), (3, 4)] == [(1, 2), (3, 4)]))\n    print(console, __render([(1, 2)] == [(1, 9)]))\n    print(console, __render(((1, 2), 3) == ((1, 2), 3)))\n    print(console, __render(((1, 2), 3) == ((1, 9), 3)))\n",
                 vec!["true".to_string(), "false".to_string(), "true".to_string(), "false".to_string()],
             ),
+            // __render of compounds (the $ts renderer): a tuple, a tuple with a
+            // String + Bool field, and a list — built with $concat/$int_to_string.
+            (
+                "fn main(console: Console):\n    print(console, __render((1, 2)))\n    print(console, __render((\"hi\", true)))\n    print(console, __render([1, 2, 3]))\n    print(console, __render([true, false]))\n",
+                vec!["(1, 2)".to_string(), "(hi, true)".to_string(), "[1, 2, 3]".to_string(), "[true, false]".to_string()],
+            ),
             // string.chars ($str_chars → $byte_to_char + $str_substring +
             // $list_push) splitting a multibyte string into a List(String).
             (
