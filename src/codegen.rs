@@ -8078,32 +8078,39 @@ impl Codegen {
             }
             ("accept", 1) => {
                 self.used_net_ops.insert("accept");
-                host("net_accept_host", self.lower_args(&[&args[0]])?)
+                let a = self.lower_args(&[&args[0]])?;
+                if self.collect_wir { call("net_accept", a) } else { host("net_accept_host", a) }
             }
             ("restrict", 2) => {
                 self.used_net_ops.insert("restrict");
-                host("net_restrict_host", self.lower_args(&[&args[0], &args[1]])?)
+                let a = self.lower_args(&[&args[0], &args[1]])?;
+                if self.collect_wir { call("net_restrict", a) } else { host("net_restrict_host", a) }
             }
             ("connect", 2) => {
                 self.used_net_ops.insert("connect");
-                host("net_connect_host", self.lower_args(&[&args[0], &args[1]])?)
+                let a = self.lower_args(&[&args[0], &args[1]])?;
+                if self.collect_wir { call("net_connect", a) } else { host("net_connect_host", a) }
             }
             ("listen", 2) => {
                 self.used_net_ops.insert("listen");
-                host("net_listen_host", self.lower_args(&[&args[0], &args[1]])?)
+                let a = self.lower_args(&[&args[0], &args[1]])?;
+                if self.collect_wir { call("net_listen", a) } else { host("net_listen_host", a) }
             }
             // --- void effects yielding Nil: `{args} call $h ... i32.const 0` ---
             ("send_line", 2) => {
                 self.used_net_ops.insert("send_line");
-                nil0(host("net_send_line_host", self.lower_args(&[&args[0], &args[1]])?))
+                let a = self.lower_args(&[&args[0], &args[1]])?;
+                if self.collect_wir { call("net_send_line", a) } else { nil0(host("net_send_line_host", a)) }
             }
             ("send_bytes", 2) => {
                 self.used_net_ops.insert("send_bytes");
-                nil0(host("net_send_bytes_host", self.lower_args(&[&args[0], &args[1]])?))
+                let a = self.lower_args(&[&args[0], &args[1]])?;
+                if self.collect_wir { call("net_send_bytes", a) } else { nil0(host("net_send_bytes_host", a)) }
             }
             ("close", 1) => {
                 self.used_net_ops.insert("close");
-                nil0(host("net_close_host", self.lower_args(&[&args[0]])?))
+                let a = self.lower_args(&[&args[0]])?;
+                if self.collect_wir { call("net_close", a) } else { nil0(host("net_close_host", a)) }
             }
             ("write", 3) => {
                 self.used_dir_ops.insert("write");

@@ -3650,6 +3650,55 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             uses_heap: false,
             uses_table: false,
         }),
+        "net_connect" => Some(WirHelperSpec {
+            func: host_call_helper("net_connect", "net_connect", 2),
+            helper_deps: &[],
+            import_deps: &["net_connect"],
+            uses_heap: false,
+            uses_table: false,
+        }),
+        "net_listen" => Some(WirHelperSpec {
+            func: host_call_helper("net_listen", "net_listen", 2),
+            helper_deps: &[],
+            import_deps: &["net_listen"],
+            uses_heap: false,
+            uses_table: false,
+        }),
+        "net_accept" => Some(WirHelperSpec {
+            func: host_call_helper("net_accept", "net_accept", 1),
+            helper_deps: &[],
+            import_deps: &["net_accept"],
+            uses_heap: false,
+            uses_table: false,
+        }),
+        "net_restrict" => Some(WirHelperSpec {
+            func: host_call_helper("net_restrict", "net_restrict", 2),
+            helper_deps: &[],
+            import_deps: &["net_restrict"],
+            uses_heap: false,
+            uses_table: false,
+        }),
+        "net_send_line" => Some(WirHelperSpec {
+            func: host_void_helper("net_send_line", "net_send_line", 2),
+            helper_deps: &[],
+            import_deps: &["net_send_line"],
+            uses_heap: false,
+            uses_table: false,
+        }),
+        "net_send_bytes" => Some(WirHelperSpec {
+            func: host_void_helper("net_send_bytes", "net_send_bytes", 2),
+            helper_deps: &[],
+            import_deps: &["net_send_bytes"],
+            uses_heap: false,
+            uses_table: false,
+        }),
+        "net_close" => Some(WirHelperSpec {
+            func: host_void_helper("net_close", "net_close", 1),
+            helper_deps: &[],
+            import_deps: &["net_close"],
+            uses_heap: false,
+            uses_table: false,
+        }),
         // The region globals ($rcopy_wm/$rcopy_base/$rcopy_delta/$__region_copy_bytes)
         // this touches are declared by `assemble` when `cg.uses_region` is set.
         "rcopy_str" => Some(WirHelperSpec {
