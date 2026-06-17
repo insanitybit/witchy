@@ -3306,6 +3306,29 @@ fn host_call_helper(name: &str, import: &str, nargs: usize) -> WirFunc {
     }
 }
 
+/// Like [`host_call_helper`] but for a VOID host import (no result): perform the
+/// effect, then yield `Nil` (`i32.const 0`) so the call expression has a value —
+/// the binary-path analogue of the WAT path's `{args} call $h  i32.const 0`.
+fn host_void_helper(name: &str, import: &str, nargs: usize) -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let params: Vec<WirLocal> = (0..nargs)
+        .map(|i| WirLocal { name: format!("a{i}"), ty: WirTy::Bool })
+        .collect();
+    let host_args: Vec<E> = (0..nargs).map(|i| E::GetLocal(format!("a{i}"))).collect();
+    WirFunc {
+        name: name.into(),
+        params,
+        ret: vec![WirTy::Bool],
+        locals: vec![],
+        body: vec![
+            N::Do(E::CallHost { import: import.into(), args: host_args }),
+            N::Push(E::ConstI32(0)),
+        ],
+        raw_body: None,
+    }
+}
+
 /// `$rcopy_str(p: i32) -> i32` — the region copy-out for a String. If `p` is below
 /// `$rcopy_wm` it's parent-side (shared, not copied) → return it. Otherwise copy the
 /// `[len][bytes]` cell to a fresh block above the live data (counting the bytes in
@@ -3603,6 +3626,27 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             func: host_call_helper("dir_is_dir", "dir_is_dir", 2),
             helper_deps: &[],
             import_deps: &["dir_is_dir"],
+            uses_heap: false,
+            uses_table: false,
+        }),
+        "dir_write" => Some(WirHelperSpec {
+            func: host_void_helper("dir_write", "dir_write", 3),
+            helper_deps: &[],
+            import_deps: &["dir_write"],
+            uses_heap: false,
+            uses_table: false,
+        }),
+        "dir_append" => Some(WirHelperSpec {
+            func: host_void_helper("dir_append", "dir_append", 3),
+            helper_deps: &[],
+            import_deps: &["dir_append"],
+            uses_heap: false,
+            uses_table: false,
+        }),
+        "dir_make_dir" => Some(WirHelperSpec {
+            func: host_void_helper("dir_make_dir", "dir_make_dir", 2),
+            helper_deps: &[],
+            import_deps: &["dir_make_dir"],
             uses_heap: false,
             uses_table: false,
         }),

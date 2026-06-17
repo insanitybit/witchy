@@ -8107,15 +8107,18 @@ impl Codegen {
             }
             ("write", 3) => {
                 self.used_dir_ops.insert("write");
-                nil0(host("dir_write_host", self.lower_args(&[&args[0], &args[1], &args[2]])?))
+                let a = self.lower_args(&[&args[0], &args[1], &args[2]])?;
+                if self.collect_wir { call("dir_write", a) } else { nil0(host("dir_write_host", a)) }
             }
             ("append", 3) => {
                 self.used_dir_ops.insert("append");
-                nil0(host("dir_append_host", self.lower_args(&[&args[0], &args[1], &args[2]])?))
+                let a = self.lower_args(&[&args[0], &args[1], &args[2]])?;
+                if self.collect_wir { call("dir_append", a) } else { nil0(host("dir_append_host", a)) }
             }
             ("make_dir", 2) => {
                 self.used_dir_ops.insert("make_dir");
-                nil0(host("dir_make_dir_host", self.lower_args(&[&args[0], &args[1]])?))
+                let a = self.lower_args(&[&args[0], &args[1]])?;
+                if self.collect_wir { call("dir_make_dir", a) } else { nil0(host("dir_make_dir_host", a)) }
             }
             ("write_out", 3) => {
                 self.used_build_ops.insert("write_out");
