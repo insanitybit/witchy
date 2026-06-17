@@ -4271,11 +4271,11 @@ fn yn(b: Bool) -> String:
         let err = interpreter::run(src).expect_err("interpreter must abort");
         assert!(err.message.contains("boom"));
         let module = parser::parse_module(src).expect("parse");
-        // `fail()` does not yet lower to the WIR/binary path (it bails to the WAT
-        // sink in production too), so this test stays on the WAT codegen. wasmtime
-        // accepts WAT bytes directly, so `run_wasm_bytes` runs them unchanged.
-        let wat = codegen::compile_module(&module).expect("compile");
-        assert!(crate::run_wasm_bytes(wat.as_bytes()).is_err(), "WASM must trap on fail()");
+        // `fail()` lowers on the binary path: drop the message, then `unreachable`.
+        let bytes = codegen::compile_module_binary(&module, &std::collections::HashMap::new())
+            .expect("compile")
+            .expect("fail() lowers on the binary path");
+        assert!(crate::run_wasm_bytes(&bytes).is_err(), "WASM must trap on fail()");
     }
 
     /// `now` (Clock) and `get_env` (Env) compile to capability-gated host

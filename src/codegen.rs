@@ -8540,6 +8540,17 @@ impl Codegen {
                 }
             }
             // `get_env(env, name)`: only the name travels (the Env grant is the host).
+            // `fail(msg)`: a deliberate, loud abort — evaluate (and drop) the
+            // message, then `unreachable` traps. The trailing `i32.const 0` is dead
+            // code after the trap, present only so the Seq is stack-typed.
+            ("fail", 1) => {
+                let msg = self.lower_expr(&args[0])?;
+                W::Seq(vec![
+                    crate::wir::WirNode::Drop(msg),
+                    crate::wir::WirNode::Unreachable,
+                    crate::wir::WirNode::Push(W::ConstI32(0)),
+                ])
+            }
             ("get_env", 2) => {
                 self.uses_get_env = true;
                 call("get_env", self.lower_args(&[&args[1]])?)
