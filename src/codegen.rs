@@ -3729,14 +3729,55 @@ impl Codegen {
             // A bare block expression: its `WirSeq` leaves the block's value.
             // (Region blocks keep their bespoke `compile_region` emission.)
             Expr::Block(b) if b.region.is_none() => return Some(W::Seq(self.lower_block(b)?)),
-            // A `region:` block on the BINARY path lowers as a plain block: the body's
-            // value is correct (a region never changes behavior, only WHEN memory is
-            // reclaimed). The in-region heap reclamation — the WAT path's
-            // `compile_region` + `$rcopy_*` deep-copy — is an OPTIMIZATION, deferred to
-            // a future wir_opt pass (the same way slot-elim / in-place are passes), so
-            // binary region programs run correctly, just without the reclaim. WAT-path
-            // region blocks (`collect_wir == false`) fall through to `compile_region`.
-            Expr::Block(b) if self.collect_wir => return Some(W::Seq(self.lower_block(b)?)),
+            // A `region:` block on the BINARY path. A SCALAR result (Int/Bool/Float)
+            // lives in a register, not the heap, so we reclaim fully: capture the heap
+            // watermark, run the body, stash the scalar in the universal i64 slot
+            // (`$MATCH_TMP`), reset `$heap` to the watermark (freeing the body's
+            // allocations), then recover the scalar. A POINTER result (list/record/…)
+            // would be on the reclaimed heap, so it needs the per-shape `$rcopy_*`
+            // deep-copy — deferred (a future wir_opt pass) — and lowers as a plain
+            // block for now (correct value, no reclaim). WAT-path region blocks
+            // (`collect_wir == false`) fall through to `compile_region`.
+            Expr::Block(b) if self.collect_wir => {
+                let ann = b.region.as_ref().and_then(|r| r.ty.clone());
+                let shape = match &ann {
+                    Some(t) => self.eq_shape_of_type(t),
+                    None => match b.stmts.last() {
+                        Some(Stmt::Expr(tail)) => self.eq_operand_shape(tail),
+                        _ => None,
+                    },
+                };
+                let is_scalar =
+                    matches!(shape, Some(EqShape::Int | EqShape::Bool | EqShape::Float));
+                if !is_scalar || self.wm_level >= WM_POOL {
+                    return Some(W::Seq(self.lower_block(b)?));
+                }
+                let wm = format!("__witchy_wm_{}", self.wm_level);
+                let body_kind = self.block_kind(b);
+                self.wm_level += 1;
+                self.uses_wm = true;
+                let mut body = self.lower_block(b)?;
+                self.wm_level -= 1;
+                // Split off the body's tail value (its last node is `Push(value)`).
+                let Some(N::Push(tail)) = body.pop() else {
+                    return Some(W::Seq(self.lower_block(b)?));
+                };
+                let mut seq = vec![N::SetLocal {
+                    local: wm.clone(),
+                    value: W::GetGlobal("heap".to_string()),
+                }];
+                seq.extend(body);
+                seq.push(N::SetLocal {
+                    local: MATCH_TMP.to_string(),
+                    value: W::ToSlot(Box::new(tail), Self::wir_kind(body_kind)),
+                });
+                seq.push(N::SetGlobal { global: "heap".to_string(), value: W::GetLocal(wm) });
+                seq.push(N::Push(W::FromSlot(
+                    Box::new(W::GetLocal(MATCH_TMP.to_string())),
+                    Self::wir_kind(body_kind),
+                )));
+                return Some(W::Seq(seq));
+            }
             // `match` on scalar patterns; non-scalar arms fall through to legacy.
             Expr::Match { scrutinee, arms } => return self.lower_match(scrutinee, arms),
             // A lambda lowers to its closure-object creation (`$mk{c}`); the lifted
