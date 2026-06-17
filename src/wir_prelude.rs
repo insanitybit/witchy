@@ -1481,8 +1481,10 @@ fn func_names() -> Vec<String> {
 }
 
 fn build_prelude() -> Prelude {
-    let wat = prelude_wat();
-    let bin = wat::parse_str(&wat).expect("prelude WAT assembles to wasm");
+    // The prelude is committed pre-assembled (`src/prelude.wasm`) so the runtime
+    // never depends on the `wat` crate. `prelude_wat` stays the source of truth;
+    // `committed_prelude_blob_is_current` guards the cache against drift.
+    let bin: &[u8] = include_bytes!("prelude.wasm");
 
     let names = func_names();
     // Type section: collect every function type so import/func type indices resolve.
@@ -1493,7 +1495,7 @@ fn build_prelude() -> Prelude {
     let mut bodies: Vec<Vec<u8>> = Vec::new();
     let mut table_size: u32 = 0;
 
-    for payload in Parser::new(0).parse_all(&bin) {
+    for payload in Parser::new(0).parse_all(bin) {
         match payload.expect("valid prelude wasm") {
             Payload::TypeSection(reader) => {
                 for rec in reader {
@@ -1629,6 +1631,25 @@ mod tests {
         let bin = wat::parse_str(&wat).expect("prelude assembles");
         assert!(bin.len() > 64, "assembled prelude is non-trivial");
         assert_eq!(&bin[0..4], b"\0asm", "wasm magic");
+    }
+
+    /// The committed `src/prelude.wasm` cache (loaded by `build_prelude` so the
+    /// runtime never assembles WAT) must stay byte-identical to what `prelude_wat`
+    /// assembles. `prelude_wat` is the source of truth; this guard catches drift.
+    /// Regenerate after editing any `*_WAT` helper: `REGEN_PRELUDE=1 cargo test
+    /// --features native committed_prelude_blob_is_current`.
+    #[test]
+    fn committed_prelude_blob_is_current() {
+        let want = wat::parse_str(&prelude_wat()).expect("prelude assembles");
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/src/prelude.wasm");
+        if std::env::var("REGEN_PRELUDE").is_ok() {
+            std::fs::write(path, &want).expect("write prelude blob");
+        }
+        let have = std::fs::read(path).expect("read committed src/prelude.wasm");
+        assert_eq!(
+            have, want,
+            "src/prelude.wasm is stale — run `REGEN_PRELUDE=1 cargo test --features native committed_prelude_blob_is_current`"
+        );
     }
 
     #[test]
