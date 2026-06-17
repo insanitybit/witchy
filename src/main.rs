@@ -7956,26 +7956,26 @@ fn main(console: Console):
         actor.output()
     }
 
-    /// Regression: a function whose OUTER block does not fully lower (here a
-    /// for-loop that lowers, followed by a lambda — which has no WIR lowering arm
-    /// and so bails) must fall back to the WAT sink as a WHOLE. The binary-path
-    /// capture must NOT mistake the inner loop body for the function body — a bug
-    /// that silently compiled a loop to a single iteration. (All loops now lower
-    /// their watermark; closures/lambdas are the construct that still bails.)
+    /// Regression: a for-loop in a function body followed by a closure both lower
+    /// on the binary path; the loop watermark must be captured for the WHOLE
+    /// function, NOT mistaking the inner loop body for the function body — a bug
+    /// that silently compiled a loop to a single iteration. Closures now lower
+    /// (the lifted body + closure object + `call_indirect`), so this program takes
+    /// the binary path end-to-end; the loop emitting all three iterations under the
+    /// binary sink is the live proof the capture is not mis-scoped.
     #[test]
-    fn wir_partial_lower_falls_back_not_miscaptured() {
+    fn wir_loop_then_closure_lowers_and_keeps_loop_scope() {
         let src = "fn main(console: Console):\n    for x in [10, 20, 30]:\n        print(console, __render(x))\n    let f = fn(n: Int): n + 1\n    print(console, __render(f(5)))\n";
         let want = vec!["10".to_string(), "20".to_string(), "30".to_string(), "6".to_string()];
         let module = parser::parse_module(src).expect("parse");
         let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typeck");
-        // Must DECLINE the binary path (return None) — not mis-capture & miscompile.
-        assert!(
-            codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
-                .expect("compile")
-                .is_none(),
-            "a partially-lowering function must fall back to WAT, not be mis-captured"
-        );
+        // Takes the binary path (closures lower) AND emits all loop iterations —
+        // a mis-scoped capture would drop the loop to a single pass.
+        let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+            .expect("compile")
+            .expect("loop + closure must lower on the binary path");
+        assert_eq!(run_bytes_print_only(&bytes), want, "binary path");
         assert_eq!(link_run(src), want, "interpreter oracle");
         assert_eq!(run_on_wasm(src), want, "WAT path");
     }
@@ -8276,6 +8276,12 @@ fn main(console: Console):
                 "fn main(console: Console):\n    print(console, __render((1.5, 2)))\n",
                 vec!["(1.5, 2)".to_string()],
             ),
+            // a closure: a lambda bound to a local, then called (the lifted body +
+            // closure object + call_indirect on the binary path).
+            (
+                "fn main(console: Console):\n    let f = fn(n: Int): n + 1\n    print(console, __render(f(5)))\n    print(console, __render(f(10)))\n",
+                vec!["6".to_string(), "11".to_string()],
+            ),
             // string.chars ($str_chars → $byte_to_char + $str_substring +
             // $list_push) splitting a multibyte string into a List(String).
             (
@@ -8318,6 +8324,18 @@ fn main(console: Console):
             (
                 "fn main(console: Console):\n    let d = dict.insert(dict.insert(dict.new(), \"a\", 1), \"b\", 2)\n    print(console, __render(list.length(dict.keys(d))))\n    print(console, __render(list.length(dict.values(d))))\n    print(console, __render(list.length(dict.pairs(d))))\n    let d2 = dict.remove(d, \"a\")\n    print(console, __render(dict.size(d2)))\n    print(console, __render(dict.has(d2, \"a\")))\n    print(console, __render(dict.has(d2, \"b\")))\n",
                 vec!["2".to_string(), "2".to_string(), "2".to_string(), "1".to_string(), "false".to_string(), "true".to_string()],
+            ),
+            // a capturing closure: the lambda closes over `k` (an Int local),
+            // recovered from the env at offset 4 on the binary path.
+            (
+                "fn main(console: Console):\n    let k = 10\n    let g = fn(n: Int): n + k\n    print(console, __render(g(5)))\n    print(console, __render(g(0)))\n",
+                vec!["15".to_string(), "10".to_string()],
+            ),
+            // a closure passed to a user function and called through its
+            // fn-typed param (`f(f(x))` — the closure-typed-local call_indirect).
+            (
+                "fn apply_twice(f: fn(Int) -> Int, x: Int) -> Int:\n    f(f(x))\nfn main(console: Console):\n    let k = 10\n    let g = fn(n: Int): n + k\n    print(console, __render(apply_twice(g, 1)))\n",
+                vec!["21".to_string()],
             ),
         ];
         let mut lowered_any = false;

@@ -748,6 +748,13 @@ struct Codegen {
     ts_wir_helpers: std::collections::BTreeMap<String, crate::wir::WirFunc>,
     /// Cycle guard for `ensure_ts_wir_helper`, mirroring `eq_building`.
     ts_building: std::collections::HashSet<String>,
+    /// Lifted lambda bodies for the binary path, in table-index order — the WIR
+    /// twin of `lambdas`. Each is a `WirFunc $__lamw{i}`; the closure object
+    /// stores `i` as its code index and `CallIndirect` uses it as the table slot.
+    lambda_wir_funcs: Vec<crate::wir::WirFunc>,
+    /// Maps a lambda's content hash to its index in `lambda_wir_funcs`, so the
+    /// many lowering passes register each lambda exactly once (idempotent).
+    lambda_wir_index: std::collections::HashMap<u64, usize>,
     /// Generated per-shape `to_string` renderers, keyed by `EqShape::id` (a
     /// `ts_` prefix on the function name). Parallels `eq_helpers`: each compound
     /// shape that flows into `to_string` (or string interpolation) gets one
@@ -898,6 +905,8 @@ impl Codegen {
             eq_building: std::collections::HashSet::new(),
             ts_wir_helpers: std::collections::BTreeMap::new(),
             ts_building: std::collections::HashSet::new(),
+            lambda_wir_funcs: Vec::new(),
+            lambda_wir_index: std::collections::HashMap::new(),
             ts_helpers: std::collections::BTreeMap::new(),
             adt_variant_names: HashMap::new(),
             clos_arities: HashSet::new(),
@@ -3690,6 +3699,47 @@ impl Codegen {
             Expr::Block(b) if b.region.is_none() => return Some(W::Seq(self.lower_block(b)?)),
             // `match` on scalar patterns; non-scalar arms fall through to legacy.
             Expr::Match { scrutinee, arms } => return self.lower_match(scrutinee, arms),
+            // A lambda lowers to its closure-object creation (`$mk{c}`); the lifted
+            // body is registered as a `WirFunc` + table entry.
+            Expr::Lambda { params, body } => return self.lower_lambda(params, body),
+            // Call a closure value: stash the pointer, then `call_indirect` with
+            // env (the closure ptr), the i64-slot args, and the code index (the
+            // closure's first word). Mirrors the WAT `Expr::Apply` emission.
+            Expr::Apply { func, args } => {
+                // Binary-path only: the WAT path keeps the legacy `Expr::Apply` arm.
+                if !self.collect_wir {
+                    return None;
+                }
+                let level = self.apply_level;
+                if level >= APPLY_POOL {
+                    return None;
+                }
+                let n = args.len();
+                let tmp = format!("__witchy_call_{level}");
+                let fcode = self.lower_expr(func)?;
+                self.apply_level = level + 1;
+                let mut arg_slots: Vec<W> = Vec::new();
+                for a in args {
+                    let ak = self.kind_of(a);
+                    let av = self.lower_expr(a)?;
+                    arg_slots.push(W::ToSlot(Box::new(av), Self::wir_kind(ak)));
+                }
+                self.apply_level = level;
+                self.clos_arities.insert(n);
+                let recover_kind = self.apply_ret_kind(func);
+                let mut ci_args = vec![W::GetLocal(tmp.clone())];
+                ci_args.extend(arg_slots);
+                let call = W::CallIndirect {
+                    type_arity: n,
+                    args: ci_args,
+                    index: Box::new(W::Load { ptr: Box::new(W::GetLocal(tmp.clone())), kind: crate::wir::Kind::I32, offset: 0 }),
+                };
+                let result = W::FromSlot(Box::new(call), Self::wir_kind(recover_kind));
+                return Some(W::Seq(vec![
+                    N::SetLocal { local: tmp, value: fcode },
+                    N::Push(result),
+                ]));
+            }
             // `if cond { .. } else { .. }` value-if. CRITICAL: codegen lowers the
             // branch blocks BEFORE the cond in the `else` case (and cond first in
             // the no-`else` case); `intern` assigns string offsets in call order, so
@@ -4274,6 +4324,31 @@ impl Codegen {
                 }
                 if let Some(w) = self.lower_call(name, args) {
                     return Some(w);
+                }
+                // A closure-typed local `f(x)`: pass the closure pointer as the env,
+                // the i64-slot args, and `call_indirect` on the code index (the
+                // closure record's first word). Mirrors `compile_call`'s closure-local
+                // arm; the pointer is a bare `GetLocal`, so no scratch stash is needed.
+                if self.locals.contains_key(name) && self.local_fn_ret_kind.contains_key(name) {
+                    let n = args.len();
+                    let mut ci_args: Vec<W> = vec![W::GetLocal(name.to_string())];
+                    for a in args {
+                        let ak = self.kind_of(a);
+                        let av = self.lower_expr(a)?;
+                        ci_args.push(W::ToSlot(Box::new(av), Self::wir_kind(ak)));
+                    }
+                    self.clos_arities.insert(n);
+                    let rk = self.local_fn_ret_kind.get(name).copied().unwrap_or(Kind::I32);
+                    let call = W::CallIndirect {
+                        type_arity: n,
+                        args: ci_args,
+                        index: Box::new(W::Load {
+                            ptr: Box::new(W::GetLocal(name.to_string())),
+                            kind: crate::wir::Kind::I32,
+                            offset: 0,
+                        }),
+                    };
+                    return Some(W::FromSlot(Box::new(call), Self::wir_kind(rk)));
                 }
                 let has_inout = self
                     .fn_conventions
@@ -5338,6 +5413,237 @@ impl Codegen {
         }
         out.push_str(&format!("    call $mk{n}\n"));
         Ok(out)
+    }
+
+    /// WIR twin of `compile_lambda`: lower a lambda to its closure-object
+    /// creation expression (the `$mk{c}` call producing `[code_index][caps..]`),
+    /// registering the lifted body `WirFunc` in `lambda_wir_funcs` once (idempotent
+    /// by content hash). `None` (→ the function falls back to WAT) when the lambda
+    /// assigns a captured var or its body doesn't fully lower.
+    fn lower_lambda(&mut self, params: &[Param], body: &Block) -> Option<crate::wir::WirExpr> {
+        use crate::wir::WirExpr as W;
+        // Binary-path only: the WAT path keeps the legacy `compile_lambda`
+        // emission (its lifted body lives in `self.lambdas`, not the WIR twin).
+        if !self.collect_wir {
+            return None;
+        }
+        let scan = scan_lambda(params, body);
+        if !scan.assigns_outer().is_empty() {
+            return None;
+        }
+        let captures: Vec<String> = scan
+            .captures()
+            .into_iter()
+            .filter(|c| self.locals.contains_key(c) || self.globals.contains(c))
+            .collect();
+        let mut cap_info: Vec<CaptureInfo> = Vec::new();
+        for c in &captures {
+            let kind = self.locals.get(c).copied().unwrap_or(Kind::I32);
+            cap_info.push((
+                c.clone(),
+                self.globals.contains(c),
+                self.local_records.get(c).cloned(),
+                self.local_list_elem.get(c).cloned(),
+                kind,
+            ));
+        }
+        // The capture slots are read at the CREATION site (current scope), before
+        // any scope swap, each widened into the universal i64 env slot.
+        let cap_slots: Vec<W> = cap_info
+            .iter()
+            .map(|(name, is_global, _, _, kind)| {
+                let v = if *is_global { W::GetGlobal(name.clone()) } else { W::GetLocal(name.clone()) };
+                W::ToSlot(Box::new(v), Self::wir_kind(*kind))
+            })
+            .collect();
+        let ncaps = cap_info.len();
+
+        // Idempotent registration: the same lambda (by content) gets one lifted
+        // body + one stable table index across the many lowering passes.
+        let key = {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            format!("{params:?}{body:?}").hash(&mut h);
+            h.finish()
+        };
+        let index = if let Some(&i) = self.lambda_wir_index.get(&key) {
+            i
+        } else {
+            let func = self.build_lambda_wir_func(params, body, &cap_info)?;
+            let i = self.lambda_wir_funcs.len();
+            self.lambda_wir_funcs.push(func);
+            self.lambda_wir_index.insert(key, i);
+            self.clos_arities.insert(params.len());
+            i
+        };
+
+        // Closure object: `$mk{ncaps}(code_index, cap0, ...)` — the code index is
+        // the i32 header (tag), captures are the i64 env slots.
+        let mut args = vec![W::ConstI32(index as i32)];
+        args.extend(cap_slots);
+        Some(W::Call { func: format!("mk{ncaps}"), args })
+    }
+
+    /// Build the lifted `WirFunc $__lamw{i}` for a lambda: env-pointer param then
+    /// one i64 value param per lambda param, a prologue recovering each value
+    /// param from its slot and each capture from the env record, the lowered body,
+    /// and the tail stored back into the universal i64 result slot. `None` if the
+    /// body doesn't lower. Mirrors `compile_lambda`'s scope save/restore exactly.
+    fn build_lambda_wir_func(
+        &mut self,
+        params: &[Param],
+        body: &Block,
+        cap_info: &[CaptureInfo],
+    ) -> Option<crate::wir::WirFunc> {
+        use crate::wir::{WirExpr as W, WirFunc, WirLocal, WirNode as N, WirTy};
+        let index = self.lambda_wir_funcs.len();
+        let saved = self.swap_out_scope();
+        self.cur_fn_inout = false;
+        self.cur_fn_inout_params = Vec::new();
+        // Lambda params: i32 ABI placeholder + record/list types (mirrors compile_lambda).
+        for p in params {
+            self.locals.insert(p.name.clone(), Kind::I32);
+            if let Some(t) = &p.ty {
+                self.local_val_types.insert(p.name.clone(), ty_to_valtype(t));
+            }
+            match &p.ty {
+                Some(Type::Named(n, _)) if self.record_fields.contains_key(n) => {
+                    self.local_records.insert(p.name.clone(), n.clone());
+                }
+                Some(Type::Named(n, args)) if n == "List" => {
+                    if let Some(elem) = args.first() {
+                        if let Type::Named(en, _) = elem {
+                            if self.record_fields.contains_key(en) {
+                                self.local_list_elem.insert(p.name.clone(), en.clone());
+                            }
+                        }
+                        let evt = ty_to_valtype(elem);
+                        if evt != ValType::Other {
+                            self.local_list_elem_valtype.insert(p.name.clone(), evt);
+                        }
+                        if let Type::Tuple(slots) = elem {
+                            self.local_list_elem_tuple
+                                .insert(p.name.clone(), slots.iter().map(ty_to_valtype).collect());
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        for (name, _, rec, list_elem, kind) in cap_info {
+            self.locals.insert(name.clone(), *kind);
+            if let Some(r) = rec {
+                self.local_records.insert(name.clone(), r.clone());
+            }
+            if let Some(e) = list_elem {
+                self.local_list_elem.insert(name.clone(), e.clone());
+            }
+        }
+        for p in params {
+            let k = p.ty.as_ref().map(ty_kind).unwrap_or(Kind::I32);
+            self.locals.insert(p.name.clone(), k);
+            if let Some(Type::Fn(_, ret)) = &p.ty {
+                self.local_fn_ret_kind.insert(p.name.clone(), ty_kind(ret));
+            }
+        }
+        self.infer_locals(body);
+        let saved_inplace = std::mem::take(&mut self.inplace_push);
+        let saved_own = self.cur_fn_own_param.take();
+        self.begin_unit(body);
+        self.cur_fn_ret_kind = Kind::I64;
+        self.cur_fn_ret_slot = true;
+        let saved_apply = self.apply_level;
+        let saved_wm = self.wm_level;
+        self.apply_level = 0;
+        self.wm_level = 0;
+        let body_res = self.lower_block(body);
+        let block_kind = self.block_kind(body);
+        self.apply_level = saved_apply;
+        self.wm_level = saved_wm;
+        let fin = self.finish_unit("lambda");
+        self.inplace_push = saved_inplace;
+        self.cur_fn_own_param = saved_own;
+
+        let func = match (body_res, fin) {
+            (Some(seq), Ok(())) => {
+                let i32t = || WirTy::Bool;
+                let mut func_params = vec![WirLocal { name: ENV_PARAM.into(), ty: i32t() }];
+                for p in params {
+                    func_params.push(WirLocal { name: format!("__lp_{}", p.name), ty: WirTy::Int });
+                }
+                let mut locals: Vec<WirLocal> = Vec::new();
+                for p in params {
+                    let k = self.locals.get(&p.name).copied().unwrap_or(Kind::I32);
+                    locals.push(WirLocal { name: p.name.clone(), ty: Self::wir_ty_for_kind(k) });
+                }
+                for (name, _, _, _, kind) in cap_info {
+                    locals.push(WirLocal { name: name.clone(), ty: Self::wir_ty_for_kind(*kind) });
+                }
+                let mut lets = Vec::new();
+                collect_let_names(body, &mut lets);
+                lets.sort();
+                lets.dedup();
+                for name in &lets {
+                    let k = self.locals.get(name).copied().unwrap_or(Kind::I32);
+                    locals.push(WirLocal { name: name.clone(), ty: Self::wir_ty_for_kind(k) });
+                }
+                let mut cap_vars: Vec<&String> = self.inplace_push.iter().collect();
+                cap_vars.sort();
+                for v in cap_vars {
+                    locals.push(WirLocal { name: format!("{v}__cap"), ty: i32t() });
+                }
+                locals.push(WirLocal { name: "__witchy_owncap".into(), ty: i32t() });
+                locals.push(WirLocal { name: TUPLE_TMP.into(), ty: i32t() });
+                locals.push(WirLocal { name: TRY_TMP.into(), ty: i32t() });
+                locals.push(WirLocal { name: MATCH_TMP.into(), ty: WirTy::Int });
+                for i in 0..WM_POOL {
+                    locals.push(WirLocal { name: format!("__witchy_wm_{i}"), ty: i32t() });
+                }
+                for i in 0..APPLY_POOL {
+                    locals.push(WirLocal { name: format!("__witchy_call_{i}"), ty: i32t() });
+                }
+                // Prologue: recover each value param from its i64 slot, then each
+                // capture from the env record (slot j at offset 4 + 8*j).
+                let mut nodes: crate::wir::WirSeq = Vec::new();
+                for p in params {
+                    let k = self.locals.get(&p.name).copied().unwrap_or(Kind::I32);
+                    nodes.push(N::SetLocal {
+                        local: p.name.clone(),
+                        value: W::FromSlot(Box::new(W::GetLocal(format!("__lp_{}", p.name))), Self::wir_kind(k)),
+                    });
+                }
+                for (j, (name, _, _, _, kind)) in cap_info.iter().enumerate() {
+                    let off = (4 + 8 * j) as i32;
+                    let addr = W::Binary {
+                        op: crate::wir::BinOp::Add,
+                        kind: crate::wir::Kind::I32,
+                        lhs: Box::new(W::GetLocal(ENV_PARAM.into())),
+                        rhs: Box::new(W::ConstI32(off)),
+                    };
+                    nodes.push(N::SetLocal {
+                        local: name.clone(),
+                        value: W::FromSlot(Box::new(W::Load { ptr: Box::new(addr), kind: crate::wir::Kind::I64, offset: 0 }), Self::wir_kind(*kind)),
+                    });
+                }
+                // Body, with the tail value stored into the i64 result slot.
+                let mut seq = seq;
+                if let Some(N::Push(v)) = seq.pop() {
+                    seq.push(N::Push(W::ToSlot(Box::new(v), Self::wir_kind(block_kind))));
+                }
+                nodes.extend(seq);
+                Some(WirFunc {
+                    name: format!("__lamw{index}"),
+                    params: func_params,
+                    ret: vec![WirTy::Int],
+                    locals,
+                    body: nodes,
+                    raw_body: None,
+                })
+            }
+            _ => None,
+        };
+        self.restore_scope(saved);
+        func
     }
 
     /// Take the current function's local-type tables out (leaving them empty for
@@ -8948,12 +9254,11 @@ pub fn assemble_wir_module(
     // twin → bail to WAT.
     let eq_all_wir = cg.eq_helpers.keys().all(|k| cg.eq_wir_helpers.contains_key(k));
     let ts_all_wir = cg.ts_helpers.keys().all(|k| cg.ts_wir_helpers.contains_key(k));
-    if !cg.lambdas.is_empty()
-        || !eq_all_wir
-        || !ts_all_wir
-        || !cg.rcopy_helpers.is_empty()
-        || !cg.clos_arities.is_empty()
-    {
+    // Lambdas/closures are fine now: each lifted body is in `lambda_wir_funcs` and
+    // the closure types are synthesized by the encoder from the `CallIndirect`
+    // nodes. A lambda the WIR couldn't lower already bailed its enclosing function
+    // at the lower stage (so the user_order check below catches it).
+    if !eq_all_wir || !ts_all_wir || !cg.rcopy_helpers.is_empty() {
         return Ok(None);
     }
     let prelude = crate::wir_prelude::prelude();
@@ -8991,6 +9296,11 @@ pub fn assemble_wir_module(
             collect_called_funcs(&f.body, &mut called);
         }
         for f in cg.ts_wir_helpers.values() {
+            collect_called_funcs(&f.body, &mut called);
+        }
+        // Lifted lambda bodies call `$mkN`/`$ensure`/prelude helpers and each
+        // other; pull their reached helpers into the resolution set.
+        for f in &cg.lambda_wir_funcs {
             collect_called_funcs(&f.body, &mut called);
         }
         // A direct host call in user code (e.g. `now`, `dir.subdir`, `recv_*`)
@@ -9077,6 +9387,11 @@ pub fn assemble_wir_module(
             for f in cg.ts_wir_helpers.values() {
                 pruned_funcs.push(f.clone());
             }
+            // Lifted lambda bodies, in table-index order (so `$__lamw{i}` lands at
+            // table slot i, matching the code index baked into each closure object).
+            for f in &cg.lambda_wir_funcs {
+                pruned_funcs.push(f.clone());
+            }
             for name in &user_order {
                 pruned_funcs.push(cg.wir_funcs.get(name).expect("lowered above").clone());
             }
@@ -9143,7 +9458,13 @@ pub fn assemble_wir_module(
                 memory_pages: 1,
                 data,
                 globals: pruned_globals,
-                table: if uses_table { Some(WirTable { funcs: Vec::new() }) } else { None },
+                table: if cg.lambda_wir_funcs.is_empty() {
+                    if uses_table { Some(WirTable { funcs: Vec::new() }) } else { None }
+                } else {
+                    // Slot i = `$__lamw{i}`, so a closure object's code index
+                    // resolves to its lifted body through the element segment.
+                    Some(WirTable { funcs: cg.lambda_wir_funcs.iter().map(|f| f.name.clone()).collect() })
+                },
                 exports: vec![("run".into(), "run".into())],
             }));
         }
