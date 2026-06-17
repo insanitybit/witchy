@@ -3360,6 +3360,40 @@ pub fn dir_read_helper() -> WirFunc {
     }
 }
 
+/// `$build_read(h, rel) -> i32` — the confined build file's contents as a fresh
+/// string. Identical staging to [`dir_read_helper`], but the host length import
+/// (`build_read_len`) resolves `rel` against the granted build *read roots*, not
+/// a Dir handle. The build sandbox's read side.
+pub fn build_read_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    let i32c = E::ConstI32;
+    let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+    WirFunc {
+        name: "build_read".into(),
+        params: vec![
+            WirLocal { name: "h".into(), ty: WirTy::Bool },
+            WirLocal { name: "rel".into(), ty: WirTy::Str },
+        ],
+        ret: vec![WirTy::Str],
+        locals: vec![
+            WirLocal { name: "len".into(), ty: WirTy::Bool },
+            WirLocal { name: "res".into(), ty: WirTy::Bool },
+        ],
+        body: vec![
+            N::SetLocal { local: "len".into(), value: E::CallHost { import: "build_read_len".into(), args: vec![getl("h"), getl("rel")] } },
+            N::Do(E::Call { func: "ensure".into(), args: vec![b(BinOp::Add, getl("len"), i32c(4))] }),
+            N::SetLocal { local: "res".into(), value: E::GetGlobal("heap".into()) },
+            N::Store { ptr: getl("res"), value: getl("len"), kind: Kind::I32, offset: 0 },
+            N::Do(E::CallHost { import: "fill_pending".into(), args: vec![b(BinOp::Add, getl("res"), i32c(4))] }),
+            N::SetGlobal { global: "heap".into(), value: b(BinOp::Add, b(BinOp::Add, getl("res"), i32c(4)), getl("len")) },
+            N::Push(getl("res")),
+        ],
+        raw_body: None,
+    }
+}
+
 /// `$regex_match_spans(pat, text) -> i32` — the regex engine's encoded match
 /// spans (`"s,e;s,e;…"`, "" on no match). The host (`regex_match_spans_len`,
 /// the same native `regex.match_spans` the interpreter uses) reports the byte
@@ -4246,6 +4280,20 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             helper_deps: &["ensure"],
             import_deps: &["dir_read_len", "fill_pending"],
             uses_heap: true,
+            uses_table: false,
+        }),
+        "build_read" => Some(WirHelperSpec {
+            func: build_read_helper(),
+            helper_deps: &["ensure"],
+            import_deps: &["build_read_len", "fill_pending"],
+            uses_heap: true,
+            uses_table: false,
+        }),
+        "build_out_write" => Some(WirHelperSpec {
+            func: host_void_helper("build_out_write", "build_out_write", 3),
+            helper_deps: &[],
+            import_deps: &["build_out_write"],
+            uses_heap: false,
             uses_table: false,
         }),
         "dir_list" => Some(WirHelperSpec {

@@ -1763,7 +1763,7 @@ pub fn run_build_step_sandboxed(
 ) -> Result<Vec<String>, String> {
     use runtime::{Capabilities, Runtime};
     std::fs::create_dir_all(&out_dir).map_err(|e| format!("build: output dir: {e}"))?;
-    let wat = codegen::compile_build_module(&module).map_err(|e| e.message)?;
+    let wasm = codegen::compile_build_module(&module).map_err(|e| e.message)?;
     let caps = Capabilities {
         build_out: Some(out_dir.clone()),
         build_read_roots: read_roots,
@@ -1771,7 +1771,7 @@ pub fn run_build_step_sandboxed(
     };
     let mut rt = Runtime::batch().map_err(|e| e.to_string())?;
     let mut actor = rt
-        .spawn(wat.as_bytes(), caps, RUN_MEMORY_PAGES)
+        .spawn(&wasm, caps, RUN_MEMORY_PAGES)
         .map_err(|e| e.to_string())?;
     actor.run().map_err(|e| e.root_cause().to_string())?;
     let mut generated: Vec<String> = std::fs::read_dir(&out_dir)
@@ -8919,8 +8919,8 @@ fn main(console: Console):
 
     /// `$crypto_sign` + `$crypto_public_key` on the binary path — the Secret
     /// capability host imports (the seed never enters guest memory). Both need a
-    /// signing key granted; with a fixed seed the outputs are deterministic, so
-    /// the WIR binary is compared byte-for-byte against the WAT path.
+    /// signing key granted; the run yields a 64-char public-key hex and a 128-char
+    /// signature hex.
     #[test]
     fn wir_crypto_signing_host_imports_binary_path() {
         use crate::runtime::{Capabilities, Runtime};
@@ -8931,18 +8931,13 @@ fn main(console: Console):
         let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
             .expect("compile_module_binary")
             .expect("the WIR binary path should handle the signing host imports");
-        let wat = codegen::compile_module(&parser::parse_module(src).expect("parse")).expect("compile wat");
         let caps = || Capabilities { print: true, signing_key: Some([7u8; 32]), quiet: true, ..Default::default() };
-        let run = |code: &[u8]| {
-            let mut rt = Runtime::batch().expect("runtime");
-            let mut actor = rt.spawn(code, caps(), crate::RUN_MEMORY_PAGES).expect("spawn with signing key");
-            actor.run().expect("run");
-            actor.output()
-        };
-        let got = run(&bytes);
+        let mut rt = Runtime::batch().expect("runtime");
+        let mut actor = rt.spawn(&bytes, caps(), crate::RUN_MEMORY_PAGES).expect("spawn with signing key");
+        actor.run().expect("run");
+        let got = actor.output();
         assert_eq!(got[0].len(), 64, "public key hex is 64 chars");
         assert_eq!(got[1].len(), 128, "signature hex is 128 chars");
-        assert_eq!(got, run(wat.as_bytes()), "binary path matches WAT path (same seed)");
     }
 
     /// `crypto.ed25519_verify` on the binary path — the signature verify the
@@ -8974,8 +8969,7 @@ fn main(console: Console):
 
     /// `$dir_read` (read a file) on the binary path — the two-phase
     /// `dir_read_len` + `fill_pending` host protocol, gated behind Dir(Read).
-    /// Sets up a sandbox dir with a file and compares the WIR binary against the
-    /// WAT path.
+    /// Sets up a sandbox dir with a file and reads it back.
     #[test]
     fn wir_dir_read_host_import_binary_path() {
         use crate::runtime::{Capabilities, Runtime};
@@ -8989,29 +8983,23 @@ fn main(console: Console):
         let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
             .expect("compile_module_binary")
             .expect("the WIR binary path should handle dir read via the host imports");
-        let wat = codegen::compile_module(&parser::parse_module(src).expect("parse")).expect("compile wat");
-        let run = |code: &[u8]| {
-            let mut rt = Runtime::batch().expect("runtime");
-            let mut actor = rt
-                .spawn(
-                    code,
-                    Capabilities { print: true, dir_root: Some(root.clone()), dir_read: true, quiet: true, ..Default::default() },
-                    crate::RUN_MEMORY_PAGES,
-                )
-                .expect("spawn with Dir(Read)");
-            actor.run().expect("run");
-            actor.output()
-        };
-        let got = run(&bytes);
-        let got_wat = run(wat.as_bytes());
+        let mut rt = Runtime::batch().expect("runtime");
+        let mut actor = rt
+            .spawn(
+                &bytes,
+                Capabilities { print: true, dir_root: Some(root.clone()), dir_read: true, quiet: true, ..Default::default() },
+                crate::RUN_MEMORY_PAGES,
+            )
+            .expect("spawn with Dir(Read)");
+        actor.run().expect("run");
+        let got = actor.output();
         let _ = std::fs::remove_dir_all(&root);
         assert_eq!(got, vec!["hello from disk".to_string()], "binary path");
-        assert_eq!(got, got_wat, "binary path matches WAT path");
     }
 
     /// `$dir_list` (list a directory) on the binary path — the host reports the
     /// marshaled-list size (`dir_list_size`) then writes it (`write_pending_list`),
-    /// gated behind Dir(Read). Counts entries and compares binary vs WAT.
+    /// gated behind Dir(Read). Counts the directory's entries.
     #[test]
     fn wir_dir_list_host_import_binary_path() {
         use crate::runtime::{Capabilities, Runtime};
@@ -9027,30 +9015,24 @@ fn main(console: Console):
         let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
             .expect("compile_module_binary")
             .expect("the WIR binary path should handle dir list via the host imports");
-        let wat = codegen::compile_module(&parser::parse_module(src).expect("parse")).expect("compile wat");
-        let run = |code: &[u8]| {
-            let mut rt = Runtime::batch().expect("runtime");
-            let mut actor = rt
-                .spawn(
-                    code,
-                    Capabilities { print: true, dir_root: Some(root.clone()), dir_read: true, quiet: true, ..Default::default() },
-                    crate::RUN_MEMORY_PAGES,
-                )
-                .expect("spawn with Dir(Read)");
-            actor.run().expect("run");
-            actor.output()
-        };
-        let got = run(&bytes);
-        let got_wat = run(wat.as_bytes());
+        let mut rt = Runtime::batch().expect("runtime");
+        let mut actor = rt
+            .spawn(
+                &bytes,
+                Capabilities { print: true, dir_root: Some(root.clone()), dir_read: true, quiet: true, ..Default::default() },
+                crate::RUN_MEMORY_PAGES,
+            )
+            .expect("spawn with Dir(Read)");
+        actor.run().expect("run");
+        let got = actor.output();
         let _ = std::fs::remove_dir_all(&root);
         assert_eq!(got, vec!["2".to_string()], "binary path: 2 entries");
-        assert_eq!(got, got_wat, "binary path matches WAT path");
     }
 
     /// `$get_env` on the binary path — a host-import helper returning an
     /// `Option(String)`, consumed via `match` (now lowering via the
     /// constructor-pattern arm). The absent branch is deterministic ("unset");
-    /// the present branch (PATH) is compared binary-vs-WAT for parity. Env grant.
+    /// the present branch (PATH) takes the `Some` arm. Env grant.
     #[test]
     fn wir_get_env_option_binary_path() {
         use crate::runtime::{Capabilities, Runtime};
@@ -9061,18 +9043,15 @@ fn main(console: Console):
         let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
             .expect("compile_module_binary")
             .expect("the WIR binary path should handle get_env + match");
-        let wat = codegen::compile_module(&parser::parse_module(src).expect("parse")).expect("compile wat");
-        let run = |code: &[u8]| {
-            let mut rt = Runtime::batch().expect("runtime");
-            let mut actor = rt
-                .spawn(code, Capabilities { print: true, env: true, quiet: true, ..Default::default() }, crate::RUN_MEMORY_PAGES)
-                .expect("spawn with Env");
-            actor.run().expect("run");
-            actor.output()
-        };
-        let got = run(&bytes);
+        let mut rt = Runtime::batch().expect("runtime");
+        let mut actor = rt
+            .spawn(&bytes, Capabilities { print: true, env: true, quiet: true, ..Default::default() }, crate::RUN_MEMORY_PAGES)
+            .expect("spawn with Env");
+        actor.run().expect("run");
+        let got = actor.output();
         assert_eq!(got[0], "unset", "absent var → None → unset");
-        assert_eq!(got, run(wat.as_bytes()), "binary path matches WAT path");
+        assert_eq!(got.len(), 2, "both matches print one line each");
+        assert!(matches!(got[1].as_str(), "has" | "no-path"), "present-var branch: {got:?}");
     }
 
     /// An Int-returning `main` on the binary path: the `run` wrapper prints the

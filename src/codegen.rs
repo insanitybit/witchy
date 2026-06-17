@@ -1133,7 +1133,8 @@ impl Codegen {
             Expr::Call { name, .. } => match name.as_str() {
                 "__render" | "string.to_upper" | "string.to_lower" | "string.trim"
                 | "string.replace" | "string.substring" | "crypto.sha256" | "crypto.sign"
-                | "crypto.public_key" | "read" | "crypto.rune_hash" | "compiler.footprint"
+                | "crypto.public_key" | "read" | "read_build" | "crypto.rune_hash"
+                | "compiler.footprint"
                 | "compiler.diff" | "regex.match_spans" | "recv_line" | "recv_all"
                 | "crypto.sha512" | "crypto.sha3_256" | "crypto.hmac_sha256"
                 | "recv_bytes" => ValType::Str,
@@ -8714,7 +8715,8 @@ impl Codegen {
             }
             ("write_out", 3) => {
                 self.used_build_ops.insert("write_out");
-                nil0(host("build_out_write_host", self.lower_args(&[&args[0], &args[1], &args[2]])?))
+                let a = self.lower_args(&[&args[0], &args[1], &args[2]])?;
+                if self.collect_wir { call("build_out_write", a) } else { nil0(host("build_out_write_host", a)) }
             }
             ("reply", 1) => {
                 self.uses_reply = true;
@@ -10842,21 +10844,16 @@ fn collect_called_host_imports(seq: &crate::wir::WirSeq, out: &mut std::collecti
     }
 }
 
-/// Compile a rune's build step to a WASM module that runs in the zero-ambient
+/// Compile a rune's build step to a WASM binary that runs in the zero-ambient
 /// build sandbox. The `build` entrypoint is renamed to `main` so the whole
-/// `compile_module` pipeline (the `run` export, marshaling, helpers) is reused
-/// verbatim — its capability parameters lower to handle 0 exactly like `main`'s,
-/// and the only build-specific code is the `write_out`/`read_build` host calls,
-/// which never appear in an ordinary program (so parity is untouched). The host
-/// links only `build_out_write`/`build_read_len`, confined to the granted output
-/// sandbox and read roots — nothing else exists for the guest to call.
-///
-/// NOTE: this stays on the WAT codegen (`compile_module`) deliberately — the
-/// build host ops (`build_read`/`build_out_write`) are not yet wired into the
-/// WIR/binary prelude, so `compile_module_binary` bails to `None` for a build
-/// step. Until those host imports land in the binary path, the build sandbox is
-/// the one remaining consumer of the WAT sink.
-pub fn compile_build_module(module: &Module) -> Result<String, CodegenError> {
+/// `compile_module_binary` pipeline (the `run` export, marshaling, helpers) is
+/// reused verbatim — its capability parameters lower to handle 0 exactly like
+/// `main`'s, and the only build-specific code is the `write_out`/`read_build`
+/// host calls (the `build_out_write`/`build_read` WIR helpers), which never
+/// appear in an ordinary program (so parity is untouched). The host links only
+/// `build_out_write`/`build_read_len`, confined to the granted output sandbox
+/// and read roots — nothing else exists for the guest to call.
+pub fn compile_build_module(module: &Module) -> Result<Vec<u8>, CodegenError> {
     let mut m = module.clone();
     // A build module ships no `main`; promote its `build` entrypoint to `main`.
     m.items.retain(|it| !matches!(it, Item::Function(f) if f.name == "main"));
@@ -10867,7 +10864,9 @@ pub fn compile_build_module(module: &Module) -> Result<String, CodegenError> {
             }
         }
     }
-    compile_module(&m)
+    compile_module_binary(&m, &HashMap::new())?.ok_or_else(|| CodegenError {
+        message: "build step uses a construct the binary backend does not support".into(),
+    })
 }
 
 fn data_segment(off: u32, s: &str) -> String {
@@ -12848,7 +12847,12 @@ impl Renamer {
 /// correctly through the val-type net in the `Add` arm, just unoptimized.
 fn flip_string_add_module(m: &mut Module, table: &crate::typeck::TypeTable) {
     fn stringy(e: &Expr, table: &crate::typeck::TypeTable) -> bool {
+        // A `Concat` is always a String — recognize it structurally so a nested
+        // chain whose intermediate levels lack a literal operand (and whose other
+        // operand the type table didn't resolve, e.g. a build-time `read_build`)
+        // still flips the whole chain once the innermost level is anchored.
         matches!(e, Expr::Str(_))
+            || matches!(e, Expr::Binary { op: BinOp::Concat, .. })
             || matches!(
                 table.type_of(e).and_then(crate::typeck::ty_to_ast),
                 Some(Type::Named(n, _)) if n == "String"
@@ -13013,13 +13017,30 @@ mod tests {
             "fn build(out: BuildOut, schema: BuildRead):\n    write_out(out, \"x.witchy\", read_build(schema, \"a.proto\"))\n",
         )
         .expect("parse");
-        let wat = compile_build_module(&module).expect("compile build module");
-        assert!(wat.contains("(export \"run\")"), "build entrypoint becomes the run export");
-        assert!(wat.contains("build_out_write"), "write_out import present");
-        assert!(wat.contains("build_read_len"), "read_build import present");
+        let wasm = compile_build_module(&module).expect("compile build module");
+        let mut imports = Vec::new();
+        let mut exports = Vec::new();
+        for payload in wasmparser::Parser::new(0).parse_all(&wasm) {
+            match payload.expect("valid wasm") {
+                wasmparser::Payload::ImportSection(reader) => {
+                    for imp in reader.into_imports() {
+                        imports.push(imp.expect("import").name.to_string());
+                    }
+                }
+                wasmparser::Payload::ExportSection(reader) => {
+                    for ex in reader {
+                        exports.push(ex.expect("export").name.to_string());
+                    }
+                }
+                _ => {}
+            }
+        }
+        assert!(exports.iter().any(|e| e == "run"), "build entrypoint becomes the run export");
+        assert!(imports.iter().any(|i| i == "build_out_write"), "write_out import present");
+        assert!(imports.iter().any(|i| i == "build_read_len"), "read_build import present");
         // No runtime-authority imports leaked in.
-        for forbidden in ["dir_write", "dir_read_len", "net_connect", "net_listen", "\"print\"", "\"now\"", "crypto.sign"] {
-            assert!(!wat.contains(forbidden), "build module must not import `{forbidden}`:\n{wat}");
+        for forbidden in ["dir_write", "dir_read_len", "net_connect", "net_listen", "print", "now", "crypto.sign"] {
+            assert!(!imports.iter().any(|i| i == forbidden), "build module must not import `{forbidden}`: {imports:?}");
         }
     }
 
