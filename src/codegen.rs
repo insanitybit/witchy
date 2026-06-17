@@ -7070,14 +7070,29 @@ impl Codegen {
         if self.eq_wir_helpers.contains_key(&name) {
             return Some(name);
         }
-        // Cycle guard: a recursive type whose eq helper is mid-build bails to WAT
-        // (the structural recursion would otherwise loop in codegen).
         if !self.eq_building.insert(name.clone()) {
             return None;
         }
+        // Reserve the name with a placeholder BEFORE building, so a recursive
+        // ADT's self-referential field compares via a `call $eq_…` back to this
+        // helper (tying the knot) instead of looping forever in codegen.
+        self.eq_wir_helpers.insert(name.clone(), crate::wir::WirFunc {
+            name: name.clone(),
+            params: vec![
+                crate::wir::WirLocal { name: "a".into(), ty: crate::wir::WirTy::Bool },
+                crate::wir::WirLocal { name: "b".into(), ty: crate::wir::WirTy::Bool },
+            ],
+            ret: vec![crate::wir::WirTy::Bool],
+            locals: vec![],
+            body: vec![crate::wir::WirNode::Push(crate::wir::WirExpr::ConstI32(1))],
+            raw_body: None,
+        });
         let built = self.build_eq_wir_body(shape);
         self.eq_building.remove(&name);
-        let (body, locals) = built?;
+        let Some((body, locals)) = built else {
+            self.eq_wir_helpers.remove(&name);
+            return None;
+        };
         let func = crate::wir::WirFunc {
             name: name.clone(),
             params: vec![
@@ -7482,9 +7497,28 @@ impl Codegen {
         if !self.ts_building.insert(name.clone()) {
             return None;
         }
+        // Reserve the name with a placeholder BEFORE building the body, so a
+        // self-referential field (a recursive ADT like JsonValue, whose
+        // JsonArray(List(JsonValue)) field renders this very shape) ties back
+        // through the `contains_key` check above — the recursion becomes a
+        // `call $ts_…` to this helper rather than an infinite inline expansion.
+        let empty = self.intern("");
+        self.ts_wir_helpers.insert(name.clone(), crate::wir::WirFunc {
+            name: name.clone(),
+            params: vec![crate::wir::WirLocal { name: "p".into(), ty: crate::wir::WirTy::Bool }],
+            ret: vec![crate::wir::WirTy::Str],
+            locals: vec![],
+            body: vec![crate::wir::WirNode::Push(crate::wir::WirExpr::StrPtr(empty))],
+            raw_body: None,
+        });
         let built = self.build_ts_wir_body(shape);
         self.ts_building.remove(&name);
-        let (body, locals) = built?;
+        let Some((body, locals)) = built else {
+            // A nested shape couldn't be built — drop the placeholder so the
+            // whole render bails cleanly (and a later re-attempt rebuilds).
+            self.ts_wir_helpers.remove(&name);
+            return None;
+        };
         let func = crate::wir::WirFunc {
             name: name.clone(),
             params: vec![crate::wir::WirLocal { name: "p".into(), ty: crate::wir::WirTy::Bool }],
@@ -7635,8 +7669,33 @@ impl Codegen {
                 ];
                 Some((body, vec![bool_local("n"), bool_local("i"), bool_local("acc")]))
             }
-            // AdtRec (self-recursive) render not generated yet → bail to WAT.
-            _ => None,
+            // A generic self-recursive ADT instantiation (`Stack(Int)`): expand
+            // one level of each variant's fields under the argument substitution.
+            // A self-referential field resolves back to this shape, whose `$ts`
+            // helper name is reserved (the placeholder in `ensure_ts_wir_helper`),
+            // so it renders via a recursive `call`. Mirrors the eq `AdtRec` arm.
+            EqShape::AdtRec(tyname, args) => {
+                let variants = self.adt_variants.get(tyname).cloned()?;
+                let names = self.adt_variant_names.get(tyname).cloned()?;
+                let mut params: Vec<String> = Vec::new();
+                for fields in &variants {
+                    for f in fields {
+                        collect_type_vars(f, &mut params);
+                    }
+                }
+                let subst: std::collections::HashMap<String, EqShape> =
+                    params.iter().cloned().zip(args.iter().cloned()).collect();
+                let mut all: Vec<Vec<EqShape>> = Vec::new();
+                for fs in &variants {
+                    let mut shapes = Vec::new();
+                    for f in fs {
+                        shapes.push(self.eq_shape_of_type_with(f, &subst)?);
+                    }
+                    all.push(shapes);
+                }
+                self.build_variant_ts_wir(&names, &all)
+            }
+            EqShape::Int | EqShape::Bool | EqShape::Float | EqShape::Str => None,
         }
     }
 

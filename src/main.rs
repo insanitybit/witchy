@@ -8506,6 +8506,15 @@ fn main(console: Console):
                 "fn mklist() -> List(Int):\n    [1, 2, 3]\n\nfn pair() -> (Int, String):\n    (7, \"x\")\n\nfn main(console: Console):\n    print(console, \"${mklist()}\")\n    print(console, \"${pair()}\")\n",
                 vec!["[1, 2, 3]".to_string(), "(7, x)".to_string()],
             ),
+            // Render of a self-RECURSIVE ADT (`Node(Tree, Tree)`): the `$ts`
+            // helper's name is reserved before its body is built, so the nested
+            // `Tree` fields render via a recursive `call` to the same helper
+            // (tying the knot) rather than bailing the cycle guard. The WAT path
+            // renders enums structurally too, so all three backends agree.
+            (
+                "type Tree:\n    Leaf(Int)\n    Node(Tree, Tree)\n\nfn main(console: Console):\n    let t = Node(Node(Leaf(1), Leaf(2)), Leaf(3))\n    print(console, \"${t}\")\n",
+                vec!["Node(Node(Leaf(1), Leaf(2)), Leaf(3))".to_string()],
+            ),
             // `inout` parameters (the multi-value move-out ABI): the callee returns
             // its declared value plus each inout param's final value, and the call
             // site (`CallStoreMulti`) writes them back into the caller's vars. Covers
@@ -8630,6 +8639,25 @@ fn main(console: Console):
         let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
             .expect("compile_module_binary")
             .expect("the WIR binary path should lower dict.update");
+        assert_eq!(run_bytes_print_only(&bytes), want, "binary path");
+        assert_eq!(link_run(src), want, "interpreter oracle");
+    }
+
+    /// Structural `==` on a self-RECURSIVE ADT (`Node(Tree, Tree)`) on the binary
+    /// path. The `$eq_*` helper reserves its name before building, so a nested
+    /// `Tree` field compares via a recursive `call` to the same helper. (2-way:
+    /// the WAT path pointer-compares enums — a known WAT/interpreter divergence —
+    /// so compare binary vs the interpreter oracle, which compares structurally.)
+    #[test]
+    fn wir_recursive_adt_eq_binary_path() {
+        let src = "type Tree:\n    Leaf(Int)\n    Node(Tree, Tree)\n\nfn main(console: Console):\n    let a = Node(Node(Leaf(1), Leaf(2)), Leaf(3))\n    let b = Node(Node(Leaf(1), Leaf(2)), Leaf(3))\n    let c = Node(Node(Leaf(1), Leaf(9)), Leaf(3))\n    print(console, \"${a == b}\")\n    print(console, \"${a == c}\")\n";
+        let want = vec!["true".to_string(), "false".to_string()];
+        let module = parser::parse_module(src).expect("parse");
+        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        typeck::check(&linked).expect("typecheck");
+        let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+            .expect("compile_module_binary")
+            .expect("the WIR binary path should compare a recursive ADT");
         assert_eq!(run_bytes_print_only(&bytes), want, "binary path");
         assert_eq!(link_run(src), want, "interpreter oracle");
     }
