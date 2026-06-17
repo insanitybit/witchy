@@ -7803,6 +7803,57 @@ fn main(console: Console):
         Module::new(&Engine::default(), &wat).expect("valid wasm");
     }
 
+    /// WIR migration progress meter (not an assertion): reports how many example
+    /// programs take the AST→WIR→wasm-binary path vs. still fall back to WAT.
+    /// Run with `cargo test --features native binary_path_coverage_report --
+    /// --ignored --nocapture`; add `WIRDIAG=1` to also print, per bailing program,
+    /// which function(s) didn't lower (the `assemble_wir_module` diagnostic).
+    #[test]
+    #[ignore]
+    fn binary_path_coverage_report() {
+        let mut dirs = vec![std::path::PathBuf::from("examples")];
+        let mut srcs: Vec<std::path::PathBuf> = vec![];
+        while let Some(d) = dirs.pop() {
+            for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    dirs.push(p);
+                } else if p.extension().and_then(|s| s.to_str()) == Some("witchy") {
+                    srcs.push(p);
+                }
+            }
+        }
+        srcs.sort();
+        let (mut ok, mut total) = (0, 0);
+        let mut bailed: Vec<String> = vec![];
+        for p in srcs {
+            let ps = p.to_str().unwrap().to_string();
+            if p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("serve_")) {
+                continue;
+            }
+            let linked = match crate::link_file(&ps) {
+                Ok((m, _)) => m,
+                Err(_) => continue,
+            };
+            if typeck::check(&linked).is_err() {
+                continue;
+            }
+            total += 1;
+            if matches!(
+                codegen::compile_module_binary(&linked, &std::collections::HashMap::new()),
+                Ok(Some(_))
+            ) {
+                ok += 1;
+            } else {
+                bailed.push(ps);
+            }
+        }
+        eprintln!("\n=== WIR binary-path coverage: {ok}/{total} ===");
+        for b in &bailed {
+            eprintln!("  fallback: {b}");
+        }
+    }
+
     /// End-to-end through the *compiled* path: type-check, compile to WASM, run
     /// on the wasmtime runtime with the output capabilities granted, and return
     /// what the program printed.

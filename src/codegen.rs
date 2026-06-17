@@ -9376,6 +9376,13 @@ pub fn assemble_wir_module(
 
     // Every reachable function must have fully lowered to WIR.
     if !user_order.iter().all(|n| cg.wir_funcs.contains_key(n)) {
+        // Migration aid: `WIRDIAG=1` names the function(s) that didn't lower, so the
+        // remaining WAT-fallback surface can be bisected. Inert otherwise.
+        if std::env::var_os("WIRDIAG").is_some() {
+            let missing: Vec<&String> =
+                user_order.iter().filter(|n| !cg.wir_funcs.contains_key(*n)).collect();
+            eprintln!("WIRBAIL user-fn-incomplete: {missing:?}");
+        }
         return Ok(None);
     }
     // Bail if the program needs program-specific helpers (not in the prelude) or
