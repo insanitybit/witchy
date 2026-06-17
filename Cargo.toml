@@ -31,9 +31,6 @@ native = ["dep:wasmtime", "dep:lsp-server", "dep:serde_json", "dep:serde", "dep:
 sha2 = "0.11.0"
 ed25519-dalek = "2.2.0"
 regex = "1.11"
-# Assembles codegen's WAT to a wasm binary; pure Rust, so the browser playground
-# can compile a witchy program to a module its own WebAssembly engine runs.
-wat = "1"
 wasm-encoder = "0.251"
 # Reads back the pre-compiled prelude blob + validates the emitted module; pure
 # Rust, so the binary codegen path (WIR -> wasm) runs on the wasm playground too.
@@ -61,3 +58,7 @@ aws-lc-rs = "1"
 
 [dev-dependencies]
 proptest = "1.11.0"
+# TEST-ONLY: assembles the legacy `to_wat` / prelude WAT back to a binary so the
+# round-trip + prelude-blob-current tests can run it. Production codegen is
+# WIR → wasm-binary (wasm-encoder); the shipped library/binary no longer needs it.
+wat = "1"
