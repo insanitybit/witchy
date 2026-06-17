@@ -8379,6 +8379,12 @@ fn main(console: Console):
                 "fn main(console: Console):\n    print(console, __render(math.to_int(math.sqrt(16.0))))\n    print(console, __render(math.to_int(math.to_float(7) + 0.5)))\n    print(console, __render(3.5))\n",
                 vec!["4".to_string(), "7".to_string(), "3.5".to_string()],
             ),
+            // `string.from_code` (Unicode scalar -> single-char string) via the
+            // `$string_from_code` host-import wrapper.
+            (
+                "fn main(console: Console):\n    print(console, string.from_code(65))\n    print(console, string.from_code(233))\n",
+                vec!["A".to_string(), "é".to_string()],
+            ),
         ];
         let mut lowered_any = false;
         for (src, want) in cases {
