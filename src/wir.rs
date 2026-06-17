@@ -3290,6 +3290,12 @@ fn compiler_introspect_helper(name: &str, import: &str, nargs: usize) -> WirFunc
 /// deferred (`no_direct_host` stays true) — and declares the import via
 /// `import_deps`. Used for the 2-arg `Dir` ops (subdir/exists/is_dir).
 fn host_call_helper(name: &str, import: &str, nargs: usize) -> WirFunc {
+    host_call_helper_ret(name, import, nargs, WirTy::Bool)
+}
+
+/// Like [`host_call_helper`] but with an explicit result type — for host imports
+/// whose result isn't the default i32 handle/pointer (e.g. `now` returns an i64).
+fn host_call_helper_ret(name: &str, import: &str, nargs: usize, ret: WirTy) -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
     let params: Vec<WirLocal> = (0..nargs)
@@ -3299,7 +3305,7 @@ fn host_call_helper(name: &str, import: &str, nargs: usize) -> WirFunc {
     WirFunc {
         name: name.into(),
         params,
-        ret: vec![WirTy::Bool],
+        ret: vec![ret],
         locals: vec![],
         body: vec![N::Push(E::CallHost { import: import.into(), args: host_args })],
         raw_body: None,
@@ -3649,6 +3655,13 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             helper_deps: &["ensure"],
             import_deps: &["compiler_diff_len", "fill_pending"],
             uses_heap: true,
+            uses_table: false,
+        }),
+        "now" => Some(WirHelperSpec {
+            func: host_call_helper_ret("now", "now", 0, WirTy::Int),
+            helper_deps: &[],
+            import_deps: &["now"],
+            uses_heap: false,
             uses_table: false,
         }),
         "dir_subdir" => Some(WirHelperSpec {

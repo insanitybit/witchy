@@ -7963,7 +7963,11 @@ impl Codegen {
             // authority and takes no operands.
             ("now", 1) => {
                 self.uses_now = true;
-                W::CallHost { import: "now_host".to_string(), args: vec![] }
+                if self.collect_wir {
+                    call("now", vec![])
+                } else {
+                    W::CallHost { import: "now_host".to_string(), args: vec![] }
+                }
             }
             // `get_env(env, name)`: only the name travels (the Env grant is the host).
             ("get_env", 2) => {
