@@ -2723,6 +2723,59 @@ pub fn dict_insert_cap_helper() -> WirFunc {
     }
 }
 
+/// `$dict_update_cap(d, k, default, mode, clos, cap) -> (i32, i32)` — the in-place
+/// upsert: apply the updater closure to the current value (or `default`) and
+/// reinsert via `$dict_insert_cap` (so an owned dict mutates in place). The
+/// closure call mirrors the non-cap `$dict_update`; the (ptr, cap) pair from
+/// `$dict_insert_cap` is captured into locals and re-pushed (WIR can't tail a
+/// multi-value call). Calls `$dict_get_or` + `$dict_insert_cap`; uses the table.
+pub fn dict_update_cap_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    WirFunc {
+        name: "dict_update_cap".into(),
+        params: vec![
+            WirLocal { name: "d".into(), ty: WirTy::Bool },
+            WirLocal { name: "k".into(), ty: WirTy::Int },
+            WirLocal { name: "default".into(), ty: WirTy::Int },
+            WirLocal { name: "mode".into(), ty: WirTy::Bool },
+            WirLocal { name: "clos".into(), ty: WirTy::Bool },
+            WirLocal { name: "cap".into(), ty: WirTy::Bool },
+        ],
+        ret: vec![WirTy::Bool, WirTy::Bool],
+        locals: vec![
+            WirLocal { name: "new".into(), ty: WirTy::Int },
+            WirLocal { name: "ret_ptr".into(), ty: WirTy::Bool },
+            WirLocal { name: "ret_cap".into(), ty: WirTy::Bool },
+        ],
+        body: vec![
+            N::SetLocal {
+                local: "new".into(),
+                value: E::CallIndirect {
+                    type_arity: 1,
+                    args: vec![
+                        getl("clos"),
+                        E::Call {
+                            func: "dict_get_or".into(),
+                            args: vec![getl("d"), getl("k"), getl("default"), getl("mode")],
+                        },
+                    ],
+                    index: Box::new(E::Load { ptr: Box::new(getl("clos")), kind: Kind::I32, offset: 0 }),
+                },
+            },
+            N::CallStoreMulti {
+                func: "dict_insert_cap".into(),
+                args: vec![getl("d"), getl("k"), getl("new"), getl("mode"), getl("cap")],
+                dests: vec!["ret_ptr".into(), "ret_cap".into()],
+            },
+            N::Push(getl("ret_ptr")),
+            N::Push(getl("ret_cap")),
+        ],
+        raw_body: None,
+    }
+}
+
 /// `$dict_get_or(d, k, default, mode) -> i64` — the value slot for `k`, or
 /// `default` when absent.
 pub fn dict_get_or_helper() -> WirFunc {
@@ -4276,6 +4329,13 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             import_deps: &[],
             uses_heap: true,
             uses_table: false,
+        }),
+        "dict_update_cap" => Some(WirHelperSpec {
+            func: dict_update_cap_helper(),
+            helper_deps: &["dict_get_or", "dict_insert_cap"],
+            import_deps: &[],
+            uses_heap: true,
+            uses_table: true,
         }),
         "dict_has" => Some(WirHelperSpec {
             func: dict_has_helper(),
