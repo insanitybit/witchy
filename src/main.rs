@@ -8552,6 +8552,34 @@ fn main(console: Console):
         assert_eq!(link_run(src), want, "interpreter oracle");
     }
 
+    /// Enum (Adt) structural `==` on the binary path — the generated `$eq_*`
+    /// tag-dispatch helper. Kept OUT of the 3-way corpus deliberately: the legacy
+    /// WAT path pointer-compares enums (a pre-existing compiled-vs-interpreter
+    /// divergence — it returns `false` even for `None == None`), so it can't be the
+    /// oracle here. The binary path is structurally CORRECT, so we assert it against
+    /// the INTERPRETER directly. Covers None==None, tag mismatch, nullary-variant
+    /// equality, and equal/unequal nested-String payloads.
+    #[test]
+    fn wir_enum_eq_binary_path() {
+        let src = "type CalcError:\n    StackUnderflow\n    UnknownToken(String)\n    DivByZero\n\nfn main(console: Console):\n    let a: Option(CalcError) = None\n    let b: Option(CalcError) = Some(StackUnderflow)\n    let c: Option(CalcError) = Some(UnknownToken(\"x\"))\n    let d: Option(CalcError) = Some(UnknownToken(\"y\"))\n    let cx: Option(CalcError) = Some(UnknownToken(\"x\"))\n    print(console, \"${a == None}\")\n    print(console, \"${b == None}\")\n    print(console, \"${b == Some(StackUnderflow)}\")\n    print(console, \"${c == cx}\")\n    print(console, \"${c == d}\")\n    print(console, \"${b == c}\")\n";
+        let want = vec![
+            "true".to_string(),
+            "false".to_string(),
+            "true".to_string(),
+            "true".to_string(),
+            "false".to_string(),
+            "false".to_string(),
+        ];
+        let module = parser::parse_module(src).expect("parse");
+        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        typeck::check(&linked).expect("typecheck");
+        let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+            .expect("compile_module_binary")
+            .expect("the WIR binary path should structurally lower enum `==`");
+        assert_eq!(run_bytes_print_only(&bytes), want, "binary path");
+        assert_eq!(link_run(src), want, "interpreter oracle");
+    }
+
     /// The crypto digest helpers ($crypto_sha256/sha512/sha3_256/hmac_sha256) on
     /// the binary path — host-import wrappers returning a String. The crypto
     /// imports are host-provided regardless of grant (hashing needs no

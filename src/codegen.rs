@@ -7336,13 +7336,104 @@ impl Codegen {
                 ];
                 (b, vec![bool_local("n"), bool_local("i")])
             }
-            // Adt/AdtInst (enum) eq is deferred — a faithful transcription of the
-            // legacy tag-dispatch still diverged on Option payloads (the
-            // boxed-vs-resolved field layout needs more care), so enum `==` bails
-            // to WAT via the `?` in the lowering hook.
-            _ => return None,
+            // Enum (Adt) structural `==`: tag-dispatch then per-variant field
+            // compares, mirroring the WAT `ensure_eq_helper` arms (which are also
+            // structural, so binary == WAT == interpreter all agree). A generic
+            // payload that the comparison site couldn't resolve to a concrete shape
+            // (a bare type variable) makes `eq_shape_of_type` return None below → the
+            // `?` bails to WAT. Recursive ADTs bail via the `ensure_eq_wir_helper`
+            // cycle guard.
+            EqShape::Adt(tyname) => {
+                let variants = self.adt_variants.get(tyname).cloned()?;
+                let mut all: Vec<Vec<EqShape>> = Vec::new();
+                for fs in &variants {
+                    let mut shapes = Vec::new();
+                    for f in fs {
+                        shapes.push(self.eq_shape_of_type(f)?);
+                    }
+                    all.push(shapes);
+                }
+                return self.build_variant_eq_wir(&all);
+            }
+            EqShape::AdtInst(_, variant_shapes) => {
+                let all = variant_shapes.clone();
+                return self.build_variant_eq_wir(&all);
+            }
+            EqShape::AdtRec(tyname, args) => {
+                let variants = self.adt_variants.get(tyname).cloned()?;
+                let mut params: Vec<String> = Vec::new();
+                for fields in &variants {
+                    for f in fields {
+                        collect_type_vars(f, &mut params);
+                    }
+                }
+                let subst: std::collections::HashMap<String, EqShape> =
+                    params.iter().cloned().zip(args.iter().cloned()).collect();
+                let mut all: Vec<Vec<EqShape>> = Vec::new();
+                for fs in &variants {
+                    let mut shapes = Vec::new();
+                    for f in fs {
+                        shapes.push(self.eq_shape_of_type_with(f, &subst)?);
+                    }
+                    all.push(shapes);
+                }
+                return self.build_variant_eq_wir(&all);
+            }
+            // Dict eq isn't generated yet; scalars never reach here (compared inline
+            // by `slot_cmp_wir`, never via a helper).
+            EqShape::Dict(..)
+            | EqShape::Int
+            | EqShape::Bool
+            | EqShape::Float
+            | EqShape::Str => return None,
         };
         Some((body, locals))
+    }
+
+    /// The tag-dispatch body of an enum `==`: tags differ → return 0, else load the
+    /// shared tag and, for the matching variant, compare its fields (slot `4+8*i`)
+    /// via `slot_cmp_wir`; a nullary or fully-equal variant → 1. `all` is the
+    /// per-variant resolved field shapes. Mirrors the WAT `ensure_eq_helper` Adt arm.
+    fn build_variant_eq_wir(
+        &mut self,
+        all: &[Vec<EqShape>],
+    ) -> Option<(crate::wir::WirSeq, Vec<crate::wir::WirLocal>)> {
+        use crate::wir::{BinOp, Kind, UnOp, WirExpr as W, WirLocal, WirNode as N, WirTy};
+        let getl = |n: &str| W::GetLocal(n.into());
+        let i32c = W::ConstI32;
+        let add = |l: W, r: W| W::Binary { op: BinOp::Add, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+        let load_i32 = |p: W| W::Load { ptr: Box::new(p), kind: Kind::I32, offset: 0 };
+        let not = |e: W| W::Unary { op: UnOp::Not, kind: Kind::I32, arg: Box::new(e) };
+        let eqi = |l: W, r: W| W::Binary { op: BinOp::Eq, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+        let nei = |l: W, r: W| W::Binary { op: BinOp::Ne, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+        let mut b: crate::wir::WirSeq = Vec::new();
+        b.push(N::If {
+            cond: nei(load_i32(getl("a")), load_i32(getl("b"))),
+            then_: vec![N::Return(Some(i32c(0)))],
+            els: vec![],
+            result: None,
+        });
+        b.push(N::SetLocal { local: "t".into(), value: load_i32(getl("a")) });
+        for (tag, fields) in all.iter().enumerate() {
+            if fields.is_empty() {
+                continue;
+            }
+            let mut checks: crate::wir::WirSeq = Vec::new();
+            for (i, fshape) in fields.iter().enumerate() {
+                let off = i32c((4 + 8 * i) as i32);
+                let cmp = self.slot_cmp_wir(fshape, add(getl("a"), off.clone()), add(getl("b"), off))?;
+                checks.push(N::If { cond: not(cmp), then_: vec![N::Return(Some(i32c(0)))], els: vec![], result: None });
+            }
+            checks.push(N::Return(Some(i32c(1))));
+            b.push(N::If {
+                cond: eqi(getl("t"), i32c(tag as i32)),
+                then_: checks,
+                els: vec![],
+                result: None,
+            });
+        }
+        b.push(N::Push(i32c(1)));
+        Some((b, vec![WirLocal { name: "t".into(), ty: WirTy::Bool }]))
     }
 
     /// WIR twin of [`render_slot`]: the String pointer rendering the 8-byte slot
