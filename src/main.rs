@@ -7902,12 +7902,15 @@ fn main(console: Console):
     fn run_on_wasm(src: &str) -> Vec<String> {
         use crate::runtime::{Capabilities, Runtime};
         assert!(typeck::check_str(src).is_ok(), "{:?}", typeck::check_str(src));
-        let module = parser::parse_module(src).expect("parse");
-        let wat = codegen::compile_module(&module).expect("compile");
+        let linked = resolve_std_src(src);
+        typeck::check(&linked).expect("typecheck");
+        let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+            .expect("compile")
+            .expect("the binary path lowers this program");
         let mut rt = Runtime::new().expect("runtime");
         let mut actor = rt
             .spawn(
-                wat.as_bytes(),
+                &bytes,
                 // Mirror the interpreter's automatic grants (output + the
                 // read-only ambient Clock/Env), like `run_wat_capture`.
                 Capabilities {
