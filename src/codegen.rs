@@ -7680,18 +7680,25 @@ impl Codegen {
                 self.used_net_ops.insert("recv_all");
                 call("net_recv_all", self.lower_args(&[&args[0]])?)
             }
-            // --- direct host-import calls: `{args} call $helper_host` ---
+            // The `Dir` ops: on the BINARY path, route through a registered host-
+            // wrapper helper (so the user body stays free of direct CallHosts and the
+            // import is accounted for via `import_deps` — capability-minimal). On the
+            // WAT path keep the inline `$dir_*_host` CallHost (byte-identical to the
+            // raw-prelude legacy, which provides `$dir_*_host` not the helper).
             ("subdir", 2) => {
                 self.used_dir_ops.insert("subdir");
-                host("dir_subdir_host", self.lower_args(&[&args[0], &args[1]])?)
+                let a = self.lower_args(&[&args[0], &args[1]])?;
+                if self.collect_wir { call("dir_subdir", a) } else { host("dir_subdir_host", a) }
             }
             ("exists", 2) => {
                 self.used_dir_ops.insert("exists");
-                host("dir_exists_host", self.lower_args(&[&args[0], &args[1]])?)
+                let a = self.lower_args(&[&args[0], &args[1]])?;
+                if self.collect_wir { call("dir_exists", a) } else { host("dir_exists_host", a) }
             }
             ("is_dir", 2) => {
                 self.used_dir_ops.insert("is_dir");
-                host("dir_is_dir_host", self.lower_args(&[&args[0], &args[1]])?)
+                let a = self.lower_args(&[&args[0], &args[1]])?;
+                if self.collect_wir { call("dir_is_dir", a) } else { host("dir_is_dir_host", a) }
             }
             ("accept", 1) => {
                 self.used_net_ops.insert("accept");

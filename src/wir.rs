@@ -3284,6 +3284,28 @@ fn compiler_introspect_helper(name: &str, import: &str, nargs: usize) -> WirFunc
     }
 }
 
+/// A thin host-import wrapper `$name(a0..a{nargs-1}) -> i32` = `CallHost(import,
+/// [a0..])`. Routing an inline host call through a registered helper keeps the
+/// user body free of direct `CallHost`s — so the capability-minimal prune isn't
+/// deferred (`no_direct_host` stays true) — and declares the import via
+/// `import_deps`. Used for the 2-arg `Dir` ops (subdir/exists/is_dir).
+fn host_call_helper(name: &str, import: &str, nargs: usize) -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let params: Vec<WirLocal> = (0..nargs)
+        .map(|i| WirLocal { name: format!("a{i}"), ty: WirTy::Bool })
+        .collect();
+    let host_args: Vec<E> = (0..nargs).map(|i| E::GetLocal(format!("a{i}"))).collect();
+    WirFunc {
+        name: name.into(),
+        params,
+        ret: vec![WirTy::Bool],
+        locals: vec![],
+        body: vec![N::Push(E::CallHost { import: import.into(), args: host_args })],
+        raw_body: None,
+    }
+}
+
 /// A WIR-native prelude helper plus the module-level resources it needs (so a
 /// pruned module declares only the imports/globals/table its reached helpers
 /// actually touch — capability-minimal).
@@ -3513,6 +3535,27 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             helper_deps: &["ensure"],
             import_deps: &["compiler_diff_len", "fill_pending"],
             uses_heap: true,
+            uses_table: false,
+        }),
+        "dir_subdir" => Some(WirHelperSpec {
+            func: host_call_helper("dir_subdir", "dir_subdir", 2),
+            helper_deps: &[],
+            import_deps: &["dir_subdir"],
+            uses_heap: false,
+            uses_table: false,
+        }),
+        "dir_exists" => Some(WirHelperSpec {
+            func: host_call_helper("dir_exists", "dir_exists", 2),
+            helper_deps: &[],
+            import_deps: &["dir_exists"],
+            uses_heap: false,
+            uses_table: false,
+        }),
+        "dir_is_dir" => Some(WirHelperSpec {
+            func: host_call_helper("dir_is_dir", "dir_is_dir", 2),
+            helper_deps: &[],
+            import_deps: &["dir_is_dir"],
+            uses_heap: false,
             uses_table: false,
         }),
         "float_to_str" => Some(WirHelperSpec {

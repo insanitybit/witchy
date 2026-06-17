@@ -1428,11 +1428,14 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
   (import "witchy" "print_int" (func $print_int (param i64)))
   (import "witchy" "print_float" (func $print_float (param f64)))
   (import "witchy" "string_from_code" (func $string_from_code_host (param i64 i32) (result i32)))
+  (import "witchy" "dir_subdir" (func $dir_subdir_host (param i32 i32) (result i32)))
+  (import "witchy" "dir_exists" (func $dir_exists_host (param i32 i32) (result i32)))
+  (import "witchy" "dir_is_dir" (func $dir_is_dir_host (param i32 i32) (result i32)))
 "#;
 
 /// The number of host imports the prelude declares (used to split function
 /// indices: imports `0..IMPORT_COUNT`, helpers after).
-pub const IMPORT_COUNT: usize = 29;
+pub const IMPORT_COUNT: usize = 32;
 
 /// Assemble the full prelude module TEXT. This is what gets compiled once.
 ///
