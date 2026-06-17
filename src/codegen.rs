@@ -5931,6 +5931,11 @@ impl Codegen {
         self.apply_level = 0;
         self.wm_level = 0;
         let body_res = self.lower_block(body);
+        // The lambda's OWN in-place accumulators (`var acc = []` + a self-push loop
+        // inside the lambda body) — snapshot before restoring the outer function's
+        // set, so the cap-shadow `${v}__cap` locals below are declared for the
+        // lambda's accumulators, not the enclosing function's.
+        let lambda_inplace = self.inplace_push.clone();
         let block_kind = self.block_kind(body);
         self.apply_level = saved_apply;
         self.wm_level = saved_wm;
@@ -5961,7 +5966,7 @@ impl Codegen {
                     let k = self.locals.get(name).copied().unwrap_or(Kind::I32);
                     locals.push(WirLocal { name: name.clone(), ty: Self::wir_ty_for_kind(k) });
                 }
-                let mut cap_vars: Vec<&String> = self.inplace_push.iter().collect();
+                let mut cap_vars: Vec<&String> = lambda_inplace.iter().collect();
                 cap_vars.sort();
                 for v in cap_vars {
                     locals.push(WirLocal { name: format!("{v}__cap"), ty: i32t() });

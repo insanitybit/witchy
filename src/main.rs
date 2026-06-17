@@ -8685,6 +8685,26 @@ fn main(console: Console):
         assert_eq!(link_run(src), want, "interpreter oracle");
     }
 
+    /// An in-place accumulator INSIDE a lifted lambda on the binary path: the
+    /// lambda's own `var acc = [...]` + self-push loop needs its `$acc__cap`
+    /// ownership-token shadow declared as a local in the lifted `$__lamw{i}`. The
+    /// builder snapshots the lambda's `inplace_push` set before restoring the
+    /// enclosing function's, so the cap local isn't dropped (was: encode panic
+    /// "unknown local $acc__cap"). (2-way: list.push isn't WAT-leg resolvable.)
+    #[test]
+    fn wir_lambda_inplace_accumulator_binary_path() {
+        let src = "fn main(console: Console):\n    let build = fn(n: Int):\n        var acc = [0]\n        var t = 0\n        while t < n:\n            acc = list.push(acc, t)\n            t = t + 1\n        list.length(acc)\n    print(console, \"${build(5)}\")\n";
+        let want = vec!["6".to_string()];
+        let module = parser::parse_module(src).expect("parse");
+        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        typeck::check(&linked).expect("typecheck");
+        let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+            .expect("compile_module_binary")
+            .expect("the WIR binary path should lower a lambda-local accumulator");
+        assert_eq!(run_bytes_print_only(&bytes), want, "binary path");
+        assert_eq!(link_run(src), want, "interpreter oracle");
+    }
+
     /// The native regex engine on the binary path: `regex.match_spans` is a host
     /// import (the Rust `regex` crate, the same native the interpreter uses)
     /// wrapped by `$regex_match_spans` (length-prefixed `fill_pending` read, like
