@@ -6674,6 +6674,24 @@ impl Codegen {
                 ];
                 Some((body, vec![bool_local("n"), bool_local("i"), bool_local("acc")]))
             }
+            // A record renders as `Name(f0, f1, ...)` — like a tuple with the type
+            // name as the opening token (matching the single ctor it lowers to).
+            EqShape::Record(tyname) => {
+                let fields = self.record_field_types.get(tyname).cloned()?;
+                let header = self.intern(&format!("{tyname}("));
+                let (close, comma) = (self.intern(")"), self.intern(", "));
+                let mut body: crate::wir::WirSeq = vec![setl("acc", W::StrPtr(header))];
+                for (i, fty) in fields.iter().enumerate() {
+                    let fshape = self.eq_shape_of_type(fty)?;
+                    let render = self.slot_render_wir(&fshape, add(getl("p"), i32c((4 + 8 * i) as i32)))?;
+                    if i > 0 {
+                        body.push(setl("acc", concat(getl("acc"), W::StrPtr(comma))));
+                    }
+                    body.push(setl("acc", concat(getl("acc"), render)));
+                }
+                body.push(N::Push(concat(getl("acc"), W::StrPtr(close))));
+                Some((body, vec![bool_local("acc")]))
+            }
             _ => None,
         }
     }

@@ -8265,6 +8265,12 @@ fn main(console: Console):
                 "fn main(console: Console):\n    print(console, __render((1, 2)))\n    print(console, __render((\"hi\", true)))\n    print(console, __render([1, 2, 3]))\n    print(console, __render([true, false]))\n",
                 vec!["(1, 2)".to_string(), "(hi, true)".to_string(), "[1, 2, 3]".to_string(), "[true, false]".to_string()],
             ),
+            // a record: structural `==` (eq helper) and `__render` (ts helper,
+            // `Name(f0, f1)`) on the binary path.
+            (
+                "type Point:\n    x: Int\n    y: Int\n\nfn main(console: Console):\n    print(console, __render(Point(1, 2)))\n    print(console, __render(Point(1, 2) == Point(1, 2)))\n    print(console, __render(Point(1, 2) == Point(1, 9)))\n",
+                vec!["Point(1, 2)".to_string(), "true".to_string(), "false".to_string()],
+            ),
             // string.chars ($str_chars → $byte_to_char + $str_substring +
             // $list_push) splitting a multibyte string into a List(String).
             (
