@@ -895,22 +895,12 @@ mod tests {
         run_binary(&encode(module))
     }
 
-    /// Run a module via the legacy WAT path.
-    fn run_wat(module: &WirModule) -> Vec<String> {
-        let wat = to_wat(module);
-        let binary = wat::parse_str(&wat)
-            .unwrap_or_else(|e| panic!("WIR→WAT did not assemble: {e}\n---\n{wat}"));
-        run_binary(&binary)
-    }
-
-    /// Assert the encoder output runs identically to the expected lines AND to the
-    /// WAT path's output (the binary-vs-WAT agreement gate).
+    /// Assert the encoder output runs identically to the expected lines. (Was
+    /// also a binary-vs-`to_wat` agreement gate; the WAT leg is retired with the
+    /// `wat` crate — `to_wat` is now only emit-wat's display, not an exec path.)
     fn assert_agrees(module: &WirModule, expected: &[&str]) {
         let exp: Vec<String> = expected.iter().map(|s| s.to_string()).collect();
-        let enc = run_encoded(module);
-        let wat = run_wat(module);
-        assert_eq!(enc, exp, "binary output mismatch");
-        assert_eq!(enc, wat, "binary vs WAT output mismatch");
+        assert_eq!(run_encoded(module), exp, "binary output mismatch");
     }
 
     /// Module with one Int-returning func + a `run` that prints its result.

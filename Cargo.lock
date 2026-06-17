@@ -2331,7 +2331,6 @@ dependencies = [
  "wasm-encoder 0.251.0",
  "wasmparser 0.251.0",
  "wasmtime",
- "wat",
 ]
 
 [[package]]

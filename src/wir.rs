@@ -4990,16 +4990,15 @@ mod tests {
         WirLocal { name: name.into(), ty }
     }
 
-    /// Assemble a WIR module's WAT and run its `run` export, capturing `print_int`
-    /// and `print` output as ordered lines.
+    /// Encode a WIR module to a wasm binary and run its `run` export, capturing
+    /// `print_int` and `print` output as ordered lines. (Runs the actual binary
+    /// the codegen path emits — `wir_encode::encode` — not the `to_wat` display.)
     fn run_capture(module: &WirModule) -> Vec<String> {
         use std::sync::{Arc, Mutex};
-        let wat = to_wat(module);
-        let binary = wat::parse_str(&wat)
-            .unwrap_or_else(|e| panic!("WIR→WAT did not assemble: {e}\n---\n{wat}"));
+        let binary = crate::wir_encode::encode(module);
         let engine = wasmtime::Engine::default();
         let m = wasmtime::Module::new(&engine, &binary)
-            .unwrap_or_else(|e| panic!("assembled module invalid: {e}\n---\n{wat}"));
+            .unwrap_or_else(|e| panic!("encoded module invalid: {e}"));
         let out: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
         let mut linker = wasmtime::Linker::new(&engine);
         let o = out.clone();

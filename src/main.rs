@@ -7639,56 +7639,6 @@ fn main(console: Console):
     }
 
     #[test]
-    fn assembled_binary_runs_like_the_wat() {
-        // The browser playground compiles a program to a wasm *binary* (codegen's
-        // WAT assembled by the `wat` crate) and runs THAT on the browser's own
-        // WebAssembly engine — no interpreter. Verify the assembly is faithful:
-        // for every console-only example the assembled binary must run identically
-        // to the WAT text on wasmtime. This is the native half of the Phase 4
-        // browser migration (the JS host shim is the browser half).
-        let mut diverged = Vec::new();
-        for entry in std::fs::read_dir("examples").unwrap() {
-            let path = entry.unwrap().path();
-            if path.extension().and_then(|e| e.to_str()) != Some("witchy") {
-                continue;
-            }
-            let p = path.to_str().unwrap();
-            let Ok((linked, _)) = crate::link_file(p) else {
-                continue;
-            };
-            if typeck::check(&linked).is_err() {
-                continue;
-            }
-            let has_main = linked
-                .items
-                .iter()
-                .any(|it| matches!(it, ast::Item::Function(f) if f.name == "main"));
-            let console_only = crate::capabilities::analyze(&linked)
-                .total
-                .keys()
-                .all(|k| *k == "Console");
-            if !has_main || !console_only {
-                continue;
-            }
-            let Ok(wat) = codegen::compile_module(&linked) else {
-                continue;
-            };
-            let binary = wat::parse_str(&wat).expect("assemble WAT to a wasm binary");
-            assert_eq!(&binary[..4], b"\0asm", "{p}: assembled output is not a wasm module");
-            let from_wat = crate::run_wat_capture(&wat);
-            let from_bin = crate::run_wasm_bytes(&binary);
-            if from_wat != from_bin {
-                diverged.push(format!("{p}: WAT {from_wat:?} vs binary {from_bin:?}"));
-            }
-        }
-        assert!(
-            diverged.is_empty(),
-            "assembled binary diverges from the WAT:\n{}",
-            diverged.join("\n")
-        );
-    }
-
-    #[test]
     fn precompiled_wasm_runs_like_the_source() {
         // C Tier 1 (distribution): a program emitted to a `.wasm` and run as a
         // precompiled module — with authority derived from its imports — produces

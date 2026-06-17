@@ -58,7 +58,3 @@ aws-lc-rs = "1"
 
 [dev-dependencies]
 proptest = "1.11.0"
-# TEST-ONLY: assembles the legacy `to_wat` / prelude WAT back to a binary so the
-# round-trip + prelude-blob-current tests can run it. Production codegen is
-# WIR → wasm-binary (wasm-encoder); the shipped library/binary no longer needs it.
-wat = "1"
