@@ -15,19 +15,19 @@ type Msg:
     Count(Int)
 
 async fn counter(inbox: Receiver(Msg)) -> Nil:
-    await chan.serve(inbox, 0, fn(n, m):
+    chan.serve(inbox, 0, fn(n, m):
         match m:
             Bump -> chan.done(n + 1)
             Get(reply) -> chan.and_then(chan.send(reply, Count(n)), fn(_u): chan.done(n))
             Count(_c) -> chan.done(n)
-    )
+    ).await
 
 async fn client(console: Console, srv: Sender(Msg)) -> Nil:
-    await chan.send(srv, Bump)
-    await chan.send(srv, Bump)
-    let (reply_tx, reply_rx) = await chan.channel(1)
-    await chan.send(srv, Get(reply_tx))
-    let r = await chan.recv(reply_rx)
+    chan.send(srv, Bump).await
+    chan.send(srv, Bump).await
+    let (reply_tx, reply_rx) = chan.channel(1).await
+    chan.send(srv, Get(reply_tx)).await
+    let r = chan.recv(reply_rx).await
     match r:
         Some(Count(c)) -> print(console, "count = ${c}")
         Some(Bump) -> print(console, "(unreachable)")
@@ -35,7 +35,7 @@ async fn client(console: Console, srv: Sender(Msg)) -> Nil:
         None -> print(console, "(no reply)")
 
 async fn main(console: Console):
-    let (srv_tx, srv_rx) = await chan.channel(8)
-    let h = await chan.spawn(counter(srv_rx))
-    await client(console, srv_tx)
-    await chan.join(h)
+    let (srv_tx, srv_rx) = chan.channel(8).await
+    let h = chan.spawn(counter(srv_rx)).await
+    client(console, srv_tx).await
+    chan.join(h).await

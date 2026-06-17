@@ -10,7 +10,7 @@ type Op:
     Withdraw(Int)
 
 async fn account(console: Console, rx: Receiver(Op)) -> Nil:
-    await chan.serve(rx, 0, fn(cents, op):
+    chan.serve(rx, 0, fn(cents, op):
         match op:
             Deposit(amount) ->
                 let bal = cents + amount
@@ -20,16 +20,16 @@ async fn account(console: Console, rx: Receiver(Op)) -> Nil:
                 let bal = cents - amount
                 print(console, "withdraw " + money.format(amount) + "  -> balance " + money.format(bal))
                 chan.done(bal)
-    )
+    ).await
 
 async fn driver(tx: Sender(Op)) -> Nil:
-    await chan.send(tx, Deposit(1250))
-    await chan.send(tx, Deposit(375))
-    await chan.send(tx, Withdraw(500))
-    await chan.send(tx, Deposit(99))
+    chan.send(tx, Deposit(1250)).await
+    chan.send(tx, Deposit(375)).await
+    chan.send(tx, Withdraw(500)).await
+    chan.send(tx, Deposit(99)).await
 
 async fn main(console: Console):
-    let (tx, rx) = await chan.channel(8)
-    let h = await chan.spawn(account(console, rx))
-    await driver(tx)
-    await chan.join(h)
+    let (tx, rx) = chan.channel(8).await
+    let h = chan.spawn(account(console, rx)).await
+    driver(tx).await
+    chan.join(h).await

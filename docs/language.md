@@ -622,16 +622,16 @@ import chan
 
 async fn producer(tx: Sender(Int)) -> Nil:
     for n in [1, 2, 3]:
-        await chan.send(tx, n)
+        chan.send(tx, n).await
 
 async fn main(console: Console):
-    let (tx, rx) = await chan.channel(4)
-    await chan.spawn(producer(tx))
-    await chan.consume(rx, fn(n): chan.done(print(console, "got ${n}")))
+    let (tx, rx) = chan.channel(4).await
+    chan.spawn(producer(tx)).await
+    chan.consume(rx, fn(n): chan.done(print(console, "got ${n}"))).await
 ```
 
 `chan.channel(cap)` is a bounded channel — the sender blocks when it is full;
-pass `0`, or use `chan.unbounded()`, for no backpressure. `await chan.recv(rx)`
+pass `0`, or use `chan.unbounded()`, for no backpressure. `chan.recv(rx).await`
 yields the next message or `None` once the channel closes (no task can send to it
 anymore). `chan.consume`/`chan.serve` write the receive-loop for you (`serve`
 threads state through each message). A channel can be shared by many receivers

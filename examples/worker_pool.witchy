@@ -10,18 +10,18 @@
 import chan
 
 async fn worker(jobs: Receiver(Int), results: Sender(Int)) -> Nil:
-    await chan.consume(jobs, fn(n): chan.send(results, n * n))
+    chan.consume(jobs, fn(n): chan.send(results, n * n)).await
 
 async fn printer(console: Console, results: Receiver(Int)) -> Nil:
-    await chan.consume(results, fn(r): chan.done(print(console, "result ${r}")))
+    chan.consume(results, fn(r): chan.done(print(console, "result ${r}"))).await
 
 async fn main(console: Console):
-    let (jobs_tx, jobs_rx) = await chan.channel(2)
-    let (res_tx, res_rx) = await chan.channel(2)
-    await chan.spawn(worker(jobs_rx, res_tx))
-    await chan.spawn(worker(jobs_rx, res_tx))
-    await chan.spawn(worker(jobs_rx, res_tx))
-    let p = await chan.spawn(printer(console, res_rx))
+    let (jobs_tx, jobs_rx) = chan.channel(2).await
+    let (res_tx, res_rx) = chan.channel(2).await
+    chan.spawn(worker(jobs_rx, res_tx)).await
+    chan.spawn(worker(jobs_rx, res_tx)).await
+    chan.spawn(worker(jobs_rx, res_tx)).await
+    let p = chan.spawn(printer(console, res_rx)).await
     for n in [10, 20, 30, 40, 50]:
-        await chan.send(jobs_tx, n)
-    await chan.join(p)
+        chan.send(jobs_tx, n).await
+    chan.join(p).await

@@ -28,15 +28,15 @@ impl Bag:
 // batch of numbers arrives as a message (channels move values, so the task owns
 // each batch — the `own` convention, made concrete).
 async fn adder(console: Console, rx: Receiver(List(Int))) -> Nil:
-    await chan.serve(rx, 0, fn(sum, batch):
+    chan.serve(rx, 0, fn(sum, batch):
         let running = sum + sum_from(batch, 0)
         print(console, "running sum: " + "${running}")
         chan.done(running)
-    )
+    ).await
 
 async fn feeder(tx: Sender(List(Int))) -> Nil:
-    await chan.send(tx, [100, 200])
-    await chan.send(tx, [1, 2, 3])
+    chan.send(tx, [100, 200]).await
+    chan.send(tx, [1, 2, 3]).await
 
 async fn main(console: Console):
     var count = 0
@@ -55,7 +55,7 @@ async fn main(console: Console):
     let gone = [5, 6, 7]
     print(console, "drained length: " + "${drain(move gone)}")
 
-    let (tx, rx) = await chan.channel(4)
-    let h = await chan.spawn(adder(console, rx))
-    await feeder(tx)
-    await chan.join(h)
+    let (tx, rx) = chan.channel(4).await
+    let h = chan.spawn(adder(console, rx)).await
+    feeder(tx).await
+    chan.join(h).await

@@ -17,11 +17,11 @@ async fn ticker(console: Console, name: String, n: Int) -> Nil:
         print(console, name + " done")
     else:
         print(console, "${name} ${n}")
-        await chan.yield_now()
-        await ticker(console, name, n - 1)
+        chan.yield_now().await
+        ticker(console, name, n - 1).await
 
 async fn main(console: Console):
-    let a = await chan.spawn(ticker(console, "A", 3))
-    let b = await chan.spawn(ticker(console, "B", 3))
-    await chan.join(a)
-    await chan.join(b)
+    let a = chan.spawn(ticker(console, "A", 3)).await
+    let b = chan.spawn(ticker(console, "B", 3)).await
+    chan.join(a).await
+    chan.join(b).await

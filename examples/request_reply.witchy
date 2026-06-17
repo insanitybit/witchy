@@ -13,23 +13,23 @@ type Msg:
     Result(Int)
 
 async fn server(inbox: Receiver(Msg)) -> Nil:
-    await chan.serve(inbox, 0, fn(seen, m):
+    chan.serve(inbox, 0, fn(seen, m):
         match m:
             Square(n, reply_to) -> chan.and_then(chan.send(reply_to, Result(n * n)), fn(_u): chan.done(seen + 1))
             Result(_r) -> chan.done(seen)
-    )
+    ).await
 
 async fn client(console: Console, srv: Sender(Msg)) -> Nil:
-    let (reply_tx, reply_rx) = await chan.channel(1)
-    await chan.send(srv, Square(9, reply_tx))
-    let r = await chan.recv(reply_rx)
+    let (reply_tx, reply_rx) = chan.channel(1).await
+    chan.send(srv, Square(9, reply_tx)).await
+    let r = chan.recv(reply_rx).await
     match r:
         Some(Result(v)) -> print(console, "9 squared is ${v}")
         Some(Square(_n, _s)) -> print(console, "(unreachable)")
         None -> print(console, "(no reply)")
 
 async fn main(console: Console):
-    let (srv_tx, srv_rx) = await chan.channel(4)
-    let h = await chan.spawn(server(srv_rx))
-    await client(console, srv_tx)
-    await chan.join(h)
+    let (srv_tx, srv_rx) = chan.channel(4).await
+    let h = chan.spawn(server(srv_rx)).await
+    client(console, srv_tx).await
+    chan.join(h).await

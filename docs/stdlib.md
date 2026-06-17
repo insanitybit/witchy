@@ -188,6 +188,26 @@ Sign `message` with a `Secret` capability (the host grants it; it cannot be forg
 
 The hex Ed25519 public key for a `Secret` — what verifiers check against.
 
+#### `fn ecdsa_p256_verify(public_key: String, message: String, signature: String) -> Bool`
+
+Verify an ECDSA P-256 / SHA-256 signature — WebAuthn "ES256" (COSE alg -7). `public_key` is the hex SEC1 uncompressed point (`04 || x || y`); `signature` is the hex ASN.1-DER signature; `message` is the raw bytes it covers. Total: bad input or a bad signature yields `false`. (Native/interpreter-only.)
+
+#### `fn ecdsa_p256_verify_hex(public_key: String, message: String, signature: String) -> Bool`
+
+Like `ecdsa_p256_verify` but the message is also hex — for binary messages such as WebAuthn's `authenticatorData || SHA256(clientDataJSON)`. (Native-only.)
+
+#### `fn sha512(data: String) -> String`
+
+SHA-512 of a string's UTF-8 bytes, as 128 lowercase hex characters. (Native-only.)
+
+#### `fn sha3_256(data: String) -> String`
+
+SHA3-256 (FIPS 202) of a string's UTF-8 bytes, as 64 hex characters. (Native-only.)
+
+#### `fn hmac_sha256(key: String, message: String) -> String`
+
+HMAC-SHA256 (FIPS 198-1). `key` is hex (so binary keys are representable); `message` is raw text. Returns the 64-hex-char tag. (Native-only.)
+
 ## `csv`
 
 csv — comma-separated values, parse and encode (RFC 4180-ish).
@@ -375,6 +395,10 @@ Standard base64 (with `=` padding) of `data`'s UTF-8 bytes.
 #### `fn base64_decode(data: String) -> String`
 
 Decode standard base64 back to text (lossy UTF-8); padding/whitespace tolerated.
+
+#### `fn base64url_of_hex(hex: String) -> String`
+
+base64url (no padding; `-`/`_`) of the bytes given as a HEX string. The hex indirection lets binary round-trip through UTF-8 strings — e.g. a WebAuthn `clientDataJSON.challenge` is base64url of the raw challenge bytes.
 
 ## `eq`
 
@@ -1701,6 +1725,10 @@ The number of Unicode scalar values.
 
 The characters, each as a single-character String — one O(n) pass, so callers can index characters in O(1).
 
+#### `fn from_code(code: Int) -> String`
+
+The single character (as a String) for a Unicode scalar value — the inverse of reading a code point. An out-of-range or surrogate value yields U+FFFD (the replacement character), never an error. Powers the JSON `\u` decoder.
+
 #### `fn split(s: String, sep: String) -> List(String)`
 
 Split on every occurrence of `sep`.
@@ -1824,6 +1852,88 @@ Remove leading whitespace.
 #### `fn trim_end(s: String) -> String`
 
 Remove trailing whitespace.
+
+## `task`
+
+std/task — the cooperative task substrate and its executor.
+
+A `Task(m, a)` is a CPS-over-closures computation that, when stepped, either completes (`Done`) or yields an effect back to the executor: cooperate (`Yield`), `spawn` a child (`Fork`), `join` one (`Wait`), or a channel op (`Open`/`Push`/`Pull`/`PullAny`, produced by `std/chan`). `run` drives a task (and everything it spawns) to completion on a deterministic round-robin schedule, so a concurrent run is byte-identical on the interpreter and the compiled WebAssembly — no scheduler state in the runtime, no `Pin`.
+
+This module is the scheduling core: the `Task` monad, `spawn`/`join`/ `yield_now`, and the executor. First-class channels are layered on top in `std/chan`; lightweight value-returning structured concurrency (`join_all`/ `select` over independent futures) lives in `std/future`.
+
+Model: one message type `m` per program (a single `run`'s channels all carry `m`; union into a sum type if you need several shapes). Spawned tasks return `Nil`; a task reports a result by sending it on a channel, not by returning it (a typed `JoinHandle(T)` would force a native runtime and break the parity contract).
+
+The `async`/`await` CPS transform lowers onto this substrate (`task.lazy`/ `and_then`/`done`/`run`), so `chan.recv(rx).await` / `chan.send(tx, x).await` work in async fns.
+
+#### `type Step`
+
+- `Done(a)`
+- `Yield(Task(m, a))`
+- `Fork(Task(m, Nil), fn(Int) -> Task(m, a))`
+- `Open(Int, fn(Int) -> Task(m, a))`
+- `Push(Int, m, fn(Nil) -> Task(m, a))`
+- `Pull(Int, fn(Option(m)) -> Task(m, a))`
+- `PullAny(List(Int), fn(Option((Int, m))) -> Task(m, a))`
+- `Wait(Int, fn(Nil) -> Task(m, a))`
+
+#### `type Task`
+
+- `Task(fn() -> Step(m, a))`
+
+#### `type Handle`
+
+- `Handle(Int)`
+
+#### `type Slot`
+
+- `Active(Task(m, Nil))`
+- `WaitRecv(Int, fn(Option(m)) -> Task(m, Nil))`
+- `WaitSend(Int, m, fn(Nil) -> Task(m, Nil))`
+- `WaitAny(List(Int), fn(Option((Int, m))) -> Task(m, Nil))`
+- `WaitJoin(Int, fn(Nil) -> Task(m, Nil))`
+- `Ended`
+
+#### `fn poll(t: Task(m, a)) -> Step(m, a)`
+
+#### `fn done(x: a) -> Task(m, a)`
+
+A finished task.
+
+#### `fn ready_unit() -> Task(m, Nil)`
+
+An already-complete `Task(m, Nil)` — the async/await lowering target for a body that falls off its end.
+
+#### `fn yield_now() -> Task(m, Nil)`
+
+Hand control back to the executor once, then continue.
+
+#### `fn and_then(t: Task(m, a), k: fn(a) -> Task(m, b)) -> Task(m, b)`
+
+Sequence: run `t`, then continue with `k` applied to its result. This is what `await` lowers to — the continuation `k` is the rest of the body.
+
+#### `fn map(t: Task(m, a), f: fn(a) -> b) -> Task(m, b)`
+
+Transform a task's result.
+
+#### `fn lazy(thunk: fn() -> Task(m, a)) -> Task(m, a)`
+
+Build the task `thunk()` lazily: nothing runs until the first poll. This is what makes an `async fn` LAZY — calling it yields a task that does no work until driven (by `run`, or by being `spawn`ed, or `await`ed).
+
+#### `fn for_each(xs: List(a), f: fn(a) -> Task(m, Nil)) -> Task(m, Nil)`
+
+Run `f(x)` as a task for each `x` in `xs`, in order — the lowering target for an `await` inside a `for x in xs:` loop.
+
+#### `fn spawn(child: Task(m, Nil)) -> Task(m, Handle)`
+
+Start `child` as a concurrent task; the returned handle completes when it does.
+
+#### `fn join(h: Handle) -> Task(m, Nil)`
+
+Block until the spawned task behind `h` finishes.
+
+#### `fn run(root: Task(m, Nil))`
+
+Drive `root` (and everything it spawns) to completion on a deterministic round-robin schedule. An async `main` lowers to a single `run` of its body.
 
 ## `testing`
 
@@ -1996,4 +2106,14 @@ Parse a URL, or an error naming what is malformed.
 #### `fn format(u: Url) -> String`
 
 Render a Url back to its string form — the inverse of `parse`. The port is shown only when it differs from the scheme default, so a parse/format round trip of `https://host/p` stays `https://host/p` rather than gaining `:443`.
+
+## `webauthn`
+
+webauthn — server-side verification of a WebAuthn *assertion* (the credential "get" / second-factor ceremony), in pure witchy. ES256 (P-256, COSE alg -7) only.
+
+The browser hands every BINARY value to the server HEX-ENCODED (it holds them as ArrayBuffers, so this is free). The server then INDEPENDENTLY re-derives and checks everything that matters — it trusts none of the client's interpretation:   * clientDataJSON.type == "webauthn.get"   * clientDataJSON.challenge == the exact challenge the server issued (anti-replay)   * clientDataJSON.origin == the expected origin (anti-phishing)   * authenticatorData.rpIdHash == SHA-256(expected RP id) (wrong relying party)   * the user-presence (and, for 2FA, user-verification) flags are set   * the ECDSA-P256 signature over `authenticatorData || SHA256(clientDataJSON)`     verifies under the public key bound to this credential at registration. A forged or replayed assertion fails one of these and is rejected here.
+
+#### `fn verify_assertion(stored_pubkey_hex: String, auth_data_hex: String, client_data_json: String, signature_hex: String, expected_challenge: String, expected_origin: String, expected_rp_id: String, require_uv: Bool) -> Result(Bool, String)`
+
+Verify an assertion. All `*_hex` arguments are hex-encoded bytes; `client_data_json` is the exact clientDataJSON text the browser signed over (it must be re-hashed verbatim, never re-serialized). `require_uv` demands user verification — pass `true` for a genuine second-factor gate. Returns `Ok(true)` when every check passes, or `Err(reason)`.
 

@@ -20,7 +20,7 @@ async fn double(n: Int) -> Int:
     n + n
 
 async fn main(console: Console):
-    let a = await double(21)
+    let a = double(21).await
     print(console, "doubled: " + "${a}")
 ```
 
@@ -28,7 +28,7 @@ async fn main(console: Console):
 
 `chan.spawn` starts a task running concurrently and returns a handle; `chan.join`
 waits for it to finish. No channel is involved — spawning is just concurrency.
-Each task yields control at `await chan.yield_now()`, so the others get a turn —
+Each task yields control at `chan.yield_now().await`, so the others get a turn —
 that is what interleaves their output.
 
 ```witchy
@@ -39,14 +39,14 @@ async fn ticker(console: Console, name: String, n: Int) -> Nil:
         print(console, name + " done")
     else:
         print(console, "${name} ${n}")
-        await chan.yield_now()
-        await ticker(console, name, n - 1)
+        chan.yield_now().await
+        ticker(console, name, n - 1).await
 
 async fn main(console: Console):
-    let a = await chan.spawn(ticker(console, "A", 2))
-    let b = await chan.spawn(ticker(console, "B", 2))
-    await chan.join(a)
-    await chan.join(b)
+    let a = chan.spawn(ticker(console, "A", 2)).await
+    let b = chan.spawn(ticker(console, "B", 2)).await
+    chan.join(a).await
+    chan.join(b).await
 ```
 
 ## Channels: sending and receiving
@@ -54,7 +54,7 @@ async fn main(console: Console):
 `chan.channel(cap)` creates a channel and returns a `(Sender, Receiver)` pair —
 two ends of the same conduit, which you pass to whichever tasks need them. A
 bounded channel blocks the sender when it is full (backpressure); pass `0`, or use
-`chan.unbounded()`, for no limit. `await chan.recv(rx)` yields the next message, or
+`chan.unbounded()`, for no limit. `chan.recv(rx).await` yields the next message, or
 `None` once the channel is closed — which happens automatically when no task can
 send to it anymore. `chan.consume` writes that receive-until-closed loop for you.
 
@@ -62,13 +62,13 @@ send to it anymore. `chan.consume` writes that receive-until-closed loop for you
 import chan
 
 async fn source(tx: Sender(String)) -> Nil:
-    await chan.send(tx, "first")
-    await chan.send(tx, "second")
+    chan.send(tx, "first").await
+    chan.send(tx, "second").await
 
 async fn main(console: Console):
-    let (tx, rx) = await chan.channel(4)
-    await chan.spawn(source(tx))
-    await chan.consume(rx, fn(msg): chan.done(print(console, "got: " + msg)))
+    let (tx, rx) = chan.channel(4).await
+    chan.spawn(source(tx)).await
+    chan.consume(rx, fn(msg): chan.done(print(console, "got: " + msg))).await
 ```
 
 ## Request, reply, and stateful servers
@@ -87,19 +87,19 @@ type Msg:
     Total(Int)
 
 async fn accumulator(inbox: Receiver(Msg)) -> Nil:
-    await chan.serve(inbox, 0, fn(sum, m):
+    chan.serve(inbox, 0, fn(sum, m):
         match m:
             Add(n) -> chan.done(sum + n)
             Get(reply) -> chan.and_then(chan.send(reply, Total(sum)), fn(_u): chan.done(sum))
             Total(_t) -> chan.done(sum)
-    )
+    ).await
 
 async fn client(console: Console, srv: Sender(Msg)) -> Nil:
-    await chan.send(srv, Add(5))
-    await chan.send(srv, Add(2))
-    let (reply_tx, reply_rx) = await chan.channel(1)
-    await chan.send(srv, Get(reply_tx))
-    let r = await chan.recv(reply_rx)
+    chan.send(srv, Add(5)).await
+    chan.send(srv, Add(2)).await
+    let (reply_tx, reply_rx) = chan.channel(1).await
+    chan.send(srv, Get(reply_tx)).await
+    let r = chan.recv(reply_rx).await
     match r:
         Some(Total(t)) -> print(console, "total is " + "${t}")
         Some(Add(_n)) -> print(console, "(unreachable)")
@@ -107,10 +107,10 @@ async fn client(console: Console, srv: Sender(Msg)) -> Nil:
         None -> print(console, "(no reply)")
 
 async fn main(console: Console):
-    let (srv_tx, srv_rx) = await chan.channel(8)
-    let h = await chan.spawn(accumulator(srv_rx))
-    await client(console, srv_tx)
-    await chan.join(h)
+    let (srv_tx, srv_rx) = chan.channel(8).await
+    let h = chan.spawn(accumulator(srv_rx)).await
+    client(console, srv_tx).await
+    chan.join(h).await
 ```
 
 The handler returns the next state *as a task*, so the `Get` arm can send a reply
@@ -128,16 +128,16 @@ express. Results flow back on a second channel.
 import chan
 
 async fn worker(jobs: Receiver(Int), out: Sender(Int)) -> Nil:
-    await chan.consume(jobs, fn(n): chan.send(out, n * n))
+    chan.consume(jobs, fn(n): chan.send(out, n * n)).await
 
 async fn main(console: Console):
-    let (jobs_tx, jobs_rx) = await chan.channel(2)
-    let (out_tx, out_rx) = await chan.channel(2)
-    await chan.spawn(worker(jobs_rx, out_tx))
-    await chan.spawn(worker(jobs_rx, out_tx))
+    let (jobs_tx, jobs_rx) = chan.channel(2).await
+    let (out_tx, out_rx) = chan.channel(2).await
+    chan.spawn(worker(jobs_rx, out_tx)).await
+    chan.spawn(worker(jobs_rx, out_tx)).await
     for n in [3, 4, 5]:
-        await chan.send(jobs_tx, n)
-    await chan.consume(out_rx, fn(r): chan.done(print(console, "sq ${r}")))
+        chan.send(jobs_tx, n).await
+    chan.consume(out_rx, fn(r): chan.done(print(console, "sq ${r}"))).await
 ```
 
 ## Iterating with `await`
@@ -155,23 +155,22 @@ import chan
 
 async fn producer(tx: Sender(Int)) -> Nil:
     for n in [1, 2, 3]:
-        await chan.send(tx, n)
+        chan.send(tx, n).await
 
 async fn squares(rx: Receiver(Int), out: Sender(Int)) -> Nil:
     for await n in rx:
-        await chan.send(out, n * n)
+        chan.send(out, n * n).await
 
 async fn main(console: Console):
-    let (tx, rx) = await chan.channel(4)
-    let (out_tx, out_rx) = await chan.channel(4)
-    await chan.spawn(producer(tx))
-    await chan.spawn(squares(rx, out_tx))
-    await chan.consume(out_rx, fn(v): chan.done(print(console, "got ${v}")))
+    let (tx, rx) = chan.channel(4).await
+    let (out_tx, out_rx) = chan.channel(4).await
+    chan.spawn(producer(tx)).await
+    chan.spawn(squares(rx, out_tx)).await
+    chan.consume(out_rx, fn(v): chan.done(print(console, "got ${v}"))).await
 ```
 
 The list form lowers to `chan.for_each`, the receiver form to `chan.consume`. A
-`while` loop cannot `await` (it would need mutable state carried across the await
-point, which captured-by-value closures can't express) — for an open-ended loop,
+`while` loop cannot `await` (it would need mutable state carried across the point, which captured-by-value closures can't express) — for an open-ended loop,.await
 recurse with an async fn, or use `for await`.
 
 ## Why this stays deterministic

@@ -10,26 +10,26 @@ import chan
 
 async fn ticks(tx: Sender(Int)) -> Nil:
     for n in [1, 2, 3]:
-        await chan.send(tx, n)
+        chan.send(tx, n).await
 
 async fn beats(tx: Sender(Int)) -> Nil:
-    await chan.send(tx, 100)
-    await chan.send(tx, 200)
+    chan.send(tx, 100).await
+    chan.send(tx, 200).await
 
 async fn collector(console: Console, a: Receiver(Int), b: Receiver(Int)) -> Nil:
-    let s = await chan.select(a, b)
+    let s = chan.select(a, b).await
     match s:
         First(x) ->
             print(console, "tick ${x}")
-            await collector(console, a, b)
+            collector(console, a, b).await
         Second(y) ->
             print(console, "beat ${y}")
-            await collector(console, a, b)
+            collector(console, a, b).await
         Closed -> print(console, "both done")
 
 async fn main(console: Console):
-    let (tick_tx, tick_rx) = await chan.channel(4)
-    let (beat_tx, beat_rx) = await chan.channel(4)
-    await chan.spawn(ticks(tick_tx))
-    await chan.spawn(beats(beat_tx))
-    await collector(console, tick_rx, beat_rx)
+    let (tick_tx, tick_rx) = chan.channel(4).await
+    let (beat_tx, beat_rx) = chan.channel(4).await
+    chan.spawn(ticks(tick_tx)).await
+    chan.spawn(beats(beat_tx)).await
+    collector(console, tick_rx, beat_rx).await

@@ -9,24 +9,24 @@
 import chan
 
 async fn logger(console: Console, rx: Receiver(String)) -> Nil:
-    await chan.serve(rx, 1, fn(count, msg):
+    chan.serve(rx, 1, fn(count, msg):
         print(console, "[${count}] " + msg)
         chan.done(count + 1)
-    )
+    ).await
 
 async fn forwarder(rx: Receiver(String), log_tx: Sender(String)) -> Nil:
-    await chan.consume(rx, fn(msg): chan.send(log_tx, msg))
+    chan.consume(rx, fn(msg): chan.send(log_tx, msg)).await
 
 async fn driver(log_tx: Sender(String), fwd_tx: Sender(String)) -> Nil:
-    await chan.send(log_tx, "direct message")
-    await chan.send(fwd_tx, "relayed message")
-    await chan.send(log_tx, "another direct")
+    chan.send(log_tx, "direct message").await
+    chan.send(fwd_tx, "relayed message").await
+    chan.send(log_tx, "another direct").await
 
 async fn main(console: Console):
-    let (log_tx, log_rx) = await chan.channel(8)
-    let (fwd_tx, fwd_rx) = await chan.channel(8)
-    let lh = await chan.spawn(logger(console, log_rx))
-    let fh = await chan.spawn(forwarder(fwd_rx, log_tx))
-    await driver(log_tx, fwd_tx)
-    await chan.join(fh)
-    await chan.join(lh)
+    let (log_tx, log_rx) = chan.channel(8).await
+    let (fwd_tx, fwd_rx) = chan.channel(8).await
+    let lh = chan.spawn(logger(console, log_rx)).await
+    let fh = chan.spawn(forwarder(fwd_rx, log_tx)).await
+    driver(log_tx, fwd_tx).await
+    chan.join(fh).await
+    chan.join(lh).await
