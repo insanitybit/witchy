@@ -995,13 +995,10 @@ pub fn module_cliffs(module: &Module) -> Vec<(String, Cliff)> {
     let summaries = Summaries::of_module(module);
     let mut out = Vec::new();
     for item in &module.items {
-        match item {
-            Item::Function(f) => {
-                for c in analyze(&f.body, &summaries).cliffs {
-                    out.push((f.name.clone(), c));
-                }
+        if let Item::Function(f) = item {
+            for c in analyze(&f.body, &summaries).cliffs {
+                out.push((f.name.clone(), c));
             }
-            _ => {}
         }
     }
     out

@@ -166,7 +166,7 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
             for method in &im.methods {
                 let mangled = mangle(im.trait_name.as_deref(), &im.type_name, &method.name);
                 let is_static =
-                    method.params.first().map_or(true, |p| p.name != "self");
+                    method.params.first().is_none_or(|p| p.name != "self");
                 if is_static {
                     statics.insert(
                         (im.type_name.clone(), method.name.clone()),
@@ -270,13 +270,10 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
             table: &empty_table,
         };
         for item in &mut items {
-            match item {
-                Item::Function(f) => {
-                    let mut scope = Scope::new();
-                    seed_params(&f.params, &mut scope);
-                    ctx.rewrite_block(&mut f.body, &mut scope);
-                }
-                _ => {}
+            if let Item::Function(f) = item {
+                let mut scope = Scope::new();
+                seed_params(&f.params, &mut scope);
+                ctx.rewrite_block(&mut f.body, &mut scope);
             }
         }
     }
@@ -378,13 +375,10 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
         table: &type_table,
     };
     for item in &mut items {
-        match item {
-            Item::Function(f) => {
-                let mut scope = Scope::new();
-                seed_params(&f.params, &mut scope);
-                ctx.rewrite_block(&mut f.body, &mut scope);
-            }
-            _ => {}
+        if let Item::Function(f) = item {
+            let mut scope = Scope::new();
+            seed_params(&f.params, &mut scope);
+            ctx.rewrite_block(&mut f.body, &mut scope);
         }
     }
 
@@ -679,7 +673,7 @@ impl Ctx<'_> {
                 };
                 if let Some(view_fn) = view {
                     let inner = std::mem::replace(iter.as_mut(), Expr::Bool(false));
-                    *iter = Box::new(Expr::Call { name: view_fn.to_string(), args: vec![inner] });
+                    **iter = Expr::Call { name: view_fn.to_string(), args: vec![inner] };
                 }
                 let mut s = scope.clone();
                 bind_loop_var(var, self.type_name(iter, scope), &mut s);
@@ -1526,13 +1520,10 @@ struct Mono<'a> {
 impl Mono<'_> {
     fn run(&mut self, items: &mut [Item]) {
         for item in items.iter_mut() {
-            match item {
-                Item::Function(f) => {
-                    let mut s = Scope::new();
-                    seed_params(&f.params, &mut s);
-                    self.walk_block(&mut f.body, &mut s);
-                }
-                _ => {}
+            if let Item::Function(f) = item {
+                let mut s = Scope::new();
+                seed_params(&f.params, &mut s);
+                self.walk_block(&mut f.body, &mut s);
             }
         }
         // A specialization may itself call a template; walk the bodies we
