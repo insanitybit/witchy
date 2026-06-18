@@ -1826,13 +1826,13 @@ impl Checker {
                     return Ok(t);
                 }
                 // A bare top-level function name used as a value is a first-class
-                // function. Reject `inout`/`sink` functions, whose move-in/out
+                // function. Reject `var`/`own` functions, whose move-in/out
                 // calling convention can't be expressed as a plain value.
                 if let Some((params, ret)) = self.fn_sigs.get(name).cloned() {
                     if let Some(convs) = self.fn_conventions.get(name) {
                         if convs.iter().any(|c| *c != Convention::Let) {
                             return terr(format!(
-                                "`{name}` takes an `inout`/`sink` parameter, so it can't be used as a function value"
+                                "`{name}` takes a `var`/`own` parameter, so it can't be used as a function value"
                             ));
                         }
                     }
@@ -1862,7 +1862,7 @@ impl Checker {
                 let outer = crate::codegen::lambda_outer_assigns(params, body);
                 if !outer.is_empty() {
                     return terr(format!(
-                        "a closure cannot assign to the captured variable `{}` (captures are by value, so the write would be lost) — return the new value or use an `inout` parameter instead",
+                        "a closure cannot assign to the captured variable `{}` (captures are by value, so the write would be lost) — return the new value or use a `var` parameter instead",
                         outer.join("`, `")
                     ));
                 }
@@ -1972,8 +1972,8 @@ impl Checker {
                     self.coerce_arg(param_ty, &at)
                         .map_err(|e| TypeError { message: format!("in call to `{name}`: {}", e.message) })?;
                 }
-                // Enforce conventions: `inout` needs a mutable variable; `sink`
-                // consumes its argument (use-after-move becomes an error).
+                // Enforce conventions: a `var` parameter needs a mutable variable;
+                // `own` consumes its argument (use-after-move becomes an error).
                 if let Some(convs) = self.fn_conventions.get(name).cloned() {
                     for (arg, conv) in args.iter().zip(&convs) {
                         match conv {
@@ -1981,12 +1981,12 @@ impl Checker {
                                 Expr::Var(v) if self.is_mutable(v) == Some(true) => {}
                                 Expr::Var(v) => {
                                     return terr(format!(
-                                        "`inout` argument `{v}` to `{name}` must be a mutable `var`"
+                                        "argument `{v}` to `{name}` is passed to a `var` parameter, so it must be a mutable `var`"
                                     ))
                                 }
                                 _ => {
                                     return terr(format!(
-                                        "`inout` argument to `{name}` must be a mutable variable"
+                                        "the argument to a `var` parameter of `{name}` must be a mutable variable"
                                     ))
                                 }
                             },
@@ -3829,7 +3829,7 @@ fn main():
     #[test]
     fn rejects_inout_argument_that_is_immutable() {
         let src = r#"
-fn bump(inout n: Int):
+fn bump(var n: Int):
     n = (n + 1)
 
 fn main():
@@ -3837,13 +3837,13 @@ fn main():
     bump(x)
 "#;
         let e = check_str(src).unwrap_err();
-        assert!(e.contains("inout"), "got: {e}");
+        assert!(e.contains("var"), "got: {e}");
     }
 
     #[test]
     fn accepts_inout_argument_that_is_var() {
         let src = r#"
-fn bump(inout n: Int):
+fn bump(var n: Int):
     n = (n + 1)
 
 fn main():
@@ -3856,7 +3856,7 @@ fn main():
     #[test]
     fn rejects_use_after_sink_move() {
         let src = r#"
-fn take(sink s: String) -> String:
+fn take(own s: String) -> String:
     s
 
 fn main():
@@ -3871,7 +3871,7 @@ fn main():
     #[test]
     fn accepts_reassignment_after_sink_move() {
         let src = r#"
-fn take(sink s: String) -> String:
+fn take(own s: String) -> String:
     s
 
 fn main():

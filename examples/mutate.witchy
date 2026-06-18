@@ -1,4 +1,4 @@
-// Mutable value semantics (Hylo-style): `var` is freely mutable, and an `inout`
+// Mutable value semantics (Hylo-style): `var` is freely mutable, and a `var`
 // parameter lets a function mutate the caller's variable in place — no pointers.
 // Because values are independent (value semantics), there's no aliasing to
 // reason about; `let` bindings stay immutable.

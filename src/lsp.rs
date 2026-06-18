@@ -61,7 +61,7 @@ fn main_loop(connection: &Connection) -> LspResult {
 
 const KEYWORDS: &[&str] = &[
     "fn", "let", "var", "if", "else", "match", "for", "in", "while", "return", "break",
-    "continue", "type", "trait", "impl", "actor", "on", "import", "pub", "inout", "sink",
+    "continue", "type", "trait", "impl", "actor", "on", "import", "pub",
     "own", "move", "spawn", "where", "as", "retain", "without", "true", "false",
 ];
 

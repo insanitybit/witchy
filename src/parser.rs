@@ -505,12 +505,12 @@ impl Parser {
     fn params(&mut self) -> Result<Vec<Param>, ParseError> {
         let mut params = Vec::new();
         while !self.at(&Tok::RParen) {
-            // `var`/`inout` mutate in place and write back; `own`/`sink` consume
-            // (take ownership). `var`/`own` are the preferred spellings;
-            // `inout`/`sink` remain as Hylo-style aliases.
-            let convention = if self.eat(&Tok::Inout) || self.eat(&Tok::Var) {
+            // `var` mutates in place and writes back; `own` consumes (takes
+            // ownership). (The `inout`/`sink` Hylo-style alias spellings were
+            // removed — `var`/`own` are the only spellings.)
+            let convention = if self.eat(&Tok::Var) {
                 Convention::Inout
-            } else if self.eat(&Tok::Sink) || self.eat(&Tok::Own) {
+            } else if self.eat(&Tok::Own) {
                 Convention::Sink
             } else if self.eat(&Tok::Let) {
                 // An explicit `let` opts into an immutable borrow (native passes it
@@ -2279,7 +2279,7 @@ fn f(n: Int) -> Int:
     #[test]
     fn parses_parameter_conventions() {
         let m = parse_module(r#"
-fn f(inout a: Int, sink b: Int, c: Int) -> Int:
+fn f(var a: Int, own b: Int, c: Int) -> Int:
     c
 "#).unwrap();
         let Item::Function(func) = &m.items[0] else {

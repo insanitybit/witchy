@@ -8417,7 +8417,7 @@ fn main() -> Int:
         // `inout` compiles to move-in / move-out: bump returns the updated n,
         // and the caller writes it back into x.
         let src = r#"
-fn bump(inout n: Int):
+fn bump(var n: Int):
     n = (n + 1)
 
 fn main() -> Int:

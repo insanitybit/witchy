@@ -1,4 +1,4 @@
-// Several features working together: an ADT, a `match` over it, an `inout`
+// Several features working together: an ADT, a `match` over it, a `var`
 // parameter that mutates the caller's variable in place, and the Console
 // capability for output. Runs in the interpreter and compiles to WASM.
 type Op:

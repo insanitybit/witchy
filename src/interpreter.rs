@@ -239,7 +239,7 @@ enum Assign {
 #[derive(Default, Debug, Clone, PartialEq)]
 pub struct Env {
     /// A stack of scopes; each scope is a small list of bindings carrying whether
-    /// the binding is mutable (`var`/`inout`/`sink`) or not (`let`). Scopes are
+    /// the binding is mutable (`var`/`own`) or not (`let`). Scopes are
     /// usually tiny (a couple of params/locals), so a linear scan beats a
     /// `HashMap`'s allocation and hashing on the hot call path. Lookups scan most
     /// recent first, so a later `let` shadows an earlier one.
@@ -4193,7 +4193,7 @@ fn main(console: Console):
     #[test]
     fn inout_parameter_writes_back_to_caller() {
         let src = r#"
-fn bump(inout n: Int):
+fn bump(var n: Int):
     n = (n + 1)
 
 fn main(console: Console):
@@ -4207,7 +4207,7 @@ fn main(console: Console):
     #[test]
     fn inout_requires_a_mutable_variable() {
         let src = r#"
-fn bump(inout n: Int):
+fn bump(var n: Int):
     n = (n + 1)
 
 fn main(console: Console):

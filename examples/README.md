@@ -20,7 +20,7 @@ witchy sandbox examples/hello.witchy  # run confined in the WASM VM
 | [result](result.witchy), [try](try.witchy), [option_std](option_std.witchy) | `Option`/`Result` and the `?` operator |
 | [closures](closures.witchy), [higher_order](higher_order.witchy), [pipeline](pipeline.witchy) | First-class functions |
 | [generics](generics.witchy), [generic_stack](generic_stack.witchy), [traits](traits.witchy), [shapes](shapes.witchy) | Generics, traits, `where` bounds |
-| [ownership](ownership.witchy), [conventions](conventions.witchy), [mutate](mutate.witchy) | `let`/`inout`/`sink` parameter conventions |
+| [ownership](ownership.witchy), [conventions](conventions.witchy), [mutate](mutate.witchy) | `let`/`var`/`own` parameter conventions |
 | [durations](durations.witchy), [time_and_encoding](time_and_encoding.witchy) | Duration literals, time, hex/base64 |
 
 ## The capability system

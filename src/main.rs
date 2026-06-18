@@ -4836,7 +4836,7 @@ fn yn(b: Bool) -> String:
     /// interpreter-only return-in-inout gap.)
     #[test]
     fn return_in_inout_fn_agrees_on_both_backends() {
-        let src = "fn clamp(inout n: Int):\n    if (n > 10):\n        n = 10\n        return\n    n = n + 1\n\nfn main(console: Console):\n    var a = 5\n    clamp(a)\n    print(console, __render(a))\n    var b = 50\n    clamp(b)\n    print(console, __render(b))\n";
+        let src = "fn clamp(var n: Int):\n    if (n > 10):\n        n = 10\n        return\n    n = n + 1\n\nfn main(console: Console):\n    var a = 5\n    clamp(a)\n    print(console, __render(a))\n    var b = 50\n    clamp(b)\n    print(console, __render(b))\n";
         let want = vec!["6".to_string(), "10".to_string()];
         assert_eq!(interp(src), want.clone(), "interpreter");
         assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
@@ -4849,7 +4849,7 @@ fn yn(b: Bool) -> String:
     /// interpreter-only `?`-in-inout gap.)
     #[test]
     fn try_in_inout_fn_agrees_on_both_backends() {
-        let src = "import result\n\nfn step(inout n: Int, r: Result(Int, String)) -> Result(Int, String):\n    n = n + 100\n    let got = r?\n    n = n + got\n    Ok(n)\n\nfn describe(r: Result(Int, String)) -> String:\n    match r:\n        Ok(v) -> \"ok:\" + __render(v)\n        Err(e) -> \"err:\" + e\n\nfn main(console: Console):\n    var a = 1\n    let ok = step(a, Ok(5))\n    print(console, __render(a))\n    print(console, describe(ok))\n    var b = 1\n    let bad = step(b, Err(\"nope\"))\n    print(console, __render(b))\n    print(console, describe(bad))\n";
+        let src = "import result\n\nfn step(var n: Int, r: Result(Int, String)) -> Result(Int, String):\n    n = n + 100\n    let got = r?\n    n = n + got\n    Ok(n)\n\nfn describe(r: Result(Int, String)) -> String:\n    match r:\n        Ok(v) -> \"ok:\" + __render(v)\n        Err(e) -> \"err:\" + e\n\nfn main(console: Console):\n    var a = 1\n    let ok = step(a, Ok(5))\n    print(console, __render(a))\n    print(console, describe(ok))\n    var b = 1\n    let bad = step(b, Err(\"nope\"))\n    print(console, __render(b))\n    print(console, describe(bad))\n";
         let want = vec![
             "106".to_string(),
             "ok:106".to_string(),
@@ -8221,7 +8221,7 @@ fn main(console: Console):
     /// `n` back into the caller's variable.
     #[test]
     fn wir_inout_early_return_binary_path() {
-        let src = "fn clamp(inout n: Int):\n    if (n > 10):\n        n = 10\n        return\n    n = n + 1\n\nfn main(console: Console):\n    var a = 5\n    clamp(a)\n    print(console, \"${a}\")\n    var b = 50\n    clamp(b)\n    print(console, \"${b}\")\n";
+        let src = "fn clamp(var n: Int):\n    if (n > 10):\n        n = 10\n        return\n    n = n + 1\n\nfn main(console: Console):\n    var a = 5\n    clamp(a)\n    print(console, \"${a}\")\n    var b = 50\n    clamp(b)\n    print(console, \"${b}\")\n";
         let want = vec!["6".to_string(), "10".to_string()];
         let module = parser::parse_module(src).expect("parse");
         let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
@@ -8655,7 +8655,7 @@ fn main(console: Console):
             // site (`CallStoreMulti`) writes them back into the caller's vars. Covers
             // a bare inout, repeated calls, and an inout alongside a non-inout arg.
             (
-                "fn bump(inout n: Int):\n    n = n + 1\nfn add(inout n: Int, by: Int):\n    n = n + by\nfn main(console: Console):\n    var a = 0\n    bump(a)\n    bump(a)\n    bump(a)\n    add(a, 10)\n    print(console, __render(a))\n",
+                "fn bump(var n: Int):\n    n = n + 1\nfn add(var n: Int, by: Int):\n    n = n + by\nfn main(console: Console):\n    var a = 0\n    bump(a)\n    bump(a)\n    bump(a)\n    add(a, 10)\n    print(console, __render(a))\n",
                 vec!["13".to_string()],
             ),
             // a `region -> String:` — a POINTER result reclaimed via `$rcopy_str`
@@ -14913,12 +14913,12 @@ fn main(console: Console):
         // multiple values — and an inout mutation inside a loop. Both backends
         // must agree.
         let src = r#"
-fn swap(inout a: Int, inout b: Int):
+fn swap(var a: Int, var b: Int):
     let t = a
     a = b
     b = t
 
-fn bump_by(inout n: Int, d: Int):
+fn bump_by(var n: Int, d: Int):
     n = (n + d)
 
 fn main(console: Console):

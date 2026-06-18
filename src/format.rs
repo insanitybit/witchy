@@ -242,8 +242,9 @@ fn sig(name: &str, params: &[Param], ret: &Option<Type>, bounds: &[(String, Stri
 }
 
 fn param(p: &Param) -> String {
-    // Normalize to the preferred spellings (`var`/`own`); `inout`/`sink` still
-    // parse as aliases but format to these. An explicit borrow prints `let`.
+    // `var` (mutate + writeback) / `own` (consume) are the parameter
+    // conventions; an explicit borrow prints `let`. (The `inout`/`sink` alias
+    // spellings were removed from the language.)
     let conv = match p.convention {
         Convention::Let => "",
         Convention::Borrow => "let ",
