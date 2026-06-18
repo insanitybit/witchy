@@ -2835,7 +2835,6 @@ impl Codegen {
                 };
                 (cond, binds)
             }
-            _ => return None,
         })
     }
 
