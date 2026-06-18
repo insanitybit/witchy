@@ -505,9 +505,10 @@ fn check_build_signature(module: &Module) -> Result<(), TypeError> {
 /// Whether `src` parses to a module shipping a build entrypoint — how the
 /// package manager decides a dependency's `build` module is a build *step* (run
 /// separately, confined) rather than library API (linked into the consumer).
-/// (The PM is bin-only, so the lib target sees no caller.)
+/// (The PM is bin-only — it lives in the `witchy` binary, which consumes this
+/// from the `witchy` library — so the lib target itself sees no caller.)
 #[allow(dead_code)]
-pub(crate) fn build_entrypoint_src(src: &str) -> bool {
+pub fn build_entrypoint_src(src: &str) -> bool {
     crate::parser::parse_module(src)
         .map(|m| build_entrypoint(&m).is_some())
         .unwrap_or(false)

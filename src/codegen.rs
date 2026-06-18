@@ -6266,7 +6266,11 @@ thread_local! {
 
 /// Thread-local override of `WITCHY_NO_INPLACE` so in-process differential
 /// tests can compile both ways without racing the process environment.
-#[cfg(test)]
+///
+/// Always compiled (not `#[cfg(test)]`): the `witchy` binary's own tests reach
+/// it cross-crate through the `witchy` library, where a `cfg(test)` item would
+/// not exist. Inert in production — with no caller the override stays `None`.
+#[doc(hidden)]
 pub fn set_force_copy_for_tests(v: Option<bool>) {
     FORCE_COPY_OVERRIDE.with(|c| c.set(v));
 }

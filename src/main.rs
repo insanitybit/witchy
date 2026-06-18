@@ -11,38 +11,38 @@
 // intentional style choice here.
 #![allow(clippy::collapsible_if, clippy::collapsible_match, clippy::items_after_test_module)]
 
-mod analysis;
-mod aliases;
-mod ast;
-mod capabilities;
-mod codegen;
-mod confine;
-mod async_lower;
-mod consts;
-mod comptime;
-mod derive;
-mod doc;
-mod fmt;
-mod format;
-mod generators;
-mod interpreter;
-mod lexer;
-mod linker;
+pub use witchy::analysis;
+pub use witchy::aliases;
+pub use witchy::ast;
+pub use witchy::capabilities;
+pub use witchy::codegen;
+pub use witchy::confine;
+pub use witchy::async_lower;
+pub use witchy::consts;
+pub use witchy::comptime;
+pub use witchy::derive;
+pub use witchy::doc;
+pub use witchy::fmt;
+pub use witchy::format;
+pub use witchy::generators;
+pub use witchy::interpreter;
+pub use witchy::lexer;
+pub use witchy::linker;
 mod lsp;
-mod native;
-mod optimize;
-mod parser;
+pub use witchy::native;
+pub use witchy::optimize;
+pub use witchy::parser;
 mod pm;
-mod records;
+pub use witchy::records;
 mod runtime;
-mod traits;
-mod typeck;
-mod value;
-mod wir;
-mod wir_encode;
-mod wir_opt;
+pub use witchy::traits;
+pub use witchy::typeck;
+pub use witchy::value;
+pub use witchy::wir;
+pub use witchy::wir_encode;
+pub use witchy::wir_opt;
 #[cfg(feature = "native")]
-mod wir_prelude;
+pub use witchy::wir_prelude;
 
 use std::time::Duration;
 
