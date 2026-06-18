@@ -1383,7 +1383,7 @@ fn host_crypto_public_key(mut caller: Caller<'_, ActorState>, out_ptr: i32) -> R
 /// modules should not pay), and it degrades to the input untouched when the
 /// binary is missing or fails — never a hard dependency.
 pub fn optimize_module(input: &[u8]) -> Vec<u8> {
-    if !std::env::var_os("WITCHY_WASM_OPT").is_some_and(|v| v == "1") {
+    if std::env::var_os("WITCHY_WASM_OPT").is_none_or(|v| v != "1") {
         return input.to_vec();
     }
     // A private, randomly named, owner-only directory per invocation — never

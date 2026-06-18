@@ -885,8 +885,7 @@ mod tests {
         let inst = linker.instantiate(&mut store, &m).expect("instantiate");
         let run = inst.get_typed_func::<(), ()>(&mut store, "run").expect("run export");
         run.call(&mut store, ()).expect("run (or fuel-exhausted — likely a runaway loop)");
-        let v = out.lock().unwrap().clone();
-        v
+        out.lock().unwrap().clone()
     }
 
     /// Run a module via the binary encoder.
@@ -2363,7 +2362,9 @@ mod tests {
         assert_agrees(&m, &["10"]);
     }
 
+    // A `(kind, value, expect)` round-trip table; single-element by design today.
     #[test]
+    #[allow(clippy::single_element_loop)]
     fn slot_conversions_roundtrip() {
         // FromSlot(ToSlot(x, k), k) == x.
         for (kind, value, expect) in [(Kind::I64, WirExpr::ConstI64(42), "42")] {

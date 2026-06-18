@@ -5072,8 +5072,7 @@ mod tests {
         let inst = linker.instantiate(&mut store, &m).expect("instantiate");
         let run = inst.get_typed_func::<(), ()>(&mut store, "run").expect("run export");
         run.call(&mut store, ()).expect("run");
-        let v = out.lock().unwrap().clone();
-        v
+        out.lock().unwrap().clone()
     }
 
     /// Module with one Int-returning func + a `run` that prints its result.
@@ -5227,7 +5226,11 @@ mod tests {
         assert_eq!(run_capture(&m), vec!["10"]);
     }
 
+    // A `(kind, value, expect)` table that round-trips each Kind; one case is
+    // active today (the F64 case is noted inline), so the loop is currently
+    // single-element by design.
     #[test]
+    #[allow(clippy::single_element_loop)]
     fn slot_conversions_roundtrip() {
         // FromSlot(ToSlot(x, k), k) == x for each Kind — the conversion nodes the
         // headline optimization (§3.2) will cancel.
