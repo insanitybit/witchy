@@ -1422,9 +1422,9 @@ fn verify_file(path: &str) -> Result<(), String> {
 fn emit_wat_file(path: &str) -> Result<String, String> {
     let (linked, _stem) = link_file(path)?;
     typeck::check(&linked).map_err(|e| e.to_string())?;
-    // The WIR-as-WAT: the actual module the binary backend encodes and runs
+    // The WIR-as-WAT: the actual module the backend encodes and runs
     // (optimization passes included), rendered back to text for inspection —
-    // not the retired `compile_module` string.
+    // a display of the real WIR, not a separately generated WAT string.
     let mut wir = codegen::assemble_wir_module(&linked, &std::collections::HashMap::new())
         .map_err(|e| format!("cannot compile to WASM (an interpreter-only feature?): {e}"))?
         .ok_or_else(|| {

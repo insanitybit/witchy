@@ -342,9 +342,9 @@ struct Codegen {
     /// reported as "unsupported".
     reject_reason: Option<CodegenError>,
     wir_funcs: HashMap<String, crate::wir::WirFunc>,
-    /// Set by `compile_module_binary` to arm WIR capture; left `false` on the WAT
-    /// path so it pays no capture/clone overhead AND so `lower_expr`'s call arm
-    /// stays inert there (the legacy `compile_call` keeps full dispatch).
+    /// Set by `compile_module_binary` to arm WIR capture for the function being
+    /// lowered. Left `false` for any scope that doesn't collect WIR, where
+    /// `lower_expr`'s call arm stays inert and pays no capture/clone overhead.
     collect_wir: bool,
     /// The exact set of names compiled to real `$name` functions (reachable,
     /// non-intrinsic `Item::Function`s) — populated by `compile_module_binary`.
@@ -1963,10 +1963,9 @@ impl Codegen {
 
         self.apply_level = 0;
         self.wm_level = 0;
-        // Lower the body straight to WIR (the binary path is the only consumer —
-        // `assemble_wir_module` always sets `collect_wir`). The legacy per-function
-        // WAT emission is retired: `lower_block` IS what `compile_block` ran first,
-        // so this captures the same sequence with none of the discarded WAT text.
+        // Lower the body straight to WIR (`assemble_wir_module` sets `collect_wir`
+        // for the function being compiled). `lower_block` is the block lowering: it
+        // walks the statements and produces the `WirSeq` the encoder consumes.
         self.captured_seq = None;
         if let Some(seq) = self.lower_block(renamed) {
             self.captured_seq = Some(seq);
@@ -2173,22 +2172,22 @@ impl Codegen {
         s
     }
 
-    /// M2 (first step): lower a SIMPLE block to a `WirSeq`. Only functions without
-    /// in-place/cap machinery qualify — no `inplace_push` vars, no `inout` params,
-    /// no own-ABI param — and only `Let`/`Expr`/`Return` statements (the cap-kill,
-    /// dict/list fast-path, tuple-destructure, and break/continue cases stay in
-    /// legacy). Byte-identical to `compile_block` for the qualifying case.
+    /// Lower a SIMPLE block to a `WirSeq`. Only functions without in-place/cap
+    /// machinery qualify — no `inplace_push` vars, no `inout` params, no own-ABI
+    /// param — and only `Let`/`Expr`/`Return` statements; any other shape (the
+    /// cap-kill, dict/list fast-path, tuple-destructure, and break/continue cases)
+    /// bails to `None`, rejecting the program as not-yet-lowerable.
     ///
     /// Statements are pre-lowered (idempotent `intern`/flag mutations) so that a
     /// non-lowerable expression bails BEFORE any `take_kills` call — `take_kills`
-    /// bumps a non-idempotent kill counter, so double-running it on the legacy
-    /// fallback would corrupt the uniqueness accounting.
+    /// bumps a non-idempotent kill counter, so double-running it would corrupt the
+    /// uniqueness accounting.
     /// Lower a block, with TRANSACTIONAL uniqueness-facts accounting: snapshot the
     /// `(kills, sites)` counters on entry and RESTORE them if lowering bails
     /// (`None`). A nested loop-body block may succeed and consume its sites, but if
-    /// the enclosing block then fails to legacy, the whole tree rolls back so the
-    /// legacy fallback re-consumes from a clean slate (no double-count). Commit
-    /// (no restore) happens only on `Some` — the whole block lowered.
+    /// the enclosing block then bails, the whole tree rolls back so a later attempt
+    /// re-consumes from a clean slate (no double-count). Commit (no restore) happens
+    /// only on `Some` — the whole block lowered.
     fn lower_block(&mut self, block: &Block) -> Option<crate::wir::WirSeq> {
         let snap = self.facts_stack.last().map(|(_, k, s)| (*k, *s));
         let result = self.lower_block_inner(block);
@@ -2204,15 +2203,16 @@ impl Codegen {
     fn lower_block_inner(&mut self, block: &Block) -> Option<crate::wir::WirSeq> {
         use crate::wir::{WirExpr as W, WirNode as N};
         // In-place accumulators lower to the cap ABI (`$list_push_cap` via
-        // CallStoreMulti) on the binary path (`collect_wir`); the WAT path keeps
-        // the legacy emission. Facts consumption for the binary path is deferred to
-        // `compile_function` on capture (lower_block is invoked many times per
-        // compile). The own-ABI never lowers here. `inout` lowers ONLY on the binary
-        // path (`collect_wir`): the param is a plain mutable local (`n = n + 1` is a
-        // `SetLocal`) and its final value is a multi-result at the tail (built by
-        // `assemble_wir_func`), the call site writing it back via `CallStoreMulti`.
-        // The WAT path keeps the legacy emission — its move-out epilogue runs before
-        // EVERY early `return`, which the WIR `N::Return` (single value) can't carry.
+        // CallStoreMulti) only in a WIR-collecting scope (`collect_wir`); otherwise
+        // this bails. Facts consumption is deferred to `compile_function` on capture
+        // (lower_block is invoked many times per compile). The own-ABI never lowers
+        // here. `inout` lowers ONLY in a WIR-collecting scope (`collect_wir`): the
+        // param is a plain mutable local (`n = n + 1` is a `SetLocal`) and its final
+        // value is a multi-result at the tail (built by `assemble_wir_func`), the
+        // call site writing it back via `CallStoreMulti`. A non-collecting scope
+        // can't carry that move-out epilogue (it must run before EVERY early
+        // `return`, which the WIR `N::Return` single value can't express), so it
+        // bails — leaving the program to be rejected as unsupported.
         if (!self.collect_wir && !self.cur_fn_inout_params.is_empty())
             || (!self.collect_wir && self.cur_fn_own_param.is_some())
             || (!self.collect_wir && !self.inplace_push.is_empty())
@@ -2596,14 +2596,12 @@ impl Codegen {
         if !tail_is_value {
             seq.push(N::Push(W::ConstI32(0)));
         }
-        // Facts consumption. On the WAT path each successful `lower_block` is the
-        // authoritative consumer (it replaces the legacy emission for that block),
-        // so consume here. On the BINARY path `lower_block` is invoked many times
-        // per compile (byte-identity probes, `kind_of`, the legacy fallback's
-        // `lower_expr`), so consuming here over-counts — instead `compile_function`
-        // consumes ONCE on a successful capture (and the legacy fallback consumes
-        // for functions that don't capture). The cap-reset nodes are already
-        // positioned in `seq` above (read-only `kills_after`).
+        // Facts consumption. In a WIR-collecting scope `lower_block` is invoked many
+        // times per compile (`kind_of` probes, nested re-lowering), so consuming
+        // here would over-count — instead `compile_function` consumes ONCE on a
+        // successful capture. This `!collect_wir` branch is the non-collecting
+        // fallback, where this block is the authoritative consumer. The cap-reset
+        // nodes are already positioned in `seq` above (read-only `kills_after`).
         if !self.collect_wir {
             for stmt in &block.stmts {
                 let _ = self.take_kills(stmt);
@@ -2638,8 +2636,8 @@ impl Codegen {
 
     /// Lower an aggregate literal (list/tuple/constructor) to the shared
     /// `$mkN` allocator call: push the i32 `header` (length, `0`, or ctor tag),
-    /// then each element in the universal i64 slot, then `call $mkN`. Byte-identical
-    /// to the legacy emission; `None` if any element isn't lowerable.
+    /// then each element in the universal i64 slot, then `call $mkN`. `None` if any
+    /// element isn't lowerable.
     fn lower_aggregate(&mut self, header: i32, items: &[Expr]) -> Option<crate::wir::WirExpr> {
         use crate::wir::WirExpr as W;
         let n = items.len();
@@ -2841,8 +2839,8 @@ impl Codegen {
     /// Lower a `match` to WIR — only when EVERY arm has a scalar pattern (and its
     /// guard/body lower). Store the scrutinee in `$MATCH_TMP`, then an outer
     /// value-`block $d` holding per-arm `block $a` (test → `br_if` skip; binds;
-    /// guard; body+convert; `br $d`), then `unreachable`. Byte-identical to
-    /// `compile_match`; `next_label` is restored on a bail.
+    /// guard; body+convert; `br $d`), then `unreachable`. `next_label` is restored
+    /// on a bail.
     fn lower_match(&mut self, scrutinee: &Expr, arms: &[MatchArm]) -> Option<crate::wir::WirExpr> {
         use crate::wir::{WirExpr as W, WirNode as N};
         let scrut_kind = self.kind_of(scrutinee);
@@ -2917,9 +2915,9 @@ impl Codegen {
 
     /// Build the WIR for a plain direct user-function call: each argument lowered
     /// and widened to its parameter's kind, then `call $name`. Returns `None` if
-    /// any argument isn't lowerable. ONLY sound to call from `compile_call`'s
-    /// `_ =>` fallback (all builtins/natives/closures already excluded there) and
-    /// only for functions WITHOUT an own-ABI token or `inout` writeback.
+    /// any argument isn't lowerable. ONLY sound from `lower_expr`'s call arm, after
+    /// builtins/natives/closures have been excluded, and only for functions WITHOUT
+    /// an own-ABI token or `inout` writeback.
     fn try_lower_user_call(&mut self, name: &str, args: &[Expr]) -> Option<crate::wir::WirExpr> {
         let param_kinds: Vec<Kind> = self
             .fn_params
@@ -2983,8 +2981,8 @@ impl Codegen {
 
     /// Convert the value a lowered block leaves on the stack: a block's tail is
     /// always a `Push`, so wrap its value in a `Convert` (a no-op when the kinds
-    /// match). Mirrors codegen appending `kind_convert(tk, ck)` after a
-    /// `compile_block` whose branch kind must be promoted to a common kind.
+    /// match). Used when a branch block's kind must be promoted to a common kind
+    /// shared with its sibling branches.
     fn convert_block_tail(
         mut seq: crate::wir::WirSeq,
         from: Kind,
@@ -3014,8 +3012,8 @@ impl Codegen {
 
     /// Is `name` a plain function/body local — compiled to a bare `local.get`,
     /// not a capability/string/list state field, a global, or a top-level
-    /// function used as a value? Mirrors the final `else` of the `Expr::Var`
-    /// arm in `compile_expr`, so `lower_expr` only claims that exact case.
+    /// function used as a value? `lower_expr`'s `Expr::Var` arm lowers to
+    /// `GetLocal` only for names that satisfy this exact predicate.
     fn is_plain_local_var(&self, name: &str) -> bool {
         !self.cap_fields.contains(name)
             && !self.str_fields.contains_key(name)
@@ -3026,14 +3024,14 @@ impl Codegen {
 
     /// Does `e` have a compound (list/tuple/record) equality shape? Such operands
     /// compare structurally (a helper), not by the bare `i32.eq` the numeric path
-    /// would emit — so `lower_expr` leaves them to the legacy arm.
+    /// would emit — so `lower_expr` declines to lower them here.
     fn operand_is_compound(&self, e: &Expr) -> bool {
         self.eq_shape_of(e).map_or(false, |s| s.is_compound())
     }
 
-    /// The generic-reference compare the legacy arm rejects loudly: in a
-    /// type-variable function, two `Other`/i32 operands would compare references,
-    /// which witchy has no notion of. Mirrors that exact guard.
+    /// The generic-reference compare we reject loudly: in a type-variable function,
+    /// two `Other`/i32 operands would compare references, which witchy has no notion
+    /// of. `lower_expr` consults this to refuse such an equality.
     fn is_generic_ref_compare(&self, lhs: &Expr, rhs: &Expr) -> bool {
         self.cur_fn_has_type_vars
             && self.val_type_of(lhs) == ValType::Other
@@ -3042,10 +3040,10 @@ impl Codegen {
             && self.kind_of(rhs) == Kind::I32
     }
 
-    /// M1: build a `WirExpr` for the convertible subset of expressions, returning
-    /// `None` for any arm — or sub-expression — not yet lowered. `compile_expr`
-    /// falls back to legacy emission on `None`, so WIR coverage grows while the
-    /// tree stays green; the printed output is byte-identical to the legacy arms.
+    /// Build a `WirExpr` for the lowerable subset of expressions, returning `None`
+    /// for any arm — or sub-expression — not yet lowered. A `None` propagates up and
+    /// the program is rejected as reaching an unsupported construct; the supported
+    /// set is the authoritative codegen for those expression shapes.
     fn lower_expr(&mut self, e: &Expr) -> Option<crate::wir::WirExpr> {
         use crate::wir::WirExpr as W;
         use crate::wir::WirNode as N;
@@ -3097,7 +3095,7 @@ impl Codegen {
                 }
             },
             // `e as T` (capability narrowing / type ascription) is value-neutral
-            // at codegen — exactly `compile_expr(inner)`.
+            // at codegen — lower the inner expression unchanged.
             Expr::As { expr, .. } => return self.lower_expr(expr),
             // A bare block expression: its `WirSeq` leaves the block's value.
             // (Region blocks keep their bespoke `compile_region` emission.)
@@ -3232,9 +3230,10 @@ impl Codegen {
             Expr::Lambda { params, body } => return self.lower_lambda(params, body),
             // Call a closure value: stash the pointer, then `call_indirect` with
             // env (the closure ptr), the i64-slot args, and the code index (the
-            // closure's first word). Mirrors the WAT `Expr::Apply` emission.
+            // closure's first word).
             Expr::Apply { func, args } => {
-                // Binary-path only: the WAT path keeps the legacy `Expr::Apply` arm.
+                // Only a WIR-collecting scope lowers `Expr::Apply`; otherwise bail
+                // so the construct is reported unsupported.
                 if !self.collect_wir {
                     return None;
                 }
@@ -3635,7 +3634,7 @@ impl Codegen {
             }
             Expr::Binary { op, lhs, rhs } => {
                 // `&&`/`||` are short-circuit control flow, not a wasm binary op:
-                // lower to a value-`if`, byte-identical to the legacy emission.
+                // lower to a value-`if`.
                 //   a && b  ->  if a { b } else { 0 }
                 //   a || b  ->  if a { 1 } else { b }
                 if matches!(op, BinOp::And | BinOp::Or) {
@@ -3658,17 +3657,16 @@ impl Codegen {
                     })));
                 }
                 // String concatenation (`+` flipped to `Concat`) lowers to
-                // `$concat` (binary path only — the WAT path keeps its legacy
-                // byte-identical emission).
+                // `$concat` (only in a WIR-collecting scope; otherwise this falls
+                // through and the program is rejected as unsupported).
                 if self.collect_wir && *op == BinOp::Concat {
                     self.uses_concat = true;
                     let a = self.lower_expr(lhs)?;
                     let b = self.lower_expr(rhs)?;
                     return Some(W::Call { func: "concat".to_string(), args: vec![a, b] });
                 }
-                // String content equality lowers to `$str_eq` (binary path only —
-                // the WAT path keeps its byte-identical legacy emission). `!=` is
-                // `i32.eqz` of the equality result.
+                // String content equality lowers to `$str_eq` (only in a
+                // WIR-collecting scope). `!=` is `i32.eqz` of the equality result.
                 if self.collect_wir
                     && matches!(op, BinOp::Eq | BinOp::NotEq)
                     && self.val_type_of(lhs) == ValType::Str
@@ -3946,18 +3944,17 @@ impl Codegen {
                     },
                 ])
             }
-            // A call expression. Builtins/natives WIR can lower flow through
+            // A call expression. Builtins/natives that WIR can lower flow through
             // `lower_call`; otherwise a plain top-level user call (no own-ABI
             // token, no `inout` writeback, not a closure-typed local) lowers via
-            // `try_lower_user_call`. This mirrors `compile_call`'s dispatch
-            // precedence exactly, so the printed WAT stays byte-identical; any
-            // other call shape (closure `call_indirect`, own-ABI, `inout`)
-            // returns `None` to keep its bespoke legacy emission.
+            // `try_lower_user_call`. The arm precedence here (builtin/native first,
+            // then direct user call, then closure-local) is the call dispatch; any
+            // other call shape (own-ABI, `inout`) returns `None` and is rejected.
             Expr::Call { name, args } => {
-                // Only the binary path lowers calls through here; the WAT path
-                // keeps `compile_call`'s full legacy dispatch (and byte-identity),
-                // since `lower_expr` cannot reproduce its builtin/native arm
-                // precedence (e.g. `math.sqrt` is an intrinsic, not a `$`-func).
+                // Only a WIR-collecting scope lowers calls; otherwise bail so the
+                // construct is reported unsupported. `lower_call` owns the
+                // builtin/native arm precedence (e.g. `math.sqrt` is an intrinsic,
+                // not a `$`-func), which this arm does not re-derive.
                 if !self.collect_wir {
                     return None;
                 }
@@ -3966,8 +3963,8 @@ impl Codegen {
                 }
                 // A closure-typed local `f(x)`: pass the closure pointer as the env,
                 // the i64-slot args, and `call_indirect` on the code index (the
-                // closure record's first word). Mirrors `compile_call`'s closure-local
-                // arm; the pointer is a bare `GetLocal`, so no scratch stash is needed.
+                // closure record's first word). The pointer is a bare `GetLocal`,
+                // so no scratch stash is needed.
                 if self.locals.contains_key(name) {
                     let n = args.len();
                     let mut ci_args: Vec<W> = vec![W::GetLocal(name.to_string())];
@@ -4019,15 +4016,15 @@ impl Codegen {
         })
     }
 
-    /// WIR twin of `compile_lambda`: lower a lambda to its closure-object
-    /// creation expression (the `$mk{c}` call producing `[code_index][caps..]`),
-    /// registering the lifted body `WirFunc` in `lambda_wir_funcs` once (idempotent
-    /// by content hash). `None` (→ the function falls back to WAT) when the lambda
-    /// assigns a captured var or its body doesn't fully lower.
+    /// Lower a lambda to its closure-object creation expression (the `$mk{c}` call
+    /// producing `[code_index][caps..]`), registering the lifted body `WirFunc` in
+    /// `lambda_wir_funcs` once (idempotent by content hash). `None` (the program is
+    /// then rejected as unsupported) when the lambda assigns a captured var or its
+    /// body doesn't fully lower.
     fn lower_lambda(&mut self, params: &[Param], body: &Block) -> Option<crate::wir::WirExpr> {
         use crate::wir::WirExpr as W;
-        // Binary-path only: the WAT path keeps the legacy `compile_lambda`
-        // emission (its lifted body lives in `self.lambdas`, not the WIR twin).
+        // Only a WIR-collecting scope lowers lambdas; otherwise bail so the
+        // construct is reported unsupported.
         if !self.collect_wir {
             return None;
         }
@@ -4110,7 +4107,8 @@ impl Codegen {
     /// one i64 value param per lambda param, a prologue recovering each value
     /// param from its slot and each capture from the env record, the lowered body,
     /// and the tail stored back into the universal i64 result slot. `None` if the
-    /// body doesn't lower. Mirrors `compile_lambda`'s scope save/restore exactly.
+    /// body doesn't lower. Saves the enclosing scope on entry and restores it on
+    /// exit so the lifted body lowers in its own local environment.
     fn build_lambda_wir_func(
         &mut self,
         params: &[Param],
@@ -4122,7 +4120,7 @@ impl Codegen {
         let saved = self.swap_out_scope();
         self.cur_fn_inout = false;
         self.cur_fn_inout_params = Vec::new();
-        // Lambda params: i32 ABI placeholder + record/list types (mirrors compile_lambda).
+        // Lambda params: i32 ABI placeholder + record/list types.
         for p in params {
             self.locals.insert(p.name.clone(), Kind::I32);
             if let Some(t) = &p.ty {
@@ -5686,9 +5684,9 @@ impl Codegen {
                 )
             }
             // `list.length(xs)` / `string.length(s)` — the i32 count/byte-length
-            // header, widened to the Int's i64. Binary path only (the legacy emits
-            // `i64.extend_i32_u`; a count is non-negative so the signed `Convert` is
-            // identical, but the WAT path keeps its byte-identical legacy emission).
+            // header, widened to the Int's i64. A count is non-negative so the
+            // signed `Convert` matches an unsigned `i64.extend_i32_u`. Lowers only
+            // in a WIR-collecting scope.
             ("list.length", 1) | ("string.length", 1) if self.collect_wir => {
                 let arg = self.lower_expr(&args[0])?;
                 Self::wir_convert(
@@ -5709,10 +5707,10 @@ impl Codegen {
                     Kind::I64,
                 )
             }
-            // Int <-> Float numeric conversions and `sqrt` (binary path only) — the
-            // WAT path keeps its byte-identical `f64.convert_i64_s` / `i64.trunc_sat
-            // _f64_s` / `f64.sqrt` emission. `to_int` is SATURATING to match the
-            // interpreter's `as i64` (NaN -> 0, ±inf clamp), not the trapping trunc.
+            // Int <-> Float numeric conversions and `sqrt`, lowered only in a
+            // WIR-collecting scope to `f64.convert_i64_s` / `i64.trunc_sat_f64_s` /
+            // `f64.sqrt`. `to_int` is SATURATING to match the interpreter's `as i64`
+            // (NaN -> 0, ±inf clamp), not the trapping trunc.
             ("math.to_float", 1) if self.collect_wir => {
                 let ak = self.kind_of(&args[0]);
                 let arg = Self::wir_convert(self.lower_expr(&args[0])?, ak, Kind::I64);
@@ -5728,9 +5726,8 @@ impl Codegen {
             }
             // `__render` to a String for the scalar shapes: Str passes through,
             // Int → `$int_to_string`, Bool → an interned "true"/"false" value-if.
-            // Float and compound shapes keep their bespoke legacy emission. Gated
-            // to the binary path (`collect_wir`) so the WAT path keeps the legacy
-            // `__render` emission and its byte-identity.
+            // Float and compound shapes bail (handled by their dedicated render
+            // helpers). Gated to a WIR-collecting scope (`collect_wir`).
             ("__render", 1) if self.collect_wir => match self.val_type_of(&args[0]) {
                 ValType::Str => return self.lower_expr(&args[0]),
                 ValType::Int => {
@@ -5913,11 +5910,12 @@ impl Codegen {
                 self.used_net_ops.insert("recv_all");
                 call("net_recv_all", self.lower_args(&[&args[0]])?)
             }
-            // The `Dir` ops: on the BINARY path, route through a registered host-
-            // wrapper helper (so the user body stays free of direct CallHosts and the
-            // import is accounted for via `import_deps` — capability-minimal). On the
-            // WAT path keep the inline `$dir_*_host` CallHost (byte-identical to the
-            // raw-prelude legacy, which provides `$dir_*_host` not the helper).
+            // The `Dir` ops: in a WIR-collecting scope, route through a registered
+            // host-wrapper helper (so the user body stays free of direct CallHosts
+            // and the import is accounted for via `import_deps` — capability-minimal).
+            // In a non-collecting scope (e.g. a raw-prelude helper body) emit the
+            // inline `$dir_*_host` CallHost, which provides `$dir_*_host` directly
+            // rather than the helper.
             ("subdir", 2) => {
                 self.used_dir_ops.insert("subdir");
                 let a = self.lower_args(&[&args[0], &args[1]])?;

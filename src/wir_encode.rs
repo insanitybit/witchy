@@ -8,9 +8,9 @@
 //! `module.imports`), then defined functions (index = `imports.len()` + position
 //! in `module.funcs`). Locals are params-then-body in declaration order.
 
-// M3: the encoder is built and validated by its own tests but not yet wired into
-// `compile_module`'s pipeline (that sink-flip is the next step), so `encode` and
-// its helpers read as dead to the non-test build. Mirrors `wir.rs`'s allow.
+// `encode` is the production codegen sink (codegen calls it directly), but some of
+// its helper paths and fields are only exercised by tests, so they read as dead to
+// the non-test build. Mirrors `wir.rs`'s allow.
 #![allow(dead_code)]
 
 use std::collections::HashMap;
