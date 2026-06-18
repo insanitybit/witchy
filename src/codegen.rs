@@ -2213,9 +2213,10 @@ impl Codegen {
         // can't carry that move-out epilogue (it must run before EVERY early
         // `return`, which the WIR `N::Return` single value can't express), so it
         // bails — leaving the program to be rejected as unsupported.
-        if (!self.collect_wir && !self.cur_fn_inout_params.is_empty())
-            || (!self.collect_wir && self.cur_fn_own_param.is_some())
-            || (!self.collect_wir && !self.inplace_push.is_empty())
+        if !self.collect_wir
+            && (!self.cur_fn_inout_params.is_empty()
+                || self.cur_fn_own_param.is_some()
+                || !self.inplace_push.is_empty())
         {
             return None;
         }

@@ -102,8 +102,7 @@ pub fn encode(module: &WirModule) -> Vec<u8> {
         clos_type_idx.entry(n).or_insert_with(|| {
             let mut params = vec![Kind::I32];
             params.extend(std::iter::repeat_n(Kind::I64, n));
-            let idx = intern(params, vec![Kind::I64]);
-            idx
+            intern(params, vec![Kind::I64])
         });
     }
 

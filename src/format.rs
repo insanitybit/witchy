@@ -1350,10 +1350,6 @@ fn local_fn(name: &str) -> bool {
     LOCAL_FNS.with(|s| s.borrow().contains(name))
 }
 
-/// Reformat witchy source (brace or off-side) as canonical brace-free source,
-/// returning `None` unless the output re-parses and formats to itself
-/// (idempotence). That guard makes the printer safe to apply in bulk: anything
-/// it cannot yet render faithfully is simply left untouched.
 // --- Round-trip canonicalization -----------------------------------------
 //
 // The semantic guard in `reformat` compares the input AST to the output's,
@@ -1539,6 +1535,10 @@ fn canon_expr(e: &mut Expr) {
     }
 }
 
+/// Reformat witchy source (brace or off-side) as canonical brace-free source,
+/// returning `None` unless the output re-parses and formats to itself
+/// (idempotence). That guard makes the printer safe to apply in bulk: anything
+/// it cannot yet render faithfully is simply left untouched.
 pub fn reformat(src: &str) -> Option<String> {
     let original = crate::parser::parse_module(src).ok()?;
     LOCAL_FNS.with(|s| {
