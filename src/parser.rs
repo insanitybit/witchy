@@ -2290,4 +2290,13 @@ fn f(var a: Int, own b: Int, c: Int) -> Int:
         assert_eq!(func.params[2].convention, Convention::Let);
     }
 
+    #[test]
+    fn inout_sink_keyword_aliases_are_removed() {
+        // `inout`/`sink` were Hylo-style alias spellings for `var`/`own`; they
+        // were removed, so they now lex as ordinary identifiers and a parameter
+        // written with them no longer parses as a convention.
+        assert!(parse_module("fn f(inout a: Int):\n    a\n").is_err());
+        assert!(parse_module("fn f(sink a: Int):\n    a\n").is_err());
+    }
+
 }
