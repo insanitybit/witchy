@@ -99,12 +99,12 @@ pub fn encode(module: &WirModule) -> Vec<u8> {
         collect_clos_arities(&f.body, &mut clos_arities);
     }
     for &n in &clos_arities {
-        if !clos_type_idx.contains_key(&n) {
+        clos_type_idx.entry(n).or_insert_with(|| {
             let mut params = vec![Kind::I32];
             params.extend(std::iter::repeat_n(Kind::I64, n));
             let idx = intern(params, vec![Kind::I64]);
-            clos_type_idx.insert(n, idx);
-        }
+            idx
+        });
     }
 
     let mut type_section = TypeSection::new();

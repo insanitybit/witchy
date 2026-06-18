@@ -3026,7 +3026,7 @@ impl Codegen {
     /// compare structurally (a helper), not by the bare `i32.eq` the numeric path
     /// would emit — so `lower_expr` declines to lower them here.
     fn operand_is_compound(&self, e: &Expr) -> bool {
-        self.eq_shape_of(e).map_or(false, |s| s.is_compound())
+        self.eq_shape_of(e).is_some_and(|s| s.is_compound())
     }
 
     /// The generic-reference compare we reject loudly: in a type-variable function,
@@ -3989,7 +3989,7 @@ impl Codegen {
                 let has_inout = self
                     .fn_conventions
                     .get(name)
-                    .is_some_and(|cs| cs.iter().any(|c| *c == Convention::Inout));
+                    .is_some_and(|cs| cs.contains(&Convention::Inout));
                 // An `inout` user call: the callee returns its declared value plus one
                 // result per inout param (the multi-value move-out ABI). Lower to a
                 // `CallStoreMulti` that writes each inout result back into the caller's
@@ -6700,7 +6700,7 @@ pub fn assemble_wir_module(
                 // Compiled for its side effects: stashes a `WirFunc` in
                 // `cg.wir_funcs` iff the whole body lowered, and sets the
                 // `uses_*` import-gating flags.
-                let _ = cg.compile_function(f)?;
+                cg.compile_function(f)?;
                 user_order.push(f.name.clone());
             }
         }
@@ -7871,11 +7871,8 @@ fn flip_string_add_module(m: &mut Module, table: &crate::typeck::TypeTable) {
 
 fn alpha_rename_module(m: &mut Module) {
     for item in &mut m.items {
-        match item {
-            Item::Function(f) => {
-                f.body = alpha_rename(&f.body, &f.params);
-            }
-            _ => {}
+        if let Item::Function(f) = item {
+            f.body = alpha_rename(&f.body, &f.params);
         }
     }
 }

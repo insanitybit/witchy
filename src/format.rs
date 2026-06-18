@@ -1244,7 +1244,7 @@ fn interpolation_sugar(e: &Expr) -> Option<String> {
         }
     }
     pieces.reverse();
-    if pieces.len() < 3 || pieces.len() % 2 == 0 {
+    if pieces.len() < 3 || pieces.len().is_multiple_of(2) {
         return None;
     }
     let mut out = String::from("\"");

@@ -385,11 +385,8 @@ fn validate_type(t: &ast::Type, known: &HashSet<&str>) -> Result<(), TypeError> 
 fn check_type_names(module: &Module) -> Result<(), TypeError> {
     let mut known: HashSet<&str> = BUILTIN_TYPE_NAMES.iter().copied().collect();
     for item in &module.items {
-        match item {
-            Item::Type(t) => {
-                known.insert(t.name.as_str());
-            }
-            _ => {}
+        if let Item::Type(t) = item {
+            known.insert(t.name.as_str());
         }
     }
     for item in &module.items {
