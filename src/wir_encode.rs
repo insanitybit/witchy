@@ -840,7 +840,7 @@ fn binop_instr(op: BinOp, kind: Kind) -> Instruction<'static> {
 mod tests {
     use super::*;
     use crate::wir::{
-        to_wat, BinOp, DataSegment, GlobalInit, Kind, UnOp, WirExpr, WirFunc, WirGlobal, WirImport,
+        BinOp, DataSegment, GlobalInit, Kind, UnOp, WirExpr, WirFunc, WirGlobal, WirImport,
         WirLocal, WirModule, WirNode, WirTable, WirTy,
     };
     use std::sync::{Arc, Mutex};

@@ -18,12 +18,13 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@nextest
       - name: Build
         run: cargo build --all-targets
       - name: Clippy (deny warnings)
         run: cargo clippy --all-targets -- -D warnings
       - name: Unit + integration tests
-        run: cargo test
+        run: cargo nextest run --profile ci --all-targets
 
   parity:
     name: Backend parity sweep

@@ -1,0 +1,29 @@
+# cargo-nextest configuration — run the suite with `cargo nextest run`.
+# Docs: https://nexte.st/book/configuration
+#
+# nextest is the preferred local + CI runner: it runs each test in its own
+# process (so a panic/abort can't take the runner down), parallelizes across
+# the whole suite, and prints a clean per-test summary. There are no doctests
+# in this crate, so `nextest run` covers everything `cargo test` did.
+
+[profile.default]
+# Surface every failure in one run rather than stopping at the first.
+fail-fast = false
+# Show a failing test's output as it fails, then recap all failures at the end.
+failure-output = "immediate-final"
+status-level = "fail"
+# Flag pathologically slow tests (the registry e2e tests are the slowest) and
+# kill anything that hangs well past that.
+slow-timeout = { period = "45s", terminate-after = 3 }
+
+# CI profile: `cargo nextest run --profile ci`. Retries absorb the occasional
+# flaky network/registry e2e test; JUnit output feeds CI test reporting.
+[profile.ci]
+fail-fast = false
+failure-output = "immediate"
+final-status-level = "slow"
+retries = 2
+slow-timeout = { period = "90s", terminate-after = 2 }
+
+[profile.ci.junit]
+path = "junit.xml"
