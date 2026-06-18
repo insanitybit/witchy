@@ -45,9 +45,9 @@
 //! NOTE: the binary path reads ONLY the helper NAMES ([`HELPER_NAMES`]) and the
 //! import signatures (parsed from [`PRELUDE_IMPORTS_WAT`]); the helper BODIES are
 //! emitted by the `wir_helper` registry, so the hand-written `*_WAT` body consts
-//! that used to live here are gone. `scripts/gen_wir_prelude.py` predates this
-//! cut — it still emits the body consts + the retired `prelude_wat` assembler, so
-//! it is now stale and must be updated (or retired) before it is run again.
+//! that used to live here are gone. This file is hand-maintained — there is no
+//! generator (the old `scripts/gen_wir_prelude.py` emitted the retired body
+//! consts and was removed).
 
 // Some items below (e.g. `MAX_MK`) are only referenced indirectly; keep the
 // crate-wide dead-code lint off this module so the prelude's pinned-order
