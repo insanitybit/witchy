@@ -51,13 +51,6 @@ pub fn lookup(qualified: &str) -> Option<NativeFn> {
     }
 }
 
-/// Whether `qualified` names a native-module function. Every registered native
-/// is also bridged into the WASM backend as a host import; the backend uses
-/// this to fail loudly if a future native is added without a bridge.
-pub fn is_native(qualified: &str) -> bool {
-    lookup(qualified).is_some()
-}
-
 fn type_error(msg: impl Into<String>) -> RuntimeError {
     RuntimeError { message: msg.into() }
 }
