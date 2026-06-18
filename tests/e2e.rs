@@ -339,7 +339,7 @@ fn bearer_token_is_not_accepted_for_publishing() {
     sb.coven_url = Some(server.url());
     let lib = sb.work.join("lib");
     std::fs::create_dir_all(lib.join("src")).unwrap();
-    std::fs::write(lib.join("witchy.toml"), "[rune]\nname = \"acme/x\"\nversion = \"1.0.0\"\n").unwrap();
+    std::fs::write(lib.join("witchy.toml"), "[rune]\nname = \"acme/xray\"\nversion = \"1.0.0\"\n").unwrap();
     std::fs::write(lib.join("src/x.witchy"), "fn f(s: String) -> String:\n    s\n").unwrap();
     // No identity token at all → remote publish is refused outright.
     let out = sb.run(&lib, "ci", &["publish"]);
@@ -351,7 +351,7 @@ fn bearer_token_is_not_accepted_for_publishing() {
     let gen_out = Command::new(BIN).args(["coven-gen-issuer", "--out", other_issuer.to_str().unwrap()]).output().unwrap();
     assert!(gen_out.status.success());
     let mint = Command::new(BIN)
-        .args(["coven-mint-token", "--issuer-key", other_issuer.to_str().unwrap(), "--issuer", "rogue", "--sub", "x", "--claim", "repository=acme/x"])
+        .args(["coven-mint-token", "--issuer-key", other_issuer.to_str().unwrap(), "--issuer", "rogue", "--sub", "x", "--claim", "repository=acme/xray"])
         .output()
         .unwrap();
     let rogue = String::from_utf8_lossy(&mint.stdout).trim().to_string();
@@ -370,13 +370,13 @@ fn tuf_chain_verified_and_snapshot_tamper_rejected() {
 
     let lib = sb.work.join("lib");
     std::fs::create_dir_all(lib.join("src")).unwrap();
-    std::fs::write(lib.join("witchy.toml"), "[rune]\nname = \"acme/t\"\nversion = \"1.0.0\"\n").unwrap();
+    std::fs::write(lib.join("witchy.toml"), "[rune]\nname = \"acme/tango\"\nversion = \"1.0.0\"\n").unwrap();
     std::fs::write(lib.join("src/t.witchy"), "fn f(s: String) -> String:\n    s\n").unwrap();
-    let ci = server.ci_token("acme/t-repo", "release.yml");
+    let ci = server.ci_token("acme/tango-repo", "release.yml");
     assert!(sb.run_id(&lib, "ci", &ci, &["publish"]).status.success());
     let alice = server.human_token("alice");
-    assert!(sb.run_id(&lib, "alice", &alice, &["promote", "acme/t@1.0.0", "--factor", "totp"]).status.success());
-    assert!(sb.run(&app, "dev", &["add", "acme/t"]).status.success());
+    assert!(sb.run_id(&lib, "alice", &alice, &["promote", "acme/tango@1.0.0", "--factor", "totp"]).status.success());
+    assert!(sb.run(&app, "dev", &["add", "acme/tango"]).status.success());
 
     // The lock pinned a TUF snapshot version, and verify confirms the chain.
     let lock = std::fs::read_to_string(app.join("witchy.lock")).unwrap();
@@ -406,13 +406,13 @@ fn tuf_rollback_is_rejected() {
 
     let lib = sb.work.join("lib");
     std::fs::create_dir_all(lib.join("src")).unwrap();
-    std::fs::write(lib.join("witchy.toml"), "[rune]\nname = \"acme/r\"\nversion = \"1.0.0\"\n").unwrap();
+    std::fs::write(lib.join("witchy.toml"), "[rune]\nname = \"acme/romeo\"\nversion = \"1.0.0\"\n").unwrap();
     std::fs::write(lib.join("src/r.witchy"), "fn f(s: String) -> String:\n    s\n").unwrap();
-    let ci = server.ci_token("acme/r-repo", "release.yml");
+    let ci = server.ci_token("acme/romeo-repo", "release.yml");
     assert!(sb.run_id(&lib, "ci", &ci, &["publish"]).status.success());
     let alice = server.human_token("alice");
-    assert!(sb.run_id(&lib, "alice", &alice, &["promote", "acme/r@1.0.0", "--factor", "totp"]).status.success());
-    assert!(sb.run(&app, "dev", &["add", "acme/r"]).status.success());
+    assert!(sb.run_id(&lib, "alice", &alice, &["promote", "acme/romeo@1.0.0", "--factor", "totp"]).status.success());
+    assert!(sb.run(&app, "dev", &["add", "acme/romeo"]).status.success());
 
     // Simulate having previously seen a much newer snapshot: bump the pinned
     // version in the lock. The server now presents an older snapshot version —
@@ -445,20 +445,20 @@ fn networked_registry_signature_detects_tampering() {
 
     let lib = sb.work.join("lib");
     std::fs::create_dir_all(lib.join("src")).unwrap();
-    std::fs::write(lib.join("witchy.toml"), "[rune]\nname = \"acme/x\"\nversion = \"1.0.0\"\n").unwrap();
+    std::fs::write(lib.join("witchy.toml"), "[rune]\nname = \"acme/xray\"\nversion = \"1.0.0\"\n").unwrap();
     std::fs::write(lib.join("src/x.witchy"), "fn f(s: String) -> String:\n    s\n").unwrap();
-    let ci = server.ci_token("acme/x-repo", "release.yml");
+    let ci = server.ci_token("acme/xray-repo", "release.yml");
     assert!(sb.run_id(&lib, "ci", &ci, &["publish"]).status.success());
     let alice = server.human_token("alice");
     assert!(sb
-        .run_id(&lib, "alice", &alice, &["promote", "acme/x@1.0.0", "--factor", "totp"])
+        .run_id(&lib, "alice", &alice, &["promote", "acme/xray@1.0.0", "--factor", "totp"])
         .status
         .success());
-    assert!(sb.run(&app, "dev", &["add", "acme/x"]).status.success());
+    assert!(sb.run(&app, "dev", &["add", "acme/xray"]).status.success());
 
     // Tamper a signed field of the record in the SERVER's storage (the
     // provenance attestation is signed, so editing it breaks the signature).
-    let meta = server.regroot.join("acme/x/1.0.0/coven.json");
+    let meta = server.regroot.join("acme/xray/1.0.0/coven.json");
     let json = std::fs::read_to_string(&meta).unwrap().replace("trusted-publisher", "evil-publisher");
     std::fs::write(&meta, json).unwrap();
 
@@ -719,13 +719,13 @@ fn diamond_dependency_resolves_shared_base_once() {
 fn update_single_package_leaves_others_pinned() {
     let sb = Sandbox::new("update1");
     let app = new_app(&sb);
-    sb.publish_lib("acme/a", "1.0.0", "fn f(s: String) -> String:\n    s\n");
-    sb.publish_lib("acme/b", "1.0.0", "fn g(s: String) -> String:\n    s\n");
-    assert!(sb.run(&app, "dev", &["add", "acme/a"]).status.success());
-    assert!(sb.run(&app, "dev", &["add", "acme/b"]).status.success());
+    sb.publish_lib("acme/alfa", "1.0.0", "fn f(s: String) -> String:\n    s\n");
+    sb.publish_lib("acme/bravo", "1.0.0", "fn g(s: String) -> String:\n    s\n");
+    assert!(sb.run(&app, "dev", &["add", "acme/alfa"]).status.success());
+    assert!(sb.run(&app, "dev", &["add", "acme/bravo"]).status.success());
 
     // Newer versions of both become available.
-    for n in ["a", "b"] {
+    for n in ["alfa", "bravo"] {
         let dir = sb.work.join(n);
         std::fs::write(
             dir.join("witchy.toml"),
@@ -740,13 +740,13 @@ fn update_single_package_leaves_others_pinned() {
     }
 
     // Update only acme/a; acme/b must stay pinned at 1.0.0.
-    let out = sb.run(&app, "dev", &["update", "acme/a"]);
+    let out = sb.run(&app, "dev", &["update", "acme/alfa"]);
     assert!(out.status.success(), "update failed: {}", stderr(&out));
     let lock = std::fs::read_to_string(app.join("witchy.lock")).unwrap();
     // a moved to 1.1.0, b stayed at 1.0.0.
-    let a_at = lock.find("acme/a").map(|i| &lock[i..i + 60]).unwrap_or("");
+    let a_at = lock.find("acme/alfa").map(|i| &lock[i..i + 60]).unwrap_or("");
     assert!(a_at.contains("1.1.0"), "acme/a should be 1.1.0; lock:\n{lock}");
-    let b_at = lock.find("acme/b").map(|i| &lock[i..i + 60]).unwrap_or("");
+    let b_at = lock.find("acme/bravo").map(|i| &lock[i..i + 60]).unwrap_or("");
     assert!(b_at.contains("1.0.0"), "acme/b should stay 1.0.0; lock:\n{lock}");
 }
 
@@ -773,8 +773,8 @@ fn yank_excludes_from_new_resolution() {
 fn provenance_is_always_recorded() {
     let sb = Sandbox::new("prov");
     let app = new_app(&sb);
-    sb.publish_lib("acme/p", "1.0.0", "fn f(s: String) -> String:\n    s\n");
-    let out = sb.run(&app, "dev", &["add", "acme/p"]);
+    sb.publish_lib("acme/papa", "1.0.0", "fn f(s: String) -> String:\n    s\n");
+    let out = sb.run(&app, "dev", &["add", "acme/papa"]);
     assert!(out.status.success(), "add failed: {}", stderr(&out));
     let out = sb.run(&app, "dev", &["audit"]);
     let s = stdout(&out);
@@ -786,15 +786,15 @@ fn provenance_is_always_recorded() {
 fn signature_detects_registry_metadata_tampering() {
     let sb = Sandbox::new("tamper");
     let app = new_app(&sb);
-    sb.publish_lib("acme/x", "1.0.0", "fn f(s: String) -> String:\n    s\n");
-    assert!(sb.run(&app, "dev", &["add", "acme/x"]).status.success());
+    sb.publish_lib("acme/xray", "1.0.0", "fn f(s: String) -> String:\n    s\n");
+    assert!(sb.run(&app, "dev", &["add", "acme/xray"]).status.success());
 
     // A healthy verify checks signatures against the registry.
     assert!(sb.run(&app, "dev", &["verify"]).status.success());
 
     // Attacker edits a signed field of the registry record (source untouched, so
     // content hashing alone would miss it — the Ed25519 signature must catch it).
-    let meta = sb.home.join("registry/acme/x/1.0.0/coven.json");
+    let meta = sb.home.join("registry/acme/xray/1.0.0/coven.json");
     let json = std::fs::read_to_string(&meta).unwrap().replace("ci-bot", "attacker");
     std::fs::write(&meta, json).unwrap();
 
@@ -815,8 +815,8 @@ fn signature_detects_registry_metadata_tampering() {
 fn lock_pins_registry_key_fingerprint() {
     let sb = Sandbox::new("pin");
     let app = new_app(&sb);
-    sb.publish_lib("acme/y", "1.0.0", "fn f(s: String) -> String:\n    s\n");
-    assert!(sb.run(&app, "dev", &["add", "acme/y"]).status.success());
+    sb.publish_lib("acme/yankee", "1.0.0", "fn f(s: String) -> String:\n    s\n");
+    assert!(sb.run(&app, "dev", &["add", "acme/yankee"]).status.success());
     let lock = std::fs::read_to_string(app.join("witchy.lock")).unwrap();
     assert!(lock.contains("registry_root"), "lock must pin the registry key");
     assert!(lock.contains("ed25519:"), "fingerprint format");
