@@ -58,3 +58,10 @@ aws-lc-rs = "1"
 
 [dev-dependencies]
 proptest = "1.11.0"
+
+# Dev builds keep file:line backtraces (so test failures and panics stay
+# legible) but skip full DWARF generation — markedly faster to compile and link
+# for this large single crate. Use a debugger build (`debug = 2`) only when you
+# actually need to step through variables.
+[profile.dev]
+debug = "line-tables-only"
