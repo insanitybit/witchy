@@ -141,7 +141,7 @@ where it is made.
 
 Top-level `let` declares a module constant (inlined at compile time).
 Assigning to a `let`, or to a variable captured by a closure, is a check-time
-error (closures capture **by value**; return the new value or use `inout`).
+error (closures capture **by value**; return the new value or use `var`).
 `let _ = expr` evaluates and discards — the same meaning as the bare
 expression statement, which is the form `fmt` prints.
 
@@ -211,8 +211,8 @@ fn main(console: Console):
 
 `if let PAT = e:` binds and runs only on a match (with an optional `else`);
 `while let PAT = e:` loops as long as the scrutinee keeps matching. `return e`
-exits early (and works in `inout` functions — the written-back parameters are
-still delivered).
+exits early (and works in functions with a `var` parameter — the written-back
+parameters are still delivered).
 
 A `retain a, b:` / `without a, b:` block is a capability firewall: inside it,
 only the named capabilities stay in scope (`retain`) or the named ones are
@@ -309,9 +309,9 @@ an occurs check).
 |---|---|
 | (default) | owned, observably immutable value |
 | `let` | immutable **borrow**; may not escape — returning a `let`-borrowed parameter is a type error |
-| `inout` | the callee mutates and the caller's `var` is **written back** — even on early `return`/`?` |
-| `sink` / `own` | ownership transfer; using the source afterwards is a check-time error |
-| `move e` | explicitly transfer a binding at a call site; pairs with `sink`/`own` |
+| `var` | the callee mutates and the caller's variable is **written back** — even on early `return`/`?` |
+| `own` | ownership transfer; using the source afterwards is a check-time error |
+| `move e` | explicitly transfer a binding at a call site; pairs with `own` |
 
 ```witchy
 fn bump(var n: Int):
