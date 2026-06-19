@@ -140,10 +140,19 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
     // across traits), and each trait's full method list (for default bodies).
     let mut trait_methods: HashMap<String, String> = HashMap::new();
     let mut trait_method_list: HashMap<String, Vec<MethodSig>> = HashMap::new();
+    // Trait methods whose first parameter is NOT `self` are STATIC (`From::from`,
+    // `FromIterator::from_iter`): a call on a bound type variable (`b.from(x)`)
+    // takes no receiver — the receiver IS the type, resolved via the bound at
+    // monomorphization. Tracked so the generic-receiver dispatch doesn't prepend a
+    // phantom `self`.
+    let mut static_trait_methods: std::collections::HashSet<String> = std::collections::HashSet::new();
     for item in &module.items {
         if let Item::Trait(t) = item {
             for m in &t.methods {
                 trait_methods.insert(m.name.clone(), t.name.clone());
+                if m.params.first().is_none_or(|p| p.name != "self") {
+                    static_trait_methods.insert(m.name.clone());
+                }
             }
             trait_method_list.insert(t.name.clone(), t.methods.clone());
         }
@@ -270,6 +279,7 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
         let empty_table = crate::typeck::TypeTable::default();
         let ctx = Ctx {
             trait_methods: &trait_methods,
+            static_trait_methods: &static_trait_methods,
             impl_table: &impl_table,
             ctor_results: &ctor_results,
             fn_rets: &fn_rets,
@@ -375,6 +385,7 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
     let missing_impls = std::cell::RefCell::new(Vec::new());
     let ctx = Ctx {
         trait_methods: &trait_methods,
+        static_trait_methods: &static_trait_methods,
         impl_table: &impl_table,
         ctor_results: &ctor_results,
         fn_rets: &fn_rets,
@@ -424,6 +435,9 @@ fn bind_loop_var(var: &str, iter_type: Option<String>, scope: &mut Scope) {
 
 struct Ctx<'a> {
     trait_methods: &'a HashMap<String, String>,
+    /// Trait methods that take no `self` — a call on a bound type variable passes
+    /// no receiver.
+    static_trait_methods: &'a std::collections::HashSet<String>,
     impl_table: &'a HashMap<(String, String), String>,
     ctor_results: &'a HashMap<String, String>,
     fn_rets: &'a HashMap<String, String>,
@@ -453,11 +467,22 @@ impl Ctx<'_> {
     /// generic type falls back to its head, where generic impls are registered:
     /// `List<Int>` matches `impl … for List(a)`, `Option<String>` matches
     /// `impl … for Option(a)`. The impl method stays generic and monomorphizes per
-    /// element exactly as a `where`-bounded free function would.
+    /// element exactly as a `where`-bounded free function would. Last, a BLANKET impl
+    /// — `impl Into(b) for a where b: From(a)` — is registered under a type-variable
+    /// head (lowercase); it applies to any receiver, with its `where` bound
+    /// discharged at monomorphization.
     fn lookup_impl(&self, method: &str, tn: &str) -> Option<String> {
         self.impl_table
             .get(&(method.to_string(), tn.to_string()))
             .or_else(|| self.impl_table.get(&(method.to_string(), head_of(tn).to_string())))
+            .or_else(|| {
+                self.impl_table
+                    .iter()
+                    .find(|((m, k), _)| {
+                        m == method && k.chars().next().is_some_and(char::is_lowercase)
+                    })
+                    .map(|(_, v)| v)
+            })
             .cloned()
     }
 
@@ -630,13 +655,19 @@ impl Ctx<'_> {
                         return;
                     }
                 }
-                // A trait method on a generic (bound) receiver dispatches
-                // after monomorphization: lower to the bare trait call.
+                // A trait method on a generic (bound) receiver dispatches after
+                // monomorphization: lower to the bare trait call. A STATIC trait
+                // method (`b.from(x)`, no `self`) takes no receiver — the receiver is
+                // the type itself, resolved through the bound at mono — so only the
+                // explicit arguments are passed; an instance method prepends `self`.
                 let receiver_is_generic =
                     tn.as_deref().is_none_or(|n| n.chars().next().is_some_and(char::is_lowercase));
                 if self.trait_methods.contains_key(method.as_str()) && receiver_is_generic {
-                    let mut call_args =
-                        vec![std::mem::replace(receiver.as_mut(), Expr::Bool(false))];
+                    let mut call_args = if self.static_trait_methods.contains(method.as_str()) {
+                        Vec::new()
+                    } else {
+                        vec![std::mem::replace(receiver.as_mut(), Expr::Bool(false))]
+                    };
                     call_args.append(args);
                     *e = Expr::Call { name: method.clone(), args: call_args };
                     return;

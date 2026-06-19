@@ -999,6 +999,29 @@ fn main(console: Console):
         assert_eq!(wasm_run(src), want, "wasm");
     }
 
+    /// FROM / INTO (std/convert): a user implements `From` and gets `Into` free via
+    /// the blanket `impl Into(b) for a where b: From(a)`. The blanket body calls the
+    /// STATIC `b.from(self)` on the bound target type (no receiver), resolved through
+    /// the bound at monomorphization. Both backends.
+    #[test]
+    fn from_into_conversion_traits() {
+        let src = "import convert\n\ntype Celsius:\n    deg: Int\n\nimpl From(Int) for Celsius:\n    fn from(value: Int) -> Celsius:\n        Celsius(value)\n\nfn main(console: Console):\n    let c: Celsius = (5).into()\n    let d = Celsius.from(9)\n    print(console, \"${c.deg} ${d.deg}\")\n";
+        let want = vec!["5 9".to_string()];
+        assert_eq!(link_run(src), want, "interpreter");
+        assert_eq!(wasm_run(src), want, "wasm");
+    }
+
+    /// `From`/`Into` reach `Json`: `impl From(a) for Json where a: Reflect` means any
+    /// reflectable value converts — `x.into()` / `Json.from(x)` — and `server.send`
+    /// serializes any reflectable response. Both backends.
+    #[test]
+    fn into_json_via_from() {
+        let src = "import json\n\nfn main(console: Console):\n    let j: Json = [1, 2, 3].into()\n    print(console, json.encode(j))\n    print(console, json.encode(Json.from((\"x\", 5))))\n";
+        let want = vec!["[1,2,3]".to_string(), "[\"x\",5]".to_string()];
+        assert_eq!(link_run(src), want, "interpreter");
+        assert_eq!(wasm_run(src), want, "wasm");
+    }
+
     /// ANONYMOUS STRUCTS: `.{ field: expr, … }` is an ad-hoc reflectable record (a
     /// generic synthetic type carrying `derive(Reflect)`), so `json.stringify(.{…})`
     /// works on any field types — including a `List` of tuples — with no per-type

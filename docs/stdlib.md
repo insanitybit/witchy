@@ -160,6 +160,16 @@ A native intrinsic module (implemented in Rust, like `crypto`): it gives a progr
 
 Compare two sources by capability footprint, as JSON:   {"widened":bool,"added":[..],"removed":[..]}   (or {"error":".."}) `widened` is the rights-precise block-on-widening gate: true when `new` demands any capability or right that `old` did not.
 
+## `convert`
+
+Conversion traits, mirroring Rust's `std::convert`. Implement `From` and get `Into` for free.
+
+  trait From(a): build the implementing type FROM an `a`  — `Celsius.from(deg)`   trait Into(b): consume `self` INTO a `b`                — `value.into()`
+
+The blanket `impl Into(b) for a where b: From(a)` means every `From` yields a matching `into`: define `impl From(Int) for Celsius` and `(5).into()` works wherever a `Celsius` is expected. `from` is a STATIC method (no `self`), so the blanket calls it on the target type `b` — `b.from(self)` — resolved through the bound at monomorphization.
+
+_No public API._
+
 ## `crypto`
 
 crypto — cryptographic hashing and signatures.
@@ -1716,6 +1726,10 @@ A single form field, or "" if absent.
 #### `fn json_value(code: Int, j: Json) -> Response`
 
 A JSON response from a `Json` value — encodes it for you.
+
+#### `fn send(code: Int, value: a) -> Response where a: Reflect`
+
+A JSON response from ANY reflectable value — reflection serializes it, so a handler returns `server.send(200, .{names: names})` or a record directly, without building `Json` by hand. (`json`/`json_value` remain for pre-built bytes / `Json` values.)
 
 #### `fn status_only(code: Int) -> Response`
 

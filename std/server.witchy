@@ -17,6 +17,7 @@
 import http
 import option
 import json
+import reflect
 import ascii
 
 // ---- Request accessors ----
@@ -82,6 +83,13 @@ pub fn json(code: Int, b: String) -> Response:
 // A JSON response from a `Json` value — encodes it for you.
 pub fn json_value(code: Int, j: Json) -> Response:
     json(code, json.encode(j))
+
+// A JSON response from ANY reflectable value — reflection serializes it, so a
+// handler returns `server.send(200, .{names: names})` or a record directly,
+// without building `Json` by hand. (`json`/`json_value` remain for pre-built
+// bytes / `Json` values.)
+pub fn send(code: Int, value: a) -> Response where a: Reflect:
+    json(code, json.stringify(value))
 
 pub fn status_only(code: Int) -> Response:
     Response(code, [], "")

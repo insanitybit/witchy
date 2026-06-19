@@ -463,6 +463,33 @@ fn main(console: Console):
     print(console, json.stringify(.{files: files}))
 ```
 
+### Conversion: `From` and `Into`
+
+`std/convert` mirrors Rust: implement `From` and get `Into` for free.
+
+```witchy
+import convert
+
+type Celsius:
+    deg: Int
+
+impl From(Int) for Celsius:
+    fn from(value: Int) -> Celsius:
+        Celsius(value)
+
+fn main(console: Console):
+    let c: Celsius = (5).into()
+    print(console, "${c.deg}")
+```
+
+The one blanket impl — `impl Into(b) for a where b: From(a)` — gives every `From` a
+matching `into`. It works because `from` is a STATIC method, so the blanket calls it
+on the target type (`b.from(self)`), resolved through the `where` bound when the call
+is monomorphized — a blanket impl over a type variable, dispatched on the receiver.
+`impl From(a) for Json where a: Reflect` then makes every reflectable value flow into
+JSON (`x.into()` / `Json.from(x)`), and `server.send(code, value)` serializes any
+reflectable response.
+
 ### `comptime:` — compile-time item generation
 
 A top-level `comptime:` block runs **at compile time** with no capabilities

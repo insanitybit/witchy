@@ -1,0 +1,21 @@
+// Conversion traits, mirroring Rust's `std::convert`. Implement `From` and get
+// `Into` for free.
+//
+//   trait From(a): build the implementing type FROM an `a`  — `Celsius.from(deg)`
+//   trait Into(b): consume `self` INTO a `b`                — `value.into()`
+//
+// The blanket `impl Into(b) for a where b: From(a)` means every `From` yields a
+// matching `into`: define `impl From(Int) for Celsius` and `(5).into()` works
+// wherever a `Celsius` is expected. `from` is a STATIC method (no `self`), so the
+// blanket calls it on the target type `b` — `b.from(self)` — resolved through the
+// bound at monomorphization.
+
+trait From(a):
+    fn from(value: a) -> Self
+
+trait Into(b):
+    fn into(self) -> b
+
+impl Into(b) for a where b: From(a):
+    fn into(self) -> b:
+        b.from(self)

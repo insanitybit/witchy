@@ -12,6 +12,8 @@ import option
 // Reflection backs `value_of`/`stringify`: encode ANY value to JSON with no
 // `derive(Json)` — `reflect(x)` gives the structure, and we walk the `Mirror`.
 import reflect
+// `impl From(a) for Json` gives `Json.from(x)` / `x.into()` for reflectable values.
+import convert
 
 type Json:
     JsonNull
@@ -625,6 +627,14 @@ pub fn value_of(x: a) -> Json where a: Reflect:
 
 pub fn stringify(x: a) -> String where a: Reflect:
     encode(value_of(x))
+
+// Any reflectable value converts INTO a `Json` (and so `Json.from(x)` /
+// `x.into()` work, via `std/convert`'s blanket `Into`). This is `value_of` wearing
+// the `From`/`Into` hat, so a server can take `x: Into(Json)` rather than a
+// pre-serialized string.
+impl From(a) for Json where a: Reflect:
+    fn from(value: a) -> Json:
+        value_of(value)
 
 fn mirror_to_json(m: Mirror) -> Json:
     match m:
