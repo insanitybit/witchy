@@ -1,0 +1,125 @@
+// coven's content-addressed store: the on-disk layout plus record/source IO,
+// behind a high-level API so the server speaks in records and versions, never raw
+// paths. Layout under the store root:
+//   <namespace>/<name>/<version>/{coven.json, rune/<files>}
+// with the signed TUF metadata (*.json) and `_policy` trust state at the root.
+
+import crypto
+import fs
+import semver
+import string
+import json
+import coven_record
+
+// --- record IO ---------------------------------------------------------------
+fn meta_path(name: String, version: String) -> String:
+    name + "/" + version + "/coven.json"
+
+// Whether a version's signed record exists.
+pub fn record_exists(store: Dir, name: String, version: String) -> Bool:
+    exists(store, meta_path(name, version))
+
+// A version's stored record JSON, or None if absent.
+pub fn read_record(store: Dir, name: String, version: String) -> Option(String):
+    if exists(store, meta_path(name, version)):
+        Some(read(store, meta_path(name, version)))
+    else:
+        None
+
+// Write (or overwrite) a version's record JSON.
+pub fn write_record(store: Dir, name: String, version: String, record: String):
+    write(store, meta_path(name, version), record)
+
+// A version's record decoded to a typed `Record`, or None if absent or corrupt.
+pub fn read_record_typed(store: Dir, name: String, version: String) -> Option(Record):
+    match read_record(store, name, version):
+        Some(text) ->
+            match coven_record.parse(text):
+                Ok(r) -> Some(r)
+                Err(_e) -> None
+        None -> None
+
+// --- source IO + content addressing ------------------------------------------
+fn rune_path(name: String, version: String, rel: String) -> String:
+    name + "/" + version + "/rune/" + rel
+
+// Write every source file under <name>/<version>/rune/, creating dirs as needed.
+pub fn store_source(store: Dir, name: String, version: String, files: List((String, String))):
+    for rel, text in files:
+        let full = rune_path(name, version, rel)
+        fs.ensure_dir(store, fs.parent_dir(full))
+        write(store, full, text)
+
+// Read the stored source back as (relpath, text) pairs: witchy.toml + every
+// src/**/*.witchy (recursively, so a nested module keeps its full path).
+pub fn read_source(store: Dir, name: String, version: String) -> List((String, String)):
+    var out = []
+    let base = name + "/" + version + "/rune"
+    if exists(store, base + "/witchy.toml"):
+        out = list.push(out, ("witchy.toml", read(store, base + "/witchy.toml")))
+    for f in fs.collect_files(store, base + "/src", "src", ".witchy"):
+        out = list.push(out, f)
+    out
+
+// The content address of a rune's source (matches crypto.rune_hash / pm/store.rs).
+pub fn content_hash(files: List((String, String))) -> String:
+    var paths = []
+    var texts = []
+    for p, t in files:
+        paths = list.push(paths, p)
+        texts = list.push(texts, t)
+    crypto.rune_hash(paths, texts)
+
+// --- walking -----------------------------------------------------------------
+// Every published version of a rune.
+pub fn versions_of(store: Dir, name: String) -> List(String):
+    if exists(store, name):
+        list(subdir(store, name))
+    else:
+        []
+
+// Every published rune name (namespace/name) — the store is two levels deep; skip
+// the TUF metadata (*.json) and `_policy` trust state that sit at the root.
+pub fn all_names(store: Dir) -> List(String):
+    var out = []
+    for ns in list(store):
+        if !string.ends_with(ns, ".json") && !string.starts_with(ns, "_"):
+            for nm in list(subdir(store, ns)):
+                out = list.push(out, ns + "/" + nm)
+    out
+
+// Every current target as (name@version -> digest of its signed payload). The
+// snapshot sorts these keys to match the Rust BTreeMap's canonical ordering.
+pub fn all_target_digests(store: Dir) -> List((String, Json)):
+    var pairs = []
+    for name in all_names(store):
+        for v in versions_of(store, name):
+            if let Some(text) = read_record(store, name, v):
+                let digest = "sha256:" + crypto.sha256(coven_record.record_signing_payload(text))
+                pairs = list.push(pairs, (name + "@" + v, JsonString(digest)))
+    pairs
+
+// The runtime footprint of the highest RELEASED version other than `version` — the
+// baseline a promote delta is computed against, so an upgrade's delta names only
+// the authority that is actually NEW. Empty on first release.
+pub fn latest_released_footprint(store: Dir, name: String, version: String) -> List(String):
+    var best = ""
+    for v in versions_of(store, name):
+        if v != version:
+            if let Some(rec) = read_record_typed(store, name, v):
+                if coven_record.state_of(rec.state) == Released && (string.is_empty(best) || version_newer(v, best)):
+                    best = v
+    if string.is_empty(best):
+        []
+    else:
+        match read_record_typed(store, name, best):
+            Some(rec) -> rec.runtime_footprint
+            None -> []
+
+fn version_newer(a: String, b: String) -> Bool:
+    match semver.parse(a):
+        Ok(va) ->
+            match semver.parse(b):
+                Ok(vb) -> semver.compare(va, vb) > 0
+                Err(_e) -> true
+        Err(_e) -> false

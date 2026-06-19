@@ -1,0 +1,68 @@
+// Trusted publishing: identity-token verification + canonical claims. coven does
+// not accept long-lived API tokens (the most-stolen supply-chain credential); a
+// publisher proves identity with a short-lived, Ed25519-signed claims envelope
+// from a trusted issuer. This module verifies the signature against the issuer's
+// pinned key, the audience, and the expiry, and derives identity from the VERIFIED
+// claims. Pure (no HTTP, no store): the server maps these results to status codes.
+//
+// The canonical claim bytes are byte-identical to the Rust minter's serde output,
+// so a token minted by `coven-mint-token` verifies here unchanged.
+
+import json
+import crypto
+import string
+import coven_json
+
+// A trusted issuer (a JWKS stand-in): a provider id and its pinned Ed25519 key (hex).
+type Issuer:
+    id: String
+    pubkey: String
+
+// The namespace (first path segment) of a rune name.
+pub fn namespace_of(name: String) -> String:
+    if string.contains(name, "/"):
+        let (ns, _rest) = string.split_once(name, "/")
+        ns
+    else:
+        name
+
+// A provider claim (from the `extra` object), or "".
+pub fn claim(claims: Json, key: String) -> String:
+    json.get(claims, "extra").map(fn(ex: Json): coven_json.str(ex, key)).unwrap_or("")
+
+// A JSON string array (e.g. a namespace's maintainers.json) as a list of strings.
+pub fn string_array(text: String) -> List(String):
+    json.decode(text).map_ok(fn(doc: Json): json.strings(doc)).unwrap_or([])
+
+// Verify a request's identity token: signature against the trusted issuer's pinned
+// key, audience == this registry, and not expired. Returns the verified claims, or
+// a reason string the server renders as 401.
+pub fn verify_token(issuers: List(Issuer), token: Json, now: Int) -> Result(Json, String):
+    let claims = json.get(token, "claims").ok_or("malformed identity token (no claims)")?
+    check_token(issuers, claims, coven_json.str(token, "sig"), now)
+
+fn check_token(issuers: List(Issuer), claims: Json, sig: String, now: Int) -> Result(Json, String):
+    let iss = coven_json.str(claims, "iss")
+    match issuer_key(issuers, iss):
+        Some(pubkey) ->
+            if !crypto.ed25519_verify(pubkey, claims_canonical(claims), sig):
+                Err("identity token signature is invalid (untrusted or forged)")
+            else if coven_json.str(claims, "aud") != "coven-registry":
+                Err("identity token audience is not `coven-registry` (wrong registry / replay)")
+            else if coven_json.int(claims, "exp") <= now:
+                Err("identity token has expired")
+            else:
+                Ok(claims)
+        None -> Err("issuer `" + iss + "` is not trusted by this registry")
+
+fn issuer_key(issuers: List(Issuer), iss: String) -> Option(String):
+    list.find_map(issuers, fn(entry: Issuer): if entry.id == iss: Some(entry.pubkey) else: None)
+
+// The canonical bytes of a claims set — byte-identical to serde's Claims
+// serialization (fields in struct order, `extra` sorted), so an issuer signature
+// made by the Rust minter verifies here. DO NOT REORDER THESE FIELDS.
+fn claims_canonical(claims: Json) -> String:
+    json.encode(JsonObject([("iss", JsonString(coven_json.str(claims, "iss"))), ("sub", JsonString(coven_json.str(claims, "sub"))), ("aud", JsonString(coven_json.str(claims, "aud"))), ("exp", JsonInt(coven_json.int(claims, "exp"))), ("iat", JsonInt(coven_json.int(claims, "iat"))), ("extra", json.object_sorted(extra_pairs(claims)))]))
+
+fn extra_pairs(claims: Json) -> List((String, Json)):
+    json.get(claims, "extra").and_then(fn(ex: Json): json.as_object(ex)).unwrap_or([])

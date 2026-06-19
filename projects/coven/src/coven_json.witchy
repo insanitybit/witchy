@@ -1,0 +1,27 @@
+// JSON read/build conveniences for coven. coven reads UNTRUSTED JSON — request
+// bodies and identity-token claims — where an absent or wrong-typed field should
+// read as its empty value, not throw. These thin helpers express that, and are
+// shared by the server (coven) and the trust layer (coven_trust).
+
+import json
+import option
+
+// A string field, or "" when absent / not a string.
+pub fn str(doc: Json, key: String) -> String:
+    json.get_string(doc, key).unwrap_or("")
+
+// An integer field, or 0 when absent / not an integer.
+pub fn int(doc: Json, key: String) -> Int:
+    json.get_int(doc, key).unwrap_or(0)
+
+// The i-th array element as a string, or "".
+pub fn index_str(j: Json, i: Int) -> String:
+    json.index_string(j, i).unwrap_or("")
+
+// Decode text to a `Json`, or `JsonNull` on a parse error.
+pub fn or_null(text: String) -> Json:
+    json.decode(text).unwrap_or(JsonNull)
+
+// A list of strings as a JSON string array.
+pub fn strings(xs: List(String)) -> List(Json):
+    list.map(xs, fn(x: String): JsonString(x))

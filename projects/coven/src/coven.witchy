@@ -1,708 +1,323 @@
-// coven — the witchy package registry, written in witchy. A faithful, self-hosted
-// port of the Rust registry (src/pm/registry.rs): content-addressed, immutable,
-// and signed. It recomputes every rune's capability footprint from source
-// (server-side enforcement — uploaded metadata is never trusted), enforces the
-// two-phase publish lifecycle (publish stages; a second-factor promote releases),
-// and re-signs each record's canonical payload with the registry root key on
-// every state transition. The signing payload is byte-identical to the Rust
+// coven — the witchy package registry, written in witchy. A content-addressed,
+// immutable, signed registry that recomputes every rune's capability footprint
+// from source (server-side enforcement — uploaded metadata is never trusted) and
+// enforces the two-phase publish lifecycle (publish stages; a second-factor
+// promote releases). Records are signed with a payload byte-identical to the Rust
 // registry's, so a record signed here verifies against the Rust client.
 //
 //   witchy --net 127.0.0.1:8787 --signing-key <seed> projects/coven/src/coven.witchy 127.0.0.1:8787
 //
-// Layout under the store: <namespace>/<name>/<version>/{coven.json, rune/<files>}.
+// This file is the HTTP server: the request lifecycle (publish/promote/yank) and
+// the routes. The layers it sits on are their own modules:
+//   coven_store     content addressing + the record/source store
+//   coven_trust     trusted-publishing identity tokens + canonical claims
+//   coven_record    the signed record type + its canonical signing payload
+//   coven_validate  name/version validation     coven_footprint  footprint recompute
+//   coven_json      JSON read/build conveniences for untrusted input
 
-import http
 import server
 import json
-import compiler
 import crypto
+import secretstore
 import fs
 import toml
-import semver
 import string
 import rights
+import coven_validate
+import coven_footprint
+import coven_record
+import coven_json
+import coven_store
+import coven_trust
+import coven_proto
+import coven_meta
 
-fn main(console: Console, net: Net, root: Dir, key: Secret, clock: Clock, args: List(String)):
+// --- error flow --------------------------------------------------------------
+// A handler failure as an HTTP status + message. Handlers return
+// `Result(Response, CovenError)` and use `?` to short-circuit; `guard` renders the
+// error once at the boundary, so each handler reads as a straight-line success path.
+type CovenError:
+    status: Int
+    message: String
+
+// Render a failure as its HTTP response — the single boundary where a `CovenError`
+// becomes a `Response` (a free function: witchy resolves methods on params and loop
+// vars, not on a `match` binding like `e`).
+fn fail_response(e: CovenError) -> Response:
+    err_json(e.status, e.message)
+
+// Adapt a fallible handler into the plain `fn(Request) -> Response` the router
+// stores: an `Err` renders to its response, so handlers can use `?`.
+fn guard(h: fn(Request) -> Result(Response, CovenError)) -> fn(Request) -> Response:
+    fn(req: Request):
+        match h(req):
+            Ok(resp) -> resp
+            Err(e) -> fail_response(e)
+
+// Guard a precondition: `require(cond, 400, "...")?` returns early with the error
+// when `cond` is false, and is a no-op (the `?` discards the `true`) otherwise.
+fn require(cond: Bool, status: Int, message: String) -> Result(Bool, CovenError):
+    return Ok(true) if cond
+    Err(CovenError(status, message))
+
+// The request's JSON body, or a 400 — so handlers `let doc = body(req)?`.
+fn body(req: Request) -> Result(Json, CovenError):
+    match server.json_body(req):
+        Ok(doc) -> Ok(doc)
+        Err(e) -> Err(CovenError(400, "bad request body: " + e))
+
+// --- server ------------------------------------------------------------------
+// The registry's ambient context: the content store, the root signing key, the
+// clock, and the trusted issuers. Bundling these lets the handlers read as
+// `self.store` / `self.key` methods rather than threading four parameters.
+type Coven:
+    store: Dir
+    key: Secret
+    clock: Clock
+    issuers: List(Issuer)
+
+// The host grants a `SecretStore`; the root signing key is its `signing` secret
+// (`--signing-key <seed>` is sugar for `--secret-file signing=<path>`). Required —
+// `require` fails loudly if it was not granted rather than handing back an Option.
+fn main(console: Console, net: Net, root: Dir, secrets: SecretStore, clock: Clock, args: List(String)):
+    serve(console, net, root, secrets.require("signing"), clock, args)
+
+fn serve(console: Console, net: Net, root: Dir, key: Secret, clock: Clock, args: List(String)):
     let addr = if list.length(args) > 0: list.at(args, 0) else: "127.0.0.1:8787"
-    // Trailing args are trusted issuers as `issuer=pubkeyhex` (a JWKS stand-in).
-    // With at least one, publish/promote require a short-lived identity token
-    // (trusted publishing); with none, the registry is anonymous (local mode).
+    // Trailing `issuer=pubkeyhex` args are trusted issuers (a JWKS stand-in). With
+    // at least one, publish/promote require a short-lived identity token (trusted
+    // publishing); with none, the registry is anonymous (local mode).
     let issuers = parse_issuers(args)
     fs.ensure_dir(root, "registry")
-    let store = subdir(root, "registry")
-    let app = server.router().get("/coven/rootpub", h_rootpub(key)).get("/coven/index", h_index(store)).get("/coven/versions", h_versions(store)).get("/coven/record", h_record(store)).get("/coven/source", h_source(store)).get("/coven/snapshot", h_snapshot(store, key, clock)).get("/coven/timestamp", h_timestamp(store, key, clock)).post("/coven/publish", h_publish(store, key, clock, issuers)).post("/coven/promote", h_promote(store, key, clock, issuers)).post("/coven/yank", h_yank(store, key, clock))
-
+    let c = Coven(subdir(root, "registry"), key, clock, issuers)
+    let app = server.router()
+        .get("/coven/rootpub", c.route_rootpub())
+        .get("/coven/index", c.route_index())
+        .get("/coven/versions", c.route_versions())
+        .get("/coven/record", c.route_record())
+        .get("/coven/source", c.route_source())
+        .get("/coven/snapshot", c.route_snapshot())
+        .get("/coven/timestamp", c.route_timestamp())
+        .post("/coven/publish", c.route_publish())
+        .post("/coven/promote", c.route_promote())
+        .post("/coven/yank", c.route_yank())
     print(console, "coven serving at http://" + addr + "  (root key " + crypto.public_key(key) + "; " + "${list.length(issuers)}" + " trusted issuer(s))")
     server.serve(net, addr, app)
 
-// Parse trailing `issuer=pubkeyhex` args into (issuer, pubkey) pairs.
-fn parse_issuers(args: List(String)) -> List((String, String)):
+// Parse trailing `issuer=pubkeyhex` args (the first arg is the listen address).
+fn parse_issuers(args: List(String)) -> List(Issuer):
     var out = []
-    var i = 0
-    for a in args:
-        if i > 0 && string.contains(a, "="):
-            out = list.push(out, string.split_once(a, "="))
-        i = i + 1
+    for a in list.drop(args, 1):
+        if let Some(issuer) = parse_issuer_arg(a):
+            out = list.push(out, issuer)
     out
 
-// --- GET /coven/rootpub : the registry's root public key (hex) ---------------
-fn h_rootpub(key: Secret) -> fn(Request) -> Response:
-    fn(req: Request): server.text(200, crypto.public_key(key))
-
-// --- GET /coven/index : every published rune name ----------------------------
-fn h_index(store: Dir) -> fn(Request) -> Response:
-    fn(req: Request): server.json(200, json.encode(JsonObject([("names", JsonArray(strs_json(all_names(store))))])))
-
-// --- GET /coven/versions?name= : every version record of a rune --------------
-fn h_versions(store: Dir) -> fn(Request) -> Response:
-    fn(req: Request):
-        let name = unwire(server.query(req, "name"))
-        var recs = []
-        for v in versions_of(store, name):
-            if let Some(r) = read_record(store, name, v):
-                recs = list.push(recs, parse_or_null(r))
-        server.json(200, json.encode(JsonObject([("records", JsonArray(recs))])))
-
-// --- GET /coven/record?name=&version= : one signed record --------------------
-fn h_record(store: Dir) -> fn(Request) -> Response:
-    fn(req: Request):
-        let name = unwire(server.query(req, "name"))
-        let version = server.query(req, "version")
-        if exists(store, meta_path(name, version)):
-            server.json(200, read(store, meta_path(name, version)))
-        else:
-            err_json(404, name + "@" + version + " not found in registry")
-
-// --- GET /coven/source?name=&version= : the rune source, hash-verified -------
-fn h_source(store: Dir) -> fn(Request) -> Response:
-    fn(req: Request):
-        let name = unwire(server.query(req, "name"))
-        let version = server.query(req, "version")
-        if !exists(store, meta_path(name, version)):
-            err_json(404, name + "@" + version + " not found")
-        else:
-            source_response(store, name, version)
-
-fn source_response(store: Dir, name: String, version: String) -> Response:
-    let files = read_source(store, name, version)
-    let recorded = record_field(store, name, version, "hash")
-    if content_hash(files) != recorded:
-        err_json(500, "integrity failure: source no longer matches the signed hash")
+fn parse_issuer_arg(a: String) -> Option(Issuer):
+    if string.contains(a, "="):
+        let (id, pubkey) = string.split_once(a, "=")
+        Some(Issuer(id, pubkey))
     else:
-        var pairs = []
-        for f in files:
-            let (path, text) = f
-            pairs = list.push(pairs, JsonArray([JsonString(path), JsonString(text)]))
-        server.json(200, json.encode(JsonObject([("files", JsonArray(pairs))])))
+        None
 
-// --- POST /coven/publish : stage a new immutable version ---------------------
-// Server-side enforcement: recompute the footprint from source, reject an
-// under-declared manifest, content-address the bytes, and land the version
-// STAGED (not resolvable until promoted). Re-publishing a version is refused.
-fn h_publish(store: Dir, key: Secret, clock: Clock, issuers: List((String, String))) -> fn(Request) -> Response:
-    fn(req: Request):
-        match server.json_body(req):
-            Ok(doc) -> do_publish(store, key, clock, issuers, doc)
-            Err(e) -> err_json(400, "bad request body: " + e)
+// The routes + the publish/promote/yank lifecycle, as methods on the context. Each
+// `route_*` returns the handler closure (capturing `self`); the work is in the
+// `do_*`/`*_checked` methods, speaking to the store/trust/record layers.
+impl Coven:
+    fn route_rootpub(self) -> fn(Request) -> Response:
+        fn(req: Request): server.text(200, crypto.public_key(self.key))
 
-fn do_publish(store: Dir, key: Secret, clock: Clock, issuers: List((String, String)), doc: Json) -> Response:
-    let manifest = jstr(doc, "manifest_toml")
-    let files = parse_source(doc)
-    let name = toml_field(manifest, "rune.name")
-    let version = toml_field(manifest, "rune.version")
-    if !valid_name(name):
-        err_json(400, "invalid rune name `" + name + "` (need lowercase `namespace/name`, no traversal)")
-    else if !valid_version(version):
-        err_json(400, "invalid version `" + version + "`")
-    else if exists(store, meta_path(name, version)):
-        err_json(409, name + "@" + version + " already published — versions are immutable, bump the version")
-    else:
-        // Trusted publishing: the publisher identity comes from a verified
-        // identity token (401) and must satisfy the namespace's bound policy
-        // (403) — never from a client-asserted field.
-        match authorized_publisher(store, issuers, doc, now(clock) / 1000, name):
-            Ok(uploaded_by) -> publish_checked(store, key, clock, manifest, name, version, uploaded_by, files)
-            Err(fail) -> fail_response(fail)
+    fn route_index(self) -> fn(Request) -> Response:
+        fn(req: Request): server.json(200, json.stringify(.{names: coven_store.all_names(self.store)}))
 
-fn publish_checked(store: Dir, key: Secret, clock: Clock, manifest: String, name: String, version: String, uploaded_by: String, files: List((String, String))) -> Response:
-    let computed = computed_footprint(files)
-    let declared = toml.get_array(manifest, "capabilities.runtime")
-    let gap = rights.uncovered(declared, computed)
-    if !string.is_empty(string.join(gap, ", ")):
-        err_json(400, "declared [capabilities] does not cover what the source demands (" + string.join(gap, ", ") + ") — coven recomputes and will not publish an under-declared rune")
-    else:
-        let hash = content_hash(files)
-        store_source(store, name, version, files)
+    fn route_versions(self) -> fn(Request) -> Response:
+        fn(req: Request):
+            let name = coven_validate.unwire(server.query(req, "name"))
+            var recs = []
+            for v in coven_store.versions_of(self.store, name):
+                if let Some(r) = coven_store.read_record(self.store, name, v):
+                    recs = list.push(recs, coven_json.or_null(r))
+            server.json(200, json.encode(JsonObject([("records", JsonArray(recs))])))
+
+    fn route_record(self) -> fn(Request) -> Response:
+        guard(fn(req: Request) -> Result(Response, CovenError):
+            let name = coven_validate.unwire(server.query(req, "name"))
+            let version = server.query(req, "version")
+            match coven_store.read_record(self.store, name, version):
+                Some(rec) -> Ok(server.json(200, rec))
+                None -> Err(CovenError(404, name + "@" + version + " not found in registry"))
+        )
+
+    fn route_source(self) -> fn(Request) -> Response:
+        guard(fn(req: Request) -> Result(Response, CovenError):
+            let name = coven_validate.unwire(server.query(req, "name"))
+            let version = server.query(req, "version")
+            require(coven_store.record_exists(self.store, name, version), 404, name + "@" + version + " not found")?
+            self.source_response(name, version)
+        )
+
+    fn route_publish(self) -> fn(Request) -> Response:
+        // POST /coven/publish : stage a new immutable version. Server-side enforcement —
+        // recompute the footprint from source, reject an under-declared manifest,
+        // content-address the bytes, land it STAGED. Re-publishing a version is refused.
+        guard(fn(req: Request) -> Result(Response, CovenError): self.do_publish(body(req)?))
+
+    fn do_publish(self, doc: Json) -> Result(Response, CovenError):
+        let req = coven_proto.publish_of(doc)
+        let name = toml_field(req.manifest, "rune.name")
+        let version = toml_field(req.manifest, "rune.version")
+        require(coven_validate.valid_name(name), 400, "invalid rune name `" + name + "` (need lowercase `namespace/name`, no traversal)")?
+        require(coven_validate.valid_version(version), 400, "invalid version `" + version + "`")?
+        require(!coven_store.record_exists(self.store, name, version), 409, name + "@" + version + " already published — versions are immutable, bump the version")?
+        // The publisher identity comes from a verified token (401) that satisfies the
+        // namespace's bound policy (403), never from a client-asserted field.
+        let uploaded_by = self.authorized_publisher(req, now(self.clock) / 1000, name)?
+        self.publish_checked(req.manifest, name, version, uploaded_by, req.files)
+
+    fn publish_checked(self, manifest: String, name: String, version: String, uploaded_by: String, files: List((String, String))) -> Result(Response, CovenError):
+        let computed = coven_footprint.computed_footprint(files)
+        let gap = rights.uncovered(toml.get_array(manifest, "capabilities.runtime"), computed)
+        require(string.is_empty(string.join(gap, ", ")), 400, "declared [capabilities] does not cover what the source demands (" + string.join(gap, ", ") + ") — coven recomputes and will not publish an under-declared rune")?
+        let hash = coven_store.content_hash(files)
+        coven_store.store_source(self.store, name, version, files)
         let provenance = "uploader=" + uploaded_by + "|hash=" + hash
-        let rec = sign_record(key, name, version, "staged", hash, computed, uploaded_by, "", "", provenance, 0)
-        write(store, meta_path(name, version), rec)
-        rebuild_metadata(store, key, clock)
-        server.json(200, rec)
+        let rec = coven_record.sign_record(self.key, name, version, Staged, hash, computed, uploaded_by, "", "", provenance, 0)
+        coven_store.write_record(self.store, name, version, rec)
+        self.rebuild_metadata()
+        Ok(server.json(200, rec))
 
-// --- POST /coven/promote : second-factor release (separation of duties) ------
-fn h_promote(store: Dir, key: Secret, clock: Clock, issuers: List((String, String))) -> fn(Request) -> Response:
-    fn(req: Request):
-        match server.json_body(req):
-            Ok(doc) -> do_promote(store, key, clock, issuers, doc)
-            Err(e) -> err_json(400, "bad request body: " + e)
+    fn route_promote(self) -> fn(Request) -> Response:
+        // POST /coven/promote : second-factor release (separation of duties).
+        guard(fn(req: Request) -> Result(Response, CovenError): self.do_promote(body(req)?))
 
-fn do_promote(store: Dir, key: Secret, clock: Clock, issuers: List((String, String)), doc: Json) -> Response:
-    let name = unwire(jstr(doc, "name"))
-    let version = jstr(doc, "version")
-    let factor = jstr(doc, "second_factor")
-    if !exists(store, meta_path(name, version)):
-        err_json(404, name + "@" + version + " not found")
-    else if string.is_empty(factor):
-        err_json(400, "promotion requires a second factor (the out-of-band 2FA event) — refusing to release")
+    fn do_promote(self, doc: Json) -> Result(Response, CovenError):
+        let req = coven_proto.promote_of(doc)
+        require(coven_store.record_exists(self.store, req.name, req.version), 404, req.name + "@" + req.version + " not found")?
+        require(!string.is_empty(req.second_factor), 400, "promotion requires a second factor (the out-of-band 2FA event) — refusing to release")?
+        let promoter = self.authorized_promoter(req, now(self.clock) / 1000)?
+        require(!string.is_empty(promoter), 400, "promotion requires an authenticated promoter identity")?
+        self.promote_checked(req.name, req.version, req.second_factor, promoter)
+
+    fn promote_checked(self, name: String, version: String, factor: String, promoter: String) -> Result(Response, CovenError):
+        let rec = self.load_record(name, version)?
+        require(coven_record.state_of(rec.state) == Staged, 400, name + "@" + version + " is " + rec.state + "; only a staged version can be promoted")?
+        require(promoter != rec.uploaded_by, 403, "separation of duties: the identity that published a version may not promote it")?
+        let signed = coven_record.sign_record(self.key, name, version, Released, rec.hash, rec.runtime_footprint, rec.uploaded_by, promoter, factor, coven_record.str_or_empty(rec.provenance), now(self.clock) / 1000)
+        coven_store.write_record(self.store, name, version, signed)
+        self.rebuild_metadata()
+        let delta = rights.uncovered(coven_store.latest_released_footprint(self.store, name, version), rec.runtime_footprint)
+        Ok(server.json(200, json.encode(JsonObject([("record", coven_json.or_null(signed)), ("separation_of_duties", JsonBool(true)), ("delta_runtime", JsonArray(coven_json.strings(delta)))]))))
+
+    fn route_yank(self) -> fn(Request) -> Response:
+        // POST /coven/yank : exclude from new resolutions (re-sign the same fields yanked).
+        guard(fn(req: Request) -> Result(Response, CovenError): self.do_yank(body(req)?))
+
+    fn do_yank(self, doc: Json) -> Result(Response, CovenError):
+        let req = coven_proto.yank_of(doc)
+        let rec = self.load_record(req.name, req.version)?
+        let signed = coven_record.sign_record(self.key, req.name, req.version, Yanked, rec.hash, rec.runtime_footprint, rec.uploaded_by, coven_record.str_or_empty(rec.promoted_by), coven_record.str_or_empty(rec.second_factor), coven_record.str_or_empty(rec.provenance), rec.released_at)
+        coven_store.write_record(self.store, req.name, req.version, signed)
+        self.rebuild_metadata()
+        Ok(server.json(200, json.stringify(.{ok: true})))
+
+    fn route_snapshot(self) -> fn(Request) -> Response:
+        // GET /coven/snapshot, /coven/timestamp : the TUF roles (regenerated on demand).
+        fn(req: Request):
+            if !exists(self.store, "snapshot.json"):
+                self.rebuild_metadata()
+            server.json(200, read(self.store, "snapshot.json"))
+
+    fn route_timestamp(self) -> fn(Request) -> Response:
+        fn(req: Request):
+            if !exists(self.store, "timestamp.json"):
+                self.rebuild_metadata()
+            server.json(200, read(self.store, "timestamp.json"))
+
+    fn rebuild_metadata(self):
+        // Regenerate + re-sign the TUF snapshot + timestamp (rollback + freeze
+        // protection); the role construction + canonical signing lives in coven_meta.
+        coven_meta.rebuild(self.store, self.key, now(self.clock) / 1000)
+
+    fn authorized_publisher(self, req: PublishRequest, now: Int, name: String) -> Result(String, CovenError):
+        // --- authorization: bind identity tokens to the namespace's trust state ------
+        // The authorized publisher (claims.sub). Anonymous (no trusted issuers): fall
+        // back to the client-asserted `uploaded_by`. Trusted: the token must verify (401)
+        // AND satisfy the namespace's policy (403); the first trusted publish binds it.
+        if list.length(self.issuers) == 0:
+            Ok(req.uploaded_by || "anonymous")
+        else:
+            let claims = verified_claims(self.issuers, req.id_token, now, "publishing to a trusted registry requires a short-lived identity token (long-lived API tokens are not accepted)")?
+            self.authorize_publish(name, claims)
+
+    fn authorize_publish(self, name: String, claims: Json) -> Result(String, CovenError):
+        let ns = coven_trust.namespace_of(name)
+        let pubfile = "_policy/" + ns + "/publisher.json"
+        if !exists(self.store, pubfile):
+            fs.ensure_dir(self.store, "_policy/" + ns)
+            write(self.store, pubfile, json.encode(JsonObject([("issuer", JsonString(coven_json.str(claims, "iss"))), ("repository", JsonString(coven_trust.claim(claims, "repository"))), ("workflow_ref", JsonString(coven_trust.claim(claims, "workflow_ref")))])))
+            Ok(coven_json.str(claims, "sub"))
+        else:
+            enforce_publish_policy(coven_json.or_null(read(self.store, pubfile)), claims, ns)
+
+    fn authorized_promoter(self, req: PromoteRequest, now: Int) -> Result(String, CovenError):
+        // The authorized promoter. Trusted: the token must verify (401) and be a
+        // registered maintainer of the namespace (403). First promoter becomes a
+        // maintainer (TOFU); machines stage, humans release.
+        if list.length(self.issuers) == 0:
+            Ok(req.promoted_by)
+        else:
+            let claims = verified_claims(self.issuers, req.id_token, now, "promoting on a trusted registry requires a short-lived identity token")?
+            self.authorize_promote(req.name, claims)
+
+    fn authorize_promote(self, name: String, claims: Json) -> Result(String, CovenError):
+        let ns = coven_trust.namespace_of(name)
+        let mfile = "_policy/" + ns + "/maintainers.json"
+        let id = coven_json.str(claims, "iss") + "|" + coven_json.str(claims, "sub")
+        if !exists(self.store, mfile):
+            fs.ensure_dir(self.store, "_policy/" + ns)
+            write(self.store, mfile, json.encode(JsonArray([JsonString(id)])))
+            Ok(coven_json.str(claims, "sub"))
+        else if coven_footprint.member(coven_trust.string_array(read(self.store, mfile)), id):
+            Ok(coven_json.str(claims, "sub"))
+        else:
+            Err(CovenError(403, "`" + coven_json.str(claims, "sub") + "` is not a maintainer of namespace `" + ns + "`"))
+
+    fn load_record(self, name: String, version: String) -> Result(Record, CovenError):
+        // The stored record as a typed `Record` — 404 if absent, 500 if corrupt.
+        match coven_store.read_record(self.store, name, version):
+            None -> Err(CovenError(404, name + "@" + version + " not found"))
+            Some(text) ->
+                match coven_record.parse(text):
+                    Ok(r) -> Ok(r)
+                    Err(e) -> Err(CovenError(500, "corrupt record `" + name + "@" + version + "`: " + e))
+
+    fn source_response(self, name: String, version: String) -> Result(Response, CovenError):
+        // GET /coven/source: the stored files, refusing to serve them if they no longer
+        // hash to the signed record (tamper detection).
+        let files = coven_store.read_source(self.store, name, version)
+        let rec = self.load_record(name, version)?
+        require(coven_store.content_hash(files) == rec.hash, 500, "integrity failure: source no longer matches the signed hash")?
+        Ok(server.json(200, json.stringify(.{files: files})))
+
+// --- authorization helpers (CovenError-returning bridges over coven_trust) ----
+// Verify a request's identity token, lifting a (401, reason) on failure.
+fn verified_claims(issuers: List(Issuer), id_token: Option(Json), now: Int, missing: String) -> Result(Json, CovenError):
+    let token = id_token.ok_or(CovenError(401, missing))?
+    coven_trust.verify_token(issuers, token, now).map_err(fn(e: String): CovenError(401, e))
+
+// A trusted publish must match the namespace's first-bound policy on every field.
+fn enforce_publish_policy(policy: Json, claims: Json, ns: String) -> Result(String, CovenError):
+    if coven_json.str(policy, "issuer") != coven_json.str(claims, "iss"):
+        Err(CovenError(403, "namespace `" + ns + "` trusts issuer `" + coven_json.str(policy, "issuer") + "`, not `" + coven_json.str(claims, "iss") + "`"))
+    else if coven_json.str(policy, "repository") != coven_trust.claim(claims, "repository"):
+        Err(CovenError(403, "identity not authorized to publish to `" + ns + "`: repository `" + coven_trust.claim(claims, "repository") + "` does not match the bound `" + coven_json.str(policy, "repository") + "`"))
+    else if coven_json.str(policy, "workflow_ref") != coven_trust.claim(claims, "workflow_ref"):
+        Err(CovenError(403, "identity not authorized to publish to `" + ns + "`: workflow_ref does not match the bound policy"))
     else:
-        match authorized_promoter(store, issuers, doc, now(clock) / 1000, name):
-            Ok(promoter) -> promote_authenticated(store, key, clock, name, version, factor, promoter)
-            Err(fail) -> fail_response(fail)
+        Ok(coven_json.str(claims, "sub"))
 
-fn promote_authenticated(store: Dir, key: Secret, clock: Clock, name: String, version: String, factor: String, promoter: String) -> Response:
-    if string.is_empty(promoter):
-        err_json(400, "promotion requires an authenticated promoter identity")
-    else:
-        promote_checked(store, key, clock, name, version, factor, promoter)
-
-fn promote_checked(store: Dir, key: Secret, clock: Clock, name: String, version: String, factor: String, promoter: String) -> Response:
-    let state = record_field(store, name, version, "state")
-    if state != "staged":
-        err_json(400, name + "@" + version + " is " + state + "; only a staged version can be promoted")
-    else if promoter == record_field(store, name, version, "uploaded_by"):
-        err_json(403, "separation of duties: the identity that published a version may not promote it")
-    else:
-        let hash = record_field(store, name, version, "hash")
-        let rt = record_array(store, name, version, "runtime_footprint")
-        let uploaded_by = record_field(store, name, version, "uploaded_by")
-        let provenance = record_field(store, name, version, "provenance")
-        let rec = sign_record(key, name, version, "released", hash, rt, uploaded_by, promoter, factor, provenance, now(clock) / 1000)
-        write(store, meta_path(name, version), rec)
-        rebuild_metadata(store, key, clock)
-        let delta = rights.uncovered(latest_released_footprint(store, name, version), rt)
-        server.json(200, json.encode(JsonObject([("record", parse_or_null(rec)), ("separation_of_duties", JsonBool(true)), ("delta_runtime", JsonArray(strs_json(delta)))])))
-
-// --- POST /coven/yank : exclude from new resolutions -------------------------
-fn h_yank(store: Dir, key: Secret, clock: Clock) -> fn(Request) -> Response:
-    fn(req: Request):
-        match server.json_body(req):
-            Ok(doc) -> do_yank(store, key, clock, doc)
-            Err(e) -> err_json(400, "bad request body: " + e)
-
-fn do_yank(store: Dir, key: Secret, clock: Clock, doc: Json) -> Response:
-    let name = unwire(jstr(doc, "name"))
-    let version = jstr(doc, "version")
-    if !exists(store, meta_path(name, version)):
-        err_json(404, name + "@" + version + " not found")
-    else:
-        let hash = record_field(store, name, version, "hash")
-        let rt = record_array(store, name, version, "runtime_footprint")
-        let uploaded_by = record_field(store, name, version, "uploaded_by")
-        let promoted_by = record_field(store, name, version, "promoted_by")
-        let factor = record_field(store, name, version, "second_factor")
-        let provenance = record_field(store, name, version, "provenance")
-        let rec = sign_record(key, name, version, "yanked", hash, rt, uploaded_by, promoted_by, factor, provenance, record_int(store, name, version, "released_at"))
-        write(store, meta_path(name, version), rec)
-        rebuild_metadata(store, key, clock)
-        server.json(200, json.encode(JsonObject([("ok", JsonBool(true))])))
-
-// --- TUF: snapshot + timestamp roles (rollback + freeze protection) ----------
-// After every mutation the snapshot is regenerated (its version bumps — a
-// monotonic counter that detects rollback) and the timestamp re-minted (a
-// short-lived signed pointer to it — its expiry detects freeze). Both are signed
-// by the registry root key over canonical JSON byte-identical to the Rust roles,
-// so they verify under crate::pm::tuf::verify_signed.
-fn h_snapshot(store: Dir, key: Secret, clock: Clock) -> fn(Request) -> Response:
-    fn(req: Request):
-        if !exists(store, "snapshot.json"):
-            rebuild_metadata(store, key, clock)
-        server.json(200, read(store, "snapshot.json"))
-
-fn h_timestamp(store: Dir, key: Secret, clock: Clock) -> fn(Request) -> Response:
-    fn(req: Request):
-        if !exists(store, "timestamp.json"):
-            rebuild_metadata(store, key, clock)
-        server.json(200, read(store, "timestamp.json"))
-
-// Regenerate + re-sign the snapshot and timestamp. The snapshot pins every
-// current record's signed-payload digest, version-numbered; the timestamp points
-// at it with a 24h expiry.
-fn rebuild_metadata(store: Dir, key: Secret, clock: Clock):
-    let created = now(clock) / 1000
-    let version = current_snapshot_version(store) + 1
-    let targets = JsonObject(all_target_digests(store))
-    let snapshot = JsonObject([("version", JsonInt(version)), ("created", JsonInt(created)), ("targets", targets)])
-    let snap_canonical = json.encode(snapshot)
-    write(store, "snapshot.json", json.encode(JsonObject([("signed", snapshot), ("sig", JsonString(crypto.sign(key, snap_canonical)))])))
-    let timestamp = JsonObject([("snapshot_version", JsonInt(version)), ("snapshot_hash", JsonString("sha256:" + crypto.sha256(snap_canonical))), ("expires", JsonInt(created + 86400))])
-    let ts_canonical = json.encode(timestamp)
-    write(store, "timestamp.json", json.encode(JsonObject([("signed", timestamp), ("sig", JsonString(crypto.sign(key, ts_canonical)))])))
-
-// Every current target as (name@version -> digest of its signed payload), sorted
-// by key to match the Rust BTreeMap's canonical ordering (so the signature
-// verifies after a round-trip through serde).
-fn all_target_digests(store: Dir) -> List((String, Json)):
-    var pairs = []
-    for name in all_names(store):
-        for v in versions_of(store, name):
-            if let Some(text) = read_record(store, name, v):
-                let digest = "sha256:" + crypto.sha256(record_signing_payload(text))
-                pairs = insert_sorted(pairs, (name + "@" + v, JsonString(digest)))
-    pairs
-
-// Reconstruct a record's canonical signing payload from its stored JSON — the
-// digest the snapshot pins, so a record swapped to an older state stops matching.
-fn record_signing_payload(text: String) -> String:
-    match json.decode(text):
-        Ok(doc) -> signing_payload(jstr(doc, "name"), jstr(doc, "version"), jstr(doc, "state"), jstr(doc, "hash"), json.get_strings(doc, "runtime_footprint"), jstr(doc, "uploaded_by"), jstr(doc, "promoted_by"), jstr(doc, "second_factor"), jstr(doc, "provenance"), jint(doc, "released_at"))
-        Err(e) -> ""
-
-fn current_snapshot_version(store: Dir) -> Int:
-    if !exists(store, "snapshot.json"):
-        0
-    else:
-        match json.decode(read(store, "snapshot.json")):
-            Ok(doc) -> match json.get(doc, "signed"):
-                Some(signed) -> jint(signed, "version")
-                None -> 0
-            Err(e) -> 0
-
-fn insert_sorted(sorted: List((String, Json)), item: (String, Json)) -> List((String, Json)):
-    let (ik, _iv) = item
-    var out = []
-    var placed = false
-    for q in sorted:
-        let (qk, _qv) = q
-        if !placed && ik < qk:
-            out = list.push(out, item)
-            placed = true
-        out = list.push(out, q)
-    if !placed:
-        out = list.push(out, item)
-    out
-
-fn jint(doc: Json, key: String) -> Int:
-    match json.get(doc, key):
-        Some(j) -> match json.as_int(j):
-            Some(n) -> n
-            None -> 0
-        None -> 0
-
-// --- trusted publishing: OIDC-style identity tokens --------------------------
-// Long-lived API tokens are the most-stolen supply-chain credential, so coven
-// does not use them. A publisher instead proves identity with a short-lived
-// identity token: an Ed25519-signed claims envelope from a trusted issuer (a CI
-// provider's IdP, or a human SSO). The registry verifies it against the issuer's
-// pinned key, the audience, and the expiry, and derives the identity from the
-// *verified* claims — the client cannot assert who it is. A token minted by the
-// Rust `coven-mint-token` verifies here unchanged (canonical claims match serde).
-
-// The authorized publisher identity (claims.sub). Anonymous (no trusted issuers):
-// fall back to the client-asserted `uploaded_by` for local use. Trusted: the
-// token must verify (401) AND satisfy the namespace's bound policy (403). The
-// first trusted publish to a namespace *binds* its policy (issuer + repository +
-// workflow_ref); later publishes must match — defeating namespace squatting.
-fn authorized_publisher(store: Dir, issuers: List((String, String)), doc: Json, now: Int, name: String) -> Result(String, (Int, String)):
-    if list.length(issuers) == 0:
-        Ok(nonempty(jstr(doc, "uploaded_by"), "anonymous"))
-    else:
-        match verified_claims(issuers, doc, now, "publishing to a trusted registry requires a short-lived identity token (long-lived API tokens are not accepted)"):
-            Ok(claims) -> authorize_publish(store, name, claims)
-            Err(fail) -> Err(fail)
-
-fn authorize_publish(store: Dir, name: String, claims: Json) -> Result(String, (Int, String)):
-    let ns = namespace_of(name)
-    let pubfile = "_policy/" + ns + "/publisher.json"
-    if !exists(store, pubfile):
-        fs.ensure_dir(store, "_policy/" + ns)
-        write(store, pubfile, json.encode(JsonObject([("issuer", JsonString(jstr(claims, "iss"))), ("repository", JsonString(claim(claims, "repository"))), ("workflow_ref", JsonString(claim(claims, "workflow_ref")))])))
-        Ok(jstr(claims, "sub"))
-    else:
-        enforce_publish_policy(parse_or_null(read(store, pubfile)), claims, ns)
-
-fn enforce_publish_policy(policy: Json, claims: Json, ns: String) -> Result(String, (Int, String)):
-    if jstr(policy, "issuer") != jstr(claims, "iss"):
-        Err((403, "namespace `" + ns + "` trusts issuer `" + jstr(policy, "issuer") + "`, not `" + jstr(claims, "iss") + "`"))
-    else if jstr(policy, "repository") != claim(claims, "repository"):
-        Err((403, "identity not authorized to publish to `" + ns + "`: repository `" + claim(claims, "repository") + "` does not match the bound `" + jstr(policy, "repository") + "`"))
-    else if jstr(policy, "workflow_ref") != claim(claims, "workflow_ref"):
-        Err((403, "identity not authorized to publish to `" + ns + "`: workflow_ref does not match the bound policy"))
-    else:
-        Ok(jstr(claims, "sub"))
-
-// The authorized promoter identity. Trusted: the token must verify (401) and be a
-// registered maintainer of the namespace (403). The first promoter becomes a
-// maintainer (TOFU); machines stage, humans release.
-fn authorized_promoter(store: Dir, issuers: List((String, String)), doc: Json, now: Int, name: String) -> Result(String, (Int, String)):
-    if list.length(issuers) == 0:
-        Ok(jstr(doc, "promoted_by"))
-    else:
-        match verified_claims(issuers, doc, now, "promoting on a trusted registry requires a short-lived identity token"):
-            Ok(claims) -> authorize_promote(store, name, claims)
-            Err(fail) -> Err(fail)
-
-fn authorize_promote(store: Dir, name: String, claims: Json) -> Result(String, (Int, String)):
-    let ns = namespace_of(name)
-    let mfile = "_policy/" + ns + "/maintainers.json"
-    let id = jstr(claims, "iss") + "|" + jstr(claims, "sub")
-    if !exists(store, mfile):
-        fs.ensure_dir(store, "_policy/" + ns)
-        write(store, mfile, json.encode(JsonArray([JsonString(id)])))
-        Ok(jstr(claims, "sub"))
-    else if member(string_array(read(store, mfile)), id):
-        Ok(jstr(claims, "sub"))
-    else:
-        Err((403, "`" + jstr(claims, "sub") + "` is not a maintainer of namespace `" + ns + "`"))
-
-// Verify a request's identity token, yielding its claims or a (401, reason).
-fn verified_claims(issuers: List((String, String)), doc: Json, now: Int, missing: String) -> Result(Json, (Int, String)):
-    match json.get(doc, "id_token"):
-        Some(token) -> match verify_token(issuers, token, now):
-            Ok(claims) -> Ok(claims)
-            Err(e) -> Err((401, e))
-        None -> Err((401, missing))
-
-fn fail_response(fail: (Int, String)) -> Response:
-    let (code, msg) = fail
-    err_json(code, msg)
-
-// A provider claim (from `extra`), or "".
-fn claim(claims: Json, key: String) -> String:
-    match json.get(claims, "extra"):
-        Some(ex) -> jstr(ex, key)
-        None -> ""
-
-fn namespace_of(name: String) -> String:
-    if string.contains(name, "/"):
-        let (ns, _rest) = string.split_once(name, "/")
-        ns
-    else:
-        name
-
-fn string_array(text: String) -> List(String):
-    var out = []
-    if let Ok(doc) = json.decode(text):
-        if let Some(items) = json.as_array(doc):
-            for it in items:
-                if let Some(s) = json.as_string(it):
-                    out = list.push(out, s)
-    out
-
-// Verify an identity token: signature against the trusted issuer's pinned key,
-// audience equals this registry, and not expired. Returns the verified claims.
-fn verify_token(issuers: List((String, String)), token: Json, now: Int) -> Result(Json, String):
-    match json.get(token, "claims"):
-        Some(claims) -> check_token(issuers, claims, jstr(token, "sig"), now)
-        None -> Err("malformed identity token (no claims)")
-
-fn check_token(issuers: List((String, String)), claims: Json, sig: String, now: Int) -> Result(Json, String):
-    let iss = jstr(claims, "iss")
-    match issuer_key(issuers, iss):
-        Some(pubkey) ->
-            if !crypto.ed25519_verify(pubkey, claims_canonical(claims), sig):
-                Err("identity token signature is invalid (untrusted or forged)")
-            else if jstr(claims, "aud") != "coven-registry":
-                Err("identity token audience is not `coven-registry` (wrong registry / replay)")
-            else if jint(claims, "exp") <= now:
-                Err("identity token has expired")
-            else:
-                Ok(claims)
-        None -> Err("issuer `" + iss + "` is not trusted by this registry")
-
-fn issuer_key(issuers: List((String, String)), iss: String) -> Option(String):
-    var found = None
-    for entry in issuers:
-        let (i, pubkey) = entry
-        if i == iss:
-            found = Some(pubkey)
-    found
-
-// The canonical bytes of a claims set — byte-identical to serde's Claims
-// serialization (fields in struct order, `extra` sorted), so an issuer signature
-// made by the Rust minter verifies here.
-fn claims_canonical(claims: Json) -> String:
-    json.encode(JsonObject([("iss", JsonString(jstr(claims, "iss"))), ("sub", JsonString(jstr(claims, "sub"))), ("aud", JsonString(jstr(claims, "aud"))), ("exp", JsonInt(jint(claims, "exp"))), ("iat", JsonInt(jint(claims, "iat"))), ("extra", JsonObject(sorted_extra(claims)))]))
-
-fn sorted_extra(claims: Json) -> List((String, Json)):
-    var out = []
-    if let Some(ex) = json.get(claims, "extra"):
-        if let Some(pairs) = json.as_object(ex):
-            for p in pairs:
-                out = insert_json_pair(out, p)
-    out
-
-fn insert_json_pair(sorted: List((String, Json)), item: (String, Json)) -> List((String, Json)):
-    let (ik, _iv) = item
-    var res = []
-    var placed = false
-    for q in sorted:
-        let (qk, _qv) = q
-        if !placed && ik < qk:
-            res = list.push(res, item)
-            placed = true
-        res = list.push(res, q)
-    if !placed:
-        res = list.push(res, item)
-    res
-
-// --- record signing ----------------------------------------------------------
-// The canonical, signed view of a record — every security-relevant field except
-// the signature. Byte-identical to src/pm/registry.rs::Record::signing_payload,
-// so a witchy-signed record verifies under the Rust ed25519 verifier.
-fn signing_payload(name: String, version: String, state: String, hash: String, rt: List(String), uploaded_by: String, promoted_by: String, factor: String, provenance: String, released_at: Int) -> String:
-    "coven-v1\nname=" + name + "\nversion=" + version + "\nstate=" + state + "\nhash=" + hash + "\nrt=" + string.join(rt, ",") + "\nbuild=\nuploaded_by=" + uploaded_by + "\npromoted_by=" + promoted_by + "\nfactor=" + factor + "\nprovenance=" + provenance + "\nreleased_at=" + "${released_at}"
-
-// Build + sign a record, returning its coven.json text. `released_at` (unix
-// seconds; 0 = not yet released) starts the consumer-side staging cooldown, so
-// it is part of the signed payload — tamper-evident like every other field.
-fn sign_record(key: Secret, name: String, version: String, state: String, hash: String, rt: List(String), uploaded_by: String, promoted_by: String, factor: String, provenance: String, released_at: Int) -> String:
-    let sig = crypto.sign(key, signing_payload(name, version, state, hash, rt, uploaded_by, promoted_by, factor, provenance, released_at))
-    json.encode(JsonObject([("name", JsonString(name)), ("version", JsonString(version)), ("state", JsonString(state)), ("hash", JsonString(hash)), ("runtime_footprint", JsonArray(strs_json(rt))), ("build_footprint", JsonArray([])), ("determinism", JsonString("guaranteed")), ("uploaded_by", JsonString(uploaded_by)), ("promoted_by", opt_json(promoted_by)), ("second_factor", opt_json(factor)), ("provenance", opt_json(provenance)), ("released_at", JsonInt(released_at)), ("sig", JsonString(sig))]))
-
-// --- the store: content addressing + source IO -------------------------------
-fn meta_path(name: String, version: String) -> String:
-    name + "/" + version + "/coven.json"
-
-fn rune_path(name: String, version: String, rel: String) -> String:
-    name + "/" + version + "/rune/" + rel
-
-// Write every source file under <name>/<version>/rune/, creating dirs as needed.
-fn store_source(store: Dir, name: String, version: String, files: List((String, String))):
-    for f in files:
-        let (rel, text) = f
-        let full = rune_path(name, version, rel)
-        fs.ensure_dir(store, fs.parent_dir(full))
-        write(store, full, text)
-
-// Read the stored source back as (relpath, text) pairs: witchy.toml + every
-// `src/**/*.witchy` (recursively, so a nested module keeps its full path).
-fn read_source(store: Dir, name: String, version: String) -> List((String, String)):
-    var out = []
-    let base = name + "/" + version + "/rune"
-    if exists(store, base + "/witchy.toml"):
-        out = list.push(out, ("witchy.toml", read(store, base + "/witchy.toml")))
-    for f in fs.collect_files(store, base + "/src", "src", ".witchy"):
-        out = list.push(out, f)
-    out
-
-// The content address of a rune's source — coven's store hash (matches
-// crypto.rune_hash / src/pm/store.rs).
-fn content_hash(files: List((String, String))) -> String:
-    var paths = []
-    var texts = []
-    for f in files:
-        let (p, t) = f
-        paths = list.push(paths, p)
-        texts = list.push(texts, t)
-    crypto.rune_hash(paths, texts)
-
-// --- server-side footprint recomputation -------------------------------------
-// The capabilities the uploaded source actually demands — union over its modules,
-// computed here via the compiler, never taken on faith from the uploader.
-fn computed_footprint(files: List((String, String))) -> List(String):
-    var out = []
-    for f in files:
-        let (path, text) = f
-        if is_src_module(path):
-            for cap in footprint_total(compiler.footprint(text)):
-                out = add_unique(out, cap)
-    out
-
-fn is_src_module(path: String) -> Bool:
-    string.starts_with(path, "src/") && string.ends_with(path, ".witchy")
-
-fn footprint_total(report: String) -> List(String):
-    match json.decode(report):
-        Ok(doc) -> json.get_strings(doc, "total")
-        Err(e) -> []
-
-// --- versions / names walking ------------------------------------------------
-fn versions_of(store: Dir, name: String) -> List(String):
-    if exists(store, name):
-        list(subdir(store, name))
-    else:
-        []
-
-fn read_record(store: Dir, name: String, version: String) -> Option(String):
-    if exists(store, meta_path(name, version)):
-        Some(read(store, meta_path(name, version)))
-    else:
-        None
-
-// Every published rune name (namespace/name) — the store is two levels deep.
-// The signed TUF metadata (`*.json`) and the `_policy` trust state live alongside
-// the namespace dirs at the store root, so skip them.
-fn all_names(store: Dir) -> List(String):
-    var out = []
-    for ns in list(store):
-        if !string.ends_with(ns, ".json") && !string.starts_with(ns, "_"):
-            for nm in list(subdir(store, ns)):
-                out = list.push(out, ns + "/" + nm)
-    out
-
-// The runtime footprint of the highest RELEASED version other than the one
-// being promoted — the baseline the promote delta is computed against, so an
-// upgrade's delta names only the authority that is actually NEW. Empty when
-// this is the rune's first release.
-fn latest_released_footprint(store: Dir, name: String, version: String) -> List(String):
-    var best = ""
-    for v in versions_of(store, name):
-        if v != version && record_field(store, name, v, "state") == "released":
-            if string.is_empty(best) || version_newer(v, best):
-                best = v
-    if string.is_empty(best):
-        []
-    else:
-        record_array(store, name, best, "runtime_footprint")
-
-fn version_newer(a: String, b: String) -> Bool:
-    match semver.parse(a):
-        Ok(va) ->
-            match semver.parse(b):
-                Ok(vb) -> semver.compare(va, vb) > 0
-                Err(_e) -> true
-        Err(_e) -> false
-
-// --- reading record fields ---------------------------------------------------
-fn record_field(store: Dir, name: String, version: String, field: String) -> String:
-    match read_record(store, name, version):
-        Some(text) -> match json.decode(text):
-            Ok(doc) -> jstr(doc, field)
-            Err(e) -> ""
-        None -> ""
-
-fn record_int(store: Dir, name: String, version: String, field: String) -> Int:
-    match read_record(store, name, version):
-        Some(text) -> match json.decode(text):
-            Ok(doc) -> jint(doc, field)
-            Err(e) -> 0
-        None -> 0
-
-fn record_array(store: Dir, name: String, version: String, field: String) -> List(String):
-    match read_record(store, name, version):
-        Some(text) -> match json.decode(text):
-            Ok(doc) -> json.get_strings(doc, field)
-            Err(e) -> []
-        None -> []
-
-// --- request source parsing --------------------------------------------------
-// The wire source is {"source":{"files":[[path,text],...]}} (matches SourceDto).
-fn parse_source(doc: Json) -> List((String, String)):
-    var out = []
-    if let Some(src) = json.get(doc, "source"):
-        if let Some(arr) = json.get(src, "files"):
-            if let Some(items) = json.as_array(arr):
-                for it in items:
-                    out = list.push(out, file_pair(it))
-    out
-
-fn file_pair(it: Json) -> (String, String):
-    (json_index_str(it, 0), json_index_str(it, 1))
-
-fn json_index_str(j: Json, i: Int) -> String:
-    match json.index(j, i):
-        Some(v) -> match json.as_string(v):
-            Some(s) -> s
-            None -> ""
-        None -> ""
-
-// --- JSON helpers ------------------------------------------------------------
-fn jstr(doc: Json, key: String) -> String:
-    match json.get(doc, key):
-        Some(j) -> match json.as_string(j):
-            Some(s) -> s
-            None -> ""
-        None -> ""
-
-fn strs_json(xs: List(String)) -> List(Json):
-    var out = []
-    for x in xs:
-        out = list.push(out, JsonString(x))
-    out
-
-fn opt_json(s: String) -> Json:
-    if string.is_empty(s):
-        JsonNull
-    else:
-        JsonString(s)
-
-fn parse_or_null(text: String) -> Json:
-    match json.decode(text):
-        Ok(doc) -> doc
-        Err(e) -> JsonNull
-
+// --- response shaping --------------------------------------------------------
 fn err_json(code: Int, msg: String) -> Response:
-    server.json(code, json.encode(JsonObject([("error", JsonString(msg))])))
+    server.json(code, json.stringify(.{error: msg}))
 
-// --- name encoding + validation ----------------------------------------------
-
-// Rune names contain `/`; the wire encodes it as `~` for use in a query value.
-fn unwire(n: String) -> String:
-    string.join(string.split(n, "~"), "/")
-
-// `namespace/name`, lowercase, exactly one `/`, no `..` traversal.
-fn valid_name(name: String) -> Bool:
-    if string.contains(name, "..") || string.starts_with(name, "/"):
-        false
-    else:
-        match split_once_opt(name, "/"):
-            Some(parts) ->
-                let (ns, nm) = parts
-                !string.is_empty(ns) && !string.is_empty(nm) && !string.contains(nm, "/")
-            None -> false
-
-fn split_once_opt(s: String, sep: String) -> Option((String, String)):
-    if string.contains(s, sep):
-        Some(string.split_once(s, sep))
-    else:
-        None
-
-// A version is strict `major.minor.patch` — digits and dots only (no traversal).
-fn valid_version(version: String) -> Bool:
-    let parts = string.split(version, ".")
-    if list.length(parts) != 3:
-        false
-    else:
-        var ok = true
-        for p in parts:
-            if string.is_empty(p) || !all_digits(p):
-                ok = false
-        ok
-
-fn all_digits(s: String) -> Bool:
-    var ok = !string.is_empty(s)
-    for ch in string.chars(s):
-        if !is_digit(ch):
-            ok = false
-    ok
-
-fn is_digit(ch: String) -> Bool:
-    ch == "0" || ch == "1" || ch == "2" || ch == "3" || ch == "4" || ch == "5" || ch == "6" || ch == "7" || ch == "8" || ch == "9"
-
-// --- small path + list helpers -----------------------------------------------
 fn toml_field(manifest: String, path: String) -> String:
-    match toml.get(manifest, path):
-        Some(v) -> v
-        None -> ""
-
-fn nonempty(s: String, default: String) -> String:
-    if string.is_empty(s):
-        default
-    else:
-        s
-
-fn add_unique(xs: List(String), x: String) -> List(String):
-    if member(xs, x):
-        xs
-    else:
-        list.push(xs, x)
-
-fn member(xs: List(String), x: String) -> Bool:
-    var found = false
-    for it in xs:
-        if it == x:
-            found = true
-    found
-
-// Rights-precise capability covering lives in std/rights (shared with the pm and
-// coven_check) — see `rights.uncovered` at the call sites above.
+    toml.get(manifest, path).unwrap_or("")

@@ -1,0 +1,49 @@
+// coven_validate — rune-name and version validation, plus wire-name decoding.
+// Self-contained (depends only on `string`): a name must be `namespace/name`,
+// lowercase, exactly one `/`, with no `..` traversal; a version must be strict
+// `major.minor.patch`. These guard every path built from a network-supplied name.
+
+import string
+
+// Rune names contain `/`; the wire encodes it as `~` for use in a query value.
+pub fn unwire(n: String) -> String:
+    string.join(string.split(n, "~"), "/")
+
+// `namespace/name`, lowercase, exactly one `/`, no `..` traversal.
+pub fn valid_name(name: String) -> Bool:
+    if string.contains(name, "..") || string.starts_with(name, "/"):
+        false
+    else:
+        match split_once_opt(name, "/"):
+            Some(parts) ->
+                let (ns, nm) = parts
+                !string.is_empty(ns) && !string.is_empty(nm) && !string.contains(nm, "/")
+            None -> false
+
+fn split_once_opt(s: String, sep: String) -> Option((String, String)):
+    if string.contains(s, sep):
+        Some(string.split_once(s, sep))
+    else:
+        None
+
+// A version is strict `major.minor.patch` — digits and dots only (no traversal).
+pub fn valid_version(version: String) -> Bool:
+    let parts = string.split(version, ".")
+    if list.length(parts) != 3:
+        false
+    else:
+        var ok = true
+        for p in parts:
+            if string.is_empty(p) || !all_digits(p):
+                ok = false
+        ok
+
+fn all_digits(s: String) -> Bool:
+    var ok = !string.is_empty(s)
+    for ch in string.chars(s):
+        if !is_digit(ch):
+            ok = false
+    ok
+
+fn is_digit(ch: String) -> Bool:
+    ch == "0" || ch == "1" || ch == "2" || ch == "3" || ch == "4" || ch == "5" || ch == "6" || ch == "7" || ch == "8" || ch == "9"

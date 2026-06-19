@@ -1,0 +1,29 @@
+// coven_meta — the TUF snapshot + timestamp roles (rollback + freeze protection),
+// regenerated and re-signed whenever the registry changes. The snapshot pins every
+// current record's signed-payload digest, version-numbered; the timestamp points at
+// it with a 24h expiry. Both are signed over canonical JSON byte-identical to the
+// Rust roles — the snapshot's targets are key-sorted to match the Rust BTreeMap.
+
+import crypto
+import json
+import coven_store
+import coven_json
+
+// Rebuild + re-sign both roles. `created` is the unix-seconds timestamp to stamp them
+// with (the caller's clock); the snapshot version monotonically increments.
+pub fn rebuild(store: Dir, key: Secret, created: Int):
+    let version = current_version(store) + 1
+    let targets = json.object_sorted(coven_store.all_target_digests(store))
+    let snapshot = JsonObject([("version", JsonInt(version)), ("created", JsonInt(created)), ("targets", targets)])
+    let snap_canonical = json.encode(snapshot)
+    write(store, "snapshot.json", json.encode(JsonObject([("signed", snapshot), ("sig", JsonString(crypto.sign(key, snap_canonical)))])))
+    let timestamp = JsonObject([("snapshot_version", JsonInt(version)), ("snapshot_hash", JsonString("sha256:" + crypto.sha256(snap_canonical))), ("expires", JsonInt(created + 86400))])
+    let ts_canonical = json.encode(timestamp)
+    write(store, "timestamp.json", json.encode(JsonObject([("signed", timestamp), ("sig", JsonString(crypto.sign(key, ts_canonical)))])))
+
+// The current snapshot version (0 before the first build), read from snapshot.json.
+pub fn current_version(store: Dir) -> Int:
+    if exists(store, "snapshot.json"):
+        coven_json.int(json.get(coven_json.or_null(read(store, "snapshot.json")), "signed").unwrap_or(JsonNull), "version")
+    else:
+        0

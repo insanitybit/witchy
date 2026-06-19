@@ -1,0 +1,66 @@
+// coven_test — unit tests for coven's pure logic. Run with `witchy test`.
+// The server lifecycle (publish -> promote -> add, TUF, trusted publishing) is
+// covered end-to-end by the Rust e2e suite; these lock the pure pieces:
+// name/version validation, and the derive(Json) round-trip the records rely on.
+
+import testing
+import coven_validate
+import coven_record
+import json
+import result
+import option
+
+// --- name + version validation -----------------------------------------------
+fn test_valid_name_accepts_namespaced():
+    testing.assert(coven_validate.valid_name("acme/json"), "namespace/name is valid")
+    testing.assert(coven_validate.valid_name("std/http-client"), "hyphens allowed in the name")
+
+fn test_valid_name_rejects_bad():
+    testing.assert(!coven_validate.valid_name("acme"), "a bare name (no namespace) is rejected")
+    testing.assert(!coven_validate.valid_name("../../etc"), "path traversal is rejected")
+    testing.assert(!coven_validate.valid_name("acme/a/b"), "two slashes are rejected")
+    testing.assert(!coven_validate.valid_name("/etc/passwd"), "a leading slash is rejected")
+
+fn test_valid_version():
+    testing.assert(coven_validate.valid_version("1.0.0"), "strict semver is valid")
+    testing.assert(!coven_validate.valid_version("1.0"), "two components are rejected")
+    testing.assert(!coven_validate.valid_version("1.x.0"), "non-digits are rejected")
+
+fn test_unwire():
+    testing.assert_eq(coven_validate.unwire("acme~json"), "acme/json")
+
+// --- State <-> wire round-trip (the publish lifecycle as a sum type) ----------
+fn test_state_round_trips():
+    testing.assert_eq(coven_record.state_wire(Staged), "staged")
+    testing.assert_eq(coven_record.state_wire(Released), "released")
+    testing.assert_eq(coven_record.state_wire(Yanked), "yanked")
+    testing.assert(coven_record.state_of("released") == Released, "the wire string parses back to its variant")
+    testing.assert(coven_record.state_of("nonsense") == Staged, "an unknown state reads as the pre-release default")
+
+// --- derive(Json) round-trip (the decode half coven's records depend on) ------
+type Sample derive(Json):
+    name: String
+    versions: List(String)
+    note: Option(String)
+    count: Int
+
+fn test_json_roundtrip():
+    let s = Sample("acme/json", ["1.0.0", "1.1.0"], Some("hi"), 2)
+    match Sample.from_json(s.to_json()):
+        Ok(b) ->
+            testing.assert_eq(b.name, "acme/json")
+            testing.assert_int_eq(b.count, 2)
+            testing.assert_int_eq(list.length(b.versions), 2)
+            testing.assert(option.is_some(b.note), "the optional note round-trips as Some")
+        Err(e) -> testing.assert(false, "round-trip failed: " + e)
+
+fn test_json_missing_field_errors():
+    match Sample.from_json(JsonObject([("name", JsonString("x"))])):
+        Ok(_b) -> testing.assert(false, "decode should fail when a required field is absent")
+        Err(_e) -> testing.assert(true, "missing field is a loud Err")
+
+fn test_json_null_optional_is_none():
+    let s = Sample("a/b", [], None, 0)
+    match Sample.from_json(s.to_json()):
+        Ok(b) -> testing.assert(option.is_none(b.note), "an absent optional decodes to None")
+        Err(e) -> testing.assert(false, "round-trip failed: " + e)

@@ -9,6 +9,8 @@ import http
 import json
 import crypto
 import string
+import coven_json
+import coven_proto
 
 fn main(console: Console, net: Net, clock: Clock, args: List(String)):
     let addr = if list.length(args) > 0: list.at(args, 0) else: "127.0.0.1:8787"
@@ -18,26 +20,26 @@ fn main(console: Console, net: Net, clock: Clock, args: List(String)):
     print(console, "rootpub:" + "${http.status(rp)}")
 
     // publish acme/money@1.0.0 (a pure library — no capabilities)
-    let pub1 = http.post(net, host, port, "/coven/publish", publish_body(money_toml(), money_files(), "ci-bot"))
+    let pub1 = http.post(net, host, port, "/coven/publish", coven_proto.publish_body(money_toml(), money_files(), "ci-bot"))
     print(console, "publish:${http.status(pub1)} state=" + field(http.body(pub1), "state"))
 
     let rec = http.get(net, host, port, "/coven/record?name=acme~money&version=1.0.0")
     print(console, "record:${http.status(rec)} state=" + field(http.body(rec), "state"))
 
     // promote with a DISTINCT identity (separation of duties holds) -> released
-    let prom = http.post(net, host, port, "/coven/promote", promote_body("acme~money", "1.0.0", "webauthn", "release-human"))
+    let prom = http.post(net, host, port, "/coven/promote", coven_proto.promote_body("acme~money", "1.0.0", "webauthn", "release-human"))
     print(console, "promote:${http.status(prom)} state=" + nested_state(http.body(prom)) + " sod=" + nested_bool(http.body(prom)))
 
     // publish v2, then attempt to promote it as the SAME identity that uploaded
     // it — separation of duties must refuse (403).
-    let pub2 = http.post(net, host, port, "/coven/publish", publish_body(money_toml_v2(), money_files_v2(), "ci-bot"))
+    let pub2 = http.post(net, host, port, "/coven/publish", coven_proto.publish_body(money_toml_v2(), money_files_v2(), "ci-bot"))
     print(console, "publish2:" + "${http.status(pub2)}")
-    let sod = http.post(net, host, port, "/coven/promote", promote_body("acme~money", "2.0.0", "webauthn", "ci-bot"))
+    let sod = http.post(net, host, port, "/coven/promote", coven_proto.promote_body("acme~money", "2.0.0", "webauthn", "ci-bot"))
     print(console, "selfpromote:" + "${http.status(sod)}")
 
     // an under-declared rune: the code demands Net but the manifest declares
     // nothing — the server recomputes the footprint and refuses (400).
-    let leak = http.post(net, host, port, "/coven/publish", publish_body(leak_toml(), leak_files(), "attacker"))
+    let leak = http.post(net, host, port, "/coven/publish", coven_proto.publish_body(leak_toml(), leak_files(), "attacker"))
     print(console, "underdeclared:" + "${http.status(leak)}")
 
     let src = http.get(net, host, port, "/coven/source?name=acme~money&version=1.0.0")
@@ -66,7 +68,7 @@ fn timestamp_fresh(text: String, now_seconds: Int) -> String:
                     Some(expires) -> if expires > now_seconds: "true" else: "false"
                     None -> "no-expiry"
             None -> "no-signed"
-        Err(e) -> "decode-err"
+        Err(_e) -> "decode-err"
 
 // Verify a signed TUF role: re-encode its `signed` payload canonically and check
 // the ed25519 signature against the registry root key.
@@ -75,21 +77,7 @@ fn verify_signed_doc(text: String, rootpub: String) -> String:
         Ok(doc) -> match json.get(doc, "signed"):
             Some(signed) -> if crypto.ed25519_verify(rootpub, json.encode(signed), field(text, "sig")): "true" else: "false"
             None -> "no-signed"
-        Err(e) -> "decode-err"
-
-// --- request bodies ----------------------------------------------------------
-fn publish_body(manifest: String, files: List((String, String)), uploaded_by: String) -> String:
-    json.encode(JsonObject([("manifest_toml", JsonString(manifest)), ("source", JsonObject([("files", JsonArray(file_pairs(files)))])), ("uploaded_by", JsonString(uploaded_by))]))
-
-fn promote_body(name: String, version: String, factor: String, promoter: String) -> String:
-    json.encode(JsonObject([("name", JsonString(name)), ("version", JsonString(version)), ("second_factor", JsonString(factor)), ("promoted_by", JsonString(promoter))]))
-
-fn file_pairs(files: List((String, String))) -> List(Json):
-    var out = []
-    for f in files:
-        let (path, text) = f
-        out = list.push(out, JsonArray([JsonString(path), JsonString(text)]))
-    out
+        Err(_e) -> "decode-err"
 
 // --- fixtures ----------------------------------------------------------------
 fn money_toml() -> String:
@@ -117,15 +105,15 @@ fn hostport(addr: String) -> (String, Int):
 
 fn field(text: String, key: String) -> String:
     match json.decode(text):
-        Ok(doc) -> jstr(doc, key)
-        Err(e) -> "?"
+        Ok(doc) -> coven_json.str(doc, key)
+        Err(_e) -> "?"
 
 fn nested_state(text: String) -> String:
     match json.decode(text):
         Ok(doc) -> match json.get(doc, "record"):
-            Some(rec) -> jstr(rec, "state")
+            Some(rec) -> coven_json.str(rec, "state")
             None -> "?"
-        Err(e) -> "?"
+        Err(_e) -> "?"
 
 fn nested_bool(text: String) -> String:
     match json.decode(text):
@@ -134,11 +122,4 @@ fn nested_bool(text: String) -> String:
                 Some(v) -> if v: "true" else: "false"
                 None -> "?"
             None -> "?"
-        Err(e) -> "?"
-
-fn jstr(doc: Json, key: String) -> String:
-    match json.get(doc, key):
-        Some(j) -> match json.as_string(j):
-            Some(s) -> s
-            None -> ""
-        None -> ""
+        Err(_e) -> "?"

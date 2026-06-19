@@ -1,0 +1,88 @@
+// coven_record — a published version's signed metadata, and the canonical signing
+// payload it is verified against. `Record derive(Json)` gives byte-identical
+// encode/decode (field order matches the Rust `Record`); records are signed over
+// `signing_payload` (a fixed line format byte-identical to src/pm/registry.rs), NOT
+// over the JSON — so a record signed here verifies under the Rust ed25519 verifier.
+
+import json
+import crypto
+import string
+import result
+import option
+
+type Record derive(Json):
+    name: String
+    version: String
+    state: String
+    hash: String
+    runtime_footprint: List(String)
+    build_footprint: List(String)
+    determinism: String
+    uploaded_by: String
+    promoted_by: Option(String)
+    second_factor: Option(String)
+    provenance: Option(String)
+    released_at: Int
+    sig: String
+
+// A version's place in the publish lifecycle. `publish` lands a version `Staged`; a
+// second-factor `promote` moves it to `Released`; `yank` excludes it as `Yanked`. The
+// wire form is the lowercase variant name (`state_wire`), kept a plain string in the
+// signed `Record` so the JSON stays byte-identical to the Rust registry.
+type State:
+    Staged
+    Released
+    Yanked
+
+// The wire/canonical string for a state — what is stored and signed.
+pub fn state_wire(s: State) -> String:
+    match s:
+        Staged -> "staged"
+        Released -> "released"
+        Yanked -> "yanked"
+
+// A stored state string back to a `State`. A persisted record always holds one of
+// the three; anything else reads as `Staged` (the pre-release default).
+pub fn state_of(s: String) -> State:
+    if s == "released":
+        Released
+    else if s == "yanked":
+        Yanked
+    else:
+        Staged
+
+// The canonical, signed view of a record — every security-relevant field except the
+// signature. Byte-identical to src/pm/registry.rs::Record::signing_payload.
+pub fn signing_payload(name: String, version: String, state: String, hash: String, rt: List(String), uploaded_by: String, promoted_by: String, factor: String, provenance: String, released_at: Int) -> String:
+    "coven-v1\nname=" + name + "\nversion=" + version + "\nstate=" + state + "\nhash=" + hash + "\nrt=" + string.join(rt, ",") + "\nbuild=\nuploaded_by=" + uploaded_by + "\npromoted_by=" + promoted_by + "\nfactor=" + factor + "\nprovenance=" + provenance + "\nreleased_at=" + "${released_at}"
+
+// Build + sign a record, returning its coven.json text. `released_at` (unix seconds;
+// 0 = not yet released) is part of the signed payload — tamper-evident.
+pub fn sign_record(key: Secret, name: String, version: String, state: State, hash: String, rt: List(String), uploaded_by: String, promoted_by: String, factor: String, provenance: String, released_at: Int) -> String:
+    let sw = state_wire(state)
+    let sig = crypto.sign(key, signing_payload(name, version, sw, hash, rt, uploaded_by, promoted_by, factor, provenance, released_at))
+    let rec = Record(name, version, sw, hash, rt, [], "guaranteed", uploaded_by, opt_str(promoted_by), opt_str(factor), opt_str(provenance), released_at, sig)
+    json.encode(rec.to_json())
+
+// Decode a stored coven.json into a typed `Record` (or a parse-error message).
+pub fn parse(text: String) -> Result(Record, String):
+    Record.from_json(json.decode(text)?)
+
+// Reconstruct a record's canonical signing payload from its stored JSON — the digest
+// the snapshot pins, so a record swapped to an older state stops matching.
+pub fn record_signing_payload(text: String) -> String:
+    match parse(text):
+        Ok(r) -> signing_payload(r.name, r.version, r.state, r.hash, r.runtime_footprint, r.uploaded_by, str_or_empty(r.promoted_by), str_or_empty(r.second_factor), str_or_empty(r.provenance), r.released_at)
+        Err(_e) -> ""
+
+// Empty string <-> absent (`null`): keeps the optional fields' JSON byte-identical.
+fn opt_str(s: String) -> Option(String):
+    if string.is_empty(s):
+        None
+    else:
+        Some(s)
+
+pub fn str_or_empty(o: Option(String)) -> String:
+    match o:
+        Some(s) -> s
+        None -> ""
