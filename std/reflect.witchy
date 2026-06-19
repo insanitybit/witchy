@@ -1,0 +1,150 @@
+// Reflection — a value's structure as data, so one function works over ALL types.
+// `reflect(x)` returns a `Mirror` describing `x` (a record's fields with their
+// names, a sum type's variant, a list's elements, or a scalar). Library code that
+// would otherwise need a per-type `derive` — JSON encoding, debug rendering,
+// structural diffing — is written ONCE against `Mirror`. This is witchy's answer
+// to Zig's `@typeInfo` / Rust's compile-time reflection: no macros, no per-type
+// boilerplate. `Reflect` is generated for every type, so `reflect(x)` just works.
+//
+// `reflect` is a trait method; the compiler generates `impl Reflect for T` for each
+// type (its `reflect` builds the `Mirror` from the declared fields/variants). The
+// scalar impls below are the leaves.
+
+import list
+import string
+
+// The reflected shape of a value.
+type Mirror:
+    MInt(Int)
+    MFloat(Float)
+    MBool(Bool)
+    MString(String)
+    // A list's elements, reflected.
+    MList(List(Mirror))
+    // A tuple's slots, reflected (a fixed-arity heterogeneous sequence).
+    MTuple(List(Mirror))
+    // A record: its type name and (field name, reflected value) pairs in order.
+    MRecord(String, List((String, Mirror)))
+    // A sum-type value: type name, variant name, reflected payloads in order.
+    MVariant(String, String, List(Mirror))
+    // The unit/`Nil` value.
+    MNil
+
+trait Reflect:
+    fn reflect(self) -> Mirror
+
+impl Reflect for Int:
+    fn reflect(self) -> Mirror:
+        MInt(self)
+
+impl Reflect for Float:
+    fn reflect(self) -> Mirror:
+        MFloat(self)
+
+impl Reflect for Bool:
+    fn reflect(self) -> Mirror:
+        MBool(self)
+
+impl Reflect for String:
+    fn reflect(self) -> Mirror:
+        MString(self)
+
+// Reflect a single value through a free function. The generated `reflect` calls
+// THIS rather than the trait method directly: trait dispatch resolves on params
+// and loop vars but NOT on `match` bindings (so an Option field's `Some(x)` arm
+// could not call `reflect(x)`), whereas here `x` is a parameter — always resolvable.
+pub fn reflect_one(x: a) -> Mirror where a: Reflect:
+    reflect(x)
+
+// Reflect an `Option` to a `Some`/`None` `MVariant`. The payload reflects through
+// a LOOP over `opt_list` (0 or 1 element) so it's the trait method `reflect(x)` on
+// a loop var — which resolves under the generic `a` bound, unlike a generic free
+// fn or a match binding. Empty payload ⇒ None.
+pub fn reflect_option(o: Option(a)) -> Mirror where a: Reflect:
+    var payloads = []
+    for x in opt_list(o):
+        payloads = list.push(payloads, reflect(x))
+    if list.is_empty(payloads):
+        MVariant("Option", "None", [])
+    else:
+        MVariant("Option", "Some", payloads)
+
+// An Option as a 0-or-1-element list (the value is only moved into a list literal,
+// never a trait call on the binding — so it stays resolvable).
+fn opt_list(o: Option(a)) -> List(a):
+    match o:
+        Some(v) -> [v]
+        None -> []
+
+// Reflect a list of `Reflect` elements. A generic free function (not an
+// `impl Reflect for List(a)`): method dispatch on a `List` receiver binds to the
+// `list` module, so the generated `reflect` for a record's List field calls THIS.
+pub fn reflect_list(xs: List(a)) -> Mirror where a: Reflect:
+    var out = []
+    for x in xs:
+        out = list.push(out, reflect(x))
+    MList(out)
+
+// `List` and `Option` reflect through generic impls, so `reflect(x)` — and thus
+// `json.stringify`, `debug`, any reflective consumer — works on a bare list or
+// option, not only as a record field. Each monomorphizes per element exactly as the
+// free function it delegates to (the dispatch falls back from `List<Int>` to the
+// generic `List` impl, then the element resolves through the `where` bound).
+impl Reflect for List(a) where a: Reflect:
+    fn reflect(self) -> Mirror:
+        reflect_list(self)
+
+impl Reflect for Option(a) where a: Reflect:
+    fn reflect(self) -> Mirror:
+        reflect_option(self)
+
+// Tuples reflect to `MTuple` (a JSON array, a `(…)` debug). Each common arity is
+// its own impl — `reflect_one` on the destructured slots dispatches per slot type.
+impl Reflect for (a, b) where a: Reflect, b: Reflect:
+    fn reflect(self) -> Mirror:
+        let (x0, x1) = self
+        MTuple([reflect_one(x0), reflect_one(x1)])
+
+impl Reflect for (a, b, c) where a: Reflect, b: Reflect, c: Reflect:
+    fn reflect(self) -> Mirror:
+        let (x0, x1, x2) = self
+        MTuple([reflect_one(x0), reflect_one(x1), reflect_one(x2)])
+
+impl Reflect for (a, b, c, d) where a: Reflect, b: Reflect, c: Reflect, d: Reflect:
+    fn reflect(self) -> Mirror:
+        let (x0, x1, x2, x3) = self
+        MTuple([reflect_one(x0), reflect_one(x1), reflect_one(x2), reflect_one(x3)])
+
+// --- a second consumer: structural debug rendering ---------------------------
+// `debug(x)` renders ANY value from its reflection — the SAME `reflect` that
+// powers `json`, proving the engine is general (one reflection, many uses).
+pub fn debug(x: a) -> String where a: Reflect:
+    render(reflect(x))
+
+fn render(m: Mirror) -> String:
+    match m:
+        MInt(n) -> "${n}"
+        MFloat(f) -> "${f}"
+        MBool(b) -> if b: "true" else: "false"
+        MString(s) -> "\"" + s + "\""
+        MNil -> "nil"
+        MList(xs) -> "[" + join_rendered(xs) + "]"
+        MTuple(xs) -> "(" + join_rendered(xs) + ")"
+        MRecord(name, fields) -> name + " { " + render_fields(fields) + " }"
+        MVariant(_tyname, variant, payload) ->
+            if list.is_empty(payload):
+                variant
+            else:
+                variant + "(" + join_rendered(payload) + ")"
+
+fn join_rendered(xs: List(Mirror)) -> String:
+    var parts = []
+    for m in xs:
+        parts = list.push(parts, render(m))
+    string.join(parts, ", ")
+
+fn render_fields(fields: List((String, Mirror))) -> String:
+    var parts = []
+    for k, m in fields:
+        parts = list.push(parts, k + ": " + render(m))
+    string.join(parts, ", ")

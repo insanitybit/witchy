@@ -5,8 +5,8 @@
 //! This evaluator's job is to *define* the semantics the compiled backend is
 //! checked against — it is the independent implementation `witchy parity` and the
 //! differential test suite diff the compiler against. It is reached at runtime
-//! only as: a transitional fallback for a program that does not yet compile
-//! (`WITCHY_INTERP=1`, or an automatic fall-through), the capability-sound
+//! only as: the parity oracle and the differential test runner, the `comptime`
+//! evaluator (compile-time blocks, zero capabilities), the capability-sound
 //! executor for *effectful* build steps (BuildExec/BuildNet/BuildEnv, whose
 //! host-side I/O the WASM boundary can't sandbox — the grant allow-list is the
 //! confinement), and the `witchy demo` showcase. Its `Dir`/`Net` path-confinement
@@ -47,9 +47,14 @@ pub enum Value {
     /// A network capability: an allow-list of permitted `host:port` destinations
     /// (wasi:sockets / cap-std-net style). Attenuable via `restrict`.
     Net(Vec<String>),
-    /// A signing capability: an Ed25519 private seed. Unforgeable — minted only by
-    /// the host (the root grant) — since the ability to sign *is* authority.
-    Secret([u8; 32]),
+    /// A single secret's raw bytes (a signing seed, or a value secret like a token).
+    /// Unforgeable — minted only by the host or fetched from a `SecretStore`. The
+    /// ability to use it *is* authority; `.sign`/`.public_key` read it as a hex
+    /// Ed25519 seed, `.reveal` returns it verbatim.
+    Secret(Vec<u8>),
+    /// The host-granted store of NAMED secrets (from `--secret`/`--secret-file`/
+    /// `--signing-key`). `secret_store.get(name)` yields a `Secret`.
+    SecretStore(std::collections::BTreeMap<String, Vec<u8>>),
     /// A connected socket — a handle into the interpreter's socket table.
     Socket(usize),
     /// A listening server socket — a handle into the interpreter's listener
@@ -146,7 +151,8 @@ impl fmt::Display for Value {
             Value::Cap(c) => write!(f, "<capability {c:?}>"),
             Value::Dir(_) => write!(f, "<dir>"),
             Value::Net(_) => write!(f, "<net>"),
-            Value::Secret(_) => write!(f, "<signing key>"),
+            Value::Secret(_) => write!(f, "<secret>"),
+            Value::SecretStore(_) => write!(f, "<secret store>"),
             Value::Socket(id) => write!(f, "<socket #{id}>"),
             Value::Listener(id) => write!(f, "<listener #{id}>"),
             Value::Build(_) => write!(f, "<build capability>"),
@@ -495,6 +501,9 @@ pub struct Interpreter {
     /// Ed25519 seed backing the root `Secret` capability, if the host granted
     /// one. A `main` that declares a `Secret` parameter requires this.
     signing_key: Option<[u8; 32]>,
+    /// Named secrets backing the `SecretStore` capability (from
+    /// `--secret`/`--secret-file`/`--signing-key`). `secret_store.get(name)`.
+    secrets: std::collections::BTreeMap<String, Vec<u8>>,
     /// Open sockets, indexed by `Value::Socket` handle.
     sockets: Vec<BufReader<TcpStream>>,
     /// Listening server sockets, indexed by `Value::Listener` handle.
@@ -568,6 +577,7 @@ impl Interpreter {
             root: PathBuf::from("."),
             net_allow: Vec::new(),
             signing_key: None,
+            secrets: std::collections::BTreeMap::new(),
             sockets: Vec::new(),
             listeners: Vec::new(),
             record_fields,
@@ -591,9 +601,10 @@ impl Interpreter {
             Some(Type::Named(n, _)) if n == "Dir" => Ok(Value::Dir(self.root.clone())),
             Some(Type::Named(n, _)) if n == "Net" => Ok(Value::Net(self.net_allow.clone())),
             Some(Type::Named(n, _)) if n == "Secret" => match self.signing_key {
-                Some(seed) => Ok(Value::Secret(seed)),
+                Some(seed) => Ok(Value::Secret(seed.to_vec())),
                 None => err("`main` requires a `Secret`, but the host granted none (provide `--signing-key <hex-seed-file>`)"),
             },
+            Some(Type::Named(n, _)) if n == "SecretStore" => Ok(Value::SecretStore(self.secrets.clone())),
             other => {
                 let found = match other {
                     Some(t) => format!("`{}`", crate::format::type_str(t)),
@@ -819,6 +830,63 @@ impl Interpreter {
     }
 
     fn call_builtin(&mut self, name: &str, args: &[Value]) -> Result<Option<Value>, RuntimeError> {
+        // `secret_store.get(name)` — a named lookup into the granted store. Handled
+        // here (not in `native`) because a `SecretStore` is not a `NativeValue`.
+        if name == "secretstore.get" {
+            return match args {
+                [Value::SecretStore(map), Value::Str(key)] => Ok(Some(match map.get(key) {
+                    Some(bytes) => Value::Ctor {
+                        name: "Some".into(),
+                        fields: vec![Value::Secret(bytes.clone())],
+                    },
+                    None => Value::Ctor { name: "None".into(), fields: Vec::new() },
+                })),
+                _ => err("secretstore.get expects (SecretStore, name)"),
+            };
+        }
+        // `__try_ctx(value, msg)` — the `e ? "msg"` desugar. Turn the operand (an
+        // `Option` or a `Result`) into a `Result(T, String)` carrying `msg`: `None`
+        // -> `Err(msg)`, a `Result`'s `Err(e)` -> `Err("msg: e")` (e is a String),
+        // and `Some(x)`/`Ok(x)` -> `Ok(x)`. The enclosing `?` then unwraps it.
+        if name == "__try_ctx" {
+            return match args {
+                [val, Value::Str(msg)] => {
+                    let out = match val {
+                        Value::Ctor { name: c, fields } if c == "Some" || c == "Ok" => {
+                            Value::Ctor { name: "Ok".into(), fields: fields.clone() }
+                        }
+                        Value::Ctor { name: c, .. } if c == "None" => {
+                            Value::Ctor { name: "Err".into(), fields: vec![Value::Str(msg.clone())] }
+                        }
+                        Value::Ctor { name: c, fields } if c == "Err" => {
+                            let inner = match fields.first() {
+                                Some(Value::Str(e)) => e.clone(),
+                                Some(other) => format!("{other}"),
+                                None => String::new(),
+                            };
+                            Value::Ctor {
+                                name: "Err".into(),
+                                fields: vec![Value::Str(format!("{msg}: {inner}"))],
+                            }
+                        }
+                        _ => return err("`? \"msg\"` applies to an Option or Result"),
+                    };
+                    Ok(Some(out))
+                }
+                _ => err("__try_ctx expects (value, message)"),
+            };
+        }
+        // `secret_store.require(name)` — a required secret: the `Secret` directly,
+        // or a loud error if absent (a configuration mistake, not an `Option`).
+        if name == "secretstore.require" {
+            return match args {
+                [Value::SecretStore(map), Value::Str(key)] => match map.get(key) {
+                    Some(bytes) => Ok(Some(Value::Secret(bytes.clone()))),
+                    None => err(format!("required secret `{key}` was not granted")),
+                },
+                _ => err("secretstore.require expects (SecretStore, name)"),
+            };
+        }
         // Native stdlib modules (crypto, …): pure, stateless functions reached by
         // their qualified name (`crypto.sha256`). Dispatched through the registry
         // so adding one needs no change here — see `src/native.rs`.
@@ -1854,7 +1922,7 @@ impl Interpreter {
                     (UnOp::BitNot, other) => err(format!("cannot apply `~` to `{other}`")),
                 }
             }
-            Expr::Lambda { params, body } => {
+            Expr::Lambda { params, body, .. } => {
                 let mut mentioned = HashSet::new();
                 idents_in_block(body, &mut |n| {
                     if !mentioned.contains(n) {
@@ -1948,7 +2016,11 @@ impl Interpreter {
                     Value::Bool(b) => Ok(Value::Bool(b)),
                     other => err(format!("`||` expects Bool operands, got `{other}`")),
                 },
-                other => err(format!("`||` expects Bool operands, got `{other}`")),
+                // Non-Bool `||` is the truthy fallback: `a` when truthy, else `b`.
+                // Falsy values are "" / None / [] (typeck restricts the operands to
+                // Bool / String / Option / List).
+                v if value_truthy(&v) => Ok(v),
+                _ => self.eval(rhs, env),
             },
             Expr::Binary { op, lhs, rhs } => {
                 let l = self.eval(lhs, env)?;
@@ -2111,6 +2183,18 @@ fn over(op: &str) -> impl FnOnce() -> RuntimeError + '_ {
     }
 }
 
+// Runtime truthiness for the non-Bool `||` fallback. Falsy values are the empty
+// forms of the emptyable built-ins: "" / [] / None. Everything else is truthy.
+fn value_truthy(v: &Value) -> bool {
+    match v {
+        Value::Bool(b) => *b,
+        Value::Str(s) => !s.is_empty(),
+        Value::List(xs) => !xs.is_empty(),
+        Value::Ctor { name, .. } => name != "None",
+        _ => true,
+    }
+}
+
 fn eval_binary(op: BinOp, l: Value, r: Value) -> Result<Value, RuntimeError> {
     use BinOp::*;
     use Value::{Float, Int, Str};
@@ -2215,7 +2299,7 @@ fn value_to_native(v: &Value) -> Result<crate::value::NativeValue, RuntimeError>
         Value::List(xs) => N::List(
             xs.iter().map(value_to_native).collect::<Result<Vec<_>, RuntimeError>>()?,
         ),
-        Value::Secret(s) => N::Secret(*s),
+        Value::Secret(s) => N::Secret(s.clone()),
         other => {
             return Err(RuntimeError {
                 message: format!("native function received an unsupported argument: {other}"),
@@ -2406,6 +2490,11 @@ fn run_module_inner_limited(
     interp.root = root;
     interp.net_allow = net_allow;
     interp.signing_key = signing_key;
+    // The signing key is the `signing` secret in the store, so a program may take
+    // either a `Secret` (the key directly) or a `SecretStore` and `get("signing")`.
+    if let Some(seed) = signing_key {
+        interp.secrets.insert("signing".to_string(), seed.to_vec());
+    }
     let root_args = match interp.functions.get("main").cloned() {
         Some(f) => f
             .params

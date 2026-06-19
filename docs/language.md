@@ -155,13 +155,15 @@ Everything is an expression; a block's value is its final expression.
 
 | `== !=` | **structural** equality — deep, on lists, tuples, records, enums, `Option`, `Dict` (insertion-order-sensitive), on every backend |
 | `< <= > >=` | ordering on `Int`/`Float`/`String`/`Duration` only; ordering a NaN is a runtime error; compounds don't order |
-| `&& \|\|` | short-circuit boolean |
+| `&&` | short-circuit boolean **and** (Bool operands) |
+| `\|\|` | short-circuit **or**: logical-or on Bool, otherwise the *truthy fallback* — `a \|\| b` is `a` when truthy, else `b`. Falsy values are `""` / `None` / `[]`; operands share a type, so `name \|\| "anon"`, `cfg \|\| fallback` (`Option`), `xs \|\| [0]` |
 | `!` | negation |
 | `& \| ^ ~ << >>` | bitwise on `Int` (shifts mask the count to 6 bits) |
 | `xs[i]` | list indexing, sugar for `list.at(xs, i)`; out of bounds is a runtime error on every backend |
 | `lo..hi` | a half-open range (for-loop iteration; never materialized) |
 | `x.f(args)` | a METHOD call: resolves to `impl` methods / trait dispatch for `x`'s type |
 | `e?` | unwrap `Ok`/`Some` or return the `Err`/`None` from the enclosing function |
+| `e? "msg"` | like `e?` with context: a `Result` `Err` gets `"msg: "` prepended; an `Option` `None` becomes `Err("msg")` |
 | `cap as Dir[Read]` | capability narrowing (drop rights; never widen) |
 
 ```witchy
@@ -175,6 +177,7 @@ fn main(console: Console):
     print(console, "${2.5 < 3.0}")
     let xs = [10, 20, 30]
     print(console, "${xs[1]}")
+    print(console, "" || "default")
 ```
 
 Float notes: `0.0 / 0.0` is NaN; `1.0 / 0.0` is infinity; NaN `==` anything is
@@ -212,7 +215,8 @@ fn main(console: Console):
 `if let PAT = e:` binds and runs only on a match (with an optional `else`);
 `while let PAT = e:` loops as long as the scrutinee keeps matching. `return e`
 exits early (and works in functions with a `var` parameter — the written-back
-parameters are still delivered).
+parameters are still delivered). A postfix guard — `return e if cond` — is sugar
+for `if cond: return e`, for one-line early-outs (`return Ok(true) if ok`).
 
 A `retain a, b:` / `without a, b:` block is a capability firewall: inside it,
 only the named capabilities stay in scope (`retain`) or the named ones are
@@ -325,7 +329,10 @@ fn main(console: Console):
 
 **Closures.** `fn(n: Int): n + by` captures by value; you call through a
 `fn(...)` -typed value or parameter. Closures cannot assign to captured
-variables (check-time error).
+variables (check-time error). A closure may declare its return type —
+`fn(n: Int) -> Bool: n > 0` — which also makes it a `?` boundary: a `?` inside
+the closure propagates to the closure's own `Result`/`Option`, not the enclosing
+function's, so closures can short-circuit on errors just like named functions.
 
 ```witchy
 fn apply(f: fn(Int) -> Int, x: Int) -> Int:
@@ -432,7 +439,29 @@ fn main(console: Console):
 ```
 
 `Show` renders structurally (the `${...}` form), `Eq` is structural equality, and
-`Ord` compares record fields lexicographically (records only).
+`Ord` compares record fields lexicographically (records only). A derive works on a
+generic type too (`type Box(a) derive(Reflect)`): the generated impl carries the
+type's parameters and their bounds, and monomorphizes per argument.
+
+### Reflection and anonymous structs
+
+`reflect(x)` returns a value's structure as a `Mirror`, so one function works over
+EVERY type. Reflection composes through ordinary generic impls — `List`, `Option`,
+tuples, and generic records all implement `Reflect` — so `json.stringify(x)` and
+`reflect.debug(x)` encode or render anything (a list, an option, a tuple, a nested
+record) with no per-type code and no builtins.
+
+An **anonymous struct** `.{ field: expr, … }` is ad-hoc reflectable data — a record
+with no declared type — so you assemble JSON from plain values without a named type
+or manual `Json` construction:
+
+```witchy
+import json
+
+fn main(console: Console):
+    let files = [("a.txt", "hi")]
+    print(console, json.stringify(.{files: files}))
+```
 
 ### `comptime:` — compile-time item generation
 
@@ -482,6 +511,31 @@ fn show(r: Result(Int, String)) -> String:
 fn main(console: Console):
     print(console, show(ratio(100, 5, 2)))
     print(console, show(ratio(100, 0, 2)))
+```
+
+`?` optionally takes a context message — `e? "msg"` — and works wherever bare `?`
+does. On a `Result`, it prepends `"msg: "` to a propagated `String` error; on an
+`Option`, a propagated `None` becomes `Err("msg")`. Either way the enclosing
+function propagates a `String` error. The message may interpolate. Bare `e?`
+propagates unchanged.
+
+```witchy
+import result
+
+fn checked_div(a: Int, b: Int) -> Result(Int, String):
+    if b == 0:
+        Err("division by zero")
+    else:
+        Ok(a / b)
+
+fn ratio(a: Int, b: Int) -> Result(Int, String):
+    let q = checked_div(a, b)? "computing ${a}/${b}"
+    Ok(q + 1)
+
+fn main(console: Console):
+    match ratio(10, 0):
+        Ok(v) -> print(console, "${v}")
+        Err(e) -> print(console, e)
 ```
 
 Unexpected failure is **loud on every backend**: out-of-bounds indexing,

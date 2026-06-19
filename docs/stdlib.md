@@ -32,7 +32,7 @@ std/chan — decoupled concurrency: `spawn` concurrent tasks, communicate over f
 
 Model: one message type `m` per program (a single `run`'s channels all carry `m`; union into a sum type if you need several shapes). Spawned tasks return `Nil`; a task reports a result by sending it on a channel, not by returning it (a typed `JoinHandle(T)` would force a native runtime and break the parity contract). `send`/`recv` are always `await`ed because messaging is an effect on the executor-owned buffer; a *bounded* channel additionally blocks the sender when full (backpressure), an unbounded one never does.
 
-The `async`/`await` CPS transform lowers onto this substrate (chan.lazy/and_then/ done/run), so `await chan.recv(rx)` / `await chan.send(tx, x)` work in async fns.
+The `async`/`await` CPS transform lowers onto the `std/task` executor (task.lazy/and_then/done/run); channel ops (`await chan.recv(rx)` / `await chan.send(tx, x)`) run on the same protocol.
 
 #### `type Step`
 
@@ -187,6 +187,10 @@ Sign `message` with a `Secret` capability (the host grants it; it cannot be forg
 #### `fn public_key(key: Secret) -> String`
 
 The hex Ed25519 public key for a `Secret` — what verifiers check against.
+
+#### `fn reveal(key: Secret) -> String`
+
+Reveal a `Secret`'s raw bytes as a string — for value secrets (tokens, passwords) that must be handed to an external sink. Signing keys are used via `sign`/`public_key`, not revealed.
 
 #### `fn ecdsa_p256_verify(public_key: String, message: String, signature: String) -> Bool`
 
@@ -679,6 +683,10 @@ Apply `f` to every element.
 
 Keep only the elements for which `keep` holds.
 
+#### `fn filter_map(it: Iter(a), f: fn(a) -> Option(b)) -> Iter(b)`
+
+Apply `f` to each element, keeping every `Some(y)` and dropping every `None` — a `map` and `filter` fused into one pass (Rust's `Iterator::filter_map`).
+
 #### `fn take(it: Iter(a), k: Int) -> Iter(a)`
 
 The first `k` elements (fewer if the iterator is shorter).
@@ -801,6 +809,30 @@ The element at index `i` of a JSON array.
 
 `j` as its key/value pairs, when it is an object — for iterating an object whose keys aren't known ahead of time.
 
+#### `fn require(j: Json, key: String) -> Result(Json, String)`
+
+--- Result-returning decoders (the backbone of derive(Json)'s from_json) -----
+
+#### `fn int_of(j: Json) -> Result(Int, String)`
+
+Coerce a Json value to a scalar, or `Err` describing the expected shape.
+
+#### `fn string_of(j: Json) -> Result(String, String)`
+
+#### `fn bool_of(j: Json) -> Result(Bool, String)`
+
+#### `fn float_of(j: Json) -> Result(Float, String)`
+
+#### `fn array_of(j: Json) -> Result(List(Json), String)`
+
+#### `fn optional(o: Option(Json), each: fn(Json) -> Result(a, String)) -> Result(Option(a), String)`
+
+Decode an optional field: an absent key or an explicit `null` is `None`; otherwise the value is decoded via `each`. Used for `Option(_)` fields.
+
+#### `fn object_sorted(pairs: List((String, Json))) -> Json`
+
+Build a JSON object whose keys are sorted (matching a serialized BTreeMap), e.g. TUF `targets`. Use this only for dynamic key/value sets whose order must be deterministic for signing; records that derive(Json) keep their declared field order instead.
+
 #### `fn get_string(j: Json, key: String) -> Option(String)`
 
 --- typed field accessors (get a key, then coerce) -------------------------- `get` composed with each `as_*` — the common case of reading a typed field out of an object without spelling the two steps every time.
@@ -824,6 +856,16 @@ The string at index `i` of a JSON array, when it is a string.
 #### `fn get_path(j: Json, path: String) -> Option(Json)`
 
 Follow a dotted path of object keys, e.g. `get_path(resp, "user.name")`. Any missing key (or a non-object along the way) yields `None`.
+
+#### `fn from_option(o: Option(a), each: fn(a) -> Json) -> Json`
+
+Encode an `Option` as payload-or-`null` — `Some(x)` through `each`, `None` as `JsonNull`. Keeps a derived `to_json`'s Option field a single-line call. (The param is `each`, not `encode`, so it doesn't shadow `json.encode`.)
+
+#### `fn value_of(x: a) -> Json where a: Reflect`
+
+--- reflective encoding (no derive) ----------------------------------------- `value_of(x)` encodes ANY value to a `Json` by reflecting over its structure — no `derive(Json)` needed. `stringify(x)` is the string form. This is the whole of `derive(Json)`'s encode side, written once over `Mirror`.
+
+#### `fn stringify(x: a) -> String where a: Reflect`
 
 ## `list`
 
@@ -1171,6 +1213,50 @@ Render `n` in `base` (2..16) with lowercase digits; a negative `n` gets a leadin
 
 Format `x` with `decimals` digits after the decimal point, rounded half-up: format_float(3.14159, 2) = "3.14", format_float(-0.5, 1) = "-0.5", format_float(2.0, 0) = "2". Built from float arithmetic, so unlike the `to_string` builtin it works on the compiled WASM backend too (which has no float formatting). Best for a fixed number of places; very large magnitudes lose precision to the Float itself.
 
+## `meta`
+
+Compile-time type introspection — the `typeInfo` half of witchy's comptime reflection (Zig's `@typeInfo`). A `comptime:` block can read the structure of every type in its module as ordinary data and generate code from it (e.g. a `to_json` specialized to a record's fields), with zero runtime cost. The compiler injects the type list as `module_types()`; these are the shapes it hands you.
+
+This is COMPILE-TIME structure (field names + declared type names as strings), distinct from `std/reflect`'s runtime `Mirror` (a value's structure at runtime).
+
+#### `type FieldInfo`
+
+One field of a record: its name and its declared type rendered as a string (e.g. "Int", "List(String)", "Option(Point)").
+
+- `FieldInfo { name: String, type_name: String }`
+
+#### `type VariantInfo`
+
+One constructor of a sum type: its name and its positional payload types.
+
+- `VariantInfo { name: String, field_types: List(String) }`
+
+#### `type TypeInfo`
+
+A type's structure. `kind` is "record" (one constructor with named fields), "sum" (one or more positional constructors), or "unit". `fields` is populated for records, `variants` for sums.
+
+- `TypeInfo { name: String, kind: String, params: List(String), fields: List(FieldInfo), variants: List(VariantInfo) }`
+
+#### `fn derive_show(t: TypeInfo) -> String`
+
+`derive(Show)` → structural rendering via the `__render` builtin.
+
+#### `fn derive_eq(t: TypeInfo) -> String`
+
+`derive(Eq)` → deep structural equality (the `==` both backends compute).
+
+#### `fn derive_reflect(t: TypeInfo) -> String`
+
+`derive(Reflect)` → an `impl Reflect for T` building the value's `Mirror`: a record to `MRecord("T", [(field, reflect field)…])`, a sum type to a `match` over variants to `MVariant`. (The module must `import reflect`; caller checks.)
+
+#### `fn derive_ord(t: TypeInfo) -> String`
+
+`derive(Ord)` → lexicographic field comparison (records only; the caller validates).
+
+#### `fn derive_json(t: TypeInfo) -> String`
+
+`derive(Json)` → `to_json`/`from_json` for a RECORD (caller validates the shape). Encode builds a `JsonObject` field by field; decode pulls + coerces each field, short-circuiting on the first error. Self-contained (only json/result/list/option).
+
 ## `option`
 
 The witchy standard `Option` type and helpers. `import option` brings the type into scope (so the `?` operator works) and gives the usual combinators. Pure and capability-free.
@@ -1326,6 +1412,42 @@ A pseudo-random Bool (true ~half the time) and the next state.
 
 A uniformly-chosen element of `xs` (None if empty) and the next state.
 
+## `reflect`
+
+Reflection — a value's structure as data, so one function works over ALL types. `reflect(x)` returns a `Mirror` describing `x` (a record's fields with their names, a sum type's variant, a list's elements, or a scalar). Library code that would otherwise need a per-type `derive` — JSON encoding, debug rendering, structural diffing — is written ONCE against `Mirror`. This is witchy's answer to Zig's `@typeInfo` / Rust's compile-time reflection: no macros, no per-type boilerplate. `Reflect` is generated for every type, so `reflect(x)` just works.
+
+`reflect` is a trait method; the compiler generates `impl Reflect for T` for each type (its `reflect` builds the `Mirror` from the declared fields/variants). The scalar impls below are the leaves.
+
+#### `type Mirror`
+
+The reflected shape of a value.
+
+- `MInt(Int)`
+- `MFloat(Float)`
+- `MBool(Bool)`
+- `MString(String)`
+- `MList(List(Mirror))`
+- `MTuple(List(Mirror))`
+- `MRecord(String, List((String, Mirror)))`
+- `MVariant(String, String, List(Mirror))`
+- `MNil`
+
+#### `fn reflect_one(x: a) -> Mirror where a: Reflect`
+
+Reflect a single value through a free function. The generated `reflect` calls THIS rather than the trait method directly: trait dispatch resolves on params and loop vars but NOT on `match` bindings (so an Option field's `Some(x)` arm could not call `reflect(x)`), whereas here `x` is a parameter — always resolvable.
+
+#### `fn reflect_option(o: Option(a)) -> Mirror where a: Reflect`
+
+Reflect an `Option` to a `Some`/`None` `MVariant`. The payload reflects through a LOOP over `opt_list` (0 or 1 element) so it's the trait method `reflect(x)` on a loop var — which resolves under the generic `a` bound, unlike a generic free fn or a match binding. Empty payload ⇒ None.
+
+#### `fn reflect_list(xs: List(a)) -> Mirror where a: Reflect`
+
+Reflect a list of `Reflect` elements. A generic free function (not an `impl Reflect for List(a)`): method dispatch on a `List` receiver binds to the `list` module, so the generated `reflect` for a record's List field calls THIS.
+
+#### `fn debug(x: a) -> String where a: Reflect`
+
+--- a second consumer: structural debug rendering --------------------------- `debug(x)` renders ANY value from its reflection — the SAME `reflect` that powers `json`, proving the engine is general (one reflection, many uses).
+
 ## `regex`
 
 Regular expressions, powered by the Rust `regex` crate (RE2 semantics): linear time, with full alternation `a|b` and grouping `(...)` — and a loud error, not a silent non-match, on an invalid pattern. The engine itself is the native `match_spans`, which returns the character spans of every match; the whole public API here is built on those spans in plain witchy, so it runs the same on the interpreter and the compiled backend. Positions are character indices.
@@ -1454,6 +1576,18 @@ The base kind: "Dir[Read]" -> "Dir"; "Console" -> "Console".
 #### `fn rights_of(cap: String) -> List(String)`
 
 The rights inside "Kind[A, B]" as ["A", "B"] (trimmed, blanks dropped).
+
+## `secretstore`
+
+secretstore — read named secrets from the host-granted `SecretStore`. The secrets come from `--secret name=value` / `--secret-file name=path` (and `--signing-key` as sugar for `--secret-file signing=<path>`); their bytes stay host-side. `get` is intercepted by the runtime, since a `SecretStore` is a capability, not plain data. Each `Secret` then supports `crypto.sign` / `crypto.public_key` (as a hex Ed25519 seed) and `crypto.reveal` (value secrets).
+
+#### `fn get(store: SecretStore, name: String) -> Option(Secret)`
+
+Fetch the secret named `name`, or `None` if it was not granted.
+
+#### `fn require(store: SecretStore, name: String) -> Secret`
+
+Fetch a *required* secret named `name`, returning the `Secret` directly. Use this when absence is a configuration error (e.g. a server's root signing key): it fails loudly rather than handing back an `Option` to unwrap. The body is a placeholder — the runtime intercepts the call (interpreter) / lowers it to a host handle lookup (WASM); it is never executed.
 
 ## `semver`
 

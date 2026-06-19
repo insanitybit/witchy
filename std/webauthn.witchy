@@ -1,0 +1,76 @@
+// webauthn — server-side verification of a WebAuthn *assertion* (the credential
+// "get" / second-factor ceremony), in pure witchy. ES256 (P-256, COSE alg -7) only.
+//
+// The browser hands every BINARY value to the server HEX-ENCODED (it holds them as
+// ArrayBuffers, so this is free). The server then INDEPENDENTLY re-derives and
+// checks everything that matters — it trusts none of the client's interpretation:
+//   * clientDataJSON.type == "webauthn.get"
+//   * clientDataJSON.challenge == the exact challenge the server issued (anti-replay)
+//   * clientDataJSON.origin == the expected origin (anti-phishing)
+//   * authenticatorData.rpIdHash == SHA-256(expected RP id) (wrong relying party)
+//   * the user-presence (and, for 2FA, user-verification) flags are set
+//   * the ECDSA-P256 signature over `authenticatorData || SHA256(clientDataJSON)`
+//     verifies under the public key bound to this credential at registration.
+// A forged or replayed assertion fails one of these and is rejected here.
+import crypto
+import json
+import string
+
+// One lowercase hex digit -> 0..15, or -1. (Inputs are lowercase hex: that is what
+// `crypto.sha256` emits and what standard encoders/`toString(16)` produce.)
+fn nibble(c: String) -> Int:
+    string.index_of("0123456789abcdef", c)
+
+// The unsigned byte at byte-offset `i` of a hex string (2 chars per byte), or -1.
+fn hex_byte_at(hexs: String, i: Int) -> Int:
+    let hi = nibble(string.substring(hexs, i * 2, i * 2 + 1))
+    let lo = nibble(string.substring(hexs, i * 2 + 1, i * 2 + 2))
+    if hi < 0 || lo < 0:
+        -1
+    else:
+        hi * 16 + lo
+
+fn json_str(doc: Json, key: String) -> String:
+    match json.get_string(doc, key):
+        Some(s) -> s
+        None -> ""
+
+// Verify an assertion. All `*_hex` arguments are hex-encoded bytes;
+// `client_data_json` is the exact clientDataJSON text the browser signed over (it
+// must be re-hashed verbatim, never re-serialized). `require_uv` demands user
+// verification — pass `true` for a genuine second-factor gate. Returns `Ok(true)`
+// when every check passes, or `Err(reason)`.
+pub fn verify_assertion(stored_pubkey_hex: String, auth_data_hex: String, client_data_json: String, signature_hex: String, expected_challenge: String, expected_origin: String, expected_rp_id: String, require_uv: Bool) -> Result(Bool, String):
+    match json.decode(client_data_json):
+        Err(e) -> Err("clientDataJSON did not parse: " + e)
+        Ok(doc) ->
+            if json_str(doc, "type") != "webauthn.get":
+                Err("clientData.type is not webauthn.get")
+            else if json_str(doc, "challenge") != expected_challenge:
+                Err("challenge mismatch (replay?)")
+            else if json_str(doc, "origin") != expected_origin:
+                Err("origin mismatch (phishing?)")
+            else:
+                check_auth_and_sig(stored_pubkey_hex, auth_data_hex, client_data_json, signature_hex, expected_rp_id, require_uv)
+
+fn check_auth_and_sig(stored_pubkey_hex: String, auth_data_hex: String, client_data_json: String, signature_hex: String, expected_rp_id: String, require_uv: Bool) -> Result(Bool, String):
+    // authenticatorData = rpIdHash[32] || flags[1] || signCount[4] || ... (>= 37 bytes).
+    if string.char_count(auth_data_hex) < 74:
+        Err("authenticatorData too short")
+    else if string.substring(auth_data_hex, 0, 64) != crypto.sha256(expected_rp_id):
+        Err("rpIdHash mismatch (wrong relying party)")
+    else:
+        let flags = hex_byte_at(auth_data_hex, 32)
+        let up = flags - ((flags / 2) * 2)      // bit 0: user present
+        let uv = (flags / 4) - ((flags / 8) * 2) // bit 2: user verified
+        if up != 1:
+            Err("user-presence flag not set")
+        else if require_uv && uv != 1:
+            Err("user-verification required but flag not set")
+        else:
+            // The signed message is authenticatorData || SHA256(clientDataJSON).
+            let msg_hex = auth_data_hex + crypto.sha256(client_data_json)
+            if crypto.ecdsa_p256_verify_hex(stored_pubkey_hex, msg_hex, signature_hex):
+                Ok(true)
+            else:
+                Err("signature invalid")

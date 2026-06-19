@@ -51,24 +51,58 @@
         crate::linker::link(vec![("t".into(), module)], "t").expect("link")
     }
 
-    /// `mode opt` / `mode strict` parse into `Module.modes`; an unknown mode is a
-    /// parse error.
+    /// `mode opt` parses into `Module.modes`; any other word (including the former
+    /// `strict` synonym) is a parse error — `opt` is the only performance mode.
     #[test]
     fn mode_directive_parses() {
         let m = parser::parse_module("mode opt\n\nfn main(console: Console):\n    print(console, \"hi\")\n")
             .expect("parse");
         assert_eq!(m.modes, vec!["opt".to_string()]);
-        let m2 = parser::parse_module("mode strict\n\nfn main(console: Console):\n    print(console, \"hi\")\n")
-            .expect("parse");
-        assert_eq!(m2.modes, vec!["strict".to_string()]);
+        assert!(parser::parse_module("mode strict\n\nfn main():\n    nil\n").is_err());
         assert!(parser::parse_module("mode turbo\n\nfn main():\n    nil\n").is_err());
         // `mode` stays usable as an ordinary identifier (contextual keyword).
         assert!(parser::parse_module("fn main(console: Console):\n    let mode = 3\n    print(console, __render(mode))\n").is_ok());
     }
 
-    /// In a `mode opt`/`strict` file, an ownership-relevant parameter (a heap
-    /// buffer) must carry an explicit `let`/`own`/`inout` convention; scalars and
-    /// capabilities are exempt; an ordinary file is never enforced.
+    /// `mode opt` is transitive: an `opt` module may import the std library
+    /// (exempt) and other `opt` modules, but importing a non-`opt` user module is
+    /// a link error.
+    #[test]
+    fn opt_mode_propagates_across_imports() {
+        let opt_main = parser::parse_module(
+            "mode opt\nimport helper\n\nfn main(console: Console):\n    print(console, __render(helper.double(21)))\n",
+        ).expect("parse main");
+        let opt_helper = parser::parse_module("mode opt\n\npub fn double(n: Int) -> Int:\n    n + n\n")
+            .expect("parse opt helper");
+        let plain_helper = parser::parse_module("pub fn double(n: Int) -> Int:\n    n + n\n")
+            .expect("parse plain helper");
+
+        // opt main + opt helper links.
+        crate::linker::link(
+            vec![("main".into(), opt_main.clone()), ("helper".into(), opt_helper)],
+            "main",
+        ).expect("opt importing opt links");
+
+        // opt main + NON-opt helper is rejected, naming both modules.
+        let err = crate::linker::link(
+            vec![("main".into(), opt_main), ("helper".into(), plain_helper)],
+            "main",
+        ).map(|_| ()).expect_err("opt importing non-opt must fail");
+        assert!(
+            err.message.contains("not `mode opt`") && err.message.contains("helper"),
+            "{}", err.message,
+        );
+
+        // Importing the bundled std library from an opt module is exempt.
+        let opt_std = parser::parse_module(
+            "mode opt\nimport list\n\nfn main(console: Console):\n    print(console, __render(list.length([1, 2, 3])))\n",
+        ).expect("parse opt+std");
+        crate::linker::link(vec![("main".into(), opt_std)], "main").expect("opt importing std is exempt");
+    }
+
+    /// In a `mode opt` file, an ownership-relevant parameter (a heap buffer) must
+    /// carry an explicit `let`/`var`/`own` convention; scalars and capabilities are
+    /// exempt; an ordinary file is never enforced.
     #[test]
     fn mode_requires_ownership_conventions() {
         let unannotated = "mode opt\n\nfn tag(xs: List(Int)) -> Int:\n    list.length(xs)\n\nfn main(console: Console):\n    print(console, __render(tag([1, 2, 3])))\n";
@@ -139,7 +173,7 @@
         .expect("parse");
         let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
-        let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+        let bytes = codegen::compile_module_binary(&linked)
             .expect("compile")
             .expect("the binary path lowers this program");
         assert_eq!(
@@ -684,7 +718,7 @@ fn main(console: Console):
             let module = parser::parse_module(src).expect("parse");
             let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
             typeck::check(&linked).expect("typecheck");
-            let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+            let bytes = codegen::compile_module_binary(&linked)
                 .expect("compile")
                 .expect("the binary path lowers this program");
             crate::run_wasm_bytes(&bytes).expect("wasm run")
@@ -700,7 +734,7 @@ fn main(console: Console):
     fn wasm_run(src: &str) -> Vec<String> {
         let linked = resolve_std_src(src);
         typeck::check(&linked).expect("typecheck");
-        let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+        let bytes = codegen::compile_module_binary(&linked)
             .expect("compile")
             .expect("the binary path lowers this program");
         crate::run_wasm_bytes(&bytes).expect("wasm run")
@@ -713,7 +747,7 @@ fn main(console: Console):
         use crate::runtime::{Capabilities, Runtime};
         let linked = resolve_std_src(src);
         typeck::check(&linked).expect("typecheck");
-        let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+        let bytes = codegen::compile_module_binary(&linked)
             .expect("compile")
             .expect("the binary path lowers this program");
         let mut rt = Runtime::batch().expect("runtime");
@@ -817,11 +851,15 @@ fn main(console: Console):
             .collect();
         assert_eq!(link_run(src), want, "interpreter");
         assert_eq!(wasm_run(src), want, "wasm");
-        // Unknown derives are loud.
+        // A derive now routes to a user generator `derive_<name>`; with none in
+        // scope it's a loud error at comptime (the generated call can't resolve).
         let bad = "type T derive(Serialize):\n    n: Int\n\nfn main(console: Console):\n    print(console, \"x\")\n";
-        let module = parser::parse_module(bad).expect("parse");
-        let err = crate::records::lower(module).expect_err("unknown derive must be rejected");
-        assert!(err.contains("unknown derive"), "got: {err}");
+        let res = crate::linker::link(
+            vec![("main".to_string(), parser::parse_module(bad).expect("parse"))],
+            "main",
+        );
+        let err = format!("{:?}", res.expect_err("missing derive generator must be rejected"));
+        assert!(err.to_lowercase().contains("serialize"), "got: {err}");
     }
 
     /// `comptime:` — compile-time item generation: zero capabilities
@@ -842,20 +880,235 @@ fn main(console: Console):
         assert!(err.to_string().contains("does not parse"), "got: {err}");
     }
 
+    /// A `derive` (comptime) in a module that ALSO imports a project-local sibling
+    /// must still link. The comptime program runs in the isolated, std-only
+    /// `comptime` link, so project-local imports are filtered out of it (a comptime
+    /// is a capability-free, link-time eval that cannot use sibling runtime code
+    /// anyway). Regression for `comptime block: imports unknown module <sibling>`,
+    /// which made `derive` unusable in any multi-module rune (e.g. its test module).
+    #[test]
+    fn derive_links_alongside_a_project_local_import() {
+        let sibling = parser::parse_module("pub fn helper() -> Int:\n    7\n").expect("parse sibling");
+        let main = parser::parse_module(
+            "import sibling\nimport json\nimport result\n\ntype Foo derive(Json):\n    x: Int\n\nfn main(console: Console):\n    print(console, \"${helper()}\")\n",
+        )
+        .expect("parse main");
+        let linked = crate::linker::link(
+            vec![("sibling".into(), sibling), ("main".into(), main)],
+            "main",
+        )
+        .expect("a derive must link in a module that also imports a project-local sibling");
+        crate::typeck::check(&linked).expect("typecheck");
+        let out = interpreter::run_module(linked, ".", Vec::new()).expect("run");
+        assert_eq!(out, vec!["7".to_string()]);
+    }
+
     /// Tuple patterns in `for` (the learning log's F4): `for (k, v) in
     /// dict.pairs(d):` destructures per element, round-trips through fmt,
     /// and agrees on both backends.
     #[test]
     fn for_tuple_patterns_destructure() {
-        let src = "fn main(console: Console):\n    var d = dict.new()\n    d = dict.insert(d, \"a\", 1)\n    d = dict.insert(d, \"b\", 2)\n    for (k, v) in dict.pairs(d):\n        print(console, \"${k}=${v}\")\n";
+        // Both the parenthesized and the unparenthesized (canonical, Python-style)
+        // tuple patterns parse and run identically on both backends.
+        let head = "fn main(console: Console):\n    var d = dict.new()\n    d = dict.insert(d, \"a\", 1)\n    d = dict.insert(d, \"b\", 2)\n";
+        let paren = format!("{head}    for (k, v) in dict.pairs(d):\n        print(console, \"${{k}}=${{v}}\")\n");
+        let unparen = format!("{head}    for k, v in dict.pairs(d):\n        print(console, \"${{k}}=${{v}}\")\n");
         let want: Vec<String> = ["a=1", "b=2"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(link_run(&paren), want, "interpreter (paren)");
+        assert_eq!(wasm_run(&paren), want, "wasm (paren)");
+        assert_eq!(link_run(&unparen), want, "interpreter (unparen)");
+        assert_eq!(wasm_run(&unparen), want, "wasm (unparen)");
+        // fmt canonicalizes to the unparenthesized form, which round-trips.
+        assert_eq!(
+            crate::format::reformat(&paren).as_deref(),
+            Some(unparen.as_str()),
+            "paren form canonicalizes to unparenthesized"
+        );
+        assert_eq!(
+            crate::format::reformat(&unparen).as_deref(),
+            Some(unparen.as_str()),
+            "unparenthesized form round-trips through fmt"
+        );
+    }
+
+    /// `return X if cond` — a postfix-guard return, sugar for `if cond: return X`.
+    /// It round-trips through fmt (the parser tags the desugared block with the
+    /// synthetic-line marker so the formatter re-collapses exactly this shape),
+    /// while an explicitly written multi-line `if cond: return X` is left untouched.
+    /// Runs identically on both backends.
+    #[test]
+    fn postfix_guard_return() {
+        let src = "fn classify(n: Int) -> String:\n    return \"neg\" if n < 0\n    return \"zero\" if n == 0\n    \"pos\"\n\nfn main(console: Console):\n    print(console, classify(-5))\n    print(console, classify(0))\n    print(console, classify(7))\n";
+        let want: Vec<String> = ["neg", "zero", "pos"].iter().map(|s| s.to_string()).collect();
         assert_eq!(link_run(src), want, "interpreter");
         assert_eq!(wasm_run(src), want, "wasm");
+        // The postfix form is preserved by fmt (idempotent).
         assert_eq!(
             crate::format::reformat(src).as_deref(),
             Some(src),
-            "the sugar must round-trip through fmt"
+            "postfix return round-trips through fmt"
         );
+        // An explicitly written multi-line if-return is NOT collapsed.
+        let explicit = "fn f(n: Int) -> Int:\n    if n < 0:\n        return 0\n    n\n";
+        assert_eq!(
+            crate::format::reformat(explicit).as_deref(),
+            Some(explicit),
+            "an explicit multi-line if-return is preserved"
+        );
+    }
+
+    /// fmt breaks a long fluent method chain onto one call per line (witchy's layout
+    /// joins the leading-`.` continuation lines back into the chain on re-parse), so
+    /// a builder like a router reads vertically. Short chains stay inline, and the
+    /// wrap is idempotent (the decision is the chain's own inline width, not its
+    /// indented column, so `chain_wrap` and `expr_max_line` agree).
+    #[test]
+    fn fmt_wraps_long_method_chains() {
+        let long = "fn main(net: Net):\n    let app = router().get(\"/aaaaaaaaaaaaaaaa\", h()).get(\"/bbbbbbbbbbbbbbbb\", h()).get(\"/cccccccccccccccc\", h()).get(\"/dddddddddddddddd\", h())\n    serve(net, app)\n";
+        let wrapped = crate::format::reformat(long).expect("a long chain formats");
+        assert!(
+            wrapped.contains("let app = router()\n        .get("),
+            "a long chain breaks one call per line:\n{wrapped}"
+        );
+        assert_eq!(
+            crate::format::reformat(&wrapped).as_deref(),
+            Some(wrapped.as_str()),
+            "the wrap is idempotent"
+        );
+        // A short chain stays on one line.
+        let short = "fn main(net: Net):\n    let x = a().b()\n";
+        assert_eq!(
+            crate::format::reformat(short).as_deref(),
+            Some(short),
+            "a short chain stays inline"
+        );
+    }
+
+    /// GENERIC IMPLS COMPOSE: reflection now reaches `List`, `Option`, tuples, and
+    /// generic records through ordinary `impl Reflect for List(a)` etc. — a generic
+    /// consumer (`json.stringify`, `where a: Reflect`) calling a generic impl method
+    /// monomorphizes per element. No builtins; identical on both backends.
+    #[test]
+    fn reflection_covers_lists_options_tuples_and_generic_records() {
+        let src = "import json\nimport reflect\n\ntype Box(a) derive(Reflect):\n    item: a\n\nfn main(console: Console):\n    print(console, json.stringify([1, 2, 3]))\n    print(console, json.stringify(Some(\"x\")))\n    print(console, json.stringify((\"p\", 5)))\n    print(console, json.stringify([(\"a\", \"b\")]))\n    print(console, json.stringify(Box([1, 2])))\n";
+        let want: Vec<String> = ["[1,2,3]", "\"x\"", "[\"p\",5]", "[[\"a\",\"b\"]]", "{\"item\":[1,2]}"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(link_run(src), want, "interpreter");
+        assert_eq!(wasm_run(src), want, "wasm");
+    }
+
+    /// ANONYMOUS STRUCTS: `.{ field: expr, … }` is an ad-hoc reflectable record (a
+    /// generic synthetic type carrying `derive(Reflect)`), so `json.stringify(.{…})`
+    /// works on any field types — including a `List` of tuples — with no per-type
+    /// boilerplate. Fields render in sorted order; `.{…}` round-trips through fmt.
+    #[test]
+    fn anonymous_structs_reflect_to_json() {
+        let src = "import json\n\nfn main(console: Console):\n    let files = [(\"a\", \"x\"), (\"b\", \"y\")]\n    print(console, json.stringify(.{files: files}))\n    print(console, json.stringify(.{name: \"acme\", count: 5}))\n";
+        let want: Vec<String> = [
+            "{\"files\":[[\"a\",\"x\"],[\"b\",\"y\"]]}",
+            "{\"count\":5,\"name\":\"acme\"}",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        assert_eq!(link_run(src), want, "interpreter");
+        assert_eq!(wasm_run(src), want, "wasm");
+        assert!(
+            crate::format::reformat(src).unwrap().contains(".{files: files}"),
+            "`.{{…}}` round-trips through fmt"
+        );
+    }
+
+    /// REFLECTION: `json.stringify(x)` encodes ANY value with no `derive(Json)` —
+    /// only `derive(Reflect)`, the one generated impl every reflective library
+    /// consumes. Covers scalars, nested records, `List`, and `Option` (Some/None),
+    /// identical on both backends (the generated `reflect` is ordinary witchy code).
+    #[test]
+    fn reflective_json_encode_without_derive() {
+        let src = "import json\nimport reflect\n\ntype Point derive(Reflect):\n    x: Int\n    y: Int\n\ntype Line derive(Reflect):\n    head: Point\n    tail: Point\n    tags: List(String)\n    note: Option(String)\n\nfn main(console: Console):\n    print(console, json.stringify(Point(1, 2)))\n    print(console, json.stringify(Line(Point(0, 0), Point(3, 4), [\"a\", \"b\"], Some(\"hi\"))))\n    print(console, json.stringify(Line(Point(5, 6), Point(7, 8), [], None)))\n";
+        let want: Vec<String> = [
+            "{\"x\":1,\"y\":2}",
+            "{\"head\":{\"x\":0,\"y\":0},\"tail\":{\"x\":3,\"y\":4},\"tags\":[\"a\",\"b\"],\"note\":\"hi\"}",
+            "{\"head\":{\"x\":5,\"y\":6},\"tail\":{\"x\":7,\"y\":8},\"tags\":[],\"note\":null}",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        // The generated `reflect` makes BARE trait calls, so the interpreter path
+        // also needs std/reflect linked (link_run's single-module typeck can't see
+        // it) — resolve std for both backends, like the real run path does.
+        // The generated `reflect` makes trait calls that need std/reflect linked,
+        // so resolve std for the interpreter path too (link_run's single-module
+        // typeck can't see it); the real `witchy run` path resolves std the same way.
+        let linked = resolve_std_src(src);
+        typeck::check(&linked).expect("typecheck");
+        let interp = interpreter::run_module(linked, ".", Vec::new()).expect("interpreter run");
+        assert_eq!(interp, want, "interpreter");
+        assert_eq!(wasm_run(src), want, "wasm");
+    }
+
+    /// `||` is the truthy fallback `a || b` ≡ `if truthy(a): a else: b` over the
+    /// emptyable built-ins: "" / None / [] are falsy, Bool stays logical-or, and the
+    /// operator chains. Both backends must agree — the wasm path reads a single
+    /// header word (length for String/List, variant tag for Option) where the
+    /// interpreter checks the runtime value, so this guards that they stay in sync.
+    #[test]
+    fn or_truthy_fallback_both_backends() {
+        let src = "fn main(console: Console):\n    print(console, \"\" || \"fallback\")\n    print(console, \"set\" || \"keep\")\n    match None || Some(\"x\"):\n        Some(v) -> print(console, v)\n        None -> print(console, \"none\")\n    match Some(\"y\") || Some(\"z\"):\n        Some(v) -> print(console, v)\n        None -> print(console, \"none\")\n    print(console, list.at([] || [\"A\"], 0))\n    print(console, list.at([\"B\"] || [\"C\"], 0))\n    print(console, \"${false || true}\")\n    let chain = \"\" || \"\" || \"third\"\n    print(console, chain)\n";
+        let want: Vec<String> = ["fallback", "set", "x", "y", "A", "B", "true", "third"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let linked = resolve_std_src(src);
+        typeck::check(&linked).expect("typecheck");
+        let interp = interpreter::run_module(linked, ".", Vec::new()).expect("interpreter run");
+        assert_eq!(interp, want, "interpreter");
+        assert_eq!(wasm_run(src), want, "wasm");
+    }
+
+    /// REFLECTION, SECOND USE CASE: `reflect.debug(x)` renders any value from the
+    /// SAME `reflect` that powers `json` — proving the engine is general, not a
+    /// json-specific hack. Records, lists-in-fields, and scalars, both backends.
+    #[test]
+    fn reflective_debug_render_other_use_case() {
+        let src = "import reflect\n\ntype Point derive(Reflect):\n    x: Int\n    y: Int\n\ntype Bag derive(Reflect):\n    items: List(Int)\n    label: String\n\nfn main(console: Console):\n    print(console, reflect.debug(Point(1, 2)))\n    print(console, reflect.debug(Bag([1, 2, 3], \"nums\")))\n    print(console, reflect.debug(42))\n";
+        let want: Vec<String> = [
+            "Point { x: 1, y: 2 }",
+            "Bag { items: [1, 2, 3], label: \"nums\" }",
+            "42",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let linked = resolve_std_src(src);
+        typeck::check(&linked).expect("typecheck");
+        let interp = interpreter::run_module(linked, ".", Vec::new()).expect("interpreter run");
+        assert_eq!(interp, want, "interpreter");
+        assert_eq!(wasm_run(src), want, "wasm");
+    }
+
+    /// COMPTIME REFLECTION (typeInfo, Phase 1 / Path 2a): a `comptime:` block reads
+    /// its module's type structure via `module_types` and GENERATES a specialized
+    /// `to_json` per record — direct field access, no runtime `Mirror`, written in
+    /// pure witchy. This is Zig-style comptime-over-types proven end-to-end, both
+    /// backends (comptime runs at link time, so the generated code is identical).
+    #[test]
+    fn comptime_typeinfo_generates_specialized_to_json() {
+        let src = "import meta\nimport json\nimport string\n\ntype Point:\n    x: Int\n    y: Int\n\ntype User:\n    name: String\n    age: Int\n    active: Bool\n\ncomptime:\n    let ctor = fn(ty: String) -> String:\n        if ty == \"Int\": \"JsonInt\"\n        else if ty == \"String\": \"JsonString\"\n        else if ty == \"Bool\": \"JsonBool\"\n        else: \"JsonNull\"\n    for t in module_types:\n        if t.kind == \"record\":\n            emit(\"fn to_json_${t.name}(v: ${t.name}) -> Json:\")\n            var pairs = []\n            for f in t.fields:\n                pairs = list.push(pairs, \"(\\\"\" + f.name + \"\\\", \" + ctor(f.type_name) + \"(v.\" + f.name + \"))\")\n            emit(\"    JsonObject([\" + string.join(pairs, \", \") + \"])\")\n            emit(\"\")\n\nfn main(console: Console):\n    print(console, json.encode(to_json_Point(Point(1, 2))))\n    print(console, json.encode(to_json_User(User(\"ann\", 30, true))))\n";
+        let want: Vec<String> = [
+            "{\"x\":1,\"y\":2}",
+            "{\"name\":\"ann\",\"age\":30,\"active\":true}",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let linked = resolve_std_src(src);
+        typeck::check(&linked).expect("typecheck");
+        let interp = interpreter::run_module(linked, ".", Vec::new()).expect("interpreter run");
+        assert_eq!(interp, want, "interpreter");
+        assert_eq!(wasm_run(src), want, "wasm");
     }
 
     /// VALUE EQUALITY, ALWAYS (the learning log's F15): dict lookups with
@@ -1051,7 +1304,7 @@ fn main(console: Console):
             want,
             "interpreter"
         );
-        let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+        let bytes = codegen::compile_module_binary(&linked)
             .expect("compile")
             .expect("the binary path lowers this program");
         let mut rt = Runtime::batch().expect("runtime");
@@ -1581,7 +1834,7 @@ fn yn(b: Bool) -> String:
         use crate::runtime::{Capabilities, Runtime};
         let run_and_count = |src: &str| -> (Vec<String>, i64) {
             let module = parser::parse_module(src).expect("parse");
-            let bytes = codegen::compile_module_binary(&module, &std::collections::HashMap::new())
+            let bytes = codegen::compile_module_binary(&module)
                 .expect("compile")
                 .expect("the binary path lowers this program");
             let mut rt = Runtime::batch().expect("rt");
@@ -2062,7 +2315,7 @@ fn yn(b: Bool) -> String:
             interpreter::run_module_signed(linked.clone(), ".", Vec::new(), Vec::new(), Some(seed))
                 .expect("interp");
         assert_eq!(interp_out[2], "verified");
-        let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+        let bytes = codegen::compile_module_binary(&linked)
             .expect("compile")
             .expect("the binary path lowers this program");
         let mut rt = Runtime::batch().expect("runtime");
@@ -2089,6 +2342,48 @@ fn yn(b: Bool) -> String:
             64,
         );
         assert!(denied.is_err(), "signing imports must not instantiate without the grant");
+    }
+
+    /// `SecretStore.get`/`.require` and `crypto.reveal` must behave identically on
+    /// both backends. The `signing` secret (granted by the seed) is fetched via
+    /// `require`, signed/published/revealed; an absent secret yields `None`. The
+    /// interpreter (oracle) and the compiled WASM must produce byte-identical
+    /// output — the same parity discipline as raw `crypto.sign`.
+    #[test]
+    fn secretstore_and_reveal_agree_on_both_backends() {
+        use crate::runtime::{Capabilities, Runtime};
+        let src = "import secretstore\nimport crypto\nfn main(console: Console, secrets: SecretStore):\n    let key = secrets.require(\"signing\")\n    print(console, crypto.public_key(key))\n    print(console, crypto.sign(key, \"msg\"))\n    print(console, crypto.reveal(key))\n    match secrets.get(\"signing\"):\n        Some(k) -> print(console, \"got signing\")\n        None -> print(console, \"no signing\")\n    match secrets.get(\"absent\"):\n        Some(k) -> print(console, \"unexpected\")\n        None -> print(console, \"absent none\")\n";
+        let module = parser::parse_module(src).expect("parse");
+        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        typeck::check(&linked).expect("typecheck");
+        let seed = [7u8; 32];
+        let interp_out =
+            interpreter::run_module_signed(linked.clone(), ".", Vec::new(), Vec::new(), Some(seed))
+                .expect("interp");
+        assert_eq!(interp_out[3], "got signing");
+        assert_eq!(interp_out[4], "absent none");
+        let bytes = codegen::compile_module_binary(&linked)
+            .expect("compile")
+            .expect("the binary path lowers this program");
+        let mut rt = Runtime::batch().expect("runtime");
+        let mut actor = rt
+            .spawn(
+                &bytes,
+                Capabilities {
+                    print: true,
+                    quiet: true,
+                    signing_key: Some(seed),
+                    ..Default::default()
+                },
+                64,
+            )
+            .expect("spawn");
+        actor.run().expect("run");
+        assert_eq!(
+            actor.output(),
+            interp_out,
+            "SecretStore.get/require + crypto.reveal must be byte-identical on both backends"
+        );
     }
 
     /// Every ```witchy code block in the documentation must be a real program:
@@ -2152,7 +2447,7 @@ fn yn(b: Bool) -> String:
                     // Every console-only doc example compiles on the binary path
                     // (AST → WIR → wasm-binary) and runs identically to the
                     // interpreter.
-                    let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+                    let bytes = codegen::compile_module_binary(&linked)
                         .unwrap_or_else(|e| panic!("{context} fails to compile to WASM: {e}"))
                         .unwrap_or_else(|| panic!("{context}: the binary backend does not support a construct it uses"));
                     let interp =
@@ -2223,7 +2518,7 @@ fn yn(b: Bool) -> String:
         assert!(err.message.contains("boom"));
         let module = parser::parse_module(src).expect("parse");
         // `fail()` lowers on the binary path: drop the message, then `unreachable`.
-        let bytes = codegen::compile_module_binary(&module, &std::collections::HashMap::new())
+        let bytes = codegen::compile_module_binary(&module)
             .expect("compile")
             .expect("fail() lowers on the binary path");
         assert!(crate::run_wasm_bytes(&bytes).is_err(), "WASM must trap on fail()");
@@ -2244,7 +2539,7 @@ fn yn(b: Bool) -> String:
         let module = parser::parse_module(env_src).expect("parse");
         let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
-        let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+        let bytes = codegen::compile_module_binary(&linked)
             .expect("compile")
             .expect("the binary path lowers this program");
         assert_eq!(link_run(env_src), want.clone(), "interpreter");
@@ -2285,7 +2580,7 @@ fn yn(b: Bool) -> String:
         let interp_out = interpreter::run_in(src, &root).expect("interp");
         assert_eq!(interp_out, want, "interpreter");
         let module = parser::parse_module(src).expect("parse");
-        let bytes = codegen::compile_module_binary(&module, &std::collections::HashMap::new())
+        let bytes = codegen::compile_module_binary(&module)
             .expect("compile")
             .expect("the binary path lowers this program");
         let mut rt = Runtime::batch().expect("runtime");
@@ -2312,7 +2607,7 @@ fn yn(b: Bool) -> String:
             );
             assert!(interpreter::run_in(&esc, &root).is_err(), "interp must reject `{bad}`");
             let m = parser::parse_module(&esc).expect("parse");
-            let wbytes = codegen::compile_module_binary(&m, &std::collections::HashMap::new())
+            let wbytes = codegen::compile_module_binary(&m)
                 .expect("compile")
                 .expect("the binary path lowers this program");
             let mut rt = Runtime::batch().expect("runtime");
@@ -2367,7 +2662,7 @@ fn yn(b: Bool) -> String:
             "interpreter"
         );
         let module = parser::parse_module(&src).expect("parse");
-        let bytes = codegen::compile_module_binary(&module, &std::collections::HashMap::new())
+        let bytes = codegen::compile_module_binary(&module)
             .expect("compile")
             .expect("the binary path lowers this program");
         let mut rt = Runtime::batch().expect("runtime");
@@ -2395,7 +2690,7 @@ fn yn(b: Bool) -> String:
             "interp must reject a non-allowlisted address"
         );
         let m = parser::parse_module(bad).expect("parse");
-        let wbytes = codegen::compile_module_binary(&m, &std::collections::HashMap::new())
+        let wbytes = codegen::compile_module_binary(&m)
             .expect("compile")
             .expect("the binary path lowers this program");
         let mut rt = Runtime::batch().expect("runtime");
@@ -2423,7 +2718,7 @@ fn yn(b: Bool) -> String:
         use crate::runtime::{Capabilities, Runtime};
         let listener_src = "fn main(console: Console, net: Net):\n    let l = listen(net, \"127.0.0.1:39999\")\n    print(console, \"listening\")\n";
         let m = parser::parse_module(listener_src).expect("parse");
-        let wbytes = codegen::compile_module_binary(&m, &std::collections::HashMap::new())
+        let wbytes = codegen::compile_module_binary(&m)
             .expect("compile")
             .expect("the binary path lowers this program");
         let mut rt = Runtime::batch().expect("runtime");
@@ -2442,7 +2737,7 @@ fn yn(b: Bool) -> String:
         assert!(denied.is_err(), "listen import must not instantiate under connect-only");
         let client = "fn main(console: Console, net: Net):\n    let s = connect(net, \"127.0.0.1:1\")\n    print(console, \"x\")\n";
         let m = parser::parse_module(client).expect("parse");
-        let wbytes = codegen::compile_module_binary(&m, &std::collections::HashMap::new())
+        let wbytes = codegen::compile_module_binary(&m)
             .expect("compile")
             .expect("the binary path lowers this program");
         let mut rt = Runtime::batch().expect("runtime");
@@ -2464,7 +2759,7 @@ fn yn(b: Bool) -> String:
         std::fs::create_dir_all(&root).expect("mkdir");
         let writer = "fn main(console: Console, dir: Dir):\n    write(dir, \"x.txt\", \"data\")\n    print(console, \"wrote\")\n";
         let module = parser::parse_module(writer).expect("parse");
-        let bytes = codegen::compile_module_binary(&module, &std::collections::HashMap::new())
+        let bytes = codegen::compile_module_binary(&module)
             .expect("compile")
             .expect("the binary path lowers this program");
         let mut rt = Runtime::batch().expect("runtime");
@@ -2483,7 +2778,7 @@ fn yn(b: Bool) -> String:
         assert!(denied.is_err(), "write import must not instantiate under a read-only grant");
         let reader = "fn main(console: Console, dir: Dir):\n    print(console, read(dir, \"x.txt\"))\n";
         let m = parser::parse_module(reader).expect("parse");
-        let wbytes = codegen::compile_module_binary(&m, &std::collections::HashMap::new())
+        let wbytes = codegen::compile_module_binary(&m)
             .expect("compile")
             .expect("the binary path lowers this program");
         let mut rt = Runtime::batch().expect("runtime");
@@ -2509,7 +2804,7 @@ fn yn(b: Bool) -> String:
         for src in srcs {
             let module = parser::parse_module(src).expect("parse");
             let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
-            let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+            let bytes = codegen::compile_module_binary(&linked)
                 .expect("compile")
                 .expect("the binary path lowers this program");
             let mut rt = Runtime::batch().expect("runtime");
@@ -2649,7 +2944,7 @@ fn yn(b: Bool) -> String:
         let rm = parser::parse_module(unresolvable).expect("parse");
         let linked = crate::linker::link(vec![("main".into(), rm)], "main").expect("link");
         assert!(
-            codegen::compile_module_binary(&linked, &std::collections::HashMap::new()).is_err(),
+            codegen::compile_module_binary(&linked).is_err(),
             "an unresolvable generic payload must stay a loud codegen error"
         );
     }
@@ -2667,7 +2962,7 @@ fn yn(b: Bool) -> String:
                 "fn main(console: Console):\n    let nan = 0.0 / 0.0\n    print(console, __render({cmp}))\n"
             );
             let module = parser::parse_module(&src).expect("parse");
-            let bytes = codegen::compile_module_binary(&module, &std::collections::HashMap::new())
+            let bytes = codegen::compile_module_binary(&module)
                 .expect("compile")
                 .expect("the binary path lowers this program");
             assert!(interpreter::run(&src).is_err(), "interpreter must error on `{cmp}`");
@@ -2698,7 +2993,7 @@ fn yn(b: Bool) -> String:
                 "fn main(console: Console):\n    print(console, __render(string.to_int(\"{v}\")))\n"
             );
             let module = parser::parse_module(&src).expect("parse");
-            let bytes = codegen::compile_module_binary(&module, &std::collections::HashMap::new())
+            let bytes = codegen::compile_module_binary(&module)
                 .expect("compile")
                 .expect("the binary path lowers this program");
             assert!(interpreter::run(&src).is_err(), "interpreter must error on `{v}`");
@@ -2723,7 +3018,7 @@ fn yn(b: Bool) -> String:
     fn list_index_out_of_bounds_errors_on_both_backends() {
         let oob = "fn main(console: Console):\n    let xs = [1, 2, 3]\n    print(console, __render(list.at(xs, 5)))\n";
         let module = parser::parse_module(oob).expect("parse");
-        let bytes = codegen::compile_module_binary(&module, &std::collections::HashMap::new())
+        let bytes = codegen::compile_module_binary(&module)
             .expect("compile")
             .expect("the binary path lowers this program");
         assert!(interpreter::run(oob).is_err(), "interpreter must error on OOB index");
@@ -2731,7 +3026,7 @@ fn yn(b: Bool) -> String:
         // A negative index likewise traps (it used to read backwards into the heap).
         let neg = "fn main(console: Console):\n    let xs = [1, 2, 3]\n    print(console, __render(list.at(xs, 0 - 1)))\n";
         let nmod = parser::parse_module(neg).expect("parse");
-        let nbytes = codegen::compile_module_binary(&nmod, &std::collections::HashMap::new())
+        let nbytes = codegen::compile_module_binary(&nmod)
             .expect("compile")
             .expect("the binary path lowers this program");
         assert!(interpreter::run(neg).is_err(), "interpreter must error on negative index");
@@ -2833,7 +3128,7 @@ fn yn(b: Bool) -> String:
         let module = parser::parse_module(src).expect("parse");
         let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
-        let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+        let bytes = codegen::compile_module_binary(&linked)
             .expect("compile")
             .expect("the binary path lowers this program");
         assert_eq!(link_run(src), want.clone(), "interpreter (linked)");
@@ -3522,6 +3817,47 @@ fn main(console: Console):
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
         let compiled = run_linked_on_wasm(&sources, "main");
         assert_eq!(interpreted, compiled, "`?` on Result diverged between backends");
+    }
+
+    #[test]
+    fn try_operator_with_message_backends_agree() {
+        // `e ? "msg"` adds context and is generic over the operand: an `Option`'s
+        // `None` becomes `Err(msg)`; a `Result`'s `Err(e)` becomes `Err("msg: e")`.
+        // Both backends must agree (the message form works wherever bare `?` does).
+        let client = r#"
+import option
+import result
+
+fn need(o: Option(Int)) -> Result(Int, String):
+    let x = o ? "missing value"
+    Ok(x)
+
+fn rewrap(r: Result(Int, String)) -> Result(Int, String):
+    let x = r ? "while computing"
+    Ok(x)
+
+fn main(console: Console):
+    print(console, __render(need(Some(5))))
+    print(console, __render(need(None)))
+    print(console, __render(rewrap(Ok(9))))
+    print(console, __render(rewrap(Err("boom"))))
+"#;
+        let sources = [
+            ("option", crate::bundled_module("option").unwrap()),
+            ("result", crate::bundled_module("result").unwrap()),
+            ("main", client),
+        ];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "`? \"msg\"` diverged between backends");
+        assert!(
+            interpreted.iter().any(|l| l.contains("missing value")),
+            "Option `None` must become `Err(msg)`: {interpreted:?}"
+        );
+        assert!(
+            interpreted.iter().any(|l| l.contains("while computing: boom")),
+            "Result `Err(e)` must become `Err(\"msg: e\")`: {interpreted:?}"
+        );
     }
 
     #[test]
@@ -5411,7 +5747,7 @@ fn main(console: Console):
         )
         .unwrap();
         let (out, exit) =
-            crate::run_file_sandboxed(path.to_str().unwrap(), None, Vec::new(), Vec::new(), None)
+            crate::run_file_sandboxed(path.to_str().unwrap(), None, Vec::new(), Vec::new(), None, Vec::new())
                 .expect("sandbox run");
         assert_eq!(out, vec!["42"]);
         assert_eq!(exit, None, "a Nil-returning main has no exit code");
@@ -5439,6 +5775,7 @@ fn main(console: Console):
             Vec::new(),
             vec!["data.txt".to_string()],
             None,
+            Vec::new(),
         )
         .expect("sandbox run");
         assert_eq!(out, vec!["found: needle in here"]);
@@ -5503,6 +5840,7 @@ fn main(console: Console):
             Vec::new(),
             vec!["../secret.txt".to_string()],
             None,
+            Vec::new(),
         )
         .expect_err("a `..` traversal must be denied");
         assert!(
@@ -5613,7 +5951,7 @@ fn main(console: Console):
             }
             let compile_with = |force_copy: bool| {
                 codegen::set_force_copy_for_tests(Some(force_copy));
-                let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new());
+                let bytes = codegen::compile_module_binary(&linked);
                 codegen::set_force_copy_for_tests(None);
                 bytes
             };
@@ -5642,7 +5980,7 @@ fn main(console: Console):
         let out = tmp.to_str().unwrap();
         crate::emit_wasm_file("examples/calc.witchy", out).expect("emit-wasm");
         let (from_wasm, _) =
-            crate::run_wasm_file(out, None, Vec::new(), Vec::new(), None).expect("run .wasm");
+            crate::run_wasm_file(out, None, Vec::new(), Vec::new(), None, Vec::new()).expect("run .wasm");
         let from_source = crate::execute_file("examples/calc.witchy", Vec::new()).expect("run source");
         assert_eq!(from_wasm, from_source, "precompiled .wasm diverges from the source run");
         let _ = std::fs::remove_file(&tmp);
@@ -5778,7 +6116,7 @@ fn main(console: Console):
     fn assert_fn_compiles(src: &str) {
         assert!(typeck::check_str(src).is_ok(), "{:?}", typeck::check_str(src));
         let module = parser::parse_module(src).expect("parse");
-        let bytes = codegen::compile_module_binary(&module, &std::collections::HashMap::new())
+        let bytes = codegen::compile_module_binary(&module)
             .expect("compile")
             .expect("the binary path lowers this program");
         Module::new(&Engine::default(), &bytes).expect("valid wasm");
@@ -5832,7 +6170,7 @@ fn main(console: Console):
             }
             total += 1;
             if matches!(
-                codegen::compile_module_binary(&linked, &std::collections::HashMap::new()),
+                codegen::compile_module_binary(&linked),
                 Ok(Some(_))
             ) {
                 ok += 1;
@@ -5854,7 +6192,7 @@ fn main(console: Console):
         assert!(typeck::check_str(src).is_ok(), "{:?}", typeck::check_str(src));
         let linked = resolve_std_src(src);
         typeck::check(&linked).expect("typecheck");
-        let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+        let bytes = codegen::compile_module_binary(&linked)
             .expect("compile")
             .expect("the binary path lowers this program");
         let mut rt = Runtime::new().expect("runtime");
@@ -6018,7 +6356,7 @@ fn main(console: Console):
         typeck::check(&linked).expect("typeck");
         // Takes the binary path (closures lower) AND emits all loop iterations —
         // a mis-scoped capture would drop the loop to a single pass.
-        let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+        let bytes = codegen::compile_module_binary(&linked)
             .expect("compile")
             .expect("loop + closure must lower on the binary path");
         assert_eq!(run_bytes_print_only(&bytes), want, "binary path");
@@ -6055,7 +6393,7 @@ fn main(console: Console):
         let module = parser::parse_module(src).expect("parse");
         let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typeck");
-        let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+        let bytes = codegen::compile_module_binary(&linked)
             .expect("compile")
             .expect("the accumulator program takes the WIR binary path");
         let (out, reowns) = binary_run_reowns(&bytes);
@@ -6076,7 +6414,7 @@ fn main(console: Console):
         typeck::check(&linked).expect("typeck");
         assert_eq!(link_run(src), want, "interpreter oracle");
         assert_eq!(run_on_wasm(src), want, "legacy WAT path");
-        let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+        let bytes = codegen::compile_module_binary(&linked)
             .expect("compile_module_binary")
             .expect("the accumulator program takes the WIR binary path");
         assert_eq!(run_bytes_print_only(&bytes), want, "binary path (in-place accumulator)");
@@ -6096,7 +6434,7 @@ fn main(console: Console):
         let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typeck");
         assert_eq!(link_run(src), want, "interpreter oracle");
-        let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+        let bytes = codegen::compile_module_binary(&linked)
             .expect("compile_module_binary")
             .expect("the dict accumulator program takes the WIR binary path");
         let (out, reowns) = binary_run_reowns(&bytes);
@@ -6116,7 +6454,7 @@ fn main(console: Console):
         let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typeck");
         assert_eq!(link_run(src), want, "interpreter oracle");
-        let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+        let bytes = codegen::compile_module_binary(&linked)
             .expect("compile_module_binary")
             .expect("the string builder takes the WIR binary path");
         let (out, reowns) = binary_run_reowns(&bytes);
@@ -6137,7 +6475,7 @@ fn main(console: Console):
         let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typeck");
         assert_eq!(link_run(src), want, "interpreter oracle");
-        let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+        let bytes = codegen::compile_module_binary(&linked)
             .expect("compile_module_binary")
             .expect("the dict.update accumulator takes the WIR binary path");
         let (out, reowns) = binary_run_reowns(&bytes);
@@ -6157,7 +6495,7 @@ fn main(console: Console):
         let module = parser::parse_module(src).expect("parse");
         let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typeck");
-        let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+        let bytes = codegen::compile_module_binary(&linked)
             .expect("compile_module_binary")
             .expect("the WIR binary path should lower a RecordUpdate with an expression base");
         assert_eq!(run_bytes_print_only(&bytes), want, "binary path");
@@ -6177,7 +6515,7 @@ fn main(console: Console):
         let module = parser::parse_module(src).expect("parse");
         let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typeck");
-        let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+        let bytes = codegen::compile_module_binary(&linked)
             .expect("compile_module_binary")
             .expect("the WIR binary path should lower an inout fn with an early return");
         assert_eq!(run_bytes_print_only(&bytes), want, "binary path");
@@ -6196,7 +6534,7 @@ fn main(console: Console):
         let module = parser::parse_module(src).expect("parse");
         let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typeck");
-        let m = codegen::assemble_wir_module(&linked, &std::collections::HashMap::new())
+        let m = codegen::assemble_wir_module(&linked)
             .expect("assemble")
             .expect("program takes the WIR binary path");
         // Measurable: the pass removes redundant slot conversions.
@@ -6233,7 +6571,7 @@ fn main(console: Console):
             let module = parser::parse_module(src).expect("parse");
             let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
             typeck::check(&linked).expect("typecheck");
-            let m = codegen::assemble_wir_module(&linked, &std::collections::HashMap::new())
+            let m = codegen::assemble_wir_module(&linked)
                 .expect("assemble")
                 .unwrap_or_else(|| panic!("expected the WIR binary path to handle:\n{src}"));
             let oracle = link_run(src);
@@ -6623,7 +6961,7 @@ fn main(console: Console):
             let module = parser::parse_module(src).expect("parse");
             let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
             typeck::check(&linked).expect("typecheck");
-            let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+            let bytes = codegen::compile_module_binary(&linked)
                 .expect("compile_module_binary")
                 .unwrap_or_else(|| {
                     panic!("expected the WIR binary path to handle this program:\n{src}")
@@ -6652,7 +6990,7 @@ fn main(console: Console):
         let module = parser::parse_module(src).expect("parse");
         let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
-        let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+        let bytes = codegen::compile_module_binary(&linked)
             .expect("compile_module_binary")
             .expect("the WIR binary path should handle encoding via the host import");
         // AST → WIR → binary runs identically to the interpreter oracle, under a
@@ -6683,7 +7021,7 @@ fn main(console: Console):
         let module = parser::parse_module(src).expect("parse");
         let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
-        let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+        let bytes = codegen::compile_module_binary(&linked)
             .expect("compile_module_binary")
             .expect("the WIR binary path should structurally lower enum `==`");
         assert_eq!(run_bytes_print_only(&bytes), want, "binary path");
@@ -6702,7 +7040,7 @@ fn main(console: Console):
         let module = parser::parse_module(src).expect("parse");
         let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
-        let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+        let bytes = codegen::compile_module_binary(&linked)
             .expect("compile_module_binary")
             .expect("the WIR binary path should render a dict");
         assert_eq!(run_bytes_print_only(&bytes), want, "binary path");
@@ -6722,7 +7060,7 @@ fn main(console: Console):
         let module = parser::parse_module(src).expect("parse");
         let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
-        let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+        let bytes = codegen::compile_module_binary(&linked)
             .expect("compile_module_binary")
             .expect("the WIR binary path should lower dict.update");
         assert_eq!(run_bytes_print_only(&bytes), want, "binary path");
@@ -6741,7 +7079,7 @@ fn main(console: Console):
         let module = parser::parse_module(src).expect("parse");
         let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
-        let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+        let bytes = codegen::compile_module_binary(&linked)
             .expect("compile_module_binary")
             .expect("the WIR binary path should compare a recursive ADT");
         assert_eq!(run_bytes_print_only(&bytes), want, "binary path");
@@ -6761,7 +7099,7 @@ fn main(console: Console):
         let module = parser::parse_module(src).expect("parse");
         let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
-        let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+        let bytes = codegen::compile_module_binary(&linked)
             .expect("compile_module_binary")
             .expect("the WIR binary path should lower the own-ABI move pipeline");
         assert_eq!(run_bytes_print_only(&bytes), want, "binary path");
@@ -6781,7 +7119,7 @@ fn main(console: Console):
         let module = parser::parse_module(src).expect("parse");
         let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
-        let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+        let bytes = codegen::compile_module_binary(&linked)
             .expect("compile_module_binary")
             .expect("the WIR binary path should lower a lambda-local accumulator");
         assert_eq!(run_bytes_print_only(&bytes), want, "binary path");
@@ -6799,7 +7137,7 @@ fn main(console: Console):
         let module = parser::parse_module(src).expect("parse");
         let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
-        let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+        let bytes = codegen::compile_module_binary(&linked)
             .expect("compile_module_binary")
             .expect("the WIR binary path should lower regex via the host engine");
         let want = link_run(src);
@@ -6818,7 +7156,7 @@ fn main(console: Console):
         let module = parser::parse_module(src).expect("parse");
         let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
-        let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+        let bytes = codegen::compile_module_binary(&linked)
             .expect("compile_module_binary")
             .expect("the WIR binary path should handle the crypto digests via host imports");
         let want = link_run(src);
@@ -6839,7 +7177,7 @@ fn main(console: Console):
         let module = parser::parse_module(src).expect("parse");
         let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
-        let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+        let bytes = codegen::compile_module_binary(&linked)
             .expect("compile_module_binary")
             .expect("the WIR binary path should handle crypto.rune_hash via the host import");
         let want = link_run(src);
@@ -6860,7 +7198,7 @@ fn main(console: Console):
         let module = parser::parse_module(&src).expect("parse");
         let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
-        let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+        let bytes = codegen::compile_module_binary(&linked)
             .expect("compile_module_binary")
             .expect("the WIR binary path should lower crypto.ecdsa_p256_verify");
         let want = vec!["ok".to_string(), "bad".to_string()];
@@ -6879,7 +7217,7 @@ fn main(console: Console):
         let module = parser::parse_module(src).expect("parse");
         let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
-        let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+        let bytes = codegen::compile_module_binary(&linked)
             .expect("compile_module_binary")
             .expect("the WIR binary path should handle the signing host imports");
         let caps = || Capabilities { print: true, signing_key: Some([7u8; 32]), quiet: true, ..Default::default() };
@@ -6903,7 +7241,7 @@ fn main(console: Console):
         let module = parser::parse_module(src).expect("parse");
         let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
-        let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+        let bytes = codegen::compile_module_binary(&linked)
             .expect("compile_module_binary")
             .expect("the WIR binary path should lower crypto.ed25519_verify");
         let mut rt = Runtime::batch().expect("runtime");
@@ -6931,7 +7269,7 @@ fn main(console: Console):
         let module = parser::parse_module(src).expect("parse");
         let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
-        let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+        let bytes = codegen::compile_module_binary(&linked)
             .expect("compile_module_binary")
             .expect("the WIR binary path should handle dir read via the host imports");
         let mut rt = Runtime::batch().expect("runtime");
@@ -6963,7 +7301,7 @@ fn main(console: Console):
         let module = parser::parse_module(src).expect("parse");
         let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
-        let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+        let bytes = codegen::compile_module_binary(&linked)
             .expect("compile_module_binary")
             .expect("the WIR binary path should handle dir list via the host imports");
         let mut rt = Runtime::batch().expect("runtime");
@@ -6991,7 +7329,7 @@ fn main(console: Console):
         let module = parser::parse_module(src).expect("parse");
         let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
-        let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+        let bytes = codegen::compile_module_binary(&linked)
             .expect("compile_module_binary")
             .expect("the WIR binary path should handle get_env + match");
         let mut rt = Runtime::batch().expect("runtime");
@@ -7016,7 +7354,7 @@ fn main(console: Console):
         let module = parser::parse_module(src).expect("parse");
         let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
-        let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+        let bytes = codegen::compile_module_binary(&linked)
             .expect("compile_module_binary")
             .expect("the WIR binary path should handle an Int-returning main");
         let mut rt = Runtime::batch().expect("runtime");
@@ -7039,7 +7377,7 @@ fn main(console: Console):
             .collect();
         let linked = crate::linker::link(mods, entry).expect("link");
         assert!(typeck::check(&linked).is_ok(), "{:?}", typeck::check(&linked));
-        let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+        let bytes = codegen::compile_module_binary(&linked)
             .expect("compile")
             .expect("the binary path lowers this program");
         let mut rt = Runtime::new().expect("runtime");
@@ -7538,7 +7876,7 @@ fn main(console: Console):
     print(console, __render(dict.size(d)))
 "#;
         let module = parser::parse_module(src).expect("parse");
-        let err = codegen::compile_module_binary(&module, &std::collections::HashMap::new())
+        let err = codegen::compile_module_binary(&module)
             .expect_err("should reject");
         assert!(
             err.to_string().contains("could not determine the Dict key type"),
@@ -8138,7 +8476,7 @@ fn main() -> Int:
     fn compiled_program_without_capability_cannot_instantiate() {
         use crate::runtime::{Capabilities, Runtime};
         let module = parser::parse_module(include_str!("../examples/compute.witchy")).expect("parse");
-        let bytes = codegen::compile_module_binary(&module, &std::collections::HashMap::new())
+        let bytes = codegen::compile_module_binary(&module)
             .expect("compile")
             .expect("the binary path lowers this program");
         let mut rt = Runtime::new().expect("runtime");
@@ -8535,6 +8873,7 @@ fn main(console: Console):
             Vec::new(),
             vec!["nobody".into(), "examples/data/poem.txt".into()],
             None,
+            Vec::new(),
         )
         .unwrap();
         assert_eq!(code, 0);
@@ -8544,7 +8883,7 @@ fn main(console: Console):
         );
         // No args: usage message and a non-zero exit code.
         let (out, code) =
-            crate::execute_file_exit("examples/minigrep.witchy", Vec::new(), Vec::new(), None)
+            crate::execute_file_exit("examples/minigrep.witchy", Vec::new(), Vec::new(), None, Vec::new())
                 .unwrap();
         assert_eq!(code, 1);
         assert_eq!(out, vec!["usage: minigrep <query> <file>".to_string()]);
@@ -8574,7 +8913,7 @@ fn main(console: Console):
     #[test]
     fn caps_guard_example_blocks_a_widening_in_witchy() {
         let (output, code) =
-            crate::execute_file_exit("examples/caps_guard.witchy", Vec::new(), Vec::new(), None)
+            crate::execute_file_exit("examples/caps_guard.witchy", Vec::new(), Vec::new(), None, Vec::new())
                 .unwrap();
         assert_eq!(output, vec!["BLOCK: upgrade widens authority by Net[Listen]"]);
         assert_eq!(code, 2, "a widening must exit 2");
@@ -8593,7 +8932,7 @@ fn main(console: Console):
     #[test]
     fn coven_check_example_flags_under_declared_manifest_in_witchy() {
         let (output, code) =
-            crate::execute_file_exit("examples/coven_check.witchy", Vec::new(), Vec::new(), None)
+            crate::execute_file_exit("examples/coven_check.witchy", Vec::new(), Vec::new(), None, Vec::new())
                 .unwrap();
         assert_eq!(
             output,
@@ -8616,6 +8955,7 @@ fn main(console: Console):
             Vec::new(),
             vec!["audit".into(), "examples/data/sample_rune.witchy".into()],
             None,
+            Vec::new(),
         )
         .unwrap();
         assert_eq!(
@@ -8645,6 +8985,7 @@ fn main(console: Console):
                 "examples/data/sample_rune_v2.witchy".into(),
             ],
             None,
+            Vec::new(),
         )
         .unwrap();
         assert_eq!(out, vec!["BLOCK: upgrade widens authority by Net[Listen]"]);
@@ -8662,6 +9003,7 @@ fn main(console: Console):
             Vec::new(),
             vec!["check".into(), "projects/pm/tests/fixtures/leaky".into()],
             None,
+            Vec::new(),
         )
         .unwrap();
         assert_eq!(
@@ -8681,6 +9023,7 @@ fn main(console: Console):
             Vec::new(),
             vec!["check".into(), "projects/pm".into()],
             None,
+            Vec::new(),
         )
         .unwrap();
         assert_eq!(out, vec!["OK: declared footprint admits the code, nothing unused"]);
@@ -8729,6 +9072,7 @@ fn main(console: Console):
             Vec::new(),
             vec!["deps".into(), "examples/projects/ledger/ledger".into()],
             None,
+            Vec::new(),
         )
         .unwrap();
         assert_eq!(out, vec!["money -> path:../money"]);
@@ -8746,6 +9090,7 @@ fn main(console: Console):
             Vec::new(),
             vec!["info".into(), "projects/pm".into()],
             None,
+            Vec::new(),
         )
         .unwrap();
         assert_eq!(
@@ -8771,6 +9116,7 @@ fn main(console: Console):
             Vec::new(),
             vec!["verify".into(), "examples/projects/ledger/ledger".into()],
             None,
+            Vec::new(),
         )
         .unwrap();
         assert_eq!(out, vec!["OK: every locked hash matches the dependency sources"]);
@@ -11491,7 +11837,7 @@ fn main(console: Console):
         // Reachable functions are present and the unused ones are dropped: the
         // binary path's `assemble_wir_module` runs the same `reachable_functions`
         // DCE, so inspect the assembled WIR func names directly.
-        let wir = codegen::assemble_wir_module(&linked, &std::collections::HashMap::new())
+        let wir = codegen::assemble_wir_module(&linked)
             .expect("assemble")
             .expect("the binary path lowers this program");
         // The binary path monomorphizes generics, so `list.map` appears as
@@ -11660,7 +12006,7 @@ async fn main(console: Console):
         typeck::check(&linked).expect("typecheck");
         let interp_out =
             interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interp");
-        let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+        let bytes = codegen::compile_module_binary(&linked)
             .expect("compile")
             .expect("the binary path lowers this program");
         let wasm_out = crate::run_wasm_bytes(&bytes).expect("wasm");
@@ -11696,7 +12042,7 @@ async fn main(console: Console):
         typeck::check(&linked).expect("typecheck");
         let interp_out =
             interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interp");
-        let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+        let bytes = codegen::compile_module_binary(&linked)
             .expect("compile")
             .expect("the binary path lowers this program");
         let wasm_out = crate::run_wasm_bytes(&bytes).expect("wasm");
@@ -11733,7 +12079,7 @@ async fn main(console: Console):
         typeck::check(&linked).expect("typecheck");
         let interp_out =
             interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interp");
-        let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+        let bytes = codegen::compile_module_binary(&linked)
             .expect("compile")
             .expect("the binary path lowers this program");
         let wasm_out = crate::run_wasm_bytes(&bytes).expect("wasm");
@@ -11769,7 +12115,7 @@ async fn main(console: Console):
         typeck::check(&linked).expect("typecheck");
         let interp_out =
             interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interp");
-        let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+        let bytes = codegen::compile_module_binary(&linked)
             .expect("compile")
             .expect("the binary path lowers this program");
         let wasm_out = crate::run_wasm_bytes(&bytes).expect("wasm");
@@ -11812,7 +12158,7 @@ async fn main(console: Console):
         typeck::check(&linked).expect("typecheck");
         let interp_out =
             interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interp");
-        let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+        let bytes = codegen::compile_module_binary(&linked)
             .expect("compile")
             .expect("the binary path lowers this program");
         let wasm_out = crate::run_wasm_bytes(&bytes).expect("wasm");
@@ -11849,7 +12195,7 @@ async fn main(console: Console):
         typeck::check(&linked).expect("typecheck");
         let interp_out =
             interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interp");
-        let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+        let bytes = codegen::compile_module_binary(&linked)
             .expect("compile")
             .expect("the binary path lowers this program");
         let wasm_out = crate::run_wasm_bytes(&bytes).expect("wasm");
@@ -11883,7 +12229,7 @@ async fn main(console: Console):
         typeck::check(&linked).expect("typecheck");
         let interp_out =
             interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interp");
-        let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+        let bytes = codegen::compile_module_binary(&linked)
             .expect("compile")
             .expect("the binary path lowers this program");
         let wasm_out = crate::run_wasm_bytes(&bytes).expect("wasm");
@@ -11929,7 +12275,7 @@ async fn main(console: Console):
         typeck::check(&linked).expect("typecheck");
         let interp_out =
             interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interp");
-        let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+        let bytes = codegen::compile_module_binary(&linked)
             .expect("compile")
             .expect("the binary path lowers this program");
         let wasm_out = crate::run_wasm_bytes(&bytes).expect("wasm");
@@ -11960,7 +12306,7 @@ fn main(console: Console):
         typeck::check(&linked).expect("typecheck");
         let interp_out =
             interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interp");
-        let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+        let bytes = codegen::compile_module_binary(&linked)
             .expect("compile")
             .expect("the binary path lowers this program");
         let wasm_out = crate::run_wasm_bytes(&bytes).expect("wasm");
@@ -12010,7 +12356,7 @@ fn main(console: Console):
         typeck::check(&linked).expect("typecheck");
         let interp_out =
             interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interp");
-        let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+        let bytes = codegen::compile_module_binary(&linked)
             .expect("compile")
             .expect("the binary path lowers this program");
         let wasm_out = crate::run_wasm_bytes(&bytes).expect("wasm");

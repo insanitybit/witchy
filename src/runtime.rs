@@ -1,13 +1,12 @@
 //! Witchy runtime spike.
 //!
-//! Each actor runs in its own wasmtime `Store` (its own linear memory, its own
-//! stack). An actor can only reach the outside world through host functions
-//! that the runtime explicitly links into *that actor's* `Linker`. Those host
+//! Each VM runs in its own wasmtime `Store` (its own linear memory, its own
+//! stack). A VM can only reach the outside world through host functions
+//! that the runtime explicitly links into *that VM's* `Linker`. Those host
 //! functions ARE the capabilities: if a capability was not granted, the import
-//! is simply absent and the actor fails to instantiate. There is no ambient
+//! is simply absent and the VM fails to instantiate. There is no ambient
 //! authority anywhere.
 
-use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -88,17 +87,15 @@ fn build_module(engine: &Engine, opt_wasm: &[u8], cacheable: bool) -> Result<Mod
     Ok(module)
 }
 
-pub type ActorId = u32;
+pub type VmId = u32;
 
-/// The set of capabilities granted to an actor at spawn time. Each `true` flag
-/// causes the corresponding host function to be linked into the actor's VM.
+/// The set of capabilities granted to a VM at spawn time. Each `true` flag
+/// causes the corresponding host function to be linked into the VM.
 /// Everything defaults to denied.
 #[derive(Clone, Debug, Default)]
 pub struct Capabilities {
     /// May write to the host's stdout via `witchy.print`.
     pub print: bool,
-    /// May deliver a message to another actor's mailbox via `witchy.send`.
-    pub send: bool,
     /// May print an integer via `witchy.print_int` (used by compiled witchy).
     pub print_int: bool,
     /// Capture output without echoing it to stdout (used by `witchy parity`,
@@ -132,6 +129,11 @@ pub struct Capabilities {
     /// material stays host-side; the guest only ever sees signatures and the
     /// public key.
     pub signing_key: Option<[u8; 32]>,
+    /// Named secrets backing the `SecretStore` capability, in handle order — a
+    /// `Secret` value is an index into this table, so the raw bytes stay host-side
+    /// (the guest only ever holds the handle). Index 0 is the `signing` secret
+    /// (from `--signing-key`), so a bare `Secret` capability is handle 0.
+    pub secrets: Vec<(String, Vec<u8>)>,
     /// The confined output directory backing a build step's `BuildOut`
     /// capability — where `write_out` may write generated source, and nowhere
     /// else. `None` denies build-time writes entirely.
@@ -149,46 +151,14 @@ impl Capabilities {
     }
 }
 
-/// A single actor's inbound message queue. Shared (`Arc`) so other actors'
-/// `send` host calls can push into it.
-type Mailbox = Arc<Mutex<VecDeque<Vec<u8>>>>;
-
-/// The shared registry of every actor's mailbox. This is the *only* shared
-/// state between actors, and it is reachable only through the `send`/`recv`
-/// host functions — never through guest memory.
-#[derive(Default)]
-struct Mailboxes {
-    boxes: Mutex<HashMap<ActorId, Mailbox>>,
-}
-
-impl Mailboxes {
-    fn get_or_create(&self, id: ActorId) -> Mailbox {
-        self.boxes.lock().unwrap().entry(id).or_default().clone()
-    }
-
-    /// Deliver `msg` to `target`'s mailbox. Returns false if no such actor.
-    fn deliver(&self, target: ActorId, msg: Vec<u8>) -> bool {
-        match self.boxes.lock().unwrap().get(&target) {
-            Some(mb) => {
-                mb.lock().unwrap().push_back(msg);
-                true
-            }
-            None => false,
-        }
-    }
-}
-
-/// Host-side state owned by each actor's `Store` — for BOTH runtimes: the
-/// single-module sandbox (`Runtime::spawn`) and the compiled actor system
-/// (`actor_system::System`, which carries its extra state in `sys`). One
-/// state type means one set of capability host functions.
-pub struct ActorState {
-    id: ActorId,
+/// Host-side state owned by a spawned VM's `Store`: its capability grant, output
+/// buffer, and the host-side `Dir`/`Net`/build handle tables. One state type
+/// means one set of capability host functions.
+pub struct VmState {
+    id: VmId,
     caps: Capabilities,
-    mailbox: Mailbox,
-    mailboxes: Arc<Mailboxes>,
     pub(crate) limits: StoreLimits,
-    /// Everything the actor has printed (via the `print`/`print_int`
+    /// Everything the VM has printed (via the `print`/`print_int`
     /// capabilities), so the host can observe a compiled program's output.
     pub(crate) output: Arc<Mutex<Vec<String>>>,
     /// The `Dir` capability handle table: index 0 is the granted root, and each
@@ -214,15 +184,14 @@ pub struct ActorState {
     build_read_roots: Vec<std::path::PathBuf>,
 }
 
-/// A spawned actor: an isolated VM plus the entrypoint we can drive.
-pub struct Actor {
-    pub id: ActorId,
-    store: Store<ActorState>,
+/// A spawned VM plus the entrypoint we can drive.
+pub struct Vm {
+    store: Store<VmState>,
     instance: wasmtime::Instance,
 }
 
-impl Actor {
-    /// Call the actor's exported `run` function to completion.
+impl Vm {
+    /// Call the VM's exported `run` function to completion.
     pub fn run(&mut self) -> Result<()> {
         let run = self
             .instance
@@ -254,7 +223,7 @@ impl Actor {
             .and_then(|g| g.get(&mut self.store).i64())
     }
 
-    /// Everything this actor has printed so far, in order. (Used by tests to
+    /// Everything this VM has printed so far, in order. (Used by tests to
     /// assert a compiled program's behavior end to end.)
     #[allow(dead_code)]
     pub fn output(&self) -> Vec<String> {
@@ -263,16 +232,15 @@ impl Actor {
 }
 
 /// The runtime owns the wasm engine and the shared mailbox registry, and hands
-/// out actor ids.
+/// out VM ids.
 pub struct Runtime {
     engine: Engine,
-    mailboxes: Arc<Mailboxes>,
-    next_id: ActorId,
+    next_id: VmId,
     preempt: bool,
 }
 
 impl Runtime {
-    /// A runtime whose actors can be preempted by the scheduler advancing the
+    /// A runtime whose VMs can be preempted by the scheduler advancing the
     /// engine epoch (M4). Epoch interruption makes the JIT insert a check at
     /// every loop backedge and call, so for run-to-completion single-program
     /// execution prefer [`Runtime::batch`], which omits that per-iteration cost.
@@ -296,7 +264,7 @@ impl Runtime {
         // compilation cache below, so generated code quality is free on every
         // run after the first.
         config.cranelift_opt_level(wasmtime::OptLevel::Speed);
-        // Epoch-based interruption lets the scheduler preempt a runaway actor
+        // Epoch-based interruption lets the scheduler preempt a runaway VM
         // (exercised in M4). It is only worth its per-backedge cost when a
         // scheduler will actually advance the epoch.
         if preempt {
@@ -310,38 +278,34 @@ impl Runtime {
         let engine = Engine::new(&config)?;
         Ok(Self {
             engine,
-            mailboxes: Arc::new(Mailboxes::default()),
             next_id: 1,
             preempt,
         })
     }
 
-    /// Spawn an actor from WAT/wasm source, granting it exactly `caps` and
+    /// Spawn a VM from WAT/wasm source, granting it exactly `caps` and
     /// capping its linear memory at `memory_pages_max` 64KiB pages.
     ///
     /// The capability check is structural: a granted host function is linked,
-    /// an ungranted one is absent, so an actor that imports an ungranted
+    /// an ungranted one is absent, so a VM that imports an ungranted
     /// capability fails right here at `instantiate`.
     pub fn spawn(
         &mut self,
         wasm: impl AsRef<[u8]>,
         caps: Capabilities,
         memory_pages_max: usize,
-    ) -> Result<Actor> {
+    ) -> Result<Vm> {
         let id = self.next_id;
         let module = build_module(&self.engine, &optimize_module(wasm.as_ref()), !self.preempt)?;
 
-        let mailbox = self.mailboxes.get_or_create(id);
         let limits = StoreLimitsBuilder::new()
             .memory_size(memory_pages_max * 64 * 1024)
             .build();
         let dirs = caps.dir_root.iter().cloned().collect();
         let nets = caps.net_allow.iter().cloned().collect();
-        let state = ActorState {
+        let state = VmState {
             id,
             caps: caps.clone(),
-            mailbox,
-            mailboxes: Arc::clone(&self.mailboxes),
             limits,
             output: Arc::new(Mutex::new(Vec::new())),
             dirs,
@@ -363,52 +327,43 @@ impl Runtime {
             store.set_epoch_deadline(1);
         }
 
-        let mut linker: Linker<ActorState> = Linker::new(&self.engine);
+        let mut linker: Linker<VmState> = Linker::new(&self.engine);
         link_capability_imports(&mut linker, &caps)?;
-        // `send` (the byte-mailbox flavor) and `recv` are this runtime's own:
-        // the actor SYSTEM defines its typed `send` instead.
-        if caps.send {
-            linker.func_wrap("witchy", "send", host_send)?;
-        }
-        // `recv` is intrinsic: reading your *own* mailbox is not authority over
-        // anyone else, so every actor may do it.
-        linker.func_wrap("witchy", "recv", host_recv)?;
 
         // Ungranted capability imports are rejected here.
         let instance = linker.instantiate(&mut store, &module)?;
 
-        // Only commit the id once the actor actually came up.
+        // Only commit the id once the VM actually came up.
         self.next_id += 1;
-        Ok(Actor { id, store, instance })
+        Ok(Vm { store, instance })
     }
 
-    /// Run an actor, but preempt it if it runs longer than `budget`. A watchdog
-    /// advances the engine epoch once the budget elapses; the actor traps at
+    /// Run a VM, but preempt it if it runs longer than `budget`. A watchdog
+    /// advances the engine epoch once the budget elapses; the VM traps at
     /// its next loop back-edge or call. This is how the scheduler reclaims a
-    /// runaway or malicious actor that refuses to yield.
-    pub fn run_with_budget(&self, actor: &mut Actor, budget: Duration) -> Result<()> {
+    /// runaway or malicious VM that refuses to yield.
+    pub fn run_with_budget(&self, vm: &mut Vm, budget: Duration) -> Result<()> {
         let engine = self.engine.clone();
         let watchdog = std::thread::spawn(move || {
             std::thread::sleep(budget);
             engine.increment_epoch();
         });
-        let result = actor.run();
+        let result = vm.run();
         watchdog.join().ok();
         result
     }
 }
 
 // ---------------------------------------------------------------------------
-// Host functions = capabilities. Each reads/writes the *calling* actor's own
-// linear memory via `Caller`; none can touch another actor's memory.
+// Host functions = capabilities. Each reads/writes the *calling* VM's own
+// linear memory via `Caller`; none can touch another VM's memory.
 // ---------------------------------------------------------------------------
 
-/// Register the capability host imports a grant entitles a VM to — shared by
-/// the single-module sandbox (`Runtime::spawn`) and the compiled actor system
-/// (`actor_system::link_vm`). Only granted families are defined; a module
-/// compiled against an ungranted operation cannot even instantiate.
+/// Register the capability host imports a grant entitles a VM to. Only granted
+/// families are defined; a module compiled against an ungranted operation cannot
+/// even instantiate.
 pub(crate) fn link_capability_imports(
-    linker: &mut Linker<ActorState>,
+    linker: &mut Linker<VmState>,
     caps: &Capabilities,
 ) -> Result<()> {
     // --- capability wiring: only granted host functions are defined ---
@@ -490,9 +445,9 @@ pub(crate) fn link_capability_imports(
     // They carry no authority — pure reads — and the WIR static prelude declares
     // them unconditionally, so define harmless stubs here. Ordinary programs
     // never call them, so the body is unreachable; returning 0 is a safe default.
-    linker.func_wrap("witchy", "field_str_len", |_: Caller<'_, ActorState>, _: i32| -> i32 { 0 })?;
-    linker.func_wrap("witchy", "field_intlist_len", |_: Caller<'_, ActorState>, _: i32| -> i32 { 0 })?;
-    linker.func_wrap("witchy", "field_strlist_size", |_: Caller<'_, ActorState>, _: i32| -> i32 { 0 })?;
+    linker.func_wrap("witchy", "field_str_len", |_: Caller<'_, VmState>, _: i32| -> i32 { 0 })?;
+    linker.func_wrap("witchy", "field_intlist_len", |_: Caller<'_, VmState>, _: i32| -> i32 { 0 })?;
+    linker.func_wrap("witchy", "field_strlist_size", |_: Caller<'_, VmState>, _: i32| -> i32 { 0 })?;
     // Native-stdlib functions are pure (no authority), so they're always
     // available — the same `crypto` module the interpreter exposes, here as a
     // host import that bridges to the shared `native` registry.
@@ -504,6 +459,13 @@ pub(crate) fn link_capability_imports(
     linker.func_wrap("witchy", "crypto.sha3_256", host_sha3_256)?;
     linker.func_wrap("witchy", "crypto.hmac_sha256", host_hmac_sha256)?;
     linker.func_wrap("witchy", "crypto.rune_hash", host_crypto_rune_hash)?;
+    // Resolving a named secret to its host-table handle reveals nothing (an
+    // i32 index, or -1 when absent), so it is always linkable; an ungranted
+    // store simply yields -1 for every name.
+    linker.func_wrap("witchy", "secretstore_lookup", host_secretstore_lookup)?;
+    // Revealing a value secret needs a granted secret at the handle (it errors
+    // otherwise), so it is always linkable — like `secretstore_lookup`.
+    linker.func_wrap("witchy", "crypto_reveal_len", host_crypto_reveal_len)?;
     // The compiler's footprint analyses are pure functions of their source
     // arguments — the toolchain exposed to witchy, same registry bridge.
     linker.func_wrap("witchy", "compiler_footprint_len", host_compiler_footprint_len)?;
@@ -519,14 +481,14 @@ pub(crate) fn link_capability_imports(
     Ok(())
 }
 
-fn host_print(mut caller: Caller<'_, ActorState>, ptr: i32, len: i32) -> Result<()> {
+fn host_print(mut caller: Caller<'_, VmState>, ptr: i32, len: i32) -> Result<()> {
     let mem = memory_of(&mut caller)?;
     let data = mem.data(&caller);
     let bytes = slice(data, ptr, len)?;
     let text = String::from_utf8_lossy(bytes);
     let id = caller.data().id;
     if !caller.data().caps.quiet {
-        print!("[actor {id}] {text}");
+        print!("[vm {id}] {text}");
     }
     caller
         .data()
@@ -537,58 +499,31 @@ fn host_print(mut caller: Caller<'_, ActorState>, ptr: i32, len: i32) -> Result<
     Ok(())
 }
 
-fn host_print_int(caller: Caller<'_, ActorState>, n: i64) -> Result<()> {
+fn host_print_int(caller: Caller<'_, VmState>, n: i64) -> Result<()> {
     if !caller.data().caps.quiet {
-        println!("[actor {}] {n}", caller.data().id);
+        println!("[vm {}] {n}", caller.data().id);
     }
     caller.data().output.lock().unwrap().push(n.to_string());
     Ok(())
 }
 
-fn host_print_float(caller: Caller<'_, ActorState>, x: f64) -> Result<()> {
+fn host_print_float(caller: Caller<'_, VmState>, x: f64) -> Result<()> {
     // The same canonical float formatting the interpreter uses (Value::Float
     // Display via `render_float`), so the two backends agree on float output —
     // including the trailing `.0` on a whole-valued float.
     let s = crate::fmt::render_float(x);
     if !caller.data().caps.quiet {
-        println!("[actor {}] {s}", caller.data().id);
+        println!("[vm {}] {s}", caller.data().id);
     }
     caller.data().output.lock().unwrap().push(s);
     Ok(())
-}
-
-fn host_send(mut caller: Caller<'_, ActorState>, target: i32, ptr: i32, len: i32) -> Result<()> {
-    let mem = memory_of(&mut caller)?;
-    let (data, state) = mem.data_and_store_mut(&mut caller);
-    let msg = slice(data, ptr, len)?.to_vec();
-    if !state.mailboxes.deliver(target as ActorId, msg) {
-        bail!("send to unknown actor id {target}");
-    }
-    Ok(())
-}
-
-fn host_recv(mut caller: Caller<'_, ActorState>, ptr: i32, cap: i32) -> Result<i32> {
-    let mem = memory_of(&mut caller)?;
-    let msg = caller.data().mailbox.lock().unwrap().pop_front();
-    let Some(msg) = msg else {
-        return Ok(-1); // mailbox empty
-    };
-    if msg.len() > cap as usize {
-        bail!(
-            "recv buffer too small: message is {} bytes, buffer is {cap}",
-            msg.len()
-        );
-    }
-    mem.write(&mut caller, ptr as usize, &msg)
-        .map_err(|e| Error::msg(format!("writing received message into actor memory: {e}")))?;
-    Ok(msg.len() as i32)
 }
 
 /// `crypto.ed25519_verify(pk, msg, sig) -> Bool`, bridged to the shared native
 /// registry (the same implementation the interpreter uses). Each argument is a
 /// pointer to a witchy string header (`[i32 len][bytes]`).
 fn host_ed25519_verify(
-    mut caller: Caller<'_, ActorState>,
+    mut caller: Caller<'_, VmState>,
     pk: i32,
     msg: i32,
     sig: i32,
@@ -615,7 +550,7 @@ fn host_ed25519_verify(
 /// Format an f64 with Rust's `Display` (matching the interpreter's float
 /// `to_string`), write the bytes at `out_ptr`, and return the byte length. The
 /// guest reserves a generous buffer; an f64's decimal form never exceeds it.
-fn host_float_to_str(mut caller: Caller<'_, ActorState>, x: f64, out_ptr: i32) -> Result<i32> {
+fn host_float_to_str(mut caller: Caller<'_, VmState>, x: f64, out_ptr: i32) -> Result<i32> {
     let s = crate::fmt::render_float(x);
     let bytes = s.into_bytes();
     let mem = memory_of(&mut caller)?;
@@ -628,7 +563,7 @@ fn host_float_to_str(mut caller: Caller<'_, ActorState>, x: f64, out_ptr: i32) -
 /// scalar value as UTF-8 into the guest buffer, via the shared native registry
 /// (the SAME `char::from_u32` the interpreter uses). An out-of-range or
 /// surrogate value becomes U+FFFD, never an error.
-fn host_string_from_code(mut caller: Caller<'_, ActorState>, cp: i64, out_ptr: i32) -> Result<i32> {
+fn host_string_from_code(mut caller: Caller<'_, VmState>, cp: i64, out_ptr: i32) -> Result<i32> {
     use crate::value::NativeValue as Value;
     let f = crate::native::lookup("string.from_code")
         .ok_or_else(|| Error::msg("string.from_code is not registered"))?;
@@ -643,7 +578,7 @@ fn host_string_from_code(mut caller: Caller<'_, ActorState>, cp: i64, out_ptr: i
     Ok(bytes.len() as i32)
 }
 
-fn host_sha256(mut caller: Caller<'_, ActorState>, in_ptr: i32, out_ptr: i32) -> Result<()> {
+fn host_sha256(mut caller: Caller<'_, VmState>, in_ptr: i32, out_ptr: i32) -> Result<()> {
     use crate::value::NativeValue as Value;
     let mem = memory_of(&mut caller)?;
     let input = read_wstr(mem.data(&caller), in_ptr)?;
@@ -665,7 +600,7 @@ fn host_sha256(mut caller: Caller<'_, ActorState>, in_ptr: i32, out_ptr: i32) ->
 /// native registry (the SAME aws-lc-rs impl the interpreter uses), return an
 /// i32 bool. Parameterized by the native name so each verify is a thin wrapper.
 fn host_crypto_verify3(
-    mut caller: Caller<'_, ActorState>,
+    mut caller: Caller<'_, VmState>,
     native: &str,
     pk: i32,
     msg: i32,
@@ -692,7 +627,7 @@ fn host_crypto_verify3(
 /// native registry, and write the `expect`-length hex digest into the guest's
 /// pre-allocated buffer at `out_ptr`.
 fn host_crypto_digest(
-    mut caller: Caller<'_, ActorState>,
+    mut caller: Caller<'_, VmState>,
     native: &str,
     inputs: &[i32],
     out_ptr: i32,
@@ -718,23 +653,23 @@ fn host_crypto_digest(
         .map_err(|e| Error::msg(format!("writing {native} result into guest memory: {e}")))
 }
 
-fn host_ecdsa_p256_verify(caller: Caller<'_, ActorState>, pk: i32, msg: i32, sig: i32) -> Result<i32> {
+fn host_ecdsa_p256_verify(caller: Caller<'_, VmState>, pk: i32, msg: i32, sig: i32) -> Result<i32> {
     host_crypto_verify3(caller, "crypto.ecdsa_p256_verify", pk, msg, sig)
 }
 
-fn host_ecdsa_p256_verify_hex(caller: Caller<'_, ActorState>, pk: i32, msg: i32, sig: i32) -> Result<i32> {
+fn host_ecdsa_p256_verify_hex(caller: Caller<'_, VmState>, pk: i32, msg: i32, sig: i32) -> Result<i32> {
     host_crypto_verify3(caller, "crypto.ecdsa_p256_verify_hex", pk, msg, sig)
 }
 
-fn host_sha512(caller: Caller<'_, ActorState>, in_ptr: i32, out_ptr: i32) -> Result<()> {
+fn host_sha512(caller: Caller<'_, VmState>, in_ptr: i32, out_ptr: i32) -> Result<()> {
     host_crypto_digest(caller, "crypto.sha512", &[in_ptr], out_ptr, 128)
 }
 
-fn host_sha3_256(caller: Caller<'_, ActorState>, in_ptr: i32, out_ptr: i32) -> Result<()> {
+fn host_sha3_256(caller: Caller<'_, VmState>, in_ptr: i32, out_ptr: i32) -> Result<()> {
     host_crypto_digest(caller, "crypto.sha3_256", &[in_ptr], out_ptr, 64)
 }
 
-fn host_hmac_sha256(caller: Caller<'_, ActorState>, key_ptr: i32, msg_ptr: i32, out_ptr: i32) -> Result<()> {
+fn host_hmac_sha256(caller: Caller<'_, VmState>, key_ptr: i32, msg_ptr: i32, out_ptr: i32) -> Result<()> {
     host_crypto_digest(caller, "crypto.hmac_sha256", &[key_ptr, msg_ptr], out_ptr, 64)
 }
 
@@ -743,7 +678,7 @@ fn host_hmac_sha256(caller: Caller<'_, ActorState>, key_ptr: i32, msg_ptr: i32, 
 /// registry, and write the fixed 71-byte `sha256:<hex>` result into the
 /// guest-allocated string.
 fn host_crypto_rune_hash(
-    mut caller: Caller<'_, ActorState>,
+    mut caller: Caller<'_, VmState>,
     paths_ptr: i32,
     contents_ptr: i32,
     out_ptr: i32,
@@ -769,7 +704,7 @@ fn host_crypto_rune_hash(
 /// `compiler_footprint_len(src_ptr) -> Int`: compute the capability-footprint
 /// JSON of the guest's source string through the shared native registry, stage
 /// it for `fill_pending`, and report its byte length.
-fn host_compiler_footprint_len(mut caller: Caller<'_, ActorState>, src_ptr: i32) -> Result<i32> {
+fn host_compiler_footprint_len(mut caller: Caller<'_, VmState>, src_ptr: i32) -> Result<i32> {
     use crate::value::NativeValue as Value;
     let mem = memory_of(&mut caller)?;
     let src = read_wstr(mem.data(&caller), src_ptr)?;
@@ -788,7 +723,7 @@ fn host_compiler_footprint_len(mut caller: Caller<'_, ActorState>, src_ptr: i32)
 /// JSON of two guest source strings, stage it for `fill_pending`, and report
 /// its byte length.
 fn host_compiler_diff_len(
-    mut caller: Caller<'_, ActorState>,
+    mut caller: Caller<'_, VmState>,
     old_ptr: i32,
     new_ptr: i32,
 ) -> Result<i32> {
@@ -812,7 +747,7 @@ fn host_compiler_diff_len(
 /// stage the encoded match spans for `fill_pending`, and report their byte
 /// length. An invalid pattern traps — identical to the interpreter's error.
 fn host_regex_match_spans_len(
-    mut caller: Caller<'_, ActorState>,
+    mut caller: Caller<'_, VmState>,
     pat_ptr: i32,
     text_ptr: i32,
 ) -> Result<i32> {
@@ -837,7 +772,7 @@ fn host_regex_match_spans_len(
 /// byte-for-byte), write the result bytes at `out_data_ptr`, and return their
 /// length. The guest reserves a sufficient buffer (`2*len + slack`) beforehand.
 /// `op`: 0 = hex_encode, 1 = hex_decode, 2 = base64_encode, 3 = base64_decode.
-fn host_encoding(mut caller: Caller<'_, ActorState>, op: i32, in_ptr: i32, out_ptr: i32) -> Result<i32> {
+fn host_encoding(mut caller: Caller<'_, VmState>, op: i32, in_ptr: i32, out_ptr: i32) -> Result<i32> {
     use crate::value::NativeValue as Value;
     let name = match op {
         0 => "encoding.hex_encode",
@@ -862,9 +797,9 @@ fn host_encoding(mut caller: Caller<'_, ActorState>, op: i32, in_ptr: i32, out_p
 }
 
 /// `now() -> Int`: wall-clock milliseconds since the Unix epoch — the same value
-/// the interpreter's `now(Clock)` produces. Linked only when the actor was
+/// the interpreter's `now(Clock)` produces. Linked only when the VM was
 /// granted a `Clock` capability.
-fn host_now(_caller: Caller<'_, ActorState>) -> i64 {
+fn host_now(_caller: Caller<'_, VmState>) -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
@@ -875,7 +810,7 @@ fn host_now(_caller: Caller<'_, ActorState>) -> i64 {
 /// variable's value, or -1 when unset (or not valid Unicode — matching the
 /// interpreter's `std::env::var`, which errors on both). The guest sizes its
 /// buffer from this, then calls `env_fill`. Linked only under an `Env` grant.
-fn host_env_len(mut caller: Caller<'_, ActorState>, name_ptr: i32) -> Result<i32> {
+fn host_env_len(mut caller: Caller<'_, VmState>, name_ptr: i32) -> Result<i32> {
     let mem = memory_of(&mut caller)?;
     let name = read_wstr(mem.data(&caller), name_ptr)?;
     match std::env::var(&name) {
@@ -887,7 +822,7 @@ fn host_env_len(mut caller: Caller<'_, ActorState>, name_ptr: i32) -> Result<i32
 /// `env_fill(name_ptr, out_ptr)`: write the named environment variable's value
 /// bytes into guest memory at `out_ptr` (the guest pre-allocated `env_len`
 /// bytes). Linked only under an `Env` grant.
-fn host_env_fill(mut caller: Caller<'_, ActorState>, name_ptr: i32, out_ptr: i32) -> Result<()> {
+fn host_env_fill(mut caller: Caller<'_, VmState>, name_ptr: i32, out_ptr: i32) -> Result<()> {
     let mem = memory_of(&mut caller)?;
     let name = read_wstr(mem.data(&caller), name_ptr)?;
     let value = std::env::var(&name).unwrap_or_default();
@@ -897,15 +832,15 @@ fn host_env_fill(mut caller: Caller<'_, ActorState>, name_ptr: i32, out_ptr: i32
 
 // --- the Dir capability family ---
 //
-// A guest `Dir` value is an i32 HANDLE into the actor's host-side path table
-// (`ActorState::dirs`); the paths never enter guest memory, so a module cannot
+// A guest `Dir` value is an i32 HANDLE into the VM's host-side path table
+// (`VmState::dirs`); the paths never enter guest memory, so a module cannot
 // forge or widen one. Handle 0 is the granted root. Every operation resolves
 // through the SAME `resolve`/`resolve_write` confinement the interpreter uses
 // (lexical `..`/absolute rejection + symlink-aware canonicalization), so the
 // two backends agree on exactly which paths are reachable.
 
 /// Look up a Dir handle's base path (trap on a forged/out-of-range handle).
-fn dir_base(caller: &Caller<'_, ActorState>, h: i32) -> Result<std::path::PathBuf> {
+fn dir_base(caller: &Caller<'_, VmState>, h: i32) -> Result<std::path::PathBuf> {
     caller
         .data()
         .dirs
@@ -920,7 +855,7 @@ fn confine(r: std::result::Result<std::path::PathBuf, crate::confine::ConfineErr
 
 /// `dir_subdir(h, name) -> handle`: attenuate to a confined subdirectory,
 /// minting a new handle.
-fn host_dir_subdir(mut caller: Caller<'_, ActorState>, h: i32, name_ptr: i32) -> Result<i32> {
+fn host_dir_subdir(mut caller: Caller<'_, VmState>, h: i32, name_ptr: i32) -> Result<i32> {
     let mem = memory_of(&mut caller)?;
     let name = read_wstr(mem.data(&caller), name_ptr)?;
     let base = dir_base(&caller, h)?;
@@ -933,7 +868,7 @@ fn host_dir_subdir(mut caller: Caller<'_, ActorState>, h: i32, name_ptr: i32) ->
 /// `dir_read_len(h, rel) -> byte length`: read the confined file NOW, stage its
 /// bytes, and report the length; the guest allocates and calls `fill_pending`.
 /// A failed read traps — the interpreter errors on it too.
-fn host_dir_read_len(mut caller: Caller<'_, ActorState>, h: i32, rel_ptr: i32) -> Result<i32> {
+fn host_dir_read_len(mut caller: Caller<'_, VmState>, h: i32, rel_ptr: i32) -> Result<i32> {
     let mem = memory_of(&mut caller)?;
     let rel = read_wstr(mem.data(&caller), rel_ptr)?;
     let base = dir_base(&caller, h)?;
@@ -946,7 +881,7 @@ fn host_dir_read_len(mut caller: Caller<'_, ActorState>, h: i32, rel_ptr: i32) -
 }
 
 /// `fill_pending(out_ptr)`: write the bytes staged by the matching size call.
-fn host_fill_pending(mut caller: Caller<'_, ActorState>, out_ptr: i32) -> Result<()> {
+fn host_fill_pending(mut caller: Caller<'_, VmState>, out_ptr: i32) -> Result<()> {
     let bytes = caller
         .data_mut()
         .pending
@@ -958,7 +893,7 @@ fn host_fill_pending(mut caller: Caller<'_, ActorState>, out_ptr: i32) -> Result
 }
 
 /// `dir_exists(h, rel) -> bool`: total — an escaping or missing path is `false`.
-fn host_dir_exists(mut caller: Caller<'_, ActorState>, h: i32, rel_ptr: i32) -> Result<i32> {
+fn host_dir_exists(mut caller: Caller<'_, VmState>, h: i32, rel_ptr: i32) -> Result<i32> {
     let mem = memory_of(&mut caller)?;
     let rel = read_wstr(mem.data(&caller), rel_ptr)?;
     let base = dir_base(&caller, h)?;
@@ -969,7 +904,7 @@ fn host_dir_exists(mut caller: Caller<'_, ActorState>, h: i32, rel_ptr: i32) -> 
 }
 
 /// `dir_is_dir(h, rel) -> bool`: total, like `dir_exists`.
-fn host_dir_is_dir(mut caller: Caller<'_, ActorState>, h: i32, rel_ptr: i32) -> Result<i32> {
+fn host_dir_is_dir(mut caller: Caller<'_, VmState>, h: i32, rel_ptr: i32) -> Result<i32> {
     let mem = memory_of(&mut caller)?;
     let rel = read_wstr(mem.data(&caller), rel_ptr)?;
     let base = dir_base(&caller, h)?;
@@ -982,7 +917,7 @@ fn host_dir_is_dir(mut caller: Caller<'_, ActorState>, h: i32, rel_ptr: i32) -> 
 /// `dir_list_size(h) -> bytes`: read the directory NOW (sorted names, matching
 /// the interpreter), stage the listing, and report the total byte size of the
 /// witchy `List(String)` structure the guest must reserve.
-fn host_dir_list_size(mut caller: Caller<'_, ActorState>, h: i32) -> Result<i32> {
+fn host_dir_list_size(mut caller: Caller<'_, VmState>, h: i32) -> Result<i32> {
     let base = dir_base(&caller, h)?;
     let mut names: Vec<String> = std::fs::read_dir(&base)
         .map_err(|e| Error::msg(format!("list failed for `{}`: {e}", base.display())))?
@@ -997,7 +932,7 @@ fn host_dir_list_size(mut caller: Caller<'_, ActorState>, h: i32) -> Result<i32>
 
 /// `args_size() -> bytes`: stage the host-provided argv and report the byte
 /// size of its `List(String)` structure (laid out by `write_pending_list`).
-fn host_args_size(mut caller: Caller<'_, ActorState>) -> Result<i32> {
+fn host_args_size(mut caller: Caller<'_, VmState>) -> Result<i32> {
     let args = caller.data().caps.args.clone();
     let size = 4 + 8 * args.len() + args.iter().map(|a| 4 + a.len()).sum::<usize>();
     caller.data_mut().pending_list = Some(args);
@@ -1008,7 +943,7 @@ fn host_args_size(mut caller: Caller<'_, ActorState>) -> Result<i32> {
 /// in the guest's own list format — `[count][count x i64 slots][string
 /// objects...]`, each slot holding the absolute guest pointer of its
 /// `[len][bytes]` string. Authority-free: it only writes already-staged data.
-fn host_write_pending_list(mut caller: Caller<'_, ActorState>, base_ptr: i32) -> Result<()> {
+fn host_write_pending_list(mut caller: Caller<'_, VmState>, base_ptr: i32) -> Result<()> {
     let names = caller
         .data_mut()
         .pending_list
@@ -1036,7 +971,7 @@ fn host_write_pending_list(mut caller: Caller<'_, ActorState>, base_ptr: i32) ->
 /// `dir_write(h, rel, contents)`: write a confined file (trap on failure or
 /// escape — the interpreter errors on both).
 fn host_dir_write(
-    mut caller: Caller<'_, ActorState>,
+    mut caller: Caller<'_, VmState>,
     h: i32,
     rel_ptr: i32,
     contents_ptr: i32,
@@ -1054,7 +989,7 @@ fn host_dir_write(
 /// `dir_append(h, rel, contents)`: append to a confined file, creating it if
 /// absent — `dir_write`'s confinement without clobbering existing contents.
 fn host_dir_append(
-    mut caller: Caller<'_, ActorState>,
+    mut caller: Caller<'_, VmState>,
     h: i32,
     rel_ptr: i32,
     contents_ptr: i32,
@@ -1075,7 +1010,7 @@ fn host_dir_append(
 }
 
 /// `dir_make_dir(h, name)`: create a confined subdirectory (idempotent).
-fn host_dir_make_dir(mut caller: Caller<'_, ActorState>, h: i32, name_ptr: i32) -> Result<()> {
+fn host_dir_make_dir(mut caller: Caller<'_, VmState>, h: i32, name_ptr: i32) -> Result<()> {
     let mem = memory_of(&mut caller)?;
     let name = read_wstr(mem.data(&caller), name_ptr)?;
     let base = dir_base(&caller, h)?;
@@ -1087,14 +1022,14 @@ fn host_dir_make_dir(mut caller: Caller<'_, ActorState>, h: i32, name_ptr: i32) 
 // --- build-time host ops ---
 //
 // The build sandbox grants a single `BuildOut` (the confined output dir) and the
-// `BuildRead` roots, both held host-side in `ActorState` — the guest's handle is
+// `BuildRead` roots, both held host-side in `VmState` — the guest's handle is
 // opaque and ignored. `write_out` confines through the same `resolve_write` as a
 // runtime `Dir`; `read_build` tries each granted root, matching the interpreter.
 
 /// `build_out_write(_h, name, contents)`: write generated source into the build
 /// output sandbox (trap on escape — a `..` can't leave it).
 fn host_build_out_write(
-    mut caller: Caller<'_, ActorState>,
+    mut caller: Caller<'_, VmState>,
     _h: i32,
     name_ptr: i32,
     contents_ptr: i32,
@@ -1119,7 +1054,7 @@ fn host_build_out_write(
 /// `build_read_len(_h, rel) -> byte length`: read the file from the first granted
 /// read root that holds it, stage its bytes, and report the length; the guest
 /// allocates and calls `fill_pending` (identical staging to `dir_read_len`).
-fn host_build_read_len(mut caller: Caller<'_, ActorState>, _h: i32, rel_ptr: i32) -> Result<i32> {
+fn host_build_read_len(mut caller: Caller<'_, VmState>, _h: i32, rel_ptr: i32) -> Result<i32> {
     let mem = memory_of(&mut caller)?;
     let rel = read_wstr(mem.data(&caller), rel_ptr)?;
     let roots = caller.data().build_read_roots.clone();
@@ -1142,13 +1077,13 @@ fn host_build_read_len(mut caller: Caller<'_, ActorState>, _h: i32, rel_ptr: i32
 
 // --- the Net capability family ---
 //
-// Same shape as Dir: a guest `Net` is an i32 handle into the actor's host-side
+// Same shape as Dir: a guest `Net` is an i32 handle into the VM's host-side
 // allowlist table (`restrict` mints narrower entries); `Socket`/`Listener` are
 // handles into host-side connection tables. The allowlist check is the SAME
 // exact-match rule the interpreter applies, so the backends agree on which
 // addresses are reachable.
 
-fn net_allow(caller: &Caller<'_, ActorState>, h: i32) -> Result<Vec<String>> {
+fn net_allow(caller: &Caller<'_, VmState>, h: i32) -> Result<Vec<String>> {
     caller
         .data()
         .nets
@@ -1158,7 +1093,7 @@ fn net_allow(caller: &Caller<'_, ActorState>, h: i32) -> Result<Vec<String>> {
 }
 
 /// `net_restrict(h, addr) -> handle`: attenuate to a single allowlisted address.
-fn host_net_restrict(mut caller: Caller<'_, ActorState>, h: i32, addr_ptr: i32) -> Result<i32> {
+fn host_net_restrict(mut caller: Caller<'_, VmState>, h: i32, addr_ptr: i32) -> Result<i32> {
     let mem = memory_of(&mut caller)?;
     let addr = read_wstr(mem.data(&caller), addr_ptr)?;
     let allow = net_allow(&caller, h)?;
@@ -1171,7 +1106,7 @@ fn host_net_restrict(mut caller: Caller<'_, ActorState>, h: i32, addr_ptr: i32) 
 }
 
 /// `net_connect(h, addr) -> Socket handle`: dial an allowlisted address.
-fn host_net_connect(mut caller: Caller<'_, ActorState>, h: i32, addr_ptr: i32) -> Result<i32> {
+fn host_net_connect(mut caller: Caller<'_, VmState>, h: i32, addr_ptr: i32) -> Result<i32> {
     let mem = memory_of(&mut caller)?;
     let addr = read_wstr(mem.data(&caller), addr_ptr)?;
     let allow = net_allow(&caller, h)?;
@@ -1190,7 +1125,7 @@ fn host_net_connect(mut caller: Caller<'_, ActorState>, h: i32, addr_ptr: i32) -
 /// `Option(Socket)`'s `None`) instead of trapping. A capability violation — an
 /// address outside the allowlist — still traps: that is a policy breach, not a
 /// transient dial failure.
-fn host_net_try_connect(mut caller: Caller<'_, ActorState>, h: i32, addr_ptr: i32) -> Result<i32> {
+fn host_net_try_connect(mut caller: Caller<'_, VmState>, h: i32, addr_ptr: i32) -> Result<i32> {
     let mem = memory_of(&mut caller)?;
     let addr = read_wstr(mem.data(&caller), addr_ptr)?;
     let allow = net_allow(&caller, h)?;
@@ -1208,7 +1143,7 @@ fn host_net_try_connect(mut caller: Caller<'_, ActorState>, h: i32, addr_ptr: i3
 }
 
 /// `net_listen(h, addr) -> Listener handle`: bind an allowlisted address.
-fn host_net_listen(mut caller: Caller<'_, ActorState>, h: i32, addr_ptr: i32) -> Result<i32> {
+fn host_net_listen(mut caller: Caller<'_, VmState>, h: i32, addr_ptr: i32) -> Result<i32> {
     let mem = memory_of(&mut caller)?;
     let addr = read_wstr(mem.data(&caller), addr_ptr)?;
     let allow = net_allow(&caller, h)?;
@@ -1223,7 +1158,7 @@ fn host_net_listen(mut caller: Caller<'_, ActorState>, h: i32, addr_ptr: i32) ->
 }
 
 /// `net_accept(listener) -> Socket handle`: block for a client connection.
-fn host_net_accept(mut caller: Caller<'_, ActorState>, lid: i32) -> Result<i32> {
+fn host_net_accept(mut caller: Caller<'_, VmState>, lid: i32) -> Result<i32> {
     let state = caller.data_mut();
     let listener = state
         .listeners
@@ -1237,7 +1172,7 @@ fn host_net_accept(mut caller: Caller<'_, ActorState>, lid: i32) -> Result<i32> 
 }
 
 fn socket_of(
-    state: &mut ActorState,
+    state: &mut VmState,
     sid: i32,
 ) -> Result<&mut std::io::BufReader<std::net::TcpStream>> {
     state
@@ -1247,7 +1182,7 @@ fn socket_of(
 }
 
 /// `net_send_line(sock, s)`: write the string and a trailing newline.
-fn host_net_send_line(mut caller: Caller<'_, ActorState>, sid: i32, line_ptr: i32) -> Result<()> {
+fn host_net_send_line(mut caller: Caller<'_, VmState>, sid: i32, line_ptr: i32) -> Result<()> {
     use std::io::Write;
     let mem = memory_of(&mut caller)?;
     let line = read_wstr(mem.data(&caller), line_ptr)?;
@@ -1259,7 +1194,7 @@ fn host_net_send_line(mut caller: Caller<'_, ActorState>, sid: i32, line_ptr: i3
 }
 
 /// `net_send_bytes(sock, s)`: write the exact bytes, no framing added.
-fn host_net_send_bytes(mut caller: Caller<'_, ActorState>, sid: i32, ptr: i32) -> Result<()> {
+fn host_net_send_bytes(mut caller: Caller<'_, VmState>, sid: i32, ptr: i32) -> Result<()> {
     use std::io::Write;
     let mem = memory_of(&mut caller)?;
     let s = read_wstr(mem.data(&caller), ptr)?;
@@ -1271,7 +1206,7 @@ fn host_net_send_bytes(mut caller: Caller<'_, ActorState>, sid: i32, ptr: i32) -
 
 /// `net_recv_line_len(sock) -> len`: read one line NOW (newline trimmed, like
 /// the interpreter), stage it, and report its length for `fill_pending`.
-fn host_net_recv_line_len(mut caller: Caller<'_, ActorState>, sid: i32) -> Result<i32> {
+fn host_net_recv_line_len(mut caller: Caller<'_, VmState>, sid: i32) -> Result<i32> {
     use std::io::BufRead;
     let state = caller.data_mut();
     let sock = socket_of(state, sid)?;
@@ -1286,7 +1221,7 @@ fn host_net_recv_line_len(mut caller: Caller<'_, ActorState>, sid: i32) -> Resul
 
 /// `net_recv_all_len(sock) -> len`: read to EOF NOW (lossy UTF-8, like the
 /// interpreter), stage it, and report its length.
-fn host_net_recv_all_len(mut caller: Caller<'_, ActorState>, sid: i32) -> Result<i32> {
+fn host_net_recv_all_len(mut caller: Caller<'_, VmState>, sid: i32) -> Result<i32> {
     use std::io::Read;
     let state = caller.data_mut();
     let sock = socket_of(state, sid)?;
@@ -1301,7 +1236,7 @@ fn host_net_recv_all_len(mut caller: Caller<'_, ActorState>, sid: i32) -> Result
 
 /// `net_recv_bytes_len(sock, n) -> len`: read exactly `n` bytes (fewer only on
 /// early EOF, matching the interpreter), stage them lossily, report the length.
-fn host_net_recv_bytes_len(mut caller: Caller<'_, ActorState>, sid: i32, n: i64) -> Result<i32> {
+fn host_net_recv_bytes_len(mut caller: Caller<'_, VmState>, sid: i32, n: i64) -> Result<i32> {
     use std::io::Read;
     let state = caller.data_mut();
     let sock = socket_of(state, sid)?;
@@ -1323,29 +1258,40 @@ fn host_net_recv_bytes_len(mut caller: Caller<'_, ActorState>, sid: i32, n: i64)
 }
 
 /// `net_close(sock)`: shut the connection down (idempotent).
-fn host_net_close(mut caller: Caller<'_, ActorState>, sid: i32) -> Result<()> {
+fn host_net_close(mut caller: Caller<'_, VmState>, sid: i32) -> Result<()> {
     if let Some(sock) = caller.data_mut().sockets.get_mut(sid as usize) {
         let _ = sock.get_mut().shutdown(std::net::Shutdown::Both);
     }
     Ok(())
 }
 
-/// `crypto.sign(msg_ptr, out_data_ptr)`: sign the message with the GRANTED key
-/// (host-side seed) and write the 128 hex signature bytes into the guest's
-/// pre-allocated string — through the same native registry the interpreter
+/// The raw bytes of the secret at `handle` (an index into the host secret table).
+/// Handle 0 falls back to the single `signing_key` so VM-spawn sites that grant a
+/// lone Secret (without populating `secrets`) keep working.
+fn secret_seed_bytes(caps: &Capabilities, handle: i32) -> Result<Vec<u8>> {
+    if let Some((_, bytes)) = usize::try_from(handle).ok().and_then(|h| caps.secrets.get(h)) {
+        return Ok(bytes.clone());
+    }
+    if handle == 0 {
+        if let Some(seed) = caps.signing_key {
+            return Ok(seed.to_vec());
+        }
+    }
+    Err(Error::msg("crypto: no secret at that handle (none granted?)"))
+}
+
+/// `crypto.sign(key, msg_ptr, out_data_ptr)`: sign the message with the secret at
+/// handle `key` (host-side bytes) and write the 128 hex signature bytes into the
+/// guest's pre-allocated string — through the same native registry the interpreter
 /// uses, so the output is byte-identical.
-fn host_crypto_sign(mut caller: Caller<'_, ActorState>, msg_ptr: i32, out_ptr: i32) -> Result<()> {
+fn host_crypto_sign(mut caller: Caller<'_, VmState>, key: i32, msg_ptr: i32, out_ptr: i32) -> Result<()> {
     use crate::value::NativeValue as Value;
-    let seed = caller
-        .data()
-        .caps
-        .signing_key
-        .ok_or_else(|| Error::msg("crypto.sign: no Secret granted"))?;
+    let bytes = secret_seed_bytes(&caller.data().caps, key)?;
     let mem = memory_of(&mut caller)?;
     let msg = read_wstr(mem.data(&caller), msg_ptr)?;
     let f = crate::native::lookup("crypto.sign")
         .ok_or_else(|| Error::msg("crypto.sign is not registered"))?;
-    let sig = match f(&[Value::Secret(seed), Value::Str(msg)]).map_err(|e| Error::msg(e.message))? {
+    let sig = match f(&[Value::Secret(bytes), Value::Str(msg)]).map_err(|e| Error::msg(e.message))? {
         Value::Str(s) => s,
         _ => return Err(Error::msg("crypto.sign did not return a String")),
     };
@@ -1353,24 +1299,55 @@ fn host_crypto_sign(mut caller: Caller<'_, ActorState>, msg_ptr: i32, out_ptr: i
         .map_err(|e| Error::msg(format!("writing signature into guest memory: {e}")))
 }
 
-/// `crypto.public_key(out_data_ptr)`: write the granted key's 64 hex public-key
-/// bytes (safe to publish) into the guest's pre-allocated string.
-fn host_crypto_public_key(mut caller: Caller<'_, ActorState>, out_ptr: i32) -> Result<()> {
+/// `crypto.public_key(key, out_data_ptr)`: write the 64 hex public-key bytes of the
+/// secret at handle `key` (safe to publish) into the guest's pre-allocated string.
+fn host_crypto_public_key(mut caller: Caller<'_, VmState>, key: i32, out_ptr: i32) -> Result<()> {
     use crate::value::NativeValue as Value;
-    let seed = caller
-        .data()
-        .caps
-        .signing_key
-        .ok_or_else(|| Error::msg("crypto.public_key: no Secret granted"))?;
+    let bytes = secret_seed_bytes(&caller.data().caps, key)?;
     let f = crate::native::lookup("crypto.public_key")
         .ok_or_else(|| Error::msg("crypto.public_key is not registered"))?;
-    let pk = match f(&[Value::Secret(seed)]).map_err(|e| Error::msg(e.message))? {
+    let pk = match f(&[Value::Secret(bytes)]).map_err(|e| Error::msg(e.message))? {
         Value::Str(s) => s,
         _ => return Err(Error::msg("crypto.public_key did not return a String")),
     };
     let mem = memory_of(&mut caller)?;
     mem.write(&mut caller, out_ptr as usize, pk.as_bytes())
         .map_err(|e| Error::msg(format!("writing public key into guest memory: {e}")))
+}
+
+/// `secretstore_lookup(name_ptr) -> i32`: the host-table handle of the secret
+/// named `name`, or -1 if it was not granted. The bytes never cross into the
+/// guest — only the opaque handle, which `crypto.sign`/`reveal` resolve back to
+/// host-side bytes. `signing` resolves to handle 0 (the `--signing-key` slot).
+fn host_secretstore_lookup(mut caller: Caller<'_, VmState>, name_ptr: i32) -> Result<i32> {
+    let mem = memory_of(&mut caller)?;
+    let name = read_wstr(mem.data(&caller), name_ptr)?;
+    let caps = &caller.data().caps;
+    if let Some(i) = caps.secrets.iter().position(|(n, _)| *n == name) {
+        return Ok(i as i32);
+    }
+    if name == "signing" && caps.signing_key.is_some() {
+        return Ok(0);
+    }
+    Ok(-1)
+}
+
+/// `crypto_reveal_len(key) -> i32`: reveal the secret at handle `key` as a string
+/// (its raw bytes, lossy UTF-8 — through the same native registry the interpreter
+/// uses), stage it for `fill_pending`, and report its byte length. For value
+/// secrets handed to an external sink; the bytes only cross into the guest here.
+fn host_crypto_reveal_len(mut caller: Caller<'_, VmState>, key: i32) -> Result<i32> {
+    use crate::value::NativeValue as Value;
+    let bytes = secret_seed_bytes(&caller.data().caps, key)?;
+    let f = crate::native::lookup("crypto.reveal")
+        .ok_or_else(|| Error::msg("crypto.reveal is not registered"))?;
+    let s = match f(&[Value::Secret(bytes)]).map_err(|e| Error::msg(e.message))? {
+        Value::Str(s) => s,
+        _ => return Err(Error::msg("crypto.reveal did not return a String")),
+    };
+    let len = s.len() as i32;
+    caller.data_mut().pending = Some(s.into_bytes());
+    Ok(len)
 }
 
 // --- small helpers for safe guest-memory access ---
@@ -1453,10 +1430,10 @@ fn read_wstr_list(data: &[u8], ptr: i32) -> Result<Vec<String>> {
     Ok(out)
 }
 
-fn memory_of(caller: &mut Caller<'_, ActorState>) -> Result<Memory> {
+fn memory_of(caller: &mut Caller<'_, VmState>) -> Result<Memory> {
     match caller.get_export("memory") {
         Some(Extern::Memory(m)) => Ok(m),
-        _ => Err(Error::msg("actor does not export a linear `memory`")),
+        _ => Err(Error::msg("VM does not export a linear `memory`")),
     }
 }
 

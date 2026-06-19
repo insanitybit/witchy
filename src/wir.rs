@@ -654,6 +654,7 @@ pub fn int_to_string_helper() -> WirFunc {
     };
     // n == 0 → the single ascii '0'.
     let then_zero = vec![
+        N::Do(E::Call { func: "ensure".into(), args: vec![i32c(5)] }),
         N::SetLocal { local: "res".into(), value: E::GetGlobal("heap".into()) },
         N::Store { ptr: getl("res"), value: i32c(1), kind: Kind::I32, offset: 0 },
         N::Store8 { ptr: getl("res"), value: i32c(48), offset: 4 },
@@ -736,6 +737,10 @@ pub fn int_to_string_helper() -> WirFunc {
             local: "len".into(),
             value: bin(BinOp::Add, Kind::I32, getl("ndigits"), getl("neg")),
         },
+        N::Do(E::Call {
+            func: "ensure".into(),
+            args: vec![bin(BinOp::Add, Kind::I32, i32c(4), getl("len"))],
+        }),
         N::SetLocal { local: "res".into(), value: E::GetGlobal("heap".into()) },
         N::Store { ptr: getl("res"), value: getl("len"), kind: Kind::I32, offset: 0 },
         N::If {
@@ -3326,6 +3331,40 @@ fn crypto_hash_helper(name: &str, import: &str, hexlen: i32, inputs: &[&str]) ->
     }
 }
 
+/// A keyed crypto op on a `Secret` — `crypto.sign(key, msg)` / `crypto.public_key(key)`.
+/// `key` is the Secret HANDLE (an i32 index into the host secret table); the host
+/// signs / derives the public key with the never-exposed bytes and writes `hexlen`
+/// hex chars. (Separate from `crypto_hash_helper`, whose inputs are all strings.)
+fn crypto_keyed_helper(name: &str, import: &str, hexlen: i32, has_msg: bool) -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    let i32c = E::ConstI32;
+    let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+    let mut params = vec![WirLocal { name: "key".into(), ty: WirTy::Bool }];
+    let mut host_args: Vec<E> = vec![getl("key")];
+    if has_msg {
+        params.push(WirLocal { name: "msg".into(), ty: WirTy::Str });
+        host_args.push(getl("msg"));
+    }
+    host_args.push(b(BinOp::Add, getl("res"), i32c(4)));
+    WirFunc {
+        name: name.into(),
+        params,
+        ret: vec![WirTy::Str],
+        locals: vec![WirLocal { name: "res".into(), ty: WirTy::Bool }],
+        body: vec![
+            N::Do(E::Call { func: "ensure".into(), args: vec![i32c(hexlen + 4)] }),
+            N::SetLocal { local: "res".into(), value: E::GetGlobal("heap".into()) },
+            N::Store { ptr: getl("res"), value: i32c(hexlen), kind: Kind::I32, offset: 0 },
+            N::Do(E::CallHost { import: import.into(), args: host_args }),
+            N::SetGlobal { global: "heap".into(), value: b(BinOp::Add, getl("res"), i32c(hexlen + 4)) },
+            N::Push(getl("res")),
+        ],
+        raw_body: None,
+    }
+}
+
 /// `$dir_read(h, rel) -> i32` — the contents of file `rel` under dir handle `h`,
 /// as a String. Two-phase host protocol: `dir_read_len` reads the file and
 /// reports its byte length (staging the bytes host-side), then `fill_pending`
@@ -3349,6 +3388,39 @@ pub fn dir_read_helper() -> WirFunc {
         ],
         body: vec![
             N::SetLocal { local: "len".into(), value: E::CallHost { import: "dir_read_len".into(), args: vec![getl("h"), getl("rel")] } },
+            N::Do(E::Call { func: "ensure".into(), args: vec![b(BinOp::Add, getl("len"), i32c(4))] }),
+            N::SetLocal { local: "res".into(), value: E::GetGlobal("heap".into()) },
+            N::Store { ptr: getl("res"), value: getl("len"), kind: Kind::I32, offset: 0 },
+            N::Do(E::CallHost { import: "fill_pending".into(), args: vec![b(BinOp::Add, getl("res"), i32c(4))] }),
+            N::SetGlobal { global: "heap".into(), value: b(BinOp::Add, b(BinOp::Add, getl("res"), i32c(4)), getl("len")) },
+            N::Push(getl("res")),
+        ],
+        raw_body: None,
+    }
+}
+
+/// `$crypto_reveal(key) -> i32` — the raw bytes of the secret at handle `key` as
+/// a fresh String (lossy UTF-8). Identical staging to [`dir_read_helper`]: the
+/// host `crypto_reveal_len` reads the host-side secret and reports its byte
+/// length (staging the bytes), then `fill_pending` copies them into `res+4`. For
+/// value secrets (tokens, passwords) handed to an external sink — signing keys
+/// are used via `sign`/`public_key`, not revealed.
+pub fn crypto_reveal_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    let i32c = E::ConstI32;
+    let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+    WirFunc {
+        name: "crypto_reveal".into(),
+        params: vec![WirLocal { name: "key".into(), ty: WirTy::Bool }],
+        ret: vec![WirTy::Str],
+        locals: vec![
+            WirLocal { name: "len".into(), ty: WirTy::Bool },
+            WirLocal { name: "res".into(), ty: WirTy::Bool },
+        ],
+        body: vec![
+            N::SetLocal { local: "len".into(), value: E::CallHost { import: "crypto_reveal_len".into(), args: vec![getl("key")] } },
             N::Do(E::Call { func: "ensure".into(), args: vec![b(BinOp::Add, getl("len"), i32c(4))] }),
             N::SetLocal { local: "res".into(), value: E::GetGlobal("heap".into()) },
             N::Store { ptr: getl("res"), value: getl("len"), kind: Kind::I32, offset: 0 },
@@ -4068,6 +4140,16 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             uses_heap: false,
             uses_table: false,
         }),
+        // Resolve a named secret to its host-table handle (an i32 index, or -1
+        // if absent). Wraps the `secretstore_lookup` host import so user code
+        // stays free of direct CallHosts; the bytes never enter the guest.
+        "secretstore_lookup" => Some(WirHelperSpec {
+            func: host_call_helper("secretstore_lookup", "secretstore_lookup", 1),
+            helper_deps: &[],
+            import_deps: &["secretstore_lookup"],
+            uses_heap: false,
+            uses_table: false,
+        }),
         "dir_exists" => Some(WirHelperSpec {
             func: host_call_helper("dir_exists", "dir_exists", 2),
             helper_deps: &[],
@@ -4229,7 +4311,7 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
         "crypto_sign" => Some(WirHelperSpec {
             // The Secret capability: the host signs `msg` with the never-exposed
             // seed and writes a 128-char hex signature.
-            func: crypto_hash_helper("crypto_sign", "crypto.sign", 128, &["msg"]),
+            func: crypto_keyed_helper("crypto_sign", "crypto.sign", 128, true),
             helper_deps: &["ensure"],
             import_deps: &["crypto.sign"],
             uses_heap: true,
@@ -4237,7 +4319,7 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
         }),
         "crypto_public_key" => Some(WirHelperSpec {
             // No input — the host writes the seed's 64-char hex public key.
-            func: crypto_hash_helper("crypto_public_key", "crypto.public_key", 64, &[]),
+            func: crypto_keyed_helper("crypto_public_key", "crypto.public_key", 64, false),
             helper_deps: &["ensure"],
             import_deps: &["crypto.public_key"],
             uses_heap: true,
@@ -4279,6 +4361,13 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             func: dir_read_helper(),
             helper_deps: &["ensure"],
             import_deps: &["dir_read_len", "fill_pending"],
+            uses_heap: true,
+            uses_table: false,
+        }),
+        "crypto_reveal" => Some(WirHelperSpec {
+            func: crypto_reveal_helper(),
+            helper_deps: &["ensure"],
+            import_deps: &["crypto_reveal_len", "fill_pending"],
             uses_heap: true,
             uses_table: false,
         }),

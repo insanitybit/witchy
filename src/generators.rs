@@ -128,6 +128,7 @@ fn lower_gen(f: Function) -> (Function, Function) {
             restrict: None,
             region: None,
         },
+        ret: None,
     };
     let wrapper = Function {
         public: f.public,

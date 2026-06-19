@@ -9,6 +9,9 @@ import string
 // program that imports `json`.
 import result
 import option
+// Reflection backs `value_of`/`stringify`: encode ANY value to JSON with no
+// `derive(Json)` — `reflect(x)` gives the structure, and we walk the `Mirror`.
+import reflect
 
 type Json:
     JsonNull
@@ -485,6 +488,72 @@ pub fn as_object(j: Json) -> Option(List((String, Json))):
         JsonObject(pairs) -> Some(pairs)
         _ -> None
 
+// --- Result-returning decoders (the backbone of derive(Json)'s from_json) -----
+pub fn require(j: Json, key: String) -> Result(Json, String):
+    match get(j, key):
+        Some(v) -> Ok(v)
+        None -> Err("missing field `" + key + "`")
+
+// Coerce a Json value to a scalar, or `Err` describing the expected shape.
+pub fn int_of(j: Json) -> Result(Int, String):
+    match j:
+        JsonInt(n) -> Ok(n)
+        _ -> Err("expected an integer")
+
+pub fn string_of(j: Json) -> Result(String, String):
+    match j:
+        JsonString(s) -> Ok(s)
+        _ -> Err("expected a string")
+
+pub fn bool_of(j: Json) -> Result(Bool, String):
+    match j:
+        JsonBool(b) -> Ok(b)
+        _ -> Err("expected a boolean")
+
+pub fn float_of(j: Json) -> Result(Float, String):
+    match j:
+        JsonFloat(f) -> Ok(f)
+        _ -> Err("expected a number")
+
+pub fn array_of(j: Json) -> Result(List(Json), String):
+    match j:
+        JsonArray(items) -> Ok(items)
+        _ -> Err("expected an array")
+
+// Decode an optional field: an absent key or an explicit `null` is `None`;
+// otherwise the value is decoded via `each`. Used for `Option(_)` fields.
+pub fn optional(o: Option(Json), each: fn(Json) -> Result(a, String)) -> Result(Option(a), String):
+    match o:
+        None -> Ok(None)
+        Some(JsonNull) -> Ok(None)
+        Some(v) -> match each(v):
+            Ok(x) -> Ok(Some(x))
+            Err(e) -> Err(e)
+
+// Build a JSON object whose keys are sorted (matching a serialized BTreeMap),
+// e.g. TUF `targets`. Use this only for dynamic key/value sets whose order must
+// be deterministic for signing; records that derive(Json) keep their declared
+// field order instead.
+pub fn object_sorted(pairs: List((String, Json))) -> Json:
+    var sorted: List((String, Json)) = []
+    for p in pairs:
+        sorted = insert_by_key(sorted, p)
+    JsonObject(sorted)
+
+fn insert_by_key(sorted: List((String, Json)), item: (String, Json)) -> List((String, Json)):
+    let (ik, _iv) = item
+    var out = []
+    var placed = false
+    for p in sorted:
+        let (k, _v) = p
+        if !placed && ik < k:
+            out = list.push(out, item)
+            placed = true
+        out = list.push(out, p)
+    if !placed:
+        out = list.push(out, item)
+    out
+
 // --- typed field accessors (get a key, then coerce) --------------------------
 // `get` composed with each `as_*` — the common case of reading a typed field out
 // of an object without spelling the two steps every time.
@@ -538,3 +607,55 @@ fn step(cur: Option(Json), seg: String) -> Option(Json):
     match cur:
         Some(j) -> get(j, seg)
         None -> None
+
+// Encode an `Option` as payload-or-`null` — `Some(x)` through `each`, `None` as
+// `JsonNull`. Keeps a derived `to_json`'s Option field a single-line call. (The
+// param is `each`, not `encode`, so it doesn't shadow `json.encode`.)
+pub fn from_option(o: Option(a), each: fn(a) -> Json) -> Json:
+    match o:
+        Some(x) -> each(x)
+        None -> JsonNull
+
+// --- reflective encoding (no derive) -----------------------------------------
+// `value_of(x)` encodes ANY value to a `Json` by reflecting over its structure —
+// no `derive(Json)` needed. `stringify(x)` is the string form. This is the whole
+// of `derive(Json)`'s encode side, written once over `Mirror`.
+pub fn value_of(x: a) -> Json where a: Reflect:
+    mirror_to_json(reflect(x))
+
+pub fn stringify(x: a) -> String where a: Reflect:
+    encode(value_of(x))
+
+fn mirror_to_json(m: Mirror) -> Json:
+    match m:
+        MInt(n) -> JsonInt(n)
+        MFloat(f) -> JsonFloat(f)
+        MBool(b) -> JsonBool(b)
+        MString(s) -> JsonString(s)
+        MNil -> JsonNull
+        MList(xs) -> JsonArray(mirror_each(xs))
+        MTuple(xs) -> JsonArray(mirror_each(xs))
+        MRecord(_name, fields) -> JsonObject(mirror_fields(fields))
+        MVariant(tyname, variant, payload) -> mirror_variant_to_json(tyname, variant, payload)
+
+fn mirror_each(xs: List(Mirror)) -> List(Json):
+    var out = []
+    for m in xs:
+        out = list.push(out, mirror_to_json(m))
+    out
+
+fn mirror_fields(fields: List((String, Mirror))) -> List((String, Json)):
+    var out = []
+    for k, m in fields:
+        out = list.push(out, (k, mirror_to_json(m)))
+    out
+
+// An `Option` encodes as payload-or-`null` (matching `derive(Json)`); any other
+// sum-type variant as a tagged object `{"$variant": name, "$values": [...]}`.
+fn mirror_variant_to_json(tyname: String, variant: String, payload: List(Mirror)) -> Json:
+    if tyname == "Option":
+        match list.head(payload):
+            Some(m) -> mirror_to_json(m)
+            None -> JsonNull
+    else:
+        JsonObject([("$variant", JsonString(variant)), ("$values", JsonArray(mirror_each(payload)))])

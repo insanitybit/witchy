@@ -79,7 +79,7 @@ fn lower_async_fn(f: Function) -> Result<Function, String> {
     let body_future = ctx.cps_stmts(&f.body.stmts)?;
     let lazy_body = call(
         "task.lazy",
-        vec![Expr::Lambda { params: vec![], body: tail_block(body_future) }],
+        vec![Expr::Lambda { params: vec![], body: tail_block(body_future), ret: None }],
     );
 
     if f.name == "main" {
@@ -256,11 +256,12 @@ impl Ctx {
         let f = Expr::Lambda {
             params: vec![Param { name: var.to_string(), ty: None, convention: Convention::Let }],
             body: tail_block(body_nil),
+            ret: None,
         };
         Ok(call("chan.consume", vec![src.clone(), f]))
     }
 
-    /// Lower a `for x in xs:` whose body awaits into a `chan.for_each(xs', fn(x):
+    /// Lower a `for x in xs:` whose body awaits into a `task.for_each(xs', fn(x):
     /// <body>)` task. The body is CPS-transformed and coerced to `Task(m, Nil)`
     /// (the loop discards each iteration's value); a range iterator is turned into
     /// its list.
@@ -273,6 +274,7 @@ impl Ctx {
         let f = Expr::Lambda {
             params: vec![Param { name: var.to_string(), ty: None, convention: Convention::Let }],
             body: tail_block(body_nil),
+            ret: None,
         };
         Ok(call("task.for_each", vec![list_expr, f]))
     }
@@ -448,6 +450,7 @@ fn and_then(inner: Expr, bind: String, k: Expr) -> Expr {
     let lambda = Expr::Lambda {
         params: vec![Param { name: bind, ty: None, convention: Convention::Let }],
         body: tail_block(k),
+        ret: None,
     };
     call("task.and_then", vec![inner, lambda])
 }

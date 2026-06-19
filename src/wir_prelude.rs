@@ -95,6 +95,8 @@ const HELPER_NAMES: &[&str] = &[
     "build_args",
     "crypto_sign",
     "crypto_public_key",
+    "crypto_reveal",
+    "secretstore_lookup",
     "f_nan_guard",
     "f_lt",
     "f_le",
@@ -211,8 +213,10 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
   (import "witchy" "field_strlist_size" (func $field_strlist_size_host (param i32) (result i32)))
   (import "witchy" "float_to_str" (func $float_to_str_host (param f64 i32) (result i32)))
   (import "witchy" "encoding" (func $encoding_host (param i32 i32 i32) (result i32)))
-  (import "witchy" "crypto.sign" (func $crypto_sign_host (param i32 i32)))
-  (import "witchy" "crypto.public_key" (func $crypto_public_key_host (param i32)))
+  (import "witchy" "crypto.sign" (func $crypto_sign_host (param i32 i32 i32)))
+  (import "witchy" "crypto.public_key" (func $crypto_public_key_host (param i32 i32)))
+  (import "witchy" "secretstore_lookup" (func $secretstore_lookup_host (param i32) (result i32)))
+  (import "witchy" "crypto_reveal_len" (func $crypto_reveal_len_host (param i32) (result i32)))
   (import "witchy" "env_len" (func $env_len_host (param i32) (result i32)))
   (import "witchy" "env_fill" (func $env_fill_host (param i32 i32)))
   (import "witchy" "dir_read_len" (func $dir_read_len_host (param i32 i32) (result i32)))
@@ -253,7 +257,7 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
 
 /// The number of host imports the prelude declares (used to split function
 /// indices: imports `0..IMPORT_COUNT`, helpers after).
-pub const IMPORT_COUNT: usize = 48;
+pub const IMPORT_COUNT: usize = 50;
 
 /// The full ordered name list for the funcs section: `$mk0..$mk{MAX_MK}` then
 /// the static helper names. Matches the order the prelude emits bodies, so

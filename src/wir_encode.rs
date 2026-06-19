@@ -18,8 +18,8 @@ use std::collections::HashMap;
 use wasm_encoder::{
     BlockType, CodeSection, ConstExpr, DataSection, ElementSection, Elements, EntityType,
     ExportKind, ExportSection, Function, FunctionSection, GlobalSection, GlobalType, ImportSection,
-    Instruction, MemArg, MemorySection, MemoryType, Module, RefType, TableSection, TableType,
-    TypeSection, ValType,
+    Instruction, MemArg, MemorySection, MemoryType, Module, NameMap, NameSection, RefType,
+    TableSection, TableType, TypeSection, ValType,
 };
 
 use crate::wir::{BinOp, GlobalInit, Kind, UnOp, WirExpr, WirModule, WirNode, WirSeq};
@@ -297,6 +297,23 @@ pub fn encode(module: &WirModule) -> Vec<u8> {
     if !module.data.is_empty() {
         wasm.section(&data_section);
     }
+
+    // --- Name section (custom) ----------------------------------------------
+    // Map every function index → its witchy name so wasmtime traps and
+    // backtraces name the offending function instead of `wasm-function[N]`.
+    // Pure metadata: wasmtime ignores it for execution, so it changes neither
+    // behavior nor the heap layout (parity-safe).
+    let mut func_names = NameMap::new();
+    for (i, imp) in module.imports.iter().enumerate() {
+        func_names.append(i as u32, &imp.name);
+    }
+    for (i, f) in module.funcs.iter().enumerate() {
+        func_names.append(import_count + i as u32, &f.name);
+    }
+    let mut name_section = NameSection::new();
+    name_section.functions(&func_names);
+    wasm.section(&name_section);
+
     wasm.finish()
 }
 

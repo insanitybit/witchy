@@ -1,0 +1,189 @@
+// Compile-time type introspection — the `typeInfo` half of witchy's comptime
+// reflection (Zig's `@typeInfo`). A `comptime:` block can read the structure of
+// every type in its module as ordinary data and generate code from it (e.g. a
+// `to_json` specialized to a record's fields), with zero runtime cost. The
+// compiler injects the type list as `module_types()`; these are the shapes it
+// hands you.
+//
+// This is COMPILE-TIME structure (field names + declared type names as strings),
+// distinct from `std/reflect`'s runtime `Mirror` (a value's structure at runtime).
+
+import string
+
+// One field of a record: its name and its declared type rendered as a string
+// (e.g. "Int", "List(String)", "Option(Point)").
+type FieldInfo:
+    name: String
+    type_name: String
+
+// One constructor of a sum type: its name and its positional payload types.
+type VariantInfo:
+    name: String
+    field_types: List(String)
+
+// A type's structure. `kind` is "record" (one constructor with named fields),
+// "sum" (one or more positional constructors), or "unit". `fields` is populated
+// for records, `variants` for sums.
+type TypeInfo:
+    name: String
+    kind: String
+    params: List(String)
+    fields: List(FieldInfo)
+    variants: List(VariantInfo)
+
+// --- built-in derive generators ----------------------------------------------
+// `derive(X)` desugars to a comptime call `meta.derive_<x>(typeInfo)` that returns
+// the impl source. These ARE witchy — the per-trait code generation that used to be
+// hardcoded in the Rust compiler now lives here as ordinary, readable functions over
+// `TypeInfo`, and anyone can write their own `derive_foo` the same way.
+
+// The impl target with its type parameters — `Box(a)` for a generic type, `Point`
+// otherwise. Also the type of a same-typed `other` parameter.
+fn target_with_params(t: TypeInfo) -> String:
+    if list.is_empty(t.params):
+        t.name
+    else:
+        t.name + "(" + string.join(t.params, ", ") + ")"
+
+// A ` where a: Trait, b: Trait` clause binding each type parameter to `trait_name`,
+// or "" for a non-generic type — so a generic type's derived impl discharges its
+// parameters' bounds and monomorphizes per argument.
+fn where_each(params: List(String), trait_name: String) -> String:
+    if list.is_empty(params):
+        ""
+    else:
+        var bounds = []
+        for p in params:
+            bounds = list.push(bounds, p + ": " + trait_name)
+        " where " + string.join(bounds, ", ")
+
+// `derive(Show)` → structural rendering via the `__render` builtin.
+pub fn derive_show(t: TypeInfo) -> String:
+    "impl Show for " + target_with_params(t) + where_each(t.params, "Show") + ":\n    fn show(self) -> String:\n        __render(self)\n"
+
+// `derive(Eq)` → deep structural equality (the `==` both backends compute).
+pub fn derive_eq(t: TypeInfo) -> String:
+    "impl Eq for " + target_with_params(t) + where_each(t.params, "Eq") + ":\n    fn eq(self, other: " + target_with_params(t) + ") -> Bool:\n        self == other\n"
+
+// The `reflect`-call for a field/payload of declared type `type_name` applied to
+// the expression text `value` — single-line, dispatched by the type's shape.
+fn reflect_call(type_name: String, value: String) -> String:
+    if string.starts_with(type_name, "List("):
+        "reflect_list(" + value + ")"
+    else if string.starts_with(type_name, "Option("):
+        "reflect_option(" + value + ")"
+    else:
+        "reflect_one(" + value + ")"
+
+// `derive(Reflect)` → an `impl Reflect for T` building the value's `Mirror`: a
+// record to `MRecord("T", [(field, reflect field)…])`, a sum type to a `match`
+// over variants to `MVariant`. (The module must `import reflect`; caller checks.)
+pub fn derive_reflect(t: TypeInfo) -> String:
+    let head = "impl Reflect for " + target_with_params(t) + where_each(t.params, "Reflect") + ":\n    fn reflect(self) -> Mirror:\n"
+    if t.kind == "record":
+        var pairs = []
+        for f in t.fields:
+            pairs = list.push(pairs, "(\"" + f.name + "\", " + reflect_call(f.type_name, "self." + f.name) + ")")
+        head + "        MRecord(\"" + t.name + "\", [" + string.join(pairs, ", ") + "])\n"
+    else:
+        var arms = []
+        for v in t.variants:
+            var pats = []
+            var refls = []
+            var i = 0
+            for ft in v.field_types:
+                let pv = "p${i}"
+                pats = list.push(pats, pv)
+                refls = list.push(refls, reflect_call(ft, pv))
+                i = i + 1
+            var pat = v.name
+            if list.length(pats) > 0:
+                pat = v.name + "(" + string.join(pats, ", ") + ")"
+            arms = list.push(arms, "            " + pat + " -> MVariant(\"" + t.name + "\", \"" + v.name + "\", [" + string.join(refls, ", ") + "])")
+        head + "        match self:\n" + string.join(arms, "\n") + "\n"
+
+// `derive(Ord)` → lexicographic field comparison (records only; the caller validates).
+pub fn derive_ord(t: TypeInfo) -> String:
+    var arms = []
+    for f in t.fields:
+        arms = list.push(arms, "self." + f.name + " < other." + f.name + ": -1")
+        arms = list.push(arms, "self." + f.name + " > other." + f.name + ": 1")
+    var body = ""
+    var first = true
+    for a in arms:
+        if first:
+            body = body + "        if " + a + "\n"
+            first = false
+        else:
+            body = body + "        else if " + a + "\n"
+    body = body + "        else: 0\n"
+    "impl Ord for " + target_with_params(t) + where_each(t.params, "Ord") + ":\n    fn compare(self, other: " + target_with_params(t) + ") -> Int:\n" + body
+
+// The element type inside `List(X)` / `Option(X)` — `after_prefix("List(String)",
+// "List(")` is "String" (strips the prefix and the trailing ")").
+fn after_prefix(s: String, prefix: String) -> String:
+    string.substring(s, string.char_count(prefix), string.char_count(s) - 1)
+
+// The `Json`-building expression for a value of declared type `ty` (recursive for
+// List/Option element types).
+fn json_encode_expr(ty: String, value: String) -> String:
+    if ty == "Int":
+        "JsonInt(" + value + ")"
+    else if ty == "Float":
+        "JsonFloat(" + value + ")"
+    else if ty == "Bool":
+        "JsonBool(" + value + ")"
+    else if ty == "String":
+        "JsonString(" + value + ")"
+    else if string.starts_with(ty, "List("):
+        let elem = after_prefix(ty, "List(")
+        "JsonArray(list.map(" + value + ", fn(__e: " + elem + "): " + json_encode_expr(elem, "__e") + "))"
+    else if string.starts_with(ty, "Option("):
+        let elem = after_prefix(ty, "Option(")
+        "json.from_option(" + value + ", fn(__e: " + elem + "): " + json_encode_expr(elem, "__e") + ")"
+    else:
+        value + ".to_json()"
+
+// A `Result`-producing decode of a `Json` value already in hand (recursive).
+fn json_decode_value(ty: String, value: String) -> String:
+    if ty == "Int":
+        "json.int_of(" + value + ")"
+    else if ty == "Float":
+        "json.float_of(" + value + ")"
+    else if ty == "Bool":
+        "json.bool_of(" + value + ")"
+    else if ty == "String":
+        "json.string_of(" + value + ")"
+    else if string.starts_with(ty, "List("):
+        let elem = after_prefix(ty, "List(")
+        "result.all(list.map(json.array_of(" + value + ")?, fn(__e: Json): " + json_decode_value(elem, "__e") + "))"
+    else:
+        ty + ".from_json(" + value + ")"
+
+// Decode one record field from the object `j`: an Option reads with `get` (absent
+// allowed), everything else with `require`. Trails a `?` so it's a `let` initializer.
+fn json_decode_field(ty: String, key: String) -> String:
+    if string.starts_with(ty, "Option("):
+        let elem = after_prefix(ty, "Option(")
+        "json.optional(json.get(j, \"" + key + "\"), fn(__e: Json): " + json_decode_value(elem, "__e") + ")?"
+    else:
+        json_decode_value(ty, "json.require(j, \"" + key + "\")?") + "?"
+
+// `derive(Json)` → `to_json`/`from_json` for a RECORD (caller validates the shape).
+// Encode builds a `JsonObject` field by field; decode pulls + coerces each field,
+// short-circuiting on the first error. Self-contained (only json/result/list/option).
+pub fn derive_json(t: TypeInfo) -> String:
+    var pairs = []
+    for f in t.fields:
+        pairs = list.push(pairs, "(\"" + f.name + "\", " + json_encode_expr(f.type_name, "self." + f.name) + ")")
+    let to_json = "    fn to_json(self) -> Json:\n        JsonObject([" + string.join(pairs, ", ") + "])\n"
+    var lets = []
+    var names = []
+    for f in t.fields:
+        lets = list.push(lets, "        let " + f.name + " = " + json_decode_field(f.type_name, f.name) + "\n")
+        names = list.push(names, f.name)
+    let from_json = "    fn from_json(j: Json) -> Result(" + t.name + ", String):\n" + string.join(lets, "") + "        Ok(" + t.name + "(" + string.join(names, ", ") + "))\n"
+    // The generated body makes module-qualified calls (json.*, list.map, result.all);
+    // emitted source is parsed on its own, so it must carry those imports for the
+    // parser to qualify them (comptime merges them into the module).
+    "import json\nimport list\nimport result\n\nimpl " + t.name + ":\n" + to_json + from_json

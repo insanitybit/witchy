@@ -216,7 +216,7 @@ fn resolve_in_block(block: &mut Block, map: &HashMap<String, Type>) {
 
 fn resolve_in_expr(e: &mut Expr, map: &HashMap<String, Type>) {
     match e {
-        Expr::Lambda { params, body } => {
+        Expr::Lambda { params, body, .. } => {
             for p in params.iter_mut() {
                 if let Some(t) = &mut p.ty {
                     resolve_type(t, map);

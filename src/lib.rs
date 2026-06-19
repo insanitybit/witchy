@@ -80,12 +80,11 @@ pub fn resolve_std_only(src: &str) -> Result<ast::Module, String> {
 pub fn compile_source(src: &str) -> Result<Vec<u8>, String> {
     let linked = resolve_std_only(src)?;
     typeck::check(&linked).map_err(|e| e.to_string())?;
-    // Prefer the WIR → wasm-binary pipeline (no `wat::parse_str`): when the whole
-    // module lowers and reaches only WIR-native prelude helpers, it emits a
-    // capability-correct binary directly. This now runs on EVERY target (the
-    // browser playground too: `wasmparser`/`wasm-encoder` are pure Rust). Anything
-    // not yet migrated still falls back to the WAT sink below.
-    codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+    // Compile through the WIR → wasm-binary pipeline (`wasmparser`/`wasm-encoder`,
+    // pure Rust, so this runs on EVERY target including the browser playground).
+    // A program that doesn't fully lower returns `Ok(None)` → the hard "cannot
+    // compile" error below; there is no WAT fallback.
+    codegen::compile_module_binary(&linked)
         .map_err(|e| format!("cannot compile to WASM: {e}"))?
         .ok_or_else(|| {
             "cannot compile to WASM: the program reached a construct the compiled backend \

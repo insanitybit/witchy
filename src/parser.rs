@@ -31,7 +31,39 @@ pub fn parse_module(src: &str) -> Result<Module, ParseError> {
     // Off-side-rule layout: indentation-delimited blocks become brace-delimited
     // ones (a no-op for code that already uses explicit braces).
     let tokens = crate::lexer::apply_layout(tokens);
-    Parser::new(tokens).module()
+    let mut parser = Parser::new(tokens);
+    let mut module = parser.module()?;
+    // Each anonymous struct `.{…}` becomes a generic synthetic record carrying
+    // `derive(Reflect)`, prepended to the module: `__anonN(t0, …)` with one type
+    // parameter per field. Generic-record derive makes `.{…}` ordinary reflectable
+    // data with no special builtin.
+    if !parser.anon_records.is_empty() {
+        let mut defs = String::new();
+        for (idx, fields) in parser.anon_records.iter().enumerate() {
+            let params: Vec<String> = (0..fields.len()).map(|i| format!("t{i}")).collect();
+            defs.push_str(&format!("type __anon{idx}({}) derive(Reflect):\n", params.join(", ")));
+            for (i, f) in fields.iter().enumerate() {
+                defs.push_str(&format!("    {f}: t{i}\n"));
+            }
+            defs.push('\n');
+        }
+        // `defs` has no `.{…}`, so this does not recurse further.
+        let synth = parse_module(&defs)?;
+        let n = synth.items.len();
+        let mut items = synth.items;
+        items.append(&mut module.items);
+        module.items = items;
+        let mut item_lines = vec![u32::MAX; n];
+        item_lines.append(&mut module.item_lines);
+        module.item_lines = item_lines;
+        // The synthetic types `derive(Reflect)`, so the module needs `reflect` in
+        // scope (the linker always bundles it; this satisfies the derive check).
+        if !module.imports.iter().any(|i| i == "reflect") {
+            module.imports.push("reflect".to_string());
+            module.import_lines.push(u32::MAX);
+        }
+    }
+    Ok(module)
 }
 
 
@@ -53,6 +85,11 @@ struct Parser {
     pending_impl_bounds: Vec<(String, String, Vec<Type>)>,
     /// True while parsing the body of an `async fn`; gates the `.await` postfix.
     in_async: bool,
+    /// Distinct field-name sets (sorted) of the anonymous structs `.{…}` seen, in
+    /// first-seen order. Each becomes a generic synthetic record `__anonN(t0, …)
+    /// derive(Reflect)` prepended to the module, so `.{a: x}` is ordinary
+    /// reflectable data — `json.stringify(.{…})`, `debug(.{…})` — with no builtins.
+    anon_records: Vec<Vec<String>>,
 }
 
 impl Parser {
@@ -76,6 +113,7 @@ impl Parser {
             .collect(),
             pending_impl_bounds: Vec::new(),
             in_async: false,
+            anon_records: Vec::new(),
         }
     }
 
@@ -151,18 +189,17 @@ impl Parser {
     // --- top level ---
 
     fn module(&mut self) -> Result<Module, ParseError> {
-        // Performance modes come first: `mode opt` / `mode strict` directives
-        // at the very top of the file. `mode` is a contextual keyword — it is
-        // recognized only here, so it stays usable as an ordinary identifier
-        // everywhere else. See docs/performance-modes.md.
+        // The performance mode `mode opt` leads the file. `mode` is a contextual
+        // keyword — recognized only here, so it stays usable as an ordinary
+        // identifier everywhere else. See docs/performance-modes.md.
         let mut modes = Vec::new();
         while self.at_ident("mode") {
             self.advance();
             loop {
                 let name = self.ident()?;
-                if name != "opt" && name != "strict" {
+                if name != "opt" {
                     return Err(self.error(format!(
-                        "unknown performance mode `{name}` — expected `opt` or `strict`"
+                        "unknown performance mode `{name}` — the only mode is `opt`"
                     )));
                 }
                 if !modes.contains(&name) {
@@ -298,26 +335,44 @@ impl Parser {
             }
             self.expect(&Tok::RParen)?;
         }
-        let (trait_name, type_name) = if self.eat(&Tok::For) {
-            let head = self.ident()?;
-            // A generic target (`List(a)`) keeps only its head: impls are
-            // registered and mangled by head, and the methods stay generic.
+        let (trait_name, type_name, target_args) = if self.eat(&Tok::For) {
+            // A generic target (`List(a)`, `(a, b)`) is registered + mangled by its
+            // head, but its type arguments are KEPT: they type the method `self` (so
+            // `self` is `List(a)`/`(a, b)`, not a bare head) and pair with the `where`
+            // bounds — which is what lets a generic impl monomorphize per element.
             if self.at(&Tok::LParen) {
+                // A tuple target `impl Trait for (a, b)`: its head is the synthetic
+                // `Tuple{N}` (the same head a tuple value dispatches under).
                 self.advance();
+                let mut args = Vec::new();
                 while !self.at(&Tok::RParen) {
-                    let _ = self.ty()?;
+                    args.push(self.ty()?);
                     if !self.eat(&Tok::Comma) {
                         break;
                     }
                 }
                 self.expect(&Tok::RParen)?;
+                (Some(first), format!("Tuple{}", args.len()), args)
+            } else {
+                let head = self.ident()?;
+                let mut args = Vec::new();
+                if self.at(&Tok::LParen) {
+                    self.advance();
+                    while !self.at(&Tok::RParen) {
+                        args.push(self.ty()?);
+                        if !self.eat(&Tok::Comma) {
+                            break;
+                        }
+                    }
+                    self.expect(&Tok::RParen)?;
+                }
+                (Some(first), head, args)
             }
-            (Some(first), head)
         } else {
             if !trait_args.is_empty() {
                 return Err(self.error("an inherent `impl Type:` takes no type arguments"));
             }
-            (None, first)
+            (None, first, Vec::new())
         };
         // `impl Trait for T where a: Bound:` — a conditional impl.
         let bounds = self.where_clause()?;
@@ -331,6 +386,7 @@ impl Parser {
             trait_name,
             trait_args,
             type_name,
+            target_args,
             bounds,
             methods,
         })
@@ -616,11 +672,30 @@ impl Parser {
     fn stmt(&mut self) -> Result<Stmt, ParseError> {
         if self.eat(&Tok::Return) {
             // `return` alone (at a block's end) yields Nil; otherwise a value.
-            let value = if self.at(&Tok::RBrace) {
+            let value = if self.at(&Tok::RBrace) || self.at(&Tok::If) {
                 None
             } else {
                 Some(self.expr(0)?)
             };
+            // Postfix guard: `return X if cond` ≡ `if cond: return X`. Desugared
+            // here to an `if` whose then-block is the lone return, tagged with the
+            // `u32::MAX` synthetic-line marker so the formatter re-collapses exactly
+            // this shape back to the postfix form (an explicitly written multi-line
+            // `if cond: return X` keeps its real line numbers and stays as is).
+            if self.eat(&Tok::If) {
+                let cond = self.expr(0)?;
+                let then_block = Block {
+                    stmts: vec![Stmt::Return(value)],
+                    lines: vec![u32::MAX],
+                    restrict: None,
+                    region: None,
+                };
+                return Ok(Stmt::Expr(Expr::If {
+                    cond: Box::new(cond),
+                    then_block,
+                    else_block: None,
+                }));
+            }
             return Ok(Stmt::Return(value));
         }
         if self.eat(&Tok::Break) {
@@ -779,7 +854,24 @@ impl Parser {
         let mut e = self.atom()?;
         loop {
             if self.eat(&Tok::Question) {
-                e = Expr::Try(Box::new(e));
+                // Optional context message: `e? "msg"` (the message may interpolate,
+                // which the lexer expands to a parenthesized concat — hence the
+                // `LParen` case). A string/`(` immediately after `?` on the same line
+                // is otherwise a syntax error everywhere, so consuming it here is a
+                // conservative extension. Desugars to `(__try_ctx(e, msg))?`: the
+                // `__try_ctx` intrinsic turns the operand — an `Option` OR a `Result`
+                // — into a `Result(T, String)` carrying `msg` (prepended to a Result's
+                // existing error), which `?` then unwraps. Generic over both, so the
+                // message form works wherever bare `?` does.
+                if self.on_same_line_as_prev()
+                    && (matches!(self.kind(), Tok::Str(_)) || *self.kind() == Tok::LParen)
+                {
+                    let msg = self.atom()?;
+                    let wrapped = Expr::Call { name: "__try_ctx".into(), args: vec![e, msg] };
+                    e = Expr::Try(Box::new(wrapped));
+                } else {
+                    e = Expr::Try(Box::new(e));
+                }
             } else if self.eat(&Tok::As) {
                 // `e as T` — a capability narrowing ascription.
                 let ty = self.ty()?;
@@ -893,6 +985,11 @@ impl Parser {
                 self.advance();
                 Ok(Expr::Bool(false))
             }
+            // `.{ field: expr, … }` — an anonymous struct.
+            Tok::DotLBrace => {
+                self.advance(); // `.{`
+                self.anon_record()
+            }
             Tok::LParen => {
                 self.advance();
                 let first = self.expr(0)?;
@@ -952,51 +1049,47 @@ impl Parser {
                         iter
                     }
                 };
-                // `for (k, v) in pairs:` — a tuple pattern destructures each
-                // element: sugar for a fresh element variable plus a leading
-                // `let (k, v) = element` in the body.
-                if self.at(&Tok::LParen) {
-                    self.advance();
-                    let mut names = Vec::new();
-                    loop {
-                        if self.eat(&Tok::Underscore) {
-                            names.push("_".to_string());
-                        } else {
-                            names.push(self.ident()?);
-                        }
-                        if !self.eat(&Tok::Comma) {
-                            break;
-                        }
-                    }
-                    self.expect(&Tok::RParen)?;
-                    self.expect(&Tok::In)?;
-                    let iter = self.expr(0)?;
-                    let mut body = self.block()?;
-                    let var = {
-                        let v = format!("__fortuple{}", self.compr_counter);
-                        self.compr_counter += 1;
-                        v
-                    };
-                    body.stmts.insert(
-                        0,
-                        Stmt::LetTuple { names, value: Expr::Var(var.clone()) },
-                    );
-                    if let Some(first) = body.lines.first().copied() {
-                        body.lines.insert(0, first);
+                // `for (a, b) in pairs:` or `for a, b in pairs:` — a tuple pattern
+                // destructures each element: sugar for a fresh element variable
+                // plus a leading `let (a, b) = element` in the body. A single
+                // unparenthesized name is an ordinary loop variable.
+                let paren = self.eat(&Tok::LParen);
+                let mut names = Vec::new();
+                loop {
+                    if self.eat(&Tok::Underscore) {
+                        names.push("_".to_string());
                     } else {
-                        body.lines.push(0);
+                        names.push(self.ident()?);
                     }
-                    return Ok(Expr::For { var, iter: Box::new(wrap(iter)), body });
+                    if !self.eat(&Tok::Comma) {
+                        break;
+                    }
                 }
-                let var = self.ident()?;
+                if paren {
+                    self.expect(&Tok::RParen)?;
+                }
                 self.expect(&Tok::In)?;
                 let iter = self.expr(0)?;
-                let body = self.block()?;
-                Ok(Expr::For {
-                    var,
-                    iter: Box::new(wrap(iter)),
-                    body,
-                })
+                let mut body = self.block()?;
+                if !paren && names.len() == 1 {
+                    return Ok(Expr::For {
+                        var: names.pop().unwrap(),
+                        iter: Box::new(wrap(iter)),
+                        body,
+                    });
+                }
+                let var = {
+                    let v = format!("__fortuple{}", self.compr_counter);
+                    self.compr_counter += 1;
+                    v
+                };
+                body.stmts.insert(0, Stmt::LetTuple { names, value: Expr::Var(var.clone()) });
+                if let Some(first) = body.lines.first().copied() {
+                    body.lines.insert(0, first);
+                } else {
+                    body.lines.push(0);
+                }
+                Ok(Expr::For { var, iter: Box::new(wrap(iter)), body })
             }
             Tok::Fn => {
                 // Anonymous function. Brace-free single-expression form
@@ -1006,8 +1099,15 @@ impl Parser {
                 self.expect(&Tok::LParen)?;
                 let params = self.params()?;
                 self.expect(&Tok::RParen)?;
+                // Optional declared return type: `fn(x: Int) -> Bool: ...`. Makes
+                // the closure a `?` boundary with that exact type.
+                let ret = if self.eat(&Tok::RArrow) {
+                    Some(self.ty()?)
+                } else {
+                    None
+                };
                 let body = self.colon_or_block()?;
-                Ok(Expr::Lambda { params, body })
+                Ok(Expr::Lambda { params, body, ret })
             }
             Tok::Match => self.match_expr(),
             Tok::Region => self.region_block(),
@@ -1033,6 +1133,35 @@ impl Parser {
             }
             _ => false,
         }
+    }
+
+    /// `.{ field: expr, … }` — an anonymous struct (the `.` is already consumed).
+    /// It desugars to a value of a generic synthetic record `__anonN`, registered so
+    /// `module()` emits its `derive(Reflect)` definition. The record is constructed
+    /// by named field, so its field order is irrelevant; the synthetic type dedups by
+    /// the sorted field-name set.
+    fn anon_record(&mut self) -> Result<Expr, ParseError> {
+        let mut fields = Vec::new();
+        while !self.at(&Tok::RBrace) {
+            let field = self.ident()?;
+            self.expect(&Tok::Colon)?;
+            fields.push((field, self.expr(0)?));
+            if !self.eat(&Tok::Comma) {
+                break;
+            }
+        }
+        self.expect(&Tok::RBrace)?;
+        let mut names: Vec<String> = fields.iter().map(|(n, _)| n.clone()).collect();
+        names.sort();
+        let idx = self
+            .anon_records
+            .iter()
+            .position(|s| *s == names)
+            .unwrap_or_else(|| {
+                self.anon_records.push(names);
+                self.anon_records.len() - 1
+            });
+        Ok(Expr::Record { name: format!("__anon{idx}"), fields, spread: None })
     }
 
     /// `Name(field: value, ..., ..base?)` — named-field construction, optionally

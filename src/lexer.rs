@@ -53,6 +53,9 @@ pub enum Tok {
     RParen,
     LBrace,
     RBrace,
+    /// `.{` — opens an anonymous struct `.{ field: expr, … }`. The only place a
+    /// brace is allowed in source (bare `{`/`}` are not witchy syntax).
+    DotLBrace,
     LBracket,
     RBracket,
     Comma,
@@ -141,6 +144,7 @@ impl fmt::Display for Tok {
             RParen => write!(f, ")"),
             LBrace => write!(f, "{{"),
             RBrace => write!(f, "}}"),
+            DotLBrace => write!(f, ".{{"),
             LBracket => write!(f, "["),
             RBracket => write!(f, "]"),
             Comma => write!(f, ","),
@@ -792,11 +796,14 @@ impl Lexer {
             ('?', _) => Tok::Question,
             ('(', _) => Tok::LParen,
             (')', _) => Tok::RParen,
-            ('{', _) | ('}', _) => {
+            // A bare `{` is not witchy syntax; `}` is only ever an anonymous-struct
+            // close (`.{ … }`), so it is allowed and matched by the parser.
+            ('{', _) => {
                 return Err(self.err(
                     "braces are not part of witchy syntax — use indentation (`:` and an indented block)",
                 ))
             }
+            ('}', _) => Tok::RBrace,
             ('[', _) => Tok::LBracket,
             (']', _) => Tok::RBracket,
             (',', _) => Tok::Comma,
@@ -809,6 +816,10 @@ impl Lexer {
                 } else {
                     Tok::DotDot
                 }
+            }
+            ('.', Some('{')) => {
+                self.bump();
+                Tok::DotLBrace
             }
             ('.', _) => Tok::Dot,
             (other, _) => return Err(self.err(format!("unexpected character `{other}`"))),
@@ -879,7 +890,7 @@ pub fn apply_layout(tokens: Vec<Token>) -> Vec<Token> {
             lines.last_mut().unwrap().toks.push(t);
         }
         match kind {
-            Tok::LParen | Tok::LBracket | Tok::LBrace => depth += 1,
+            Tok::LParen | Tok::LBracket | Tok::LBrace | Tok::DotLBrace => depth += 1,
             Tok::RParen | Tok::RBracket | Tok::RBrace => depth -= 1,
             _ => {}
         }
@@ -945,7 +956,7 @@ pub fn apply_layout(tokens: Vec<Token>) -> Vec<Token> {
                     bdepth = new_bd;
                     out.push(t.clone());
                 }
-                Tok::LParen | Tok::LBracket | Tok::LBrace => {
+                Tok::LParen | Tok::LBracket | Tok::LBrace | Tok::DotLBrace => {
                     bdepth += 1;
                     out.push(t.clone());
                 }

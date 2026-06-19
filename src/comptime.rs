@@ -15,7 +15,7 @@
 //! hard-isolation upgrade is mechanical because the channel is already
 //! "printed source in, items out".
 
-use crate::ast::{Block, Function, Item, Module, Param, Type};
+use crate::ast::{Block, Expr, Function, Item, Module, Param, Stmt, Type, TypeDef};
 
 /// Expand every `comptime:` block in `module` (consuming the items), running
 /// each and appending the items its output parses to. `name` is the module's
@@ -42,6 +42,16 @@ pub fn expand(name: &str, module: &mut Module) -> Result<(), String> {
     if blocks.is_empty() {
         return Ok(());
     }
+    // The module's type structures, exposed to every block as `module_types`
+    // (the comptime `typeInfo` primitive). Built once from the module's types.
+    let type_infos: Vec<Expr> = module
+        .items
+        .iter()
+        .filter_map(|it| match it {
+            Item::Type(t) => Some(type_info_expr(t)),
+            _ => None,
+        })
+        .collect();
     for mut body in blocks {
         // The block becomes `fn main(console: Console)` of a synthetic
         // program carrying the enclosing module's imports. `emit(line)` is
@@ -73,6 +83,7 @@ pub fn expand(name: &str, module: &mut Module) -> Result<(), String> {
                         restrict: None,
                         region: None,
                     },
+                    ret: None,
                 },
             },
         );
@@ -81,9 +92,42 @@ pub fn expand(name: &str, module: &mut Module) -> Result<(), String> {
         } else {
             body.lines.push(0);
         }
+        // Expose the module's type structures to the block as `module_types`
+        // (the comptime `typeInfo` reflection primitive).
+        body.stmts.insert(
+            0,
+            Stmt::Let {
+                ty: None,
+                name: "module_types".into(),
+                mutable: false,
+                value: Expr::List(type_infos.clone()),
+            },
+        );
+        if let Some(first) = body.lines.first().copied() {
+            body.lines.insert(0, first);
+        } else {
+            body.lines.push(0);
+        }
+        // The comptime program carries only the enclosing module's STD imports: it
+        // runs in the isolated, zero-capability `comptime` link, which resolves the
+        // bundled std modules but not the project's own sibling modules — and a
+        // comptime block (a link-time, capability-free eval) cannot use sibling
+        // runtime code in any case. Dropping the project-local imports lets a module
+        // that both `derive`s and imports a sibling (e.g. a rune's test module)
+        // still run its comptime. `module_types` is `meta.TypeInfo`s, so meta is
+        // always present.
+        let mut prog_imports: Vec<String> = module
+            .imports
+            .iter()
+            .filter(|i| crate::linker::STD_MODULES.contains(&i.as_str()))
+            .cloned()
+            .collect();
+        if !prog_imports.iter().any(|i| i == "meta") {
+            prog_imports.push("meta".into());
+        }
         let prog = Module {
             modes: Vec::new(),
-            imports: module.imports.clone(),
+            imports: prog_imports,
             items: vec![Item::Function(Function {
                 public: false,
                 name: "main".into(),
@@ -140,4 +184,78 @@ pub fn expand(name: &str, module: &mut Module) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// Render a declared type to the string form `meta.TypeInfo` exposes — `Int`,
+/// `List(String)`, `Option(Point)`, `(Int, String)`, `fn(Int) -> Bool`.
+fn type_to_string(t: &Type) -> String {
+    match t {
+        Type::Named(n, args) if args.is_empty() => n.clone(),
+        Type::Named(n, args) => {
+            let inner: Vec<String> = args.iter().map(type_to_string).collect();
+            format!("{n}({})", inner.join(", "))
+        }
+        Type::Tuple(ts) => {
+            let inner: Vec<String> = ts.iter().map(type_to_string).collect();
+            format!("({})", inner.join(", "))
+        }
+        Type::Fn(ps, r) => {
+            let inner: Vec<String> = ps.iter().map(type_to_string).collect();
+            format!("fn({}) -> {}", inner.join(", "), type_to_string(r))
+        }
+    }
+}
+
+/// Build the `meta.TypeInfo(...)` constructor expression describing `t`, injected
+/// into comptime blocks as an element of `module_types` so a block can read its
+/// module's type structure as data (the `typeInfo` reflection primitive). Also
+/// used by `derive` to embed a type's structure in the generator call it desugars to.
+pub(crate) fn type_info_expr(t: &TypeDef) -> Expr {
+    let s = |v: &str| Expr::Str(v.to_string());
+    let str_list = |xs: &[String]| Expr::List(xs.iter().map(|x| Expr::Str(x.clone())).collect());
+    let is_record = t.variants.len() == 1 && !t.variants[0].field_names.is_empty();
+    let kind = if is_record {
+        "record"
+    } else if t.variants.is_empty() {
+        "unit"
+    } else {
+        "sum"
+    };
+    let fields = if is_record {
+        let v = &t.variants[0];
+        v.field_names
+            .iter()
+            .zip(&v.fields)
+            .map(|(name, ty)| Expr::Ctor {
+                name: "FieldInfo".into(),
+                args: vec![s(name), s(&type_to_string(ty))],
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let variants = if is_record {
+        Vec::new()
+    } else {
+        t.variants
+            .iter()
+            .map(|v| Expr::Ctor {
+                name: "VariantInfo".into(),
+                args: vec![
+                    s(&v.name),
+                    Expr::List(v.fields.iter().map(|ty| s(&type_to_string(ty))).collect()),
+                ],
+            })
+            .collect()
+    };
+    Expr::Ctor {
+        name: "TypeInfo".into(),
+        args: vec![
+            s(&t.name),
+            s(kind),
+            str_list(&t.params),
+            Expr::List(fields),
+            Expr::List(variants),
+        ],
+    }
 }

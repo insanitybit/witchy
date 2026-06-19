@@ -389,7 +389,7 @@ fn subst_expr(
             }
             changed
         }
-        Expr::Lambda { params, body } => {
+        Expr::Lambda { params, body, .. } => {
             let mut s = scope.clone();
             for p in params.iter() {
                 s.insert(p.name.clone());

@@ -38,8 +38,16 @@ fn method_fn(
     ret: Option<Type>,
     body: Block,
     type_name: &str,
+    target_args: &[Type],
     bounds: Vec<(String, String, Vec<Type>)>,
 ) -> Function {
+    // The target type the method's `self` stands for: `List(a)` for a generic impl
+    // (so monomorphization can recover the element), bare `List`/`Point` otherwise.
+    let self_ty = if type_name.starts_with("Tuple") {
+        Type::Tuple(target_args.to_vec())
+    } else {
+        Type::Named(type_name.to_string(), target_args.to_vec())
+    };
     for p in &mut params {
         if let Some(t) = &p.ty {
             p.ty = Some(subst_self(t, type_name));
@@ -47,7 +55,7 @@ fn method_fn(
     }
     if let Some(first) = params.first_mut() {
         if first.ty.is_none() {
-            first.ty = Some(Type::Named(type_name.to_string(), vec![]));
+            first.ty = Some(self_ty);
         }
     }
     let ret = ret.map(|t| subst_self(&t, type_name));
@@ -178,6 +186,7 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
                         method.ret.clone(),
                         method.body.clone(),
                         &im.type_name,
+                        &im.target_args,
                         im.bounds.clone(),
                     ));
                     continue;
@@ -194,6 +203,7 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
                     method.ret.clone(),
                     method.body.clone(),
                     &im.type_name,
+                    &im.target_args,
                     im.bounds.clone(),
                 ));
             }
@@ -215,6 +225,7 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
                                 ms.ret.clone(),
                                 body.clone(),
                                 &im.type_name,
+                                &im.target_args,
                                 im.bounds.clone(),
                             ));
                         }
@@ -438,6 +449,18 @@ impl Ctx<'_> {
         head_type_name(e, scope, self.ctor_results, self.fn_rets, self.record_fields)
     }
 
+    /// Resolve a trait method to its mangled impl for a receiver type. A concrete
+    /// generic type falls back to its head, where generic impls are registered:
+    /// `List<Int>` matches `impl … for List(a)`, `Option<String>` matches
+    /// `impl … for Option(a)`. The impl method stays generic and monomorphizes per
+    /// element exactly as a `where`-bounded free function would.
+    fn lookup_impl(&self, method: &str, tn: &str) -> Option<String> {
+        self.impl_table
+            .get(&(method.to_string(), tn.to_string()))
+            .or_else(|| self.impl_table.get(&(method.to_string(), head_of(tn).to_string())))
+            .cloned()
+    }
+
     fn rewrite_block(&self, b: &mut Block, scope: &mut Scope) {
         for stmt in &mut b.stmts {
             match stmt {
@@ -452,8 +475,23 @@ impl Ctx<'_> {
                         }
                     }
                 }
-                Stmt::Assign { value, .. } | Stmt::LetTuple { value, .. } => {
-                    self.rewrite_expr(value, scope)
+                Stmt::Assign { value, .. } => self.rewrite_expr(value, scope),
+                // Seed each destructured name from the tuple's slot types so a
+                // trait call on a tuple part (`x0.show()`) dispatches.
+                Stmt::LetTuple { names, value } => {
+                    self.rewrite_expr(value, scope);
+                    match self.type_name(value, scope).as_deref().and_then(tuple_args) {
+                        Some(args) => {
+                            for (n, t) in names.iter().zip(args) {
+                                scope.insert(n.clone(), t.to_string());
+                            }
+                        }
+                        None => {
+                            for n in names {
+                                scope.remove(n.as_str());
+                            }
+                        }
+                    }
                 }
                 Stmt::Return(Some(e)) | Stmt::Expr(e) | Stmt::Yield(e) => self.rewrite_expr(e, scope),
                 Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
@@ -470,7 +508,7 @@ impl Ctx<'_> {
                 if let Some(trait_name) = self.trait_methods.get(name.as_str()) {
                     if let Some(recv) = args.first() {
                         if let Some(tn) = self.type_name(recv, scope) {
-                            match self.impl_table.get(&(name.clone(), tn.clone())) {
+                            match self.lookup_impl(name, &tn) {
                                 Some(mangled) => *name = mangled.clone(),
                                 // The receiver's type is known and no impl
                                 // exists; unless a plain function of this name
@@ -573,17 +611,6 @@ impl Ctx<'_> {
                         }
                     }
                 }
-                // Actor message send: `subject.Msg(args)` is sugar for
-                // `send(subject, Msg(args))`. An uppercased method name can only
-                // be a message constructor (impl/UFCS methods are lowercase), so
-                // this is unambiguous; the type checker still verifies the
-                // receiver is a `Subject` whose actor handles `Msg`.
-                if method.chars().next().is_some_and(char::is_uppercase) {
-                    let recv = std::mem::replace(receiver.as_mut(), Expr::Bool(false));
-                    let msg = Expr::Ctor { name: method.clone(), args: std::mem::take(args) };
-                    *e = Expr::Call { name: "send".to_string(), args: vec![recv, msg] };
-                    return;
-                }
                 let tn = self
                     .type_name(receiver, scope)
                     .or_else(|| {
@@ -593,7 +620,7 @@ impl Ctx<'_> {
                             .and_then(|t| type_to_scope_name(&t))
                     });
                 if let Some(tn) = &tn {
-                    if let Some(mangled) = self.impl_table.get(&(method.clone(), tn.clone())) {
+                    if let Some(mangled) = self.lookup_impl(method, tn) {
                         let mut call_args = vec![std::mem::replace(
                             receiver.as_mut(),
                             Expr::Bool(false),
@@ -690,7 +717,7 @@ impl Ctx<'_> {
                     self.rewrite_expr(&mut arm.body, &mut s);
                 }
             }
-            Expr::Lambda { params, body } => {
+            Expr::Lambda { params, body, .. } => {
                 let mut s = scope.clone();
                 seed_params(params, &mut s);
                 self.rewrite_block(body, &mut s);
@@ -733,9 +760,21 @@ fn head_type_name(
         // type is concrete (so generated method bodies dispatch on fields).
         Expr::Field { base, field } => {
             let base_ty = head_type_name(base, scope, ctor_results, fn_rets, record_fields)?;
-            let fields = record_fields.get(&base_ty)?;
+            // The base may be an encoded generic (`Box<Int>`, `Set<String>`); record
+            // fields are keyed by the bare head. The field's declared type stays
+            // generic (`a`) and the caller's substitution makes it concrete.
+            let fields = record_fields.get(head_of(&base_ty))?;
             let (_, ft) = fields.iter().find(|(n, _)| n == field)?;
             type_to_scope_name(ft)
+        }
+        // `Some(x)` encodes its payload (`Option<Int>`), mirroring a list literal,
+        // so monomorphization recovers an option's element from the call site.
+        Expr::Ctor { name, args } if name == "Some" => {
+            let elem = args
+                .first()
+                .and_then(|a| head_type_name(a, scope, ctor_results, fn_rets, record_fields))
+                .unwrap_or_else(|| "_".to_string());
+            Some(format!("Option<{elem}>"))
         }
         Expr::Ctor { name, .. } => ctor_results.get(name).cloned(),
         Expr::Call { name, .. } => fn_rets.get(name).cloned().or_else(|| builtin_ret(name)),
@@ -749,8 +788,9 @@ fn head_type_name(
         // bitwise ops have the type of their (left) operand.
         Expr::Binary { op, lhs, .. } => match op {
             BinOp::Eq | BinOp::NotEq | BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq
-            | BinOp::And | BinOp::Or => Some("Bool".into()),
+            | BinOp::And => Some("Bool".into()),
             BinOp::Concat => Some("String".into()),
+            // Non-Bool `||` (truthy fallback) has its (left) operand's type.
             _ => head_type_name(lhs, scope, ctor_results, fn_rets, record_fields),
         },
         // A list literal's type encodes its element type when determinable from
@@ -763,6 +803,18 @@ fn head_type_name(
             {
                 Some(elem) => format!("List<{elem}>"),
                 None => "List".to_string(),
+            },
+        ),
+        // A tuple literal encodes its slot types (`Tuple2<Int,String>`), mirroring a
+        // list literal, so a tuple value dispatches + monomorphizes per slot.
+        Expr::Tuple(items) => Some(
+            match items
+                .iter()
+                .map(|e| head_type_name(e, scope, ctor_results, fn_rets, record_fields))
+                .collect::<Option<Vec<_>>>()
+            {
+                Some(es) => format!("Tuple{}<{}>", items.len(), es.join(",")),
+                None => format!("Tuple{}", items.len()),
             },
         ),
         _ => None,
@@ -801,6 +853,38 @@ fn list_elem(type_name: &str) -> Option<&str> {
     type_name.strip_prefix("List<")?.strip_suffix('>')
 }
 
+/// The argument of a single-arg generic scope name — `List<Int>`/`Option<Int>` ->
+/// `Int`, `List<List<Int>>` -> `List<Int>`. Lets monomorphization recover the
+/// element of any one-parameter generic (List, Option, a user `Box(a)`) uniformly.
+fn generic_arg(type_name: &str) -> Option<&str> {
+    let start = type_name.find('<')? + 1;
+    let end = type_name.rfind('>')?;
+    (start <= end).then(|| &type_name[start..end])
+}
+
+/// The top-level slot scope names of a tuple scope name — `Tuple2<Int,String>` ->
+/// `["Int", "String"]`, respecting nesting (`Tuple2<List<Int>,String>`). Lets
+/// monomorphization recover each slot type of a tuple impl's `self`.
+fn tuple_args(type_name: &str) -> Option<Vec<&str>> {
+    let inner = generic_arg(type_name)?;
+    let mut out = Vec::new();
+    let mut depth = 0i32;
+    let mut start = 0;
+    for (i, c) in inner.char_indices() {
+        match c {
+            '<' => depth += 1,
+            '>' => depth -= 1,
+            ',' if depth == 0 => {
+                out.push(inner[start..i].trim());
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    out.push(inner[start..].trim());
+    Some(out)
+}
+
 /// The scope name for a declared parameter type, encoding a list's element type
 /// (`List<Int>`) so loop-variable typing works on annotated list parameters.
 // The stdlib module that backs UFCS method calls on a built-in type, so
@@ -815,6 +899,10 @@ fn builtin_method_module(tn: &str) -> Option<&'static str> {
         "Option" => Some("option"),
         "Result" => Some("result"),
         "Iter" => Some("iter"),
+        // `key.sign(msg)` / `key.public_key()` / `key.reveal()` -> crypto.*;
+        // `store.get(name)` -> secretstore.get.
+        "Secret" => Some("crypto"),
+        "SecretStore" => Some("secretstore"),
         _ => None,
     }
 }
@@ -898,15 +986,34 @@ fn expr_needs_lowering(e: &Expr) -> bool {
 
 fn type_to_scope_name(t: &Type) -> Option<String> {
     match t {
-        Type::Named(n, args) if n == "List" => {
-            Some(match args.first().and_then(type_to_scope_name) {
-                Some(elem) => format!("List<{elem}>"),
-                None => "List".to_string(),
+        // A generic encodes its arguments (`List<Int>`, `Box<Int>`,
+        // `Dict<String,Int>`) so monomorphization can recover each from a receiver's
+        // scope name; the dispatch lookup strips them back to the head.
+        Type::Named(n, args) if !args.is_empty() => {
+            Some(match args.iter().map(type_to_scope_name).collect::<Option<Vec<_>>>() {
+                Some(es) => format!("{n}<{}>", es.join(",")),
+                None => n.clone(),
             })
         }
         Type::Named(n, _) => Some(n.clone()),
+        // A tuple's head is its arity (`Tuple2`, `Tuple3`) — the head `impl Trait for
+        // (a, b)` registers under and a value dispatches to — and it encodes its
+        // slot types (`Tuple2<Int,String>`) so monomorphization recovers each.
+        Type::Tuple(ts) => Some(
+            match ts.iter().map(type_to_scope_name).collect::<Option<Vec<_>>>() {
+                Some(es) => format!("Tuple{}<{}>", ts.len(), es.join(",")),
+                None => format!("Tuple{}", ts.len()),
+            },
+        ),
         _ => None,
     }
+}
+
+/// The head of a scope type name — `List<Int>` -> `List`, `Point` -> `Point`,
+/// `Tuple2` -> `Tuple2`. Generic impls register by head, so a concrete receiver
+/// type falls back to it during dispatch.
+fn head_of(tn: &str) -> &str {
+    tn.split('<').next().unwrap_or(tn)
 }
 
 /// Constructor -> its type name, and function -> its (named) return type.
@@ -1103,6 +1210,13 @@ fn decode_scope_type(name: &str) -> Type {
             }
             if head == "List" && args.len() == 1 {
                 Type::Named("List".into(), args)
+            } else if head
+                .strip_prefix("Tuple")
+                .is_some_and(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()))
+            {
+                // `Tuple2<String,Int>` decodes to the tuple type `(String, Int)`, so
+                // its slot types survive the round-trip and each one monomorphizes.
+                Type::Tuple(args)
             } else {
                 Type::Named(head.to_string(), args)
             }
@@ -1134,7 +1248,7 @@ fn subst_block_types(b: &mut Block, subst: &HashMap<&str, String>) {
 
 fn subst_expr_types(e: &mut Expr, subst: &HashMap<&str, String>) {
     match e {
-        Expr::Lambda { params, body } => {
+        Expr::Lambda { params, body, .. } => {
             for p in params.iter_mut() {
                 if let Some(t) = &p.ty {
                     p.ty = Some(subst_vars(t, subst));
@@ -1576,7 +1690,7 @@ impl Mono<'_> {
     /// Resolves a `fn(...) -> b` parameter's `b` for monomorphization.
     fn closure_ret_type(&self, arg: &Expr, scope: &Scope) -> Option<String> {
         match arg {
-            Expr::Lambda { params, body } => {
+            Expr::Lambda { params, body, .. } => {
                 let mut s = scope.clone();
                 seed_params(params, &mut s);
                 match body.stmts.last() {
@@ -1614,16 +1728,25 @@ impl Mono<'_> {
                             break;
                         }
                     }
-                    Some(Type::Named(n, a))
-                        if n == "List"
-                            && matches!(a.first(), Some(Type::Named(vn, va)) if *vn == var && va.is_empty()) =>
+                    // `xs: List(a)` / `b: Box(a, c)` / any generic `G(…var…)`: take
+                    // `var` from its position among the argument's encoded scope
+                    // arguments `G<arg0,arg1,…>`.
+                    Some(Type::Named(_, slots))
+                        if slots.iter().any(
+                            |t| matches!(t, Type::Named(vn, va) if *vn == var && va.is_empty()),
+                        ) =>
                     {
+                        let pos = slots
+                            .iter()
+                            .position(|t| matches!(t, Type::Named(vn, va) if *vn == var && va.is_empty()))
+                            .unwrap();
                         if let Some(elem) = self
                             .type_name_subst(arg, scope)
                             .as_deref()
-                            .and_then(list_elem)
+                            .and_then(tuple_args)
+                            .and_then(|a| a.get(pos).map(|s| s.to_string()))
                         {
-                            found = Some(elem.to_string());
+                            found = Some(elem);
                             break;
                         }
                     }
@@ -1652,6 +1775,23 @@ impl Mono<'_> {
                             break;
                         }
                     }
+                    // `self: (a, b, ...)` — a tuple impl's receiver: recover `var`
+                    // from its slot in the argument tuple's encoded scope name.
+                    Some(Type::Tuple(slots)) => {
+                        if let Some(pos) = slots.iter().position(
+                            |t| matches!(t, Type::Named(vn, va) if *vn == var && va.is_empty()),
+                        ) {
+                            if let Some(elem) = self
+                                .type_name_subst(arg, scope)
+                                .as_deref()
+                                .and_then(tuple_args)
+                                .and_then(|a| a.get(pos).map(|s| s.to_string()))
+                            {
+                                found = Some(elem);
+                                break;
+                            }
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -1677,7 +1817,17 @@ impl Mono<'_> {
                     found = Some(tn.clone());
                     true
                 }
-                (Some(f), Some(tn)) => f == tn,
+                (Some(f), Some(tn)) if f == tn => true,
+                // The head-name scope saw only the bare head (`Box`, from a
+                // constructor) while the table carries the full encoded type
+                // (`Box<Int>`); the table is more specific, so trust it — this is
+                // what recovers a generic constructor's element without a per-
+                // constructor head-name special case.
+                (Some(f), Some(tn)) if head_of(tn) == f => {
+                    found = Some(tn.clone());
+                    true
+                }
+                (Some(_), Some(_)) => false,
                 _ => false,
             };
             // A RETURN-POSITION variable (`fn collect(...) -> c`): no argument
@@ -1850,8 +2000,24 @@ impl Mono<'_> {
                         }
                     }
                 }
-                Stmt::Assign { value, .. } | Stmt::LetTuple { value, .. } => {
-                    self.walk_expr(value, scope)
+                Stmt::Assign { value, .. } => self.walk_expr(value, scope),
+                // `let (x0, x1) = t` seeds each name from the tuple's slot types, so
+                // a destructured tuple value's parts monomorphize (e.g. a tuple
+                // impl's `reflect_one(x0)`).
+                Stmt::LetTuple { names, value } => {
+                    self.walk_expr(value, scope);
+                    match self.type_name_subst(value, scope).as_deref().and_then(tuple_args) {
+                        Some(args) => {
+                            for (n, t) in names.iter().zip(args) {
+                                scope.insert(n.clone(), t.to_string());
+                            }
+                        }
+                        None => {
+                            for n in names {
+                                scope.remove(n.as_str());
+                            }
+                        }
+                    }
                 }
                 Stmt::Return(Some(e)) | Stmt::Expr(e) | Stmt::Yield(e) => self.walk_expr(e, scope),
                 Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
@@ -1977,7 +2143,7 @@ impl Mono<'_> {
                     self.walk_expr(&mut arm.body, &mut s);
                 }
             }
-            Expr::Lambda { params, body } => {
+            Expr::Lambda { params, body, .. } => {
                 let mut s = scope.clone();
                 seed_params(params, &mut s);
                 self.walk_block(body, &mut s);

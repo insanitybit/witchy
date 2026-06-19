@@ -127,7 +127,7 @@ fn opt_expr(e: &mut Expr, consts: &mut Consts) {
         }
         Expr::Unary { expr, .. } => opt_expr(expr, consts),
         Expr::Field { base, .. } => opt_expr(base, consts),
-        Expr::Lambda { params, body } => {
+        Expr::Lambda { params, body, .. } => {
             // Params shadow outer constants inside the body.
             let mut inner = consts.clone();
             for p in params.iter() {

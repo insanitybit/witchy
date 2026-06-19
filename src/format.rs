@@ -92,6 +92,9 @@ fn expr_max_line(e: &Expr, default: u32) -> u32 {
         }
         Expr::Block(b) => block_max_line(b, default),
         Expr::Lambda { body, .. } => block_max_line(body, default),
+        // A fluent chain that `chain_wrap` breaks occupies one extra line per call
+        // below the head, so the following statement is not given a phantom blank.
+        Expr::MethodCall { .. } if chain_should_wrap(e) => default + method_chain_len(e) as u32,
         _ => default,
     }
 }
@@ -116,7 +119,7 @@ pub fn module(m: &Module, comments: &[(u32, String)]) -> String {
         cursor: 0,
     };
 
-    // Performance-mode directives lead the file (`mode opt` / `mode strict`).
+    // The performance mode `mode opt` leads the file.
     // The following block (imports or the first item) supplies the blank-line
     // separator, so we emit no trailing blank here.
     for mode in &m.modes {
@@ -144,6 +147,11 @@ pub fn module(m: &Module, comments: &[(u32, String)]) -> String {
     }
 
     for (idx, item) in m.items.iter().enumerate() {
+        // The synthetic record behind each `.{…}` is regenerated from the literal on
+        // re-parse, so it must not be printed (else fmt would duplicate it).
+        if matches!(item, Item::Type(t) if t.name.starts_with("__anon")) {
+            continue;
+        }
         if !s.is_empty() {
             s.push('\n');
         }
@@ -349,7 +357,19 @@ fn impl_def(s: &mut String, im: &ImplDef, c: &mut Comments) {
         }
         s.push_str(" for ");
     }
-    s.push_str(&im.type_name);
+    // The target, with its type arguments: `List(a)`, `Box(a, b)`, or a tuple
+    // `(a, b)` (whose head is the synthetic `Tuple{N}`, printed back as a tuple).
+    if let Some(arity) = im.type_name.strip_prefix("Tuple").and_then(|n| n.parse::<usize>().ok()) {
+        let _ = arity;
+        let rendered: Vec<String> = im.target_args.iter().map(type_str).collect();
+        s.push_str(&format!("({})", rendered.join(", ")));
+    } else {
+        s.push_str(&im.type_name);
+        if !im.target_args.is_empty() {
+            let rendered: Vec<String> = im.target_args.iter().map(type_str).collect();
+            s.push_str(&format!("({})", rendered.join(", ")));
+        }
+    }
     // A conditional impl's `where` clause (`impl FromIterator(a) for Set(a) where a: Eq`).
     if !im.bounds.is_empty() {
         s.push_str(" where ");
@@ -500,8 +520,47 @@ fn stmt(s: &mut String, st: &Stmt, depth: usize, c: &mut Comments) {
     }
 }
 
+/// An expression's single-line rendering, or None when it only renders multi-line
+/// (match/lambda/block) or wrapped onto several lines.
+fn inline_form(e: &Expr) -> Option<String> {
+    if matches!(e, Expr::Match { .. } | Expr::Lambda { .. } | Expr::Block(_)) {
+        return None;
+    }
+    let rendered = expr(e);
+    (!rendered.contains('\n')).then_some(rendered)
+}
+
 /// A statement-position expression: control-flow forms expand multi-line.
 fn block_stmt(s: &mut String, e: &Expr, depth: usize, c: &mut Comments) {
+    // Postfix-guard return: the parser desugars `return X if cond` to an `if`
+    // whose then-block is the lone return, tagged with the `u32::MAX` synthetic
+    // line marker. Re-collapse exactly that shape — and only it, so an explicitly
+    // written multi-line `if cond: return X` (real line numbers) is left as is.
+    if let Expr::If { cond, then_block, else_block: None } = e {
+        if then_block.restrict.is_none()
+            && then_block.region.is_none()
+            && then_block.lines.as_slice() == [u32::MAX]
+        {
+            if let [Stmt::Return(val)] = then_block.stmts.as_slice() {
+                let val_inline = match val {
+                    None => Some(None),
+                    Some(v) => inline_form(v).map(Some),
+                };
+                if let (Some(cond_str), Some(val_str)) = (inline_form(cond), val_inline) {
+                    pad(s, depth);
+                    s.push_str("return");
+                    if let Some(v) = val_str {
+                        s.push(' ');
+                        s.push_str(&v);
+                    }
+                    s.push_str(" if ");
+                    s.push_str(&cond_str);
+                    s.push('\n');
+                    return;
+                }
+            }
+        }
+    }
     // A trailing-block-lambda call, possibly behind `await`/`move`, renders
     // multi-line with the prefix on the head line.
     if let Some((prefix, call, suffix)) = unwrap_block_lambda_call(e) {
@@ -528,16 +587,69 @@ fn block_stmt(s: &mut String, e: &Expr, depth: usize, c: &mut Comments) {
                 block(s, b, depth, c);
             }
         }
-        Expr::Lambda { params, body } => {
+        Expr::Lambda { params, body, ret } => {
             pad(s, depth);
-            lambda_at(s, params, body, depth, c);
+            lambda_at(s, params, body, ret, depth, c);
         }
         _ => {
             pad(s, depth);
-            s.push_str(&expr(e));
-            s.push('\n');
+            if !chain_wrap(s, e, depth) {
+                s.push_str(&expr(e));
+                s.push('\n');
+            }
         }
     }
+}
+
+/// The inline length past which a fluent method chain is broken one call per line.
+const MAX_WIDTH: usize = 100;
+
+/// The number of chained `.method(..)` calls in `e` (0 if it is not a method call).
+fn method_chain_len(e: &Expr) -> usize {
+    let mut n = 0;
+    let mut cur = e;
+    while let Expr::MethodCall { receiver, .. } = cur {
+        n += 1;
+        cur = receiver;
+    }
+    n
+}
+
+/// Whether a fluent chain is long enough to break onto one call per line. The test
+/// is column-INDEPENDENT (the chain's own inline length, not its indented position)
+/// so `chain_wrap` and `expr_max_line` always agree — which is what keeps fmt
+/// idempotent across the wrap.
+fn chain_should_wrap(e: &Expr) -> bool {
+    method_chain_len(e) >= 2 && expr(e).len() > MAX_WIDTH
+}
+
+/// Wrap a long fluent method chain — `head.a(..).b(..).c(..)` — onto one call per
+/// line, each `.method(..)` indented a level below the statement (witchy's layout
+/// joins these leading-`.` continuation lines back into the chain). Returns false,
+/// emitting nothing, for a short chain or non-chain, which the caller renders inline.
+fn chain_wrap(s: &mut String, e: &Expr, depth: usize) -> bool {
+    if !chain_should_wrap(e) {
+        return false;
+    }
+    let mut segments: Vec<(&str, &[Expr])> = Vec::new();
+    let mut cur = e;
+    while let Expr::MethodCall { receiver, method, args } = cur {
+        segments.push((method.as_str(), args.as_slice()));
+        cur = receiver;
+    }
+    segments.reverse();
+    s.push_str(&expr(cur));
+    for (method, args) in segments {
+        s.push('\n');
+        pad(s, depth + 1);
+        s.push('.');
+        s.push_str(method);
+        s.push('(');
+        s.push_str(&comma(args));
+        s.push(')');
+    }
+    s.push('\n');
+    true
 }
 
 /// The right-hand side of a `let`/`=`/`return`: use a multi-line form when the
@@ -553,8 +665,8 @@ fn value_or_block(s: &mut String, e: &Expr, depth: usize, c: &mut Comments) {
         Expr::Match { .. } => {
             multiline(s, e, depth, c);
         }
-        Expr::Lambda { params, body } => {
-            lambda_at(s, params, body, depth, c);
+        Expr::Lambda { params, body, ret } => {
+            lambda_at(s, params, body, ret, depth, c);
         }
         // A `retain`/`without` block used as a value (`let x = without c: ...`):
         // the header follows `= ` on this line, the body indents below.
@@ -570,8 +682,10 @@ fn value_or_block(s: &mut String, e: &Expr, depth: usize, c: &mut Comments) {
             block_stmts(s, b, depth + 1, c);
         }
         _ => {
-            s.push_str(&expr(e));
-            s.push('\n');
+            if !chain_wrap(s, e, depth) {
+                s.push_str(&expr(e));
+                s.push('\n');
+            }
         }
     }
 }
@@ -615,8 +729,9 @@ fn multiline(s: &mut String, e: &Expr, depth: usize, c: &mut Comments) {
             block(s, body, depth + 1, c);
         }
         Expr::For { var, iter, body } => {
-            // `for (k, v) in e:` desugars at parse to a synthetic element
-            // variable plus a leading destructure; print the sugar back.
+            // `for a, b in e:` desugars at parse to a synthetic element variable
+            // plus a leading destructure; print the sugar back (unparenthesized —
+            // the canonical Python-style form; `for (a, b) in e:` also parses).
             if var.starts_with("__fortuple") {
                 if let Some(Stmt::LetTuple { names, value: Expr::Var(v) }) = body.stmts.first() {
                     if v == var {
@@ -626,9 +741,9 @@ fn multiline(s: &mut String, e: &Expr, depth: usize, c: &mut Comments) {
                             restrict: body.restrict.clone(),
                             region: body.region.clone(),
                         };
-                        s.push_str("for (");
+                        s.push_str("for ");
                         s.push_str(&names.join(", "));
-                        s.push_str(") in ");
+                        s.push_str(" in ");
                         s.push_str(&expr(iter));
                         s.push_str(":\n");
                         block(s, &inner, depth + 1, c);
@@ -762,9 +877,9 @@ fn arm_body(s: &mut String, body: &Expr, depth: usize, c: &mut Comments) {
             s.push(' ');
             multiline(s, body, depth, c);
         }
-        Expr::Lambda { params, body } => {
+        Expr::Lambda { params, body, ret } => {
             s.push(' ');
-            lambda_at(s, params, body, depth, c);
+            lambda_at(s, params, body, ret, depth, c);
         }
         _ => {
             s.push(' ');
@@ -811,15 +926,6 @@ fn expr(e: &Expr) -> String {
         Expr::List(xs) => format!("[{}]", comma(xs)),
         Expr::Tuple(xs) => format!("({})", comma(xs)),
         Expr::Call { name, args } => {
-            // An actor message send prints in method form: `send(subject,
-            // Msg(args))` is the canonical `subject.Msg(args)`, so `witchy fmt`
-            // rewrites the old call spelling to the method one in place.
-            if name == "send" && !local_fn("send") && args.len() == 2 {
-                if let Expr::Ctor { name: msg, args: margs } = &args[1] {
-                    let recv = operand(&args[0], POSTFIX_PREC, false);
-                    return format!("{recv}.{msg}({})", comma(margs));
-                }
-            }
             // The one-shot migration vehicle: a retired global builtin prints
             // as its module-qualified spelling, so `witchy fmt` rewrites a
             // pre-migration tree in place (docs/language-evolution.md Phase 2).
@@ -860,7 +966,12 @@ fn expr(e: &Expr) -> String {
             if let Some(s) = spread {
                 parts.push(format!("..{}", expr(s)));
             }
-            format!("{name}({})", parts.join(", "))
+            // An anonymous struct prints back as `.{…}`, not its synthetic name.
+            if name.starts_with("__anon") {
+                format!(".{{{}}}", parts.join(", "))
+            } else {
+                format!("{name}({})", parts.join(", "))
+            }
         }
         Expr::Apply { func, args } => {
             format!("{}({})", operand(func, POSTFIX_PREC, false), comma(args))
@@ -892,11 +1003,22 @@ fn expr(e: &Expr) -> String {
         Expr::Index { base, index } => {
             format!("{}[{}]", operand(base, POSTFIX_PREC, false), expr(index))
         }
-        Expr::Try(inner) => format!("{}?", operand(inner, POSTFIX_PREC, false)),
+        // `(__try_ctx(e, msg))?` is the desugar of `e ? "msg"` — render it back to
+        // the surface form rather than exposing the intrinsic.
+        Expr::Try(inner) => match inner.as_ref() {
+            Expr::Call { name, args } if name == "__try_ctx" && args.len() == 2 => {
+                format!("{} ? {}", operand(&args[0], POSTFIX_PREC, false), expr(&args[1]))
+            }
+            _ => format!("{}?", operand(inner, POSTFIX_PREC, false)),
+        },
         Expr::As { expr, ty } => format!("{} as {}", operand(expr, POSTFIX_PREC, false), type_str(ty)),
-        Expr::Lambda { params, body } => {
+        Expr::Lambda { params, body, ret } => {
             let ps: Vec<String> = params.iter().map(param).collect();
-            format!("fn({}): {}", ps.join(", "), block_value(body))
+            let r = match ret {
+                Some(t) => format!(" -> {}", type_str(t)),
+                None => String::new(),
+            };
+            format!("fn({}){}: {}", ps.join(", "), r, block_value(body))
         }
         Expr::If { cond, then_block, else_block } => {
             let e = else_block
@@ -972,11 +1094,15 @@ fn block_value(b: &Block) -> String {
 /// inline `fn(p): expr` when the body is a single inline expression, otherwise
 /// `fn(p):` followed by an indented block. `s` is positioned where the `fn`
 /// begins.
-fn lambda_at(s: &mut String, params: &[Param], body: &Block, depth: usize, c: &mut Comments) {
+fn lambda_at(s: &mut String, params: &[Param], body: &Block, ret: &Option<Type>, depth: usize, c: &mut Comments) {
     let ps: Vec<String> = params.iter().map(param).collect();
     s.push_str("fn(");
     s.push_str(&ps.join(", "));
     s.push(')');
+    if let Some(t) = ret {
+        s.push_str(" -> ");
+        s.push_str(&type_str(t));
+    }
     match block_value_opt(body) {
         Some(inline) => {
             s.push_str(": ");
@@ -1051,8 +1177,8 @@ fn call_block_lambda(s: &mut String, head: &str, args: &[Expr], suffix: &str, de
         s.push_str(&expr(a));
         s.push_str(", ");
     }
-    if let Expr::Lambda { params, body } = &last[0] {
-        lambda_at(s, params, body, depth, c);
+    if let Expr::Lambda { params, body, ret } = &last[0] {
+        lambda_at(s, params, body, ret, depth, c);
     }
     pad(s, depth);
     s.push(')');
@@ -1427,16 +1553,6 @@ fn canon_expr(e: &mut Expr) {
                 rhs: Box::new(Expr::Str(String::new())),
             };
             return;
-        }
-    }
-    // An actor message send canonicalizes to the `send(recv, Msg(args))` call, so
-    // the method spelling `recv.Msg(args)` and the legacy call spelling compare
-    // equal (the printer rewrites the latter to the former).
-    if let Expr::MethodCall { receiver, method, args } = e {
-        if method.chars().next().is_some_and(char::is_uppercase) {
-            let recv = std::mem::replace(receiver.as_mut(), Expr::Bool(false));
-            let msg = Expr::Ctor { name: method.clone(), args: std::mem::take(args) };
-            *e = Expr::Call { name: "send".into(), args: vec![recv, msg] };
         }
     }
     match e {

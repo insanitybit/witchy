@@ -103,6 +103,19 @@ fn filter_step(s: Step(a), keep: fn(a) -> Bool) -> Step(a):
             else:
                 filter_step(next(rest), keep)
 
+// Apply `f` to each element, keeping every `Some(y)` and dropping every `None` —
+// a `map` and `filter` fused into one pass (Rust's `Iterator::filter_map`).
+pub fn filter_map(it: Iter(a), f: fn(a) -> Option(b)) -> Iter(b):
+    Iter(fn(): filter_map_step(next(it), f))
+
+fn filter_map_step(s: Step(a), f: fn(a) -> Option(b)) -> Step(b):
+    match s:
+        Empty -> Empty
+        Item(x, rest) ->
+            match f(x):
+                Some(y) -> Item(y, filter_map(rest, f))
+                None -> filter_map_step(next(rest), f)
+
 // The first `k` elements (fewer if the iterator is shorter).
 pub fn take(it: Iter(a), k: Int) -> Iter(a):
     Iter(fn(): take_step(it, k))

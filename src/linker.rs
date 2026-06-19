@@ -97,7 +97,7 @@ pub const STD_MODULES: &[&str] = &[
     "list", "string", "math", "result", "option", "func", "ord", "eq", "ascii", "set", "server",
     "show", "http", "json", "url", "duration", "random", "regex", "crypto", "compiler", "toml",
     "iter", "semver", "rights", "fs", "dict", "csv", "time", "encoding", "path", "testing",
-    "future", "task", "chan", "webauthn",
+    "future", "task", "chan", "webauthn", "secretstore", "reflect", "meta",
 ];
 
 /// The bundled std modules that export a `pub fn` of the given name — used to
@@ -287,6 +287,7 @@ pub fn std_source(name: &str) -> Option<&'static str> {
         "random" => Some(include_str!("../std/random.witchy")),
         "regex" => Some(include_str!("../std/regex.witchy")),
         "crypto" => Some(include_str!("../std/crypto.witchy")),
+        "secretstore" => Some(include_str!("../std/secretstore.witchy")),
         "webauthn" => Some(include_str!("../std/webauthn.witchy")),
         "compiler" => Some(include_str!("../std/compiler.witchy")),
         "toml" => Some(include_str!("../std/toml.witchy")),
@@ -302,6 +303,8 @@ pub fn std_source(name: &str) -> Option<&'static str> {
         "future" => Some(include_str!("../std/future.witchy")),
         "task" => Some(include_str!("../std/task.witchy")),
         "chan" => Some(include_str!("../std/chan.witchy")),
+        "reflect" => Some(include_str!("../std/reflect.witchy")),
+        "meta" => Some(include_str!("../std/meta.witchy")),
         _ => None,
     }
 }
@@ -423,6 +426,34 @@ pub fn link(mut modules: Vec<(String, Module)>, entry: &str) -> Result<Module, L
         for imp in &m.imports {
             if !fns.contains_key(imp) {
                 return lerr(format!("module `{name}` imports unknown module `{imp}`"));
+            }
+        }
+    }
+
+    // `mode opt` is transitive: an `opt` module may depend only on other `opt`
+    // modules, so the guarantee covers the whole reachable user graph, not just
+    // one file. The bundled standard library is the compiler's optimized
+    // substrate and is exempt; any USER import of an `opt` module must itself be
+    // `opt`. (A non-`opt` module may freely import `opt` ones — the rule is
+    // one-directional.)
+    let is_opt = |m: &Module| m.modes.iter().any(|x| x == "opt");
+    let opt_of: HashMap<&str, bool> =
+        modules.iter().map(|(n, m)| (n.as_str(), is_opt(m))).collect();
+    for (name, m) in &modules {
+        if !is_opt(m) {
+            continue;
+        }
+        for imp in &m.imports {
+            if STD_MODULES.contains(&imp.as_str()) {
+                continue;
+            }
+            if opt_of.get(imp.as_str()) == Some(&false) {
+                return lerr(format!(
+                    "`mode opt` module `{name}` imports `{imp}`, which is not `mode opt` — \
+                     optimization mode is transitive, so an `opt` module may depend only on \
+                     other `opt` modules (the bundled std library is exempt). Add `mode opt` \
+                     to `{imp}`, or drop `mode opt` from `{name}`."
+                ));
             }
         }
     }
@@ -796,7 +827,7 @@ fn collect_pattern_vars(p: &Pattern, out: &mut HashSet<String>) {
 
 fn collect_bound_expr(e: &Expr, out: &mut HashSet<String>) {
     match e {
-        Expr::Lambda { params, body } => {
+        Expr::Lambda { params, body, .. } => {
             for p in params {
                 out.insert(p.name.clone());
             }

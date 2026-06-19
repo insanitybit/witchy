@@ -41,7 +41,7 @@
 
     fn run_int(src: &str) -> i64 {
         let module = parse_module(src).expect("parse");
-        let bytes = compile_module_binary(&module, &std::collections::HashMap::new())
+        let bytes = compile_module_binary(&module)
             .expect("compile")
             .expect("the binary path lowers this program");
         let engine = Engine::default();
@@ -67,7 +67,7 @@
     /// Run a float program with a capturing `print_float`.
     fn run_float(src: &str) -> f64 {
         let module = parse_module(src).expect("parse");
-        let bytes = compile_module_binary(&module, &std::collections::HashMap::new())
+        let bytes = compile_module_binary(&module)
             .expect("compile")
             .expect("the binary path lowers this program");
         let engine = Engine::default();
@@ -265,7 +265,7 @@ fn main() -> Int:
     run(add, 5)
 "#;
         let module = parse_module(src).expect("parse");
-        let err = compile_module_binary(&module, &std::collections::HashMap::new())
+        let err = compile_module_binary(&module)
             .expect_err("should reject outer assignment");
         assert!(
             err.to_string().contains("assigns `total`"),
@@ -303,7 +303,7 @@ fn main() -> Int:
 
     fn run_str(src: &str) -> Vec<String> {
         let module = parse_module(src).expect("parse");
-        let bytes = compile_module_binary(&module, &std::collections::HashMap::new())
+        let bytes = compile_module_binary(&module)
             .expect("compile")
             .expect("the binary path lowers this program");
         let (mut store, instance, captured) = instantiate_with_print(&bytes);

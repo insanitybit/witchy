@@ -155,6 +155,102 @@ fn check_ref(name: &str, version: &str) -> PmResult<()> {
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// Publish-time naming policy: minimum length + typosquatting guard.
+//
+// These are POLICY (enforced only when a *new* name is first published), kept
+// separate from `valid_name`, which is a path-safety check used everywhere
+// (including fetch/resolve of already-published names). The constants below are
+// the only tuning knobs.
+// ---------------------------------------------------------------------------
+
+/// Minimum length of the *name* segment (the part after `namespace/`). Blocks
+/// single-character junk/squat-prone names. Enforced only on new publishes, so
+/// it can never strand an already-published name.
+const MIN_NAME_SEGMENT_LEN: usize = 2;
+
+/// A new name within this *typo distance* of an existing rune owned by a
+/// DIFFERENT publisher is rejected as a likely typosquat.
+const TYPO_BLOCK_DISTANCE: usize = 1;
+
+/// Distance-based blocking only applies once the longer normalized name is at
+/// least this long — short names sit one typo apart too often for proximity to
+/// mean anything. (Names that normalize *identically* are blocked at any length.)
+const TYPO_MIN_LEN: usize = 5;
+
+/// Fold a rune name to a canonical form for typosquat comparison: drop the
+/// separators (`-`, `_`, `.`) and the namespace slash, and collapse the common
+/// homoglyphs/confusables (`0→o`, `1→l`, `5→s`, `3→e`, `rn→m`, `vv→w`) so visual
+/// look-alikes and separator tricks land on the same string. Names are already
+/// `[a-z0-9_.-/]`, so this stays ASCII.
+fn normalize_for_typo(name: &str) -> String {
+    let folded: String = name
+        .chars()
+        .filter_map(|c| match c {
+            '-' | '_' | '.' | '/' => None,
+            '0' => Some('o'),
+            '1' => Some('l'),
+            '5' => Some('s'),
+            '3' => Some('e'),
+            other => Some(other),
+        })
+        .collect();
+    folded.replace("rn", "m").replace("vv", "w")
+}
+
+/// Damerau–Levenshtein (optimal string alignment) distance — like plain edit
+/// distance, but an adjacent transposition (`form`↔`from`) counts as ONE
+/// operation, which is the whole point of a *typo* distance: transposition is a
+/// single slip of the fingers, not two unrelated edits.
+fn typo_distance(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    let (n, m) = (a.len(), b.len());
+    if n == 0 {
+        return m;
+    }
+    if m == 0 {
+        return n;
+    }
+    let mut d = vec![vec![0usize; m + 1]; n + 1];
+    for (i, row) in d.iter_mut().enumerate() {
+        row[0] = i;
+    }
+    for j in 0..=m {
+        d[0][j] = j;
+    }
+    for i in 1..=n {
+        for j in 1..=m {
+            let cost = usize::from(a[i - 1] != b[j - 1]);
+            let mut best = (d[i - 1][j] + 1) // deletion
+                .min(d[i][j - 1] + 1) // insertion
+                .min(d[i - 1][j - 1] + cost); // substitution
+            if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
+                best = best.min(d[i - 2][j - 2] + 1); // transposition
+            }
+            d[i][j] = best;
+        }
+    }
+    d[n][m]
+}
+
+/// Is `candidate` close enough to `other` to be a likely typosquat? Both are
+/// compared in normalized form: an identical normalization is always a hit (a
+/// separator/homoglyph squat such as `my-pkg` vs `my_pkg`); otherwise a typo
+/// distance within the block radius counts, but only once the names are long
+/// enough that the proximity isn't coincidence.
+fn is_typosquat(candidate: &str, other: &str) -> bool {
+    let a = normalize_for_typo(candidate);
+    let b = normalize_for_typo(other);
+    if a == b {
+        return true;
+    }
+    if a.chars().count().max(b.chars().count()) < TYPO_MIN_LEN {
+        return false;
+    }
+    typo_distance(&a, &b) <= TYPO_BLOCK_DISTANCE
+}
+
 /// The local, directory-backed registry implementation. Used directly by the
 /// `coven serve` server, and wrapped by [`Registry::Local`] for in-process use.
 pub struct LocalRegistry {
@@ -268,6 +364,37 @@ impl LocalRegistry {
         out
     }
 
+    /// Enforce publish-time naming policy for a rune name: a minimum name-segment
+    /// length, and a typosquatting guard rejecting names too close to an existing
+    /// rune owned by a *different* publisher. Skipped once the name already exists
+    /// (publishing a new version of your own rune is never a squat).
+    fn check_new_name(&self, name: &str, uploaded_by: &str) -> PmResult<()> {
+        let leaf = name.rsplit('/').next().unwrap_or(name);
+        if leaf.chars().count() < MIN_NAME_SEGMENT_LEN {
+            return err(format!(
+                "rune name `{name}` is too short — the name segment must be at least {MIN_NAME_SEGMENT_LEN} characters"
+            ));
+        }
+        // Only guard brand-new names; a new version of an existing rune isn't a squat.
+        if !self.versions(name).is_empty() {
+            return Ok(());
+        }
+        for existing in self.list_all() {
+            if existing == name || !is_typosquat(name, &existing) {
+                continue;
+            }
+            // Same-publisher near-names are fine (e.g. `acme/foo`, `acme/foo-cli`);
+            // only a DIFFERENT user's near-name is a typosquat.
+            let owner = self.versions(&existing).first().map(|r| r.uploaded_by.clone());
+            if owner.as_deref() != Some(uploaded_by) {
+                return err(format!(
+                    "rune name `{name}` is too similar to the existing rune `{existing}` (typosquatting guard) — choose a more distinct name"
+                ));
+            }
+        }
+        Ok(())
+    }
+
     fn key(&self) -> PmResult<super::keys::RegistryKey> {
         crate::pm::keys::RegistryKey::load_or_create(&self.root)
     }
@@ -317,6 +444,9 @@ impl LocalRegistry {
             ));
         }
         Version::parse(version)?;
+        // Minimum-length + typosquatting policy for new names (server-side, with
+        // the full corpus visible — the remote publish path routes through here).
+        self.check_new_name(name, uploaded_by)?;
 
         let hash = src.hash();
         // Server-side recomputation: the footprint is computed here from source,
@@ -886,6 +1016,70 @@ mod tests {
         ];
         files.sort_by(|a, b| a.0.cmp(&b.0));
         (RuneSource { files }, manifest)
+    }
+
+    #[test]
+    fn typo_distance_counts_transposition_as_one() {
+        assert_eq!(typo_distance("from", "form"), 1); // adjacent swap = 1 op
+        assert_eq!(typo_distance("request", "reqest"), 1); // omission
+        assert_eq!(typo_distance("json", "json"), 0);
+        assert_eq!(typo_distance("serde", "tokio"), 5);
+    }
+
+    #[test]
+    fn normalize_folds_separators_and_homoglyphs() {
+        // separator tricks and homoglyphs collapse to the same canonical form
+        assert_eq!(normalize_for_typo("acme/my-pkg"), normalize_for_typo("acme/my_pkg"));
+        assert_eq!(normalize_for_typo("acme/my-pkg"), normalize_for_typo("acme/mypkg"));
+        assert_eq!(normalize_for_typo("acme/rust0"), normalize_for_typo("acme/rusto"));
+        assert_eq!(normalize_for_typo("acme/json"), "acmejson");
+    }
+
+    #[test]
+    fn typosquat_detection() {
+        // identical-after-normalization → squat at any length
+        assert!(is_typosquat("acme/my-pkg", "acme/my_pkg"));
+        assert!(is_typosquat("acme/acrne", "acme/acme")); // rn→m homoglyph
+        // one typo on a long-enough name → squat
+        assert!(is_typosquat("acme/reqwest", "acme/reqvest"));
+        assert!(is_typosquat("acme/request", "acme/reqest"));
+        // genuinely different names → fine
+        assert!(!is_typosquat("acme/serde", "acme/tokio"));
+        // different namespace keeps the distance large → not flagged
+        assert!(!is_typosquat("mallory/json", "acme/json"));
+        // short names: only identical-normalization blocks, not distance-1
+        assert!(!is_typosquat("acme/io", "acme/os"));
+    }
+
+    #[test]
+    fn publish_rejects_too_short_name() {
+        let (reg, root) = tmp_registry();
+        let (src, m) = rune("acme/x", "1.0.0", "fn f() -> Nil:\n    nil\n");
+        let e = reg.publish(&src, &m, "ci-bot", None).unwrap_err();
+        assert!(e.to_string().contains("too short"), "{e}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn publish_blocks_typosquat_of_another_user() {
+        let (reg, root) = tmp_registry();
+        let body = "fn f() -> Nil:\n    nil\n";
+        let (src, m) = rune("acme/reqwest", "1.0.0", body);
+        reg.publish(&src, &m, "alice", None).unwrap();
+
+        // A DIFFERENT user publishing a near-identical name is rejected.
+        let (src2, m2) = rune("acme/reqvest", "1.0.0", body);
+        let e = reg.publish(&src2, &m2, "mallory", None).unwrap_err();
+        assert!(e.to_string().contains("typosquatting"), "{e}");
+
+        // The SAME user may publish a similar name (their own family of runes).
+        let (src3, m3) = rune("acme/reqvest", "1.0.0", body);
+        assert!(reg.publish(&src3, &m3, "alice", None).is_ok());
+
+        // A clearly distinct name is fine for anyone.
+        let (src4, m4) = rune("acme/hyper", "1.0.0", body);
+        assert!(reg.publish(&src4, &m4, "mallory", None).is_ok());
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

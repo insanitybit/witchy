@@ -20,10 +20,8 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use crate::ast::{Item, Module, Type};
 
-/// The host capabilities the runtime grants at an entry point. (`Subject`, an
-/// actor handle from `spawn`, is intra-program authority, not host authority,
-/// so it isn't a supply-chain footprint concern.)
-pub const HOST_CAPABILITIES: &[&str] = &["Console", "Clock", "Env", "Secret", "Dir", "Net"];
+/// The host capabilities the runtime grants at an entry point.
+pub const HOST_CAPABILITIES: &[&str] = &["Console", "Clock", "Env", "Secret", "SecretStore", "Dir", "Net"];
 
 /// The build-time capabilities a rune's `build` entrypoint may demand — the
 /// parallel set to the runtime host caps, tracked on a separate axis. Kind-only

@@ -6,11 +6,11 @@
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Module {
-    /// Performance modes declared at the top of the file (`mode opt` /
-    /// `mode strict`). Empty for an ordinary file. The linker copies the entry
-    /// module's modes onto the linked module; enforcement (cliffs → errors)
-    /// then applies to the entry file's own functions. See
-    /// docs/performance-modes.md.
+    /// The performance mode declared at the top of the file (`mode opt`), or empty
+    /// for an ordinary file. The linker copies the entry module's modes onto the
+    /// linked module; enforcement (cliffs → errors) then applies to the entry
+    /// file's own functions, and an `opt` module may only import other `opt`
+    /// modules. See docs/performance-modes.md.
     pub modes: Vec<String>,
     /// Names of modules imported (side-effect-free: brings declarations into
     /// scope, runs no code, grants no authority).
@@ -85,6 +85,10 @@ pub struct ImplDef {
     /// impl. Empty for unparameterized traits.
     pub trait_args: Vec<Type>,
     pub type_name: String,
+    /// The target's type arguments — `[a]` for `impl … for List(a)`, `[a, b]` for a
+    /// tuple impl, empty for a concrete target. They type the method `self` (so a
+    /// generic impl's `self` is `List(a)`, not bare `List`) and pair with `bounds`.
+    pub target_args: Vec<Type>,
     /// A `where` clause on the impl head — a CONDITIONAL impl that applies only
     /// when its target's type variables satisfy these bounds (`impl FromIterator(a)
     /// for Set(a) where a: Eq`). Each bound is `(var, trait, trait_args)`, the same
@@ -301,9 +305,11 @@ pub enum Expr {
     /// Record field access: `point.x`. (Module-qualified calls `mod.func(...)`
     /// are parsed as `Call`, not `Field`.)
     Field { base: Box<Expr>, field: String },
-    /// An anonymous function (closure): `fn(x: Int) { x + 1 }`. Captures the
-    /// environment it is created in.
-    Lambda { params: Vec<Param>, body: Block },
+    /// An anonymous function (closure): `fn(x: Int): x + 1`. Captures the
+    /// environment it is created in. `ret` is the optional declared return type
+    /// (`fn(x: Int) -> Bool: ...`); when present it makes the closure a `?`
+    /// boundary with that exact `Result`/`Option` type.
+    Lambda { params: Vec<Param>, body: Block, ret: Option<Type> },
     /// Record update: a new record like `p` with the named fields replaced. `p`
     /// is not mutated. Produced by lowering an `Expr::Record` whose `spread` is
     /// set (`Point(x: 5, ..p)`); no longer has surface syntax of its own.

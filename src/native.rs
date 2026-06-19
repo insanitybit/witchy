@@ -28,6 +28,7 @@ pub fn lookup(qualified: &str) -> Option<NativeFn> {
         "crypto.ed25519_verify" => Some(crypto::ed25519_verify),
         "crypto.sign" => Some(crypto::sign),
         "crypto.public_key" => Some(crypto::public_key),
+        "crypto.reveal" => Some(crypto::reveal),
         #[cfg(not(target_arch = "wasm32"))]
         "crypto.ecdsa_p256_verify" => Some(crypto::ecdsa_p256_verify),
         #[cfg(not(target_arch = "wasm32"))]
@@ -136,21 +137,48 @@ mod crypto {
         Ok(Value::Bool(ok))
     }
 
-    /// Sign `message` with a `Secret` capability, returning the hex signature.
-    pub fn sign(args: &[Value]) -> Result<Value, RuntimeError> {
-        let [Value::Secret(seed), Value::Str(msg)] = args else {
-            return Err(type_error("crypto.sign expects (Secret, message)"));
+    /// Normalize a secret's raw bytes to a 32-byte Ed25519 seed: accept the seed
+    /// directly (32 bytes) or hex-encoded (64 chars). Anything else (e.g. a value
+    /// secret like a token) is not a signing key.
+    fn seed32(bytes: &[u8]) -> Result<[u8; 32], RuntimeError> {
+        let raw = if bytes.len() == 32 {
+            bytes.to_vec()
+        } else if bytes.len() == 64 {
+            hex_decode(&String::from_utf8_lossy(bytes))
+                .ok_or_else(|| type_error("secret is not a valid hex Ed25519 seed"))?
+        } else {
+            return Err(type_error(
+                "secret is not a signing key (need a 32-byte seed or 64 hex chars)",
+            ));
         };
-        Ok(Value::Str(hex(&ed25519_sign_raw(seed, msg.as_bytes()))))
+        raw.try_into()
+            .map_err(|_| type_error("secret is not a 32-byte Ed25519 seed"))
     }
 
-    /// The hex-encoded Ed25519 public key for a `Secret` capability — what a
-    /// verifier checks signatures against (safe to publish).
+    /// Sign `message` with a `Secret`, returning the hex signature.
+    pub fn sign(args: &[Value]) -> Result<Value, RuntimeError> {
+        let [Value::Secret(bytes), Value::Str(msg)] = args else {
+            return Err(type_error("crypto.sign expects (Secret, message)"));
+        };
+        Ok(Value::Str(hex(&ed25519_sign_raw(&seed32(bytes)?, msg.as_bytes()))))
+    }
+
+    /// The hex-encoded Ed25519 public key for a `Secret` — what a verifier checks
+    /// signatures against (safe to publish).
     pub fn public_key(args: &[Value]) -> Result<Value, RuntimeError> {
-        let [Value::Secret(seed)] = args else {
+        let [Value::Secret(bytes)] = args else {
             return Err(type_error("crypto.public_key expects a Secret"));
         };
-        Ok(Value::Str(hex(&ed25519_public_raw(seed))))
+        Ok(Value::Str(hex(&ed25519_public_raw(&seed32(bytes)?))))
+    }
+
+    /// Reveal a `Secret`'s raw bytes as a string — for value secrets (tokens,
+    /// passwords) that must be handed to an external sink.
+    pub fn reveal(args: &[Value]) -> Result<Value, RuntimeError> {
+        let [Value::Secret(bytes)] = args else {
+            return Err(type_error("crypto.reveal expects a Secret"));
+        };
+        Ok(Value::Str(String::from_utf8_lossy(bytes).into_owned()))
     }
 
     /// Verify an ECDSA P-256 / SHA-256 ("ES256", WebAuthn COSE alg -7) signature.

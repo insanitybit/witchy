@@ -14,7 +14,9 @@ pub enum NativeValue {
     Str(String),
     Bool(bool),
     List(Vec<NativeValue>),
-    Secret([u8; 32]),
+    /// A secret's raw bytes — a signing seed (read as a hex Ed25519 seed by
+    /// `crypto.sign`/`public_key`) or a value secret (returned by `reveal`).
+    Secret(Vec<u8>),
 }
 
 /// A native function's error — just a message, surfaced by the interpreter as a

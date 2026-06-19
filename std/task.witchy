@@ -1,25 +1,33 @@
-// std/chan — decoupled concurrency: `spawn` concurrent tasks, communicate over
-// first-class `channel`s. Spawning and channels are independent — you can spawn
-// without a channel, and a channel is a value you create and pass around, not a
-// task's mailbox. Built on a pure-witchy cooperative executor with a deterministic
-// round-robin schedule, so a concurrent run is byte-identical on the interpreter
-// and the compiled WebAssembly — no scheduler state in the runtime, no `Pin`.
+// std/task — the cooperative task substrate and its executor.
+//
+// A `Task(m, a)` is a CPS-over-closures computation that, when stepped, either
+// completes (`Done`) or yields an effect back to the executor: cooperate
+// (`Yield`), `spawn` a child (`Fork`), `join` one (`Wait`), or a channel op
+// (`Open`/`Push`/`Pull`/`PullAny`, produced by `std/chan`). `run` drives a task
+// (and everything it spawns) to completion on a deterministic round-robin
+// schedule, so a concurrent run is byte-identical on the interpreter and the
+// compiled WebAssembly — no scheduler state in the runtime, no `Pin`.
+//
+// This module is the scheduling core: the `Task` monad, `spawn`/`join`/
+// `yield_now`, and the executor. First-class channels are layered on top in
+// `std/chan`; lightweight value-returning structured concurrency (`join_all`/
+// `select` over independent futures) lives in `std/future`.
 //
 // Model: one message type `m` per program (a single `run`'s channels all carry
 // `m`; union into a sum type if you need several shapes). Spawned tasks return
 // `Nil`; a task reports a result by sending it on a channel, not by returning it
 // (a typed `JoinHandle(T)` would force a native runtime and break the parity
-// contract). `send`/`recv` are always `await`ed because messaging is an effect on
-// the executor-owned buffer; a *bounded* channel additionally blocks the sender
-// when full (backpressure), an unbounded one never does.
+// contract).
 //
-// The `async`/`await` CPS transform lowers onto the `std/task` executor
-// (task.lazy/and_then/done/run); channel ops (`await chan.recv(rx)` /
-// `await chan.send(tx, x)`) run on the same protocol.
+// The `async`/`await` CPS transform lowers onto this substrate (`task.lazy`/
+// `and_then`/`done`/`run`), so `chan.recv(rx).await` / `chan.send(tx, x).await`
+// work in async fns.
 
 import option
 
 // What a task yields to the executor when stepped. `a` is the task's own result.
+// The channel effects (`Open`/`Push`/`Pull`/`PullAny`) are produced by `std/chan`;
+// the executor below interprets every variant.
 type Step(m, a):
     Done(a)
     Yield(Task(m, a))
@@ -34,7 +42,7 @@ type Step(m, a):
 type Task(m, a):
     Task(fn() -> Step(m, a))
 
-fn poll(t: Task(m, a)) -> Step(m, a):
+pub fn poll(t: Task(m, a)) -> Step(m, a):
     match t:
         Task(th) -> th()
 
@@ -90,39 +98,10 @@ pub fn for_each(xs: List(a), f: fn(a) -> Task(m, Nil)) -> Task(m, Nil):
     else:
         and_then(f(list.at(xs, 0)), fn(_done): for_each(list.tail(xs), f))
 
-// ---- spawn + channels (the surface) ----
-
-type Sender(m):
-    Sender(Int)
-
-type Receiver(m):
-    Receiver(Int)
+// ---- spawn + join ----
 
 type Handle:
     Handle(Int)
-
-// A bounded channel of `capacity` (the sender blocks when it is full); pass 0 for
-// an unbounded channel that never blocks the sender.
-pub fn channel(capacity: Int) -> Task(m, (Sender(m), Receiver(m))):
-    and_then(open_raw(capacity), fn(id): done((Sender(id), Receiver(id))))
-
-// An unbounded channel — `send` never blocks (the buffer grows without limit).
-pub fn unbounded() -> Task(m, (Sender(m), Receiver(m))):
-    channel(0)
-
-fn open_raw(capacity: Int) -> Task(m, Int):
-    Task(fn(): Open(capacity, fn(c): Task(fn(): Done(c))))
-
-// Send `msg`; on a bounded channel this blocks until there is room. Always awaited.
-pub fn send(tx: Sender(m), msg: m) -> Task(m, Nil):
-    match tx:
-        Sender(id) -> Task(fn(): Push(id, msg, fn(u): Task(fn(): Done(u))))
-
-// Receive the next message, or `None` once the channel is closed — i.e. once no
-// task can send to it anymore. `for await x in rx:` loops until this `None`.
-pub fn recv(rx: Receiver(m)) -> Task(m, Option(m)):
-    match rx:
-        Receiver(id) -> Task(fn(): Pull(id, fn(o): Task(fn(): Done(o))))
 
 // Start `child` as a concurrent task; the returned handle completes when it does.
 pub fn spawn(child: Task(m, Nil)) -> Task(m, Handle):
@@ -132,50 +111,6 @@ pub fn spawn(child: Task(m, Nil)) -> Task(m, Handle):
 pub fn join(h: Handle) -> Task(m, Nil):
     match h:
         Handle(id) -> Task(fn(): Wait(id, fn(u): Task(fn(): Done(u))))
-
-// The outcome of a `select`: a message from the first or the second receiver, or
-// `Closed` once neither can deliver.
-type Selected(m):
-    First(m)
-    Second(m)
-    Closed
-
-// Receive from whichever of `a` or `b` has a message first; a tie favours `a`.
-// Yields `Closed` once both channels are closed.
-pub fn select(a: Receiver(m), b: Receiver(m)) -> Task(m, Selected(m)):
-    match a:
-        Receiver(ia) ->
-            match b:
-                Receiver(ib) -> Task(fn(): PullAny([ia, ib], fn(o): select_result(o)))
-
-fn select_result(o: Option((Int, m))) -> Task(m, Selected(m)):
-    match o:
-        Some(hit) ->
-            let (i, msg) = hit
-            if i == 0:
-                Task(fn(): Done(First(msg)))
-            else:
-                Task(fn(): Done(Second(msg)))
-        None -> Task(fn(): Done(Closed))
-
-// Receive from `rx`, run `f` on each message, until the channel closes. The
-// stateless server loop; `for await x in rx:` lowers to this.
-pub fn consume(rx: Receiver(m), f: fn(m) -> Task(m, Nil)) -> Task(m, Nil):
-    and_then(recv(rx), fn(o):
-        match o:
-            Some(x) -> and_then(f(x), fn(_u): consume(rx, f))
-            None -> ready_unit()
-    )
-
-// The stateful server loop: receive a message, run `handler` with the current
-// `state` to get the next state, and repeat until the channel closes. State
-// threads through every message with no hand-written recursion.
-pub fn serve(rx: Receiver(m), state: s, handler: fn(s, m) -> Task(m, s)) -> Task(m, Nil):
-    and_then(recv(rx), fn(o):
-        match o:
-            Some(msg) -> and_then(handler(state, msg), fn(next): serve(rx, next, handler))
-            None -> ready_unit()
-    )
 
 // ---- executor ----
 
