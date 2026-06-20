@@ -241,7 +241,7 @@ impl Coven:
         // --- authorization: bind identity tokens to the namespace's trust state ------
         // The authorized publisher (claims.sub). Anonymous (no trusted issuers): fall
         // back to the client-asserted `uploaded_by`. Trusted: the token must verify (401)
-        // AND satisfy the namespace's policy (403); the first trusted publish binds it.
+        // and satisfy the namespace's policy (403); the first trusted publish binds it.
         if list.length(self.issuers) == 0:
             Ok(req.uploaded_by || "anonymous")
         else:

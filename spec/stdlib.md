@@ -1444,19 +1444,19 @@ The reflected shape of a value.
 
 #### `fn reflect_one(x: a) -> Mirror where a: Reflect`
 
-Reflect a single value through a free function. The generated `reflect` calls THIS rather than the trait method directly: trait dispatch resolves on params and loop vars but NOT on `match` bindings (so an Option field's `Some(x)` arm could not call `reflect(x)`), whereas here `x` is a parameter — always resolvable.
+Reflect a single value through a free function. The generated `reflect` calls this rather than the trait method directly, because trait dispatch resolves on params and loop vars but not on `match` bindings (so an Option field's `Some(x)` arm could not call `reflect(x)`). Here `x` is a parameter, which always resolves.
 
 #### `fn reflect_option(o: Option(a)) -> Mirror where a: Reflect`
 
-Reflect an `Option` to a `Some`/`None` `MVariant`. The payload reflects through a LOOP over `opt_list` (0 or 1 element) so it's the trait method `reflect(x)` on a loop var — which resolves under the generic `a` bound, unlike a generic free fn or a match binding. Empty payload ⇒ None.
+Reflect an `Option` to a `Some`/`None` `MVariant`. The payload reflects through a loop over `opt_list` (0 or 1 element), so it calls the trait method `reflect(x)` on a loop var, which resolves under the generic `a` bound where a generic free function or a match binding would not. An empty payload gives None.
 
 #### `fn reflect_list(xs: List(a)) -> Mirror where a: Reflect`
 
-Reflect a list of `Reflect` elements. A generic free function (not an `impl Reflect for List(a)`): method dispatch on a `List` receiver binds to the `list` module, so the generated `reflect` for a record's List field calls THIS.
+Reflect a list of `Reflect` elements. This is a free function rather than an `impl Reflect for List(a)` because method dispatch on a `List` receiver binds to the `list` module, so the generated `reflect` for a record's List field calls this.
 
 #### `fn debug(x: a) -> String where a: Reflect`
 
---- a second consumer: structural debug rendering --------------------------- `debug(x)` renders ANY value from its reflection — the SAME `reflect` that powers `json`, proving the engine is general (one reflection, many uses).
+--- a second consumer: structural debug rendering --------------------------- `debug(x)` renders any value from its reflection, using the same `reflect` that backs `json`.
 
 ## `regex`
 

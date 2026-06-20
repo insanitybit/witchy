@@ -3,7 +3,7 @@
 // reflection (`json.value_of`) and `derive(Deserialize)` reconstructs it from JSON;
 // field order matches the Rust `Record`, so the bytes are identical. Records are
 // signed over `signing_payload` (a fixed line format byte-identical to
-// src/pm/registry.rs), NOT over the JSON — so a record signed here verifies under
+// src/pm/registry.rs), not over the JSON, so a record signed here verifies under
 // the Rust ed25519 verifier.
 
 import json

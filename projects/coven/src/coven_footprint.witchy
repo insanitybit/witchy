@@ -1,7 +1,7 @@
-// coven_footprint — server-side capability-footprint recomputation. The whole
-// point of the registry's trust model: the capabilities a rune may exercise are
-// computed HERE from its source via the compiler, never taken on faith from the
-// uploaded manifest. `member`/`add_unique` are the small set helpers this needs.
+// coven_footprint — server-side capability-footprint recomputation. coven computes
+// the capabilities a rune may exercise from its source via the compiler, never
+// trusting the uploaded manifest; that recomputation is what the registry's trust
+// model rests on. `member`/`add_unique` are the small set helpers this needs.
 
 import json
 import compiler
