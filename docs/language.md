@@ -421,9 +421,11 @@ composes with an explicit `where` clause. The std library uses it for
 
 `derive(...)` on a type generates the impls you would write by hand —
 appended to the module before checking, so the footprint and both backends
-see ordinary code. Supported: `Show`, `Eq`, `Ord`, and `Json` (which needs
-`import json` and generates `to_json(self) -> Json` over scalars, lists,
-options, and nested derived records):
+see ordinary code. Supported: `Show`, `Eq`, `Ord`, `Reflect`, and `Deserialize`
+(which needs `import json` and generates `from_json(j) -> Result(Self, String)`
+over scalars, lists, options, and nested records). There is no `Serialize`
+derive: reflection (`json.value_of` / `json.stringify` / `Into(Json)`) already
+encodes any value, so only the one-directional decode is generated per type:
 
 ```witchy
 import show

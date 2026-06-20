@@ -821,7 +821,7 @@ The element at index `i` of a JSON array.
 
 #### `fn require(j: Json, key: String) -> Result(Json, String)`
 
---- Result-returning decoders (the backbone of derive(Json)'s from_json) -----
+--- Result-returning decoders (the backbone of `derive(Deserialize)`'s from_json) -----
 
 #### `fn int_of(j: Json) -> Result(Int, String)`
 
@@ -1263,9 +1263,9 @@ A type's structure. `kind` is "record" (one constructor with named fields), "sum
 
 `derive(Ord)` → lexicographic field comparison (records only; the caller validates).
 
-#### `fn derive_json(t: TypeInfo) -> String`
+#### `fn derive_deserialize(t: TypeInfo) -> String`
 
-`derive(Json)` → `to_json`/`from_json` for a RECORD (caller validates the shape). Encode builds a `JsonObject` field by field; decode pulls + coerces each field, short-circuiting on the first error. Self-contained (only json/result/list/option).
+`derive(Deserialize)` → `from_json` for a RECORD (caller validates the shape). Decode pulls + coerces each field, short-circuiting on the first error. There is no matching `Serialize` derive: reflection (`json.value_of`/`stringify`/`Into(Json)`) already encodes ANY value, so only this one-directional reconstruction is per-type. Self-contained (only json/result/list/option).
 
 ## `option`
 

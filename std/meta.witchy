@@ -124,26 +124,6 @@ pub fn derive_ord(t: TypeInfo) -> String:
 fn after_prefix(s: String, prefix: String) -> String:
     string.substring(s, string.char_count(prefix), string.char_count(s) - 1)
 
-// The `Json`-building expression for a value of declared type `ty` (recursive for
-// List/Option element types).
-fn json_encode_expr(ty: String, value: String) -> String:
-    if ty == "Int":
-        "JsonInt(" + value + ")"
-    else if ty == "Float":
-        "JsonFloat(" + value + ")"
-    else if ty == "Bool":
-        "JsonBool(" + value + ")"
-    else if ty == "String":
-        "JsonString(" + value + ")"
-    else if string.starts_with(ty, "List("):
-        let elem = after_prefix(ty, "List(")
-        "JsonArray(list.map(" + value + ", fn(__e: " + elem + "): " + json_encode_expr(elem, "__e") + "))"
-    else if string.starts_with(ty, "Option("):
-        let elem = after_prefix(ty, "Option(")
-        "json.from_option(" + value + ", fn(__e: " + elem + "): " + json_encode_expr(elem, "__e") + ")"
-    else:
-        value + ".to_json()"
-
 // A `Result`-producing decode of a `Json` value already in hand (recursive).
 fn json_decode_value(ty: String, value: String) -> String:
     if ty == "Int":
@@ -169,21 +149,19 @@ fn json_decode_field(ty: String, key: String) -> String:
     else:
         json_decode_value(ty, "json.require(j, \"" + key + "\")?") + "?"
 
-// `derive(Json)` → `to_json`/`from_json` for a RECORD (caller validates the shape).
-// Encode builds a `JsonObject` field by field; decode pulls + coerces each field,
-// short-circuiting on the first error. Self-contained (only json/result/list/option).
-pub fn derive_json(t: TypeInfo) -> String:
-    var pairs = []
-    for f in t.fields:
-        pairs = list.push(pairs, "(\"" + f.name + "\", " + json_encode_expr(f.type_name, "self." + f.name) + ")")
-    let to_json = "    fn to_json(self) -> Json:\n        JsonObject([" + string.join(pairs, ", ") + "])\n"
+// `derive(Deserialize)` → `from_json` for a RECORD (caller validates the shape).
+// Decode pulls + coerces each field, short-circuiting on the first error. There is
+// no matching `Serialize` derive: reflection (`json.value_of`/`stringify`/`Into(Json)`)
+// already encodes ANY value, so only this one-directional reconstruction is per-type.
+// Self-contained (only json/result/list/option).
+pub fn derive_deserialize(t: TypeInfo) -> String:
     var lets = []
     var names = []
     for f in t.fields:
         lets = list.push(lets, "        let " + f.name + " = " + json_decode_field(f.type_name, f.name) + "\n")
         names = list.push(names, f.name)
-    let from_json = "    fn from_json(j: Json) -> Result(" + t.name + ", String):\n" + string.join(lets, "") + "        Ok(" + t.name + "(" + string.join(names, ", ") + "))\n"
+    let from_json = "    fn from_json(j: Json) -> Result(Self, String):\n" + string.join(lets, "") + "        Ok(" + t.name + "(" + string.join(names, ", ") + "))\n"
     // The generated body makes module-qualified calls (json.*, list.map, result.all);
     // emitted source is parsed on its own, so it must carry those imports for the
     // parser to qualify them (comptime merges them into the module).
-    "import json\nimport list\nimport result\n\nimpl " + t.name + ":\n" + to_json + from_json
+    "import json\nimport list\nimport result\n\nimpl Deserialize for " + t.name + ":\n" + from_json

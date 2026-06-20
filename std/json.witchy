@@ -490,7 +490,14 @@ pub fn as_object(j: Json) -> Option(List((String, Json))):
         JsonObject(pairs) -> Some(pairs)
         _ -> None
 
-// --- Result-returning decoders (the backbone of derive(Json)'s from_json) -----
+// Reconstruct a value FROM a `Json` — the one-directional half reflection can't do
+// (a value's structure doesn't say how to rebuild it), so `derive(Deserialize)`
+// generates this per type. The encode direction needs no trait: `value_of(x)` /
+// `stringify(x)` / `x.into()` serialize anything `Reflect`.
+trait Deserialize:
+    fn from_json(j: Json) -> Result(Self, String)
+
+// --- Result-returning decoders (the backbone of `derive(Deserialize)`'s from_json) -----
 pub fn require(j: Json, key: String) -> Result(Json, String):
     match get(j, key):
         Some(v) -> Ok(v)

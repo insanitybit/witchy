@@ -890,7 +890,7 @@ fn main(console: Console):
     fn derive_links_alongside_a_project_local_import() {
         let sibling = parser::parse_module("pub fn helper() -> Int:\n    7\n").expect("parse sibling");
         let main = parser::parse_module(
-            "import sibling\nimport json\nimport result\n\ntype Foo derive(Json):\n    x: Int\n\nfn main(console: Console):\n    print(console, \"${helper()}\")\n",
+            "import sibling\nimport json\nimport result\n\ntype Foo derive(Deserialize):\n    x: Int\n\nfn main(console: Console):\n    print(console, \"${helper()}\")\n",
         )
         .expect("parse main");
         let linked = crate::linker::link(

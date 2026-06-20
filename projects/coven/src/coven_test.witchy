@@ -7,6 +7,7 @@ import testing
 import coven_validate
 import coven_record
 import json
+import reflect
 import result
 import option
 
@@ -37,8 +38,8 @@ fn test_state_round_trips():
     testing.assert(coven_record.state_of("released") == Released, "the wire string parses back to its variant")
     testing.assert(coven_record.state_of("nonsense") == Staged, "an unknown state reads as the pre-release default")
 
-// --- derive(Json) round-trip (the decode half coven's records depend on) ------
-type Sample derive(Json):
+// --- encode (reflection) + derive(Deserialize) round-trip ------
+type Sample derive(Reflect, Deserialize):
     name: String
     versions: List(String)
     note: Option(String)
@@ -46,7 +47,7 @@ type Sample derive(Json):
 
 fn test_json_roundtrip():
     let s = Sample("acme/json", ["1.0.0", "1.1.0"], Some("hi"), 2)
-    match Sample.from_json(s.to_json()):
+    match Sample.from_json(json.value_of(s)):
         Ok(b) ->
             testing.assert_eq(b.name, "acme/json")
             testing.assert_int_eq(b.count, 2)
@@ -61,6 +62,6 @@ fn test_json_missing_field_errors():
 
 fn test_json_null_optional_is_none():
     let s = Sample("a/b", [], None, 0)
-    match Sample.from_json(s.to_json()):
+    match Sample.from_json(json.value_of(s)):
         Ok(b) -> testing.assert(option.is_none(b.note), "an absent optional decodes to None")
         Err(e) -> testing.assert(false, "round-trip failed: " + e)

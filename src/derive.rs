@@ -14,7 +14,7 @@ use crate::ast::*;
 /// derive routes to a user-provided `derive_<name>` (a comptime error if absent).
 pub fn expand(module: &mut Module) -> Result<(), String> {
     let mut generated: Vec<Item> = Vec::new();
-    let mut needs_json = false;
+    let mut needs_deserialize = false;
     let mut needs_option = false;
     let mut needs_reflect = false;
     for item in &mut module.items {
@@ -40,16 +40,20 @@ pub fn expand(module: &mut Module) -> Result<(), String> {
                     generated.push(derive_via_comptime("meta.derive_reflect", t));
                     needs_reflect = true;
                 }
-                "Json" => {
+                // Decode only: reflection (json.value_of / stringify / Into(Json))
+                // serializes ANY value, so there is no `Serialize` derive; `from_json`
+                // reconstruction is per-type (reflection is one-directional), so it is
+                // the one derive that remains.
+                "Deserialize" => {
                     let is_record = t.variants.len() == 1 && !t.variants[0].field_names.is_empty();
                     if !is_record {
                         return Err(format!(
-                            "type `{}`: derive(Json) supports record types (one constructor with named fields)",
+                            "type `{}`: derive(Deserialize) supports record types (one constructor with named fields)",
                             t.name
                         ));
                     }
-                    generated.push(derive_via_comptime("meta.derive_json", t));
-                    needs_json = true;
+                    generated.push(derive_via_comptime("meta.derive_deserialize", t));
+                    needs_deserialize = true;
                     if t.variants.first().is_some_and(|v| {
                         v.fields
                             .iter()
@@ -71,17 +75,17 @@ pub fn expand(module: &mut Module) -> Result<(), String> {
             }
         }
     }
-    // The generated `to_json` names `Json` and its constructors, and `from_json`
-    // names `Result`/`Ok`/`Err` — both need the import, and the parser has already
-    // qualified calls by the imports it SAW, so they must be written, not injected.
-    if needs_json && !module.imports.iter().any(|i| i == "json") {
-        return Err("derive(Json) needs `import json` in the module".into());
+    // The generated `from_json` names `Json`'s decoders and `Result`/`Ok`/`Err`, and
+    // the parser has already qualified calls by the imports it SAW, so the imports
+    // must be written by the user, not injected.
+    if needs_deserialize && !module.imports.iter().any(|i| i == "json") {
+        return Err("derive(Deserialize) needs `import json` in the module".into());
     }
-    if needs_json && !module.imports.iter().any(|i| i == "result") {
-        return Err("derive(Json) needs `import result` in the module (from_json returns Result)".into());
+    if needs_deserialize && !module.imports.iter().any(|i| i == "result") {
+        return Err("derive(Deserialize) needs `import result` in the module (from_json returns Result)".into());
     }
     if needs_option && !module.imports.iter().any(|i| i == "option") {
-        return Err("derive(Json) on a type with an Option field needs `import option`".into());
+        return Err("derive(Deserialize) on a type with an Option field needs `import option`".into());
     }
     if needs_reflect && !module.imports.iter().any(|i| i == "reflect") {
         return Err("derive(Reflect) needs `import reflect` in the module".into());
