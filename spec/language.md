@@ -214,16 +214,16 @@ fn main(console: Console):
 
 `if let PAT = e:` binds and runs only on a match (with an optional `else`);
 `while let PAT = e:` loops as long as the scrutinee keeps matching. `return e`
-exits early (and works in functions with a `var` parameter — the written-back
-parameters are still delivered). A postfix guard — `return e if cond` — is sugar
-for `if cond: return e`, for one-line early-outs (`return Ok(true) if ok`).
+exits early, and works in functions with a `var` parameter (the written-back
+parameters are still delivered). `return e if cond` is a postfix form of
+`if cond: return e`, for one-line early returns like `return Ok(true) if ok`.
 
 A `retain a, b:` / `without a, b:` block is a capability firewall: inside it,
 only the named capabilities stay in scope (`retain`) or the named ones are
 dropped (`without`). It is a compile-time scoping restriction — the checker hides
 the bindings, every backend runs the block normally — that seals a region of code
 against capabilities the surrounding scope holds (or later gains). `retain:` with
-no names drops all of them. See `docs/capabilities.md`.
+no names drops all of them. See `spec/capabilities.md`.
 
 A `region:` block (optionally `region -> T:`) is a user-controlled allocation
 scope: everything allocated inside is reclaimed at the block's end, and the
@@ -234,7 +234,7 @@ error (the value is the only pointer escape; scalar assignments are fine), and
 `yield` is rejected. A region never changes observable behavior — only when
 memory is reclaimed — so the interpreter runs it as a plain block. The
 optional `-> T` ascribes the value's type, guaranteeing the copy-out shape
-when inference cannot see it. See `docs/regions.md`.
+when inference cannot see it. See `rfcs/regions.md`.
 
 ```witchy
 import option
@@ -419,13 +419,14 @@ composes with an explicit `where` clause. The std library uses it for
 
 ### Deriving the standard traits
 
-`derive(...)` on a type generates the impls you would write by hand —
-appended to the module before checking, so the footprint and both backends
-see ordinary code. Supported: `Show`, `Eq`, `Ord`, `Reflect`, and `Deserialize`
-(which needs `import json` and generates `from_json(j) -> Result(Self, String)`
-over scalars, lists, options, and nested records). There is no `Serialize`
-derive: reflection (`json.value_of` / `json.stringify` / `Into(Json)`) already
-encodes any value, so only the one-directional decode is generated per type:
+`derive(...)` generates trait impls for a type. The generated code is appended to
+the module before type-checking, so both backends and the footprint analysis treat
+it like handwritten code. The supported derives are `Show`, `Eq`, `Ord`, `Reflect`,
+and `Deserialize`. `Deserialize` needs `import json` and generates
+`from_json(j) -> Result(Self, String)` for scalars, lists, options, and nested
+records. There is no `Serialize` derive, because reflection already encodes any
+value (`json.value_of`, `json.stringify`, `Into(Json)`); only decoding has to be
+generated per type.
 
 ```witchy
 import show
@@ -440,22 +441,22 @@ fn main(console: Console):
     print(console, "${less(Point(1, 2), Point(1, 3))}")
 ```
 
-`Show` renders structurally (the `${...}` form), `Eq` is structural equality, and
-`Ord` compares record fields lexicographically (records only). A derive works on a
-generic type too (`type Box(a) derive(Reflect)`): the generated impl carries the
-type's parameters and their bounds, and monomorphizes per argument.
+`Show` renders a value structurally (the same form `${...}` uses), `Eq` is
+structural equality, and `Ord` compares record fields in order (records only).
+Derives also work on a generic type. `type Box(a) derive(Reflect)` generates an impl
+that carries the type parameters and their bounds and specializes per type argument.
 
 ### Reflection and anonymous structs
 
-`reflect(x)` returns a value's structure as a `Mirror`, so one function works over
-EVERY type. Reflection composes through ordinary generic impls — `List`, `Option`,
-tuples, and generic records all implement `Reflect` — so `json.stringify(x)` and
-`reflect.debug(x)` encode or render anything (a list, an option, a tuple, a nested
-record) with no per-type code and no builtins.
+`reflect(x)` returns a value's structure as a `Mirror`, which lets one function
+handle a value of any type. `List`, `Option`, tuples, and generic records implement
+`Reflect` through ordinary generic impls, so `json.stringify(x)` and
+`reflect.debug(x)` work on a list, an option, a tuple, or a nested record without a
+per-type impl.
 
-An **anonymous struct** `.{ field: expr, … }` is ad-hoc reflectable data — a record
-with no declared type — so you assemble JSON from plain values without a named type
-or manual `Json` construction:
+An anonymous struct, `.{ field: expr, ... }`, is a record with no declared type. It
+reflects like any record, so you can build JSON from plain values without declaring
+a type or constructing `Json` by hand:
 
 ```witchy
 import json
@@ -467,7 +468,8 @@ fn main(console: Console):
 
 ### Conversion: `From` and `Into`
 
-`std/convert` mirrors Rust: implement `From` and get `Into` for free.
+`std/convert` provides `From` and `Into`, following Rust. Implementing `From` for a
+type also gives it `Into`:
 
 ```witchy
 import convert
@@ -484,13 +486,12 @@ fn main(console: Console):
     print(console, "${c.deg}")
 ```
 
-The one blanket impl — `impl Into(b) for a where b: From(a)` — gives every `From` a
-matching `into`. It works because `from` is a STATIC method, so the blanket calls it
-on the target type (`b.from(self)`), resolved through the `where` bound when the call
-is monomorphized — a blanket impl over a type variable, dispatched on the receiver.
-`impl From(a) for Json where a: Reflect` then makes every reflectable value flow into
-JSON (`x.into()` / `Json.from(x)`), and `server.send(code, value)` serializes any
-reflectable response.
+A single blanket impl, `impl Into(b) for a where b: From(a)`, supplies the `into` for
+every `From`. Its body calls the static `from` on the target type, `b.from(self)`,
+which the `where` bound resolves when the call is monomorphized. `std/json` adds
+`impl From(a) for Json where a: Reflect`, so any reflectable value converts to JSON
+with `x.into()` or `Json.from(x)`, and `server.send(code, value)` encodes a response
+of any reflectable type.
 
 ### `comptime:` — compile-time item generation
 

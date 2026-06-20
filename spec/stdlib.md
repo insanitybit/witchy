@@ -162,11 +162,11 @@ Compare two sources by capability footprint, as JSON:   {"widened":bool,"added":
 
 ## `convert`
 
-Conversion traits, mirroring Rust's `std::convert`. Implement `From` and get `Into` for free.
+Conversion traits, following Rust's `std::convert`. `From(a)` builds the implementing type from an `a`; `Into(b)` consumes `self` into a `b`. Implementing `From` is enough, since the blanket impl below derives the matching `Into`:
 
-  trait From(a): build the implementing type FROM an `a`  — `Celsius.from(deg)`   trait Into(b): consume `self` INTO a `b`                — `value.into()`
+  Celsius.from(deg)   build via From   value.into()        convert via the derived Into
 
-The blanket `impl Into(b) for a where b: From(a)` means every `From` yields a matching `into`: define `impl From(Int) for Celsius` and `(5).into()` works wherever a `Celsius` is expected. `from` is a STATIC method (no `self`), so the blanket calls it on the target type `b` — `b.from(self)` — resolved through the bound at monomorphization.
+`from` takes no `self`, so the blanket impl calls it on the target type as `b.from(self)`. The `where` bound decides which `from` to call when the use site is monomorphized.
 
 _No public API._
 
@@ -873,7 +873,7 @@ Encode an `Option` as payload-or-`null` — `Some(x)` through `each`, `None` as 
 
 #### `fn value_of(x: a) -> Json where a: Reflect`
 
---- reflective encoding (no derive) ----------------------------------------- `value_of(x)` encodes ANY value to a `Json` by reflecting over its structure — no `derive(Json)` needed. `stringify(x)` is the string form. This is the whole of `derive(Json)`'s encode side, written once over `Mirror`.
+--- reflective encoding (no derive) ----------------------------------------- `value_of(x)` encodes a value to `Json` by reflecting over its structure, so it works for any type with no derive. `stringify(x)` returns the encoded string.
 
 #### `fn stringify(x: a) -> String where a: Reflect`
 
@@ -1265,7 +1265,7 @@ A type's structure. `kind` is "record" (one constructor with named fields), "sum
 
 #### `fn derive_deserialize(t: TypeInfo) -> String`
 
-`derive(Deserialize)` → `from_json` for a RECORD (caller validates the shape). Decode pulls + coerces each field, short-circuiting on the first error. There is no matching `Serialize` derive: reflection (`json.value_of`/`stringify`/`Into(Json)`) already encodes ANY value, so only this one-directional reconstruction is per-type. Self-contained (only json/result/list/option).
+`derive(Deserialize)` generates `from_json` for a record (the caller validates the shape). It decodes and coerces each field, returning on the first error. There is no matching `Serialize` derive, because reflection (`json.value_of`, `stringify`, `Into(Json)`) already encodes any value, so only this reconstruction is per-type. The generated code uses only json/result/list/option.
 
 ## `option`
 
@@ -1424,9 +1424,9 @@ A uniformly-chosen element of `xs` (None if empty) and the next state.
 
 ## `reflect`
 
-Reflection — a value's structure as data, so one function works over ALL types. `reflect(x)` returns a `Mirror` describing `x` (a record's fields with their names, a sum type's variant, a list's elements, or a scalar). Library code that would otherwise need a per-type `derive` — JSON encoding, debug rendering, structural diffing — is written ONCE against `Mirror`. This is witchy's answer to Zig's `@typeInfo` / Rust's compile-time reflection: no macros, no per-type boilerplate. `Reflect` is generated for every type, so `reflect(x)` just works.
+Reflection: a value's structure as data, so one function can work over any type. `reflect(x)` returns a `Mirror` describing `x`: a record's named fields, a sum type's variant, a list's elements, or a scalar. Code that would otherwise need a per-type `derive` (JSON encoding, debug rendering, structural diffing) is written once against `Mirror`. The compiler generates `Reflect` for every type, much like Zig's `@typeInfo`, so `reflect(x)` works without a macro.
 
-`reflect` is a trait method; the compiler generates `impl Reflect for T` for each type (its `reflect` builds the `Mirror` from the declared fields/variants). The scalar impls below are the leaves.
+`reflect` is a trait method; the compiler generates `impl Reflect for T` for each type, building the `Mirror` from the declared fields and variants. The scalar impls below are the leaves.
 
 #### `type Mirror`
 
@@ -1729,7 +1729,7 @@ A JSON response from a `Json` value — encodes it for you.
 
 #### `fn send(code: Int, value: a) -> Response where a: Reflect`
 
-A JSON response from ANY reflectable value — reflection serializes it, so a handler returns `server.send(200, .{names: names})` or a record directly, without building `Json` by hand. (`json`/`json_value` remain for pre-built bytes / `Json` values.)
+A JSON response from any reflectable value. Reflection serializes it, so a handler can return `server.send(200, .{names: names})`, or a record, without building `Json` by hand. Use `json` or `json_value` for pre-encoded bytes or a `Json` value.
 
 #### `fn status_only(code: Int) -> Response`
 

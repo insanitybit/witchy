@@ -490,10 +490,10 @@ pub fn as_object(j: Json) -> Option(List((String, Json))):
         JsonObject(pairs) -> Some(pairs)
         _ -> None
 
-// Reconstruct a value FROM a `Json` — the one-directional half reflection can't do
-// (a value's structure doesn't say how to rebuild it), so `derive(Deserialize)`
-// generates this per type. The encode direction needs no trait: `value_of(x)` /
-// `stringify(x)` / `x.into()` serialize anything `Reflect`.
+// Reconstruct a value from a `Json`. Reflection can read a value's structure but not
+// rebuild a value from structure, so `derive(Deserialize)` generates `from_json` per
+// type. Encoding needs no trait: `value_of`, `stringify`, and `x.into()` already
+// serialize any `Reflect` value.
 trait Deserialize:
     fn from_json(j: Json) -> Result(Self, String)
 
@@ -626,19 +626,18 @@ pub fn from_option(o: Option(a), each: fn(a) -> Json) -> Json:
         None -> JsonNull
 
 // --- reflective encoding (no derive) -----------------------------------------
-// `value_of(x)` encodes ANY value to a `Json` by reflecting over its structure —
-// no `derive(Json)` needed. `stringify(x)` is the string form. This is the whole
-// of `derive(Json)`'s encode side, written once over `Mirror`.
+// `value_of(x)` encodes a value to `Json` by reflecting over its structure, so it
+// works for any type with no derive. `stringify(x)` returns the encoded string.
 pub fn value_of(x: a) -> Json where a: Reflect:
     mirror_to_json(reflect(x))
 
 pub fn stringify(x: a) -> String where a: Reflect:
     encode(value_of(x))
 
-// A `Json` reflects to its OWN value (not the `Json` enum's shape): the round-trip
-// `mirror_to_json(reflect(j))` is `j`. So an already-built `Json` — a decoded record,
-// a signed blob — can sit inside a reflected value (an anonymous struct, a record
-// field) and embed verbatim: `json.stringify(.{record: decoded, ok: true})`.
+// A `Json` reflects to its own value rather than to the `Json` enum's shape, so
+// `mirror_to_json(reflect(j))` returns `j`. This lets an already-built `Json` (a
+// decoded record, a signed blob) sit inside a reflected value such as an anonymous
+// struct, e.g. `json.stringify(.{record: decoded, ok: true})`.
 impl Reflect for Json:
     fn reflect(self) -> Mirror:
         match self:
@@ -662,10 +661,9 @@ fn reflect_json_fields(fields: List((String, Json))) -> List((String, Mirror)):
         out = list.push(out, (k, v.reflect()))
     out
 
-// Any reflectable value converts INTO a `Json` (and so `Json.from(x)` /
-// `x.into()` work, via `std/convert`'s blanket `Into`). This is `value_of` wearing
-// the `From`/`Into` hat, so a server can take `x: Into(Json)` rather than a
-// pre-serialized string.
+// Convert any reflectable value to `Json`, which also gives `Json.from(x)` and
+// `x.into()` through `std/convert`'s blanket `Into`. This is `value_of` exposed as
+// `From`, so a handler can accept `x: Into(Json)` instead of a pre-encoded string.
 impl From(a) for Json where a: Reflect:
     fn from(value: a) -> Json:
         value_of(value)

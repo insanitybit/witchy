@@ -1,14 +1,13 @@
-// Reflection — a value's structure as data, so one function works over ALL types.
-// `reflect(x)` returns a `Mirror` describing `x` (a record's fields with their
-// names, a sum type's variant, a list's elements, or a scalar). Library code that
-// would otherwise need a per-type `derive` — JSON encoding, debug rendering,
-// structural diffing — is written ONCE against `Mirror`. This is witchy's answer
-// to Zig's `@typeInfo` / Rust's compile-time reflection: no macros, no per-type
-// boilerplate. `Reflect` is generated for every type, so `reflect(x)` just works.
+// Reflection: a value's structure as data, so one function can work over any type.
+// `reflect(x)` returns a `Mirror` describing `x`: a record's named fields, a sum
+// type's variant, a list's elements, or a scalar. Code that would otherwise need a
+// per-type `derive` (JSON encoding, debug rendering, structural diffing) is written
+// once against `Mirror`. The compiler generates `Reflect` for every type, much like
+// Zig's `@typeInfo`, so `reflect(x)` works without a macro.
 //
 // `reflect` is a trait method; the compiler generates `impl Reflect for T` for each
-// type (its `reflect` builds the `Mirror` from the declared fields/variants). The
-// scalar impls below are the leaves.
+// type, building the `Mirror` from the declared fields and variants. The scalar
+// impls below are the leaves.
 
 import list
 import string
@@ -85,11 +84,11 @@ pub fn reflect_list(xs: List(a)) -> Mirror where a: Reflect:
         out = list.push(out, reflect(x))
     MList(out)
 
-// `List` and `Option` reflect through generic impls, so `reflect(x)` — and thus
-// `json.stringify`, `debug`, any reflective consumer — works on a bare list or
-// option, not only as a record field. Each monomorphizes per element exactly as the
-// free function it delegates to (the dispatch falls back from `List<Int>` to the
-// generic `List` impl, then the element resolves through the `where` bound).
+// `List` and `Option` reflect through generic impls, so `reflect(x)` (and therefore
+// `json.stringify`, `debug`, and any other reflective consumer) works on a bare list
+// or option, not only on one held in a record field. Each impl specializes per
+// element: dispatch falls back from `List<Int>` to the generic `List` impl, and the
+// element type resolves through the `where` bound.
 impl Reflect for List(a) where a: Reflect:
     fn reflect(self) -> Mirror:
         reflect_list(self)
@@ -98,8 +97,9 @@ impl Reflect for Option(a) where a: Reflect:
     fn reflect(self) -> Mirror:
         reflect_option(self)
 
-// Tuples reflect to `MTuple` (a JSON array, a `(…)` debug). Each common arity is
-// its own impl — `reflect_one` on the destructured slots dispatches per slot type.
+// Tuples reflect to `MTuple` (a JSON array, or a parenthesized debug). Each common
+// arity has its own impl; `reflect_one` on the destructured slots dispatches per
+// slot type.
 impl Reflect for (a, b) where a: Reflect, b: Reflect:
     fn reflect(self) -> Mirror:
         let (x0, x1) = self

@@ -149,11 +149,11 @@ fn json_decode_field(ty: String, key: String) -> String:
     else:
         json_decode_value(ty, "json.require(j, \"" + key + "\")?") + "?"
 
-// `derive(Deserialize)` → `from_json` for a RECORD (caller validates the shape).
-// Decode pulls + coerces each field, short-circuiting on the first error. There is
-// no matching `Serialize` derive: reflection (`json.value_of`/`stringify`/`Into(Json)`)
-// already encodes ANY value, so only this one-directional reconstruction is per-type.
-// Self-contained (only json/result/list/option).
+// `derive(Deserialize)` generates `from_json` for a record (the caller validates the
+// shape). It decodes and coerces each field, returning on the first error. There is
+// no matching `Serialize` derive, because reflection (`json.value_of`, `stringify`,
+// `Into(Json)`) already encodes any value, so only this reconstruction is per-type.
+// The generated code uses only json/result/list/option.
 pub fn derive_deserialize(t: TypeInfo) -> String:
     var lets = []
     var names = []

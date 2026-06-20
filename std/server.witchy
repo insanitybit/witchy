@@ -84,10 +84,9 @@ pub fn json(code: Int, b: String) -> Response:
 pub fn json_value(code: Int, j: Json) -> Response:
     json(code, json.encode(j))
 
-// A JSON response from ANY reflectable value — reflection serializes it, so a
-// handler returns `server.send(200, .{names: names})` or a record directly,
-// without building `Json` by hand. (`json`/`json_value` remain for pre-built
-// bytes / `Json` values.)
+// A JSON response from any reflectable value. Reflection serializes it, so a handler
+// can return `server.send(200, .{names: names})`, or a record, without building
+// `Json` by hand. Use `json` or `json_value` for pre-encoded bytes or a `Json` value.
 pub fn send(code: Int, value: a) -> Response where a: Reflect:
     json(code, json.stringify(value))
 
