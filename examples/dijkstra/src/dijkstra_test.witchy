@@ -1,0 +1,26 @@
+// In-rune tests for `dijkstra`. Each `test_*` function takes no parameters,
+// passes by returning, and fails by aborting (the `testing` assertions do that
+// with a message). Run them with `witchy test examples/dijkstra`.
+
+import dijkstra
+import string
+import list
+import testing
+
+let names = ["A", "B", "C", "D", "E"]
+let edges = [(0, 1, 4), (0, 2, 1), (2, 1, 2), (1, 3, 1), (2, 3, 5), (3, 4, 3)]
+
+fn render_ints(xs: List(Int)) -> String:
+    string.join(list.map(xs, fn(n: Int): "${n}"), " ")
+
+fn test_distances():
+    let (dist, prev) = dijkstra.dijkstra(list.length(names), edges, 0)
+    testing.assert_eq(render_ints(dist), "0 3 1 4 7")
+
+fn test_predecessors():
+    let (dist, prev) = dijkstra.dijkstra(list.length(names), edges, 0)
+    testing.assert_eq(render_ints(prev), "-1 2 0 1 3")
+
+fn test_path_to_target():
+    let (dist, prev) = dijkstra.dijkstra(list.length(names), edges, 0)
+    testing.assert_eq(string.join(dijkstra.path_to(names, prev, 4), " -> "), "A -> C -> B -> D -> E")

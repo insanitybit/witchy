@@ -1,0 +1,5 @@
+[rune]
+name = "async_executor"
+version = "0.1.0"
+
+[dependencies]

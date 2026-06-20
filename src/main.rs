@@ -1,7 +1,7 @@
-//! Witchy runtime spike — proving the core thesis: an actor in an isolated
+//! Witchy runtime spike — proving the core thesis: a program in an isolated
 //! WASM VM can do nothing beyond the capabilities it was explicitly granted.
 //!
-//! The "actors" here are hand-written WebAssembly standing in for compiled
+//! The modules here are hand-written WebAssembly standing in for compiled
 //! witchy code; the point of the spike is the security substrate, not the
 //! language surface yet.
 
@@ -48,7 +48,7 @@ use std::time::Duration;
 
 use runtime::{Capabilities, Runtime};
 
-/// A well-behaved actor that was granted `print`.
+/// A well-behaved VM that was granted `print`.
 const GREETER: &str = r#"
 (module
   (import "witchy" "print" (func $print (param i32 i32)))
@@ -69,21 +69,7 @@ const MALICIOUS: &str = r#"
     (call $print (i32.const 0) (i32.const 31))))
 "#;
 
-/// An actor that receives one message and prints it. Needs `print`; `recv` is
-/// intrinsic.
-const LOGGER: &str = r#"
-(module
-  (import "witchy" "recv" (func $recv (param i32 i32) (result i32)))
-  (import "witchy" "print" (func $print (param i32 i32)))
-  (memory (export "memory") 1)
-  (func (export "run")
-    (local $n i32)
-    (local.set $n (call $recv (i32.const 256) (i32.const 256)))
-    (if (i32.ge_s (local.get $n) (i32.const 0))
-      (then (call $print (i32.const 256) (local.get $n))))))
-"#;
-
-/// A greedy actor: it declares 4 pages of initial memory. We will cap it at 1,
+/// A greedy VM: it declares 4 pages of initial memory. We will cap it at 1,
 /// so it must be denied at instantiation.
 const GREEDY: &str = r#"
 (module
@@ -91,7 +77,7 @@ const GREEDY: &str = r#"
   (func (export "run")))
 "#;
 
-/// A runaway actor: an infinite loop that never yields. The scheduler must be
+/// A runaway VM: an infinite loop that never yields. The scheduler must be
 /// able to preempt it.
 const RUNAWAY: &str = r#"
 (module
@@ -99,23 +85,6 @@ const RUNAWAY: &str = r#"
   (func (export "run")
     (loop $forever (br $forever))))
 "#;
-
-/// An actor that sends one message to a target id. Needs `send`. The target id
-/// is filled in at spawn time so the demo doesn't depend on id arithmetic.
-fn sender_src(target: u32) -> String {
-    let text = "ping from the sender actor";
-    let len = text.len() + 1; // +1 for the trailing newline byte
-    format!(
-        r#"
-(module
-  (import "witchy" "send" (func $send (param i32 i32 i32)))
-  (memory (export "memory") 1)
-  (data (i32.const 0) "{text}\n")
-  (func (export "run")
-    (call $send (i32.const {target}) (i32.const 0) (i32.const {len}))))
-"#
-    )
-}
 
 /// One-screen overview of the command-line interface, shown for bare `witchy`.
 fn print_usage() {
@@ -148,55 +117,6 @@ program as `main`'s `args`, including `--help`."
 }
 
 fn main() -> wasmtime::Result<()> {
-    // A packaged executable (`witchy build-exe`) carries its program appended to
-    // this binary: run the embedded module instead of the CLI. The end user's
-    // flags grant concrete authority; everything else is passed to the program.
-    if let Some(wasm) = embedded_payload() {
-        let mut dir_root: Option<std::path::PathBuf> = None;
-        let mut net_allow: Vec<String> = Vec::new();
-        let mut signing_key: Option<[u8; 32]> = None;
-        let mut prog_args: Vec<String> = Vec::new();
-        let mut argv = std::env::args().skip(1);
-        while let Some(a) = argv.next() {
-            match a.as_str() {
-                "--dir" => dir_root = argv.next().map(std::path::PathBuf::from),
-                "--net" => {
-                    if let Some(addr) = argv.next() {
-                        net_allow.push(addr);
-                    }
-                }
-                "--signing-key" => {
-                    if let Some(file) = argv.next() {
-                        match load_signing_seed(&file) {
-                            Ok(seed) => signing_key = Some(seed),
-                            Err(e) => {
-                                eprintln!("--signing-key: {e}");
-                                std::process::exit(1);
-                            }
-                        }
-                    }
-                }
-                _ => prog_args.push(a),
-            }
-        }
-        match run_wasm_module(&wasm, dir_root, net_allow, prog_args, signing_key) {
-            Ok((lines, code)) => {
-                for line in lines {
-                    println!("{line}");
-                }
-                if let Some(c) = code {
-                    if c != 0 {
-                        std::process::exit(c);
-                    }
-                }
-            }
-            Err(e) => {
-                eprintln!("{e}");
-                std::process::exit(1);
-            }
-        }
-        return Ok(());
-    }
     // `witchy doc <file>...` prints Markdown API docs (one section per file) to
     // stdout — public functions, their signatures, and their doc comments.
     if std::env::args().nth(1).as_deref() == Some("doc") {
@@ -419,6 +339,7 @@ fn main() -> wasmtime::Result<()> {
         let mut dir_root: Option<std::path::PathBuf> = None;
         let mut net_allow: Vec<String> = Vec::new();
         let mut signing_key: Option<[u8; 32]> = None;
+        let mut named_secrets: Vec<(String, Vec<u8>)> = Vec::new();
         let mut path: Option<String> = None;
         let mut prog_args: Vec<String> = Vec::new();
         let mut argv = std::env::args().skip(2);
@@ -451,20 +372,34 @@ fn main() -> wasmtime::Result<()> {
                         std::process::exit(1);
                     }
                 },
+                "--secret" if path.is_none() => match argv.next() {
+                    Some(spec) => match parse_secret_inline(&spec) {
+                        Ok(s) => named_secrets.push(s),
+                        Err(e) => { eprintln!("{e}"); std::process::exit(1); }
+                    },
+                    None => { eprintln!("--secret needs name=value"); std::process::exit(1); }
+                },
+                "--secret-file" if path.is_none() => match argv.next() {
+                    Some(spec) => match parse_secret_file(&spec) {
+                        Ok(s) => named_secrets.push(s),
+                        Err(e) => { eprintln!("{e}"); std::process::exit(1); }
+                    },
+                    None => { eprintln!("--secret-file needs name=path"); std::process::exit(1); }
+                },
                 _ if path.is_none() => path = Some(a),
                 _ => prog_args.push(a),
             }
         }
         let Some(path) = path else {
-            eprintln!("usage: witchy sandbox [--dir <root>] [--net <host:port>]... [--signing-key <seed-file>] <file.witchy> [args...]");
+            eprintln!("usage: witchy sandbox [--dir <root>] [--net <host:port>]... [--signing-key <seed-file>] [--secret name=value] [--secret-file name=path] <file.witchy> [args...]");
             std::process::exit(1);
         };
         // A precompiled `.wasm` runs directly (authority from its imports); a
         // `.witchy` source is compiled then run, granted its computed footprint.
         let result = if path.ends_with(".wasm") {
-            run_wasm_file(&path, dir_root, net_allow, prog_args, signing_key)
+            run_wasm_file(&path, dir_root, net_allow, prog_args, signing_key, named_secrets)
         } else {
-            run_file_sandboxed(&path, dir_root, net_allow, prog_args, signing_key)
+            run_file_sandboxed(&path, dir_root, net_allow, prog_args, signing_key, named_secrets)
         };
         match result {
             Ok((lines, exit_code)) => {
@@ -533,39 +468,6 @@ fn main() -> wasmtime::Result<()> {
         }
         return Ok(());
     }
-    // `witchy build-exe <file.witchy> [-o out]` packages a program into a
-    // self-contained executable (this binary + the appended program). Run the
-    // result directly: `./out --dir . --net host:port` — no witchy install needed.
-    if std::env::args().nth(1).as_deref() == Some("build-exe") {
-        let mut argv = std::env::args().skip(2);
-        let mut path: Option<String> = None;
-        let mut out: Option<String> = None;
-        while let Some(a) = argv.next() {
-            match a.as_str() {
-                "-o" | "--out" => out = argv.next(),
-                _ => path = path.or(Some(a)),
-            }
-        }
-        let Some(path) = path else {
-            eprintln!("usage: witchy build-exe <file.witchy> [-o out]");
-            std::process::exit(1);
-        };
-        let out = out.unwrap_or_else(|| {
-            std::path::Path::new(&path)
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .map(String::from)
-                .unwrap_or_else(|| "app".to_string())
-        });
-        match build_exe_file(&path, &out) {
-            Ok(()) => eprintln!("wrote {out} (run it: ./{out} [--dir <root>] [--net <host:port>]...)"),
-            Err(e) => {
-                eprintln!("{e}");
-                std::process::exit(1);
-            }
-        }
-        return Ok(());
-    }
     // `witchy fmt <file>` rewrites a source file in canonical brace-free form.
     if std::env::args().nth(1).as_deref() == Some("fmt") {
         // `witchy fmt --check <file>` verifies formatting without rewriting (for
@@ -625,12 +527,25 @@ fn main() -> wasmtime::Result<()> {
         let mut file: Option<String> = None;
         let mut prog_args: Vec<String> = Vec::new();
         let mut signing_key: Option<[u8; 32]> = None;
+        let mut named_secrets: Vec<(String, Vec<u8>)> = Vec::new();
         let mut args = std::env::args().skip(1);
         while let Some(arg) = args.next() {
             if file.is_some() {
                 // Everything after the program file is the program's own argv —
                 // passed through verbatim (flags here belong to the program).
                 prog_args.push(arg);
+            } else if arg == "--secret" || arg.starts_with("--secret=") {
+                let spec = flag_value(&arg, "--secret", &mut args);
+                match parse_secret_inline(&spec) {
+                    Ok(s) => named_secrets.push(s),
+                    Err(e) => { eprintln!("{e}"); std::process::exit(1); }
+                }
+            } else if arg == "--secret-file" || arg.starts_with("--secret-file=") {
+                let spec = flag_value(&arg, "--secret-file", &mut args);
+                match parse_secret_file(&spec) {
+                    Ok(s) => named_secrets.push(s),
+                    Err(e) => { eprintln!("{e}"); std::process::exit(1); }
+                }
             } else if let Some(host) = arg.strip_prefix("--net=") {
                 net_allow.push(host.to_string());
             } else if arg == "--net" {
@@ -684,7 +599,7 @@ fn main() -> wasmtime::Result<()> {
             // A precompiled program module (`witchy app.wasm`): run it directly,
             // granted exactly the authority its imports declare (Dir rooted at cwd).
             Some(path) if path.ends_with(".wasm") => {
-                match run_wasm_file(path, None, net_allow, prog_args, signing_key) {
+                match run_wasm_file(path, None, net_allow, prog_args, signing_key, named_secrets) {
                     Ok((lines, code)) => {
                         for line in lines {
                             println!("{line}");
@@ -703,7 +618,7 @@ fn main() -> wasmtime::Result<()> {
                 return Ok(());
             }
             Some(path) => {
-                match execute_file_exit(path, net_allow, prog_args, signing_key) {
+                match execute_file_exit(path, net_allow, prog_args, signing_key, named_secrets) {
                     Ok((output, code)) => {
                         for line in output {
                             println!("{line}");
@@ -739,36 +654,22 @@ fn main() -> wasmtime::Result<()> {
     // Granted nothing — must fail to instantiate because `witchy.print` is not
     // linked into its VM.
     match rt.spawn(MALICIOUS, Capabilities::none(), 4) {
-        Ok(_) => println!("!! SECURITY FAILURE: ungranted actor was allowed to instantiate"),
+        Ok(_) => println!("!! SECURITY FAILURE: ungranted VM was allowed to instantiate"),
         Err(e) => println!("DENIED (as designed): {e}"),
     }
 
-    println!("\n== M3: message passing across isolated VMs ==");
+    println!("\n== M3: containment ==");
 
-    // Logger can print + recv, but cannot send.
-    let mut logger = rt.spawn(LOGGER, Capabilities { print: true, ..Default::default() }, 4)?;
-    // Sender can only send.
-    let mut sender = rt.spawn(
-        sender_src(logger.id),
-        Capabilities { send: true, ..Default::default() },
-        4,
-    )?;
-
-    sender.run()?; // delivers a message into the logger's mailbox
-    logger.run()?; // receives it (into ITS own memory) and prints it
-
-    println!("\n== M4: containment ==");
-
-    // Memory budget: the greedy actor wants 4 pages but is capped at 1.
+    // Memory budget: the greedy VM wants 4 pages but is capped at 1.
     match rt.spawn(GREEDY, Capabilities::none(), 1) {
-        Ok(_) => println!("!! BUDGET FAILURE: over-budget actor was allowed to start"),
+        Ok(_) => println!("!! BUDGET FAILURE: over-budget VM was allowed to start"),
         Err(e) => println!("memory budget enforced: {e}"),
     }
 
-    // Preemption: the runaway actor loops forever; the scheduler interrupts it.
+    // Preemption: the runaway VM loops forever; the scheduler interrupts it.
     let mut runaway = rt.spawn(RUNAWAY, Capabilities::none(), 4)?;
     match rt.run_with_budget(&mut runaway, Duration::from_millis(50)) {
-        Ok(_) => println!("!! PREEMPTION FAILURE: runaway actor finished on its own"),
+        Ok(_) => println!("!! PREEMPTION FAILURE: runaway VM finished on its own"),
         Err(e) => {
             let reason = e
                 .downcast_ref::<wasmtime::Trap>()
@@ -778,39 +679,39 @@ fn main() -> wasmtime::Result<()> {
         }
     }
 
-    run_witchy("witchy language (interpreter)", include_str!("../examples/hello.witchy"));
-    run_witchy("witchy mutable value semantics", include_str!("../examples/mutate.witchy"));
-    run_witchy("witchy ownership (sink)", include_str!("../examples/ownership.witchy"));
-    run_witchy("witchy features combined", include_str!("../examples/commands.witchy"));
-    run_witchy("witchy fizzbuzz (while, %, if/else)", include_str!("../examples/fizzbuzz.witchy"));
-    run_witchy("witchy tuples (multiple return values)", include_str!("../examples/tuples.witchy"));
-    run_witchy("witchy generics (swap any pair)", include_str!("../examples/generics.witchy"));
-    run_witchy("witchy generic ADTs (Result)", include_str!("../examples/result.witchy"));
-    run_witchy("witchy ? error propagation", include_str!("../examples/try.witchy"));
-    run_witchy("witchy for-in loops over lists", include_str!("../examples/loops.witchy"));
-    run_witchy("witchy list patterns (head/tail)", include_str!("../examples/listmatch.witchy"));
-    run_witchy("witchy records (named fields)", include_str!("../examples/records.witchy"));
-    run_witchy("witchy record update", include_str!("../examples/record_update.witchy"));
-    run_witchy("witchy expression evaluator (recursive ADT)", include_str!("../examples/eval.witchy"));
-    run_witchy("witchy bank (records + lists + Result)", include_str!("../examples/bank.witchy"));
-    run_witchy("witchy higher-order functions (closures)", include_str!("../examples/higher_order.witchy"));
-    run_witchy("witchy list combinators (map/filter via push)", include_str!("../examples/list_ops.witchy"));
-    run_witchy("witchy dictionaries (word count)", include_str!("../examples/wordcount.witchy"));
-    run_witchy("witchy dict iteration (values/pairs)", include_str!("../examples/inventory.witchy"));
-    run_witchy("witchy early return (guard clauses)", include_str!("../examples/guard.witchy"));
-    run_witchy("witchy negative-literal patterns", include_str!("../examples/signs.witchy"));
-    run_witchy("witchy string slicing (substring/index_of)", include_str!("../examples/parse_kv.witchy"));
-    run_witchy("witchy filesystem capability", include_str!("../examples/files.witchy"));
-    run_compiled(&mut rt, "witchy compiled to WASM (ints)", include_str!("../examples/compute.witchy"));
-    run_compiled(&mut rt, "witchy compiled to WASM (ADTs)", include_str!("../examples/shapes.witchy"));
-    run_compiled(&mut rt, "witchy compiled to WASM (record field access)", include_str!("../examples/record_compiled.witchy"));
-    run_compiled(&mut rt, "witchy compiled to WASM (strings)", include_str!("../examples/strings.witchy"));
+    run_witchy("witchy language (interpreter)", include_str!("../examples/hello/src/hello.witchy"));
+    run_witchy("witchy mutable value semantics", include_str!("../examples/mutate/src/mutate.witchy"));
+    run_witchy("witchy ownership (sink)", include_str!("../examples/ownership/src/ownership.witchy"));
+    run_witchy("witchy features combined", include_str!("../examples/commands/src/commands.witchy"));
+    run_witchy("witchy fizzbuzz (while, %, if/else)", include_str!("../examples/fizzbuzz/src/fizzbuzz.witchy"));
+    run_witchy("witchy tuples (multiple return values)", include_str!("../examples/tuples/src/tuples.witchy"));
+    run_witchy("witchy generics (swap any pair)", include_str!("../examples/generics/src/generics.witchy"));
+    run_witchy("witchy generic ADTs (Result)", include_str!("../examples/result/src/result.witchy"));
+    run_witchy("witchy ? error propagation", include_str!("../examples/try/src/try.witchy"));
+    run_witchy("witchy for-in loops over lists", include_str!("../examples/loops/src/loops.witchy"));
+    run_witchy("witchy list patterns (head/tail)", include_str!("../examples/listmatch/src/listmatch.witchy"));
+    run_witchy("witchy records (named fields)", include_str!("../examples/records/src/records.witchy"));
+    run_witchy("witchy record update", include_str!("../examples/record_update/src/record_update.witchy"));
+    run_witchy("witchy expression evaluator (recursive ADT)", include_str!("../examples/eval/src/eval.witchy"));
+    run_witchy("witchy bank (records + lists + Result)", include_str!("../examples/bank/src/bank.witchy"));
+    run_witchy("witchy higher-order functions (closures)", include_str!("../examples/higher_order/src/higher_order.witchy"));
+    run_witchy("witchy list combinators (map/filter via push)", include_str!("../examples/list_ops/src/list_ops.witchy"));
+    run_witchy("witchy dictionaries (word count)", include_str!("../examples/wordcount/src/wordcount.witchy"));
+    run_witchy("witchy dict iteration (values/pairs)", include_str!("../examples/inventory/src/inventory.witchy"));
+    run_witchy("witchy early return (guard clauses)", include_str!("../examples/guard/src/guard.witchy"));
+    run_witchy("witchy negative-literal patterns", include_str!("../examples/signs/src/signs.witchy"));
+    run_witchy("witchy string slicing (substring/index_of)", include_str!("../examples/parse_kv/src/parse_kv.witchy"));
+    run_witchy("witchy filesystem capability", include_str!("../examples/files/src/files.witchy"));
+    run_compiled(&mut rt, "witchy compiled to WASM (ints)", include_str!("../examples/compute/src/compute.witchy"));
+    run_compiled(&mut rt, "witchy compiled to WASM (ADTs)", include_str!("../examples/shapes/src/shapes.witchy"));
+    run_compiled(&mut rt, "witchy compiled to WASM (record field access)", include_str!("../examples/record_compiled/src/record_compiled.witchy"));
+    run_compiled(&mut rt, "witchy compiled to WASM (strings)", include_str!("../examples/strings/src/strings.witchy"));
     run_net_demo("witchy network capability");
     run_program_demo(
         "witchy modules (import)",
         &[
-            ("strutil", include_str!("../examples/strutil.witchy")),
-            ("app", include_str!("../examples/app.witchy")),
+            ("strutil", include_str!("../examples/app/src/strutil.witchy")),
+            ("app", include_str!("../examples/app/src/app.witchy")),
         ],
         "app",
     );
@@ -818,7 +719,7 @@ fn main() -> wasmtime::Result<()> {
         "witchy standard library (import list)",
         &[
             ("list", include_str!("../std/list.witchy")),
-            ("std_demo", include_str!("../examples/std_demo.witchy")),
+            ("std_demo", include_str!("../examples/std_demo/src/std_demo.witchy")),
         ],
         "std_demo",
     );
@@ -827,7 +728,7 @@ fn main() -> wasmtime::Result<()> {
         "witchy list combinators compiled to WASM (map/filter/fold/sort_by)",
         &[
             ("list", include_str!("../std/list.witchy")),
-            ("list_pipeline", include_str!("../examples/list_pipeline.witchy")),
+            ("list_pipeline", include_str!("../examples/list_pipeline/src/list_pipeline.witchy")),
         ],
         "list_pipeline",
     );
@@ -835,7 +736,7 @@ fn main() -> wasmtime::Result<()> {
         "witchy list search/slice (contains/index_of/take/drop)",
         &[
             ("list", include_str!("../std/list.witchy")),
-            ("list_more", include_str!("../examples/list_more.witchy")),
+            ("list_more", include_str!("../examples/list_more/src/list_more.witchy")),
         ],
         "list_more",
     );
@@ -844,7 +745,7 @@ fn main() -> wasmtime::Result<()> {
         &[
             ("list", include_str!("../std/list.witchy")),
             ("string", include_str!("../std/string.witchy")),
-            ("zip", include_str!("../examples/zip.witchy")),
+            ("zip", include_str!("../examples/zip/src/zip.witchy")),
         ],
         "zip",
     );
@@ -852,7 +753,7 @@ fn main() -> wasmtime::Result<()> {
         "witchy list any/all (predicates)",
         &[
             ("list", include_str!("../std/list.witchy")),
-            ("predicates", include_str!("../examples/predicates.witchy")),
+            ("predicates", include_str!("../examples/predicates/src/predicates.witchy")),
         ],
         "predicates",
     );
@@ -861,7 +762,7 @@ fn main() -> wasmtime::Result<()> {
         &[
             ("list", include_str!("../std/list.witchy")),
             ("string", include_str!("../std/string.witchy")),
-            ("text", include_str!("../examples/text.witchy")),
+            ("text", include_str!("../examples/text/src/text.witchy")),
         ],
         "text",
     );
@@ -870,7 +771,7 @@ fn main() -> wasmtime::Result<()> {
         &[
             ("list", include_str!("../std/list.witchy")),
             ("string", include_str!("../std/string.witchy")),
-            ("sort", include_str!("../examples/sort.witchy")),
+            ("sort", include_str!("../examples/sort/src/sort.witchy")),
         ],
         "sort",
     );
@@ -878,7 +779,7 @@ fn main() -> wasmtime::Result<()> {
         "witchy standard library (import math)",
         &[
             ("math", include_str!("../std/math.witchy")),
-            ("math_demo", include_str!("../examples/math_demo.witchy")),
+            ("math_demo", include_str!("../examples/math_demo/src/math_demo.witchy")),
         ],
         "math_demo",
     );
@@ -886,7 +787,7 @@ fn main() -> wasmtime::Result<()> {
         "witchy float math (sqrt + float_abs/float_min/float_max)",
         &[
             ("math", include_str!("../std/math.witchy")),
-            ("floats", include_str!("../examples/floats.witchy")),
+            ("floats", include_str!("../examples/floats/src/floats.witchy")),
         ],
         "floats",
     );
@@ -920,7 +821,7 @@ fn main(console: Console):
         "witchy standard Option (import option)",
         &[
             ("option", include_str!("../std/option.witchy")),
-            ("option_std", include_str!("../examples/option_std.witchy")),
+            ("option_std", include_str!("../examples/option_std/src/option_std.witchy")),
         ],
         "option_std",
     );
@@ -947,13 +848,13 @@ fn run_benchmarks() -> wasmtime::Result<()> {
 
     fn compiled_ms(src: &str, runs: u32) -> f64 {
         let module = parser::parse_module(src).expect("parse");
-        let bytes = codegen::compile_module_binary(&module, &std::collections::HashMap::new())
+        let bytes = codegen::compile_module_binary(&module)
             .expect("compile")
             .expect("the binary path lowers this benchmark");
         let mut rt = Runtime::new().expect("runtime");
         let start = Instant::now();
         for _ in 0..runs {
-            let mut actor = rt
+            let mut vm = rt
                 .spawn(
                     &bytes,
                     runtime::Capabilities {
@@ -964,7 +865,7 @@ fn run_benchmarks() -> wasmtime::Result<()> {
                     16,
                 )
                 .expect("spawn");
-            actor.run().expect("run");
+            vm.run().expect("run");
         }
         start.elapsed().as_secs_f64() * 1000.0 / runs as f64
     }
@@ -1093,7 +994,7 @@ fn is_entry_function(name: &str, entry_stem: &str) -> bool {
 /// Performance-mode enforcement. The uniqueness analysis flags accumulation that
 /// reverts to the copying path inside a loop (O(n²)). In an ordinary file this is
 /// a check-time *note* — the copying path IS the semantics, so a perf-shape
-/// warning must never block a build. In a file that declares `mode opt`/`strict`
+/// warning must never block a build. In a file that declares `mode opt`
 /// the cliff is a hard error, AND every ownership-relevant parameter must carry
 /// an explicit `let`/`own`/`inout` convention — so the interprocedural summaries
 /// are declared contracts rather than inferences, and the optimization is powered
@@ -1165,7 +1066,7 @@ fn ownership_relevant(ty: &Option<ast::Type>) -> bool {
         Some(ast::Type::Named(n, _)) => !matches!(
             n.as_str(),
             "Int" | "Float" | "Bool" | "Duration" | "Console" | "Dir" | "Net" | "Clock"
-                | "Env" | "Secret"
+                | "Env" | "Secret" | "SecretStore"
         ),
         Some(ast::Type::Tuple(_)) => true,
         _ => false,
@@ -1187,6 +1088,44 @@ fn load_signing_seed(path: &str) -> Result<[u8; 32], String> {
     Ok(seed)
 }
 
+/// The value of a `--flag value` / `--flag=value` option: the inline form if
+/// present, else the next argument. Exits with a usage error if neither is given.
+fn flag_value(arg: &str, flag: &str, rest: &mut impl Iterator<Item = String>) -> String {
+    match arg.strip_prefix(&format!("{flag}=")) {
+        Some(v) => v.to_string(),
+        None => match rest.next() {
+            Some(v) => v,
+            None => {
+                eprintln!("{flag} requires a value");
+                std::process::exit(1);
+            }
+        },
+    }
+}
+
+/// Parse a `--secret name=value` spec into a named secret. The value is taken
+/// literally (UTF-8 bytes) — a token, password, or connection string. The name
+/// must be non-empty and contain no `=` (everything after the first `=` is the
+/// value, so values may contain `=`).
+fn parse_secret_inline(spec: &str) -> Result<(String, Vec<u8>), String> {
+    match spec.split_once('=') {
+        Some((name, value)) if !name.is_empty() => Ok((name.to_string(), value.as_bytes().to_vec())),
+        _ => Err(format!("`--secret` expects `name=value`, got `{spec}`")),
+    }
+}
+
+/// Parse a `--secret-file name=path` spec, reading the secret's bytes from the
+/// file. Whitespace is NOT trimmed (a secret file holds exactly its bytes).
+fn parse_secret_file(spec: &str) -> Result<(String, Vec<u8>), String> {
+    match spec.split_once('=') {
+        Some((name, path)) if !name.is_empty() => {
+            let bytes = std::fs::read(path).map_err(|e| format!("`--secret-file {name}`: cannot read `{path}`: {e}"))?;
+            Ok((name.to_string(), bytes))
+        }
+        _ => Err(format!("`--secret-file` expects `name=path`, got `{spec}`")),
+    }
+}
+
 // Convenience wrapper (no command-line args) — used by the test suite; the CLI
 // run path calls `execute_file_exit` to also get the process exit code.
 #[cfg_attr(not(test), allow(dead_code))]
@@ -1203,7 +1142,7 @@ fn execute_file_args(
     args: Vec<String>,
     signing_key: Option<[u8; 32]>,
 ) -> Result<Vec<String>, String> {
-    execute_file_exit(path, net_allow, args, signing_key).map(|(output, _)| output)
+    execute_file_exit(path, net_allow, args, signing_key, Vec::new()).map(|(output, _)| output)
 }
 
 /// Link, type-check, and run `path`, returning its output and the process exit
@@ -1214,6 +1153,7 @@ fn execute_file_exit(
     net_allow: Vec<String>,
     args: Vec<String>,
     signing_key: Option<[u8; 32]>,
+    named_secrets: Vec<(String, Vec<u8>)>,
 ) -> Result<(Vec<String>, i32), String> {
     let (linked, entry_stem) = link_file(path)?;
     typeck::check(&linked).map_err(|e| e.to_string())?;
@@ -1236,7 +1176,7 @@ fn execute_file_exit(
     // share one runtime, so dev == deploy by construction. The interpreter is only
     // the differential oracle (`witchy parity`) and the comptime evaluator — never
     // a user-program run path.
-    run_linked_compiled(&linked, None, net_allow, args, signing_key)
+    run_linked_compiled(&linked, None, net_allow, args, signing_key, named_secrets)
         .map(|(lines, code)| (lines, code.unwrap_or(0)))
 }
 
@@ -1307,21 +1247,44 @@ fn run_tests(path: &str) -> Result<bool, String> {
     let mut files: Vec<String> = Vec::new();
     let meta = std::fs::metadata(path).map_err(|e| format!("cannot read `{path}`: {e}"))?;
     if meta.is_dir() {
-        let mut entries: Vec<_> = std::fs::read_dir(path)
-            .map_err(|e| format!("cannot read `{path}`: {e}"))?
-            .filter_map(|e| e.ok())
-            .map(|e| e.path())
-            .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("witchy"))
-            .collect();
-        entries.sort();
-        files.extend(entries.into_iter().filter_map(|p| p.to_str().map(String::from)));
+        // Collect every `.witchy` under the directory recursively, so a rune's
+        // `src/` modules (and the nested runes of a multi-rune project) are all
+        // discovered — `witchy test <rune-dir>` runs the whole package's tests.
+        fn collect(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) -> std::io::Result<()> {
+            let mut entries: Vec<_> =
+                std::fs::read_dir(dir)?.filter_map(|e| e.ok()).map(|e| e.path()).collect();
+            entries.sort();
+            for p in entries {
+                if p.is_dir() {
+                    collect(&p, out)?;
+                } else if p.extension().and_then(|s| s.to_str()) == Some("witchy") {
+                    out.push(p);
+                }
+            }
+            Ok(())
+        }
+        let mut paths = Vec::new();
+        collect(std::path::Path::new(path), &mut paths)
+            .map_err(|e| format!("cannot read `{path}`: {e}"))?;
+        files.extend(paths.into_iter().filter_map(|p| p.to_str().map(String::from)));
     } else {
         files.push(path.to_string());
     }
     let mut total_pass = 0usize;
     let mut total_fail = 0usize;
     for file in &files {
-        let (passed, failed) = run_tests_in_file(file)?;
+        let (passed, failed) = match run_tests_in_file(file) {
+            Ok(r) => r,
+            // In a directory sweep, a file that can't link standalone — e.g. a
+            // module of a multi-rune project that imports a sibling rune via a
+            // path dependency — is skipped, not fatal. An explicit single file
+            // still surfaces the error.
+            Err(e) if meta.is_dir() => {
+                eprintln!("  skipped {file}: {e}");
+                continue;
+            }
+            Err(e) => return Err(e),
+        };
         if passed.is_empty() && failed.is_empty() {
             continue;
         }
@@ -1354,11 +1317,7 @@ fn verify_file(path: &str) -> Result<(), String> {
         return Err(format!("`{path}` has no `main` to run"));
     }
     // Compile first (borrows `linked`), then run the interpreter (consumes it).
-    // An actor program runs on the compiled ACTOR SYSTEM (its main in a driver
-    // VM, each spawned actor in its own); a plain program on the single-module
-    // WASM runtime.
-    let compiled_system: Option<Result<Vec<String>, String>> = None;
-    let bytes = codegen::compile_module_binary(&linked, &std::collections::HashMap::new())
+    let bytes = codegen::compile_module_binary(&linked)
         .map_err(|e| format!("cannot compile to WASM (an interpreter-only feature?): {e}"))?
         .ok_or_else(|| {
             "cannot compile to WASM: the program reached a construct the compiled backend \
@@ -1377,15 +1336,12 @@ fn verify_file(path: &str) -> Result<(), String> {
             && matches!(&f.ret, Some(ast::Type::Named(n, _)) if n == "Int"))
     });
     let interp = interpreter::run_module(linked, Path::new("."), Vec::new()).map_err(|e| e.to_string());
-    let compiled = match compiled_system {
-        Some(result) => result,
-        None => run_wasm_bytes(&bytes).map(|mut lines| {
-            if main_returns_int {
-                lines.pop();
-            }
-            lines
-        }),
-    };
+    let compiled = run_wasm_bytes(&bytes).map(|mut lines| {
+        if main_returns_int {
+            lines.pop();
+        }
+        lines
+    });
     match (interp, compiled) {
         (Ok(i), Ok(c)) if i == c => {
             println!(
@@ -1425,7 +1381,7 @@ fn emit_wat_file(path: &str) -> Result<String, String> {
     // The WIR-as-WAT: the actual module the backend encodes and runs
     // (optimization passes included), rendered back to text for inspection —
     // a display of the real WIR, not a separately generated WAT string.
-    let mut wir = codegen::assemble_wir_module(&linked, &std::collections::HashMap::new())
+    let mut wir = codegen::assemble_wir_module(&linked)
         .map_err(|e| format!("cannot compile to WASM (an interpreter-only feature?): {e}"))?
         .ok_or_else(|| {
             "cannot compile to WASM: the program reached a construct the compiled backend \
@@ -1448,6 +1404,7 @@ fn run_linked_compiled(
     net_allow: Vec<String>,
     args: Vec<String>,
     signing_key: Option<[u8; 32]>,
+    named_secrets: Vec<(String, Vec<u8>)>,
 ) -> Result<(Vec<String>, Option<i32>), String> {
     use crate::runtime::{Capabilities, Runtime};
     let footprint = capabilities::analyze(linked);
@@ -1458,11 +1415,11 @@ fn run_linked_compiled(
     let main_binds_secret = linked.items.iter().any(|it| {
         matches!(it, ast::Item::Function(f) if f.name == "main"
             && f.params.iter().any(|p| matches!(&p.ty,
-                Some(ast::Type::Named(n, _)) if n == "Secret")))
+                Some(ast::Type::Named(n, _)) if n == "Secret" || n == "SecretStore")))
     });
-    if main_binds_secret && signing_key.is_none() {
+    if main_binds_secret && signing_key.is_none() && named_secrets.is_empty() {
         return Err(
-            "this program needs a Secret, but the host granted none (provide `--signing-key <seed-file>`)".to_string(),
+            "this program needs a Secret, but the host granted none (provide `--signing-key <seed-file>`, `--secret name=value`, or `--secret-file name=path`)".to_string(),
         );
     }
     // Quiet: the captured lines are printed once by the caller (and an
@@ -1491,20 +1448,36 @@ fn run_linked_compiled(
         caps.net_connect = rights.contains("Connect");
         caps.net_listen = rights.contains("Listen");
     }
-    if footprint.total.contains_key("Secret") {
+    if footprint.total.contains_key("Secret") || footprint.total.contains_key("SecretStore") {
         caps.signing_key = signing_key;
+        // The signing key is the `signing` secret at handle 0, so a `Secret`
+        // capability (always handle 0) and `SecretStore.get("signing")` agree.
+        // The `--secret`/`--secret-file` grants follow, each a named `Secret`
+        // reachable by `SecretStore.get(name)` / `.require(name)`.
+        if let Some(seed) = signing_key {
+            caps.secrets.push(("signing".to_string(), seed.to_vec()));
+        }
+        caps.secrets.extend(named_secrets);
     }
     let wasm = compile_linked_to_wasm(linked)?;
     let mut rt = Runtime::batch().map_err(|e| e.to_string())?;
-    let mut actor = rt
+    let mut vm = rt
         .spawn(&wasm, caps, RUN_MEMORY_PAGES)
         .map_err(|e| e.to_string())?;
     // Surface the *root cause*, not wasmtime's outer "error while executing at
     // wasm backtrace…" wrapper: a confinement violation then reads as the same
     // clean "`..` escapes the Dir capability" both backends print, and a genuine
     // trap reads as "wasm trap: …" rather than a stack dump.
-    actor.run().map_err(|e| e.root_cause().to_string())?;
-    let mut lines = actor.output();
+    vm.run().map_err(|e| {
+        // Default: the clean root-cause message both backends agree on. With
+        // WITCHY_WASM_BACKTRACE set, also dump the full named wasm backtrace
+        // (the emitted name section makes frames readable) for debugging traps.
+        if std::env::var_os("WITCHY_WASM_BACKTRACE").is_some() {
+            eprintln!("{e:?}");
+        }
+        e.root_cause().to_string()
+    })?;
+    let mut lines = vm.output();
     // At the process boundary an Int-returning `main` is the exit code (the
     // run export surfaces it as the final print_int line; pop and convert).
     let main_returns_int = linked.items.iter().any(|it| {
@@ -1519,12 +1492,11 @@ fn run_linked_compiled(
     Ok((lines, exit_code))
 }
 
-/// Compile a linked module to a wasm BINARY, preferring the WIR → wasm-binary
-/// pipeline (`compile_module_binary`, no `wat::parse_str`). When the whole module
-/// lowers and reaches only WIR-native prelude helpers it emits a capability-
-/// correct binary directly; anything else falls back to the legacy WAT sink.
+/// Compile a linked module to a wasm BINARY through the WIR → wasm-binary
+/// pipeline (`compile_module_binary`). A program that doesn't fully lower
+/// surfaces as a hard "cannot compile" error — there is no WAT fallback.
 fn compile_linked_to_wasm(linked: &ast::Module) -> Result<Vec<u8>, String> {
-    codegen::compile_module_binary(linked, &std::collections::HashMap::new())
+    codegen::compile_module_binary(linked)
         .map_err(|e| format!("cannot compile to WASM (an interpreter-only feature?): {e}"))?
         .ok_or_else(|| {
             "cannot compile to WASM: the program reached a construct the compiled backend \
@@ -1543,6 +1515,7 @@ fn run_file_sandboxed(
     net_allow: Vec<String>,
     args: Vec<String>,
     signing_key: Option<[u8; 32]>,
+    named_secrets: Vec<(String, Vec<u8>)>,
 ) -> Result<(Vec<String>, Option<i32>), String> {
     let (linked, stem) = link_file(path)?;
     typeck::check(&linked).map_err(|e| e.to_string())?;
@@ -1555,16 +1528,16 @@ fn run_file_sandboxed(
         return Err(format!("`{path}` has no `main` to run"));
     }
     let footprint = capabilities::analyze(&linked);
-    if footprint.total.contains_key("Secret") && signing_key.is_none() {
+    if footprint.total.contains_key("Secret") && signing_key.is_none() && named_secrets.is_empty() {
         return Err(format!(
-            "`{path}` needs a Secret, but the host granted none (provide `--signing-key <seed-file>`)"
+            "`{path}` needs a Secret, but the host granted none (provide `--signing-key <seed-file>`, `--secret name=value`, or `--secret-file name=path`)"
         ));
     }
     eprintln!(
         "sandboxing `{path}` \u{2014} granted exactly: {}",
         capabilities::show_caps(&footprint.total)
     );
-    run_linked_compiled(&linked, dir_root, net_allow, args, signing_key)
+    run_linked_compiled(&linked, dir_root, net_allow, args, signing_key, named_secrets)
 }
 
 /// The `witchy.*` host functions a compiled module imports — its authority
@@ -1594,19 +1567,21 @@ fn run_wasm_file(
     net_allow: Vec<String>,
     args: Vec<String>,
     signing_key: Option<[u8; 32]>,
+    named_secrets: Vec<(String, Vec<u8>)>,
 ) -> Result<(Vec<String>, Option<i32>), String> {
     let bytes = std::fs::read(path).map_err(|e| format!("cannot read `{path}`: {e}"))?;
-    run_wasm_module(&bytes, dir_root, net_allow, args, signing_key)
+    run_wasm_module(&bytes, dir_root, net_allow, args, signing_key, named_secrets)
 }
 
-/// Like [`run_wasm_file`] but from in-memory wasm bytes — used by a `build-exe`
-/// launcher to run the program embedded in its own executable.
+/// Run a precompiled wasm program from in-memory bytes under the capability
+/// sandbox — the byte-level core of [`run_wasm_file`].
 fn run_wasm_module(
     bytes: &[u8],
     dir_root: Option<std::path::PathBuf>,
     net_allow: Vec<String>,
     args: Vec<String>,
     signing_key: Option<[u8; 32]>,
+    named_secrets: Vec<(String, Vec<u8>)>,
 ) -> Result<(Vec<String>, Option<i32>), String> {
     use crate::runtime::{Capabilities, Runtime};
     let needs = witchy_imports(bytes)?;
@@ -1622,10 +1597,11 @@ fn run_wasm_module(
     .iter()
     .any(|n| has(n));
     let net_listen = ["net_listen", "net_accept"].iter().any(|n| has(n));
-    let needs_secret = has("crypto.sign") || has("crypto.public_key");
-    if needs_secret && signing_key.is_none() {
+    let needs_secret =
+        has("crypto.sign") || has("crypto.public_key") || has("crypto.reveal") || has("secretstore_lookup");
+    if needs_secret && signing_key.is_none() && named_secrets.is_empty() {
         return Err(
-            "this module imports the Secret signing host, but no key was granted (use `--signing-key <seed-file>`)".to_string(),
+            "this module imports the Secret host, but none was granted (use `--signing-key <seed-file>`, `--secret name=value`, or `--secret-file name=path`)".to_string(),
         );
     }
     let mut caps = Capabilities {
@@ -1653,85 +1629,20 @@ fn run_wasm_module(
     }
     if needs_secret {
         caps.signing_key = signing_key;
+        if let Some(seed) = signing_key {
+            caps.secrets.push(("signing".to_string(), seed.to_vec()));
+        }
+        caps.secrets.extend(named_secrets);
     }
     let mut rt = Runtime::batch().map_err(|e| e.to_string())?;
-    let mut actor = rt
+    let mut vm = rt
         .spawn(bytes, caps, RUN_MEMORY_PAGES)
         .map_err(|e| e.to_string())?;
-    actor.run().map_err(|e| e.root_cause().to_string())?;
+    vm.run().map_err(|e| e.root_cause().to_string())?;
     // We can't see `main`'s return type from a bare binary, so an Int `main`'s
     // value surfaces as a trailing output line rather than the process exit code
     // (the source runners pop it because they have the AST). Acceptable for Tier 1.
-    Ok((actor.output(), None))
-}
-
-// --- `build-exe`: standalone distribution -----------------------------------
-//
-// A packaged executable is a copy of the `witchy` binary with the program's wasm
-// appended, followed by a 16-byte trailer: `[u64 LE wasm-length][8-byte magic]`.
-// On startup the binary checks its own tail for the magic (see `embedded_payload`)
-// and, if present, runs the embedded module instead of the normal CLI — so the
-// end user runs `./app --dir . --net host:port` with no `witchy` install.
-
-const EXE_MAGIC: &[u8; 8] = b"WiTcHyX1";
-
-/// If this executable has an appended witchy payload, return its wasm bytes. Reads
-/// only the 16-byte trailer in the common (unpackaged) case, so the check is cheap
-/// on every `witchy` invocation.
-fn embedded_payload() -> Option<Vec<u8>> {
-    use std::io::{Read, Seek, SeekFrom};
-    let exe = std::env::current_exe().ok()?;
-    let mut f = std::fs::File::open(&exe).ok()?;
-    let size = f.seek(SeekFrom::End(0)).ok()?;
-    if size < 16 {
-        return None;
-    }
-    f.seek(SeekFrom::End(-16)).ok()?;
-    let mut trailer = [0u8; 16];
-    f.read_exact(&mut trailer).ok()?;
-    if &trailer[8..] != EXE_MAGIC {
-        return None;
-    }
-    let wasm_len = u64::from_le_bytes(trailer[..8].try_into().ok()?);
-    if wasm_len == 0 || wasm_len + 16 > size {
-        return None;
-    }
-    f.seek(SeekFrom::Start(size - 16 - wasm_len)).ok()?;
-    let mut wasm = vec![0u8; wasm_len as usize];
-    f.read_exact(&mut wasm).ok()?;
-    Some(wasm)
-}
-
-/// `witchy build-exe <file.witchy> -o <out>`: compile the program and append it to
-/// a copy of this `witchy` binary, producing a self-contained, capability-enforcing
-/// executable. (Embeds the portable wasm — startup recompiles it; embedding a
-/// per-target `cwasm` for instant startup is a later optimization.)
-fn build_exe_file(path: &str, out: &str) -> Result<(), String> {
-    let (linked, stem) = link_file(path)?;
-    typeck::check(&linked).map_err(|e| e.to_string())?;
-    enforce_performance_modes(&linked, &stem)?;
-    let wasm = compile_linked_to_wasm(&linked)?;
-    let exe = std::env::current_exe().map_err(|e| format!("cannot locate the witchy binary: {e}"))?;
-    let mut bytes = std::fs::read(&exe).map_err(|e| format!("cannot read the witchy binary: {e}"))?;
-    // Don't stack payloads: if this witchy is itself already packaged, strip its
-    // trailer first so the new exe carries only the new program.
-    if bytes.len() >= 16 && &bytes[bytes.len() - 8..] == EXE_MAGIC {
-        let len_off = bytes.len() - 16;
-        let old = u64::from_le_bytes(bytes[len_off..len_off + 8].try_into().unwrap()) as usize;
-        bytes.truncate(len_off.saturating_sub(old));
-    }
-    bytes.extend_from_slice(&wasm);
-    bytes.extend_from_slice(&(wasm.len() as u64).to_le_bytes());
-    bytes.extend_from_slice(EXE_MAGIC);
-    std::fs::write(out, &bytes).map_err(|e| format!("cannot write `{out}`: {e}"))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = std::fs::metadata(out).map_err(|e| e.to_string())?.permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(out, perms).map_err(|e| e.to_string())?;
-    }
-    Ok(())
+    Ok((vm.output(), None))
 }
 
 /// Compile a `.witchy` program to a wasm binary and write it to `out`. The
@@ -1770,10 +1681,10 @@ pub fn run_build_step_sandboxed(
         ..Default::default()
     };
     let mut rt = Runtime::batch().map_err(|e| e.to_string())?;
-    let mut actor = rt
+    let mut vm = rt
         .spawn(&wasm, caps, RUN_MEMORY_PAGES)
         .map_err(|e| e.to_string())?;
-    actor.run().map_err(|e| e.root_cause().to_string())?;
+    vm.run().map_err(|e| e.root_cause().to_string())?;
     let mut generated: Vec<String> = std::fs::read_dir(&out_dir)
         .map_err(|e| format!("build: reading output dir: {e}"))?
         .flatten()
@@ -1788,7 +1699,7 @@ pub fn run_build_step_sandboxed(
 /// Linear-memory cap (64 KiB pages) for a run-to-completion program: 1 GiB.
 /// wasmtime grows memory lazily, so this is just a ceiling, not a reservation —
 /// it lets real programs (lists, strings, recursion) allocate freely while
-/// still bounding a runaway. (The tiny per-actor caps used by the scheduler are
+/// still bounding a runaway. (The tiny per-VM caps used by the scheduler are
 /// a separate, deliberate resource-limit demonstration.)
 const RUN_MEMORY_PAGES: usize = 16384;
 
@@ -1800,7 +1711,7 @@ fn run_wasm_bytes(bytes: &[u8]) -> Result<Vec<String>, String> {
     // Run-to-completion: no scheduler, so use the non-preempting engine, which
     // omits the per-backedge epoch check and runs tight loops at full speed.
     let mut rt = Runtime::batch().map_err(|e| e.to_string())?;
-    let mut actor = rt
+    let mut vm = rt
         .spawn(
             bytes,
             // The dev/differential path mirrors the interpreter's automatic
@@ -1824,8 +1735,8 @@ fn run_wasm_bytes(bytes: &[u8]) -> Result<Vec<String>, String> {
             RUN_MEMORY_PAGES,
         )
         .map_err(|e| e.to_string())?;
-    actor.run().map_err(|e| e.to_string())?;
-    Ok(actor.output())
+    vm.run().map_err(|e| e.to_string())?;
+    Ok(vm.output())
 }
 
 /// Read, parse, and compute the host-capability footprint of a source file.
@@ -2064,7 +1975,7 @@ fn run_compiled(rt: &mut Runtime, title: &str, program: &str) {
             return;
         }
     };
-    let bytes = match codegen::compile_module_binary(&module, &std::collections::HashMap::new()) {
+    let bytes = match codegen::compile_module_binary(&module) {
         Ok(Some(b)) => b,
         Ok(None) => {
             println!("cannot compile to WASM (an interpreter-only feature?)");
@@ -2086,8 +1997,8 @@ fn run_compiled(rt: &mut Runtime, title: &str, program: &str) {
         },
         4,
     ) {
-        Ok(mut actor) => {
-            if let Err(e) = actor.run() {
+        Ok(mut vm) => {
+            if let Err(e) = vm.run() {
                 println!("error: {e}");
             }
         }
@@ -2125,7 +2036,7 @@ fn run_compiled_program(rt: &mut Runtime, title: &str, sources: &[(&str, &str)],
         println!("{e}");
         return;
     }
-    let bytes = match codegen::compile_module_binary(&linked, &std::collections::HashMap::new()) {
+    let bytes = match codegen::compile_module_binary(&linked) {
         Ok(Some(b)) => b,
         Ok(None) => {
             println!("cannot compile to WASM (an interpreter-only feature?)");
@@ -2145,8 +2056,8 @@ fn run_compiled_program(rt: &mut Runtime, title: &str, sources: &[(&str, &str)],
         },
         4,
     ) {
-        Ok(mut actor) => {
-            if let Err(e) = actor.run() {
+        Ok(mut vm) => {
+            if let Err(e) = vm.run() {
                 println!("error: {e}");
             }
         }

@@ -1,0 +1,11 @@
+// In-rune tests for `opt_mode`. Importing an `opt` module is itself constrained
+// (the importer must be `opt`-compatible), and the bundled std/testing is exempt
+// from that rule. Run with `witchy test examples/opt_mode`.
+
+import opt_mode
+import testing
+
+fn test_sum():
+    testing.assert_int_eq(opt_mode.sum([1, 4, 9, 16, 25]), 55)
+    testing.assert_int_eq(opt_mode.sum([]), 0)
+    testing.assert_int_eq(opt_mode.sum([7]), 7)

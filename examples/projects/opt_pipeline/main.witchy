@@ -1,0 +1,16 @@
+mode opt
+import stats
+
+// The entry module is `mode opt`, so every module it imports must be too —
+// `stats` here is, which is why this compiles. The optimization discipline is
+// therefore a guarantee over the whole program, not just this file.
+
+fn main(console: Console):
+    // Build the sample in place — O(n) under `mode opt`, not O(n²) copying.
+    var xs = []
+    for i in [4, 8, 15, 16, 23, 42]:
+        xs = list.push(xs, i)
+
+    print(console, "n:    ${stats.count(xs)}")
+    print(console, "sum:  ${stats.total(xs)}")
+    print(console, "mean: ${stats.mean(xs)}")

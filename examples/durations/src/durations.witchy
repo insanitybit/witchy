@@ -1,0 +1,32 @@
+// Durations the witchy way: write times as `30s`, `500ms`, `2hr` — a distinct
+// type, so the compiler stops you adding a Duration to a bare number, yet they
+// combine and compare with the ordinary operators (`d * 2`, `a < b`, `a + b`).
+// The std `duration` module formats and parses them. Everything here is pure, so
+// it runs identically on the interpreter and compiled to WASM.
+// Run: witchy examples/durations.witchy
+
+import duration
+
+// A capped exponential backoff: the wait doubles each attempt but never exceeds
+// `cap`. `d * 2` is Duration * Int -> Duration; `d > cap` compares two Durations.
+pub fn backoff(attempt: Int, base: Duration, cap: Duration) -> Duration:
+    var d = base
+    var i = 0
+    while i < attempt:
+        d = d * 2
+        i = i + 1
+    if d > cap:
+        cap
+    else:
+        d
+
+fn main(console: Console):
+    // A retry schedule: 1s, 2s, 4s, ... capped at 5s.
+    var attempt = 0
+    while attempt < 5:
+        print(console, duration.human(backoff(attempt, 1s, 5s)))
+        attempt = attempt + 1
+    // Combine and compare durations directly.
+    print(console, duration.clock(1h + 30m))
+    print(console, "${90s < 2m}")
+    print(console, duration.human(duration.from_clock(0, 2, 30)))

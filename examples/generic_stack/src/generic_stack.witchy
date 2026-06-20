@@ -1,0 +1,58 @@
+// Parametric polymorphism: one data structure, any element type. `Stack(a)` is a
+// recursive generic ADT — the type parameter `a` flows through the constructors
+// (`Push(a, Stack(a))`) and every function below works for *any* `a`. The same
+// `size`/`peek`/`reverse` operate on a `Stack(Int)` and a `Stack(String)` alike,
+// fully type-checked, with `peek` returning a generic `Option(a)`. Pure (only
+// `main` touches the Console), so it runs identically interpreted, compiled, and
+// inside the capability sandbox:
+//   witchy examples/generic_stack.witchy
+//   witchy parity examples/generic_stack.witchy
+//   witchy sandbox examples/generic_stack.witchy
+
+import option
+import string
+
+type Stack:
+    Empty
+    Push(a, Stack(a))
+
+pub fn size(s: Stack(a)) -> Int:
+    match s:
+        Empty -> 0
+        Push(_x, rest) -> 1 + size(rest)
+
+pub fn peek(s: Stack(a)) -> Option(a):
+    match s:
+        Empty -> None
+        Push(x, _rest) -> Some(x)
+
+fn rev_onto(s: Stack(a), acc: Stack(a)) -> Stack(a):
+    match s:
+        Empty -> acc
+        Push(x, rest) -> rev_onto(rest, Push(x, acc))
+
+pub fn reverse(s: Stack(a)) -> Stack(a):
+    rev_onto(s, Empty)
+
+pub fn show_top_int(s: Stack(Int)) -> String:
+    match peek(s):
+        Some(n) -> "${n}"
+        None -> "<empty>"
+
+pub fn show_top_str(s: Stack(String)) -> String:
+    match peek(s):
+        Some(w) -> w
+        None -> "<empty>"
+
+fn main(console: Console):
+    // Same generic type, two element types — both fully type-checked.
+    let nums = Push(1, Push(2, Push(3, Empty)))
+    let words = Push("first", Push("second", Empty))
+
+    print(console, "nums size:  " + "${size(nums)}")
+    print(console, "words size: " + "${size(words)}")
+    print(console, "nums top:   " + show_top_int(nums))
+    print(console, "words top:  " + show_top_str(words))
+    // reverse is generic too: after reversing, the bottom element is on top.
+    print(console, "rev nums top:  " + show_top_int(reverse(nums)))
+    print(console, "rev words top: " + show_top_str(reverse(words)))

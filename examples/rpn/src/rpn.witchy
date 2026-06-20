@@ -1,0 +1,83 @@
+// rpn — a reverse-Polish (postfix) calculator, the stack-machine counterpart to
+// the recursive-descent `calc`. Tokens are whitespace-separated; a number is
+// pushed, an operator pops its two operands and pushes the result. Errors (stack
+// underflow, division by zero, an unknown token, a leftover stack) flow through
+// `Result`. Pure (Console only); identical on both backends. Run:
+//   witchy examples/rpn.witchy
+
+import string
+
+// The evaluator's state: a stack of operands, or the first error encountered.
+type Outcome:
+    Stack(List(Int))
+    Failure(String)
+
+fn main(console: Console):
+    for expr in ["3 4 +", "5 1 2 + 4 * + 3 -", "10 2 /", "1 0 /", "1 +"]:
+        print(console, string.pad_right(expr, 20, " ") + "=> " + run(expr))
+
+pub fn run(expr: String) -> String:
+    match eval(string.words(expr)):
+        Ok(value) -> "${value}"
+        Err(message) -> "error: " + message
+
+fn eval(tokens: List(String)) -> Result(Int, String):
+    var outcome = Stack([])
+    for token in tokens:
+        outcome = step(outcome, token)
+    finish(outcome)
+
+fn step(outcome: Outcome, token: String) -> Outcome:
+    match outcome:
+        Failure(message) -> Failure(message)
+        Stack(stack) -> push_or_apply(stack, token)
+
+fn push_or_apply(stack: List(Int), token: String) -> Outcome:
+    match string.parse_int(token):
+        Some(n) -> Stack(list.push(stack, n))
+        None -> apply_operator(stack, token)
+
+fn apply_operator(stack: List(Int), op: String) -> Outcome:
+    let n = list.length(stack)
+    if n < 2:
+        Failure("stack underflow at `" + op + "`")
+    else:
+        let b = list.at(stack, n - 1)
+        let a = list.at(stack, n - 2)
+        match compute(op, a, b):
+            Ok(result) -> Stack(list.push(prefix(stack, n - 2), result))
+            Err(message) -> Failure(message)
+
+fn compute(op: String, a: Int, b: Int) -> Result(Int, String):
+    if op == "+":
+        Ok(a + b)
+    else if op == "-":
+        Ok(a - b)
+    else if op == "*":
+        Ok(a * b)
+    else if op == "/":
+        if b == 0:
+            Err("division by zero")
+        else:
+            Ok(a / b)
+    else:
+        Err("unknown token `" + op + "`")
+
+fn finish(outcome: Outcome) -> Result(Int, String):
+    match outcome:
+        Failure(message) -> Err(message)
+        Stack(stack) ->
+            if list.length(stack) == 1:
+                Ok(list.at(stack, 0))
+            else:
+                Err("expected a single result, the stack has " + "${list.length(stack)}")
+
+// The first `k` elements of `xs` (the stack below the two consumed operands).
+fn prefix(xs: List(Int), k: Int) -> List(Int):
+    var out = []
+    var i = 0
+    for x in xs:
+        if i < k:
+            out = list.push(out, x)
+        i = i + 1
+    out

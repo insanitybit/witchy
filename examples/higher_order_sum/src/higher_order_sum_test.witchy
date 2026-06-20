@@ -1,0 +1,20 @@
+// In-rune tests for `higher_order_sum`. Each `test_*` function takes no
+// parameters, passes by returning, and fails by aborting (the `testing`
+// assertions do that with a message). Run them with
+// `witchy test examples/higher_order_sum`.
+
+import higher_order_sum
+import testing
+
+fn test_is_odd():
+    testing.assert(higher_order_sum.is_odd(9), "9 is odd")
+    testing.assert(!higher_order_sum.is_odd(4), "4 is even")
+
+fn test_imperative():
+    testing.assert_int_eq(higher_order_sum.imperative(1000), 5456)
+
+fn test_functional():
+    testing.assert_int_eq(higher_order_sum.functional(1000), 5456)
+
+fn test_both_agree():
+    testing.assert_int_eq(higher_order_sum.imperative(1000), higher_order_sum.functional(1000))

@@ -1,0 +1,9 @@
+// Compiled to WASM with string support: literals live in linear memory, `<>`
+// concatenates via a bump allocator, and `print` lowers to the host capability
+// (ptr, len). Granted the `print` capability the module runs; denied it, the
+// module cannot instantiate.
+pub fn shout(name: String) -> String:
+    "hello, " + name
+
+fn main(console: Console):
+    print(console, shout("compiled witchy") + "\n")

@@ -1,0 +1,25 @@
+// In-rune tests for `bst`. Each `test_*` function takes no parameters, passes by
+// returning, and fails by aborting (the `testing` assertions do that with a
+// message). Run them with `witchy test examples/bst`.
+
+import bst
+import list
+import string
+import testing
+
+// Render a list of ints as a space-separated string.
+fn show(xs: List(Int)) -> String:
+    string.join(list.map(xs, fn(n: Int): "${n}"), " ")
+
+fn test_tree_sort():
+    testing.assert_eq(show(bst.inorder(bst.from_list([5, 3, 8, 1, 4, 7, 9, 2, 6]))), "1 2 3 4 5 6 7 8 9")
+    testing.assert_eq(show(bst.inorder(bst.from_list([3, 1, 2]))), "1 2 3")
+    testing.assert_eq(show(bst.inorder(bst.from_list([]))), "")
+
+fn test_duplicates_collapse():
+    testing.assert_eq(show(bst.inorder(bst.from_list([2, 2, 1, 1, 3, 3]))), "1 2 3")
+
+fn test_contains():
+    let tree = bst.from_list([5, 3, 8, 1, 4, 7, 9, 2, 6])
+    testing.assert(bst.contains(tree, 7), "tree should contain 7")
+    testing.assert(!bst.contains(tree, 10), "tree should not contain 10")

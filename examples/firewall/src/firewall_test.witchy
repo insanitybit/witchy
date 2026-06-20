@@ -1,0 +1,15 @@
+// In-rune tests for `firewall`. Each `test_*` function takes no parameters, passes
+// by returning, and fails by aborting (the `testing` assertions do that with a
+// message). Run them with `witchy test examples/firewall`.
+
+import firewall
+import testing
+
+fn test_valid_names():
+    testing.assert(firewall.is_valid("ada"), "short name is valid")
+    testing.assert(firewall.is_valid("grace"), "five-char name is valid")
+    testing.assert(firewall.is_valid("twelve_chars"), "twelve chars is the limit")
+
+fn test_invalid_names():
+    testing.assert(!firewall.is_valid(""), "empty name is invalid")
+    testing.assert(!firewall.is_valid("this_name_is_too_long"), "over twelve is invalid")

@@ -1,0 +1,46 @@
+// Generators: `gen fn` + `yield` — witchy's most ergonomic lazy iteration. A
+// `gen fn` runs like an ordinary imperative function but `yield`s a sequence of
+// values; calling it returns a lazy `iter.Iter` (std/iter) that computes only
+// what's demanded, so an infinite generator is fine when something bounds it.
+// Informed by the Rust retrospectives: because witchy values are "data" (no
+// borrowing), generators need none of the lending-iterator complexity Rust
+// regrets. Runs on both the interpreter and the compiled WASM backend.
+
+import iter
+import string
+
+// Fibonacci, written the way most people reach for — an imperative loop that
+// yields. (Infinite; the caller takes a prefix.)
+gen fn fibs() -> Iter(Int):
+    var a = 0
+    var b = 1
+    while true:
+        yield a
+        let nxt = a + b
+        a = b
+        b = nxt
+
+// The Collatz / hailstone sequence from `start` down to 1: a finite generator
+// with a branch inside the loop — natural with `yield`, awkward as a fold.
+gen fn collatz(start: Int) -> Iter(Int):
+    var n = start
+    yield n
+    while n > 1:
+        if n % 2 == 0:
+            n = n / 2
+        else:
+            n = 3 * n + 1
+        yield n
+
+pub fn show(xs: List(Int)) -> String:
+    var parts = []
+    for x in xs:
+        parts = list.push(parts, "${x}")
+    string.join(parts, ", ")
+
+fn main(console: Console):
+    let fib10: List(Int) = iter.collect(iter.take(fibs(), 10))
+    print(console, "fib[0..10): " + show(fib10))
+    let path: List(Int) = iter.collect(collatz(6))
+    print(console, "collatz(6): " + show(path))
+    print(console, "collatz(27) length: " + "${iter.count(collatz(27))}")

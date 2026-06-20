@@ -1,0 +1,5 @@
+[rune]
+name = "floats"
+version = "0.1.0"
+
+[dependencies]

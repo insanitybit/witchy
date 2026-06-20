@@ -1,0 +1,30 @@
+// In-rune tests for `queens`. Each `test_*` function takes no parameters, passes
+// by returning, and fails by aborting (the `testing` assertions do that with a
+// message). Run them with `witchy test examples/queens`.
+
+import queens
+import testing
+
+fn test_count():
+    testing.assert_int_eq(queens.count(1, []), 1)
+    testing.assert_int_eq(queens.count(4, []), 2)
+    testing.assert_int_eq(queens.count(8, []), 92)
+
+fn test_safe():
+    // From an empty board every column is safe.
+    testing.assert(queens.safe([], 0), "any column is safe on an empty board")
+    // A queen in column 0 of row 0: row 1 can't reuse column 0 (same column)
+    // or column 1 (adjacent diagonal), but column 2 is fine.
+    testing.assert(!queens.safe([0], 0), "same column attacks")
+    testing.assert(!queens.safe([0], 1), "adjacent diagonal attacks")
+    testing.assert(queens.safe([0], 2), "column 2 is safe below a queen at 0")
+
+fn test_solve():
+    let placement = queens.solve(4, [])
+    testing.assert_int_eq(list.length(placement), 4)
+    // The known first column-order DFS solution for the 4x4 board.
+    testing.assert_eq("${placement}", "[1, 3, 0, 2]")
+
+fn test_row_string():
+    testing.assert_eq(queens.row_string(0, 4), "Q...")
+    testing.assert_eq(queens.row_string(2, 4), "..Q.")

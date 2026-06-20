@@ -1,0 +1,13 @@
+// In-rune tests for `signs`. Each `test_*` function takes no parameters, passes
+// by returning, and fails by aborting (the `testing` assertions do that with a
+// message). Run them with `witchy test examples/signs`.
+
+import signs
+import testing
+
+fn test_step():
+    testing.assert_eq(signs.step(-1), "left")
+    testing.assert_eq(signs.step(1), "right")
+    testing.assert_eq(signs.step(0), "stay")
+    testing.assert_eq(signs.step(2), "?")
+    testing.assert_eq(signs.step(-5), "?")

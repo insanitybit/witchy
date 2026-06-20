@@ -1,0 +1,24 @@
+// In-rune tests for `ranges`. Each `test_*` function takes no parameters, passes
+// by returning, and fails by aborting (the `testing` assertions do that with a
+// message). Run them with `witchy test examples/ranges`.
+
+import ranges
+import testing
+
+fn test_http_class():
+    testing.assert_eq(ranges.http_class(200), "success")
+    testing.assert_eq(ranges.http_class(204), "success")
+    testing.assert_eq(ranges.http_class(301), "redirect")
+    testing.assert_eq(ranges.http_class(404), "client error")
+    testing.assert_eq(ranges.http_class(503), "server error")
+    testing.assert_eq(ranges.http_class(600), "unknown")
+
+fn test_grade():
+    testing.assert_eq(ranges.grade(95), "A")
+    testing.assert_eq(ranges.grade(100), "A")
+    testing.assert_eq(ranges.grade(90), "A")
+    testing.assert_eq(ranges.grade(83), "B")
+    testing.assert_eq(ranges.grade(71), "C")
+    testing.assert_eq(ranges.grade(60), "D")
+    testing.assert_eq(ranges.grade(42), "F")
+    testing.assert_eq(ranges.grade(101), "invalid")

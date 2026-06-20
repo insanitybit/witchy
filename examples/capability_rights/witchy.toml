@@ -1,0 +1,5 @@
+[rune]
+name = "capability_rights"
+version = "0.1.0"
+
+[dependencies]

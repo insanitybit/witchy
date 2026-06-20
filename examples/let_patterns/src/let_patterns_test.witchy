@@ -1,0 +1,22 @@
+// In-rune tests for `let_patterns`. Each `test_*` function takes no parameters,
+// passes by returning, and fails by aborting. Run them with
+// `witchy test examples/let_patterns`.
+
+import let_patterns
+import list
+import testing
+
+fn test_pop_head():
+    match let_patterns.pop([7, 8, 9]):
+        Some(pair) ->
+            let (head, rest) = pair
+            testing.assert_int_eq(head, 7)
+            testing.assert_int_eq(list.length(rest), 2)
+            testing.assert_int_eq(list.at(rest, 0), 8)
+            testing.assert_int_eq(list.at(rest, 1), 9)
+        None -> testing.fail_with("expected Some")
+
+fn test_pop_empty():
+    match let_patterns.pop([]):
+        Some(_) -> testing.fail_with("expected None")
+        None -> testing.assert(true, "popped empty")

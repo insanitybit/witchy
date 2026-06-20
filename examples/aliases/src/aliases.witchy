@@ -1,0 +1,32 @@
+// Type aliases name a type for clarity without creating a new, incompatible
+// type: `type Celsius = Int` *is* `Int`, just more legible in signatures.
+// Aliases may stand for compound types (`List(...)`, tuples, function types) and
+// may chain. They are expanded to their target before type-checking and code
+// generation, so they cost nothing at runtime and behave identically
+// interpreted, compiled, and inside the capability sandbox:
+//   witchy examples/aliases.witchy
+//   witchy parity examples/aliases.witchy
+//   witchy sandbox examples/aliases.witchy
+
+import string
+
+type Celsius = Int
+
+type Fahrenheit = Int
+
+type Readings = List(Celsius)
+
+pub fn to_fahrenheit(c: Celsius) -> Fahrenheit:
+    c * 9 / 5 + 32
+
+pub fn average(rs: Readings) -> Celsius:
+    var total = 0
+    for r in rs:
+        total = total + r
+    total / list.length(rs)
+
+fn main(console: Console):
+    let week = [18, 21, 25, 23, 20, 19, 22]
+    print(console, "avg C = " + "${average(week)}")
+    print(console, "25C = ${to_fahrenheit(25)}F")
+    print(console, "0C  = ${to_fahrenheit(0)}F")

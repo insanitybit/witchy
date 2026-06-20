@@ -1,0 +1,23 @@
+// In-rune tests for `toposort`. Each `test_*` function takes no parameters,
+// passes by returning, and fails by aborting. Run with `witchy test examples/toposort`.
+
+import toposort
+import string
+import testing
+
+fn order_or_err(nodes: List(String), edges: List((String, String))) -> String:
+    match toposort.toposort(nodes, edges):
+        Ok(order) -> string.join(order, " -> ")
+        Err(message) -> "error: " + message
+
+fn test_linear_chain():
+    let nodes = ["boot", "config", "db", "cache", "api", "web"]
+    let edges = [("boot", "config"), ("config", "db"), ("config", "cache"), ("db", "api"), ("cache", "api"), ("api", "web")]
+    testing.assert_eq(order_or_err(nodes, edges), "boot -> config -> db -> cache -> api -> web")
+
+fn test_no_edges_keeps_node_order():
+    testing.assert_eq(order_or_err(["a", "b", "c"], []), "a -> b -> c")
+
+fn test_cycle_is_rejected():
+    let edges = [("egg", "chicken"), ("chicken", "egg")]
+    testing.assert_eq(order_or_err(["egg", "chicken"], edges), "error: cycle among egg, chicken")

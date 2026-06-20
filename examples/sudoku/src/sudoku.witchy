@@ -1,0 +1,114 @@
+// sudoku — a backtracking Sudoku solver. The board is a 9x9 `List(List(Int))`
+// (0 is an empty cell); `solve` finds the first empty cell, tries each digit that
+// is consistent with its row, column, and 3x3 box, and recurses — backtracking
+// (an `Option` `None`) when a cell admits no digit. Boards are *immutable*: each
+// trial builds a fresh board with one cell set, the natural functional style.
+// Pure (Console only). Run:  witchy examples/sudoku.witchy
+
+import string
+
+fn main(console: Console):
+    let puzzle = [[5, 3, 0, 0, 7, 0, 0, 0, 0], [6, 0, 0, 1, 9, 5, 0, 0, 0], [0, 9, 8, 0, 0, 0, 0, 6, 0], [8, 0, 0, 0, 6, 0, 0, 0, 3], [4, 0, 0, 8, 0, 3, 0, 0, 1], [7, 0, 0, 0, 2, 0, 0, 0, 6], [0, 6, 0, 0, 0, 0, 2, 8, 0], [0, 0, 0, 4, 1, 9, 0, 0, 5], [0, 0, 0, 0, 8, 0, 0, 7, 9]]
+
+    print(console, "puzzle:")
+    print(console, render(puzzle))
+    match solve(puzzle):
+        Some(solved) ->
+            print(console, "solved:")
+            print(console, render(solved))
+        None -> print(console, "no solution")
+
+pub fn solve(board: List(List(Int))) -> Option(List(List(Int))):
+    match first_empty(board):
+        None -> Some(board)
+        Some(cell) ->
+            let (r, c) = cell
+            try_digits(board, r, c, 1)
+
+// Try digits `n..9` at (r, c): place the first valid one and recurse; if the
+// recursion dead-ends, try the next digit; if none work, backtrack with None.
+fn try_digits(board: List(List(Int)), r: Int, c: Int, n: Int) -> Option(List(List(Int))):
+    if n > 9:
+        None
+    else if consistent(board, r, c, n):
+        match solve(place(board, r, c, n)):
+            Some(done) -> Some(done)
+            None -> try_digits(board, r, c, n + 1)
+    else:
+        try_digits(board, r, c, n + 1)
+
+// The first empty (zero) cell, scanning row by row.
+fn first_empty(board: List(List(Int))) -> Option((Int, Int)):
+    var found = None
+    var r = 0
+    for row in board:
+        var c = 0
+        for v in row:
+            if v == 0 && is_none(found):
+                found = Some((r, c))
+            c = c + 1
+        r = r + 1
+    found
+
+// Whether placing `n` at (r, c) breaks no Sudoku constraint.
+pub fn consistent(board: List(List(Int)), r: Int, c: Int, n: Int) -> Bool:
+    !in_row(board, r, n) && !in_col(board, c, n) && !in_box(board, r, c, n)
+
+fn in_row(board: List(List(Int)), r: Int, n: Int) -> Bool:
+    var hit = false
+    for v in list.at(board, r):
+        if v == n:
+            hit = true
+    hit
+
+fn in_col(board: List(List(Int)), c: Int, n: Int) -> Bool:
+    var hit = false
+    for row in board:
+        if list.at(row, c) == n:
+            hit = true
+    hit
+
+fn in_box(board: List(List(Int)), r: Int, c: Int, n: Int) -> Bool:
+    let r0 = r / 3 * 3
+    let c0 = c / 3 * 3
+    var hit = false
+    var i = 0
+    while i < 3:
+        var j = 0
+        while j < 3:
+            if list.at(list.at(board, r0 + i), c0 + j) == n:
+                hit = true
+            j = j + 1
+        i = i + 1
+    hit
+
+// A copy of `board` with (r, c) set to `n`.
+fn place(board: List(List(Int)), r: Int, c: Int, n: Int) -> List(List(Int)):
+    var out = []
+    var i = 0
+    for row in board:
+        out = list.push(out, if i == r: set_at(row, c, n) else: row)
+        i = i + 1
+    out
+
+fn set_at(row: List(Int), c: Int, n: Int) -> List(Int):
+    var out = []
+    var j = 0
+    for v in row:
+        out = list.push(out, if j == c: n else: v)
+        j = j + 1
+    out
+
+fn is_none(o: Option((Int, Int))) -> Bool:
+    match o:
+        Some(_x) -> false
+        None -> true
+
+pub fn render(board: List(List(Int))) -> String:
+    var lines = []
+    for row in board:
+        var cells = []
+        for v in row:
+            cells = list.push(cells, "${v}")
+        lines = list.push(lines, string.join(cells, ""))
+    string.join(lines, "\n")

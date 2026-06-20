@@ -1,0 +1,23 @@
+// In-rune tests for `life`. Each `test_*` function takes no parameters, passes by
+// returning, and fails by aborting. Run them with `witchy test examples/life`.
+
+import life
+import testing
+
+// The seeded glider on a 4x4 board, rendered.
+fn test_glider_render():
+    let g = life.glider(4)
+    testing.assert_eq(life.render(g), ".#..\n..#.\n###.\n....")
+
+// Live-neighbour counts on the seeded glider.
+fn test_neighbours():
+    let g = life.glider(8)
+    // (1,1) is dead but borders all five live cells of the glider.
+    testing.assert_int_eq(life.neighbours(g, 1, 1), 5)
+    // A cell far from the glider (which sits in the top-left) has no neighbours.
+    testing.assert_int_eq(life.neighbours(g, 6, 6), 0)
+
+// One B3/S23 step turns the glider into its second phase.
+fn test_step():
+    let next = life.step(life.glider(4))
+    testing.assert_eq(life.render(next), "....\n#.#.\n.##.\n.#..")

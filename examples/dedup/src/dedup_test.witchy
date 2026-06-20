@@ -1,0 +1,22 @@
+// In-rune tests for `dedup`. Each `test_*` function takes no parameters, passes
+// by returning, and fails by aborting (the `testing` assertions do that with a
+// message). Run them with `witchy test examples/dedup`.
+
+import dedup
+import iter
+import testing
+
+fn run(xs: List(Int)) -> List(Int):
+    iter.collect(dedup.dedup(iter.from_list(xs)))
+
+fn test_collapses_runs():
+    testing.assert_eq(dedup.show(run([1, 1, 2, 3, 3, 3, 2, 2, 4])), "1 2 3 2 4")
+
+fn test_no_duplicates():
+    testing.assert_eq(dedup.show(run([1, 2, 3])), "1 2 3")
+
+fn test_all_same():
+    testing.assert_eq(dedup.show(run([5, 5, 5, 5])), "5")
+
+fn test_empty():
+    testing.assert_eq(dedup.show(run([])), "")

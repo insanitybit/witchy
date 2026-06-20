@@ -1,0 +1,18 @@
+// In-rune tests for `minigrep`'s pure search functions (the capability-typed
+// `main` is not exercised here). Result lists are rendered with interpolation
+// and compared as strings. Run with `witchy test examples/minigrep`.
+
+import minigrep
+import testing
+
+fn test_search():
+    // Case-sensitive: "duct" matches "productive." but not the capital-D "Duct".
+    let contents = "Rust:\nsafe, fast, productive.\nPick three.\nDuct tape."
+    testing.assert_eq("${minigrep.search("duct", contents)}", "[safe, fast, productive.]")
+
+fn test_search_insensitive():
+    let contents = "Rust:\nsafe, fast, productive.\nPick three.\nTrust me."
+    testing.assert_eq("${minigrep.search_insensitive("rUsT", contents)}", "[Rust:, Trust me.]")
+
+fn test_search_no_match():
+    testing.assert_eq("${minigrep.search("zzz", "one\ntwo\nthree")}", "[]")

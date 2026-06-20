@@ -51,6 +51,32 @@
         crate::linker::link(vec![("t".into(), module)], "t").expect("link")
     }
 
+    /// Every shipped example's entry module: `examples/<name>/src/<name>.witchy`
+    /// (the file whose stem matches its rune directory — the one bearing `main`).
+    /// Skips `examples/projects/` (multi-rune workspaces, covered by the pm tests)
+    /// and each rune's `*_test.witchy` modules and helper modules.
+    fn example_entries() -> Vec<std::path::PathBuf> {
+        let mut out = Vec::new();
+        for entry in std::fs::read_dir("examples").expect("examples directory") {
+            let dir = entry.expect("dir entry").path();
+            if !dir.is_dir() {
+                continue;
+            }
+            let Some(name) = dir.file_name().and_then(|s| s.to_str()) else {
+                continue;
+            };
+            if name == "projects" {
+                continue;
+            }
+            let entry_file = dir.join("src").join(format!("{name}.witchy"));
+            if entry_file.exists() {
+                out.push(entry_file);
+            }
+        }
+        out.sort();
+        out
+    }
+
     /// `mode opt` parses into `Module.modes`; any other word (including the former
     /// `strict` synonym) is a parse error — `opt` is the only performance mode.
     #[test]
@@ -216,14 +242,14 @@
         assert!(typeck::check_str(after_borrow).is_ok(), "borrow reuse should be fine");
     }
 
-    /// The full conventions showcase (examples/conventions.witchy) — `var`/`let`/
+    /// The full conventions showcase (examples/conventions/src/conventions.witchy) — `var`/`let`/
     /// `own`/`move` across a function, a method (`let self`), an actor (`var`
     /// state, `own` payload), and local bindings — runs identically on the
     /// interpreter and WASM backends.
     #[test]
     fn conventions_showcase_runs() {
         let expected = "count: 2\nsum: 10\ndoubled first: 2\nnums still here, length: 4\nbag total: 60\ndrained length: 3\nrunning sum: 300\nrunning sum: 306\n";
-        let (linked, _) = crate::link_file("examples/conventions.witchy").expect("link");
+        let (linked, _) = crate::link_file("examples/conventions/src/conventions.witchy").expect("link");
         let interp =
             interpreter::run_module(linked, ".", Vec::new()).expect("interp run").join("\n");
         assert_eq!(format!("{interp}\n"), expected, "interp showcase");
@@ -1673,13 +1699,13 @@ fn yn(b: Bool) -> String:
         );
     }
 
-    /// The `examples/time_and_encoding.witchy` showcase runs: a formatted civil
+    /// The `examples/time_and_encoding/src/time_and_encoding.witchy` showcase runs: a formatted civil
     /// date and base64/hex of a multibyte-UTF-8 payload, round-tripped — its
     /// footprint is just Console.
     #[test]
     fn time_and_encoding_example_runs() {
         assert_eq!(
-            crate::execute_file("examples/time_and_encoding.witchy", Vec::new()).unwrap(),
+            crate::execute_file("examples/time_and_encoding/src/time_and_encoding.witchy", Vec::new()).unwrap(),
             vec![
                 "date:    2026-05-28T20:26:40Z (Thursday)",
                 "layout:  Thursday, May 28 2026 at 20:26",
@@ -1690,19 +1716,19 @@ fn yn(b: Bool) -> String:
                 "decoded: witchy 🧙",
             ]
         );
-        let src = std::fs::read_to_string("examples/time_and_encoding.witchy").unwrap();
+        let src = std::fs::read_to_string("examples/time_and_encoding/src/time_and_encoding.witchy").unwrap();
         let fp = crate::capabilities::analyze(&parser::parse_module(&src).expect("parse"));
         assert_eq!(crate::capabilities::show_caps(&fp.total), "Console");
     }
 
-    /// `examples/calc.witchy` — a recursive-descent arithmetic evaluator — honors
+    /// `examples/calc/src/calc.witchy` — a recursive-descent arithmetic evaluator — honors
     /// operator precedence and left-associativity, and reports division-by-zero
     /// and parse errors through `Result`. A pure (Console-only) tour of recursive
     /// enums + pattern matching.
     #[test]
     fn calc_example_evaluates_with_precedence_and_errors() {
         assert_eq!(
-            crate::execute_file("examples/calc.witchy", Vec::new()).unwrap(),
+            crate::execute_file("examples/calc/src/calc.witchy", Vec::new()).unwrap(),
             vec![
                 "2 + 3 * 4       => 14",
                 "(2 + 3) * 4     => 20",
@@ -1712,18 +1738,18 @@ fn yn(b: Bool) -> String:
                 "2 * (3 +        => error: unexpected end of input",
             ]
         );
-        let src = std::fs::read_to_string("examples/calc.witchy").unwrap();
+        let src = std::fs::read_to_string("examples/calc/src/calc.witchy").unwrap();
         let fp = crate::capabilities::analyze(&parser::parse_module(&src).expect("parse"));
         assert_eq!(crate::capabilities::show_caps(&fp.total), "Console");
     }
 
-    /// `examples/wrap.witchy` — greedy word wrapping — packs space-separated
+    /// `examples/wrap/src/wrap.witchy` — greedy word wrapping — packs space-separated
     /// words onto lines within a column width, breaking before overflow, and
     /// frames each padded line. Pure string handling; agrees on both backends.
     #[test]
     fn wrap_example_greedily_wraps_to_width() {
         assert_eq!(
-            crate::execute_file("examples/wrap.witchy", Vec::new()).unwrap(),
+            crate::execute_file("examples/wrap/src/wrap.witchy", Vec::new()).unwrap(),
             vec![
                 "wrapped to 20 columns:",
                 "| The quick brown fox  |",
@@ -1734,14 +1760,14 @@ fn yn(b: Bool) -> String:
         );
     }
 
-    /// `examples/dijkstra.witchy` — single-source shortest paths in a weighted
+    /// `examples/dijkstra/src/dijkstra.witchy` — single-source shortest paths in a weighted
     /// directed graph — settles the nearest node, relaxes edges, then prints
     /// every distance and one reconstructed path. Returns a tuple of parallel
     /// arrays, so it also covers tuple-return + `let (a, b) =` on both backends.
     #[test]
     fn dijkstra_example_finds_shortest_paths() {
         assert_eq!(
-            crate::execute_file("examples/dijkstra.witchy", Vec::new()).unwrap(),
+            crate::execute_file("examples/dijkstra/src/dijkstra.witchy", Vec::new()).unwrap(),
             vec![
                 "shortest distances from A:",
                 "  A = 0",
@@ -1754,13 +1780,13 @@ fn yn(b: Bool) -> String:
         );
     }
 
-    /// `examples/queens.witchy` — N-queens by backtracking — counts all 92
+    /// `examples/queens/src/queens.witchy` — N-queens by backtracking — counts all 92
     /// solutions for the 8x8 board and renders the first (column-order DFS). Deep
     /// recursion with an early-exit search; agrees on both backends.
     #[test]
     fn queens_example_counts_and_renders_first_board() {
         assert_eq!(
-            crate::execute_file("examples/queens.witchy", Vec::new()).unwrap(),
+            crate::execute_file("examples/queens/src/queens.witchy", Vec::new()).unwrap(),
             vec![
                 "8-queens solutions: 92",
                 "first solution:",
@@ -1776,19 +1802,19 @@ fn yn(b: Bool) -> String:
         );
     }
 
-    /// `examples/anagram.witchy` — groups words that are letter-rearrangements
+    /// `examples/anagram/src/anagram.witchy` — groups words that are letter-rearrangements
     /// of each other by a sorted-character signature, bucketing with a parallel
     /// signatures/groups list (no Dict). Exercises sorting characters (string
     /// `<`) and signature equality (string `==`) on both backends.
     #[test]
     fn anagram_example_groups_by_sorted_signature() {
         assert_eq!(
-            crate::execute_file("examples/anagram.witchy", Vec::new()).unwrap(),
+            crate::execute_file("examples/anagram/src/anagram.witchy", Vec::new()).unwrap(),
             vec!["listen, silent, enlist", "cat, act, tac", "dog, god"]
         );
     }
 
-    /// `examples/stats.witchy` — summary statistics over a `List(Float)` —
+    /// `examples/stats/src/stats.witchy` — summary statistics over a `List(Float)` —
     /// computes count/mean/variance/stddev/min/max, rendering with
     /// math.format_float. Floats live in the list and flow through arithmetic and
     /// sqrt; a guard that floats-in-collections + fixed-decimal formatting agree
@@ -1796,7 +1822,7 @@ fn yn(b: Bool) -> String:
     #[test]
     fn stats_example_summarizes_a_float_list() {
         assert_eq!(
-            crate::execute_file("examples/stats.witchy", Vec::new()).unwrap(),
+            crate::execute_file("examples/stats/src/stats.witchy", Vec::new()).unwrap(),
             vec![
                 "count    8",
                 "mean     5.00",
@@ -1808,14 +1834,14 @@ fn yn(b: Bool) -> String:
         );
     }
 
-    /// `examples/regex.witchy` — a tiny K&P-style regex matcher (literals, `.`,
+    /// `examples/regex/src/regex.witchy` — a tiny K&P-style regex matcher (literals, `.`,
     /// `*`, `^`, `$`) — matches a battery of pattern/text pairs. Every step is a
     /// two-`list.at(..)` character comparison, so it stresses content comparison on
     /// both backends.
     #[test]
     fn regex_example_matches_literals_dot_star_anchors() {
         assert_eq!(
-            crate::execute_file("examples/regex.witchy", Vec::new()).unwrap(),
+            crate::execute_file("examples/regex/src/regex.witchy", Vec::new()).unwrap(),
             vec![
                 "/abc/     \"abc\"           match",
                 "/a.c/     \"axc\"           match",
@@ -2049,13 +2075,13 @@ fn yn(b: Bool) -> String:
         assert_eq!(wasm_run(src), want, "compiled WASM must agree");
     }
 
-    /// `examples/matrix.witchy` — integer matrices — multiplies a 2x3 by a 3x2,
+    /// `examples/matrix/src/matrix.witchy` — integer matrices — multiplies a 2x3 by a 3x2,
     /// transposes, and prints an identity, all with right-aligned columns. A
     /// `List(List(Int))` workout (nested `at`) that agrees on both backends.
     #[test]
     fn matrix_example_multiplies_and_transposes() {
         assert_eq!(
-            crate::execute_file("examples/matrix.witchy", Vec::new()).unwrap(),
+            crate::execute_file("examples/matrix/src/matrix.witchy", Vec::new()).unwrap(),
             vec![
                 "A x B =",
                 "[  58  64 ]",
@@ -2072,7 +2098,7 @@ fn yn(b: Bool) -> String:
         );
     }
 
-    /// `examples/brainfuck.witchy` — a full brainfuck interpreter — runs the
+    /// `examples/brainfuck/src/brainfuck.witchy` — a full brainfuck interpreter — runs the
     /// canonical "Hello World!" program and a second that prints 'A', building
     /// output by indexing a printable-ASCII literal (no chr/ord builtin). The
     /// instruction dispatch compares `list.at(code, pc)` against operator literals,
@@ -2080,19 +2106,19 @@ fn yn(b: Bool) -> String:
     #[test]
     fn brainfuck_example_runs_hello_world() {
         assert_eq!(
-            crate::execute_file("examples/brainfuck.witchy", Vec::new()).unwrap(),
+            crate::execute_file("examples/brainfuck/src/brainfuck.witchy", Vec::new()).unwrap(),
             vec!["Hello World!", "A"]
         );
     }
 
-    /// `examples/diff.witchy` — an LCS line diff — fills the longest-common-
+    /// `examples/diff/src/diff.witchy` — an LCS line diff — fills the longest-common-
     /// subsequence table and backtracks into unchanged/removed/added lines. The
     /// backtrack compares `list.at(old, i) == list.at(new, j)` (two `List(String)` element
     /// reads), so it also guards content comparison on both backends.
     #[test]
     fn diff_example_emits_lcs_line_diff() {
         assert_eq!(
-            crate::execute_file("examples/diff.witchy", Vec::new()).unwrap(),
+            crate::execute_file("examples/diff/src/diff.witchy", Vec::new()).unwrap(),
             vec![
                 "  apple",
                 "- banana",
@@ -2104,13 +2130,13 @@ fn yn(b: Bool) -> String:
         );
     }
 
-    /// `examples/toposort.witchy` — Kahn's topological sort over a dependency
+    /// `examples/toposort/src/toposort.witchy` — Kahn's topological sort over a dependency
     /// graph — produces a valid build order and reports a cycle. Pure (Console),
     /// list-based (no Dict), both backends.
     #[test]
     fn toposort_example_orders_and_detects_cycles() {
         assert_eq!(
-            crate::execute_file("examples/toposort.witchy", Vec::new()).unwrap(),
+            crate::execute_file("examples/toposort/src/toposort.witchy", Vec::new()).unwrap(),
             vec![
                 "build order: boot -> config -> db -> cache -> api -> web",
                 "cyclic:      error: cycle among egg, chicken",
@@ -2118,13 +2144,13 @@ fn yn(b: Bool) -> String:
         );
     }
 
-    /// `examples/jq.witchy` — a JSON query tool — walks a dotted path (object keys
+    /// `examples/jq/src/jq.witchy` — a JSON query tool — walks a dotted path (object keys
     /// and numeric array indices) into a decoded document and renders the value.
     /// Pure (Console), both backends.
     #[test]
     fn jq_example_queries_json_by_path() {
         assert_eq!(
-            crate::execute_file("examples/jq.witchy", Vec::new()).unwrap(),
+            crate::execute_file("examples/jq/src/jq.witchy", Vec::new()).unwrap(),
             vec![
                 "user.name       => \"Ada\"",
                 "user.roles      => [\"admin\",\"dev\"]",
@@ -2137,13 +2163,13 @@ fn yn(b: Bool) -> String:
         );
     }
 
-    /// `examples/rpn.witchy` — a stack-machine reverse-Polish calculator — folds
+    /// `examples/rpn/src/rpn.witchy` — a stack-machine reverse-Polish calculator — folds
     /// tokens through an operand stack and reports underflow / division-by-zero
     /// through `Result`. Pure (Console), both backends.
     #[test]
     fn rpn_example_evaluates_postfix_with_a_stack() {
         assert_eq!(
-            crate::execute_file("examples/rpn.witchy", Vec::new()).unwrap(),
+            crate::execute_file("examples/rpn/src/rpn.witchy", Vec::new()).unwrap(),
             vec![
                 "3 4 +               => 7",
                 "5 1 2 + 4 * + 3 -   => 14",
@@ -2154,11 +2180,11 @@ fn yn(b: Bool) -> String:
         );
     }
 
-    /// `examples/maze.witchy` — BFS shortest path through a grid maze, with a
+    /// `examples/maze/src/maze.witchy` — BFS shortest path through a grid maze, with a
     /// `prev` Dict for path reconstruction. Pure (Console); interpreter-hosted.
     #[test]
     fn maze_example_finds_shortest_path_by_bfs() {
-        let out = crate::execute_file("examples/maze.witchy", Vec::new())
+        let out = crate::execute_file("examples/maze/src/maze.witchy", Vec::new())
             .unwrap()
             .join("\n");
         assert!(out.contains("shortest path: 14 steps"), "distance: {out}");
@@ -2168,13 +2194,13 @@ fn yn(b: Bool) -> String:
         );
     }
 
-    /// `examples/traits.witchy` — defines a custom `Shape` trait, implements it for
+    /// `examples/traits/src/traits.witchy` — defines a custom `Shape` trait, implements it for
     /// three types, and dispatches generically (`where s: Shape`). Monomorphized,
     /// so it runs identically on both backends.
     #[test]
     fn traits_example_dispatches_a_custom_trait() {
         assert_eq!(
-            crate::execute_file("examples/traits.witchy", Vec::new()).unwrap(),
+            crate::execute_file("examples/traits/src/traits.witchy", Vec::new()).unwrap(),
             vec![
                 "square with area 25",
                 "rectangle with area 12",
@@ -2184,29 +2210,29 @@ fn yn(b: Bool) -> String:
         );
     }
 
-    /// `examples/sudoku.witchy` — a backtracking solver over immutable boards —
+    /// `examples/sudoku/src/sudoku.witchy` — a backtracking solver over immutable boards —
     /// solves the canonical puzzle to its unique solution. Pure (Console),
     /// recursion + Option-backtracking heavy.
     #[test]
     fn sudoku_example_solves_by_backtracking() {
-        let out = crate::execute_file("examples/sudoku.witchy", Vec::new())
+        let out = crate::execute_file("examples/sudoku/src/sudoku.witchy", Vec::new())
             .unwrap()
             .join("\n");
         assert!(
             out.contains("solved:\n534678912\n672195348\n198342567\n859761423"),
             "unique solution: {out}"
         );
-        let src = std::fs::read_to_string("examples/sudoku.witchy").unwrap();
+        let src = std::fs::read_to_string("examples/sudoku/src/sudoku.witchy").unwrap();
         let fp = crate::capabilities::analyze(&parser::parse_module(&src).expect("parse"));
         assert_eq!(crate::capabilities::show_caps(&fp.total), "Console");
     }
 
-    /// `examples/life.witchy` — Conway's Game of Life over a `List(List(Bool))` —
+    /// `examples/life/src/life.witchy` — Conway's Game of Life over a `List(List(Bool))` —
     /// evolves a glider through its phases by the B3/S23 rule. Pure (Console),
     /// nested-list heavy, and identical on both backends.
     #[test]
     fn life_example_evolves_a_glider() {
-        let out = crate::execute_file("examples/life.witchy", Vec::new())
+        let out = crate::execute_file("examples/life/src/life.witchy", Vec::new())
             .unwrap()
             .join("\n");
         // Generation 0 is the seeded glider.
@@ -2219,12 +2245,12 @@ fn yn(b: Bool) -> String:
             out.contains("generation 3:\n........\n.#......\n..##....\n.##....."),
             "evolved glider: {out}"
         );
-        let src = std::fs::read_to_string("examples/life.witchy").unwrap();
+        let src = std::fs::read_to_string("examples/life/src/life.witchy").unwrap();
         let fp = crate::capabilities::analyze(&parser::parse_module(&src).expect("parse"));
         assert_eq!(crate::capabilities::show_caps(&fp.total), "Console");
     }
 
-    /// Regression (found by `examples/calc.witchy` via the both-backends invariant):
+    /// Regression (found by `examples/calc/src/calc.witchy` via the both-backends invariant):
     /// comparing a String whose type isn't locally tracked — a List(String)
     /// element via `at` — to a literal must be a *structural* `$str_eq` on the
     /// WASM backend, not a pointer compare, with the literal on either side.
@@ -3383,14 +3409,14 @@ fn yn(b: Bool) -> String:
         assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
     }
 
-    /// `examples/rle.witchy` — run-length encoding and its inverse — collapses
+    /// `examples/rle/src/rle.witchy` — run-length encoding and its inverse — collapses
     /// runs to "<count><char>" and expands them back, verifying decode∘encode is
     /// the identity. Pure string processing; identical on both backends. (Its
     /// run-counting loop is what exposed the two-`at`-results comparison gap.)
     #[test]
     fn rle_example_round_trips_runs() {
         assert_eq!(
-            crate::execute_file("examples/rle.witchy", Vec::new()).unwrap(),
+            crate::execute_file("examples/rle/src/rle.witchy", Vec::new()).unwrap(),
             vec![
                 "\"aaabbbbc\" -> \"3a4b1c\"  roundtrip ok",
                 "\"wwwwww\" -> \"6w\"  roundtrip ok",
@@ -4900,7 +4926,7 @@ fn main(console: Console):
         // overrides host/port and adds workers.
         let sources = [
             ("json", crate::bundled_module("json").unwrap()),
-            ("main", include_str!("../examples/config_merge.witchy")),
+            ("main", include_str!("../examples/config_merge/src/config_merge.witchy")),
         ];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
         let compiled = run_linked_on_wasm(&sources, "main");
@@ -5057,7 +5083,7 @@ fn main(console: Console):
         // duration module) prints identically on both backends.
         let sources = [
             ("duration", crate::bundled_module("duration").unwrap()),
-            ("main", include_str!("../examples/durations.witchy")),
+            ("main", include_str!("../examples/durations/src/durations.witchy")),
         ];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
         let compiled = run_linked_on_wasm(&sources, "main");
@@ -5116,7 +5142,7 @@ fn main(console: Console):
             ("list", crate::bundled_module("list").unwrap()),
             ("string", crate::bundled_module("string").unwrap()),
             ("random", crate::bundled_module("random").unwrap()),
-            ("main", include_str!("../examples/dice.witchy")),
+            ("main", include_str!("../examples/dice/src/dice.witchy")),
         ];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
         let compiled = run_linked_on_wasm(&sources, "main");
@@ -5391,7 +5417,7 @@ fn main(console: Console):
     /// on both backends, which the float-formatting-less `to_string` could not.
     #[test]
     fn temperature_example_agrees_on_both_backends() {
-        let client = std::fs::read_to_string("examples/temperature.witchy").unwrap();
+        let client = std::fs::read_to_string("examples/temperature/src/temperature.witchy").unwrap();
         let sources = [("math", crate::bundled_module("math").unwrap()), ("main", client.as_str())];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
         let compiled = run_linked_on_wasm(&sources, "main");
@@ -5476,7 +5502,7 @@ fn main(console: Console):
         let sources = [
             ("string", crate::bundled_module("string").unwrap()),
             ("option", crate::bundled_module("option").unwrap()),
-            ("main", include_str!("../examples/plugin_host.witchy")),
+            ("main", include_str!("../examples/plugin_host/src/plugin_host.witchy")),
         ];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
         let compiled = run_linked_on_wasm(&sources, "main");
@@ -5495,7 +5521,7 @@ fn main(console: Console):
             ("string", crate::bundled_module("string").unwrap()),
             ("option", crate::bundled_module("option").unwrap()),
             ("list", crate::bundled_module("list").unwrap()),
-            ("main", include_str!("../examples/bst.witchy")),
+            ("main", include_str!("../examples/bst/src/bst.witchy")),
         ];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
         let compiled = run_linked_on_wasm(&sources, "main");
@@ -5514,7 +5540,7 @@ fn main(console: Console):
         let sources = [
             ("string", crate::bundled_module("string").unwrap()),
             ("option", crate::bundled_module("option").unwrap()),
-            ("main", include_str!("../examples/generic_stack.witchy")),
+            ("main", include_str!("../examples/generic_stack/src/generic_stack.witchy")),
         ];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
         let compiled = run_linked_on_wasm(&sources, "main");
@@ -5540,7 +5566,7 @@ fn main(console: Console):
         let sources = [
             ("string", crate::bundled_module("string").unwrap()),
             ("option", crate::bundled_module("option").unwrap()),
-            ("main", include_str!("../examples/let_patterns.witchy")),
+            ("main", include_str!("../examples/let_patterns/src/let_patterns.witchy")),
         ];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
         let compiled = run_linked_on_wasm(&sources, "main");
@@ -5566,7 +5592,7 @@ fn main(console: Console):
         // both backends.
         let sources = [
             ("string", crate::bundled_module("string").unwrap()),
-            ("main", include_str!("../examples/ranges.witchy")),
+            ("main", include_str!("../examples/ranges/src/ranges.witchy")),
         ];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
         let compiled = run_linked_on_wasm(&sources, "main");
@@ -5594,7 +5620,7 @@ fn main(console: Console):
         // The dot product and 2D-grid diagonal match on both backends.
         let sources = [
             ("string", crate::bundled_module("string").unwrap()),
-            ("main", include_str!("../examples/subscript.witchy")),
+            ("main", include_str!("../examples/subscript/src/subscript.witchy")),
         ];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
         let compiled = run_linked_on_wasm(&sources, "main");
@@ -5611,7 +5637,7 @@ fn main(console: Console):
         // subtractive rule (from_roman) round-trip identically on both backends.
         let sources = [
             ("string", crate::bundled_module("string").unwrap()),
-            ("main", include_str!("../examples/roman.witchy")),
+            ("main", include_str!("../examples/roman/src/roman.witchy")),
         ];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
         let compiled = run_linked_on_wasm(&sources, "main");
@@ -5635,7 +5661,7 @@ fn main(console: Console):
         // inlined before both backends, producing identical output.
         let sources = [
             ("string", crate::bundled_module("string").unwrap()),
-            ("main", include_str!("../examples/constants.witchy")),
+            ("main", include_str!("../examples/constants/src/constants.witchy")),
         ];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
         let compiled = run_linked_on_wasm(&sources, "main");
@@ -5669,7 +5695,7 @@ fn main(console: Console):
         // so the temperature conversions and averaging agree.
         let sources = [
             ("string", crate::bundled_module("string").unwrap()),
-            ("main", include_str!("../examples/aliases.witchy")),
+            ("main", include_str!("../examples/aliases/src/aliases.witchy")),
         ];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
         let compiled = run_linked_on_wasm(&sources, "main");
@@ -5684,7 +5710,7 @@ fn main(console: Console):
         let sources = [
             ("string", crate::bundled_module("string").unwrap()),
             ("regex", crate::bundled_module("regex").unwrap()),
-            ("main", include_str!("../examples/patterns.witchy")),
+            ("main", include_str!("../examples/patterns/src/patterns.witchy")),
         ];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
         let compiled = run_linked_on_wasm(&sources, "main");
@@ -5712,7 +5738,7 @@ fn main(console: Console):
         let sources = [
             ("string", crate::bundled_module("string").unwrap()),
             ("option", crate::bundled_module("option").unwrap()),
-            ("main", include_str!("../examples/calculator.witchy")),
+            ("main", include_str!("../examples/calculator/src/calculator.witchy")),
         ];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
         let compiled = run_linked_on_wasm(&sources, "main");
@@ -5736,7 +5762,7 @@ fn main(console: Console):
             ("option", crate::bundled_module("option").unwrap()),
             ("list", crate::bundled_module("list").unwrap()),
             ("string", crate::bundled_module("string").unwrap()),
-            ("main", include_str!("../examples/pipeline.witchy")),
+            ("main", include_str!("../examples/pipeline/src/pipeline.witchy")),
         ];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
         let compiled = run_linked_on_wasm(&sources, "main");
@@ -5915,11 +5941,7 @@ fn main(console: Console):
         // skips non-divergence errors, so without this a type error in an example
         // could slip through CI.
         let mut failures = Vec::new();
-        for entry in std::fs::read_dir("examples").unwrap() {
-            let path = entry.unwrap().path();
-            if path.extension().and_then(|e| e.to_str()) != Some("witchy") {
-                continue;
-            }
+        for path in example_entries() {
             let p = path.to_str().unwrap();
             if let Err(e) = crate::check_file(p) {
                 failures.push(format!("{p}: {e}"));
@@ -5937,11 +5959,7 @@ fn main(console: Console):
         // genuine divergence fails. (This would have caught the trailing-newline
         // print divergence.)
         let mut diverged = Vec::new();
-        for entry in std::fs::read_dir("examples").unwrap() {
-            let path = entry.unwrap().path();
-            if path.extension().and_then(|e| e.to_str()) != Some("witchy") {
-                continue;
-            }
+        for path in example_entries() {
             let p = path.to_str().unwrap();
             match crate::verify_file(p) {
                 Ok(()) => {}
@@ -5967,11 +5985,7 @@ fn main(console: Console):
         // Restricted to console-only, `main`-bearing programs so output is
         // self-contained and deterministic.
         let mut diverged = Vec::new();
-        for entry in std::fs::read_dir("examples").unwrap() {
-            let path = entry.unwrap().path();
-            if path.extension().and_then(|e| e.to_str()) != Some("witchy") {
-                continue;
-            }
+        for path in example_entries() {
             let p = path.to_str().unwrap();
             let Ok((linked, _)) = crate::link_file(p) else {
                 continue;
@@ -6019,10 +6033,10 @@ fn main(console: Console):
         // with witchy".
         let tmp = std::env::temp_dir().join("witchy_tier1_precompiled.wasm");
         let out = tmp.to_str().unwrap();
-        crate::emit_wasm_file("examples/calc.witchy", out).expect("emit-wasm");
+        crate::emit_wasm_file("examples/calc/src/calc.witchy", out).expect("emit-wasm");
         let (from_wasm, _) =
             crate::run_wasm_file(out, None, Vec::new(), Vec::new(), None, Vec::new()).expect("run .wasm");
-        let from_source = crate::execute_file("examples/calc.witchy", Vec::new()).expect("run source");
+        let from_source = crate::execute_file("examples/calc/src/calc.witchy", Vec::new()).expect("run source");
         assert_eq!(from_wasm, from_source, "precompiled .wasm diverges from the source run");
         let _ = std::fs::remove_file(&tmp);
     }
@@ -7501,7 +7515,7 @@ fn main() -> Int:
             run_linked_on_wasm(
                 &[
                     ("list", crate::bundled_module("list").unwrap()),
-                    ("main", include_str!("../examples/list_pipeline.witchy")),
+                    ("main", include_str!("../examples/list_pipeline/src/list_pipeline.witchy")),
                 ],
                 "main",
             ),
@@ -7855,7 +7869,7 @@ fn main(console: Console):
         // substring + string_length + ends_with + __render(Bool), matching the
         // interpreter.
         assert_eq!(
-            run_on_wasm(include_str!("../examples/parse_kv.witchy")),
+            run_on_wasm(include_str!("../examples/parse_kv/src/parse_kv.witchy")),
             vec!["timeout", "30", "true"]
         );
     }
@@ -7901,7 +7915,7 @@ fn main(console: Console):
         // in a `for w in string.split(...)` loop (so `w`'s type resolves to String).
         // the=3, cat=1, missing=0, size=4.
         assert_eq!(
-            run_on_wasm(include_str!("../examples/wordcount.witchy")),
+            run_on_wasm(include_str!("../examples/wordcount/src/wordcount.witchy")),
             vec!["3", "1", "0", "4"]
         );
     }
@@ -8092,7 +8106,7 @@ fn main(console: Console):
         // Dict iteration example compiles: `values` summed in a loop, and `pairs`
         // destructured. total = 3+2+4 = 9; prices over 2 = {apple, milk} = 2.
         assert_eq!(
-            run_on_wasm(include_str!("../examples/inventory.witchy")),
+            run_on_wasm(include_str!("../examples/inventory/src/inventory.witchy")),
             vec!["total = 9", "over 2: 2"]
         );
     }
@@ -8235,7 +8249,7 @@ fn main() -> Int:
     #[test]
     fn compute_runs_on_wasm() {
         assert_eq!(
-            run_on_wasm(include_str!("../examples/compute.witchy")),
+            run_on_wasm(include_str!("../examples/compute/src/compute.witchy")),
             vec!["217"]
         );
     }
@@ -8395,7 +8409,7 @@ fn main() -> Int:
     #[test]
     fn shapes_runs_on_wasm() {
         assert_eq!(
-            run_on_wasm(include_str!("../examples/shapes.witchy")),
+            run_on_wasm(include_str!("../examples/shapes/src/shapes.witchy")),
             vec!["325"]
         );
     }
@@ -8448,13 +8462,13 @@ fn main() -> Int:
     /// matching the interpreter — a concrete check of codegen breadth.
     #[test]
     fn eval_example_runs_on_wasm() {
-        assert_eq!(run_on_wasm(include_str!("../examples/eval.witchy")), vec!["20"]);
+        assert_eq!(run_on_wasm(include_str!("../examples/eval/src/eval.witchy")), vec!["20"]);
     }
 
     #[test]
     fn records_example_runs_on_wasm() {
         assert_eq!(
-            run_on_wasm(include_str!("../examples/records.witchy")),
+            run_on_wasm(include_str!("../examples/records/src/records.witchy")),
             vec!["origin.x = 2", "moved = (12, 3)", "manhattan(moved) = 15"]
         );
     }
@@ -8463,7 +8477,7 @@ fn main() -> Int:
     fn bank_example_runs_on_wasm() {
         // Records + lists + for-in + Result + `?` together, compiled to WASM.
         assert_eq!(
-            run_on_wasm(include_str!("../examples/bank.witchy")),
+            run_on_wasm(include_str!("../examples/bank/src/bank.witchy")),
             vec!["total = 150", "remaining: 90", "error: insufficient funds for bob"]
         );
     }
@@ -8474,7 +8488,7 @@ fn main() -> Int:
         // 81; twice(+3, 10) = ((10+3)+3) = 16; apply(adder(100), 5) = 105 (the
         // returned closure captures `by = 100`).
         assert_eq!(
-            run_on_wasm(include_str!("../examples/closures.witchy")),
+            run_on_wasm(include_str!("../examples/closures/src/closures.witchy")),
             vec!["81", "16", "105"]
         );
     }
@@ -8505,7 +8519,7 @@ fn main() -> Int:
         // Records — field access *and* update — compile and run on the WASM
         // runtime. shift_x(Point(3,4), 1) = Point(4,4); 4*4 + 4*4 = 32.
         assert_eq!(
-            run_on_wasm(include_str!("../examples/record_compiled.witchy")),
+            run_on_wasm(include_str!("../examples/record_compiled/src/record_compiled.witchy")),
             vec!["32"]
         );
     }
@@ -8516,7 +8530,7 @@ fn main() -> Int:
     #[test]
     fn compiled_program_without_capability_cannot_instantiate() {
         use crate::runtime::{Capabilities, Runtime};
-        let module = parser::parse_module(include_str!("../examples/compute.witchy")).expect("parse");
+        let module = parser::parse_module(include_str!("../examples/compute/src/compute.witchy")).expect("parse");
         let bytes = codegen::compile_module_binary(&module)
             .expect("compile")
             .expect("the binary path lowers this program");
@@ -8593,10 +8607,8 @@ fn main(console: Console):
     /// they're covered by the loopback tests instead, not run-to-completion here.
     #[test]
     fn all_examples_run_via_cli() {
-        let mut files: Vec<std::path::PathBuf> = std::fs::read_dir("examples")
-            .expect("examples directory")
-            .filter_map(|e| e.ok().map(|e| e.path()))
-            .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("witchy"))
+        let mut files: Vec<std::path::PathBuf> = example_entries()
+            .into_iter()
             .filter(|p| {
                 !p.file_name()
                     .and_then(|n| n.to_str())
@@ -8618,11 +8630,7 @@ fn main(console: Console):
     #[test]
     fn all_examples_type_check() {
         let mut any = false;
-        for entry in std::fs::read_dir("examples").expect("examples directory") {
-            let path = entry.unwrap().path();
-            if path.extension().and_then(|s| s.to_str()) != Some("witchy") {
-                continue;
-            }
+        for path in example_entries() {
             any = true;
             let p = path.to_str().unwrap();
             assert!(
@@ -8632,6 +8640,46 @@ fn main(console: Console):
             );
         }
         assert!(any, "no examples found");
+    }
+
+    /// Every example rune's in-language tests (`src/*_test.witchy`) pass. This
+    /// keeps the per-example `witchy test` suites green in CI — so an example
+    /// whose behavior drifts from its documented tests fails the build, not just
+    /// a manual run. (Multi-rune `projects/` are skipped here: their cross-rune
+    /// path dependencies are exercised by the package-manager tests instead.)
+    #[test]
+    fn all_example_rune_tests_pass() {
+        let mut ran = 0usize;
+        for dir in std::fs::read_dir("examples").expect("examples directory") {
+            let dir = dir.unwrap().path();
+            if !dir.is_dir() {
+                continue;
+            }
+            if dir.file_name().and_then(|s| s.to_str()) == Some("projects") {
+                continue;
+            }
+            let Ok(rd) = std::fs::read_dir(dir.join("src")) else {
+                continue;
+            };
+            let mut test_files: Vec<std::path::PathBuf> = rd
+                .filter_map(|e| e.ok().map(|e| e.path()))
+                .filter(|p| {
+                    p.file_name()
+                        .and_then(|n| n.to_str())
+                        .is_some_and(|n| n.ends_with("_test.witchy"))
+                })
+                .collect();
+            test_files.sort();
+            for tf in test_files {
+                let p = tf.to_str().unwrap();
+                let (passed, failed) =
+                    crate::run_tests_in_file(p).unwrap_or_else(|e| panic!("{p}: {e}"));
+                assert!(failed.is_empty(), "{p}: test failures: {failed:?}");
+                assert!(!passed.is_empty(), "{p}: a `*_test.witchy` with no `test_*` functions");
+                ran += passed.len();
+            }
+        }
+        assert!(ran > 0, "no example rune tests ran");
     }
 
     /// Every bundled std module must type-check on its own (linked with its
@@ -8659,7 +8707,7 @@ fn main(console: Console):
     #[test]
     fn compute_example_returns_value() {
         assert_eq!(
-            crate::execute_file("examples/compute.witchy", Vec::new()).unwrap(),
+            crate::execute_file("examples/compute/src/compute.witchy", Vec::new()).unwrap(),
             vec!["217"]
         );
     }
@@ -8667,7 +8715,7 @@ fn main(console: Console):
     #[test]
     fn shapes_example_returns_value() {
         assert_eq!(
-            crate::execute_file("examples/shapes.witchy", Vec::new()).unwrap(),
+            crate::execute_file("examples/shapes/src/shapes.witchy", Vec::new()).unwrap(),
             vec!["325"]
         );
     }
@@ -8675,7 +8723,7 @@ fn main(console: Console):
     #[test]
     fn files_example_reads_sandboxed_file() {
         assert_eq!(
-            crate::execute_file("examples/files.witchy", Vec::new()).unwrap(),
+            crate::execute_file("examples/files/src/files.witchy", Vec::new()).unwrap(),
             vec!["hello from a sandboxed Dir capability"]
         );
     }
@@ -8686,13 +8734,13 @@ fn main(console: Console):
     #[test]
     fn capability_rights_example_runs_and_audits() {
         assert_eq!(
-            crate::execute_file("examples/capability_rights.witchy", Vec::new()).unwrap(),
+            crate::execute_file("examples/capability_rights/src/capability_rights.witchy", Vec::new()).unwrap(),
             vec![
                 "implicit: hello from a sandboxed Dir capability",
                 "explicit: hello from a sandboxed Dir capability",
             ]
         );
-        let src = std::fs::read_to_string("examples/capability_rights.witchy").unwrap();
+        let src = std::fs::read_to_string("examples/capability_rights/src/capability_rights.witchy").unwrap();
         let fp = crate::capabilities::analyze(&parser::parse_module(&src).expect("parse"));
         let shown = |name: &str| {
             let e = fp.entries.iter().find(|e| e.name == name).expect("entry");
@@ -8708,7 +8756,7 @@ fn main(console: Console):
     /// non-scalar state; agrees on both backends.
     #[test]
     fn pascal_generator_example_agrees_on_both_backends() {
-        let client = std::fs::read_to_string("examples/pascal.witchy").unwrap();
+        let client = std::fs::read_to_string("examples/pascal/src/pascal.witchy").unwrap();
         let sources = [
             ("iter", crate::bundled_module("iter").unwrap()),
             ("string", crate::bundled_module("string").unwrap()),
@@ -8728,7 +8776,7 @@ fn main(console: Console):
     /// `unfold`. Must agree on both backends.
     #[test]
     fn std_iter_split_first_dedup_backends_agree() {
-        let client = std::fs::read_to_string("examples/dedup.witchy").unwrap();
+        let client = std::fs::read_to_string("examples/dedup/src/dedup.witchy").unwrap();
         let sources = [
             ("iter", crate::bundled_module("iter").unwrap()),
             ("string", crate::bundled_module("string").unwrap()),
@@ -8778,7 +8826,7 @@ fn main(console: Console):
     /// a branch inside a loop) must agree on both backends.
     #[test]
     fn gen_yield_generators_example_agrees_on_both_backends() {
-        let client = std::fs::read_to_string("examples/generators.witchy").unwrap();
+        let client = std::fs::read_to_string("examples/generators/src/generators.witchy").unwrap();
         let sources = [
             ("iter", crate::bundled_module("iter").unwrap()),
             ("string", crate::bundled_module("string").unwrap()),
@@ -8854,7 +8902,7 @@ fn main(console: Console):
     /// demo, agreeing on both backends.
     #[test]
     fn lazy_fib_example_agrees_on_both_backends() {
-        let client = std::fs::read_to_string("examples/lazy_fib.witchy").unwrap();
+        let client = std::fs::read_to_string("examples/lazy_fib/src/lazy_fib.witchy").unwrap();
         let sources = [
             ("iter", crate::bundled_module("iter").unwrap()),
             ("string", crate::bundled_module("string").unwrap()),
@@ -8879,7 +8927,7 @@ fn main(console: Console):
     /// trait's derived `greater` dispatches correctly through monomorphization).
     #[test]
     fn largest_example_agrees_on_both_backends() {
-        let client = std::fs::read_to_string("examples/largest.witchy").unwrap();
+        let client = std::fs::read_to_string("examples/largest/src/largest.witchy").unwrap();
         let sources = [("ord", crate::bundled_module("ord").unwrap()), ("main", client.as_str())];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
         let compiled = run_linked_on_wasm(&sources, "main");
@@ -8895,7 +8943,7 @@ fn main(console: Console):
     /// (map / take_while / filter / sum) that must agree, on both backends.
     #[test]
     fn higher_order_sum_example_agrees_on_both_backends() {
-        let client = std::fs::read_to_string("examples/higher_order_sum.witchy").unwrap();
+        let client = std::fs::read_to_string("examples/higher_order_sum/src/higher_order_sum.witchy").unwrap();
         let sources = [("list", crate::bundled_module("list").unwrap()), ("main", client.as_str())];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
         let compiled = run_linked_on_wasm(&sources, "main");
@@ -8910,7 +8958,7 @@ fn main(console: Console):
     #[test]
     fn minigrep_example_searches_a_file_like_the_rust_book() {
         let (out, code) = crate::execute_file_exit(
-            "examples/minigrep.witchy",
+            "examples/minigrep/src/minigrep.witchy",
             Vec::new(),
             vec!["nobody".into(), "examples/data/poem.txt".into()],
             None,
@@ -8924,7 +8972,7 @@ fn main(console: Console):
         );
         // No args: usage message and a non-zero exit code.
         let (out, code) =
-            crate::execute_file_exit("examples/minigrep.witchy", Vec::new(), Vec::new(), None, Vec::new())
+            crate::execute_file_exit("examples/minigrep/src/minigrep.witchy", Vec::new(), Vec::new(), None, Vec::new())
                 .unwrap();
         assert_eq!(code, 1);
         assert_eq!(out, vec!["usage: minigrep <query> <file>".to_string()]);
@@ -8937,11 +8985,11 @@ fn main(console: Console):
     #[test]
     fn caps_audit_example_audits_a_rune_in_witchy() {
         assert_eq!(
-            crate::execute_file("examples/caps_audit.witchy", Vec::new()).unwrap(),
+            crate::execute_file("examples/caps_audit/src/caps_audit.witchy", Vec::new()).unwrap(),
             vec!["examples/data/sample_rune.witchy demands: Dir[Read], Net[Connect]"]
         );
         // The auditor itself only reads files and prints — provably no writes/net.
-        let src = std::fs::read_to_string("examples/caps_audit.witchy").unwrap();
+        let src = std::fs::read_to_string("examples/caps_audit/src/caps_audit.witchy").unwrap();
         let fp = crate::capabilities::analyze(&parser::parse_module(&src).expect("parse"));
         assert_eq!(crate::capabilities::show_caps(&fp.total), "Console, Dir[Read]");
     }
@@ -8954,11 +9002,11 @@ fn main(console: Console):
     #[test]
     fn caps_guard_example_blocks_a_widening_in_witchy() {
         let (output, code) =
-            crate::execute_file_exit("examples/caps_guard.witchy", Vec::new(), Vec::new(), None, Vec::new())
+            crate::execute_file_exit("examples/caps_guard/src/caps_guard.witchy", Vec::new(), Vec::new(), None, Vec::new())
                 .unwrap();
         assert_eq!(output, vec!["BLOCK: upgrade widens authority by Net[Listen]"]);
         assert_eq!(code, 2, "a widening must exit 2");
-        let src = std::fs::read_to_string("examples/caps_guard.witchy").unwrap();
+        let src = std::fs::read_to_string("examples/caps_guard/src/caps_guard.witchy").unwrap();
         let fp = crate::capabilities::analyze(&parser::parse_module(&src).expect("parse"));
         assert_eq!(crate::capabilities::show_caps(&fp.total), "Console, Dir[Read]");
     }
@@ -8973,7 +9021,7 @@ fn main(console: Console):
     #[test]
     fn coven_check_example_flags_under_declared_manifest_in_witchy() {
         let (output, code) =
-            crate::execute_file_exit("examples/coven_check.witchy", Vec::new(), Vec::new(), None, Vec::new())
+            crate::execute_file_exit("examples/coven_check/src/coven_check.witchy", Vec::new(), Vec::new(), None, Vec::new())
                 .unwrap();
         assert_eq!(
             output,
@@ -8981,7 +9029,7 @@ fn main(console: Console):
         );
         assert_eq!(code, 1, "an under-declared manifest must exit 1");
         // The checker itself only reads files and prints — provably no writes/net.
-        let src = std::fs::read_to_string("examples/coven_check.witchy").unwrap();
+        let src = std::fs::read_to_string("examples/coven_check/src/coven_check.witchy").unwrap();
         let fp = crate::capabilities::analyze(&parser::parse_module(&src).expect("parse"));
         assert_eq!(crate::capabilities::show_caps(&fp.total), "Console, Dir[Read]");
     }
@@ -9770,7 +9818,7 @@ fn main(console: Console):
     #[test]
     fn std_library_resolves_and_runs_via_cli() {
         assert_eq!(
-            crate::execute_file("examples/std_demo.witchy", Vec::new()).unwrap(),
+            crate::execute_file("examples/std_demo/src/std_demo.witchy", Vec::new()).unwrap(),
             vec!["30", "3"]
         );
     }
@@ -9779,7 +9827,7 @@ fn main(console: Console):
     #[test]
     fn sort_runs_via_cli() {
         assert_eq!(
-            crate::execute_file("examples/sort.witchy", Vec::new()).unwrap(),
+            crate::execute_file("examples/sort/src/sort.witchy", Vec::new()).unwrap(),
             vec!["1,1,3,4,5", "5,4,3,1,1"]
         );
     }
@@ -9788,7 +9836,7 @@ fn main(console: Console):
     #[test]
     fn math_runs_via_cli() {
         assert_eq!(
-            crate::execute_file("examples/math_demo.witchy", Vec::new()).unwrap(),
+            crate::execute_file("examples/math_demo/src/math_demo.witchy", Vec::new()).unwrap(),
             vec!["7", "5", "10", "1024", "12"]
         );
     }
@@ -9797,7 +9845,7 @@ fn main(console: Console):
     #[test]
     fn floats_run_via_cli() {
         assert_eq!(
-            crate::execute_file("examples/floats.witchy", Vec::new()).unwrap(),
+            crate::execute_file("examples/floats/src/floats.witchy", Vec::new()).unwrap(),
             vec!["4.0", "3.5", "5.0", "1.0"]
         );
     }
@@ -9806,7 +9854,7 @@ fn main(console: Console):
     #[test]
     fn list_more_runs_via_cli() {
         assert_eq!(
-            crate::execute_file("examples/list_more.witchy", Vec::new()).unwrap(),
+            crate::execute_file("examples/list_more/src/list_more.witchy", Vec::new()).unwrap(),
             vec!["true", "3", "-1", "20", "30"]
         );
     }
@@ -9817,7 +9865,7 @@ fn main(console: Console):
     #[test]
     fn list_pipeline_runs_via_cli() {
         assert_eq!(
-            crate::execute_file("examples/list_pipeline.witchy", Vec::new()).unwrap(),
+            crate::execute_file("examples/list_pipeline/src/list_pipeline.witchy", Vec::new()).unwrap(),
             vec!["233", "2 8", "735"]
         );
     }
@@ -9826,7 +9874,7 @@ fn main(console: Console):
     #[test]
     fn zip_runs_via_cli() {
         assert_eq!(
-            crate::execute_file("examples/zip.witchy", Vec::new()).unwrap(),
+            crate::execute_file("examples/zip/src/zip.witchy", Vec::new()).unwrap(),
             vec!["0:alice 1:bob 2:carol", "alice=30 bob=25 carol=40"]
         );
     }
@@ -9835,7 +9883,7 @@ fn main(console: Console):
     #[test]
     fn predicates_run_via_cli() {
         assert_eq!(
-            crate::execute_file("examples/predicates.witchy", Vec::new()).unwrap(),
+            crate::execute_file("examples/predicates/src/predicates.witchy", Vec::new()).unwrap(),
             vec!["true", "true", "false", "false"]
         );
     }
@@ -9903,7 +9951,7 @@ fn main(console: Console):
     #[test]
     fn option_module_runs_via_cli() {
         assert_eq!(
-            crate::execute_file("examples/option_std.witchy", Vec::new()).unwrap(),
+            crate::execute_file("examples/option_std/src/option_std.witchy", Vec::new()).unwrap(),
             vec!["10", "-1"]
         );
     }
@@ -9941,7 +9989,7 @@ fn main(console: Console):
     #[test]
     fn text_processing_runs_via_cli() {
         assert_eq!(
-            crate::execute_file("examples/text.witchy", Vec::new()).unwrap(),
+            crate::execute_file("examples/text/src/text.witchy", Vec::new()).unwrap(),
             vec!["ALICE | BOB | CAROL", "===", "alice,***,carol"]
         );
     }
@@ -9967,7 +10015,7 @@ fn main(console: Console):
     #[test]
     fn hello_example() {
         assert_eq!(
-            interp(include_str!("../examples/hello.witchy")),
+            interp(include_str!("../examples/hello/src/hello.witchy")),
             vec!["hello, witchy", "8 doubled is 16", "negative"]
         );
     }
@@ -9975,7 +10023,7 @@ fn main(console: Console):
     #[test]
     fn mutate_example() {
         assert_eq!(
-            interp(include_str!("../examples/mutate.witchy")),
+            interp(include_str!("../examples/mutate/src/mutate.witchy")),
             vec!["bumped to 3"]
         );
     }
@@ -9983,7 +10031,7 @@ fn main(console: Console):
     #[test]
     fn ownership_example() {
         assert_eq!(
-            interp(include_str!("../examples/ownership.witchy")),
+            interp(include_str!("../examples/ownership/src/ownership.witchy")),
             vec!["[witchy]"]
         );
     }
@@ -10019,7 +10067,7 @@ fn main(console: Console):
     #[test]
     fn guard_example_runs_on_wasm() {
         // Early `return` from a function and from inside a `for` loop.
-        let src = include_str!("../examples/guard.witchy");
+        let src = include_str!("../examples/guard/src/guard.witchy");
         assert_eq!(interp(src), run_on_wasm(src));
         assert_eq!(run_on_wasm(src), vec!["negative", "zero", "positive", "8", "-1"]);
     }
@@ -10027,7 +10075,7 @@ fn main(console: Console):
     #[test]
     fn higher_order_example_runs_on_wasm() {
         // Closure returned from a function (make_adder) + higher-order reduce.
-        let src = include_str!("../examples/higher_order.witchy");
+        let src = include_str!("../examples/higher_order/src/higher_order.witchy");
         assert_eq!(interp(src), run_on_wasm(src));
         assert_eq!(run_on_wasm(src), vec!["15", "81", "15", "120"]);
     }
@@ -10036,7 +10084,7 @@ fn main(console: Console):
     fn record_update_example_runs_on_wasm() {
         // `update` referencing the original record, plus a String-field update;
         // the original is unchanged.
-        let src = include_str!("../examples/record_update.witchy");
+        let src = include_str!("../examples/record_update/src/record_update.witchy");
         assert_eq!(interp(src), run_on_wasm(src));
         assert_eq!(
             run_on_wasm(src),
@@ -12168,7 +12216,7 @@ async fn main(console: Console):
     // separate mailboxes run together (what a single shared channel cannot do).
     // A logger (#0), a forwarder (#1) that relays to the logger, and a driver (#2)
     // that messages both — `send(target, msg)` routes by actor index. This is the
-    // shape `examples/actors.witchy` (Logger + Forwarder) needs, now in async/chan,
+    // shape `examples/actors/src/actors.witchy` (Logger + Forwarder) needs, now in async/chan,
     // byte-identical on both backends.
     #[test]
     fn chan_multi_actor_separate_inboxes_backends_agree() {
@@ -13167,7 +13215,7 @@ fn main(console: Console):
     fn generics_example_runs_on_wasm() {
         // A generic `swap((a, b)) -> (b, a)` on a mixed (Int, String) tuple:
         // tuple pattern match + construction through a generic function.
-        let src = include_str!("../examples/generics.witchy");
+        let src = include_str!("../examples/generics/src/generics.witchy");
         assert_eq!(interp(src), run_on_wasm(src));
         assert_eq!(run_on_wasm(src), vec!["answer", "42"]);
     }
@@ -13175,7 +13223,7 @@ fn main(console: Console):
     #[test]
     fn signs_example_runs_on_wasm() {
         // Negative-literal match patterns (`-1 -> ...`).
-        let src = include_str!("../examples/signs.witchy");
+        let src = include_str!("../examples/signs/src/signs.witchy");
         assert_eq!(interp(src), run_on_wasm(src));
         assert_eq!(run_on_wasm(src), vec!["left", "right", "stay", "?"]);
     }
@@ -13281,20 +13329,20 @@ fn main(console: Console):
     fn mutate_example_runs_on_wasm() {
         // `inout` (move-in / move-out) compiles: the example agrees with the
         // interpreter through the WASM backend.
-        let src = include_str!("../examples/mutate.witchy");
+        let src = include_str!("../examples/mutate/src/mutate.witchy");
         assert_eq!(interp(src), run_on_wasm(src));
     }
 
     #[test]
     fn ownership_example_runs_on_wasm() {
         // `sink` (consume / move ownership) compiles and agrees across backends.
-        let src = include_str!("../examples/ownership.witchy");
+        let src = include_str!("../examples/ownership/src/ownership.witchy");
         assert_eq!(interp(src), run_on_wasm(src));
     }
 
     #[test]
     fn commands_example_runs_and_compiles() {
-        let src = include_str!("../examples/commands.witchy");
+        let src = include_str!("../examples/commands/src/commands.witchy");
         assert_eq!(interp(src), vec!["total is 1"]);
         assert_fn_compiles(src);
     }
@@ -13303,7 +13351,7 @@ fn main(console: Console):
     fn files_example_reads_through_capability() {
         // Run from the crate root so examples/data/greeting.txt resolves.
         assert_eq!(
-            interp(include_str!("../examples/files.witchy")),
+            interp(include_str!("../examples/files/src/files.witchy")),
             vec!["hello from a sandboxed Dir capability"]
         );
     }
@@ -13367,7 +13415,7 @@ pub fn serve(console: Console, net: Net) -> Int:
     #[test]
     fn tuples_example() {
         assert_eq!(
-            interp(include_str!("../examples/tuples.witchy")),
+            interp(include_str!("../examples/tuples/src/tuples.witchy")),
             vec!["3 remainder 2", "7 spells seven", "just the remainder: 2", "2 3"]
         );
     }
@@ -13375,7 +13423,7 @@ pub fn serve(console: Console, net: Net) -> Int:
     #[test]
     fn generics_example() {
         assert_eq!(
-            interp(include_str!("../examples/generics.witchy")),
+            interp(include_str!("../examples/generics/src/generics.witchy")),
             vec!["answer", "42"]
         );
     }
@@ -13383,7 +13431,7 @@ pub fn serve(console: Console, net: Net) -> Int:
     #[test]
     fn result_example() {
         assert_eq!(
-            interp(include_str!("../examples/result.witchy")),
+            interp(include_str!("../examples/result/src/result.witchy")),
             vec!["ok 5", "err divide by zero"]
         );
     }
@@ -13391,7 +13439,7 @@ pub fn serve(console: Console, net: Net) -> Int:
     #[test]
     fn try_example() {
         assert_eq!(
-            interp(include_str!("../examples/try.witchy")),
+            interp(include_str!("../examples/try/src/try.witchy")),
             vec!["= 11", "error: divide by zero", "error: divide by zero"]
         );
     }
@@ -13399,7 +13447,7 @@ pub fn serve(console: Console, net: Net) -> Int:
     #[test]
     fn loops_example() {
         assert_eq!(
-            interp(include_str!("../examples/loops.witchy")),
+            interp(include_str!("../examples/loops/src/loops.witchy")),
             vec!["sum = 108", "witchy loops work"]
         );
     }
@@ -13407,7 +13455,7 @@ pub fn serve(console: Console, net: Net) -> Int:
     #[test]
     fn listmatch_example() {
         assert_eq!(
-            interp(include_str!("../examples/listmatch.witchy")),
+            interp(include_str!("../examples/listmatch/src/listmatch.witchy")),
             vec!["sum = 21", "starts with 3", "one: 42", "empty"]
         );
     }
@@ -13415,7 +13463,7 @@ pub fn serve(console: Console, net: Net) -> Int:
     #[test]
     fn records_example() {
         assert_eq!(
-            interp(include_str!("../examples/records.witchy")),
+            interp(include_str!("../examples/records/src/records.witchy")),
             vec![
                 "origin.x = 2",
                 "moved = (12, 3)",
@@ -13427,20 +13475,20 @@ pub fn serve(console: Console, net: Net) -> Int:
     #[test]
     fn record_update_example() {
         assert_eq!(
-            interp(include_str!("../examples/record_update.witchy")),
+            interp(include_str!("../examples/record_update/src/record_update.witchy")),
             vec!["alice 100", "alice 150", "alice smith 150"]
         );
     }
 
     #[test]
     fn eval_example() {
-        assert_eq!(interp(include_str!("../examples/eval.witchy")), vec!["20"]);
+        assert_eq!(interp(include_str!("../examples/eval/src/eval.witchy")), vec!["20"]);
     }
 
     #[test]
     fn bank_example() {
         assert_eq!(
-            interp(include_str!("../examples/bank.witchy")),
+            interp(include_str!("../examples/bank/src/bank.witchy")),
             vec![
                 "total = 150",
                 "remaining: 90",
@@ -13452,7 +13500,7 @@ pub fn serve(console: Console, net: Net) -> Int:
     #[test]
     fn higher_order_example() {
         assert_eq!(
-            interp(include_str!("../examples/higher_order.witchy")),
+            interp(include_str!("../examples/higher_order/src/higher_order.witchy")),
             vec!["15", "81", "15", "120"]
         );
     }
@@ -13460,7 +13508,7 @@ pub fn serve(console: Console, net: Net) -> Int:
     #[test]
     fn list_ops_example() {
         assert_eq!(
-            interp(include_str!("../examples/list_ops.witchy")),
+            interp(include_str!("../examples/list_ops/src/list_ops.witchy")),
             vec!["55", "6", "0-2-4"]
         );
     }
@@ -13468,7 +13516,7 @@ pub fn serve(console: Console, net: Net) -> Int:
     #[test]
     fn wordcount_example() {
         assert_eq!(
-            interp(include_str!("../examples/wordcount.witchy")),
+            interp(include_str!("../examples/wordcount/src/wordcount.witchy")),
             vec!["3", "1", "0", "4"]
         );
     }
@@ -13476,7 +13524,7 @@ pub fn serve(console: Console, net: Net) -> Int:
     #[test]
     fn inventory_example() {
         assert_eq!(
-            interp(include_str!("../examples/inventory.witchy")),
+            interp(include_str!("../examples/inventory/src/inventory.witchy")),
             vec!["total = 9", "over 2: 2"]
         );
     }
@@ -13484,7 +13532,7 @@ pub fn serve(console: Console, net: Net) -> Int:
     #[test]
     fn guard_example() {
         assert_eq!(
-            interp(include_str!("../examples/guard.witchy")),
+            interp(include_str!("../examples/guard/src/guard.witchy")),
             vec!["negative", "zero", "positive", "8", "-1"]
         );
     }
@@ -13492,7 +13540,7 @@ pub fn serve(console: Console, net: Net) -> Int:
     #[test]
     fn signs_example() {
         assert_eq!(
-            interp(include_str!("../examples/signs.witchy")),
+            interp(include_str!("../examples/signs/src/signs.witchy")),
             vec!["left", "right", "stay", "?"]
         );
     }
@@ -13500,7 +13548,7 @@ pub fn serve(console: Console, net: Net) -> Int:
     #[test]
     fn parse_kv_example() {
         assert_eq!(
-            interp(include_str!("../examples/parse_kv.witchy")),
+            interp(include_str!("../examples/parse_kv/src/parse_kv.witchy")),
             vec!["timeout", "30", "true"]
         );
     }
@@ -13508,7 +13556,7 @@ pub fn serve(console: Console, net: Net) -> Int:
     #[test]
     fn fizzbuzz_example() {
         assert_eq!(
-            interp(include_str!("../examples/fizzbuzz.witchy")),
+            interp(include_str!("../examples/fizzbuzz/src/fizzbuzz.witchy")),
             vec![
                 "1", "2", "Fizz", "4", "Buzz", "Fizz", "7", "8", "Fizz", "Buzz", "11", "Fizz",
                 "13", "14", "FizzBuzz"
@@ -13518,16 +13566,16 @@ pub fn serve(console: Console, net: Net) -> Int:
 
     #[test]
     fn compute_example_compiles() {
-        assert_fn_compiles(include_str!("../examples/compute.witchy"));
+        assert_fn_compiles(include_str!("../examples/compute/src/compute.witchy"));
     }
 
     #[test]
     fn strings_example_compiles() {
-        assert_fn_compiles(include_str!("../examples/strings.witchy"));
+        assert_fn_compiles(include_str!("../examples/strings/src/strings.witchy"));
     }
 
     #[test]
     fn shapes_example_compiles() {
-        assert_fn_compiles(include_str!("../examples/shapes.witchy"));
+        assert_fn_compiles(include_str!("../examples/shapes/src/shapes.witchy"));
     }
 

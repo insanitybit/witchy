@@ -1,0 +1,25 @@
+// In-rune tests for `diff`. Each `test_*` function takes no parameters, passes
+// by returning, and fails by aborting (the `testing` assertions do that with a
+// message). Run them with `witchy test examples/diff`.
+
+import diff
+import string
+import testing
+
+fn render(old: List(String), new: List(String)) -> String:
+    string.join(diff.diff(old, new), "\n")
+
+fn test_insert_delete():
+    let old = ["apple", "banana", "cherry", "date", "fig"]
+    let new = ["apple", "cherry", "date", "elderberry", "fig"]
+    testing.assert_eq(render(old, new), "  apple\n- banana\n  cherry\n  date\n+ elderberry\n  fig")
+
+fn test_identical():
+    let lines = ["one", "two", "three"]
+    testing.assert_eq(render(lines, lines), "  one\n  two\n  three")
+
+fn test_all_inserted():
+    testing.assert_eq(render([], ["a", "b"]), "+ a\n+ b")
+
+fn test_all_deleted():
+    testing.assert_eq(render(["a", "b"], []), "- a\n- b")

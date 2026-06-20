@@ -1,0 +1,41 @@
+// The generic `largest` function from chapter 10 of *The Rust Programming
+// Language* — find the biggest element of a list, for any type that is ordered.
+// Rust writes the bound `T: PartialOrd`; witchy writes `where a: Ord` over the
+// std `Ord` trait, and a user type becomes comparable by implementing `compare`
+// (the `greater` used below is the trait's derived default).
+
+import ord
+
+// Works for any element type with an Ord instance. Assumes a non-empty list.
+pub fn largest(xs: List(a)) -> a where a: Ord:
+    var best = list.at(xs, 0)
+    for x in xs:
+        if greater(x, best):
+            best = x
+    best
+
+// A user type made comparable by a single `compare` method (by year, then part).
+type Version:
+    Version(Int, Int)
+
+impl Ord for Version:
+    fn compare(self, other: Version) -> Int:
+        match self:
+            Version(amaj, amin) ->
+                match other:
+                    Version(bmaj, bmin) ->
+                        if amaj == bmaj:
+                            amin - bmin
+                        else:
+                            amaj - bmaj
+
+pub fn show_version(v: Version) -> String:
+    match v:
+        Version(a, b) -> "${a}" + "." + "${b}"
+
+fn main(console: Console):
+    let numbers = [34, 50, 25, 100, 65]
+    print(console, "largest number: " + "${largest(numbers)}")
+
+    let versions = [Version(1, 9), Version(2, 0), Version(1, 12), Version(2, 0)]
+    print(console, "latest version: " + show_version(largest(versions)))

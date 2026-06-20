@@ -1,0 +1,19 @@
+// In-rune tests for `maze`'s pure grid helpers: locating a marker and reading a
+// cell glyph. The BFS itself is exercised by running the example. Run with
+// `witchy test examples/maze`.
+
+import maze
+import testing
+
+fn grid() -> List(String):
+    ["#####", "#S #E", "#####"]
+
+fn test_find():
+    // Positions are encoded as row*width + col; width here is 5.
+    testing.assert_int_eq(maze.find(grid(), "S", 5), 6)
+    testing.assert_int_eq(maze.find(grid(), "E", 5), 9)
+
+fn test_cell():
+    testing.assert_eq(maze.cell(grid(), 0, 0), "#")
+    testing.assert_eq(maze.cell(grid(), 1, 1), "S")
+    testing.assert_eq(maze.cell(grid(), 1, 2), " ")
