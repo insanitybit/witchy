@@ -113,7 +113,7 @@ wfmt-check: build-release
 
 # Regenerate the stdlib API reference (a test asserts it stays current).
 doc-std: build-release
-    {{bin}} doc std/*.witchy > docs/stdlib.md
+    {{bin}} doc std/*.witchy > spec/stdlib.md
 
 # --- End-to-end / acceptance ---------------------------------------------
 

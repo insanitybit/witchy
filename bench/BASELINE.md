@@ -17,7 +17,7 @@ is present.
 
 Reading: compute and startup are already in Go's class; the headline win is
 the memory-model work (a workload that *trapped* now ties, and the string
-builder beats Go's compiler). Next levers per docs/performance.md: arena
+builder beats Go's compiler). Next levers per spec/performance.md: arena
 reset points (long-running loops), wasm-opt post-pass, threaded actors.
 
 ## After Phase 1 (same day)

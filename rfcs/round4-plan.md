@@ -1,3 +1,8 @@
+---
+status: implemented
+note: Historical planning doc, imported from docs/ under RFC-0001. Frozen — a record of what was planned, not current behavior (see spec/).
+---
+
 # Learner round 3 — evaluation, and the round-4 plan
 
 Round 3 (scratch/LEARNING-LOG.md; rounds 1–2 archived at

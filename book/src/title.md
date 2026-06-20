@@ -12,7 +12,7 @@ compiler will not let it try.
 
 This book teaches witchy from the ground up, building toward that idea. If you
 want the terse, exhaustive description of every form, the
-[language reference](https://github.com/insanitybit/witchy/blob/master/docs/language.md)
+[language reference](https://github.com/insanitybit/witchy/blob/master/spec/language.md)
 is its companion; this book is the narrative path.
 
 Every witchy example in this book is a complete program that the project's test

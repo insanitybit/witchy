@@ -1,3 +1,8 @@
+---
+status: implemented
+note: Imported from docs/ under RFC-0001. Frozen design record — current behavior lives in spec/ and the code.
+---
+
 # Rights-parameterized capabilities (design)
 
 Decompose each host capability *by type* into the operations it permits, so the

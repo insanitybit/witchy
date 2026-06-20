@@ -11,7 +11,7 @@ Six modules form **the prelude** and never need an import line: `list`,
 redundant. This appendix is a map; the full,
 function-by-function reference — generated from the library sources, so it's
 always current — is
-[docs/stdlib.md](https://github.com/insanitybit/witchy/blob/master/docs/stdlib.md).
+[spec/stdlib.md](https://github.com/insanitybit/witchy/blob/master/spec/stdlib.md).
 
 ## Collections and data
 

@@ -1,3 +1,8 @@
+---
+status: implemented
+note: Imported from docs/ under RFC-0001. Frozen design record — current behavior lives in spec/ and the code.
+---
+
 # `region:` — user-controlled temporary allocation scopes
 
 A `region:` block gives short-term allocations an explicit lifetime: everything

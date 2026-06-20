@@ -928,7 +928,7 @@ fn expr(e: &Expr) -> String {
         Expr::Call { name, args } => {
             // The one-shot migration vehicle: a retired global builtin prints
             // as its module-qualified spelling, so `witchy fmt` rewrites a
-            // pre-migration tree in place (docs/language-evolution.md Phase 2).
+            // pre-migration tree in place (rfcs/language-evolution.md Phase 2).
             // A function the module DEFINES under that name is the user's own
             // and keeps its spelling.
             if !local_fn(name)

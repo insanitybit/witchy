@@ -387,7 +387,7 @@ pub fn link(mut modules: Vec<(String, Module)>, entry: &str) -> Result<Module, L
 
     // MethodCall nodes survive linking: `x.f(a)` resolves to a REAL method
     // (impl/trait/static) during trait lowering, not to arbitrary free
-    // functions (docs/language-evolution.md Phase 3).
+    // functions (rfcs/language-evolution.md Phase 3).
 
     // Reject cyclic constant/alias definitions with a clear message before
     // resolution turns them into dangling self-references.

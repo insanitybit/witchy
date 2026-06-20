@@ -1,5 +1,5 @@
 //! `comptime:` — compile-time, capability-free, ADDITIVE item generation
-//! (docs/language-evolution.md Phase 5).
+//! (rfcs/language-evolution.md Phase 5).
 //!
 //! A comptime block is an ordinary witchy block executed AT COMPILE TIME with
 //! exactly one ambient ability: `print` (its emit channel). It cannot reach a

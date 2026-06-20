@@ -1,3 +1,8 @@
+---
+status: implemented
+note: Imported from docs/ under RFC-0001. Frozen design record — current behavior lives in spec/ and the code.
+---
+
 # Concurrency design: async/await + spawn + channels
 
 witchy's concurrency is **stackless async/await** with **`spawn`** for concurrency
@@ -37,12 +42,14 @@ several of Rust's costs were *forced by constraints witchy does not share*:
 
 ## The executor
 
-`std/chan` is an **effect protocol**. A `Task(m, a)` is a thunk that, when polled,
+The executor is an **effect protocol** — its core (`Task`/`Step` and the `run`
+scheduler) lives in `std/task`, and `std/chan` builds first-class channels on the
+same protocol. A `Task(m, a)` is a thunk that, when polled,
 yields a `Step`: `Done`, `Yield`, `Fork` (spawn), `Open` (make a channel), `Push`
 (send), `Pull` (recv), `PullAny` (select), or `Wait` (join). The executor (`run`)
 owns the world — a growable list of task slots and a list of channel buffers — and
 threads it functionally through a deterministic round-robin schedule. `await`
-lowers to `chan.and_then`, which sequences tasks by threading the continuation
+lowers to `task.and_then`, which sequences tasks by threading the continuation
 through every `Step`. No scheduler state lives in the host runtime, and nothing is
 shared mutably, so both backends produce identical interleavings.
 
@@ -83,11 +90,11 @@ controls *backpressure*, not whether `send` is awaited.
 ## Lowering
 
 `src/async_lower.rs` performs the CPS transform before type-checking, so the rest
-of the compiler never sees `async`/`await`. `await E` becomes `chan.and_then(E,
-fn(x): <rest>)`; the whole body is wrapped in `chan.lazy`; an async `main` becomes
-`chan.run(<body>)` (a single root that may spawn more). `await` may appear as a
+of the compiler never sees `async`/`await`. `await E` becomes `task.and_then(E,
+fn(x): <rest>)`; the whole body is wrapped in `task.lazy`; an async `main` becomes
+`task.run(<body>)` (a single root that may spawn more). `await` may appear as a
 `let`/`let (a, b)` value, a bare statement, in tail position (including `if`/`match`
-branches), or inside a `for` loop body — `for x in xs:` lowers to `chan.for_each`,
+branches), or inside a `for` loop body — `for x in xs:` lowers to `task.for_each`,
 and `for await x in rx:` to `chan.consume`. `await` inside a `while` loop or a
 condition/scrutinee is not yet supported (a `while` would need mutable state carried
 across the await, which captured-by-value closures can't express).

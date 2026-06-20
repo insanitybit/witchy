@@ -180,7 +180,7 @@ pub enum Ty {
     /// Build-time capabilities — a parallel set to the runtime caps, granted only
     /// to a rune's `build` entrypoint and enforced in a zero-ambient build
     /// sandbox. Kind-only (the specific tool/host/dir/var is the consumer's grant,
-    /// not the type); see docs/build-time-execution-plan.md.
+    /// not the type); see rfcs/build-time-execution-plan.md.
     BuildOut,
     BuildRead,
     BuildEnv,
@@ -2586,7 +2586,7 @@ fn ty_has_var(t: &Ty) -> bool {
 }
 
 /// Annotate an ALREADY-LOWERED module instance (the exact AST a consumer will
-/// keep walking): the typed-lowering keystone (docs/language-evolution.md
+/// keep walking): the typed-lowering keystone (rfcs/language-evolution.md
 /// Phase 0). Best-effort by contract — consumers only annotate modules that
 /// already passed `check`, so any error here yields an empty table and the
 /// consumer's own fallbacks apply.
@@ -2770,7 +2770,7 @@ pub fn intrinsic(name: &str) -> bool {
 }
 
 /// The retired global builtins and the module-qualified spellings that
-/// replaced them (docs/language-evolution.md Phase 2 — one cut, no aliases).
+/// replaced them (rfcs/language-evolution.md Phase 2 — one cut, no aliases).
 pub fn moved_builtin(bare: &str) -> Option<&'static str> {
     Some(match bare {
         "push" => "list.push",

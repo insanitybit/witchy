@@ -1,6 +1,6 @@
 # Appendix: Operators and Keywords
 
-A quick reference. The [language reference](https://github.com/insanitybit/witchy/blob/master/docs/language.md)
+A quick reference. The [language reference](https://github.com/insanitybit/witchy/blob/master/spec/language.md)
 has the precise semantics; this is the cheat sheet.
 
 ## Operators
@@ -37,9 +37,9 @@ has the precise semantics; this is the cheat sheet.
 | `where` | a trait bound on a generic (`where a: Ord`) |
 | `pub` | export an item from its module |
 | `import` | bring a module into scope |
-| `inout` | a parameter whose final value is written back to the caller |
-| `sink` / `own` / `move` | ownership transfer of a parameter / at a call |
-| `actor` / `on` / `spawn` | concurrency: actor type, message handler, spawn |
+| `var` | a parameter whose final value is written back to the caller |
+| `own` / `move` | ownership transfer of a parameter / at a call |
+| `async` / `await` | concurrency: declare an async function / suspend on a future (`spawn` and channels are stdlib functions in `std/task` and `std/chan`, not keywords) |
 | `gen` / `yield` | a generator function that yields a lazy `Iter` |
 | `as` | capability rights narrowing |
 | `retain` / `without` | block capability firewall: keep only / drop the named capabilities |

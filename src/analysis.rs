@@ -1,5 +1,5 @@
 //! The uniqueness pass: one ownership analysis behind the compiled tier's
-//! in-place fast paths. See docs/ownership-analysis.md.
+//! in-place fast paths. See rfcs/ownership-analysis.md.
 //!
 //! The in-place machinery is gated by a runtime ownership token (the shadow
 //! `__cap` local: zero = no owned slack, so the next self-assign COPIES into

@@ -12,7 +12,7 @@ mode opt
 // `mode opt` is also TRANSITIVE: an `opt` module may only import other `opt`
 // modules (the bundled standard library is exempt), so the guarantee covers the
 // whole reachable graph, not just this one file. See examples/projects/opt_pipeline
-// for a multi-file version, and docs/performance-modes.md for the full story.
+// for a multi-file version, and rfcs/performance-modes.md for the full story.
 
 fn main(console: Console):
     // Building a list by self-assign push stays O(n): the uniqueness analysis

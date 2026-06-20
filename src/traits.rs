@@ -597,7 +597,7 @@ impl Ctx<'_> {
                 self.rewrite_expr(base, scope);
                 self.rewrite_expr(index, scope);
             }
-            // METHOD RESOLUTION (docs/language-evolution.md Phase 3):
+            // METHOD RESOLUTION (rfcs/language-evolution.md Phase 3):
             // `x.f(a)` resolves to a real method — an impl for x's type, a
             // trait method on a bound receiver, or a `Type.f(a)` static. It
             // is NOT sugar for arbitrary free functions; an unresolvable

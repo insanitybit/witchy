@@ -1,11 +1,20 @@
+---
+status: implemented
+note: Imported from docs/ under RFC-0001. Frozen design record — current behavior lives in spec/ and the code.
+---
+
 # WIR — the Witchy Intermediate Representation
 
-A design for the compiled backend's representation. This document describes
-what WIR *should be*, why, and how to get there. Nothing here is implemented
-yet — it is the plan that the incremental refactor in
-[oracle-only-migration.md](oracle-only-migration.md) §"Future refactors — A"
-sketched at a high level, worked out concretely and grounded in the current
-`src/codegen.rs`.
+**Status: shipped.** WIR is the compiled backend's representation, implemented
+in `src/wir.rs` (the IR types), `src/wir_opt.rs` (the peephole pass), and
+`src/wir_encode.rs` (the `wasm-encoder` backend). Codegen lowers the checked AST
+to WIR (`codegen::assemble_wir_module`) and `codegen::compile_module_binary`
+encodes it to a wasm binary. This document is the original design — the *why* and
+the shape — that the refactor in
+[binary-distribution.md](binary-distribution.md) delivered. The type sketches in
+§2 are indicative of that design; for the exact current types read `src/wir.rs`
+(the shipped `WirTy`/`WirExpr`/`WirNode`/`WirModule` differ in naming, and in
+which aggregate operations are IR nodes vs. calls to prelude helper functions).
 
 The interpreter (`src/interpreter.rs`) is **not** part of WIR. It stays a
 tree-walking evaluator over the AST and remains the differential oracle. WIR is
@@ -398,11 +407,11 @@ engine's general SSA optimization.
 
 ## 4. Lowering WIR → wasm (`wasm-encoder`)
 
-`wasm-encoder` `0.251` is **already in the dependency tree** (via `wat`), so no
-new dependency. The lowering is `fn encode(module: &WirModule) -> Vec<u8>`,
-emitting the binary sections directly (types, imports, funcs, table, memory,
-globals, exports, code, data). It replaces `compile_module -> String` +
-`wat::parse_str`.
+`wasm-encoder` is a **direct dependency** (the `wat` crate it once rode in on has
+since been dropped). The lowering is `fn encode(module: &WirModule) -> Vec<u8>`
+(`src/wir_encode.rs`), emitting the binary sections directly (types, imports,
+funcs, table, memory, globals, exports, code, data). It replaced the old
+`compile_module -> String` + `wat::parse_str` text path.
 
 ### 4.1 Control-flow emission — no relooper, ever
 

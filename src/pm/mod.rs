@@ -1,7 +1,7 @@
 //! coven — witchy's package manager.
 //!
 //! A rune is a package; coven is the registry. The whole design is in
-//! `docs/package-manager.md`. The guiding invariant: this tool only moves bytes
+//! `rfcs/package-manager.md`. The guiding invariant: this tool only moves bytes
 //! and verifies them — it never becomes a source of ambient authority. Its jobs
 //! are integrity, reproducibility, and making each rune's capability footprint
 //! (runtime *and* build) legible and gated.

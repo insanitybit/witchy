@@ -1,6 +1,15 @@
+---
+status: implemented
+note: Imported from docs/ under RFC-0001. Core shipped; TUF/trusted-publishing phase still planned (see body). Frozen — current behavior lives in spec/ and the code.
+---
+
 # The witchy package manager — design spec
 
-Status: draft / design phase (2026-06-04)
+Status: design spec — the core is **shipped** (CLI, resolver, content-addressed
+store, signing, the capability-widening gate, and a self-hosted `coven`
+registry); full TUF / trusted-publishing is the main remaining work. See §15 for
+the built-vs-pending breakdown.
+
 The registry is **coven**; a published package is a **rune**. The management
 commands (`witchy add`, `witchy publish`, …) fold into the existing `witchy`
 binary, the way `cargo` extends `rustc`. Manifest `witchy.toml`, lockfile
@@ -562,6 +571,8 @@ witchy audit                 print the tree's aggregate + per-rune runtime AND b
                              pinned-only); flag yanked deps, weak provenance, drift
 witchy why <pkg>             explain why a dep is in the tree (path)
 witchy why-cap <Kind>        trace which rune(s) introduce a capability kind
+witchy tree                  print the resolved dependency tree
+witchy outdated              list deps with newer versions available within constraints
 witchy vendor                materialize the content-addressed store (and vendored
                              generated source) in-repo
 witchy verify                re-verify lock against store + coven signatures
@@ -646,7 +657,7 @@ full lifecycle. What is built vs. modelled-for-later:
 | Two-phase publish (§8.1) | **Built (local).** stage → second-factor `promote`, immutability, separation of duties, server-side footprint recomputation. |
 | Determinism tiering (§7.2) | **Built.** computed class surfaced by `audit`. |
 | Build-grant enforcement (§7.1) | **Built.** All five build capability types (`BuildOut`/`BuildRead`/`BuildEnv`/`BuildNet`/`BuildExec`) exist in the language, are footprinted on their own axis, and execute confined; grants are enforced per-rune (grant ⊇ demand), default-deny — even `BuildOut` alone requires an explicit `[build.grants."name"]` section. |
-| CLI (§11) | **Built.** new/init/add/build/run/update/audit/why/why-cap/publish/promote/yank/list/verify/vendor. Never executes dependency code. |
+| CLI (§11) | **Built.** new/init/add/build/run/update/audit/why/why-cap/tree/outdated/publish/promote/yank/list/verify/vendor. Never executes dependency code. |
 | **Cryptographic record signing** (§8 targets role) | **Built.** `src/pm/keys.rs` — every registry record is **Ed25519-signed** by the registry root key; `fetch`/`build`/`verify` reject any record whose signature fails (catches metadata tampering that content-hashing alone would miss). The client **pins the key fingerprint (TOFU)** in `witchy.lock` and refuses to build if the registry's key changes. |
 | **Networked registry server** (§8) | **Built.** `witchy coven-serve` (`src/pm/server.rs`, tiny_http) serves a JSON wire protocol; `src/pm/remote.rs` is the zero-trust HTTP client (verifies every record signature + source hash). `COVEN_URL` switches the CLI from the local model to a remote server. |
 | **TUF snapshot + timestamp roles** (§8) | **Built.** `src/pm/tuf.rs` — the server regenerates/re-signs a version-numbered snapshot + a short-lived timestamp on every mutation; the client verifies the full chain (signatures, freshness ⇒ no freeze, version ≥ pinned ⇒ no rollback, per-record snapshot consistency). The snapshot version is pinned in `witchy.lock`. |

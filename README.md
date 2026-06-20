@@ -72,7 +72,7 @@ truly a "safe by default" system;
 
 ## A disclosure
 
-`witchy` is a project for fun. It's vibe coded using different models. It's a way
+`witchy` is a project for fun. It's vibecoded using different models. It's a way
 for me to explore ideas in this space. If that's not for you, no problem! But you
 should be aware, upfront, that this project oscillates heavily between "these changes
 were meaningfully reviewed" and "I literally didn't even check". I have also not
@@ -97,14 +97,14 @@ cargo install mdbook              # one-time, if you don't already have it
 ./scripts/build-book.sh --serve   # builds the book and opens it in your browser
 ```
 
-That's a chapter-by-chapter tour from "hello" through capabilities, actors,
+That's a chapter-by-chapter tour from "hello" through capabilities, concurrency,
 generators, and the package manager — every example is run and verified by the
 test suite, so what you read is exactly what the language does. (No witchy build
 needed just to read it.)
 
-Want to _run code_ with zero install instead? The [playground](#playground) runs
-the real interpreter in your browser. Or jump straight to [Install](#install) to
-build the `witchy` CLI.
+Want to _run code_ with zero install instead? The [playground](#playground)
+compiles and runs your code in your browser. Or jump straight to
+[Install](#install) to build the `witchy` CLI.
 
 Authority enters a witchy program in exactly one place: the typed parameters of
 `main`, minted by the host. A `Console`, a `Dir[Read]`, a `Net[Connect, Tcp]` —
@@ -128,14 +128,18 @@ That makes three things possible that mainstream languages can't offer:
 
 ## Two backends, one semantics
 
-| Backend                  | Command                     | Use                                                     |
-| ------------------------ | --------------------------- | ------------------------------------------------------- |
-| Tree-walking interpreter | `witchy run.witchy`         | Development; the reference semantics                    |
-| WebAssembly (wasmtime)   | `witchy sandbox run.witchy` | Deployment: confinement AND speed — the capability boundary is the VM boundary, and the tier benches at Go-class (see `bench/`)                                                   |
+| Backend                          | Role                                                                                                                                                              |
+| -------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| WebAssembly (wasmtime)           | **The run path.** `witchy <file>`, `witchy run`, and `witchy sandbox` all compile to a wasm binary and execute it under wasmtime — the capability boundary is the VM boundary, and the tier benches at Go-class (see `bench/`) |
+| Tree-walking interpreter         | **The reference oracle.** Defines the semantics the compiled backend is checked against (`witchy parity`), and runs `comptime` blocks, the test runner, and build steps — never a user run path                                |
 
-The backends are held to a **zero-silent-divergence** invariant, enforced by
-the project's own `witchy parity` harness (runs a program on both backends
-and confirms identical output — including agreement on _error paths_: an
+There is one run path; `run` and `sandbox` differ only in the **capability
+grant**, not the backend: `witchy run` (or a bare `witchy <file>`) uses a
+development grant, `witchy sandbox` grants exactly the computed footprint.
+
+The two backends are held to a **zero-silent-divergence** invariant, enforced
+by the project's own `witchy parity` harness (runs a program on both and
+confirms identical output — including agreement on _error paths_: an
 out-of-bounds index traps on both, an unparseable integer fails on both), a
 test suite with hundreds of differential tests, and a property-based fuzzer.
 You never verify this yourself: anything one backend can't express is a loud
@@ -164,11 +168,12 @@ fn main(console: Console):
 - `Int` (64-bit), `Float`, `Bool`, `String`, `Duration` (native literals: `30s`,
   `2hr`), `List(a)`, `Dict(k, v)`, tuples, records, ADTs, `Option`/`Result`
   with the `?` operator.
-- Traits with `where` bounds, monomorphized for compiled backends.
+- Traits with `where` bounds, monomorphized for the compiled backend.
 - Hylo-style parameter conventions: `let` (immutable borrow, the default),
-  `inout` (caller's variable is written back), `sink`/`own` (ownership
-  transfer; use-after-move is a compile error).
-- Actors with typed handlers, isolated per-VM when compiled.
+  `var` (caller's variable is written back), `own` (ownership transfer;
+  use-after-move is a compile error).
+- Concurrency: `async`/`await`, `spawn`, and first-class channels (the Go/CSP
+  family), on a cooperative executor written in pure witchy.
 - Structural equality, deep, on both backends.
 
 ## Package manager: `coven`
@@ -191,8 +196,8 @@ verified consumption — with one command:
 ./scripts/local-registry-demo.sh
 ```
 
-See [docs/local-registry.md](docs/local-registry.md) for the step-by-step
-version, and [docs/package-manager.md](docs/package-manager.md) for the full
+See [spec/local-registry.md](spec/local-registry.md) for the step-by-step
+version, and [rfcs/package-manager.md](rfcs/package-manager.md) for the full
 design and threat model.
 
 ## Install
@@ -231,8 +236,11 @@ witchy new/add/build/run/publish/...          package-manager commands
 
 ## Playground
 
-The witchy interpreter compiles to WebAssembly, so it runs **in the browser**
-with no server. Build the page and open it:
+witchy's compiler — front end, type checker, and the WIR → wasm backend —
+itself compiles to WebAssembly, so the playground runs **in the browser** with
+no server: it compiles your snippet to a wasm binary and instantiates *that* on
+the browser's own WebAssembly engine, exactly as `witchy sandbox` would. Build
+the page and open it:
 
 ```sh
 ./scripts/build-playground.sh
@@ -240,22 +248,22 @@ python3 -m http.server -d web 8000   # then visit http://localhost:8000
 ```
 
 `web/` is a static page (`index.html` + `playground.js`) that loads the
-interpreter module and runs snippets client-side; it ships with the language
-reference's examples preloaded.
+compiler module, compiles snippets to wasm client-side, and runs them; it ships
+with the language reference's examples preloaded.
 
 ## Learn more
 
 - **[The witchy Book](book/src/SUMMARY.md)** — the guided, chapter-by-chapter
   introduction (build it with `./scripts/build-book.sh`, or read the chapters as
   Markdown under `book/src/`). Start here if you're new.
-- **[Language reference](docs/language.md)** — the full syntax and semantics.
-- **[Capabilities guide](docs/capabilities.md)** — the security model, for users.
-- **[Standard library](docs/stdlib.md)** — 31 modules, function-by-function.
+- **[Language reference](spec/language.md)** — the full syntax and semantics.
+- **[Capabilities guide](spec/capabilities.md)** — the security model, for users.
+- **[Standard library](spec/stdlib.md)** — 36 modules, function-by-function.
 - **[Examples](examples/)** — 100+ programs from `hello` to a self-hosted
   package registry; see the [index](examples/README.md).
-- **[Capability rights design](docs/capability-rights.md)** and
-  **[package-manager design](docs/package-manager.md)** — the deeper design docs.
-- **[Architecture](docs/architecture.md)** — how the compiler and backends fit
+- **[Capability rights design](rfcs/capability-rights.md)** and
+  **[package-manager design](rfcs/package-manager.md)** — the deeper design docs.
+- **[Architecture](spec/architecture.md)** — how the compiler and backends fit
   together, and the parity discipline that keeps them honest.
 
 Editor support: a [Zed extension](editors/zed) with tree-sitter highlighting and
@@ -276,10 +284,10 @@ smuggle in authority; execution is **default-deny** (a dependency's build step i
 refused until you write its `[build.grants]` section); deterministic outputs are
 cached; deterministic steps run in the **zero-ambient WASM sandbox**; releases
 sit out a signed 72h **staging cooldown** (`--allow-fresh` to override). See
-[docs/build-time-execution-plan.md](docs/build-time-execution-plan.md).
+[rfcs/build-time-execution-plan.md](rfcs/build-time-execution-plan.md).
 
 Not yet done: a hosted public registry. See
-[docs/architecture.md](docs/architecture.md) for the honest limitations list.
+[spec/architecture.md](spec/architecture.md) for the honest limitations list.
 
 ## License
 

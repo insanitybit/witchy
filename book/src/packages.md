@@ -120,8 +120,8 @@ refusing an over-reaching upgrade:
 ./scripts/local-registry-demo.sh
 ```
 
-The repository's `docs/local-registry.md` walks through it step by step, and
-`docs/package-manager.md` is the full design and threat model. The package
+The repository's `spec/local-registry.md` walks through it step by step, and
+`rfcs/package-manager.md` is the full design and threat model. The package
 manager and the registry are themselves written in witchy (`projects/pm` and
 `projects/coven`) — the language eats its own dog food, sandboxable footprint
 and all.

@@ -26,7 +26,7 @@ pub const HOST_CAPABILITIES: &[&str] = &["Console", "Clock", "Env", "Secret", "S
 /// The build-time capabilities a rune's `build` entrypoint may demand — the
 /// parallel set to the runtime host caps, tracked on a separate axis. Kind-only
 /// (the specific tool/dir/host/var is the consumer's grant, not the type), so
-/// they carry no rights. See docs/build-time-execution-plan.md.
+/// they carry no rights. See rfcs/build-time-execution-plan.md.
 pub const BUILD_CAPABILITIES: &[&str] =
     &["BuildOut", "BuildRead", "BuildEnv", "BuildNet", "BuildExec"];
 

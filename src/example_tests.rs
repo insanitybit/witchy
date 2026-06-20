@@ -1642,9 +1642,9 @@ fn main(console: Console):
         );
     }
 
-    /// The committed `docs/stdlib.md` must match what `witchy doc` generates from
+    /// The committed `spec/stdlib.md` must match what `witchy doc` generates from
     /// the std sources — so a std module change that isn't re-documented fails
-    /// loudly. Regenerate with: `witchy doc std/*.witchy > docs/stdlib.md`.
+    /// loudly. Regenerate with: `witchy doc std/*.witchy > spec/stdlib.md`.
     #[test]
     fn stdlib_docs_are_current() {
         let mut files: Vec<std::path::PathBuf> = std::fs::read_dir("std")
@@ -1659,19 +1659,19 @@ fn main(console: Console):
             let src = std::fs::read_to_string(f).unwrap();
             generated.push_str(&crate::doc::render(stem, &src).expect("render"));
         }
-        let committed = std::fs::read_to_string("docs/stdlib.md").expect("read docs/stdlib.md");
+        let committed = std::fs::read_to_string("spec/stdlib.md").expect("read spec/stdlib.md");
         for (i, (g, c)) in generated.lines().zip(committed.lines()).enumerate() {
             assert_eq!(
                 g,
                 c,
-                "docs/stdlib.md is stale at line {} — regenerate with `witchy doc std/*.witchy > docs/stdlib.md`",
+                "spec/stdlib.md is stale at line {} — regenerate with `witchy doc std/*.witchy > spec/stdlib.md`",
                 i + 1
             );
         }
         assert_eq!(
             generated.lines().count(),
             committed.lines().count(),
-            "docs/stdlib.md length differs — regenerate with `witchy doc std/*.witchy > docs/stdlib.md`"
+            "spec/stdlib.md length differs — regenerate with `witchy doc std/*.witchy > spec/stdlib.md`"
         );
     }
 
@@ -1856,7 +1856,7 @@ fn yn(b: Bool) -> String:
         );
     }
 
-    /// `region:` Phase 1 (docs/regions.md): the syntax parses (with optional
+    /// `region:` Phase 1 (rfcs/regions.md): the syntax parses (with optional
     /// `-> T` ascription), the block's value escapes, scalar outer
     /// assignments are allowed, and both backends agree — a region NEVER
     /// changes observable behavior, only when memory is reclaimed.

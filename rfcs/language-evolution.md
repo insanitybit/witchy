@@ -1,3 +1,8 @@
+---
+status: implemented
+note: Imported from docs/ under RFC-0001. Frozen design record — current behavior lives in spec/ and the code.
+---
+
 # Language evolution: typed lowering, value equality, a real stdlib, self, comptime
 
 Five workstreams, one dependency spine. The learning log (`scratch/LEARNING-LOG.md`)
@@ -117,9 +122,9 @@ This phase makes it the *rule* and finishes the half-built parts:
 
 - **Decision: every instance method declares `self` explicitly**, with the
   full convention set: bare `self` = owned (like any parameter), `let self`
-  = borrow (no-escape, typeck-enforced), `inout self` = mutate-and-write-back
+  = borrow (no-escape, typeck-enforced), `var self` = mutate-and-write-back
   (`var c = …; c.bump()`), `own self` = consume. The uniqueness pass extends
-  naturally: `inout self`/`own self` receivers join the own-ABI so builder
+  naturally: `var self`/`own self` receivers join the own-ABI so builder
   chains (`c = c.with_x(1).with_y(2)`) pipeline in place.
 - **Self-less functions in an `impl` are static**: callable as
   `Type.name(args)` (today that syntax mis-desugars into a method call with

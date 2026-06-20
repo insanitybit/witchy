@@ -10,7 +10,7 @@ pub struct Module {
     /// for an ordinary file. The linker copies the entry module's modes onto the
     /// linked module; enforcement (cliffs → errors) then applies to the entry
     /// file's own functions, and an `opt` module may only import other `opt`
-    /// modules. See docs/performance-modes.md.
+    /// modules. See rfcs/performance-modes.md.
     pub modes: Vec<String>,
     /// Names of modules imported (side-effect-free: brings declarations into
     /// scope, runs no code, grants no authority).
@@ -46,7 +46,7 @@ pub enum Item {
     /// `comptime:` — a block executed AT COMPILE TIME with no capabilities
     /// (deterministic by construction); everything it prints is parsed as
     /// witchy source and appended to the module as ADDITIVE items before
-    /// type-checking and footprint analysis (docs/language-evolution.md
+    /// type-checking and footprint analysis (rfcs/language-evolution.md
     /// Phase 5). Expanded by `crate::comptime` during linking, so later
     /// stages never see this variant.
     Comptime(Block),
@@ -110,7 +110,7 @@ pub struct TypeDef {
     pub params: Vec<String>,
     pub variants: Vec<Variant>,
     /// `type T derive(Show, Eq, Ord):` — traits whose impls the compiler
-    /// generates (additively, before checking; docs/language-evolution.md
+    /// generates (additively, before checking; rfcs/language-evolution.md
     /// Phase 4). Empty for an undecorated type.
     pub derives: Vec<String>,
 }

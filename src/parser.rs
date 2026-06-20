@@ -191,7 +191,7 @@ impl Parser {
     fn module(&mut self) -> Result<Module, ParseError> {
         // The performance mode `mode opt` leads the file. `mode` is a contextual
         // keyword — recognized only here, so it stays usable as an ordinary
-        // identifier everywhere else. See docs/performance-modes.md.
+        // identifier everywhere else. See rfcs/performance-modes.md.
         let mut modes = Vec::new();
         while self.at_ident("mode") {
             self.advance();
@@ -415,7 +415,7 @@ impl Parser {
             return Ok(Item::TypeAlias { name, ty });
         }
         // `derive(Show, Eq, Ord)` — compiler-generated impls (additive,
-        // expanded before checking; docs/language-evolution.md Phase 4).
+        // expanded before checking; rfcs/language-evolution.md Phase 4).
         let mut derives = Vec::new();
         if self.at_ident("derive") {
             self.advance();

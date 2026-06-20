@@ -1,3 +1,8 @@
+---
+status: implemented
+note: Historical planning doc, imported from docs/ under RFC-0001. Frozen — a record of what was planned, not current behavior (see spec/).
+---
+
 # Learner round 6 — evaluation, and the round-7 worklist
 
 Round 6 ran the morning after two one-cut migrations (`to_string` → `${...}`

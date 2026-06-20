@@ -1,3 +1,8 @@
+---
+status: implemented
+note: Historical planning doc, imported from docs/ under RFC-0001. Frozen — a record of what was planned, not current behavior (see spec/).
+---
+
 # Learner round 2 — evaluation, and the round-3 plan
 
 > **STATUS (2026-06-12): sections A–C are SHIPPED.** Statement match arms /

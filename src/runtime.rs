@@ -32,7 +32,7 @@ fn compilation_cache() -> Option<Cache> {
 /// Directory for AOT-serialized compiled modules, keyed by a content hash of the
 /// wasm. Distinct from the Cranelift compile cache above: `Module::deserialize`
 /// loads an already-compiled artifact directly, skipping wasm parse/validate AND
-/// the cache lookup — the cold-start lever from docs/performance.md Phase 3.
+/// the cache lookup — the cold-start lever from spec/performance.md Phase 3.
 fn aot_cache_dir() -> Option<std::path::PathBuf> {
     let base = std::env::var_os("XDG_CACHE_HOME")
         .map(std::path::PathBuf::from)

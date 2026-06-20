@@ -9,7 +9,7 @@ bundled std library is exempt).
 
 **Shows:** `mode opt`, `let` heap parameters, in-place list building proven by the
 uniqueness analysis, and in-rune `test_*` functions. See
-docs/performance-modes.md for the full story.
+rfcs/performance-modes.md for the full story.
 
 ## Run
 

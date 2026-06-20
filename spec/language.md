@@ -156,7 +156,7 @@ Everything is an expression; a block's value is its final expression.
 | `== !=` | **structural** equality — deep, on lists, tuples, records, enums, `Option`, `Dict` (insertion-order-sensitive), on every backend |
 | `< <= > >=` | ordering on `Int`/`Float`/`String`/`Duration` only; ordering a NaN is a runtime error; compounds don't order |
 | `&&` | short-circuit boolean **and** (Bool operands) |
-| `\|\|` | short-circuit **or**: logical-or on Bool, otherwise the *truthy fallback* — `a \|\| b` is `a` when truthy, else `b`. Falsy values are `""` / `None` / `[]`; operands share a type, so `name \|\| "anon"`, `cfg \|\| fallback` (`Option`), `xs \|\| [0]` |
+| `\|\|` | short-circuit **or**: logical-or on Bool, otherwise the *truthy fallback* (`a \|\| b` is `a` when truthy, else `b`). Falsy values are `""` / `None` / `[]`; operands share a type, so `name \|\| "anon"`, `cfg \|\| fallback` (`Option`), `xs \|\| [0]` |
 | `!` | negation |
 | `& \| ^ ~ << >>` | bitwise on `Int` (shifts mask the count to 6 bits) |
 | `xs[i]` | list indexing, sugar for `list.at(xs, i)`; out of bounds is a runtime error on every backend |

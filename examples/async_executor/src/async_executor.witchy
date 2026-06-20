@@ -10,7 +10,7 @@
 // executor is ordinary witchy (see std/future.witchy).
 //
 // This is the executor the planned `async`/`await` + `spawn`/`scope` surface will
-// lower onto (see docs/concurrency-design.md). Today you write the futures by
+// lower onto (see rfcs/concurrency-design.md). Today you write the futures by
 // hand; the sugar comes in a later phase.
 //
 // Run:  witchy examples/async_executor.witchy

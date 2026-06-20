@@ -1,3 +1,8 @@
+---
+status: implemented
+note: Imported from docs/ under RFC-0001. Frozen design record — current behavior lives in spec/ and the code.
+---
+
 # The uniqueness pass — one ownership analysis for every fast path
 
 ## Status — SHIPPED (2026-06-11: 9a1ffb5 core, 842bac3 own-ABI)
@@ -85,7 +90,7 @@ per function, per parameter:
 | Summary fact | Meaning | Source of truth |
 |---|---|---|
 | `borrows(i)` | param `i` cannot escape the call | typeck's `let` no-escape rule — already enforced |
-| `consumes(i)` | callee owns the buffer | the `own`/`sink` convention |
+| `consumes(i)` | callee owns the buffer | the `own` convention |
 | `returns_alias(i)` | the return value may alias param `i` | computed (e.g. `fn id(xs): xs`) |
 | `escapes(i)` | param `i` may be stored beyond the call | computed |
 

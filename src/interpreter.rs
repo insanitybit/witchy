@@ -11,7 +11,7 @@
 //! host-side I/O the WASM boundary can't sandbox — the grant allow-list is the
 //! confinement), and the `witchy demo` showcase. Its `Dir`/`Net` path-confinement
 //! logic is also reused by the sandbox, so it stays even as the evaluator role
-//! shrinks. See `docs/oracle-only-migration.md`.
+//! shrinks. See `rfcs/oracle-only-migration.md`.
 
 // `Result<Value, Flow>` threads control flow (early `return`, `break`,
 // `continue`) — not just errors — through evaluation, so the `Flow::Return(Value)`

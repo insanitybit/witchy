@@ -430,7 +430,7 @@ struct Codegen {
     cur_fn_has_type_vars: bool,
     /// The function being compiled, for error context.
     cur_fn_name: String,
-    /// Phase 0 (docs/language-evolution.md): typeck's resolved types for the
+    /// Phase 0 (rfcs/language-evolution.md): typeck's resolved types for the
     /// EXACT module instance being compiled — the authoritative fallback
     /// wherever the local tracking maps come up empty.
     type_table: crate::typeck::TypeTable,

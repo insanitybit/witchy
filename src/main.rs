@@ -999,7 +999,7 @@ fn is_entry_function(name: &str, entry_stem: &str) -> bool {
 /// an explicit `let`/`own`/`inout` convention — so the interprocedural summaries
 /// are declared contracts rather than inferences, and the optimization is powered
 /// by the annotation, not the fixpoint. Only the entry file's own functions are
-/// judged; linked-in modules keep their own policy. See docs/performance-modes.md.
+/// judged; linked-in modules keep their own policy. See rfcs/performance-modes.md.
 fn enforce_performance_modes(linked: &ast::Module, entry_stem: &str) -> Result<(), String> {
     let enforce = !linked.modes.is_empty();
     let mut errors = Vec::new();

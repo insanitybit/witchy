@@ -4,7 +4,7 @@
 
 ```sh
 cargo build                 # debug build of the `witchy` CLI
-cargo test                  # ~870 unit + integration tests (must stay green)
+cargo nextest run           # the unit + integration suite (must stay green)
 cargo clippy -- -D warnings # lint gate (CI enforces)
 ./scripts/e2e-full.sh       # the from-scratch acceptance test (see below)
 ```
@@ -19,7 +19,7 @@ auditing (`caps`/`caps-diff`), sandbox enforcement (confinement + allowlist
 refusals), a complete registry lifecycle (trusted publish → staged → 2FA
 promote → verified add → the capability-widening gate → namespace binding), a
 multi-rune example project, and doc extraction — ~30 asserted checks.
-`--quick` skips the `cargo test` stage (CI runs it as its own job).
+`--quick` skips the test stage (CI runs it as its own job).
 
 ## The one rule: parity
 
@@ -36,7 +36,7 @@ done
 If you add observable behavior (a builtin, an operator, a stdlib function),
 implement it on the interpreter AND the WASM backend in the same change, with
 a differential test (`assert_eq!(interp(src), ...); assert_eq!(run_on_wasm(src), ...)`
-in `src/main.rs`'s `example_tests`). If a backend genuinely can't support it
+in `src/example_tests.rs`). If a backend genuinely can't support it
 yet, make it a **loud error** there — never a silently different answer.
 Behavior that errors should error on *both* backends (the parity tool checks
 error paths too).
@@ -45,7 +45,7 @@ error paths too).
 
 Rust code: `cargo fmt`. witchy code (std/, examples/): `witchy fmt <file>` —
 CI runs `witchy fmt --check` over the tree. If you edit `std/`, regenerate the
-API reference: `witchy doc std/*.witchy > docs/stdlib.md` (a test asserts it
+API reference: `witchy doc std/*.witchy > spec/stdlib.md` (a test asserts it
 is current).
 
 ## Documentation is tested
@@ -61,7 +61,7 @@ not executed.
 
 ## Where things live
 
-See [docs/architecture.md](docs/architecture.md) for the pipeline and file
+See [spec/architecture.md](spec/architecture.md) for the pipeline and file
 map. Quick orientation: the interpreter (`src/interpreter.rs`) defines
 semantics; `src/codegen.rs` must match it; `src/typeck.rs` rejects what can't
 be made to agree; `src/runtime.rs` is the security boundary (capability-gated
@@ -72,7 +72,7 @@ functions small, total, and confined).
 
 If a change adds or widens what any capability can do, update the footprint
 analyzer (`src/capabilities.rs`), the runtime gating (`src/runtime.rs`), and
-[docs/capabilities.md](docs/capabilities.md) together — and add an
+[spec/capabilities.md](spec/capabilities.md) together — and add an
 *enforcement* test (an ungranted module must fail to instantiate).
 
 ## License

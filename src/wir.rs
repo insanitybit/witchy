@@ -1,5 +1,5 @@
 //! WIR — the Witchy IR (the compiled backend's representation). See
-//! `docs/wir-design.md`.
+//! `rfcs/wir-design.md`.
 //!
 //! **Milestone 0**: the data structures + a `WIR → WAT` pretty-printer ONLY. No
 //! lowering from the AST yet, and `codegen.rs` is untouched. The point is to

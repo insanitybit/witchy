@@ -3,7 +3,7 @@
 //! canonicalization). Both the compiled-WASM sandbox (`runtime.rs`) and the
 //! interpreter oracle resolve through these functions, so the two backends can
 //! never diverge on which paths a `Dir` capability reaches. Keeping it one
-//! implementation is a security invariant — see `docs/binary-distribution.md`.
+//! implementation is a security invariant — see `spec/binary-distribution.md`.
 
 use std::path::{Component, Path, PathBuf};
 

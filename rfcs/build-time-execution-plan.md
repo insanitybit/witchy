@@ -1,3 +1,8 @@
+---
+status: implemented
+note: Imported from docs/ under RFC-0001. Frozen design record — current behavior lives in spec/.
+---
+
 # Implementation Plan: Build-Time Execution as a Capability
 
 Status: **implemented.** Every phase is live: the two-axis footprint + gate, the

@@ -23,7 +23,7 @@ are not "WASM is slow"; they are specific and addressable:
 | Long-lived, pointer-chasing mutable heaps | arena never reclaims | **Hard** — this is what Go's GC is genuinely good at. Out of scope until everything above lands; mitigations in Phase 4 |
 
 The honest summary: witchy should not chase Go by building a GC. Its value
-semantics + ownership conventions + per-message arenas are an *Erlang-shaped*
+semantics + ownership conventions + region-scoped arenas are an *Erlang-shaped*
 memory story that, done properly, beats GC languages on throughput for the
 request/message-scoped workloads witchy targets — and loses (by design) on
 workloads witchy is not for.
