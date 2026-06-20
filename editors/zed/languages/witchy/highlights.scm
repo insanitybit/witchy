@@ -13,6 +13,14 @@
 (string) @string
 (escape_sequence) @string.escape
 
+; String interpolation `${ ... }`: clear @string over the interpolation and mark
+; the delimiters, so the embedded expression picks up the normal code rules below
+; (which, coming later, win over @string for their own ranges).
+(interpolation) @none
+(interpolation
+  "${" @punctuation.special
+  "}" @punctuation.special)
+
 ; ---- Identifiers: general default, refined below -------------------------
 
 (identifier) @variable
