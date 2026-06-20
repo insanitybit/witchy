@@ -1016,12 +1016,25 @@ fn expr_needs_lowering(e: &Expr) -> bool {
 }
 
 fn type_to_scope_name(t: &Type) -> Option<String> {
+    type_to_scope_name_d(t, 0)
+}
+
+/// A legitimate type is shallow (its depth is the program's nesting); a self-
+/// referential type's NOMINAL form is finite (`Json`, not its expansion). Past this
+/// depth the input is a degenerate/cyclic type the encoding can't represent, so bail
+/// to the head rather than recurse without bound — the compiler must never overflow.
+const SCOPE_NAME_MAX_DEPTH: usize = 32;
+
+fn type_to_scope_name_d(t: &Type, depth: usize) -> Option<String> {
     match t {
         // A generic encodes its arguments (`List<Int>`, `Box<Int>`,
         // `Dict<String,Int>`) so monomorphization can recover each from a receiver's
         // scope name; the dispatch lookup strips them back to the head.
         Type::Named(n, args) if !args.is_empty() => {
-            Some(match args.iter().map(type_to_scope_name).collect::<Option<Vec<_>>>() {
+            if depth >= SCOPE_NAME_MAX_DEPTH {
+                return Some(n.clone());
+            }
+            Some(match args.iter().map(|a| type_to_scope_name_d(a, depth + 1)).collect::<Option<Vec<_>>>() {
                 Some(es) => format!("{n}<{}>", es.join(",")),
                 None => n.clone(),
             })
@@ -1030,12 +1043,17 @@ fn type_to_scope_name(t: &Type) -> Option<String> {
         // A tuple's head is its arity (`Tuple2`, `Tuple3`) — the head `impl Trait for
         // (a, b)` registers under and a value dispatches to — and it encodes its
         // slot types (`Tuple2<Int,String>`) so monomorphization recovers each.
-        Type::Tuple(ts) => Some(
-            match ts.iter().map(type_to_scope_name).collect::<Option<Vec<_>>>() {
-                Some(es) => format!("Tuple{}<{}>", ts.len(), es.join(",")),
-                None => format!("Tuple{}", ts.len()),
-            },
-        ),
+        Type::Tuple(ts) => {
+            if depth >= SCOPE_NAME_MAX_DEPTH {
+                return Some(format!("Tuple{}", ts.len()));
+            }
+            Some(
+                match ts.iter().map(|a| type_to_scope_name_d(a, depth + 1)).collect::<Option<Vec<_>>>() {
+                    Some(es) => format!("Tuple{}<{}>", ts.len(), es.join(",")),
+                    None => format!("Tuple{}", ts.len()),
+                },
+            )
+        }
         _ => None,
     }
 }

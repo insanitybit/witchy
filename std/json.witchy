@@ -635,6 +635,33 @@ pub fn value_of(x: a) -> Json where a: Reflect:
 pub fn stringify(x: a) -> String where a: Reflect:
     encode(value_of(x))
 
+// A `Json` reflects to its OWN value (not the `Json` enum's shape): the round-trip
+// `mirror_to_json(reflect(j))` is `j`. So an already-built `Json` — a decoded record,
+// a signed blob — can sit inside a reflected value (an anonymous struct, a record
+// field) and embed verbatim: `json.stringify(.{record: decoded, ok: true})`.
+impl Reflect for Json:
+    fn reflect(self) -> Mirror:
+        match self:
+            JsonNull -> MNil
+            JsonBool(b) -> MBool(b)
+            JsonInt(n) -> MInt(n)
+            JsonFloat(f) -> MFloat(f)
+            JsonString(s) -> MString(s)
+            JsonArray(xs) -> MList(reflect_json_each(xs))
+            JsonObject(fields) -> MRecord("", reflect_json_fields(fields))
+
+fn reflect_json_each(xs: List(Json)) -> List(Mirror):
+    var out = []
+    for x in xs:
+        out = list.push(out, x.reflect())
+    out
+
+fn reflect_json_fields(fields: List((String, Json))) -> List((String, Mirror)):
+    var out = []
+    for k, v in fields:
+        out = list.push(out, (k, v.reflect()))
+    out
+
 // Any reflectable value converts INTO a `Json` (and so `Json.from(x)` /
 // `x.into()` work, via `std/convert`'s blanket `Into`). This is `value_of` wearing
 // the `From`/`Into` hat, so a server can take `x: Into(Json)` rather than a

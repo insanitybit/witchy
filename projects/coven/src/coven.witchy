@@ -132,11 +132,11 @@ impl Coven:
     fn route_versions(self) -> fn(Request) -> Response:
         fn(req: Request):
             let name = coven_validate.unwire(server.query(req, "name"))
-            var recs = []
+            var recs: List(Json) = []
             for v in coven_store.versions_of(self.store, name):
                 if let Some(r) = coven_store.read_record(self.store, name, v):
                     recs = list.push(recs, coven_json.or_null(r))
-            server.json(200, json.encode(JsonObject([("records", JsonArray(recs))])))
+            server.send(200, .{records: recs})
 
     fn route_record(self) -> fn(Request) -> Response:
         guard(fn(req: Request) -> Result(Response, CovenError):
@@ -205,7 +205,7 @@ impl Coven:
         coven_store.write_record(self.store, name, version, signed)
         self.rebuild_metadata()
         let delta = rights.uncovered(coven_store.latest_released_footprint(self.store, name, version), rec.runtime_footprint)
-        Ok(server.json(200, json.encode(JsonObject([("record", coven_json.or_null(signed)), ("separation_of_duties", JsonBool(true)), ("delta_runtime", JsonArray(coven_json.strings(delta)))]))))
+        Ok(server.send(200, .{record: coven_json.or_null(signed), separation_of_duties: true, delta_runtime: delta}))
 
     fn route_yank(self) -> fn(Request) -> Response:
         // POST /coven/yank : exclude from new resolutions (re-sign the same fields yanked).

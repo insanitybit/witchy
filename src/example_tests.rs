@@ -1072,6 +1072,24 @@ fn main(console: Console):
         assert_eq!(wasm_run(src), want, "wasm");
     }
 
+    /// RECURSIVE-TYPE REFLECTION: a self-referential type (`Tree` with a `List(Tree)`
+    /// arm) reflects + serializes without the monomorphizer overflowing, and an
+    /// already-built `Json` reflects to its own value so it embeds verbatim inside an
+    /// anonymous struct. Both backends. (The compiler's scope-name encoder is depth-
+    /// guarded so recursive-type reflection can never stack-overflow the compiler.)
+    #[test]
+    fn recursive_types_and_json_reflect() {
+        let tree = "import json\nimport reflect\n\ntype Tree derive(Reflect):\n    Leaf(Int)\n    Node(List(Tree))\n\nfn main(console: Console):\n    print(console, json.stringify(Node([Leaf(1), Node([Leaf(2)])])))\n";
+        let tw = vec!["{\"$variant\":\"Node\",\"$values\":[[{\"$variant\":\"Leaf\",\"$values\":[1]},{\"$variant\":\"Node\",\"$values\":[[{\"$variant\":\"Leaf\",\"$values\":[2]}]]}]]}".to_string()];
+        assert_eq!(link_run(tree), tw, "interpreter (tree)");
+        assert_eq!(wasm_run(tree), tw, "wasm (tree)");
+        // An already-built Json embeds verbatim in an anonymous struct.
+        let embed = "import json\n\nfn main(console: Console):\n    let rec: Json = json.decode(\"{\\\"a\\\":1}\").unwrap_or(JsonNull)\n    print(console, json.stringify(.{record: rec, ok: true}))\n";
+        let ew = vec!["{\"ok\":true,\"record\":{\"a\":1}}".to_string()];
+        assert_eq!(link_run(embed), ew, "interpreter (embed)");
+        assert_eq!(wasm_run(embed), ew, "wasm (embed)");
+    }
+
     /// `||` is the truthy fallback `a || b` ≡ `if truthy(a): a else: b` over the
     /// emptyable built-ins: "" / None / [] are falsy, Bool stays logical-or, and the
     /// operator chains. Both backends must agree — the wasm path reads a single
