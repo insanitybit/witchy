@@ -1,0 +1,266 @@
+// coven-web — the secure web frontend server for the coven registry.
+//
+// 100% witchy on std/server. It serves a zero-dep SPA + the full security-header
+// stack (Perfect Types CSP, COOP/COEP/DIP cross-origin isolation, the
+// double-iframe `/sandbox-frame` bootstrap) and reverse-proxies coven's read API
+// same-origin, so the browser's `connect-src 'self'` is satisfied without CORS.
+//
+// Handlers are `fn(Request) -> Response` (no ambient authority). The proxy
+// handlers are *deliberately* given the `Net` capability via closure capture so
+// they can reach the upstream coven; nothing else can phone home.
+
+import server
+import http
+import string
+import list
+import json
+import crypto
+import encoding
+import webauthn
+
+fn main(console: Console, net: Net, assets: Dir, key: Secret, clock: Clock, args: List(String)):
+    let listen_addr = if list.length(args) > 0: list.at(args, 0) else: "127.0.0.1:8080"
+    let upstream = if list.length(args) > 1: list.at(args, 1) else: "127.0.0.1:8787"
+    // The WebAuthn relying-party origin + id the server checks every assertion against.
+    let origin = if list.length(args) > 2: list.at(args, 2) else: "http://" + listen_addr
+    let rp_id = if list.length(args) > 3: list.at(args, 3) else: "localhost"
+
+    var app = server.router()
+    app = app.get("/", h_index_html(assets))
+    app = app.get("/index.html", h_index_html(assets))
+    app = app.get("/app.js", h_asset(assets, "app.js", "text/javascript; charset=utf-8"))
+    app = app.get("/styles.css", h_asset(assets, "styles.css", "text/css; charset=utf-8"))
+    app = app.get("/source-sandbox.js", h_asset(assets, "source-sandbox.js", "text/javascript; charset=utf-8"))
+    app = app.get("/sandbox-frame", h_sandbox_frame())
+    // Read API reverse-proxy — one explicit route per allowlisted coven endpoint
+    // (the route table IS the SSRF allowlist; query strings are forwarded verbatim).
+    app = app.get("/api/coven/index", h_proxy(net, upstream, "/coven/index"))
+    app = app.get("/api/coven/versions", h_proxy(net, upstream, "/coven/versions"))
+    app = app.get("/api/coven/record", h_proxy(net, upstream, "/coven/record"))
+    app = app.get("/api/coven/source", h_proxy(net, upstream, "/coven/source"))
+    app = app.get("/api/coven/rootpub", h_proxy(net, upstream, "/coven/rootpub"))
+    app = app.get("/api/coven/snapshot", h_proxy(net, upstream, "/coven/snapshot"))
+    app = app.get("/api/coven/timestamp", h_proxy(net, upstream, "/coven/timestamp"))
+    // Write endpoints (the only state-changing surface): the two-phase promote and
+    // yank. POST, behind the Sec-Fetch CSRF layer below.
+    app = app.post("/api/coven/promote", h_proxy_post(net, upstream, "/coven/promote"))
+    app = app.post("/api/coven/yank", h_proxy_post(net, upstream, "/coven/yank"))
+    // WebAuthn 2FA: register a credential, fetch a single-use challenge, and a
+    // second-factor promote that verifies the assertion server-side before forwarding.
+    app = app.post("/api/webauthn/register", h_wa_register(assets))
+    app = app.get("/api/webauthn/challenge", h_wa_challenge(assets, key, clock))
+    app = app.post("/api/coven/promote-2fa", h_wa_promote(assets, net, upstream, origin, rp_id))
+    // Layer order: sec_fetch_csrf is inner (rejects cross-site writes before the
+    // handler), security_headers is outer (so even a 403 carries the full stack).
+    app = app.layer(sec_fetch_csrf())
+    app = app.layer(security_headers())
+
+    print(console, "coven-web serving http://" + listen_addr + "  -> coven " + upstream)
+    server.serve(net, listen_addr, app)
+
+// ---- Static assets ----------------------------------------------------------
+
+fn h_index_html(assets: Dir) -> fn(Request) -> Response:
+    fn(req: Request):
+        if exists(assets, "index.html"):
+            server.html(200, read(assets, "index.html"))
+        else:
+            server.not_found()
+
+fn h_asset(assets: Dir, file: String, ctype: String) -> fn(Request) -> Response:
+    fn(req: Request):
+        if exists(assets, file):
+            Response(200, [("content-type", ctype)], read(assets, file))
+        else:
+            server.not_found()
+
+// ---- The double-iframe sandbox bootstrap ------------------------------------
+// Served from a real same-origin URL so it gets its OWN CSP (sandbox CSP with
+// `connect-src 'none'`) from the response headers. The outer frame is loaded by
+// the parent with `sandbox="allow-scripts"` (opaque origin). This bootstrap then
+// creates a second, inner opaque-origin `srcdoc` iframe and relays a MessagePort
+// to it; all real rendering traffic flows over the private MessageChannel.
+fn h_sandbox_frame() -> fn(Request) -> Response:
+    fn(req: Request): server.html(200, sandbox_bootstrap())
+
+fn sandbox_bootstrap() -> String:
+    "<!doctype html><html><head><meta charset='utf-8'></head><body><script>if(window.origin!=='null'){document.body.textContent='This page must be loaded inside a sandboxed iframe.';}else{window.addEventListener('message',function h(e){if(e.source!==window.parent)return;if(!e.data||e.data.type!=='init'||!e.ports.length)return;window.removeEventListener('message',h);var port=e.ports[0];var f=document.createElement('iframe');f.setAttribute('sandbox','allow-scripts');f.addEventListener('load',function(){f.contentWindow.postMessage({type:'port'},'*',[port]);});f.srcdoc=e.data.html;document.body.appendChild(f);});}</script></body></html>"
+
+// ---- Reverse proxy ----------------------------------------------------------
+
+fn h_proxy(net: Net, upstream: String, base: String) -> fn(Request) -> Response:
+    fn(req: Request):
+        match req:
+            Request(_m, _p, _pa, q, _h, _b) ->
+                let qs = encode_query(q)
+                let path = if qs == "": base else: base + "?" + qs
+                let (host, port) = split_host_port(upstream)
+                match http.try_get(net, host, port, path):
+                    Ok(resp) -> server.json(http.status(resp), http.body(resp))
+                    Err(_e) -> server.json(502, "{\"error\":\"coven registry unreachable\"}")
+
+// POST proxy for the write endpoints. The whole request is in the body, so no
+// query forwarding is needed. (Like h_proxy, this captures Net deliberately.)
+fn h_proxy_post(net: Net, upstream: String, base: String) -> fn(Request) -> Response:
+    fn(req: Request):
+        let body = server.request_body(req)
+        let (host, port) = split_host_port(upstream)
+        match http.try_post(net, host, port, base, body):
+            Ok(resp) -> server.json(http.status(resp), http.body(resp))
+            Err(_e) -> server.json(502, "{\"error\":\"coven registry unreachable\"}")
+
+// ---- WebAuthn 2FA for promote -----------------------------------------------
+// Credential + challenge state live in UNROUTED `_wa_*` files in the served Dir
+// (no route serves a `_wa_*` file). A challenge is derived from the Secret (so it
+// is unforgeable without it) over a Clock reading, and is single-use. The browser
+// hex-encodes the assertion's ArrayBuffers; the server re-derives and verifies
+// everything via `webauthn.verify_assertion` — trusting nothing from the client.
+
+fn wa_field(doc: Json, name: String) -> String:
+    match json.get_string(doc, name):
+        Some(s) -> s
+        None -> ""
+
+fn decode_or_empty(s: String) -> Json:
+    match json.decode(s):
+        Ok(doc) -> doc
+        Err(_e) -> JsonObject([])
+
+fn h_wa_register(store: Dir) -> fn(Request) -> Response:
+    fn(req: Request):
+        match server.json_body(req):
+            Err(_e) -> server.bad_request("{\"error\":\"bad body\"}")
+            Ok(doc) ->
+                let cred = wa_field(doc, "credentialId")
+                let pk = wa_field(doc, "publicKey")
+                if cred == "" || pk == "":
+                    server.bad_request("{\"error\":\"missing credentialId or publicKey\"}")
+                else:
+                    write(store, "_wa_cred.json", json.encode(JsonObject([("credentialId", JsonString(cred)), ("publicKey", JsonString(pk))])))
+                    server.json(200, "{\"ok\":true}")
+
+fn h_wa_challenge(store: Dir, key: Secret, clock: Clock) -> fn(Request) -> Response:
+    fn(req: Request):
+        let raw = crypto.sign(key, "ch:" + "${now(clock)}")
+        let ch_hex = string.substring(raw, 0, 64)
+        let ch_b64 = encoding.base64url_of_hex(ch_hex)
+        write(store, "_wa_challenge.json", json.encode(JsonObject([("b64", JsonString(ch_b64))])))
+        server.json(200, json.encode(JsonObject([("challengeHex", JsonString(ch_hex))])))
+
+fn h_wa_promote(store: Dir, net: Net, upstream: String, origin: String, rp_id: String) -> fn(Request) -> Response:
+    fn(req: Request):
+        match server.json_body(req):
+            Err(_e) -> server.bad_request("{\"error\":\"bad body\"}")
+            Ok(doc) -> wa_do_promote(store, net, upstream, origin, rp_id, doc)
+
+fn wa_do_promote(store: Dir, net: Net, upstream: String, origin: String, rp_id: String, doc: Json) -> Response:
+    if !exists(store, "_wa_cred.json") || !exists(store, "_wa_challenge.json"):
+        server.json(403, "{\"error\":\"no registered credential or outstanding challenge\"}")
+    else:
+        let pk = wa_field(decode_or_empty(read(store, "_wa_cred.json")), "publicKey")
+        let ch_b64 = wa_field(decode_or_empty(read(store, "_wa_challenge.json")), "b64")
+        match webauthn.verify_assertion(pk, wa_field(doc, "authData"), wa_field(doc, "clientData"), wa_field(doc, "signature"), ch_b64, origin, rp_id, true):
+            Err(reason) -> server.json(403, json.encode(JsonObject([("error", JsonString("2FA failed: " + reason))])))
+            Ok(_) ->
+                write(store, "_wa_challenge.json", "{}")
+                let body = json.encode(JsonObject([("name", JsonString(wa_field(doc, "name"))), ("version", JsonString(wa_field(doc, "version"))), ("second_factor", JsonString("webauthn")), ("promoted_by", JsonString(wa_field(doc, "promotedBy")))]))
+                let (host, port) = split_host_port(upstream)
+                match http.try_post(net, host, port, "/coven/promote", body):
+                    Ok(resp) -> server.json(http.status(resp), http.body(resp))
+                    Err(_e) -> server.json(502, "{\"error\":\"coven registry unreachable\"}")
+
+fn split_host_port(hp: String) -> (String, Int):
+    let (h, p) = string.split_once(hp, ":")
+    (h, string.to_int(p))
+
+fn encode_query(pairs: List((String, String))) -> String:
+    var s = ""
+    var first = true
+    for pair in pairs:
+        let (k, v) = pair
+        let seg = k + "=" + v
+        if first:
+            s = seg
+            first = false
+        else:
+            s = s + "&" + seg
+    s
+
+// ---- Security headers (the `.layer()` middleware) ---------------------------
+
+fn security_headers() -> fn(fn(Request) -> Response) -> fn(Request) -> Response:
+    fn(inner: fn(Request) -> Response):
+        fn(req: Request):
+            let resp = inner(req)
+            with_headers(resp, headers_for(server.path(req)))
+
+// Sec-Fetch CSRF defense for state-changing requests. A browser stamps cross-site
+// requests with `sec-fetch-site: cross-site|same-site`; we admit only `same-origin`
+// (and absent, for non-browser clients that authenticate by other means). Safe
+// methods (GET/HEAD) pass through untouched.
+fn sec_fetch_csrf() -> fn(fn(Request) -> Response) -> fn(Request) -> Response:
+    fn(inner: fn(Request) -> Response):
+        fn(req: Request):
+            if is_state_changing(server.method(req)):
+                match server.request_header(req, "sec-fetch-site"):
+                    Some(site) -> if site == "same-origin": inner(req) else: server.forbidden("cross-site request refused")
+                    None -> inner(req)
+            else:
+                inner(req)
+
+fn is_state_changing(method: String) -> Bool:
+    method == "POST" || method == "PUT" || method == "DELETE" || method == "PATCH"
+
+fn with_headers(resp: Response, hs: List((String, String))) -> Response:
+    var r = resp
+    for h in hs:
+        let (k, v) = h
+        r = server.with_header(r, k, v)
+    r
+
+fn headers_for(p: String) -> List((String, String)):
+    let xfo = if p == "/sandbox-frame": "SAMEORIGIN" else: "DENY"
+    [("content-security-policy", csp_for(p)),
+     ("x-content-type-options", "nosniff"),
+     ("x-frame-options", xfo),
+     ("referrer-policy", "no-referrer"),
+     // HARD INVARIANT — strict cross-origin isolation on EVERY response, never relax:
+     // COOP same-origin + COEP require-corp + CORP same-origin (the strictest standard
+     // values) => a cross-origin-isolated, own-process document (anti-Spectre) and the
+     // strongest iframe isolation. DIP isolate-and-require-corp reinforces it.
+     ("cross-origin-opener-policy", "same-origin"),
+     ("cross-origin-embedder-policy", "require-corp"),
+     ("cross-origin-resource-policy", "same-origin"),
+     ("document-isolation-policy", "isolate-and-require-corp"),
+     ("permissions-policy", permissions_policy()),
+     ("x-permitted-cross-domain-policies", "none"),
+     ("cache-control", "no-store")]
+
+fn csp_for(p: String) -> String:
+    if p == "/sandbox-frame":
+        sandbox_csp()
+    else if string.starts_with(p, "/api/"):
+        api_csp()
+    else:
+        app_csp()
+
+// The app shell runs under Perfect Types: `trusted-types 'none'` forbids creating
+// ANY Trusted Types policy, so every string->HTML sink throws and the only way to
+// write HTML is the native Sanitizer (`setHTML`). `connect-src 'self'` keeps all
+// fetches same-origin (the proxy is why coven is reachable).
+fn app_csp() -> String:
+    "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-src 'self'; worker-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'; require-trusted-types-for 'script'; trusted-types 'none'"
+
+// The sandbox frame intentionally OMITS Perfect Types so the bootstrap can set
+// `srcdoc` and the renderer can use innerHTML — safe because the frame is
+// opaque-origin (no allow-same-origin) and `connect-src 'none'` (network firewall).
+fn sandbox_csp() -> String:
+    "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'none'; worker-src 'none'; form-action 'none'; base-uri 'none'; sandbox allow-scripts; frame-ancestors 'self'"
+
+fn api_csp() -> String:
+    "default-src 'none'; frame-ancestors 'none'; require-trusted-types-for 'script'; trusted-types 'none'"
+
+fn permissions_policy() -> String:
+    // Deny everything except WebAuthn, which the 2FA promote needs. `(self)` grants
+    // it to this origin only — NOT delegated to the opaque-origin sandbox iframes.
+    "accelerometer=(), autoplay=(), camera=(), display-capture=(), encrypted-media=(), fullscreen=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), midi=(), payment=(), publickey-credentials-get=(self), publickey-credentials-create=(self), screen-wake-lock=(), sync-xhr=(), usb=(), xr-spatial-tracking=()"
