@@ -1039,7 +1039,7 @@ fn enforce_performance_modes(linked: &ast::Module, entry_stem: &str) -> Result<(
                         errors.push(format!(
                             "error: in `{}`: parameter `{}` has no ownership \
                              convention — `mode {}` requires an explicit `let` \
-                             (read-only borrow), `own` (consumed), or `inout` \
+                             (read-only borrow), `own` (consumed), or `var` \
                              (mutated in place)",
                             f.name,
                             p.name,

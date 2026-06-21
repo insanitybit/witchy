@@ -786,7 +786,7 @@ impl Interpreter {
                     Expr::Var(caller) => writebacks.push((caller.clone(), param.name.clone())),
                     _ => {
                         return err(format!(
-                            "`inout` argument to `{name}` must be a mutable variable"
+                            "`var` argument to `{name}` must be a mutable variable"
                         ))
                     }
                 }
@@ -817,11 +817,11 @@ impl Interpreter {
                 Assign::Done => {}
                 Assign::Immutable => {
                     return err(format!(
-                        "`inout` argument `{caller}` must be a `var` (it is immutable)"
+                        "`var` argument `{caller}` must be a mutable variable (it is immutable)"
                     ))
                 }
                 Assign::Unbound => {
-                    return err(format!("`inout` argument `{caller}` must be a local variable"))
+                    return err(format!("`var` argument `{caller}` must be a local variable"))
                 }
             }
         }
