@@ -1,3 +1,4 @@
 tools/node_modules/
+dist/app.js
 dist/app.js.map
 dist/_wa_*.json

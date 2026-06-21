@@ -6,3 +6,7 @@
 bench/bin/
 
 .claude/scheduled_tasks.lock
+
+# coven local registry store + Ed25519 signing keys — never commit
+coven-store/
+*.seed
