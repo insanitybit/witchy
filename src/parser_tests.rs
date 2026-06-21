@@ -455,7 +455,7 @@ fn f(var a: Int, own b: Int, c: Int) -> Int:
             panic!("expected a function");
         };
         assert_eq!(func.params[0].convention, Convention::Var);
-        assert_eq!(func.params[1].convention, Convention::Sink);
+        assert_eq!(func.params[1].convention, Convention::Own);
         assert_eq!(func.params[2].convention, Convention::Let);
     }
 

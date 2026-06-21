@@ -256,7 +256,7 @@ fn param(p: &Param) -> String {
         Convention::Let => "",
         Convention::Borrow => "let ",
         Convention::Var => "var ",
-        Convention::Sink => "own ",
+        Convention::Own => "own ",
     };
     match &p.ty {
         Some(t) => format!("{conv}{}: {}", p.name, type_str(t)),

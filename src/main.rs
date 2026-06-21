@@ -681,7 +681,7 @@ fn main() -> wasmtime::Result<()> {
 
     run_witchy("witchy language (interpreter)", include_str!("../examples/hello/src/hello.witchy"));
     run_witchy("witchy mutable value semantics", include_str!("../examples/mutate/src/mutate.witchy"));
-    run_witchy("witchy ownership (sink)", include_str!("../examples/ownership/src/ownership.witchy"));
+    run_witchy("witchy ownership", include_str!("../examples/ownership/src/ownership.witchy"));
     run_witchy("witchy features combined", include_str!("../examples/commands/src/commands.witchy"));
     run_witchy("witchy fizzbuzz (while, %, if/else)", include_str!("../examples/fizzbuzz/src/fizzbuzz.witchy"));
     run_witchy("witchy tuples (multiple return values)", include_str!("../examples/tuples/src/tuples.witchy"));

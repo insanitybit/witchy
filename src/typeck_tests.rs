@@ -955,7 +955,7 @@ fn main():
     }
 
     #[test]
-    fn rejects_use_after_sink_move() {
+    fn rejects_use_after_own_move() {
         let src = r#"
 fn take(own s: String) -> String:
     s
@@ -970,7 +970,7 @@ fn main():
     }
 
     #[test]
-    fn accepts_reassignment_after_sink_move() {
+    fn accepts_reassignment_after_own_move() {
         let src = r#"
 fn take(own s: String) -> String:
     s

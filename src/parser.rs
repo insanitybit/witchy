@@ -566,7 +566,7 @@ impl Parser {
             let convention = if self.eat(&Tok::Var) {
                 Convention::Var
             } else if self.eat(&Tok::Own) {
-                Convention::Sink
+                Convention::Own
             } else if self.eat(&Tok::Let) {
                 // An explicit `let` opts into an immutable borrow (native passes it
                 // `&T`, no clone). Bare params remain owned values.

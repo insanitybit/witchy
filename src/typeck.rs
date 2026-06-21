@@ -692,7 +692,7 @@ struct Checker {
     /// block can be sealed against capabilities its callers might hold. An inner
     /// re-binding (a fresh `let`) shadows the tombstone normally.
     hidden: Vec<HashSet<String>>,
-    /// Bindings that have been consumed (moved out via a `sink` parameter) and
+    /// Bindings that have been consumed (moved out via an `own` parameter) and
     /// may not be used again until reassigned. Flow-sensitive within a body.
     consumed: HashSet<String>,
     /// One entry per ACTIVE `region:` block, holding the names declared
@@ -1732,7 +1732,7 @@ impl Checker {
             Expr::Var(name) => {
                 if self.consumed.contains(name) {
                     return terr(format!(
-                        "use of `{name}` after it was moved (consumed by a `sink` parameter)"
+                        "use of `{name}` after it was moved (consumed by an `own` parameter)"
                     ));
                 }
                 if let Some(t) = self.lookup(name) {
@@ -1912,7 +1912,7 @@ impl Checker {
                                     ))
                                 }
                             },
-                            Convention::Sink => {
+                            Convention::Own => {
                                 if let Expr::Var(v) = arg {
                                     self.consumed.insert(v.clone());
                                 }

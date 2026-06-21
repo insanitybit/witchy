@@ -227,7 +227,7 @@
     /// imposes no such restriction.
     #[test]
     fn conventions_reuse_after_move_rejected() {
-        // Reuse after an `own` (sink) parameter consumes it.
+        // Reuse after an `own` parameter consumes it.
         let after_own = "fn drain(own xs: List(Int)) -> Int:\n    list.length(xs)\nfn main(c: Console):\n    let d = [1, 2, 3]\n    print(c, __render(drain(d)))\n    print(c, __render(list.length(d)))\n";
         let e1 = typeck::check_str(after_own).expect_err("reuse after own should fail");
         assert!(e1.to_string().contains("after it was moved"), "got: {e1:?}");
@@ -13335,7 +13335,7 @@ fn main(console: Console):
 
     #[test]
     fn ownership_example_runs_on_wasm() {
-        // `sink` (consume / move ownership) compiles and agrees across backends.
+        // `own` (consume / move ownership) compiles and agrees across backends.
         let src = include_str!("../examples/ownership/src/ownership.witchy");
         assert_eq!(interp(src), run_on_wasm(src));
     }

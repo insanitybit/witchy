@@ -252,18 +252,18 @@ impl Summaries {
         // this module compiles (the driver and each actor module must agree
         // on every function's signature).
         for (name, f) in &bodies {
-            let sinks: Vec<usize> = f
+            let owns: Vec<usize> = f
                 .params
                 .iter()
                 .enumerate()
                 .filter(|(_, p)| {
-                    p.convention == Convention::Sink
+                    p.convention == Convention::Own
                         && matches!(&p.ty, Some(Type::Named(n, _)) if n == "List" || n == "Dict" || n == "String")
                 })
                 .map(|(i, _)| i)
                 .collect();
             let has_var = f.params.iter().any(|p| p.convention == Convention::Var);
-            if let [i] = sinks.as_slice() {
+            if let [i] = owns.as_slice() {
                 if !has_var && summaries.fns[name.as_str()].may_alias_out[*i] {
                     summaries.fns.get_mut(name.as_str()).unwrap().own_abi = Some(*i);
                 }
@@ -284,10 +284,10 @@ impl Summaries {
             Some(info) => match info.convs.get(idx) {
                 // typeck: a `let` borrow cannot escape the call.
                 Some(Convention::Borrow) => false,
-                // an `own`/`sink` argument is moved: the caller's binding is
+                // an `own` argument is moved: the caller's binding is
                 // dead afterwards (use-after-move is a compile error), so no
                 // live DOUBLE alias can form.
-                Some(Convention::Sink) => false,
+                Some(Convention::Own) => false,
                 // the var variable itself is rebound at write-back (the
                 // consumer's plain-reassign reset covers it); whether OTHER
                 // arguments leak into it is `may_alias_out`.
