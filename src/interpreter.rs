@@ -726,7 +726,7 @@ impl Interpreter {
     }
 
     /// Evaluate a function call expression, honoring parameter conventions:
-    /// `inout` arguments must be mutable variables and are written back after
+    /// `var` arguments must be mutable variables and are written back after
     /// the call returns (Hylo-style move-in / move-out).
     fn eval_call(&mut self, name: &str, args: &[Expr], env: &mut Env) -> Result<Value, Flow> {
         let argvals = args
@@ -781,7 +781,7 @@ impl Interpreter {
                 argvals[i].clone(),
                 param.convention.binds_mutable(),
             );
-            if matches!(param.convention, Convention::Inout) {
+            if matches!(param.convention, Convention::Var) {
                 match &args[i] {
                     Expr::Var(caller) => writebacks.push((caller.clone(), param.name.clone())),
                     _ => {

@@ -258,7 +258,7 @@ fn main(console: Console):
 
 const KEYWORDS = new Set(
   ("fn let var if else match for in while return break continue type trait " +
-    "impl actor on import pub inout sink own move spawn where as gen yield " +
+    "impl actor on import pub sink own move spawn where as gen yield " +
     "retain without")
     .split(" "),
 );

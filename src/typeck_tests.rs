@@ -928,7 +928,7 @@ fn main():
     }
 
     #[test]
-    fn rejects_inout_argument_that_is_immutable() {
+    fn rejects_var_argument_that_is_immutable() {
         let src = r#"
 fn bump(var n: Int):
     n = (n + 1)
@@ -942,7 +942,7 @@ fn main():
     }
 
     #[test]
-    fn accepts_inout_argument_that_is_var() {
+    fn accepts_var_argument_that_is_var() {
         let src = r#"
 fn bump(var n: Int):
     n = (n + 1)

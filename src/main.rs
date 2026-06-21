@@ -996,7 +996,7 @@ fn is_entry_function(name: &str, entry_stem: &str) -> bool {
 /// a check-time *note* — the copying path IS the semantics, so a perf-shape
 /// warning must never block a build. In a file that declares `mode opt`
 /// the cliff is a hard error, AND every ownership-relevant parameter must carry
-/// an explicit `let`/`own`/`inout` convention — so the interprocedural summaries
+/// an explicit `let`/`own`/`var` convention — so the interprocedural summaries
 /// are declared contracts rather than inferences, and the optimization is powered
 /// by the annotation, not the fixpoint. Only the entry file's own functions are
 /// judged; linked-in modules keep their own policy. See rfcs/performance-modes.md.

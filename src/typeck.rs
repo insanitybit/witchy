@@ -1899,7 +1899,7 @@ impl Checker {
                 if let Some(convs) = self.fn_conventions.get(name).cloned() {
                     for (arg, conv) in args.iter().zip(&convs) {
                         match conv {
-                            Convention::Inout => match arg {
+                            Convention::Var => match arg {
                                 Expr::Var(v) if self.is_mutable(v) == Some(true) => {}
                                 Expr::Var(v) => {
                                     return terr(format!(

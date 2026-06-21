@@ -251,12 +251,11 @@ fn sig(name: &str, params: &[Param], ret: &Option<Type>, bounds: &[(String, Stri
 
 fn param(p: &Param) -> String {
     // `var` (mutate + writeback) / `own` (consume) are the parameter
-    // conventions; an explicit borrow prints `let`. (The `inout`/`sink` alias
-    // spellings were removed from the language.)
+    // conventions; an explicit borrow prints `let`.
     let conv = match p.convention {
         Convention::Let => "",
         Convention::Borrow => "let ",
-        Convention::Inout => "var ",
+        Convention::Var => "var ",
         Convention::Sink => "own ",
     };
     match &p.ty {

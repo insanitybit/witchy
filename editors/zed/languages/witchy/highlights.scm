@@ -38,7 +38,7 @@
   "return" "yield"
   "if" "else" "match"
   "for" "while" "in"
-  "inout" "sink" "own" "move"
+  "sink" "own" "move"
   "as" "retain" "without" "region"
   "comptime" "derive"
 ] @keyword

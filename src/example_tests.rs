@@ -3142,26 +3142,26 @@ fn yn(b: Bool) -> String:
         assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
     }
 
-    /// An early `return` inside an `inout` function must agree on both backends.
-    /// An inout function yields multiple results (the declared return plus one per
-    /// inout param), so an early return reproduces that epilogue: it pushes each
-    /// inout param's current value before returning. (Regression for the
-    /// interpreter-only return-in-inout gap.)
+    /// An early `return` inside an `var` function must agree on both backends.
+    /// An var function yields multiple results (the declared return plus one per
+    /// var param), so an early return reproduces that epilogue: it pushes each
+    /// var param's current value before returning. (Regression for the
+    /// interpreter-only return-in-var gap.)
     #[test]
-    fn return_in_inout_fn_agrees_on_both_backends() {
+    fn return_in_var_fn_agrees_on_both_backends() {
         let src = "fn clamp(var n: Int):\n    if (n > 10):\n        n = 10\n        return\n    n = n + 1\n\nfn main(console: Console):\n    var a = 5\n    clamp(a)\n    print(console, __render(a))\n    var b = 50\n    clamp(b)\n    print(console, __render(b))\n";
         let want = vec!["6".to_string(), "10".to_string()];
         assert_eq!(interp(src), want.clone(), "interpreter");
         assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
     }
 
-    /// The `?` operator inside an `inout` function must agree on both backends.
+    /// The `?` operator inside an `var` function must agree on both backends.
     /// `?` early-returns the Err, and (like the interpreter's `Flow::Return`) the
-    /// inout param is still written back at its value on the error path — so WASM
-    /// pushes the inout params before the `?`-return too. (Regression for the
-    /// interpreter-only `?`-in-inout gap.)
+    /// var param is still written back at its value on the error path — so WASM
+    /// pushes the var params before the `?`-return too. (Regression for the
+    /// interpreter-only `?`-in-var gap.)
     #[test]
-    fn try_in_inout_fn_agrees_on_both_backends() {
+    fn try_in_var_fn_agrees_on_both_backends() {
         let src = "import result\n\nfn step(var n: Int, r: Result(Int, String)) -> Result(Int, String):\n    n = n + 100\n    let got = r?\n    n = n + got\n    Ok(n)\n\nfn describe(r: Result(Int, String)) -> String:\n    match r:\n        Ok(v) -> \"ok:\" + __render(v)\n        Err(e) -> \"err:\" + e\n\nfn main(console: Console):\n    var a = 1\n    let ok = step(a, Ok(5))\n    print(console, __render(a))\n    print(console, describe(ok))\n    var b = 1\n    let bad = step(b, Err(\"nope\"))\n    print(console, __render(b))\n    print(console, describe(bad))\n";
         let want = vec![
             "106".to_string(),
@@ -3169,9 +3169,9 @@ fn yn(b: Bool) -> String:
             "101".to_string(),
             "err:nope".to_string(),
         ];
-        // `?` inside an `inout` fn now lowers on the binary path: the Err
-        // early-return carries the multi-result tuple (the Err value + each inout
-        // param), so the inout writeback still happens on the error path.
+        // `?` inside an `var` fn now lowers on the binary path: the Err
+        // early-return carries the multi-result tuple (the Err value + each var
+        // param), so the var writeback still happens on the error path.
         assert_eq!(link_run(src), want.clone(), "interpreter");
         assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
     }
@@ -6557,14 +6557,14 @@ fn main(console: Console):
         assert_eq!(link_run(src), want, "interpreter oracle");
     }
 
-    /// An `inout` fn with an EARLY `return` on the binary path: the return must
-    /// yield the full multi-result tuple (the declared value, then each inout
+    /// An `var` fn with an EARLY `return` on the binary path: the return must
+    /// yield the full multi-result tuple (the declared value, then each var
     /// param's final value) so the arity matches the move-out ABI — a single
     /// `N::Return` would mismatch and the whole module bailed to WAT. `clamp`
     /// returns early when `n > 10`; both the early and fall-through exits write
     /// `n` back into the caller's variable.
     #[test]
-    fn wir_inout_early_return_binary_path() {
+    fn wir_var_early_return_binary_path() {
         let src = "fn clamp(var n: Int):\n    if (n > 10):\n        n = 10\n        return\n    n = n + 1\n\nfn main(console: Console):\n    var a = 5\n    clamp(a)\n    print(console, \"${a}\")\n    var b = 50\n    clamp(b)\n    print(console, \"${b}\")\n";
         let want = vec!["6".to_string(), "10".to_string()];
         let module = parser::parse_module(src).expect("parse");
@@ -6572,7 +6572,7 @@ fn main(console: Console):
         typeck::check(&linked).expect("typeck");
         let bytes = codegen::compile_module_binary(&linked)
             .expect("compile_module_binary")
-            .expect("the WIR binary path should lower an inout fn with an early return");
+            .expect("the WIR binary path should lower an var fn with an early return");
         assert_eq!(run_bytes_print_only(&bytes), want, "binary path");
         assert_eq!(link_run(src), want, "interpreter oracle");
     }
@@ -6994,10 +6994,10 @@ fn main(console: Console):
                 "type Tree:\n    Leaf(Int)\n    Node(Tree, Tree)\n\nfn main(console: Console):\n    let t = Node(Node(Leaf(1), Leaf(2)), Leaf(3))\n    print(console, \"${t}\")\n",
                 vec!["Node(Node(Leaf(1), Leaf(2)), Leaf(3))".to_string()],
             ),
-            // `inout` parameters (the multi-value move-out ABI): the callee returns
-            // its declared value plus each inout param's final value, and the call
+            // `var` parameters (the multi-value move-out ABI): the callee returns
+            // its declared value plus each var param's final value, and the call
             // site (`CallStoreMulti`) writes them back into the caller's vars. Covers
-            // a bare inout, repeated calls, and an inout alongside a non-inout arg.
+            // a bare var, repeated calls, and an var alongside a non-var arg.
             (
                 "fn bump(var n: Int):\n    n = n + 1\nfn add(var n: Int, by: Int):\n    n = n + by\nfn main(console: Console):\n    var a = 0\n    bump(a)\n    bump(a)\n    bump(a)\n    add(a, 10)\n    print(console, __render(a))\n",
                 vec!["13".to_string()],
@@ -13294,9 +13294,9 @@ fn main(console: Console):
     }
 
     #[test]
-    fn inout_swap_and_loop_backends_agree() {
-        // Harder `inout`: two inout parameters (swap) — exercising move-out of
-        // multiple values — and an inout mutation inside a loop. Both backends
+    fn var_swap_and_loop_backends_agree() {
+        // Harder `var`: two var parameters (swap) — exercising move-out of
+        // multiple values — and an var mutation inside a loop. Both backends
         // must agree.
         let src = r#"
 fn swap(var a: Int, var b: Int):
@@ -13327,7 +13327,7 @@ fn main(console: Console):
 
     #[test]
     fn mutate_example_runs_on_wasm() {
-        // `inout` (move-in / move-out) compiles: the example agrees with the
+        // `var` (move-in / move-out) compiles: the example agrees with the
         // interpreter through the WASM backend.
         let src = include_str!("../examples/mutate/src/mutate.witchy");
         assert_eq!(interp(src), run_on_wasm(src));

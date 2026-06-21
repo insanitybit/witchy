@@ -313,8 +313,8 @@ struct SavedScope {
     fn_ret_kind: HashMap<String, Kind>,
     ret: Kind,
     ret_slot: bool,
-    inout: bool,
-    inout_params: Vec<String>,
+    var: bool,
+    var_params: Vec<String>,
 }
 
 struct Codegen {
@@ -349,7 +349,7 @@ struct Codegen {
     globals: HashSet<String>,
     /// Capability field names (erased; referencing one yields a placeholder 0).
     cap_fields: HashSet<String>,
-    /// Parameter conventions per function, so call sites can write back `inout`
+    /// Parameter conventions per function, so call sites can write back `var`
     /// results (move-in / move-out).
     fn_conventions: HashMap<String, Vec<Convention>>,
     /// Parameters of each top-level function, so a bare function name used as a
@@ -654,12 +654,12 @@ struct Codegen {
     /// closure call `f(x)` recovers the result at the right width (an `Int`-
     /// returning closure as i64, not the generic i32).
     local_fn_ret_kind: HashMap<String, Kind>,
-    /// Whether the current function has any `inout` parameters.
-    cur_fn_inout: bool,
-    /// The current function's `inout` parameter names, in declaration order. An
+    /// Whether the current function has any `var` parameters.
+    cur_fn_var: bool,
+    /// The current function's `var` parameter names, in declaration order. An
     /// early `return`/`?` must push these (after the primary result) so the
     /// multi-result epilogue is reproduced on every exit path.
-    cur_fn_inout_params: Vec<String>,
+    cur_fn_var_params: Vec<String>,
     /// Generated per-shape structural-equality helper functions, keyed by
     /// `EqShape::id` so each shape is emitted once. A `BTreeMap` keeps emission
     /// order deterministic.
@@ -771,8 +771,8 @@ impl Codegen {
             cur_fn_ret_kind: Kind::I32,
             cur_fn_ret_slot: false,
             local_fn_ret_kind: HashMap::new(),
-            cur_fn_inout: false,
-            cur_fn_inout_params: Vec::new(),
+            cur_fn_var: false,
+            cur_fn_var_params: Vec::new(),
             uses_list_at: false,
             uses_list_push: false,
             uses_list_concat: false,
@@ -1942,18 +1942,18 @@ impl Codegen {
             .own_abi(&f.name)
             .and_then(|i| f.params.get(i))
             .map(|p| p.name.clone());
-        // Result = the normal return value, then one slot per `inout` parameter
+        // Result = the normal return value, then one slot per `var` parameter
         // (moved back out to the caller).
         let ret_kind = match &f.ret {
             Some(t) => ty_kind(t),
             None => self.block_kind(renamed),
         };
         self.cur_fn_ret_kind = ret_kind;
-        self.cur_fn_inout = f.params.iter().any(|p| p.convention == Convention::Inout);
-        self.cur_fn_inout_params = f
+        self.cur_fn_var = f.params.iter().any(|p| p.convention == Convention::Var);
+        self.cur_fn_var_params = f
             .params
             .iter()
-            .filter(|p| p.convention == Convention::Inout)
+            .filter(|p| p.convention == Convention::Var)
             .map(|p| p.name.clone())
             .collect();
 
@@ -1975,7 +1975,7 @@ impl Codegen {
         }
         let block_kind = self.block_kind(renamed);
         // M3: if the whole body lowered to WIR and the function uses neither the
-        // inout move-out ABI nor the own-cap ABI (the binary sink models neither
+        // var move-out ABI nor the own-cap ABI (the binary sink models neither
         // yet), keep a `WirFunc` so `compile_module_binary` can encode it.
         if let Some(seq) = self.captured_seq.take() {
             // The whole function lowered + captured (binary path). lower_block
@@ -1989,7 +1989,7 @@ impl Codegen {
                 top.1 = ke;
                 top.2 = se;
             }
-            // Inout AND own-ABI functions are captured now: the multi-value
+            // Var AND own-ABI functions are captured now: the multi-value
             // move-out / own-cap signatures are built in `assemble_wir_func`. A
             // function whose body lowered into a signature the call sites don't
             // match (e.g. an early `return` that can't carry the extra results)
@@ -2063,14 +2063,14 @@ impl Codegen {
         for i in 0..APPLY_POOL {
             locals.push(WirLocal { name: format!("__witchy_call_{i}"), ty: i32t() });
         }
-        // An `inout` function returns its declared value FOLLOWED BY one result per
-        // inout param (the multi-value move-out ABI, mirroring `inout_epilogue` on the
-        // WAT path): after the declared tail, push each inout param's final value in
+        // An `var` function returns its declared value FOLLOWED BY one result per
+        // var param (the multi-value move-out ABI, mirroring `var_epilogue` on the
+        // WAT path): after the declared tail, push each var param's final value in
         // declaration order. The call site (`CallStoreMulti`) pops them back into the
         // caller's variables.
         let mut ret = vec![Self::wir_ty_for_kind(ret_kind)];
         let mut body = body;
-        for name in &self.cur_fn_inout_params {
+        for name in &self.cur_fn_var_params {
             let k = self.locals.get(name).copied().unwrap_or(Kind::I32);
             ret.push(Self::wir_ty_for_kind(k));
             body.push(crate::wir::WirNode::Push(crate::wir::WirExpr::GetLocal(name.clone())));
@@ -2172,7 +2172,7 @@ impl Codegen {
     }
 
     /// Lower a SIMPLE block to a `WirSeq`. Only functions without in-place/cap
-    /// machinery qualify — no `inplace_push` vars, no `inout` params, no own-ABI
+    /// machinery qualify — no `inplace_push` vars, no `var` params, no own-ABI
     /// param — and only `Let`/`Expr`/`Return` statements; any other shape (the
     /// cap-kill, dict/list fast-path, tuple-destructure, and break/continue cases)
     /// bails to `None`, rejecting the program as not-yet-lowerable.
@@ -2205,7 +2205,7 @@ impl Codegen {
         // CallStoreMulti) only in a WIR-collecting scope (`collect_wir`); otherwise
         // this bails. Facts consumption is deferred to `compile_function` on capture
         // (lower_block is invoked many times per compile). The own-ABI never lowers
-        // here. `inout` lowers ONLY in a WIR-collecting scope (`collect_wir`): the
+        // here. `var` lowers ONLY in a WIR-collecting scope (`collect_wir`): the
         // param is a plain mutable local (`n = n + 1` is a `SetLocal`) and its final
         // value is a multi-result at the tail (built by `assemble_wir_func`), the
         // call site writing it back via `CallStoreMulti`. A non-collecting scope
@@ -2213,7 +2213,7 @@ impl Codegen {
         // `return`, which the WIR `N::Return` single value can't express), so it
         // bails — leaving the program to be rejected as unsupported.
         if !self.collect_wir
-            && (!self.cur_fn_inout_params.is_empty()
+            && (!self.cur_fn_var_params.is_empty()
                 || self.cur_fn_own_param.is_some()
                 || !self.inplace_push.is_empty())
         {
@@ -2266,16 +2266,16 @@ impl Codegen {
                             Kind::I32 => W::ConstI32(0),
                         },
                     };
-                    if self.cur_fn_inout_params.is_empty() && self.cur_fn_own_param.is_none() {
+                    if self.cur_fn_var_params.is_empty() && self.cur_fn_own_param.is_none() {
                         seq.push(N::Return(Some(value)));
                     } else {
-                        // An `inout`/own-ABI function's early `return` must yield the
+                        // An `var`/own-ABI function's early `return` must yield the
                         // full multi-result tuple — the declared value, then each
-                        // inout param's value, then the own-cap — matching
+                        // var param's value, then the own-cap — matching
                         // `assemble_wir_func`'s tail ordering. Push them and use a
                         // bare `return` (WIR `N::Return(Some)` carries one value).
                         seq.push(N::Push(value));
-                        for name in &self.cur_fn_inout_params {
+                        for name in &self.cur_fn_var_params {
                             seq.push(N::Push(W::GetLocal(name.clone())));
                         }
                         if let Some(p) = self.cur_fn_own_param.clone() {
@@ -2917,7 +2917,7 @@ impl Codegen {
     /// and widened to its parameter's kind, then `call $name`. Returns `None` if
     /// any argument isn't lowerable. ONLY sound from `lower_expr`'s call arm, after
     /// builtins/natives/closures have been excluded, and only for functions WITHOUT
-    /// an own-ABI token or `inout` writeback.
+    /// an own-ABI token or `var` writeback.
     fn try_lower_user_call(&mut self, name: &str, args: &[Expr]) -> Option<crate::wir::WirExpr> {
         let param_kinds: Vec<Kind> = self
             .fn_params
@@ -2936,13 +2936,13 @@ impl Codegen {
         Some(crate::wir::WirExpr::Call { func: name.to_string(), args: args_w })
     }
 
-    /// Lower an `inout` user call. The callee returns `(declared, inout_1, …)`;
+    /// Lower an `var` user call. The callee returns `(declared, var_1, …)`;
     /// `CallStoreMulti` pops the results in reverse into `dests`, so dest[0] is a
-    /// scratch holding the declared value and the rest are the caller's inout-arg
+    /// scratch holding the declared value and the rest are the caller's var-arg
     /// locals (written back). We then push the scratch — the call's value. Each
-    /// inout arg must be a non-global local `Var` (CallStoreMulti uses `local.set`);
+    /// var arg must be a non-global local `Var` (CallStoreMulti uses `local.set`);
     /// otherwise we defer to WAT (`None`).
-    fn lower_inout_call(&mut self, name: &str, args: &[Expr]) -> Option<crate::wir::WirExpr> {
+    fn lower_var_call(&mut self, name: &str, args: &[Expr]) -> Option<crate::wir::WirExpr> {
         use crate::wir::{WirExpr as W, WirNode as N};
         let convs = self.fn_conventions.get(name).cloned()?;
         let param_kinds: Vec<Kind> = self
@@ -2959,10 +2959,10 @@ impl Codegen {
                 None => w,
             });
         }
-        // dest[0] = scratch for the declared return; then each inout arg's local.
+        // dest[0] = scratch for the declared return; then each var arg's local.
         let mut dests = vec![TUPLE_TMP.to_string()];
         for (i, conv) in convs.iter().enumerate() {
-            if *conv == Convention::Inout {
+            if *conv == Convention::Var {
                 match args.get(i) {
                     Some(Expr::Var(v))
                         if self.locals.contains_key(v) && !self.globals.contains(v) =>
@@ -3922,7 +3922,7 @@ impl Codegen {
             }
             // `e?`: store the operand once, then a value-`if` on its tag — take the
             // success payload (tag 0, at `tmp+4`) or early-`return` the whole
-            // Err/None. The `inout` epilogue variant stays in legacy.
+            // Err/None. The `var` epilogue variant stays in legacy.
             Expr::Try(inner) => {
                 use crate::wir::WirNode as N;
                 let payload_kind =
@@ -3956,13 +3956,13 @@ impl Codegen {
                     Kind::F64 => W::ConstF64(0.0),
                     Kind::I32 => W::ConstI32(0),
                 };
-                // The Err path early-returns the Err Result. In an inout/own-ABI
+                // The Err path early-returns the Err Result. In an var/own-ABI
                 // fn the return must carry the full multi-result tuple (the Err
-                // value, then each inout param's current value, then the own-cap),
-                // matching `assemble_wir_func`'s tail — so the inout writeback still
+                // value, then each var param's current value, then the own-cap),
+                // matching `assemble_wir_func`'s tail — so the var writeback still
                 // happens on the `?` error path. Then a bare `Return(None)`.
                 let mut els: Vec<N> =
-                    if self.cur_fn_inout_params.is_empty() && self.cur_fn_own_param.is_none() {
+                    if self.cur_fn_var_params.is_empty() && self.cur_fn_own_param.is_none() {
                         // `?` early-returns the whole Err/None aggregate (an i32
                         // pointer). Inside a closure the function returns an i64
                         // slot (the call-indirect ABI), so the value must be
@@ -3977,7 +3977,7 @@ impl Codegen {
                         vec![N::Return(Some(ret_val))]
                     } else {
                         let mut nodes = vec![N::Push(W::GetLocal(tmp.clone()))];
-                        for name in &self.cur_fn_inout_params {
+                        for name in &self.cur_fn_var_params {
                             nodes.push(N::Push(W::GetLocal(name.clone())));
                         }
                         if self.cur_fn_own_param.is_some() {
@@ -4000,10 +4000,10 @@ impl Codegen {
             }
             // A call expression. Builtins/natives that WIR can lower flow through
             // `lower_call`; otherwise a plain top-level user call (no own-ABI
-            // token, no `inout` writeback, not a closure-typed local) lowers via
+            // token, no `var` writeback, not a closure-typed local) lowers via
             // `try_lower_user_call`. The arm precedence here (builtin/native first,
             // then direct user call, then closure-local) is the call dispatch; any
-            // other call shape (own-ABI, `inout`) returns `None` and is rejected.
+            // other call shape (own-ABI, `var`) returns `None` and is rejected.
             Expr::Call { name, args } => {
                 // Only a WIR-collecting scope lowers calls; otherwise bail so the
                 // construct is reported unsupported. `lower_call` owns the
@@ -4040,20 +4040,20 @@ impl Codegen {
                     };
                     return Some(W::FromSlot(Box::new(call), Self::wir_kind(rk)));
                 }
-                let has_inout = self
+                let has_var = self
                     .fn_conventions
                     .get(name)
-                    .is_some_and(|cs| cs.contains(&Convention::Inout));
-                // An `inout` user call: the callee returns its declared value plus one
-                // result per inout param (the multi-value move-out ABI). Lower to a
-                // `CallStoreMulti` that writes each inout result back into the caller's
+                    .is_some_and(|cs| cs.contains(&Convention::Var));
+                // An `var` user call: the callee returns its declared value plus one
+                // result per var param (the multi-value move-out ABI). Lower to a
+                // `CallStoreMulti` that writes each var result back into the caller's
                 // local var, then yield the declared value.
-                if has_inout
+                if has_var
                     && self.emitted_funcs.contains(name)
                     && !self.locals.contains_key(name)
                     && self.summaries.own_abi(name).is_none()
                 {
-                    return self.lower_inout_call(name, args);
+                    return self.lower_var_call(name, args);
                 }
                 // Exactly the compiled `$name` user functions — never an
                 // intrinsic/native (those have no emitted func to call), never a
@@ -4061,7 +4061,7 @@ impl Codegen {
                 let is_plain_user_fn = self.emitted_funcs.contains(name)
                     && !self.locals.contains_key(name)
                     && !self.local_fn_ret_kind.contains_key(name);
-                if is_plain_user_fn && self.summaries.own_abi(name).is_none() && !has_inout {
+                if is_plain_user_fn && self.summaries.own_abi(name).is_none() && !has_var {
                     return self.try_lower_user_call(name, args);
                 }
                 return None;
@@ -4172,8 +4172,8 @@ impl Codegen {
         use crate::wir::{WirExpr as W, WirFunc, WirLocal, WirNode as N, WirTy};
         let index = self.lambda_wir_funcs.len();
         let saved = self.swap_out_scope();
-        self.cur_fn_inout = false;
-        self.cur_fn_inout_params = Vec::new();
+        self.cur_fn_var = false;
+        self.cur_fn_var_params = Vec::new();
         // Lambda params: i32 ABI placeholder + record/list types.
         for p in params {
             self.locals.insert(p.name.clone(), Kind::I32);
@@ -4343,8 +4343,8 @@ impl Codegen {
             fn_ret_kind: std::mem::take(&mut self.local_fn_ret_kind),
             ret: self.cur_fn_ret_kind,
             ret_slot: self.cur_fn_ret_slot,
-            inout: self.cur_fn_inout,
-            inout_params: std::mem::take(&mut self.cur_fn_inout_params),
+            var: self.cur_fn_var,
+            var_params: std::mem::take(&mut self.cur_fn_var_params),
         }
     }
 
@@ -4363,8 +4363,8 @@ impl Codegen {
         self.local_fn_ret_kind = s.fn_ret_kind;
         self.cur_fn_ret_kind = s.ret;
         self.cur_fn_ret_slot = s.ret_slot;
-        self.cur_fn_inout = s.inout;
-        self.cur_fn_inout_params = s.inout_params;
+        self.cur_fn_var = s.var;
+        self.cur_fn_var_params = s.var_params;
     }
 
     /// The `$key_eq` comparison mode for a Dict key expression: 0 for Int/Bool
@@ -6515,7 +6515,7 @@ fn register_module_items(cg: &mut Codegen, module: &Module) {
             cg.ctors.insert(name.to_string(), (tag as u32, *nfields));
         }
     }
-    // Collect parameter conventions up front so call sites can resolve `inout`
+    // Collect parameter conventions up front so call sites can resolve `var`
     // write-back even for forward references.
     for item in &module.items {
         match item {

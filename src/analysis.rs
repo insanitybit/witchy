@@ -175,14 +175,14 @@ pub fn is_self_assign_shape(name: &str, value: &Expr, summaries: &Summaries) -> 
 // ---------------------------------------------------------------------------
 // Function summaries: can a call leave a live whole-alias of an argument
 // observable by the caller (returned, embedded in the return value, or
-// written back through an `inout` parameter)?
+// written back through an `var` parameter)?
 // ---------------------------------------------------------------------------
 
 struct FnInfo {
     convs: Vec<Convention>,
     may_alias_out: Vec<bool>,
     /// `Some(i)`: this function carries the own-ABI — parameter `i` is its
-    /// single `own` collection parameter, the function has no `inout`
+    /// single `own` collection parameter, the function has no `var`
     /// parameters, and the return value may alias that parameter. The
     /// ownership token travels across the call (extra i32 cap param + extra
     /// i32 cap result), so `x = f(move x)` pipelines keep their owned slack.
@@ -201,7 +201,7 @@ impl Summaries {
 
     /// The full bottom-up pass over the module's call graph: a parameter may
     /// alias out only if some occurrence of it flows somewhere live —
-    /// returned (whole or embedded), written back through `inout`, captured
+    /// returned (whole or embedded), written back through `var`, captured
     /// by a closure, or passed on to a callee position that itself aliases
     /// out. Optimistic least fixpoint: aliasing needs a syntactic source, so
     /// cycles with no source stay clean (`let`-style read recursion).
@@ -262,9 +262,9 @@ impl Summaries {
                 })
                 .map(|(i, _)| i)
                 .collect();
-            let has_inout = f.params.iter().any(|p| p.convention == Convention::Inout);
+            let has_var = f.params.iter().any(|p| p.convention == Convention::Var);
             if let [i] = sinks.as_slice() {
-                if !has_inout && summaries.fns[name.as_str()].may_alias_out[*i] {
+                if !has_var && summaries.fns[name.as_str()].may_alias_out[*i] {
                     summaries.fns.get_mut(name.as_str()).unwrap().own_abi = Some(*i);
                 }
             }
@@ -288,7 +288,7 @@ impl Summaries {
                 // dead afterwards (use-after-move is a compile error), so no
                 // live DOUBLE alias can form.
                 Some(Convention::Sink) => false,
-                // the inout variable itself is rebound at write-back (the
+                // the var variable itself is rebound at write-back (the
                 // consumer's plain-reassign reset covers it); whether OTHER
                 // arguments leak into it is `may_alias_out`.
                 _ => info.may_alias_out.get(idx).copied().unwrap_or(true),
@@ -679,7 +679,7 @@ impl<'a> Walker<'a> {
                     for (i, a) in args.iter().enumerate() {
                         let arg_live = self.summaries.arg_live(name, i);
                         // NOTE: `may_alias_out` covers BOTH the return value
-                        // and inout write-backs; an inout-channel alias is
+                        // and var write-backs; an var-channel alias is
                         // live even when the call's result is discarded, so
                         // arg liveness here deliberately ignores `live`.
                         self.scan(a, arg_live, &format!("passed to `{name}`"), out);

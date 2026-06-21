@@ -588,24 +588,24 @@ fragments via `wir::expr_to_wat`.
   `FromSlot(Load{Add(base, off), I64, 0}, kind)`. (Also fixed `to_slot_op`'s I32
   case to sign-extend `i64.extend_i32_s`, matching codegen's `to_slot`/`kind_convert`
   — it was a latent `_u`; `FromSlot` was already correct.)
-- **`Try`** (`e?`, non-`inout` functions): stores the operand in the `$TRY_TMP`
+- **`Try`** (`e?`, non-`var` functions): stores the operand in the `$TRY_TMP`
   scratch, then a value-`if` on the tag — take the success payload (`tmp+4`) or
   early-`return` the whole Err/None. Modelled with the new `WirExpr::Seq(WirSeq)`
-  node (a node sequence that leaves one value — `SetLocal; value-If`). The `inout`
-  epilogue variant (`cur_fn_inout_params` non-empty) stays in legacy.
+  node (a node sequence that leaves one value — `SetLocal; value-If`). The `var`
+  epilogue variant (`cur_fn_var_params` non-empty) stays in legacy.
 - **aggregate constructors** (`List`, `Tuple`, `Ctor`): no `Store` node needed —
   each is `header; elems-in-slots; call $mkN` (the `$mkN` helper allocates). Lowered
   via `lower_aggregate` to `Call{ "mkN", [ConstI32(header), ToSlot(elem, k)…] }`
   (header = length / `0` / ctor tag), recording `mk_arities`. These emit the first
   **explicit `ToSlot` nodes** in real lowered code — the M4 slot-elimination pass's
   raw material.
-- **plain user-function `Call`** (no own-ABI token, no `inout`): the soundness
+- **plain user-function `Call`** (no own-ABI token, no `var`): the soundness
   problem (a user fn can't be told from a bare builtin by name) is dodged by
   converting **inside `compile_call`'s `_ =>` fallback** — only reached after every
   builtin/native/closure is excluded by the dispatch, so it's sound *by
   construction*, no predicate needed. `try_lower_user_call` lowers each arg, widens
   it to the param kind (`Convert`), and emits `Call{ name, args }`. The own-ABI /
-  `inout` / closure (`call_indirect`) variants stay in legacy.
+  `var` / closure (`call_indirect`) variants stay in legacy.
 - **`RecordUpdate`** (bare-variable base): rebuilds the record as `Call{ "mkN",
   [ConstI32(tag), per-field…] }` where each field is either the overridden value in
   a slot (`ToSlot`) or the base's raw slot copied across (`Load{Add(base, off)}`,
@@ -653,7 +653,7 @@ lowering is the M2 work, so these wait for it).
 - **`Call` — the rest of the cluster** (extend `lower_call`): the remaining
   builtin/native arms (`encoding.*`, `string.*`, list/dict, net, dir, `print`, …;
   many add a trailing `i32.const 0`, an arg `kind_convert`, or call a `_host`
-  import → `CallHost`), plus the user-call **own-ABI / `inout` / closure
+  import → `CallHost`), plus the user-call **own-ABI / `var` / closure
   (`call_indirect`)** variants. (The crypto/compiler/regex cluster and the plain
   user call are done.) `MethodCall`/`Apply` lower to `Call` before codegen;
 - **`Lambda`** — closure materialisation (table slot + capture record);
@@ -661,7 +661,7 @@ lowering is the M2 work, so these wait for it).
   are **blocks**, so they wait on the M2 block-lowering.
 
 (Lowered so far: leaf arms incl. `Float`, plain-local `Var`, `Unary`, the whole
-`Binary` arm, `As`, `&&`/`||`, `Field`, `Try` (non-`inout`), the `List`/`Tuple`/
+`Binary` arm, `As`, `&&`/`||`, `Field`, `Try` (non-`var`), the `List`/`Tuple`/
 `Ctor` constructors, `RecordUpdate` (bare-var base), the **plain user-function
 `Call`**, and ~60 builtin `Call` arms (see the `lower_call` bullet above). Infra in
 place: the `Control`, `Seq`, `Convert`, `ToSlot`/`FromSlot`/`Load`/`Call`/`CallHost`
@@ -698,7 +698,7 @@ collapses into `WirTy`-on-nodes here — the big contributor-facing simplificati
 suite green):
 - `lower_block` lowers a block whose statements are `Let`/`Expr`/`Return`/
   `LetTuple`/`Break`/`Continue`/`Assign` (in a function with no `inplace_push` var /
-  `inout` param / own-ABI param) to a `WirSeq` rendered by `seq_to_wat`.
+  `var` param / own-ABI param) to a `WirSeq` rendered by `seq_to_wat`.
   `Break`/`Continue` → `Br` to the enclosing `loop_labels` (so loops *with* early
   exit now lower); `LetTuple` → store-once + per-name `FromSlot(Load(tmp+4+8*i))`;
   `Assign` → `SetLocal{name, Convert(value, vk, target)}` for the simplest case only

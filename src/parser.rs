@@ -562,10 +562,9 @@ impl Parser {
         let mut params = Vec::new();
         while !self.at(&Tok::RParen) {
             // `var` mutates in place and writes back; `own` consumes (takes
-            // ownership). (The `inout`/`sink` Hylo-style alias spellings were
-            // removed — `var`/`own` are the only spellings.)
+            // ownership).
             let convention = if self.eat(&Tok::Var) {
-                Convention::Inout
+                Convention::Var
             } else if self.eat(&Tok::Own) {
                 Convention::Sink
             } else if self.eat(&Tok::Let) {

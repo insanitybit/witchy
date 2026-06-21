@@ -1692,10 +1692,10 @@ fn main(console: Console):
         assert_eq!(run(src).unwrap(), vec!["42"]);
     }
 
-    /// Hylo-style mutable value semantics: an `inout` parameter mutates the
+    /// Hylo-style mutable value semantics: an `var` parameter mutates the
     /// caller's variable in place — easy mutability, no pointers.
     #[test]
-    fn inout_parameter_writes_back_to_caller() {
+    fn var_parameter_writes_back_to_caller() {
         let src = r#"
 fn bump(var n: Int):
     n = (n + 1)
@@ -1709,7 +1709,7 @@ fn main(console: Console):
     }
 
     #[test]
-    fn inout_requires_a_mutable_variable() {
+    fn var_requires_a_mutable_variable() {
         let src = r#"
 fn bump(var n: Int):
     n = (n + 1)

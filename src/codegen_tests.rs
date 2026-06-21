@@ -520,8 +520,8 @@ fn main() -> Int:
     }
 
     #[test]
-    fn compiles_inout_writeback() {
-        // `inout` compiles to move-in / move-out: bump returns the updated n,
+    fn compiles_var_writeback() {
+        // `var` compiles to move-in / move-out: bump returns the updated n,
         // and the caller writes it back into x.
         let src = r#"
 fn bump(var n: Int):

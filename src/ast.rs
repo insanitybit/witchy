@@ -155,7 +155,7 @@ pub struct Param {
 }
 
 /// Hylo-style parameter passing conventions (mutable value semantics).
-/// `let` borrows immutably (default), `inout` mutates in place and writes back,
+/// `let` borrows immutably (default), `var` mutates in place and writes back,
 /// `sink` consumes (takes ownership / moves the value in).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Convention {
@@ -167,16 +167,16 @@ pub enum Convention {
     /// observable semantics as the default; the no-escape contract (a borrowed
     /// parameter may not be returned) is enforced by the type checker.
     Borrow,
-    Inout,
+    Var,
     Sink,
 }
 
 impl Convention {
     /// Whether a parameter with this convention binds a *mutable* local (you may
-    /// assign it in the body). `inout` and `sink` give a mutable value; `let` and
+    /// assign it in the body). `var` and `sink` give a mutable value; `let` and
     /// an explicit borrow are read-only.
     pub fn binds_mutable(self) -> bool {
-        matches!(self, Convention::Inout | Convention::Sink)
+        matches!(self, Convention::Var | Convention::Sink)
     }
 }
 
