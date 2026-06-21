@@ -131,13 +131,13 @@ fn main(console: Console):
 "By value" means a closure can't reach back and mutate a variable from the
 enclosing scope — that's a compile error, not a silent surprise. If you need to
 produce a changed value, return it; if you need to mutate a caller's variable,
-the next section's `inout` is the tool.
+the next section's `var` is the tool.
 
-## Mutating a caller's variable: `inout`
+## Mutating a caller's variable: `var`
 
 Most functions take their arguments as read-only views (the default). When you
 genuinely want a function to mutate the caller's variable, mark the parameter
-`inout`; the final value is written back:
+`var`; the final value is written back:
 
 ```witchy
 fn bump(var n: Int):
@@ -154,10 +154,9 @@ fn main(console: Console):
 ```
 
 This is witchy's version of mutable references, but it's explicit at both the
-definition (`inout n`) and — because the variable is visibly handed over — the
+definition (`var n`) and — because the variable is visibly handed over — the
 call. There's no aliasing to reason about: `bump` has the only handle to `n`
-while it runs. (`var n` on a parameter means exactly the same thing as `inout n`,
-if you prefer that spelling.)
+while it runs.
 
 ## Ownership: borrow and transfer
 
@@ -186,8 +185,8 @@ fn main(console: Console):
 4
 ```
 
-To *take* a value — so the caller can no longer use it — mark the parameter `own`
-(its synonym is `sink`). Spell the hand-off `move` at the call site; afterwards,
+To *take* a value — so the caller can no longer use it — mark the parameter `own`.
+Spell the hand-off `move` at the call site; afterwards,
 touching the original is a compile error, not a dangling reference:
 
 ```witchy
@@ -206,7 +205,7 @@ fn main(console: Console):
 ```
 
 So the whole model is four choices, all visible in the signature: owned-immutable
-by default, `let` to borrow, `own`/`move` to transfer, `inout`/`var` to mutate the
+by default, `let` to borrow, `own`/`move` to transfer, `var` to mutate the
 caller's variable in place. There's no aliasing and no garbage-collector surprise
 — who may change what is part of every function's type.
 

@@ -15,8 +15,8 @@ can be looking.
 |---|---|---|
 | `fn f(xs: List(Int))` *(default)* | an owned, observably immutable value | the callee's copy is independent; safe everywhere |
 | `fn f(let xs: List(Int))` | an immutable **borrow** — the type checker rejects returning it, so it cannot outlive the call | the value provably has no new owner after the call; backends share it without a defensive copy |
-| `fn f(own xs: List(Int))` / `sink` | ownership transfer; use-after-move is a compile error | the callee may consume the value in place — its story ends here |
-| `fn f(inout n: Int)` | the callee mutates and the caller's `var` is written back | mutate-in-place with write-back; no copy-out |
+| `fn f(own xs: List(Int))` | ownership transfer; use-after-move is a compile error | the callee may consume the value in place — its story ends here |
+| `fn f(var n: Int)` | the callee mutates and the caller's `var` is written back | mutate-in-place with write-back; no copy-out |
 
 ## The optimizations you get without asking
 
@@ -55,10 +55,8 @@ annotations** — it triggers on shapes the compiler can prove unaliased:
 - **Loop watermark resets.** A loop body whose allocations provably don't
   escape the iteration rewinds the arena every pass — a million-iteration
   formatting loop runs in constant memory.
-- **Per-message actor resets.** An actor's arena resets before every
-  delivery; persistent state lives host-side. Resident actors stay flat.
 
-The honest summary of where the knobs matter: `let`/`own`/`inout` are
+The honest summary of where the knobs matter: `let`/`own`/`var` are
 *contracts* the optimizer consumes — `let` certifies a call as
 chain-preserving, `own`+`move` threads ownership through call boundaries,
 and everything unannotated is still analyzed (summaries are computed for
@@ -84,5 +82,5 @@ let summary = region -> String:
 ```
 
 The compiler already inserts the same machinery for free where it can prove
-it safe (every actor message, escape-free loop iterations); `region:` is the
+it safe (escape-free loop iterations); `region:` is the
 explicit form for everything else.

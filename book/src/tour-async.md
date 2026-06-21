@@ -169,8 +169,8 @@ async fn main(console: Console):
     chan.consume(out_rx, fn(v): chan.done(print(console, "got ${v}"))).await
 ```
 
-The list form lowers to `chan.for_each`, the receiver form to `chan.consume`. A
-`while` loop cannot `await` (it would need mutable state carried across the point, which captured-by-value closures can't express) — for an open-ended loop,.await
+The list form lowers to `task.for_each`, the receiver form to `chan.consume`. A
+`while` loop cannot `await` (it would need mutable state carried across the point, which captured-by-value closures can't express) — for an open-ended loop,
 recurse with an async fn, or use `for await`.
 
 ## Why this stays deterministic

@@ -88,4 +88,4 @@ all: the ability to run code whose blast radius is written in its type and
 enforced by the machine. There's one more place that boundary matters — between
 the concurrent parts of a running program.
 
-Next: concurrency with actors.
+Next: concurrency with async and channels.
