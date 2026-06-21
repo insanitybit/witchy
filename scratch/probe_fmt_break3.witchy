@@ -1,2 +1,0 @@
-fn main(console: Console):
-    print(console, "newline\\n is escaped backslash-n; \n was a real newline above? no")

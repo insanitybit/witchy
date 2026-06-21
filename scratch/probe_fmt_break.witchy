@@ -1,5 +1,0 @@
-fn join_csv(xs: List(Int)) -> String:
-    string.join(["${n}" for n in xs], ",")
-
-fn main(console: Console):
-    print(console, join_csv([1, 2, 3]))

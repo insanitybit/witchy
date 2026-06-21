@@ -1,2 +1,0 @@
-fn main(console: Console):
-    print(console, "literal dollar: \${not_interpolated}")
