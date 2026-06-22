@@ -1,9 +1,17 @@
 ---
 rfc: 0004
 title: Self-hosting the `witchy` CLI over a `witchyc` compiler
-status: proposed
+status: implemented
 created: 2026-06-21
-tracking:
+tracking: |
+  Shipped 2026-06-22 (`src/pm` deleted, commit eae5276). The package manager
+  (`projects/pm`) and registry (`projects/coven`) are self-hosted in witchy and
+  drive the compiler via the `Exec` capability. One divergence from this proposal:
+  it landed as a SINGLE binary that embeds the witchy front-end (loaded via the
+  `witchy pm` / top-level and `coven-serve` bootstraps) rather than two separate
+  `witchy` + `witchyc` binaries — the split is logical (TCB vs. front-end), not
+  packaged. The trusted-publishing IdP minting (`coven-gen-issuer`/`coven-mint-token`)
+  remains a Rust test helper in `src/idp.rs` (per §7).
 ---
 
 # RFC-0004: Self-hosting the `witchy` CLI over a `witchyc` compiler

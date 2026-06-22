@@ -61,8 +61,9 @@ the child's `(exit_code, stdout-then-stderr)`. `Exec` is the most dangerous
 capability — it escapes the WASM sandbox by running native code — so it is
 footprinted and gated like any other, the `Dir[Read]` confinement and
 argv-only (no shell string) call shape are load-bearing, and almost nothing
-should hold it. It exists chiefly so the `witchy` CLI can drive the `witchyc`
-compiler; see `rfcs/0004-self-hosted-cli.md`.
+should hold it. It exists chiefly so the self-hosted `witchy` package manager
+can drive the compiler — the same binary's `compile`/`build-step` verbs — as a
+confined subprocess; see `rfcs/0004-self-hosted-cli.md`.
 
 ## Attenuation patterns
 
