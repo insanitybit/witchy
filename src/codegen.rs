@@ -3014,6 +3014,10 @@ impl Codegen {
         use crate::wir::WirExpr as W;
         use crate::wir::WirNode as N;
         Some(match e {
+            // Expanded away by `crate::tagged` during linking, before codegen.
+            Expr::TaggedLit { tag, .. } => {
+                unreachable!("unexpanded tagged literal `{tag}` reached codegen")
+            }
             Expr::Int(n) | Expr::Duration(n) => W::ConstI64(*n),
             Expr::Float(x) => W::ConstF64(*x),
             Expr::Bool(b) => W::ConstI32(if *b { 1 } else { 0 }),
@@ -4497,6 +4501,7 @@ impl Codegen {
             | Expr::Duration(_)
             | Expr::Float(_)
             | Expr::Str(_)
+            | Expr::TaggedLit { .. }
             | Expr::Bool(_) => {}
         }
     }
@@ -6440,7 +6445,12 @@ fn collect_fn_refs_expr(e: &Expr, out: &mut HashSet<String>) {
         }
         Expr::Lambda { body, .. } => collect_fn_refs_block(body, out),
         Expr::Block(b) => collect_fn_refs_block(b, out),
-        Expr::Int(_) | Expr::Duration(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) => {}
+        Expr::Int(_)
+        | Expr::Duration(_)
+        | Expr::Float(_)
+        | Expr::Str(_)
+        | Expr::Bool(_)
+        | Expr::TaggedLit { .. } => {}
     }
 }
 
@@ -7391,7 +7401,12 @@ fn fv_expr(e: &Expr, s: &mut LambdaScan) {
         Expr::Var(n) => {
             s.reads.insert(n.clone());
         }
-        Expr::Int(_) | Expr::Duration(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) => {}
+        Expr::Int(_)
+        | Expr::Duration(_)
+        | Expr::Float(_)
+        | Expr::Str(_)
+        | Expr::Bool(_)
+        | Expr::TaggedLit { .. } => {}
         // A `Call` name is a function/builtin (or a closure local, caught at WASM
         // validation), never an outer value capture — only its args matter here.
         Expr::List(xs) | Expr::Tuple(xs) => {
@@ -7584,6 +7599,7 @@ fn collect_let_names_expr(expr: &Expr, out: &mut Vec<String>) {
         | Expr::Float(_)
         | Expr::Str(_)
         | Expr::Bool(_)
+        | Expr::TaggedLit { .. }
         | Expr::Lambda { .. } => {}
     }
 }
@@ -7701,7 +7717,12 @@ impl Renamer {
                 unreachable!("range/index sugar is lowered before codegen (parser::lower_sugar_module)")
             }
             Expr::Var(n) => *n = self.resolve(n),
-            Expr::Int(_) | Expr::Duration(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) => {}
+            Expr::Int(_)
+        | Expr::Duration(_)
+        | Expr::Float(_)
+        | Expr::Str(_)
+        | Expr::Bool(_)
+        | Expr::TaggedLit { .. } => {}
             // Call / Ctor names are functions / constructors, not locals —
             // only the arguments are renamed.
             Expr::List(xs) | Expr::Tuple(xs) => {
@@ -7924,7 +7945,7 @@ fn flip_string_add_module(m: &mut Module, table: &crate::typeck::TypeTable) {
             Expr::Lambda { body, .. } => walk_block(body, table),
             Expr::Block(b) => walk_block(b, table),
             Expr::Int(_) | Expr::Duration(_) | Expr::Float(_) | Expr::Str(_)
-            | Expr::Bool(_) | Expr::Var(_) => {}
+            | Expr::Bool(_) | Expr::Var(_) | Expr::TaggedLit { .. } => {}
         }
     }
     fn walk_block(b: &mut Block, table: &crate::typeck::TypeTable) {
@@ -8090,7 +8111,7 @@ fn rewrite_try_ctx_module(m: &mut Module, table: &crate::typeck::TypeTable) -> b
             Expr::Lambda { body, .. } => walk_block(body, table, changed),
             Expr::Block(b) => walk_block(b, table, changed),
             Expr::Int(_) | Expr::Duration(_) | Expr::Float(_) | Expr::Str(_)
-            | Expr::Bool(_) | Expr::Var(_) => {}
+            | Expr::Bool(_) | Expr::Var(_) | Expr::TaggedLit { .. } => {}
         }
         // After recursing into children, rewrite this node if it is `__try_ctx`.
         // Read the operand type BEFORE moving (the table is keyed by node address).

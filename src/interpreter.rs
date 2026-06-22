@@ -348,6 +348,8 @@ impl Env {
 fn idents_in_expr(e: &Expr, f: &mut dyn FnMut(&str)) {
     match e {
         Expr::Int(_) | Expr::Float(_) | Expr::Duration(_) | Expr::Str(_) | Expr::Bool(_) => {}
+        // No identifier children (its holes are unparsed source); gone before this runs.
+        Expr::TaggedLit { .. } => {}
         Expr::Var(n) => f(n),
         Expr::List(items) | Expr::Tuple(items) => {
             for it in items {
@@ -1903,6 +1905,10 @@ impl Interpreter {
             return err("evaluation step budget exceeded (possible infinite loop)");
         }
         match expr {
+            // Expanded away by `crate::tagged` during linking, before evaluation.
+            Expr::TaggedLit { tag, .. } => {
+                unreachable!("unexpanded tagged literal `{tag}` reached the interpreter")
+            }
             Expr::Int(n) | Expr::Duration(n) => Ok(Value::Int(*n)),
             Expr::Float(x) => Ok(Value::Float(*x)),
             Expr::Str(s) => Ok(Value::Str(s.clone())),

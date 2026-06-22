@@ -956,6 +956,21 @@ fn expr(e: &Expr) -> String {
             }
         }
         Expr::Str(v) => string_lit(v),
+        // `tag"a${x}b"` — reconstruct from the static parts (escaped) and holes
+        // (raw source). `parts` has one more element than `holes`.
+        Expr::TaggedLit { tag, parts, holes, .. } => {
+            let mut s = format!("{tag}\"");
+            for (i, part) in parts.iter().enumerate() {
+                s.push_str(&tagged_part(part));
+                if let Some(hole) = holes.get(i) {
+                    s.push_str("${");
+                    s.push_str(hole);
+                    s.push('}');
+                }
+            }
+            s.push('"');
+            s
+        }
         Expr::Bool(b) => b.to_string(),
         Expr::Var(n) => n.clone(),
         Expr::List(xs) => format!("[{}]", comma(xs)),
@@ -1743,6 +1758,27 @@ pub fn reformat(src: &str) -> Option<String> {
 
 
 
+
+/// Escape one static fragment of a tagged literal for re-emission. Like the
+/// body of `string_lit` but a bare `$` is escaped only when it would open an
+/// interpolation (`${`), so ordinary `$` in markup/SQL survives unchanged.
+fn tagged_part(v: &str) -> String {
+    let mut s = String::new();
+    let chars: Vec<char> = v.chars().collect();
+    for (i, &c) in chars.iter().enumerate() {
+        match c {
+            '"' => s.push_str("\\\""),
+            '\\' => s.push_str("\\\\"),
+            '\n' => s.push_str("\\n"),
+            '\t' => s.push_str("\\t"),
+            '\r' => s.push_str("\\r"),
+            '\0' => s.push_str("\\0"),
+            '$' if chars.get(i + 1) == Some(&'{') => s.push_str("\\$"),
+            _ => s.push(c),
+        }
+    }
+    s
+}
 
 fn string_lit(v: &str) -> String {
     let mut s = String::from("\"");

@@ -14,6 +14,16 @@ pub enum Tok {
     Duration(i64),
     Str(String),
     Ident(String),
+    /// A compile-time tagged literal `tag"a${x}b"` (RFC-0006). Produced when a
+    /// `"`-string immediately follows an identifier with no intervening
+    /// whitespace. `parts` are the static fragments (`["a", "b"]`), `holes` are
+    /// each interpolation's source text (`["x"]`). Expanded away by
+    /// `crate::tagged` before type-checking; see `Expr::TaggedLit`.
+    TagLit {
+        tag: String,
+        parts: Vec<String>,
+        holes: Vec<String>,
+    },
 
     // Keywords
     Fn,
@@ -110,6 +120,7 @@ impl fmt::Display for Tok {
             Duration(ms) => write!(f, "{ms}ms"),
             Str(s) => write!(f, "{s:?}"),
             Ident(s) => write!(f, "{s}"),
+            TagLit { tag, .. } => write!(f, "{tag}\"…\""),
             Fn => write!(f, "fn"),
             Gen => write!(f, "gen"),
             Yield => write!(f, "yield"),
@@ -278,12 +289,35 @@ impl Lexer {
     fn tokenize(&mut self) -> Result<Vec<Token>, LexError> {
         let mut out = Vec::new();
         loop {
+            // Position right after the previously emitted token, before trivia: a
+            // `"` is adjacent to a preceding `Ident` (a tagged literal) only when
+            // `skip_trivia` advances nothing — i.e. no whitespace/comment between.
+            let before_trivia = self.pos;
             self.skip_trivia();
             let (line, col) = (self.line, self.col);
             let Some(c) = self.peek() else {
                 out.push(Token { kind: Tok::Eof, line, col });
                 return Ok(out);
             };
+            // `name"…"` (no space) is a compile-time tagged literal: the preceding
+            // identifier binds the interpolated string to a comptime tag function.
+            // The `Ident` is replaced by a single `TagLit` carrying the static
+            // parts and per-hole source. (RFC-0006.)
+            if c == '"' && self.pos == before_trivia {
+                if let Some(Token { kind: Tok::Ident(_), line: tl, col: tc }) = out.last() {
+                    let (tl, tc) = (*tl, *tc);
+                    let Some(Token { kind: Tok::Ident(tag), .. }) = out.pop() else {
+                        unreachable!()
+                    };
+                    let (parts, holes) = self.tag_literal()?;
+                    out.push(Token {
+                        kind: Tok::TagLit { tag, parts, holes },
+                        line: tl,
+                        col: tc,
+                    });
+                    continue;
+                }
+            }
             // A string literal may expand into several tokens (interpolation),
             // so it pushes directly; everything else yields a single token.
             if c == '"' {
@@ -610,6 +644,47 @@ impl Lexer {
         } else {
             Ok(vec![Tok::Str(text)])
         }
+    }
+
+    /// Lex a tagged literal `tag"a${x}b"` (the preceding `Ident` already popped,
+    /// the opening `"` not yet consumed). Returns the static fragments and each
+    /// hole's source text — the same `(parts, holes)` split `comptime` hands the
+    /// tag function. Escapes are honored exactly as in `string()`; a `${ … }` hole
+    /// closes the current part and records its source via `interp_source()`.
+    fn tag_literal(&mut self) -> Result<(Vec<String>, Vec<String>), LexError> {
+        self.bump(); // opening quote
+        let mut parts: Vec<String> = Vec::new();
+        let mut holes: Vec<String> = Vec::new();
+        let mut text = String::new();
+        loop {
+            match self.bump() {
+                None => return Err(self.err("unterminated tagged literal")),
+                Some('"') => break,
+                Some('\\') => {
+                    let esc = self
+                        .bump()
+                        .ok_or_else(|| self.err("unterminated escape in tagged literal"))?;
+                    match esc {
+                        'n' => text.push('\n'),
+                        't' => text.push('\t'),
+                        'r' => text.push('\r'),
+                        '0' => text.push('\0'),
+                        '\\' => text.push('\\'),
+                        '"' => text.push('"'),
+                        '$' => text.push('$'),
+                        other => return Err(self.err(format!("unknown escape `\\{other}`"))),
+                    }
+                }
+                Some('$') if self.peek() == Some('{') => {
+                    self.bump(); // consume '{'
+                    parts.push(std::mem::take(&mut text));
+                    holes.push(self.interp_source()?);
+                }
+                Some(c) => text.push(c),
+            }
+        }
+        parts.push(text);
+        Ok((parts, holes))
     }
 
     /// Emit one interpolation segment `<> __render( <expr> )` (the opening brace

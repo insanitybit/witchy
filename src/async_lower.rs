@@ -389,7 +389,8 @@ fn contains_await(e: &Expr) -> bool {
         | Expr::Duration(_)
         | Expr::Str(_)
         | Expr::Bool(_)
-        | Expr::Var(_) => false,
+        | Expr::Var(_)
+        | Expr::TaggedLit { .. } => false,
         Expr::Unary { expr, .. } | Expr::Field { base: expr, .. } | Expr::Try(expr)
         | Expr::As { expr, .. } => contains_await(expr),
         Expr::Index { base, index } => contains_await(base) || contains_await(index),

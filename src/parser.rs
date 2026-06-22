@@ -1064,6 +1064,14 @@ impl Parser {
                 self.advance();
                 Ok(Expr::Str(s))
             }
+            // `tag"a${x}b"` — a compile-time tagged literal (RFC-0006). The lexer
+            // already split it into static parts and per-hole source; expansion
+            // (`crate::tagged`) replaces it before type-checking.
+            Tok::TagLit { tag, parts, holes } => {
+                let line = self.cur().line;
+                self.advance();
+                Ok(Expr::TaggedLit { tag, parts, holes, line })
+            }
             Tok::True => {
                 self.advance();
                 Ok(Expr::Bool(true))
@@ -1954,7 +1962,7 @@ fn lower_sugar_expr(e: &mut Expr) {
             *e = desugar_method((**receiver).clone(), method.clone(), std::mem::take(args));
         }
         Expr::Int(_) | Expr::Float(_) | Expr::Duration(_) | Expr::Str(_) | Expr::Bool(_)
-        | Expr::Var(_) => {}
+        | Expr::Var(_) | Expr::TaggedLit { .. } => {}
         Expr::List(xs)
         | Expr::Tuple(xs)
         | Expr::Call { args: xs, .. }

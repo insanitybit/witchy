@@ -482,7 +482,8 @@ fn collect_accumulators_expr(
         | Expr::Duration(_)
         | Expr::Str(_)
         | Expr::Bool(_)
-        | Expr::Var(_) => {}
+        | Expr::Var(_)
+        | Expr::TaggedLit { .. } => {}
     }
 }
 
@@ -651,7 +652,8 @@ impl<'a> Walker<'a> {
             | Expr::Float(_)
             | Expr::Duration(_)
             | Expr::Str(_)
-            | Expr::Bool(_) => {}
+            | Expr::Bool(_)
+            | Expr::TaggedLit { .. } => {}
             Expr::Var(v) => {
                 if live && self.accs.contains(v) {
                     out.push((v.clone(), reason.to_string()));
@@ -905,7 +907,8 @@ fn expr(e: &Expr, accs: &HashSet<String>, out: &mut HashSet<String>) {
             | Expr::Float(_)
             | Expr::Duration(_)
             | Expr::Str(_)
-            | Expr::Bool(_) => {}
+            | Expr::Bool(_)
+            | Expr::TaggedLit { .. } => {}
     }
 }
 

@@ -395,6 +395,21 @@ pub enum Expr {
         scrutinee: Box<Expr>,
         body: Block,
     },
+    /// `tag"a${x}b"` — a compile-time tagged literal (RFC-0006). `tag` is an
+    /// ordinary compile-time function `fn(parts: List(String), holes: List(String))
+    /// -> String` that returns witchy EXPRESSION SOURCE. `parts` are the static
+    /// fragments (`["a", "b"]`); `holes` are each interpolation's SOURCE TEXT
+    /// (`["x"]`). `crate::tagged::expand` runs `tag(parts, holes)` at compile time,
+    /// parses the returned string as an expression, and SPLICES it in place of this
+    /// node — before type-checking and codegen, so both backends consume the same
+    /// expanded AST. UNREACHABLE after expansion: typeck, the interpreter, and both
+    /// codegen backends panic if they ever see one.
+    TaggedLit {
+        tag: String,
+        parts: Vec<String>,
+        holes: Vec<String>,
+        line: u32,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

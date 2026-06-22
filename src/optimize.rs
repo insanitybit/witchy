@@ -112,7 +112,8 @@ fn opt_expr(e: &mut Expr, consts: &mut Consts) {
         | Expr::Duration(_)
         | Expr::Str(_)
         | Expr::Bool(_)
-        | Expr::Var(_) => {}
+        | Expr::Var(_)
+        | Expr::TaggedLit { .. } => {}
         Expr::List(xs) | Expr::Tuple(xs) => xs.iter_mut().for_each(|x| opt_expr(x, consts)),
         Expr::Call { args, .. } | Expr::Ctor { args, .. } => {
             args.iter_mut().for_each(|a| opt_expr(a, consts))

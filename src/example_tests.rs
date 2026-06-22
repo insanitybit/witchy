@@ -13770,3 +13770,30 @@ pub fn serve(console: Console, net: Net) -> Int:
         assert_fn_compiles(include_str!("../examples/shapes/src/shapes.witchy"));
     }
 
+    /// RFC-0006: a `tag"…${e}…"` tagged literal expands at COMPILE TIME — the tag
+    /// (`twice`, a self-contained `fn(parts, holes) -> String` returning witchy
+    /// EXPRESSION SOURCE) runs once in the compiler and its result is parsed and
+    /// SPLICED over the literal. The literal is gone before either backend sees
+    /// the program, so the interpreter and the compiled-WASM backend must produce
+    /// IDENTICAL output. `twice"a${v}b"` expands to source `"a" + v + v + "b"`,
+    /// which at the call site (`v = "X"`) evaluates to `"aXXb"`.
+    #[test]
+    fn tagged_literal_expands_identically_on_both_backends() {
+        let src = "import list\n\
+                   \n\
+                   fn twice(parts: List(String), holes: List(String)) -> String:\n\
+                   \x20   let a = list.at(parts, 0)\n\
+                   \x20   let b = list.at(parts, 1)\n\
+                   \x20   let h = list.at(holes, 0)\n\
+                   \x20   \"\\\"\" + a + \"\\\" + \" + h + \" + \" + h + \" + \\\"\" + b + \"\\\"\"\n\
+                   \n\
+                   fn main(console: Console):\n\
+                   \x20   let v = \"X\"\n\
+                   \x20   print(console, twice\"a${v}b\")\n";
+        // Interpreter and compiled WASM agree, and both yield the spliced value.
+        let interp = link_run(src);
+        let wasm = wasm_run(src);
+        assert_eq!(interp, vec!["aXXb".to_string()], "interpreter output");
+        assert_eq!(wasm, interp, "compiled WASM must match the interpreter");
+    }
+

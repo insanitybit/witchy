@@ -119,7 +119,7 @@ fn lower_expr(e: &mut Expr, orders: &Orders) -> Result<(), String> {
             *e = build(name.clone(), std::mem::take(fields), spread.take(), orders)?;
         }
         Expr::Int(_) | Expr::Float(_) | Expr::Duration(_) | Expr::Str(_) | Expr::Bool(_)
-        | Expr::Var(_) => {}
+        | Expr::Var(_) | Expr::TaggedLit { .. } => {}
         Expr::List(xs)
         | Expr::Tuple(xs)
         | Expr::Call { args: xs, .. }

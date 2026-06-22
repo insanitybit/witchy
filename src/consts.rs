@@ -48,7 +48,8 @@ fn collect_names(e: &Expr, out: &mut Vec<String>) {
                 collect_names(a, out);
             }
         }
-        Expr::Int(_) | Expr::Float(_) | Expr::Duration(_) | Expr::Str(_) | Expr::Bool(_) => {}
+        Expr::Int(_) | Expr::Float(_) | Expr::Duration(_) | Expr::Str(_) | Expr::Bool(_)
+        | Expr::TaggedLit { .. } => {}
         Expr::List(xs) | Expr::Tuple(xs) | Expr::Call { args: xs, .. } => {
             for x in xs {
                 collect_names(x, out);
@@ -272,7 +273,8 @@ fn subst_expr(
                 false
             }
         }
-        Expr::Int(_) | Expr::Float(_) | Expr::Duration(_) | Expr::Str(_) | Expr::Bool(_) => false,
+        Expr::Int(_) | Expr::Float(_) | Expr::Duration(_) | Expr::Str(_) | Expr::Bool(_)
+        | Expr::TaggedLit { .. } => false,
         Expr::List(xs) | Expr::Tuple(xs) => {
             let mut changed = false;
             for x in xs {

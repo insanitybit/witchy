@@ -898,7 +898,7 @@ impl Ctx<'_> {
                 self.rewrite_block(body, &mut s);
             }
             Expr::Block(b) => self.rewrite_block(b, &mut scope.clone()),
-            Expr::Var(_) | Expr::Int(_) | Expr::Duration(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) => {}
+            Expr::Var(_) | Expr::Int(_) | Expr::Duration(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) | Expr::TaggedLit { .. } => {}
         }
     }
 }
@@ -1108,7 +1108,7 @@ fn expr_needs_lowering(e: &Expr) -> bool {
     match e {
         Expr::MethodCall { .. } => true,
         Expr::Int(_) | Expr::Float(_) | Expr::Duration(_) | Expr::Str(_) | Expr::Bool(_)
-        | Expr::Var(_) => false,
+        | Expr::Var(_) | Expr::TaggedLit { .. } => false,
         Expr::List(xs) | Expr::Tuple(xs) => xs.iter().any(expr_needs_lowering),
         Expr::Call { args, .. } | Expr::Ctor { args, .. } => {
             args.iter().any(expr_needs_lowering)
@@ -1607,7 +1607,7 @@ fn subst_expr_types(e: &mut Expr, subst: &HashMap<&str, String>) {
             }
         }
         Expr::Int(_) | Expr::Float(_) | Expr::Duration(_) | Expr::Str(_) | Expr::Bool(_)
-        | Expr::Var(_) => {}
+        | Expr::Var(_) | Expr::TaggedLit { .. } => {}
     }
 }
 
@@ -1839,7 +1839,7 @@ fn rename_calls_block(b: &mut Block, renames: &HashMap<String, String>) {
                 rename_calls_block(body, renames)
             }
             Expr::Int(_) | Expr::Duration(_) | Expr::Float(_) | Expr::Str(_)
-            | Expr::Bool(_) | Expr::Var(_) => {}
+            | Expr::Bool(_) | Expr::Var(_) | Expr::TaggedLit { .. } => {}
         }
     }
     for st in &mut b.stmts {
@@ -2442,7 +2442,7 @@ impl Mono<'_> {
                 self.walk_block(body, &mut s);
             }
             Expr::Block(b) => self.walk_block(b, &mut scope.clone()),
-            Expr::Var(_) | Expr::Int(_) | Expr::Duration(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) => {}
+            Expr::Var(_) | Expr::Int(_) | Expr::Duration(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) | Expr::TaggedLit { .. } => {}
         }
     }
 }

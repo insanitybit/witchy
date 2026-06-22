@@ -348,6 +348,12 @@ pub fn link(mut modules: Vec<(String, Module)>, entry: &str) -> Result<Module, L
         for (i, name) in names.iter().enumerate() {
             crate::comptime::expand(name, &mut modules[i].1)
                 .map_err(|message| LinkError { message })?;
+            // `tag"…${e}…"` tagged literals expand right after comptime, per
+            // module: each tag runs at compile time and its returned source is
+            // parsed and SPLICED over the literal — so both backends compile the
+            // same expanded AST (RFC-0006). Additive only.
+            crate::tagged::expand(name, &mut modules[i].1)
+                .map_err(|message| LinkError { message })?;
         }
     }
 
@@ -781,7 +787,8 @@ fn resolve_in_expr(
         | Expr::Float(_)
         | Expr::Str(_)
         | Expr::Bool(_)
-        | Expr::Var(_) => {}
+        | Expr::Var(_)
+        | Expr::TaggedLit { .. } => {}
     }
 }
 
@@ -921,7 +928,7 @@ fn collect_bound_expr(e: &Expr, out: &mut HashSet<String>) {
                 collect_bound_expr(s, out);
             }
         }
-        Expr::Var(_) | Expr::Int(_) | Expr::Duration(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) => {}
+        Expr::Var(_) | Expr::Int(_) | Expr::Duration(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) | Expr::TaggedLit { .. } => {}
     }
 }
 
@@ -1049,7 +1056,7 @@ fn rewrite_expr(
                 rewrite_expr(&mut arm.body, m, imps, fns, bound)?;
             }
         }
-        Expr::Int(_) | Expr::Duration(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) => {}
+        Expr::Int(_) | Expr::Duration(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) | Expr::TaggedLit { .. } => {}
     }
     Ok(())
 }
@@ -1239,7 +1246,8 @@ fn seal_expr(e: &Expr, sealed: &HashMap<String, String>, home: &str) -> Result<(
         | Expr::Duration(_)
         | Expr::Float(_)
         | Expr::Str(_)
-        | Expr::Bool(_) => {}
+        | Expr::Bool(_)
+        | Expr::TaggedLit { .. } => {}
     }
     Ok(())
 }

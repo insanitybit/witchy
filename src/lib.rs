@@ -33,6 +33,7 @@ pub mod native;
 pub mod optimize;
 pub mod parser;
 pub mod records;
+pub mod tagged;
 pub mod traits;
 pub mod typeck;
 pub mod value;

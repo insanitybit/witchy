@@ -225,7 +225,7 @@ fn resolve_in_expr(e: &mut Expr, map: &HashMap<String, Type>) {
             resolve_in_block(body, map);
         }
         Expr::Int(_) | Expr::Float(_) | Expr::Duration(_) | Expr::Str(_) | Expr::Bool(_)
-        | Expr::Var(_) => {}
+        | Expr::Var(_) | Expr::TaggedLit { .. } => {}
         Expr::List(xs) | Expr::Tuple(xs) => {
             for x in xs {
                 resolve_in_expr(x, map);

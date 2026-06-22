@@ -1748,6 +1748,10 @@ impl Checker {
 
     fn infer_inner(&mut self, expr: &Expr) -> Result<Ty, TypeError> {
         match expr {
+            // Expanded away by `crate::tagged` during linking, before checking.
+            Expr::TaggedLit { tag, .. } => {
+                unreachable!("unexpanded tagged literal `{tag}` reached the type checker")
+            }
             Expr::Int(_) => Ok(Ty::Int),
             Expr::Float(_) => Ok(Ty::Float),
             Expr::Duration(_) => Ok(Ty::Duration),
