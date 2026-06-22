@@ -288,22 +288,6 @@ impl Sandbox {
         cmd.output().expect("spawn witchy")
     }
 
-    /// Like `run`, but presenting a short-lived identity token (trusted
-    /// publishing) via `COVEN_ID_TOKEN`.
-    fn run_id(&self, dir: &Path, user: &str, id_token: &str, args: &[&str]) -> Output {
-        let mut cmd = Command::new(BIN);
-        cmd.current_dir(dir)
-            .env("WITCHY_HOME", &self.home)
-            .env("WITCHY_USER", user)
-            .env("WITCHY_COOLDOWN_SECS", "0")
-            .env("COVEN_ID_TOKEN", id_token)
-            .args(args);
-        if let Some(u) = &self.coven_url {
-            cmd.env("COVEN_URL", u);
-        }
-        cmd.output().expect("spawn witchy")
-    }
-
     /// Create + publish + promote a library rune in one shot. Returns its dir.
     fn publish_lib(&self, name: &str, version: &str, module_body: &str) -> PathBuf {
         let dir_name = name.rsplit('/').next().unwrap();
@@ -485,61 +469,55 @@ fn token_required_and_untrusted_issuer_refused() {
     let _ = std::fs::remove_dir_all(&other_issuer);
 }
 
+/// The front-end verifies the registry's TUF chain on `add` and re-verifies it on
+/// `verify`. `add` pins the registry's signed snapshot version into the lock; a
+/// later `verify` re-fetches the signed snapshot + timestamp roles and checks the
+/// whole chain against the root key. Tampering a signed field of the server's
+/// snapshot breaks its root-key signature, so a fresh `verify` rejects it — the
+/// signature + content binding, not the transport, are trusted.
 #[test]
 fn tuf_chain_verified_and_snapshot_tamper_rejected() {
     let server = RegistryServer::start();
-    let mut sb = Sandbox::new("tuf");
-    sb.coven_url = Some(server.url());
-    let app = new_app(&sb);
-
-    let lib = sb.work.join("lib");
-    std::fs::create_dir_all(lib.join("src")).unwrap();
-    std::fs::write(lib.join("witchy.toml"), "[rune]\nname = \"acme/tango\"\nversion = \"1.0.0\"\n").unwrap();
-    std::fs::write(lib.join("src/t.witchy"), "fn f(s: String) -> String:\n    s\n").unwrap();
-    let ci = server.ci_token("acme/tango-repo", "release.yml");
-    assert!(sb.run_id(&lib, "ci", &ci, &["publish"]).status.success());
-    let alice = server.human_token("alice");
-    assert!(sb.run_id(&lib, "alice", &alice, &["promote", "acme/tango@1.0.0", "--factor", "totp"]).status.success());
-    assert!(sb.run(&app, "dev", &["add", "acme/tango"]).status.success());
+    let fe = FrontEnd::new(&server, "tuf");
+    let app = fe.new_app();
+    fe.published_lib("acme/tango", "1.0.0", "pub fn f(s: String) -> String:\n    s\n");
+    let out = fe.pm(&app, &["add", "acme/tango"], None);
+    assert!(out.status.success(), "add failed: {}\n{}", stderr(&out), stdout(&out));
 
     // The lock pinned a TUF snapshot version, and verify confirms the chain.
     let lock = std::fs::read_to_string(app.join("witchy.lock")).unwrap();
     assert!(lock.contains("registry_snapshot_version"), "lock should pin snapshot version: {lock}");
-    let out = sb.run(&app, "dev", &["verify"]);
-    assert!(out.status.success(), "verify failed: {}", stderr(&out));
+    let out = fe.pm(&app, &["verify"], None);
+    assert!(out.status.success(), "verify failed: {}\n{}", stderr(&out), stdout(&out));
     assert!(stdout(&out).contains("TUF chain"), "verify out: {}", stdout(&out));
 
     // Tamper the SERVER's signed snapshot (changing a signed field breaks the
-    // snapshot-role signature). Clear the client store so it must re-consult.
+    // snapshot-role signature). The front-end vendors, so there is no client cache
+    // to clear — `verify` re-fetches the role and must reject the broken signature.
     let snap = server.regroot.join("registry/snapshot.json");
     let body = std::fs::read_to_string(&snap).unwrap().replace("1.0.0", "1.0.1");
     std::fs::write(&snap, body).unwrap();
-    std::fs::remove_dir_all(sb.home.join("store")).ok();
 
-    let out = sb.run(&app, "dev", &["verify"]);
+    let out = fe.pm(&app, &["verify"], None);
     assert!(!out.status.success(), "tampered snapshot must fail verify");
     assert!(stdout(&out).contains("FAIL"), "verify out: {}", stdout(&out));
 }
 
+/// A registry rollback — serving an OLDER TUF snapshot version than the one the
+/// project last pinned — is refused. We simulate having seen a much newer snapshot
+/// by bumping the lock's pinned `registry_snapshot_version`; the server's actual
+/// (older) snapshot version is now below the pin, which `verify` rejects.
 #[test]
 fn tuf_rollback_is_rejected() {
     let server = RegistryServer::start();
-    let mut sb = Sandbox::new("rollback");
-    sb.coven_url = Some(server.url());
-    let app = new_app(&sb);
-
-    let lib = sb.work.join("lib");
-    std::fs::create_dir_all(lib.join("src")).unwrap();
-    std::fs::write(lib.join("witchy.toml"), "[rune]\nname = \"acme/romeo\"\nversion = \"1.0.0\"\n").unwrap();
-    std::fs::write(lib.join("src/r.witchy"), "fn f(s: String) -> String:\n    s\n").unwrap();
-    let ci = server.ci_token("acme/romeo-repo", "release.yml");
-    assert!(sb.run_id(&lib, "ci", &ci, &["publish"]).status.success());
-    let alice = server.human_token("alice");
-    assert!(sb.run_id(&lib, "alice", &alice, &["promote", "acme/romeo@1.0.0", "--factor", "totp"]).status.success());
-    assert!(sb.run(&app, "dev", &["add", "acme/romeo"]).status.success());
+    let fe = FrontEnd::new(&server, "rollback");
+    let app = fe.new_app();
+    fe.published_lib("acme/romeo", "1.0.0", "pub fn f(s: String) -> String:\n    s\n");
+    let out = fe.pm(&app, &["add", "acme/romeo"], None);
+    assert!(out.status.success(), "add failed: {}\n{}", stderr(&out), stdout(&out));
 
     // Simulate having previously seen a much newer snapshot: bump the pinned
-    // version in the lock. The server now presents an older snapshot version —
+    // version in the lock. The server still presents an older snapshot version —
     // a rollback — which must be refused.
     let lock = std::fs::read_to_string(app.join("witchy.lock")).unwrap();
     let bumped = lock
@@ -555,9 +533,13 @@ fn tuf_rollback_is_rejected() {
         .join("\n");
     std::fs::write(app.join("witchy.lock"), bumped).unwrap();
 
-    let out = sb.run(&app, "dev", &["verify"]);
+    let out = fe.pm(&app, &["verify"], None);
     assert!(!out.status.success(), "rollback must be refused");
-    assert!(stdout(&out).contains("rolled back") || stdout(&out).contains("rollback"), "out: {}", stdout(&out));
+    assert!(
+        stdout(&out).contains("rolled back") || stdout(&out).contains("rollback"),
+        "out: {}",
+        stdout(&out)
+    );
 }
 
 /// The front-end refuses a tampered registry record via its Ed25519 signature.
@@ -793,48 +775,52 @@ fn transitive_dependency_add_pulls_the_closure() {
     assert!(lock.contains("name = \"url\""), "lock must pin the transitive url: {lock}");
 }
 
+/// The supply-chain gate on a registry upgrade: `pm update` re-resolves a vendored
+/// dependency to its latest released version, but BLOCKS when that version's
+/// declared capability footprint WIDENS beyond the vendored baseline — the classic
+/// "a patch release quietly starts phoning home" attack. The front-end compares the
+/// incoming version's signed-record footprint against the locked one; `--allow-cap`
+/// consents to the widening so an intended upgrade proceeds.
 #[test]
 fn upgrade_that_widens_is_gated() {
-    let sb = Sandbox::new("upgrade");
-    let app = new_app(&sb);
+    let server = RegistryServer::start();
+    let fe = FrontEnd::new(&server, "upgrade");
+    let app = fe.new_app();
 
     // v1.0.0 of a logger: pure, no capabilities.
-    sb.publish_lib(
-        "acme/logger",
-        "1.0.0",
-        "fn line(s: String) -> String:\n    s\n",
-    );
-    let out = sb.run(&app, "dev", &["add", "acme/logger"]);
-    assert!(out.status.success(), "add v1 failed: {}", stderr(&out));
+    fe.published_lib("acme/logger", "1.0.0", "pub fn line(s: String) -> String:\n    s\n");
+    let out = fe.pm(&app, &["add", "acme/logger"], None);
+    assert!(out.status.success(), "add v1 failed: {}\n{}", stderr(&out), stdout(&out));
 
     // v1.1.0 quietly starts demanding Net (a classic account-takeover scenario).
-    let dir = sb.work.join("logger");
+    // The registry recomputes the footprint server-side, so the new version must
+    // honestly declare Net to publish — it lands as a wider-authority release.
+    let dir = fe.base.join("logger");
     std::fs::write(
         dir.join("witchy.toml"),
-        "[rune]\nname = \"acme/logger\"\nversion = \"1.1.0\"\n",
+        "[rune]\nname = \"acme/logger\"\nversion = \"1.1.0\"\n\n[capabilities]\nruntime = [\"Net\"]\n",
     )
     .unwrap();
     std::fs::write(
         dir.join("src/logger.witchy"),
-        "fn line(s: String) -> String:\n    s\nfn beacon(net: Net, s: String) -> String:\n    s\n",
+        "pub fn line(s: String) -> String:\n    s\npub fn beacon(net: Net, s: String) -> String:\n    s\n",
     )
     .unwrap();
-    assert!(sb.run(&dir, "ci-bot", &["publish"]).status.success());
-    assert!(sb
-        .run(&dir, "alice", &["promote", "acme/logger@1.1.0", "--factor", "webauthn"])
-        .status
-        .success());
+    fe.publish_promote(&dir, "acme/logger", "1.1.0");
 
     // `update` must BLOCK: the upgrade widens logger's footprint with Net.
-    let out = sb.run(&app, "dev", &["update"]);
+    let out = fe.pm(&app, &["update"], None);
     assert!(!out.status.success(), "update should block the widening upgrade");
     assert!(stdout(&out).contains("Net"), "got: {}", stdout(&out));
+    // The gate left the dependency at its safe version (nothing re-fetched).
+    let lock = std::fs::read_to_string(app.join("witchy.lock")).unwrap();
+    assert!(lock.contains("1.0.0"), "blocked update must not move the lock: {lock}");
 
     // With consent it proceeds.
-    let out = sb.run(&app, "dev", &["update", "--allow-cap", "Net"]);
-    assert!(out.status.success(), "consented update failed: {}", stderr(&out));
+    let out = fe.pm(&app, &["update", "--allow-cap", "Net"], None);
+    assert!(out.status.success(), "consented update failed: {}\n{}", stderr(&out), stdout(&out));
     let lock = std::fs::read_to_string(app.join("witchy.lock")).unwrap();
-    assert!(lock.contains("1.1.0"), "lock should pin the upgraded version");
+    assert!(lock.contains("1.1.0"), "lock should pin the upgraded version: {lock}");
 }
 
 /// A diamond resolves the shared base exactly once: `acme/left` and `acme/right`
@@ -1037,31 +1023,32 @@ fn std_shadowing_dependency_is_refused() {
     );
 }
 
+/// Two distinct registry runes that share a basename (`a/util` and `b/util`) both
+/// vendor to `vendor/util`, so the second would silently shadow the first — an
+/// `import util` cannot name both. The front-end `pm add` catches the collision and
+/// refuses: the first add vendors `a/util`, the second (`b/util`) is blocked because
+/// `vendor/util` already holds a rune whose full name differs.
 #[test]
 fn module_name_collision_between_deps_is_caught() {
-    let sb = Sandbox::new("collision");
-    let app = new_app(&sb);
+    let server = RegistryServer::start();
+    let fe = FrontEnd::new(&server, "collision");
+    let app = fe.new_app();
     // Two different runes that both expose a module named `util`.
     for ns in ["a", "b"] {
-        let dir = sb.work.join(format!("util-{ns}"));
-        std::fs::create_dir_all(dir.join("src")).unwrap();
-        std::fs::write(
-            dir.join("witchy.toml"),
-            format!("[rune]\nname = \"{ns}/util\"\nversion = \"1.0.0\"\n"),
-        )
-        .unwrap();
-        std::fs::write(dir.join("src/util.witchy"), "fn helper(s: String) -> String:\n    s\n").unwrap();
-        assert!(sb.run(&dir, "ci-bot", &["publish"]).status.success());
-        assert!(sb
-            .run(&dir, "alice", &["promote", &format!("{ns}/util@1.0.0"), "--factor", "totp"])
-            .status
-            .success());
+        fe.published_lib(&format!("{ns}/util"), "1.0.0", "pub fn helper(s: String) -> String:\n    s\n");
     }
-    assert!(sb.run(&app, "dev", &["add", "a/util"]).status.success());
-    assert!(sb.run(&app, "dev", &["add", "b/util"]).status.success());
-    let out = sb.run(&app, "dev", &["build"]);
+    let out = fe.pm(&app, &["add", "a/util"], None);
+    assert!(out.status.success(), "add a/util failed: {}\n{}", stderr(&out), stdout(&out));
+    let out = fe.pm(&app, &["add", "b/util"], None);
     assert!(!out.status.success(), "module collision must be caught");
-    assert!(stderr(&out).contains("collision"), "stderr: {}", stderr(&out));
+    assert!(
+        stdout(&out).contains("collision"),
+        "stdout {} stderr {}",
+        stdout(&out),
+        stderr(&out)
+    );
+    // Only the first rune's source is vendored; the colliding one was refused.
+    assert!(app.join("vendor/util/src/util.witchy").exists(), "first dep must vendor");
 }
 
 /// `pm add` vendors the dependency source INTO the project, so build/run are
@@ -1562,28 +1549,28 @@ fn example_convert_workspace_writes_json_via_dir_write() {
     assert!(written.contains("Grace") && written.contains("NYC"), "second row: {written}");
 }
 
+/// A published rune must be self-contained (registry-only): a manifest carrying a
+/// path dependency would reach across the publisher's filesystem to bytes the
+/// registry never content-addresses, so the front-end `pm publish` refuses it
+/// before anything is uploaded.
 #[test]
 fn published_rune_cannot_have_path_dependency() {
-    let sb = Sandbox::new("nopath");
-    let app = new_app(&sb);
-    // A published rune that tries to reach into the consumer's filesystem.
-    let dir = sb.work.join("sneaky");
+    let server = RegistryServer::start();
+    let fe = FrontEnd::new(&server, "nopath");
+    // A rune that tries to reach into a sibling path on the publisher's filesystem.
+    let dir = fe.base.join("sneaky");
     std::fs::create_dir_all(dir.join("src")).unwrap();
     std::fs::write(
         dir.join("witchy.toml"),
         "[rune]\nname = \"acme/sneaky\"\nversion = \"1.0.0\"\n\n[dependencies]\n\"x\" = { path = \"../x\" }\n",
     )
     .unwrap();
-    std::fs::write(dir.join("src/sneaky.witchy"), "fn f(s: String) -> String:\n    s\n").unwrap();
-    assert!(sb.run(&dir, "ci-bot", &["publish"]).status.success());
-    assert!(sb
-        .run(&dir, "alice", &["promote", "acme/sneaky@1.0.0", "--factor", "totp"])
-        .status
-        .success());
+    std::fs::write(dir.join("src/sneaky.witchy"), "pub fn f(s: String) -> String:\n    s\n").unwrap();
 
-    let out = sb.run(&app, "dev", &["add", "acme/sneaky"]);
-    assert!(!out.status.success(), "registry rune with a path dep must be refused");
-    assert!(stderr(&out).contains("path"), "stderr: {}", stderr(&out));
+    let ci = server.ci_token("acme-sneaky-repo", "release.yml");
+    let out = fe.pm(&dir, &["publish", "."], Some(&ci));
+    assert!(!out.status.success(), "a published rune with a path dep must be refused");
+    assert!(stdout(&out).contains("path"), "stdout {} stderr {}", stdout(&out), stderr(&out));
 }
 
 /// The registry recomputes a rune's footprint server-side and refuses an

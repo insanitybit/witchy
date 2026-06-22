@@ -65,6 +65,8 @@ fn main(console: Console, args: List(String), root: Dir, bin: Dir, runner: Exec,
     else if cmd == "audit":
         cmd_audit(console, root, arg(args, 1))
         0
+    else if cmd == "verify":
+        cmd_verify(console, net, root, env, args)
     else:
         dispatch_more(console, root, args, cmd)
 
@@ -94,8 +96,6 @@ fn dispatch_more(console: Console, root: Dir, args: List(String), cmd: String) -
         cmd_vendor(console, root, arg(args, 1))
     else if cmd == "lock":
         cmd_lock(console, root, arg(args, 1))
-    else if cmd == "verify":
-        cmd_verify(console, root, arg(args, 1))
     else if cmd == "gate":
         cmd_gate(console, root, args)
     else if cmd == "verify-rune":
@@ -425,11 +425,35 @@ fn cmd_publish(console: Console, net: Net, root: Dir, env: Env, args: List(Strin
         let identity = if string.is_empty(arg(args, 3)): "ci-bot" else: arg(args, 3)
         let (host, port) = hostport(addr)
         let manifest = read(root, join_path(dir, "witchy.toml"))
-        let files = publish_files(root, dir, manifest)
-        let token = id_token_from_env(env)
-        let resp = http.post(net, host, port, "/coven/publish", publish_body(manifest, files, identity, token))
-        print(console, "publish: ${http.status(resp)} state=" + resp_field(http.body(resp), "state"))
-        if http.status(resp) >= 200 && http.status(resp) < 300: 0 else: 1
+        if has_path_dependency(manifest):
+            print(console, "BLOCK: a published rune must be self-contained — it cannot have a path dependency (a published rune resolves only registry deps): " + string.join(path_deps(manifest), ", "))
+            1
+        else:
+            publish_checked(console, net, root, dir, manifest, host, port, identity, env)
+
+// The wire envelope POST once the manifest has been validated. Split out of
+// `cmd_publish` so its `else` arm stays shallow (the WASM codegen recurses per
+// nesting level).
+fn publish_checked(console: Console, net: Net, root: Dir, dir: String, manifest: String, host: String, port: Int, identity: String, env: Env) -> Int:
+    let files = publish_files(root, dir, manifest)
+    let token = id_token_from_env(env)
+    let resp = http.post(net, host, port, "/coven/publish", publish_body(manifest, files, identity, token))
+    print(console, "publish: ${http.status(resp)} state=" + resp_field(http.body(resp), "state"))
+    if http.status(resp) >= 200 && http.status(resp) < 300: 0 else: 1
+
+// Whether the manifest declares any path dependency (`{ path = ... }`). A published
+// rune must be self-contained / registry-only, so publish refuses these.
+fn has_path_dependency(manifest: String) -> Bool:
+    list.length(path_deps(manifest)) > 0
+
+// The names of the manifest's path dependencies, for the refusal message.
+fn path_deps(manifest: String) -> List(String):
+    var out = []
+    for pair in toml.table(manifest, "dependencies"):
+        let (name, inline) = pair
+        if let Some(_rel) = toml.inline_get(inline, "path"):
+            out = list.push(out, name)
+    out
 
 // The trusted-publishing identity token from COVEN_ID_TOKEN (a coven id-token JSON
 // envelope), parsed; None when unset/unparseable (an anonymous `uploaded_by`
@@ -684,22 +708,27 @@ fn cmd_lock(console: Console, root: Dir, dir: String) -> Int:
         print(console, "locked ${n} dependencies -> ${lockpath}")
         0
 
-// --- verify: every locked hash must still match its source ------------------
+// --- verify: every locked hash must still match its source, AND the registry's
+// TUF chain must verify (no tampered/rolled-back metadata) -------------------
 // Parses the lockfile's `[[rune]]` entries and recomputes each path dependency's
 // content hash, so it validates *any* witchy.lock — including one coven wrote.
 // A mismatch (or a missing entry) means the pinned bytes no longer match disk:
-// tampering or a stale lock. Exits 2 on any discrepancy.
-fn cmd_verify(console: Console, root: Dir, dir: String) -> Int:
-    if string.is_empty(dir):
-        print(console, "usage: pm verify <dir>")
-        1
-    else if !exists(root, join_path(dir, "witchy.lock")):
+// tampering or a stale lock. Then, if the lock pins a `registry_snapshot_version`
+// (written by `add`), it re-fetches + re-verifies the registry's signed TUF
+// snapshot + timestamp roles and refuses a tampered chain or a rollback to an
+// older snapshot version than the one the lock pinned. Exits 2 on any discrepancy.
+fn cmd_verify(console: Console, net: Net, root: Dir, env: Env, args: List(String)) -> Int:
+    let target = arg(args, 1)
+    let dir = if string.is_empty(target): "." else: target
+    if !exists(root, join_path(dir, "witchy.lock")):
         print(console, "no witchy.lock — run `pm lock " + dir + "` first")
         1
     else:
         let lock = read(root, join_path(dir, "witchy.lock"))
         let manifest = read(root, join_path(dir, "witchy.toml"))
-        report_verify(console, hash_mismatches(root, dir, manifest, lock))
+        let hash_code = report_verify(console, hash_mismatches(root, dir, manifest, lock))
+        let tuf_code = verify_tuf(console, net, root, env, dir, lock)
+        if hash_code != 0: hash_code else: tuf_code
 
 fn report_verify(console: Console, bad: List(String)) -> Int:
     if list.length(bad) == 0:
@@ -708,6 +737,151 @@ fn report_verify(console: Console, bad: List(String)) -> Int:
     else:
         print(console, "BLOCK: lock no longer matches source for: " + string.join(bad, ", "))
         2
+
+// --- TUF chain verification (client side) ------------------------------------
+// `add` pins the registry's TUF snapshot version into the lock; `verify` re-fetches
+// the signed snapshot + timestamp roles and re-checks the whole chain against the
+// registry root key, refusing a tampered role or a rollback. The registry only
+// PRODUCES these roles (coven_meta); the front-end is the verifier. Checks (the
+// freshness/`expires` check is the one chain link omitted here — it needs a wall
+// clock the confined front-end does not hold; the security-relevant signature,
+// content-binding, version-match and rollback links are all enforced):
+//   1. timestamp signed by the root key
+//   2. snapshot signed by the root key
+//   3. sha256(canonical(snapshot)) == timestamp.snapshot_hash   (content binding)
+//   4. snapshot.version == timestamp.snapshot_version           (role agreement)
+//   5. snapshot.version >= the version pinned in witchy.lock    (no rollback)
+//   6. each vendored registry dep's record digest is the snapshot's target digest
+fn verify_tuf(console: Console, net: Net, root: Dir, env: Env, dir: String, lock: String) -> Int:
+    let pinned = pinned_snapshot_version(lock)
+    if pinned < 0:
+        // No registry deps were added (no pinned snapshot) — nothing to verify.
+        0
+    else:
+        let addr = coven_addr(env, "")
+        let (host, port) = hostport(addr)
+        verify_chain(console, net, root, dir, host, port, pinned)
+
+fn verify_chain(console: Console, net: Net, root: Dir, dir: String, host: String, port: Int, pinned: Int) -> Int:
+    let rootpub = http.body(http.get(net, host, port, "/coven/rootpub"))
+    let snap_resp = http.get(net, host, port, "/coven/snapshot")
+    let ts_resp = http.get(net, host, port, "/coven/timestamp")
+    if http.status(snap_resp) != 200 || http.status(ts_resp) != 200:
+        print(console, "FAIL: TUF chain — registry served no snapshot/timestamp role")
+        2
+    else:
+        check_chain(console, root, dir, rootpub, http.body(snap_resp), http.body(ts_resp), pinned)
+
+fn check_chain(console: Console, root: Dir, dir: String, rootpub: String, snap_env: String, ts_env: String, pinned: Int) -> Int:
+    let snap_signed = signed_canonical(snap_env)
+    let ts_signed = signed_canonical(ts_env)
+    if !signed_valid(rootpub, ts_env):
+        print(console, "FAIL: TUF chain — the timestamp role is not validly signed by the registry root key (tampered)")
+        2
+    else if !signed_valid(rootpub, snap_env):
+        print(console, "FAIL: TUF chain — the snapshot role is not validly signed by the registry root key (tampered)")
+        2
+    else if "sha256:" + crypto.sha256(snap_signed) != signed_field_str(ts_env, "snapshot_hash"):
+        print(console, "FAIL: TUF chain — the snapshot does not match the timestamp's pinned hash (tampered)")
+        2
+    else if signed_field_int(snap_env, "version") != signed_field_int(ts_env, "snapshot_version"):
+        print(console, "FAIL: TUF chain — snapshot and timestamp disagree on the snapshot version (tampered)")
+        2
+    else if signed_field_int(snap_env, "version") < pinned:
+        print(console, "FAIL: TUF chain — the registry's snapshot version ${signed_field_int(snap_env, "version")} is older than the pinned ${pinned}: the metadata has been rolled back")
+        2
+    else:
+        check_targets(console, root, dir, snap_env)
+
+// Every vendored registry dep's signed-record digest must equal the snapshot's
+// target digest for its `name@version` — a dep whose record was swapped out from
+// under the snapshot is rejected.
+fn check_targets(console: Console, root: Dir, dir: String, snap_env: String) -> Int:
+    let targets = signed_field(snap_env, "targets")
+    var bad = []
+    for entry in vendored_runes(root, dir):
+        let coven = read(root, join_path(entry, "coven.json"))
+        if let Ok(doc) = json.decode(coven):
+            let key = jget(doc, "name") + "@" + jget(doc, "version")
+            let want = target_digest(targets, key)
+            let have = "sha256:" + crypto.sha256(record_payload(doc))
+            if want != have:
+                bad = list.push(bad, key)
+    if list.length(bad) == 0:
+        print(console, "OK: TUF chain verified (snapshot + timestamp signatures, content binding, no rollback)")
+        0
+    else:
+        print(console, "FAIL: TUF chain — vendored record digest does not match the snapshot target for: " + string.join(bad, ", "))
+        2
+
+// The vendored rune directories (those carrying a coven.json) under <dir>/vendor.
+fn vendored_runes(root: Dir, dir: String) -> List(String):
+    var out = []
+    let vendor = join_path(dir, "vendor")
+    if exists(root, vendor):
+        for entry in list(subdir(root, vendor)):
+            let rune_dir = join_path(vendor, entry)
+            if exists(root, join_path(rune_dir, "coven.json")):
+                out = list.push(out, rune_dir)
+    out
+
+// The digest a snapshot pins for `key` (`name@version`), or "" if absent.
+fn target_digest(targets: Json, key: String) -> String:
+    match json.get(targets, key):
+        Some(j) -> match json.as_string(j):
+            Some(s) -> s
+            None -> ""
+        None -> ""
+
+// A `Signed{signed, sig}` envelope's canonical bytes — `json.encode` of the
+// `signed` member, byte-identical to what coven signed (coven signs `encode(role)`
+// and json round-trips key order, so re-encoding the decoded role reproduces it).
+fn signed_canonical(envelope: String) -> String:
+    match json.decode(envelope):
+        Ok(doc) -> match json.get(doc, "signed"):
+            Some(signed) -> json.encode(signed)
+            None -> ""
+        Err(_e) -> ""
+
+// Verify a `Signed{signed, sig}` envelope against the root pubkey over its canonical bytes.
+fn signed_valid(rootpub: String, envelope: String) -> Bool:
+    match json.decode(envelope):
+        Ok(doc) -> crypto.ed25519_verify(rootpub, signed_canonical(envelope), jget(doc, "sig"))
+        Err(_e) -> false
+
+// A string field of the `signed` member of a `Signed{...}` envelope.
+fn signed_field_str(envelope: String, key: String) -> String:
+    match json.decode(envelope):
+        Ok(doc) -> match json.get(doc, "signed"):
+            Some(signed) -> match json.get_string(signed, key):
+                Some(s) -> s
+                None -> ""
+            None -> ""
+        Err(_e) -> ""
+
+// An int field of the `signed` member of a `Signed{...}` envelope.
+fn signed_field_int(envelope: String, key: String) -> Int:
+    match json.decode(envelope):
+        Ok(doc) -> match json.get(doc, "signed"):
+            Some(signed) -> match json.get_int(signed, key):
+                Some(n) -> n
+                None -> 0
+            None -> 0
+        Err(_e) -> 0
+
+// A Json field of the `signed` member of a `Signed{...}` envelope (e.g. `targets`).
+fn signed_field(envelope: String, key: String) -> Json:
+    match json.decode(envelope):
+        Ok(doc) -> match json.get(doc, "signed"):
+            Some(signed) -> json.get(signed, key).unwrap_or(JsonNull)
+            None -> JsonNull
+        Err(_e) -> JsonNull
+
+// The `registry_snapshot_version` pinned in the lock, or -1 if none (no registry deps).
+fn pinned_snapshot_version(lock: String) -> Int:
+    match toml.get(lock, "registry_snapshot_version"):
+        Some(v) -> string.to_int(v)
+        None -> -1
 
 // The path-dependency names whose recomputed hash differs from the lockfile's.
 fn hash_mismatches(root: Dir, dir: String, manifest: String, lock: String) -> List(String):
@@ -886,39 +1060,126 @@ fn drop_last(xs: List(String)) -> List(String):
 // `name` argument only that rune is updated; the others stay pinned at their
 // vendored version. Run from a project directory (cwd is the project Dir).
 fn cmd_update(console: Console, net: Net, root: Dir, env: Env, args: List(String)) -> Int:
-    let only = arg(args, 1)
-    let addr = coven_addr(env, arg(args, 2))
+    let allowed = allowed_caps(args)
+    let positional = update_positionals(args)
+    let only = list.at(positional, 0)
+    let addr = coven_addr(env, list.at(positional, 1))
     let (host, port) = hostport(addr)
     if !exists(root, "vendor"):
         print(console, "no vendored dependencies to update")
         0
     else:
-        update_vendored(console, net, root, host, port, only)
+        update_vendored(console, net, root, host, port, only, allowed)
 
-fn update_vendored(console: Console, net: Net, root: Dir, host: String, port: Int, only: String) -> Int:
+// `update`'s positional args (`[only, addr]`), skipping the command word and any
+// `--allow-cap <Cap>` flag pairs. Always length 2 (absent positionals are ""), so
+// the caller can index freely.
+fn update_positionals(args: List(String)) -> List(String):
+    var out = ["", ""]
+    var idx = 0
+    var first = true
+    var take = false
+    for a in args:
+        if first:
+            first = false
+        else if take:
+            take = false
+        else if a == "--allow-cap":
+            take = true
+        else if idx < 2:
+            out = set_at(out, idx, a)
+            idx = idx + 1
+    out
+
+// The capabilities a `--allow-cap <Cap>` flag consents to (so an intended widening
+// passes the gate) — every value following an `--allow-cap` token.
+fn allowed_caps(args: List(String)) -> List(String):
+    var out = []
+    var take = false
+    for a in args:
+        if take:
+            out = list.push(out, a)
+            take = false
+        else if a == "--allow-cap":
+            take = true
+    out
+
+fn set_at(xs: List(String), i: Int, v: String) -> List(String):
+    var out = []
+    var j = 0
+    for x in xs:
+        if j == i:
+            out = list.push(out, v)
+        else:
+            out = list.push(out, x)
+        j = j + 1
+    out
+
+fn update_vendored(console: Console, net: Net, root: Dir, host: String, port: Int, only: String, allowed: List(String)) -> Int:
     var changed = 0
+    var blocked = false
     for entry in list(subdir(root, "vendor")):
         if string.is_empty(only) || entry == only:
-            changed = changed + update_one(console, net, root, host, port, entry)
-    write(root, "witchy.lock", vendor_lock(root))
-    print(console, "updated ${changed} dependencies -> witchy.lock")
-    0
+            let outcome = update_one(console, net, root, host, port, entry, allowed)
+            changed = changed + outcome.0
+            if outcome.1:
+                blocked = true
+    if blocked:
+        // Leave the vendored tree + lock untouched: a widening upgrade is the
+        // supply-chain attack the gate exists to stop.
+        2
+    else:
+        write(root, "witchy.lock", vendor_lock(root, snapshot_pin(net, host, port)))
+        print(console, "updated ${changed} dependencies -> witchy.lock")
+        0
 
-// Re-fetch one vendored rune if the registry has a newer released version than
-// the one currently vendored (returns 1 if it moved, 0 otherwise).
-fn update_one(console: Console, net: Net, root: Dir, host: String, port: Int, entry: String) -> Int:
+// Re-fetch one vendored rune if the registry has a newer released version than the
+// one currently vendored. Returns (changed, blocked): `changed` is 1 if it moved,
+// `blocked` is true if the newer version WIDENS the rune's capability footprint
+// beyond the vendored baseline (the gate) — in which case nothing is re-fetched.
+fn update_one(console: Console, net: Net, root: Dir, host: String, port: Int, entry: String, allowed: List(String)) -> (Int, Bool):
     let rune_dir = join_path("vendor", entry)
     if !exists(root, join_path(rune_dir, "coven.json")):
-        0
+        (0, false)
     else:
         let record = read(root, join_path(rune_dir, "coven.json"))
         let fullname = recorded_field(record, "name")
         let current = recorded_field(record, "version")
         let latest = latest_released(net, host, port, fullname)
         if string.is_empty(latest) || latest == current:
-            0
+            (0, false)
         else:
-            refetch(console, net, root, host, port, fullname, latest, current)
+            gated_refetch(console, net, root, host, port, fullname, current, latest, record, allowed)
+
+// The capability gate: compare the incoming version's declared footprint (from its
+// signed registry record) against the vendored baseline ∪ the consented caps. Any
+// capability the baseline doesn't already admit is a widening of authority — BLOCK.
+// Only on a clean (non-widening) upgrade do we re-fetch.
+fn gated_refetch(console: Console, net: Net, root: Dir, host: String, port: Int, fullname: String, current: String, latest: String, baseline_record: String, allowed: List(String)) -> (Int, Bool):
+    let baseline = union_all(recorded_footprint(baseline_record), allowed)
+    let incoming = incoming_footprint(net, host, port, fullname, latest)
+    let widened = rights.uncovered(baseline, incoming)
+    if list.length(widened) > 0:
+        print(console, "BLOCK: upgrading " + fullname + " " + current + " -> " + latest + " widens authority: " + string.join(widened, ", "))
+        print(console, "  re-run with --allow-cap " + string.join(widened, " --allow-cap ") + " to consent")
+        (0, true)
+    else:
+        (refetch(console, net, root, host, port, fullname, latest, current), false)
+
+// The runtime footprint a registry version declares, from its signed record at
+// `/coven/record` — the incoming authority the gate diffs against the baseline.
+fn incoming_footprint(net: Net, host: String, port: Int, name: String, version: String) -> List(String):
+    let resp = http.get(net, host, port, "/coven/record?name=" + wire(name) + "&version=" + version)
+    if http.status(resp) != 200:
+        []
+    else:
+        recorded_footprint(http.body(resp))
+
+// The `runtime_footprint` array of a signed coven record (JSON), as capability strings.
+fn recorded_footprint(record: String) -> List(String):
+    match json.decode(record):
+        Ok(doc) -> json.get_strings(doc, "runtime_footprint")
+        Err(_e) -> []
 
 fn refetch(console: Console, net: Net, root: Dir, host: String, port: Int, fullname: String, latest: String, current: String) -> Int:
     let code = fetch_source(console, net, root, host, port, fullname, latest, "vendor")
@@ -977,7 +1238,7 @@ fn cmd_add_pkg(console: Console, net: Net, root: Dir, env: Env, args: List(Strin
         if code != 0:
             code
         else:
-            pin_lock(console, root, name)
+            pin_lock(console, net, root, host, port, name)
 
 // Split `<pkg>[@<ver>]` into a (name, requirement); an absent `@<ver>` resolves to
 // `*` (the latest released version). A leading-`@` namespace is not split.
@@ -993,16 +1254,29 @@ fn split_spec(spec: String) -> (String, String):
 // content hash, so `build`/`run` can map `import <basename>` to its vendored
 // source and `verify`/`gate` can re-check it. Idempotently rewrites the lock from
 // every currently-vendored rune so repeated `add`s accumulate, not clobber.
-fn pin_lock(console: Console, root: Dir, name: String) -> Int:
-    write(root, "witchy.lock", vendor_lock(root))
+fn pin_lock(console: Console, net: Net, root: Dir, host: String, port: Int, name: String) -> Int:
+    write(root, "witchy.lock", vendor_lock(root, snapshot_pin(net, host, port)))
     print(console, "locked " + basename(name) + " -> witchy.lock")
     0
 
+// The `registry_snapshot_version = N` top-level line pinning the registry's current
+// TUF snapshot version into the lock — the rollback baseline `verify` enforces. The
+// snapshot role is signed; we record the version the `add` resolved against. An
+// empty string when the registry serves no snapshot (nothing to pin).
+fn snapshot_pin(net: Net, host: String, port: Int) -> String:
+    let resp = http.get(net, host, port, "/coven/snapshot")
+    if http.status(resp) != 200:
+        ""
+    else:
+        let v = signed_field_int(http.body(resp), "version")
+        "registry_snapshot_version = ${v}\n"
+
 // The lockfile text generated from the vendored tree: one `[[rune]]` block per
 // vendored rune (those carrying a coven.json), pinning name/version/hash from the
-// signed record kept beside the source.
-fn vendor_lock(root: Dir) -> String:
-    var out = "# witchy.lock — generated by `pm add`. Pins every vendored dependency\n# by content hash. Regenerate with `pm add`. Do not edit by hand.\n"
+// signed record kept beside the source. `snapshot_line` is the TUF snapshot pin
+// (a top-level key, emitted BEFORE any `[[rune]]` array-table per TOML rules).
+fn vendor_lock(root: Dir, snapshot_line: String) -> String:
+    var out = "# witchy.lock — generated by `pm add`. Pins every vendored dependency\n# by content hash. Regenerate with `pm add`. Do not edit by hand.\n" + snapshot_line
     if exists(root, "vendor"):
         for entry in list(subdir(root, "vendor")):
             let rune_dir = join_path("vendor", entry)
@@ -1022,10 +1296,19 @@ fn recorded_field(record: String, key: String) -> String:
         Err(_e) -> ""
 
 // Resolve + fetch one rune and its transitive deps. Already-vendored runes (their
-// coven.json is present) are skipped — the dedup + cycle break.
+// coven.json is present) are skipped — the dedup + cycle break. But a rune already
+// vendored under this basename whose FULL name differs is a collision: two distinct
+// runes (`a/util` and `b/util`) would vendor to the same `vendor/util`, so the
+// second silently shadows the first. Refuse it — `import util` cannot name both.
 fn add_rune(console: Console, net: Net, root: Dir, host: String, port: Int, name: String, req: String, dest: String) -> Int:
-    if exists(root, join_path(join_path(dest, basename(name)), "coven.json")):
-        0
+    let vendored = join_path(dest, basename(name))
+    if exists(root, join_path(vendored, "coven.json")):
+        let existing = recorded_field(read(root, join_path(vendored, "coven.json")), "name")
+        if !string.is_empty(existing) && existing != name:
+            print(console, "BLOCK: module name collision — `" + name + "` and `" + existing + "` both vendor to `" + vendored + "` (same basename `" + basename(name) + "`)")
+            2
+        else:
+            0
     else:
         let versions = http.get(net, host, port, "/coven/versions?name=" + wire(name))
         if http.status(versions) != 200:
