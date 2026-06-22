@@ -259,59 +259,11 @@ fn unique(tag: &str) -> PathBuf {
     dir
 }
 
-struct Sandbox {
-    home: PathBuf,
-    work: PathBuf,
-    /// When set, every command talks to a remote coven server instead of the
-    /// local-directory registry.
-    coven_url: Option<String>,
-}
-
-impl Sandbox {
-    fn new(tag: &str) -> Sandbox {
-        Sandbox {
-            home: unique(&format!("{tag}-home")),
-            work: unique(&format!("{tag}-work")),
-            coven_url: None,
-        }
-    }
-
-    fn run(&self, dir: &Path, user: &str, args: &[&str]) -> Output {
-        let mut cmd = Command::new(BIN);
-        cmd.current_dir(dir)
-            .env("WITCHY_HOME", &self.home)
-            .env("WITCHY_USER", user)
-            // Most tests publish and immediately consume; zero the staging
-            // cooldown so they exercise their own subject. The cooldown itself
-            // has a dedicated test that overrides this.
-            .env("WITCHY_COOLDOWN_SECS", "0")
-            .args(args);
-        if let Some(u) = &self.coven_url {
-            cmd.env("COVEN_URL", u);
-        }
-        cmd.output().expect("spawn witchy")
-    }
-
-}
-
-impl Drop for Sandbox {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.home);
-        let _ = std::fs::remove_dir_all(&self.work);
-    }
-}
-
 fn stdout(o: &Output) -> String {
     String::from_utf8_lossy(&o.stdout).into_owned()
 }
 fn stderr(o: &Output) -> String {
     String::from_utf8_lossy(&o.stderr).into_owned()
-}
-
-fn new_app(sb: &Sandbox) -> PathBuf {
-    let out = sb.run(&sb.work, "dev", &["new", "app"]);
-    assert!(out.status.success(), "new failed: {}", stderr(&out));
-    sb.work.join("app")
 }
 
 /// Recursively copy the contents of `src` into `dst` (used to lift a committed
@@ -1201,19 +1153,18 @@ fn path_dependency_builds_and_runs() {
     assert!(stdout(&out).contains("ok"), "build output: {}", stdout(&out));
 }
 
-/// Build-time execution is **default-deny, twice over** — even for a "safe" build
-/// step that demands only the confined `BuildOut` sandbox. (1) `add` runs the
-/// widening gate: the appearance of any build-axis kind must be accepted with
-/// `--allow-build-cap`. (2) `build` then still refuses to accept the *existence*
-/// of a build step until the consumer writes a `[build.grants."name"]` section —
-/// you consent to any code execution before you consent to safe code execution.
-/// An empty section is that consent (it permits only `BuildOut`).
+/// Build-time execution is **default-deny** in the front-end — even for a "safe"
+/// build step that demands only the confined `BuildOut` sandbox. A `build`/`run`
+/// refuses the very *existence* of a dependency's build step until the consumer
+/// writes a `[build.grants."name"]` section: you consent to any code execution
+/// before you consent to safe code execution. An empty section is that consent
+/// (it permits only `BuildOut`). The path dependency is declared straight in the
+/// consumer's manifest (the front-end resolves path deps from `path =`, not a
+/// `pm add` step), and the front-end prints its decisions to stdout.
 #[test]
 fn build_steps_are_default_deny_even_when_safe() {
-    let sb = Sandbox::new("builddeny");
-    let app = new_app(&sb);
-
-    let lib = sb.work.join("safegen");
+    let work = unique("builddeny");
+    let lib = work.join("safegen");
     std::fs::create_dir_all(lib.join("src")).unwrap();
     std::fs::write(lib.join("witchy.toml"), "[rune]\nname = \"safegen\"\nversion = \"0.1.0\"\n").unwrap();
     std::fs::write(
@@ -1228,27 +1179,27 @@ fn build_steps_are_default_deny_even_when_safe() {
     )
     .unwrap();
 
-    // Layer 1 — the gate: even BuildOut appearing on the build axis is a
-    // widening that `add` blocks until explicitly accepted.
-    let out = sb.run(&app, "dev", &["add", "safegen", "--path", "../safegen"]);
-    assert!(!out.status.success(), "add must gate on the new build-axis kind");
-    let blocked = format!("{}{}", stdout(&out), stderr(&out));
-    assert!(blocked.contains("BuildOut"), "the gate should name BuildOut: {blocked}");
-    let out = sb.run(
-        &app,
-        "dev",
-        &["add", "safegen", "--path", "../safegen", "--allow-build-cap", "BuildOut"],
-    );
-    assert!(out.status.success(), "accepting the kind should let add proceed: {}", stderr(&out));
+    let app = work.join("app");
+    std::fs::create_dir_all(app.join("src")).unwrap();
+    std::fs::write(
+        app.join("witchy.toml"),
+        "[rune]\nname = \"app\"\nversion = \"0.1.0\"\n\n[capabilities]\nruntime = [\"Console\"]\n\n[dependencies]\n\"safegen\" = { path = \"../safegen\" }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        app.join("src/app.witchy"),
+        "fn main(console: Console):\n    print(console, \"ok\")\n",
+    )
+    .unwrap();
 
-    // Layer 2 — execution consent: the build still refuses while no
-    // [build.grants."safegen"] section exists at all.
-    let out = sb.run(&app, "dev", &["build"]);
+    // Default-deny: the build refuses while no [build.grants."safegen"] section
+    // exists at all — you consent to ANY build-time code execution first.
+    let out = pm_fe(&work, &["build", "app"]);
     assert!(!out.status.success(), "a build step must be denied without a grants section");
     assert!(
-        stderr(&out).contains("build-time code execution is denied by default"),
+        stdout(&out).contains("build-time code execution is denied by default"),
         "denial should say why: {}",
-        stderr(&out)
+        stdout(&out)
     );
 
     // The empty section is the explicit consent — it grants only BuildOut.
@@ -1258,12 +1209,15 @@ fn build_steps_are_default_deny_even_when_safe() {
         format!("{manifest}\n[build.grants.\"safegen\"]\n"),
     )
     .unwrap();
-    let out = sb.run(&app, "dev", &["build"]);
+    let out = pm_fe(&work, &["build", "app"]);
     assert!(
         out.status.success(),
-        "an empty grants section accepts a BuildOut-only step: {}",
-        stderr(&out)
+        "an empty grants section accepts a BuildOut-only step: {}\n{}",
+        stderr(&out),
+        stdout(&out)
     );
+
+    let _ = std::fs::remove_dir_all(&work);
 }
 
 /// Staging cooldown (§8): a freshly released version is not resolvable until its
@@ -1308,18 +1262,17 @@ fn fresh_releases_cool_down_before_resolving() {
     assert!(app.join("vendor/fresh/src/fresh.witchy").exists(), "accepted add must vendor");
 }
 
-/// Build steps auto-run during `witchy build`/`run`: a dependency's
+/// Build steps auto-run during `witchy build`/`run`: a path dependency's
 /// `src/build.witchy` executes confined under its `[build.grants]`, the source
 /// it emits joins the consumer's link (importable like any module) — and the
 /// **post-generation audit** recomputes the rune's footprint over shipped +
-/// generated code, refusing generated source that widens beyond the locked
-/// baseline. Generated code cannot smuggle in authority.
+/// generated code, refusing generated source that widens beyond the dependency's
+/// shipped baseline. Generated code cannot smuggle in authority. Driven through
+/// the front-end (`witchy pm run`) from the workspace root.
 #[test]
 fn build_steps_auto_run_and_generated_source_is_gated() {
-    let sb = Sandbox::new("autorun");
-    let app = new_app(&sb);
-
-    let lib = sb.work.join("genlib");
+    let work = unique("autorun");
+    let lib = work.join("genlib");
     std::fs::create_dir_all(lib.join("src")).unwrap();
     std::fs::write(lib.join("witchy.toml"), "[rune]\nname = \"genlib\"\nversion = \"0.1.0\"\n").unwrap();
     std::fs::write(
@@ -1333,52 +1286,52 @@ fn build_steps_auto_run_and_generated_source_is_gated() {
     )
     .unwrap();
 
-    let out = sb.run(
-        &app,
-        "dev",
-        &["add", "genlib", "--path", "../genlib", "--allow-build-cap", "BuildOut"],
-    );
-    assert!(out.status.success(), "add failed: {}", stderr(&out));
-    let manifest = std::fs::read_to_string(app.join("witchy.toml")).unwrap();
-    std::fs::write(app.join("witchy.toml"), format!("{manifest}\n[build.grants.\"genlib\"]\n")).unwrap();
+    let app = work.join("app");
+    std::fs::create_dir_all(app.join("src")).unwrap();
+    // The path dep + an empty grants section (the consent to its BuildOut-only step).
+    std::fs::write(
+        app.join("witchy.toml"),
+        "[rune]\nname = \"app\"\nversion = \"0.1.0\"\n\n[capabilities]\nruntime = [\"Console\"]\n\n[dependencies]\n\"genlib\" = { path = \"../genlib\" }\n\n[build.grants.\"genlib\"]\n",
+    )
+    .unwrap();
     std::fs::write(
         app.join("src/app.witchy"),
         "import greet\n\nfn main(console: Console):\n    print(console, greet.greeting())\n",
     )
     .unwrap();
-    let out = sb.run(&app, "dev", &["run"]);
-    assert!(out.status.success(), "auto-run build step + import failed: {}", stderr(&out));
+    let out = pm_fe(&work, &["run", "app"]);
+    assert!(out.status.success(), "auto-run build step + import failed: {}\n{}", stderr(&out), stdout(&out));
     assert!(stdout(&out).contains("hi from generated code"), "got: {}", stdout(&out));
 
     // Now the build step turns malicious: it *generates* capability-hungry
-    // source. The hash change re-locks fine (the step itself still demands only
-    // BuildOut) — but the post-generation audit refuses the smuggle.
+    // source. The step itself still demands only BuildOut — but the
+    // post-generation audit (footprint over shipped + generated) refuses the
+    // smuggle of new runtime authority (Net) into the consumer's link.
     std::fs::write(
         lib.join("src/build.witchy"),
         "fn build(out: BuildOut):\n    let nl = \"\\n\"\n    write_out(out, \"greet.witchy\", \"pub fn evil(n: Net, addr: String) -> Socket:\" + nl + \"    connect(n, addr)\" + nl)\n",
     )
     .unwrap();
-    let out = sb.run(&app, "dev", &["update"]);
-    assert!(out.status.success(), "re-lock after hash change: {}", stderr(&out));
-    let out = sb.run(&app, "dev", &["run"]);
+    let out = pm_fe(&work, &["run", "app"]);
     assert!(!out.status.success(), "generated widening must be refused");
     assert!(
-        stderr(&out).contains("WIDENS its footprint"),
+        stdout(&out).contains("WIDENS its footprint"),
         "the refusal should explain the smuggle: {}",
-        stderr(&out)
+        stdout(&out)
     );
+
+    let _ = std::fs::remove_dir_all(&work);
 }
 
 /// A deterministic build step (no BuildExec/BuildNet) is cached by its inputs
 /// (§7.2): a second build with unchanged inputs reuses the prior output instead
 /// of re-running. We prove the *hit* by corrupting the cached output and leaving
 /// the cache key intact — a cache hit serves the corrupted bytes, a miss would
-/// regenerate the original.
+/// regenerate the original. Driven through the front-end (`witchy pm run`).
 #[test]
 fn deterministic_build_output_is_cached() {
-    let sb = Sandbox::new("buildcache");
-    let app = new_app(&sb);
-    let lib = sb.work.join("genlib");
+    let work = unique("buildcache");
+    let lib = work.join("genlib");
     std::fs::create_dir_all(lib.join("src")).unwrap();
     std::fs::write(lib.join("witchy.toml"), "[rune]\nname = \"genlib\"\nversion = \"0.1.0\"\n").unwrap();
     std::fs::write(lib.join("src/genlib.witchy"), "pub fn id(s: String) -> String:\n    s\n").unwrap();
@@ -1387,18 +1340,22 @@ fn deterministic_build_output_is_cached() {
         "fn build(out: BuildOut):\n    let nl = \"\\n\"\n    write_out(out, \"greet.witchy\", \"pub fn greeting() -> String:\" + nl + \"    \\\"V1\\\"\" + nl)\n",
     )
     .unwrap();
-    let out = sb.run(&app, "dev", &["add", "genlib", "--path", "../genlib", "--allow-build-cap", "BuildOut"]);
-    assert!(out.status.success(), "add failed: {}", stderr(&out));
-    let manifest = std::fs::read_to_string(app.join("witchy.toml")).unwrap();
-    std::fs::write(app.join("witchy.toml"), format!("{manifest}\n[build.grants.\"genlib\"]\n")).unwrap();
+
+    let app = work.join("app");
+    std::fs::create_dir_all(app.join("src")).unwrap();
+    std::fs::write(
+        app.join("witchy.toml"),
+        "[rune]\nname = \"app\"\nversion = \"0.1.0\"\n\n[capabilities]\nruntime = [\"Console\"]\n\n[dependencies]\n\"genlib\" = { path = \"../genlib\" }\n\n[build.grants.\"genlib\"]\n",
+    )
+    .unwrap();
     std::fs::write(
         app.join("src/app.witchy"),
         "import greet\n\nfn main(console: Console):\n    print(console, greet.greeting())\n",
     )
     .unwrap();
 
-    let out = sb.run(&app, "dev", &["run"]);
-    assert!(out.status.success(), "first run failed: {}", stderr(&out));
+    let out = pm_fe(&work, &["run", "app"]);
+    assert!(out.status.success(), "first run failed: {}\n{}", stderr(&out), stdout(&out));
     assert!(stdout(&out).contains("V1"), "got: {}", stdout(&out));
 
     // Corrupt the generated output, keep the cache key.
@@ -1406,13 +1363,15 @@ fn deterministic_build_output_is_cached() {
     let body = std::fs::read_to_string(&gen_file).unwrap().replace("V1", "CACHED");
     std::fs::write(&gen_file, body).unwrap();
 
-    let out = sb.run(&app, "dev", &["run"]);
-    assert!(out.status.success(), "cached run failed: {}", stderr(&out));
+    let out = pm_fe(&work, &["run", "app"]);
+    assert!(out.status.success(), "cached run failed: {}\n{}", stderr(&out), stdout(&out));
     assert!(
         stdout(&out).contains("CACHED"),
         "a deterministic build step should be cached (got: {})",
         stdout(&out)
     );
+
+    let _ = std::fs::remove_dir_all(&work);
 }
 
 /// The committed `examples/projects/todo` workspace — a `todo` app that depends

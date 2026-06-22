@@ -415,7 +415,7 @@ fn audit_then_flags(console: Console, root: Dir, dir: String, name: String, depd
     for f in list(subdir(root, gendir)):
         if string.ends_with(f, ".witchy"):
             let path = join_path(gendir, f)
-            for c in build_total(read(root, path)):
+            for c in footprint_total(compiler.footprint(read(root, path))):
                 generated = add_unique(generated, c)
             flags = dep_flag(flags, module_stem(f), path)
     let widened = rights.uncovered(shipped, generated)
