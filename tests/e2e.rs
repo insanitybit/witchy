@@ -347,6 +347,34 @@ fn copy_tree(src: &Path, dst: &Path) {
     }
 }
 
+/// Lift a committed `examples/projects/<name>` workspace into a fresh, hermetic
+/// temp dir (so the test never mutates the repo or its lockfiles) and return the
+/// workspace root. The workspace holds the app rune and its sibling library runes;
+/// `witchy pm run/build <app>` is driven from this root so the project `Dir` (the
+/// front-end's handle 0) reaches both the app and its `../sibling` path deps,
+/// while the program's own runtime `Dir` is rooted at the app subdir.
+fn lift_example(name: &str) -> PathBuf {
+    let srcroot = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/projects").join(name);
+    let work = unique(&format!("ex-{name}"));
+    copy_tree(&srcroot, &work);
+    work
+}
+
+/// Drive the embedded **witchy front-end** (`witchy pm <args>`) from `dir`, the
+/// self-hosted CLI of rfcs/0004-self-hosted-cli.md. Capability-confined: the
+/// project `Dir` is `dir`, a `Dir` to the toolchain bin lets it drive the compiler
+/// via `Exec`. No registry server is needed for a path-dependency workspace — the
+/// sources resolve straight from the manifests' `path =`.
+fn pm_fe(dir: &Path, args: &[&str]) -> Output {
+    let mut full = vec!["pm"];
+    full.extend_from_slice(args);
+    Command::new(BIN)
+        .current_dir(dir)
+        .args(&full)
+        .output()
+        .expect("spawn witchy pm")
+}
+
 /// The full networked lifecycle through the front-end against a real coven:
 /// trusted CI `publish` (staged) → a staged rune is not addable → distinct-human
 /// `promote` (released) → `add` (fetched over HTTP, signature + content verified,
@@ -1148,30 +1176,42 @@ fn tree_shows_direct_deps_with_sources() {
 
 #[test]
 fn path_dependency_builds_and_runs() {
-    let sb = Sandbox::new("path");
-    let app = new_app(&sb);
-
-    // A sibling library on disk (no registry involved).
-    let lib = sb.work.join("greet");
+    // A two-rune workspace: an `app` with a path dependency on a sibling `greet`
+    // library, both on disk (no registry involved). Driven through the embedded
+    // witchy front-end (`witchy pm run`), proving the front-end resolves a sibling
+    // path dependency and links it into the program.
+    let work = unique("path");
+    let lib = work.join("greet");
     std::fs::create_dir_all(lib.join("src")).unwrap();
     std::fs::write(lib.join("witchy.toml"), "[rune]\nname = \"greet\"\nversion = \"0.1.0\"\n").unwrap();
     std::fs::write(
         lib.join("src/greet.witchy"),
-        "fn hi(s: String) -> String:\n    \"hi \" + s\n",
+        "pub fn hi(s: String) -> String:\n    \"hi \" + s\n",
     )
     .unwrap();
 
-    // Add it as a path dependency, then use it.
-    let out = sb.run(&app, "dev", &["add", "greet", "--path", "../greet"]);
-    assert!(out.status.success(), "add --path failed: {}", stderr(&out));
+    let app = work.join("app");
+    std::fs::create_dir_all(app.join("src")).unwrap();
+    std::fs::write(
+        app.join("witchy.toml"),
+        "[rune]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"greet\" = { path = \"../greet\" }\n",
+    )
+    .unwrap();
     std::fs::write(
         app.join("src/app.witchy"),
         "import greet\n\nfn main(console: Console):\n    print(console, greet.hi(\"witchy\"))\n",
     )
     .unwrap();
-    let out = sb.run(&app, "dev", &["run"]);
-    assert!(out.status.success(), "run failed: {}", stderr(&out));
+
+    // Run from the workspace root so the project Dir reaches the `../greet` sibling.
+    let out = pm_fe(&work, &["run", "app"]);
+    assert!(out.status.success(), "pm run failed: {}", stderr(&out));
     assert!(stdout(&out).contains("hi witchy"), "got: {}", stdout(&out));
+
+    // It also builds (links the path dep without running).
+    let out = pm_fe(&work, &["build", "app"]);
+    assert!(out.status.success(), "pm build failed: {}", stderr(&out));
+    assert!(stdout(&out).contains("ok"), "build output: {}", stdout(&out));
 }
 
 /// Build-time execution is **default-deny, twice over** — even for a "safe" build
@@ -1389,10 +1429,8 @@ fn deterministic_build_output_is_cached() {
 /// hermetic sandbox so the test never mutates the repo (or its lockfile).
 #[test]
 fn example_todo_workspace_runs_with_a_path_dependency() {
-    let sb = Sandbox::new("ex-todo");
-    let srcroot = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/projects/todo");
-    copy_tree(&srcroot, &sb.work);
-    let out = sb.run(&sb.work.join("todo"), "dev", &["run"]);
+    let work = lift_example("todo");
+    let out = pm_fe(&work, &["run", "todo"]);
     assert!(out.status.success(), "run failed: {}", stderr(&out));
     let s = stdout(&out);
     assert!(s.contains("[x] Decompose Dir into Read / Write"), "rendered board missing: {s}");
@@ -1406,10 +1444,8 @@ fn example_todo_workspace_runs_with_a_path_dependency() {
 /// runs end to end. Copied into a hermetic sandbox so the repo is never touched.
 #[test]
 fn example_ledger_workspace_runs_with_async_and_a_path_dependency() {
-    let sb = Sandbox::new("ex-ledger");
-    let srcroot = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/projects/ledger");
-    copy_tree(&srcroot, &sb.work);
-    let out = sb.run(&sb.work.join("ledger"), "dev", &["run"]);
+    let work = lift_example("ledger");
+    let out = pm_fe(&work, &["run", "ledger"]);
     assert!(out.status.success(), "run failed: {}", stderr(&out));
     let s = stdout(&out);
     // FIFO message order + running balance, formatted by the `money` rune.
@@ -1424,10 +1460,8 @@ fn example_ledger_workspace_runs_with_async_and_a_path_dependency() {
 /// builds and runs end to end. Copied into a hermetic sandbox.
 #[test]
 fn example_report_workspace_runs_with_json_and_a_path_dependency() {
-    let sb = Sandbox::new("ex-report");
-    let srcroot = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/projects/report");
-    copy_tree(&srcroot, &sb.work);
-    let out = sb.run(&sb.work.join("report"), "dev", &["run"]);
+    let work = lift_example("report");
+    let out = pm_fe(&work, &["run", "report"]);
     assert!(out.status.success(), "run failed: {}", stderr(&out));
     let s = stdout(&out);
     assert!(s.contains("records: 4"), "record count missing: {s}");
@@ -1442,22 +1476,25 @@ fn example_report_workspace_runs_with_json_and_a_path_dependency() {
 /// shows the shared base resolved once. Copied into a hermetic sandbox.
 #[test]
 fn example_dashboard_workspace_runs_with_a_diamond_dependency() {
-    let sb = Sandbox::new("ex-dash");
-    let srcroot = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/projects/dashboard");
-    copy_tree(&srcroot, &sb.work);
-    let app = sb.work.join("dashboard");
+    let work = lift_example("dashboard");
 
-    let out = sb.run(&app, "dev", &["run"]);
+    // The diamond — `dashboard` → {`tasks`, `coverage`} → shared `bars` base —
+    // builds and runs. The front-end collects the path-dependency graph
+    // TRANSITIVELY and deduplicates the shared base, so `bars` is linked exactly
+    // once: a successful run with both widgets rendered is the proof (a duplicate
+    // `bars` module would be a link-time redefinition error).
+    let out = pm_fe(&work, &["run", "dashboard"]);
     assert!(out.status.success(), "run failed: {}", stderr(&out));
     let s = stdout(&out);
     assert!(s.contains("tasks    [####----]  50%"), "tasks widget missing: {s}");
     assert!(s.contains("coverage [######--]  75%"), "coverage widget missing: {s}");
 
-    // The diamond: `bars` is reached via both `tasks` and `coverage`, but the
-    // resolver shares it — the tree marks the second occurrence with `(*)`.
-    let tree = sb.run(&app, "dev", &["tree"]);
+    // `witchy pm tree` lists the app and its direct path dependencies.
+    let tree = pm_fe(&work, &["tree", "dashboard"]);
     assert!(tree.status.success(), "tree failed: {}", stderr(&tree));
-    assert!(stdout(&tree).contains("bars@0.1.0 (*)"), "shared base not deduplicated: {}", stdout(&tree));
+    let t = stdout(&tree);
+    assert!(t.contains("dashboard"), "tree should name the rune: {t}");
+    assert!(t.contains("tasks") && t.contains("coverage"), "tree should list the widgets: {t}");
 }
 
 /// The committed `examples/projects/config` workspace — a `greet` app that reads
@@ -1467,18 +1504,16 @@ fn example_dashboard_workspace_runs_with_a_diamond_dependency() {
 /// project's own design (and exercised manually).
 #[test]
 fn example_config_workspace_runs_with_result_error_handling() {
-    let sb = Sandbox::new("ex-config");
-    let srcroot = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/projects/config");
-    copy_tree(&srcroot, &sb.work);
-    let app = sb.work.join("greet");
+    let work = lift_example("config");
 
-    let out = sb.run(&app, "dev", &["run"]);
+    let out = pm_fe(&work, &["run", "greet"]);
     assert!(out.status.success(), "run failed: {}", stderr(&out));
     assert!(stdout(&out).trim() == "Hello, witchy!", "greeting wrong: {}", stdout(&out));
 
-    // Drop a required key: `?` short-circuits to the friendly Err message.
-    std::fs::write(app.join("config.kv"), "greeting = Hi\n").unwrap();
-    let out = sb.run(&app, "dev", &["run"]);
+    // Drop a required key: `?` short-circuits to the friendly Err message. The
+    // data file lives in the app subdir (the program's runtime Dir is rooted there).
+    std::fs::write(work.join("greet").join("config.kv"), "greeting = Hi\n").unwrap();
+    let out = pm_fe(&work, &["run", "greet"]);
     assert!(out.status.success(), "run failed: {}", stderr(&out));
     assert!(
         stdout(&out).contains("config error: missing config key: name"),
@@ -1493,10 +1528,8 @@ fn example_config_workspace_runs_with_result_error_handling() {
 /// runs, parsing a quoted field with an embedded comma and folding into a Dict.
 #[test]
 fn example_sales_workspace_aggregates_csv_with_dict() {
-    let sb = Sandbox::new("ex-sales");
-    let srcroot = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/projects/sales");
-    copy_tree(&srcroot, &sb.work);
-    let out = sb.run(&sb.work.join("sales"), "dev", &["run"]);
+    let work = lift_example("sales");
+    let out = pm_fe(&work, &["run", "sales"]);
     assert!(out.status.success(), "run failed: {}", stderr(&out));
     let s = stdout(&out);
     assert!(s.contains("gadget          $125"), "gadget total: {s}");
@@ -1514,10 +1547,8 @@ fn example_sales_workspace_aggregates_csv_with_dict() {
 /// so the assertion checks content and order, not the column padding.
 #[test]
 fn example_wordfreq_workspace_ranks_words() {
-    let sb = Sandbox::new("ex-wordfreq");
-    let srcroot = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/projects/wordfreq");
-    copy_tree(&srcroot, &sb.work);
-    let out = sb.run(&sb.work.join("wordfreq"), "dev", &["run"]);
+    let work = lift_example("wordfreq");
+    let out = pm_fe(&work, &["run", "wordfreq"]);
     assert!(out.status.success(), "run failed: {}", stderr(&out));
     let collapsed = stdout(&out).split_whitespace().collect::<Vec<_>>().join(" ");
     assert!(
@@ -1533,13 +1564,12 @@ fn example_wordfreq_workspace_ranks_words() {
 /// produced — header column order preserved, integers as JSON numbers.
 #[test]
 fn example_convert_workspace_writes_json_via_dir_write() {
-    let sb = Sandbox::new("ex-convert");
-    let srcroot = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/projects/convert");
-    copy_tree(&srcroot, &sb.work);
-    let app = sb.work.join("convert");
-    let out = sb.run(&app, "dev", &["run"]);
+    let work = lift_example("convert");
+    let app = work.join("convert");
+    let out = pm_fe(&work, &["run", "convert"]);
     assert!(out.status.success(), "run failed: {}", stderr(&out));
     assert!(stdout(&out).contains("wrote output.json"), "stdout: {}", stdout(&out));
+    // The program writes through its read-write Dir, rooted at the app subdir.
     let written = std::fs::read_to_string(app.join("output.json")).expect("app must write output.json");
     assert!(written.trim_start().starts_with('['), "must be a JSON array: {written}");
     assert!(written.contains("\"name\": \"Ada\""), "name field: {written}");

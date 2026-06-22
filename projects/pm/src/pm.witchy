@@ -159,8 +159,16 @@ fn cmd_build(console: Console, runner: Exec, root: Dir, bin: Dir, args: List(Str
 
 // Link a project's entry + vendored deps to a wasm under <dir>/target, then run
 // that wasm. Two compiler invocations: `compile --dep ... --out` (link) then a
-// plain run of the wasm (which carries exactly its own footprint). The artifact
-// goes under the project's own tree so it is named through the project Dir.
+// run of the wasm (which carries exactly its own footprint). The artifact goes
+// under the project's own tree so it is named through the project Dir.
+//
+// The run step is granted a `Dir` rooted at the PROJECT directory (`--dir <dir>`),
+// NOT pm's own working directory. This keeps the program's runtime authority
+// confined to its own tree while still letting the *compile* step reach a sibling
+// path-dependency (`../lib`), which is named relative to pm's Dir (a workspace
+// that holds both the app and its siblings). Without the explicit `--dir`, the
+// program's data Dir would default to pm's cwd — too wide when pm runs from a
+// workspace root, and missing the project's data files (e.g. `tasks.md`).
 fn run_project(console: Console, runner: Exec, root: Dir, bin: Dir, dir: String) -> Int:
     match project_entry(root, dir):
         None ->
@@ -177,7 +185,16 @@ fn run_project(console: Console, runner: Exec, root: Dir, bin: Dir, dir: String)
                 print(console, built.1)
                 built.0
             else:
-                run_compiler(console, runner, bin, "run", [wasm])
+                run_compiler(console, runner, bin, "run", ["sandbox", "--dir", project_data_dir(dir), wasm])
+
+// The directory backing the program's runtime `Dir` grant — the project itself
+// (`.` when pm is run from inside the project, `<dir>` when run from a workspace
+// root). Data files (`tasks.md`, `config.kv`, `output.json`, …) live here.
+fn project_data_dir(dir: String) -> String:
+    if string.is_empty(dir) || dir == ".":
+        "."
+    else:
+        dir
 
 // The project's entry source: the first `.witchy` under <dir>/src, prefixed back
 // to a path the compiler can read relative to the project Dir.
@@ -190,37 +207,54 @@ fn project_entry(root: Dir, dir: String) -> Option(String):
             Some(file) -> Some(join_path(srcdir, file))
             None -> None
 
-// One `--dep name=path` token per dependency, mapping the `import <name>` the
-// entry uses to the source the compiler should link. A registry dependency is
-// served from its vendored tree (`vendor/<name>/src/*.witchy`, pinned by the
-// lock); a path dependency is resolved straight from the manifest's `path =`,
-// relative to the project, so a sibling-library workspace builds without
-// vendoring (the project Dir reaches across to the sibling). Path wins when both
-// are present (the manifest is the source of truth for a path dep).
+// One `--dep name=path` token per dependency (TRANSITIVELY), mapping the `import
+// <name>` any linked module uses to the source the compiler should link. The
+// compiler links a flat set of modules, so a *diamond* — `app` → {`tasks`,
+// `coverage`} → `bars` — needs every rune in the graph passed as a `--dep`, not
+// just the app's direct dependencies. Deduplicated by name (a shared base like
+// `bars` appears once). A registry dependency is served from its vendored tree
+// (`vendor/<name>/src/*.witchy`, pinned by the lock); a path dependency is
+// resolved from its manifest's `path =`, relative to the depending rune's dir, so
+// a sibling-library workspace builds without vendoring. Path wins when both are
+// present (the manifest is the source of truth for a path dep).
 fn dep_flags(root: Dir, dir: String) -> List(String):
-    var flags = []
+    collect_deps(root, dir, [])
+
+// Accumulate `--dep` flags for the rune at `dir` and, recursively, the path
+// dependencies it declares — skipping any already present so the graph is walked
+// once per rune (cycles and diamonds both terminate).
+fn collect_deps(root: Dir, dir: String, flags: List(String)) -> List(String):
+    var acc = flags
     if exists(root, join_path(dir, "witchy.toml")):
         let manifest = read(root, join_path(dir, "witchy.toml"))
         for pair in toml.table(manifest, "dependencies"):
-            flags = push_path_dep(root, dir, flags, pair)
+            acc = push_path_dep(root, dir, acc, pair)
     let lockpath = join_path(dir, "witchy.lock")
     if exists(root, lockpath):
         let lock = read(root, lockpath)
         for block in toml.array_tables(lock, "rune"):
             let name = entry_name(block)
-            if !string.is_empty(name) && !has_dep(flags, name):
+            if !string.is_empty(name) && !has_dep(acc, name):
                 if let Some(src) = vendored_module(root, dir, name):
-                    flags = dep_flag(flags, name, src)
-    flags
+                    acc = dep_flag(acc, name, src)
+    acc
 
-// Append a `--dep <name>=<path>` for a manifest path dependency (no-op otherwise).
+// Append a `--dep <name>=<path>` for a manifest path dependency (no-op otherwise),
+// then recurse into that dependency's own directory so its transitive path deps
+// are collected too. Already-resolved names are skipped (the diamond's shared base
+// resolves once).
 fn push_path_dep(root: Dir, dir: String, flags: List(String), pair: (String, String)) -> List(String):
     let (name, inline) = pair
-    match toml.inline_get(inline, "path"):
-        Some(rel) -> match path_dep_module(root, dir, rel):
-            Some(src) -> dep_flag(flags, name, src)
+    if has_dep(flags, name):
+        flags
+    else:
+        match toml.inline_get(inline, "path"):
+            Some(rel) ->
+                let dep_dir = normalize_path(join_path(dir, rel))
+                match module_in_src(root, dep_dir):
+                    Some(src) -> collect_deps(root, dep_dir, dep_flag(flags, name, src))
+                    None -> flags
             None -> flags
-        None -> flags
 
 fn dep_flag(flags: List(String), name: String, src: String) -> List(String):
     list.push(list.push(flags, "--dep"), name + "=" + src)
@@ -232,11 +266,6 @@ fn has_dep(flags: List(String), name: String) -> Bool:
         if string.contains(f, "=") && string.split_once(f, "=").0 == name:
             found = true
     found
-
-// The source file for a path dependency at `rel` (relative to the project dir),
-// normalized so `../sib` resolves across to a sibling under the project Dir.
-fn path_dep_module(root: Dir, dir: String, rel: String) -> Option(String):
-    module_in_src(root, normalize_path(join_path(dir, rel)))
 
 // The vendored source file for dependency `name`: vendor/<name>/src/<first>.witchy.
 fn vendored_module(root: Dir, dir: String, name: String) -> Option(String):
@@ -1033,14 +1062,29 @@ fn footprint_toml(caps: List(String)) -> String:
 
 // Collapse `a/b/../c` to `a/c`, dropping `.` and empty segments — the confined
 // Dir capability rejects `..`, so a relative dep path must be resolved first.
+// Lexically normalize a relative path, preserving leading `..` segments. A `..`
+// that has a real prior segment to cancel pops it; a `..` with nothing left to
+// pop (the path escapes its starting directory) is KEPT, so a sibling reference
+// like `todo/../tasklib` normalizes to `tasklib` while `../tasklib` (from the
+// workspace root) stays `../tasklib`. Dropping the leading `..` would silently
+// rewrite a sibling path-dependency into a non-existent same-directory one.
 fn normalize_path(let p: String) -> String:
     var stack = []
     for seg in string.split(p, "/"):
         if seg == "..":
-            stack = drop_last(stack)
+            if can_pop(stack):
+                stack = drop_last(stack)
+            else:
+                stack = list.push(stack, "..")
         else if seg != "" && seg != ".":
             stack = list.push(stack, seg)
     string.join(stack, "/")
+
+// Whether the last segment of `stack` is a real directory `..` can cancel (i.e.
+// not itself a leading `..`).
+fn can_pop(stack: List(String)) -> Bool:
+    let n = list.length(stack)
+    n > 0 && list.at(stack, n - 1) != ".."
 
 fn drop_last(xs: List(String)) -> List(String):
     var out = []
