@@ -1,0 +1,22 @@
+# glamour — the view layer of witchy's capability-pure frontend framework
+# (RFC-0008). A pure MVU core: `view(state) -> VNode(msg)` projects state to a
+# VNode tree (data, not side effects), an event is a `msg` VALUE carried by an
+# `On` attribute, and `update(state, msg) -> (state, Cmd(msg))` is a pure match.
+# The rune holds NO capability — no Net, no Dir, no Clock — and `witchy caps`
+# proves it. A capability-holding host shell (TypeScript today, RFC-0007's WASM
+# host tomorrow) diffs the tree into the real DOM and marshals events back as
+# `msg` values; the rune computes, the shell acts.
+#
+# The `html` tag is a COMPILE-TIME tagged literal (RFC-0006): `html"<div…>"`
+# expands during compilation into `element(…)`/`text(…)`/`prop(…)` constructor
+# calls, with holes typed by POSITION — a text-position hole becomes a `text`
+# node (never markup), so the view is XSS-immune by construction.
+[rune]
+name = "glamour"
+version = "0.1.0"
+
+[capabilities]
+# The headline acceptance criterion (RFC-0008): an EMPTY runtime footprint.
+runtime = []
+
+[dependencies]

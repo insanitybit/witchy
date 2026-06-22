@@ -13797,3 +13797,128 @@ pub fn serve(console: Console, net: Net) -> Int:
         assert_eq!(wasm, interp, "compiled WASM must match the interpreter");
     }
 
+    /// The glamour rune's source, embedded so tests can `import glamour` without a
+    /// sibling file on disk — the same trick `coven`'s server modules use.
+    const GLAMOUR_SRC: &str = include_str!("../projects/glamour/src/glamour.witchy");
+
+    /// Link a program that `import glamour` against the embedded glamour source
+    /// (and, transitively, the bundled std), then run it on BOTH backends and
+    /// assert they agree — the parity oracle for the framework rune. Returns the
+    /// agreed output. The `html` tag is a COMPILE-TIME literal (RFC-0006): it is
+    /// expanded by the linker before either backend sees the program, so this is a
+    /// genuine differential test of the *expanded* `VNode`-constructing AST.
+    fn glamour_run_both(src: &str) -> Vec<String> {
+        let entry = parser::parse_module(src).expect("parse entry");
+        let glamour = parser::parse_module(GLAMOUR_SRC).expect("parse glamour");
+        let modules = vec![("main".to_string(), entry), ("glamour".to_string(), glamour)];
+        let linked = crate::linker::link(modules, "main").expect("link glamour consumer");
+        typeck::check(&linked).expect("typecheck");
+        let interp = interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interp run");
+        let bytes = codegen::compile_module_binary(&linked)
+            .expect("compile")
+            .expect("the binary path lowers this program");
+        let wasm = crate::run_wasm_bytes(&bytes).expect("wasm run");
+        assert_eq!(wasm, interp, "compiled WASM must match the interpreter");
+        interp
+    }
+
+    /// RFC-0008: glamour's `html` tag (RFC-0006 compile-time literal) builds a
+    /// `VNode(msg)` tree, and the serializer renders it IDENTICALLY on both
+    /// backends. The headline property is structural XSS-immunity: a text-position
+    /// hole carrying `<script>x</script>` becomes a `Text` NODE, never markup, so
+    /// the serializer escapes it to `&lt;script&gt;…` — proven observable here.
+    #[test]
+    fn glamour_html_tag_renders_and_is_xss_immune_on_both_backends() {
+        let src = "import glamour\n\
+                   \n\
+                   fn main(console: Console):\n\
+                   \x20   let cls = \"card\"\n\
+                   \x20   let title = \"Witchy\"\n\
+                   \x20   let body = \"<script>x</script>\"\n\
+                   \x20   let view = html\"<div class=${cls}><h2>${title}</h2><span class=\\\"cap\\\">${body}</span></div>\"\n\
+                   \x20   print(console, to_html(view))\n";
+        let out = glamour_run_both(src);
+        assert_eq!(
+            out,
+            vec![
+                "<div class=\"card\"><h2>Witchy</h2><span class=\"cap\">\
+                 &lt;script&gt;x&lt;/script&gt;</span></div>"
+                    .to_string()
+            ],
+            "static class -> prop, text holes -> text nodes, and the <script> \
+             payload renders ESCAPED — XSS-immune by construction"
+        );
+        // The escaped payload is present; the raw executable form is NOT.
+        let rendered = &out[0];
+        assert!(rendered.contains("&lt;script&gt;"), "the payload must be escaped");
+        assert!(
+            !rendered.contains("<script>"),
+            "no raw <script> may reach the output — that would be an injection"
+        );
+    }
+
+    /// RFC-0008: events are DATA. `on:click=${Inc}` in attribute position lowers
+    /// to `on("click", Inc)` carrying a `msg` VALUE (not a closure), and the same
+    /// expanded AST runs identically on both backends.
+    #[test]
+    fn glamour_event_binding_is_a_msg_value_on_both_backends() {
+        let src = "import glamour\n\
+                   \n\
+                   type Msg:\n\
+                   \x20   Inc\n\
+                   \x20   Dec\n\
+                   \n\
+                   fn main(console: Console):\n\
+                   \x20   let view = html\"<button on:click=${Inc}>+</button>\"\n\
+                   \x20   print(console, to_html(view))\n";
+        let out = glamour_run_both(src);
+        assert_eq!(out, vec!["<button data-on-click=\"[msg]\">+</button>".to_string()]);
+    }
+
+    /// RFC-0008 acceptance criterion: the glamour rune has an EMPTY runtime
+    /// footprint — no Net, no Dir, no Clock, nothing. coven's own analyzer
+    /// (`capabilities::analyze`, the engine behind `witchy caps`) proves it from
+    /// source. This is the headline: a UI framework whose authority is provably
+    /// nil. The `witchy.toml` declares the same (`runtime = []`).
+    #[test]
+    fn glamour_rune_has_an_empty_capability_footprint() {
+        let fp = crate::capabilities::analyze(
+            &parser::parse_module(GLAMOUR_SRC).expect("parse glamour"),
+        );
+        // `show_caps` renders the empty set as the literal `(none)`.
+        assert_eq!(
+            crate::capabilities::show_caps(&fp.total),
+            "(none)",
+            "glamour must demand NO capability — an empty footprint is RFC-0008's headline"
+        );
+        assert!(fp.total.is_empty(), "the footprint map itself must be empty");
+        // And the manifest agrees: `runtime = []`.
+        let toml = include_str!("../projects/glamour/witchy.toml");
+        assert!(
+            toml.contains("runtime = []"),
+            "witchy.toml must declare an empty runtime footprint"
+        );
+    }
+
+    /// RFC-0008: a hole in a FORBIDDEN position is a COMPILE error, not a runtime
+    /// surprise. A `${hole}` used as a tag NAME makes the `html` tag `fail` at
+    /// comptime with a message naming the problem — so the program never links.
+    #[test]
+    fn glamour_html_rejects_a_hole_in_tag_name_position() {
+        let src = "import glamour\n\
+                   \n\
+                   fn main(console: Console):\n\
+                   \x20   let t = \"div\"\n\
+                   \x20   let view = html\"<${t}>hi</${t}>\"\n\
+                   \x20   print(console, to_html(view))\n";
+        let entry = parser::parse_module(src).expect("parse entry");
+        let glamour = parser::parse_module(GLAMOUR_SRC).expect("parse glamour");
+        let modules = vec![("main".to_string(), entry), ("glamour".to_string(), glamour)];
+        let err = crate::linker::link(modules, "main")
+            .expect_err("a tag-name hole must be a compile error");
+        assert!(
+            err.to_string().contains("a tag NAME may not be a"),
+            "the compile error must name the forbidden position, got: {err}"
+        );
+    }
+

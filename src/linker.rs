@@ -351,8 +351,19 @@ pub fn link(mut modules: Vec<(String, Module)>, entry: &str) -> Result<Module, L
             // `tag"…${e}…"` tagged literals expand right after comptime, per
             // module: each tag runs at compile time and its returned source is
             // parsed and SPLICED over the literal — so both backends compile the
-            // same expanded AST (RFC-0006). Additive only.
-            crate::tagged::expand(name, &mut modules[i].1)
+            // same expanded AST (RFC-0006). Additive only. The tag-expansion
+            // context needs the OTHER modules so an IMPORTED tag (and the
+            // constructors it emits) resolves, so we hand it a snapshot of the
+            // rest of the link set (those already expanded for this pass, plus the
+            // raw later ones — sufficient, since a tag's module is data, not
+            // itself tag-bearing in practice).
+            let siblings: Vec<(String, Module)> = modules
+                .iter()
+                .enumerate()
+                .filter(|(j, _)| *j != i)
+                .map(|(_, m)| m.clone())
+                .collect();
+            crate::tagged::expand(name, &mut modules[i].1, &siblings)
                 .map_err(|message| LinkError { message })?;
         }
     }

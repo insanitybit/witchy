@@ -1,0 +1,435 @@
+// glamour — the view layer (RFC-0008): a capability-pure MVU core over a `VNode`
+// tree. A view is a VALUE, not a side effect: `view(state) -> VNode(msg)` is a
+// pure projection of state to data, an event is a `msg` VALUE carried by `On`,
+// and `update(state, msg) -> (state, Cmd(msg))` is an ordinary `match`. The rune
+// holds NO capability; `witchy caps projects/glamour/src/glamour.witchy` proves
+// the footprint is empty. A capability-holding host shell diffs the tree into the
+// real DOM and marshals DOM events back as `msg` values — the rune computes, the
+// shell acts.
+//
+// `string`/`list` come from the prelude (no import needed) and are PURE, so they
+// grant no authority — that is what keeps this rune's footprint empty.
+
+// ---------------------------------------------------------------------------
+// VNode — the view as data (parameterized over the app's message type `msg`,
+// because event handlers carry app-specific messages).
+// ---------------------------------------------------------------------------
+
+// An element with a tag name, attributes, and children, OR a text node. Text is
+// ALWAYS a leaf carrying a plain String — there is no `string -> markup` variant,
+// so a `${userInput}` routed here (see the `html` tag) can only ever be inert
+// text. That is the XSS-immunity-by-construction guarantee, made structural.
+pub type VNode(msg):
+    Element(String, List(Attr(msg)), List(VNode(msg)))
+    Text(String)
+
+// A DOM property/attribute (`class="card"`, `href=…`), OR an event→msg binding.
+// `On` carries a `msg` VALUE, not a closure — the whole MVU model: events are
+// DATA the shell hands back to `update`, never live handlers wired into the view.
+pub type Attr(msg):
+    Prop(String, String)
+    On(String, msg)
+
+// ---- constructors / helpers (the names the `html` tag emits) ----
+// Kept deliberately simple (`element`/`text`/`prop`/`on`): the `html` tag splices
+// these names at the CALL site, so a consumer that writes `html"…"` must
+// `import glamour`. (Hygiene — qualified/private emission so the tag's
+// constructors can't be shadowed by a call-site binding — is a later refinement;
+// noted in the RFC's "Hygiene" section.)
+
+pub fn element(tag: String, attrs: List(Attr(msg)), children: List(VNode(msg))) -> VNode(msg):
+    Element(tag, attrs, children)
+
+pub fn text(s: String) -> VNode(msg):
+    Text(s)
+
+pub fn prop(name: String, value: String) -> Attr(msg):
+    Prop(name, value)
+
+pub fn on(event: String, msg: msg) -> Attr(msg):
+    On(event, msg)
+
+// ---------------------------------------------------------------------------
+// Cmd — effects as data (types only for this slice; the DOM run-loop needs the
+// browser host from RFC-0007). `update` does not PERFORM effects — the rune is
+// capability-denied — it DESCRIBES them: it returns a `Cmd(msg)` the
+// capability-holding host shell interprets. Intended shapes (built by the host
+// loop, not here):
+//     view:   fn(state) -> VNode(msg)
+//     update: fn(state, msg) -> (state, Cmd(msg))
+// kept minimal on purpose (the `Cmd` vocabulary is RFC-0008's least-built part).
+// ---------------------------------------------------------------------------
+
+pub type Cmd(msg):
+    None
+    Batch(List(Cmd(msg)))
+
+// ---------------------------------------------------------------------------
+// Serializer — render a VNode tree to an HTML string. There is no browser here,
+// so this is how the structural safety becomes OBSERVABLE in tests: text content
+// is escaped, so a text-node hole containing `<script>` renders as the literal
+// characters `&lt;script&gt;`, never executable markup.
+// ---------------------------------------------------------------------------
+
+pub fn to_html(node: VNode(msg)) -> String:
+    match node:
+        Text(s) -> escape_text(s)
+        Element(tag, attrs, children) -> render_element(tag, attrs, children)
+
+fn render_element(tag: String, attrs: List(Attr(msg)), children: List(VNode(msg))) -> String:
+    var out = "<" + tag
+    for a in attrs:
+        out = out + render_attr(a)
+    if list.is_empty(children):
+        out + "></" + tag + ">"
+    else:
+        out = out + ">"
+        for c in children:
+            out = out + to_html(c)
+        out + "</" + tag + ">"
+
+fn render_attr(a: Attr(msg)) -> String:
+    match a:
+        // A static/property attribute. The value is attribute-escaped so a `"`
+        // can't break out of the quoted value.
+        Prop(name, value) -> " " + name + "=\"" + escape_attr(value) + "\""
+        // An event binding is data for the host shell; it has no HTML rendering
+        // surface, so the serializer marks it inertly (the shell reads the live
+        // `On` value out of the VNode, not out of this string).
+        On(event, msg) -> " data-on-" + event + "=\"[msg]\""
+
+// Escape text content: the four characters that could otherwise be parsed as
+// markup. This is the load-bearing line for XSS-immunity being observable.
+fn escape_text(s: String) -> String:
+    var out = string.replace(s, "&", "&amp;")
+    out = string.replace(out, "<", "&lt;")
+    out = string.replace(out, ">", "&gt;")
+    out
+
+// Escape an attribute value: as text, plus the quote that delimits the value.
+fn escape_attr(s: String) -> String:
+    var out = escape_text(s)
+    out = string.replace(out, "\"", "&quot;")
+    out
+
+// ===========================================================================
+// The `html` tag — a COMPILE-TIME tagged literal (RFC-0006). `html"<div…>"`
+// expands DURING COMPILATION: this function runs once in the compiler, receives
+// the static fragments (`parts`) and each hole's SOURCE TEXT (`holes`), and
+// returns witchy EXPRESSION SOURCE constructing a `VNode`. The returned source is
+// reparsed and spliced over the literal, so both backends compile the same AST.
+//
+// Holes are typed BY POSITION (the headline safety property):
+//   * a hole in TEXT position      -> `text(<hole-source>)`  (a text NODE; if the
+//     hole is a String it is inert text — XSS-immune; a VNode hole is spliced
+//     directly, the simplest correct rule).
+//   * a hole in ATTRIBUTE-VALUE    -> `prop("name", <hole-source>)`
+//     position
+//   * a hole in `on:event=${...}`  -> `on("event", <hole-source>)`  (events as
+//     data; the hole is a `msg` value).
+//   * a hole in a FORBIDDEN spot   -> `fail("…")` at comptime, aborting the
+//     (e.g. as a tag NAME)            compile with a message naming the problem.
+//
+// Supported subset: nested `<tag attr=… on:evt=…>children</tag>`, self-closing
+// `<tag/>`, static text, static `name="value"` / `name=value` attributes, and
+// `${}` holes in text / attribute-value / event positions. NOT supported (noted):
+// HTML comments, entities beyond the escape set, boolean attributes without a
+// value, and namespaced/SVG tags.
+// ===========================================================================
+
+pub fn html(parts: List(String), holes: List(String)) -> String:
+    // Reconstruct the full template, replacing each hole with a sentinel marker
+    // `<NUL>N<NUL>` (NUL cannot appear in HTML source), so the parser can walk a
+    // single char stream and recover hole `N`'s source when it meets a marker.
+    let template = weave(parts)
+    let toks = lex_html(template)
+    // Parse one top-level node (the RFC's examples are single-rooted).
+    let parsed = parse_node(toks, 0, holes)
+    let (src, _next) = parsed
+    src
+
+// Interleave static parts with NUL-delimited hole markers: part0 + M0 + part1 +
+// M1 + … . `parts.len() == holes.len() + 1`, so every gap gets exactly one
+// marker indexed by its position.
+fn weave(parts: List(String)) -> String:
+    let nul = string.from_code(0)
+    var out = ""
+    var i = 0
+    let n = list.length(parts)
+    for p in parts:
+        out = out + p
+        if i < n - 1:
+            out = out + nul + "${i}" + nul
+        i = i + 1
+    out
+
+// ---- a tiny HTML lexer over the woven template ----
+// Tokens are encoded as strings for simplicity (no extra type leaks into the
+// rune's public surface): a tag-open marker, attributes, text runs, and holes.
+
+type HtmlTok:
+    // `<tag` open (the tag name; "" if the name was a forbidden hole — caught
+    // later) with the parsed attributes and whether it self-closed (`/>`).
+    Open(String, List(HAttr), Bool)
+    // `</tag>` close.
+    Close(String)
+    // A run of literal text (already de-woven: holes inside text are separate).
+    TextRun(String)
+    // A `${N}` hole appearing in TEXT position (child of an element).
+    HoleNode(Int)
+
+type HAttr:
+    // `name="value"` / `name=value` — a static attribute.
+    SProp(String, String)
+    // `name=${N}` — an attribute whose value is hole `N`.
+    HProp(String, Int)
+    // `on:event=${N}` — an event binding to hole `N` (a `msg` value).
+    HOn(String, Int)
+    // `on:event=${N}` written with a static literal is rejected at parse time;
+    // a forbidden attribute shape becomes `Bad(message)`.
+    Bad(String)
+
+fn lex_html(s: String) -> List(HtmlTok):
+    let cs = string.chars(s)
+    let n = list.length(cs)
+    var out = []
+    var i = 0
+    var text = ""
+    let nul = string.from_code(0)
+    while i < n:
+        let c = list.at(cs, i)
+        if c == nul:
+            // A hole marker `<NUL>N<NUL>` in TEXT position.
+            if string.length(text) > 0:
+                out = list.push(out, TextRun(text))
+                text = ""
+            let (idx, j) = read_marker(cs, i, nul)
+            out = list.push(out, HoleNode(idx))
+            i = j
+        else:
+            if c == "<":
+                if string.length(text) > 0:
+                    out = list.push(out, TextRun(text))
+                    text = ""
+                let (tok, j) = lex_tag(cs, i, nul)
+                out = list.push(out, tok)
+                i = j
+            else:
+                text = text + c
+                i = i + 1
+    if string.length(text) > 0:
+        out = list.push(out, TextRun(text))
+    out
+
+// Read a NUL-delimited marker `<NUL>digits<NUL>` starting at `i` (which is the
+// opening NUL). Returns (hole index, index after the closing NUL).
+fn read_marker(cs: List(String), i: Int, nul: String) -> (Int, Int):
+    var j = i + 1
+    var digits = ""
+    let n = list.length(cs)
+    while j < n && list.at(cs, j) != nul:
+        digits = digits + list.at(cs, j)
+        j = j + 1
+    (string.to_int(digits), j + 1)
+
+// Lex a `<...>` tag starting at the `<`. Returns (token, index after `>`).
+fn lex_tag(cs: List(String), start: Int, nul: String) -> (HtmlTok, Int):
+    let n = list.length(cs)
+    var i = start + 1
+    // Closing tag `</name>`.
+    if i < n && list.at(cs, i) == "/":
+        i = i + 1
+        var name = ""
+        while i < n && list.at(cs, i) != ">":
+            name = name + list.at(cs, i)
+            i = i + 1
+        (Close(string.trim(name)), i + 1)
+    else:
+        // Opening tag: read the name (up to whitespace, `>`, or `/`). A name that
+        // is or contains a hole marker is FORBIDDEN.
+        var name = ""
+        if i < n && list.at(cs, i) == nul:
+            // Tag name is a hole — forbidden. Emit an empty-named Open carrying a
+            // marker the parser turns into a comptime `fail`.
+            let (_idx, j) = read_marker(cs, i, nul)
+            (Open("", [], false), j)
+        else:
+            while i < n && !is_name_end(list.at(cs, i)):
+                name = name + list.at(cs, i)
+                i = i + 1
+            let (attrs, j, self_close) = lex_attrs(cs, i, nul)
+            (Open(string.trim(name), attrs, self_close), j)
+
+fn is_name_end(c: String) -> Bool:
+    c == " " || c == "\t" || c == "\n" || c == "\r" || c == ">" || c == "/"
+
+fn is_ws(c: String) -> Bool:
+    c == " " || c == "\t" || c == "\n" || c == "\r"
+
+// Lex the attribute list after the tag name, up to (and consuming) `>` or `/>`.
+// Returns (attrs, index after `>`, self_closing?).
+fn lex_attrs(cs: List(String), start: Int, nul: String) -> (List(HAttr), Int, Bool):
+    let n = list.length(cs)
+    var i = start
+    var attrs = []
+    while i < n:
+        let c = list.at(cs, i)
+        if is_ws(c):
+            i = i + 1
+        else:
+            if c == ">":
+                return (attrs, i + 1, false)
+            else:
+                if c == "/":
+                    // `/>` self-close.
+                    return (attrs, i + 2, true)
+                else:
+                    let (attr, j) = lex_one_attr(cs, i, nul)
+                    attrs = list.push(attrs, attr)
+                    i = j
+    (attrs, i, false)
+
+// Lex a single `name=value` (or `on:event=value`) attribute.
+fn lex_one_attr(cs: List(String), start: Int, nul: String) -> (HAttr, Int):
+    let n = list.length(cs)
+    var i = start
+    var name = ""
+    while i < n && !is_attr_name_end(list.at(cs, i)):
+        name = name + list.at(cs, i)
+        i = i + 1
+    // No `=value`: a bare/boolean attribute (unsupported in this subset).
+    if i >= n || list.at(cs, i) != "=":
+        (Bad("attribute `" + name + "` has no value — boolean attributes are unsupported"), i)
+    else:
+        i = i + 1
+        // Value: a `${N}` hole, a `"quoted"` string, or a bare token.
+        if i < n && list.at(cs, i) == nul:
+            let (idx, j) = read_marker(cs, i, nul)
+            (hole_attr(name, idx), j)
+        else:
+            let (value, j) = lex_attr_value(cs, i, nul)
+            // A static value for an `on:` handler is rejected — events are data.
+            if string.starts_with(name, "on:"):
+                (Bad("event `" + name + "` needs a \${msg} hole, not a static value"), j)
+            else:
+                (SProp(name, value), j)
+
+fn is_attr_name_end(c: String) -> Bool:
+    c == "=" || is_ws(c) || c == ">" || c == "/"
+
+fn hole_attr(name: String, idx: Int) -> HAttr:
+    if string.starts_with(name, "on:"):
+        HOn(string.substring(name, 3, string.length(name)), idx)
+    else:
+        HProp(name, idx)
+
+// Read a static attribute value: `"quoted"` (may contain a hole marker? no — a
+// holed value is handled by the caller) or a bare token up to whitespace/`>`.
+fn lex_attr_value(cs: List(String), start: Int, nul: String) -> (String, Int):
+    let n = list.length(cs)
+    var i = start
+    if i < n && list.at(cs, i) == "\"":
+        i = i + 1
+        var v = ""
+        while i < n && list.at(cs, i) != "\"":
+            v = v + list.at(cs, i)
+            i = i + 1
+        (v, i + 1)
+    else:
+        var v = ""
+        while i < n && !is_name_end(list.at(cs, i)):
+            v = v + list.at(cs, i)
+            i = i + 1
+        (v, i)
+
+// ---- the parser: tokens -> witchy expression source building a VNode ----
+
+// Parse the node starting at token `at`. Returns (source, index after the node).
+fn parse_node(toks: List(HtmlTok), at: Int, holes: List(String)) -> (String, Int):
+    let n = list.length(toks)
+    if at >= n:
+        fail("glamour html: empty template — expected a single root element")
+        ("", at)
+    else:
+        match list.at(toks, at):
+            TextRun(s) -> (emit_text_literal(s), at + 1)
+            HoleNode(idx) -> (emit_text_hole(idx, holes), at + 1)
+            Close(name) ->
+                let _bad = fail("glamour html: unexpected closing tag </" + name + ">")
+                ("", at + 1)
+            Open(name, attrs, self_close) -> parse_element(toks, at, name, attrs, self_close, holes)
+
+fn parse_element(
+    toks: List(HtmlTok),
+    at: Int,
+    name: String,
+    attrs: List(HAttr),
+    self_close: Bool,
+    holes: List(String),
+) -> (String, Int):
+    if string.length(name) == 0:
+        let _bad = fail("glamour html: a tag NAME may not be a \${hole} — the element name must be static")
+        ("", at + 1)
+    else:
+        let attr_src = emit_attrs(attrs, holes)
+        if self_close:
+            ("element(\"" + name + "\", [" + attr_src + "], [])", at + 1)
+        else:
+            let (kids_src, after) = parse_children(toks, at + 1, name, holes)
+            ("element(\"" + name + "\", [" + attr_src + "], [" + kids_src + "])", after)
+
+// Parse children until the matching `</name>`. Returns (comma-joined child
+// sources, index after the close tag).
+fn parse_children(toks: List(HtmlTok), at: Int, name: String, holes: List(String)) -> (String, Int):
+    let n = list.length(toks)
+    var i = at
+    var kids = []
+    var done = false
+    while i < n && !done:
+        match list.at(toks, i):
+            Close(close_name) ->
+                done = true
+                i = i + 1
+            _ ->
+                let (src, j) = parse_node(toks, i, holes)
+                kids = list.push(kids, src)
+                i = j
+    (string.join(kids, ", "), i)
+
+// ---- emitters: produce witchy expression SOURCE ----
+
+// Static text -> `text("…")` with the literal string-escaped for re-parsing.
+fn emit_text_literal(s: String) -> String:
+    "text(\"" + escape_src(s) + "\")"
+
+// A text-position hole -> `text(<hole-source>)`. This is the SIMPLEST CORRECT
+// rule and the security crux: the hole is ALWAYS wrapped in `text(...)`, so a
+// String hole becomes an inert text NODE (escaped on render — XSS-immune by
+// construction), and the position therefore TYPES the hole as `String` (a VNode
+// in text position is a type error here). Splicing a child VNode directly — to
+// nest a precomputed subtree via `${node}` — is a documented later refinement
+// (it needs the tag to emit the hole unwrapped when its type is `VNode`).
+fn emit_text_hole(idx: Int, holes: List(String)) -> String:
+    "text(" + list.at(holes, idx) + ")"
+
+fn emit_attrs(attrs: List(HAttr), holes: List(String)) -> String:
+    var srcs = []
+    for a in attrs:
+        srcs = list.push(srcs, emit_attr(a, holes))
+    string.join(srcs, ", ")
+
+fn emit_attr(a: HAttr, holes: List(String)) -> String:
+    match a:
+        SProp(name, value) -> "prop(\"" + escape_src(name) + "\", \"" + escape_src(value) + "\")"
+        HProp(name, idx) -> "prop(\"" + escape_src(name) + "\", " + list.at(holes, idx) + ")"
+        HOn(event, idx) -> "on(\"" + escape_src(event) + "\", " + list.at(holes, idx) + ")"
+        Bad(msg) ->
+            let _bad = fail("glamour html: " + msg)
+            ""
+
+// Escape a string so it can be re-parsed as a witchy string LITERAL (the emitted
+// source is parsed by the compiler). Backslash first, then quote.
+fn escape_src(s: String) -> String:
+    var out = string.replace(s, "\\", "\\\\")
+    out = string.replace(out, "\"", "\\\"")
+    out

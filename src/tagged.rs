@@ -25,20 +25,44 @@ const MAX_TAG_DEPTH: u32 = 64;
 /// generated expression source over the literal. Runs after `comptime::expand`
 /// (per module), before name resolution / type-checking. `name` is the module's
 /// name, for error messages.
-pub fn expand(name: &str, module: &mut Module) -> Result<(), String> {
+pub fn expand(name: &str, module: &mut Module, siblings: &[(String, Module)]) -> Result<(), String> {
     // Snapshot the module's own items + std imports once: every tag expansion in
     // this module runs in a comptime program carrying this context, so a tag
     // defined locally (or in std) is callable. Cloning per-module (not per-hole)
     // keeps the cost proportional to the number of literals, not items.
+    //
+    // A tag may also be IMPORTED: a consumer that `import`s a rune (e.g. glamour)
+    // and writes `tag"…"` needs the tag — and the constructors the tag emits
+    // (`element`/`text`/`prop`) — to resolve. So we also fold in the items of
+    // every NON-std module this one imports, transitively, drawn from `siblings`
+    // (the rest of the link set). std imports stay declared as `imports` (the
+    // bundled std is a search path the comptime link resolves on its own).
+    let by_name: std::collections::HashMap<&str, &Module> =
+        siblings.iter().map(|(n, m)| (n.as_str(), m)).collect();
+    let mut items = module.items.clone();
+    let mut std_imports: Vec<String> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    seen.insert(name.to_string());
+    let mut frontier: Vec<String> = module.imports.clone();
+    while let Some(imp) = frontier.pop() {
+        if crate::linker::STD_MODULES.contains(&imp.as_str()) {
+            if !std_imports.contains(&imp) {
+                std_imports.push(imp);
+            }
+            continue;
+        }
+        if !seen.insert(imp.clone()) {
+            continue;
+        }
+        if let Some(m) = by_name.get(imp.as_str()) {
+            items.extend(m.items.iter().cloned());
+            frontier.extend(m.imports.iter().cloned());
+        }
+    }
     let ctx = Context {
         name: name.to_string(),
-        items: module.items.clone(),
-        imports: module
-            .imports
-            .iter()
-            .filter(|i| crate::linker::STD_MODULES.contains(&i.as_str()))
-            .cloned()
-            .collect(),
+        items,
+        imports: std_imports,
     };
     for item in &mut module.items {
         if let Item::Function(f) = item {
