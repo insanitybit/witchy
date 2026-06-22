@@ -12,6 +12,14 @@ highlighting, the TUF trust panel, and WebAuthn 2FA promote/yank). The remaining
 (prereq B5). See the Implementation log (near the end) for what landed. The workstreams below
 are the original ordered plan; everything needed to implement is inline.
 
+> **Design RFCs (2026-06-22).** WS-I is now specified across three proposed RFCs:
+> [RFC-0008 — A capability-pure frontend framework](../../rfcs/0008-frontend-framework-rune.md)
+> (the MVU-over-`VNode` framework), which depends on
+> [RFC-0006 — Compile-time tagged literals](../../rfcs/0006-compile-time-tagged-literals.md)
+> (the typed, XSS-immune `html` ergonomics) and
+> [RFC-0007 — witchy-WASM in the browser](../../rfcs/0007-witchy-wasm-browser-target.md)
+> (the pure-compute browser target; **B5** below is its host-import shim). Build WS-I from those.
+
 ---
 
 ## 1. Objective & theses
@@ -320,6 +328,9 @@ Each is an implementable unit with deliverables and acceptance criteria. Depende
 
 ### WS-I — Framework rune (north star)
 *Depends on: a clean WS-F render seam. Don't front-load; extract from real patterns.*
+- **Design:** specified in [RFC-0008](../../rfcs/0008-frontend-framework-rune.md), depending on
+  [RFC-0006](../../rfcs/0006-compile-time-tagged-literals.md) (compile-time `html`) and
+  [RFC-0007](../../rfcs/0007-witchy-wasm-browser-target.md) (the pure-compute browser target).
 - **B5:** a **browser WASM host-import shim** (JS) implementing witchy's `"witchy"` import ABI
   (string-bridge + `encoding`; **deny** all capability imports → structurally I/O-incapable).
 - The framework: pure `view(state) -> VNode` / `update(state, msg) -> state` as a rune with a

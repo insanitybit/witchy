@@ -61,6 +61,27 @@ The Perfect Types model depends on the native HTML Sanitizer / Trusted Types and
 is no safe down-level polyfill (a polyfill would reintroduce the fallible sanitizer-policy code the
 model deletes), so older browsers are **unsupported**, not degraded.
 
+## Future: witchy-WASM in the browser (WS-I)
+
+WS-I brings witchy-compiled WASM into the browser (first the sandbox source highlighter/renderer,
+later the framework). Full threat model: [RFC-0007](../../rfcs/0007-witchy-wasm-browser-target.md).
+The load-bearing rules to preserve:
+
+- **Pure-compute by construction.** The browser host shim implements only the non-capability
+  `"witchy"` imports and **denies every capability import** (Net/Dir/Clock/…); a module that needs
+  authority simply fails to instantiate. A footprint-empty rune is the *static* form of what the
+  iframe sandbox enforces dynamically — two independent containment proofs, not one.
+- **Parent vs. sandbox.** WASM runs in the null-origin sandbox (or a worker) by **default**.
+  Placing it in the trusted parent requires `script-src 'wasm-unsafe-eval'` — a CSP relaxation —
+  and is permitted only as a deliberate, documented decision, never by drift.
+- **VNode, not HTML.** The renderer builds DOM via `createElement`/`textContent`/`setAttribute` and
+  never forms a string→DOM sink, so it *strengthens* Perfect Types rather than competing with it.
+  `html`/`VNode` is for trusted app structure only — untrusted publisher content still goes through
+  the sandbox + Sanitizer.
+- **Trust shift (accept consciously).** A WASM renderer moves trust from "audit hand-written
+  zero-dep TS" to "audit the witchy source + trust the compiler (already the TCB) + a reproducible
+  build + a provable empty footprint." The parent's executable artifact grows; that is the trade.
+
 ## Known gaps (tracked in PLAN.md)
 
 - **B6:** if the upstream coven is unreachable, the proxy currently crashes the server (`connect`
