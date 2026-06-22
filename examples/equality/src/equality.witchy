@@ -1,18 +1,18 @@
-// The standard `Eq` trait gives content-correct equality that holds up in
-// compiled code, not just the interpreter. `member` and `index_of` search a
-// list by the element type's Eq impl, so they find runtime-built strings and
+// The standard comparison hierarchy gives content-correct equality that holds up
+// in compiled code, not just the interpreter. `member` and `index_of` search a
+// list by the element type's `Eq` impl, so they find runtime-built strings and
 // your own types — where a generic `==` search would fall back to comparing
-// pointers. Built-in impls cover Int, Bool, and String; derive your own by
-// implementing `eq`.
+// pointers. Built-in impls cover the primitives; derive your own, or implement
+// `PartialEq` (the `==`/`!=` operators dispatch through it).
 
-import eq
+import cmp
 
 type Color:
     Red
     Green
     Blue
 
-impl Eq for Color:
+impl PartialEq for Color:
     fn eq(self, other: Self) -> Bool:
         match self:
             Red ->
@@ -28,9 +28,11 @@ impl Eq for Color:
                     Blue -> true
                     _ -> false
 
+impl Eq for Color
+
 fn main(console: Console):
     let palette = [Red, Green, Blue]
-    print(console, "${eq.member(palette, Green)}")
-    print(console, "${eq.index_of(palette, Blue)}")
-    print(console, "${eq.member([1, 2, 3], 4)}")
-    print(console, "${ne(Red, Blue)}")
+    print(console, "${cmp.member(palette, Green)}")
+    print(console, "${cmp.index_of(palette, Blue)}")
+    print(console, "${cmp.member([1, 2, 3], 4)}")
+    print(console, "${Red != Blue}")

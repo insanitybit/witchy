@@ -283,6 +283,28 @@ fn function(s: &mut String, f: &Function, indented: bool, c: &mut Comments) {
 }
 
 fn type_def(s: &mut String, t: &TypeDef) {
+    if t.sealed {
+        // RFC-0002 `capability X from U` — a sealed brand. Its single variant's
+        // field types ARE the underlying capabilities it refines.
+        s.push_str("capability ");
+        s.push_str(&t.name);
+        s.push_str(" from ");
+        let fields = &t.variants[0].fields;
+        if fields.len() == 1 {
+            s.push_str(&type_str(&fields[0]));
+        } else {
+            s.push('(');
+            for (i, ty) in fields.iter().enumerate() {
+                if i > 0 {
+                    s.push_str(", ");
+                }
+                s.push_str(&type_str(ty));
+            }
+            s.push(')');
+        }
+        s.push('\n');
+        return;
+    }
     s.push_str("type ");
     s.push_str(&t.name);
     if !t.params.is_empty() {
@@ -330,6 +352,15 @@ fn trait_def(s: &mut String, t: &TraitDef, c: &mut Comments) {
     s.push_str(&t.name);
     if !t.typarams.is_empty() {
         s.push_str(&format!("({})", t.typarams.join(", ")));
+    }
+    if !t.supertraits.is_empty() {
+        s.push_str(": ");
+        s.push_str(&t.supertraits.join(" + "));
+    }
+    // A marker trait (no methods) opens no block.
+    if t.methods.is_empty() {
+        s.push('\n');
+        return;
     }
     s.push_str(":\n");
     for m in &t.methods {
@@ -384,6 +415,11 @@ fn impl_def(s: &mut String, im: &ImplDef, c: &mut Comments) {
                 s.push_str(&format!("({})", rendered.join(", ")));
             }
         }
+    }
+    // A marker-trait impl (`impl Eq for Int`) has no method block.
+    if im.methods.is_empty() {
+        s.push('\n');
+        return;
     }
     s.push_str(":\n");
     for (i, m) in im.methods.iter().enumerate() {

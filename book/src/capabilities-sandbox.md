@@ -56,19 +56,20 @@ checked host-side, where the program can't interfere.
 
 ## Why you can trust the sandbox runs your program
 
-Here's the crucial connection. You develop and test against the interpreter. The
-sandbox runs the *compiled* version. Why believe they behave the same?
+The everyday `witchy program.witchy` run and `witchy sandbox` compile your program
+to the same WebAssembly; the sandbox just grants narrower authority. A sandboxed
+deploy therefore runs the same binary you developed against, not a second build
+you hope agrees with the first.
 
-Because of **parity** — the invariant from the introduction. The interpreter and
-the WebAssembly backend are held, by the test suite, to produce identical output
-on every program, including identical *failures*. A program that traps on an
-out-of-bounds index in one traps in the other; a program that prints `42` in one
-prints `42` in the other. When the two backends *can't* agree on something, that
-is a compile-time error, never a silent difference.
+That compiled backend is held honest by **parity**, the invariant from the
+introduction. The test suite runs every program on both the WebAssembly backend
+and a reference tree-walking interpreter and requires identical output, including
+identical failures. A program that traps on an out-of-bounds index in one traps
+in the other; one that prints `42` in one prints `42` in the other. When the two
+can't agree, that is a compile-time error, never a silent difference.
 
-So "I tested it on the interpreter" and "it runs the same in the sandbox" are the
-same statement. The confinement you reason about statically is the confinement
-you get at runtime, on a binary you can re-derive from source.
+So the confinement you reason about statically is the confinement you get at
+runtime, on a binary you can re-derive from source.
 
 ## The honest boundaries
 

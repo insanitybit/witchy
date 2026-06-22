@@ -468,3 +468,36 @@ fn f(var a: Int, own b: Int, c: Int) -> Int:
         assert!(parse_module("fn f(sink a: Int):\n    a\n").is_err());
     }
 
+    #[test]
+    fn bare_name_tail_does_not_swallow_a_following_interpolation() {
+        // Regression: an inline `else:` whose branch is a bare identifier, followed
+        // by a line that starts with a string interpolation, used to mis-parse the
+        // identifier as a call — because `"${...}"` lexes to a leading `(`, and the
+        // initial call rule didn't require the `(` on the same line as the name.
+        let m = parse_module(
+            "fn f(c: Int) -> String:\n    let b = if c < 0: 0 - c else: c\n    \"${b}\"\n",
+        )
+        .expect("a newline-led interpolation is the next statement, not call args");
+        let Item::Function(f) = &m.items[0] else { panic!("expected a function") };
+        // The `let b = ...` and the trailing interpolation are TWO statements.
+        assert_eq!(f.body.stmts.len(), 2, "{:?}", f.body.stmts);
+        // A genuine call keeps its `(` on the same line, so this still parses as a call.
+        parse_module("fn g(x: Int) -> Int:\n    x\nfn main(console: Console):\n    print(console, \"${g(1)}\")\n")
+            .expect("a same-line call is unaffected");
+    }
+
+    #[test]
+    fn rustism_diagnostics_point_at_the_witchy_form() {
+        // `let mut x` (Rust) — suggest `var`, instead of "expected `=`, found `x`".
+        let let_mut = parse_module("fn main(console: Console):\n    let mut x = 0\n    x = x + 1\n")
+            .unwrap_err();
+        assert!(let_mut.to_string().contains("var"), "{let_mut}");
+        // `List<Int>` (Rust/TS) — suggest parentheses, not "expected `=`, found `<`".
+        let angle = parse_module("fn main(console: Console):\n    let xs: List<Int> = []\n    print(console, \"x\")\n")
+            .unwrap_err();
+        assert!(angle.to_string().contains("List(…)"), "{angle}");
+        // `var mut x` is NOT mistaken for the Rust form (mut is a real binding name here).
+        parse_module("fn main(console: Console):\n    var mut = 0\n    mut = mut + 1\n    print(console, \"${mut}\")\n")
+            .expect("`mut` is a valid identifier on its own");
+    }
+

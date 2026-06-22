@@ -51,8 +51,8 @@ witchy has two backends:
 
 | Backend | What it's for |
 |---|---|
-| **Interpreter** | The reference. Fast to start, used during development. |
-| **WebAssembly** (via wasmtime) | Deployment — confinement *and* speed: the capability boundary becomes the VM boundary, and the tier benches at native class. Also the browser playground. |
+| **Interpreter** | The reference *oracle*. It defines the meaning every program must have, and `witchy parity` checks the compiled tier against it. You don't invoke it to run your code — it also serves as the `comptime` evaluator. |
+| **WebAssembly** (via wasmtime) | How your program actually runs — `witchy program.witchy`, `witchy run`, and `witchy sandbox` all compile to WASM, so dev and deploy are the same backend. Confinement *and* speed: the capability boundary becomes the VM boundary, and the tier benches at native class. Also the browser playground. |
 
 These are not two dialects. They are held to a single invariant the project
 calls **parity**: a program produces *identical* output on both, down to

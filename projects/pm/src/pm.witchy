@@ -18,6 +18,7 @@
 
 import compiler
 import crypto
+import exec
 import fs
 import http
 import json
@@ -26,23 +27,67 @@ import semver
 import string
 import toml
 
-fn main(console: Console, args: List(String), root: Dir, net: Net) -> Int:
+// `main` takes two `Dir` grants positionally: `root` (handle 0) is the project
+// tree the PM reads/writes; `bin` (handle 1) is where the compiler lives, used
+// only by `run`, which drives it through the `Exec` capability. See
+// rfcs/0004-self-hosted-cli.md.
+fn main(console: Console, args: List(String), root: Dir, bin: Dir, runner: Exec, net: Net, env: Env) -> Int:
     let cmd = arg(args, 0)
     if cmd == "info":
         cmd_info(console, root, arg(args, 1))
         0
+    else if cmd == "run":
+        cmd_run(console, runner, root, bin, args)
+    else if cmd == "build":
+        cmd_build(console, runner, root, bin, args)
+    else if cmd == "typecheck":
+        cmd_drive(console, runner, bin, "typecheck", ["check", arg(args, 1)])
+    else if cmd == "fmt":
+        cmd_drive(console, runner, bin, "fmt", ["fmt", arg(args, 1)])
+    else if cmd == "test":
+        cmd_drive(console, runner, bin, "test", ["test", arg(args, 1)])
+    else if cmd == "doc":
+        cmd_drive(console, runner, bin, "doc", ["doc", arg(args, 1)])
     else if cmd == "add":
-        cmd_add(console, net, root, args)
+        cmd_add(console, net, root, env, args)
+    else if cmd == "publish":
+        cmd_publish(console, net, root, env, args)
+    else if cmd == "promote":
+        cmd_promote(console, net, env, args)
+    else if cmd == "yank":
+        cmd_yank(console, net, args)
+    else if cmd == "outdated":
+        cmd_outdated(console, net, root, args)
     else if cmd == "audit":
         cmd_audit(console, root, arg(args, 1))
         0
-    else if cmd == "check":
+    else:
+        dispatch_more(console, root, args, cmd)
+
+// The rest of the command table, split out of `main` so neither `if`/`else if`
+// chain nests deeply enough to overflow the compiler's stack while lowering it
+// (the WASM codegen recurses per nesting level). These commands need only
+// Console + the project Dir.
+fn dispatch_more(console: Console, root: Dir, args: List(String), cmd: String) -> Int:
+    if cmd == "check":
         cmd_check(console, root, arg(args, 1))
     else if cmd == "guard":
         cmd_guard(console, root, arg(args, 1), arg(args, 2))
     else if cmd == "deps":
         cmd_deps(console, root, arg(args, 1))
         0
+    else if cmd == "tree":
+        cmd_tree(console, root, arg(args, 1))
+        0
+    else if cmd == "init":
+        cmd_init(console, root, arg(args, 1))
+        0
+    else if cmd == "why":
+        cmd_why(console, root, arg(args, 1), arg(args, 2))
+    else if cmd == "why-cap":
+        cmd_why_cap(console, root, arg(args, 1), arg(args, 2))
+    else if cmd == "vendor":
+        cmd_vendor(console, root, arg(args, 1))
     else if cmd == "lock":
         cmd_lock(console, root, arg(args, 1))
     else if cmd == "verify":
@@ -72,6 +117,128 @@ fn cmd_info(console: Console, root: Dir, dir: String):
         print(console, "version:  " + field(manifest, "rune.version"))
         print(console, "declared: " + string.join(declared_caps(manifest), ", "))
         print(console, "actual:   " + string.join(rune_footprint(root, dir), ", "))
+
+// run <file|dir> — compile and run a program by driving the compiler. Given a
+// project directory (or, with no argument, the current directory) that carries a
+// `witchy.toml`, it links the entry with its vendored dependencies (`witchy
+// compile --dep ... --out`) and then runs the resulting wasm; given a bare file
+// it runs that one module directly. This is the project-level `run` of RFC-0004 —
+// the front-end decides *what* to compile (entry + deps from the lock) and
+// `witchyc` does the compiling/running.
+fn cmd_run(console: Console, runner: Exec, root: Dir, bin: Dir, args: List(String)) -> Int:
+    let target = arg(args, 1)
+    let dir = if string.is_empty(target): "." else: target
+    if exists(root, join_path(dir, "witchy.toml")):
+        run_project(console, runner, root, bin, dir)
+    else if string.is_empty(target):
+        print(console, "usage: pm run <file|dir>")
+        1
+    else:
+        run_compiler(console, runner, bin, "run", [target])
+
+// build <file|dir> — compile a program (and its vendored deps) to verify it builds.
+fn cmd_build(console: Console, runner: Exec, root: Dir, bin: Dir, args: List(String)) -> Int:
+    let target = arg(args, 1)
+    let dir = if string.is_empty(target): "." else: target
+    if exists(root, join_path(dir, "witchy.toml")):
+        match project_entry(root, dir):
+            Some(entry) ->
+                run_compiler(console, runner, bin, "build", flatten_argv(["compile", entry], dep_flags(root, dir)))
+            None ->
+                print(console, "no entry source under " + join_path(dir, "src"))
+                1
+    else if string.is_empty(target):
+        print(console, "usage: pm build <file|dir>")
+        1
+    else:
+        run_compiler(console, runner, bin, "build", ["compile", target])
+
+// Link a project's entry + vendored deps to a wasm under <dir>/target, then run
+// that wasm. Two compiler invocations: `compile --dep ... --out` (link) then a
+// plain run of the wasm (which carries exactly its own footprint). The artifact
+// goes under the project's own tree so it is named through the project Dir.
+fn run_project(console: Console, runner: Exec, root: Dir, bin: Dir, dir: String) -> Int:
+    match project_entry(root, dir):
+        None ->
+            print(console, "no entry source under " + join_path(dir, "src"))
+            1
+        Some(entry) ->
+            let outdir = join_path(dir, "target")
+            if !exists(root, outdir):
+                make_dir(root, outdir)
+            let wasm = join_path(outdir, "app.wasm")
+            let argv = flatten_argv(["compile", entry], flatten_argv(dep_flags(root, dir), ["--out", wasm]))
+            let built = exec.run_args(runner, bin, "witchy", argv)
+            if built.0 != 0:
+                print(console, built.1)
+                built.0
+            else:
+                run_compiler(console, runner, bin, "run", [wasm])
+
+// The project's entry source: the first `.witchy` under <dir>/src, prefixed back
+// to a path the compiler can read relative to the project Dir.
+fn project_entry(root: Dir, dir: String) -> Option(String):
+    let srcdir = join_path(dir, "src")
+    if !exists(root, srcdir):
+        None
+    else:
+        match first_witchy(list(subdir(root, srcdir))):
+            Some(file) -> Some(join_path(srcdir, file))
+            None -> None
+
+// One `--dep name=path` token per vendored dependency the lock records, mapping the
+// `import <name>` the entry uses to the vendored module file `vendor/<name>/src/*.witchy`.
+fn dep_flags(root: Dir, dir: String) -> List(String):
+    var flags = []
+    let lockpath = join_path(dir, "witchy.lock")
+    if exists(root, lockpath):
+        let lock = read(root, lockpath)
+        for block in toml.array_tables(lock, "rune"):
+            let name = entry_name(block)
+            if !string.is_empty(name):
+                if let Some(src) = vendored_module(root, dir, name):
+                    flags = list.push(flags, "--dep")
+                    flags = list.push(flags, name + "=" + src)
+    flags
+
+// The vendored source file for dependency `name`: vendor/<name>/src/<first>.witchy.
+fn vendored_module(root: Dir, dir: String, name: String) -> Option(String):
+    let srcdir = join_path(join_path(join_path(dir, "vendor"), name), "src")
+    if !exists(root, srcdir):
+        None
+    else:
+        match first_witchy(list(subdir(root, srcdir))):
+            Some(file) -> Some(join_path(srcdir, file))
+            None -> None
+
+// Concatenate the leading argv with the trailing `--dep` flags into one argv.
+fn flatten_argv(head: List(String), tail: List(String)) -> List(String):
+    var out = []
+    for a in head:
+        out = list.push(out, a)
+    for b in tail:
+        out = list.push(out, b)
+    out
+
+// Exec the compiler with `argv`, printing its output and returning its exit code.
+fn run_compiler(console: Console, runner: Exec, bin: Dir, label: String, argv: List(String)) -> Int:
+    let result = exec.run_args(runner, bin, "witchy", argv)
+    print(console, result.1)
+    result.0
+
+// Drive the compiler (`witchy`) with `argv`, confined to the toolchain-`bin` Dir
+// via the `Exec` capability (you can only run a binary you can read). Prints the
+// compiler's output and returns its exit code. The shared core of
+// run/typecheck/fmt/test/doc — the CLI front-end driving the compiler, RFC-0004's
+// cargo→rustc split.
+fn cmd_drive(console: Console, runner: Exec, bin: Dir, verb: String, argv: List(String)) -> Int:
+    if string.is_empty(list.at(argv, list.length(argv) - 1)):
+        print(console, "usage: pm " + verb + " <file>")
+        1
+    else:
+        let result = exec.run_args(runner, bin, "witchy", argv)
+        print(console, result.1)
+        result.0
 
 // --- audit: the footprint a single file demands -----------------------------
 fn cmd_audit(console: Console, root: Dir, file: String):
@@ -157,6 +324,262 @@ fn cmd_deps(console: Console, root: Dir, dir: String):
             for pair in deps:
                 let (name, inline) = pair
                 print(console, name + " -> " + dep_source(inline))
+
+// tree <dir> — the rune and its direct dependencies, indented.
+fn cmd_tree(console: Console, root: Dir, dir: String):
+    if string.is_empty(dir):
+        print(console, "usage: pm tree <dir>")
+    else:
+        let manifest = read(root, join_path(dir, "witchy.toml"))
+        print(console, field(manifest, "rune.name"))
+        let deps = toml.table(manifest, "dependencies")
+        if list.length(deps) == 0:
+            print(console, "  (no dependencies)")
+        else:
+            for pair in deps:
+                let (name, inline) = pair
+                print(console, "  " + name + " (" + dep_source(inline) + ")")
+
+// vendor <dir> — materialize path dependencies' sources into <dir>/vendor/<name>
+// for offline, auditable builds. Copies each dep's src/*.witchy and manifest.
+fn cmd_vendor(console: Console, root: Dir, dir: String) -> Int:
+    if string.is_empty(dir):
+        print(console, "usage: pm vendor <dir>")
+        1
+    else:
+        let manifest = read(root, join_path(dir, "witchy.toml"))
+        let vendor = join_path(dir, "vendor")
+        if !exists(root, vendor):
+            make_dir(root, vendor)
+        var count = 0
+        for pair in toml.table(manifest, "dependencies"):
+            let (name, inline) = pair
+            if let Some(rel) = toml.inline_get(inline, "path"):
+                let dep_dir = normalize_path(join_path(dir, rel))
+                let dest = join_path(vendor, name)
+                if !exists(root, dest):
+                    make_dir(root, dest)
+                if !exists(root, join_path(dest, "src")):
+                    make_dir(root, join_path(dest, "src"))
+                for f in fs.collect_files(root, join_path(dep_dir, "src"), "src", ".witchy"):
+                    let (relpath, contents) = f
+                    write(root, join_path(dest, relpath), contents)
+                    count = count + 1
+                if exists(root, join_path(dep_dir, "witchy.toml")):
+                    write(root, join_path(dest, "witchy.toml"), read(root, join_path(dep_dir, "witchy.toml")))
+        print(console, "vendored ${count} file(s) into " + vendor)
+        0
+
+// publish <dir> [host:port] [identity] — stage a rune to a coven registry. Reads
+// the manifest + full src tree, builds the coven publish envelope, and POSTs it.
+// The server recomputes the footprint and refuses an under-declared rune; a
+// published version lands STAGED (not resolvable until a separate `promote`).
+fn cmd_publish(console: Console, net: Net, root: Dir, env: Env, args: List(String)) -> Int:
+    let dir = arg(args, 1)
+    if string.is_empty(dir):
+        print(console, "usage: pm publish <dir> [host:port] [identity]")
+        1
+    else:
+        let addr = coven_addr(env, arg(args, 2))
+        let identity = if string.is_empty(arg(args, 3)): "ci-bot" else: arg(args, 3)
+        let (host, port) = hostport(addr)
+        let manifest = read(root, join_path(dir, "witchy.toml"))
+        let files = publish_files(root, dir, manifest)
+        let token = id_token_from_env(env)
+        let resp = http.post(net, host, port, "/coven/publish", publish_body(manifest, files, identity, token))
+        print(console, "publish: ${http.status(resp)} state=" + resp_field(http.body(resp), "state"))
+        if http.status(resp) >= 200 && http.status(resp) < 300: 0 else: 1
+
+// The trusted-publishing identity token from COVEN_ID_TOKEN (a coven id-token JSON
+// envelope), parsed; None when unset/unparseable (an anonymous `uploaded_by`
+// publish). This is the trusted-publishing CLIENT flow: the server verifies the
+// token's claims against its per-namespace trust policy.
+fn id_token_from_env(env: Env) -> Option(Json):
+    match get_env(env, "COVEN_ID_TOKEN"):
+        Some(raw) -> json_ok(json.decode(raw))
+        None -> None
+
+fn json_ok(r: Result(Json, String)) -> Option(Json):
+    match r:
+        Ok(tok) -> Some(tok)
+        Err(_e) -> None
+
+// The coven registry host:port: the explicit arg if given, else `COVEN_URL` from
+// the environment (the Rust CLI's convention), else the default. The bootstrap
+// auto-grants Net to `COVEN_URL` so no explicit `--net` is needed.
+fn coven_addr(env: Env, arg_addr: String) -> String:
+    if !string.is_empty(arg_addr):
+        arg_addr
+    else:
+        match get_env(env, "COVEN_URL"):
+            Some(u) -> strip_scheme(u)
+            None -> "127.0.0.1:8787"
+
+fn strip_scheme(u: String) -> String:
+    string.replace(string.replace(u, "https://", ""), "http://", "")
+
+// promote <name> <version> [host:port] [identity] — release a staged version
+// (the out-of-band second factor; must be a DISTINCT identity from the uploader).
+fn cmd_promote(console: Console, net: Net, env: Env, args: List(String)) -> Int:
+    let name = arg(args, 1)
+    let version = arg(args, 2)
+    if string.is_empty(name) || string.is_empty(version):
+        print(console, "usage: pm promote <name> <version> [host:port] [identity]")
+        1
+    else:
+        let addr = coven_addr(env, arg(args, 3))
+        let identity = if string.is_empty(arg(args, 4)): "release-human" else: arg(args, 4)
+        let (host, port) = hostport(addr)
+        let body = promote_body(name, version, "webauthn", identity, id_token_from_env(env))
+        let resp = http.post(net, host, port, "/coven/promote", body)
+        print(console, "promote: ${http.status(resp)}")
+        if http.status(resp) >= 200 && http.status(resp) < 300: 0 else: 1
+
+// outdated <dir> <coven-host:port> — for each registry dependency, show its
+// requirement and the latest released version available. Flattened into shallow
+// helpers (deep `for`/`if`/`match` nesting in one fn overflowed codegen).
+fn cmd_outdated(console: Console, net: Net, root: Dir, args: List(String)) -> Int:
+    let dir = arg(args, 1)
+    let addr = arg(args, 2)
+    if string.is_empty(dir) || string.is_empty(addr):
+        print(console, "usage: pm outdated <dir> <coven-host:port>")
+        1
+    else:
+        let (host, port) = hostport(addr)
+        let manifest = read(root, join_path(dir, "witchy.toml"))
+        for pair in toml.table(manifest, "dependencies"):
+            report_dep_version(console, net, host, port, pair)
+        0
+
+fn report_dep_version(console: Console, net: Net, host: String, port: Int, pair: (String, String)):
+    let (name, inline) = pair
+    if let Some(req) = toml.inline_get(inline, "version"):
+        let resp = http.get(net, host, port, "/coven/versions?name=" + wire(name))
+        print(console, name + ": req " + req + ", " + latest_label(http.body(resp), http.status(resp)))
+
+fn latest_label(body: String, status: Int) -> String:
+    if status != 200:
+        "registry error"
+    else:
+        latest_label_of(latest_version(released_versions(body)))
+
+fn latest_label_of(v: Option(Version)) -> String:
+    match v:
+        Some(ver) -> "latest " + semver.format(ver)
+        None -> "no released versions"
+
+fn latest_version(versions: List(Version)) -> Option(Version):
+    var best = None
+    for v in versions:
+        let take = match best:
+            None -> true
+            Some(b) -> semver.lt(b, v)
+        if take:
+            best = Some(v)
+    best
+
+// yank <name> <version> [host:port] — flag a released version (re-signs the
+// record as yanked); existing locks still resolve it, new resolutions skip it.
+fn cmd_yank(console: Console, net: Net, args: List(String)) -> Int:
+    let name = arg(args, 1)
+    let version = arg(args, 2)
+    if string.is_empty(name) || string.is_empty(version):
+        print(console, "usage: pm yank <name> <version> [host:port]")
+        1
+    else:
+        let addr = if string.is_empty(arg(args, 3)): "127.0.0.1:8787" else: arg(args, 3)
+        let (host, port) = hostport(addr)
+        let resp = http.post(net, host, port, "/coven/yank", yank_body(name, version))
+        print(console, "yank: ${http.status(resp)}")
+        if http.status(resp) >= 200 && http.status(resp) < 300: 0 else: 1
+
+fn yank_body(name: String, version: String) -> String:
+    json.encode(JsonObject([("name", JsonString(name)), ("version", JsonString(version))]))
+
+// The manifest plus every `src/**/*.witchy`, as (path, contents) — the source
+// tree the registry content-addresses and footprints.
+fn publish_files(root: Dir, dir: String, manifest: String) -> List((String, String)):
+    var out = [("witchy.toml", manifest)]
+    for f in fs.collect_files(root, join_path(dir, "src"), "src", ".witchy"):
+        out = list.push(out, f)
+    out
+
+// Replicate coven's (unsigned) publish/promote wire envelopes (see
+// projects/coven/src/coven_proto.witchy) — the front-end is a client, so it
+// rebuilds the shape rather than depending on the server rune.
+fn publish_body(manifest: String, files: List((String, String)), identity: String, id_token: Option(Json)) -> String:
+    let base = [("manifest_toml", JsonString(manifest)), ("source", JsonObject([("files", JsonArray(file_jsons(files)))])), ("uploaded_by", JsonString(identity))]
+    let fields = match id_token:
+        Some(tok) -> list.push(base, ("id_token", tok))
+        None -> base
+    json.encode(JsonObject(fields))
+
+fn promote_body(name: String, version: String, factor: String, promoter: String, id_token: Option(Json)) -> String:
+    let base = [("name", JsonString(name)), ("version", JsonString(version)), ("second_factor", JsonString(factor)), ("promoted_by", JsonString(promoter))]
+    let fields = match id_token:
+        Some(tok) -> list.push(base, ("id_token", tok))
+        None -> base
+    json.encode(JsonObject(fields))
+
+fn file_jsons(files: List((String, String))) -> List(Json):
+    var out = []
+    for path, text in files:
+        out = list.push(out, JsonArray([JsonString(path), JsonString(text)]))
+    out
+
+fn resp_field(text: String, key: String) -> String:
+    match json.decode(text):
+        Ok(doc) -> match json.get_string(doc, key):
+            Some(v) -> v
+            None -> "?"
+        Err(_e) -> "?"
+
+// why <dir> <name> — explain a dependency's presence in the rune.
+fn cmd_why(console: Console, root: Dir, dir: String, name: String) -> Int:
+    if string.is_empty(dir) || string.is_empty(name):
+        print(console, "usage: pm why <dir> <name>")
+        1
+    else:
+        let manifest = read(root, join_path(dir, "witchy.toml"))
+        var found = false
+        for pair in toml.table(manifest, "dependencies"):
+            let (dep, inline) = pair
+            if dep == name:
+                found = true
+                print(console, name + " — direct dependency (" + dep_source(inline) + ")")
+        if !found:
+            print(console, name + " is not a dependency of this rune")
+        0
+
+// why-cap <dir> <Cap> — which dependencies introduce a capability into the tree.
+fn cmd_why_cap(console: Console, root: Dir, dir: String, cap: String) -> Int:
+    if string.is_empty(dir) || string.is_empty(cap):
+        print(console, "usage: pm why-cap <dir> <Cap>")
+        1
+    else:
+        let manifest = read(root, join_path(dir, "witchy.toml"))
+        let who = gate_contributors(root, dir, manifest, cap)
+        if list.length(who) == 0:
+            print(console, "no dependency demands " + cap)
+        else:
+            for name in who:
+                print(console, name + " demands " + cap)
+        0
+
+// init [name] — add a manifest + src stub to the CURRENT directory (vs `new`,
+// which creates a new subdirectory). No-op if it is already a rune.
+fn cmd_init(console: Console, root: Dir, dir: String):
+    let name = if string.is_empty(dir): "app" else: dir
+    if exists(root, "witchy.toml"):
+        print(console, "already a rune: witchy.toml")
+    else:
+        if !exists(root, "src"):
+            make_dir(root, "src")
+        write(root, "witchy.toml", manifest_stub(name))
+        let stub = join_path("src", name + ".witchy")
+        if !exists(root, stub):
+            write(root, stub, src_stub(name))
+        print(console, "initialized rune `" + name + "` in the current directory")
 
 fn dep_source(let inline: String) -> String:
     match toml.inline_get(inline, "path"):
@@ -385,17 +808,80 @@ fn drop_last(xs: List(String)) -> List(String):
 // as the visited-set: a rune already carrying its coven.json is never re-fetched,
 // which makes a diamond or a dependency cycle terminate. This command needs the
 // network.
-fn cmd_add(console: Console, net: Net, root: Dir, args: List(String)) -> Int:
-    let name = arg(args, 1)
-    let req = arg(args, 2)
-    let addr = arg(args, 3)
-    let dest = arg(args, 4)
-    if string.is_empty(name) || string.is_empty(req) || string.is_empty(addr) || string.is_empty(dest):
-        print(console, "usage: pm add <name> <req> <coven-host:port> <dest-dir>")
-        1
+fn cmd_add(console: Console, net: Net, root: Dir, env: Env, args: List(String)) -> Int:
+    if string.is_empty(arg(args, 3)):
+        cmd_add_pkg(console, net, root, env, args)
     else:
+        let name = arg(args, 1)
+        let req = arg(args, 2)
+        let addr = arg(args, 3)
+        let dest = arg(args, 4)
         let (host, port) = hostport(addr)
         add_rune(console, net, root, host, port, name, req, dest)
+
+// Cargo-like `add <pkg>[@<ver>]`: resolve the registry from COVEN_URL (or an
+// explicit second `<host:port>` argument), default the requirement to the latest
+// released version when no `@<ver>` is given, fetch+verify, vendor into the
+// project's `vendor/<basename>`, and pin the resolved version in `witchy.lock`.
+// Run from a project directory (cwd is the project Dir). This is the cargo-style
+// front-end `add` of RFC-0004 — a stable vendor/lock layout the project `build`/
+// `run` then resolves through `witchy compile --dep`.
+fn cmd_add_pkg(console: Console, net: Net, root: Dir, env: Env, args: List(String)) -> Int:
+    let spec = arg(args, 1)
+    if string.is_empty(spec):
+        print(console, "usage: pm add <pkg>[@<ver>] [host:port]")
+        1
+    else:
+        let (name, req) = split_spec(spec)
+        let addr = coven_addr(env, arg(args, 2))
+        let (host, port) = hostport(addr)
+        let code = add_rune(console, net, root, host, port, name, req, "vendor")
+        if code != 0:
+            code
+        else:
+            pin_lock(console, root, name)
+
+// Split `<pkg>[@<ver>]` into a (name, requirement); an absent `@<ver>` resolves to
+// `*` (the latest released version). A leading-`@` namespace is not split.
+fn split_spec(spec: String) -> (String, String):
+    if string.contains(spec, "@"):
+        let (name, ver) = string.rsplit_once(spec, "@")
+        if string.is_empty(name): (spec, "*") else: (name, ver)
+    else:
+        (spec, "*")
+
+// Record the resolved dependency in the project's `witchy.lock`: a `[[rune]]`
+// entry pinning the vendored rune's name, resolved version, source (coven), and
+// content hash, so `build`/`run` can map `import <basename>` to its vendored
+// source and `verify`/`gate` can re-check it. Idempotently rewrites the lock from
+// every currently-vendored rune so repeated `add`s accumulate, not clobber.
+fn pin_lock(console: Console, root: Dir, name: String) -> Int:
+    write(root, "witchy.lock", vendor_lock(root))
+    print(console, "locked " + basename(name) + " -> witchy.lock")
+    0
+
+// The lockfile text generated from the vendored tree: one `[[rune]]` block per
+// vendored rune (those carrying a coven.json), pinning name/version/hash from the
+// signed record kept beside the source.
+fn vendor_lock(root: Dir) -> String:
+    var out = "# witchy.lock — generated by `pm add`. Pins every vendored dependency\n# by content hash. Regenerate with `pm add`. Do not edit by hand.\n"
+    if exists(root, "vendor"):
+        for entry in list(subdir(root, "vendor")):
+            let rune_dir = join_path("vendor", entry)
+            if exists(root, join_path(rune_dir, "coven.json")):
+                out = out + vendor_lock_entry(root, entry, rune_dir)
+    out
+
+fn vendor_lock_entry(root: Dir, name: String, rune_dir: String) -> String:
+    let record = read(root, join_path(rune_dir, "coven.json"))
+    let version = recorded_field(record, "version")
+    let hash = recorded_field(record, "hash")
+    "\n[[rune]]\nname = \"" + name + "\"\nversion = \"" + version + "\"\nsource = \"coven\"\nhash = \"" + hash + "\"\n"
+
+fn recorded_field(record: String, key: String) -> String:
+    match json.decode(record):
+        Ok(doc) -> jget(doc, key)
+        Err(_e) -> ""
 
 // Resolve + fetch one rune and its transitive deps. Already-vendored runes (their
 // coven.json is present) are skipped — the dedup + cycle break.
@@ -726,10 +1212,26 @@ fn usage(console: Console):
     print(console, "  lock  <dir>         pin dependencies by content hash -> witchy.lock")
     print(console, "  verify <dir>        witchy.lock must match the dependency sources")
     print(console, "  gate  <dir> [cap..] BLOCK if deps demand authority beyond the lock")
-    print(console, "  add <name> <req> <coven> <dest>  resolve + fetch a rune and its deps")
+    print(console, "  why   <dir> <name>  explain a dependency's presence")
+    print(console, "  why-cap <dir> <Cap> which deps introduce a capability")
+    print(console, "  add <pkg>[@<ver>] [host:port]    fetch + vendor a rune, pin it in witchy.lock")
+    print(console, "  add <name> <req> <coven> <dest>  resolve + fetch a rune into <dest> (explicit)")
+    print(console, "  publish <dir> [host:port] [id]    stage a rune to a coven registry")
+    print(console, "  promote <name> <ver> [host:port] [id]  release a staged version")
+    print(console, "  yank  <name> <ver> [host:port]   flag a released version as yanked")
+    print(console, "  outdated <dir> <host:port>       latest released version of each dep")
     print(console, "  verify-rune <dir> <rootpub>  re-verify a vendored rune offline (coven.json)")
     print(console, "  verify-vendor <dir> <rootpub>  re-verify every vendored rune offline")
+    print(console, "  vendor <dir>        materialize path deps into <dir>/vendor")
     print(console, "  new   <name>        scaffold a new rune")
+    print(console, "  init  [name]        add a manifest to an existing directory")
+    print(console, "  tree  <dir>         show a rune and its dependencies")
+    print(console, "  run   <file|dir>    compile and run a program/project (drives the compiler)")
+    print(console, "  build <file|dir>    compile a program/project to verify it builds")
+    print(console, "  typecheck <file>    type-check a program")
+    print(console, "  test  <dir>         run a rune's tests")
+    print(console, "  fmt   <file>        format a source file")
+    print(console, "  doc   <file>        render a module's documentation")
 
 fn unknown(console: Console, cmd: String) -> Int:
     print(console, "unknown command: " + cmd)

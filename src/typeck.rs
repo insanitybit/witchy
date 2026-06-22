@@ -173,6 +173,10 @@ pub enum Ty {
     Clock,
     Env,
     Secret,
+    /// The runtime authority to spawn a native subprocess. Right-less (one op):
+    /// the executable is named and confined through a `Dir[Read]` argument, so
+    /// "you can only execute a file you can read". See rfcs/0004-self-hosted-cli.md.
+    Exec,
     Dir(DirRights),
     Net(NetRights),
     Socket,
@@ -209,6 +213,7 @@ impl fmt::Display for Ty {
             Ty::Clock => write!(f, "Clock"),
             Ty::Env => write!(f, "Env"),
             Ty::Secret => write!(f, "Secret"),
+            Ty::Exec => write!(f, "Exec"),
             Ty::Dir(r) => write!(f, "{r}"),
             Ty::Net(r) => write!(f, "{r}"),
             Ty::Socket => write!(f, "Socket"),
@@ -327,10 +332,10 @@ fn check_unique_functions(module: &Module) -> Result<(), TypeError> {
 /// capabilities, and the built-in generics. Mirrors the named arms of
 /// `to_ty_generic` plus the opaque generics the checker itself produces
 /// (`Option`/`Result`/`Dict`). Any other named type must be declared (a `type`
-/// or an actor) or be a lowercase generic parameter.
+/// or be a lowercase generic parameter.
 const BUILTIN_TYPE_NAMES: &[&str] = &[
     "Int", "Float", "Duration", "String", "Bool", "Nil", "Console", "Clock", "Env", "Secret",
-    "SecretStore", "Dir", "Net", "Socket", "Listener", "List", "Option", "Result", "Dict",
+    "SecretStore", "Dir", "Net", "Exec", "Socket", "Listener", "List", "Option", "Result", "Dict",
     "BuildOut", "BuildRead", "BuildEnv", "BuildNet", "BuildExec",
 ];
 
@@ -362,8 +367,8 @@ fn validate_type(t: &ast::Type, known: &HashSet<&str>) -> Result<(), TypeError> 
     }
 }
 
-/// Reject references to undeclared types in function and actor signatures. The
-/// set of known names is the builtins plus every `type`/actor declared in the
+/// Reject references to undeclared types in function signatures. The
+/// set of known names is the builtins plus every `type` declared in the
 /// module; lowercase argument-less names are generic parameters.
 fn check_type_names(module: &Module) -> Result<(), TypeError> {
     let mut known: HashSet<&str> = BUILTIN_TYPE_NAMES.iter().copied().collect();
@@ -407,7 +412,7 @@ fn check_type_names(module: &Module) -> Result<(), TypeError> {
 /// authority (the rights of `Dir`/`Net` don't matter here — any are grantable).
 pub(crate) fn is_capability_type(t: &ast::Type) -> bool {
     matches!(t, ast::Type::Named(n, _)
-        if matches!(n.as_str(), "Console" | "Clock" | "Env" | "Dir" | "Net" | "Secret" | "SecretStore"))
+        if matches!(n.as_str(), "Console" | "Clock" | "Env" | "Dir" | "Net" | "Exec" | "Secret" | "SecretStore"))
 }
 
 /// Whether `t` is a *build-time* capability — the parallel set granted only to a
@@ -427,7 +432,7 @@ pub(crate) fn is_args_type(t: &ast::Type) -> bool {
 }
 
 /// Validate `main`'s signature: every parameter must be a host capability or the
-/// `List(String)` args parameter, since `main` is the program's root actor and
+/// `List(String)` args parameter, since `main` is the program's root entrypoint and
 /// only the host's granted authority can enter there. Catches at check time what
 /// would otherwise be a runtime error when the root capabilities are minted. A
 /// module without `main` is a library and passes.
@@ -448,9 +453,26 @@ fn check_main_signature(module: &Module) -> Result<(), TypeError> {
         };
         return terr(format!(
             "`main` parameter `{}` {found}, but `main` may only take host capabilities \
-             (Console, Clock, Env, Dir, Net, Secret, SecretStore) or `List(String)` for command-line args",
+             (Console, Clock, Env, Dir, Net, Exec, Secret, SecretStore) or `List(String)` for command-line args",
             p.name
         ));
+    }
+    // The runtime's value sink surfaces a plain `main` return — an `Int` becomes
+    // the process exit code, a `Float`/`String`/… is printed — but it does NOT
+    // surface a `Result` or `Option`: their wrapper is dropped, so an `Err`/`None`
+    // is silently swallowed (no message, exit stays 0). That makes the Rust
+    // `fn main() -> Result(...)` habit a quiet-failure trap. Reject those two
+    // specifically and point at handling the outcome in `main`.
+    if let Some(ast::Type::Named(n, _)) = &main.ret {
+        if n == "Result" || n == "Option" {
+            return terr(format!(
+                "`main` returns `{}`, but a `Result`/`Option` returned from `main` is \
+                 silently discarded — its `Err`/`None` never surfaces and the exit code \
+                 stays 0. Handle the outcome inside `main` and return an exit code (or \
+                 print it), e.g. `match r: Ok(_) -> 0; Err(e) -> ... ; 1`.",
+                crate::format::type_str(main.ret.as_ref().unwrap())
+            ));
+        }
     }
     Ok(())
 }
@@ -741,6 +763,7 @@ impl Checker {
             "Clock" => Ty::Clock,
             "Env" => Ty::Env,
             "Secret" => Ty::Secret,
+            "Exec" => Ty::Exec,
             "Dir" => Ty::Dir(dir_rights(args)),
             "Net" => Ty::Net(net_rights(args)),
             "Socket" => Ty::Socket,
@@ -784,6 +807,7 @@ impl Checker {
             "Clock" => Ty::Clock,
             "Env" => Ty::Env,
             "Secret" => Ty::Secret,
+                "Exec" => Ty::Exec,
                 "Dir" => Ty::Dir(dir_rights(args)),
                 "Net" => Ty::Net(net_rights(args)),
                 "Socket" => Ty::Socket,
@@ -993,6 +1017,7 @@ impl Checker {
                 | Ty::Clock
                 | Ty::Env
                 | Ty::Secret
+                | Ty::Exec
                 | Ty::Dir(_)
                 | Ty::Net(_)
                 | Ty::Socket
@@ -1385,6 +1410,43 @@ impl Checker {
         Ok(Some(ret))
     }
 
+    /// Type-check the low-level `exec` op:
+    /// `exec(exec, dir, path, args, stdin) -> String`.
+    /// `Exec` is the right to spawn a subprocess; the executable is named through a
+    /// `Dir[Read]` (the same confinement as `read`), so you can only run a file you
+    /// can read. `args` is a single `\0`-joined argv string and the result is a
+    /// `"<exit_code>\n<output>"` payload — the std `exec` module wraps this as
+    /// `(Int, String)` over a `List(String)`. Returns `Ok(None)` when `name` is not
+    /// `exec`.
+    fn check_exec_op(&mut self, name: &str, args: &[Expr]) -> Result<Option<Ty>, TypeError> {
+        if name != "exec" {
+            return Ok(None);
+        }
+        if args.len() != 5 {
+            return terr(format!(
+                "`exec` expects (exec, dir, path, args, stdin) — 5 arguments but got {}",
+                args.len()
+            ));
+        }
+        let e = self.infer(&args[0])?;
+        self.unify(&Ty::Exec, &e).map_err(|err| TypeError {
+            message: format!("`exec`'s first argument must be an `Exec` capability: {}", err.message),
+        })?;
+        let rights = self.dir_cap_rights("exec", &args[1])?;
+        if !rights.read {
+            return terr(format!(
+                "`exec` needs a `Dir` with `Read` to locate the executable, but the capability is `{rights}`"
+            ));
+        }
+        for (i, what) in [(2usize, "path"), (3, "args"), (4, "stdin")] {
+            let at = self.infer(&args[i])?;
+            self.unify(&Ty::String, &at).map_err(|err| TypeError {
+                message: format!("in call to `exec`: {what} must be a String: {}", err.message),
+            })?;
+        }
+        Ok(Some(Ty::String))
+    }
+
     /// Resolve a call's first argument as a `Net` capability and yield its verbs.
     /// An unconstrained variable defaults to the full set (bare `Net`).
     fn net_cap_rights(&mut self, name: &str, arg: &Expr) -> Result<NetRights, TypeError> {
@@ -1491,8 +1553,9 @@ impl Checker {
                     && (!t.uds || s.uds)
             }
             (Ty::Console, Ty::Console) => true,
+            (Ty::Exec, Ty::Exec) => true,
             // An unconstrained source: pin it to the ascribed capability.
-            (Ty::Var(_), Ty::Dir(_) | Ty::Net(_) | Ty::Console) => {
+            (Ty::Var(_), Ty::Dir(_) | Ty::Net(_) | Ty::Console | Ty::Exec) => {
                 return self.unify(src, target).map_err(|e| TypeError {
                     message: format!("in `as` ascription: {}", e.message),
                 });
@@ -1618,6 +1681,14 @@ impl Checker {
                     ty = Ty::Nil;
                 }
                 Stmt::LetTuple { names, value } => {
+                    let mut seen = HashSet::new();
+                    for n in names {
+                        if n != "_" && !seen.insert(n.clone()) {
+                            return terr(format!(
+                                "tuple destructure binds `{n}` more than once — each name must be distinct"
+                            ));
+                        }
+                    }
                     let vt = self.infer(value)?;
                     let elem_tys: Vec<Ty> = (0..names.len()).map(|_| self.fresh()).collect();
                     self.unify(&Ty::Tuple(elem_tys.clone()), &vt).map_err(|e| TypeError {
@@ -1843,6 +1914,9 @@ impl Checker {
                 if let Some(t) = self.check_dir_op(name, args)? {
                     return Ok(t);
                 }
+                if let Some(t) = self.check_exec_op(name, args)? {
+                    return Ok(t);
+                }
                 if let Some(t) = self.check_net_op(name, args)? {
                     return Ok(t);
                 }
@@ -1858,6 +1932,20 @@ impl Checker {
                              interpolation (it works on every value), or \
                              `say(console, x)` to print a `Show` value"
                         ));
+                    }
+                    // `show` is the `Show` trait method, not a free function: a
+                    // bare `show(x)` resolves only when x's concrete type is
+                    // statically known here. Point at the renderers that always
+                    // work, rather than the misleading `import set` near-miss
+                    // (`set.show` is an unrelated same-named module function).
+                    if name == "show" && args.len() == 1 {
+                        return terr(
+                            "could not resolve the `Show` method `show` on this \
+                             value — a bare `show(x)` needs x's concrete type to be \
+                             statically known. Render any value with `\"${x}\"` \
+                             interpolation or `say(console, x)`, or bind x via a \
+                             `for` loop or a typed parameter so dispatch resolves",
+                        );
                     }
                     // A retired global builtin: name the module-qualified
                     // spelling that replaced it (the one-cut migration).
@@ -2289,6 +2377,12 @@ impl Checker {
         for arm in arms {
             self.consumed = before.clone();
             self.push();
+            if let Some(dup) = pattern_dup_binding(&arm.pattern) {
+                return terr(format!(
+                    "pattern binds `{dup}` more than once — each binding in a pattern \
+                     must have a distinct name (witchy has no equality patterns)"
+                ));
+            }
             self.check_pattern(&arm.pattern, &st)?;
             if let Some(guard) = &arm.guard {
                 let gt = self.infer(guard)?;
@@ -2442,12 +2536,30 @@ impl Checker {
                 "non-exhaustive match on `Bool`: cover both `true` and `false` (or add `_`)",
             );
         }
+        // Infinite/large scalar domains can only be matched exhaustively with a
+        // catch-all (an unguarded `_`/variable) — which we'd have accepted above.
+        // Reaching here means there is none, so a literal-only or guard-only match
+        // is non-exhaustive and would trap at runtime on an unlisted value.
+        let scalar = match resolved {
+            Ty::Int => Some("Int"),
+            Ty::Float => Some("Float"),
+            Ty::Duration => Some("Duration"),
+            Ty::String => Some("String"),
+            _ => None,
+        };
+        if let Some(kind) = scalar {
+            return terr(format!(
+                "non-exhaustive match on `{kind}`: it has no finite set of cases, \
+                 so add a catch-all `_` arm (a guard does not make a match exhaustive)"
+            ));
+        }
         let Ty::Named(adt, _) = resolved else {
             return Ok(());
         };
         let Some(variants) = self.adt_variants.get(&adt) else {
             return Ok(());
         };
+        // Top-level: every variant of the sum type must appear in an unguarded arm.
         let covered: HashSet<&str> = arms
             .iter()
             .filter(|a| a.guard.is_none())
@@ -2457,12 +2569,97 @@ impl Checker {
             })
             .collect();
         let missing: Vec<&String> = variants.iter().filter(|v| !covered.contains(v.as_str())).collect();
-        if missing.is_empty() {
-            Ok(())
-        } else {
+        if !missing.is_empty() {
             let names = missing.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ");
-            terr(format!("non-exhaustive match on `{adt}`: missing {names}"))
+            return terr(format!("non-exhaustive match on `{adt}`: missing {names}"));
         }
+        // ...and each present variant must ALSO cover its fields, so a *nested*
+        // non-exhaustive match (`Circle(Red)` without `Circle(Blue)`) is caught at
+        // check time instead of trapping at runtime. `patterns_cover` reads each
+        // nested type from the sub-patterns' own constructors and is permissive on
+        // shapes it can't analyze, so it only ever rejects a provably-incomplete
+        // match — never a valid one (which is what the earlier shortcut got wrong).
+        for v in variants {
+            let v_arms: Vec<&[Pattern]> = arms
+                .iter()
+                .filter(|a| a.guard.is_none())
+                .filter_map(|a| match &a.pattern {
+                    Pattern::Ctor { name, args } if name == v => Some(args.as_slice()),
+                    _ => None,
+                })
+                .collect();
+            if !v_arms.is_empty() && !self.variant_fields_covered(&v_arms) {
+                return terr(format!(
+                    "non-exhaustive match on `{adt}`: `{v}` is matched but its fields \
+                     don't cover every case — add a wholesale `{v}(_)` arm or a `_`"
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether one variant's arms jointly cover all its field values. 0 fields →
+    /// yes; 1 field → recurse on that column (the common `Some(_)`/`Circle(c)`
+    /// case, checked precisely); ≥2 fields → permissive (a full product matrix is
+    /// rare and error-prone, so we don't risk rejecting a valid enumeration).
+    fn variant_fields_covered(&self, arms: &[&[Pattern]]) -> bool {
+        match arms.first().map(|a| a.len()).unwrap_or(0) {
+            0 => true,
+            1 => {
+                let col: Vec<&Pattern> = arms.iter().map(|a| &a[0]).collect();
+                self.patterns_cover(&col)
+            }
+            _ => true,
+        }
+    }
+
+    /// Whether a set of patterns at one position covers every value of its type.
+    /// The type is read from the patterns themselves — a constructor names its
+    /// ADT, a `Bool`/`Int`/`Str` literal names a scalar. Returns `true` whenever
+    /// coverage cannot be DISPROVEN (lists, tuples, foreign constructors, mixed or
+    /// empty rows), so it never rejects a valid match — only one it can prove is
+    /// incomplete (a missing variant, or a scalar with no catch-all).
+    fn patterns_cover(&self, pats: &[&Pattern]) -> bool {
+        if pats.iter().any(|p| matches!(p, Pattern::Wildcard | Pattern::Var(_))) {
+            return true;
+        }
+        if pats.iter().any(|p| matches!(p, Pattern::Bool(_))) {
+            let has = |b: bool| pats.iter().any(|p| matches!(p, Pattern::Bool(x) if *x == b));
+            return has(true) && has(false);
+        }
+        // A scalar literal column with no catch-all is an infinite domain — it can
+        // never be exhaustively enumerated.
+        if pats.iter().any(|p| matches!(p, Pattern::Int(_) | Pattern::Str(_))) {
+            return false;
+        }
+        if !pats.is_empty() && pats.iter().all(|p| matches!(p, Pattern::Ctor { .. })) {
+            let Pattern::Ctor { name: first, .. } = pats[0] else {
+                return true;
+            };
+            let Some((_, result)) = self.ctor_sigs.get(first) else {
+                return true;
+            };
+            let Ty::Named(adt, _) = result else {
+                return true;
+            };
+            let Some(variants) = self.adt_variants.get(adt) else {
+                return true;
+            };
+            for v in variants {
+                let v_arms: Vec<&[Pattern]> = pats
+                    .iter()
+                    .filter_map(|p| match p {
+                        Pattern::Ctor { name, args } if name == v => Some(args.as_slice()),
+                        _ => None,
+                    })
+                    .collect();
+                if v_arms.is_empty() || !self.variant_fields_covered(&v_arms) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        true
     }
 
     fn check_function(&mut self, func: &Function) -> Result<(), TypeError> {
@@ -2555,6 +2752,7 @@ pub fn ty_to_ast(t: &Ty) -> Option<crate::ast::Type> {
         Ty::Clock => T::Named("Clock".into(), Vec::new()),
         Ty::Env => T::Named("Env".into(), Vec::new()),
         Ty::Secret => T::Named("Secret".into(), Vec::new()),
+        Ty::Exec => T::Named("Exec".into(), Vec::new()),
         Ty::Dir(_) => T::Named("Dir".into(), Vec::new()),
         Ty::Net(_) => T::Named("Net".into(), Vec::new()),
         Ty::Socket => T::Named("Socket".into(), Vec::new()),
@@ -2717,7 +2915,7 @@ fn run_check(module: &Module, record: bool) -> Result<Option<TypeTable>, TypeErr
     // opaque types that mis-unify with a confusing message later.
     check_type_names(module)?;
 
-    // `main` is the root actor: its parameters are where the host's authority
+    // `main` is the root entrypoint: its parameters are where the host's authority
     // enters, so they must be capabilities (or the args list) — validate before
     // diving into bodies so a malformed entry point is reported up front.
     check_main_signature(module)?;
@@ -2750,6 +2948,40 @@ fn run_check(module: &Module, record: bool) -> Result<Option<TypeTable>, TypeErr
         return Ok(Some(TypeTable { types }));
     }
     Ok(None)
+}
+
+/// The first name a pattern binds twice, if any. A pattern like `P(x, x)` must be
+/// a compile error: witchy has no non-linear patterns (binding the same name in
+/// two positions would silently shadow rather than constrain the two to be
+/// equal), so we reject it rather than pick a winner.
+fn pattern_dup_binding(p: &Pattern) -> Option<String> {
+    fn walk(p: &Pattern, seen: &mut HashSet<String>, dup: &mut Option<String>) {
+        if dup.is_some() {
+            return;
+        }
+        match p {
+            Pattern::Var(n) => {
+                if !seen.insert(n.clone()) {
+                    *dup = Some(n.clone());
+                }
+            }
+            Pattern::Tuple(ps) => ps.iter().for_each(|q| walk(q, seen, dup)),
+            Pattern::Ctor { args, .. } => args.iter().for_each(|q| walk(q, seen, dup)),
+            Pattern::List { elems, rest } => {
+                elems.iter().for_each(|q| walk(q, seen, dup));
+                if let Some(Some(name)) = rest {
+                    if !seen.insert(name.clone()) {
+                        *dup = Some(name.clone());
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut seen = HashSet::new();
+    let mut dup = None;
+    walk(p, &mut seen, &mut dup);
+    dup
 }
 
 /// The module-qualified NATIVE INTRINSICS: declared in std as self-recursive

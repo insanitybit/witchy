@@ -349,12 +349,12 @@ fn main(console: Console):
 ## 8. Generics and traits
 
 ```witchy
-import ord
+import cmp
 
 fn largest(xs: List(a)) -> a where a: Ord:
     var best = list.at(xs, 0)
     for x in xs:
-        if greater(x, best):
+        if x > best:
             best = x
     best
 
@@ -386,8 +386,10 @@ fn main(console: Console):
     print(console, Dog.greet())
 ```
 
-The std `Eq`/`Ord`/`Show` traits (`import eq`, ...) provide bounded generic
-algorithms (`eq.member`, `ord.max`, ...).
+The std comparison hierarchy `PartialEq` → `Eq` → `PartialOrd` → `Ord` (in
+`import cmp`, mirroring Rust's `std::cmp`) backs the `== != < > <= >=` operators
+and provides bounded generic algorithms (`cmp.member`, `cmp.max_of`, `cmp.sort`,
+...); `Show` (`import show`) renders.
 
 **`impl Trait` arguments.** When a parameter is generic only so it can carry a
 trait bound, `impl Trait` says so directly — `x: impl Loud` is sugar for a fresh
@@ -422,27 +424,32 @@ composes with an explicit `where` clause. The std library uses it for
 `derive(...)` generates trait impls for a type. The generated code is appended to
 the module before type-checking, so both backends and the footprint analysis treat
 it like handwritten code. The supported derives are `Show`, `Eq`, `Ord`, `Reflect`,
-and `Deserialize`. `Deserialize` needs `import json` and generates
-`from_json(j) -> Result(Self, String)` for scalars, lists, options, and nested
-records. There is no `Serialize` derive, because reflection already encodes any
-value (`json.value_of`, `json.stringify`, `Into(Json)`); only decoding has to be
-generated per type.
+and `Deserialize`. `Reflect` needs `import reflect` and makes a user type
+reflectable (scalars and the built-in containers already are); it is what lets
+`json.stringify` / `json.value_of` encode the type with no per-type code.
+`Deserialize` generates `from_json(j) -> Result(Self, String)` for scalars,
+lists, options, and nested records, and — because the generated body names them
+like handwritten code — needs `import json` **and `import result`** (plus
+`import option` when any field is an `Option`). There is no `Serialize` derive,
+because reflection already encodes any value (`json.value_of`, `json.stringify`,
+`Into(Json)`); only decoding has to be generated per type.
 
 ```witchy
 import show
-import ord
+import cmp
 
-type Point derive(Show, Eq, Ord):
+type Point derive(Show, PartialEq, Eq, PartialOrd, Ord):
     x: Int
     y: Int
 
 fn main(console: Console):
     say(console, Point(1, 2))
-    print(console, "${less(Point(1, 2), Point(1, 3))}")
+    print(console, "${Point(1, 2) < Point(1, 3)}")
 ```
 
-`Show` renders a value structurally (the same form `${...}` uses), `Eq` is
-structural equality, and `Ord` compares record fields in order (records only).
+`Show` renders a value structurally (the same form `${...}` uses); `PartialEq`/`Eq`
+are structural equality (backing `==`/`!=`), and `PartialOrd`/`Ord` compare record
+fields in order (records only) and back `<` `>` `<=` `>=`.
 Derives also work on a generic type. `type Box(a) derive(Reflect)` generates an impl
 that carries the type parameters and their bounds and specializes per type argument.
 
@@ -569,7 +576,7 @@ fn main(console: Console):
 ```
 
 Unexpected failure is **loud on every backend**: out-of-bounds indexing,
-division by zero, unparseable `string_to_int`, NaN ordering, and the `fail(msg)`
+division by zero, unparseable `string.to_int`, NaN ordering, and the `fail(msg)`
 primitive all abort (a runtime error interpreted, a trap compiled). The parity
 invariant covers these too — a program that errors on one backend errors on
 both.
@@ -644,7 +651,7 @@ however, come into scope *unqualified* — after `import json` you write
 sibling `name.witchy` file, then the bundled standard library (30+ modules — see
 [stdlib.md](stdlib.md)). `pub` items are importable; everything else is
 module-private. Package dependencies ("runes")
-come from the manifest — see [package-manager.md](package-manager.md).
+come from the manifest — see [package-manager.md](../rfcs/package-manager.md).
 
 ## 13. Entry point
 
@@ -688,8 +695,45 @@ project's *grant*, not the type. `witchy caps` reports the build footprint on it
 own axis, `witchy caps-diff` fails on a build-axis widening, and
 `witchy build-step <file> [--out <dir>] [--read <dir>] [--env K]... [--exec tool]...`
 runs a build step under those confined grants. See
-[build-time-execution-plan.md](build-time-execution-plan.md) for status and
-[package-manager.md](package-manager.md) §7.1 for the full model.
+[build-time-execution-plan.md](../rfcs/build-time-execution-plan.md) for status and
+[package-manager.md](../rfcs/package-manager.md) §7.1 for the full model.
+
+### 13.2 User-definable capabilities
+
+A library declares its own capability by **refining** the host's, with
+`capability X from U`. `X` is a *sealed brand*: a single-variant wrapper over the
+underlying capability `U` (or several — `from (A, B)`), with one rule — `X` may be
+**constructed or destructured only inside the module that declares it**. Any other
+module may hold, pass, and return a value of `X`, but cannot mint or unwrap one, so
+`X` is un-forgeable exactly like a host capability.
+
+```witchy
+capability Redis from Net[Connect, Tcp]
+
+// The ONLY way to obtain a `Redis` — its constructor is sealed to this module.
+pub fn open(net: Net[Connect, Tcp]) -> Redis:
+    Redis(net)
+
+pub fn ping(r: Redis) -> Int:
+    match r:
+        Redis(net) -> 1
+```
+
+- **Minting consumes authority.** A `Redis` can only be made by handing a real
+  `Net` to `open`; a library can never conjure authority from nothing.
+- **Attenuation is by facet** — declare a narrower capability refining the first
+  (`capability ReadOnly from Postgres`) that exposes fewer operations; ordinary
+  type-checking enforces it.
+- **The footprint sees through.** `witchy caps` reports a user capability as the
+  host authority it refines — `ping` audits as `Net[Connect, Tcp] (refined: Redis)`
+  — so a library cannot launder `Net` behind a friendly name.
+
+For the network specifically, `restrict(net, "host:port") -> Net` confines a `Net`
+*value* to an address subset (exact, `host:*`, or IPv4 CIDR), host-enforced on
+`connect`/`listen` on both backends — the address analog of `subdir` for `Dir`,
+and rebinding-safe (a CIDR/IP allowlist is checked against the resolved IP). See
+[0002-user-definable-capabilities.md](../rfcs/0002-user-definable-capabilities.md)
+and [0003-network-address-scoping.md](../rfcs/0003-network-address-scoping.md).
 
 ## 14. Concurrency: async, spawn, and channels
 

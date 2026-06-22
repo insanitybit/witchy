@@ -25,7 +25,18 @@ pub fn expand(module: &mut Module) -> Result<(), String> {
         for d in &derives {
             match d.as_str() {
                 "Show" => generated.push(derive_via_comptime("meta.derive_show", t)),
+                "PartialEq" => generated.push(derive_via_comptime("meta.derive_partial_eq", t)),
                 "Eq" => generated.push(derive_via_comptime("meta.derive_eq", t)),
+                "PartialOrd" => {
+                    let is_record = t.variants.len() == 1 && !t.variants[0].field_names.is_empty();
+                    if !is_record {
+                        return Err(format!(
+                            "type `{}`: derive(PartialOrd) supports record types (one constructor with named fields)",
+                            t.name
+                        ));
+                    }
+                    generated.push(derive_via_comptime("meta.derive_partial_ord", t));
+                }
                 "Ord" => {
                     let is_record = t.variants.len() == 1 && !t.variants[0].field_names.is_empty();
                     if !is_record {

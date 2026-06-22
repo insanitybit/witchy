@@ -244,8 +244,9 @@ pub fn rsplit_once(s: String, sep: String) -> (String, String):
         (string.substring(s, 0, i), string.substring(s, i + string.char_count(sep), string.char_count(s)))
 
 // Safely parse a base-10 integer: an optional leading `-`/`+` then one or more
-// digits. Returns None for empty, sign-only, or non-digit input — so it never
-// traps on bad input the way the raw `string_to_int` builtin can.
+// digits. Returns None for empty, sign-only, non-digit, or out-of-range (beyond
+// the i64 range) input — so it never traps the way the raw `string_to_int`
+// builtin can.
 pub fn parse_int(s: String) -> Option(Int):
     let n = string.char_count(s)
     if n == 0:
@@ -253,6 +254,7 @@ pub fn parse_int(s: String) -> Option(Int):
     else:
         var start = 0
         let first = char_at(s, 0)
+        let neg = first == "-"
         if first == "-" || first == "+":
             start = 1
         if start >= n:
@@ -265,10 +267,24 @@ pub fn parse_int(s: String) -> Option(Int):
                 if c < "0" || c > "9":
                     ok = false
                 i = i + 1
-            if ok:
-                Some(string.to_int(s))
-            else:
+            if ok == false:
                 None
+            else:
+                // Digits are valid; reject a string that would overflow i64
+                // (otherwise `string.to_int` traps). Strip leading zeros, then
+                // compare the significant digits against the bound — equal-length
+                // digit strings compare numerically, and |i64::MIN| is one past
+                // i64::MAX, so the bound depends on the sign.
+                var j = start
+                while j < n - 1 && char_at(s, j) == "0":
+                    j = j + 1
+                let mag = string.substring(s, j, n)
+                let mlen = string.char_count(mag)
+                let limit = if neg: "9223372036854775808" else: "9223372036854775807"
+                if mlen > 19 || (mlen == 19 && mag > limit):
+                    None
+                else:
+                    Some(string.to_int(s))
 
 // Split text into its newline-separated lines.
 pub fn lines(text: String) -> List(String):

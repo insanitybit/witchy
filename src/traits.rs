@@ -50,15 +50,15 @@ fn method_fn(
     };
     for p in &mut params {
         if let Some(t) = &p.ty {
-            p.ty = Some(subst_self(t, type_name));
+            p.ty = Some(subst_self(t, &self_ty));
         }
     }
     if let Some(first) = params.first_mut() {
         if first.ty.is_none() {
-            first.ty = Some(self_ty);
+            first.ty = Some(self_ty.clone());
         }
     }
-    let ret = ret.map(|t| subst_self(&t, type_name));
+    let ret = ret.map(|t| subst_self(&t, &self_ty));
     Function {
         public: true,
         name,
@@ -74,19 +74,20 @@ fn method_fn(
     }
 }
 
-/// Replace every `Self` in a type with the implementing type.
-fn subst_self(t: &Type, impl_type: &str) -> Type {
+/// Replace every `Self` in a type with the implementing type. `self_ty` carries
+/// the type's parameters for a generic impl (`Pair(a, b)`, `(a, b)`), so a
+/// default method's `other: Self` is typed `Pair(a, b)` to match the receiver —
+/// not the bare head `Pair`, which would clash with a real `Pair(Int, String)`.
+fn subst_self(t: &Type, self_ty: &Type) -> Type {
     match t {
-        Type::Named(n, args) if n == "Self" && args.is_empty() => {
-            Type::Named(impl_type.to_string(), vec![])
-        }
+        Type::Named(n, args) if n == "Self" && args.is_empty() => self_ty.clone(),
         Type::Named(n, args) => {
-            Type::Named(n.clone(), args.iter().map(|a| subst_self(a, impl_type)).collect())
+            Type::Named(n.clone(), args.iter().map(|a| subst_self(a, self_ty)).collect())
         }
-        Type::Tuple(ts) => Type::Tuple(ts.iter().map(|a| subst_self(a, impl_type)).collect()),
+        Type::Tuple(ts) => Type::Tuple(ts.iter().map(|a| subst_self(a, self_ty)).collect()),
         Type::Fn(ps, r) => Type::Fn(
-            ps.iter().map(|a| subst_self(a, impl_type)).collect(),
-            Box::new(subst_self(r, impl_type)),
+            ps.iter().map(|a| subst_self(a, self_ty)).collect(),
+            Box::new(subst_self(r, self_ty)),
         ),
     }
 }
@@ -146,6 +147,8 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
     // monomorphization. Tracked so the generic-receiver dispatch doesn't prepend a
     // phantom `self`.
     let mut static_trait_methods: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // trait name -> its DIRECT supertraits; closed under transitivity below.
+    let mut trait_supertraits: HashMap<String, Vec<String>> = HashMap::new();
     for item in &module.items {
         if let Item::Trait(t) = item {
             for m in &t.methods {
@@ -155,8 +158,12 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
                 }
             }
             trait_method_list.insert(t.name.clone(), t.methods.clone());
+            trait_supertraits.insert(t.name.clone(), t.supertraits.clone());
         }
     }
+    // A `where a: Ord` bound must discharge Eq/PartialOrd/PartialEq methods too,
+    // so each trait maps to ALL of its supertraits (direct and inherited).
+    let trait_supertraits = transitive_supertraits(&trait_supertraits);
 
     // (method name, receiver type) -> mangled function, plus the generated
     // functions themselves (impl methods with `self` typed to the impl type).
@@ -167,10 +174,13 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
     let mut impl_trait_args: HashMap<(String, String), Vec<Type>> = HashMap::new();
     // (type name, method name) -> mangled fn, for self-less impl methods.
     let mut statics: HashMap<(String, String), String> = HashMap::new();
+    // (trait name, impl head) present, to check supertrait obligations below.
+    let mut impl_pairs: HashSet<(String, String)> = HashSet::new();
     let mut generated: Vec<Function> = Vec::new();
     for item in &module.items {
         if let Item::Impl(im) = item {
             if let Some(t) = &im.trait_name {
+                impl_pairs.insert((t.clone(), im.type_name.clone()));
                 if !im.trait_args.is_empty() {
                     impl_trait_args
                         .insert((t.clone(), im.type_name.clone()), im.trait_args.clone());
@@ -244,6 +254,28 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
         }
     }
 
+    // Supertrait obligations: `impl Ord for T` requires `impl Eq for T`,
+    // `impl PartialOrd for T`, etc. (the transitive closure). Surfaced through the
+    // same diagnostics channel as missing dispatch impls.
+    let mut supertrait_diags: Vec<String> = Vec::new();
+    for item in &module.items {
+        if let Item::Impl(im) = item {
+            if let Some(t) = &im.trait_name {
+                if let Some(supers) = trait_supertraits.get(t) {
+                    for sup in supers {
+                        if !impl_pairs.contains(&(sup.clone(), im.type_name.clone())) {
+                            supertrait_diags.push(format!(
+                                "`{ty}` implements `{t}` but not its supertrait `{sup}` \
+                                 (add `impl {sup} for {ty}`)",
+                                ty = im.type_name
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // Keep everything that isn't a trait/impl, then append the lowered methods.
     let imports = module.imports;
     let mut items: Vec<Item> = module
@@ -265,7 +297,7 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
     // sees a checkable module. Diagnostics are discarded here — anything
     // genuinely unresolvable is re-found loudly by the post-mono pass.
     {
-        let (ctor_results, fn_rets) = build_tables(&items);
+        let (ctor_results, fn_rets, fn_sigs) = build_tables(&items);
         let ctor_fields = build_ctor_fields(&items);
         let record_fields = build_record_fields(&items);
         let free_fns: std::collections::HashSet<String> = items
@@ -283,15 +315,18 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
             impl_table: &impl_table,
             ctor_results: &ctor_results,
             fn_rets: &fn_rets,
+            fn_sigs: &fn_sigs,
             ctor_fields: &ctor_fields,
             record_fields: &record_fields,
             free_fns: &free_fns,
             missing_impls: &quiet,
             statics: &statics,
             table: &empty_table,
+            bound_traits: std::cell::RefCell::new(HashMap::new()),
         };
         for item in &mut items {
             if let Item::Function(f) = item {
+                ctx.set_bounds(&f.bounds);
                 let mut scope = Scope::new();
                 seed_params(&f.params, &mut scope);
                 ctx.rewrite_block(&mut f.body, &mut scope);
@@ -340,7 +375,7 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
     }
     let mut mono_diags: Vec<String> = Vec::new();
     if !templates.is_empty() {
-        let (ctor_results, fn_rets) = build_tables(&items);
+        let (ctor_results, fn_rets, fn_sigs) = build_tables(&items);
         let ctor_fields = build_ctor_fields(&items);
         let record_fields = build_record_fields(&items);
         let known_fns: std::collections::HashSet<String> = items
@@ -354,12 +389,14 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
             templates: &templates,
             known_fns: &known_fns,
             trait_methods: &trait_methods,
+            supertraits: &trait_supertraits,
             impl_trait_args: &impl_trait_args,
             diagnostics: Vec::new(),
             ctor_results: &ctor_results,
             ctor_fields: &ctor_fields,
             record_fields: &record_fields,
             fn_rets,
+            fn_sigs,
             memo: HashMap::new(),
             generated: Vec::new(),
             generated_subst: Vec::new(),
@@ -372,7 +409,7 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
     }
 
     // Tables used to determine a receiver's type at a trait-method call site.
-    let (ctor_results, fn_rets) = build_tables(&items);
+    let (ctor_results, fn_rets, fn_sigs) = build_tables(&items);
     let ctor_fields = build_ctor_fields(&items);
         let record_fields = build_record_fields(&items);
     let free_fns: std::collections::HashSet<String> = items
@@ -389,15 +426,18 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
         impl_table: &impl_table,
         ctor_results: &ctor_results,
         fn_rets: &fn_rets,
+        fn_sigs: &fn_sigs,
         ctor_fields: &ctor_fields,
         record_fields: &record_fields,
         free_fns: &free_fns,
         missing_impls: &missing_impls,
         statics: &statics,
         table: &type_table,
+        bound_traits: std::cell::RefCell::new(HashMap::new()),
     };
     for item in &mut items {
         if let Item::Function(f) = item {
+            ctx.set_bounds(&f.bounds);
             let mut scope = Scope::new();
             seed_params(&f.params, &mut scope);
             ctx.rewrite_block(&mut f.body, &mut scope);
@@ -407,11 +447,34 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
     (
         Module { modes: Vec::new(), imports, items, import_lines: Vec::new(), item_lines: Vec::new() },
         {
-            let mut d = missing_impls.into_inner();
+            let mut d = supertrait_diags;
+            d.extend(missing_impls.into_inner());
             d.extend(mono_diags);
             d
         },
     )
+}
+
+/// Close a direct-supertrait map under transitivity: each trait maps to ALL of
+/// its supertraits (direct and inherited), so a `where a: Ord` bound knows it
+/// also provides `Eq`, `PartialOrd`, and `PartialEq`.
+fn transitive_supertraits(direct: &HashMap<String, Vec<String>>) -> HashMap<String, Vec<String>> {
+    let mut out: HashMap<String, Vec<String>> = HashMap::new();
+    for name in direct.keys() {
+        let mut seen: Vec<String> = Vec::new();
+        let mut stack: Vec<String> = direct.get(name).cloned().unwrap_or_default();
+        while let Some(s) = stack.pop() {
+            if seen.contains(&s) {
+                continue;
+            }
+            seen.push(s.clone());
+            if let Some(more) = direct.get(&s) {
+                stack.extend(more.iter().cloned());
+            }
+        }
+        out.insert(name.clone(), seen);
+    }
+    out
 }
 
 /// Variable name -> the head name of its (known) type.
@@ -441,6 +504,9 @@ struct Ctx<'a> {
     impl_table: &'a HashMap<(String, String), String>,
     ctor_results: &'a HashMap<String, String>,
     fn_rets: &'a HashMap<String, String>,
+    /// Function -> (param types, return type), for recovering a generic call's
+    /// concrete result type (e.g. the element of `list.at(xs, i)`).
+    fn_sigs: &'a HashMap<String, FnSig>,
     ctor_fields: &'a HashMap<String, Vec<Type>>,
     /// Record type name -> its named field types (for typing `x.field`).
     record_fields: &'a HashMap<String, Vec<(String, Type)>>,
@@ -456,11 +522,17 @@ struct Ctx<'a> {
     statics: &'a HashMap<(String, String), String>,
     /// typeck's resolved types — receiver typing for method resolution.
     table: &'a crate::typeck::TypeTable,
+    /// The current function's type-variable bounds (var -> trait names), so a
+    /// comparison operator on a type-variable operand desugars to a trait call
+    /// ONLY when that variable is bound by the relevant comparison trait — an
+    /// UNbounded generic `==` keeps the native structural comparison.
+    bound_traits: std::cell::RefCell<HashMap<String, Vec<String>>>,
 }
 
 impl Ctx<'_> {
     fn type_name(&self, e: &Expr, scope: &Scope) -> Option<String> {
-        head_type_name(e, scope, self.ctor_results, self.fn_rets, self.record_fields)
+        recover_generic_call(e, self.fn_sigs, &|a| self.type_name(a, scope))
+            .or_else(|| head_type_name(e, scope, self.ctor_results, self.fn_rets, self.record_fields))
     }
 
     /// Resolve a trait method to its mangled impl for a receiver type. A concrete
@@ -484,6 +556,58 @@ impl Ctx<'_> {
                     .map(|(_, v)| v)
             })
             .cloned()
+    }
+
+    /// Record the current function's type-variable bounds, so the operator
+    /// rewrite can tell a bounded generic (dispatch) from an unbounded one (keep
+    /// the native structural comparison).
+    fn set_bounds(&self, bounds: &[(String, String, Vec<Type>)]) {
+        let mut map: HashMap<String, Vec<String>> = HashMap::new();
+        for (var, trait_name, _) in bounds {
+            map.entry(var.clone()).or_default().push(trait_name.clone());
+        }
+        *self.bound_traits.borrow_mut() = map;
+    }
+
+    /// Whether the current function bounds type variable `var` by any of `traits`
+    /// (or a comparison trait that has one of them as a supertrait — `Ord` and
+    /// `PartialOrd` both imply `PartialEq`).
+    fn var_bounded_by(&self, var: &str, traits: &[&str]) -> bool {
+        self.bound_traits
+            .borrow()
+            .get(var)
+            .is_some_and(|bs| bs.iter().any(|b| traits.contains(&b.as_str())))
+    }
+
+    /// Whether a comparison operator on an operand of head type `head` should
+    /// desugar to a trait call. Primitives keep the native operator. For
+    /// equality, structural tuples, records without a `PartialEq` impl, and
+    /// UNbounded type variables stay native (backwards compatible); a type
+    /// variable bound by a comparison trait dispatches so compiled generic `==`
+    /// is content-correct. Ordering has no native path for non-primitives, so a
+    /// concrete non-primitive always dispatches and a type variable dispatches
+    /// when bound by `PartialOrd`/`Ord` (an unbounded one is left for the type
+    /// checker to reject with its clear "ordering requires Int/…" message).
+    fn operator_dispatches(&self, op: BinOp, head: Option<&str>) -> bool {
+        let Some(head) = head else { return false };
+        if is_specializable_type_arg(head) {
+            return false;
+        }
+        let is_type_var = head.chars().next().is_some_and(char::is_lowercase);
+        if matches!(op, BinOp::Eq | BinOp::NotEq) {
+            if head.starts_with("Tuple") {
+                return false;
+            }
+            if is_type_var {
+                return self.var_bounded_by(head, &["PartialEq", "Eq", "PartialOrd", "Ord"]);
+            }
+            let method = if op == BinOp::Eq { "eq" } else { "ne" };
+            self.lookup_impl(method, head).is_some()
+        } else if is_type_var {
+            self.var_bounded_by(head, &["PartialOrd", "Ord"])
+        } else {
+            true
+        }
     }
 
     fn rewrite_block(&self, b: &mut Block, scope: &mut Scope) {
@@ -585,7 +709,27 @@ impl Ctx<'_> {
                     self.rewrite_expr(s, scope);
                 }
             }
-            Expr::Binary { lhs, rhs, .. } => {
+            Expr::Binary { op, lhs, rhs } => {
+                // Comparison operators on non-primitive operands desugar to their
+                // trait method (`a > b` -> `greater(a, b)`), which the call arm
+                // below then dispatches to the concrete impl. Primitives — and, for
+                // equality, structural tuples and records lacking a `PartialEq`
+                // impl — keep the native operator.
+                if let Some(method) = operator_trait_method(*op) {
+                    let head = self.type_name(lhs, scope).or_else(|| {
+                        self.table
+                            .type_of(lhs)
+                            .and_then(crate::typeck::ty_to_ast)
+                            .and_then(|t| type_to_scope_name(&t))
+                    });
+                    if self.operator_dispatches(*op, head.as_deref()) {
+                        let l = std::mem::replace(lhs.as_mut(), Expr::Bool(false));
+                        let r = std::mem::replace(rhs.as_mut(), Expr::Bool(false));
+                        *e = Expr::Call { name: method.to_string(), args: vec![l, r] };
+                        self.rewrite_expr(e, scope);
+                        return;
+                    }
+                }
                 self.rewrite_expr(lhs, scope);
                 self.rewrite_expr(rhs, scope);
             }
@@ -1065,10 +1209,19 @@ fn head_of(tn: &str) -> &str {
     tn.split('<').next().unwrap_or(tn)
 }
 
-/// Constructor -> its type name, and function -> its (named) return type.
-fn build_tables(items: &[Item]) -> (HashMap<String, String>, HashMap<String, String>) {
+/// A function's parameter types (None for an unannotated param) and return type,
+/// kept so a generic call's result type can be recovered by binding the return
+/// type variable from an argument — e.g. `list.at(xs: List(a), Int) -> a`.
+type FnSig = (Vec<Option<Type>>, Type);
+
+/// Constructor -> its type name, function -> its (named) return type head, and
+/// function -> its full signature (params + return) for generic-return recovery.
+fn build_tables(
+    items: &[Item],
+) -> (HashMap<String, String>, HashMap<String, String>, HashMap<String, FnSig>) {
     let mut ctor_results = HashMap::new();
     let mut fn_rets = HashMap::new();
+    let mut fn_sigs = HashMap::new();
     for item in items {
         match item {
             Item::Type(t) => {
@@ -1080,11 +1233,75 @@ fn build_tables(items: &[Item]) -> (HashMap<String, String>, HashMap<String, Str
                 if let Some(Type::Named(n, _)) = &f.ret {
                     fn_rets.insert(f.name.clone(), n.clone());
                 }
+                if let Some(ret) = &f.ret {
+                    let ptys = f.params.iter().map(|p| p.ty.clone()).collect();
+                    fn_sigs.insert(f.name.clone(), (ptys, ret.clone()));
+                }
             }
             _ => {}
         }
     }
-    (ctor_results, fn_rets)
+    (ctor_results, fn_rets, fn_sigs)
+}
+
+/// Recover the concrete result type of a generic call whose declared return is a
+/// bare type variable, by binding that variable from an argument. Handles
+/// `xs[i]` (list element) and any `f(.., List(a)|Option(a)|a, ..) -> a`, so
+/// `show(xs[i])` / `say(list.at(xs, i))` dispatch on the element type. Returns
+/// `None` when undeterminable (the caller falls back to `head_type_name`); a
+/// wrong guess only ever yields a type error, never wrong code.
+fn recover_generic_call(
+    e: &Expr,
+    sigs: &HashMap<String, FnSig>,
+    type_of: &dyn Fn(&Expr) -> Option<String>,
+) -> Option<String> {
+    match e {
+        // `xs[i]` is element access: the element of the base's `List<...>` type.
+        // (typeck lowers a subscript to a `list.at` call, so the arm below also
+        // covers it after that pass.)
+        Expr::Index { base, .. } => list_elem(&type_of(base)?).map(str::to_string),
+        // `list.at(xs, i)` is an intrinsic (no `Item`, so absent from `sigs`); it
+        // yields the element of `xs`'s `List<...>` type.
+        Expr::Call { name, args } if name == "list.at" => {
+            list_elem(&type_of(args.first()?)?).map(str::to_string)
+        }
+        Expr::Call { name, args } => {
+            let (params, ret) = sigs.get(name)?;
+            // Only a bare type VARIABLE return is recoverable here; a concrete
+            // head (uppercase, or carrying its own args) is handled elsewhere.
+            let Type::Named(var, vargs) = ret else { return None };
+            if !vargs.is_empty() || !var.chars().next()?.is_lowercase() {
+                return None;
+            }
+            params
+                .iter()
+                .zip(args)
+                .find_map(|(p, arg)| bind_type_var(var, p.as_ref()?, arg, type_of))
+        }
+        _ => None,
+    }
+}
+
+/// Bind return type variable `var` from a single (param type, argument) pair:
+/// `x: a` -> the arg's type; `xs: List(a)` -> its element; `o: Option(a)` -> its
+/// element. Any other shape contributes no binding.
+fn bind_type_var(
+    var: &str,
+    pty: &Type,
+    arg: &Expr,
+    type_of: &dyn Fn(&Expr) -> Option<String>,
+) -> Option<String> {
+    let inner_is_var = |a: &[Type]| matches!(a, [Type::Named(v, va)] if v == var && va.is_empty());
+    match pty {
+        Type::Named(n, a) if n == var && a.is_empty() => type_of(arg),
+        Type::Named(n, a) if n == "List" && inner_is_var(a) => {
+            list_elem(&type_of(arg)?).map(str::to_string)
+        }
+        Type::Named(n, a) if n == "Option" && inner_is_var(a) => {
+            generic_arg(&type_of(arg)?).map(str::to_string)
+        }
+        _ => None,
+    }
 }
 
 /// Record type name -> its named field types, for typing `x.field` receivers.
@@ -1473,6 +1690,20 @@ fn is_specializable_type_arg(n: &str) -> bool {
     matches!(n, "Int" | "Bool" | "Float" | "String" | "Duration")
 }
 
+/// The trait method a comparison operator desugars to, or `None` for the
+/// non-comparison operators (which never dispatch through a trait).
+fn operator_trait_method(op: BinOp) -> Option<&'static str> {
+    Some(match op {
+        BinOp::Eq => "eq",
+        BinOp::NotEq => "ne",
+        BinOp::Lt => "less",
+        BinOp::Gt => "greater",
+        BinOp::LtEq => "less_equal",
+        BinOp::GtEq => "greater_equal",
+        _ => return None,
+    })
+}
+
 /// Collect the type-variable names appearing in a type (lowercase, argument-free
 /// `Named`s), in order of first appearance.
 fn collect_type_vars(t: &Type, out: &mut Vec<String>) {
@@ -1658,6 +1889,9 @@ struct Mono<'a> {
     /// method name -> owning trait, and (trait, impl head) -> the impl's
     /// trait type-arguments — substitution-directed dispatch for bounds.
     trait_methods: &'a HashMap<String, String>,
+    /// trait -> its transitive supertraits, so a `where a: Ord` bound discharges
+    /// the methods of `Eq`/`PartialOrd`/`PartialEq` too.
+    supertraits: &'a HashMap<String, Vec<String>>,
     impl_trait_args: &'a HashMap<(String, String), Vec<Type>>,
     /// Loud failures (an uninferrable bounded call) surfaced as check errors.
     diagnostics: Vec<String>,
@@ -1665,6 +1899,9 @@ struct Mono<'a> {
     ctor_fields: &'a HashMap<String, Vec<Type>>,
     record_fields: &'a HashMap<String, Vec<(String, Type)>>,
     fn_rets: HashMap<String, String>,
+    /// Function -> (param types, return type), for recovering a generic call's
+    /// concrete result type (mirrors `Ctx::fn_sigs`).
+    fn_sigs: HashMap<String, FnSig>,
     memo: HashMap<(String, Vec<String>), String>,
     generated: Vec<Function>,
     /// Per-generated-instance type-variable substitution (var -> concrete scope
@@ -1711,7 +1948,8 @@ impl Mono<'_> {
     }
 
     fn type_name(&self, e: &Expr, scope: &Scope) -> Option<String> {
-        head_type_name(e, scope, self.ctor_results, &self.fn_rets, self.record_fields)
+        recover_generic_call(e, &self.fn_sigs, &|a| self.type_name(a, scope))
+            .or_else(|| head_type_name(e, scope, self.ctor_results, &self.fn_rets, self.record_fields))
     }
 
     /// Like `type_name`, but rewrites the current instantiation's type variables
@@ -1964,12 +2202,18 @@ impl Mono<'_> {
         for (bvar, btrait, btargs) in &bounds_snapshot {
             let Some(concrete) = subst.get(bvar.as_str()) else { continue };
             let head = concrete.split('<').next().unwrap_or(concrete).to_string();
-            let impl_vars = self.impl_trait_args.get(&(btrait.clone(), head.clone())).cloned();
             for (method, owner) in &trait_method_pairs {
-                if owner != btrait {
+                // The bound discharges its own trait's methods AND those of every
+                // supertrait (a `where a: Ord` bound also supplies `eq`/`less`).
+                let owned_by_bound = owner == btrait
+                    || self.supertraits.get(btrait).is_some_and(|s| s.contains(owner));
+                if !owned_by_bound {
                     continue;
                 }
-                let mangled = format!("{btrait}__{head}__{method}");
+                // The impl that defines this method is registered under its actual
+                // owning trait, so mangle and look up trait-args by `owner`.
+                let impl_vars = self.impl_trait_args.get(&(owner.clone(), head.clone())).cloned();
+                let mangled = format!("{owner}__{head}__{method}");
                 let mut target = mangled.clone();
                 if let (Some(vars), Some(tmpl)) =
                     (&impl_vars, self.templates.get(&mangled).cloned())

@@ -3399,6 +3399,44 @@ pub fn dir_read_helper() -> WirFunc {
     }
 }
 
+/// `$exec(h, path, args, stdin) -> i32` — spawn the executable `path` under Dir
+/// handle `h` (confined like `dir_read`), passing the `\0`-joined argv `args` and
+/// `stdin`, returning the payload string `"<exit_code>\n<stdout><stderr>"`.
+/// Two-phase host protocol identical to [`dir_read_helper`]: `exec_run` runs the
+/// process and reports the staged payload's byte length, then `fill_pending`
+/// copies it into `res+4`. Needs the `Exec` capability.
+pub fn exec_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    let i32c = E::ConstI32;
+    let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+    WirFunc {
+        name: "exec".into(),
+        params: vec![
+            WirLocal { name: "h".into(), ty: WirTy::Bool },
+            WirLocal { name: "path".into(), ty: WirTy::Str },
+            WirLocal { name: "args".into(), ty: WirTy::Str },
+            WirLocal { name: "stdin".into(), ty: WirTy::Str },
+        ],
+        ret: vec![WirTy::Str],
+        locals: vec![
+            WirLocal { name: "len".into(), ty: WirTy::Bool },
+            WirLocal { name: "res".into(), ty: WirTy::Bool },
+        ],
+        body: vec![
+            N::SetLocal { local: "len".into(), value: E::CallHost { import: "exec_run".into(), args: vec![getl("h"), getl("path"), getl("args"), getl("stdin")] } },
+            N::Do(E::Call { func: "ensure".into(), args: vec![b(BinOp::Add, getl("len"), i32c(4))] }),
+            N::SetLocal { local: "res".into(), value: E::GetGlobal("heap".into()) },
+            N::Store { ptr: getl("res"), value: getl("len"), kind: Kind::I32, offset: 0 },
+            N::Do(E::CallHost { import: "fill_pending".into(), args: vec![b(BinOp::Add, getl("res"), i32c(4))] }),
+            N::SetGlobal { global: "heap".into(), value: b(BinOp::Add, b(BinOp::Add, getl("res"), i32c(4)), getl("len")) },
+            N::Push(getl("res")),
+        ],
+        raw_body: None,
+    }
+}
+
 /// `$crypto_reveal(key) -> i32` — the raw bytes of the secret at handle `key` as
 /// a fresh String (lossy UTF-8). Identical staging to [`dir_read_helper`]: the
 /// host `crypto_reveal_len` reads the host-side secret and reports its byte
@@ -4361,6 +4399,13 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             func: dir_read_helper(),
             helper_deps: &["ensure"],
             import_deps: &["dir_read_len", "fill_pending"],
+            uses_heap: true,
+            uses_table: false,
+        }),
+        "exec" => Some(WirHelperSpec {
+            func: exec_helper(),
+            helper_deps: &["ensure"],
+            import_deps: &["exec_run", "fill_pending"],
             uses_heap: true,
             uses_table: false,
         }),

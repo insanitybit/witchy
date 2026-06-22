@@ -57,11 +57,18 @@ pub fn range_step(start: Int, stop: Int, step: Int) -> List(Int):
         var i = start
         while i < stop:
             out = list.push(out, i)
+            // Stop before `i + step` would overflow past i64::MAX and wrap
+            // negative — otherwise `i < stop` stays true and the loop never ends.
+            if i > 9223372036854775807 - step:
+                break
             i = i + step
     else if step < 0:
         var i = start
         while i > stop:
             out = list.push(out, i)
+            // Likewise stop before `i + step` underflows past i64::MIN.
+            if i < ((0 - 9223372036854775807) - 1) - step:
+                break
             i = i + step
     out
 

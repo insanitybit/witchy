@@ -5,7 +5,7 @@
 // reach for `union`/`intersection`/`difference` for the algebra. `set.show(s)`
 // renders the members; `set.to_list(s)` returns them in insertion order.
 
-import eq
+import cmp
 import list
 import string
 
@@ -26,7 +26,7 @@ pub fn from_list(xs: List(a)) -> Set(a) where a: Eq:
 // `s` with `x` added (a no-op if already present).
 pub fn insert(s: Set(a), x: a) -> Set(a) where a: Eq:
     let items = s.items
-    if eq.member(items, x):
+    if cmp.member(items, x):
         s
     else:
         Set(list.push(items, x))
@@ -36,14 +36,14 @@ pub fn remove(s: Set(a), x: a) -> Set(a) where a: Eq:
     let items = s.items
     var out = []
     for y in items:
-        if !eq.member([x], y):
+        if !cmp.member([x], y):
             out = list.push(out, y)
     Set(out)
 
 // Whether `x` is a member of `s`.
 pub fn contains(s: Set(a), x: a) -> Bool where a: Eq:
     let items = s.items
-    eq.member(items, x)
+    cmp.member(items, x)
 
 // The number of distinct members.
 pub fn size(s: Set(a)) -> Int:
@@ -80,7 +80,7 @@ pub fn intersection(s: Set(a), t: Set(a)) -> Set(a) where a: Eq:
     let titems = t.items
     var out = []
     for x in sitems:
-        if eq.member(titems, x):
+        if cmp.member(titems, x):
             out = list.push(out, x)
     Set(out)
 
@@ -90,7 +90,7 @@ pub fn difference(s: Set(a), t: Set(a)) -> Set(a) where a: Eq:
     let titems = t.items
     var out = []
     for x in sitems:
-        if !eq.member(titems, x):
+        if !cmp.member(titems, x):
             out = list.push(out, x)
     Set(out)
 
@@ -100,10 +100,10 @@ pub fn symmetric_difference(s: Set(a), t: Set(a)) -> Set(a) where a: Eq:
     let titems = t.items
     var out = []
     for x in sitems:
-        if !eq.member(titems, x):
+        if !cmp.member(titems, x):
             out = list.push(out, x)
     for y in titems:
-        if !eq.member(sitems, y):
+        if !cmp.member(sitems, y):
             out = list.push(out, y)
     Set(out)
 
@@ -113,7 +113,7 @@ pub fn is_subset(s: Set(a), t: Set(a)) -> Bool where a: Eq:
     let titems = t.items
     var ok = true
     for x in sitems:
-        if !eq.member(titems, x):
+        if !cmp.member(titems, x):
             ok = false
     ok
 
@@ -123,6 +123,6 @@ pub fn is_disjoint(s: Set(a), t: Set(a)) -> Bool where a: Eq:
     let titems = t.items
     var ok = true
     for x in sitems:
-        if eq.member(titems, x):
+        if cmp.member(titems, x):
             ok = false
     ok

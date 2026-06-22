@@ -1,0 +1,23 @@
+// The `Exec` capability: spawn a confined native subprocess. The executable is
+// named through a `Dir[Read]` — you can only run a file you can read — so `run`
+// takes both the `Exec` right and the `Dir` the binary lives under. Pure data
+// otherwise; the only authority is the `Exec`/`Dir` it is handed.
+//
+// This wraps the low-level `exec` primitive (which takes a single `\0`-joined
+// argv string and returns a `"<exit_code>\n<output>"` payload) with a
+// `List(String)` argv and a parsed `(Int, String)` result, where `output` is the
+// child's stdout followed by its stderr. See rfcs/0004-self-hosted-cli.md.
+
+// Run `path` (resolved within `dir`) with `args` and `stdin`, returning
+// `(exit_code, output)`.
+pub fn run(e: Exec, dir: Dir[Read], path: String, args: List(String), stdin: String) -> (Int, String):
+    let joined = string.join(args, "\0")
+    let payload = exec(e, dir, path, joined, stdin)
+    let nl = string.index_of(payload, "\n")
+    let code = string.to_int(string.substring(payload, 0, nl))
+    let output = string.substring(payload, nl + 1, string.length(payload))
+    (code, output)
+
+// Run `path` with `args` and no stdin — the common case.
+pub fn run_args(e: Exec, dir: Dir[Read], path: String, args: List(String)) -> (Int, String):
+    run(e, dir, path, args, "")

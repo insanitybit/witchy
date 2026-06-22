@@ -4,8 +4,8 @@
 //! (a non-`main` rune can never *forge* a capability — it must receive one
 //! through its public surface), the exact set of capability *kinds* a rune can
 //! demand of its caller is computable, statically, from its source. This module
-//! does that: it walks a rune's top-level functions and actors and collects the
-//! capability kinds appearing in their parameter / field types, transitively
+//! does that: it walks a rune's top-level functions and collects the
+//! capability kinds appearing in their parameter types, transitively
 //! through user-defined types that contain capabilities.
 //!
 //! The result is a sound, tight upper bound on what the rune can do — there is
@@ -18,7 +18,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::ast::*;
 
 /// Runtime capability type names (what a caller / `main` must supply).
-const RUNTIME_CAPS: &[&str] = &["Console", "Clock", "Env", "Secret", "SecretStore", "Dir", "Net", "Socket", "Subject"];
+const RUNTIME_CAPS: &[&str] = &["Console", "Clock", "Env", "Secret", "SecretStore", "Dir", "Net", "Socket", "Subject", "Exec"];
 /// Build-time capability type names (what a build step demands of the consumer).
 const BUILD_CAPS: &[&str] = &["BuildOut", "BuildRead", "BuildEnv", "BuildNet", "BuildExec"];
 
@@ -260,8 +260,7 @@ impl Widening {
 
 /// Compute the capability footprint of a single rune (one parsed module).
 ///
-/// Public surface = every top-level function (its parameters) and every actor
-/// (its capability-typed fields, granted at spawn, plus its handler parameters).
+/// Public surface = every top-level function (its parameters).
 /// witchy has no enforced visibility yet — the linker exposes every top-level
 /// function as `mod.func` — so scanning all of them is the correct, sound choice.
 pub fn compute(module: &Module) -> Footprint {

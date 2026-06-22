@@ -1345,6 +1345,23 @@ fn main(console: Console):
     }
 
     #[test]
+    fn assertion_failures_report_the_user_call_site_not_stdlib() {
+        // Regression (M6): a failed `std/testing` assertion used to report the
+        // `fail` line buried inside std/testing (always the same line, for every
+        // failure). It must instead point at the user's call site — and at the
+        // call STATEMENT's line even when an argument is a nested call that moves
+        // the line cursor (`helper(1)` here is on line 3, the assertion on line 5).
+        let src = "import testing\nfn helper(n: Int) -> Int:\n    n + 1\nfn main(console: Console):\n    testing.assert_int_eq(helper(1), 5)\n";
+        let parsed = crate::parser::parse_module(src).expect("parse");
+        let linked =
+            crate::linker::link(vec![("main".to_string(), parsed)], "main").expect("link");
+        let e = run_module(linked, ".", vec![]).unwrap_err();
+        assert!(e.message.contains("`main`, line 5"), "got: {}", e.message);
+        assert!(!e.message.contains("testing."), "should not name the stdlib frame: {}", e.message);
+        assert!(e.message.contains("got 2, want 5"), "got: {}", e.message);
+    }
+
+    #[test]
     fn runaway_loop_is_bounded_not_hung() {
         let src = r#"
 fn main() -> Int:

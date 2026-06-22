@@ -47,6 +47,7 @@ pub enum Tok {
     Without,
     Region,
     Comptime,
+    Capability,
 
     // Grouping / punctuation
     LParen,
@@ -140,6 +141,7 @@ impl fmt::Display for Tok {
             Without => write!(f, "without"),
             Region => write!(f, "region"),
             Comptime => write!(f, "comptime"),
+            Capability => write!(f, "capability"),
             LParen => write!(f, "("),
             RParen => write!(f, ")"),
             LBrace => write!(f, "{{"),
@@ -540,6 +542,7 @@ impl Lexer {
             "without" => Tok::Without,
             "region" => Tok::Region,
             "comptime" => Tok::Comptime,
+            "capability" => Tok::Capability,
             "_" => Tok::Underscore,
             _ => Tok::Ident(text),
         }

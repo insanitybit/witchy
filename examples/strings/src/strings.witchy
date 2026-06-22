@@ -1,7 +1,6 @@
-// Compiled to WASM with string support: literals live in linear memory, `<>`
-// concatenates via a bump allocator, and `print` lowers to the host capability
-// (ptr, len). Granted the `print` capability the module runs; denied it, the
-// module cannot instantiate.
+// String handling: literals, `<>` concatenation, and `print` lowering to the
+// host `Console` capability. Granted the `print` capability the program runs;
+// denied it, it cannot — printing is authority, not ambient.
 pub fn shout(name: String) -> String:
     "hello, " + name
 

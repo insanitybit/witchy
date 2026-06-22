@@ -18,7 +18,7 @@ pub struct Module {
     pub items: Vec<Item>,
     /// Source line of each import and each top-level item, parallel to `imports`
     /// and `items` — used by the formatter to place comments. Empty when unknown
-    /// (e.g. after linking, or when actor-impl merging changed the item count).
+    /// (e.g. after linking, or when impl merging changed the item count).
     pub import_lines: Vec<u32>,
     pub item_lines: Vec<u32>,
 }
@@ -61,6 +61,10 @@ pub struct TraitDef {
     /// `trait FromIterator(e):` — the trait's type parameters. Empty for the
     /// plain `trait Show:` form.
     pub typarams: Vec<String>,
+    /// `trait Ord: Eq + PartialOrd:` — the direct supertraits. A type implementing
+    /// this trait must also implement each of these, and a `where a: Ord` bound
+    /// brings the supertraits' methods into scope.
+    pub supertraits: Vec<String>,
     pub methods: Vec<MethodSig>,
 }
 
@@ -113,6 +117,13 @@ pub struct TypeDef {
     /// generates (additively, before checking; rfcs/language-evolution.md
     /// Phase 4). Empty for an undecorated type.
     pub derives: Vec<String>,
+    /// `capability X from U` (RFC-0002): a SEALED one-variant brand over a host
+    /// capability. Behaves like an ordinary single-variant type EXCEPT its
+    /// constructor and pattern may only be used in the module that declares it
+    /// (enforced at link time) — so a value of `X` can only be minted by `X`'s
+    /// own module, making it un-forgeable like the host capability it refines.
+    /// `false` for an ordinary `type`.
+    pub sealed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -247,7 +258,7 @@ pub enum Stmt {
         mutable: bool,
         value: Expr,
     },
-    /// `x = e` — reassign an existing binding (e.g. actor state).
+    /// `x = e` — reassign an existing binding (e.g. a `var` accumulator).
     Assign {
         name: String,
         value: Expr,

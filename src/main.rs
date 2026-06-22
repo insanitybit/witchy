@@ -300,6 +300,155 @@ fn main() -> wasmtime::Result<()> {
         }
         return Ok(());
     }
+    // `witchy compile <entry> [--dep name=path]... [--out <file.wasm>]` links the
+    // entry with explicitly-provided dependency sources, type-checks, and compiles
+    // to a wasm binary — the low-level surface the witchy CLI front-end drives to
+    // build a multi-rune project (rfcs/0004-self-hosted-cli.md §4). Without `--out`
+    // it just verifies the program compiles.
+    if std::env::args().nth(1).as_deref() == Some("compile") {
+        let mut entry: Option<String> = None;
+        let mut deps: std::collections::HashMap<String, std::path::PathBuf> =
+            std::collections::HashMap::new();
+        let mut out: Option<String> = None;
+        let mut argv = std::env::args().skip(2);
+        while let Some(a) = argv.next() {
+            match a.as_str() {
+                "--dep" => match argv.next().and_then(|s| s.split_once('=').map(|(n, p)| (n.to_string(), std::path::PathBuf::from(p)))) {
+                    Some((n, p)) => {
+                        deps.insert(n, p);
+                    }
+                    None => {
+                        eprintln!("--dep needs name=path");
+                        std::process::exit(1);
+                    }
+                },
+                "--out" => match argv.next() {
+                    Some(f) => out = Some(f),
+                    None => {
+                        eprintln!("--out needs a file");
+                        std::process::exit(1);
+                    }
+                },
+                _ if entry.is_none() => entry = Some(a),
+                _ => {}
+            }
+        }
+        let Some(entry) = entry else {
+            eprintln!("usage: witchy compile <entry.witchy> [--dep name=path]... [--out <file.wasm>]");
+            std::process::exit(1);
+        };
+        let result = (|| -> Result<(), String> {
+            let (linked, _stem) = link_file_with_deps(&entry, &deps)?;
+            typeck::check(&linked).map_err(|e| e.to_string())?;
+            let bytes = compile_linked_to_wasm(&linked)?;
+            if let Some(f) = &out {
+                std::fs::write(f, &bytes).map_err(|e| format!("cannot write `{f}`: {e}"))?;
+            }
+            Ok(())
+        })();
+        match result {
+            Ok(()) => {
+                match &out {
+                    Some(f) => println!("{entry}: compiled -> {f}"),
+                    None => println!("{entry}: ok"),
+                }
+                return Ok(());
+            }
+            Err(e) => {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
+        }
+    }
+    // `witchy pm <args...>` runs the EMBEDDED witchy package-manager front-end
+    // (projects/pm/src/pm.witchy) — the cargo-equivalent CLI, itself written in
+    // witchy and bundled into the toolchain like std. It runs capability-confined:
+    // Console, the project `Dir` (cwd, handle 0), a `Dir` to the toolchain bin
+    // (handle 1, so it can drive the compiler via `Exec`), `Net`, and its argv.
+    // This is the additive bootstrap of rfcs/0004-self-hosted-cli.md §5 — `src/pm`
+    // is NOT yet removed; this proves the front-end runs as the embedded CLI.
+    if std::env::args().nth(1).as_deref() == Some("pm") {
+        use std::collections::{HashSet, VecDeque};
+        let mut net_allow: Vec<String> = Vec::new();
+        let mut pm_args: Vec<String> = Vec::new();
+        let mut argv = std::env::args().skip(2);
+        while let Some(a) = argv.next() {
+            if a == "--net" {
+                match argv.next() {
+                    Some(addr) => net_allow.push(addr),
+                    None => {
+                        eprintln!("--net needs a host:port");
+                        std::process::exit(1);
+                    }
+                }
+            } else {
+                pm_args.push(a);
+            }
+        }
+        // Auto-grant Net to the configured registry (COVEN_URL), matching the Rust
+        // CLI, so registry commands need no explicit `--net`. The front-end reads
+        // COVEN_URL itself (via Env) when no host:port argument is given.
+        if let Ok(u) = std::env::var("COVEN_URL") {
+            let hp = u
+                .trim_start_matches("http://")
+                .trim_start_matches("https://")
+                .trim_end_matches('/');
+            if !hp.is_empty() {
+                net_allow.push(hp.to_string());
+            }
+        }
+        // Link the embedded front-end against the bundled std modules.
+        let link_result = (|| -> Result<ast::Module, String> {
+            let mut modules: Vec<(String, ast::Module)> = Vec::new();
+            let mut loaded: HashSet<String> = HashSet::new();
+            let mut queue: VecDeque<(String, String)> = VecDeque::new();
+            queue.push_back(("pm".to_string(), include_str!("../projects/pm/src/pm.witchy").to_string()));
+            while let Some((name, source)) = queue.pop_front() {
+                if !loaded.insert(name.clone()) {
+                    continue;
+                }
+                let module = parser::parse_module(&source).map_err(|e| format!("{name}: {e}"))?;
+                for imp in &module.imports {
+                    if !loaded.contains(imp) {
+                        match bundled_module(imp) {
+                            Some(s) => queue.push_back((imp.clone(), s.to_string())),
+                            None => return Err(format!("embedded front-end imports `{imp}`, not a bundled module")),
+                        }
+                    }
+                }
+                modules.push((name, module));
+            }
+            linker::link(modules, "pm").map_err(|e| e.to_string())
+        })();
+        let module = match link_result {
+            Ok(m) => m,
+            Err(e) => {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
+        };
+        if let Err(e) = typeck::check(&module) {
+            eprintln!("{e}");
+            std::process::exit(1);
+        }
+        let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        let bin = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+            .unwrap_or_else(|| std::path::PathBuf::from("."));
+        match interpreter::run_module_exit_dirs(module, vec![cwd, bin], net_allow, pm_args, None) {
+            Ok((lines, code)) => {
+                for l in &lines {
+                    println!("{l}");
+                }
+                std::process::exit(code);
+            }
+            Err(e) => {
+                eprintln!("{}", e.message);
+                std::process::exit(1);
+            }
+        }
+    }
     // `witchy test <file|dir>` runs in-language tests: zero-parameter `test_*`
     // functions, passing unless they abort (std/testing's assertions).
     if std::env::args().nth(1).as_deref() == Some("test") {
@@ -336,7 +485,9 @@ fn main() -> wasmtime::Result<()> {
     // granted exactly its computed footprint. `--dir` picks the subtree backing
     // a granted Dir (default `.`); each `--net` allowlists an address.
     if std::env::args().nth(1).as_deref() == Some("sandbox") {
-        let mut dir_root: Option<std::path::PathBuf> = None;
+        // Multiple `--dir` grants map positionally to `main`'s `Dir` params: the
+        // first backs handle 0, the rest handles 1.. (rfcs/0004-self-hosted-cli.md).
+        let mut dir_roots: Vec<std::path::PathBuf> = Vec::new();
         let mut net_allow: Vec<String> = Vec::new();
         let mut signing_key: Option<[u8; 32]> = None;
         let mut named_secrets: Vec<(String, Vec<u8>)> = Vec::new();
@@ -346,7 +497,7 @@ fn main() -> wasmtime::Result<()> {
         while let Some(a) = argv.next() {
             match a.as_str() {
                 "--dir" if path.is_none() => match argv.next() {
-                    Some(root) => dir_root = Some(std::path::PathBuf::from(root)),
+                    Some(root) => dir_roots.push(std::path::PathBuf::from(root)),
                     None => {
                         eprintln!("--dir needs a directory");
                         std::process::exit(1);
@@ -397,9 +548,9 @@ fn main() -> wasmtime::Result<()> {
         // A precompiled `.wasm` runs directly (authority from its imports); a
         // `.witchy` source is compiled then run, granted its computed footprint.
         let result = if path.ends_with(".wasm") {
-            run_wasm_file(&path, dir_root, net_allow, prog_args, signing_key, named_secrets)
+            run_wasm_file(&path, dir_roots, net_allow, prog_args, signing_key, named_secrets)
         } else {
-            run_file_sandboxed(&path, dir_root, net_allow, prog_args, signing_key, named_secrets)
+            run_file_sandboxed(&path, dir_roots, net_allow, prog_args, signing_key, named_secrets)
         };
         match result {
             Ok((lines, exit_code)) => {
@@ -599,7 +750,7 @@ fn main() -> wasmtime::Result<()> {
             // A precompiled program module (`witchy app.wasm`): run it directly,
             // granted exactly the authority its imports declare (Dir rooted at cwd).
             Some(path) if path.ends_with(".wasm") => {
-                match run_wasm_file(path, None, net_allow, prog_args, signing_key, named_secrets) {
+                match run_wasm_file(path, Vec::new(), net_allow, prog_args, signing_key, named_secrets) {
                     Ok((lines, code)) => {
                         for line in lines {
                             println!("{line}");
@@ -918,6 +1069,18 @@ fn bundled_module(name: &str) -> Option<&'static str> {
 /// `<name>.witchy` (preferred) or the bundled std. Returns the linked module and
 /// the entry module's stem. Shared by `execute_file` and `check_file`.
 fn link_file(path: &str) -> Result<(ast::Module, String), String> {
+    link_file_with_deps(path, &std::collections::HashMap::new())
+}
+
+/// Like `link_file`, but resolves named imports from an explicit dependency map
+/// (`import X` → `deps["X"]`) before the sibling-`<name>.witchy` / bundled-std
+/// fallback. This is the hook the witchy CLI front-end uses to hand the compiler
+/// resolved coven-dependency sources via `witchy compile <entry> --dep name=path`
+/// (rfcs/0004-self-hosted-cli.md §4).
+fn link_file_with_deps(
+    path: &str,
+    deps: &std::collections::HashMap<String, std::path::PathBuf>,
+) -> Result<(ast::Module, String), String> {
     use std::collections::{HashSet, VecDeque};
     use std::path::{Path, PathBuf};
 
@@ -963,7 +1126,11 @@ fn link_file(path: &str) -> Result<(ast::Module, String), String> {
         let module = parser::parse_module(&src).map_err(|e| format!("{name}: {e}"))?;
         for imp in &module.imports {
             if !loaded.contains(imp) {
-                queue.push_back((imp.clone(), dir.join(format!("{imp}.witchy"))));
+                let dep_path = deps
+                    .get(imp)
+                    .cloned()
+                    .unwrap_or_else(|| dir.join(format!("{imp}.witchy")));
+                queue.push_back((imp.clone(), dep_path));
             }
         }
         modules.push((name, module));
@@ -1176,7 +1343,7 @@ fn execute_file_exit(
     // share one runtime, so dev == deploy by construction. The interpreter is only
     // the differential oracle (`witchy parity`) and the comptime evaluator — never
     // a user-program run path.
-    run_linked_compiled(&linked, None, net_allow, args, signing_key, named_secrets)
+    run_linked_compiled(&linked, Vec::new(), net_allow, args, signing_key, named_secrets)
         .map(|(lines, code)| (lines, code.unwrap_or(0)))
 }
 
@@ -1335,13 +1502,27 @@ fn verify_file(path: &str) -> Result<(), String> {
         matches!(it, ast::Item::Function(f) if f.name == "main"
             && matches!(&f.ret, Some(ast::Type::Named(n, _)) if n == "Int"))
     });
-    let interp = interpreter::run_module(linked, Path::new("."), Vec::new()).map_err(|e| e.to_string());
-    let compiled = run_wasm_bytes(&bytes).map(|mut lines| {
-        if main_returns_int {
-            lines.pop();
+    // The root grant is concrete on BOTH backends (spec §13): if `main` binds a
+    // `Secret` and `verify` was given no signing key, neither backend may run.
+    // The interpreter already refuses (in `root_cap_for`); make the compiled side
+    // refuse identically so they AGREE (both error) instead of diverging — the
+    // interpreter rejecting while WASM mints a null secret was a real parity hole.
+    let unmintable = linked.items.iter().find_map(|it| match it {
+        ast::Item::Function(f) if f.name == "main" => {
+            capabilities::unmintable_main_cap(&f.params, false)
         }
-        lines
+        _ => None,
     });
+    let interp = interpreter::run_module(linked, Path::new("."), Vec::new()).map_err(|e| e.to_string());
+    let compiled = match &unmintable {
+        Some(msg) => Err(msg.clone()),
+        None => run_wasm_bytes(&bytes).map(|mut lines| {
+            if main_returns_int {
+                lines.pop();
+            }
+            lines
+        }),
+    };
     match (interp, compiled) {
         (Ok(i), Ok(c)) if i == c => {
             println!(
@@ -1400,7 +1581,7 @@ fn emit_wat_file(path: &str) -> Result<String, String> {
 /// (strict, announced grant) — one runtime for both, so dev == deploy.
 fn run_linked_compiled(
     linked: &ast::Module,
-    dir_root: Option<std::path::PathBuf>,
+    dir_roots: Vec<std::path::PathBuf>,
     net_allow: Vec<String>,
     args: Vec<String>,
     signing_key: Option<[u8; 32]>,
@@ -1438,8 +1619,16 @@ fn run_linked_compiled(
     if footprint.total.contains_key("Env") {
         caps.env = true;
     }
+    if footprint.total.contains_key("Exec") {
+        caps.exec = true;
+    }
     if let Some(rights) = footprint.total.get("Dir") {
-        caps.dir_root = Some(dir_root.unwrap_or_else(|| std::path::PathBuf::from(".")));
+        let mut roots = dir_roots;
+        if roots.is_empty() {
+            roots.push(std::path::PathBuf::from("."));
+        }
+        caps.dir_root = Some(roots.remove(0));
+        caps.dir_roots = roots;
         caps.dir_read = rights.contains("Read");
         caps.dir_write = rights.contains("Write");
     }
@@ -1511,7 +1700,7 @@ fn compile_linked_to_wasm(linked: &ast::Module) -> Result<Vec<u8>, String> {
 /// whether they are granted at all.
 fn run_file_sandboxed(
     path: &str,
-    dir_root: Option<std::path::PathBuf>,
+    dir_roots: Vec<std::path::PathBuf>,
     net_allow: Vec<String>,
     args: Vec<String>,
     signing_key: Option<[u8; 32]>,
@@ -1537,7 +1726,7 @@ fn run_file_sandboxed(
         "sandboxing `{path}` \u{2014} granted exactly: {}",
         capabilities::show_caps(&footprint.total)
     );
-    run_linked_compiled(&linked, dir_root, net_allow, args, signing_key, named_secrets)
+    run_linked_compiled(&linked, dir_roots, net_allow, args, signing_key, named_secrets)
 }
 
 /// The `witchy.*` host functions a compiled module imports — its authority
@@ -1563,21 +1752,21 @@ fn witchy_imports(bytes: &[u8]) -> Result<Vec<String>, String> {
 /// it with `witchy`.
 fn run_wasm_file(
     path: &str,
-    dir_root: Option<std::path::PathBuf>,
+    dir_roots: Vec<std::path::PathBuf>,
     net_allow: Vec<String>,
     args: Vec<String>,
     signing_key: Option<[u8; 32]>,
     named_secrets: Vec<(String, Vec<u8>)>,
 ) -> Result<(Vec<String>, Option<i32>), String> {
     let bytes = std::fs::read(path).map_err(|e| format!("cannot read `{path}`: {e}"))?;
-    run_wasm_module(&bytes, dir_root, net_allow, args, signing_key, named_secrets)
+    run_wasm_module(&bytes, dir_roots, net_allow, args, signing_key, named_secrets)
 }
 
 /// Run a precompiled wasm program from in-memory bytes under the capability
 /// sandbox — the byte-level core of [`run_wasm_file`].
 fn run_wasm_module(
     bytes: &[u8],
-    dir_root: Option<std::path::PathBuf>,
+    dir_roots: Vec<std::path::PathBuf>,
     net_allow: Vec<String>,
     args: Vec<String>,
     signing_key: Option<[u8; 32]>,
@@ -1617,8 +1806,16 @@ fn run_wasm_module(
     if has("env_len") || has("env_fill") {
         caps.env = true;
     }
+    if has("exec_run") {
+        caps.exec = true;
+    }
     if dir_read || dir_write {
-        caps.dir_root = Some(dir_root.unwrap_or_else(|| std::path::PathBuf::from(".")));
+        let mut roots = dir_roots;
+        if roots.is_empty() {
+            roots.push(std::path::PathBuf::from("."));
+        }
+        caps.dir_root = Some(roots.remove(0));
+        caps.dir_roots = roots;
         caps.dir_read = dir_read;
         caps.dir_write = dir_write;
     }

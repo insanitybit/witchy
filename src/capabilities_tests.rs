@@ -17,6 +17,56 @@
     const NET_FULL: &[&str] = &["Connect", "Listen", "Tcp", "Udp", "Uds"];
     const NET_CONNECT: &[&str] = &["Connect", "Tcp", "Udp", "Uds"];
 
+    // RFC-0003: the address-pattern matcher shared by both backends. Exact match,
+    // port wildcard, and IPv4 CIDR — generalizing the old exact-string allowlist.
+    #[test]
+    fn address_matcher_patterns() {
+        assert!(address_admits("10.0.0.5:6379", "10.0.0.5:6379"));
+        assert!(!address_admits("10.0.0.5:6379", "10.0.0.6:6379"));
+        assert!(!address_admits("10.0.0.5:6379", "10.0.0.5:6380"));
+        assert!(address_admits("10.0.0.5:*", "10.0.0.5:6379"));
+        assert!(!address_admits("10.0.0.5:*", "10.0.0.6:1"));
+        assert!(address_admits("10.0.0.0/24:6379", "10.0.0.5:6379"));
+        assert!(address_admits("10.0.0.0/24:6379", "10.0.0.255:6379"));
+        assert!(!address_admits("10.0.0.0/24:6379", "10.0.1.0:6379"));
+        assert!(!address_admits("10.0.0.0/24:6379", "10.0.0.5:80"));
+        assert!(address_admits("10.0.0.0/24:*", "10.0.0.5:80"));
+        assert!(address_admits("0.0.0.0/0:*", "203.0.113.7:443"));
+        assert!(address_admits("api.example.com:443", "api.example.com:443"));
+        assert!(!address_admits("10.0.0.0/24:*", "api.example.com:443"));
+        assert!(net_allows(
+            &["127.0.0.1:80".to_string(), "10.0.0.0/8:*".to_string()],
+            "10.1.2.3:6379"
+        ));
+        assert!(!net_allows(&["127.0.0.1:80".to_string()], "127.0.0.1:81"));
+    }
+
+    // The "root grant is always concrete" check shared by both backends: a bare
+    // `Secret` needs a key (it IS the key); an empty `Net`/`SecretStore` is a real
+    // capability and is always grantable.
+    #[test]
+    fn main_secret_grant_is_concrete() {
+        let params_of = |src: &str| {
+            parse_module(src)
+                .expect("parse")
+                .items
+                .iter()
+                .find_map(|it| match it {
+                    crate::ast::Item::Function(f) if f.name == "main" => Some(f.params.clone()),
+                    _ => None,
+                })
+                .expect("main")
+        };
+        let secret = params_of("fn main(console: Console, signing: Secret):\n    print(console, \"x\")\n");
+        assert!(unmintable_main_cap(&secret, false).is_some(), "no key → refuse");
+        assert!(unmintable_main_cap(&secret, true).is_none(), "key → grantable");
+        // SecretStore and Net are real even when empty — never refused.
+        let store = params_of("fn main(console: Console, store: SecretStore):\n    print(console, \"x\")\n");
+        assert!(unmintable_main_cap(&store, false).is_none());
+        let net = params_of("fn main(console: Console, net: Net):\n    print(console, \"x\")\n");
+        assert!(unmintable_main_cap(&net, false).is_none());
+    }
+
     #[test]
     fn pure_functions_have_no_footprint() {
         let fp = footprint(r#"
@@ -303,7 +353,7 @@ pub fn serve(console: Console) -> Int:
     #[test]
     fn std_module_footprints_are_pinned() {
         let pure = [
-            "list", "string", "math", "option", "result", "func", "ord", "eq", "ascii", "set",
+            "list", "string", "math", "option", "result", "func", "cmp", "ascii", "set",
             "json", "url", "duration", "random", "regex", "compiler", "toml", "semver",
             "rights", "dict", "csv", "time", "encoding", "path",
         ];
@@ -346,4 +396,12 @@ pub fn serve(console: Console) -> Int:
                 "networking module `{name}` should require only Net",
             );
         }
+        // `exec` takes an `Exec` (to spawn) plus a `Dir[Read]` (to name and
+        // confine the executable) — exactly those two, nothing ambient.
+        let exec_fp = footprint(crate::linker::std_source("exec").expect("bundled module"));
+        assert_eq!(
+            exec_fp.total.keys().copied().collect::<Vec<_>>(),
+            vec!["Dir", "Exec"],
+            "exec requires exactly Dir + Exec",
+        );
     }

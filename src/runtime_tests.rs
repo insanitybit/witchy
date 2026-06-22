@@ -24,7 +24,7 @@
     "#;
 
     /// The core thesis: a capability that was not granted simply does not exist
-    /// for the actor, so it cannot even be instantiated.
+    /// for the VM, so it cannot even be instantiated.
     #[test]
     fn ungranted_capability_is_unreachable() {
         let mut rt = Runtime::new().unwrap();
@@ -41,16 +41,16 @@
     #[test]
     fn granted_capability_instantiates() {
         let mut rt = Runtime::new().unwrap();
-        let mut actor = rt
+        let mut vm = rt
             .spawn(IMPORTS_PRINT, Capabilities { print: true, ..Default::default() }, 4)
             .unwrap();
-        actor.run().unwrap();
+        vm.run().unwrap();
     }
 
-    /// Each actor's linear memory is its own; the runtime hands out separate
-    /// `Store`s, so one actor's memory is never visible to another.
+    /// Each VM's linear memory is its own; the runtime hands out separate
+    /// `Store`s, so one VM's memory is never visible to another.
     #[test]
-    fn actors_have_independent_memories() {
+    fn vms_have_independent_memories() {
         let mut rt = Runtime::new().unwrap();
         let mut a = rt.spawn(BARE, Capabilities::default(), 4).unwrap();
         let mut b = rt.spawn(BARE, Capabilities::default(), 4).unwrap();
@@ -60,7 +60,7 @@
         assert_ne!(
             mem_a.data_ptr(&a.store),
             mem_b.data_ptr(&b.store),
-            "actors must not share a linear memory"
+            "VMs must not share a linear memory"
         );
     }
 
@@ -74,9 +74,9 @@
         );
     }
 
-    /// A runaway actor that never yields is forcibly preempted by the scheduler.
+    /// A runaway VM that never yields is forcibly preempted by the scheduler.
     #[test]
-    fn runaway_actor_is_preempted() {
+    fn runaway_vm_is_preempted() {
         let mut rt = Runtime::new().unwrap();
         let mut spinner = rt.spawn(SPINNER, Capabilities::none(), 4).unwrap();
         let err = rt

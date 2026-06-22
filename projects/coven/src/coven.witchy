@@ -101,7 +101,16 @@ fn serve(console: Console, net: Net, root: Dir, key: Secret, clock: Clock, args:
         .post("/coven/publish", c.route_publish())
         .post("/coven/promote", c.route_promote())
         .post("/coven/yank", c.route_yank())
-    print(console, "coven serving at http://" + addr + "  (root key " + crypto.public_key(key) + "; " + "${list.length(issuers)}" + " trusted issuer(s))")
+    print(
+        console,
+        "coven serving at http://" +
+        addr +
+        "  (root key " +
+        crypto.public_key(key) +
+        "; " +
+        "${list.length(issuers)}" +
+        " trusted issuer(s))"
+    )
     server.serve(net, addr, app)
 
 // Parse trailing `issuer=pubkeyhex` args (the first arg is the listen address).
@@ -241,7 +250,7 @@ impl Coven:
         // --- authorization: bind identity tokens to the namespace's trust state ------
         // The authorized publisher (claims.sub). Anonymous (no trusted issuers): fall
         // back to the client-asserted `uploaded_by`. Trusted: the token must verify (401)
-        // and satisfy the namespace's policy (403); the first trusted publish binds it.
+        // AND satisfy the namespace's policy (403); the first trusted publish binds it.
         if list.length(self.issuers) == 0:
             Ok(req.uploaded_by || "anonymous")
         else:

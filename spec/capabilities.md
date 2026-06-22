@@ -3,8 +3,8 @@
 This is the user-facing guide to witchy's capability system — what it
 guarantees, how to read and write capability-typed code, and how to audit and
 confine a program. For the design rationale of rights parameters, see
-[capability-rights.md](capability-rights.md); for how packages are gated on
-their footprints, see [package-manager.md](package-manager.md).
+[capability-rights.md](../rfcs/capability-rights.md); for how packages are gated on
+their footprints, see [package-manager.md](../rfcs/package-manager.md).
 
 ## The one rule
 
@@ -40,14 +40,29 @@ audit witchy code by reading signatures, not by tracing call graphs.
 | `Clock` | read the wall clock | `now(clock) -> Int` (epoch ms) |
 | `Env` | read environment variables | `get_env(env, name) -> Option(String)` |
 | `Dir`, `Dir[Read]`, `Dir[Write]` | a directory **subtree** | `read`, `write`, `append`, `exists`, `is_dir`, `list`, `make_dir`, `subdir` |
+| `Exec` | spawn a confined native subprocess | `exec.run(e, dir, path, args, stdin) -> (Int, String)` (std `exec`) |
 | `Net`, `Net[Connect]`, `Net[Listen]` (+ `Tcp`/`Udp`/`Uds` transport markers) | the network | `connect`, `listen`, `accept`, `send_line`, `recv_line`, `recv_all`, … |
-| `Secret` | an Ed25519 private key | `crypto.sign`, `crypto.public_key` |
+| `SecretStore` | named secrets provisioned by the host (`--secret`/`--secret-file`/`--signing-key`) | `require(store, name) -> Secret`, `get(store, name) -> Option(Secret)` |
+| `Secret` | an Ed25519 seed obtained from a `SecretStore` | `crypto.sign`, `crypto.public_key`, `crypto.reveal` |
 
 A `Dir` is not "the filesystem" — it is one subtree. `read(dir, path)` resolves
 `path` relative to the capability and rejects `..`, absolute paths, and
 symlinks that point outside the subtree. `subdir(dir, "sub")` mints a new,
 smaller capability — handing a callee `subdir(dir, "uploads")` gives it that
 folder and nothing else.
+
+`Exec` is the right to spawn a native subprocess — the runtime analog of the
+build-time `BuildExec`. It is right-less and carries no payload of its own: the
+executable is **named through a `Dir[Read]` argument**, resolved with the same
+confinement as `read`, so **you can only execute a file you can read**. The std
+`exec` module wraps the low-level primitive as
+`exec.run(e, dir, path, args: List(String), stdin) -> (Int, String)`, returning
+the child's `(exit_code, stdout-then-stderr)`. `Exec` is the most dangerous
+capability — it escapes the WASM sandbox by running native code — so it is
+footprinted and gated like any other, the `Dir[Read]` confinement and
+argv-only (no shell string) call shape are load-bearing, and almost nothing
+should hold it. It exists chiefly so the `witchy` CLI can drive the `witchyc`
+compiler; see `rfcs/0004-self-hosted-cli.md`.
 
 ## Attenuation patterns
 
@@ -71,7 +86,7 @@ fn main(console: Console, dir: Dir):
 Brands go further: wrap a capability in your own type to encode *policy*
 (e.g. a `Backup` that only a checked constructor can produce). The footprint
 analyzer sees through wrappers, so brands add discipline without hiding
-authority. See `examples/branded_caps.witchy`.
+authority. See `examples/branded_caps/src/branded_caps.witchy`.
 
 ## Block firewalls: `retain` / `without`
 
@@ -154,13 +169,12 @@ call**. The enforcement is structural, not a runtime permission check:
   paths never enter guest memory, so a module cannot forge or widen one, and
   every resolution runs the same `..`/absolute/symlink confinement as the
   interpreter.
-- Memory is capped; a scheduler can preempt runaway actors at loop back-edges.
-- ACTOR programs sandbox per actor: each spawned actor runs in its own VM
-  linked with only the families its declared capability fields entitle it to
-  (no `Console` field, no `print` import; a `Dir[Read]` field links the read
-  family only). `Dir`/`Net` authority moves at `spawn` by handle translation
-  — the host copies the path/allowlist into the new VM's own table — so an
-  attenuated grant (`subdir`, `restrict`) stays attenuated across actors.
+- Memory is capped; a scheduler can preempt a runaway guest at loop back-edges.
+- Concurrency stays *inside* the single VM: `async`/`await`, `spawn`, and
+  channels lower to a cooperative executor written in witchy (`std/task`,
+  `std/chan`), so concurrent tasks share that VM's one linear memory and one
+  capability grant. There is no per-task sandbox boundary — isolating untrusted
+  code means running it as its own sandboxed program, not as a task.
 
 The interpreter (`witchy program.witchy`) enforces capabilities at the type
 level and confines `Dir` paths identically, but it is a development runtime,

@@ -1,7 +1,6 @@
-// Records compiled to WebAssembly: a Point is a heap record [tag][x][y], and
-// `p.x` loads a field by its offset. This whole program compiles to a WASM
-// module and runs on the witchy runtime — records, not just sum-type matches,
-// now work in the compiled backend.
+// Records and field access: a Point is a heap record [tag][x][y], and `p.x`
+// loads a field by its offset. (The runtime representation behind ordinary
+// record syntax — records, like sum-type matches, are values you compute with.)
 type Point:
     x: Int
     y: Int

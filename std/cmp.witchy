@@ -1,0 +1,262 @@
+// The witchy standard comparison hierarchy, mirroring Rust's `std::cmp`:
+// `PartialEq` → `Eq` → `PartialOrd` → `Ord`. The comparison operators desugar
+// through these traits, so `a == b` and `x < y` work on your own types once you
+// implement (or derive) them — there is no separate `compare`/`greater` to call
+// by name. Built-in impls cover the primitives; `Self` in a method signature
+// stands for the implementing type. Pure and capability-free, like every std
+// module.
+
+import option
+
+// The result of a comparison: `a` is `Less` than, `Equal` to, or `Greater` than
+// `b`. The return of `Ord.compare`, and (wrapped in `Some`) `PartialOrd`.
+type Ordering:
+    Less
+    Equal
+    Greater
+
+// `==` and `!=`. The minimal equality trait: implement `eq` and `ne` comes free.
+// `Float` is `PartialEq` but NOT `Eq` — `NaN != NaN`, so equality is not
+// reflexive.
+trait PartialEq:
+    fn eq(self, other: Self) -> Bool
+    fn ne(self, other: Self) -> Bool:
+        !eq(self, other)
+
+// Total equality: a marker refining `PartialEq` with reflexivity (no `NaN`).
+// Types usable as `Set` / `Dict` keys are `Eq`.
+trait Eq: PartialEq
+
+// `<` `>` `<=` `>=`. `partial_compare` returns `None` for incomparable values
+// (a `NaN`); the four ordering operators are then all false, as in Rust.
+// Implement `partial_compare`; the rest come free.
+trait PartialOrd: PartialEq:
+    fn partial_compare(self, other: Self) -> Option(Ordering)
+    fn less(self, other: Self) -> Bool:
+        match partial_compare(self, other):
+            Some(Less) -> true
+            _ -> false
+    fn greater(self, other: Self) -> Bool:
+        match partial_compare(self, other):
+            Some(Greater) -> true
+            _ -> false
+    fn less_equal(self, other: Self) -> Bool:
+        match partial_compare(self, other):
+            Some(Less) -> true
+            Some(Equal) -> true
+            _ -> false
+    fn greater_equal(self, other: Self) -> Bool:
+        match partial_compare(self, other):
+            Some(Greater) -> true
+            Some(Equal) -> true
+            _ -> false
+
+// A total order: `compare` never reports "incomparable". Sorting and the `min`/
+// `max` helpers require `Ord`. Implement `compare`; the companion `PartialOrd`
+// impl's `partial_compare` is `Some` of it.
+trait Ord: Eq + PartialOrd:
+    fn compare(self, other: Self) -> Ordering
+
+// Flip an ordering — `Less` <-> `Greater`, `Equal` unchanged — for reverse sorts.
+pub fn reverse(o: Ordering) -> Ordering:
+    match o:
+        Less -> Greater
+        Greater -> Less
+        Equal -> Equal
+
+// --- primitive impls ---------------------------------------------------------
+
+impl PartialEq for Int:
+    fn eq(self, other: Self) -> Bool:
+        self == other
+
+impl Eq for Int
+
+impl PartialOrd for Int:
+    fn partial_compare(self, other: Self) -> Option(Ordering):
+        Some(compare(self, other))
+
+impl Ord for Int:
+    fn compare(self, other: Self) -> Ordering:
+        if self < other:
+            Less
+        else if self > other:
+            Greater
+        else:
+            Equal
+
+impl PartialEq for Bool:
+    fn eq(self, other: Self) -> Bool:
+        self == other
+
+impl Eq for Bool
+
+// Lexicographic ordering by code point — the same order `<` gives on strings, and
+// content-correct in compiled code (both backends compare bytes, not pointers).
+impl PartialEq for String:
+    fn eq(self, other: Self) -> Bool:
+        self == other
+
+impl Eq for String
+
+impl PartialOrd for String:
+    fn partial_compare(self, other: Self) -> Option(Ordering):
+        Some(compare(self, other))
+
+impl Ord for String:
+    fn compare(self, other: Self) -> Ordering:
+        if self < other:
+            Less
+        else if self > other:
+            Greater
+        else:
+            Equal
+
+impl PartialEq for Duration:
+    fn eq(self, other: Self) -> Bool:
+        self == other
+
+impl Eq for Duration
+
+impl PartialOrd for Duration:
+    fn partial_compare(self, other: Self) -> Option(Ordering):
+        Some(compare(self, other))
+
+impl Ord for Duration:
+    fn compare(self, other: Self) -> Ordering:
+        if self < other:
+            Less
+        else if self > other:
+            Greater
+        else:
+            Equal
+
+// `Float` is `PartialEq` + `PartialOrd` only: a `NaN` is unequal to everything
+// (including itself) and unordered, so `Float` is neither `Eq` nor `Ord`. Sort a
+// `List(Float)` with a total wrapper or by comparing a derived key.
+impl PartialEq for Float:
+    fn eq(self, other: Self) -> Bool:
+        self == other
+
+impl PartialOrd for Float:
+    fn partial_compare(self, other: Self) -> Option(Ordering):
+        if self < other:
+            Some(Less)
+        else if self > other:
+            Some(Greater)
+        else if self == other:
+            Some(Equal)
+        else:
+            None
+
+// --- generic helpers over `Ord` ----------------------------------------------
+
+// True when `a` orders strictly before `b` by the type's TOTAL order. Going
+// through `compare` (not the `<` operator, which only needs `PartialOrd`) is what
+// makes these helpers reject a merely-partial type like `Float`.
+fn lt(a: x, b: x) -> Bool where x: Ord:
+    match compare(a, b):
+        Less -> true
+        _ -> false
+
+pub fn max_of(x: a, y: a) -> a where a: Ord:
+    if lt(x, y):
+        y
+    else:
+        x
+
+pub fn min_of(x: a, y: a) -> a where a: Ord:
+    if lt(y, x):
+        y
+    else:
+        x
+
+// `x` confined to the range [lo, hi].
+pub fn clamp(x: a, lo: a, hi: a) -> a where a: Ord:
+    if lt(x, lo):
+        lo
+    else if lt(hi, x):
+        hi
+    else:
+        x
+
+// The largest element of `xs`, or `default` when `xs` is empty.
+pub fn maximum(xs: List(a), default: a) -> a where a: Ord:
+    var best = default
+    for x in xs:
+        if lt(best, x):
+            best = x
+    best
+
+// The smallest element of `xs`, or `default` when `xs` is empty.
+pub fn minimum(xs: List(a), default: a) -> a where a: Ord:
+    var best = default
+    for x in xs:
+        if lt(x, best):
+            best = x
+    best
+
+// Insert `x` into an already-sorted list, keeping it ordered by the type's `Ord`.
+fn insert_ord(sorted: List(a), x: a) -> List(a) where a: Ord:
+    var out = []
+    var placed = false
+    for y in sorted:
+        if placed:
+            out = list.push(out, y)
+        else if lt(x, y):
+            out = list.push(out, x)
+            out = list.push(out, y)
+            placed = true
+        else:
+            out = list.push(out, y)
+    if placed:
+        out
+    else:
+        list.push(out, x)
+
+// Sort any list of an `Ord` type ascending — a stable insertion sort that
+// dispatches through the element type's `Ord` impl, so it is content-correct on
+// both backends (Int, String, Duration, or your own `Ord` types) without a
+// caller-supplied comparator. For Ints, `list.sort` is the lighter default.
+pub fn sort(xs: List(a)) -> List(a) where a: Ord:
+    var out = []
+    for x in xs:
+        out = insert_ord(out, x)
+    out
+
+// --- generic helpers over `Eq` -----------------------------------------------
+
+// Whether `x` is in `xs`, by the element type's `Eq` impl — correct on both
+// backends, unlike a generic `==`-based search reached through a type variable.
+pub fn member(xs: List(a), x: a) -> Bool where a: Eq:
+    for e in xs:
+        if e == x:
+            return true
+    false
+
+// The index of the first element equal to `x`, or -1 if absent.
+pub fn index_of(xs: List(a), x: a) -> Int where a: Eq:
+    var i = 0
+    for e in xs:
+        if e == x:
+            return i
+        i = i + 1
+    0 - 1
+
+// How many elements equal `x` (by the element type's `Eq`).
+pub fn count(xs: List(a), x: a) -> Int where a: Eq:
+    var n = 0
+    for e in xs:
+        if e == x:
+            n = n + 1
+    n
+
+// The list with duplicates removed, keeping the first occurrence of each element
+// (by the element type's `Eq`), in original order. The content-correct
+// counterpart to `list.unique`, which compares pointers in compiled code.
+pub fn unique(xs: List(a)) -> List(a) where a: Eq:
+    var out = []
+    for x in xs:
+        if !member(out, x):
+            out = list.push(out, x)
+    out

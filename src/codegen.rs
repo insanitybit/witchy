@@ -48,9 +48,9 @@ const DATA_BASE: u32 = 8;
 /// Scratch local holding a tuple pointer while its elements are unpacked.
 const TUPLE_TMP: &str = "__witchy_tuple_tmp";
 
-/// One captured variable for a closure: (name, is-global-actor-field,
-/// record-type-name, list-element-type-name, slot kind).
-type CaptureInfo = (String, bool, Option<String>, Option<String>, Kind);
+/// One captured variable for a closure: (name, record-type-name,
+/// list-element-type-name, slot kind).
+type CaptureInfo = (String, Option<String>, Option<String>, Kind);
 
 /// Scratch local holding the Result/Option being unwrapped by `?`.
 const TRY_TMP: &str = "__witchy_try_tmp";
@@ -345,10 +345,6 @@ struct Codegen {
     /// A call lowers to a direct `WirExpr::Call` only for a member; an intrinsic
     /// or native (`math.sqrt`, `crypto.ed25519_verify`) is NOT one, so it defers.
     emitted_funcs: HashSet<String>,
-    /// Names that resolve to mutable WASM globals (actor state).
-    globals: HashSet<String>,
-    /// Capability field names (erased; referencing one yields a placeholder 0).
-    cap_fields: HashSet<String>,
     /// Parameter conventions per function, so call sites can write back `var`
     /// results (move-in / move-out).
     fn_conventions: HashMap<String, Vec<Convention>>,
@@ -405,15 +401,7 @@ struct Codegen {
     uses_crypto_sha256: bool,
     /// Whether the `crypto.rune_hash` host import + guest helper are needed.
     uses_crypto_rune_hash: bool,
-    /// String state fields of the actor being compiled -> host cell index.
-    /// String state lives in HOST cells (not guest globals): the per-message
-    /// arena reset would clobber a guest-heap string between messages.
-    str_fields: HashMap<String, u32>,
-    /// List state fields -> (host cell index, element value type). Like String
-    /// state, list state lives in host cells; reads stage a fresh arena copy
-    /// and writes copy the content out.
-    list_fields: HashMap<String, (u32, ValType)>,
-    /// Variables in the CURRENT function/handler eligible for in-place push
+    /// Variables in the CURRENT function eligible for in-place push
     /// (the analysis's accumulator set); each carries a shadow `${name}__cap`
     /// ownership-token local.
     inplace_push: HashSet<String>,
@@ -725,8 +713,6 @@ impl Codegen {
             wir_funcs: HashMap::new(),
             collect_wir: false,
             emitted_funcs: HashSet::new(),
-            globals: HashSet::new(),
-            cap_fields: HashSet::new(),
             fn_conventions: HashMap::new(),
             fn_params: HashMap::new(),
             ctors: HashMap::new(),
@@ -781,8 +767,6 @@ impl Codegen {
             uses_crypto_ed25519_verify: false,
             uses_crypto_sha256: false,
             uses_crypto_rune_hash: false,
-            str_fields: HashMap::new(),
-            list_fields: HashMap::new(),
             inplace_push: HashSet::new(),
             facts_stack: Vec::new(),
             summaries: analysis::Summaries::empty(),
@@ -1061,6 +1045,7 @@ impl Codegen {
                 "__render" | "string.to_upper" | "string.to_lower" | "string.trim"
                 | "string.replace" | "string.substring" | "crypto.sha256" | "crypto.sign"
                 | "crypto.public_key" | "crypto.reveal" | "read" | "read_build" | "crypto.rune_hash"
+                | "exec"
                 | "compiler.footprint"
                 | "compiler.diff" | "regex.match_spans" | "recv_line" | "recv_all"
                 | "crypto.sha512" | "crypto.sha3_256" | "crypto.hmac_sha256"
@@ -2105,9 +2090,8 @@ impl Codegen {
         }
     }
 
-    /// Begin a compile unit (function/handler/lambda body): run the
-    /// uniqueness analysis and install its facts. Accumulators that are
-    /// globals or host-cell fields carry no cap local and are filtered here.
+    /// Begin a compile unit (function/lambda body): run the
+    /// uniqueness analysis and install its facts.
     fn begin_unit(&mut self, body: &Block) {
         let facts = if force_copy_mode() {
             analysis::Facts::default()
@@ -2117,11 +2101,6 @@ impl Codegen {
         self.inplace_push = facts
             .accumulators
             .iter()
-            .filter(|v| {
-                !self.globals.contains(*v)
-                    && !self.str_fields.contains_key(*v)
-                    && !self.list_fields.contains_key(*v)
-            })
             .cloned()
             .collect();
         self.facts_stack.push((facts, 0, 0));
@@ -2544,13 +2523,6 @@ impl Codegen {
                         });
                         inplace_sites += 1;
                         tail_is_value = false;
-                    } else if self.str_fields.contains_key(name)
-                        || self.list_fields.contains_key(name)
-                        || self.globals.contains(name)
-                    {
-                        // A string/list state field or a global is a real mutation of
-                        // shared cells, not a local rebind — keep the legacy emission.
-                        return None;
                     } else {
                         // A plain local reassignment, INCLUDING a self-assign
                         // accumulator (`s = s + x`, `xs = list.push(xs, e)`) that the
@@ -2964,8 +2936,7 @@ impl Codegen {
         for (i, conv) in convs.iter().enumerate() {
             if *conv == Convention::Var {
                 match args.get(i) {
-                    Some(Expr::Var(v))
-                        if self.locals.contains_key(v) && !self.globals.contains(v) =>
+                    Some(Expr::Var(v)) if self.locals.contains_key(v) =>
                     {
                         dests.push(v.clone());
                     }
@@ -3011,15 +2982,10 @@ impl Codegen {
     }
 
     /// Is `name` a plain function/body local — compiled to a bare `local.get`,
-    /// not a capability/string/list state field, a global, or a top-level
-    /// function used as a value? `lower_expr`'s `Expr::Var` arm lowers to
-    /// `GetLocal` only for names that satisfy this exact predicate.
+    /// not a top-level function used as a value? `lower_expr`'s `Expr::Var` arm
+    /// lowers to `GetLocal` only for names that satisfy this exact predicate.
     fn is_plain_local_var(&self, name: &str) -> bool {
-        !self.cap_fields.contains(name)
-            && !self.str_fields.contains_key(name)
-            && !self.list_fields.contains_key(name)
-            && !self.globals.contains(name)
-            && self.locals.contains_key(name)
+        self.locals.contains_key(name)
     }
 
     /// Does `e` have a compound (list/tuple/record) equality shape? Such operands
@@ -3055,9 +3021,8 @@ impl Codegen {
             Expr::Var(name) if self.is_plain_local_var(name) => W::GetLocal(name.clone()),
             // A bare top-level function name used as a VALUE (`list.filter(xs,
             // is_odd)`): materialize it as a forwarding closure `fn(p..): name(p..)`,
-            // reusing the lambda machinery — exactly as the WAT path's `Expr::Var`
-            // arm does. Only fires for a known function that isn't shadowed by a
-            // local; locals/globals/cap-state fields are handled elsewhere or bail.
+            // reusing the lambda machinery. Only fires for a known function that
+            // isn't shadowed by a local; a shadowing local is handled elsewhere.
             Expr::Var(name)
                 if self.collect_wir
                     && !self.locals.contains_key(name)
@@ -4099,14 +4064,13 @@ impl Codegen {
         let captures: Vec<String> = scan
             .captures()
             .into_iter()
-            .filter(|c| self.locals.contains_key(c) || self.globals.contains(c))
+            .filter(|c| self.locals.contains_key(c))
             .collect();
         let mut cap_info: Vec<CaptureInfo> = Vec::new();
         for c in &captures {
             let kind = self.locals.get(c).copied().unwrap_or(Kind::I32);
             cap_info.push((
                 c.clone(),
-                self.globals.contains(c),
                 self.local_records.get(c).cloned(),
                 self.local_list_elem.get(c).cloned(),
                 kind,
@@ -4116,8 +4080,8 @@ impl Codegen {
         // any scope swap, each widened into the universal i64 env slot.
         let cap_slots: Vec<W> = cap_info
             .iter()
-            .map(|(name, is_global, _, _, kind)| {
-                let v = if *is_global { W::GetGlobal(name.clone()) } else { W::GetLocal(name.clone()) };
+            .map(|(name, _, _, kind)| {
+                let v = W::GetLocal(name.clone());
                 W::ToSlot(Box::new(v), Self::wir_kind(*kind))
             })
             .collect();
@@ -4204,7 +4168,7 @@ impl Codegen {
                 _ => {}
             }
         }
-        for (name, _, rec, list_elem, kind) in cap_info {
+        for (name, rec, list_elem, kind) in cap_info {
             self.locals.insert(name.clone(), *kind);
             if let Some(r) = rec {
                 self.local_records.insert(name.clone(), r.clone());
@@ -4255,7 +4219,7 @@ impl Codegen {
                     let k = self.locals.get(&p.name).copied().unwrap_or(Kind::I32);
                     locals.push(WirLocal { name: p.name.clone(), ty: Self::wir_ty_for_kind(k) });
                 }
-                for (name, _, _, _, kind) in cap_info {
+                for (name, _, _, kind) in cap_info {
                     locals.push(WirLocal { name: name.clone(), ty: Self::wir_ty_for_kind(*kind) });
                 }
                 let mut lets = Vec::new();
@@ -4292,7 +4256,7 @@ impl Codegen {
                         value: W::FromSlot(Box::new(W::GetLocal(format!("__lp_{}", p.name))), Self::wir_kind(k)),
                     });
                 }
-                for (j, (name, _, _, _, kind)) in cap_info.iter().enumerate() {
+                for (j, (name, _, _, kind)) in cap_info.iter().enumerate() {
                     let off = (4 + 8 * j) as i32;
                     let addr = W::Binary {
                         op: crate::wir::BinOp::Add,
@@ -4439,11 +4403,7 @@ impl Codegen {
         for stmt in &b.stmts {
             match stmt {
                 Stmt::Assign { name, value } => {
-                    if !inner.contains(name)
-                        && !self.globals.contains(name)
-                        && !self.str_fields.contains_key(name)
-                        && !self.list_fields.contains_key(name)
-                    {
+                    if !inner.contains(name) {
                         let scalar_kind = matches!(
                             self.locals.get(name),
                             Some(Kind::I64) | Some(Kind::F64)
@@ -5866,11 +5826,25 @@ impl Codegen {
                 _ => {
                     if let Some(shape) = self.eq_operand_shape(&args[0]) {
                         if shape.is_compound() {
-                            let h = self.ensure_ts_wir_helper(&shape)?;
-                            let arg = self.lower_expr(&args[0])?;
-                            return Some(W::Call { func: h, args: vec![arg] });
+                            if let Some(h) = self.ensure_ts_wir_helper(&shape) {
+                                let arg = self.lower_expr(&args[0])?;
+                                return Some(W::Call { func: h, args: vec![arg] });
+                            }
                         }
                     }
+                    // The structural renderer can't build this shape — most often
+                    // a GENERIC RECORD such as `Set(a)` (its field types stay
+                    // generic, so the compiled backend has no concrete layout to
+                    // walk). Record WHY so the failure names the construct and the
+                    // fix instead of the bare "interpreter-only feature?" message.
+                    self.reject_reason.get_or_insert_with(|| CodegenError {
+                        message: "cannot render this value with `\"${…}\"` on the \
+                                  compiled backend — the structural renderer can't \
+                                  build this shape (typically a generic record such \
+                                  as `Set`); call the type's own renderer instead, \
+                                  e.g. `set.show(s)`"
+                            .into(),
+                    });
                     return None;
                 }
             },
@@ -5996,6 +5970,12 @@ impl Codegen {
             ("read", 2) => {
                 self.used_dir_ops.insert("read");
                 call("dir_read", self.lower_args(&[&args[0], &args[1]])?)
+            }
+            // `exec(cap, dir, path, args, stdin) -> String`. The `Exec` cap (arg 0)
+            // is a structural placeholder — `caps.exec` gates linking — so it is
+            // dropped; the WIR `exec` helper takes (dir handle, path, args, stdin).
+            ("exec", 5) => {
+                call("exec", self.lower_args(&[&args[1], &args[2], &args[3], &args[4]])?)
             }
             ("list", 1) => {
                 self.used_dir_ops.insert("list");
@@ -6495,9 +6475,7 @@ fn reachable_functions(module: &Module) -> HashSet<String> {
 }
 
 /// Register every item's compile-time metadata (parameter conventions,
-/// return kinds/types, record fields, generic shape hints, ...) on `cg` —
-/// shared by the module/driver compile and by actor modules, which carry
-/// the module's plain functions for their handlers to call.
+/// return kinds/types, record fields, generic shape hints, ...) on `cg`.
 fn register_module_items(cg: &mut Codegen, module: &Module) {
     // `Option`/`Result` are language-level (`?`, `Some`/`Ok` literals, the
     // interpreter evaluates them natively): their constructors exist for
@@ -6783,6 +6761,7 @@ pub fn assemble_wir_module(
     let mut has_main = false;
     let mut main_params = 0usize;
     let mut main_param_is_args: Vec<bool> = Vec::new();
+    let mut main_param_is_dir: Vec<bool> = Vec::new();
     let mut main_returns_int = false;
     let mut main_returns_float = false;
     let mut user_order: Vec<String> = Vec::new();
@@ -6799,6 +6778,8 @@ pub fn assemble_wir_module(
                         cg.uses_args = true;
                     }
                     main_param_is_args.push(is_args);
+                    main_param_is_dir
+                        .push(matches!(&p.ty, Some(Type::Named(n, _)) if n == "Dir"));
                 }
             }
             if reachable.contains(&f.name) && !crate::typeck::intrinsic(&f.name) {
@@ -7008,15 +6989,21 @@ pub fn assemble_wir_module(
             for name in &user_order {
                 pruned_funcs.push(cg.wir_funcs.get(name).expect("lowered above").clone());
             }
-            let main_args: Vec<WirExpr> = (0..main_params)
-                .map(|i| {
-                    if main_param_is_args.get(i).copied().unwrap_or(false) {
-                        WirExpr::Call { func: "build_args".into(), args: vec![] }
-                    } else {
-                        WirExpr::ConstI32(0)
-                    }
-                })
-                .collect();
+            // Each `Dir` param maps to a distinct host handle in declaration order
+            // (0, 1, 2, …) so a `main` taking several `Dir`s gets several grants;
+            // every other cap is a right-less placeholder (handle 0).
+            let mut dir_handle = 0i32;
+            let mut main_args: Vec<WirExpr> = Vec::with_capacity(main_params);
+            for i in 0..main_params {
+                if main_param_is_args.get(i).copied().unwrap_or(false) {
+                    main_args.push(WirExpr::Call { func: "build_args".into(), args: vec![] });
+                } else if main_param_is_dir.get(i).copied().unwrap_or(false) {
+                    main_args.push(WirExpr::ConstI32(dir_handle));
+                    dir_handle += 1;
+                } else {
+                    main_args.push(WirExpr::ConstI32(0));
+                }
+            }
             // The `run` export calls `main`; an Int/Float result is printed (the
             // exit-code convention), anything else is dropped — matching the WAT
             // sink's `run` tail.
@@ -7715,8 +7702,8 @@ impl Renamer {
             }
             Expr::Var(n) => *n = self.resolve(n),
             Expr::Int(_) | Expr::Duration(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) => {}
-            // Call / Ctor / Spawn names are functions / constructors / actors,
-            // not locals — only the arguments are renamed.
+            // Call / Ctor names are functions / constructors, not locals —
+            // only the arguments are renamed.
             Expr::List(xs) | Expr::Tuple(xs) => {
                 for x in xs {
                     self.rename_expr(x);
@@ -7829,9 +7816,9 @@ impl Renamer {
     }
 }
 
-/// Alpha-rename a function/handler body so shadowing bindings get unique names.
+/// Alpha-rename a function body so shadowing bindings get unique names.
 /// `params` are bound in the outermost scope (never renamed themselves).
-/// Alpha-rename every function and handler body IN PLACE, once, at module
+/// Alpha-rename every function body IN PLACE, once, at module
 /// level — BEFORE `typeck::annotate` runs — so the annotated AST instance is
 /// the very one codegen compiles (the type table and uniqueness facts are
 /// keyed by node identity). `compile_function` compiles bodies as-given.

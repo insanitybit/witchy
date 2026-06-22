@@ -5,8 +5,8 @@
 //! expression can construct one, and there is no ambient authority. A capability
 //! can only enter code as a parameter. Therefore a function's authority is
 //! exactly its capability-typed parameters, and a module's footprint is the
-//! union over its entry points (public functions, `main`, and the fields an
-//! actor is granted at spawn). Unlike Go — where any dependency runs with your
+//! union over its entry points (public functions and `main`). Unlike Go — where
+//! any dependency runs with your
 //! full ambient authority — this makes "what can this code touch?" statically
 //! computable, so a dependency that *widens* its footprint (suddenly asks for
 //! `Net`, or asks for a `Net` it can now *listen* on) is visible and gateable.
@@ -21,7 +21,8 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use crate::ast::{Item, Module, Type};
 
 /// The host capabilities the runtime grants at an entry point.
-pub const HOST_CAPABILITIES: &[&str] = &["Console", "Clock", "Env", "Secret", "SecretStore", "Dir", "Net"];
+pub const HOST_CAPABILITIES: &[&str] =
+    &["Console", "Clock", "Env", "Secret", "SecretStore", "Dir", "Net", "Exec"];
 
 /// The build-time capabilities a rune's `build` entrypoint may demand — the
 /// parallel set to the runtime host caps, tracked on a separate axis. Kind-only
@@ -93,6 +94,136 @@ fn right_marker(cap: &str, marker: &str) -> Option<&'static str> {
         ("Net", "Udp") => Some("Udp"),
         ("Net", "Uds") => Some("Uds"),
         _ => None,
+    }
+}
+
+/// Whether the concrete address `target` (`host:port`) is admitted by an
+/// allowlist entry `pattern`. Patterns generalize an exact `host:port` along two
+/// independent axes — the host may be a CIDR block, the port may be `*`:
+/// `host:*` (any port on that host), `A.B.C.D/n:port` (any IPv4 in the block,
+/// that port), or `A.B.C.D/n:*` (any IPv4 in the block, any port).
+///
+/// Exact string equality is the fast path and the fallback (so existing
+/// `host:port` allowlists behave unchanged). Shared by BOTH backends so the
+/// network confinement check is one implementation — the same discipline as
+/// `confine::resolve` for `Dir` (a deliberate parity/security invariant).
+///
+/// `target` is expected to be concrete (a literal IP or a resolved host); the
+/// connect path additionally re-checks the *resolved* IP, so a CIDR pattern with
+/// a hostname target is matched against the address actually dialed, not the
+/// name (DNS-rebinding safe — see the interpreter/runtime connect sites).
+pub fn address_admits(pattern: &str, target: &str) -> bool {
+    if pattern == target {
+        return true;
+    }
+    let (phost, pport) = split_host_port(pattern);
+    let (thost, tport) = split_host_port(target);
+    if pport != "*" && pport != tport {
+        return false;
+    }
+    if phost == thost {
+        return true;
+    }
+    // A CIDR host pattern admits a literal IPv4 target inside the block.
+    if let Some((base, bits)) = parse_ipv4_cidr(phost) {
+        if let Ok(ip) = thost.parse::<std::net::Ipv4Addr>() {
+            return ipv4_in_cidr(ip, base, bits);
+        }
+    }
+    false
+}
+
+/// Split `host:port` on the LAST colon (so a bracketed IPv6 `[::1]:80` keeps its
+/// host intact). A pattern with no port part has an empty port (matches nothing
+/// but an empty target — callers always pass `host:port`).
+fn split_host_port(s: &str) -> (&str, &str) {
+    match s.rsplit_once(':') {
+        Some((h, p)) => (h, p),
+        None => (s, ""),
+    }
+}
+
+fn parse_ipv4_cidr(s: &str) -> Option<(std::net::Ipv4Addr, u8)> {
+    let (ip, bits) = s.split_once('/')?;
+    let ip: std::net::Ipv4Addr = ip.parse().ok()?;
+    let bits: u8 = bits.parse().ok()?;
+    (bits <= 32).then_some((ip, bits))
+}
+
+fn ipv4_in_cidr(ip: std::net::Ipv4Addr, base: std::net::Ipv4Addr, bits: u8) -> bool {
+    if bits == 0 {
+        return true;
+    }
+    let mask = if bits == 32 { u32::MAX } else { !((1u32 << (32 - bits)) - 1) };
+    (u32::from(ip) & mask) == (u32::from(base) & mask)
+}
+
+/// Whether any allowlist entry admits `target` — the per-op confinement check
+/// used by `listen`/`restrict` on both backends.
+pub fn net_allows(allow: &[String], target: &str) -> bool {
+    allow.iter().any(|p| address_admits(p, target))
+}
+
+/// The error a backend MUST raise when `main` binds a host capability the host
+/// cannot actually mint, so BOTH backends refuse identically and the spec's
+/// "the root grant is always concrete — the host hands `main` a real capability or
+/// that parameter doesn't exist" invariant holds (spec §13). Today the only such
+/// case is a bare `Secret` with no signing key: a `Secret` *is* the key, so —
+/// unlike an empty `Net` allowlist or an empty `SecretStore`, which are real
+/// capabilities with no resources — there is no "empty" `Secret` to hand over.
+/// Returns `None` when every parameter is grantable. Shared by the run paths so
+/// the interpreter and the compiled backend can never drift on this.
+pub fn unmintable_main_cap(main_params: &[crate::ast::Param], has_signing_key: bool) -> Option<String> {
+    let binds_secret = main_params
+        .iter()
+        .any(|p| matches!(&p.ty, Some(crate::ast::Type::Named(n, _)) if n == "Secret"));
+    if binds_secret && !has_signing_key {
+        return Some(
+            "`main` requires a `Secret`, but the host granted none \
+             (provide `--signing-key <hex-seed-file>`)"
+                .to_string(),
+        );
+    }
+    None
+}
+
+/// Resolve `addr` and return the concrete socket addresses a `connect` may dial.
+/// Rebinding-safe: a CIDR/IP allowlist is matched against the *resolved IP*, and
+/// the connect is made to that exact address — so a hostile resolver cannot point
+/// an allowlisted name at a disallowed host. A hostname that is itself allowlisted
+/// by string falls back to all of its resolved addresses (hostname allowlists are
+/// an ergonomic, explicitly non-rebinding-proof form; prefer IP/CIDR for untrusted
+/// peers). Used by `connect`/`try_connect` on both backends.
+pub fn resolve_admitted(allow: &[String], addr: &str) -> Result<Vec<std::net::SocketAddr>, String> {
+    use std::net::ToSocketAddrs;
+    let denied = || format!("`{addr}` is not permitted by this Net capability");
+    // Whether the address STRING itself is allowlisted (an exact `host:port` or a
+    // literal-IP pattern). The capability denial takes precedence over any DNS
+    // failure, so a disallowed host reports "not permitted", never a resolver leak.
+    let name_ok = net_allows(allow, addr);
+    match addr.to_socket_addrs() {
+        Ok(iter) => {
+            let resolved: Vec<std::net::SocketAddr> = iter.collect();
+            // Rebinding-safe: a CIDR/IP allowlist is matched against the resolved
+            // IP, and the connect is made to exactly that address.
+            let ip_ok: Vec<std::net::SocketAddr> = resolved
+                .iter()
+                .copied()
+                .filter(|sa| net_allows(allow, &sa.to_string()))
+                .collect();
+            if !ip_ok.is_empty() {
+                Ok(ip_ok)
+            } else if name_ok {
+                // A hostname allowlisted by string (not rebinding-proof): dial it.
+                Ok(resolved)
+            } else {
+                Err(denied())
+            }
+        }
+        // Could not resolve. A genuine dial failure only if the name was allowed;
+        // otherwise it is a capability denial (don't leak the resolver error).
+        Err(e) if name_ok => Err(format!("`{addr}` could not be resolved: {e}")),
+        Err(_) => Err(denied()),
     }
 }
 
@@ -372,7 +503,7 @@ pub fn analyze(module: &Module) -> Footprint {
     let mut total = CapSet::new();
     for item in &module.items {
         // The capability-bearing types at this entry point: a public function's
-        // (or `main`'s) parameters, or an actor's spawn-granted fields. Private
+        // (or `main`'s) parameters. Private
         // functions get the same signature scan, but report-only.
         let (name, types, is_entry): (String, Vec<&Type>, bool) = match item {
             Item::Function(f) => (

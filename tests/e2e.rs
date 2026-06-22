@@ -2367,3 +2367,275 @@ fn witchy_coven_promote_delta_immutability_and_error_paths() {
         promote_v2.1
     );
 }
+
+/// The embedded witchy package-manager front-end, invoked as `witchy pm <cmd>`
+/// (RFC-0004 §5 bootstrap): the front-end `projects/pm/src/pm.witchy` is bundled
+/// into the toolchain like std and run capability-confined. This is the first
+/// slice of the e2e migration off the Rust CLI — as the front-end ports more of
+/// `src/pm`'s behavior, this coverage grows until it can replace the Rust-CLI
+/// lifecycle tests and `src/pm` can be removed. Read-only (no temp state needed).
+#[test]
+fn witchy_pm_embedded_frontend() {
+    // audit: compute the capability footprint a source file demands.
+    let audit = Command::new(BIN)
+        .args(["pm", "audit", "examples/data/sample_rune.witchy"])
+        .output()
+        .expect("run `witchy pm audit`");
+    assert!(audit.status.success(), "pm audit failed: {}", String::from_utf8_lossy(&audit.stderr));
+    assert!(
+        String::from_utf8_lossy(&audit.stdout).contains("demands: Dir[Read], Net[Connect]"),
+        "pm audit output: {}",
+        String::from_utf8_lossy(&audit.stdout)
+    );
+
+    // check: the pm rune's declared footprint admits its own code.
+    let check = Command::new(BIN)
+        .args(["pm", "check", "projects/pm"])
+        .output()
+        .expect("run `witchy pm check`");
+    assert!(check.status.success(), "pm check failed: {}", String::from_utf8_lossy(&check.stderr));
+    assert!(
+        String::from_utf8_lossy(&check.stdout).contains("OK"),
+        "pm check output: {}",
+        String::from_utf8_lossy(&check.stdout)
+    );
+
+    // tree: the rune and its (zero) dependencies.
+    let tree = Command::new(BIN)
+        .args(["pm", "tree", "projects/pm"])
+        .output()
+        .expect("run `witchy pm tree`");
+    assert!(tree.status.success(), "pm tree failed: {}", String::from_utf8_lossy(&tree.stderr));
+    assert!(String::from_utf8_lossy(&tree.stdout).contains("pm"), "pm tree output");
+}
+
+/// The front-end drives the compiler through the `Exec` capability: `witchy pm
+/// run`/`build` exec the bundled compiler to compile-and-run / compile a program
+/// — the cargo→rustc split of RFC-0004, exercised through the real binary.
+#[test]
+fn witchy_pm_drives_the_compiler() {
+    // run: compile and execute a program, capturing its output.
+    let run = Command::new(BIN)
+        .args(["pm", "run", "examples/hello/src/hello.witchy"])
+        .output()
+        .expect("run `witchy pm run`");
+    assert!(run.status.success(), "pm run failed: {}", String::from_utf8_lossy(&run.stderr));
+    assert!(
+        String::from_utf8_lossy(&run.stdout).contains("hello, witchy"),
+        "pm run output: {}",
+        String::from_utf8_lossy(&run.stdout)
+    );
+
+    // build: compile a program to verify it builds.
+    let build = Command::new(BIN)
+        .args(["pm", "build", "examples/hello/src/hello.witchy"])
+        .output()
+        .expect("run `witchy pm build`");
+    assert!(build.status.success(), "pm build failed: {}", String::from_utf8_lossy(&build.stderr));
+    assert!(
+        String::from_utf8_lossy(&build.stdout).contains("ok"),
+        "pm build output: {}",
+        String::from_utf8_lossy(&build.stdout)
+    );
+}
+
+/// Trusted-publishing CLIENT flow through the front-end: `witchy pm publish` reads
+/// the identity token from `COVEN_ID_TOKEN` (the `Env` capability) and includes it
+/// as `id_token`; the coven server verifies it against the namespace trust policy.
+/// This closes the depth gap that gates deleting `src/pm` — the front-end can
+/// publish under trusted publishing, not only anonymously.
+#[test]
+fn witchy_pm_publishes_with_trusted_token() {
+    let server = RegistryServer::start();
+    let base = unique("pm-tp");
+    let dir = base.join("tplib");
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::write(
+        dir.join("witchy.toml"),
+        "[rune]\nname = \"acme/tplib\"\nversion = \"1.0.0\"\n",
+    )
+    .unwrap();
+    std::fs::write(dir.join("src/tplib.witchy"), "pub fn n() -> Int:\n    1\n").unwrap();
+    let ci = server.ci_token("acme/tplib-repo", "release.yml");
+    let hostport = format!("127.0.0.1:{}", server.port);
+
+    let out = Command::new(BIN)
+        .current_dir(&base)
+        // The Rust-CLI-like invocation: the registry comes from COVEN_URL (the
+        // bootstrap auto-grants Net to it and the front-end reads its address), and
+        // the identity token from COVEN_ID_TOKEN — no explicit `--net`/host:port.
+        .args(["pm", "publish", "tplib"])
+        .env("COVEN_URL", server.url())
+        .env("COVEN_ID_TOKEN", &ci)
+        .output()
+        .expect("run `witchy pm publish` via COVEN_URL");
+    let s = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "pm publish (trusted) failed: {}\nstdout: {s}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        s.contains("publish: 200") && s.contains("staged"),
+        "expected a staged trusted publish, got: {s}"
+    );
+
+    // Promote to released with a DISTINCT human identity (separation of duties):
+    // the promoter (alice) must not be the uploader (ci-bot).
+    let human = server.human_token("alice");
+    let prom = Command::new(BIN)
+        .current_dir(&base)
+        .args(["pm", "promote", "acme/tplib", "1.0.0"])
+        .env("COVEN_URL", server.url())
+        .env("COVEN_ID_TOKEN", &human)
+        .output()
+        .expect("run `witchy pm promote` via COVEN_URL");
+    let ps = String::from_utf8_lossy(&prom.stdout);
+    assert!(
+        prom.status.success(),
+        "pm promote failed: {}\nstdout: {ps}",
+        String::from_utf8_lossy(&prom.stderr)
+    );
+    assert!(ps.contains("promote: 200"), "expected promote 200 (released), got: {ps}");
+
+    // Fetch the now-released rune over HTTP (the consuming side): the signed coven
+    // record is verified against the registry root key and the source hash checked.
+    let add = Command::new(BIN)
+        .current_dir(&base)
+        .args(["pm", "--net", &hostport, "add", "acme/tplib", "^1.0.0", &hostport, "vendored"])
+        .output()
+        .expect("run `witchy pm add`");
+    assert!(
+        add.status.success(),
+        "pm add failed: {}\nstdout: {}",
+        String::from_utf8_lossy(&add.stderr),
+        String::from_utf8_lossy(&add.stdout)
+    );
+    assert!(
+        base.join("vendored/tplib/src/tplib.witchy").exists(),
+        "fetched rune source should be vendored"
+    );
+
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+/// The cargo-like consumer flow end to end through the front-end (RFC-0004 §5):
+/// publish + promote a library over a real coven, then `witchy pm add <pkg>` it
+/// (no explicit dest — vendored into the project's `vendor/` and pinned in
+/// `witchy.lock`), then `witchy pm build`/`run` the consumer that `import`s the
+/// fetched rune. `build` links the vendored dep via `witchy compile --dep` and
+/// `run` compiles+links+runs it — the front-end deciding *what* to compile from
+/// the lock and the compiler doing the build, all through the embedded CLI.
+#[test]
+fn witchy_pm_add_build_run_consumes_a_fetched_rune() {
+    let server = RegistryServer::start();
+    let base = unique("pm-consume");
+
+    // Author + publish + promote `acme/lib` (a `shout` helper) via trusted publishing.
+    let lib = base.join("lib");
+    std::fs::create_dir_all(lib.join("src")).unwrap();
+    std::fs::write(
+        lib.join("witchy.toml"),
+        "[rune]\nname = \"acme/lib\"\nversion = \"1.0.0\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        lib.join("src/lib.witchy"),
+        "pub fn shout(s: String) -> String:\n    \"HEY \" + s\n",
+    )
+    .unwrap();
+    let ci = server.ci_token("acme/lib-repo", "release.yml");
+    let pubd = Command::new(BIN)
+        .current_dir(&base)
+        .args(["pm", "publish", "lib"])
+        .env("COVEN_URL", server.url())
+        .env("COVEN_ID_TOKEN", &ci)
+        .output()
+        .expect("run `witchy pm publish`");
+    assert!(
+        pubd.status.success() && String::from_utf8_lossy(&pubd.stdout).contains("publish: 200"),
+        "publish failed: {}\nstdout: {}",
+        String::from_utf8_lossy(&pubd.stderr),
+        String::from_utf8_lossy(&pubd.stdout)
+    );
+    let human = server.human_token("alice");
+    let prom = Command::new(BIN)
+        .current_dir(&base)
+        .args(["pm", "promote", "acme/lib", "1.0.0"])
+        .env("COVEN_URL", server.url())
+        .env("COVEN_ID_TOKEN", &human)
+        .output()
+        .expect("run `witchy pm promote`");
+    assert!(
+        prom.status.success() && String::from_utf8_lossy(&prom.stdout).contains("promote: 200"),
+        "promote failed: {}\nstdout: {}",
+        String::from_utf8_lossy(&prom.stderr),
+        String::from_utf8_lossy(&prom.stdout)
+    );
+
+    // Author the consumer that imports the fetched rune.
+    let app = base.join("app");
+    std::fs::create_dir_all(app.join("src")).unwrap();
+    std::fs::write(
+        app.join("witchy.toml"),
+        "[rune]\nname = \"app\"\nversion = \"0.1.0\"\n\n[capabilities]\nruntime = [\"Console\"]\n\n[dependencies]\n",
+    )
+    .unwrap();
+    std::fs::write(
+        app.join("src/app.witchy"),
+        "import lib\n\nfn main(console: Console):\n    print(console, lib.shout(\"net\"))\n",
+    )
+    .unwrap();
+
+    // Cargo-like add: registry from COVEN_URL, version defaults to latest released.
+    // Vendors into the project's `vendor/lib` and pins it in `witchy.lock`.
+    let add = Command::new(BIN)
+        .current_dir(&app)
+        .args(["pm", "add", "acme/lib"])
+        .env("COVEN_URL", server.url())
+        .output()
+        .expect("run `witchy pm add`");
+    let add_out = String::from_utf8_lossy(&add.stdout);
+    assert!(
+        add.status.success() && add_out.contains("added acme/lib@1.0.0"),
+        "pm add failed: {}\nstdout: {add_out}",
+        String::from_utf8_lossy(&add.stderr)
+    );
+    assert!(
+        app.join("vendor/lib/src/lib.witchy").exists(),
+        "the fetched rune must be vendored into the project's vendor/ tree"
+    );
+    let lock = std::fs::read_to_string(app.join("witchy.lock")).unwrap();
+    assert!(
+        lock.contains("name = \"lib\"") && lock.contains("version = \"1.0.0\"") && lock.contains("hash = \"sha256:"),
+        "witchy.lock must pin the resolved dependency: {lock:?}"
+    );
+
+    // build: link the entry + vendored dep (`witchy compile --dep`) — must compile.
+    let build = Command::new(BIN)
+        .current_dir(&app)
+        .args(["pm", "build", "."])
+        .output()
+        .expect("run `witchy pm build`");
+    assert!(
+        build.status.success() && String::from_utf8_lossy(&build.stdout).contains("ok"),
+        "pm build failed: {}\nstdout: {}",
+        String::from_utf8_lossy(&build.stderr),
+        String::from_utf8_lossy(&build.stdout)
+    );
+
+    // run: compile+link+run the consumer importing the fetched rune.
+    let run = Command::new(BIN)
+        .current_dir(&app)
+        .args(["pm", "run", "."])
+        .output()
+        .expect("run `witchy pm run`");
+    assert!(
+        run.status.success() && String::from_utf8_lossy(&run.stdout).contains("HEY net"),
+        "pm run failed: {}\nstdout: {}",
+        String::from_utf8_lossy(&run.stderr),
+        String::from_utf8_lossy(&run.stdout)
+    );
+
+    let _ = std::fs::remove_dir_all(&base);
+}

@@ -32,7 +32,7 @@
 //!      `emit_data_globals_helpers` "all features on" order).
 //!    * user functions follow, at `imports.len() + funcs.len() ..`.
 //! 3. **Globals**: `$heap` (mut i32) then `$__witchy_reowns` (mut i64),
-//!    matching [`Prelude::globals`]. User/actor-state globals follow.
+//!    matching [`Prelude::globals`]. Region copy-out scratch globals follow.
 //! 4. **Table 0** (`funcref`): present for `call_indirect (type $clos1)` inside
 //!    `$dict_update` / `$dict_update_cap`. The encoder owns its final size and
 //!    elem segments; [`Prelude::table_size`] is the prelude's own minimum.
@@ -253,11 +253,12 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
   (import "witchy" "crypto.ecdsa_p256_verify" (func $crypto_ecdsa_p256_verify (param i32 i32 i32) (result i32)))
   (import "witchy" "crypto.ecdsa_p256_verify_hex" (func $crypto_ecdsa_p256_verify_hex (param i32 i32 i32) (result i32)))
   (import "witchy" "crypto.ed25519_verify" (func $crypto_ed25519_verify (param i32 i32 i32) (result i32)))
+  (import "witchy" "exec_run" (func $exec_run_host (param i32 i32 i32 i32) (result i32)))
 "#;
 
 /// The number of host imports the prelude declares (used to split function
 /// indices: imports `0..IMPORT_COUNT`, helpers after).
-pub const IMPORT_COUNT: usize = 50;
+pub const IMPORT_COUNT: usize = 51;
 
 /// The full ordered name list for the funcs section: `$mk0..$mk{MAX_MK}` then
 /// the static helper names. Matches the order the prelude emits bodies, so

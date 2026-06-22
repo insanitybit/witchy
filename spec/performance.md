@@ -19,7 +19,6 @@ are not "WASM is slow"; they are specific and addressable:
 | Startup / cold runs | Cranelift cache exists | **Yes, decisively** — AOT-serialized modules instantiate in microseconds; Go/C# pay process + runtime init |
 | Allocation-heavy (lists, strings) | **traps OOM** (copy-per-push under a bump arena, O(n²) bytes) | **Yes** — capacity-growth + ownership-driven in-place mutation beats GC throughput; this is Phase 1 |
 | Long-running request loops | arena grows until the cap | **Yes** — arena reset points are *faster* than any GC (free bulk reclaim, no pauses) |
-| Multicore actor pipelines | single-threaded drain | **Yes** — actors are already isolated VMs; a threaded scheduler gets shared-nothing parallelism with zero GC coordination |
 | Long-lived, pointer-chasing mutable heaps | arena never reclaims | **Hard** — this is what Go's GC is genuinely good at. Out of scope until everything above lands; mitigations in Phase 4 |
 
 The honest summary: witchy should not chase Go by building a GC. Its value
@@ -36,12 +35,12 @@ tracked in CI as numbers, not vibes:
 - compute (numeric loops, branchy code)
 - list/dict building and traversal (the workload that traps today)
 - string building/scanning
-- actor ping-pong and fan-out throughput
+- channel ping-pong and fan-out throughput
 - HTTP server requests/second (`std/server` vs `net/http` vs ASP.NET minimal)
 - cold-start latency (`witchy sandbox` AOT vs `go run`/compiled binary vs `dotnet run`)
 
-`witchy --bench` grows a `--vs-baseline` mode that diffs against the last
-recorded run, so regressions fail loudly.
+`bench/run.sh` runs the paired programs via `hyperfine` and diffs against the
+recorded `bench/BASELINE.md`, so regressions fail loudly.
 
 ## Phase 1 — Memory model (the current blocker)
 
@@ -60,7 +59,7 @@ recorded run, so regressions fail loudly.
    accumulation (`s = s <> piece`).
 3. **Dict growth**: verify the 16-byte-entry table doubles rather than
    rebuilding per insert; apply the same in-place rule.
-4. **Arena reset points**: generalize the actors' `__msg_prep` watermark reset
+4. **Arena reset points**: generalize the per-loop-iteration watermark reset
    to other escape-free boundaries — first target: `std/server`'s per-request
    loop. A reset is sound exactly when no value allocated inside the scope
    escapes it; the capability/escape analysis used for `let`-borrows already
@@ -82,7 +81,7 @@ resolved (overflow wraps by definition on both backends). The 300k-push
 bench went from an OOM trap to Go parity.
 
 **Superseded (2026-06-11, later):** item 2's eligibility scan was replaced
-wholesale by the **uniqueness pass** ([ownership-analysis.md](ownership-analysis.md)):
+wholesale by the **uniqueness pass** ([ownership-analysis.md](../rfcs/ownership-analysis.md)):
 share-event/dirty-site analysis with function summaries, so aliases cost one
 re-own instead of disqualifying, read-only calls don't break accumulation,
 `d = dict.update(…)` upserts and `x = f(move x)` own-ABI pipelines run in place,
@@ -119,11 +118,6 @@ All wasmtime-45 features we already ship but don't fully use:
 3. **Pooling instance allocator** — deferred until profiling shows spawn
    pressure (the measure-first rule; on-demand allocation hasn't appeared in
    any profile yet).
-4. **Threaded actor scheduler** — LANDED (`WITCHY_PARALLEL_ACTORS=N` /
-   `run_program_with_workers`): workers deliver to distinct actor VMs
-   concurrently; per-actor FIFO is preserved via parked pending queues; the
-   deterministic drain stays the default, so parity with the interpreter's
-   schedule is untouched unless explicitly relaxed.
 
 ## Phase 4 — Researched options, deliberately deferred
 
@@ -147,7 +141,6 @@ All wasmtime-45 features we already ship but don't fully use:
 | `wasm-opt` (Binaryen bindings) | post-pass optimizer over emitted modules | 2 |
 | `wasmtime` 45 (already in) | opt-level, serialize/deserialize AOT, pooling allocator, relaxed-SIMD | 3 |
 | `hyperfine` (dev-dependency / CI tool) | benchmark harness vs Go/C# | 0 |
-| `rayon` or std threads | actor scheduler pool | 3 |
 | `wasmer` + `wasmer-compiler-llvm` | optional LLVM engine — only if Binaryen numbers disappoint | 4 |
 
 ## Native backend retirement — DONE (2026-06-11, e302f70)

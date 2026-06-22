@@ -19,6 +19,14 @@ fn main(console: Console, root: Dir[Read]):
         print(console, "no notes yet")
 ```
 
+Where does `root` point? A plain `witchy program.witchy` run roots every `Dir`
+it grants at the **current working directory** — so relative paths resolve
+against where you launched the program, not where the source file lives. To run
+it confined to a specific subtree instead, use `witchy sandbox --dir <root>
+program.witchy`; the sandbox prints exactly what it granted. Either way the
+program only ever sees paths *under* that root — `subdir(root, "sub")` narrows
+further to a child folder.
+
 ## Write a file
 
 Asking for `Dir[Write]` (rather than a full `Dir`) says in the type that this

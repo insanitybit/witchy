@@ -1,8 +1,7 @@
-// The standard `list` library now compiles to WebAssembly, not just the
-// interpreter: map / filter / fold and a comparator-driven sort all run in the
-// compiled backend. The library is pure — `import list` hands it no Console,
-// Dir, or Net, so it can only transform data — and the closures you pass to it
-// cross the compiled boundary as heap `[code_index][captures...]` records.
+// A `list` pipeline: map / filter / fold and a comparator-driven sort compose
+// over a list. The library is pure — `import list` hands it no Console, Dir, or
+// Net, so it can only transform data — and the closures you pass to it are
+// ordinary first-class values.
 
 import list
 

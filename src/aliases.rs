@@ -2,7 +2,7 @@
 //!
 //! A top-level `type Id = Int` (`Item::TypeAlias`) is expanded to its target
 //! everywhere a type is written — function signatures, record/variant fields,
-//! actor fields and handler parameters, trait/impl method signatures, and lambda
+//! trait/impl method signatures, and lambda
 //! parameter annotations — and then dropped, so the type checker and code
 //! generator only ever see concrete types. Aliases may chain (`type B = A`,
 //! resolved to a fixpoint first). Aliases are simple (non-parameterized): a name

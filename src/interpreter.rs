@@ -104,6 +104,9 @@ pub enum Capability {
     Console,
     Clock,
     Env,
+    /// The right to spawn a native subprocess (`exec`). Right-less and payload-
+    /// free: the executable is named + confined by a `Dir[Read]` argument.
+    Exec,
 }
 
 impl fmt::Display for Value {
@@ -494,8 +497,14 @@ pub struct Interpreter {
     // `Rc` so a call clones a pointer, not the whole function AST (this is the
     // hot path for recursion).
     functions: HashMap<String, Rc<Function>>,
-    /// Host directory the root `Dir` capability is rooted at.
+    /// Host directory the root `Dir` capability is rooted at (handle 0 / the
+    /// first `Dir` parameter of `main`).
     root: PathBuf,
+    /// Additional `Dir` grants for a `main` taking several `Dir` params: the
+    /// i-th `Dir` param (i>=1) is rooted at `dir_roots[i-1]`, falling back to
+    /// `root`. Empty for the common single-`Dir` case. Mirrors the compiled
+    /// backend's `Capabilities::dir_roots`. See rfcs/0004-self-hosted-cli.md.
+    dir_roots: Vec<PathBuf>,
     /// Allow-list backing the root `Net` capability.
     net_allow: Vec<String>,
     /// Ed25519 seed backing the root `Secret` capability, if the host granted
@@ -521,6 +530,12 @@ pub struct Interpreter {
     /// The function currently executing (after linking, `module.func`), attached
     /// to runtime errors. Empty means "unknown".
     cur_fn: String,
+    /// When user code calls into a `std/testing` assertion, the caller's
+    /// (function, line). A FAILED assertion is reported here — the user's call
+    /// site — instead of the `fail` line buried inside std/testing. Only
+    /// assertion failures consult this; a genuine runtime error still names the
+    /// innermost frame (a tested guarantee).
+    assert_site: Option<(String, u32)>,
     /// Current call nesting and its ceiling. The tree-walker recurses in Rust,
     /// so unbounded recursion would overflow the (large) stack; this errors
     /// gracefully well before that.
@@ -575,6 +590,7 @@ impl Interpreter {
         Self {
             functions,
             root: PathBuf::from("."),
+            dir_roots: Vec::new(),
             net_allow: Vec::new(),
             signing_key: None,
             secrets: std::collections::BTreeMap::new(),
@@ -585,6 +601,7 @@ impl Interpreter {
             step_limit: DEFAULT_STEP_LIMIT,
             cur_line: 0,
             cur_fn: String::new(),
+            assert_site: None,
             depth: 0,
             depth_limit: DEFAULT_DEPTH_LIMIT,
             output: Vec::new(),
@@ -592,7 +609,7 @@ impl Interpreter {
     }
 
     /// Mint the root capability for a `main` parameter of the given type. This
-    /// is where authority enters the program — `main` is the root actor.
+    /// is where authority enters the program — `main` is the root entrypoint.
     fn root_cap_for(&self, ty: &Option<Type>) -> Result<Value, RuntimeError> {
         match ty {
             Some(Type::Named(n, _)) if n == "Console" => Ok(Value::Cap(Capability::Console)),
@@ -600,6 +617,7 @@ impl Interpreter {
             Some(Type::Named(n, _)) if n == "Env" => Ok(Value::Cap(Capability::Env)),
             Some(Type::Named(n, _)) if n == "Dir" => Ok(Value::Dir(self.root.clone())),
             Some(Type::Named(n, _)) if n == "Net" => Ok(Value::Net(self.net_allow.clone())),
+            Some(Type::Named(n, _)) if n == "Exec" => Ok(Value::Cap(Capability::Exec)),
             Some(Type::Named(n, _)) if n == "Secret" => match self.signing_key {
                 Some(seed) => Ok(Value::Secret(seed.to_vec())),
                 None => err("`main` requires a `Secret`, but the host granted none (provide `--signing-key <hex-seed-file>`)"),
@@ -611,7 +629,7 @@ impl Interpreter {
                     None => "no type annotation".to_string(),
                 };
                 err(format!(
-                    "`main` parameters must be capabilities (Console, Clock, Env, Dir, Net, Secret) or `List(String)` for command-line args; got {found}"
+                    "`main` parameters must be capabilities (Console, Clock, Env, Dir, Net, Exec, Secret) or `List(String)` for command-line args; got {found}"
                 ))
             }
         }
@@ -692,6 +710,16 @@ impl Interpreter {
         result
     }
 
+    /// Record the user→testing crossing: when a non-`testing` function calls a
+    /// `testing.*` assertion, remember the caller's (function, line) so a failed
+    /// assertion is reported at the user's call site rather than at the `fail`
+    /// buried in std/testing. Crossings *within* testing don't overwrite it.
+    fn note_assert_crossing(&mut self, callee: &str) {
+        if callee.starts_with("testing.") && !self.cur_fn.starts_with("testing.") {
+            self.assert_site = Some((self.cur_fn.clone(), self.cur_line));
+        }
+    }
+
     /// Apply a closure to already-evaluated arguments. The closure runs in its
     /// captured environment (plus a fresh scope for the parameters), and its body
     /// is a function boundary, so a `?` inside it returns from the closure.
@@ -729,6 +757,10 @@ impl Interpreter {
     /// `var` arguments must be mutable variables and are written back after
     /// the call returns (Hylo-style move-in / move-out).
     fn eval_call(&mut self, name: &str, args: &[Expr], env: &mut Env) -> Result<Value, Flow> {
+        // Record an assertion call SITE *before* evaluating arguments — nested
+        // calls in the arguments move `cur_line`, so capturing it later (e.g. once
+        // we're inside the callee) would report the wrong line.
+        self.note_assert_crossing(name);
         let argvals = args
             .iter()
             .map(|a| self.eval(a, env))
@@ -947,7 +979,20 @@ impl Interpreter {
             // Abort with a message — the error-raising primitive behind
             // `std/testing`'s assertions (a deliberate, loud failure).
             "fail" => match one(args)? {
-                Value::Str(msg) => Err(RuntimeError { message: msg.clone() }),
+                Value::Str(msg) => {
+                    // When this `fail` is the one behind a `std/testing` assertion
+                    // that user code invoked, retarget the reported location to the
+                    // user's call site (recorded at the crossing). A direct `fail`
+                    // in user code, or any non-assertion runtime error, is left to
+                    // the default innermost-frame reporting.
+                    if self.cur_fn.starts_with("testing.") {
+                        if let Some((func, line)) = self.assert_site.take() {
+                            self.cur_fn = func;
+                            self.cur_line = line;
+                        }
+                    }
+                    Err(RuntimeError { message: msg.clone() })
+                }
                 other => err(format!("fail expects a String message, got `{other}`")),
             },
             "string.trim" => match one(args)? {
@@ -1164,6 +1209,46 @@ impl Interpreter {
                     Ok(Some(Value::Dir(resolve(base, name)?)))
                 }
                 _ => err("subdir expects a Dir and a name"),
+            },
+            // Spawn a native subprocess. `Exec` is the right to spawn; the
+            // executable is named through (and confined to) the `Dir[Read]`, so you
+            // can only run a file you can read. The low-level primitive takes argv
+            // as a single `\0`-joined string and returns a payload string
+            // `"<exit_code>\n<stdout><stderr>"`; the std `exec` module wraps this as
+            // `(Int, String)` over a `List(String)`. (One staged-string result, so
+            // the compiled backend mirrors `dir_read` exactly — see rfcs/0004.)
+            "exec" => match args {
+                [Value::Cap(Capability::Exec), Value::Dir(base), Value::Str(path), Value::Str(joined), Value::Str(stdin)] => {
+                    let prog = resolve(base, path)?;
+                    let argv: Vec<&str> =
+                        if joined.is_empty() { Vec::new() } else { joined.split('\0').collect() };
+                    use std::io::Write as _;
+                    use std::process::{Command, Stdio};
+                    let spawned = Command::new(&prog)
+                        .args(&argv)
+                        .stdin(Stdio::piped())
+                        .stdout(Stdio::piped())
+                        .stderr(Stdio::piped())
+                        .spawn();
+                    let mut child = match spawned {
+                        Ok(c) => c,
+                        Err(e) => return err(format!("exec failed to spawn `{}`: {e}", prog.display())),
+                    };
+                    if let Some(mut sin) = child.stdin.take() {
+                        if let Err(e) = sin.write_all(stdin.as_bytes()) {
+                            return err(format!("exec failed writing stdin to `{}`: {e}", prog.display()));
+                        }
+                    }
+                    let output = match child.wait_with_output() {
+                        Ok(o) => o,
+                        Err(e) => return err(format!("exec failed running `{}`: {e}", prog.display())),
+                    };
+                    let code = output.status.code().unwrap_or(-1);
+                    let out = String::from_utf8_lossy(&output.stdout);
+                    let serr = String::from_utf8_lossy(&output.stderr);
+                    Ok(Some(Value::Str(format!("{code}\n{out}{serr}"))))
+                }
+                _ => err("exec expects (Exec, Dir, path, args, stdin)"),
             },
             // Read a file relative to a Dir capability (confined to its subtree).
             "read" => match args {
@@ -1409,7 +1494,7 @@ impl Interpreter {
             // Network capability: attenuate a Net to a held address.
             "restrict" => match args {
                 [Value::Net(allow), Value::Str(addr)] => {
-                    if !allow.iter().any(|a| a == addr) {
+                    if !crate::capabilities::net_allows(allow, addr) {
                         return err(format!("restrict: `{addr}` is not in this Net capability"));
                     }
                     Ok(Some(Value::Net(vec![addr.clone()])))
@@ -1419,10 +1504,11 @@ impl Interpreter {
             // Connect only to an address the Net capability permits.
             "connect" => match args {
                 [Value::Net(allow), Value::Str(addr)] => {
-                    if !allow.iter().any(|a| a == addr) {
-                        return err(format!("connect: `{addr}` is not permitted by this Net capability"));
-                    }
-                    match TcpStream::connect(addr) {
+                    let targets = match crate::capabilities::resolve_admitted(allow, addr) {
+                        Ok(t) => t,
+                        Err(e) => return err(format!("connect: {e}")),
+                    };
+                    match TcpStream::connect(targets.as_slice()) {
                         Ok(stream) => {
                             let id = self.sockets.len();
                             self.sockets.push(BufReader::new(stream));
@@ -1435,12 +1521,11 @@ impl Interpreter {
             },
             "try_connect" => match args {
                 [Value::Net(allow), Value::Str(addr)] => {
-                    if !allow.iter().any(|a| a == addr) {
-                        return err(format!(
-                            "try_connect: `{addr}` is not permitted by this Net capability"
-                        ));
-                    }
-                    let v = match TcpStream::connect(addr) {
+                    let targets = match crate::capabilities::resolve_admitted(allow, addr) {
+                        Ok(t) => t,
+                        Err(e) => return err(format!("try_connect: {e}")),
+                    };
+                    let v = match TcpStream::connect(targets.as_slice()) {
                         Ok(stream) => {
                             let id = self.sockets.len();
                             self.sockets.push(BufReader::new(stream));
@@ -1538,7 +1623,7 @@ impl Interpreter {
             // server side of the network capability. Returns a `Listener`.
             "listen" => match args {
                 [Value::Net(allow), Value::Str(addr)] => {
-                    if !allow.iter().any(|a| a == addr) {
+                    if !crate::capabilities::net_allows(allow, addr) {
                         return err(format!("listen: `{addr}` is not permitted by this Net capability"));
                     }
                     match TcpListener::bind(addr) {
@@ -2343,8 +2428,9 @@ pub fn run_in(src: &str, root: impl AsRef<Path>) -> Result<Vec<String>, RuntimeE
 
 /// Run with the host-provided root capabilities: `root` backs the root `Dir`,
 /// and `net_allow` backs the root `Net` (the permitted `host:port` list).
-/// `main` is the root actor: it receives the capabilities it declares (the only
-/// place authority is minted) and hands attenuated ones to the actors it spawns.
+/// `main` is the root entrypoint: it receives the capabilities it declares (the
+/// only place authority is minted) and may pass attenuated ones to the functions
+/// it calls.
 pub fn run_with(
     src: &str,
     root: impl AsRef<Path>,
@@ -2374,7 +2460,7 @@ pub fn run_module_budgeted(
     let module = crate::traits::lower(module);
     let root = root.as_ref().to_path_buf();
     run_on_deep_stack(move || {
-        run_module_inner_limited(module, root, Vec::new(), Vec::new(), None, step_limit)
+        run_module_inner_limited(module, root, Vec::new(), Vec::new(), Vec::new(), None, step_limit)
     })
     .map(|(output, _)| output)
 }
@@ -2419,7 +2505,33 @@ pub fn run_module_exit(
     let module = crate::records::lower(module).map_err(|message| RuntimeError { message })?;
     let module = crate::traits::lower(module);
     let root = root.as_ref().to_path_buf();
-    run_on_deep_stack(move || run_module_inner(module, root, net_allow, args, signing_key))
+    run_on_deep_stack(move || run_module_inner(module, root, Vec::new(), net_allow, args, signing_key))
+}
+
+/// Like [`run_module_exit`], but grants several `Dir` capabilities: `roots[0]`
+/// backs the first `Dir` param of `main` (handle 0), `roots[1..]` the rest, in
+/// order. For multi-directory programs — e.g. the witchy CLI holding both a
+/// project `Dir` and a toolchain-`bin` `Dir`. See rfcs/0004-self-hosted-cli.md.
+pub fn run_module_exit_dirs(
+    module: Module,
+    roots: Vec<PathBuf>,
+    net_allow: Vec<String>,
+    args: Vec<String>,
+    signing_key: Option<[u8; 32]>,
+) -> Result<(Vec<String>, i32), RuntimeError> {
+    let module = crate::records::lower(module).map_err(|message| RuntimeError { message })?;
+    let module = crate::traits::lower(module);
+    let mut roots = roots;
+    let root = if roots.is_empty() { PathBuf::from(".") } else { roots.remove(0) };
+    run_on_deep_stack(move || run_module_inner(module, root, roots, net_allow, args, signing_key))
+}
+
+/// Parse and run `src` with several `Dir` grants (the multi-`Dir` analog of
+/// [`run_in`]); test/CLI helper for [`run_module_exit_dirs`].
+#[allow(dead_code)]
+pub fn run_in_dirs(src: &str, roots: &[PathBuf]) -> Result<Vec<String>, RuntimeError> {
+    let module = parse_module(src).map_err(|e| RuntimeError { message: e.to_string() })?;
+    run_module_exit_dirs(module, roots.to_vec(), Vec::new(), Vec::new(), None).map(|(out, _)| out)
 }
 
 /// Run the tree-walker on a thread with a large stack. The interpreter recurses
@@ -2470,16 +2582,18 @@ fn is_args_param(ty: &Option<Type>) -> bool {
 fn run_module_inner(
     module: Module,
     root: PathBuf,
+    dir_roots: Vec<PathBuf>,
     net_allow: Vec<String>,
     args: Vec<String>,
     signing_key: Option<[u8; 32]>,
 ) -> Result<(Vec<String>, i32), RuntimeError> {
-    run_module_inner_limited(module, root, net_allow, args, signing_key, DEFAULT_STEP_LIMIT)
+    run_module_inner_limited(module, root, dir_roots, net_allow, args, signing_key, DEFAULT_STEP_LIMIT)
 }
 
 fn run_module_inner_limited(
     module: Module,
     root: PathBuf,
+    dir_roots: Vec<PathBuf>,
     net_allow: Vec<String>,
     args: Vec<String>,
     signing_key: Option<[u8; 32]>,
@@ -2488,6 +2602,7 @@ fn run_module_inner_limited(
     let mut interp = Interpreter::new(module);
     interp.step_limit = step_limit;
     interp.root = root;
+    interp.dir_roots = dir_roots;
     interp.net_allow = net_allow;
     interp.signing_key = signing_key;
     // The signing key is the `signing` secret in the store, so a program may take
@@ -2496,17 +2611,29 @@ fn run_module_inner_limited(
         interp.secrets.insert("signing".to_string(), seed.to_vec());
     }
     let root_args = match interp.functions.get("main").cloned() {
-        Some(f) => f
-            .params
-            .iter()
-            .map(|p| {
+        Some(f) => {
+            // Each `Dir` param maps positionally to a grant: the first to `root`
+            // (handle 0), the rest to `dir_roots` in order (mirrors the compiled
+            // backend's handle assignment). Other caps mint normally.
+            let mut vals = Vec::with_capacity(f.params.len());
+            let mut dir_idx = 0usize;
+            for p in &f.params {
                 if is_args_param(&p.ty) {
-                    Ok(Value::List(args.iter().cloned().map(Value::Str).collect()))
+                    vals.push(Value::List(args.iter().cloned().map(Value::Str).collect()));
+                } else if matches!(&p.ty, Some(Type::Named(n, _)) if n == "Dir") {
+                    let r = if dir_idx == 0 {
+                        interp.root.clone()
+                    } else {
+                        interp.dir_roots.get(dir_idx - 1).cloned().unwrap_or_else(|| interp.root.clone())
+                    };
+                    dir_idx += 1;
+                    vals.push(Value::Dir(r));
                 } else {
-                    interp.root_cap_for(&p.ty)
+                    vals.push(interp.root_cap_for(&p.ty)?);
                 }
-            })
-            .collect::<Result<Vec<_>, _>>()?,
+            }
+            vals
+        }
         None => vec![],
     };
     let ret = interp

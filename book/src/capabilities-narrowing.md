@@ -95,14 +95,45 @@ Combine the two — `subdir(dir, "uploads") as Dir[Write]` — and you've handed
 function write access to one folder and nothing else, in a way the type system
 guarantees and a reviewer can read at a glance.
 
-## Brands: encoding policy
+## User-defined capabilities: `capability X from U`
 
-You can go further and wrap a capability in your own type to attach *policy*. A
-`Backup` type whose only constructor checks an invariant becomes a capability
-that can only be obtained the blessed way — and the footprint analyzer still
-sees the `Dir` inside it, so the wrapping adds discipline without hiding
-authority. The `examples/branded_caps.witchy` program in the repository walks
-through this; the key idea is that capabilities compose with your domain types.
+A library can define its own capability by refining one of the host's, with
+`capability X from U`. The new type `X` wraps the underlying capability `U`, and
+it is sealed: only the module that declares `X` may construct or destructure it.
+No other module can forge an `X` or pull the `U` back out.
+
+```witchy
+capability ConfigDir from Dir[Read]
+
+// The ONLY way to get a `ConfigDir` — a checked smart constructor, in the same
+// module. Outside this module nobody can write `ConfigDir(...)`.
+pub fn config_dir(root: Dir[Read]) -> Option(ConfigDir):
+    if exists(root, "config.toml"):
+        Some(ConfigDir(root))
+    else:
+        None
+
+// A consumer that takes `ConfigDir` *statically* demands the brand, not just any
+// `Dir` — and can never reach the raw `Dir` back out.
+fn load(c: ConfigDir, name: String) -> String:
+    match c:
+        ConfigDir(dir) -> read(dir, name)
+```
+
+`witchy caps` still reports `load` as `Dir[Read] (refined: ConfigDir)`. The brand
+records intent and tightens the API, but it never hides authority from the
+footprint. A library can ship a `Redis` over `Net`, a database handle that
+exposes read and write as separate facets, or a mailer over `Net` and a `Secret`.
+
+A plain `type` brand (`type ConfigDir: ConfigDir(Dir)`) is convention only: any
+module can construct one. Use `capability` when the brand has to hold as a
+guarantee. See `examples/branded_caps` and `examples/redis_capability`.
+
+For the network, `restrict(net, "host:port")` returns a `Net` confined to a set
+of addresses: an exact `host:port`, `host:*`, or an IPv4 CIDR. The host enforces
+it on `connect` and `listen`, the same way `subdir` confines a `Dir` to a
+subtree. Pass a dependency `restrict(net, "10.0.0.5:6379")` and it reaches that
+one server.
 
 ## Block firewalls: `retain` and `without`
 

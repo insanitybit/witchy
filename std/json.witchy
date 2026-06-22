@@ -196,6 +196,25 @@ fn parse_lit(s: String, i: Int, word: String, value: Json) -> Result((Json, Int)
 fn is_digit(c: String) -> Bool:
     c == "0" || c == "1" || c == "2" || c == "3" || c == "4" || c == "5" || c == "6" || c == "7" || c == "8" || c == "9"
 
+// Fold a run of decimal digits (with an optional leading `-`) into a Float
+// without an intermediate i64, so a large integer part never overflows. Each
+// per-digit `string.to_int` is on a single character, so it can't trap.
+fn digits_to_float(s: String) -> Float:
+    let n = string.char_count(s)
+    var i = 0
+    var neg = false
+    if n > 0 && string.substring(s, 0, 1) == "-":
+        neg = true
+        i = 1
+    var acc = 0.0
+    while i < n:
+        acc = acc * 10.0 + math.to_float(string.to_int(string.substring(s, i, i + 1)))
+        i = i + 1
+    if neg:
+        0.0 - acc
+    else:
+        acc
+
 fn parse_number(s: String, i: Int) -> Result((Json, Int), String):
     let n = string.char_count(s)
     var j = i
@@ -210,7 +229,11 @@ fn parse_number(s: String, i: Int) -> Result((Json, Int), String):
     else if j < n && is_float_tail(string.substring(s, j, j + 1)):
         parse_float_tail(s, i, j)
     else:
-        Ok((JsonInt(string.to_int(string.substring(s, i, j))), j))
+        // A bare integer literal beyond the i64 range can't be a `JsonInt`;
+        // report it rather than trapping in the raw `string.to_int`.
+        match string.parse_int(string.substring(s, i, j)):
+            Some(v) -> Ok((JsonInt(v), j))
+            None -> Err("integer out of range at " + "${i}")
 
 // A `.`/`e`/`E` after the integer digits: parse the fraction and exponent and
 // build a JsonFloat. (Assembled from parts with float arithmetic — fine for
@@ -244,9 +267,11 @@ fn parse_float_tail(s: String, start: Int, ip_end: Int) -> Result((Json, Int), S
             j = j + 1
         if exp_digits == 0:
             return Err("invalid number at " + "${start}")
-    let ip = string.to_int(string.substring(s, start, ip_end))
     let negative = string.substring(s, start, start + 1) == "-"
-    var x = math.to_float(ip)
+    // Fold the integer-part digits straight into a Float: a float literal with a
+    // huge integer part (`99999999999999999999.5`) is valid JSON and must not
+    // trap the way `string.to_int` would on an out-of-i64 magnitude.
+    var x = digits_to_float(string.substring(s, start, ip_end))
     var fpart = math.to_float(frac) / pow10(frac_digits)
     if negative:
         fpart = 0.0 - fpart

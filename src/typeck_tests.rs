@@ -147,11 +147,36 @@
     }
 
     #[test]
+    fn main_returning_result_or_option_is_rejected() {
+        // `main` returning a `Result` used to type-check and then be SILENTLY
+        // discarded by the runtime's value sink (an `Err` neither printed nor set
+        // a non-zero exit). Reject it loudly instead, pointing at the fix.
+        let bad = check_str(
+            "fn risky() -> Result(Int, String):\n    Err(\"boom\")\nfn main(console: Console) -> Result(Int, String):\n    let v = risky()?\n    Ok(v)\n",
+        )
+        .unwrap_err();
+        assert!(bad.contains("`main` returns `Result(Int, String)`"), "{bad}");
+        assert!(bad.contains("exit code"), "{bad}");
+        // `Option` is the same trap (a dropped `None`).
+        let bad_opt = check_str("fn main(console: Console) -> Option(Int):\n    None\n").unwrap_err();
+        assert!(bad_opt.contains("`main` returns `Option(Int)`"), "{bad_opt}");
+        // Plain value returns are NOT rejected — the value sink surfaces them: an
+        // `Int` exit code, a printed `Float`, an explicit `Nil`, and no annotation
+        // (implicit Nil) all pass. (The `Float`-returning main is a tested feature.)
+        check_str("fn main(console: Console) -> Int:\n    0\n").expect("Int exit code is valid");
+        check_str("import math\nfn main() -> Float:\n    math.sqrt(4.0)\n").expect("Float main is valid");
+        check_str("fn main(console: Console) -> Nil:\n    print(console, \"x\")\n")
+            .expect("explicit Nil is valid");
+        check_str("fn main(console: Console):\n    print(console, \"x\")\n")
+            .expect("no annotation is valid");
+    }
+
+    #[test]
     fn unknown_stdlib_function_suggests_import() {
         // Calling an unimported stdlib function points at the module to import.
         let err = check_str("fn main(console: Console):\n    print(console, __render(minimum([1], 0)))\n")
             .expect_err("minimum is unimported");
-        assert!(err.contains("import ord"), "{err}");
+        assert!(err.contains("import cmp"), "{err}");
         // A genuine typo (no stdlib match) gets no misleading hint.
         let typo = check_str("fn main(console: Console):\n    frobnicate()\n")
             .expect_err("frobnicate is unknown");

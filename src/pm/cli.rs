@@ -335,7 +335,7 @@ fn cmd_new(rest: &[String]) -> PmResult<()> {
     } else {
         format!(
             "// {name} — a witchy rune.\n\
-             // `main` is the root actor: the host mints the capabilities it declares\n\
+             // `main` is the program entrypoint: the host mints the capabilities it declares\n\
              // (here, Console) and nothing else can perform effects.\n\n\
              fn main(console: Console):\n    \
                print(console, \"hello from {name}\")\n"

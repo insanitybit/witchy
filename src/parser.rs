@@ -245,6 +245,8 @@ impl Parser {
             Ok(Item::Trait(self.trait_def()?))
         } else if self.at(&Tok::Impl) {
             Ok(Item::Impl(self.impl_def()?))
+        } else if self.at(&Tok::Capability) {
+            self.capability_def()
         } else if self.at(&Tok::Let) {
             // A module-level constant: `let NAME = EXPR`. Inlined at use sites.
             self.advance();
@@ -267,6 +269,8 @@ impl Parser {
     }
 
     /// `trait Name { fn m(self, ...) -> Ret  ... }` — method signatures only.
+    /// `trait Ord: Eq + PartialOrd { ... }` declares supertraits. A marker trait
+    /// with no methods needs no block: `trait Eq: PartialEq`.
     fn trait_def(&mut self) -> Result<TraitDef, ParseError> {
         self.expect(&Tok::Trait)?;
         let name = self.ident()?;
@@ -281,13 +285,28 @@ impl Parser {
             }
             self.expect(&Tok::RParen)?;
         }
-        self.expect(&Tok::LBrace)?;
-        let mut methods = Vec::new();
-        while !self.at(&Tok::RBrace) && !self.at(&Tok::Eof) {
-            methods.push(self.method_sig()?);
+        // `trait Ord: Eq + PartialOrd` — supertraits. The off-side layout pass
+        // drops only the line-final `:` (the block opener), so this leading `:`
+        // survives as a real token.
+        let mut supertraits = Vec::new();
+        if self.eat(&Tok::Colon) {
+            loop {
+                supertraits.push(self.ident()?);
+                if !self.eat(&Tok::Plus) {
+                    break;
+                }
+            }
         }
-        self.expect(&Tok::RBrace)?;
-        Ok(TraitDef { name, typarams, methods })
+        // The method block is optional: a marker trait (`trait Eq: PartialEq`)
+        // opens none.
+        let mut methods = Vec::new();
+        if self.eat(&Tok::LBrace) {
+            while !self.at(&Tok::RBrace) && !self.at(&Tok::Eof) {
+                methods.push(self.method_sig()?);
+            }
+            self.expect(&Tok::RBrace)?;
+        }
+        Ok(TraitDef { name, typarams, supertraits, methods })
     }
 
     /// A method signature inside a `trait`: `fn name(params) -> Ret`, with an
@@ -369,19 +388,26 @@ impl Parser {
                 (Some(first), head, args)
             }
         } else {
-            if !trait_args.is_empty() {
-                return Err(self.error("an inherent `impl Type:` takes no type arguments"));
-            }
-            (None, first, Vec::new())
+            // Inherent impl on a generic type: `impl Stack(a):`. The arguments
+            // after the head are the type's OWN parameters; keeping them as the
+            // target args types each method's `self` as `Stack(a)` (in
+            // `method_fn`), so methods on a generic type monomorphize per element
+            // exactly like the trait-impl form `impl Trait for Stack(a)`. An
+            // inherent impl carries no trait, so these are the target's args, not
+            // a trait's — move them across and leave `trait_args` empty.
+            (None, first, std::mem::take(&mut trait_args))
         };
         // `impl Trait for T where a: Bound:` — a conditional impl.
         let bounds = self.where_clause()?;
-        self.expect(&Tok::LBrace)?;
+        // The method block is optional: a marker-trait impl (`impl Eq for Int`)
+        // provides no methods.
         let mut methods = Vec::new();
-        while !self.at(&Tok::RBrace) && !self.at(&Tok::Eof) {
-            methods.push(self.function(false)?);
+        if self.eat(&Tok::LBrace) {
+            while !self.at(&Tok::RBrace) && !self.at(&Tok::Eof) {
+                methods.push(self.function(false)?);
+            }
+            self.expect(&Tok::RBrace)?;
         }
-        self.expect(&Tok::RBrace)?;
         Ok(ImplDef {
             trait_name,
             trait_args,
@@ -474,10 +500,49 @@ impl Parser {
                     field_names: rec_names,
                 }],
                 derives,
+                sealed: false,
             }))
         } else {
-            Ok(Item::Type(TypeDef { name, params, variants, derives }))
+            Ok(Item::Type(TypeDef { name, params, variants, derives, sealed: false }))
         }
+    }
+
+    /// `capability X from U` / `capability X from (A, B)` (RFC-0002) — a SEALED
+    /// one-variant brand over the host capabilities it refines. Desugars to a
+    /// single-constructor type `X(U)` (or `X(A, B)`) carrying `sealed: true`, so
+    /// every later stage treats it like an ordinary brand while the link-time
+    /// sealing check confines its construction/destructuring to this module.
+    fn capability_def(&mut self) -> Result<Item, ParseError> {
+        self.expect(&Tok::Capability)?;
+        let name = self.ident()?;
+        if !self.at_ident("from") {
+            return Err(self.error("expected `from` after the capability name, e.g. `capability Redis from Net[Connect, Tcp]`"));
+        }
+        self.advance();
+        // The underlying capabilities: a single type, or a parenthesized tuple.
+        let mut fields = Vec::new();
+        if self.at(&Tok::LParen) {
+            self.advance();
+            while !self.at(&Tok::RParen) {
+                fields.push(self.ty()?);
+                if !self.eat(&Tok::Comma) {
+                    break;
+                }
+            }
+            self.expect(&Tok::RParen)?;
+        } else {
+            fields.push(self.ty()?);
+        }
+        if fields.is_empty() {
+            return Err(self.error("`capability X from …` must refine at least one capability"));
+        }
+        Ok(Item::Type(TypeDef {
+            name: name.clone(),
+            params: vec![],
+            variants: vec![Variant { name, fields, field_names: vec![] }],
+            derives: vec![],
+            sealed: true,
+        }))
     }
 
     fn is_assignment(&self) -> bool {
@@ -631,6 +696,16 @@ impl Parser {
             return Ok(Type::Tuple(types));
         }
         let name = self.ident()?;
+        if self.at(&Tok::Lt) {
+            // `List<Int>` is the Rust/TS spelling; witchy writes type arguments in
+            // parentheses. Catch the `<` here and suggest the right form, instead
+            // of the opaque "expected `=`, found `<`" the caller would otherwise
+            // report.
+            return Err(self.error(format!(
+                "witchy writes type arguments in parentheses, not angle brackets: \
+                 use `{name}(…)` instead of `{name}<…>`"
+            )));
+        }
         let mut args = Vec::new();
         if self.eat(&Tok::LParen) {
             while !self.at(&Tok::RParen) {
@@ -709,6 +784,19 @@ impl Parser {
         }
         if self.at(&Tok::Let) || self.at(&Tok::Var) {
             let mutable = self.advance() == Tok::Var;
+            // `let mut x` is the Rust spelling; witchy has no `mut` modifier — a
+            // mutable binding is `var x`. Catch `let mut <name>` (where `mut`
+            // parses as a bare identifier) and point at the right keyword, instead
+            // of the confusing "expected `=`, found `<name>`" that falls out of
+            // treating `mut` as the variable name.
+            if !mutable
+                && self.at_ident("mut")
+                && matches!(self.toks.get(self.pos + 1).map(|t| &t.kind), Some(Tok::Ident(_)))
+            {
+                return Err(self.error(
+                    "witchy has no `let mut`; use `var` for a mutable binding (e.g. `var x = …`)",
+                ));
+            }
             if !mutable && self.eat(&Tok::Underscore) {
                 // `let _ = e` — evaluate for effects, bind nothing. Same
                 // meaning as the bare expression statement (the canonical
@@ -1189,13 +1277,17 @@ impl Parser {
         // Note: a trailing `.member` (module-qualified call or field access) is
         // handled by `postfix`, which wraps this.
         let is_ctor = name.chars().next().is_some_and(|c| c.is_uppercase());
-        // In a match-arm body, a `(` that begins a new line is the next arm's
-        // tuple pattern, not call arguments for this name. (Arms have no
-        // separator; same rule as a leading `-`.)
-        let paren_starts_next_arm = self.in_match_arm
-            && *self.kind() == Tok::LParen
+        // A `(` that begins a NEW line is never call arguments: witchy has no
+        // statement terminators, so a leading `(` opens the next statement / match
+        // arm — a tuple pattern, a parenthesized expression, or an interpolated
+        // string (which the lexer expands to a leading `(`). A genuine call keeps
+        // its `(` on the same line as the callee, exactly as the `Apply`/`Index`
+        // postfix rules require. Without this, `else: x` (or any bare-name tail
+        // expression) followed by a line that starts with `"${...}"` mis-parses
+        // `x` as the call `x(...)`.
+        let paren_on_new_line = *self.kind() == Tok::LParen
             && self.cur().line > self.toks[self.pos.saturating_sub(1)].line;
-        if self.at(&Tok::LParen) && !paren_starts_next_arm {
+        if self.at(&Tok::LParen) && !paren_on_new_line {
             // `Point(x: 1, y: 2)` / `Point(x: 5, ..p)` — named-field record
             // construction (only for constructors, i.e. uppercase names).
             if is_ctor && self.peek_named_record() {

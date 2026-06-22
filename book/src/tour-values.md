@@ -37,8 +37,9 @@ backend.
 One display gotcha worth knowing now: a `Duration` is carried as whole
 milliseconds, and that is what `${timeout}` prints —
 `30000`, not `30s`. For human output, reach for `duration.human(timeout)`
-(`"30s"`, `"1m30s"`) or `duration.clock(timeout)` (`"0:00:30"`), or `say` it —
-`Duration` implements `Show` with the human form.
+(`"30s"`, `"1m30s"`) or `duration.clock(timeout)` (`"0:00:30"`) — both need an
+`import duration` (it isn't one of the six prelude modules) — or `say` it, since
+`Duration` implements `Show` with the human form (no import needed for `say`).
 
 ## Strings
 

@@ -70,12 +70,12 @@ trait, written `where a: TraitName`. The standard library's `Ord` trait gives
 ordering; here's a generic "biggest element" for anything orderable:
 
 ```witchy
-import ord
+import cmp
 
 fn largest(xs: List(a)) -> a where a: Ord:
     var best = list.at(xs, 0)
     for x in xs:
-        if greater(x, best):
+        if x > best:
             best = x
     best
 
@@ -90,10 +90,12 @@ pear
 ```
 
 `largest` works for `Int` and `String` here because both implement `Ord`, and it
-would work for any type of yours that does too — implement `Ord` for it and the
-same function applies. The standard `eq`, `ord`, and `show` modules provide
-these traits along with generic algorithms built on them (`eq.member`,
-`ord.max`, and so on).
+would work for any type of yours that does too — implement (or derive) the
+comparison hierarchy for it and the same function applies. The `>` operator
+desugars to the type's `Ord` impl, so you never call a `greater`/`compare`
+function by name. The standard `cmp` and `show` modules provide these traits
+(`PartialEq` → `Eq` → `PartialOrd` → `Ord`) along with generic algorithms built
+on them (`cmp.member`, `cmp.max_of`, `cmp.sort`, and so on).
 
 ## `impl Trait` and rendering with `Show`
 
@@ -136,21 +138,22 @@ lists, tuples, and dicts, which can't carry a `Show` impl); `Show` is for giving
 
 ## Deriving the common traits
 
-For a record, the obvious `Show`, `Eq`, and `Ord` impls are mechanical — so the
-compiler writes them for you. Add `derive(...)` to the type:
+For a record, the obvious comparison and `Show` impls are mechanical — so the
+compiler writes them for you. List each trait you want in `derive(...)`, the same
+way Rust does (`PartialEq, Eq, PartialOrd, Ord`):
 
 ```witchy
-import ord
+import cmp
 
-type Score derive(Show, Eq, Ord):
+type Score derive(Show, PartialEq, Eq, PartialOrd, Ord):
     points: Int
     label: String
 
 fn main(console: Console):
     let a = Score(10, "alpha")
     let b = Score(12, "beta")
-    print(console, "${a == Score(10, "alpha")}")   // derived Eq
-    print(console, "${ord.max_of(a, b)}")          // derived Ord (field order)
+    print(console, "${a == Score(10, "alpha")}")   // derived PartialEq
+    print(console, "${cmp.max_of(a, b)}")          // derived Ord (field order)
 ```
 
 ```text
@@ -160,12 +163,20 @@ Score(12, beta)
 
 - `derive(Show)` renders the record structurally (`Score(12, beta)`), which
   also feeds `${...}` and `say`.
-- `derive(Eq)` is field-by-field structural equality.
-- `derive(Ord)` compares fields lexicographically, in declaration order.
-- `derive(Json)` (with `import json`) generates `to_json(self) -> Json`, so
-  `json.encode(score.to_json())` serializes the record — scalars, lists,
-  options, and nested `derive(Json)` records all map; anything else is a
-  compile error, not a guess.
+- `derive(PartialEq)` is field-by-field structural equality (it backs `==`/`!=`);
+  `derive(Eq)` marks it as a total equality, usable as a `Set`/`Dict` key.
+- `derive(PartialOrd)`/`derive(Ord)` compare fields lexicographically, in
+  declaration order, and back the `<` `>` `<=` `>=` operators.
+- `derive(Reflect)` (with `import reflect`) makes the record *reflectable*, so
+  the reflection-based encoders serialize it with no per-type code:
+  `json.stringify(score)` returns `{"points":12,"label":"beta"}` and
+  `json.value_of(score)` the `Json` value. Scalars, lists, options, and nested
+  `derive(Reflect)` records all map. (There is **no** `derive(Json)` /
+  `to_json`; serialization is reflective, only decoding is generated — next.)
+- `derive(Deserialize)` (with `import json`, `import result`, and `import
+  option` if any field is `Option`) generates the inverse,
+  `from_json(j) -> Result(Self, String)`, so `Score.from_json(j)` rebuilds a
+  record from a parsed `Json` and reports a bad shape as `Err`.
 
 Write an explicit `impl` only when you want behavior the mechanical version
 doesn't give you — a custom display format, a comparison that ignores a field.

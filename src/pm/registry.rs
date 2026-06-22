@@ -216,8 +216,8 @@ fn typo_distance(a: &str, b: &str) -> usize {
     for (i, row) in d.iter_mut().enumerate() {
         row[0] = i;
     }
-    for j in 0..=m {
-        d[0][j] = j;
+    for (j, cell) in d[0].iter_mut().enumerate() {
+        *cell = j;
     }
     for i in 1..=n {
         for j in 1..=m {

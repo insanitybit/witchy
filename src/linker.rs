@@ -6,9 +6,9 @@
 //! to an imported module. Importing is purely declarative: it brings names into
 //! scope, runs no code, and confers no authority — a dependency can only act
 //! through capabilities the caller passes to its functions (visible in their
-//! types) or by being spawned as an actor with a grant.
+//! types).
 //!
-//! v1: functions are module-scoped; types/constructors/actors share one global
+//! v1: functions are module-scoped; types/constructors share one global
 //! namespace.
 
 use std::collections::{HashMap, HashSet};
@@ -75,6 +75,7 @@ const BUILTINS: &[&str] = &[
     "read",
     "exists",
     "subdir",
+    "exec",
     "connect",
     "restrict",
     "send_line",
@@ -94,10 +95,10 @@ type FnTable = HashMap<String, HashSet<String>>;
 /// and the CLI/test harness resolve `import` against it too.
 /// Names of all bundled standard-library modules.
 pub const STD_MODULES: &[&str] = &[
-    "list", "string", "math", "result", "option", "func", "ord", "eq", "ascii", "set", "server",
+    "list", "string", "math", "result", "option", "func", "cmp", "ascii", "set", "server",
     "show", "http", "json", "url", "duration", "random", "regex", "crypto", "compiler", "toml",
     "iter", "semver", "rights", "fs", "dict", "csv", "time", "encoding", "path", "testing",
-    "future", "task", "chan", "webauthn", "secretstore", "reflect", "meta", "convert",
+    "future", "task", "chan", "webauthn", "secretstore", "reflect", "meta", "convert", "exec",
 ];
 
 /// The bundled std modules that export a `pub fn` of the given name — used to
@@ -274,8 +275,7 @@ pub fn std_source(name: &str) -> Option<&'static str> {
         "option" => Some(include_str!("../std/option.witchy")),
         "func" => Some(include_str!("../std/func.witchy")),
         "convert" => Some(include_str!("../std/convert.witchy")),
-        "ord" => Some(include_str!("../std/ord.witchy")),
-        "eq" => Some(include_str!("../std/eq.witchy")),
+        "cmp" => Some(include_str!("../std/cmp.witchy")),
         "testing" => Some(include_str!("../std/testing.witchy")),
         "ascii" => Some(include_str!("../std/ascii.witchy")),
         "set" => Some(include_str!("../std/set.witchy")),
@@ -306,6 +306,7 @@ pub fn std_source(name: &str) -> Option<&'static str> {
         "chan" => Some(include_str!("../std/chan.witchy")),
         "reflect" => Some(include_str!("../std/reflect.witchy")),
         "meta" => Some(include_str!("../std/meta.witchy")),
+        "exec" => Some(include_str!("../std/exec.witchy")),
         _ => None,
     }
 }
@@ -399,6 +400,11 @@ pub fn link(mut modules: Vec<(String, Module)>, entry: &str) -> Result<Module, L
             return lerr(format!("module `{name}`: type alias `{c}` is defined cyclically"));
         }
     }
+
+    // RFC-0002 sealing: a `capability` (a sealed type) may be CONSTRUCTED or
+    // DESTRUCTURED only inside the module that declares it. Run here, while each
+    // item still knows its home module (before merge flattens the namespace).
+    check_sealing(&modules)?;
 
     // Expand type aliases and inline top-level constants per module before
     // merging, so their use sites (and any function calls inside constant values)
@@ -1044,6 +1050,196 @@ fn rewrite_expr(
             }
         }
         Expr::Int(_) | Expr::Duration(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) => {}
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// RFC-0002 sealing: a `capability` (sealed) type may only be constructed
+// (`X(..)`) or destructured (`match _: X(..)`) inside the module that declares
+// it. Every other module may hold, pass, and return a value of `X` — but cannot
+// mint or unwrap one, so the brand is un-forgeable like the host capabilities it
+// refines. Checked here (a read-only walk mirroring `rewrite_expr`'s complete
+// traversal, plus pattern walking the rewriter skips) before names are merged.
+// ---------------------------------------------------------------------------
+
+fn check_sealing(modules: &[(String, Module)]) -> Result<(), LinkError> {
+    let mut sealed: HashMap<String, String> = HashMap::new();
+    for (mname, m) in modules {
+        for item in &m.items {
+            if let Item::Type(t) = item {
+                if t.sealed {
+                    sealed.insert(t.name.clone(), mname.clone());
+                }
+            }
+        }
+    }
+    if sealed.is_empty() {
+        return Ok(());
+    }
+    for (mname, m) in modules {
+        for item in &m.items {
+            match item {
+                Item::Function(f) => seal_block(&f.body, &sealed, mname)?,
+                Item::Impl(im) => {
+                    for method in &im.methods {
+                        seal_block(&method.body, &sealed, mname)?;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    Ok(())
+}
+
+fn seal_use(
+    name: &str,
+    sealed: &HashMap<String, String>,
+    home: &str,
+    verb: &str,
+) -> Result<(), LinkError> {
+    if let Some(decl) = sealed.get(name) {
+        if decl != home {
+            return lerr(format!(
+                "`{name}` is a sealed capability declared in module `{decl}`; module \
+                 `{home}` may hold and pass a `{name}` but cannot {verb} one — only \
+                 `{decl}` can mint or unwrap it (use the functions `{decl}` exports)"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn seal_block(b: &Block, sealed: &HashMap<String, String>, home: &str) -> Result<(), LinkError> {
+    for stmt in &b.stmts {
+        match stmt {
+            Stmt::Let { value, .. } | Stmt::Assign { value, .. } | Stmt::LetTuple { value, .. } => {
+                seal_expr(value, sealed, home)?
+            }
+            Stmt::Return(Some(e)) | Stmt::Expr(e) | Stmt::Yield(e) => seal_expr(e, sealed, home)?,
+            Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
+        }
+    }
+    Ok(())
+}
+
+fn seal_pattern(p: &Pattern, sealed: &HashMap<String, String>, home: &str) -> Result<(), LinkError> {
+    match p {
+        Pattern::Ctor { name, args } => {
+            seal_use(name, sealed, home, "destructure")?;
+            for a in args {
+                seal_pattern(a, sealed, home)?;
+            }
+        }
+        Pattern::Tuple(ps) => {
+            for q in ps {
+                seal_pattern(q, sealed, home)?;
+            }
+        }
+        Pattern::List { elems, .. } => {
+            for q in elems {
+                seal_pattern(q, sealed, home)?;
+            }
+        }
+        Pattern::Wildcard | Pattern::Var(_) | Pattern::Int(_) | Pattern::Str(_) | Pattern::Bool(_) => {}
+    }
+    Ok(())
+}
+
+fn seal_expr(e: &Expr, sealed: &HashMap<String, String>, home: &str) -> Result<(), LinkError> {
+    match e {
+        Expr::Ctor { name, args } => {
+            seal_use(name, sealed, home, "construct")?;
+            for a in args {
+                seal_expr(a, sealed, home)?;
+            }
+        }
+        Expr::Call { args, .. } | Expr::List(args) | Expr::Tuple(args) => {
+            for a in args {
+                seal_expr(a, sealed, home)?;
+            }
+        }
+        Expr::Apply { func, args } => {
+            seal_expr(func, sealed, home)?;
+            for a in args {
+                seal_expr(a, sealed, home)?;
+            }
+        }
+        Expr::MethodCall { receiver, args, .. } => {
+            seal_expr(receiver, sealed, home)?;
+            for a in args {
+                seal_expr(a, sealed, home)?;
+            }
+        }
+        Expr::Unary { expr, .. }
+        | Expr::Try(expr)
+        | Expr::As { expr, .. }
+        | Expr::Field { base: expr, .. } => seal_expr(expr, sealed, home)?,
+        Expr::RecordUpdate { base, fields } => {
+            seal_expr(base, sealed, home)?;
+            for (_, v) in fields {
+                seal_expr(v, sealed, home)?;
+            }
+        }
+        Expr::Record { fields, spread, .. } => {
+            for (_, v) in fields {
+                seal_expr(v, sealed, home)?;
+            }
+            if let Some(s) = spread {
+                seal_expr(s, sealed, home)?;
+            }
+        }
+        Expr::Binary { lhs, rhs, .. } => {
+            seal_expr(lhs, sealed, home)?;
+            seal_expr(rhs, sealed, home)?;
+        }
+        Expr::Range { lo, hi, .. } => {
+            seal_expr(lo, sealed, home)?;
+            seal_expr(hi, sealed, home)?;
+        }
+        Expr::Index { base, index } => {
+            seal_expr(base, sealed, home)?;
+            seal_expr(index, sealed, home)?;
+        }
+        Expr::WhileLet { pattern, scrutinee, body } => {
+            seal_pattern(pattern, sealed, home)?;
+            seal_expr(scrutinee, sealed, home)?;
+            seal_block(body, sealed, home)?;
+        }
+        Expr::If { cond, then_block, else_block } => {
+            seal_expr(cond, sealed, home)?;
+            seal_block(then_block, sealed, home)?;
+            if let Some(b) = else_block {
+                seal_block(b, sealed, home)?;
+            }
+        }
+        Expr::Lambda { body, .. } => seal_block(body, sealed, home)?,
+        Expr::Block(b) => seal_block(b, sealed, home)?,
+        Expr::While { cond, body } => {
+            seal_expr(cond, sealed, home)?;
+            seal_block(body, sealed, home)?;
+        }
+        Expr::For { iter, body, .. } => {
+            seal_expr(iter, sealed, home)?;
+            seal_block(body, sealed, home)?;
+        }
+        Expr::Match { scrutinee, arms } => {
+            seal_expr(scrutinee, sealed, home)?;
+            for arm in arms {
+                seal_pattern(&arm.pattern, sealed, home)?;
+                if let Some(g) = &arm.guard {
+                    seal_expr(g, sealed, home)?;
+                }
+                seal_expr(&arm.body, sealed, home)?;
+            }
+        }
+        Expr::Var(_)
+        | Expr::Int(_)
+        | Expr::Duration(_)
+        | Expr::Float(_)
+        | Expr::Str(_)
+        | Expr::Bool(_) => {}
     }
     Ok(())
 }

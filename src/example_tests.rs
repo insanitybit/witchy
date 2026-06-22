@@ -299,6 +299,65 @@
         assert!(typeck::check_str(reads).is_ok(), "a read-only borrow should check");
     }
 
+    #[test]
+    fn match_soundness_exhaustiveness_and_linearity() {
+        // C3: an infinite scalar domain needs a catch-all — a guard-only match is
+        // non-exhaustive and would trap at runtime, so it's rejected at check time.
+        let guard_only = "fn f(n: Int) -> String:\n    match n:\n        m if m > 0 -> \"p\"\n        z if z < 0 -> \"n\"\nfn main(c: Console):\n    print(c, f(1))\n";
+        let e = typeck::check_str(guard_only).expect_err("guard-only Int match must be rejected");
+        assert!(e.to_string().contains("non-exhaustive match on `Int`"), "{e}");
+
+        // C2: a single-field variant matched only with a narrower sub-pattern
+        // (`Circle(Red)`) is rejected when an inner case (`Circle(Blue)`) is
+        // missing — the recursive coverage check catches the nested hole.
+        let nested = "type Color:\n    Red\n    Blue\ntype Shape:\n    Circle(Color)\n    Square\nfn f(s: Shape) -> Int:\n    match s:\n        Circle(Red) -> 1\n        Square -> 2\nfn main(c: Console):\n    print(c, __render(f(Square)))\n";
+        let e = typeck::check_str(nested).expect_err("nested non-exhaustive match must be rejected");
+        assert!(e.to_string().contains("non-exhaustive"), "{e}");
+
+        // ...but the idiomatic `Some(V) / None` form — `Some` covered by
+        // ENUMERATING the inner variants, no wholesale `Some(_)` — must still check
+        // (the conservative earlier rule wrongly rejected this; the recursion does not).
+        let some_enum = "type Msg:\n    A\n    B\nfn f(o: Option(Msg)) -> Int:\n    match o:\n        Some(A) -> 1\n        Some(B) -> 2\n        None -> 0\nfn main(c: Console):\n    print(c, __render(f(Some(A))))\n";
+        assert!(typeck::check_str(some_enum).is_ok(), "idiomatic Some(V)/None must check");
+
+        // C5: a pattern may not bind the same name twice (no equality patterns).
+        let dup = "type P:\n    P(Int, Int)\nfn f(p: P) -> Int:\n    match p:\n        P(x, x) -> x\nfn main(c: Console):\n    print(c, __render(f(P(3, 4))))\n";
+        let e = typeck::check_str(dup).expect_err("duplicate pattern binding must be rejected");
+        assert!(e.to_string().contains("more than once"), "{e}");
+
+        // Valid exhaustive / linear matches still check (no over-rejection).
+        let ok = "type Shape:\n    Circle(Int)\n    Square\nfn f(s: Shape) -> Int:\n    match s:\n        Circle(r) -> r\n        Square -> 0\nfn g(n: Int) -> Int:\n    match n:\n        0 -> 0\n        _ -> 1\nfn main(c: Console):\n    print(c, __render(f(Circle(3)) + g(5)))\n";
+        assert!(typeck::check_str(ok).is_ok(), "valid exhaustive matches must check");
+    }
+
+    #[test]
+    fn capability_is_sealed_across_modules() {
+        // RFC-0002: `capability Conn from Net` is a SEALED brand — it may be
+        // constructed or destructured only in its declaring module (`redis`).
+        use crate::linker::link;
+        use crate::parser::parse_module;
+        let lib = "capability Conn from Net[Connect, Tcp]\npub fn open(net: Net[Connect, Tcp]) -> Conn:\n    Conn(net)\npub fn ping(c: Conn) -> Int:\n    match c:\n        Conn(net) -> 1\n";
+        let mods = |app: &str| {
+            vec![
+                ("redis".to_string(), parse_module(lib).expect("lib parse")),
+                ("app".to_string(), parse_module(app).expect("app parse")),
+            ]
+        };
+        // Forging the sealed cap in another module is rejected.
+        let forge = "import redis\nfn main(console: Console, net: Net):\n    let c = Conn(net)\n    print(console, \"${redis.ping(c)}\")\n";
+        let e = format!("{:?}", link(mods(forge), "app").expect_err("forge must be rejected"));
+        assert!(e.contains("sealed capability") && e.contains("construct"), "{e}");
+        // Unwrapping (destructuring) it in another module is rejected too.
+        let unwrap = "import redis\nfn main(console: Console, net: Net):\n    let c = redis.open(net)\n    match c:\n        Conn(n) -> print(console, \"x\")\n";
+        let e2 = format!("{:?}", link(mods(unwrap), "app").expect_err("unwrap must be rejected"));
+        assert!(e2.contains("destructure"), "{e2}");
+        // The legitimate path — mint via the library, then use it — links fine.
+        let ok = "import redis\nfn main(console: Console, net: Net):\n    let c = redis.open(net)\n    print(console, \"${redis.ping(c)}\")\n";
+        assert!(link(mods(ok), "app").is_ok(), "legit mint-then-use must link");
+        // A module can construct/destructure its OWN sealed capability.
+        assert!(parse_module(lib).is_ok());
+    }
+
     /// Conventions apply to a method's receiver too: `let self` borrows it
     /// (read-only), and `own self` consumes it (the value can't be used after the
     /// call). Both run identically on interpreter and native.
@@ -870,7 +929,7 @@ fn main(console: Console):
     /// the expanded program).
     #[test]
     fn derive_show_eq_ord_generates_working_impls() {
-        let src = "import show\nimport ord\nimport list\n\ntype Point derive(Show, Eq, Ord):\n    x: Int\n    y: Int\n\nfn main(console: Console):\n    let a = Point(1, 2)\n    let b = Point(1, 3)\n    say(console, a)\n    print(console, \"${eq(a, Point(1, 2))} ${eq(a, b)}\")\n    print(console, \"${less(a, b)} ${less(b, a)}\")\n    print(console, \"${list.contains([a, b], Point(1, 3))}\")\n";
+        let src = "import show\nimport cmp\nimport list\n\ntype Point derive(Show, PartialEq, Eq, PartialOrd, Ord):\n    x: Int\n    y: Int\n\nfn main(console: Console):\n    let a = Point(1, 2)\n    let b = Point(1, 3)\n    say(console, a)\n    print(console, \"${eq(a, Point(1, 2))} ${eq(a, b)}\")\n    print(console, \"${less(a, b)} ${less(b, a)}\")\n    print(console, \"${list.contains([a, b], Point(1, 3))}\")\n";
         let want: Vec<String> = ["Point(1, 2)", "true false", "true false", "true"]
             .iter()
             .map(|s| s.to_string())
@@ -886,6 +945,19 @@ fn main(console: Console):
         );
         let err = format!("{:?}", res.expect_err("missing derive generator must be rejected"));
         assert!(err.to_lowercase().contains("serialize"), "got: {err}");
+    }
+
+    #[test]
+    fn derive_ord_on_generic_record() {
+        // derive(Ord) on a GENERIC record: the generated impl and the Ord trait's
+        // default methods (`greater`/`less`, used by `cmp.max_of`) must be typed
+        // against the applied `Pair(a, b)`, not the bare head `Pair` — otherwise a
+        // real `Pair(Int, Int)` clashes with the method's `other: Self`. Both
+        // backends agree. (Regression for the bare-head `Self` substitution.)
+        let src = "import cmp\n\ntype Pair(a, b) derive(PartialEq, Eq, PartialOrd, Ord):\n    first: a\n    second: b\n\nfn main(console: Console):\n    let m = cmp.max_of(Pair(1, 9), Pair(1, 4))\n    print(console, \"${m.first} ${m.second}\")\n    print(console, \"${less(Pair(1, 2), Pair(1, 3))} ${less(Pair(2, 0), Pair(1, 9))}\")\n";
+        let want: Vec<String> = ["1 9", "true false"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(link_run(src), want, "interpreter");
+        assert_eq!(wasm_run(src), want, "wasm");
     }
 
     /// `comptime:` — compile-time item generation: zero capabilities
@@ -2697,6 +2769,169 @@ fn yn(b: Bool) -> String:
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// The `Exec` capability compiles to a capability-gated host import and
+    /// agrees with the interpreter: a confined subprocess runs identically on
+    /// both backends, returning the `"<code>\n<output>"` payload, and an
+    /// executable outside the granted `Dir` subtree FAILS on both. (Unix-only —
+    /// it spawns a shell script.)
+    #[cfg(unix)]
+    #[test]
+    fn exec_capability_compiles_to_wasm_and_agrees() {
+        use crate::runtime::{Capabilities, Runtime};
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("witchy_wasm_exec_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("mkdir");
+        // A tiny deterministic program: echo its two args, then echo stdin.
+        let script = root.join("greet");
+        std::fs::write(&script, "#!/bin/sh\necho \"args=$1,$2\"\ncat\n").expect("write script");
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+
+        // args "a\0b" -> argv [a, b]; stdin "hi". Payload: "0\nargs=a,b\nhi".
+        let src = "fn main(console: Console, runner: Exec, dir: Dir):\n    print(console, exec(runner, dir, \"greet\", \"a\\0b\", \"hi\"))\n";
+
+        let interp_out = interpreter::run_in(src, &root).expect("interp");
+        let module = parser::parse_module(src).expect("parse");
+        let bytes = codegen::compile_module_binary(&module)
+            .expect("compile")
+            .expect("the binary path lowers this program");
+        let mut rt = Runtime::batch().expect("runtime");
+        let mut actor = rt
+            .spawn(
+                &bytes,
+                Capabilities {
+                    print: true,
+                    quiet: true,
+                    dir_root: Some(root.clone()),
+                    dir_read: true,
+                    exec: true,
+                    ..Default::default()
+                },
+                64,
+            )
+            .expect("spawn");
+        actor.run().expect("run");
+        // The parity invariant: byte-identical output on both backends.
+        assert_eq!(interp_out, actor.output(), "exec must agree across backends");
+        // And it actually ran the process.
+        assert!(
+            interp_out.join("\n").contains("args=a,b") && interp_out.join("\n").contains("hi"),
+            "exec output should contain the subprocess result, got {interp_out:?}"
+        );
+
+        // An executable outside the granted subtree is rejected on both backends.
+        let esc = "fn main(console: Console, runner: Exec, dir: Dir):\n    print(console, exec(runner, dir, \"../escape\", \"\", \"\"))\n";
+        assert!(interpreter::run_in(esc, &root).is_err(), "interp must reject escape");
+        let m = parser::parse_module(esc).expect("parse");
+        let wbytes = codegen::compile_module_binary(&m)
+            .expect("compile")
+            .expect("the binary path lowers this program");
+        let mut rt2 = Runtime::batch().expect("runtime");
+        let mut a = rt2
+            .spawn(
+                &wbytes,
+                Capabilities {
+                    print: true,
+                    quiet: true,
+                    dir_root: Some(root.clone()),
+                    dir_read: true,
+                    exec: true,
+                    ..Default::default()
+                },
+                64,
+            )
+            .expect("spawn");
+        assert!(a.run().is_err(), "WASM must trap on an escaping exec path");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A `main` taking several `Dir` params gets several *distinct* grants —
+    /// positional handles (the first `--dir` backs handle 0, the next handle 1)
+    /// — identically on both backends. Reading from each confined subtree yields
+    /// that subtree's file, and the two never cross. (RFC-0004 multi-Dir.)
+    #[test]
+    fn multi_dir_grants_are_positional_and_agree() {
+        use crate::runtime::{Capabilities, Runtime};
+        let base = std::env::temp_dir().join(format!("witchy_multidir_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let dir_a = base.join("a");
+        let dir_b = base.join("b");
+        std::fs::create_dir_all(&dir_a).expect("mkdir a");
+        std::fs::create_dir_all(&dir_b).expect("mkdir b");
+        std::fs::write(dir_a.join("f.txt"), "from-A").expect("seed a");
+        std::fs::write(dir_b.join("f.txt"), "from-B").expect("seed b");
+
+        // Both Dirs name `f.txt`, but each resolves within its own subtree.
+        let src = "fn main(console: Console, da: Dir, db: Dir):\n    print(console, read(da, \"f.txt\"))\n    print(console, read(db, \"f.txt\"))\n";
+        let want = vec!["from-A".to_string(), "from-B".to_string()];
+
+        let interp_out =
+            interpreter::run_in_dirs(src, &[dir_a.clone(), dir_b.clone()]).expect("interp");
+        assert_eq!(interp_out, want, "interpreter multi-dir");
+
+        let module = parser::parse_module(src).expect("parse");
+        let bytes = codegen::compile_module_binary(&module)
+            .expect("compile")
+            .expect("the binary path lowers this program");
+        let mut rt = Runtime::batch().expect("runtime");
+        let mut actor = rt
+            .spawn(
+                &bytes,
+                Capabilities {
+                    print: true,
+                    quiet: true,
+                    dir_root: Some(dir_a.clone()),
+                    dir_roots: vec![dir_b.clone()],
+                    dir_read: true,
+                    ..Default::default()
+                },
+                64,
+            )
+            .expect("spawn");
+        actor.run().expect("run");
+        assert_eq!(actor.output(), want, "compiled WASM multi-dir must agree");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// `witchy compile <entry> --dep name=path` (RFC-0004 §4) links the entry
+    /// with an explicitly-provided dependency source — one that is NOT a sibling
+    /// or std module — type-checks, and compiles to wasm. This is the surface the
+    /// witchy CLI front-end drives to build a multi-rune project.
+    #[test]
+    fn compile_resolves_explicit_deps() {
+        let base = std::env::temp_dir().join(format!("witchy_compile_dep_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let depdir = base.join("dep");
+        let appdir = base.join("app");
+        std::fs::create_dir_all(&depdir).unwrap();
+        std::fs::create_dir_all(&appdir).unwrap();
+        std::fs::write(depdir.join("mylib.witchy"), "pub fn greet() -> String:\n    \"hi\"\n").unwrap();
+        let app = appdir.join("app.witchy");
+        std::fs::write(
+            &app,
+            "import mylib\n\nfn main(console: Console):\n    print(console, mylib.greet())\n",
+        )
+        .unwrap();
+
+        // Without the dep mapping, the import resolves to neither a sibling nor std.
+        assert!(crate::link_file(app.to_str().unwrap()).is_err(), "no sibling/std mylib");
+
+        // With the dep mapping, it links, type-checks, and compiles to wasm.
+        let mut deps = std::collections::HashMap::new();
+        deps.insert("mylib".to_string(), depdir.join("mylib.witchy"));
+        let (linked, _) =
+            crate::link_file_with_deps(app.to_str().unwrap(), &deps).expect("link with dep");
+        crate::typeck::check(&linked).expect("typecheck");
+        let bytes = crate::codegen::compile_module_binary(&linked)
+            .expect("compile")
+            .expect("the binary path lowers this program");
+        assert!(!bytes.is_empty(), "produced a wasm binary");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
     /// The Net family compiles to capability-gated host imports and agrees with
     /// the interpreter: a client connects to an allowlisted loopback server,
     /// exchanges a line on both backends, and a non-allowlisted address FAILS
@@ -3778,6 +4013,23 @@ fn main(console: Console):
     print(console, __render("done"))
 "#,
             ),
+            (
+                // Regression (M7): an inline `else:` ending in a bare identifier,
+                // immediately followed by a `"${...}"` interpolation, must parse as
+                // two statements (not `count(...)`). (Builtins/prelude only — this
+                // harness doesn't link std modules.)
+                "inline else bare-ident before an interpolation",
+                r#"
+fn describe(n: Int) -> String:
+    let label = if n < 0: "neg" else: "pos"
+    let mag = if n < 0: 0 - n else: n
+    "${label}:${mag}"
+
+fn main(console: Console):
+    print(console, describe(0 - 4250))
+    print(console, describe(150000))
+"#,
+            ),
         ];
         for (name, src) in programs {
             let interpreted = interp(src);
@@ -4188,16 +4440,18 @@ fn main(console: Console):
         // generic `==` search does pointer comparison in compiled code and would
         // wrongly miss. A user `impl Eq` (Box) works, as does the default `ne`.
         let client = r#"
-import eq
+import cmp
 
 type Box:
     Box(Int)
 
-impl Eq for Box:
+impl PartialEq for Box:
     fn eq(self, other: Self) -> Bool:
         match self:
             Box(a) -> match other:
                 Box(b) -> (a == b)
+
+impl Eq for Box
 
 fn build(s: String) -> String:
     var acc = ""
@@ -4209,15 +4463,15 @@ fn build(s: String) -> String:
 
 fn main(console: Console):
     let words = [build("apple"), build("banana")]
-    print(console, __render(eq.member(words, build("banana"))))
-    print(console, __render(eq.member(words, build("cherry"))))
-    print(console, __render(eq.index_of([10, 20, 30], 20)))
-    print(console, __render(eq.index_of([10, 20, 30], 99)))
-    print(console, __render(eq.member([Box(1), Box(2)], Box(2))))
+    print(console, __render(cmp.member(words, build("banana"))))
+    print(console, __render(cmp.member(words, build("cherry"))))
+    print(console, __render(cmp.index_of([10, 20, 30], 20)))
+    print(console, __render(cmp.index_of([10, 20, 30], 99)))
+    print(console, __render(cmp.member([Box(1), Box(2)], Box(2))))
     print(console, __render(ne(Box(1), Box(2))))
     print(console, __render(ne(Box(2), Box(2))))
 "#;
-        let sources = [("eq", crate::bundled_module("eq").unwrap()), ("main", client)];
+        let sources = [("cmp", crate::bundled_module("cmp").unwrap()), ("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
         let compiled = run_linked_on_wasm(&sources, "main");
         assert_eq!(interpreted, compiled, "std eq member/index_of diverged");
@@ -4231,17 +4485,19 @@ fn main(console: Console):
         // strings, where `list.unique`'s generic `==` compares pointers and fails
         // to dedupe in compiled code. A user `impl Eq` works too (Tag).
         let client = r#"
-import eq
+import cmp
 import string
 
 type Tag:
     Tag(Int)
 
-impl Eq for Tag:
+impl PartialEq for Tag:
     fn eq(self, other: Self) -> Bool:
         match self:
             Tag(a) -> match other:
                 Tag(b) -> (a == b)
+
+impl Eq for Tag
 
 fn build(s: String) -> String:
     var acc = ""
@@ -4253,14 +4509,14 @@ fn build(s: String) -> String:
 
 fn main(console: Console):
     let words = [build("a"), build("b"), build("a"), build("c"), build("b"), build("a")]
-    print(console, __render(eq.count(words, build("a"))))
-    print(console, __render(eq.count(words, build("z"))))
-    print(console, string.join(eq.unique(words), ","))
-    print(console, __render(list.length(eq.unique([Tag(1), Tag(2), Tag(1), Tag(2), Tag(3)]))))
-    print(console, __render(eq.count([Tag(1), Tag(2), Tag(1)], Tag(1))))
+    print(console, __render(cmp.count(words, build("a"))))
+    print(console, __render(cmp.count(words, build("z"))))
+    print(console, string.join(cmp.unique(words), ","))
+    print(console, __render(list.length(cmp.unique([Tag(1), Tag(2), Tag(1), Tag(2), Tag(3)]))))
+    print(console, __render(cmp.count([Tag(1), Tag(2), Tag(1)], Tag(1))))
 "#;
         let sources = [
-            ("eq", crate::bundled_module("eq").unwrap()),
+            ("cmp", crate::bundled_module("cmp").unwrap()),
             ("string", crate::bundled_module("string").unwrap()),
             ("main", client),
         ];
@@ -4282,11 +4538,13 @@ import string
 type Id:
     Id(Int)
 
-impl Eq for Id:
+impl PartialEq for Id:
     fn eq(self, other: Self) -> Bool:
         match self:
             Id(a) -> match other:
                 Id(b) -> (a == b)
+
+impl Eq for Id
 
 fn build(s: String) -> String:
     var acc = ""
@@ -4312,7 +4570,7 @@ fn main(console: Console):
 "#;
         let sources = [
             ("set", crate::bundled_module("set").unwrap()),
-            ("eq", crate::bundled_module("eq").unwrap()),
+            ("cmp", crate::bundled_module("cmp").unwrap()),
             ("string", crate::bundled_module("string").unwrap()),
             ("main", client),
         ];
@@ -4332,7 +4590,7 @@ fn main(console: Console):
     fn std_set_type_iteration_and_collect_agree() {
         let client = "import set\nimport iter\n\nfn main(console: Console):\n    let s = set.from_list([3, 1, 2, 3, 1])\n    print(console, __render(set.size(s)))\n    print(console, __render(set.contains(s, 2)))\n    var total = 0\n    for x in s:\n        total = (total + x)\n    print(console, __render(total))\n    let r = set.remove(s, 2)\n    print(console, set.show(r))\n    let cs: Set(Int) = iter.collect(iter.range(1, 4))\n    print(console, set.show(cs))\n";
         let sources = [
-            ("eq", crate::bundled_module("eq").unwrap()),
+            ("cmp", crate::bundled_module("cmp").unwrap()),
             ("option", crate::bundled_module("option").unwrap()),
             ("list", crate::bundled_module("list").unwrap()),
             ("string", crate::bundled_module("string").unwrap()),
@@ -4539,6 +4797,36 @@ fn main(console: Console):
     }
 
     #[test]
+    fn inherent_impl_on_generic_type() {
+        // An inherent `impl Stack(a):` carries the type's OWN parameter, so each
+        // method's `self` is `Stack(a)` (not a bare `Stack`) and the methods
+        // monomorphize per element type. Covers a static constructor (`empty`), an
+        // instance method returning Self (`push`, chained off the static), and an
+        // instance method on a let-bound chain receiver (`howbig`). Two distinct
+        // element types exercise monomorphization; both backends agree.
+        let client = r#"
+type Stack(a):
+    items: List(a)
+
+impl Stack(a):
+    fn empty() -> Stack(a):
+        Stack([])
+    fn push(self, x: a) -> Stack(a):
+        Stack(list.push(self.items, x))
+    fn howbig(self) -> Int:
+        list.length(self.items)
+
+fn main(console: Console):
+    let s = Stack.empty().push(1).push(2).push(3)
+    print(console, __render(s.howbig()))
+    let w = Stack.empty().push("a").push("b")
+    print(console, __render(w.howbig()))
+"#;
+        assert_eq!(interp(client), vec!["3", "2"]);
+        assert_eq!(run_on_wasm(client), vec!["3", "2"]);
+    }
+
+    #[test]
     fn recursive_trait_dispatch_on_match_bound_fields() {
         // A trait method can now dispatch on a variable bound by a constructor
         // pattern when the field type is concrete: `show(x)` / `show(c)` inside a
@@ -4688,7 +4976,7 @@ fn main(console: Console):
     print(console, if set.is_disjoint(d1a, set.from_list([2, 3])): "yes" else: "no")
 "#;
         let sources = [
-            ("eq", crate::bundled_module("eq").unwrap()),
+            ("cmp", crate::bundled_module("cmp").unwrap()),
             ("option", crate::bundled_module("option").unwrap()),
             ("list", crate::bundled_module("list").unwrap()),
             ("string", crate::bundled_module("string").unwrap()),
@@ -5814,7 +6102,7 @@ fn main(console: Console):
         )
         .unwrap();
         let (out, exit) =
-            crate::run_file_sandboxed(path.to_str().unwrap(), None, Vec::new(), Vec::new(), None, Vec::new())
+            crate::run_file_sandboxed(path.to_str().unwrap(), Vec::new(), Vec::new(), Vec::new(), None, Vec::new())
                 .expect("sandbox run");
         assert_eq!(out, vec!["42"]);
         assert_eq!(exit, None, "a Nil-returning main has no exit code");
@@ -5838,7 +6126,7 @@ fn main(console: Console):
         unsafe { std::env::set_var("WITCHY_SANDBOX_LABEL", "found") };
         let (out, exit) = crate::run_file_sandboxed(
             src_path.to_str().unwrap(),
-            Some(root.clone()),
+            vec![root.clone()],
             Vec::new(),
             vec!["data.txt".to_string()],
             None,
@@ -5903,7 +6191,7 @@ fn main(console: Console):
         .unwrap();
         let err = crate::run_file_sandboxed(
             src_path.to_str().unwrap(),
-            Some(root.clone()),
+            vec![root.clone()],
             Vec::new(),
             vec!["../secret.txt".to_string()],
             None,
@@ -6035,7 +6323,7 @@ fn main(console: Console):
         let out = tmp.to_str().unwrap();
         crate::emit_wasm_file("examples/calc/src/calc.witchy", out).expect("emit-wasm");
         let (from_wasm, _) =
-            crate::run_wasm_file(out, None, Vec::new(), Vec::new(), None, Vec::new()).expect("run .wasm");
+            crate::run_wasm_file(out, Vec::new(), Vec::new(), Vec::new(), None, Vec::new()).expect("run .wasm");
         let from_source = crate::execute_file("examples/calc/src/calc.witchy", Vec::new()).expect("run source");
         assert_eq!(from_wasm, from_source, "precompiled .wasm diverges from the source run");
         let _ = std::fs::remove_file(&tmp);
@@ -6072,12 +6360,12 @@ fn main(console: Console):
     #[test]
     fn std_ord_string_and_sort_backends_agree() {
         // `impl Ord for String` makes strings comparable, and the bounded generic
-        // `ord.sort` dispatches through the element's Ord impl — so it sorts
+        // `cmp.sort` dispatches through the element's Ord impl — so it sorts
         // runtime-BUILT strings content-correctly on both backends (a pointer
         // comparison sort would scramble them in compiled code). Also covers
         // Ord-over-String for max_of/maximum and Ints via the same `sort`.
         let client = r#"
-import ord
+import cmp
 import string
 
 fn build(s: String) -> String:
@@ -6090,15 +6378,15 @@ fn build(s: String) -> String:
 
 fn main(console: Console):
     let words = [build("pear"), build("apple"), build("fig"), build("apple")]
-    print(console, string.join(ord.sort(words), ","))
-    print(console, string.join(ord.sort(["c", "a", "b"]), ""))
-    print(console, ord.max_of(build("alpha"), build("omega")))
-    print(console, ord.maximum([build("x"), build("a"), build("m")], ""))
-    let nums = ord.sort([3, 1, 2, 1])
+    print(console, string.join(cmp.sort(words), ","))
+    print(console, string.join(cmp.sort(["c", "a", "b"]), ""))
+    print(console, cmp.max_of(build("alpha"), build("omega")))
+    print(console, cmp.maximum([build("x"), build("a"), build("m")], ""))
+    let nums = cmp.sort([3, 1, 2, 1])
     print(console, __render((list.at(nums, 0) + (list.at(nums, 3) * 10))))
 "#;
         let sources = [
-            ("ord", crate::bundled_module("ord").unwrap()),
+            ("cmp", crate::bundled_module("cmp").unwrap()),
             ("string", crate::bundled_module("string").unwrap()),
             ("main", client),
         ];
@@ -8928,7 +9216,7 @@ fn main(console: Console):
     #[test]
     fn largest_example_agrees_on_both_backends() {
         let client = std::fs::read_to_string("examples/largest/src/largest.witchy").unwrap();
-        let sources = [("ord", crate::bundled_module("ord").unwrap()), ("main", client.as_str())];
+        let sources = [("cmp", crate::bundled_module("cmp").unwrap()), ("main", client.as_str())];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
         let compiled = run_linked_on_wasm(&sources, "main");
         assert_eq!(interpreted, compiled, "largest diverged");
@@ -9052,12 +9340,13 @@ fn main(console: Console):
             vec!["examples/data/sample_rune.witchy demands: Dir[Read], Net[Connect]"]
         );
         assert_eq!(code, 0);
-        // pm reads/writes project files, prints, and `add` fetches over the
-        // network — Console, Dir, Net. `compiler.*` is a host introspection
-        // intrinsic, not a runtime capability.
+        // pm reads/writes project files, prints, `add` fetches over the network,
+        // `run` drives the compiler via Exec, and `publish` reads COVEN_ID_TOKEN
+        // via Env — Console, Dir, Env, Exec, Net. `compiler.*` is a host
+        // introspection intrinsic, not a runtime capability.
         let src = std::fs::read_to_string("projects/pm/src/pm.witchy").unwrap();
         let fp = crate::capabilities::analyze(&parser::parse_module(&src).expect("parse"));
-        assert_eq!(crate::capabilities::show_caps(&fp.total), "Console, Dir, Net");
+        assert_eq!(crate::capabilities::show_caps(&fp.total), "Console, Dir, Env, Exec, Net");
     }
 
     /// `pm guard <old> <new>` is the supply-chain gate: it asks `compiler.diff`
@@ -9187,8 +9476,8 @@ fn main(console: Console):
             vec![
                 "name:     pm",
                 "version:  0.1.0",
-                "declared: Console, Dir, Net",
-                "actual:   Console, Dir, Net",
+                "declared: Console, Dir, Net, Exec, Env",
+                "actual:   Console, Dir, Env, Exec, Net",
             ]
         );
         assert_eq!(code, 0);
@@ -12544,33 +12833,46 @@ fn main(console: Console):
         assert_eq!(compiled, vec!["42", "N"]);
     }
 
-    // The standard `Ord` trait: `import ord` brings comparison polymorphism into
-    // scope. The built-in Int impl, a user type implementing only `compare`, and
-    // the derived default methods (`less`/`greater`/`equal`) all work, and both
-    // backends agree.
+    // The standard comparison hierarchy: `import cmp` brings the `PartialEq` ->
+    // `Eq` -> `PartialOrd` -> `Ord` traits into scope. The built-in Int impl, a
+    // user type implementing the hierarchy, the `Ordering` result of `compare`,
+    // the `PartialOrd` default methods (`less`/`greater`/`greater_equal`), and
+    // `Float` being only `PartialOrd` (so `less` works, `compare` does not) all
+    // hold, and both backends agree.
     #[test]
     fn std_ord_trait_backends_agree() {
         let client = r#"
-import ord
+import cmp
 
 type Money:
     Money(Int)
 
-impl Ord for Money:
-    fn compare(self, other: Money) -> Int:
+impl PartialEq for Money:
+    fn eq(self, other: Money) -> Bool:
         match self:
             Money(a) -> match other:
-                Money(b) -> if (a < b): (-1) else: if (a > b): 1 else: 0
+                Money(b) -> a == b
+
+impl Eq for Money
+
+impl PartialOrd for Money:
+    fn partial_compare(self, other: Money) -> Option(Ordering):
+        Some(compare(self, other))
+
+impl Ord for Money:
+    fn compare(self, other: Money) -> Ordering:
+        match self:
+            Money(a) -> match other:
+                Money(b) -> if (a < b): Less else: if (a > b): Greater else: Equal
 
 fn main(console: Console):
     print(console, __render(compare(3, 5)))
     print(console, __render(less(3, 5)))
     print(console, __render(greater_equal(5, 5)))
-    print(console, __render(compare(1.5, 0.5)))
     print(console, __render(less(1.5, 2.5)))
     print(console, __render(compare(Money(10), Money(4))))
     print(console, __render(greater(Money(10), Money(4))))
-    print(console, __render(equal(Money(7), Money(7))))
+    print(console, __render(eq(Money(7), Money(7))))
 "#;
         let sources = [("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
@@ -12578,8 +12880,62 @@ fn main(console: Console):
         assert_eq!(interpreted, compiled, "std Ord diverged");
         assert_eq!(
             compiled,
-            vec!["-1", "true", "true", "1", "true", "1", "true", "true"]
+            vec!["Less", "true", "true", "true", "Greater", "true", "true"]
         );
+    }
+
+    // The comparison OPERATORS (`== != < > <= >=`) desugar through the derived
+    // PartialEq/PartialOrd impls of a user record — no named `eq`/`less` call —
+    // and both backends agree. Also covers the `Ordering` result of `compare`,
+    // `cmp.reverse`, and `cmp.sort` over the user type.
+    #[test]
+    fn comparison_operators_dispatch_on_user_types() {
+        let src = "import cmp\n\ntype Coord derive(PartialEq, Eq, PartialOrd, Ord):\n    x: Int\n    y: Int\n\nfn main(console: Console):\n    let a = Coord(1, 2)\n    let b = Coord(1, 5)\n    print(console, \"${a == a} ${a == b} ${a != b}\")\n    print(console, \"${a < b} ${b > a} ${a <= a} ${b >= b}\")\n    print(console, __render(compare(a, b)))\n    print(console, __render(cmp.reverse(compare(a, b))))\n    print(console, \"${cmp.sort([Coord(2, 0), Coord(1, 9), Coord(1, 1)])}\")\n";
+        let want: Vec<String> = [
+            "true false true",
+            "true true true true",
+            "Less",
+            "Greater",
+            "[Coord(1, 1), Coord(1, 9), Coord(2, 0)]",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        assert_eq!(link_run(src), want, "interpreter");
+        assert_eq!(wasm_run(src), want, "wasm");
+    }
+
+    // `Float` implements `PartialEq` + `PartialOrd` only (NaN is unequal to itself
+    // and unordered), so the operators work but an `Ord`-bounded helper rejects
+    // `List(Float)` at check time — Float is not totally ordered.
+    #[test]
+    fn float_is_partial_ord_not_ord() {
+        let ok = "import cmp\n\nfn main(console: Console):\n    print(console, \"${1.5 < 2.5} ${2.5 == 2.5} ${2.5 != 1.5}\")\n";
+        assert_eq!(link_run(ok), vec!["true true true".to_string()], "Float PartialOrd works");
+
+        let bad = "import cmp\n\nfn main(console: Console):\n    print(console, \"${cmp.sort([3.0, 1.0, 2.0])}\")\n";
+        let module = parser::parse_module(bad).expect("parse");
+        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        let err = typeck::check(&linked).expect_err("Float is not Ord — cmp.sort must reject it").message;
+        assert!(err.contains("Ord"), "error should mention Ord: {err}");
+    }
+
+    // A user supertrait hierarchy (`trait Derived: Base`): a `where a: Derived`
+    // bound discharges the SUPERTRAIT's methods too, so the body calls both
+    // `base` (declared on `Base`) and `derived`. Both backends agree.
+    #[test]
+    fn supertrait_methods_resolve_through_bound() {
+        let src = "trait Base:\n    fn base(self) -> Int\n\ntrait Derived: Base:\n    fn derived(self) -> Int\n\ntype W:\n    W(Int)\n\nimpl Base for W:\n    fn base(self) -> Int:\n        match self:\n            W(n) -> n\n\nimpl Derived for W:\n    fn derived(self) -> Int:\n        match self:\n            W(n) -> n * 2\n\nfn use_it(x: a) -> Int where a: Derived:\n    base(x) + derived(x)\n\nfn main(console: Console):\n    print(console, __render(use_it(W(5))))\n";
+        let want = vec!["15".to_string()];
+        assert_eq!(link_run(src), want, "interpreter");
+        assert_eq!(wasm_run(src), want, "wasm");
+
+        // Omitting the supertrait impl is a loud check error.
+        let bad = "trait Base:\n    fn base(self) -> Int\n\ntrait Derived: Base:\n    fn derived(self) -> Int\n\ntype W:\n    W(Int)\n\nimpl Derived for W:\n    fn derived(self) -> Int:\n        match self:\n            W(n) -> n\n\nfn main(console: Console):\n    print(console, \"x\")\n";
+        let module = parser::parse_module(bad).expect("parse");
+        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        let err = typeck::check(&linked).expect_err("missing supertrait impl must be rejected").message;
+        assert!(err.contains("Base"), "error should name the missing supertrait: {err}");
     }
 
     // The standard `Show` trait: `show` renders built-in types and any user type
@@ -12618,16 +12974,28 @@ fn main(console: Console):
     #[test]
     fn generic_bounds_backends_agree() {
         let client = r#"
-import ord
+import cmp
 
 type Box:
     Box(Int)
 
-impl Ord for Box:
-    fn compare(self, other: Box) -> Int:
+impl PartialEq for Box:
+    fn eq(self, other: Box) -> Bool:
         match self:
             Box(a) -> match other:
-                Box(b) -> if (a < b): (-1) else: if (a > b): 1 else: 0
+                Box(b) -> a == b
+
+impl Eq for Box
+
+impl PartialOrd for Box:
+    fn partial_compare(self, other: Box) -> Option(Ordering):
+        Some(compare(self, other))
+
+impl Ord for Box:
+    fn compare(self, other: Box) -> Ordering:
+        match self:
+            Box(a) -> match other:
+                Box(b) -> if (a < b): Less else: if (a > b): Greater else: Equal
 
 fn pick_max(x: a, y: a) -> a where a: Ord:
     if greater(x, y):
@@ -12658,27 +13026,39 @@ fn main(console: Console):
     #[test]
     fn std_ord_generics_backends_agree() {
         let client = r#"
-import ord
+import cmp
 
 type Box:
     Box(Int)
 
-impl Ord for Box:
-    fn compare(self, other: Box) -> Int:
+impl PartialEq for Box:
+    fn eq(self, other: Box) -> Bool:
         match self:
             Box(a) -> match other:
-                Box(b) -> if (a < b): (-1) else: if (a > b): 1 else: 0
+                Box(b) -> a == b
+
+impl Eq for Box
+
+impl PartialOrd for Box:
+    fn partial_compare(self, other: Box) -> Option(Ordering):
+        Some(compare(self, other))
+
+impl Ord for Box:
+    fn compare(self, other: Box) -> Ordering:
+        match self:
+            Box(a) -> match other:
+                Box(b) -> if (a < b): Less else: if (a > b): Greater else: Equal
 
 fn unbox(b: Box) -> Int:
     match b:
         Box(n) -> n
 
 fn main(console: Console):
-    print(console, __render(ord.max_of((-5), 3)))
-    print(console, __render(ord.min_of(8, 2)))
-    print(console, __render(ord.clamp(10, 0, 5)))
-    print(console, __render(ord.clamp(0, 3, 9)))
-    print(console, __render(unbox(ord.max_of(Box(4), Box(11)))))
+    print(console, __render(cmp.max_of((-5), 3)))
+    print(console, __render(cmp.min_of(8, 2)))
+    print(console, __render(cmp.clamp(10, 0, 5)))
+    print(console, __render(cmp.clamp(0, 3, 9)))
+    print(console, __render(unbox(cmp.max_of(Box(4), Box(11)))))
 "#;
         let sources = [("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
@@ -12687,34 +13067,46 @@ fn main(console: Console):
         assert_eq!(compiled, vec!["3", "2", "5", "3", "11"]);
     }
 
-    // Bounds through `List(a)`: a generic over a collection. `ord.maximum` /
-    // `ord.minimum` are bounded generics taking `List(a) where a: Ord`,
+    // Bounds through `List(a)`: a generic over a collection. `cmp.maximum` /
+    // `cmp.minimum` are bounded generics taking `List(a) where a: Ord`,
     // monomorphized by the list's element type; the trait call inside resolves
     // via the for-loop variable's element type. Exercised over Int (incl. an
     // empty list -> default) and a user Box type. Both backends agree.
     #[test]
     fn generic_over_list_backends_agree() {
         let client = r#"
-import ord
+import cmp
 
 type Box:
     Box(Int)
 
-impl Ord for Box:
-    fn compare(self, other: Box) -> Int:
+impl PartialEq for Box:
+    fn eq(self, other: Box) -> Bool:
         match self:
             Box(a) -> match other:
-                Box(b) -> if (a < b): (-1) else: if (a > b): 1 else: 0
+                Box(b) -> a == b
+
+impl Eq for Box
+
+impl PartialOrd for Box:
+    fn partial_compare(self, other: Box) -> Option(Ordering):
+        Some(compare(self, other))
+
+impl Ord for Box:
+    fn compare(self, other: Box) -> Ordering:
+        match self:
+            Box(a) -> match other:
+                Box(b) -> if (a < b): Less else: if (a > b): Greater else: Equal
 
 fn unbox(b: Box) -> Int:
     match b:
         Box(n) -> n
 
 fn main(console: Console):
-    print(console, __render(ord.maximum([3, 7, 2, 9, 4], 0)))
-    print(console, __render(ord.minimum([3, 7, 2, 9, 4], 100)))
-    print(console, __render(ord.maximum([], 42)))
-    print(console, __render(unbox(ord.maximum([Box(2), Box(8), Box(5)], Box(0)))))
+    print(console, __render(cmp.maximum([3, 7, 2, 9, 4], 0)))
+    print(console, __render(cmp.minimum([3, 7, 2, 9, 4], 100)))
+    print(console, __render(cmp.maximum([], 42)))
+    print(console, __render(unbox(cmp.maximum([Box(2), Box(8), Box(5)], Box(0)))))
 "#;
         let sources = [("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");

@@ -110,10 +110,20 @@ pub struct Capabilities {
     /// `None` denies the filesystem entirely; the `dir_read`/`dir_write` flags
     /// pick which operation families are linked within it.
     pub dir_root: Option<std::path::PathBuf>,
+    /// Additional `Dir` grants beyond handle 0, for a `main` that takes several
+    /// `Dir` parameters (positional: the i-th `Dir` param maps to handle `i`).
+    /// Handle 0 is `dir_root`; these back handles 1.. in order. They share the
+    /// `dir_read`/`dir_write` rights of the grant. See rfcs/0004-self-hosted-cli.md.
+    pub dir_roots: Vec<std::path::PathBuf>,
     /// May read within `dir_root` (read/exists/is_dir/list/subdir).
     pub dir_read: bool,
     /// May write within `dir_root` (write/make_dir).
     pub dir_write: bool,
+    /// May spawn a native subprocess via `exec` (an `Exec` capability). The
+    /// executable is named + confined through a `Dir[Read]` handle, so `exec`
+    /// without filesystem read is useless — but the flag is tracked separately so
+    /// `Exec` appears as its own authority. See rfcs/0004-self-hosted-cli.md.
+    pub exec: bool,
     /// The `host:port` allowlist backing the root `Net` capability (handle 0).
     /// `None` denies the network entirely; the verb flags below pick which
     /// operation families are linked within it.
@@ -301,7 +311,12 @@ impl Runtime {
         let limits = StoreLimitsBuilder::new()
             .memory_size(memory_pages_max * 64 * 1024)
             .build();
-        let dirs = caps.dir_root.iter().cloned().collect();
+        let dirs = caps
+            .dir_root
+            .iter()
+            .cloned()
+            .chain(caps.dir_roots.iter().cloned())
+            .collect();
         let nets = caps.net_allow.iter().cloned().collect();
         let state = VmState {
             id,
@@ -395,6 +410,11 @@ pub(crate) fn link_capability_imports(
         linker.func_wrap("witchy", "dir_write", host_dir_write)?;
         linker.func_wrap("witchy", "dir_append", host_dir_append)?;
         linker.func_wrap("witchy", "dir_make_dir", host_dir_make_dir)?;
+    }
+    // The Exec capability: spawn a confined subprocess. The executable is named
+    // through a `Dir[Read]` handle, so `exec_run` reuses `dir_base`/`confine`.
+    if caps.exec {
+        linker.func_wrap("witchy", "exec_run", host_exec_run)?;
     }
     // The Net family, linked per VERB right. Socket I/O carries no authority
     // of its own (a socket is only obtainable through a granted connect or
@@ -880,6 +900,52 @@ fn host_dir_read_len(mut caller: Caller<'_, VmState>, h: i32, rel_ptr: i32) -> R
     Ok(len)
 }
 
+/// `exec_run(h, path, args, stdin) -> byte length`: spawn the executable named by
+/// `path` within Dir handle `h` (confined like `dir_read`), passing `args` (a
+/// single `\0`-joined argv string) and `stdin`. Captures the child's stdout+stderr
+/// and stages a payload `"<exit_code>\n<stdout><stderr>"`, reporting its byte
+/// length; the guest allocates and calls `fill_pending`. Mirrors `dir_read_len`'s
+/// two-phase protocol so both backends produce identical results. Needs `Exec`.
+fn host_exec_run(
+    mut caller: Caller<'_, VmState>,
+    h: i32,
+    path_ptr: i32,
+    args_ptr: i32,
+    stdin_ptr: i32,
+) -> Result<i32> {
+    let mem = memory_of(&mut caller)?;
+    let data = mem.data(&caller);
+    let path = read_wstr(data, path_ptr)?;
+    let joined = read_wstr(data, args_ptr)?;
+    let stdin = read_wstr(data, stdin_ptr)?;
+    let base = dir_base(&caller, h)?;
+    let prog = confine(crate::confine::resolve(&base, &path))?;
+    let argv: Vec<&str> = if joined.is_empty() { Vec::new() } else { joined.split('\0').collect() };
+    use std::io::Write as _;
+    use std::process::{Command, Stdio};
+    let mut child = Command::new(&prog)
+        .args(&argv)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| Error::msg(format!("exec failed to spawn `{}`: {e}", prog.display())))?;
+    if let Some(mut sin) = child.stdin.take() {
+        sin.write_all(stdin.as_bytes())
+            .map_err(|e| Error::msg(format!("exec failed writing stdin to `{}`: {e}", prog.display())))?;
+    }
+    let output = child
+        .wait_with_output()
+        .map_err(|e| Error::msg(format!("exec failed running `{}`: {e}", prog.display())))?;
+    let code = output.status.code().unwrap_or(-1);
+    let out = String::from_utf8_lossy(&output.stdout);
+    let serr = String::from_utf8_lossy(&output.stderr);
+    let payload = format!("{code}\n{out}{serr}");
+    let len = payload.len() as i32;
+    caller.data_mut().pending = Some(payload.into_bytes());
+    Ok(len)
+}
+
 /// `fill_pending(out_ptr)`: write the bytes staged by the matching size call.
 fn host_fill_pending(mut caller: Caller<'_, VmState>, out_ptr: i32) -> Result<()> {
     let bytes = caller
@@ -1097,7 +1163,7 @@ fn host_net_restrict(mut caller: Caller<'_, VmState>, h: i32, addr_ptr: i32) -> 
     let mem = memory_of(&mut caller)?;
     let addr = read_wstr(mem.data(&caller), addr_ptr)?;
     let allow = net_allow(&caller, h)?;
-    if !allow.contains(&addr) {
+    if !crate::capabilities::net_allows(&allow, &addr) {
         bail!("restrict: `{addr}` is not in this Net capability");
     }
     let nets = &mut caller.data_mut().nets;
@@ -1110,10 +1176,9 @@ fn host_net_connect(mut caller: Caller<'_, VmState>, h: i32, addr_ptr: i32) -> R
     let mem = memory_of(&mut caller)?;
     let addr = read_wstr(mem.data(&caller), addr_ptr)?;
     let allow = net_allow(&caller, h)?;
-    if !allow.contains(&addr) {
-        bail!("connect: `{addr}` is not permitted by this Net capability");
-    }
-    let stream = std::net::TcpStream::connect(&addr)
+    let targets = crate::capabilities::resolve_admitted(&allow, &addr)
+        .map_err(|e| Error::msg(format!("connect: {e}")))?;
+    let stream = std::net::TcpStream::connect(targets.as_slice())
         .map_err(|e| Error::msg(format!("connect to `{addr}` failed: {e}")))?;
     let sockets = &mut caller.data_mut().sockets;
     sockets.push(std::io::BufReader::new(stream));
@@ -1129,10 +1194,9 @@ fn host_net_try_connect(mut caller: Caller<'_, VmState>, h: i32, addr_ptr: i32) 
     let mem = memory_of(&mut caller)?;
     let addr = read_wstr(mem.data(&caller), addr_ptr)?;
     let allow = net_allow(&caller, h)?;
-    if !allow.contains(&addr) {
-        bail!("try_connect: `{addr}` is not permitted by this Net capability");
-    }
-    match std::net::TcpStream::connect(&addr) {
+    let targets = crate::capabilities::resolve_admitted(&allow, &addr)
+        .map_err(|e| Error::msg(format!("try_connect: {e}")))?;
+    match std::net::TcpStream::connect(targets.as_slice()) {
         Ok(stream) => {
             let sockets = &mut caller.data_mut().sockets;
             sockets.push(std::io::BufReader::new(stream));
@@ -1147,7 +1211,7 @@ fn host_net_listen(mut caller: Caller<'_, VmState>, h: i32, addr_ptr: i32) -> Re
     let mem = memory_of(&mut caller)?;
     let addr = read_wstr(mem.data(&caller), addr_ptr)?;
     let allow = net_allow(&caller, h)?;
-    if !allow.contains(&addr) {
+    if !crate::capabilities::net_allows(&allow, &addr) {
         bail!("listen: `{addr}` is not permitted by this Net capability");
     }
     let listener = std::net::TcpListener::bind(&addr)

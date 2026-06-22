@@ -124,5 +124,5 @@ the e2e suite drives. What separates it from a production deployment is
 operational, not functional: TLS termination in front of the server, a real
 OIDC issuer (the JWKS adapter for e.g. GitHub Actions is designed but not yet
 built — the demo issuer stands in for it), a TUF root-key ceremony, and
-backups. See [package-manager.md](package-manager.md) §15 for the status
+backups. See [package-manager.md](../rfcs/package-manager.md) §15 for the status
 table.

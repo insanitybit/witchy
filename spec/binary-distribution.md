@@ -60,9 +60,9 @@ browser:  app.wasm + web/witchy-host.js (loader)        host = JS
           ┌────────────────────┼─────────────────────────┐
           ▼                    ▼                          ▼
   capabilities::analyze   CODEGEN (A)                INTERPRETER (B)
-  footprint from source   AST → wasm IR → binary     [feature "oracle", off in wasm32]
+  footprint from source   AST → WIR → binary         [oracle + comptime: not a run path]
   → grant decision        (wasm-encoder)             tree-walks the AST:
-                          │                          parity · run-fallback ·
+                          │                          parity ·
                           ▼                          effectful build · demo
                      app.wasm ──────────► two hosts (native / browser)
                                                  │
@@ -220,41 +220,26 @@ The owner's call (mid-build): **minimize how many backends/modes the compiler ha
 do what's *fastest* to the simple end state. That reframes — and ultimately
 **cancels** — A.
 
-The `wat`-crate removal is not just non-simplifying; measured, it makes codegen
-**more** complex, the opposite of the goal:
-
-- It's a **multi-week atomic rewrite** — the mutually-recursive emission cluster
-  (`compile_expr` ~633, `compile_match` ~1,691, `compile_call` ~1,247,
-  `compile_block` ~256 lines) converts as one block; it cannot be done
-  green-incrementally as one backend.
-- codegen emits **named** locals/funcs/globals (`$main`, `$heap`); the tiny
-  pure-Rust `wat` crate resolves those names to indices. Emitting binary directly
-  via `wasm-encoder` means **adding a name-resolution pass** and hand-rolled
-  section encoding — *more* compiler machinery, replacing a small well-tested
-  assembler.
-- It does **not** change the backend/mode count: it's still one compiled backend.
-
-So "cut WAT" is satisfied where it matters — the distribution **artifact is a
-binary**, and WAT is a simple internal assembly step, not a surfaced format or a
-parallel path. Fully deleting the `wat` crate is **not pursued**: it would add
-complexity for internal purity, against the "fewer ways" goal.
+The `wat` crate has since been removed entirely: codegen lowers the checked AST
+to a structured IR (`WirModule`) and `src/wir_encode.rs` emits the wasm **binary**
+directly via `wasm-encoder` — there is no WAT-text assembly in the run path, and
+`wat` is no longer a direct dependency (it survives only transitively under
+wasmtime).
 
 What a parallel IR backend *did* add was a **third way the compiler emits code**,
 which is the opposite of the goal — so it was removed:
 
-- **Removed** `src/wasm_ir.rs`, `src/codegen_ir.rs`, and the `wasm-encoder` dep (the
-  parallel IR codegen experiment). Back to one compiled backend.
+- **Removed** `src/wasm_ir.rs` and `src/codegen_ir.rs` (the parallel IR codegen
+  experiment). `wasm-encoder` was kept and is now the one binary emitter.
 - **Removed** the `WITCHY_INTERP` run-fallback mode — `witchy run` is the compiled
   backend, full stop; the interpreter is only the oracle + comptime evaluator.
 - **Deferred:** removing the `witchy demo` showcase (~200 lines of the original
-  actor-system/language spike + its helpers). It's a pre-existing minor command,
+  language spike + its helpers). It's a pre-existing minor command,
   not new proliferation — a low-value, mechanical cleanup left for a focused pass.
 
-End state of "fewer ways": **one front-end, one compiled backend (WAT-text→binary
-internally, a tiny pure-Rust assembler), one interpreter used only as the parity
-oracle + comptime evaluator.** If the `wat`-crate removal is ever wanted purely for
-purity, it's the in-place `codegen.rs`→`wasm-encoder` rewrite (do it *in place*, one
-backend — never a second parallel codegen).
+End state of "fewer ways": **one front-end, one compiled backend (AST → WIR →
+wasm binary via `wasm-encoder`), one interpreter used only as the parity oracle
++ comptime evaluator.**
 
 ## Out of scope (separate, additive future work)
 

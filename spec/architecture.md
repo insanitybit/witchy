@@ -34,15 +34,15 @@ effectful build-step executor.
 | `src/lexer.rs` | Tokens, the off-side (indentation) layout pass, string interpolation, duration literals |
 | `src/parser.rs` | Recursive descent with a Pratt expression core; sugar lowering (ranges, `xs[i]`, method calls, comprehensions) |
 | `src/linker.rs` | Combines modules into one flat module with qualified names; bundles the std library (`include_str!`) |
-| `src/typeck.rs` | Annotation-driven checking + HM unification (occurs-checked); capability rights; exhaustiveness; actor message validation |
+| `src/typeck.rs` | Annotation-driven checking + HM unification (occurs-checked); capability rights; exhaustiveness |
 | `src/traits.rs` | Trait desugaring to plain functions; monomorphization of bounded AND unbounded generics for the compiled backend |
-| `src/interpreter.rs` | The reference semantics (parity oracle, `comptime`, test runner, build steps — not a user run path); also the `Dir`/`Net` confinement logic the sandbox reuses |
+| `src/interpreter.rs` | The reference semantics (parity oracle, `comptime`, test runner, build steps — not a user run path); confines its own `Dir`/`Net` effects via the shared `src/confine.rs` |
 | `src/codegen.rs` | Lowers the checked AST to WIR (universal 8-byte value slots, per-shape structural-equality helpers, capability host imports) |
 | `src/wir.rs` | The structured intermediate representation: a typed expression tree with named lexical `Block`/`Loop` labels (no relooper) |
 | `src/wir_encode.rs` | Encodes a `WirModule` to a wasm binary via the `wasm-encoder` crate |
 | `src/wir_opt.rs` | Peephole pass over WIR (cancels redundant slot/kind round-trips) before encoding |
 | `src/wir_prelude.rs` | The runtime helper library (lists, strings, dicts, crypto, …), precompiled once and spliced into each module |
-| `src/runtime.rs` | The wasmtime sandbox: capability-gated host functions over one shared `ActorState`, memory caps, epoch preemption |
+| `src/runtime.rs` | The wasmtime sandbox: capability-gated host functions over one shared `VmState`, memory caps, epoch preemption |
 | `src/capabilities.rs` | The footprint analyzer (`witchy caps`, `caps-diff`) — recomputed from source, never trusted metadata |
 | `src/pm/` | The package manager: manifest/lockfile, resolution, content-addressed store, registry client/server, TUF, signing, the block-on-widening gate |
 | `src/format.rs` | The canonical formatter (comment-preserving, round-trip-verified) |
@@ -95,11 +95,11 @@ lifetimes the compiler can prove (or the user declares):
   the region dies at its end; the block's VALUE escapes by a shape-directed
   copy-out that short-circuits on parent-side data (a passthrough result
   copies zero bytes — asserted in tests via the exported
-  `__region_copy_bytes` counter). See [regions.md](regions.md).
+  `__region_copy_bytes` counter). See [regions.md](../rfcs/regions.md).
 
 On top of reclamation, hot mutation paths avoid allocating at all. The
 **uniqueness pass** (`src/analysis.rs`, design in
-[ownership-analysis.md](ownership-analysis.md)) drives in-place mutation of
+[ownership-analysis.md](../rfcs/ownership-analysis.md)) drives in-place mutation of
 the self-assign accumulation shapes (`xs = list.push(xs, e)`, `s = s <> p`,
 `d = insert/dict.update(d, …)`, `x = f(move x)`) through a runtime ownership
 token: the analysis finds every statement that can create a live whole-alias
@@ -124,7 +124,7 @@ Each program is one wasmtime `Store` (one VM) with its own linear memory and
 its own `Linker`. A capability grant means "this host function is linked";
 everything else is structurally absent — a module importing an ungranted
 function fails at instantiation, before any code runs.
-`link_capability_imports` (over the shared `ActorState`) defines only the
+`link_capability_imports` (over the shared `VmState`) defines only the
 families the grant entitles: a program with no `Console` in its footprint
 physically has no `print` import, and a `Dir[Read]` footprint links the read
 family only. `Dir`/`Net` values compile to i32 handles into a host-side table
@@ -140,7 +140,7 @@ channels lower to a cooperative executor written in pure witchy (`std/task`,
 `std/chan`), so concurrent tasks share one linear memory and one capability
 grant rather than running as separate VMs — and because the scheduler is
 ordinary witchy code, a concurrent run is byte-identical on both backends. See
-[concurrency-design.md](concurrency-design.md).
+[concurrency-design.md](../rfcs/concurrency-design.md).
 
 Trusted computing base: the lexer-to-codegen pipeline, the runtime host
 functions, and wasmtime itself. Microarchitectural side channels (Spectre
@@ -160,7 +160,7 @@ Tracked honestly rather than hidden:
   erasure, so union several shapes into a sum type. Spawned tasks return `Nil`
   and report results over channels (the Go model); a typed `JoinHandle(T)`
   would likewise need erasure. `await` is not yet supported inside a `while`
-  loop or a condition/scrutinee. See [concurrency-design.md](concurrency-design.md).
+  loop or a condition/scrutinee. See [concurrency-design.md](../rfcs/concurrency-design.md).
 - The LSP has diagnostics, completion, and hover — no go-to-definition or
   rename yet.
 - No tracing GC: reclamation is structural (see the memory model above). A

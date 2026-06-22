@@ -61,9 +61,54 @@ fn where_each(params: List(String), trait_name: String) -> String:
 pub fn derive_show(t: TypeInfo) -> String:
     "impl Show for " + target_with_params(t) + where_each(t.params, "Show") + ":\n    fn show(self) -> String:\n        __render(self)\n"
 
-// `derive(Eq)` → deep structural equality (the `==` both backends compute).
+// `derive(Eq)` → the total-equality marker. Refines `PartialEq` (derive both).
 pub fn derive_eq(t: TypeInfo) -> String:
-    "impl Eq for " + target_with_params(t) + where_each(t.params, "Eq") + ":\n    fn eq(self, other: " + target_with_params(t) + ") -> Bool:\n        self == other\n"
+    "impl Eq for " + target_with_params(t) + where_each(t.params, "Eq") + "\n"
+
+// `derive(PartialEq)` → field-wise structural equality. The operators dispatch
+// per field, so it is content-correct on both backends: a record compares each
+// field with `==`; a sum type matches the variant and compares payloads.
+pub fn derive_partial_eq(t: TypeInfo) -> String:
+    let head = "impl PartialEq for " + target_with_params(t) + where_each(t.params, "PartialEq") + ":\n    fn eq(self, other: " + target_with_params(t) + ") -> Bool:\n"
+    if t.kind == "record":
+        head + "        " + record_eq_body(t.fields) + "\n"
+    else:
+        var arms = []
+        for v in t.variants:
+            arms = list.push(arms, variant_eq_arm(v))
+        head + "        match self:\n" + string.join(arms, "\n") + "\n"
+
+// The `&&`-chained field comparison of a record's `eq`, or `true` for a unit.
+fn record_eq_body(fields: List(FieldInfo)) -> String:
+    if list.is_empty(fields):
+        "true"
+    else:
+        var terms = []
+        for f in fields:
+            terms = list.push(terms, "self." + f.name + " == other." + f.name)
+        string.join(terms, " && ")
+
+// One arm of a sum type's `eq`: match `other` against the same variant, compare
+// payloads pairwise, and fail on any other variant.
+fn variant_eq_arm(v: VariantInfo) -> String:
+    var pats = []
+    var opats = []
+    var terms = []
+    var i = 0
+    for ft in v.field_types:
+        pats = list.push(pats, "p${i}")
+        opats = list.push(opats, "o${i}")
+        terms = list.push(terms, "p${i} == o${i}")
+        i = i + 1
+    var selfpat = v.name
+    var otherpat = v.name
+    if list.length(pats) > 0:
+        selfpat = v.name + "(" + string.join(pats, ", ") + ")"
+        otherpat = v.name + "(" + string.join(opats, ", ") + ")"
+    var rhs = "true"
+    if list.length(terms) > 0:
+        rhs = string.join(terms, " && ")
+    "            " + selfpat + " -> match other:\n                " + otherpat + " -> " + rhs + "\n                _ -> false"
 
 // The `reflect`-call for a field/payload of declared type `type_name` applied to
 // the expression text `value` — single-line, dispatched by the type's shape.
@@ -102,12 +147,15 @@ pub fn derive_reflect(t: TypeInfo) -> String:
             arms = list.push(arms, "            " + pat + " -> MVariant(\"" + t.name + "\", \"" + v.name + "\", [" + string.join(refls, ", ") + "])")
         head + "        match self:\n" + string.join(arms, "\n") + "\n"
 
-// `derive(Ord)` → lexicographic field comparison (records only; the caller validates).
-pub fn derive_ord(t: TypeInfo) -> String:
+// The lexicographic if/else chain shared by `derive(Ord)` and `derive(PartialOrd)`:
+// compare fields in declaration order via the operators (which dispatch to each
+// field type's impl), yielding `lt`/`gt`/`eq` (wrapped in `Some` for the partial
+// variant).
+fn lexicographic_body(fields: List(FieldInfo), lt: String, gt: String, eq: String) -> String:
     var arms = []
-    for f in t.fields:
-        arms = list.push(arms, "self." + f.name + " < other." + f.name + ": -1")
-        arms = list.push(arms, "self." + f.name + " > other." + f.name + ": 1")
+    for f in fields:
+        arms = list.push(arms, "self." + f.name + " < other." + f.name + ": " + lt)
+        arms = list.push(arms, "self." + f.name + " > other." + f.name + ": " + gt)
     var body = ""
     var first = true
     for a in arms:
@@ -116,8 +164,16 @@ pub fn derive_ord(t: TypeInfo) -> String:
             first = false
         else:
             body = body + "        else if " + a + "\n"
-    body = body + "        else: 0\n"
-    "impl Ord for " + target_with_params(t) + where_each(t.params, "Ord") + ":\n    fn compare(self, other: " + target_with_params(t) + ") -> Int:\n" + body
+    body + "        else: " + eq + "\n"
+
+// `derive(Ord)` → lexicographic `compare` returning `Ordering` (records only; the
+// caller validates the shape). Requires the `PartialEq`/`Eq`/`PartialOrd` impls too.
+pub fn derive_ord(t: TypeInfo) -> String:
+    "impl Ord for " + target_with_params(t) + where_each(t.params, "Ord") + ":\n    fn compare(self, other: " + target_with_params(t) + ") -> Ordering:\n" + lexicographic_body(t.fields, "Less", "Greater", "Equal")
+
+// `derive(PartialOrd)` → lexicographic `partial_compare` (records only).
+pub fn derive_partial_ord(t: TypeInfo) -> String:
+    "impl PartialOrd for " + target_with_params(t) + where_each(t.params, "PartialOrd") + ":\n    fn partial_compare(self, other: " + target_with_params(t) + ") -> Option(Ordering):\n" + lexicographic_body(t.fields, "Some(Less)", "Some(Greater)", "Some(Equal)")
 
 // The element type inside `List(X)` / `Option(X)` — `after_prefix("List(String)",
 // "List(")` is "String" (strips the prefix and the trailing ")").

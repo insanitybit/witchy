@@ -9,8 +9,8 @@ has the precise semantics; this is the cheat sheet.
 |---|---|
 | `+ - * / %` | arithmetic; `+` on two Strings concatenates; `Int` wraps on overflow; `/0` and `%0` are runtime errors |
 
-| `== !=` | structural (deep) equality |
-| `< <= > >=` | ordering — `Int`/`Float`/`String`/`Duration` only |
+| `== !=` | equality — structural for built-ins, else the type's `PartialEq` impl (`eq`/`ne`) |
+| `< <= > >=` | ordering via the type's `PartialOrd` impl (built in for `Int`/`Float`/`String`/`Duration`; derive or implement it for your own) |
 | `&& \|\|` | short-circuit boolean and/or |
 | `!` | boolean not |
 | `& \| ^ ~ << >>` | bitwise on `Int` (shift counts masked to 6 bits) |

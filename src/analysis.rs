@@ -249,7 +249,7 @@ impl Summaries {
             }
         }
         // The own-ABI: decided AFTER the alias fixpoint, identically wherever
-        // this module compiles (the driver and each actor module must agree
+        // this module compiles (callers and the definition must agree
         // on every function's signature).
         for (name, f) in &bodies {
             let owns: Vec<usize> = f

@@ -19,7 +19,7 @@ always current — is
 |---|---|
 | `list` *(prelude)* | `map`, `filter`, `fold`, `zip`, `sort`, … |
 | `dict` *(prelude)* | map operations over `Dict(k, v)` |
-| `set` | the `Set(a)` type — distinct values, `union`/`intersection`/`difference`, `for x in set` iteration, and `let s: Set(Int) = iter.collect(it)` (its `FromIterator` is a conditional impl `where a: Eq`) |
+| `set` | the `Set(a)` type — distinct values, `union`/`intersection`/`difference`, `for x in set` iteration, and `let s: Set(Int) = iter.collect(it)` (its `FromIterator` is a conditional impl `where a: Eq`). Render a set with `set.show(s)` (`{1, 2, 3}`); `Set` is a *generic record*, so `"${s}"` interpolation works on the interpreter but not the compiled backend — use `set.show`. |
 | `string` *(prelude)* | `split`, `lines`, `join`, `trim`, case, search, … |
 | `path` | path-*string* manipulation (join, normalize, base/dir/ext) — pure; the `Dir`-using half lives in `fs` |
 | `iter` | lazy iterator combinators (`take`, `collect`, …) |
@@ -37,7 +37,7 @@ to_ms` finds `duration.to_milliseconds`.
 
 | Module | What it gives you |
 |---|---|
-| `json` | parse and encode JSON — `json.decode(s)` returns the `Json` sum type; `derive(Json)` on a record generates `to_json` |
+| `json` | parse and encode JSON — `json.decode(s)` returns the `Json` sum type; `json.stringify(x)` / `json.value_of(x)` encode *any* value reflectively (give your own types `derive(Reflect)`); `derive(Deserialize)` generates `from_json` to parse a record back. There is no `derive(Json)`. |
 | `csv` | RFC 4180 CSV |
 | `toml` | TOML parsing |
 | `url` | URL parsing |
@@ -52,7 +52,7 @@ to_ms` finds `duration.to_milliseconds`.
 | `random` | seeded pseudo-random numbers |
 | `time` / `duration` | civil UTC date-times: `parse_iso8601`, `iso8601`, strftime-style `format`, validated `civil(...)`; `Duration` helpers |
 | `semver` | version parsing and comparison |
-| `eq` / `ord` / `show` | the comparison/ordering/display traits and generic algorithms |
+| `cmp` / `show` | the comparison hierarchy (`PartialEq`/`Eq`/`PartialOrd`/`Ord`, backing `== != < > <= >=`) and display trait, plus generic algorithms (`cmp.sort`, `cmp.max_of`, `cmp.member`, …) |
 | `ascii` | ASCII classification |
 
 ## Capability-gated modules
@@ -75,8 +75,12 @@ chapter.
 
 ## A reminder about portability
 
-Most of the library works on every backend — including rendering whole compound
-values with `${...}` interpolation, which is identical on both. A few
-things are interpreter-only by nature (e.g. Unicode-aware operations the
-WebAssembly backend scopes to ASCII). The compiler tells you — loudly — if you
-use one in code headed for the sandbox, so you never have to guess.
+Most of the library works on every backend — including rendering the built-in
+compound values (lists, tuples, dicts, records, enums) with `${...}`
+interpolation, which is identical on both. A few things are interpreter-only by
+nature: Unicode-aware operations the WebAssembly backend scopes to ASCII, and
+interpolating a *generic record* such as `Set(a)` — for those the module gives
+you an explicit renderer (`set.show(s)`). The compiler stops a program that
+reaches one in code headed for the sandbox, though today that happens at run/
+compile time rather than at `witchy check`, so prefer a quick `witchy <file>`
+run to confirm a program is sandbox-clean.

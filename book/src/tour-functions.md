@@ -76,7 +76,9 @@ between two things.
 
 ## Loops
 
-`for ... in` walks a list, a range (`lo..hi`, half-open), or a dict's views.
+`for ... in` walks a list, a range (`lo..hi`, half-open), or a dict — iterating a
+dict directly binds each key/value pair (`for (k, v) in d:`), or use
+`dict.keys(d)` / `dict.values(d)` / `dict.pairs(d)` for an explicit view.
 `while` loops on a condition. `break` and `continue` work as you'd expect.
 
 ```witchy

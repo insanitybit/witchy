@@ -144,6 +144,58 @@ The stateful server loop: receive a message, run `handler` with the current `sta
 
 Drive `root` (and everything it spawns) to completion on a deterministic round-robin schedule. An async `main` lowers to a single `run` of its body.
 
+## `cmp`
+
+The witchy standard comparison hierarchy, mirroring Rust's `std::cmp`: `PartialEq` → `Eq` → `PartialOrd` → `Ord`. The comparison operators desugar through these traits, so `a == b` and `x < y` work on your own types once you implement (or derive) them — there is no separate `compare`/`greater` to call by name. Built-in impls cover the primitives; `Self` in a method signature stands for the implementing type. Pure and capability-free, like every std module.
+
+#### `type Ordering`
+
+The result of a comparison: `a` is `Less` than, `Equal` to, or `Greater` than `b`. The return of `Ord.compare`, and (wrapped in `Some`) `PartialOrd`.
+
+- `Less`
+- `Equal`
+- `Greater`
+
+#### `fn reverse(o: Ordering) -> Ordering`
+
+Flip an ordering — `Less` <-> `Greater`, `Equal` unchanged — for reverse sorts.
+
+#### `fn max_of(x: a, y: a) -> a where a: Ord`
+
+#### `fn min_of(x: a, y: a) -> a where a: Ord`
+
+#### `fn clamp(x: a, lo: a, hi: a) -> a where a: Ord`
+
+`x` confined to the range [lo, hi].
+
+#### `fn maximum(xs: List(a), default: a) -> a where a: Ord`
+
+The largest element of `xs`, or `default` when `xs` is empty.
+
+#### `fn minimum(xs: List(a), default: a) -> a where a: Ord`
+
+The smallest element of `xs`, or `default` when `xs` is empty.
+
+#### `fn sort(xs: List(a)) -> List(a) where a: Ord`
+
+Sort any list of an `Ord` type ascending — a stable insertion sort that dispatches through the element type's `Ord` impl, so it is content-correct on both backends (Int, String, Duration, or your own `Ord` types) without a caller-supplied comparator. For Ints, `list.sort` is the lighter default.
+
+#### `fn member(xs: List(a), x: a) -> Bool where a: Eq`
+
+Whether `x` is in `xs`, by the element type's `Eq` impl — correct on both backends, unlike a generic `==`-based search reached through a type variable.
+
+#### `fn index_of(xs: List(a), x: a) -> Int where a: Eq`
+
+The index of the first element equal to `x`, or -1 if absent.
+
+#### `fn count(xs: List(a), x: a) -> Int where a: Eq`
+
+How many elements equal `x` (by the element type's `Eq`).
+
+#### `fn unique(xs: List(a)) -> List(a) where a: Eq`
+
+The list with duplicates removed, keeping the first occurrence of each element (by the element type's `Eq`), in original order. The content-correct counterpart to `list.unique`, which compares pointers in compiled code.
+
 ## `compiler`
 
 compiler — witchy's own toolchain, exposed to witchy programs.
@@ -414,27 +466,19 @@ Decode standard base64 back to text (lossy UTF-8); padding/whitespace tolerated.
 
 base64url (no padding; `-`/`_`) of the bytes given as a HEX string. The hex indirection lets binary round-trip through UTF-8 strings — e.g. a WebAuthn `clientDataJSON.challenge` is base64url of the raw challenge bytes.
 
-## `eq`
+## `exec`
 
-The witchy standard `Eq` trait: equality that is correct on both backends.
+The `Exec` capability: spawn a confined native subprocess. The executable is named through a `Dir[Read]` — you can only run a file you can read — so `run` takes both the `Exec` right and the `Dir` the binary lives under. Pure data otherwise; the only authority is the `Exec`/`Dir` it is handed.
 
-The `==` operator works for every type in the interpreter, but in COMPILED code a generic `==` on a non-primitive type (a String or record reached through a type variable) falls back to pointer comparison. An `Eq` impl is a concrete function, and the bounded generics below are monomorphized, so `eq`-based equality is content-correct everywhere. Built-in impls cover Int, Bool, and String; implement `Eq` for your own types to use these. `Self` is the implementing type.
+This wraps the low-level `exec` primitive (which takes a single `\0`-joined argv string and returns a `"<exit_code>\n<output>"` payload) with a `List(String)` argv and a parsed `(Int, String)` result, where `output` is the child's stdout followed by its stderr. See rfcs/0004-self-hosted-cli.md.
 
-#### `fn member(xs: List(a), x: a) -> Bool where a: Eq`
+#### `fn run(e: Exec, dir: Dir[Read], path: String, args: List(String), stdin: String) -> (Int, String)`
 
-Whether `x` is in `xs`, by the element type's Eq impl — correct on both backends, unlike a generic `==`-based search.
+Run `path` (resolved within `dir`) with `args` and `stdin`, returning `(exit_code, output)`.
 
-#### `fn index_of(xs: List(a), x: a) -> Int where a: Eq`
+#### `fn run_args(e: Exec, dir: Dir[Read], path: String, args: List(String)) -> (Int, String)`
 
-The index of the first element equal to `x`, or -1 if absent.
-
-#### `fn count(xs: List(a), x: a) -> Int where a: Eq`
-
-How many elements equal `x` (by the element type's Eq). Correct on both backends, unlike a generic `==` count over non-primitive elements.
-
-#### `fn unique(xs: List(a)) -> List(a) where a: Eq`
-
-The list with duplicates removed, keeping the first occurrence of each element (by the element type's Eq), in original order. The content-correct counterpart to `list.unique`, which compares pointers in compiled code and so fails to dedupe runtime-built strings and records.
+Run `path` with `args` and no stdin — the common case.
 
 ## `fs`
 
@@ -1253,7 +1297,11 @@ A type's structure. `kind` is "record" (one constructor with named fields), "sum
 
 #### `fn derive_eq(t: TypeInfo) -> String`
 
-`derive(Eq)` → deep structural equality (the `==` both backends compute).
+`derive(Eq)` → the total-equality marker. Refines `PartialEq` (derive both).
+
+#### `fn derive_partial_eq(t: TypeInfo) -> String`
+
+`derive(PartialEq)` → field-wise structural equality. The operators dispatch per field, so it is content-correct on both backends: a record compares each field with `==`; a sum type matches the variant and compares payloads.
 
 #### `fn derive_reflect(t: TypeInfo) -> String`
 
@@ -1261,7 +1309,11 @@ A type's structure. `kind` is "record" (one constructor with named fields), "sum
 
 #### `fn derive_ord(t: TypeInfo) -> String`
 
-`derive(Ord)` → lexicographic field comparison (records only; the caller validates).
+`derive(Ord)` → lexicographic `compare` returning `Ordering` (records only; the caller validates the shape). Requires the `PartialEq`/`Eq`/`PartialOrd` impls too.
+
+#### `fn derive_partial_ord(t: TypeInfo) -> String`
+
+`derive(PartialOrd)` → lexicographic `partial_compare` (records only).
 
 #### `fn derive_deserialize(t: TypeInfo) -> String`
 
@@ -1334,32 +1386,6 @@ Combine two options into an option of a pair: `Some((x, y))` only when both are 
 
 Collect a list of Options into an Option of the list: `Some` of every value in order, or `None` if any element is `None`.
 
-## `ord`
-
-The witchy standard `Ord` trait: a total ordering. `compare(a, b)` returns a negative number, zero, or a positive number when `a` is respectively less than, equal to, or greater than `b`. Built-in impls cover `Int` and `Float`; implement `Ord` for your own types to make them comparable — the derived `less`/`greater`/`equal` (and the `_equal` variants) then come for free. Pure and capability-free, like every std module. `Self` in a method signature stands for the implementing type.
-
-#### `fn max_of(x: a, y: a) -> a where a: Ord`
-
-Generic helpers over any `Ord` type — usable as `ord.max_of(a, b)`, etc.
-
-#### `fn min_of(x: a, y: a) -> a where a: Ord`
-
-#### `fn clamp(x: a, lo: a, hi: a) -> a where a: Ord`
-
-`x` confined to the range [lo, hi].
-
-#### `fn maximum(xs: List(a), default: a) -> a where a: Ord`
-
-The largest element of `xs`, or `default` when `xs` is empty.
-
-#### `fn minimum(xs: List(a), default: a) -> a where a: Ord`
-
-The smallest element of `xs`, or `default` when `xs` is empty.
-
-#### `fn sort(xs: List(a)) -> List(a) where a: Ord`
-
-Sort any list of an `Ord` type ascending — a stable insertion sort that dispatches through the element type's `Ord` impl, so it is content-correct on both backends (Int, Float, String, or your own `Ord` types) without a caller-supplied comparator. For Ints, `list.sort` is the lighter default.
-
 ## `path`
 
 path — pure manipulation of '/'-separated path strings.
@@ -1424,9 +1450,9 @@ A uniformly-chosen element of `xs` (None if empty) and the next state.
 
 ## `reflect`
 
-Reflection: a value's structure as data, so one function can work over any type. `reflect(x)` returns a `Mirror` describing `x`: a record's named fields, a sum type's variant, a list's elements, or a scalar. Code that would otherwise need a per-type `derive` (JSON encoding, debug rendering, structural diffing) is written once against `Mirror`. The compiler generates `Reflect` for every type, much like Zig's `@typeInfo`, so `reflect(x)` works without a macro.
+Reflection: a value's structure as data, so one function can work over any type. `reflect(x)` returns a `Mirror` describing `x`: a record's named fields, a sum type's variant, a list's elements, or a scalar. Code that would otherwise need a per-type `derive` (JSON encoding, debug rendering, structural diffing) is written once against `Mirror`. Scalars and the built-in containers (`List`, `Option`, tuples, `Dict`) are reflectable out of the box; a user `type` becomes reflectable when you add `derive(Reflect)` to it (which needs `import reflect`), much like Zig's `@typeInfo` but opt-in per type — so `reflect(x)` / `json.stringify(x)` work without a per-type macro once the type derives it.
 
-`reflect` is a trait method; the compiler generates `impl Reflect for T` for each type, building the `Mirror` from the declared fields and variants. The scalar impls below are the leaves.
+`reflect` is a trait method; `derive(Reflect)` generates `impl Reflect for T`, building the `Mirror` from the declared fields and variants. The scalar impls below are the leaves.
 
 #### `type Mirror`
 
@@ -1987,7 +2013,7 @@ Split on the LAST occurrence of `sep` (e.g. a file extension): `rsplit_once` of 
 
 #### `fn parse_int(s: String) -> Option(Int)`
 
-Safely parse a base-10 integer: an optional leading `-`/`+` then one or more digits. Returns None for empty, sign-only, or non-digit input — so it never traps on bad input the way the raw `string_to_int` builtin can.
+Safely parse a base-10 integer: an optional leading `-`/`+` then one or more digits. Returns None for empty, sign-only, non-digit, or out-of-range (beyond the i64 range) input — so it never traps the way the raw `string_to_int` builtin can.
 
 #### `fn lines(text: String) -> List(String)`
 

@@ -6,7 +6,7 @@ constantly; here they are, roughly in the order you meet them.
 ## Running and checking
 
 ```sh
-witchy program.witchy            # run on the interpreter
+witchy program.witchy            # compile and run
 witchy check program.witchy      # type-check only, don't run (also prints
                                  # performance notes, e.g. copy-path loops)
 witchy fmt program.witchy        # reformat in place (canonical layout)
