@@ -178,17 +178,22 @@ impl Coven:
         require(coven_validate.valid_version(version), 400, "invalid version `" + version + "`")?
         require(!coven_store.record_exists(self.store, name, version), 409, name + "@" + version + " already published — versions are immutable, bump the version")?
         // The publisher identity comes from a verified token (401) that satisfies the
-        // namespace's bound policy (403), never from a client-asserted field.
-        let uploaded_by = self.authorized_publisher(req, now(self.clock) / 1000, name)?
-        self.publish_checked(req.manifest, name, version, uploaded_by, req.files)
+        // namespace's bound policy (403), never from a client-asserted field. The
+        // verified `claims` (None when anonymous) build the SLSA provenance attestation.
+        let (uploaded_by, claims) = self.authorized_publisher(req, now(self.clock) / 1000, name)?
+        self.publish_checked(req.manifest, name, version, uploaded_by, claims, req.files)
 
-    fn publish_checked(self, manifest: String, name: String, version: String, uploaded_by: String, files: List((String, String))) -> Result(Response, CovenError):
+    fn publish_checked(self, manifest: String, name: String, version: String, uploaded_by: String, claims: Option(Json), files: List((String, String))) -> Result(Response, CovenError):
         let computed = coven_footprint.computed_footprint(files)
         let gap = rights.uncovered(toml.get_array(manifest, "capabilities.runtime"), computed)
         require(string.is_empty(string.join(gap, ", ")), 400, "declared [capabilities] does not cover what the source demands (" + string.join(gap, ", ") + ") — coven recomputes and will not publish an under-declared rune")?
         let hash = coven_store.content_hash(files)
         coven_store.store_source(self.store, name, version, files)
-        let provenance = "uploader=" + uploaded_by + "|hash=" + hash
+        // Trusted (claims present): a SLSA provenance attestation bound to the verified
+        // identity + digest. Anonymous: the uploader/hash fallback.
+        let provenance = match claims:
+            Some(c) -> coven_trust.attestation(c, hash, now(self.clock) / 1000)
+            None -> "uploader=" + uploaded_by + "|hash=" + hash
         let rec = coven_record.sign_record(self.key, name, version, Staged, hash, computed, uploaded_by, "", "", provenance, 0)
         coven_store.write_record(self.store, name, version, rec)
         self.rebuild_metadata()
@@ -214,7 +219,10 @@ impl Coven:
         coven_store.write_record(self.store, name, version, signed)
         self.rebuild_metadata()
         let delta = rights.uncovered(coven_store.latest_released_footprint(self.store, name, version), rec.runtime_footprint)
-        Ok(server.send(200, .{record: coven_json.or_null(signed), separation_of_duties: true, delta_runtime: delta}))
+        // `delta_build` is always empty (coven never has build footprints — `build=` is
+        // hard-empty); present for wire-shape parity with the Rust PromoteResp.
+        let delta_build: List(String) = []
+        Ok(server.send(200, .{record: coven_json.or_null(signed), separation_of_duties: true, delta_runtime: delta, delta_build: delta_build}))
 
     fn route_yank(self) -> fn(Request) -> Response:
         // POST /coven/yank : exclude from new resolutions (re-sign the same fields yanked).
@@ -246,16 +254,18 @@ impl Coven:
         // protection); the role construction + canonical signing lives in coven_meta.
         coven_meta.rebuild(self.store, self.key, now(self.clock) / 1000)
 
-    fn authorized_publisher(self, req: PublishRequest, now: Int, name: String) -> Result(String, CovenError):
+    fn authorized_publisher(self, req: PublishRequest, now: Int, name: String) -> Result((String, Option(Json)), CovenError):
         // --- authorization: bind identity tokens to the namespace's trust state ------
-        // The authorized publisher (claims.sub). Anonymous (no trusted issuers): fall
-        // back to the client-asserted `uploaded_by`. Trusted: the token must verify (401)
-        // AND satisfy the namespace's policy (403); the first trusted publish binds it.
+        // The authorized publisher (claims.sub) plus the verified claims (for the SLSA
+        // attestation). Anonymous (no trusted issuers): fall back to the client-asserted
+        // `uploaded_by`, no claims. Trusted: the token must verify (401) AND satisfy the
+        // namespace's policy (403); the first trusted publish binds it.
         if list.length(self.issuers) == 0:
-            Ok(req.uploaded_by || "anonymous")
+            Ok((req.uploaded_by || "anonymous", None))
         else:
             let claims = verified_claims(self.issuers, req.id_token, now, "publishing to a trusted registry requires a short-lived identity token (long-lived API tokens are not accepted)")?
-            self.authorize_publish(name, claims)
+            let sub = self.authorize_publish(name, claims)?
+            Ok((sub, Some(claims)))
 
     fn authorize_publish(self, name: String, claims: Json) -> Result(String, CovenError):
         let ns = coven_trust.namespace_of(name)

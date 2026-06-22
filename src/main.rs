@@ -449,6 +449,137 @@ fn main() -> wasmtime::Result<()> {
             }
         }
     }
+    // `witchy coven-serve [--addr H:P] [--root DIR] [--trust-issuer iss=pubhex]...
+    // [--signing-key <seed>] [--secret-file signing=<path>]` runs the EMBEDDED witchy
+    // registry server (projects/coven/src/coven.witchy) — the self-hosted coven, itself
+    // written in witchy and bundled into the toolchain like std + the `pm` front-end.
+    // It runs capability-confined: Console, Net (the listen addr), the registry `Dir`
+    // (handle 0), a `SecretStore` holding the root signing key, and a Clock. coven uses
+    // `compiler.footprint` + the blocking accept loop, so it runs on the interpreter —
+    // exactly like the `witchy pm` bootstrap above. This replaces the Rust `coven-serve`
+    // (rfcs/0004-self-hosted-cli.md Phase 5); the IdP helpers `coven-gen-issuer` /
+    // `coven-mint-token` stay on the Rust path (test-only key tooling).
+    if std::env::args().nth(1).as_deref() == Some("coven-serve") {
+        use std::collections::{HashSet, VecDeque};
+        let mut addr = "127.0.0.1:8787".to_string();
+        let mut root: Option<std::path::PathBuf> = None;
+        let mut issuers: Vec<String> = Vec::new();
+        let mut signing_key: Option<[u8; 32]> = None;
+        let mut argv = std::env::args().skip(2);
+        while let Some(a) = argv.next() {
+            match a.as_str() {
+                "--addr" => match argv.next() {
+                    Some(v) => addr = v,
+                    None => { eprintln!("--addr needs a host:port"); std::process::exit(1); }
+                },
+                "--root" => match argv.next() {
+                    Some(v) => root = Some(std::path::PathBuf::from(v)),
+                    None => { eprintln!("--root needs a directory"); std::process::exit(1); }
+                },
+                "--trust-issuer" => match argv.next() {
+                    // `iss=pubhex`, passed verbatim to coven as a trailing arg.
+                    Some(v) => issuers.push(v),
+                    None => { eprintln!("--trust-issuer needs iss=pubhex"); std::process::exit(1); }
+                },
+                "--signing-key" => match argv.next() {
+                    Some(file) => match load_signing_seed(&file) {
+                        Ok(seed) => signing_key = Some(seed),
+                        Err(e) => { eprintln!("--signing-key: {e}"); std::process::exit(1); }
+                    },
+                    None => { eprintln!("--signing-key needs a <seed-file>"); std::process::exit(1); }
+                },
+                // `--secret-file signing=<path>` is the general form; coven only needs
+                // its `signing` secret, which the interpreter seeds from `signing_key`.
+                "--secret-file" => match argv.next() {
+                    Some(spec) => match spec.split_once('=') {
+                        Some(("signing", path)) => match load_signing_seed(path) {
+                            Ok(seed) => signing_key = Some(seed),
+                            Err(e) => { eprintln!("--secret-file signing: {e}"); std::process::exit(1); }
+                        },
+                        _ => { eprintln!("coven-serve only accepts `--secret-file signing=<path>`"); std::process::exit(1); }
+                    },
+                    None => { eprintln!("--secret-file needs signing=<path>"); std::process::exit(1); }
+                },
+                other => { eprintln!("coven-serve: unknown argument `{other}`"); std::process::exit(1); }
+            }
+        }
+        let Some(root) = root else {
+            eprintln!("coven-serve requires --root <dir>");
+            std::process::exit(1);
+        };
+        if signing_key.is_none() {
+            eprintln!("coven-serve requires --signing-key <seed> (or --secret-file signing=<path>)");
+            std::process::exit(1);
+        }
+        // coven's argv is [addr, "iss1=hex1", ...]; it binds `args[0]` and reads the
+        // rest as `iss=pubhex` trusted issuers (parse_issuers / list.drop(args,1)).
+        let mut coven_args: Vec<String> = vec![addr.clone()];
+        coven_args.extend(issuers);
+        // The embedded coven source set: the entry plus its 8 server-side siblings.
+        // (coven_client / coven_test are the test client + unit tests — not bundled.)
+        let coven_modules: &[(&str, &str)] = &[
+            ("coven", include_str!("../projects/coven/src/coven.witchy")),
+            ("coven_validate", include_str!("../projects/coven/src/coven_validate.witchy")),
+            ("coven_footprint", include_str!("../projects/coven/src/coven_footprint.witchy")),
+            ("coven_record", include_str!("../projects/coven/src/coven_record.witchy")),
+            ("coven_json", include_str!("../projects/coven/src/coven_json.witchy")),
+            ("coven_store", include_str!("../projects/coven/src/coven_store.witchy")),
+            ("coven_trust", include_str!("../projects/coven/src/coven_trust.witchy")),
+            ("coven_proto", include_str!("../projects/coven/src/coven_proto.witchy")),
+            ("coven_meta", include_str!("../projects/coven/src/coven_meta.witchy")),
+        ];
+        let link_result = (|| -> Result<ast::Module, String> {
+            let embedded: std::collections::HashMap<&str, &str> = coven_modules.iter().copied().collect();
+            let mut modules: Vec<(String, ast::Module)> = Vec::new();
+            let mut loaded: HashSet<String> = HashSet::new();
+            let mut queue: VecDeque<(String, String)> = VecDeque::new();
+            queue.push_back(("coven".to_string(), embedded["coven"].to_string()));
+            while let Some((name, source)) = queue.pop_front() {
+                if !loaded.insert(name.clone()) {
+                    continue;
+                }
+                let module = parser::parse_module(&source).map_err(|e| format!("{name}: {e}"))?;
+                for imp in &module.imports {
+                    if loaded.contains(imp) {
+                        continue;
+                    }
+                    // A coven_* sibling resolves from the embedded set; everything else
+                    // (server, json, crypto, ...) is a bundled std module.
+                    match embedded.get(imp.as_str()) {
+                        Some(s) => queue.push_back((imp.clone(), s.to_string())),
+                        None => match bundled_module(imp) {
+                            Some(s) => queue.push_back((imp.clone(), s.to_string())),
+                            None => return Err(format!("embedded coven imports `{imp}`, not a bundled or coven module")),
+                        },
+                    }
+                }
+                modules.push((name, module));
+            }
+            linker::link(modules, "coven").map_err(|e| e.to_string())
+        })();
+        let module = match link_result {
+            Ok(m) => m,
+            Err(e) => { eprintln!("{e}"); std::process::exit(1); }
+        };
+        if let Err(e) = typeck::check(&module) {
+            eprintln!("{e}");
+            std::process::exit(1);
+        }
+        // The listen addr is the only Net authority coven is granted.
+        let net_allow = vec![addr];
+        match interpreter::run_module_exit_dirs(module, vec![root], net_allow, coven_args, signing_key) {
+            Ok((lines, code)) => {
+                for l in &lines {
+                    println!("{l}");
+                }
+                std::process::exit(code);
+            }
+            Err(e) => {
+                eprintln!("{}", e.message);
+                std::process::exit(1);
+            }
+        }
+    }
     // `witchy test <file|dir>` runs in-language tests: zero-parameter `test_*`
     // functions, passing unless they abort (std/testing's assertions).
     if std::env::args().nth(1).as_deref() == Some("test") {

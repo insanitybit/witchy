@@ -30,6 +30,15 @@ pub fn namespace_of(name: String) -> String:
 pub fn claim(claims: Json, key: String) -> String:
     json.get(claims, "extra").map(fn(ex: Json): coven_json.str(ex, key)).unwrap_or("")
 
+// A SLSA-style provenance attestation built from the VERIFIED identity-token claims,
+// bound to the content digest and stamped with the verification time (unix seconds).
+// Byte-identical to the Rust `attestation` (src/pm/server.rs): the field order,
+// separators, and `verified_at` units must match so the signed `provenance` is the
+// same bytes — a record published here verifies under the Rust verifier, and the
+// tamper test that greps the signed record for `trusted-publisher` applies unchanged.
+pub fn attestation(claims: Json, digest: String, now: Int) -> String:
+    "trusted-publisher|issuer=" + coven_json.str(claims, "iss") + "|sub=" + coven_json.str(claims, "sub") + "|repository=" + claim(claims, "repository") + "|workflow_ref=" + claim(claims, "workflow_ref") + "|ref=" + claim(claims, "ref") + "|digest=" + digest + "|verified_at=" + "${now}"
+
 // A JSON string array (e.g. a namespace's maintainers.json) as a list of strings.
 pub fn string_array(text: String) -> List(String):
     json.decode(text).map_ok(fn(doc: Json): json.strings(doc)).unwrap_or([])

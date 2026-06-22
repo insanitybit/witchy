@@ -4,7 +4,6 @@
 //! build, run, audit. Each test is hermetic — its own temp `WITCHY_HOME` and
 //! working tree — so they can run in parallel.
 
-use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 
@@ -25,11 +24,22 @@ struct RegistryServer {
 const ISSUER: &str = "local-idp";
 
 impl RegistryServer {
-    /// Bind to an ephemeral port (`:0`) and discover the actual port from the
-    /// server's startup line — race-free, unlike pre-picking a port.
+    /// Spawn the EMBEDDED witchy registry server (`witchy coven-serve`, running
+    /// projects/coven on the interpreter — rfcs/0004-self-hosted-cli.md Phase 5).
+    /// The witchy coven buffers its startup line until exit (a server never exits),
+    /// so we pre-pick a free port, pass a concrete `127.0.0.1:<port>`, and poll the
+    /// listener — the zero-risk pattern (no `:0`-discovery std/runtime gap).
     fn start() -> RegistryServer {
         let regroot = unique("coven-regroot");
         let home = unique("coven-srv-home");
+        // The root signing key (a fixed test seed) — coven mints its `signing` secret.
+        std::fs::create_dir_all(&regroot).unwrap();
+        let seed = regroot.join("root.seed");
+        std::fs::write(
+            &seed,
+            "0000000000000000000000000000000000000000000000000000000000000001",
+        )
+        .unwrap();
         // Generate the IdP signing key and capture its public key (the JWKS).
         let issuer_dir = unique("coven-issuer");
         let gen_out = Command::new(BIN)
@@ -38,34 +48,42 @@ impl RegistryServer {
             .expect("gen issuer");
         let pubhex = String::from_utf8_lossy(&gen_out.stdout).trim().to_string();
 
-        let mut child = Command::new(BIN)
+        // Pre-pick a free port (the server binds the same addr we pass).
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let addr = format!("127.0.0.1:{port}");
+
+        let child = Command::new(BIN)
             .args([
                 "coven-serve",
                 "--addr",
-                "127.0.0.1:0",
+                &addr,
                 "--root",
                 regroot.to_str().unwrap(),
                 "--trust-issuer",
                 &format!("{ISSUER}={pubhex}"),
+                "--signing-key",
+                seed.to_str().unwrap(),
             ])
             .env("WITCHY_HOME", &home)
-            .stdout(Stdio::piped())
+            .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
             .expect("spawn coven-serve");
 
-        // The server prints "...serving at http://HOST:PORT ..." once bound.
-        let stdout = child.stdout.take().expect("piped stdout");
-        let mut reader = BufReader::new(stdout);
-        let mut line = String::new();
-        reader.read_line(&mut line).expect("read server startup line");
-        let port = line
-            .split("http://")
-            .nth(1)
-            .and_then(|s| s.split_whitespace().next())
-            .and_then(|hostport| hostport.rsplit(':').next())
-            .and_then(|p| p.trim().parse::<u16>().ok())
-            .unwrap_or_else(|| panic!("could not parse server port from: {line:?}"));
+        // Wait for the listener to come up.
+        let mut up = false;
+        for _ in 0..200 {
+            if std::net::TcpStream::connect(&addr).is_ok() {
+                up = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert!(up, "witchy coven-serve never started listening on {addr}");
 
         RegistryServer {
             child,
@@ -387,7 +405,7 @@ fn tuf_chain_verified_and_snapshot_tamper_rejected() {
 
     // Tamper the SERVER's signed snapshot (changing a signed field breaks the
     // snapshot-role signature). Clear the client store so it must re-consult.
-    let snap = server.regroot.join("snapshot.json");
+    let snap = server.regroot.join("registry/snapshot.json");
     let body = std::fs::read_to_string(&snap).unwrap().replace("1.0.0", "1.0.1");
     std::fs::write(&snap, body).unwrap();
     std::fs::remove_dir_all(sb.home.join("store")).ok();
@@ -458,7 +476,7 @@ fn networked_registry_signature_detects_tampering() {
 
     // Tamper a signed field of the record in the SERVER's storage (the
     // provenance attestation is signed, so editing it breaks the signature).
-    let meta = server.regroot.join("acme/xray/1.0.0/coven.json");
+    let meta = server.regroot.join("registry/acme/xray/1.0.0/coven.json");
     let json = std::fs::read_to_string(&meta).unwrap().replace("trusted-publisher", "evil-publisher");
     std::fs::write(&meta, json).unwrap();
 
