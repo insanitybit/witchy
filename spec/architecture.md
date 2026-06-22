@@ -44,7 +44,7 @@ effectful build-step executor.
 | `src/wir_prelude.rs` | The runtime helper library (lists, strings, dicts, crypto, …), precompiled once and spliced into each module |
 | `src/runtime.rs` | The wasmtime sandbox: capability-gated host functions over one shared `VmState`, memory caps, epoch preemption |
 | `src/capabilities.rs` | The footprint analyzer (`witchy caps`, `caps-diff`) — recomputed from source, never trusted metadata |
-| `src/pm/` | The package manager: manifest/lockfile, resolution, content-addressed store, registry client/server, TUF, signing, the block-on-widening gate |
+| `src/idp.rs` | The trusted-publishing IdP *test* simulator (`coven-gen-issuer`/`coven-mint-token`): issuer-key + OIDC-token minting standing in for an external CI identity provider. The package manager itself is self-hosted (see `projects/pm`) |
 | `src/format.rs` | The canonical formatter (comment-preserving, round-trip-verified) |
 | `src/lsp.rs` | Diagnostics language server |
 | `std/` | The standard library, written in witchy |
