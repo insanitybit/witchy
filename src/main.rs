@@ -32,7 +32,7 @@ mod lsp;
 pub use witchy::native;
 pub use witchy::optimize;
 pub use witchy::parser;
-mod pm;
+mod idp;
 pub use witchy::records;
 mod runtime;
 pub use witchy::traits;
@@ -116,6 +116,117 @@ program as `main`'s `args`, including `--help`."
     );
 }
 
+/// The current directory's project entry source file (`src/<module>.witchy`,
+/// where `<module>` is the manifest's rune name with `/`-prefixes stripped and
+/// `-` mapped to `_`), if we're inside a project. Lets file-oriented commands
+/// (`witchy caps`) default to the project entry. Reads the `name = "..."` line
+/// from `witchy.toml` directly so no package-manager code is needed.
+fn project_entry_file() -> Option<String> {
+    let dir = std::path::Path::new(".");
+    let toml = std::fs::read_to_string(dir.join("witchy.toml")).ok()?;
+    let name = toml.lines().find_map(|line| {
+        let line = line.trim();
+        let rest = line.strip_prefix("name")?.trim_start();
+        let rest = rest.strip_prefix('=')?.trim();
+        rest.strip_prefix('"').and_then(|r| r.strip_suffix('"')).map(|s| s.to_string())
+    })?;
+    let module = name.rsplit('/').next().unwrap_or("").replace('-', "_");
+    let path = dir.join("src").join(format!("{module}.witchy"));
+    path.exists().then(|| path.display().to_string())
+}
+
+/// Run the EMBEDDED witchy package-manager front-end (`projects/pm/src/pm.witchy`)
+/// — the cargo-equivalent CLI, itself written in witchy and bundled into the
+/// toolchain like std (rfcs/0004-self-hosted-cli.md). `raw` is the front-end's
+/// argv (everything after the `witchy` subcommand): `--net <host:port>` flags are
+/// extracted into the program's `Net` allowlist, the rest become `main`'s `args`.
+/// It runs capability-confined: Console, the project `Dir` (cwd, handle 0), a
+/// `Dir` to the toolchain bin (handle 1, so it can drive the compiler via `Exec`),
+/// `Net`, `Env`, and its argv. This is the sole entry for the front-end's client
+/// verbs — both `witchy pm <verb>` and the top-level `witchy <verb>` route here.
+fn run_embedded_pm(raw: Vec<String>) -> ! {
+    use std::collections::{HashSet, VecDeque};
+    let mut net_allow: Vec<String> = Vec::new();
+    let mut pm_args: Vec<String> = Vec::new();
+    let mut argv = raw.into_iter();
+    while let Some(a) = argv.next() {
+        if a == "--net" {
+            match argv.next() {
+                Some(addr) => net_allow.push(addr),
+                None => {
+                    eprintln!("--net needs a host:port");
+                    std::process::exit(1);
+                }
+            }
+        } else {
+            pm_args.push(a);
+        }
+    }
+    // Auto-grant Net to the configured registry (COVEN_URL) so registry commands
+    // need no explicit `--net`. The front-end reads COVEN_URL itself (via Env)
+    // when no host:port argument is given.
+    if let Ok(u) = std::env::var("COVEN_URL") {
+        let hp = u
+            .trim_start_matches("http://")
+            .trim_start_matches("https://")
+            .trim_end_matches('/');
+        if !hp.is_empty() {
+            net_allow.push(hp.to_string());
+        }
+    }
+    // Link the embedded front-end against the bundled std modules.
+    let link_result = (|| -> Result<ast::Module, String> {
+        let mut modules: Vec<(String, ast::Module)> = Vec::new();
+        let mut loaded: HashSet<String> = HashSet::new();
+        let mut queue: VecDeque<(String, String)> = VecDeque::new();
+        queue.push_back(("pm".to_string(), include_str!("../projects/pm/src/pm.witchy").to_string()));
+        while let Some((name, source)) = queue.pop_front() {
+            if !loaded.insert(name.clone()) {
+                continue;
+            }
+            let module = parser::parse_module(&source).map_err(|e| format!("{name}: {e}"))?;
+            for imp in &module.imports {
+                if !loaded.contains(imp) {
+                    match bundled_module(imp) {
+                        Some(s) => queue.push_back((imp.clone(), s.to_string())),
+                        None => return Err(format!("embedded front-end imports `{imp}`, not a bundled module")),
+                    }
+                }
+            }
+            modules.push((name, module));
+        }
+        linker::link(modules, "pm").map_err(|e| e.to_string())
+    })();
+    let module = match link_result {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("{e}");
+            std::process::exit(1);
+        }
+    };
+    if let Err(e) = typeck::check(&module) {
+        eprintln!("{e}");
+        std::process::exit(1);
+    }
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let bin = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    match interpreter::run_module_exit_dirs(module, vec![cwd, bin], net_allow, pm_args, None) {
+        Ok((lines, code)) => {
+            for l in &lines {
+                println!("{l}");
+            }
+            std::process::exit(code);
+        }
+        Err(e) => {
+            eprintln!("{}", e.message);
+            std::process::exit(1);
+        }
+    }
+}
+
 fn main() -> wasmtime::Result<()> {
     // `witchy doc <file>...` prints Markdown API docs (one section per file) to
     // stdout — public functions, their signatures, and their doc comments.
@@ -192,7 +303,7 @@ fn main() -> wasmtime::Result<()> {
     if std::env::args().nth(1).as_deref() == Some("caps") {
         let path = match std::env::args().nth(2) {
             Some(p) => p,
-            None => match pm::project_entry_file() {
+            None => match project_entry_file() {
                 Some(p) => p,
                 None => {
                     eprintln!(
@@ -368,86 +479,7 @@ fn main() -> wasmtime::Result<()> {
     // This is the additive bootstrap of rfcs/0004-self-hosted-cli.md §5 — `src/pm`
     // is NOT yet removed; this proves the front-end runs as the embedded CLI.
     if std::env::args().nth(1).as_deref() == Some("pm") {
-        use std::collections::{HashSet, VecDeque};
-        let mut net_allow: Vec<String> = Vec::new();
-        let mut pm_args: Vec<String> = Vec::new();
-        let mut argv = std::env::args().skip(2);
-        while let Some(a) = argv.next() {
-            if a == "--net" {
-                match argv.next() {
-                    Some(addr) => net_allow.push(addr),
-                    None => {
-                        eprintln!("--net needs a host:port");
-                        std::process::exit(1);
-                    }
-                }
-            } else {
-                pm_args.push(a);
-            }
-        }
-        // Auto-grant Net to the configured registry (COVEN_URL), matching the Rust
-        // CLI, so registry commands need no explicit `--net`. The front-end reads
-        // COVEN_URL itself (via Env) when no host:port argument is given.
-        if let Ok(u) = std::env::var("COVEN_URL") {
-            let hp = u
-                .trim_start_matches("http://")
-                .trim_start_matches("https://")
-                .trim_end_matches('/');
-            if !hp.is_empty() {
-                net_allow.push(hp.to_string());
-            }
-        }
-        // Link the embedded front-end against the bundled std modules.
-        let link_result = (|| -> Result<ast::Module, String> {
-            let mut modules: Vec<(String, ast::Module)> = Vec::new();
-            let mut loaded: HashSet<String> = HashSet::new();
-            let mut queue: VecDeque<(String, String)> = VecDeque::new();
-            queue.push_back(("pm".to_string(), include_str!("../projects/pm/src/pm.witchy").to_string()));
-            while let Some((name, source)) = queue.pop_front() {
-                if !loaded.insert(name.clone()) {
-                    continue;
-                }
-                let module = parser::parse_module(&source).map_err(|e| format!("{name}: {e}"))?;
-                for imp in &module.imports {
-                    if !loaded.contains(imp) {
-                        match bundled_module(imp) {
-                            Some(s) => queue.push_back((imp.clone(), s.to_string())),
-                            None => return Err(format!("embedded front-end imports `{imp}`, not a bundled module")),
-                        }
-                    }
-                }
-                modules.push((name, module));
-            }
-            linker::link(modules, "pm").map_err(|e| e.to_string())
-        })();
-        let module = match link_result {
-            Ok(m) => m,
-            Err(e) => {
-                eprintln!("{e}");
-                std::process::exit(1);
-            }
-        };
-        if let Err(e) = typeck::check(&module) {
-            eprintln!("{e}");
-            std::process::exit(1);
-        }
-        let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-        let bin = std::env::current_exe()
-            .ok()
-            .and_then(|p| p.parent().map(|d| d.to_path_buf()))
-            .unwrap_or_else(|| std::path::PathBuf::from("."));
-        match interpreter::run_module_exit_dirs(module, vec![cwd, bin], net_allow, pm_args, None) {
-            Ok((lines, code)) => {
-                for l in &lines {
-                    println!("{l}");
-                }
-                std::process::exit(code);
-            }
-            Err(e) => {
-                eprintln!("{}", e.message);
-                std::process::exit(1);
-            }
-        }
+        run_embedded_pm(std::env::args().skip(2).collect());
     }
     // `witchy coven-serve [--addr H:P] [--root DIR] [--trust-issuer iss=pubhex]...
     // [--signing-key <seed>] [--secret-file signing=<path>]` runs the EMBEDDED witchy
@@ -789,12 +821,30 @@ fn main() -> wasmtime::Result<()> {
     if std::env::args().nth(1).as_deref() == Some("--bench") {
         return run_benchmarks();
     }
-    // coven package-manager subcommands (`witchy add`, `build`, `publish`, ...)
-    // are checked before the file/`--net` runner so they intercept first.
+    // Package-manager front-end verbs (`witchy add`, `build`, `publish`, ...) run
+    // the EMBEDDED witchy front-end — the same program `witchy pm <verb>` runs,
+    // so `witchy add foo` and `witchy pm add foo` are identical. They are checked
+    // before the file/`--net` runner so they intercept first. The whole argv
+    // (verb included) becomes the front-end's args. `coven-serve` intercepts
+    // earlier (its own bootstrap), so it never reaches here.
     if let Some(a1) = std::env::args().nth(1) {
-        if pm::cli::is_command(&a1) {
-            let args: Vec<String> = std::env::args().skip(1).collect();
-            if let Err(e) = pm::cli::run(&args) {
+        const FRONTEND_VERBS: &[&str] = &[
+            "new", "init", "add", "build", "run", "audit", "tree", "outdated", "why", "why-cap",
+            "publish", "promote", "yank", "verify", "vendor",
+        ];
+        if FRONTEND_VERBS.contains(&a1.as_str()) {
+            run_embedded_pm(std::env::args().skip(1).collect());
+        }
+        // IdP test tooling (trusted-publishing key/token generation) stays a Rust
+        // toolchain helper per RFC-0004 §7.
+        if a1 == "coven-gen-issuer" || a1 == "coven-mint-token" {
+            let rest: Vec<String> = std::env::args().skip(2).collect();
+            let result = if a1 == "coven-gen-issuer" {
+                idp::gen_issuer(&rest)
+            } else {
+                idp::mint_token(&rest)
+            };
+            if let Err(e) = result {
                 eprintln!("error: {e}");
                 std::process::exit(1);
             }
