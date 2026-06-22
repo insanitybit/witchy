@@ -9341,12 +9341,13 @@ fn main(console: Console):
         );
         assert_eq!(code, 0);
         // pm reads/writes project files, prints, `add` fetches over the network,
-        // `run` drives the compiler via Exec, and `publish` reads COVEN_ID_TOKEN
-        // via Env — Console, Dir, Env, Exec, Net. `compiler.*` is a host
-        // introspection intrinsic, not a runtime capability.
+        // `run` drives the compiler via Exec, `publish` reads COVEN_ID_TOKEN via
+        // Env, and `add`'s staging-cooldown gate reads the wall clock (Clock) —
+        // Clock, Console, Dir, Env, Exec, Net. `compiler.*` is a host introspection
+        // intrinsic, not a runtime capability.
         let src = std::fs::read_to_string("projects/pm/src/pm.witchy").unwrap();
         let fp = crate::capabilities::analyze(&parser::parse_module(&src).expect("parse"));
-        assert_eq!(crate::capabilities::show_caps(&fp.total), "Console, Dir, Env, Exec, Net");
+        assert_eq!(crate::capabilities::show_caps(&fp.total), "Clock, Console, Dir, Env, Exec, Net");
     }
 
     /// `pm guard <old> <new>` is the supply-chain gate: it asks `compiler.diff`
@@ -9476,8 +9477,8 @@ fn main(console: Console):
             vec![
                 "name:     pm",
                 "version:  0.1.0",
-                "declared: Console, Dir, Net, Exec, Env",
-                "actual:   Console, Dir, Env, Exec, Net",
+                "declared: Console, Dir, Net, Exec, Env, Clock",
+                "actual:   Clock, Console, Dir, Env, Exec, Net",
             ]
         );
         assert_eq!(code, 0);

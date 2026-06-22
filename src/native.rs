@@ -360,8 +360,11 @@ mod compiler {
     use crate::value::NativeError as RuntimeError;
 
     /// Compute the capability footprint of witchy `source`, returned as JSON:
-    /// `{"total":[..],"entries":[{"name":..,"capabilities":[..],"brands":[..]}]}`,
-    /// or `{"error":".."}` if the source does not parse. Pairs with `std/json`.
+    /// `{"total":[..],"build":[..],"entries":[{"name":..,"capabilities":[..],"brands":[..]}]}`,
+    /// or `{"error":".."}` if the source does not parse. `build` is the build-time
+    /// footprint — the build capabilities (`BuildOut`/`BuildRead`/…) the rune's
+    /// `build` entrypoint demands, which a build tool gates separately from the
+    /// runtime `total`. Pairs with `std/json`.
     pub fn footprint(args: &[Value]) -> Result<Value, RuntimeError> {
         let [Value::Str(src)] = args else {
             return Err(type_error("compiler.footprint expects a String"));
@@ -370,6 +373,7 @@ mod compiler {
             Ok(module) => {
                 let fp = crate::capabilities::analyze(&module);
                 let total = arr(fp.total.iter().map(|(n, r)| crate::capabilities::show_cap(n, r)));
+                let build = arr(fp.build.iter().map(|(n, r)| crate::capabilities::show_cap(n, r)));
                 let entries: Vec<String> = fp
                     .entries
                     .iter()
@@ -385,7 +389,12 @@ mod compiler {
                         )
                     })
                     .collect();
-                format!("{{\"total\":{},\"entries\":[{}]}}", total, entries.join(","))
+                format!(
+                    "{{\"total\":{},\"build\":{},\"entries\":[{}]}}",
+                    total,
+                    build,
+                    entries.join(",")
+                )
             }
             Err(e) => format!("{{\"error\":{}}}", string(&e.to_string())),
         };

@@ -6,8 +6,10 @@
 // witchy — on either backend. The body below is a placeholder the runtime never
 // executes (the call is intercepted by its qualified name).
 // The capability footprint of witchy `source`, as JSON:
-//   {"total":[..],"entries":[{"name":..,"capabilities":[..],"brands":[..]}]}
-// or {"error":".."} if the source does not parse. Parse it with `import json`.
+//   {"total":[..],"build":[..],"entries":[{"name":..,"capabilities":[..],"brands":[..]}]}
+// or {"error":".."} if the source does not parse. `build` is the build-time
+// footprint — the build capabilities the rune's `build` entrypoint demands (gated
+// separately from the runtime `total`). Parse it with `import json`.
 pub fn footprint(source: String) -> String:
     source
 

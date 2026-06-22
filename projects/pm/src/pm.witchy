@@ -31,15 +31,15 @@ import toml
 // tree the PM reads/writes; `bin` (handle 1) is where the compiler lives, used
 // only by `run`, which drives it through the `Exec` capability. See
 // rfcs/0004-self-hosted-cli.md.
-fn main(console: Console, args: List(String), root: Dir, bin: Dir, runner: Exec, net: Net, env: Env) -> Int:
+fn main(console: Console, args: List(String), root: Dir, bin: Dir, runner: Exec, net: Net, env: Env, clock: Clock) -> Int:
     let cmd = arg(args, 0)
     if cmd == "info":
         cmd_info(console, root, arg(args, 1))
         0
     else if cmd == "run":
-        cmd_run(console, runner, root, bin, args)
+        cmd_run(console, runner, root, bin, env, clock, args)
     else if cmd == "build":
-        cmd_build(console, runner, root, bin, args)
+        cmd_build(console, runner, root, bin, env, args)
     else if cmd == "typecheck":
         cmd_drive(console, runner, bin, "typecheck", ["check", arg(args, 1)])
     else if cmd == "fmt":
@@ -49,7 +49,7 @@ fn main(console: Console, args: List(String), root: Dir, bin: Dir, runner: Exec,
     else if cmd == "doc":
         cmd_drive(console, runner, bin, "doc", ["doc", arg(args, 1)])
     else if cmd == "add":
-        cmd_add(console, net, root, env, args)
+        cmd_add(console, net, root, env, clock, args)
     else if cmd == "publish":
         cmd_publish(console, net, root, env, args)
     else if cmd == "promote":
@@ -129,7 +129,7 @@ fn cmd_info(console: Console, root: Dir, dir: String):
 // it runs that one module directly. This is the project-level `run` of RFC-0004 —
 // the front-end decides *what* to compile (entry + deps from the lock) and
 // `witchyc` does the compiling/running.
-fn cmd_run(console: Console, runner: Exec, root: Dir, bin: Dir, args: List(String)) -> Int:
+fn cmd_run(console: Console, runner: Exec, root: Dir, bin: Dir, env: Env, clock: Clock, args: List(String)) -> Int:
     let target = arg(args, 1)
     let dir = if string.is_empty(target): "." else: target
     if exists(root, join_path(dir, "witchy.toml")):
@@ -141,13 +141,17 @@ fn cmd_run(console: Console, runner: Exec, root: Dir, bin: Dir, args: List(Strin
         run_compiler(console, runner, bin, "run", [target])
 
 // build <file|dir> — compile a program (and its vendored deps) to verify it builds.
-fn cmd_build(console: Console, runner: Exec, root: Dir, bin: Dir, args: List(String)) -> Int:
+fn cmd_build(console: Console, runner: Exec, root: Dir, bin: Dir, env: Env, args: List(String)) -> Int:
     let target = arg(args, 1)
     let dir = if string.is_empty(target): "." else: target
     if exists(root, join_path(dir, "witchy.toml")):
         match project_entry(root, dir):
             Some(entry) ->
-                run_compiler(console, runner, bin, "build", flatten_argv(["compile", entry], dep_flags(root, dir)))
+                let built = build_step_flags(console, runner, root, bin, dir)
+                if built.0 != 0:
+                    built.0
+                else:
+                    run_compiler(console, runner, bin, "build", flatten_argv(["compile", entry], flatten_argv(dep_flags(root, dir), built.1)))
             None ->
                 print(console, "no entry source under " + join_path(dir, "src"))
                 1
@@ -175,17 +179,25 @@ fn run_project(console: Console, runner: Exec, root: Dir, bin: Dir, dir: String)
             print(console, "no entry source under " + join_path(dir, "src"))
             1
         Some(entry) ->
-            let outdir = join_path(dir, "target")
-            if !exists(root, outdir):
-                make_dir(root, outdir)
-            let wasm = join_path(outdir, "app.wasm")
-            let argv = flatten_argv(["compile", entry], flatten_argv(dep_flags(root, dir), ["--out", wasm]))
-            let built = exec.run_args(runner, bin, "witchy", argv)
-            if built.0 != 0:
-                print(console, built.1)
-                built.0
+            let steps = build_step_flags(console, runner, root, bin, dir)
+            if steps.0 != 0:
+                steps.0
             else:
-                run_compiler(console, runner, bin, "run", ["sandbox", "--dir", project_data_dir(dir), wasm])
+                compile_then_run(console, runner, root, bin, dir, entry, steps.1)
+
+fn compile_then_run(console: Console, runner: Exec, root: Dir, bin: Dir, dir: String, entry: String, build_flags: List(String)) -> Int:
+    let outdir = join_path(dir, "target")
+    if !exists(root, outdir):
+        make_dir(root, outdir)
+    let wasm = join_path(outdir, "app.wasm")
+    let deps = flatten_argv(dep_flags(root, dir), build_flags)
+    let argv = flatten_argv(["compile", entry], flatten_argv(deps, ["--out", wasm]))
+    let built = exec.run_args(runner, bin, "witchy", argv)
+    if built.0 != 0:
+        print(console, built.1)
+        built.0
+    else:
+        run_compiler(console, runner, bin, "run", ["sandbox", "--dir", project_data_dir(dir), wasm])
 
 // The directory backing the program's runtime `Dir` grant — the project itself
 // (`.` when pm is run from inside the project, `<dir>` when run from a workspace
@@ -309,6 +321,169 @@ fn cmd_drive(console: Console, runner: Exec, bin: Dir, verb: String, argv: List(
         let result = exec.run_args(runner, bin, "witchy", argv)
         print(console, result.1)
         result.0
+
+// --- build steps (§7.1) -----------------------------------------------------
+// A dependency may ship a `src/build.witchy` that GENERATES source the consumer
+// then imports. Running it is dangerous — generated code is still code — so the
+// front-end gates it default-deny, twice over (the policy mirrors the Rust
+// `run_dep_build_step`, src/pm/cli.rs:500-703): EXECUTION itself must be consented
+// (a `[build.grants."name"]` section must exist), and any build capability the
+// step demands beyond the confined `BuildOut` sandbox must be named in it. The
+// confined EXECUTION + sandboxing is the compiler's (`witchy build-step`, the
+// TCB); the front-end only decides POLICY and drives it via `Exec`.
+//
+// Returns (exit_code, extra_dep_flags): a nonzero code aborts the build; the flags
+// are `--dep <module>=<path>` per generated file, joined into the compile.
+fn build_step_flags(console: Console, runner: Exec, root: Dir, bin: Dir, dir: String) -> (Int, List(String)):
+    var code = 0
+    var flags = []
+    for entry in dep_dirs(root, dir):
+        let (name, depdir) = entry
+        if has_build_step(root, depdir):
+            let outcome = run_one_build_step(console, runner, root, bin, dir, name, depdir)
+            if outcome.0 != 0:
+                code = outcome.0
+            else:
+                flags = flatten_argv(flags, outcome.1)
+    (code, flags)
+
+// Each dependency as (name, dir): the consumer's path dependencies (resolved
+// relative to the project) and its vendored registry dependencies (`vendor/<name>`).
+fn dep_dirs(root: Dir, dir: String) -> List((String, String)):
+    var out = []
+    if exists(root, join_path(dir, "witchy.toml")):
+        let manifest = read(root, join_path(dir, "witchy.toml"))
+        for pair in toml.table(manifest, "dependencies"):
+            let (name, inline) = pair
+            if let Some(rel) = toml.inline_get(inline, "path"):
+                out = list.push(out, (name, normalize_path(join_path(dir, rel))))
+    let vendor = join_path(dir, "vendor")
+    if exists(root, vendor):
+        for name in list(subdir(root, vendor)):
+            out = list.push(out, (name, join_path(vendor, name)))
+    out
+
+// Whether a dependency ships a `build` step (`src/build.witchy` defining `build`).
+fn has_build_step(root: Dir, depdir: String) -> Bool:
+    let path = join_path(join_path(depdir, "src"), "build.witchy")
+    exists(root, path) && string.contains(read(root, path), "fn build")
+
+// Run one dependency's build step under its grant, returning (code, dep_flags).
+// Default-deny layer 1: refuse unless the consumer accepted execution with a
+// `[build.grants."name"]` section. Layer 2: the demanded build caps must all be
+// granted. Then cache-or-exec, audit the generated source, and emit `--dep` flags.
+fn run_one_build_step(console: Console, runner: Exec, root: Dir, bin: Dir, dir: String, name: String, depdir: String) -> (Int, List(String)):
+    let manifest = read(root, join_path(dir, "witchy.toml"))
+    if !has_grants_section(manifest, name):
+        print(console, "`" + name + "` ships a build step, and build-time code execution is denied by default.")
+        print(console, "  Add a [build.grants.\"" + name + "\"] section to accept it — an empty section permits only the confined output sandbox (BuildOut); name read/exec/env/net to grant more.")
+        (1, [])
+    else:
+        let buildfile = join_path(join_path(depdir, "src"), "build.witchy")
+        let demanded = build_footprint(read(root, buildfile))
+        let granted = granted_build_kinds(manifest, name)
+        let missing = rights.uncovered(granted, demanded)
+        if list.length(missing) > 0:
+            print(console, "`" + name + "` build step demands build capabilities you have not granted: " + string.join(missing, ", "))
+            print(console, "  add them to [build.grants.\"" + name + "\"] (read/exec/env/net).")
+            (1, [])
+        else:
+            exec_build_step(console, runner, root, bin, dir, name, depdir, manifest)
+
+// Generate (or reuse cached) source, audit it, and return its `--dep` flags.
+fn exec_build_step(console: Console, runner: Exec, root: Dir, bin: Dir, dir: String, name: String, depdir: String, manifest: String) -> (Int, List(String)):
+    let gendir = join_path(join_path(dir, "build-out"), name)
+    let buildfile = join_path(join_path(depdir, "src"), "build.witchy")
+    let key = build_cache_key(read(root, buildfile))
+    if !cache_hit(root, gendir, key):
+        let argv = flatten_argv(["build-step", buildfile, "--out", gendir], grant_flags(manifest, name, dir))
+        let result = exec.run_args(runner, bin, "witchy", argv)
+        if result.0 != 0:
+            print(console, "`" + name + "` build step failed:")
+            print(console, result.1)
+            return (1, [])
+        write(root, join_path(gendir, ".witchy-build-cache"), key)
+    audit_then_flags(console, root, dir, name, depdir, gendir)
+
+// Post-generation audit (the smuggle gate): the dependency's footprint over its
+// shipped source PLUS the generated source must not widen beyond what it shipped.
+// Generated code cannot introduce authority the version was not accepted with.
+fn audit_then_flags(console: Console, root: Dir, dir: String, name: String, depdir: String, gendir: String) -> (Int, List(String)):
+    let shipped = rune_footprint(root, depdir)
+    var generated = []
+    var flags = []
+    for f in list(subdir(root, gendir)):
+        if string.ends_with(f, ".witchy"):
+            let path = join_path(gendir, f)
+            for c in build_total(read(root, path)):
+                generated = add_unique(generated, c)
+            flags = dep_flag(flags, module_stem(f), path)
+    let widened = rights.uncovered(shipped, generated)
+    if list.length(widened) > 0:
+        print(console, "`" + name + "`'s build step generated source that WIDENS its footprint (+ " + string.join(widened, ", ") + ") beyond the locked baseline — refusing. Generated code is still code; it cannot smuggle in authority the version was not accepted with.")
+        (1, [])
+    else:
+        (0, flags)
+
+// A deterministic build step is a pure function of its build source, so its output
+// is cached by a hash of that source: a re-build with an unchanged step reuses the
+// prior generated files instead of re-running. (The compiler confines the step;
+// non-deterministic steps that read env/exec/net are out of scope for these runes.)
+fn build_cache_key(build_src: String) -> String:
+    "witchy-build-cache-v1:" + crypto.sha256(build_src)
+
+fn cache_hit(root: Dir, gendir: String, key: String) -> Bool:
+    let keyfile = join_path(gendir, ".witchy-build-cache")
+    exists(root, keyfile) && read(root, keyfile) == key
+
+// Whether the consumer manifest carries a `[build.grants."name"]` section at all —
+// the explicit consent to ANY build-time execution (an empty section is consent to
+// a BuildOut-only step).
+fn has_grants_section(manifest: String, name: String) -> Bool:
+    string.contains(manifest, "[build.grants.\"" + name + "\"]")
+
+// The build capabilities a `[build.grants."name"]` section grants. The mere section
+// (even empty) grants `BuildOut`; named read/exec/env/net arrays grant the others.
+fn granted_build_kinds(manifest: String, name: String) -> List(String):
+    var out = ["BuildOut"]
+    let section = "build.grants.\"" + name + "\""
+    if list.length(toml.get_array(manifest, section + ".read")) > 0:
+        out = list.push(out, "BuildRead")
+    if list.length(toml.get_array(manifest, section + ".exec")) > 0:
+        out = list.push(out, "BuildExec")
+    if list.length(toml.get_array(manifest, section + ".env")) > 0:
+        out = list.push(out, "BuildEnv")
+    if list.length(toml.get_array(manifest, section + ".net")) > 0:
+        out = list.push(out, "BuildNet")
+    out
+
+// Translate a `[build.grants."name"]` section into `witchy build-step` flags:
+// each granted read path (resolved relative to the project) → `--read`, env key →
+// `--env`, exec tool → `--exec`. (BuildOut needs no flag — it is the default.)
+fn grant_flags(manifest: String, name: String, dir: String) -> List(String):
+    var out = []
+    let section = "build.grants.\"" + name + "\""
+    for p in toml.get_array(manifest, section + ".read"):
+        out = list.push(list.push(out, "--read"), normalize_path(join_path(dir, p)))
+    for k in toml.get_array(manifest, section + ".env"):
+        out = list.push(list.push(out, "--env"), k)
+    for t in toml.get_array(manifest, section + ".exec"):
+        out = list.push(list.push(out, "--exec"), t)
+    out
+
+// The build-axis footprint of a source: the build capabilities its `build`
+// entrypoint demands (`compiler.footprint`'s `build` array).
+fn build_footprint(source: String) -> List(String):
+    build_total(source)
+
+fn build_total(source: String) -> List(String):
+    match json.decode(compiler.footprint(source)):
+        Ok(doc) -> json.get_strings(doc, "build")
+        Err(_e) -> []
+
+// `greet.witchy` → module name `greet`.
+fn module_stem(file: String) -> String:
+    string.strip_suffix(file, ".witchy")
 
 // --- audit: the footprint a single file demands -----------------------------
 fn cmd_audit(console: Console, root: Dir, file: String):
@@ -1251,16 +1426,17 @@ fn latest_released(net: Net, host: String, port: Int, name: String) -> String:
 // as the visited-set: a rune already carrying its coven.json is never re-fetched,
 // which makes a diamond or a dependency cycle terminate. This command needs the
 // network.
-fn cmd_add(console: Console, net: Net, root: Dir, env: Env, args: List(String)) -> Int:
-    if string.is_empty(arg(args, 3)):
-        cmd_add_pkg(console, net, root, env, args)
+fn cmd_add(console: Console, net: Net, root: Dir, env: Env, clock: Clock, args: List(String)) -> Int:
+    let pos = positionals(args)
+    if string.is_empty(arg(pos, 3)):
+        cmd_add_pkg(console, net, root, env, clock, args)
     else:
-        let name = arg(args, 1)
-        let req = arg(args, 2)
-        let addr = arg(args, 3)
-        let dest = arg(args, 4)
+        let name = arg(pos, 1)
+        let req = arg(pos, 2)
+        let addr = arg(pos, 3)
+        let dest = arg(pos, 4)
         let (host, port) = hostport(addr)
-        add_rune(console, net, root, host, port, name, req, dest)
+        add_rune(console, net, root, host, port, name, req, dest, cooldown_now(env, clock, args), [])
 
 // Cargo-like `add <pkg>[@<ver>]`: resolve the registry from COVEN_URL (or an
 // explicit second `<host:port>` argument), default the requirement to the latest
@@ -1269,20 +1445,56 @@ fn cmd_add(console: Console, net: Net, root: Dir, env: Env, args: List(String)) 
 // Run from a project directory (cwd is the project Dir). This is the cargo-style
 // front-end `add` of RFC-0004 — a stable vendor/lock layout the project `build`/
 // `run` then resolves through `witchy compile --dep`.
-fn cmd_add_pkg(console: Console, net: Net, root: Dir, env: Env, args: List(String)) -> Int:
-    let spec = arg(args, 1)
+fn cmd_add_pkg(console: Console, net: Net, root: Dir, env: Env, clock: Clock, args: List(String)) -> Int:
+    let pos = positionals(args)
+    let spec = arg(pos, 1)
     if string.is_empty(spec):
-        print(console, "usage: pm add <pkg>[@<ver>] [host:port]")
+        print(console, "usage: pm add <pkg>[@<ver>] [host:port] [--allow-cap <Cap>]... [--allow-fresh]")
         1
     else:
         let (name, req) = split_spec(spec)
-        let addr = coven_addr(env, arg(args, 2))
+        let addr = coven_addr(env, arg(pos, 2))
         let (host, port) = hostport(addr)
-        let code = add_rune(console, net, root, host, port, name, req, "vendor")
-        if code != 0:
-            code
-        else:
-            pin_lock(console, net, root, host, port, name)
+        add_pkg_gated(console, net, root, host, port, name, req, cooldown_now(env, clock, args), allowed_caps(args))
+
+// A direct `add` is the consumer's deliberate choice to take on a dependency, so
+// it is gated: if the rune introduces a capability the project does not already
+// admit (its own declared caps ∪ what the lock already records ∪ the caps the
+// consumer consented to with `--allow-cap`), the add is BLOCKED. The transitive
+// closure a consented direct add pulls in is NOT re-gated — consenting to a rune
+// is consenting to its declared dependency tree (which the registry footprinted).
+fn add_pkg_gated(console: Console, net: Net, root: Dir, host: String, port: Int, name: String, req: String, cooldown: (Int, Int, Bool), allowed: List(String)) -> Int:
+    match resolve_version(net, host, port, name, req, cooldown):
+        Err(msg) ->
+            print(console, name + ": " + msg)
+            1
+        Ok(chosen) ->
+            let baseline = union_all(project_baseline(root), allowed)
+            let incoming = incoming_footprint(net, host, port, name, chosen)
+            let widened = rights.uncovered(baseline, incoming)
+            if list.length(widened) > 0:
+                print(console, "BLOCKED: adding `" + name + "` would widen your project's capability footprint: " + string.join(widened, ", "))
+                print(console, "  re-run with --allow-cap " + string.join(widened, " --allow-cap ") + " to consent")
+                2
+            else:
+                let code = add_rune(console, net, root, host, port, name, req, "vendor", cooldown, [])
+                if code != 0:
+                    code
+                else:
+                    pin_lock(console, net, root, host, port, name)
+
+// The capability authority the project already admits: its own declared runtime
+// caps (from witchy.toml, if any) plus every capability the lockfile already
+// records for a vendored dependency — the baseline a new direct `add` diffs
+// against, so adding a same-or-narrower rune is silent and a widening one gates.
+fn project_baseline(root: Dir) -> List(String):
+    var out = []
+    if exists(root, "witchy.toml"):
+        for c in declared_caps(read(root, "witchy.toml")):
+            out = add_unique(out, c)
+    if exists(root, "witchy.lock"):
+        out = union_all(out, lock_baseline(read(root, "witchy.lock")))
+    out
 
 // Split `<pkg>[@<ver>]` into a (name, requirement); an absent `@<ver>` resolves to
 // `*` (the latest released version). A leading-`@` namespace is not split.
@@ -1332,7 +1544,8 @@ fn vendor_lock_entry(root: Dir, name: String, rune_dir: String) -> String:
     let record = read(root, join_path(rune_dir, "coven.json"))
     let version = recorded_field(record, "version")
     let hash = recorded_field(record, "hash")
-    "\n[[rune]]\nname = \"" + name + "\"\nversion = \"" + version + "\"\nsource = \"coven\"\nhash = \"" + hash + "\"\n"
+    let fp = footprint_toml(recorded_footprint(record))
+    "\n[[rune]]\nname = \"" + name + "\"\nversion = \"" + version + "\"\nsource = \"coven\"\nhash = \"" + hash + "\"\nruntime_footprint = [" + fp + "]\n"
 
 fn recorded_field(record: String, key: String) -> String:
     match json.decode(record):
@@ -1344,7 +1557,7 @@ fn recorded_field(record: String, key: String) -> String:
 // vendored under this basename whose FULL name differs is a collision: two distinct
 // runes (`a/util` and `b/util`) would vendor to the same `vendor/util`, so the
 // second silently shadows the first. Refuse it — `import util` cannot name both.
-fn add_rune(console: Console, net: Net, root: Dir, host: String, port: Int, name: String, req: String, dest: String) -> Int:
+fn add_rune(console: Console, net: Net, root: Dir, host: String, port: Int, name: String, req: String, dest: String, cooldown: (Int, Int, Bool), allowed: List(String)) -> Int:
     let vendored = join_path(dest, basename(name))
     if exists(root, join_path(vendored, "coven.json")):
         let existing = recorded_field(read(root, join_path(vendored, "coven.json")), "name")
@@ -1354,41 +1567,57 @@ fn add_rune(console: Console, net: Net, root: Dir, host: String, port: Int, name
         else:
             0
     else:
-        let versions = http.get(net, host, port, "/coven/versions?name=" + wire(name))
-        if http.status(versions) != 200:
-            print(console, "registry error fetching versions for " + name)
-            1
-        else:
-            match pick_version(http.body(versions), req):
-                Ok(chosen) -> fetch_then_deps(console, net, root, host, port, name, chosen, dest)
-                Err(e) ->
-                    print(console, name + ": " + e)
-                    1
+        match resolve_version(net, host, port, name, req, cooldown):
+            Ok(chosen) -> fetch_then_deps(console, net, root, host, port, name, chosen, dest, cooldown, allowed)
+            Err(e) ->
+                print(console, name + ": " + e)
+                1
+
+// Resolve `req` against the registry's released versions, honoring the staging
+// cooldown: a release younger than the cooldown window is not resolvable (the
+// compromised-release window, §8) unless `--allow-fresh` was passed. If the only
+// matching versions are still cooling, the error explains the window + override.
+fn resolve_version(net: Net, host: String, port: Int, name: String, req: String, cooldown: (Int, Int, Bool)) -> Result(String, String):
+    let resp = http.get(net, host, port, "/coven/versions?name=" + wire(name))
+    if http.status(resp) != 200:
+        Err("registry error fetching versions")
+    else:
+        let body = http.body(resp)
+        match pick_version_cooled(body, req, cooldown):
+            Ok(v) -> Ok(v)
+            Err(e) ->
+                if has_cooling_match(body, req, cooldown):
+                    Err("a release satisfying `" + req + "` is inside its staging cooldown and not resolvable yet (compromised-release protection) — re-run with --allow-fresh to accept it now")
+                else:
+                    Err(e)
 
 // Fetch a resolved version, then recurse into the version deps its manifest
 // declares. The exit code is the first failure (0 if the whole tree resolves).
-fn fetch_then_deps(console: Console, net: Net, root: Dir, host: String, port: Int, name: String, version: String, dest: String) -> Int:
+fn fetch_then_deps(console: Console, net: Net, root: Dir, host: String, port: Int, name: String, version: String, dest: String, cooldown: (Int, Int, Bool), allowed: List(String)) -> Int:
     let code = fetch_source(console, net, root, host, port, name, version, dest)
     if code != 0:
         code
     else:
-        add_deps(console, net, root, host, port, name, dest)
+        add_deps(console, net, root, host, port, name, dest, cooldown, allowed)
 
-fn add_deps(console: Console, net: Net, root: Dir, host: String, port: Int, name: String, dest: String) -> Int:
+fn add_deps(console: Console, net: Net, root: Dir, host: String, port: Int, name: String, dest: String, cooldown: (Int, Int, Bool), allowed: List(String)) -> Int:
     let manifest = read(root, join_path(join_path(dest, basename(name)), "witchy.toml"))
     var code = 0
     for pair in toml.table(manifest, "dependencies"):
         let (depname, inline) = pair
         if let Some(depreq) = toml.inline_get(inline, "version"):
-            let sub = add_rune(console, net, root, host, port, depname, depreq, dest)
+            let sub = add_rune(console, net, root, host, port, depname, depreq, dest, cooldown, allowed)
             if sub != 0:
                 code = sub
     code
 
-// The highest released version satisfying `req`, or an explanatory error.
-fn pick_version(body: String, req: String) -> Result(String, String):
+// The highest released-and-eligible version satisfying `req`, or an explanatory
+// error. A release still inside its staging cooldown is excluded (unless
+// `--allow-fresh`) — `resolve_version` distinguishes "none satisfy" from "the
+// only match is cooling" for a clearer message.
+fn pick_version_cooled(body: String, req: String, cooldown: (Int, Int, Bool)) -> Result(String, String):
     match semver.parse_req(req):
-        Ok(r) -> choose(released_versions(body), r, req)
+        Ok(r) -> choose(eligible_versions(body, cooldown), r, req)
         Err(e) -> Err("bad requirement `" + req + "`: " + e)
 
 fn choose(versions: List(Version), r: Req, req: String) -> Result(String, String):
@@ -1396,16 +1625,90 @@ fn choose(versions: List(Version), r: Req, req: String) -> Result(String, String
         Some(v) -> Ok(semver.format(v))
         None -> Err("no released version satisfies `" + req + "`")
 
-// The released versions in a /coven/versions response, parsed.
+// The released versions in a /coven/versions response, parsed (cooldown-agnostic;
+// used by `outdated`/`update` which report the latest, not resolve-for-install).
 fn released_versions(body: String) -> List(Version):
+    eligible_versions(body, (0, 0, true))
+
+// Released versions that are resolvable now: state `released` AND past the staging
+// cooldown window (or `--allow-fresh`). A record's `released_at` (unix seconds, in
+// the signed payload so it can't be tampered away) plus the window must be ≤ now.
+fn eligible_versions(body: String, cooldown: (Int, Int, Bool)) -> List(Version):
+    var out = []
+    for rec in released_records(body):
+        if !cooling(rec, cooldown):
+            if let Ok(v) = semver.parse(jget(rec, "version")):
+                out = list.push(out, v)
+    out
+
+// Whether any released version satisfying `req` exists but is still cooling — so
+// the caller can say "blocked by cooldown" instead of "no version".
+fn has_cooling_match(body: String, req: String, cooldown: (Int, Int, Bool)) -> Bool:
+    match semver.parse_req(req):
+        Err(_e) -> false
+        Ok(r) ->
+            var found = false
+            for rec in released_records(body):
+                if cooling(rec, cooldown):
+                    if let Ok(v) = semver.parse(jget(rec, "version")):
+                        if semver.matches(r, v):
+                            found = true
+            found
+
+// The `released`-state records of a /coven/versions response, as raw Json.
+fn released_records(body: String) -> List(Json):
     var out = []
     if let Ok(doc) = json.decode(body):
         if let Some(records) = json.get(doc, "records"):
             if let Some(items) = json.as_array(records):
                 for rec in items:
                     if jget(rec, "state") == "released":
-                        if let Ok(v) = semver.parse(jget(rec, "version")):
-                            out = list.push(out, v)
+                        out = list.push(out, rec)
+    out
+
+// Whether a released record is still inside its staging cooldown window. A
+// `released_at` of 0 (legacy/unstamped) is treated as past any window; with
+// `--allow-fresh` nothing cools. `cooldown` is (now_unix_secs, window_secs,
+// allow_fresh).
+fn cooling(rec: Json, cooldown: (Int, Int, Bool)) -> Bool:
+    let (now_secs, window, allow_fresh) = cooldown
+    let released_at = jget_int(rec, "released_at")
+    if allow_fresh || released_at == 0:
+        false
+    else:
+        now_secs < released_at + window
+
+// The cooldown context for this `add`: (now_unix_secs, window_secs, allow_fresh).
+// The window is `WITCHY_COOLDOWN_SECS` (Env; default 72h); `--allow-fresh` accepts
+// a still-cooling release. The wall clock comes from the `Clock` capability (ms →
+// seconds, matching the registry's `released_at` unit).
+fn cooldown_now(env: Env, clock: Clock, args: List(String)) -> (Int, Int, Bool):
+    (now(clock) / 1000, cooldown_window(env), has_flag(args, "--allow-fresh"))
+
+fn cooldown_window(env: Env) -> Int:
+    match get_env(env, "WITCHY_COOLDOWN_SECS"):
+        Some(v) -> string.to_int(v)
+        None -> 259200
+
+fn has_flag(args: List(String), flag: String) -> Bool:
+    var found = false
+    for a in args:
+        if a == flag:
+            found = true
+    found
+
+// The positional arguments (no `--flag` and no `--flag value` pairs). `--allow-cap`
+// takes a value (the consented capability); `--allow-fresh` / `--dry-run` are bare.
+fn positionals(args: List(String)) -> List(String):
+    var out = []
+    var skip = false
+    for a in args:
+        if skip:
+            skip = false
+        else if a == "--allow-cap" || a == "--allow-build-cap":
+            skip = true
+        else if !string.starts_with(a, "--"):
+            out = list.push(out, a)
     out
 
 // Fetch a version, verifying the full trust chain before writing anything: the

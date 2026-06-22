@@ -9,9 +9,10 @@ version = "0.1.0"
 # Declared footprint — a reviewable contract; the toolchain recomputes and would
 # error on mismatch. The pm reads/writes project files (Dir), prints (Console),
 # `add` fetches runes from a registry (Net), `run` drives the compiler via the
-# Exec capability, and `publish` reads COVEN_ID_TOKEN (Env) for trusted publishing
+# Exec capability, `publish` reads COVEN_ID_TOKEN (Env) for trusted publishing, and
+# `add`'s staging-cooldown gate reads the wall clock (Clock)
 # (rfcs/0004-self-hosted-cli.md).
 [capabilities]
-runtime = ["Console", "Dir", "Net", "Exec", "Env"]
+runtime = ["Console", "Dir", "Net", "Exec", "Env", "Clock"]
 
 [dependencies]

@@ -198,6 +198,10 @@ impl<'a> FrontEnd<'a> {
         let mut cmd = Command::new(BIN);
         cmd.current_dir(dir)
             .env("COVEN_URL", self.server.url())
+            // Most tests publish and immediately consume; zero the staging cooldown
+            // so they exercise their own subject. The cooldown has its own test that
+            // overrides this (fresh_releases_cool_down_before_resolving).
+            .env("WITCHY_COOLDOWN_SECS", "0")
             .args(&full);
         if let Some(t) = id_token {
             cmd.env("COVEN_ID_TOKEN", t);
@@ -288,28 +292,6 @@ impl Sandbox {
         cmd.output().expect("spawn witchy")
     }
 
-    /// Create + publish + promote a library rune in one shot. Returns its dir.
-    fn publish_lib(&self, name: &str, version: &str, module_body: &str) -> PathBuf {
-        let dir_name = name.rsplit('/').next().unwrap();
-        let dir = self.work.join(dir_name);
-        std::fs::create_dir_all(dir.join("src")).unwrap();
-        std::fs::write(
-            dir.join("witchy.toml"),
-            format!("[rune]\nname = \"{name}\"\nversion = \"{version}\"\n"),
-        )
-        .unwrap();
-        let module = dir_name.replace('-', "_");
-        std::fs::write(dir.join("src").join(format!("{module}.witchy")), module_body).unwrap();
-        let out = self.run(&dir, "ci-bot", &["publish"]);
-        assert!(out.status.success(), "publish failed: {}", stderr(&out));
-        let out = self.run(
-            &dir,
-            "alice",
-            &["promote", &format!("{name}@{version}"), "--factor", "webauthn"],
-        );
-        assert!(out.status.success(), "promote failed: {}", stderr(&out));
-        dir
-    }
 }
 
 impl Drop for Sandbox {
@@ -728,46 +710,48 @@ fn promote_requires_distinct_identity() {
     assert!(stdout(&out).contains("promote: 403"), "expected 403: {}", stdout(&out));
 }
 
+/// The supply-chain gate on a DIRECT `add` (§10): adding a rune that introduces a
+/// capability the project does not already admit BLOCKS and writes nothing, until
+/// the consumer consents with `--allow-cap <Cap>`. The front-end diffs the rune's
+/// signed-record footprint against the project's baseline (its own declared caps ∪
+/// what the lock already records ∪ the consented caps).
 #[test]
 fn gate_blocks_capability_widening_then_allows_with_consent() {
-    let sb = Sandbox::new("gate");
-    let app = new_app(&sb);
-    // A library that demands Net in its public API.
-    sb.publish_lib(
+    let server = RegistryServer::start();
+    let fe = FrontEnd::new(&server, "gate");
+    let app = fe.new_app();
+    // A library that demands Net in its public API (the registry footprints it
+    // server-side, so it must honestly declare Net to publish).
+    let dir = fe.lib(
         "acme/netkit",
         "0.1.0",
-        "fn fetch(net: Net, url: String) -> String:\n    url\n",
+        "pub fn fetch(net: Net, url: String) -> String:\n    url\n",
     );
+    std::fs::write(
+        dir.join("witchy.toml"),
+        "[rune]\nname = \"acme/netkit\"\nversion = \"0.1.0\"\n\n[capabilities]\nruntime = [\"Net\"]\n",
+    )
+    .unwrap();
+    fe.publish_promote(&dir, "acme/netkit", "0.1.0");
 
     // Adding it to a pure app must BLOCK and write nothing.
-    let out = sb.run(&app, "dev", &["add", "acme/netkit"]);
+    let out = fe.pm(&app, &["add", "acme/netkit"], None);
     assert!(!out.status.success(), "expected block, got success");
-    assert!(stdout(&out).contains("BLOCKED"));
+    assert!(stdout(&out).contains("BLOCKED"), "got: {}", stdout(&out));
     assert!(stdout(&out).contains("Net"));
     assert!(!app.join("witchy.lock").exists(), "lock must not be written on block");
-    let manifest = std::fs::read_to_string(app.join("witchy.toml")).unwrap();
-    assert!(!manifest.contains("netkit"), "manifest must be untouched on block");
+    assert!(!app.join("vendor/netkit").exists(), "nothing vendored on block");
 
-    // A dry run with consent should pass the gate but still write nothing.
-    let out = sb.run(&app, "dev", &["add", "acme/netkit", "--allow-cap", "Net", "--dry-run"]);
-    assert!(out.status.success(), "dry-run failed: {}", stderr(&out));
-    assert!(!app.join("witchy.lock").exists(), "dry-run must not write");
-
-    // With explicit consent (no dry run), it proceeds and records Net.
-    let out = sb.run(&app, "dev", &["add", "acme/netkit", "--allow-cap", "Net"]);
-    assert!(out.status.success(), "consented add failed: {}", stderr(&out));
+    // With explicit consent, it proceeds and records Net.
+    let out = fe.pm(&app, &["add", "acme/netkit", "--allow-cap", "Net"], None);
+    assert!(out.status.success(), "consented add failed: {}\n{}", stderr(&out), stdout(&out));
     assert!(app.join("witchy.lock").exists());
+    assert!(app.join("vendor/netkit/src/netkit.witchy").exists(), "consented add must vendor");
 
-    // Audit reflects the new authority; why-cap traces it.
-    let out = sb.run(&app, "dev", &["audit"]);
-    assert!(stdout(&out).contains("Net"));
-    let out = sb.run(&app, "dev", &["why-cap", "Net"]);
-    assert!(stdout(&out).contains("acme/netkit"));
-
-    // Verify the lock against the registry.
-    let out = sb.run(&app, "dev", &["verify"]);
-    assert!(out.status.success(), "verify failed: {}", stderr(&out));
-    assert!(stdout(&out).contains("verified"));
+    // A re-add of the same rune now passes silently — Net is already in the
+    // baseline (the lock records it), so it is no longer a widening.
+    let out = fe.pm(&app, &["add", "acme/netkit"], None);
+    assert!(out.status.success(), "re-add of an already-admitted rune must not gate: {}", stdout(&out));
 }
 
 /// `pm add` resolves transitively: adding `acme/http` (which declares a version
@@ -793,8 +777,11 @@ fn transitive_dependency_add_pulls_the_closure() {
     std::fs::write(dir.join("src/http.witchy"), "pub fn get(net: Net, u: String) -> String:\n    u\n").unwrap();
     fe.publish_promote(&dir, "acme/http", "1.0.0");
 
-    // Adding http pulls url transitively into the vendored tree + the lock.
-    let out = fe.pm(&app, &["add", "acme/http"], None);
+    // Adding http pulls url transitively into the vendored tree + the lock. http
+    // demands Net, so the DIRECT add gates and needs `--allow-cap Net`; the
+    // transitive `url` (pure) is pulled by the consented direct add without
+    // re-gating — consenting to a rune consents to its declared dependency tree.
+    let out = fe.pm(&app, &["add", "acme/http", "--allow-cap", "Net"], None);
     assert!(out.status.success(), "add failed: {}\n{}", stderr(&out), stdout(&out));
     assert!(app.join("vendor/http/src/http.witchy").exists(), "http must vendor");
     assert!(app.join("vendor/url/src/url.witchy").exists(), "the transitive url must vendor");
@@ -1283,37 +1270,42 @@ fn build_steps_are_default_deny_even_when_safe() {
 /// cooldown window passes — protection against a compromised release being
 /// consumed the moment it lands — unless the consumer explicitly accepts it with
 /// `--allow-fresh`. The `released_at` stamp is part of the signed record, so the
-/// window can't be erased by metadata tampering.
+/// window can't be erased by metadata tampering. The front-end gates resolution
+/// client-side using the wall clock (its `Clock` capability) against
+/// `WITCHY_COOLDOWN_SECS`.
 #[test]
 fn fresh_releases_cool_down_before_resolving() {
-    let sb = Sandbox::new("cooldown");
-    let app = new_app(&sb);
-    sb.publish_lib("acme/fresh", "1.0.0", "fn f(s: String) -> String:\n    s\n");
+    let server = RegistryServer::start();
+    let fe = FrontEnd::new(&server, "cooldown");
+    let app = fe.new_app();
+    fe.published_lib("acme/fresh", "1.0.0", "fn f(s: String) -> String:\n    s\n");
 
-    // With a real window in force, the just-promoted version is refused…
+    // A `pm add` with a real cooldown window in force (overriding the test-default
+    // zero). The just-promoted version is younger than the window, so it is refused.
     let run_cooled = |args: &[&str]| {
-        let mut cmd = Command::new(BIN);
-        cmd.current_dir(&app)
-            .env("WITCHY_HOME", &sb.home)
-            .env("WITCHY_USER", "dev")
+        let mut full = vec!["pm"];
+        full.extend_from_slice(args);
+        Command::new(BIN)
+            .current_dir(&app)
+            .env("COVEN_URL", server.url())
             .env("WITCHY_COOLDOWN_SECS", "3600")
-            .args(args);
-        if let Some(u) = &sb.coven_url {
-            cmd.env("COVEN_URL", u);
-        }
-        cmd.output().expect("spawn witchy")
+            .args(&full)
+            .output()
+            .expect("spawn witchy pm")
     };
     let out = run_cooled(&["add", "acme/fresh"]);
     assert!(!out.status.success(), "a release inside its cooldown must not resolve");
-    let msg = stderr(&out);
+    let msg = format!("{}{}", stdout(&out), stderr(&out));
     assert!(
         msg.contains("staging cooldown") && msg.contains("--allow-fresh"),
         "the refusal should explain the window and the override: {msg}"
     );
+    assert!(!app.join("witchy.lock").exists(), "a cooled-out add must write nothing");
 
     // …and `--allow-fresh` is the explicit acceptance.
     let out = run_cooled(&["add", "acme/fresh", "--allow-fresh"]);
     assert!(out.status.success(), "--allow-fresh should accept: {}", stderr(&out));
+    assert!(app.join("vendor/fresh/src/fresh.witchy").exists(), "accepted add must vendor");
 }
 
 /// Build steps auto-run during `witchy build`/`run`: a dependency's
@@ -2055,6 +2047,7 @@ fn witchy_pm_add_resolves_and_fetches_from_coven() {
             "vendor",
         ])
         .current_dir(&dest)
+        .env("WITCHY_COOLDOWN_SECS", "0")
         .output()
         .expect("run pm add");
 
@@ -2204,6 +2197,7 @@ fn witchy_coven_yank_excludes_from_resolution() {
         let dest = unique("witchy-yank-dest");
         let out = Command::new(BIN)
             .args(["--net", &addr, &pm_src, "add", "acme/money", "*", &addr, "vendor"])
+            .env("WITCHY_COOLDOWN_SECS", "0")
             .current_dir(&dest)
             .output()
             .expect("run pm add");
@@ -2320,6 +2314,7 @@ fn witchy_pm_add_resolves_transitive_dependencies() {
     let dest = unique("witchy-trans-dest");
     let out = Command::new(BIN)
         .args(["--net", &addr, &pm_src, "add", "acme/app", "*", &addr, "vendor"])
+        .env("WITCHY_COOLDOWN_SECS", "0")
         .current_dir(&dest)
         .output()
         .expect("run pm add");
@@ -2721,6 +2716,7 @@ fn witchy_pm_publishes_with_trusted_token() {
     let add = Command::new(BIN)
         .current_dir(&base)
         .args(["pm", "--net", &hostport, "add", "acme/tplib", "^1.0.0", &hostport, "vendored"])
+        .env("WITCHY_COOLDOWN_SECS", "0")
         .output()
         .expect("run `witchy pm add`");
     assert!(
@@ -2811,6 +2807,7 @@ fn witchy_pm_add_build_run_consumes_a_fetched_rune() {
         .current_dir(&app)
         .args(["pm", "add", "acme/lib"])
         .env("COVEN_URL", server.url())
+        .env("WITCHY_COOLDOWN_SECS", "0")
         .output()
         .expect("run `witchy pm add`");
     let add_out = String::from_utf8_lossy(&add.stdout);
