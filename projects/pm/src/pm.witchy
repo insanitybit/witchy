@@ -55,9 +55,13 @@ fn main(console: Console, args: List(String), root: Dir, bin: Dir, runner: Exec,
     else if cmd == "promote":
         cmd_promote(console, net, env, args)
     else if cmd == "yank":
-        cmd_yank(console, net, args)
+        cmd_yank(console, net, env, args)
+    else if cmd == "list":
+        cmd_list(console, net, env, args)
     else if cmd == "outdated":
         cmd_outdated(console, net, root, args)
+    else if cmd == "update":
+        cmd_update(console, net, root, env, args)
     else if cmd == "audit":
         cmd_audit(console, root, arg(args, 1))
         0
@@ -186,24 +190,61 @@ fn project_entry(root: Dir, dir: String) -> Option(String):
             Some(file) -> Some(join_path(srcdir, file))
             None -> None
 
-// One `--dep name=path` token per vendored dependency the lock records, mapping the
-// `import <name>` the entry uses to the vendored module file `vendor/<name>/src/*.witchy`.
+// One `--dep name=path` token per dependency, mapping the `import <name>` the
+// entry uses to the source the compiler should link. A registry dependency is
+// served from its vendored tree (`vendor/<name>/src/*.witchy`, pinned by the
+// lock); a path dependency is resolved straight from the manifest's `path =`,
+// relative to the project, so a sibling-library workspace builds without
+// vendoring (the project Dir reaches across to the sibling). Path wins when both
+// are present (the manifest is the source of truth for a path dep).
 fn dep_flags(root: Dir, dir: String) -> List(String):
     var flags = []
+    if exists(root, join_path(dir, "witchy.toml")):
+        let manifest = read(root, join_path(dir, "witchy.toml"))
+        for pair in toml.table(manifest, "dependencies"):
+            flags = push_path_dep(root, dir, flags, pair)
     let lockpath = join_path(dir, "witchy.lock")
     if exists(root, lockpath):
         let lock = read(root, lockpath)
         for block in toml.array_tables(lock, "rune"):
             let name = entry_name(block)
-            if !string.is_empty(name):
+            if !string.is_empty(name) && !has_dep(flags, name):
                 if let Some(src) = vendored_module(root, dir, name):
-                    flags = list.push(flags, "--dep")
-                    flags = list.push(flags, name + "=" + src)
+                    flags = dep_flag(flags, name, src)
     flags
+
+// Append a `--dep <name>=<path>` for a manifest path dependency (no-op otherwise).
+fn push_path_dep(root: Dir, dir: String, flags: List(String), pair: (String, String)) -> List(String):
+    let (name, inline) = pair
+    match toml.inline_get(inline, "path"):
+        Some(rel) -> match path_dep_module(root, dir, rel):
+            Some(src) -> dep_flag(flags, name, src)
+            None -> flags
+        None -> flags
+
+fn dep_flag(flags: List(String), name: String, src: String) -> List(String):
+    list.push(list.push(flags, "--dep"), name + "=" + src)
+
+// Whether a `--dep <name>=...` flag is already present.
+fn has_dep(flags: List(String), name: String) -> Bool:
+    var found = false
+    for f in flags:
+        if string.contains(f, "=") && string.split_once(f, "=").0 == name:
+            found = true
+    found
+
+// The source file for a path dependency at `rel` (relative to the project dir),
+// normalized so `../sib` resolves across to a sibling under the project Dir.
+fn path_dep_module(root: Dir, dir: String, rel: String) -> Option(String):
+    module_in_src(root, normalize_path(join_path(dir, rel)))
 
 // The vendored source file for dependency `name`: vendor/<name>/src/<first>.witchy.
 fn vendored_module(root: Dir, dir: String, name: String) -> Option(String):
-    let srcdir = join_path(join_path(join_path(dir, "vendor"), name), "src")
+    module_in_src(root, join_path(join_path(dir, "vendor"), name))
+
+// The first `.witchy` under `<base>/src`, as a path the compiler can read.
+fn module_in_src(root: Dir, base: String) -> Option(String):
+    let srcdir = join_path(base, "src")
     if !exists(root, srcdir):
         None
     else:
@@ -480,14 +521,14 @@ fn latest_version(versions: List(Version)) -> Option(Version):
 
 // yank <name> <version> [host:port] — flag a released version (re-signs the
 // record as yanked); existing locks still resolve it, new resolutions skip it.
-fn cmd_yank(console: Console, net: Net, args: List(String)) -> Int:
+fn cmd_yank(console: Console, net: Net, env: Env, args: List(String)) -> Int:
     let name = arg(args, 1)
     let version = arg(args, 2)
     if string.is_empty(name) || string.is_empty(version):
         print(console, "usage: pm yank <name> <version> [host:port]")
         1
     else:
-        let addr = if string.is_empty(arg(args, 3)): "127.0.0.1:8787" else: arg(args, 3)
+        let addr = coven_addr(env, arg(args, 3))
         let (host, port) = hostport(addr)
         let resp = http.post(net, host, port, "/coven/yank", yank_body(name, version))
         print(console, "yank: ${http.status(resp)}")
@@ -495,6 +536,43 @@ fn cmd_yank(console: Console, net: Net, args: List(String)) -> Int:
 
 fn yank_body(name: String, version: String) -> String:
     json.encode(JsonObject([("name", JsonString(name)), ("version", JsonString(version))]))
+
+// list <name> [host:port] — every version of a rune the registry knows, with its
+// lifecycle state (staged / released / yanked). The registry comes from the
+// explicit arg or COVEN_URL. Reads /coven/versions and prints `<version> <state>`
+// per record so a consumer can see what is resolvable before adding.
+fn cmd_list(console: Console, net: Net, env: Env, args: List(String)) -> Int:
+    let name = arg(args, 1)
+    if string.is_empty(name):
+        print(console, "usage: pm list <name> [host:port]")
+        1
+    else:
+        let addr = coven_addr(env, arg(args, 2))
+        let (host, port) = hostport(addr)
+        let resp = http.get(net, host, port, "/coven/versions?name=" + wire(name))
+        if http.status(resp) != 200:
+            print(console, "registry error listing " + name)
+            1
+        else:
+            print_versions(console, name, http.body(resp))
+
+fn print_versions(console: Console, name: String, body: String) -> Int:
+    var any = false
+    for rec in version_records(body):
+        any = true
+        print(console, name + "@" + jget(rec, "version") + " " + jget(rec, "state"))
+    if !any:
+        print(console, name + ": no versions")
+    0
+
+// The `records` array of a /coven/versions response, as raw Json values.
+fn version_records(body: String) -> List(Json):
+    var out = []
+    if let Ok(doc) = json.decode(body):
+        if let Some(records) = json.get(doc, "records"):
+            if let Some(items) = json.as_array(records):
+                out = items
+    out
 
 // The manifest plus every `src/**/*.witchy`, as (path, contents) — the source
 // tree the registry content-addresses and footprints.
@@ -799,6 +877,66 @@ fn drop_last(xs: List(String)) -> List(String):
             out = list.push(out, x)
         i = i + 1
     out
+
+// --- update: re-resolve vendored deps to the latest released version ---------
+// `update [name]` walks the project's `vendor/` tree (each vendored rune carries
+// its signed `coven.json`, naming the full `ns/name` and pinned version), queries
+// the registry for the latest released version of each, and re-fetches the ones
+// that moved (verifying signature + hash), then regenerates `witchy.lock`. With a
+// `name` argument only that rune is updated; the others stay pinned at their
+// vendored version. Run from a project directory (cwd is the project Dir).
+fn cmd_update(console: Console, net: Net, root: Dir, env: Env, args: List(String)) -> Int:
+    let only = arg(args, 1)
+    let addr = coven_addr(env, arg(args, 2))
+    let (host, port) = hostport(addr)
+    if !exists(root, "vendor"):
+        print(console, "no vendored dependencies to update")
+        0
+    else:
+        update_vendored(console, net, root, host, port, only)
+
+fn update_vendored(console: Console, net: Net, root: Dir, host: String, port: Int, only: String) -> Int:
+    var changed = 0
+    for entry in list(subdir(root, "vendor")):
+        if string.is_empty(only) || entry == only:
+            changed = changed + update_one(console, net, root, host, port, entry)
+    write(root, "witchy.lock", vendor_lock(root))
+    print(console, "updated ${changed} dependencies -> witchy.lock")
+    0
+
+// Re-fetch one vendored rune if the registry has a newer released version than
+// the one currently vendored (returns 1 if it moved, 0 otherwise).
+fn update_one(console: Console, net: Net, root: Dir, host: String, port: Int, entry: String) -> Int:
+    let rune_dir = join_path("vendor", entry)
+    if !exists(root, join_path(rune_dir, "coven.json")):
+        0
+    else:
+        let record = read(root, join_path(rune_dir, "coven.json"))
+        let fullname = recorded_field(record, "name")
+        let current = recorded_field(record, "version")
+        let latest = latest_released(net, host, port, fullname)
+        if string.is_empty(latest) || latest == current:
+            0
+        else:
+            refetch(console, net, root, host, port, fullname, latest, current)
+
+fn refetch(console: Console, net: Net, root: Dir, host: String, port: Int, fullname: String, latest: String, current: String) -> Int:
+    let code = fetch_source(console, net, root, host, port, fullname, latest, "vendor")
+    if code != 0:
+        0
+    else:
+        print(console, "updated " + fullname + " " + current + " -> " + latest)
+        1
+
+// The highest released version of `name` in the registry, or "" if none.
+fn latest_released(net: Net, host: String, port: Int, name: String) -> String:
+    let resp = http.get(net, host, port, "/coven/versions?name=" + wire(name))
+    if http.status(resp) != 200:
+        ""
+    else:
+        match latest_version(released_versions(http.body(resp))):
+            Some(v) -> semver.format(v)
+            None -> ""
 
 // --- add: resolve + fetch a rune (and its deps) from a coven registry --------
 // Resolves a version requirement against the registry's released versions
@@ -1219,7 +1357,9 @@ fn usage(console: Console):
     print(console, "  publish <dir> [host:port] [id]    stage a rune to a coven registry")
     print(console, "  promote <name> <ver> [host:port] [id]  release a staged version")
     print(console, "  yank  <name> <ver> [host:port]   flag a released version as yanked")
+    print(console, "  list  <name> [host:port]         every version of a rune and its state")
     print(console, "  outdated <dir> <host:port>       latest released version of each dep")
+    print(console, "  update [name] [host:port]        re-fetch vendored deps to their latest release")
     print(console, "  verify-rune <dir> <rootpub>  re-verify a vendored rune offline (coven.json)")
     print(console, "  verify-vendor <dir> <rootpub>  re-verify every vendored rune offline")
     print(console, "  vendor <dir>        materialize path deps into <dir>/vendor")

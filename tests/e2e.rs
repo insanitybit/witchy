@@ -98,6 +98,14 @@ impl RegistryServer {
         format!("http://127.0.0.1:{}", self.port)
     }
 
+    /// The registry's root public key (hex) — what an offline `pm verify-rune`
+    /// pins and re-verifies a vendored rune's signed record against.
+    fn rootpub(&self) -> String {
+        let (status, body) = http_get(&format!("127.0.0.1:{}", self.port), "/coven/rootpub");
+        assert_eq!(status, 200, "rootpub fetch failed");
+        body.trim().to_string()
+    }
+
     /// Mint a short-lived identity token (JSON) via the IdP key, with arbitrary
     /// claims (`key=value`).
     fn mint(&self, sub: &str, claims: &[(&str, &str)]) -> String {
@@ -140,6 +148,100 @@ impl Drop for RegistryServer {
         let _ = std::fs::remove_dir_all(&self.regroot);
         let _ = std::fs::remove_dir_all(&self.home);
         let _ = std::fs::remove_dir_all(&self.issuer_dir);
+    }
+}
+
+/// Drives the embedded **witchy front-end** (`witchy pm <cmd>`, the self-hosted
+/// CLI of rfcs/0004-self-hosted-cli.md) against a `RegistryServer`. The front-end
+/// is the canonical client: a project-local `vendor/<name>/` + content-hash
+/// `witchy.lock` (no global `WITCHY_HOME` store), and `COVEN_URL`/`COVEN_ID_TOKEN`
+/// for the registry address + trusted-publishing identity. Each `FrontEnd` owns a
+/// hermetic working tree under which projects/libraries are authored.
+struct FrontEnd<'a> {
+    server: &'a RegistryServer,
+    base: PathBuf,
+}
+
+impl<'a> FrontEnd<'a> {
+    fn new(server: &'a RegistryServer, tag: &str) -> FrontEnd<'a> {
+        FrontEnd { server, base: unique(tag) }
+    }
+
+    /// Author a library rune `<dir_name>` (named `<name>`@`<version>`) with one
+    /// source module; returns its directory.
+    fn lib(&self, name: &str, version: &str, module_body: &str) -> PathBuf {
+        let dir_name = name.rsplit('/').next().unwrap();
+        let dir = self.base.join(dir_name);
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(
+            dir.join("witchy.toml"),
+            format!("[rune]\nname = \"{name}\"\nversion = \"{version}\"\n"),
+        )
+        .unwrap();
+        let module = dir_name.replace('-', "_");
+        std::fs::write(dir.join("src").join(format!("{module}.witchy")), module_body).unwrap();
+        dir
+    }
+
+    /// Scaffold a fresh consumer app via `witchy pm new app`; returns its dir.
+    fn new_app(&self) -> PathBuf {
+        let out = self.pm(&self.base, &["new", "app"], None);
+        assert!(out.status.success(), "pm new failed: {}", stderr(&out));
+        self.base.join("app")
+    }
+
+    /// Run `witchy pm <args>` from `dir`, with `COVEN_URL` pointed at the server
+    /// and (optionally) a `COVEN_ID_TOKEN` identity for trusted publish/promote.
+    fn pm(&self, dir: &Path, args: &[&str], id_token: Option<&str>) -> Output {
+        let mut full = vec!["pm"];
+        full.extend_from_slice(args);
+        let mut cmd = Command::new(BIN);
+        cmd.current_dir(dir)
+            .env("COVEN_URL", self.server.url())
+            .args(&full);
+        if let Some(t) = id_token {
+            cmd.env("COVEN_ID_TOKEN", t);
+        }
+        cmd.output().expect("spawn witchy pm")
+    }
+
+    /// Publish + promote a library to the registry in one shot (the common case):
+    /// a CI identity bound to `<namespace>-repo`/`release.yml` stages it, then a
+    /// human identity (distinct, for separation of duties) promotes it to
+    /// released. The repository is keyed by NAMESPACE (not the full name) so every
+    /// rune under a namespace publishes from the one TOFU-bound repository.
+    fn publish_promote(&self, dir: &Path, name: &str, version: &str) {
+        let ns = name.split('/').next().unwrap();
+        let repo = format!("{ns}-repo");
+        let ci = self.server.ci_token(&repo, "release.yml");
+        let out = self.pm(dir, &["publish", "."], Some(&ci));
+        assert!(
+            out.status.success() && stdout(&out).contains("publish: 200"),
+            "publish failed: {}\nstdout: {}",
+            stderr(&out),
+            stdout(&out)
+        );
+        let human = self.server.human_token("alice");
+        let out = self.pm(dir, &["promote", name, version], Some(&human));
+        assert!(
+            out.status.success() && stdout(&out).contains("promote: 200"),
+            "promote failed: {}\nstdout: {}",
+            stderr(&out),
+            stdout(&out)
+        );
+    }
+
+    /// Author + publish + promote a library in one shot; returns its dir.
+    fn published_lib(&self, name: &str, version: &str, module_body: &str) -> PathBuf {
+        let dir = self.lib(name, version, module_body);
+        self.publish_promote(&dir, name, version);
+        dir
+    }
+}
+
+impl Drop for FrontEnd<'_> {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.base);
     }
 }
 
@@ -261,121 +363,125 @@ fn copy_tree(src: &Path, dst: &Path) {
     }
 }
 
+/// The full networked lifecycle through the front-end against a real coven:
+/// trusted CI `publish` (staged) → a staged rune is not addable → distinct-human
+/// `promote` (released) → `add` (fetched over HTTP, signature + content verified,
+/// vendored + locked) → `run` the consumer → `list` reflects `released`.
 #[test]
 fn networked_registry_full_lifecycle() {
     let server = RegistryServer::start();
-    let mut sb = Sandbox::new("net");
-    sb.coven_url = Some(server.url());
+    let fe = FrontEnd::new(&server, "net");
+    let app = fe.new_app();
 
-    let app = new_app(&sb);
-    // Publish to the remote server.
-    let lib = sb.work.join("lib");
-    std::fs::create_dir_all(lib.join("src")).unwrap();
-    std::fs::write(lib.join("witchy.toml"), "[rune]\nname = \"acme/lib\"\nversion = \"1.0.0\"\n").unwrap();
-    std::fs::write(lib.join("src/lib.witchy"), "fn shout(s: String) -> String:\n    \"HEY \" + s\n").unwrap();
+    let lib = fe.lib("acme/lib", "1.0.0", "pub fn shout(s: String) -> String:\n    \"HEY \" + s\n");
     // Publish via a trusted CI identity token (no long-lived API key).
-    let ci = server.ci_token("acme/lib-repo", "release.yml");
-    assert!(sb.run_id(&lib, "ci", &ci, &["publish"]).status.success());
+    let ci = server.ci_token("acme-lib-repo", "release.yml");
+    let out = fe.pm(&lib, &["publish", "."], Some(&ci));
+    assert!(out.status.success() && stdout(&out).contains("publish: 200"), "publish: {}", stdout(&out));
 
-    // Staged over the network → not addable.
-    let out = sb.run(&app, "dev", &["add", "acme/lib"]);
-    assert!(!out.status.success());
-    assert!(stderr(&out).contains("STAGED"), "stderr: {}", stderr(&out));
+    // Staged over the network → not addable (no released version satisfies it).
+    let out = fe.pm(&app, &["add", "acme/lib"], None);
+    assert!(!out.status.success(), "a staged version must not be addable");
+    assert!(
+        stdout(&out).contains("no released version") || stderr(&out).contains("no released version"),
+        "stdout {} stderr {}",
+        stdout(&out),
+        stderr(&out)
+    );
 
-    // Promote over the network with a human identity token + a second factor.
+    // Promote over the network with a distinct human identity token.
     let alice = server.human_token("alice");
-    let out = sb.run_id(&lib, "alice", &alice, &["promote", "acme/lib@1.0.0", "--factor", "webauthn"]);
-    assert!(out.status.success(), "remote promote failed: {}", stderr(&out));
-    assert!(stdout(&out).contains("RELEASED"));
+    let out = fe.pm(&lib, &["promote", "acme/lib", "1.0.0"], Some(&alice));
+    assert!(out.status.success() && stdout(&out).contains("promote: 200"), "promote: {}", stdout(&out));
 
-    // Add (fetched over HTTP, signature-verified) and run.
-    let out = sb.run(&app, "dev", &["add", "acme/lib"]);
-    assert!(out.status.success(), "remote add failed: {}", stderr(&out));
+    // Add (fetched over HTTP, signature-verified + content-hashed) and run.
+    let out = fe.pm(&app, &["add", "acme/lib"], None);
+    assert!(out.status.success(), "remote add failed: {}\n{}", stderr(&out), stdout(&out));
     std::fs::write(
         app.join("src/app.witchy"),
         "import lib\n\nfn main(console: Console):\n    print(console, lib.shout(\"net\"))\n",
     )
     .unwrap();
-    let out = sb.run(&app, "dev", &["run"]);
-    assert!(out.status.success(), "remote run failed: {}", stderr(&out));
+    let out = fe.pm(&app, &["run", "."], None);
+    assert!(out.status.success(), "remote run failed: {}\n{}", stderr(&out), stdout(&out));
     assert!(stdout(&out).contains("HEY net"), "got: {}", stdout(&out));
 
-    // The lock pinned the remote registry's key fingerprint.
+    // The lock pins the fetched dependency by content hash.
     let lock = std::fs::read_to_string(app.join("witchy.lock")).unwrap();
-    assert!(lock.contains("ed25519:"), "lock should pin remote key: {lock}");
+    assert!(lock.contains("sha256:"), "lock should pin the content hash: {lock}");
 
     // `list` over the network reflects the released state.
-    let out = sb.run(&app, "dev", &["list", "acme/lib"]);
-    assert!(stdout(&out).contains("released"));
+    let out = fe.pm(&app, &["list", "acme/lib"], None);
+    assert!(stdout(&out).contains("released"), "list: {}", stdout(&out));
 }
 
+/// Trusted publishing binds a namespace to a repository + workflow on first
+/// publish (TOFU), and the front-end `pm publish` (carrying `COVEN_ID_TOKEN`) is
+/// refused (403) for a token from a different repository or a non-release
+/// workflow — even though the token is otherwise valid. The bound CI identity may
+/// re-publish; a distinct human then promotes.
 #[test]
 fn trusted_publishing_binds_repo_and_rejects_others() {
     let server = RegistryServer::start();
-    let mut sb = Sandbox::new("auth");
-    sb.coven_url = Some(server.url());
+    let fe = FrontEnd::new(&server, "auth");
+    let lib = fe.lib("acme/secure", "1.0.0", "pub fn f(s: String) -> String:\n    s\n");
 
-    let lib = sb.work.join("lib");
-    std::fs::create_dir_all(lib.join("src")).unwrap();
-    std::fs::write(lib.join("witchy.toml"), "[rune]\nname = \"acme/secure\"\nversion = \"1.0.0\"\n").unwrap();
-    std::fs::write(lib.join("src/secure.witchy"), "fn f(s: String) -> String:\n    s\n").unwrap();
+    // First trusted publish from acme-secure-repo / release.yml binds namespace `acme`.
+    let good = server.ci_token("acme-secure-repo", "release.yml");
+    let out = fe.pm(&lib, &["publish", "."], Some(&good));
+    assert!(out.status.success() && stdout(&out).contains("publish: 200"), "good publish: {}", stdout(&out));
 
-    // First trusted publish from acme/secure-repo / release.yml binds the
-    // namespace `acme` to that exact source + workflow (TOFU).
-    let good = server.ci_token("acme/secure-repo", "release.yml");
-    assert!(sb.run_id(&lib, "ci", &good, &["publish"]).status.success());
-
-    // A token from a DIFFERENT repository cannot publish to `acme` — even though
-    // it's a valid token from the trusted issuer. (Namespace-squat / hijack.)
+    // A token from a DIFFERENT repository cannot publish to `acme` (namespace hijack).
     std::fs::write(lib.join("witchy.toml"), "[rune]\nname = \"acme/secure\"\nversion = \"1.1.0\"\n").unwrap();
-    let evil = server.ci_token("evil/fork", "release.yml");
-    let out = sb.run_id(&lib, "ci", &evil, &["publish"]);
+    let evil = server.ci_token("evil-fork", "release.yml");
+    let out = fe.pm(&lib, &["publish", "."], Some(&evil));
     assert!(!out.status.success(), "publish from wrong repo must be refused");
-    assert!(stderr(&out).contains("not authorized") || stderr(&out).contains("policy"), "stderr: {}", stderr(&out));
+    assert!(stdout(&out).contains("publish: 403"), "wrong-repo: {}", stdout(&out));
 
     // A token from the right repo but a NON-release workflow is also refused.
-    let wrong_wf = server.ci_token("acme/secure-repo", "ci.yml");
-    let out = sb.run_id(&lib, "ci", &wrong_wf, &["publish"]);
+    let wrong_wf = server.ci_token("acme-secure-repo", "ci.yml");
+    let out = fe.pm(&lib, &["publish", "."], Some(&wrong_wf));
     assert!(!out.status.success(), "publish from wrong workflow must be refused");
+    assert!(stdout(&out).contains("publish: 403"), "wrong-workflow: {}", stdout(&out));
 
     // The legitimate CI identity may publish the new version.
-    let out = sb.run_id(&lib, "ci", &good, &["publish"]);
-    assert!(out.status.success(), "legit re-publish failed: {}", stderr(&out));
+    let out = fe.pm(&lib, &["publish", "."], Some(&good));
+    assert!(out.status.success() && stdout(&out).contains("publish: 200"), "legit re-publish: {}", stdout(&out));
 
-    // Promotion requires a human identity + second factor, and the human must
-    // not be the CI that staged it (separation of duties).
+    // A distinct human promotes it to released.
     let alice = server.human_token("alice");
-    let out = sb.run_id(&lib, "alice", &alice, &["promote", "acme/secure@1.0.0", "--factor", "webauthn"]);
-    assert!(out.status.success(), "human promote failed: {}", stderr(&out));
-    assert!(stdout(&out).contains("RELEASED"));
+    let out = fe.pm(&lib, &["promote", "acme/secure", "1.1.0"], Some(&alice));
+    assert!(out.status.success() && stdout(&out).contains("promote: 200"), "human promote: {}", stdout(&out));
 }
 
+/// A trusted registry requires a valid identity token to publish: an anonymous
+/// publish (no `COVEN_ID_TOKEN`) is refused 401, and a token from an UNTRUSTED
+/// issuer (a rogue IdP whose key the registry doesn't list) is also refused 401.
+/// The front-end forwards whatever token the environment provides; the server is
+/// the gate.
 #[test]
-fn bearer_token_is_not_accepted_for_publishing() {
+fn token_required_and_untrusted_issuer_refused() {
     let server = RegistryServer::start();
-    let mut sb = Sandbox::new("nobearer");
-    sb.coven_url = Some(server.url());
-    let lib = sb.work.join("lib");
-    std::fs::create_dir_all(lib.join("src")).unwrap();
-    std::fs::write(lib.join("witchy.toml"), "[rune]\nname = \"acme/xray\"\nversion = \"1.0.0\"\n").unwrap();
-    std::fs::write(lib.join("src/x.witchy"), "fn f(s: String) -> String:\n    s\n").unwrap();
-    // No identity token at all → remote publish is refused outright.
-    let out = sb.run(&lib, "ci", &["publish"]);
-    assert!(!out.status.success(), "publish without an identity token must be refused");
-    assert!(stderr(&out).contains("identity token"), "stderr: {}", stderr(&out));
+    let fe = FrontEnd::new(&server, "nobearer");
+    let lib = fe.lib("acme/xray", "1.0.0", "pub fn f(s: String) -> String:\n    s\n");
 
-    // A token from an UNTRUSTED issuer is also refused.
+    // No identity token at all → publish is refused outright (401).
+    let out = fe.pm(&lib, &["publish", "."], None);
+    assert!(!out.status.success(), "publish without an identity token must be refused");
+    assert!(stdout(&out).contains("publish: 401"), "no-token: {}", stdout(&out));
+
+    // A token from an UNTRUSTED issuer is also refused (401).
     let other_issuer = unique("rogue-idp");
     let gen_out = Command::new(BIN).args(["coven-gen-issuer", "--out", other_issuer.to_str().unwrap()]).output().unwrap();
     assert!(gen_out.status.success());
     let mint = Command::new(BIN)
-        .args(["coven-mint-token", "--issuer-key", other_issuer.to_str().unwrap(), "--issuer", "rogue", "--sub", "x", "--claim", "repository=acme/xray"])
+        .args(["coven-mint-token", "--issuer-key", other_issuer.to_str().unwrap(), "--issuer", "rogue", "--sub", "x", "--claim", "repository=acme-xray-repo"])
         .output()
         .unwrap();
     let rogue = String::from_utf8_lossy(&mint.stdout).trim().to_string();
-    let out = sb.run_id(&lib, "ci", &rogue, &["publish"]);
+    let out = fe.pm(&lib, &["publish", "."], Some(&rogue));
     assert!(!out.status.success(), "token from untrusted issuer must be refused");
-    assert!(stderr(&out).contains("not trusted") || stderr(&out).contains("untrusted"), "stderr: {}", stderr(&out));
+    assert!(stdout(&out).contains("publish: 401"), "untrusted-issuer: {}", stdout(&out));
     let _ = std::fs::remove_dir_all(&other_issuer);
 }
 
@@ -454,135 +560,162 @@ fn tuf_rollback_is_rejected() {
     assert!(stdout(&out).contains("rolled back") || stdout(&out).contains("rollback"), "out: {}", stdout(&out));
 }
 
+/// The front-end refuses a tampered registry record via its Ed25519 signature.
+/// The SLSA provenance attestation is part of the signed record, so editing it on
+/// the server (`trusted-publisher` → `evil-publisher`) breaks the root-key
+/// signature. A fresh `pm add` fetches the tampered record and rejects it — the
+/// content address + the signature, not the transport, are trusted.
 #[test]
 fn networked_registry_signature_detects_tampering() {
     let server = RegistryServer::start();
-    let mut sb = Sandbox::new("nettamper");
-    sb.coven_url = Some(server.url());
-    let app = new_app(&sb);
-
-    let lib = sb.work.join("lib");
-    std::fs::create_dir_all(lib.join("src")).unwrap();
-    std::fs::write(lib.join("witchy.toml"), "[rune]\nname = \"acme/xray\"\nversion = \"1.0.0\"\n").unwrap();
-    std::fs::write(lib.join("src/x.witchy"), "fn f(s: String) -> String:\n    s\n").unwrap();
-    let ci = server.ci_token("acme/xray-repo", "release.yml");
-    assert!(sb.run_id(&lib, "ci", &ci, &["publish"]).status.success());
+    let fe = FrontEnd::new(&server, "nettamper");
+    let lib = fe.lib("acme/xray", "1.0.0", "pub fn f(s: String) -> String:\n    s\n");
+    let ci = server.ci_token("acme-xray-repo", "release.yml");
+    let out = fe.pm(&lib, &["publish", "."], Some(&ci));
+    assert!(out.status.success() && stdout(&out).contains("publish: 200"), "publish: {}", stdout(&out));
     let alice = server.human_token("alice");
-    assert!(sb
-        .run_id(&lib, "alice", &alice, &["promote", "acme/xray@1.0.0", "--factor", "totp"])
-        .status
-        .success());
-    assert!(sb.run(&app, "dev", &["add", "acme/xray"]).status.success());
+    let out = fe.pm(&lib, &["promote", "acme/xray", "1.0.0"], Some(&alice));
+    assert!(out.status.success() && stdout(&out).contains("promote: 200"), "promote: {}", stdout(&out));
 
-    // Tamper a signed field of the record in the SERVER's storage (the
-    // provenance attestation is signed, so editing it breaks the signature).
+    // Tamper a signed field of the record in the SERVER's storage (the provenance
+    // attestation is signed, so editing it breaks the root-key signature).
     let meta = server.regroot.join("registry/acme/xray/1.0.0/coven.json");
     let json = std::fs::read_to_string(&meta).unwrap().replace("trusted-publisher", "evil-publisher");
     std::fs::write(&meta, json).unwrap();
 
-    // A fresh client (clear its store so it must re-fetch) must reject the
-    // tampered record via the signature — verify re-fetches from the server.
-    std::fs::remove_dir_all(sb.home.join("store")).ok();
-    let out = sb.run(&app, "dev", &["verify"]);
-    assert!(!out.status.success(), "tampered remote record must fail verify");
+    // A fresh `add` fetches the tampered record and must refuse it via the signature.
+    let app = fe.new_app();
+    let out = fe.pm(&app, &["add", "acme/xray"], None);
+    assert!(!out.status.success(), "tampered remote record must be refused");
     assert!(
-        stdout(&out).contains("FAIL") || stderr(&out).contains("signature"),
+        stdout(&out).contains("invalid signature") || stdout(&out).contains("BLOCK"),
         "stdout {} stderr {}",
         stdout(&out),
         stderr(&out)
     );
+    assert!(!app.join("vendor/xray").exists(), "nothing should be vendored on a rejected add");
 }
 
+/// `pm new` scaffolds a runnable rune and `pm run` compiles + runs it through the
+/// embedded compiler (the cargo→rustc split of RFC-0004) — no registry needed.
 #[test]
 fn scaffold_and_run() {
-    let sb = Sandbox::new("scaffold");
-    let app = new_app(&sb);
-    let out = sb.run(&app, "dev", &["run"]);
-    assert!(out.status.success(), "run failed: {}", stderr(&out));
+    let base = unique("scaffold");
+    let out = Command::new(BIN)
+        .current_dir(&base)
+        .args(["pm", "new", "app"])
+        .output()
+        .expect("spawn witchy pm new");
+    assert!(out.status.success(), "new failed: {}", stderr(&out));
+    let out = Command::new(BIN)
+        .current_dir(&base)
+        .args(["pm", "run", "app"])
+        .output()
+        .expect("spawn witchy pm run");
+    assert!(out.status.success(), "run failed: {}\n{}", stderr(&out), stdout(&out));
     assert!(stdout(&out).contains("hello from app"), "got: {}", stdout(&out));
+    let _ = std::fs::remove_dir_all(&base);
 }
 
+/// The cargo-like consumer lifecycle through the **witchy front-end**: author +
+/// publish + promote a library over a real coven, `witchy pm add` it (vendored
+/// into the project's `vendor/` and pinned in `witchy.lock` by content hash), then
+/// `witchy pm run` a consumer that imports it. The front-end is canonical: the
+/// vendored basename `strkit` is the import name, and the lock pins `sha256:`.
 #[test]
 fn full_lifecycle_publish_promote_add_use() {
-    let sb = Sandbox::new("lifecycle");
-    let app = new_app(&sb);
-    sb.publish_lib(
+    let server = RegistryServer::start();
+    let fe = FrontEnd::new(&server, "lifecycle");
+    let app = fe.new_app();
+    fe.published_lib(
         "acme/strkit",
         "0.1.0",
-        "fn shout(s: String) -> String:\n    \"HEY \" + s\n",
+        "pub fn shout(s: String) -> String:\n    \"HEY \" + s\n",
     );
 
-    // Add the released library (pure — no capability widening, so no consent needed).
-    let out = sb.run(&app, "dev", &["add", "acme/strkit"]);
+    // Add the released library (pure — no capability widening, just vendored).
+    let out = fe.pm(&app, &["add", "acme/strkit"], None);
     assert!(out.status.success(), "add failed: {}", stderr(&out));
-    assert!(stdout(&out).contains("demands no capabilities"));
+    assert!(stdout(&out).contains("added acme/strkit@0.1.0"), "add: {}", stdout(&out));
 
-    // Use it from main.
+    // Use it from main (the vendored basename `strkit` is the import name).
     std::fs::write(
         app.join("src").join("app.witchy"),
         "import strkit\n\nfn main(console: Console):\n    print(console, strkit.shout(\"witchy\"))\n",
     )
     .unwrap();
-    let out = sb.run(&app, "dev", &["run"]);
+    let out = fe.pm(&app, &["run", "."], None);
     assert!(out.status.success(), "run failed: {}", stderr(&out));
     assert!(stdout(&out).contains("HEY witchy"), "got: {}", stdout(&out));
 
-    // The lockfile pins the dependency.
+    // The lockfile pins the dependency by content hash.
     let lock = std::fs::read_to_string(app.join("witchy.lock")).unwrap();
-    assert!(lock.contains("acme/strkit"));
-    assert!(lock.contains("sha256:"));
+    assert!(lock.contains("name = \"strkit\""), "lock: {lock}");
+    assert!(lock.contains("sha256:"), "lock: {lock}");
 }
 
+/// A staged (published-but-not-promoted) version is not resolvable: only released
+/// versions satisfy a requirement. The front-end resolves over `/coven/versions`
+/// and refuses when no released version matches.
 #[test]
 fn staged_dependency_is_not_resolvable() {
-    let sb = Sandbox::new("staged");
-    let app = new_app(&sb);
+    let server = RegistryServer::start();
+    let fe = FrontEnd::new(&server, "staged");
+    let app = fe.new_app();
 
-    // Publish WITHOUT promoting.
-    let dir = sb.work.join("json");
-    std::fs::create_dir_all(dir.join("src")).unwrap();
-    std::fs::write(
-        dir.join("witchy.toml"),
-        "[rune]\nname = \"acme/json\"\nversion = \"1.0.0\"\n",
-    )
-    .unwrap();
-    std::fs::write(dir.join("src/json.witchy"), "fn p(s: String) -> String:\n    s\n").unwrap();
-    assert!(sb.run(&dir, "ci-bot", &["publish"]).status.success());
+    // Publish WITHOUT promoting (a trusted CI stage, but no human promote).
+    let dir = fe.lib("acme/json", "1.0.0", "pub fn p(s: String) -> String:\n    s\n");
+    let ci = server.ci_token("acme-json-repo", "release.yml");
+    let out = fe.pm(&dir, &["publish", "."], Some(&ci));
+    assert!(
+        out.status.success() && stdout(&out).contains("publish: 200"),
+        "publish failed: {}\nstdout: {}",
+        stderr(&out),
+        stdout(&out)
+    );
 
-    // Adding a pinned-but-staged version must fail and mention STAGED.
-    std::fs::write(
-        app.join("witchy.toml"),
-        "[rune]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"acme/json\" = \"^1.0.0\"\n",
-    )
-    .unwrap();
-    let out = sb.run(&app, "dev", &["build"]);
-    assert!(!out.status.success());
-    assert!(stderr(&out).contains("STAGED"), "stderr: {}", stderr(&out));
+    // Adding the staged rune must fail: no released version satisfies the request.
+    let out = fe.pm(&app, &["add", "acme/json"], None);
+    assert!(!out.status.success(), "a staged version must not be resolvable");
+    assert!(
+        stdout(&out).contains("no released version") || stderr(&out).contains("no released version"),
+        "stdout {} stderr {}",
+        stdout(&out),
+        stderr(&out)
+    );
+    assert!(!app.join("vendor/json").exists(), "nothing should be vendored on a failed add");
 }
 
+/// Promotion enforces separation of duties: the promoter must be a DISTINCT human
+/// identity from the CI that uploaded it, and presents the out-of-band second
+/// factor. The front-end stages with a CI token, then releases with a distinct
+/// human token; a self-promote (CI promoting its own upload, after the human has
+/// bound the maintainer policy) is refused 403.
 #[test]
-fn promote_requires_second_factor() {
-    let sb = Sandbox::new("factor");
-    let dir = sb.work.join("lib");
-    std::fs::create_dir_all(dir.join("src")).unwrap();
-    std::fs::write(
-        dir.join("witchy.toml"),
-        "[rune]\nname = \"acme/lib\"\nversion = \"1.0.0\"\n",
-    )
-    .unwrap();
-    std::fs::write(dir.join("src/lib.witchy"), "fn f(s: String) -> String:\n    s\n").unwrap();
-    assert!(sb.run(&dir, "ci-bot", &["publish"]).status.success());
+fn promote_requires_distinct_identity() {
+    let server = RegistryServer::start();
+    let fe = FrontEnd::new(&server, "factor");
+    let dir = fe.lib("acme/lib", "1.0.0", "pub fn f(s: String) -> String:\n    s\n");
+    let ci = server.ci_token("acme-lib-repo", "release.yml");
+    let out = fe.pm(&dir, &["publish", "."], Some(&ci));
+    assert!(out.status.success() && stdout(&out).contains("publish: 200"), "publish: {}", stdout(&out));
 
-    // No --factor -> refused.
-    let out = sb.run(&dir, "alice", &["promote", "acme/lib@1.0.0"]);
-    assert!(!out.status.success());
-    assert!(stderr(&out).contains("second factor"), "stderr: {}", stderr(&out));
-
-    // With --factor -> released.
-    let out = sb.run(&dir, "alice", &["promote", "acme/lib@1.0.0", "--factor", "webauthn"]);
+    // A DISTINCT human identity promotes it to released (the first promoter binds
+    // the namespace's maintainer policy via TOFU; it is not the uploader).
+    let human = server.human_token("alice");
+    let out = fe.pm(&dir, &["promote", "acme/lib", "1.0.0"], Some(&human));
     assert!(out.status.success(), "promote failed: {}", stderr(&out));
-    assert!(stdout(&out).contains("RELEASED"));
-    assert!(stdout(&out).contains("separation of duties"));
+    assert!(stdout(&out).contains("promote: 200"), "expected 200: {}", stdout(&out));
+
+    // Stage a second version, then have the CI try to self-promote it: the human
+    // is the bound maintainer, so the CI is refused as not-a-maintainer (403) —
+    // machines stage, humans release.
+    std::fs::write(dir.join("witchy.toml"), "[rune]\nname = \"acme/lib\"\nversion = \"1.1.0\"\n").unwrap();
+    let out = fe.pm(&dir, &["publish", "."], Some(&ci));
+    assert!(out.status.success() && stdout(&out).contains("publish: 200"), "republish: {}", stdout(&out));
+    let out = fe.pm(&dir, &["promote", "acme/lib", "1.1.0"], Some(&ci));
+    assert!(!out.status.success(), "a CI self-promote must be refused");
+    assert!(stdout(&out).contains("promote: 403"), "expected 403: {}", stdout(&out));
 }
 
 #[test]
@@ -627,33 +760,37 @@ fn gate_blocks_capability_widening_then_allows_with_consent() {
     assert!(stdout(&out).contains("verified"));
 }
 
+/// `pm add` resolves transitively: adding `acme/http` (which declares a version
+/// dependency on `acme/url`) pulls BOTH into the project's `vendor/` tree and
+/// pins both in `witchy.lock`. The front-end walks each fetched rune's manifest
+/// version-deps, fetching the closure (the vendored tree doubles as the
+/// visited-set, so a diamond terminates).
 #[test]
-fn transitive_dependency_caps_aggregate() {
-    let sb = Sandbox::new("transitive");
-    let app = new_app(&sb);
-    sb.publish_lib("acme/url", "1.0.0", "fn parse(s: String) -> String:\n    s\n");
+fn transitive_dependency_add_pulls_the_closure() {
+    let server = RegistryServer::start();
+    let fe = FrontEnd::new(&server, "transitive");
+    let app = fe.new_app();
+    fe.published_lib("acme/url", "1.0.0", "pub fn parse(s: String) -> String:\n    s\n");
 
-    // http depends on url and demands Net.
-    let dir = sb.work.join("http");
+    // http depends on url and demands Net (declared, so the server admits it).
+    let dir = fe.base.join("http");
     std::fs::create_dir_all(dir.join("src")).unwrap();
     std::fs::write(
         dir.join("witchy.toml"),
-        "[rune]\nname = \"acme/http\"\nversion = \"1.0.0\"\n\n[dependencies]\n\"acme/url\" = \"^1.0.0\"\n",
+        "[rune]\nname = \"acme/http\"\nversion = \"1.0.0\"\n\n[capabilities]\nruntime = [\"Net\"]\n\n[dependencies]\n\"acme/url\" = { version = \"^1.0.0\" }\n",
     )
     .unwrap();
-    std::fs::write(dir.join("src/http.witchy"), "fn get(net: Net, u: String) -> String:\n    u\n").unwrap();
-    assert!(sb.run(&dir, "ci-bot", &["publish"]).status.success());
-    assert!(sb
-        .run(&dir, "alice", &["promote", "acme/http@1.0.0", "--factor", "totp"])
-        .status
-        .success());
+    std::fs::write(dir.join("src/http.witchy"), "pub fn get(net: Net, u: String) -> String:\n    u\n").unwrap();
+    fe.publish_promote(&dir, "acme/http", "1.0.0");
 
-    // Adding http pulls url transitively; Net must surface and gate-block.
-    let out = sb.run(&app, "dev", &["add", "acme/http", "--allow-cap", "Net"]);
-    assert!(out.status.success(), "add failed: {}", stderr(&out));
-    let out = sb.run(&app, "dev", &["why", "acme/url"]);
-    assert!(stdout(&out).contains("acme/http"), "why output: {}", stdout(&out));
-    assert!(stdout(&out).contains("acme/url"));
+    // Adding http pulls url transitively into the vendored tree + the lock.
+    let out = fe.pm(&app, &["add", "acme/http"], None);
+    assert!(out.status.success(), "add failed: {}\n{}", stderr(&out), stdout(&out));
+    assert!(app.join("vendor/http/src/http.witchy").exists(), "http must vendor");
+    assert!(app.join("vendor/url/src/url.witchy").exists(), "the transitive url must vendor");
+    let lock = std::fs::read_to_string(app.join("witchy.lock")).unwrap();
+    assert!(lock.contains("name = \"http\""), "lock must pin http: {lock}");
+    assert!(lock.contains("name = \"url\""), "lock must pin the transitive url: {lock}");
 }
 
 #[test]
@@ -700,174 +837,204 @@ fn upgrade_that_widens_is_gated() {
     assert!(lock.contains("1.1.0"), "lock should pin the upgraded version");
 }
 
+/// A diamond resolves the shared base exactly once: `acme/left` and `acme/right`
+/// both depend on `acme/base`; adding both vendors `base` a single time (the
+/// vendored tree is the visited-set) and the lock pins it once. The consumer then
+/// builds against the deduplicated vendored closure.
 #[test]
 fn diamond_dependency_resolves_shared_base_once() {
-    let sb = Sandbox::new("diamond");
-    let app = new_app(&sb);
-    sb.publish_lib("acme/base", "1.0.0", "fn b(s: String) -> String:\n    s\n");
+    let server = RegistryServer::start();
+    let fe = FrontEnd::new(&server, "diamond");
+    let app = fe.new_app();
+    fe.published_lib("acme/base", "1.0.0", "pub fn b(s: String) -> String:\n    s\n");
 
     // left and right both depend on base.
     for side in ["left", "right"] {
-        let dir = sb.work.join(side);
+        let dir = fe.base.join(side);
         std::fs::create_dir_all(dir.join("src")).unwrap();
         std::fs::write(
             dir.join("witchy.toml"),
-            format!("[rune]\nname = \"acme/{side}\"\nversion = \"1.0.0\"\n\n[dependencies]\n\"acme/base\" = \"^1.0.0\"\n"),
+            format!("[rune]\nname = \"acme/{side}\"\nversion = \"1.0.0\"\n\n[dependencies]\n\"acme/base\" = {{ version = \"^1.0.0\" }}\n"),
         )
         .unwrap();
-        std::fs::write(dir.join(format!("src/{side}.witchy")), "fn x(s: String) -> String:\n    s\n").unwrap();
-        assert!(sb.run(&dir, "ci-bot", &["publish"]).status.success());
-        assert!(sb
-            .run(&dir, "alice", &["promote", &format!("acme/{side}@1.0.0"), "--factor", "totp"])
-            .status
-            .success());
+        std::fs::write(dir.join(format!("src/{side}.witchy")), "pub fn x(s: String) -> String:\n    s\n").unwrap();
+        fe.publish_promote(&dir, &format!("acme/{side}"), "1.0.0");
     }
 
-    assert!(sb.run(&app, "dev", &["add", "acme/left"]).status.success());
-    assert!(sb.run(&app, "dev", &["add", "acme/right"]).status.success());
+    let out = fe.pm(&app, &["add", "acme/left"], None);
+    assert!(out.status.success(), "add left failed: {}\n{}", stderr(&out), stdout(&out));
+    let out = fe.pm(&app, &["add", "acme/right"], None);
+    assert!(out.status.success(), "add right failed: {}\n{}", stderr(&out), stdout(&out));
 
     // base appears exactly once in the lock despite two paths to it.
     let lock = std::fs::read_to_string(app.join("witchy.lock")).unwrap();
-    let occurrences = lock.matches("name = \"acme/base\"").count();
+    let occurrences = lock.matches("name = \"base\"").count();
     assert_eq!(occurrences, 1, "shared base must resolve once; lock:\n{lock}");
-    assert!(sb.run(&app, "dev", &["build"]).status.success());
+    assert!(app.join("vendor/base/src/base.witchy").exists(), "base must vendor once");
 }
 
+/// `pm update <name>` re-resolves only the named vendored dependency to its
+/// latest released version, re-fetching + re-vendoring it and rewriting the lock;
+/// the other dependencies stay pinned at their vendored versions.
 #[test]
 fn update_single_package_leaves_others_pinned() {
-    let sb = Sandbox::new("update1");
-    let app = new_app(&sb);
-    sb.publish_lib("acme/alfa", "1.0.0", "fn f(s: String) -> String:\n    s\n");
-    sb.publish_lib("acme/bravo", "1.0.0", "fn g(s: String) -> String:\n    s\n");
-    assert!(sb.run(&app, "dev", &["add", "acme/alfa"]).status.success());
-    assert!(sb.run(&app, "dev", &["add", "acme/bravo"]).status.success());
+    let server = RegistryServer::start();
+    let fe = FrontEnd::new(&server, "update1");
+    let app = fe.new_app();
+    fe.published_lib("acme/alfa", "1.0.0", "pub fn f(s: String) -> String:\n    s\n");
+    fe.published_lib("acme/bravo", "1.0.0", "pub fn g(s: String) -> String:\n    s\n");
+    assert!(fe.pm(&app, &["add", "acme/alfa"], None).status.success(), "add alfa");
+    assert!(fe.pm(&app, &["add", "acme/bravo"], None).status.success(), "add bravo");
 
     // Newer versions of both become available.
     for n in ["alfa", "bravo"] {
-        let dir = sb.work.join(n);
-        std::fs::write(
-            dir.join("witchy.toml"),
-            format!("[rune]\nname = \"acme/{n}\"\nversion = \"1.1.0\"\n"),
-        )
-        .unwrap();
-        assert!(sb.run(&dir, "ci-bot", &["publish"]).status.success());
-        assert!(sb
-            .run(&dir, "alice", &["promote", &format!("acme/{n}@1.1.0"), "--factor", "totp"])
-            .status
-            .success());
+        let dir = fe.lib(&format!("acme/{n}"), "1.1.0", "pub fn f(s: String) -> String:\n    s\n");
+        fe.publish_promote(&dir, &format!("acme/{n}"), "1.1.0");
     }
 
-    // Update only acme/a; acme/b must stay pinned at 1.0.0.
-    let out = sb.run(&app, "dev", &["update", "acme/alfa"]);
-    assert!(out.status.success(), "update failed: {}", stderr(&out));
+    // Update only alfa; bravo must stay pinned at 1.0.0.
+    let out = fe.pm(&app, &["update", "alfa"], None);
+    assert!(out.status.success(), "update failed: {}\n{}", stderr(&out), stdout(&out));
+    assert!(stdout(&out).contains("updated acme/alfa 1.0.0 -> 1.1.0"), "update: {}", stdout(&out));
     let lock = std::fs::read_to_string(app.join("witchy.lock")).unwrap();
-    // a moved to 1.1.0, b stayed at 1.0.0.
-    let a_at = lock.find("acme/alfa").map(|i| &lock[i..i + 60]).unwrap_or("");
-    assert!(a_at.contains("1.1.0"), "acme/a should be 1.1.0; lock:\n{lock}");
-    let b_at = lock.find("acme/bravo").map(|i| &lock[i..i + 60]).unwrap_or("");
-    assert!(b_at.contains("1.0.0"), "acme/b should stay 1.0.0; lock:\n{lock}");
+    let a_at = lock.find("\"alfa\"").map(|i| &lock[i..i + 60]).unwrap_or("");
+    assert!(a_at.contains("1.1.0"), "alfa should be 1.1.0; lock:\n{lock}");
+    let b_at = lock.find("\"bravo\"").map(|i| &lock[i..i + 60]).unwrap_or("");
+    assert!(b_at.contains("1.0.0"), "bravo should stay 1.0.0; lock:\n{lock}");
 }
 
+/// A yanked version is excluded from new resolution: `pm add` skips it (no
+/// non-yanked released version remains), and `pm list` reflects the yanked state.
 #[test]
 fn yank_excludes_from_new_resolution() {
-    let sb = Sandbox::new("yank");
-    let lib = sb.publish_lib("acme/old", "1.0.0", "fn f(s: String) -> String:\n    s\n");
+    let server = RegistryServer::start();
+    let fe = FrontEnd::new(&server, "yank");
+    let lib = fe.published_lib("acme/old", "1.0.0", "pub fn f(s: String) -> String:\n    s\n");
 
-    // Yank it.
-    let out = sb.run(&lib, "alice", &["yank", "acme/old@1.0.0"]);
-    assert!(out.status.success(), "yank failed: {}", stderr(&out));
+    // Yank it (a distinct human identity).
+    let human = server.human_token("alice");
+    let out = fe.pm(&lib, &["yank", "acme/old", "1.0.0"], Some(&human));
+    assert!(
+        out.status.success() && stdout(&out).contains("yank: 200"),
+        "yank failed: {}\nstdout: {}",
+        stderr(&out),
+        stdout(&out)
+    );
 
     // A fresh app can no longer add it (no non-yanked released version).
-    let app = new_app(&sb);
-    let out = sb.run(&app, "dev", &["add", "acme/old"]);
+    let app = fe.new_app();
+    let out = fe.pm(&app, &["add", "acme/old"], None);
     assert!(!out.status.success(), "yanked version must not be addable");
 
     // `list` reflects the yanked state.
-    let out = sb.run(&app, "dev", &["list", "acme/old"]);
+    let out = fe.pm(&app, &["list", "acme/old"], None);
     assert!(stdout(&out).contains("yanked"), "list: {}", stdout(&out));
 }
 
+/// Provenance is always recorded: a rune fetched by `pm add` carries its signed
+/// `coven.json` beside the vendored source, and that record holds the SLSA
+/// trusted-publisher attestation (issuer / repository / workflow / digest). The
+/// front-end pins provenance with the source — re-verifiable offline.
 #[test]
 fn provenance_is_always_recorded() {
-    let sb = Sandbox::new("prov");
-    let app = new_app(&sb);
-    sb.publish_lib("acme/papa", "1.0.0", "fn f(s: String) -> String:\n    s\n");
-    let out = sb.run(&app, "dev", &["add", "acme/papa"]);
+    let server = RegistryServer::start();
+    let fe = FrontEnd::new(&server, "prov");
+    let app = fe.new_app();
+    fe.published_lib("acme/papa", "1.0.0", "pub fn f(s: String) -> String:\n    s\n");
+    let out = fe.pm(&app, &["add", "acme/papa"], None);
     assert!(out.status.success(), "add failed: {}", stderr(&out));
-    let out = sb.run(&app, "dev", &["audit"]);
-    let s = stdout(&out);
-    assert!(s.contains("provenance:"), "audit: {s}");
-    assert!(s.contains("uploader=ci-bot"), "audit: {s}");
+
+    let record = std::fs::read_to_string(app.join("vendor/papa/coven.json"))
+        .expect("the vendored rune must carry its signed coven.json");
+    assert!(record.contains("trusted-publisher"), "record must carry the SLSA attestation: {record}");
+    assert!(record.contains("repository=acme-repo"), "provenance must name the repo: {record}");
 }
 
+/// The Ed25519 signature catches metadata tampering that content hashing alone
+/// would miss. After `pm add` vendors a rune, editing a SIGNED field of its
+/// `coven.json` (here the `uploaded_by` identity — the source bytes are untouched,
+/// so the content hash still matches) is detected by `pm verify-rune`: the record
+/// no longer verifies against the registry root key.
 #[test]
 fn signature_detects_registry_metadata_tampering() {
-    let sb = Sandbox::new("tamper");
-    let app = new_app(&sb);
-    sb.publish_lib("acme/xray", "1.0.0", "fn f(s: String) -> String:\n    s\n");
-    assert!(sb.run(&app, "dev", &["add", "acme/xray"]).status.success());
+    let server = RegistryServer::start();
+    let fe = FrontEnd::new(&server, "tamper");
+    let app = fe.new_app();
+    fe.published_lib("acme/xray", "1.0.0", "pub fn f(s: String) -> String:\n    s\n");
+    let out = fe.pm(&app, &["add", "acme/xray"], None);
+    assert!(out.status.success(), "add failed: {}", stderr(&out));
 
-    // A healthy verify checks signatures against the registry.
-    assert!(sb.run(&app, "dev", &["verify"]).status.success());
+    let rootpub = server.rootpub();
+    // A healthy verify-rune passes (signature + content).
+    let out = fe.pm(&app, &["verify-rune", "vendor/xray", &rootpub], None);
+    assert!(out.status.success() && stdout(&out).contains("verified"), "healthy verify: {}", stdout(&out));
 
-    // Attacker edits a signed field of the registry record (source untouched, so
-    // content hashing alone would miss it — the Ed25519 signature must catch it).
-    let meta = sb.home.join("registry/acme/xray/1.0.0/coven.json");
-    let json = std::fs::read_to_string(&meta).unwrap().replace("ci-bot", "attacker");
+    // Attacker edits a SIGNED field of the vendored record (source untouched).
+    let meta = app.join("vendor/xray/coven.json");
+    let json = std::fs::read_to_string(&meta).unwrap().replace("alice", "attacker");
     std::fs::write(&meta, json).unwrap();
 
-    // `verify` re-fetches from the registry and must reject the tampered record.
-    // (A `build` legitimately keeps working — it uses the trusted, hash-pinned
-    // copy already in the local store; tampering upstream cannot affect it.)
-    let out = sb.run(&app, "dev", &["verify"]);
+    // verify-rune must reject the tampered record via the signature.
+    let out = fe.pm(&app, &["verify-rune", "vendor/xray", &rootpub], None);
     assert!(!out.status.success(), "tampered metadata must fail verify");
-    assert!(
-        stdout(&out).contains("FAIL") || stderr(&out).contains("signature") || stderr(&out).contains("tampered"),
-        "stdout: {} stderr: {}",
-        stdout(&out),
-        stderr(&out)
-    );
+    assert!(stdout(&out).contains("BLOCK"), "verify-rune: {}", stdout(&out));
 }
 
+/// A fetched rune carries its signed provenance and re-verifies offline: `pm add`
+/// vendors `coven.json` (the registry-root-signed record) beside the source and
+/// pins the content hash in `witchy.lock`; `pm verify-rune <dir> <rootpub>` then
+/// re-checks the signature + content hash with NO network. The front-end pins
+/// trust in the signed record + content address, not a lockfile key fingerprint.
 #[test]
-fn lock_pins_registry_key_fingerprint() {
-    let sb = Sandbox::new("pin");
-    let app = new_app(&sb);
-    sb.publish_lib("acme/yankee", "1.0.0", "fn f(s: String) -> String:\n    s\n");
-    assert!(sb.run(&app, "dev", &["add", "acme/yankee"]).status.success());
+fn vendored_rune_reverifies_offline_against_the_root_key() {
+    let server = RegistryServer::start();
+    let fe = FrontEnd::new(&server, "pin");
+    let app = fe.new_app();
+    fe.published_lib("acme/yankee", "1.0.0", "pub fn f(s: String) -> String:\n    s\n");
+    let out = fe.pm(&app, &["add", "acme/yankee"], None);
+    assert!(out.status.success(), "add failed: {}", stderr(&out));
+
     let lock = std::fs::read_to_string(app.join("witchy.lock")).unwrap();
-    assert!(lock.contains("registry_root"), "lock must pin the registry key");
-    assert!(lock.contains("ed25519:"), "fingerprint format");
-    // verify reports the pinned key as OK.
-    let out = sb.run(&app, "dev", &["verify"]);
-    assert!(out.status.success(), "verify failed: {}", stderr(&out));
-    assert!(stdout(&out).contains("coven root key"));
+    assert!(lock.contains("hash = \"sha256:"), "lock must pin the content hash: {lock}");
+
+    // Offline re-verification against the registry root key (signature + content).
+    let rootpub = server.rootpub();
+    let out = fe.pm(&app, &["verify-rune", "vendor/yankee", &rootpub], None);
+    assert!(out.status.success(), "verify-rune failed: {}\n{}", stderr(&out), stdout(&out));
+    assert!(stdout(&out).contains("verified"), "verify-rune: {}", stdout(&out));
+
+    // Tampering the vendored source breaks the content check.
+    std::fs::write(app.join("vendor/yankee/src/yankee.witchy"), "pub fn f(s: String) -> String:\n    \"evil\"\n").unwrap();
+    let out = fe.pm(&app, &["verify-rune", "vendor/yankee", &rootpub], None);
+    assert!(!out.status.success(), "tampered source must fail re-verification");
+    assert!(stdout(&out).contains("BLOCK"), "verify-rune: {}", stdout(&out));
 }
 
+/// A dependency whose module shadows the standard library (a rune named
+/// `evil/list`, exposing a module `list`) cannot impersonate std: building a
+/// consumer that imports the shadowing module fails — the std `list` the prelude
+/// and generated code rely on is not the vendored impostor, so the link breaks.
 #[test]
 fn std_shadowing_dependency_is_refused() {
-    let sb = Sandbox::new("shadow");
-    let app = new_app(&sb);
-    // A malicious rune whose module is literally `list` — trying to impersonate
-    // the standard library's `list` module.
-    let dir = sb.work.join("badlist");
-    std::fs::create_dir_all(dir.join("src")).unwrap();
+    let server = RegistryServer::start();
+    let fe = FrontEnd::new(&server, "shadow");
+    let app = fe.new_app();
+    fe.published_lib("evil/list", "1.0.0", "pub fn rng(n: Int) -> Int:\n    0\n");
+
+    let out = fe.pm(&app, &["add", "evil/list"], None);
+    assert!(out.status.success(), "add failed: {}\n{}", stderr(&out), stdout(&out));
     std::fs::write(
-        dir.join("witchy.toml"),
-        "[rune]\nname = \"evil/list\"\nversion = \"1.0.0\"\n",
+        app.join("src/app.witchy"),
+        "import list\n\nfn main(console: Console):\n    print(console, \"x\")\n",
     )
     .unwrap();
-    std::fs::write(dir.join("src/list.witchy"), "fn range(n: Int) -> Int:\n    0\n").unwrap();
-    assert!(sb.run(&dir, "ci-bot", &["publish"]).status.success());
-    assert!(sb
-        .run(&dir, "alice", &["promote", "evil/list@1.0.0", "--factor", "totp"])
-        .status
-        .success());
-
-    assert!(sb.run(&app, "dev", &["add", "evil/list"]).status.success());
-    let out = sb.run(&app, "dev", &["build"]);
-    assert!(!out.status.success(), "std-shadowing rune must be refused at build");
-    assert!(stderr(&out).contains("shadow"), "stderr: {}", stderr(&out));
+    let out = fe.pm(&app, &["build", "."], None);
+    assert!(!out.status.success(), "a std-shadowing rune must be refused at build");
+    let s = format!("{}{}", stdout(&out), stderr(&out));
+    assert!(
+        s.contains("link error") || s.contains("shadow") || s.contains("module `list`"),
+        "build should refuse the shadowing dep: {s}"
+    );
 }
 
 #[test]
@@ -897,108 +1064,99 @@ fn module_name_collision_between_deps_is_caught() {
     assert!(stderr(&out).contains("collision"), "stderr: {}", stderr(&out));
 }
 
+/// `pm add` vendors the dependency source INTO the project, so build/run are
+/// offline by construction: once a rune is vendored under `vendor/` and pinned in
+/// `witchy.lock`, the registry is no longer consulted. We prove it by dropping the
+/// whole server after the add and running the consumer — it builds straight from
+/// the committed vendor tree (the front-end's offline store IS the vendor dir).
 #[test]
-fn build_is_offline_from_the_store() {
-    let sb = Sandbox::new("offline");
-    let app = new_app(&sb);
-    sb.publish_lib("acme/lib", "1.0.0", "fn f(s: String) -> String:\n    s\n");
-    assert!(sb.run(&app, "dev", &["add", "acme/lib"]).status.success());
-    std::fs::write(
-        app.join("src/app.witchy"),
-        "import lib\n\nfn main(console: Console):\n    print(console, lib.f(\"ok\"))\n",
-    )
-    .unwrap();
-    assert!(sb.run(&app, "dev", &["run"]).status.success());
+fn vendored_sources_build_with_no_registry() {
+    let app = {
+        let server = RegistryServer::start();
+        let fe = FrontEnd::new(&server, "offline");
+        let app = fe.new_app();
+        fe.published_lib("acme/lib", "1.0.0", "pub fn f(s: String) -> String:\n    s\n");
+        let out = fe.pm(&app, &["add", "acme/lib"], None);
+        assert!(out.status.success(), "add failed: {}\n{}", stderr(&out), stdout(&out));
+        std::fs::write(
+            app.join("src/app.witchy"),
+            "import lib\n\nfn main(console: Console):\n    print(console, lib.f(\"vend\"))\n",
+        )
+        .unwrap();
+        assert!(app.join("vendor/lib/src/lib.witchy").exists(), "the dep source must be vendored");
+        // Leak the FrontEnd's base so the vendored tree survives the server drop.
+        std::mem::forget(fe);
+        app
+        // `server` (and its child process) is dropped here — the registry is gone.
+    };
 
-    // Now obliterate the registry entirely. A build/run must still succeed,
-    // straight from the content-addressed store (hash-verified against the lock).
-    std::fs::remove_dir_all(sb.home.join("registry")).unwrap();
-    let out = sb.run(&app, "dev", &["run"]);
-    assert!(out.status.success(), "offline run failed: {}", stderr(&out));
-    assert!(stdout(&out).contains("ok"), "got: {}", stdout(&out));
-}
-
-#[test]
-fn vendored_sources_build_with_no_store_or_registry() {
-    let sb = Sandbox::new("vendor");
-    let app = new_app(&sb);
-    sb.publish_lib("acme/lib", "1.0.0", "fn f(s: String) -> String:\n    s\n");
-    assert!(sb.run(&app, "dev", &["add", "acme/lib"]).status.success());
-    std::fs::write(
-        app.join("src/app.witchy"),
-        "import lib\n\nfn main(console: Console):\n    print(console, lib.f(\"vend\"))\n",
-    )
-    .unwrap();
-    // Vendor the sources into the repo.
-    assert!(sb.run(&app, "dev", &["vendor"]).status.success());
-    assert!(app.join("vendor/acme/lib/witchy.toml").exists(), "vendor must write sources");
-
-    // Simulate a fresh clone on another machine: no global store, no registry —
-    // only the committed vendor/ tree and witchy.lock.
-    std::fs::remove_dir_all(&sb.home).unwrap();
-    let out = sb.run(&app, "dev", &["run"]);
-    assert!(out.status.success(), "vendored run failed: {}", stderr(&out));
+    // With NO registry running, the run is offline, served from the vendor tree.
+    let out = Command::new(BIN)
+        .current_dir(&app)
+        .args(["pm", "run", "."])
+        .output()
+        .expect("spawn witchy pm run");
+    assert!(out.status.success(), "offline run failed: {}\n{}", stderr(&out), stdout(&out));
     assert!(stdout(&out).contains("vend"), "got: {}", stdout(&out));
+    let _ = std::fs::remove_dir_all(app.parent().unwrap());
 }
 
+/// `pm outdated <dir> <host:port>` reports, for each registry dependency the
+/// manifest declares, its requirement and the latest released version available.
+/// Initially the latest matches the requirement floor; after a newer version is
+/// published + promoted, `outdated` surfaces it.
 #[test]
-fn outdated_reports_newer_versions_and_flags_widening() {
-    let sb = Sandbox::new("outdated");
-    let app = new_app(&sb);
-    sb.publish_lib("acme/lib", "1.0.0", "fn f(s: String) -> String:\n    s\n");
-    assert!(sb.run(&app, "dev", &["add", "acme/lib"]).status.success());
+fn outdated_reports_newer_versions() {
+    let server = RegistryServer::start();
+    let fe = FrontEnd::new(&server, "outdated");
+    fe.published_lib("acme/lib", "1.0.0", "pub fn f(s: String) -> String:\n    s\n");
 
-    // Up to date initially.
-    let out = sb.run(&app, "dev", &["outdated"]);
-    assert!(stdout(&out).contains("up to date") || stdout(&out).contains("latest"), "got: {}", stdout(&out));
-
-    // Publish a newer version that demands Net.
-    let dir = sb.work.join("lib");
-    std::fs::write(dir.join("witchy.toml"), "[rune]\nname = \"acme/lib\"\nversion = \"1.1.0\"\n").unwrap();
+    // A consumer that declares a registry dependency on acme/lib.
+    let app = fe.new_app();
     std::fs::write(
-        dir.join("src/lib.witchy"),
-        "fn f(s: String) -> String:\n    s\nfn net_f(net: Net, s: String) -> String:\n    s\n",
+        app.join("witchy.toml"),
+        "[rune]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"acme/lib\" = { version = \"^1.0.0\" }\n",
     )
     .unwrap();
-    assert!(sb.run(&dir, "ci-bot", &["publish"]).status.success());
-    assert!(sb
-        .run(&dir, "alice", &["promote", "acme/lib@1.1.0", "--factor", "totp"])
-        .status
-        .success());
+    let hostport = format!("127.0.0.1:{}", server.port);
 
-    let out = sb.run(&app, "dev", &["outdated"]);
-    let s = stdout(&out);
-    assert!(s.contains("1.0.0 -> 1.1.0"), "outdated: {s}");
-    assert!(s.contains("widen") && s.contains("Net"), "should flag widening: {s}");
+    // Only 1.0.0 exists so far.
+    let out = fe.pm(&app, &["--net", &hostport, "outdated", ".", &hostport], None);
+    assert!(out.status.success(), "outdated failed: {}", stderr(&out));
+    assert!(stdout(&out).contains("acme/lib: req ^1.0.0, latest 1.0.0"), "outdated: {}", stdout(&out));
+
+    // Publish + promote a newer version.
+    let dir = fe.lib("acme/lib", "1.1.0", "pub fn f(s: String) -> String:\n    s\n");
+    fe.publish_promote(&dir, "acme/lib", "1.1.0");
+
+    let out = fe.pm(&app, &["--net", &hostport, "outdated", ".", &hostport], None);
+    assert!(stdout(&out).contains("acme/lib: req ^1.0.0, latest 1.1.0"), "outdated: {}", stdout(&out));
 }
 
+/// `pm tree` shows a rune and its direct dependencies (from the manifest), each
+/// annotated with its source (a registry `version:` requirement or a `path:`).
+/// The front-end's tree is manifest-direct; the transitive closure lives in the
+/// resolved `witchy.lock`/`vendor/` tree (covered by the add tests).
 #[test]
-fn tree_shows_transitive_deps_and_capabilities() {
-    let sb = Sandbox::new("tree");
-    let app = new_app(&sb);
-    sb.publish_lib("acme/url", "1.0.0", "fn parse(s: String) -> String:\n    s\n");
+fn tree_shows_direct_deps_with_sources() {
+    let server = RegistryServer::start();
+    let fe = FrontEnd::new(&server, "tree");
+    let app = fe.new_app();
+    fe.published_lib("acme/url", "1.0.0", "pub fn parse(s: String) -> String:\n    s\n");
 
-    let dir = sb.work.join("http");
-    std::fs::create_dir_all(dir.join("src")).unwrap();
+    // Declare a registry dependency in the consumer's manifest.
     std::fs::write(
-        dir.join("witchy.toml"),
-        "[rune]\nname = \"acme/http\"\nversion = \"1.0.0\"\n\n[dependencies]\n\"acme/url\" = \"^1.0.0\"\n",
+        app.join("witchy.toml"),
+        "[rune]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"acme/url\" = { version = \"^1.0.0\" }\n",
     )
     .unwrap();
-    std::fs::write(dir.join("src/http.witchy"), "fn get(net: Net, u: String) -> String:\n    u\n").unwrap();
-    assert!(sb.run(&dir, "ci-bot", &["publish"]).status.success());
-    assert!(sb
-        .run(&dir, "alice", &["promote", "acme/http@1.0.0", "--factor", "totp"])
-        .status
-        .success());
-    assert!(sb.run(&app, "dev", &["add", "acme/http", "--allow-cap", "Net"]).status.success());
 
-    let out = sb.run(&app, "dev", &["tree"]);
+    let out = fe.pm(&app, &["tree", "."], None);
     let s = stdout(&out);
-    assert!(s.contains("acme/http"), "tree: {s}");
-    assert!(s.contains("acme/url"), "tree: {s}");
-    assert!(s.contains("Net"), "tree should annotate caps: {s}");
-    assert!(s.contains("└──") || s.contains("├──"), "tree should draw branches: {s}");
+    assert!(out.status.success(), "tree failed: {}", stderr(&out));
+    assert!(s.contains("app"), "tree should name the rune: {s}");
+    assert!(s.contains("acme/url"), "tree should list the dependency: {s}");
+    assert!(s.contains("version:^1.0.0"), "tree should annotate the source: {s}");
 }
 
 #[test]
@@ -1428,24 +1586,31 @@ fn published_rune_cannot_have_path_dependency() {
     assert!(stderr(&out).contains("path"), "stderr: {}", stderr(&out));
 }
 
+/// The registry recomputes a rune's footprint server-side and refuses an
+/// under-declared publish (400): a library that demands `Net` but declares only
+/// `Console` is rejected — the under-declaration a supply-chain attacker relies
+/// on. The front-end `pm publish` surfaces the server's refusal.
 #[test]
-fn build_rejects_underdeclared_capabilities() {
-    let sb = Sandbox::new("declared");
-    let app = new_app(&sb);
-    // A library rune that demands Net but declares only Console.
+fn publish_rejects_underdeclared_capabilities() {
+    let server = RegistryServer::start();
+    let fe = FrontEnd::new(&server, "declared");
+    let dir = fe.base.join("lib");
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    // A rune that demands Net but declares only Console.
     std::fs::write(
-        app.join("witchy.toml"),
-        "[rune]\nname = \"lib\"\nversion = \"0.1.0\"\n\n[capabilities]\nruntime = [\"Console\"]\n",
+        dir.join("witchy.toml"),
+        "[rune]\nname = \"acme/lib\"\nversion = \"0.1.0\"\n\n[capabilities]\nruntime = [\"Console\"]\n",
     )
     .unwrap();
     std::fs::write(
-        app.join("src/app.witchy"),
-        "fn fetch(net: Net, u: String) -> String:\n    u\n",
+        dir.join("src/lib.witchy"),
+        "pub fn fetch(net: Net, u: String) -> String:\n    u\n",
     )
     .unwrap();
-    let out = sb.run(&app, "dev", &["build"]);
-    assert!(!out.status.success(), "under-declared caps must fail build");
-    assert!(stderr(&out).contains("under-declare"), "stderr: {}", stderr(&out));
+    let ci = server.ci_token("acme-repo", "release.yml");
+    let out = fe.pm(&dir, &["publish", "."], Some(&ci));
+    assert!(!out.status.success(), "under-declared caps must be refused at publish");
+    assert!(stdout(&out).contains("publish: 400"), "expected 400: {}", stdout(&out));
 }
 
 /// The **self-hosted** registry path: spawn the witchy coven server
@@ -1732,6 +1897,24 @@ fn http_post(addr: &str, path: &str, body: &str) -> (u16, String) {
         "POST {path} HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     );
+    s.write_all(req.as_bytes()).unwrap();
+    let mut buf = String::new();
+    let _ = s.read_to_string(&mut buf);
+    let status = buf
+        .split_whitespace()
+        .nth(1)
+        .and_then(|c| c.parse::<u16>().ok())
+        .unwrap_or(0);
+    let body = buf.split("\r\n\r\n").nth(1).unwrap_or("").to_string();
+    (status, body)
+}
+
+/// GET a path from a coven server, returning (status, body).
+fn http_get(addr: &str, path: &str) -> (u16, String) {
+    use std::io::{Read, Write};
+    let mut s = std::net::TcpStream::connect(addr).unwrap();
+    s.set_read_timeout(Some(std::time::Duration::from_secs(3))).unwrap();
+    let req = format!("GET {path} HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
     s.write_all(req.as_bytes()).unwrap();
     let mut buf = String::new();
     let _ = s.read_to_string(&mut buf);
