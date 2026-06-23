@@ -3162,6 +3162,59 @@ fn yn(b: Bool) -> String:
         assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
     }
 
+    /// RFC-0006 regression: an IMPORTED tag used inside a NON-`main` function
+    /// expands and runs identically on both backends. This locks in the
+    /// infinite-recursion fix in `tagged::expand`: to RUN a tag the compiler links
+    /// a synthetic comptime program, and `linker::link` re-runs `tagged::expand`
+    /// per module — so if the comptime program still carried the CONSUMER's
+    /// tag-bearing function (`render`, with its unexpanded `box"…"`), expansion
+    /// would loop forever (rebuild the program → expand the tag again → …) and
+    /// overflow the stack. The fix prunes the comptime program to only the items
+    /// REACHABLE FROM THE TAG (its callees + the types they name), which excludes
+    /// `render`/`main`, so the program holds no tagged literals and terminates.
+    /// Shape mirrors the glamour `html"…"`-in-`view` case that triggered the bug.
+    #[test]
+    fn imported_tag_in_non_main_fn_agrees_on_both_backends() {
+        use crate::runtime::{Capabilities, Runtime};
+        // The tag-defining module: a tiny `box"…"` tag that emits source wrapping
+        // each hole in `unwrap(wrap(…))`. The `Wrapped` type + `wrap`/`unwrap`
+        // helpers exercise the reachable-TYPES half of the prune (the tag's
+        // signature/body reach `Wrapped`, so it must be kept for the comptime
+        // program to type-check), and prove a tag works when defined in an
+        // IMPORTED rune, not just locally.
+        let widget = "type Wrapped:\n    Wrap(String)\n\npub fn unwrap(w: Wrapped) -> String:\n    match w:\n        Wrap(s) -> s\n\npub fn wrap(s: String) -> Wrapped:\n    Wrap(s)\n\npub fn box(parts: List(String), holes: List(String)) -> String:\n    var out = \"unwrap(wrap(\\\"\"\n    var i = 0\n    let n = list.length(parts)\n    for p in parts:\n        out = out + p\n        if i < n - 1:\n            out = out + \"\\\" + \" + list.at(holes, i) + \" + \\\"\"\n        i = i + 1\n    out + \"\\\"))\"\n";
+        // The CONSUMER: the tag appears in `render`, a NON-`main` function. This is
+        // the exact shape that recursed before the fix (cf. glamour's `view`).
+        let app = "import widget\n\nfn render(x: String) -> String:\n    box\"[${x}]\"\n\nfn main(console: Console):\n    print(console, render(\"hi\"))\n";
+
+        let want = vec!["[hi]".to_string()];
+        let link = || {
+            let app_m = parser::parse_module(app).expect("parse app");
+            let widget_m = parser::parse_module(widget).expect("parse widget");
+            crate::linker::link(
+                vec![("main".into(), app_m), ("widget".into(), widget_m)],
+                "main",
+            )
+            .expect("link (must not overflow the stack)")
+        };
+
+        let linked = link();
+        typeck::check(&linked).expect("typecheck");
+        let interp_out = interpreter::run_module(linked, ".", Vec::new()).expect("interp run");
+        assert_eq!(interp_out, want, "interpreter");
+
+        let linked = link();
+        let bytes = codegen::compile_module_binary(&linked)
+            .expect("compile")
+            .expect("the binary path lowers this program");
+        let mut rt = Runtime::new().expect("runtime");
+        let mut actor = rt
+            .spawn(&bytes, Capabilities { print: true, ..Default::default() }, 4)
+            .expect("spawn");
+        actor.run().expect("run");
+        assert_eq!(actor.output(), want, "compiled WASM must agree");
+    }
+
     /// Interpolating a record field — `"${p.x}"` (scalar) and `"${p.tags}"`
     /// (compound) — renders on WASM, including inside a custom `Show` impl. A
     /// field access previously resolved to no value type, so `to_string` of it

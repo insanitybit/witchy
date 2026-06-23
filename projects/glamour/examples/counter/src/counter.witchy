@@ -22,22 +22,16 @@ type Msg derive(Reflect):
     Inc
     Dec
 
-// view: a pure projection of the model to a VNode tree. This is the equivalent of
-//     html"<div><button on:click=${Dec}>-</button>
-//          <span>${int_to_str(count)}</span>
-//          <button on:click=${Inc}>+</button></div>"
-// written with glamour's hand-builder constructors (`element`/`text`/`on`) —
-// RFC-0008 Alternative (a), the explicitly-blessed MVP form. The `html` tag is the
-// ergonomic sugar over exactly these calls (and is covered by glamour's own tests,
-// `glamour_html_tag_renders_*`); hand-building here keeps this end-to-end demo
-// independent of the comptime tag-expansion pass. `on("click", Dec)` carries a
-// `Msg` VALUE (events as data), and `text(...)` is always an inert text node.
+// view: a pure projection of the model to a VNode tree, written with glamour's
+// `html` tag — a COMPILE-TIME tagged literal (RFC-0006). The tag runs in the
+// compiler and splices `element`/`text`/`on` calls over the literal, so this is
+// exactly the hand-builder form but ergonomic: `on:click=${Dec}` becomes
+// `on("click", Dec)` (a `Msg` VALUE — events as data), and a `${...}` text hole
+// becomes an inert, escape-on-render `text(...)` node (XSS-immune by construction).
+// This exercises the html → VNode → DOM path end to end (the headless DOM test
+// renders and clicks through it).
 fn view(count: Int) -> VNode(Msg):
-    element("div", [], [
-        element("button", [on("click", Dec)], [text("-")]),
-        element("span", [], [text(int_to_str(count))]),
-        element("button", [on("click", Inc)], [text("+")]),
-    ])
+    html"<div><button on:click=${Dec}>-</button><span>${int_to_str(count)}</span><button on:click=${Inc}>+</button></div>"
 
 // update: a pure match from (model, msg) to (model, Cmd). No effects — the rune
 // is capability-denied — so the command is always `NoCmd` here.

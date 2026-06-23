@@ -352,11 +352,16 @@ pub fn link(mut modules: Vec<(String, Module)>, entry: &str) -> Result<Module, L
             // module: each tag runs at compile time and its returned source is
             // parsed and SPLICED over the literal — so both backends compile the
             // same expanded AST (RFC-0006). Additive only. The tag-expansion
-            // context needs the OTHER modules so an IMPORTED tag (and the
-            // constructors it emits) resolves, so we hand it a snapshot of the
-            // rest of the link set (those already expanded for this pass, plus the
-            // raw later ones — sufficient, since a tag's module is data, not
-            // itself tag-bearing in practice).
+            // context needs the OTHER modules so an IMPORTED tag resolves, so we
+            // hand it a snapshot of the rest of the link set (those already
+            // expanded for this pass, plus the raw later ones). To RUN a tag,
+            // `tagged::expand` builds a comptime program from only the items
+            // REACHABLE from the tag function and `link`s it — which re-enters
+            // this pass. The reachable-set prune is what keeps that finite: a
+            // CONSUMER module IS tag-bearing (it writes `tag"…"` in a function),
+            // but its tag-bearing functions are unreachable from the tag, so the
+            // comptime program carries no tagged literals and the recursion
+            // terminates.
             let siblings: Vec<(String, Module)> = modules
                 .iter()
                 .enumerate()
