@@ -1,0 +1,427 @@
+// covenbrowser — the CAPSTONE glamour MVU app (RFC-0008): a mini "coven browser"
+// that combines the runecard view and the source highlighter into ONE navigable,
+// multi-view interactive UI. This proves witchy/glamour builds a REAL interactive
+// application — multiple views, navigation, an event loop — not just isolated
+// components.
+//
+// The MVU triple (exactly the counter's shape, scaled up to a real app):
+//   * `Model` — the catalog of runes (name/version/caps/source) plus a `selected`
+//     index (a sentinel `-1` means "show the INDEX"). `view` projects it to a
+//     VNode tree; `update` folds a `Msg` into the next model.
+//   * `Msg = Show(Int) | Back` — the navigation events. A click on a rune card in
+//     the index dispatches `Show(i)`; a click on the detail's back button
+//     dispatches `Back`. Events are DATA carried by glamour's `on` binding.
+//   * `view(model)` — if nothing is selected, render the INDEX: a
+//     `<div class="coven-index">` of clickable rune cards (reusing the runecard
+//     CARD STRUCTURE, each wrapped so the whole card is `on("click", Show(i))`).
+//     If a rune is selected, render the DETAIL: the rune card PLUS its highlighted
+//     source (reusing the highlighter's TOKENIZER→VNode logic, inlined below) PLUS
+//     a back button.
+//
+// SECURITY: every text leaf — a rune name, a capability, a source token — flows
+// through glamour's `text(...)` node, never an HTML-string sink. A rune whose
+// source (or name) contains `<script>` renders as the inert characters
+// `&lt;script&gt;`, never a real script element. That XSS-immunity-by-construction
+// is the same property the highlighter and runecard prove; here it guards a whole
+// navigable app rendering UNTRUSTED registry records.
+//
+// The single JS-callable entry is `export_step` (the `export_` prefix marks it a
+// `String -> String` WASM export). The host calls it with `{"model": <sel>}` to
+// render and `{"model": <sel>, "msg": <m>}` after a click; it returns
+// `{"model": <sel'>, "vnode": <tree>, "cmd": ...}`. The rune holds NO capability —
+// `witchy caps .../covenbrowser.witchy` reports `export_step (none)`.
+
+import glamour
+import json
+import reflect
+import string
+import list
+
+// ---------------------------------------------------------------------------
+// Model + Msg.
+// ---------------------------------------------------------------------------
+
+// One rune in the catalog: its registry name, published version, declared
+// capability footprint (an EMPTY list is the celebrated "no capabilities" state),
+// and its full source text (highlighted in the detail view).
+type Rune:
+    Rune(String, String, List(String), String)
+
+// The whole app state: the catalog of runes and the selected index. `selected` is
+// `-1` for the INDEX view (nothing selected) or a valid index into `runes` for the
+// DETAIL view. Keeping the catalog IN the model (not a wire field) means the host
+// only round-trips the tiny `selected` integer — the catalog is constant data the
+// rune rebuilds each step.
+type Model:
+    Model(List(Rune), Int)
+
+// The navigation messages. `Show(i)` selects rune `i` (index -> detail); `Back`
+// clears the selection (detail -> index). Both are pure data the shell hands back
+// to `update` — no live handlers in the view. (`Show`, not `Open`: `Open` would
+// collide with glamour's internal `HtmlTok.Open` constructor, which leaks into the
+// constructor namespace on `import glamour`.)
+type Msg derive(Reflect):
+    Show(Int)
+    Back
+
+// The sentinel `selected` value meaning "no rune selected — show the index".
+fn no_selection() -> Int:
+    0 - 1
+
+// ---------------------------------------------------------------------------
+// The catalog — the embedded sample data. A few runes incl. one with an EMPTY
+// footprint and one whose source contains a comment + a string + `<script>` (the
+// XSS probe: it must render as inert text, never a real element).
+// ---------------------------------------------------------------------------
+
+fn catalog() -> List(Rune):
+    [
+        Rune(
+            "acme/widget",
+            "1.2.0",
+            ["Net", "Dir", "Clock"],
+            "// acme/widget — fetches and renders a remote widget.\nfn main(net: Net):\n    let body = http.get(net, \"https://acme.test/widget\")\n    print(body)",
+        ),
+        Rune(
+            "glamour/view",
+            "0.1.0",
+            [],
+            "// glamour/view — a footprint-EMPTY view rune.\nfn view(count: Int) -> VNode(Msg):\n    html\"<span>\${count}</span>\"",
+        ),
+        Rune(
+            "evil/inject",
+            "6.6.6",
+            ["Exec"],
+            "// evil/inject — tries to smuggle markup through the highlighter.\nfn payload() -> String:\n    let s = \"<script>alert(1)</script>\"\n    s",
+        ),
+    ]
+
+// The initial model: the catalog, nothing selected (the INDEX view).
+fn init() -> Model:
+    Model(catalog(), no_selection())
+
+// ---------------------------------------------------------------------------
+// view — the two-view projection. INDEX when nothing is selected, DETAIL when a
+// rune is. Built entirely with glamour BUILDERS (`element`/`text`/`prop`/`on`) —
+// NOT the `html` tag (its contract is mid-change in a parallel branch).
+// ---------------------------------------------------------------------------
+
+fn view(model: Model) -> VNode(Msg):
+    match model:
+        Model(runes, selected) ->
+            if selected < 0 || selected >= list.length(runes):
+                index_view(runes)
+            else:
+                detail_view(list.at(runes, selected))
+
+// The INDEX: a `<div class="coven-index">` of clickable rune cards. Each card is
+// the runecard structure, but the OUTER `<div class="rune-card">` additionally
+// carries `on("click", Show(i))` so a click anywhere on the card opens that rune.
+fn index_view(runes: List(Rune)) -> VNode(Msg):
+    var cards: List(VNode(Msg)) = []
+    var i = 0
+    for r in runes:
+        cards = list.push(cards, index_card(r, i))
+        i = i + 1
+    let heading = glamour.element(
+        "h2",
+        [glamour.prop("class", "coven-title")],
+        [glamour.text("coven — browse runes")],
+    )
+    glamour.element(
+        "div",
+        [glamour.prop("class", "coven-index")],
+        [heading, glamour.element("div", [glamour.prop("class", "coven-list")], cards)],
+    )
+
+// One clickable index card: the runecard card body wrapped so the whole card
+// dispatches `Show(i)` on click. Reuses `card_body` (the shared runecard structure).
+fn index_card(r: Rune, idx: Int) -> VNode(Msg):
+    match r:
+        Rune(name, version, caps, _src) ->
+            glamour.element(
+                "div",
+                [glamour.prop("class", "rune-card"), glamour.on("click", Show(idx))],
+                card_body(name, version, caps, "click to inspect"),
+            )
+
+// The DETAIL: the selected rune's card (NOT clickable here) PLUS its highlighted
+// source PLUS a back button. The back button dispatches `Back` (detail -> index).
+fn detail_view(r: Rune) -> VNode(Msg):
+    match r:
+        Rune(name, version, caps, src) ->
+            let back = glamour.element(
+                "button",
+                [glamour.prop("class", "coven-back"), glamour.on("click", Back)],
+                [glamour.text("← back")],
+            )
+            let card = glamour.element(
+                "div",
+                [glamour.prop("class", "rune-card")],
+                card_body(name, version, caps, "source"),
+            )
+            let source = highlight(src)
+            glamour.element(
+                "div",
+                [glamour.prop("class", "coven-detail")],
+                [back, card, source],
+            )
+
+// ---------------------------------------------------------------------------
+// The runecard CARD STRUCTURE, reused (mirrors runecard.witchy's `card`/`cap_row`/
+// `cap_badge`): a name heading, a version line, a row of capability badges (or the
+// celebrated empty-footprint state), and a provenance/label line. Returned as a
+// list of children so both the clickable index card and the static detail card can
+// wrap it in their own outer `<div class="rune-card">` (the index card adds an
+// `on("click", ...)`; the detail card does not).
+// ---------------------------------------------------------------------------
+
+fn card_body(name: String, version: String, caps: List(String), label: String) -> List(VNode(Msg)):
+    let heading = glamour.element("h3", [glamour.prop("class", "rune-name")], [glamour.text(name)])
+    let ver = glamour.element(
+        "div",
+        [glamour.prop("class", "rune-version")],
+        [glamour.text("v" + version)],
+    )
+    let caps_row = cap_row(caps)
+    let prov = glamour.element(
+        "div",
+        [glamour.prop("class", "rune-provenance")],
+        [glamour.text(label)],
+    )
+    [heading, ver, caps_row, prov]
+
+// The capability row. A NON-empty footprint becomes one `<span class="cap-badge">`
+// per capability; an EMPTY footprint becomes a single distinct
+// `<span class="cap-none">no capabilities</span>` — the state witchy celebrates.
+fn cap_row(caps: List(String)) -> VNode(Msg):
+    if list.is_empty(caps):
+        let none_badge = glamour.element(
+            "span",
+            [glamour.prop("class", "cap-none")],
+            [glamour.text("no capabilities")],
+        )
+        glamour.element("div", [glamour.prop("class", "cap-row")], [none_badge])
+    else:
+        var badges: List(VNode(Msg)) = []
+        for c in caps:
+            badges = list.push(badges, cap_badge(c))
+        glamour.element("div", [glamour.prop("class", "cap-row")], badges)
+
+// One capability badge — `<span class="cap-badge">Net</span>`. The capability name
+// is a `text(...)` leaf, so even a malformed/hostile cap string is inert.
+fn cap_badge(name: String) -> VNode(Msg):
+    glamour.element("span", [glamour.prop("class", "cap-badge")], [glamour.text(name)])
+
+// ===========================================================================
+// The HIGHLIGHTER, reused (the tokenizer→VNode logic from highlighter.witchy,
+// inlined here as helpers so this rune is self-contained). The scanner peels off
+// one classed run at a time: `com` (// line comment), `str` ("…" string), `num`
+// (digit run), `kw` (keyword identifier), or "" (plain text). Each token's text
+// flows through a `text(...)` node, so a `<script>` in the source is inert.
+// ===========================================================================
+
+type Token:
+    Tok(String, String)
+
+fn keywords() -> List(String):
+    [
+        "fn", "let", "var", "if", "else", "match", "type", "import", "pub",
+        "for", "while", "return", "in", "where", "derive", "and", "or", "not",
+        "true", "false",
+    ]
+
+fn is_keyword(word: String) -> Bool:
+    list.contains(keywords(), word)
+
+fn tokenize(src: String) -> List(Token):
+    let cs = string.chars(src)
+    let n = list.length(cs)
+    var toks: List(Token) = []
+    var i = 0
+    while i < n:
+        let c = list.at(cs, i)
+        if is_slash_slash(cs, i, n):
+            let (text, j) = read_line_comment(cs, i, n)
+            toks = list.push(toks, Tok("com", text))
+            i = j
+        else:
+            if c == "\"":
+                let (text, j) = read_string(cs, i, n)
+                toks = list.push(toks, Tok("str", text))
+                i = j
+            else:
+                if is_digit(c):
+                    let (text, j) = read_number(cs, i, n)
+                    toks = list.push(toks, Tok("num", text))
+                    i = j
+                else:
+                    if is_ident_start(c):
+                        let (word, j) = read_ident(cs, i, n)
+                        let kind = if is_keyword(word): "kw" else: ""
+                        toks = list.push(toks, Tok(kind, word))
+                        i = j
+                    else:
+                        let (text, j) = read_plain(cs, i, n)
+                        toks = list.push(toks, Tok("", text))
+                        i = j
+    toks
+
+fn is_slash_slash(cs: List(String), i: Int, n: Int) -> Bool:
+    list.at(cs, i) == "/" && i + 1 < n && list.at(cs, i + 1) == "/"
+
+fn read_line_comment(cs: List(String), start: Int, n: Int) -> (String, Int):
+    var i = start
+    var out = ""
+    while i < n && list.at(cs, i) != "\n":
+        out = out + list.at(cs, i)
+        i = i + 1
+    (out, i)
+
+fn read_string(cs: List(String), start: Int, n: Int) -> (String, Int):
+    var i = start + 1
+    var out = "\""
+    var done = false
+    while i < n && !done:
+        let c = list.at(cs, i)
+        if c == "\\" && i + 1 < n:
+            out = out + c + list.at(cs, i + 1)
+            i = i + 2
+        else:
+            out = out + c
+            i = i + 1
+            if c == "\"":
+                done = true
+    (out, i)
+
+fn read_number(cs: List(String), start: Int, n: Int) -> (String, Int):
+    var i = start
+    var out = ""
+    while i < n && is_number_char(list.at(cs, i)):
+        out = out + list.at(cs, i)
+        i = i + 1
+    (out, i)
+
+fn read_ident(cs: List(String), start: Int, n: Int) -> (String, Int):
+    var i = start
+    var out = ""
+    while i < n && is_ident_cont(list.at(cs, i)):
+        out = out + list.at(cs, i)
+        i = i + 1
+    (out, i)
+
+fn read_plain(cs: List(String), start: Int, n: Int) -> (String, Int):
+    var i = start
+    var out = ""
+    var done = false
+    while i < n && !done:
+        let c = list.at(cs, i)
+        if c == "\"" || is_digit(c) || is_ident_start(c) || is_slash_slash(cs, i, n):
+            done = true
+        else:
+            out = out + c
+            i = i + 1
+    (out, i)
+
+fn is_digit(c: String) -> Bool:
+    c == "0" || c == "1" || c == "2" || c == "3" || c == "4"
+        || c == "5" || c == "6" || c == "7" || c == "8" || c == "9"
+
+fn is_number_char(c: String) -> Bool:
+    is_digit(c) || c == "_" || c == "."
+
+fn is_ident_start(c: String) -> Bool:
+    is_alpha(c) || c == "_"
+
+fn is_ident_cont(c: String) -> Bool:
+    is_alpha(c) || is_digit(c) || c == "_"
+
+fn is_alpha(c: String) -> Bool:
+    let lower = string.to_lower(c)
+    lower >= "a" && lower <= "z"
+
+// Tokens to a `<pre><code>` VNode of classed `<span>` runs. A classed token
+// becomes `<span class="kw">text</span>`; a plain token is a bare `text(...)` node.
+fn highlight(src: String) -> VNode(Msg):
+    let toks = tokenize(src)
+    var spans: List(VNode(Msg)) = []
+    for t in toks:
+        spans = list.push(spans, render_token(t))
+    let code = glamour.element("code", [], spans)
+    glamour.element("pre", [glamour.prop("class", "coven-source")], [code])
+
+fn render_token(t: Token) -> VNode(Msg):
+    match t:
+        Tok(kind, text) ->
+            if string.is_empty(kind):
+                glamour.text(text)
+            else:
+                glamour.element("span", [glamour.prop("class", kind)], [glamour.text(text)])
+
+// ---------------------------------------------------------------------------
+// update — fold a navigation message into the next model. No effects (the rune is
+// capability-denied), so the command is always `NoCmd`.
+// ---------------------------------------------------------------------------
+
+fn update(model: Model, msg: Msg) -> (Model, Cmd(Msg)):
+    match model:
+        Model(runes, _selected) ->
+            match msg:
+                // Show rune `i`: select it (index -> detail).
+                Show(i) -> (Model(runes, i), NoCmd)
+                // Back: clear the selection (detail -> index).
+                Back -> (Model(runes, no_selection()), NoCmd)
+
+// ---------------------------------------------------------------------------
+// The wire boundary. The catalog is constant data, so only the `selected` index
+// round-trips through the host — `model` on the wire is a bare JSON integer (the
+// sentinel `-1` for the index view, or a rune index). `parse_model` rebuilds the
+// full `Model` from the constant catalog + the wire index; `model_to_json` projects
+// the model back down to that index. `Msg` round-trips via reflect (like counter).
+// ---------------------------------------------------------------------------
+
+fn parse_model(j: Json) -> Model:
+    match json.as_int(j):
+        Some(sel) -> Model(catalog(), sel)
+        None -> init()
+
+fn model_to_json(model: Model) -> Json:
+    match model:
+        Model(_runes, selected) -> json.value_of(selected)
+
+fn parse_msg(j: Json) -> Msg:
+    match json.get_string(j, "$variant"):
+        Some(v) ->
+            if v == "Show":
+                match json.get(j, "$values"):
+                    Some(vals) -> Show(first_int(vals))
+                    None -> Back
+            else:
+                Back
+        None -> Back
+
+// Pull the first integer out of a reflected `$values` JSON array (the `Show`
+// payload). Defaults to the index sentinel if the shape is unexpected.
+fn first_int(vals: Json) -> Int:
+    match vals:
+        JsonArray(items) ->
+            if list.is_empty(items):
+                no_selection()
+            else:
+                match json.as_int(list.at(items, 0)):
+                    Some(n) -> n
+                    None -> no_selection()
+        _ -> no_selection()
+
+fn msg_to_json(m: Msg) -> Json:
+    json.value_of(m)
+
+// The single JS-callable export — glamour's reusable MVU engine wired to this
+// app's view/update and its model/msg parsers + serializers.
+pub fn export_step(input: String) -> String:
+    step_with(input, view, update, parse_model, parse_msg, model_to_json, msg_to_json)
+
+// A `main` so the rune also runs as a CLI program (and the compiled module gets a
+// `run` export): render the initial model (the index) and print the wire JSON.
+fn main(console: Console):
+    print(console, export_step("{\"model\": -1}") + "\n")

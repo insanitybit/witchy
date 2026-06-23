@@ -91,6 +91,37 @@
       font-weight: 600;
     }
     .rune-card .rune-provenance { color: #4a4a55; font-size: 0.8rem; }
+    /* The covenbrowser app: an INDEX of clickable rune cards and a DETAIL view
+       (card + highlighted source + a back button). It reuses .rune-card / .cap-*
+       above; these classes style the app chrome. Styling is the SHELL's job; the
+       rune is pure. */
+    #covenbrowser .coven-title { font-size: 1rem; margin: 0 0 0.5rem; }
+    #covenbrowser .coven-index .rune-card { cursor: pointer; transition: border-color 0.1s; }
+    #covenbrowser .coven-index .rune-card:hover { border-color: #7c6cf7; }
+    #covenbrowser .coven-back {
+      cursor: pointer;
+      font-size: 0.85rem;
+      padding: 0.25rem 0.7rem;
+      margin: 0 0 0.6rem;
+      border: 1px solid #d8d8e0;
+      border-radius: 6px;
+      background: #f3f3f7;
+    }
+    #covenbrowser .coven-detail .rune-card { cursor: default; }
+    #covenbrowser pre.coven-source {
+      margin: 0.6rem 0 0;
+      padding: 0.75rem 1rem;
+      background: #1e1e2e;
+      color: #cdd6f4;
+      border-radius: 6px;
+      overflow-x: auto;
+      white-space: pre-wrap;
+      font: 13px/1.5 "SF Mono", Menlo, Consolas, monospace;
+    }
+    #covenbrowser pre.coven-source span.kw  { color: #cba6f7; font-weight: 600; }
+    #covenbrowser pre.coven-source span.str { color: #a6e3a1; }
+    #covenbrowser pre.coven-source span.com { color: #6c7086; font-style: italic; }
+    #covenbrowser pre.coven-source span.num { color: #fab387; }
     .note { color: #6c7086; font-size: 0.85rem; }
     code.inline { background: #eee; padding: 0 0.3em; border-radius: 3px; }
     #status { font-size: 0.85rem; }
@@ -138,6 +169,23 @@
       <code class="inline">&lt;script&gt;</code> — it routes through a
       <code class="inline">text(...)</code> node, so it renders as inert text, never
       a real element.
+    </p>
+  </div>
+
+  <h2>4. Coven browser (capstone MVU app: a navigable multi-view UI)</h2>
+  <div class="card">
+    <div id="covenbrowser" data-demo="covenbrowser"><!-- mount() builds the DOM here --></div>
+    <p class="note">
+      One footprint-empty witchy rune that is a whole <em>application</em>: an
+      INDEX of clickable rune cards, and a DETAIL view (the card + its
+      syntax-highlighted source + a <code class="inline">← back</code> button). A
+      click dispatches a <code class="inline">Show(i)</code>/<code class="inline">Back</code>
+      <code class="inline">Msg</code> into the rune; <code class="inline">update</code>
+      folds it and the new VNode is diffed into the DOM. The
+      <code class="inline">evil/inject</code> rune's source carries a literal
+      <code class="inline">&lt;script&gt;</code> — it routes through a
+      <code class="inline">text(...)</code> node, so it renders as inert text, never
+      a real element. The full MVU navigation loop, end to end, in the browser.
     </p>
   </div>
 

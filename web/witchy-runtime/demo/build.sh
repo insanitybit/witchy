@@ -6,7 +6,8 @@
 # DEBUG witchy binary, and drop the `.wasm` into this `demo/` directory.
 #
 # Usage:  ./build.sh        (run from web/witchy-runtime/demo/)
-# Output: demo/counter.wasm, demo/highlighter.wasm, demo/runecard.wasm
+# Output: demo/counter.wasm, demo/highlighter.wasm, demo/runecard.wasm,
+#         demo/covenbrowser.wasm
 set -euo pipefail
 
 # Resolve paths relative to this script so it works from any CWD.
@@ -41,5 +42,7 @@ compile_rune highlighter \
   "$REPO/projects/glamour/examples/highlighter/src/highlighter.witchy"
 compile_rune runecard \
   "$REPO/projects/glamour/examples/runecard/src/runecard.witchy"
+compile_rune covenbrowser \
+  "$REPO/projects/glamour/examples/covenbrowser/src/covenbrowser.witchy"
 
 echo "build.sh: done. Serve with:  (cd $REPO/web/witchy-runtime && python3 -m http.server 8099)  then open /demo/"

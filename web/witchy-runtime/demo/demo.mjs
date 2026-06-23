@@ -158,11 +158,41 @@ async function main() {
   const cardScripts = runecardEl.querySelectorAll("script").length;
   const cardScriptAsText = runecardEl.textContent.includes("<script>");
 
+  // --- 4. Coven browser (capstone MVU app) ----------------------------------
+  // The full MVU loop driving a multi-view APP via glamour-dom's `mount()`: the
+  // INDEX is clickable rune cards; clicking one dispatches `Show(i)` -> the rune
+  // selects it and `view` projects the DETAIL (card + highlighted source + a back
+  // button); the back button dispatches `Back` -> the index. initialModel -1 is
+  // the "nothing selected" sentinel (the rune's wire model is a bare integer; the
+  // catalog is constant data the rune rebuilds each step).
+  const covenEl = document.getElementById("covenbrowser");
+  const covenBytes = await fetchWasm("covenbrowser");
+  const coven = await mount(covenBytes, covenEl, { initialModel: -1 });
+
+  // A tiny inspection surface for the Playwright run: which view is showing, the
+  // counts that prove the detail render, and the XSS check.
+  const covenInspect = () => {
+    const onIndex = covenEl.querySelector(".coven-index") != null;
+    const onDetail = covenEl.querySelector(".coven-detail") != null;
+    return {
+      view: onIndex ? "index" : onDetail ? "detail" : "?",
+      indexCards: covenEl.querySelectorAll(".coven-index .rune-card").length,
+      hasBack: covenEl.querySelector(".coven-back") != null,
+      sourceKw: covenEl.querySelectorAll("pre.coven-source span.kw").length,
+      sourceStr: covenEl.querySelectorAll("pre.coven-source span.str").length,
+      sourceCom: covenEl.querySelectorAll("pre.coven-source span.com").length,
+      realScripts: covenEl.querySelectorAll("script").length,
+      scriptAsText: covenEl.textContent.includes("<script>"),
+      model: () => coven.getModel(),
+    };
+  };
+
   window.__demo = {
     count: () => counterEl.querySelector("span")?.textContent,
     model: () => app.getModel(),
     highlight: { kwCount, strCount, comCount, realScripts, scriptAsText },
     runecard: { cardCount, capBadgeCount, capNoneCount, cardScripts, cardScriptAsText },
+    coven: covenInspect,
   };
 
   setStatus(
@@ -170,7 +200,8 @@ async function main() {
     `highlight: ${kwCount} kw / ${strCount} str / ${comCount} com spans, ` +
     `real <script> elements=${realScripts}, "<script>" present as text=${scriptAsText}; ` +
     `runecard: ${cardCount} cards / ${capBadgeCount} cap-badges / ${capNoneCount} cap-none, ` +
-    `real <script> elements=${cardScripts}, "<script>" present as text=${cardScriptAsText}`,
+    `real <script> elements=${cardScripts}, "<script>" present as text=${cardScriptAsText}; ` +
+    `covenbrowser: ${covenInspect().view} view, ${covenInspect().indexCards} index cards`,
   );
 }
 
