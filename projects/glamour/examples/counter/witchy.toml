@@ -1,0 +1,16 @@
+# counter — the canonical glamour MVU demo (RFC-0008). A capability-pure rune:
+# `Model = Int`, `Msg = Inc | Dec`, a pure `view`/`update`, and a single
+# JS-callable `export_step(String) -> String` entry. The JS DOM host shell
+# (web/witchy-runtime/glamour-dom.mjs) diffs the returned VNode into the real DOM
+# and routes click events back as `Msg` values — the rune computes, the shell acts.
+[rune]
+name = "counter"
+version = "0.1.0"
+
+[capabilities]
+# Like glamour itself, the app's view/update core holds NO runtime authority — its
+# only host call is `print` from `main` (Console = output, not authority).
+runtime = ["Console"]
+
+[dependencies]
+"glamour" = { path = "../.." }

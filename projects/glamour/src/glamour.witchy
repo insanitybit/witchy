@@ -10,6 +10,12 @@
 // `string`/`list` come from the prelude (no import needed) and are PURE, so they
 // grant no authority — that is what keeps this rune's footprint empty.
 
+// `json`/`reflect` are PURE (capability-free) too — they serialize the VNode tree
+// and reflect a `msg` value to JSON the host shell consumes. Importing them keeps
+// the empty footprint (they touch no Net/Dir/Clock); see `to_json`/the run loop.
+import json
+import reflect
+
 // ---------------------------------------------------------------------------
 // VNode — the view as data (parameterized over the app's message type `msg`,
 // because event handlers carry app-specific messages).
@@ -60,8 +66,11 @@ pub fn on(event: String, msg: msg) -> Attr(msg):
 // kept minimal on purpose (the `Cmd` vocabulary is RFC-0008's least-built part).
 // ---------------------------------------------------------------------------
 
+// `NoCmd` (not `None`) names the empty effect: `None` is already `Option.None`
+// from the prelude, so an `update` returning `(model, None)` would be read as an
+// `Option`. `NoCmd` is unambiguous and reads as "no command".
 pub type Cmd(msg):
-    None
+    NoCmd
     Batch(List(Cmd(msg)))
 
 // ---------------------------------------------------------------------------
@@ -111,6 +120,119 @@ fn escape_attr(s: String) -> String:
     var out = escape_text(s)
     out = string.replace(out, "\"", "&quot;")
     out
+
+// ===========================================================================
+// The WIRE FORMAT — serialize a VNode tree to JSON the JS DOM host shell
+// (`web/witchy-runtime/glamour-dom.mjs`) consumes (RFC-0007's string-bridge,
+// RFC-0008's run loop). There is no DOM here; the shell deserializes this and
+// builds nodes with `createElement`/`textContent`/`setAttribute` ONLY — never an
+// HTML-string sink — so the Perfect-Types-safe render path is structural.
+//
+// Shape (compact JSON):
+//   element : {"el": tag, "attrs": [<attr>...], "kids": [<node>...]}
+//   text    : {"text": "..."}
+//   <attr>  : ["prop", name, value]            (a static property)
+//           | ["on", event, <msg-json>]        (an event->msg binding; the msg is
+//                                                serialized by the app's
+//                                                `msg_to_json`, sent back verbatim
+//                                                by the shell as the next
+//                                                `{model, msg}` input)
+//
+// The `On` binding embeds the message value as JSON via a caller-supplied
+// `msg_to_json: fn(msg) -> Json` (symmetric with `parse_msg` on the way back in).
+// Passing the serializer as a value — rather than reflecting a still-generic type
+// var inside this function — keeps monomorphization happy; `json.value_of(msg)` is
+// the obvious `msg_to_json` an app hands in (it works for any `Reflect` msg).
+// ===========================================================================
+
+pub fn to_json(node: VNode(msg), msg_to_json: fn(msg) -> Json) -> String:
+    json.encode(node_json(node, msg_to_json))
+
+fn node_json(node: VNode(msg), msg_to_json: fn(msg) -> Json) -> Json:
+    match node:
+        Text(s) -> JsonObject([("text", JsonString(s))])
+        Element(tag, attrs, children) ->
+            var ajs: List(Json) = []
+            for a in attrs:
+                let aj: Json = match a:
+                    Prop(name, value) -> JsonArray([JsonString("prop"), JsonString(name), JsonString(value)])
+                    // The msg VALUE serialized to JSON — the host sends it back
+                    // unchanged, so a `${Inc}` event handler round-trips as the
+                    // `Inc` message into `update`. Events are data.
+                    On(event, msg) ->
+                        let mj: Json = msg_to_json(msg)
+                        JsonArray([JsonString("on"), JsonString(event), mj])
+                ajs = list.push(ajs, aj)
+            var kjs: List(Json) = []
+            for c in children:
+                let cj: Json = node_json(c, msg_to_json)
+                kjs = list.push(kjs, cj)
+            JsonObject([
+                ("el", JsonString(tag)),
+                ("attrs", JsonArray(ajs)),
+                ("kids", JsonArray(kjs)),
+            ])
+
+// ===========================================================================
+// The RUN-LOOP glue (RFC-0008's MVU loop, host-driven). The app author writes a
+// single pure `pub fn export_step(input: String) -> String` (the `export_`
+// prefix marks it a JS-callable WASM export — see `is_string_export` in codegen).
+// The host calls it with `{"model": <model-json>}` (initial render) or
+// `{"model": <model-json>, "msg": <msg-json>}` (after an event). `step_with`
+// below is the reusable engine: parse the input, run `update(model, msg)` when a
+// msg is present, then `view(model)`, and return `{"model": <model-json>,
+// "vnode": <vnode-json>}` for the shell to diff into the DOM.
+//
+// `step_with` is generic over the app's `model`/`msg` and takes `view`/`update`
+// and the model/msg encode+decode as first-class function values (the stdlib
+// already passes `fn` values throughout). The app supplies:
+//   * `parse_model: fn(Json) -> model` / `parse_msg: fn(Json) -> msg` (a small
+//     match over its own JSON shape — the inbound boundary), and
+//   * `model_to_json: fn(model) -> Json` / `msg_to_json: fn(msg) -> Json` (the
+//     outbound boundary; `json.value_of` is the obvious choice for a `Reflect`
+//     type).
+// `update` returns `(model, Cmd(msg))`; this slice runs the model and IGNORES the
+// `Cmd` (the shell interprets effects — `None` only, for now). Passing the
+// serializers as values (rather than a `where _: Reflect` bound here) keeps the
+// generic monomorphization tractable — the unproven part RFC-0008 flagged.
+// ===========================================================================
+
+pub fn step_with(
+    input: String,
+    view: fn(model) -> VNode(msg),
+    update: fn(model, msg) -> (model, Cmd(msg)),
+    parse_model: fn(Json) -> model,
+    parse_msg: fn(Json) -> msg,
+    model_to_json: fn(model) -> Json,
+    msg_to_json: fn(msg) -> Json,
+) -> String:
+    let parsed = json.decode(input)
+    match parsed:
+        Err(e) -> json.encode(JsonObject([("error", JsonString(e))]))
+        Ok(doc) ->
+            // The model is required; a missing/invalid `model` is an error result.
+            match json.get(doc, "model"):
+                None -> json.encode(JsonObject([("error", JsonString("missing `model`"))]))
+                Some(model_json) ->
+                    let model0 = parse_model(model_json)
+                    // Apply `update` only when a `msg` is present (the event step);
+                    // the initial render has model-only input. Kept inline (not a
+                    // helper) so the `model`/`msg` type vars thread without a
+                    // cross-function inference hop.
+                    let model1 = match json.get(doc, "msg"):
+                        None -> model0
+                        Some(msg_json) ->
+                            let msg = parse_msg(msg_json)
+                            let stepped = update(model0, msg)
+                            let (m1, _cmd) = stepped
+                            m1
+                    let vnode = view(model1)
+                    let model_j = model_to_json(model1)
+                    let vnode_j = node_json(vnode, msg_to_json)
+                    json.encode(JsonObject([
+                        ("model", model_j),
+                        ("vnode", vnode_j),
+                    ]))
 
 // ===========================================================================
 // The `html` tag — a COMPILE-TIME tagged literal (RFC-0006). `html"<div…>"`

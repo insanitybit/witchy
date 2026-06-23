@@ -54,8 +54,35 @@ A compiled module exports:
 - `memory` — the linear memory the host reads/writes for marshaling.
 - `run` — the no-arg entry the host calls to run the program. The compiler
   synthesizes it around `main`, supplying `main`'s parameters (a Console is
-  type-level; `args`/`Dir` parameters are host-provided).
+  type-level; `args`/`Dir` parameters are host-provided). Present only when the
+  module has a `main`.
 - `__witchy_reowns`, `__region_copy_bytes` — diagnostic globals (optional).
+
+### String-export entry points (the `String -> String` call ABI)
+
+A `pub fn` whose name starts with `export_` and has the shape
+`(String) -> String` is a **JS-callable string export**: the compiler emits a
+stable export wrapper plus a bump allocator so a host (the browser pure-compute
+shim, the glamour DOM shell — RFC-0008) can call a pure witchy function with a
+JSON string in and a JSON string out. These are **exports, not imports**: they
+grant **no** authority — the wrapper only reads/writes guest memory.
+
+- `__galloc` — `(i32 len) -> i32 ptr`. Reserves `len` bytes on the bump heap
+  (`ensure` + advance `$heap`) and returns the pointer, so the host can write an
+  input String header into guest memory before the call.
+- `__export_<name>` — `(i32 in_ptr, i32 in_len) -> i32 out_ptr`, one per string
+  export (the linker's `{module}.` prefix is dropped: `export_step` ->
+  `__export_export_step`... i.e. `__export_<unqualified-source-name>`). The host
+  `__galloc`s `4 + len` bytes, writes a String header `[i32 len][bytes]` at the
+  returned pointer, then calls `__export_<name>(ptr, len)`. The wrapper forwards
+  `in_ptr` to the witchy function (whose single `String` parameter **is** that
+  header) and returns a pointer to the result String header `[i32 len][bytes]`,
+  which the host reads back. `in_len` is accepted for ABI symmetry; the header is
+  self-describing. This call path adds **no** import, so a string-export module
+  stays footprint-empty and instantiates under the deny-all host.
+
+The JS host's `callString(instance, exportName, str) -> str`
+(`web/witchy-runtime/witchy-runtime.mjs`) implements this protocol.
 
 ## Value & memory representation
 

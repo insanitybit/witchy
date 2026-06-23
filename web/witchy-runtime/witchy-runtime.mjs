@@ -536,5 +536,49 @@ export async function instantiate(wasmBytes, opts = {}) {
     return output;
   };
 
-  return { instance, output, run, get memory() { return memory; } };
+  // callString(exportName, str) -> str : the `String -> String` export ABI
+  // (RFC-0008 §1 / RFC-0007 §"Data marshaling"). A `pub fn export_f(String) ->
+  // String` compiles to a `__export_f(in_ptr, in_len) -> out_ptr` export plus a
+  // `__galloc(len) -> ptr` bump allocator. We:
+  //   1. encode `str` to UTF-8 bytes,
+  //   2. `__galloc(4 + len)` to reserve a witchy String header `[i32 len][bytes]`,
+  //   3. write the header + bytes into guest memory,
+  //   4. call `__export_f(ptr, len)` -> a pointer to a result String header,
+  //   5. read `[i32 len][bytes]` back out as a JS string.
+  // Pure mechanics over guest memory — no capability, no authority.
+  const callString = (exportName, str) => {
+    const fn = instance.exports[exportName];
+    if (typeof fn !== "function") {
+      throw new Error(`witchy-runtime: the module does not export \`${exportName}\``);
+    }
+    const galloc = instance.exports.__galloc;
+    if (typeof galloc !== "function") {
+      throw new Error("witchy-runtime: the module does not export `__galloc`");
+    }
+    const bytes = utf8.encode(str);
+    const inPtr = galloc(4 + bytes.length);
+    dv().setInt32(inPtr, bytes.length, true); // little-endian length header
+    u8().set(bytes, inPtr + 4);
+    const outPtr = fn(inPtr, bytes.length);
+    const outLen = dv().getInt32(outPtr, true);
+    return decodeLossy(u8().slice(outPtr + 4, outPtr + 4 + outLen));
+  };
+
+  return {
+    instance,
+    output,
+    run,
+    callString,
+    get memory() { return memory; },
+  };
+}
+
+/**
+ * Convenience: instantiate `wasmBytes` and immediately call its `exportName`
+ * string export with `str`, returning the result string. For one-shot
+ * `String -> String` calls (the glamour `step` loop holds the instance instead).
+ */
+export async function callStringExport(wasmBytes, exportName, str, opts = {}) {
+  const { callString } = await instantiate(wasmBytes, opts);
+  return callString(exportName, str);
 }

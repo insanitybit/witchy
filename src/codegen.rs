@@ -6457,6 +6457,58 @@ fn collect_fn_refs_expr(e: &Expr, out: &mut HashSet<String>) {
 /// The set of functions reachable from `main` (transitively). Only these need
 /// compiling — importing a std module no longer drags its whole API into the
 /// output.
+/// The naming convention that designates a JS-callable string export: a `pub fn`
+/// whose name starts with this prefix and has the `(String) -> String` shape.
+pub(crate) const STRING_EXPORT_PREFIX: &str = "export_";
+
+/// Is `f` a JS-callable string export? — a `pub fn export_*(s: String) -> String`.
+/// Such a function gets a stable `(in_ptr, in_len) -> ptr` export wrapper
+/// (`__export_<name>`) plus the `__galloc` allocator, so a host (the browser
+/// pure-compute shim, the glamour DOM shell) can drive it across the WASM boundary
+/// with a JSON string in and a JSON string out.
+///
+/// The marker is the `export_` name PREFIX rather than the bare `(String)->String`
+/// shape, because after linking the stdlib's own `pub fn`s (`string.to_upper`,
+/// `trim`, …) are flattened into the same item list and would otherwise all become
+/// roots/exports. An explicit, opt-in prefix scopes the host surface to functions
+/// the author intends to expose — and is also the better security posture: the
+/// JS-callable boundary is named, not implicit. It adds no import and no authority;
+/// the wrapper only reads/writes guest memory (RFC-0007 §"Data marshaling",
+/// RFC-0008's run loop).
+pub(crate) fn is_string_export(f: &Function) -> bool {
+    let is_string = |t: &Option<Type>| matches!(t, Some(Type::Named(n, a)) if n == "String" && a.is_empty());
+    // After linking a function is named `{module}.{name}` (the entry module's
+    // `main` is the one exception). Match the unqualified tail against the prefix.
+    let unqualified = f.name.rsplit('.').next().unwrap_or(&f.name);
+    f.public
+        && unqualified.starts_with(STRING_EXPORT_PREFIX)
+        && f.bounds.is_empty()
+        && f.params.len() == 1
+        && is_string(&f.params[0].ty)
+        && is_string(&f.ret)
+}
+
+/// The JS export name for a string-export function: `__export_<unqualified>`. The
+/// linker's `{module}.` prefix is dropped so a host calls a stable, source-named
+/// export (`__export_step`) regardless of the rune's file/module name.
+pub(crate) fn string_export_name(linked_name: &str) -> String {
+    let unqualified = linked_name.rsplit('.').next().unwrap_or(linked_name);
+    format!("__export_{unqualified}")
+}
+
+/// The names of every JS-callable string export in declaration order (`__export_*`
+/// wrappers are emitted for these and they are extra reachability roots).
+fn string_export_functions(module: &Module) -> Vec<String> {
+    module
+        .items
+        .iter()
+        .filter_map(|it| match it {
+            Item::Function(f) if is_string_export(f) => Some(f.name.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
 fn reachable_functions(module: &Module) -> HashSet<String> {
     let mut bodies: HashMap<&str, &Block> = HashMap::new();
     for item in &module.items {
@@ -6469,6 +6521,14 @@ fn reachable_functions(module: &Module) -> HashSet<String> {
     if bodies.contains_key("main") {
         reachable.insert("main".to_string());
         work.push("main".to_string());
+    }
+    // String exports (`pub fn f(String) -> String`) are additional roots: the host
+    // calls them directly through their `__export_*` wrapper, so they must be
+    // compiled and kept even when `main` never reaches them.
+    for name in string_export_functions(module) {
+        if reachable.insert(name.clone()) {
+            work.push(name);
+        }
     }
     while let Some(name) = work.pop() {
         if let Some(body) = bodies.get(name.as_str()) {
@@ -6775,6 +6835,9 @@ pub fn assemble_wir_module(
     let mut main_returns_int = false;
     let mut main_returns_float = false;
     let mut user_order: Vec<String> = Vec::new();
+    // The JS-callable string exports (`pub fn f(String) -> String`); each gets an
+    // `__export_f` wrapper and is an extra reachability root (above).
+    let string_exports = string_export_functions(module);
     for item in &module.items {
         if let Item::Function(f) = item {
             if f.name == "main" {
@@ -6801,7 +6864,10 @@ pub fn assemble_wir_module(
             }
         }
     }
-    if !has_main {
+    // A module needs an entry: either a `main` (the `run` export) or at least one
+    // string export (a `__export_*` host entry). A library with neither has nothing
+    // to instantiate against.
+    if !has_main && string_exports.is_empty() {
         if std::env::var_os("WIRDIAG").is_some() { eprintln!("WIRBAIL no-main"); }
         return Ok(None);
     }
@@ -6901,6 +6967,13 @@ pub fn assemble_wir_module(
             !called.iter().any(|n| n.starts_with("host:")) && user_host_imports.is_empty();
         if cg.uses_args {
             called.insert("build_args".to_string());
+        }
+        // The `__galloc` allocator the string-export wrappers expose calls `$ensure`
+        // and bumps `$heap`, so pull `ensure` into the reached set (it brings the
+        // `$heap` global via `uses_heap` below). Harmless if a string-export body
+        // already reaches it.
+        if !string_exports.is_empty() {
+            called.insert("ensure".to_string());
         }
         // Resolve every reached helper through the registry (transitively).
         let mut resolved: std::collections::BTreeMap<String, crate::wir::WirHelperSpec> =
@@ -7016,23 +7089,89 @@ pub fn assemble_wir_module(
             }
             // The `run` export calls `main`; an Int/Float result is printed (the
             // exit-code convention), anything else is dropped — matching the WAT
-            // sink's `run` tail.
-            let main_call = WirExpr::Call { func: "main".into(), args: main_args };
-            let run_body = if main_returns_int {
-                vec![WirNode::Do(WirExpr::CallHost { import: "print_int".into(), args: vec![main_call] })]
-            } else if main_returns_float {
-                vec![WirNode::Do(WirExpr::CallHost { import: "print_float".into(), args: vec![main_call] })]
-            } else {
-                vec![WirNode::Drop(main_call)]
-            };
-            pruned_funcs.push(WirFunc {
-                name: "run".into(),
-                params: Vec::new(),
-                ret: Vec::new(),
-                locals: Vec::new(),
-                body: run_body,
-                raw_body: None,
-            });
+            // sink's `run` tail. Only synthesized when the module has a `main`; a
+            // pure string-export library (no `main`) exports only `__galloc` + the
+            // `__export_*` wrappers.
+            if has_main {
+                let main_call = WirExpr::Call { func: "main".into(), args: main_args };
+                let run_body = if main_returns_int {
+                    vec![WirNode::Do(WirExpr::CallHost { import: "print_int".into(), args: vec![main_call] })]
+                } else if main_returns_float {
+                    vec![WirNode::Do(WirExpr::CallHost { import: "print_float".into(), args: vec![main_call] })]
+                } else {
+                    vec![WirNode::Drop(main_call)]
+                };
+                pruned_funcs.push(WirFunc {
+                    name: "run".into(),
+                    params: Vec::new(),
+                    ret: Vec::new(),
+                    locals: Vec::new(),
+                    body: run_body,
+                    raw_body: None,
+                });
+            }
+            // String-export glue (RFC-0007 §"Data marshaling" / RFC-0008 run loop):
+            // a JS host writes a witchy `String` header `[i32 len][bytes]` into guest
+            // memory at a `__galloc`-returned pointer, then calls `__export_f(ptr,
+            // len)`; the wrapper passes the pointer straight to the witchy fn (whose
+            // single `String` param IS that header) and returns the result String
+            // pointer. No import, no authority — only guest-memory reads/writes.
+            if !string_exports.is_empty() {
+                // __galloc(len) -> ptr : ensure(len); p = heap; heap = heap + len; p
+                pruned_funcs.push(WirFunc {
+                    name: "__galloc".into(),
+                    params: vec![crate::wir::WirLocal {
+                        name: "len".into(),
+                        ty: crate::wir::WirTy::Bool, // i32
+                    }],
+                    ret: vec![crate::wir::WirTy::Bool], // i32 pointer
+                    locals: vec![crate::wir::WirLocal {
+                        name: "p".into(),
+                        ty: crate::wir::WirTy::Bool,
+                    }],
+                    body: vec![
+                        WirNode::Do(WirExpr::Call {
+                            func: "ensure".into(),
+                            args: vec![WirExpr::GetLocal("len".into())],
+                        }),
+                        WirNode::SetLocal {
+                            local: "p".into(),
+                            value: WirExpr::GetGlobal("heap".into()),
+                        },
+                        WirNode::SetGlobal {
+                            global: "heap".into(),
+                            value: WirExpr::Binary {
+                                op: crate::wir::BinOp::Add,
+                                kind: WK::I32,
+                                lhs: Box::new(WirExpr::GetGlobal("heap".into())),
+                                rhs: Box::new(WirExpr::GetLocal("len".into())),
+                            },
+                        },
+                        WirNode::Push(WirExpr::GetLocal("p".into())),
+                    ],
+                    raw_body: None,
+                });
+                // One `__export_f(in_ptr, in_len) -> out_ptr` per string export. The
+                // `in_len` param is accepted for ABI symmetry (and a future bounds
+                // check) but the String header is self-describing, so the wrapper
+                // forwards `in_ptr` to the witchy fn directly.
+                for name in &string_exports {
+                    pruned_funcs.push(WirFunc {
+                        name: string_export_name(name),
+                        params: vec![
+                            crate::wir::WirLocal { name: "in_ptr".into(), ty: crate::wir::WirTy::Bool },
+                            crate::wir::WirLocal { name: "in_len".into(), ty: crate::wir::WirTy::Bool },
+                        ],
+                        ret: vec![crate::wir::WirTy::Bool], // i32 result String pointer
+                        locals: vec![],
+                        body: vec![WirNode::Push(WirExpr::Call {
+                            func: name.clone(),
+                            args: vec![WirExpr::GetLocal("in_ptr".into())],
+                        })],
+                        raw_body: None,
+                    });
+                }
+            }
             let mut pruned_globals = if uses_heap {
                 vec![
                     WirGlobal {
@@ -7098,7 +7237,20 @@ pub fn assemble_wir_module(
                     // resolves to its lifted body through the element segment.
                     Some(WirTable { funcs: cg.lambda_wir_funcs.iter().map(|f| f.name.clone()).collect() })
                 },
-                exports: vec![("run".into(), "run".into())],
+                exports: {
+                    let mut exports: Vec<(String, String)> = Vec::new();
+                    if has_main {
+                        exports.push(("run".into(), "run".into()));
+                    }
+                    if !string_exports.is_empty() {
+                        exports.push(("__galloc".into(), "__galloc".into()));
+                        for name in &string_exports {
+                            let ex = string_export_name(name);
+                            exports.push((ex.clone(), ex));
+                        }
+                    }
+                    exports
+                },
             }));
         }
     }

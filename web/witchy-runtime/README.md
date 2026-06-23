@@ -33,7 +33,7 @@ const { run, output } = await instantiate(wasmBytes, {
 run();          // calls the module's exported `run`; returns the output array
 ```
 
-`instantiate(wasmBytes, opts) -> { instance, output, run, memory }`:
+`instantiate(wasmBytes, opts) -> { instance, output, run, callString, memory }`:
 
 - `wasmBytes` — a witchyc-compiled module (`witchy compile foo.witchy --out
   foo.wasm`).
@@ -43,6 +43,32 @@ run();          // calls the module's exported `run`; returns the output array
   `node:crypto` is auto-detected; SHA-256/HMAC/`rune_hash` work with no backend).
 
 The exported `WITCHY_ABI_VERSION` is the ABI version this runtime implements.
+
+### `callString` — the `String -> String` export ABI (RFC-0008)
+
+A `pub fn export_*(s: String) -> String` compiles to a JS-callable export. The
+runtime's `callString` drives it (writes the input String header via `__galloc`,
+calls `__export_*`, reads the result String header back) — pure mechanics over
+guest memory, no capability:
+
+```js
+const { callString } = await instantiate(wasmBytes);
+const out = callString("__export_export_step", '{"model":0}'); // -> result string
+```
+
+`callStringExport(wasmBytes, exportName, str, opts)` is a one-shot convenience
+(instantiate + call). See [`spec/wasm-abi.md`](../../spec/wasm-abi.md)
+§"String-export entry points".
+
+### `glamour-dom.mjs` — the DOM host shell (RFC-0008)
+
+`glamour-dom.mjs` is the capability-holding shell that runs a glamour MVU rune in
+a browser: `mount(wasmBytes, rootElement, opts)` instantiates the rune under this
+pure-compute host, calls its `export_step` to render, diffs the returned VNode
+into the real DOM (`createElement` / `textContent` / `setAttribute` only — never
+`innerHTML`), and wires `on` attributes as `addEventListener` handlers that route
+events back as `Msg` values and re-render. The witchy rune computes; the shell
+acts (holds the DOM, the events, and — later — effects).
 
 ## What it provides — and refuses
 

@@ -95,6 +95,28 @@ try {
   }
   console.log("deny result:", denyMsg);
   ok(denied, "a capability-using rune is refused with a LinkError (deny-by-omission)");
+
+  // --- 5. the String -> String export ABI (RFC-0008 §1): a `pub fn export_*` of
+  //     shape `(String) -> String` compiles to a `__export_*(in_ptr, in_len) ->
+  //     ptr` export plus the `__galloc` allocator; the shim's `callString` writes
+  //     the input String header, calls the export, and reads the result back.
+  const ECHO = `pub fn export_echo(s: String) -> String:
+    "echo: " + s
+
+fn main(console: Console):
+    print(console, export_echo("hi") + "\\n")
+`;
+  const echoSrc = join(work, "echo.witchy");
+  const echoWasm = join(work, "echo.wasm");
+  writeFileSync(echoSrc, ECHO);
+  execFileSync(BIN, ["compile", echoSrc, "--out", echoWasm]);
+  const { callString } = await instantiate(readFileSync(echoWasm));
+  const echoed = callString("__export_export_echo", "world");
+  console.log("callString result:", JSON.stringify(echoed));
+  ok(echoed === "echo: world", "the String -> String export round-trips through the shim");
+  // The bump heap advances cleanly across calls (no corruption on re-call).
+  const echoed2 = callString("__export_export_echo", "again");
+  ok(echoed2 === "echo: again", "a second callString round-trips (the heap is re-callable)");
 } finally {
   rmSync(work, { recursive: true, force: true });
 }

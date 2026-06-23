@@ -13875,6 +13875,89 @@ pub fn serve(console: Console, net: Net) -> Int:
         assert_eq!(out, vec!["<button data-on-click=\"[msg]\">+</button>".to_string()]);
     }
 
+    /// RFC-0008: glamour's `to_json` serializes a VNode tree to the wire format the
+    /// JS DOM host shell (`web/witchy-runtime/glamour-dom.mjs`) consumes —
+    /// `{"el":tag,"attrs":[["prop",k,v]|["on",evt,<msg-json>]],"kids":[...]}` /
+    /// `{"text":"..."}`. The `On` binding embeds the msg via a caller-supplied
+    /// `msg_to_json` (here `json.value_of`), so an event handler round-trips as its
+    /// message value. The serialized string must be IDENTICAL on both backends.
+    #[test]
+    fn glamour_to_json_serializes_the_wire_format_on_both_backends() {
+        let src = "import glamour\n\
+                   import json\n\
+                   import reflect\n\
+                   \n\
+                   type Msg derive(Reflect):\n\
+                   \x20   Inc\n\
+                   \x20   Dec\n\
+                   \n\
+                   fn msg_to_json(m: Msg) -> Json:\n\
+                   \x20   json.value_of(m)\n\
+                   \n\
+                   fn main(console: Console):\n\
+                   \x20   let view = element(\"div\", [prop(\"class\", \"c\")], [\n\
+                   \x20       element(\"button\", [on(\"click\", Inc)], [text(\"+\")]),\n\
+                   \x20       text(\"hi\"),\n\
+                   \x20   ])\n\
+                   \x20   print(console, to_json(view, msg_to_json))\n";
+        let out = glamour_run_both(src);
+        assert_eq!(
+            out,
+            vec![
+                "{\"el\":\"div\",\"attrs\":[[\"prop\",\"class\",\"c\"]],\"kids\":\
+                 [{\"el\":\"button\",\"attrs\":[[\"on\",\"click\",\
+                 {\"$variant\":\"Inc\",\"$values\":[]}]],\"kids\":[{\"text\":\"+\"}]},\
+                 {\"text\":\"hi\"}]}"
+                    .to_string()
+            ],
+            "to_json must emit the documented wire shape: el/attrs/kids, prop/on \
+             attrs, and the On msg embedded as its reflected JSON"
+        );
+    }
+
+    /// RFC-0008 §1 / RFC-0007: a `pub fn export_*(String) -> String` compiles to a
+    /// JS-callable export. The module must export the `__galloc` allocator and the
+    /// `__export_<name>` wrapper (so the host can write the input String header and
+    /// call the function), keep the existing `run`/`memory` exports intact, and add
+    /// NO import (the call path grants no authority). This is the codegen contract
+    /// the JS `callString` (and the spike's round-trip) depend on.
+    #[test]
+    fn string_export_emits_galloc_and_wrapper_with_no_extra_import() {
+        let src = "pub fn export_echo(s: String) -> String:\n\
+                   \x20   \"echo: \" + s\n\
+                   \n\
+                   fn main(console: Console):\n\
+                   \x20   print(console, export_echo(\"hi\"))\n";
+        let linked = resolve_std_src(src);
+        typeck::check(&linked).expect("typecheck");
+        let bytes = codegen::compile_module_binary(&linked)
+            .expect("compile")
+            .expect("the binary path lowers this program");
+
+        let mut exports: Vec<String> = Vec::new();
+        for payload in wasmparser::Parser::new(0).parse_all(&bytes) {
+            if let wasmparser::Payload::ExportSection(s) = payload.expect("parse") {
+                for e in s {
+                    exports.push(e.expect("export").name.to_string());
+                }
+            }
+        }
+        for want in ["memory", "run", "__galloc", "__export_export_echo"] {
+            assert!(
+                exports.contains(&want.to_string()),
+                "module must export `{want}`; got {exports:?}"
+            );
+        }
+        // The module validates (the synthesized wrappers are well-formed wasm). The
+        // spike (`tests/browser_shim.rs`) proves it round-trips through the JS shim
+        // and that the wrappers add NO host import (the rune stays instantiable
+        // under the deny-all pure-compute host).
+        assert!(
+            wasmparser::validate(&bytes).is_ok(),
+            "a module with string-export wrappers must validate"
+        );
+    }
+
     /// RFC-0008 acceptance criterion: the glamour rune has an EMPTY runtime
     /// footprint — no Net, no Dir, no Clock, nothing. coven's own analyzer
     /// (`capabilities::analyze`, the engine behind `witchy caps`) proves it from
