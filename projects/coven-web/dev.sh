@@ -123,6 +123,12 @@ publish_sample() { # uses PKG_NAME / PKG_VERSION
     fi
 }
 
+seed_examples() { # populate the registry with witchy's real example runes
+    command -v node >/dev/null 2>&1 || { echo "node not found — skipping example seeding"; return 0; }
+    echo "seeding example runes into coven…"
+    COVEN_URL="$COVEN_URL" node "$REPO/projects/coven-web/seed-examples.mjs" 2>&1 | tail -1
+}
+
 stop_one() { # $1=pidfile  $2=label
     if alive "$1"; then
         local p; p="$(cat "$1")"
@@ -138,6 +144,7 @@ do_up() {
     start_coven
     wait_up "$COVEN_URL/coven/index" || { echo "coven did not come up; last log lines:"; tail -n 20 "$COVEN_LOG" 2>/dev/null; exit 1; }
     [ "$SEED_SAMPLE" = 1 ] && publish_sample
+    [ "$SEED_SAMPLE" = 1 ] && seed_examples
     start_web
     wait_up "$WEB_URL/" || { echo "coven-web did not come up; last log lines:"; tail -n 20 "$WEB_LOG" 2>/dev/null; exit 1; }
     echo
