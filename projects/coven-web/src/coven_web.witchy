@@ -90,7 +90,7 @@ fn h_sandbox_frame() -> fn(Request) -> Response:
     fn(req: Request): server.html(200, sandbox_bootstrap())
 
 fn sandbox_bootstrap() -> String:
-    "<!doctype html><html><head><meta charset='utf-8'></head><body><script>if(window.origin!=='null'){document.body.textContent='This page must be loaded inside a sandboxed iframe.';}else{window.addEventListener('message',function h(e){if(e.source!==window.parent)return;if(!e.data||e.data.type!=='init'||!e.ports.length)return;window.removeEventListener('message',h);var port=e.ports[0];var f=document.createElement('iframe');f.setAttribute('sandbox','allow-scripts');f.addEventListener('load',function(){f.contentWindow.postMessage({type:'port'},'*',[port]);});f.srcdoc=e.data.html;document.body.appendChild(f);});}</script></body></html>"
+    "<!doctype html><html><head><meta charset='utf-8'></head><body><script>if(window.origin!=='null'){document.body.textContent='This page must be loaded inside a sandboxed iframe.';}else{var d=document.documentElement.style;d.margin='0';d.height='100%';d.background='#0f0b16';document.body.style.margin='0';document.body.style.height='100%';window.addEventListener('message',function h(e){if(e.source!==window.parent)return;if(!e.data||e.data.type!=='init'||!e.ports.length)return;window.removeEventListener('message',h);var port=e.ports[0];var f=document.createElement('iframe');f.setAttribute('sandbox','allow-scripts');f.style.cssText='width:100%;height:100%;border:0;display:block';f.addEventListener('load',function(){f.contentWindow.postMessage({type:'port'},'*',[port]);});f.srcdoc=e.data.html;document.body.appendChild(f);});}</script></body></html>"
 
 // ---- Reverse proxy ----------------------------------------------------------
 

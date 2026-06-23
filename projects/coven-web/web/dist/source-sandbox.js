@@ -553,18 +553,22 @@
       return WASM_BYTES;
     }
     var STYLE = [
-      "pre{margin:0;padding:12px 14px;background:#f6f8fa;color:#24292e;",
-      "font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;",
-      "white-space:pre-wrap;word-break:break-word;border-radius:6px;overflow:auto}",
+      "html,body{margin:0;background:#0f0b16}",
+      "pre{margin:0;padding:14px 16px;background:#0f0b16;color:#d8cfe8;",
+      "font:13px/1.6 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;",
+      "white-space:pre-wrap;word-break:break-word;border-radius:8px;overflow:auto;",
+      "-webkit-font-smoothing:antialiased}",
       "code{font:inherit}",
-      "span.com{color:#6a737d;font-style:italic}",
+      "span.com{color:#6f6585;font-style:italic}",
       // comment
-      "span.str{color:#032f62}",
+      "span.str{color:#8fe3a8}",
       // string
-      "span.num{color:#005cc5}",
+      "span.num{color:#f0a878}",
       // number
-      "span.kw{color:#d73a49}"
+      "span.kw{color:#c99cff}",
       // keyword
+      "span.cap{color:#ffd479;font-weight:600}"
+      // capability (authority)
     ].join("");
     function ensureStyle() {
       if (document.getElementById("hl-style")) return;
