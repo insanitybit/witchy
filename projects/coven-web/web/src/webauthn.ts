@@ -59,6 +59,30 @@ export async function register(rpId: string): Promise<void> {
   });
 }
 
+// Sign in: run the assertion ceremony and exchange it for a session token. The
+// server verifies the assertion against the registered credential + single-use
+// challenge (h_wa_login) and, only then, mints the signed bearer token.
+export async function login(rpId: string): Promise<string> {
+  const assertion = (await navigator.credentials.get({
+    publicKey: { challenge: await challengeBytes(), rpId, userVerification: "required", timeout: 60000 },
+  })) as PublicKeyCredential;
+  const resp = assertion.response as AuthenticatorAssertionResponse;
+  const r = await fetch("/api/webauthn/login", {
+    method: "POST",
+    credentials: "omit",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      credentialId: b64url(assertion.rawId),
+      authData: hex(resp.authenticatorData),
+      clientData: new TextDecoder().decode(resp.clientDataJSON),
+      signature: hex(resp.signature),
+    }),
+  });
+  const data = (await r.json().catch(() => ({}))) as { token?: string; error?: string };
+  if (!r.ok || !data.token) throw new Error(data.error ?? "sign-in failed (" + r.status + ")");
+  return data.token;
+}
+
 // Run the assertion ceremony and POST the (hex-encoded) assertion to the 2FA promote.
 export async function promote2fa(
   rpId: string,

@@ -120,6 +120,19 @@ dl.record dd { margin: 0; font-family: ui-monospace, Menlo, monospace; word-brea
 .promote button.link:hover, .topnav button.link:hover { background: var(--card-2); border-color: var(--accent); text-decoration: none; }
 .topnav { margin-bottom: 0.75rem; }
 
+.header-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
+.session-bar { display: inline-flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; padding-top: 0.5rem; }
+.session-bar button.link {
+  border: 1px solid var(--accent); border-radius: 8px; padding: 0.45rem 0.9rem;
+  color: var(--accent); background: var(--card);
+  transition: background .15s ease, border-color .15s ease, color .15s ease;
+}
+.session-bar button.link:hover { background: var(--card-2); text-decoration: none; }
+.session-bar button.link.ghost { border-color: var(--border); color: var(--muted); }
+.session-bar button.link.ghost:hover { color: var(--fg); border-color: #4a3d6e; }
+.session-id { color: var(--green); font-weight: 600; font-size: 0.86rem; font-family: ui-monospace, Menlo, monospace; }
+.session-status { font-size: 0.82rem; max-width: 16rem; }
+
 .sandbox-box {
   border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden;
   background: var(--bg-2); box-shadow: var(--shadow);

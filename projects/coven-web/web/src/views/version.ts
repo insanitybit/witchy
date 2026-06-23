@@ -2,7 +2,8 @@ import { clear, el, button } from "../dom";
 import { getRecord, getSource, promote, yank } from "../api";
 import { footprintChips, stateBadge } from "../widgets";
 import { mountSandbox } from "../sandbox";
-import { register as registerPasskey, promote2fa } from "../webauthn";
+import { promote2fa } from "../webauthn";
+import { isSignedIn } from "../session";
 import type { Nav } from "../nav";
 
 function labeledField(label: string, control: HTMLElement): HTMLElement {
@@ -13,6 +14,15 @@ function labeledField(label: string, control: HTMLElement): HTMLElement {
 }
 
 function renderWriteControls(app: HTMLElement, nav: Nav, name: string, version: string, state: string): void {
+  if (state !== "staged" && state !== "released") return; // yanked: nothing to do
+  if (!isSignedIn()) {
+    app.appendChild(el("h2", { text: state === "staged" ? "Promote" : "Manage" }));
+    app.appendChild(el("p", {
+      className: "muted",
+      text: "Sign in with a passkey (top right) to " + (state === "staged" ? "promote" : "yank") + " this version.",
+    }));
+    return;
+  }
   if (state === "staged") {
     app.appendChild(el("h2", { text: "Promote — 2FA to publish" }));
     const wrap = el("div", { className: "promote" });
@@ -44,14 +54,6 @@ function renderWriteControls(app: HTMLElement, nav: Nav, name: string, version: 
     // Passkey (WebAuthn ES256) second factor — verified server-side via std/webauthn.
     const pkWrap = el("div", { className: "promote" });
     const pkStatus = el("p", { className: "muted" });
-    pkWrap.appendChild(
-      button("Register passkey", () => {
-        pkStatus.textContent = "registering passkey…";
-        void registerPasskey(location.hostname)
-          .then(() => { pkStatus.textContent = "passkey registered ✓"; })
-          .catch((e: Error) => { pkStatus.textContent = "register failed: " + e.message; });
-      }),
-    );
     pkWrap.appendChild(
       button("Promote with passkey (2FA)", () => {
         pkStatus.textContent = "verifying passkey…";

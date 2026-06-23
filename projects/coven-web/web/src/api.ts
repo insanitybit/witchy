@@ -1,6 +1,7 @@
 // Same-origin client for the coven read API (proxied by coven-web). Names encode
 // `/` as `~` because coven does NO url-decoding (PLAN.md §4, src/pm/wire.rs:92).
 import type { IndexResp, CatalogResp, VersionsResp, Record, Snapshot, Timestamp, SourceResp } from "./types";
+import { authHeader } from "./session";
 
 export function wireName(n: string): string {
   return n.replace(/\//g, "~");
@@ -61,7 +62,8 @@ async function postJSON<T>(path: string, body: unknown): Promise<T> {
   const r = await fetch(path, {
     method: "POST",
     credentials: "omit",
-    headers: { "content-type": "application/json" },
+    // Carry the passkey session token; the server gates promote/yank on it.
+    headers: { "content-type": "application/json", ...authHeader() },
     body: JSON.stringify(body),
   });
   const data = (await r.json()) as T & { error?: string };

@@ -57,7 +57,17 @@ COVEN_PIDF="$STORE/coven.pid"
 WEB_PIDF="$STORE/web.pid"
 COVEN_LOG="$STORE/coven.log"
 WEB_LOG="$STORE/web.log"
-WEB_URL="http://$WEB_ADDR"
+# WebAuthn ties the RP id + origin to the *access host*, and an IP literal (127.0.0.1)
+# cannot use the `localhost` RP id — so when bound to a loopback address, drive the
+# UI (and the server's expected origin/rp_id) through `localhost`, which resolves to
+# the same socket. A real --web host is used verbatim.
+WEB_PORT="${WEB_ADDR##*:}"
+case "${WEB_ADDR%:*}" in
+    127.0.0.1|0.0.0.0|localhost|"") WEB_HOST="localhost" ;;
+    *) WEB_HOST="${WEB_ADDR%:*}" ;;
+esac
+WEB_URL="http://$WEB_HOST:$WEB_PORT"
+RP_ID="$WEB_HOST"
 COVEN_URL="http://$COVEN_ADDR"
 DIST="$REPO/projects/coven-web/web/dist"
 BIN=""
@@ -106,7 +116,7 @@ start_web() {
     alive "$WEB_PIDF" && { echo "coven-web already running (pid $(cat "$WEB_PIDF"))"; return 0; }
     echo "starting coven-web on $WEB_ADDR -> $COVEN_ADDR"
     ( cd "$REPO" && exec "$BIN" sandbox --dir "$DIST" --net "$WEB_ADDR" --net "$COVEN_ADDR" --signing-key "$SEED" \
-        projects/coven-web/src/coven_web.witchy "$WEB_ADDR" "$COVEN_ADDR" "$WEB_URL" localhost ) >"$WEB_LOG" 2>&1 &
+        projects/coven-web/src/coven_web.witchy "$WEB_ADDR" "$COVEN_ADDR" "$WEB_URL" "$RP_ID" ) >"$WEB_LOG" 2>&1 &
     echo $! > "$WEB_PIDF"
 }
 

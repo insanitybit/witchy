@@ -49,13 +49,16 @@ fn main(console: Console, net: Net, assets: Dir, key: Secret, clock: Clock, args
     app = app.get("/api/coven/snapshot", h_proxy(net, upstream, "/coven/snapshot"))
     app = app.get("/api/coven/timestamp", h_proxy(net, upstream, "/coven/timestamp"))
     // Write endpoints (the only state-changing surface): the two-phase promote and
-    // yank. POST, behind the Sec-Fetch CSRF layer below.
-    app = app.post("/api/coven/promote", h_proxy_post(net, upstream, "/coven/promote"))
-    app = app.post("/api/coven/yank", h_proxy_post(net, upstream, "/coven/yank"))
-    // WebAuthn 2FA: register a credential, fetch a single-use challenge, and a
-    // second-factor promote that verifies the assertion server-side before forwarding.
+    // yank. POST, behind the Sec-Fetch CSRF layer below AND a passkey session — a
+    // signed-in maintainer's bearer token is required before either reaches coven.
+    app = app.post("/api/coven/promote", require_session(key, clock)(h_proxy_post(net, upstream, "/coven/promote")))
+    app = app.post("/api/coven/yank", require_session(key, clock)(h_proxy_post(net, upstream, "/coven/yank")))
+    // WebAuthn: register a credential, fetch a single-use challenge, sign IN (an
+    // assertion the server verifies, minting a session token), and a second-factor
+    // promote that verifies the assertion server-side before forwarding.
     app = app.post("/api/webauthn/register", h_wa_register(assets))
     app = app.get("/api/webauthn/challenge", h_wa_challenge(assets, key, clock))
+    app = app.post("/api/webauthn/login", h_wa_login(assets, key, clock, origin, rp_id))
     app = app.post("/api/coven/promote-2fa", h_wa_promote(assets, net, upstream, origin, rp_id))
     // Layer order: sec_fetch_csrf is inner (rejects cross-site writes before the
     // handler), security_headers is outer (so even a 403 carries the full stack).
@@ -175,6 +178,60 @@ fn wa_do_promote(store: Dir, net: Net, upstream: String, origin: String, rp_id: 
                 match http.try_post(net, host, port, "/coven/promote", body):
                     Ok(resp) -> server.json(http.status(resp), http.body(resp))
                     Err(_e) -> server.json(502, "{\"error\":\"coven registry unreachable\"}")
+
+// ---- Session auth (passkey sign-in) -----------------------------------------
+// A signed-in maintainer holds a short-lived BEARER token. The server mints it
+// only after a passkey assertion verifies (h_wa_login), signing it with the
+// server Secret over an expiry; every write re-checks that signature. There is no
+// server-side session store — the token is self-authenticating (a mini-JWT), so
+// nothing to steal at rest and `--signing-key` rotation invalidates all sessions.
+
+fn session_ttl_ms() -> Int:
+    1800000
+
+fn issue_session(key: Secret, clock: Clock) -> (String, Int):
+    let exp = now(clock) + session_ttl_ms()
+    let tok = "${exp}" + "." + crypto.sign(key, "session:" + "${exp}")
+    (tok, exp)
+
+fn valid_session(key: Secret, clock: Clock, token: String) -> Bool:
+    if !string.contains(token, "."):
+        false
+    else:
+        let (exp_s, sig) = string.split_once(token, ".")
+        sig == crypto.sign(key, "session:" + exp_s) && string.to_int(exp_s) > now(clock)
+
+fn bearer_of(req: Request) -> Option(String):
+    match server.request_header(req, "authorization"):
+        Some(h) -> if string.starts_with(h, "Bearer "): Some(string.substring(h, 7, string.length(h))) else: None
+        None -> None
+
+// Wrap a write handler so it runs only for a request carrying a valid session.
+fn require_session(key: Secret, clock: Clock) -> fn(fn(Request) -> Response) -> fn(Request) -> Response:
+    fn(inner: fn(Request) -> Response):
+        fn(req: Request):
+            match bearer_of(req):
+                Some(tok) -> if valid_session(key, clock, tok): inner(req) else: server.json(403, "{\"error\":\"invalid or expired session — sign in again\"}")
+                None -> server.json(401, "{\"error\":\"sign in with a passkey to manage releases\"}")
+
+fn h_wa_login(store: Dir, key: Secret, clock: Clock, origin: String, rp_id: String) -> fn(Request) -> Response:
+    fn(req: Request):
+        match server.json_body(req):
+            Err(_e) -> server.bad_request("{\"error\":\"bad body\"}")
+            Ok(doc) -> wa_do_login(store, key, clock, origin, rp_id, doc)
+
+fn wa_do_login(store: Dir, key: Secret, clock: Clock, origin: String, rp_id: String, doc: Json) -> Response:
+    if !exists(store, "_wa_cred.json") || !exists(store, "_wa_challenge.json"):
+        server.json(403, "{\"error\":\"no registered passkey or outstanding challenge\"}")
+    else:
+        let pk = wa_field(decode_or_empty(read(store, "_wa_cred.json")), "publicKey")
+        let ch_b64 = wa_field(decode_or_empty(read(store, "_wa_challenge.json")), "b64")
+        match webauthn.verify_assertion(pk, wa_field(doc, "authData"), wa_field(doc, "clientData"), wa_field(doc, "signature"), ch_b64, origin, rp_id, true):
+            Err(reason) -> server.json(403, json.encode(JsonObject([("error", JsonString("sign-in failed: " + reason))])))
+            Ok(_) ->
+                write(store, "_wa_challenge.json", "{}")
+                let (tok, exp) = issue_session(key, clock)
+                server.json(200, json.encode(JsonObject([("token", JsonString(tok)), ("expires", JsonString("${exp}"))])))
 
 fn split_host_port(hp: String) -> (String, Int):
     let (h, p) = string.split_once(hp, ":")
