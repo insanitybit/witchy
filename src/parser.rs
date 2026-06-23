@@ -1067,10 +1067,10 @@ impl Parser {
             // `tag"a${x}b"` — a compile-time tagged literal (RFC-0006). The lexer
             // already split it into static parts and per-hole source; expansion
             // (`crate::tagged`) replaces it before type-checking.
-            Tok::TagLit { tag, parts, holes } => {
+            Tok::TagLit { tag, parts, holes, hole_spans } => {
                 let line = self.cur().line;
                 self.advance();
-                Ok(Expr::TaggedLit { tag, parts, holes, line })
+                Ok(Expr::TaggedLit { tag, parts, holes, hole_spans, line })
             }
             Tok::True => {
                 self.advance();

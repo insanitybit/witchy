@@ -399,15 +399,22 @@ pub enum Expr {
     /// ordinary compile-time function `fn(parts: List(String), holes: List(String))
     /// -> String` that returns witchy EXPRESSION SOURCE. `parts` are the static
     /// fragments (`["a", "b"]`); `holes` are each interpolation's SOURCE TEXT
-    /// (`["x"]`). `crate::tagged::expand` runs `tag(parts, holes)` at compile time,
-    /// parses the returned string as an expression, and SPLICES it in place of this
-    /// node — before type-checking and codegen, so both backends consume the same
-    /// expanded AST. UNREACHABLE after expansion: typeck, the interpreter, and both
-    /// codegen backends panic if they ever see one.
+    /// (`["x"]`); `hole_spans` is each hole's `(line, col)` start position in the
+    /// ORIGINAL source. `crate::tagged::expand` passes the tag an OPAQUE MARKER
+    /// (`__witchy_hole_N`) per hole — the tag places markers where the hole's value
+    /// goes — runs `tag(parts, markers)` at compile time, parses the returned
+    /// string as an expression, then SUBSTITUTES the real hole expression (parsed
+    /// once from `holes[N]` and STAMPED with `hole_spans[N]`) at each marker. This
+    /// is RFC-0006's hygiene split: tag-emitted nodes carry the tag's scope (the
+    /// tag emits qualified `glamour.text(…)` etc.), hole nodes carry the call site.
+    /// The result is spliced in place of this node before type-checking and codegen,
+    /// so both backends consume the same expanded AST. UNREACHABLE after expansion:
+    /// typeck, the interpreter, and both codegen backends panic if they ever see one.
     TaggedLit {
         tag: String,
         parts: Vec<String>,
         holes: Vec<String>,
+        hole_spans: Vec<(u32, u32)>,
         line: u32,
     },
 }

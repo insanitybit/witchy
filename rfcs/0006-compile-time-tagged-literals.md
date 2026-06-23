@@ -12,11 +12,16 @@ tracking: |
   backends. Built on witchy's source-emitting comptime model — a tag is
   `fn(parts: List(String), holes: List(String)) -> String` returning expression
   source — NOT a separate AST-reflection subsystem (the consistency is the point).
-  Documented in spec/language.md §8. DEFERRED + flagged: column-accurate mapping of
-  a type error back INTO the literal (errors name the tag and show the generated
-  source; full in-literal spans are future work), and LSP highlighting of embedded
-  grammars (a separate tooling lift). The headline `html` tag lives in the glamour
+  Documented in spec/language.md §8. The headline `html` tag lives in the glamour
   rune (RFC-0008).
+  UPDATE 2026-06-22: hygiene + hole-precise diagnostics IMPLEMENTED (originally
+  deferred). Holes now pass to a tag as OPAQUE MARKERS it places; the compiler
+  substitutes the real hole expression — parsed at the call site, carrying its
+  source span — at each marker (a marker may appear 0/1/many times). So hole
+  expressions resolve at the call site (hygiene) and a wrong-typed hole points
+  INTO the literal at that `${…}` (test
+  glamour_html_wrong_typed_hole_points_into_the_literal), not at generated code.
+  STILL DEFERRED: LSP highlighting of embedded grammars (a separate tooling lift).
 ---
 
 # RFC-0006: Compile-time tagged literals

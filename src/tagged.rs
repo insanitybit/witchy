@@ -3,9 +3,32 @@
 //! A *tag* is an ordinary compile-time function
 //! `fn <tag>(parts: List(String), holes: List(String)) -> String` that returns
 //! witchy EXPRESSION SOURCE. A tagged literal `tag"a${x}b"` is expanded AT
-//! COMPILE TIME — before type-checking — by calling `tag(["a", "b"], ["x"])`
-//! (the static fragments and each hole's SOURCE TEXT, as strings), parsing the
-//! returned string as an expression, and SPLICING it in place of the literal.
+//! COMPILE TIME — before type-checking.
+//!
+//! ## Marker substitution (the hygiene split)
+//!
+//! Each hole is delivered to the tag NOT as its raw source but as an OPAQUE MARKER
+//! — the reserved identifier `__witchy_hole_N` (which lexes as a single primary
+//! expression and cannot collide with user code; the `__witchy_` prefix is
+//! reserved-synthetic). The tag PLACES these markers wherever a hole's value
+//! belongs (an `html` text hole emits `glamour.text(__witchy_hole_0)`). After the
+//! tag returns source and we parse it to an AST, `expand` walks that AST and
+//! REPLACES each `__witchy_hole_N` leaf with a CLONE of the hole's ACTUAL
+//! expression — parsed ONCE from the original hole source and STAMPED with the
+//! hole's captured `(line, col)` (via a one-statement `Expr::Block` whose `lines`
+//! carry the hole line, which typeck reads as `cur_line`). A marker may appear any
+//! number of times (a tag may drop a hole or use it more than once, e.g. an
+//! `html` body that renders `${v}` twice); each occurrence gets a fresh clone, so
+//! re-evaluating the pure hole expression at each site matches the original
+//! source-text contract. So:
+//!
+//!   * tag-emitted nodes keep the tag/generated provenance and resolve in the tag's
+//!     scope (the tag emits QUALIFIED names like `glamour.text`, immune to a
+//!     call-site local named `text`), and
+//!   * hole nodes carry the CALL-SITE position, so a type error in a hole points
+//!     INTO the literal at that `${…}` rather than at the tag-emitted constructor.
+//!
+//! This is RFC-0006's hygiene + hole-precise-diagnostics, delivered by one change.
 //!
 //! This extends the existing `comptime` "source in, items out" model: the tag
 //! runs once, in the compiler, on the reference interpreter, and both backends
@@ -21,6 +44,22 @@ use std::collections::{HashMap, HashSet};
 /// A tag may emit a tag (re-expansion); cap the nesting so a self-referential or
 /// runaway tag fails loudly rather than looping.
 const MAX_TAG_DEPTH: u32 = 64;
+
+/// The opaque hole-marker prefix handed to a tag in place of each hole's source.
+/// `__witchy_hole_N` lexes as a single primary expression (`Expr::Var`) and the
+/// reserved `__witchy_` prefix cannot collide with user code, so after the tag
+/// places it we can find each marker as a leaf `Var` and substitute the real hole.
+const HOLE_MARKER_PREFIX: &str = "__witchy_hole_";
+
+/// Build the marker for hole `i` (`__witchy_hole_0`, …).
+fn hole_marker(i: usize) -> String {
+    format!("{HOLE_MARKER_PREFIX}{i}")
+}
+
+/// Parse `"__witchy_hole_N"` back to `N`, or `None` if `name` is not a marker.
+fn hole_marker_index(name: &str) -> Option<usize> {
+    name.strip_prefix(HOLE_MARKER_PREFIX)?.parse().ok()
+}
 
 /// Expand every `Expr::TaggedLit` in `module` in place, splicing each tag's
 /// generated expression source over the literal. Runs after `comptime::expand`
@@ -64,10 +103,24 @@ pub fn expand(name: &str, module: &mut Module, siblings: &[(String, Module)]) ->
             frontier.extend(m.imports.iter().cloned());
         }
     }
+    // Module names that may appear as a QUALIFIER in a tag's generated source: the
+    // tag emits hygienic, qualified constructors (`glamour.text(…)`), and that
+    // source is parsed in a throwaway wrapper whose `imports` decide whether `m.f`
+    // is a qualified call vs. a UFCS method call. Seed the consumer itself plus
+    // every module it imports (transitively) so any qualifier the tag could emit
+    // parses as a call. (`seen` already accumulated the consumer + visited
+    // non-std imports; add the std imports too.)
+    let mut qualifiers: Vec<String> = seen.into_iter().collect();
+    for s in &std_imports {
+        if !qualifiers.contains(s) {
+            qualifiers.push(s.clone());
+        }
+    }
     let ctx = Context {
         name: name.to_string(),
         items,
         imports: std_imports,
+        qualifiers,
     };
     for item in &mut module.items {
         if let Item::Function(f) = item {
@@ -82,6 +135,10 @@ struct Context {
     name: String,
     items: Vec<Item>,
     imports: Vec<String>,
+    /// Module names a tag's generated source may qualify against (the consumer +
+    /// its transitive imports). Seeded as `import` lines in the throwaway parse so
+    /// `glamour.text(…)` parses as a qualified call, not a method call.
+    qualifiers: Vec<String>,
 }
 
 /// Replace `expr` with its expansion if it is (or contains) a `TaggedLit`,
@@ -89,7 +146,7 @@ struct Context {
 /// `TaggedLit` (a tag emitting a tag), so we re-walk to a fixed point under a
 /// depth cap.
 fn walk_expr_depth(expr: &mut Expr, ctx: &Context, depth: u32) -> Result<(), String> {
-    if let Expr::TaggedLit { tag, parts, holes, line } = expr {
+    if let Expr::TaggedLit { tag, parts, holes, hole_spans, line } = expr {
         if depth >= MAX_TAG_DEPTH {
             return Err(format!(
                 "module `{}`: tagged literal `{tag}` (line {line}) expanded past the \
@@ -100,8 +157,11 @@ fn walk_expr_depth(expr: &mut Expr, ctx: &Context, depth: u32) -> Result<(), Str
         let tag = std::mem::take(tag);
         let parts = std::mem::take(parts);
         let holes = std::mem::take(holes);
-        let mut spliced = expand_one(ctx, &tag, &parts, &holes)?;
+        let hole_spans = std::mem::take(hole_spans);
+        let mut spliced = expand_one(ctx, &tag, &parts, &holes, &hole_spans)?;
         // The spliced source may itself contain a tagged literal — expand it too.
+        // (Substitution has already replaced the markers with the real holes, so a
+        // nested tag inside a hole is a normal `TaggedLit` this recursion handles.)
         walk_expr_depth(&mut spliced, ctx, depth + 1)?;
         *expr = spliced;
         return Ok(());
@@ -240,9 +300,17 @@ fn expand_one(
     tag: &str,
     parts: &[String],
     holes: &[String],
+    hole_spans: &[(u32, u32)],
 ) -> Result<Expr, String> {
     let where_ = || format!("module `{}`: tagged literal `{tag}`", ctx.name);
     let str_list = |xs: &[String]| Expr::List(xs.iter().map(|x| Expr::Str(x.clone())).collect());
+
+    // The tag receives an OPAQUE MARKER per hole, NOT the hole's source: it places
+    // `__witchy_hole_N` wherever the hole's value belongs, and we substitute the
+    // real (already-parsed, position-stamped) hole expression at each marker after
+    // the tag returns. This is the hygiene split (RFC-0006): the tag never sees —
+    // and so cannot mangle or capture — the author's hole expression.
+    let markers: Vec<String> = (0..holes.len()).map(hole_marker).collect();
 
     // fn main(console: Console):
     //     let emit = fn(line): print(console, line)
@@ -273,7 +341,7 @@ fn expand_one(
         name: "emit".into(),
         args: vec![Expr::Call {
             name: tag.to_string(),
-            args: vec![str_list(parts), str_list(holes)],
+            args: vec![str_list(parts), str_list(&markers)],
         }],
     });
     let main = Function {
@@ -353,31 +421,246 @@ fn expand_one(
     .map_err(|e| format!("{}: {e}", where_()))?;
     let src = lines.join("\n");
 
-    // Parse the generated source as an expression by wrapping it as the tail
-    // expression of a throwaway function (only `parse_module` exists). The 4-space
-    // indent satisfies the off-side layout.
-    let wrapped = format!("fn __tagsplice():\n    {}\n", src.replace('\n', "\n    "));
-    let parsed = crate::parser::parse_module(&wrapped).map_err(|e| {
-        format!(
-            "{}: generated source does not parse as an expression: {e}\n--- generated ---\n{src}",
-            where_()
-        )
-    })?;
-    let Some(Item::Function(f)) = parsed.items.into_iter().find(|it| {
-        matches!(it, Item::Function(f) if f.name == "__tagsplice")
-    }) else {
-        return Err(format!(
-            "{}: generated source did not yield an expression\n--- generated ---\n{src}",
-            where_()
-        ));
+    // Parse the generated source as an expression. The tag emits QUALIFIED
+    // constructors (`glamour.text(…)`), so the throwaway parse must know the
+    // qualifier module names — else `glamour.text(…)` parses as a UFCS method call.
+    let mut e = parse_splice_expr(&src, &ctx.qualifiers)
+        .map_err(|e| format!("{}: generated source: {e}\n--- generated ---\n{src}", where_()))?;
+
+    // Parse each hole's ORIGINAL source ONCE, into an expression carrying the
+    // author's own AST (resolved at the CALL site), wrapped in a one-statement
+    // block stamped with the hole's `(line, col)` so a type error inside the hole
+    // reports the hole's position in the literal — not the tag-emitted constructor.
+    // Parsing once here (not inside the tag's generated source) is the hygiene win:
+    // the hole expression is never re-lexed in the generated context.
+    let mut hole_exprs: Vec<Expr> = Vec::with_capacity(holes.len());
+    for (i, hole) in holes.iter().enumerate() {
+        let span = hole_spans.get(i).copied().unwrap_or((0, 0));
+        hole_exprs.push(parse_hole(hole, span, &ctx.qualifiers, &where_)?);
+    }
+
+    // Replace every `__witchy_hole_N` marker leaf the tag placed with a CLONE of
+    // hole N's parsed-and-stamped expression. A tag may place a hole's marker any
+    // number of times (zero, one, or many) — witchy values are data and a hole is a
+    // pure call-site expression, so re-evaluating it at each site is correct and
+    // matches the original source-text contract (`"${v} ${v}"` duplicates `v`).
+    // Each clone keeps the hole's source span, so diagnostics still point into the
+    // literal. A tag that drops a hole simply never places its marker (fine).
+    substitute_holes(&mut e, &hole_exprs, &where_)?;
+    Ok(e)
+}
+
+/// Parse `src` as a single expression by wrapping it as the tail expression of a
+/// throwaway `fn __tagsplice()` (only `parse_module` exists). `qualifiers` are the
+/// module names to seed as `import` lines so `m.f(…)` parses as a qualified call,
+/// not a UFCS method call — load-bearing for the tag's hygienic qualified emission.
+fn parse_splice_expr(src: &str, qualifiers: &[String]) -> Result<Expr, String> {
+    let mut wrapped = String::new();
+    for q in qualifiers {
+        // Only real (non-prelude) module names need an explicit `import`; the
+        // prelude modules (`list`/`string`/…) the parser already seeds. Importing a
+        // prelude name again is harmless, so we don't filter — the parse is
+        // throwaway and never linked.
+        wrapped.push_str("import ");
+        wrapped.push_str(q);
+        wrapped.push('\n');
+    }
+    wrapped.push_str("fn __tagsplice():\n    ");
+    wrapped.push_str(&src.replace('\n', "\n    "));
+    wrapped.push('\n');
+    let parsed = crate::parser::parse_module(&wrapped)
+        .map_err(|e| format!("does not parse as an expression: {e}"))?;
+    let Some(Item::Function(f)) =
+        parsed.items.into_iter().find(|it| matches!(it, Item::Function(f) if f.name == "__tagsplice"))
+    else {
+        return Err("did not yield an expression".to_string());
     };
     let Some(Stmt::Expr(e)) = f.body.stmts.into_iter().next_back() else {
-        return Err(format!(
-            "{}: generated source is not a single expression\n--- generated ---\n{src}",
-            where_()
-        ));
+        return Err("is not a single expression".to_string());
     };
     Ok(e)
+}
+
+/// Parse a single hole's source `hole` as an expression and stamp it with the
+/// hole's source position `(line, _col)` so type errors point INTO the literal.
+/// The stamping is a one-statement `Expr::Block` whose `lines` carry the hole line,
+/// which `typeck` reads as `cur_line` while inferring the hole — backends treat the
+/// block transparently, so parity is preserved.
+fn parse_hole(
+    hole: &str,
+    (line, _col): (u32, u32),
+    qualifiers: &[String],
+    where_: &impl Fn() -> String,
+) -> Result<Expr, String> {
+    let inner = parse_splice_expr(hole, qualifiers)
+        .map_err(|e| format!("{}: hole `{hole}` {e}", where_()))?;
+    // Stamp the hole line via a one-statement block; line 0 (no span) leaves the
+    // statement's own line in effect, exactly as before.
+    if line == 0 {
+        Ok(inner)
+    } else {
+        Ok(Expr::Block(Block {
+            stmts: vec![Stmt::Expr(inner)],
+            lines: vec![line],
+            restrict: None,
+            region: None,
+        }))
+    }
+}
+
+/// Walk `expr` and replace each `__witchy_hole_N` marker leaf with a CLONE of
+/// `holes[N]`. A marker may appear any number of times — a hole is a pure call-site
+/// expression and witchy values are data, so re-evaluating it at each site is
+/// correct (the original `(parts, holes)` source-text contract let a hole appear
+/// any number of times, e.g. `"${v} ${v}"`). Cloning preserves the hole's source
+/// span at every site, so a type error still points into the literal.
+fn substitute_holes(
+    expr: &mut Expr,
+    holes: &[Expr],
+    where_: &impl Fn() -> String,
+) -> Result<(), String> {
+    // A marker is a bare `Var` leaf; swap it for a fresh clone of the parsed hole.
+    if let Expr::Var(name) = expr {
+        if let Some(idx) = hole_marker_index(name) {
+            let Some(hole) = holes.get(idx) else {
+                return Err(format!(
+                    "{}: tag placed marker `{}` but there is no hole {idx}",
+                    where_(),
+                    hole_marker(idx)
+                ));
+            };
+            *expr = hole.clone();
+            return Ok(());
+        }
+    }
+    substitute_holes_children(expr, holes, where_)
+}
+
+/// Recurse into an expression's children, substituting markers (it is not itself a
+/// marker leaf). Mirrors `walk_children` but threads the hole slots.
+fn substitute_holes_children(
+    expr: &mut Expr,
+    holes: &[Expr],
+    where_: &impl Fn() -> String,
+) -> Result<(), String> {
+    match expr {
+        Expr::Int(_)
+        | Expr::Float(_)
+        | Expr::Duration(_)
+        | Expr::Str(_)
+        | Expr::Bool(_)
+        | Expr::Var(_) => {}
+        Expr::List(xs) | Expr::Tuple(xs) => {
+            for x in xs {
+                substitute_holes(x, holes, where_)?;
+            }
+        }
+        Expr::Call { args, .. } | Expr::Ctor { args, .. } => {
+            for a in args {
+                substitute_holes(a, holes, where_)?;
+            }
+        }
+        Expr::MethodCall { receiver, args, .. } => {
+            substitute_holes(receiver, holes, where_)?;
+            for a in args {
+                substitute_holes(a, holes, where_)?;
+            }
+        }
+        Expr::Apply { func, args } => {
+            substitute_holes(func, holes, where_)?;
+            for a in args {
+                substitute_holes(a, holes, where_)?;
+            }
+        }
+        Expr::Unary { expr, .. } => substitute_holes(expr, holes, where_)?,
+        Expr::Field { base, .. } => substitute_holes(base, holes, where_)?,
+        Expr::Lambda { body, .. } => substitute_holes_block(body, holes, where_)?,
+        Expr::RecordUpdate { base, fields } => {
+            substitute_holes(base, holes, where_)?;
+            for (_, v) in fields {
+                substitute_holes(v, holes, where_)?;
+            }
+        }
+        Expr::Record { fields, spread, .. } => {
+            for (_, v) in fields {
+                substitute_holes(v, holes, where_)?;
+            }
+            if let Some(s) = spread {
+                substitute_holes(s, holes, where_)?;
+            }
+        }
+        Expr::Try(e) => substitute_holes(e, holes, where_)?,
+        Expr::As { expr, .. } => substitute_holes(expr, holes, where_)?,
+        Expr::Binary { lhs, rhs, .. } => {
+            substitute_holes(lhs, holes, where_)?;
+            substitute_holes(rhs, holes, where_)?;
+        }
+        Expr::If { cond, then_block, else_block } => {
+            substitute_holes(cond, holes, where_)?;
+            substitute_holes_block(then_block, holes, where_)?;
+            if let Some(b) = else_block {
+                substitute_holes_block(b, holes, where_)?;
+            }
+        }
+        Expr::Match { scrutinee, arms } => {
+            substitute_holes(scrutinee, holes, where_)?;
+            for MatchArm { guard, body, .. } in arms {
+                if let Some(g) = guard {
+                    substitute_holes(g, holes, where_)?;
+                }
+                substitute_holes(body, holes, where_)?;
+            }
+        }
+        Expr::Block(b) => substitute_holes_block(b, holes, where_)?,
+        Expr::While { cond, body } => {
+            substitute_holes(cond, holes, where_)?;
+            substitute_holes_block(body, holes, where_)?;
+        }
+        Expr::For { iter, body, .. } => {
+            substitute_holes(iter, holes, where_)?;
+            substitute_holes_block(body, holes, where_)?;
+        }
+        Expr::Range { lo, hi, .. } => {
+            substitute_holes(lo, holes, where_)?;
+            substitute_holes(hi, holes, where_)?;
+        }
+        Expr::Index { base, index } => {
+            substitute_holes(base, holes, where_)?;
+            substitute_holes(index, holes, where_)?;
+        }
+        Expr::WhileLet { scrutinee, body, .. } => {
+            substitute_holes(scrutinee, holes, where_)?;
+            substitute_holes_block(body, holes, where_)?;
+        }
+        // The generated source is plain witchy: a tag cannot emit a tagged literal
+        // here (it returns STRING source; a nested `tag"…"` in that source is
+        // re-expanded by `walk_expr_depth` AFTER substitution, never reached here).
+        Expr::TaggedLit { .. } => {}
+    }
+    Ok(())
+}
+
+fn substitute_holes_block(
+    block: &mut Block,
+    holes: &[Expr],
+    where_: &impl Fn() -> String,
+) -> Result<(), String> {
+    for stmt in &mut block.stmts {
+        match stmt {
+            Stmt::Let { value, .. }
+            | Stmt::Assign { value, .. }
+            | Stmt::LetTuple { value, .. }
+            | Stmt::Yield(value)
+            | Stmt::Expr(value) => substitute_holes(value, holes, where_)?,
+            Stmt::Return(opt) => {
+                if let Some(e) = opt {
+                    substitute_holes(e, holes, where_)?;
+                }
+            }
+            Stmt::Break | Stmt::Continue => {}
+        }
+    }
+    Ok(())
 }
 
 /// The names of every item (function OR type) REACHABLE from the tag function

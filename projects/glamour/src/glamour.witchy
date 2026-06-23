@@ -37,11 +37,13 @@ pub type Attr(msg):
     On(String, msg)
 
 // ---- constructors / helpers (the names the `html` tag emits) ----
-// Kept deliberately simple (`element`/`text`/`prop`/`on`): the `html` tag splices
-// these names at the CALL site, so a consumer that writes `html"…"` must
-// `import glamour`. (Hygiene — qualified/private emission so the tag's
-// constructors can't be shadowed by a call-site binding — is a later refinement;
-// noted in the RFC's "Hygiene" section.)
+// The `html` tag emits these QUALIFIED (`glamour.element`/`glamour.text`/
+// `glamour.prop`/`glamour.on`), so they resolve in the TAG's module no matter what
+// the call site binds — a consumer's `let text = …` cannot shadow the emitted
+// `text` constructor (RFC-0006's hygiene). A consumer that writes `html"…"` must
+// still `import glamour` so the qualifier resolves. The hole values are spliced as
+// already-parsed AST at the tag's markers (see the `html` tag below), so a hole
+// expression resolves at the CALL site — the other half of the hygiene split.
 
 pub fn element(tag: String, attrs: List(Attr(msg)), children: List(VNode(msg))) -> VNode(msg):
     Element(tag, attrs, children)
@@ -287,17 +289,23 @@ pub fn step_with(
 // ===========================================================================
 // The `html` tag — a COMPILE-TIME tagged literal (RFC-0006). `html"<div…>"`
 // expands DURING COMPILATION: this function runs once in the compiler, receives
-// the static fragments (`parts`) and each hole's SOURCE TEXT (`holes`), and
-// returns witchy EXPRESSION SOURCE constructing a `VNode`. The returned source is
-// reparsed and spliced over the literal, so both backends compile the same AST.
+// the static fragments (`parts`) and an OPAQUE MARKER per hole (`holes` — each
+// element is a `__witchy_hole_N` token, NOT the hole's source), and returns witchy
+// EXPRESSION SOURCE constructing a `VNode`. The tag PLACES each marker where the
+// hole's value belongs; `tagged::expand` substitutes the real hole expression
+// (parsed once at the call site, carrying its source position) at each marker. The
+// emitted constructors are QUALIFIED (`glamour.text`/`glamour.element`/…) so they
+// resolve in this module and cannot be shadowed by a call-site local — the hygiene
+// split (RFC-0006). The result is spliced over the literal, so both backends
+// compile the same AST.
 //
 // Holes are typed BY POSITION (the headline safety property):
-//   * a hole in TEXT position      -> `text(<hole-source>)`  (a text NODE; if the
-//     hole is a String it is inert text — XSS-immune; a VNode hole is spliced
+//   * a hole in TEXT position      -> `glamour.text(<marker>)`  (a text NODE; if
+//     the hole is a String it is inert text — XSS-immune; a VNode hole is spliced
 //     directly, the simplest correct rule).
-//   * a hole in ATTRIBUTE-VALUE    -> `prop("name", <hole-source>)`
+//   * a hole in ATTRIBUTE-VALUE    -> `glamour.prop("name", <marker>)`
 //     position
-//   * a hole in `on:event=${...}`  -> `on("event", <hole-source>)`  (events as
+//   * a hole in `on:event=${...}`  -> `glamour.on("event", <marker>)`  (events as
 //     data; the hole is a `msg` value).
 //   * a hole in a FORBIDDEN spot   -> `fail("…")` at comptime, aborting the
 //     (e.g. as a tag NAME)            compile with a message naming the problem.
@@ -545,10 +553,10 @@ fn parse_element(
     else:
         let attr_src = emit_attrs(attrs, holes)
         if self_close:
-            ("element(\"" + name + "\", [" + attr_src + "], [])", at + 1)
+            ("glamour.element(\"" + name + "\", [" + attr_src + "], [])", at + 1)
         else:
             let (kids_src, after) = parse_children(toks, at + 1, name, holes)
-            ("element(\"" + name + "\", [" + attr_src + "], [" + kids_src + "])", after)
+            ("glamour.element(\"" + name + "\", [" + attr_src + "], [" + kids_src + "])", after)
 
 // Parse children until the matching `</name>`. Returns (comma-joined child
 // sources, index after the close tag).
@@ -570,19 +578,22 @@ fn parse_children(toks: List(HtmlTok), at: Int, name: String, holes: List(String
 
 // ---- emitters: produce witchy expression SOURCE ----
 
-// Static text -> `text("…")` with the literal string-escaped for re-parsing.
+// Static text -> `glamour.text("…")` with the literal string-escaped for
+// re-parsing. The qualified name resolves in glamour's module (hygiene).
 fn emit_text_literal(s: String) -> String:
-    "text(\"" + escape_src(s) + "\")"
+    "glamour.text(\"" + escape_src(s) + "\")"
 
-// A text-position hole -> `text(<hole-source>)`. This is the SIMPLEST CORRECT
-// rule and the security crux: the hole is ALWAYS wrapped in `text(...)`, so a
-// String hole becomes an inert text NODE (escaped on render — XSS-immune by
-// construction), and the position therefore TYPES the hole as `String` (a VNode
-// in text position is a type error here). Splicing a child VNode directly — to
-// nest a precomputed subtree via `${node}` — is a documented later refinement
-// (it needs the tag to emit the hole unwrapped when its type is `VNode`).
+// A text-position hole -> `glamour.text(<marker>)`. `list.at(holes, idx)` is the
+// opaque `__witchy_hole_idx` token; `tagged::expand` substitutes the real hole
+// expression there. This is the SIMPLEST CORRECT rule and the security crux: the
+// hole is ALWAYS wrapped in `glamour.text(...)`, so a String hole becomes an inert
+// text NODE (escaped on render — XSS-immune by construction), and the position
+// therefore TYPES the hole as `String` (a VNode in text position is a type error
+// here). Splicing a child VNode directly — to nest a precomputed subtree via
+// `${node}` — is a documented later refinement (it needs the tag to emit the hole
+// unwrapped when its type is `VNode`).
 fn emit_text_hole(idx: Int, holes: List(String)) -> String:
-    "text(" + list.at(holes, idx) + ")"
+    "glamour.text(" + list.at(holes, idx) + ")"
 
 fn emit_attrs(attrs: List(HAttr), holes: List(String)) -> String:
     var srcs = []
@@ -592,9 +603,9 @@ fn emit_attrs(attrs: List(HAttr), holes: List(String)) -> String:
 
 fn emit_attr(a: HAttr, holes: List(String)) -> String:
     match a:
-        SProp(name, value) -> "prop(\"" + escape_src(name) + "\", \"" + escape_src(value) + "\")"
-        HProp(name, idx) -> "prop(\"" + escape_src(name) + "\", " + list.at(holes, idx) + ")"
-        HOn(event, idx) -> "on(\"" + escape_src(event) + "\", " + list.at(holes, idx) + ")"
+        SProp(name, value) -> "glamour.prop(\"" + escape_src(name) + "\", \"" + escape_src(value) + "\")"
+        HProp(name, idx) -> "glamour.prop(\"" + escape_src(name) + "\", " + list.at(holes, idx) + ")"
+        HOn(event, idx) -> "glamour.on(\"" + escape_src(event) + "\", " + list.at(holes, idx) + ")"
         Bad(msg) ->
             let _bad = fail("glamour html: " + msg)
             ""

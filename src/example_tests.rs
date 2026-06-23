@@ -14058,3 +14058,31 @@ pub fn serve(console: Console, net: Net) -> Int:
         );
     }
 
+    /// RFC-0006 hole-precise diagnostics: a type-wrong hole (an `Int` in TEXT
+    /// position, which the `html` tag wraps in `glamour.text(…)` expecting a
+    /// `String`) must report a type error whose LINE points INTO the literal — the
+    /// `${5}` lives on the literal's line, not on the tag-emitted constructor or
+    /// the desugared call. The marker-substitution machinery stamps each spliced
+    /// hole with its captured source position so the diagnostic lands here.
+    #[test]
+    fn glamour_html_wrong_typed_hole_points_into_the_literal() {
+        // The `html"…"` literal (with the `${5}` text hole) is on line 4.
+        let src = "import glamour\n\
+                   \n\
+                   fn main(console: Console):\n\
+                   \x20   let view = html\"<span>${5}</span>\"\n\
+                   \x20   print(console, to_html(view))\n";
+        let entry = parser::parse_module(src).expect("parse entry");
+        let glamour = parser::parse_module(GLAMOUR_SRC).expect("parse glamour");
+        let modules = vec![("main".to_string(), entry), ("glamour".to_string(), glamour)];
+        let linked = crate::linker::link(modules, "main").expect("link (expansion succeeds)");
+        let err = typeck::check(&linked)
+            .expect_err("an Int in text position must be a type error (text holes need String)");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("line 4"),
+            "the type error must point INTO the literal (line 4, where the `${{5}}` \
+             hole lives), got: {msg}"
+        );
+    }
+

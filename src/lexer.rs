@@ -5,6 +5,11 @@
 
 use std::fmt;
 
+/// The lexed pieces of a tagged literal `tag"a${x}b"`: the static `parts`, each
+/// hole's source text, and each hole's `(line, col)` START position in the original
+/// source (the diagnostics channel — see `tag_literal` / `Tok::TagLit`).
+type TagLiteralParts = (Vec<String>, Vec<String>, Vec<(u32, u32)>);
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Tok {
     // Literals
@@ -17,12 +22,16 @@ pub enum Tok {
     /// A compile-time tagged literal `tag"a${x}b"` (RFC-0006). Produced when a
     /// `"`-string immediately follows an identifier with no intervening
     /// whitespace. `parts` are the static fragments (`["a", "b"]`), `holes` are
-    /// each interpolation's source text (`["x"]`). Expanded away by
-    /// `crate::tagged` before type-checking; see `Expr::TaggedLit`.
+    /// each interpolation's source text (`["x"]`), and `hole_spans` is each hole's
+    /// `(line, col)` START position in the ORIGINAL source — carried so a type
+    /// error in a hole can point INTO the literal at that `${…}` (RFC-0006's
+    /// hole-precise diagnostics). Expanded away by `crate::tagged` before
+    /// type-checking; see `Expr::TaggedLit`.
     TagLit {
         tag: String,
         parts: Vec<String>,
         holes: Vec<String>,
+        hole_spans: Vec<(u32, u32)>,
     },
 
     // Keywords
@@ -309,9 +318,9 @@ impl Lexer {
                     let Some(Token { kind: Tok::Ident(tag), .. }) = out.pop() else {
                         unreachable!()
                     };
-                    let (parts, holes) = self.tag_literal()?;
+                    let (parts, holes, hole_spans) = self.tag_literal()?;
                     out.push(Token {
-                        kind: Tok::TagLit { tag, parts, holes },
+                        kind: Tok::TagLit { tag, parts, holes, hole_spans },
                         line: tl,
                         col: tc,
                     });
@@ -647,14 +656,18 @@ impl Lexer {
     }
 
     /// Lex a tagged literal `tag"a${x}b"` (the preceding `Ident` already popped,
-    /// the opening `"` not yet consumed). Returns the static fragments and each
-    /// hole's source text — the same `(parts, holes)` split `comptime` hands the
-    /// tag function. Escapes are honored exactly as in `string()`; a `${ … }` hole
-    /// closes the current part and records its source via `interp_source()`.
-    fn tag_literal(&mut self) -> Result<(Vec<String>, Vec<String>), LexError> {
+    /// the opening `"` not yet consumed). Returns the static fragments, each hole's
+    /// source text, and each hole's `(line, col)` START position in the original
+    /// source. `(parts, holes)` is the same split `comptime` hands the tag function;
+    /// `hole_spans` is the new diagnostics channel — `tagged::expand` stamps it onto
+    /// each spliced hole expression so a type error points INTO the literal at the
+    /// `${…}`. Escapes are honored exactly as in `string()`; a `${ … }` hole closes
+    /// the current part and records its source via `interp_source()`.
+    fn tag_literal(&mut self) -> Result<TagLiteralParts, LexError> {
         self.bump(); // opening quote
         let mut parts: Vec<String> = Vec::new();
         let mut holes: Vec<String> = Vec::new();
+        let mut hole_spans: Vec<(u32, u32)> = Vec::new();
         let mut text = String::new();
         loop {
             match self.bump() {
@@ -678,13 +691,17 @@ impl Lexer {
                 Some('$') if self.peek() == Some('{') => {
                     self.bump(); // consume '{'
                     parts.push(std::mem::take(&mut text));
+                    // The hole's source begins at the current position (just past
+                    // `${`): record where the `${…}` body opens so diagnostics land
+                    // on the interpolated expression, not the literal's start.
+                    hole_spans.push((self.line, self.col));
                     holes.push(self.interp_source()?);
                 }
                 Some(c) => text.push(c),
             }
         }
         parts.push(text);
-        Ok((parts, holes))
+        Ok((parts, holes, hole_spans))
     }
 
     /// Emit one interpolation segment `<> __render( <expr> )` (the opening brace

@@ -534,24 +534,30 @@ and its `${…}` hole sources, and the compiler calls the `tag` function
 fn tag(parts: List(String), holes: List(String)) -> String
 ```
 
-with `parts` = the static fragments and `holes` = each hole's **source text**. The
-tag returns witchy **expression source**, which is parsed and **spliced** over the
-literal before type checking — so both backends compile the same AST, and the tag
-itself runs once, in the compiler. The tag is an ordinary function (it may be
-local or imported); only the items reachable from it run at expansion time.
+with `parts` = the static fragments and `holes` = an **opaque marker** per hole —
+a token the tag *places* where that hole's value belongs (the tag does not read
+the hole's source). The tag returns witchy **expression source**; the compiler
+parses it and **substitutes** the real hole expression — parsed once at the call
+site, carrying its source position — at each marker, then splices the result over
+the literal before type checking. So both backends compile the same AST, the tag
+runs once in the compiler, and a hole's marker may be placed zero, once, or many
+times. The tag is an ordinary function (local or imported); only the items
+reachable from it run at expansion time.
 
 Because a tag emits *code*, interpolation holes are typed **by position** (the
-spliced expression is type-checked normally) and there is no runtime string
-parser. The `html` tag in the `glamour` rune uses this: a `${userInput}` in text
-position expands to a `text(…)` **node**, never markup, so it is XSS-immune by
-construction.
+substituted expression is type-checked normally) and there is no runtime string
+parser. Hole expressions resolve at the **call site** (hygiene), and a type error
+in a hole points back **into the literal** at that `${…}`, not at generated code.
+The `html` tag in the `glamour` rune uses this: a `${userInput}` in text position
+becomes a `text(…)` **node**, never markup, so it is XSS-immune by construction.
 
 ```witchy
 import list
 
-// A tag: it receives the static parts and the hole sources, and returns witchy
-// expression source. `holes[0]` is the *source* of the first `${…}` ("name"),
-// resolved at the call site after splicing.
+// A tag receives the static parts and an opaque MARKER per hole; it places each
+// marker where the hole's value goes, then returns witchy expression source. The
+// compiler substitutes the real hole expression (here `name`, resolved at the
+// call site) at the marker.
 fn greet(parts: List(String), holes: List(String)) -> String:
     "\"Hello, \" + " + list.at(holes, 0)
 
