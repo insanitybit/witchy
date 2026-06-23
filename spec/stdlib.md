@@ -646,6 +646,18 @@ GET a full URL string (`http://host[:port]/path`), or an error if it doesn't par
 
 Send a request with custom headers, returning the response. The generic form behind the method helpers — use it when you need to set headers (auth, content-type, ...). `Connection: close` ends `recv_all` after the body.
 
+#### `fn try_request_with(net: Net[Connect, Tcp], method: String, host: String, port: Int, path: String, headers: List((String, String)), body: String) -> Result(Response, String)`
+
+Like `request_with`, but fallible: an unreachable upstream yields `Err("connect to host:port failed (unreachable)")` instead of trapping. Built on `try_connect` so a long-running server (a proxy, a health check) survives a down peer — the caller decides what to do (e.g. answer 502) instead of the VM aborting. A successful dial sends the request and parses the response as usual.
+
+#### `fn try_get(net: Net[Connect, Tcp], host: String, port: Int, path: String) -> Result(Response, String)`
+
+Fallible GET: `Ok(response)` on success, `Err(reason)` if the host is unreachable. The fallible counterpart of `get`.
+
+#### `fn try_post(net: Net[Connect, Tcp], host: String, port: Int, path: String, body: String) -> Result(Response, String)`
+
+Fallible POST: `Ok(response)` on success, `Err(reason)` if the host is unreachable. The fallible counterpart of `post`.
+
 #### `fn build(method: String, url: String) -> RequestBuilder`
 
 Start a request to `url` with `method` (e.g. "GET").

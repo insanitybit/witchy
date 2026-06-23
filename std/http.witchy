@@ -70,6 +70,33 @@ pub fn request_with(net: Net[Connect, Tcp], method: String, host: String, port: 
 fn request(net: Net[Connect, Tcp], method: String, host: String, port: Int, path: String, body: String) -> Response:
     request_with(net, method, host, port, path, [], body)
 
+// Like `request_with`, but fallible: an unreachable upstream yields
+// `Err("connect to host:port failed (unreachable)")` instead of trapping. Built
+// on `try_connect` so a long-running server (a proxy, a health check) survives a
+// down peer — the caller decides what to do (e.g. answer 502) instead of the VM
+// aborting. A successful dial sends the request and parses the response as usual.
+pub fn try_request_with(net: Net[Connect, Tcp], method: String, host: String, port: Int, path: String, headers: List((String, String)), body: String) -> Result(Response, String):
+    match try_connect(net, host + ":" + "${port}"):
+        None -> Err("connect to " + host + ":" + "${port}" + " failed (unreachable)")
+        Some(sock) ->
+            var head = method + " " + path + " HTTP/1.1\r\n" + "Host: " + host + "\r\n"
+            for h in headers:
+                let (k, v) = h
+                head = head + k + ": " + v + "\r\n"
+            let req = head + "Content-Length: " + "${string.length(body)}" + "\r\n" + "Connection: close\r\n\r\n" + body
+            send_bytes(sock, req)
+            Ok(parse_response(recv_all(sock)))
+
+// Fallible GET: `Ok(response)` on success, `Err(reason)` if the host is
+// unreachable. The fallible counterpart of `get`.
+pub fn try_get(net: Net[Connect, Tcp], host: String, port: Int, path: String) -> Result(Response, String):
+    try_request_with(net, "GET", host, port, path, [], "")
+
+// Fallible POST: `Ok(response)` on success, `Err(reason)` if the host is
+// unreachable. The fallible counterpart of `post`.
+pub fn try_post(net: Net[Connect, Tcp], host: String, port: Int, path: String, body: String) -> Result(Response, String):
+    try_request_with(net, "POST", host, port, path, [], body)
+
 // ---- Request builder (reqwest-style fluent client) ----
 
 // An outgoing request being assembled: method, full URL, headers, and body.

@@ -242,6 +242,7 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
   (import "witchy" "dir_append" (func $dir_append_host (param i32 i32 i32)))
   (import "witchy" "dir_make_dir" (func $dir_make_dir_host (param i32 i32)))
   (import "witchy" "net_connect" (func $net_connect_host (param i32 i32) (result i32)))
+  (import "witchy" "net_try_connect" (func $net_try_connect_host (param i32 i32) (result i32)))
   (import "witchy" "net_listen" (func $net_listen_host (param i32 i32) (result i32)))
   (import "witchy" "net_accept" (func $net_accept_host (param i32) (result i32)))
   (import "witchy" "net_restrict" (func $net_restrict_host (param i32 i32) (result i32)))
@@ -258,7 +259,7 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
 
 /// The number of host imports the prelude declares (used to split function
 /// indices: imports `0..IMPORT_COUNT`, helpers after).
-pub const IMPORT_COUNT: usize = 51;
+pub const IMPORT_COUNT: usize = 52;
 
 /// The full ordered name list for the funcs section: `$mk0..$mk{MAX_MK}` then
 /// the static helper names. Matches the order the prelude emits bodies, so

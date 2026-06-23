@@ -6034,6 +6034,43 @@ impl Codegen {
                 let a = self.lower_args(&[&args[0], &args[1]])?;
                 if self.collect_wir { call("net_connect", a) } else { host("net_connect_host", a) }
             }
+            // Fallible dial. The host `net_try_connect` returns the socket handle
+            // or the `-1` sentinel; wrap it as `Option(Socket)`: handle the dial
+            // ONCE into a scratch local, then `h >= 0 ? Some(h) : None`. Mirrors
+            // the `secretstore.lookup` Option construction (Some=tag-0/None=tag-1).
+            ("try_connect", 2) => {
+                self.used_net_ops.insert("try_connect");
+                let a = self.lower_args(&[&args[0], &args[1]])?;
+                let dial = if self.collect_wir {
+                    call("net_try_connect", a)
+                } else {
+                    host("net_try_connect_host", a)
+                };
+                let handle = || W::GetLocal(SECRET_TMP.to_string());
+                let cond = W::Binary {
+                    op: crate::wir::BinOp::Ge,
+                    kind: crate::wir::Kind::I32,
+                    lhs: Box::new(handle()),
+                    rhs: Box::new(W::ConstI32(0)),
+                };
+                self.mk_arities.insert(1);
+                self.mk_arities.insert(0);
+                let some = W::Call {
+                    func: "mk1".into(),
+                    args: vec![W::ConstI32(0), W::ToSlot(Box::new(handle()), crate::wir::Kind::I32)],
+                };
+                let none = W::Call { func: "mk0".into(), args: vec![W::ConstI32(1)] };
+                let choose = W::Control(Box::new(N::If {
+                    cond,
+                    then_: vec![N::Push(some)],
+                    els: vec![N::Push(none)],
+                    result: Some(crate::wir::WirTy::Str),
+                }));
+                W::Seq(vec![
+                    N::SetLocal { local: SECRET_TMP.to_string(), value: dial },
+                    N::Push(choose),
+                ])
+            }
             ("listen", 2) => {
                 self.used_net_ops.insert("listen");
                 let a = self.lower_args(&[&args[0], &args[1]])?;

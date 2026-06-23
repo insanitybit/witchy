@@ -70,7 +70,7 @@ const BUILTINS: &[&str] = &[
     // universal staples. Pure data operations live in their modules
     // (list./string./dict./math., offered via the prelude completion below).
     "print", "now", "get_env", "read", "write", "append", "exists", "is_dir", "list", "subdir",
-    "make_dir", "exec", "connect", "listen", "accept", "send_line", "send_bytes", "recv_line",
+    "make_dir", "exec", "connect", "try_connect", "listen", "accept", "send_line", "send_bytes", "recv_line",
     "recv_all", "recv_bytes", "close", "restrict", "send", "fail",
 ];
 

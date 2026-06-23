@@ -77,6 +77,7 @@ const BUILTINS: &[&str] = &[
     "subdir",
     "exec",
     "connect",
+    "try_connect",
     "restrict",
     "send_line",
     "recv_line",

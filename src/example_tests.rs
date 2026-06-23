@@ -1465,6 +1465,56 @@ fn main(console: Console):
         handle.join().expect("server thread");
     }
 
+    /// `http.try_get` is fallible: a dial to an ALLOWLISTED-but-closed port
+    /// yields `Err(...)` rather than trapping — on BOTH backends. This is the
+    /// primitive that lets a proxy answer 502 for a down upstream instead of
+    /// aborting the VM. (A capability violation still traps; here the address is
+    /// permitted, so only the transient dial failure path is exercised.) The
+    /// closed port comes from binding then dropping a loopback listener, so the
+    /// address is well-formed and reachable-to-refuse, not merely unroutable.
+    #[test]
+    fn http_try_get_returns_err_on_closed_port() {
+        use crate::runtime::{Capabilities, Runtime};
+        // Bind to grab a free loopback port, then drop the listener so a connect
+        // is refused fast (RST) rather than hanging.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().unwrap().port();
+        let addr = format!("127.0.0.1:{port}");
+        drop(listener);
+
+        let src = format!(
+            "import http\nfn main(console: Console, net: Net):\n    match http.try_get(net, \"127.0.0.1\", {port}, \"/\"):\n        Ok(_) -> print(console, \"ok\")\n        Err(_) -> print(console, \"err\")\n"
+        );
+        let want = vec!["err".to_string()];
+        let module = parser::parse_module(&src).expect("parse");
+        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        typeck::check(&linked).expect("typecheck");
+        assert_eq!(
+            interpreter::run_module(linked.clone(), ".", vec![addr.clone()]).expect("interp"),
+            want,
+            "interpreter must report Err for a closed-port dial"
+        );
+        let bytes = codegen::compile_module_binary(&linked)
+            .expect("compile")
+            .expect("the binary path lowers this program");
+        let mut rt = Runtime::batch().expect("runtime");
+        let mut actor = rt
+            .spawn(
+                &bytes,
+                Capabilities {
+                    print: true,
+                    quiet: true,
+                    net_allow: Some(vec![addr]),
+                    net_connect: true,
+                    ..Default::default()
+                },
+                64,
+            )
+            .expect("spawn");
+        actor.run().expect("run");
+        assert_eq!(actor.output(), want, "compiled WASM must agree: Err, not a trap");
+    }
+
     /// Signing round-trips entirely in witchy: a host-granted `Secret`
     /// capability signs a message (`crypto.sign`), and `crypto.ed25519_verify`
     /// against the key's public half (`crypto.public_key`) accepts it. Without a

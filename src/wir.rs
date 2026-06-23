@@ -4230,6 +4230,16 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             uses_heap: false,
             uses_table: false,
         }),
+        // Fallible dial: returns the socket handle, or the `-1` sentinel on a
+        // failed connect (the codegen `try_connect` case wraps that as
+        // `Option(Socket)`'s `None`). A capability violation still traps host-side.
+        "net_try_connect" => Some(WirHelperSpec {
+            func: host_call_helper("net_try_connect", "net_try_connect", 2),
+            helper_deps: &[],
+            import_deps: &["net_try_connect"],
+            uses_heap: false,
+            uses_table: false,
+        }),
         "net_listen" => Some(WirHelperSpec {
             func: host_call_helper("net_listen", "net_listen", 2),
             helper_deps: &[],
