@@ -20,6 +20,16 @@ export interface Record {
 export interface IndexResp { names: string[]; }
 export interface VersionsResp { records: Record[]; }
 
+// A browse-oriented catalog entry: each rune's newest version, its state, and its
+// recomputed runtime footprint — so the index can show authority per rune.
+export interface CatalogEntry {
+  name: string;
+  version: string;
+  state: State;
+  runtime_footprint: string[];
+}
+export interface CatalogResp { runes: CatalogEntry[]; }
+
 // A source bundle: [relative path, UTF-8 text] pairs, content-hash-verified by coven.
 export type SourceFile = [string, string];
 export interface SourceResp { files: SourceFile[]; }

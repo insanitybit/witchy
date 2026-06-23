@@ -58,9 +58,9 @@ h2 {
 }
 h2::after { content: ""; flex: 1; height: 1px; background: linear-gradient(90deg, var(--border), transparent); }
 
-.rune-list, .version-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.6rem; }
+.rune-list, .version-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.5rem; }
 .rune-list li, .version-list li {
-  padding: 0.85rem 1.05rem;
+  padding: 0.7rem 0.95rem;
   background: linear-gradient(180deg, var(--card-2), var(--card));
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -72,6 +72,9 @@ h2::after { content: ""; flex: 1; height: 1px; background: linear-gradient(90deg
   transform: translateY(-1px);
   box-shadow: 0 2px 4px rgba(0,0,0,.45), 0 12px 30px rgba(120,90,200,.18);
 }
+.rune-row-head { display: flex; align-items: baseline; justify-content: space-between; gap: 0.75rem; }
+.rune-row .caps { margin-top: 0.5rem; }
+.count { margin: 0.2rem 0 0.7rem; font-size: 0.82rem; }
 .error { color: var(--rose); }
 .muted { color: var(--muted); }
 button.link {

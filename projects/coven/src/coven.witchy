@@ -93,6 +93,7 @@ fn serve(console: Console, net: Net, root: Dir, key: Secret, clock: Clock, args:
     let app = server.router()
         .get("/coven/rootpub", c.route_rootpub())
         .get("/coven/index", c.route_index())
+        .get("/coven/catalog", c.route_catalog())
         .get("/coven/versions", c.route_versions())
         .get("/coven/record", c.route_record())
         .get("/coven/source", c.route_source())
@@ -137,6 +138,17 @@ impl Coven:
 
     fn route_index(self) -> fn(Request) -> Response:
         fn(req: Request): server.send(200, .{names: coven_store.all_names(self.store)})
+
+    // A browse-oriented index: every rune with its newest version, that version's
+    // state, and its recomputed runtime footprint — so a UI can show authority
+    // (witchy's headline) per rune in one request, without N record fetches.
+    fn route_catalog(self) -> fn(Request) -> Response:
+        fn(req: Request):
+            var runes = []
+            for name in coven_store.all_names(self.store):
+                if let Some(r) = coven_store.latest_record(self.store, name):
+                    runes = list.push(runes, .{name: name, version: r.version, state: r.state, runtime_footprint: r.runtime_footprint})
+            server.send(200, .{runes: runes})
 
     fn route_versions(self) -> fn(Request) -> Response:
         fn(req: Request):

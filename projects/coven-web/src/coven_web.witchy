@@ -41,6 +41,7 @@ fn main(console: Console, net: Net, assets: Dir, key: Secret, clock: Clock, args
     // Read API reverse-proxy — one explicit route per allowlisted coven endpoint
     // (the route table IS the SSRF allowlist; query strings are forwarded verbatim).
     app = app.get("/api/coven/index", h_proxy(net, upstream, "/coven/index"))
+    app = app.get("/api/coven/catalog", h_proxy(net, upstream, "/coven/catalog"))
     app = app.get("/api/coven/versions", h_proxy(net, upstream, "/coven/versions"))
     app = app.get("/api/coven/record", h_proxy(net, upstream, "/coven/record"))
     app = app.get("/api/coven/source", h_proxy(net, upstream, "/coven/source"))

@@ -1,6 +1,6 @@
 // Same-origin client for the coven read API (proxied by coven-web). Names encode
 // `/` as `~` because coven does NO url-decoding (PLAN.md §4, src/pm/wire.rs:92).
-import type { IndexResp, VersionsResp, Record, Snapshot, Timestamp, SourceResp } from "./types";
+import type { IndexResp, CatalogResp, VersionsResp, Record, Snapshot, Timestamp, SourceResp } from "./types";
 
 export function wireName(n: string): string {
   return n.replace(/\//g, "~");
@@ -14,6 +14,10 @@ async function getJSON<T>(path: string): Promise<T> {
 
 export function getIndex(): Promise<IndexResp> {
   return getJSON<IndexResp>("/api/coven/index");
+}
+
+export function getCatalog(): Promise<CatalogResp> {
+  return getJSON<CatalogResp>("/api/coven/catalog");
 }
 
 export function getVersions(name: string): Promise<VersionsResp> {

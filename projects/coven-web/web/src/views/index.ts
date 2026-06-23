@@ -1,12 +1,13 @@
 import { clear, el, button } from "../dom";
-import { getIndex, getVersions, getSource } from "../api";
+import { getCatalog, getVersions, getSource } from "../api";
 import { mountSandbox } from "../sandbox";
 import { sampleSource } from "../sample";
 import type { Nav } from "../nav";
+import type { CatalogEntry } from "../types";
 
 export async function renderIndex(app: HTMLElement, nav: Nav): Promise<void> {
   try {
-    const { names } = await getIndex();
+    const { runes } = await getCatalog();
     clear(app);
     const topnav = el("div", { className: "topnav" });
     topnav.appendChild(button("Trust & integrity (TUF) →", () => nav.trust()));
@@ -15,29 +16,31 @@ export async function renderIndex(app: HTMLElement, nav: Nav): Promise<void> {
 
     const search = el("input", { className: "field search" });
     search.setAttribute("type", "search");
-    search.setAttribute("placeholder", "filter runes…");
-    search.setAttribute("aria-label", "filter runes");
+    search.setAttribute("placeholder", "filter by name or capability…");
+    search.setAttribute("aria-label", "filter runes by name or capability");
     app.appendChild(search);
 
+    const note = el("p", { className: "muted count" });
+    app.appendChild(note);
     const ul = el("ul", { className: "rune-list" });
     app.appendChild(ul);
-    const note = el("p", { className: "muted" });
-    app.appendChild(note);
 
     const renderList = (filter: string): void => {
       clear(ul);
       const f = filter.trim().toLowerCase();
-      const shown = names.filter((n) => n.toLowerCase().includes(f));
-      note.textContent = shown.length
-        ? ""
-        : names.length
-          ? "No runes match “" + filter + "”."
-          : "No runes published yet.";
-      for (const n of shown) {
-        const li = el("li");
-        li.appendChild(button(n, () => nav.rune(n)));
-        ul.appendChild(li);
-      }
+      // Search matches the rune name OR any capability in its footprint, so the
+      // box doubles as capability discovery ("which runes touch the network?").
+      const shown = runes.filter(
+        (r) =>
+          r.name.toLowerCase().includes(f) ||
+          r.runtime_footprint.some((c) => c.toLowerCase().includes(f)),
+      );
+      note.textContent = runes.length === 0
+        ? "No runes published yet."
+        : shown.length === runes.length
+          ? runes.length + " runes"
+          : shown.length + " of " + runes.length + " runes";
+      for (const r of shown) ul.appendChild(runeRow(r, nav));
     };
     search.addEventListener("input", () => renderList(search.value));
     renderList("");
@@ -49,11 +52,31 @@ export async function renderIndex(app: HTMLElement, nav: Nav): Promise<void> {
     app.appendChild(status);
     const box = el("div", { className: "sandbox-box" });
     app.appendChild(box);
-    void mountDemoSource(names, caption, box, status);
+    void mountDemoSource(runes.map((r) => r.name), caption, box, status);
   } catch (e) {
     clear(app);
     app.appendChild(el("p", { className: "error", text: "Failed to load registry: " + (e as Error).message }));
   }
+}
+
+// One rune as a card: name + version (state-colored) on top, its capability
+// footprint below — gold cap chips, or a green "no authority" badge for the
+// celebrated empty footprint. Authority is the headline, shown at a glance.
+function runeRow(r: CatalogEntry, nav: Nav): HTMLElement {
+  const li = el("li", { className: "rune-row" });
+  const head = el("div", { className: "rune-row-head" });
+  head.appendChild(button(r.name, () => nav.rune(r.name)));
+  head.appendChild(el("span", { className: "chip state-" + r.state, text: r.version + " · " + r.state }));
+  li.appendChild(head);
+
+  const caps = el("div", { className: "chips caps" });
+  if (r.runtime_footprint.length === 0) {
+    caps.appendChild(el("span", { className: "chip cap-none", text: "no authority" }));
+  } else {
+    for (const c of r.runtime_footprint) caps.appendChild(el("span", { className: "chip cap", text: c }));
+  }
+  li.appendChild(caps);
+  return li;
 }
 
 // Render a REAL published rune's source in the sandbox as the landing showcase —

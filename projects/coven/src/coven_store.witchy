@@ -116,6 +116,18 @@ pub fn latest_released_footprint(store: Dir, name: String, version: String) -> L
             Some(rec) -> rec.runtime_footprint
             None -> []
 
+// The highest-semver version's record (any state), or None if the rune has no
+// readable record — the catalog/browse view of a rune is its newest version.
+pub fn latest_record(store: Dir, name: String) -> Option(Record):
+    var best = ""
+    for v in versions_of(store, name):
+        if string.is_empty(best) || version_newer(v, best):
+            best = v
+    if string.is_empty(best):
+        None
+    else:
+        read_record_typed(store, name, best)
+
 fn version_newer(a: String, b: String) -> Bool:
     match semver.parse(a):
         Ok(va) ->
