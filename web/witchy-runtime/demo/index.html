@@ -122,6 +122,39 @@
     #covenbrowser pre.coven-source span.str { color: #a6e3a1; }
     #covenbrowser pre.coven-source span.com { color: #6c7086; font-style: italic; }
     #covenbrowser pre.coven-source span.num { color: #fab387; }
+    /* The detail view's TRUST PANEL (coven-web's security headline): the signature
+       badge (green verified / red unverified), the TUF freshness line, and the
+       provenance line. Every value is a witchy text(...) leaf — inert by construction. */
+    #covenbrowser .trust-panel {
+      margin: 0.6rem 0;
+      padding: 0.6rem 0.85rem;
+      border: 1px solid #d8d8e0;
+      border-radius: 8px;
+      background: #fbfbfd;
+    }
+    #covenbrowser .trust-panel .trust-sig { margin-bottom: 0.35rem; }
+    #covenbrowser .trust-ok {
+      display: inline-block;
+      padding: 0.1rem 0.55rem;
+      border-radius: 999px;
+      background: #e6f6e6;
+      color: #1f7a1f;
+      border: 1px solid #bfe3bf;
+      font-size: 0.85rem;
+      font-weight: 600;
+    }
+    #covenbrowser .trust-warn {
+      display: inline-block;
+      padding: 0.1rem 0.55rem;
+      border-radius: 999px;
+      background: #fde8e8;
+      color: #9a2a2a;
+      border: 1px solid #f3c0c0;
+      font-size: 0.85rem;
+      font-weight: 600;
+    }
+    #covenbrowser .trust-tuf,
+    #covenbrowser .trust-prov { color: #4a4a55; font-size: 0.8rem; }
     .note { color: #6c7086; font-size: 0.85rem; }
     code.inline { background: #eee; padding: 0 0.3em; border-radius: 3px; }
     #status { font-size: 0.85rem; }

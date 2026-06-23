@@ -41,11 +41,26 @@ import list
 // Model + Msg.
 // ---------------------------------------------------------------------------
 
-// One rune in the catalog: its registry name, published version, declared
-// capability footprint (an EMPTY list is the celebrated "no capabilities" state),
-// and its full source text (highlighted in the detail view).
+// One rune in the catalog. The first four fields are the registry record proper;
+// the last three are its TRUST/PROVENANCE state, surfaced in the detail's trust
+// panel (the coven-web security headline, PLAN WS-G):
+//   * name        — the rune's registry name
+//   * version     — its published version
+//   * caps        — declared capability footprint (an EMPTY list is the celebrated
+//                   "no capabilities" state)
+//   * src         — its full source text (highlighted in the detail view)
+//   * verified    — the SIGNATURE state: `true` when the published artifact's
+//                   signature checks out against the rune's trusted key, `false`
+//                   when it is unsigned / fails verification (the warning state)
+//   * freshness   — the TUF metadata freshness line, e.g.
+//                   "snapshot v42, timestamp fresh" — a human summary of the
+//                   repository's TUF snapshot/timestamp state for this rune
+//   * provenance  — how the artifact was vouched for, e.g.
+//                   "trusted-publisher | issuer=ci@acme". This is an UNTRUSTED
+//                   registry-supplied string and so flows through a `text(...)`
+//                   leaf in the trust panel — a hostile provenance is inert text.
 type Rune:
-    Rune(String, String, List(String), String)
+    Rune(String, String, List(String), String, Bool, String, String)
 
 // The whole app state: the catalog of runes and the selected index. `selected` is
 // `-1` for the INDEX view (nothing selected) or a valid index into `runes` for the
@@ -76,23 +91,37 @@ fn no_selection() -> Int:
 
 fn catalog() -> List(Rune):
     [
+        // VERIFIED: signature checks out, TUF metadata is fresh, trusted publisher.
         Rune(
             "acme/widget",
             "1.2.0",
             ["Net", "Dir", "Clock"],
             "// acme/widget — fetches and renders a remote widget.\nfn main(net: Net):\n    let body = http.get(net, \"https://acme.test/widget\")\n    print(body)",
+            true,
+            "snapshot v42, timestamp fresh",
+            "trusted-publisher | issuer=ci@acme",
         ),
+        // VERIFIED + the celebrated EMPTY footprint.
         Rune(
             "glamour/view",
             "0.1.0",
             [],
             "// glamour/view — a footprint-EMPTY view rune.\nfn view(count: Int) -> VNode(Msg):\n    html\"<span>\${count}</span>\"",
+            true,
+            "snapshot v42, timestamp fresh",
+            "trusted-publisher | issuer=witchy-core",
         ),
+        // UNVERIFIED: unsigned artifact, stale TUF metadata, and a HOSTILE
+        // provenance string (carries `<script>`) — the XSS probe for the trust
+        // panel. It must render as inert text, never a real element.
         Rune(
             "evil/inject",
             "6.6.6",
             ["Exec"],
             "// evil/inject — tries to smuggle markup through the highlighter.\nfn payload() -> String:\n    let s = \"<script>alert(1)</script>\"\n    s",
+            false,
+            "snapshot v17, timestamp STALE",
+            "unverified | <script>alert('provenance')</script>",
         ),
     ]
 
@@ -138,18 +167,19 @@ fn index_view(runes: List(Rune)) -> VNode(Msg):
 // dispatches `Show(i)` on click. Reuses `card_body` (the shared runecard structure).
 fn index_card(r: Rune, idx: Int) -> VNode(Msg):
     match r:
-        Rune(name, version, caps, _src) ->
+        Rune(name, version, caps, _src, _verified, _freshness, _provenance) ->
             glamour.element(
                 "div",
                 [glamour.prop("class", "rune-card"), glamour.on("click", Show(idx))],
                 card_body(name, version, caps, "click to inspect"),
             )
 
-// The DETAIL: the selected rune's card (NOT clickable here) PLUS its highlighted
-// source PLUS a back button. The back button dispatches `Back` (detail -> index).
+// The DETAIL: a COMPLETE coven page for the selected rune — the back button, the
+// rune card (NOT clickable here), the TRUST PANEL (signature + TUF freshness +
+// provenance — the coven-web security headline), then its highlighted source.
 fn detail_view(r: Rune) -> VNode(Msg):
     match r:
-        Rune(name, version, caps, src) ->
+        Rune(name, version, caps, src, verified, freshness, provenance) ->
             let back = glamour.element(
                 "button",
                 [glamour.prop("class", "coven-back"), glamour.on("click", Back)],
@@ -160,12 +190,58 @@ fn detail_view(r: Rune) -> VNode(Msg):
                 [glamour.prop("class", "rune-card")],
                 card_body(name, version, caps, "source"),
             )
+            let trust = trust_panel(verified, freshness, provenance)
             let source = highlight(src)
             glamour.element(
                 "div",
                 [glamour.prop("class", "coven-detail")],
-                [back, card, source],
+                [back, card, trust, source],
             )
+
+// ---------------------------------------------------------------------------
+// The TRUST PANEL — the detail view's security headline (coven-web, PLAN WS-G).
+// A `<div class="trust-panel">` with three lines, each built from glamour
+// BUILDERS so every untrusted value flows through a `text(...)` leaf:
+//   * the SIGNATURE badge — `<span class="trust-ok">✓ signature verified</span>`
+//     when `verified`, else `<span class="trust-warn">⚠ unverified</span>`. The
+//     badge is the at-a-glance "should I trust this rune?" signal.
+//   * the TUF FRESHNESS line — the snapshot/timestamp summary; a registry-supplied
+//     string rendered as inert text.
+//   * the PROVENANCE line — how the artifact was vouched for; an UNTRUSTED string,
+//     so a hostile `<script>` in it renders as the inert characters `&lt;script&gt;`,
+//     never a real element. That XSS-immunity is the whole point of routing it
+//     through `text(...)` rather than an HTML-string sink.
+// ---------------------------------------------------------------------------
+fn trust_panel(verified: Bool, freshness: String, provenance: String) -> VNode(Msg):
+    let badge =
+        if verified:
+            glamour.element(
+                "span",
+                [glamour.prop("class", "trust-ok")],
+                [glamour.text("✓ signature verified")],
+            )
+        else:
+            glamour.element(
+                "span",
+                [glamour.prop("class", "trust-warn")],
+                [glamour.text("⚠ unverified")],
+            )
+    let sig_line = glamour.element("div", [glamour.prop("class", "trust-sig")], [badge])
+    let tuf_line = glamour.element(
+        "div",
+        [glamour.prop("class", "trust-tuf")],
+        [glamour.text("TUF: " + freshness)],
+    )
+    let prov_line = glamour.element(
+        "div",
+        [glamour.prop("class", "trust-prov")],
+        [glamour.text("provenance: " + provenance)],
+    )
+    glamour.element(
+        "div",
+        [glamour.prop("class", "trust-panel")],
+        [sig_line, tuf_line, prov_line],
+    )
 
 // ---------------------------------------------------------------------------
 // The runecard CARD STRUCTURE, reused (mirrors runecard.witchy's `card`/`cap_row`/
