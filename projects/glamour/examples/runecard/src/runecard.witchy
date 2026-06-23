@@ -1,0 +1,136 @@
+// runecard — a coven "rune card" VIEW built on glamour (RFC-0008): the project's
+// OWN capability-footprint model, rendered by a witchy program in the browser.
+// Given a rune's published metadata as JSON, it produces a glamour `VNode` card —
+// the name, version, a row of capability BADGES, and a provenance line — that a
+// capability-holding host shell diffs into the DOM. There are no events (a card is
+// a pure render), so the rune has no `Msg` and emits no `on` bindings.
+//
+// SECURITY: every metadata field (name, version, each capability, provenance)
+// flows through glamour's `text(...)` node, never an HTML-string sink, so a
+// hostile `name` of `<script>…` renders as the inert characters `&lt;script&gt;`
+// and never a real script node. That XSS-immunity-by-construction is the same
+// property the highlighter proves; here it guards an UNTRUSTED registry record.
+//
+// The single JS-callable entry is `export_render` (the `export_` prefix marks it a
+// `String -> String` WASM export). The host calls it with one metadata object and
+// gets back the VNode tree as JSON (glamour's `to_json`). The rune holds NO
+// capability — `witchy caps .../runecard.witchy` reports `export_render (none)`.
+// That empty footprint is itself the thing this card celebrates: a rune that asks
+// for nothing.
+
+import glamour
+import json
+import list
+
+// ---------------------------------------------------------------------------
+// The metadata WIRE SHAPE. `export_render` is called with a single JSON object:
+//
+//   {
+//     "name":       "acme/widget",                 // the rune's registry name
+//     "version":    "1.2.0",                        // its published version
+//     "caps":       ["Net", "Dir"],                 // declared capability footprint
+//     "provenance": "trusted-publisher | issuer=…"  // how it was vouched for
+//   }
+//
+// `caps` is the load-bearing field: a NON-empty array renders one badge per
+// capability; an EMPTY array (or an absent `caps` key) renders the celebrated
+// "no capabilities" state — the empty footprint witchy is built to reward. Every
+// field is optional; a missing string field falls back to a sane placeholder so a
+// partial record still renders a (clearly-labelled) card rather than an error.
+// ---------------------------------------------------------------------------
+
+// A render-only rune has no DOM events, so no app message. `to_json` still wants a
+// `msg_to_json: fn(msg) -> Json`, so a trivial one-variant `Msg` with a
+// hand-written serializer satisfies the signature — no `on` binding ever carries a
+// `Msg`, so the serializer is never actually reached.
+type Msg:
+    NoMsg
+
+fn msg_to_json(m: Msg) -> Json:
+    match m:
+        NoMsg -> JsonNull
+
+// ---------------------------------------------------------------------------
+// The view — metadata to a VNode card, built with glamour's VNode BUILDERS
+// (`element`/`text`/`prop`). A loop over a capability list is exactly the dynamic
+// shape builders fit (the `html` tag fits static structure). The card is a single
+// `<div class="rune-card">` holding, in order:
+//   * `<h3 class="rune-name">name</h3>`           — the rune's name as a heading
+//   * `<div class="rune-version">version</div>`   — its version
+//   * `<div class="cap-row">…badges…</div>`       — the capability footprint
+//   * `<div class="rune-provenance">prov</div>`   — the provenance line
+// Every text leaf is a `text(...)` node, so no field can ever form markup.
+// ---------------------------------------------------------------------------
+
+fn card(name: String, version: String, caps: List(String), provenance: String) -> VNode(Msg):
+    let heading = glamour.element("h3", [glamour.prop("class", "rune-name")], [glamour.text(name)])
+    let ver = glamour.element(
+        "div",
+        [glamour.prop("class", "rune-version")],
+        [glamour.text("v" + version)],
+    )
+    let caps_row = cap_row(caps)
+    let prov = glamour.element(
+        "div",
+        [glamour.prop("class", "rune-provenance")],
+        [glamour.text(provenance)],
+    )
+    glamour.element(
+        "div",
+        [glamour.prop("class", "rune-card")],
+        [heading, ver, caps_row, prov],
+    )
+
+// The capability row. A NON-empty footprint becomes one `<span class="cap-badge">`
+// per declared capability. An EMPTY footprint becomes a SINGLE distinct
+// `<span class="cap-none">no capabilities</span>` — the state witchy celebrates,
+// given its own class so the shell can style it as a reward rather than a warning.
+fn cap_row(caps: List(String)) -> VNode(Msg):
+    if list.is_empty(caps):
+        let none_badge = glamour.element(
+            "span",
+            [glamour.prop("class", "cap-none")],
+            [glamour.text("no capabilities")],
+        )
+        glamour.element("div", [glamour.prop("class", "cap-row")], [none_badge])
+    else:
+        var badges: List(VNode(Msg)) = []
+        for c in caps:
+            badges = list.push(badges, cap_badge(c))
+        glamour.element("div", [glamour.prop("class", "cap-row")], badges)
+
+// One capability badge — `<span class="cap-badge">Net</span>`. The capability name
+// is a `text(...)` leaf, so even a malformed/hostile cap string is inert.
+fn cap_badge(name: String) -> VNode(Msg):
+    glamour.element("span", [glamour.prop("class", "cap-badge")], [glamour.text(name)])
+
+// ---------------------------------------------------------------------------
+// The JS-callable export. Parse the metadata object, build the card, and return
+// the VNode tree as JSON via glamour's `to_json` (no MVU loop / no msgs — a card is
+// render-only). On invalid JSON it returns an `{"error"}` object the host surfaces,
+// matching glamour's run-loop convention. Each field defaults gracefully so a
+// partial record still renders a card.
+// ---------------------------------------------------------------------------
+
+pub fn export_render(input: String) -> String:
+    match json.decode(input):
+        Err(e) -> json.encode(JsonObject([("error", JsonString(e))]))
+        Ok(doc) ->
+            let name = field_or(doc, "name", "(unnamed rune)")
+            let version = field_or(doc, "version", "0.0.0")
+            let caps = json.get_strings(doc, "caps")
+            let provenance = field_or(doc, "provenance", "unverified")
+            let tree = card(name, version, caps, provenance)
+            glamour.to_json(tree, msg_to_json)
+
+// A string field, or a fallback when the key is absent or not a string.
+fn field_or(doc: Json, key: String, fallback: String) -> String:
+    match json.get_string(doc, key):
+        Some(s) -> s
+        None -> fallback
+
+// A `main` so the rune also runs as a CLI program (and the compiled module gets a
+// `run` export): render a tiny sample card and print the wire JSON.
+fn main(console: Console):
+    let sample = "{\"name\": \"acme/widget\", \"version\": \"1.2.0\", \"caps\": [\"Net\", \"Dir\"], \"provenance\": \"trusted-publisher | issuer=ci@acme\"}"
+    print(console, export_render(sample) + "\n")

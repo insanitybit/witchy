@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# build.sh — compile the two glamour example runes to footprint-empty WASM for the
-# real-browser demo. Both runes `import glamour`, so the compiler must see
+# build.sh — compile the glamour example runes to footprint-empty WASM for the
+# real-browser demo. Each rune `import glamour`, so the compiler must see
 # `glamour.witchy` as a resolvable sibling; we stage each rune next to a copy of
 # glamour in a scratch dir (exactly what the headless tests do), compile with the
 # DEBUG witchy binary, and drop the `.wasm` into this `demo/` directory.
 #
 # Usage:  ./build.sh        (run from web/witchy-runtime/demo/)
-# Output: demo/counter.wasm, demo/highlighter.wasm
+# Output: demo/counter.wasm, demo/highlighter.wasm, demo/runecard.wasm
 set -euo pipefail
 
 # Resolve paths relative to this script so it works from any CWD.
@@ -39,5 +39,7 @@ compile_rune counter \
   "$REPO/projects/glamour/examples/counter/src/counter.witchy"
 compile_rune highlighter \
   "$REPO/projects/glamour/examples/highlighter/src/highlighter.witchy"
+compile_rune runecard \
+  "$REPO/projects/glamour/examples/runecard/src/runecard.witchy"
 
 echo "build.sh: done. Serve with:  (cd $REPO/web/witchy-runtime && python3 -m http.server 8099)  then open /demo/"

@@ -52,6 +52,45 @@
     #highlight span.str { color: #a6e3a1; }
     #highlight span.com { color: #6c7086; font-style: italic; }
     #highlight span.num { color: #fab387; }
+    /* The runecard rune emits <div class="rune-card"> nodes: a name heading, a
+       version line, a row of capability badges (or the celebrated cap-none
+       state), and a provenance line. Styling is the SHELL's job; the rune is pure. */
+    .rune-card {
+      border: 1px solid #d8d8e0;
+      border-radius: 8px;
+      padding: 0.75rem 1rem;
+      margin: 0.6rem 0;
+      background: #fff;
+    }
+    .rune-card .rune-name {
+      margin: 0 0 0.1rem;
+      font-size: 1rem;
+      font-family: "SF Mono", Menlo, Consolas, monospace;
+    }
+    .rune-card .rune-version { color: #6c7086; font-size: 0.85rem; }
+    .rune-card .cap-row { margin: 0.5rem 0; display: flex; flex-wrap: wrap; gap: 0.35rem; }
+    .rune-card .cap-badge {
+      display: inline-block;
+      padding: 0.1rem 0.5rem;
+      border-radius: 999px;
+      background: #fde8e8;
+      color: #9a2a2a;
+      border: 1px solid #f3c0c0;
+      font-size: 0.8rem;
+      font-weight: 600;
+    }
+    /* The empty footprint — witchy's headline reward — gets its own green badge. */
+    .rune-card .cap-none {
+      display: inline-block;
+      padding: 0.1rem 0.5rem;
+      border-radius: 999px;
+      background: #e6f6e6;
+      color: #1f7a1f;
+      border: 1px solid #bfe3bf;
+      font-size: 0.8rem;
+      font-weight: 600;
+    }
+    .rune-card .rune-provenance { color: #4a4a55; font-size: 0.8rem; }
     .note { color: #6c7086; font-size: 0.85rem; }
     code.inline { background: #eee; padding: 0 0.3em; border-radius: 3px; }
     #status { font-size: 0.85rem; }
@@ -84,6 +123,21 @@
       <code class="inline">&lt;script&gt;</code>. The rune routes every token
       through a <code class="inline">text(...)</code> node, so the script tag
       renders as four inert characters — never a real element.
+    </p>
+  </div>
+
+  <h2>3. Rune cards (coven's capability footprint, rendered by a witchy rune)</h2>
+  <div class="card">
+    <div id="runecard" data-demo="runecard"><!-- VNode→DOM render here --></div>
+    <p class="note">
+      witchy's OWN capability-footprint model, displayed by a footprint-empty
+      witchy rune. Each registry record (name, version, declared
+      <code class="inline">caps</code>, provenance) becomes a card: a red badge per
+      capability, or a green <code class="inline">cap-none</code> badge for the
+      celebrated <em>empty</em> footprint. The last record's name is a literal
+      <code class="inline">&lt;script&gt;</code> — it routes through a
+      <code class="inline">text(...)</code> node, so it renders as inert text, never
+      a real element.
     </p>
   </div>
 

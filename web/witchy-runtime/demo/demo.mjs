@@ -109,16 +109,68 @@ async function main() {
   const realScripts = highlightEl.querySelectorAll("script").length;
   const scriptAsText = highlightEl.textContent.includes("<script>");
 
+  // --- 3. Rune cards --------------------------------------------------------
+  // The runecard rune renders coven's capability-footprint model. We call its
+  // `export_render({...metadata})` per sample record and render each returned
+  // VNode card with the SAME createElement/textContent walk (never innerHTML).
+  const runecardEl = document.getElementById("runecard");
+  const runecardBytes = await fetchWasm("runecard");
+  const { callString: callRunecard } = await instantiate(runecardBytes);
+
+  // Three records that exercise the card's three interesting states:
+  //   1. a normal rune with a NON-empty footprint  -> red cap-badge per capability
+  //   2. a footprint-EMPTY rune                     -> the green cap-none state
+  //   3. a HOSTILE name containing <script>         -> must render as inert text
+  const records = [
+    {
+      name: "acme/widget",
+      version: "1.2.0",
+      caps: ["Net", "Dir", "Clock"],
+      provenance: "trusted-publisher | issuer=ci@acme",
+    },
+    {
+      name: "glamour/view",
+      version: "0.1.0",
+      caps: [],
+      provenance: "trusted-publisher | issuer=witchy-core",
+    },
+    {
+      name: "<script>alert(1)</script>",
+      version: "6.6.6",
+      caps: ["Exec"],
+      provenance: "unverified | <img src=x onerror=alert(2)>",
+    },
+  ];
+
+  for (const rec of records) {
+    const out = callRunecard("__export_export_render", JSON.stringify(rec));
+    const tree = JSON.parse(out);
+    if (tree.error) {
+      throw new Error(`runecard returned an error: ${tree.error}`);
+    }
+    runecardEl.appendChild(renderVNode(tree));
+  }
+
+  // Inspection summary for the Playwright run.
+  const cardCount = runecardEl.querySelectorAll(".rune-card").length;
+  const capBadgeCount = runecardEl.querySelectorAll(".cap-badge").length;
+  const capNoneCount = runecardEl.querySelectorAll(".cap-none").length;
+  const cardScripts = runecardEl.querySelectorAll("script").length;
+  const cardScriptAsText = runecardEl.textContent.includes("<script>");
+
   window.__demo = {
     count: () => counterEl.querySelector("span")?.textContent,
     model: () => app.getModel(),
     highlight: { kwCount, strCount, comCount, realScripts, scriptAsText },
+    runecard: { cardCount, capBadgeCount, capNoneCount, cardScripts, cardScriptAsText },
   };
 
   setStatus(
     `ready — counter=${counterEl.querySelector("span")?.textContent}, ` +
     `highlight: ${kwCount} kw / ${strCount} str / ${comCount} com spans, ` +
-    `real <script> elements=${realScripts}, "<script>" present as text=${scriptAsText}`,
+    `real <script> elements=${realScripts}, "<script>" present as text=${scriptAsText}; ` +
+    `runecard: ${cardCount} cards / ${capBadgeCount} cap-badges / ${capNoneCount} cap-none, ` +
+    `real <script> elements=${cardScripts}, "<script>" present as text=${cardScriptAsText}`,
   );
 }
 
