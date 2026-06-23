@@ -57,8 +57,19 @@ fn keywords() -> List(String):
     [
         "fn", "let", "var", "if", "else", "match", "type", "import", "pub",
         "for", "while", "return", "in", "where", "derive", "and", "or", "not",
-        "true", "false",
+        "true", "false", "async", "await", "spawn", "comptime", "gen", "yield",
+        "as", "capability", "from", "test",
     ]
+
+// witchy's host capabilities — the unforgeable authority a rune may hold. The
+// highlighter gives them their OWN class (`cap`) so a reader's eye lands on
+// exactly the tokens that carry authority — fitting for coven-web, whose whole
+// job is making a rune's capability footprint visible.
+fn is_capability(word: String) -> Bool:
+    list.contains(capabilities(), word)
+
+fn capabilities() -> List(String):
+    ["Console", "Clock", "Env", "Secret", "SecretStore", "Dir", "Net", "Exec"]
 
 // Scan the whole source into a flat list of classed tokens.
 fn tokenize(src: String) -> List(Token):
@@ -87,7 +98,7 @@ fn tokenize(src: String) -> List(Token):
                 else:
                     if is_ident_start(c):
                         let (word, j) = read_ident(cs, i, n)
-                        let kind = if is_keyword(word): "kw" else: ""
+                        let kind = if is_keyword(word): "kw" else if is_capability(word): "cap" else: ""
                         toks = list.push(toks, Tok(kind, word))
                         i = j
                     else:
