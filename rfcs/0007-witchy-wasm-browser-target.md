@@ -1,10 +1,20 @@
 ---
 rfc: 0007
 title: "witchy-WASM in the browser: a pure-compute target"
-status: proposed        # proposed | planned | implemented | rejected | superseded
+status: implemented     # proposed | planned | implemented | rejected | superseded
 created: 2026-06-22
 superseded-by:
-tracking:
+tracking: |
+  Shipped 2026-06-22 (commit bfc7655). The JS host-import shim
+  (web/witchy-runtime/witchy-runtime.mjs) runs witchyc-compiled WASM with the
+  "witchy" ABI: it provides the pure-compute imports and DENIES capabilities by
+  OMISSION — imports are tree-shaken, so a footprint-empty rune instantiates and a
+  capability-using rune fails with a LinkError (proven by spike.mjs in node;
+  tests/browser_shim.rs). The ABI is a stabilized contract in spec/wasm-abi.md
+  (version 1). A String->String export ABI (__galloc + __export_<name>, codegen)
+  was added under RFC-0008 (commit de0c68e) for the framework loop. DEFERRED +
+  flagged (this RFC's Future work): a browser DOM/host capability — not needed
+  while WASM stays pure-compute and the JS shell drives the DOM.
 ---
 
 # RFC-0007: witchy-WASM in the browser: a pure-compute target

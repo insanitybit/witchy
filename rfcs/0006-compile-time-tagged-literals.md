@@ -1,10 +1,22 @@
 ---
 rfc: 0006
 title: Compile-time tagged literals
-status: proposed        # proposed | planned | implemented | rejected | superseded
+status: implemented     # proposed | planned | implemented | rejected | superseded
 created: 2026-06-22
 superseded-by:
-tracking:
+tracking: |
+  Shipped 2026-06-22 (commits 0476584 core mechanism, e56ae24 reachability fix).
+  The `tag"…"` surface (lexer/parser/AST) + the expand-before-codegen pass
+  (src/tagged.rs, pruned to items REACHABLE FROM THE TAG so a tag-bearing consumer
+  function doesn't recurse) + fmt rendering landed, differential-tested on both
+  backends. Built on witchy's source-emitting comptime model — a tag is
+  `fn(parts: List(String), holes: List(String)) -> String` returning expression
+  source — NOT a separate AST-reflection subsystem (the consistency is the point).
+  Documented in spec/language.md §8. DEFERRED + flagged: column-accurate mapping of
+  a type error back INTO the literal (errors name the tag and show the generated
+  source; full in-literal spans are future work), and LSP highlighting of embedded
+  grammars (a separate tooling lift). The headline `html` tag lives in the glamour
+  rune (RFC-0008).
 ---
 
 # RFC-0006: Compile-time tagged literals

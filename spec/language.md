@@ -523,6 +523,43 @@ fn main(console: Console):
     print(console, "${lucky_0()} ${lucky_1()} ${lucky_2()}")
 ```
 
+### Tagged literals — compile-time `tag"…"`
+
+A string literal written **immediately after an identifier**, `tag"a${x}b"`, is a
+*tagged literal*. It is expanded **at compile time**, like `comptime:`, but in
+**expression** position: the lexer splits the literal into its static fragments
+and its `${…}` hole sources, and the compiler calls the `tag` function
+
+```text
+fn tag(parts: List(String), holes: List(String)) -> String
+```
+
+with `parts` = the static fragments and `holes` = each hole's **source text**. The
+tag returns witchy **expression source**, which is parsed and **spliced** over the
+literal before type checking — so both backends compile the same AST, and the tag
+itself runs once, in the compiler. The tag is an ordinary function (it may be
+local or imported); only the items reachable from it run at expansion time.
+
+Because a tag emits *code*, interpolation holes are typed **by position** (the
+spliced expression is type-checked normally) and there is no runtime string
+parser. The `html` tag in the `glamour` rune uses this: a `${userInput}` in text
+position expands to a `text(…)` **node**, never markup, so it is XSS-immune by
+construction.
+
+```witchy
+import list
+
+// A tag: it receives the static parts and the hole sources, and returns witchy
+// expression source. `holes[0]` is the *source* of the first `${…}` ("name"),
+// resolved at the call site after splicing.
+fn greet(parts: List(String), holes: List(String)) -> String:
+    "\"Hello, \" + " + list.at(holes, 0)
+
+fn main(console: Console):
+    let name = "witch"
+    print(console, greet"hi ${name}")
+```
+
 ## 9. Errors, `Option`/`Result`, and failure
 
 witchy has no exceptions. Expected failure is a value:

@@ -1,10 +1,23 @@
 ---
 rfc: 0008
 title: A capability-pure frontend framework (MVU over VNode)
-status: proposed        # proposed | planned | implemented | rejected | superseded
+status: implemented     # proposed | planned | implemented | rejected | superseded
 created: 2026-06-22
 superseded-by:
-tracking: "projects/coven-web/PLAN.md — workstream WS-I (the build milestone for this design)"
+tracking: |
+  Shipped 2026-06-22 (commits 0783c22 VNode + html tag, de0c68e run-loop + DOM
+  shell + String->String export ABI, e56ae24 html end-to-end, 3a7642a effects-as-
+  data). The glamour rune (projects/glamour, EMPTY footprint) provides VNode(msg)/
+  Attr(msg)/Cmd(msg), the compile-time `html` tag (XSS-immune — text holes become
+  text nodes), to_json, and step_with (the MVU engine). The JS host shell
+  (web/witchy-runtime/glamour-dom.mjs) diffs VNode->DOM via createElement/
+  textContent/setAttribute ONLY, routes events back as Msg values, and interprets
+  Cmd — a timer After(ms,msg) the capability-holding shell performs while the rune
+  only describes it. counter + autocounter demos with headless DOM tests. Build
+  milestone: projects/coven-web/PLAN.md WS-I (the coven-web integration is owned
+  separately). REFINEMENTS from implementation: the msg serializer is passed as
+  fn(msg)->Json (threading Reflect through nested generics defeated
+  monomorphization); Cmd.None renamed NoCmd (Option.None collision).
 ---
 
 # RFC-0008: A capability-pure frontend framework (MVU over VNode)
