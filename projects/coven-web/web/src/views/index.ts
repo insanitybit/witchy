@@ -1,5 +1,5 @@
 import { clear, el, button } from "../dom";
-import { getIndex } from "../api";
+import { getIndex, getVersions, getSource } from "../api";
 import { mountSandbox } from "../sandbox";
 import { sampleSource } from "../sample";
 import type { Nav } from "../nav";
@@ -42,14 +42,45 @@ export async function renderIndex(app: HTMLElement, nav: Nav): Promise<void> {
     search.addEventListener("input", () => renderList(search.value));
     renderList("");
 
-    app.appendChild(el("h2", { text: "Source viewer (sandbox demo)" }));
+    app.appendChild(el("h2", { text: "Source viewer (sandboxed)" }));
+    const caption = el("p", { className: "muted", text: "loading a published rune…" });
+    app.appendChild(caption);
     const status = el("p", { className: "muted", id: "sandbox-status", text: "loading sandbox…" });
     app.appendChild(status);
     const box = el("div", { className: "sandbox-box" });
     app.appendChild(box);
-    void mountSandbox(box, sampleSource("acme/money", "2.0.0"), status);
+    void mountDemoSource(names, caption, box, status);
   } catch (e) {
     clear(app);
     app.appendChild(el("p", { className: "error", text: "Failed to load registry: " + (e as Error).message }));
   }
+}
+
+// Render a REAL published rune's source in the sandbox as the landing showcase —
+// the same opaque-origin, network-firewalled frame the version page uses, so the
+// front page proves the pipeline end-to-end on live, hash-verified data. Falls
+// back to a static sample only if the registry is empty or no source loads.
+async function mountDemoSource(
+  names: string[],
+  caption: HTMLElement,
+  box: HTMLElement,
+  status: HTMLElement,
+): Promise<void> {
+  for (const name of names) {
+    try {
+      const { records } = await getVersions(name);
+      const rec = records.find((r) => r.state === "released") ?? records[0];
+      if (!rec) continue;
+      const { files } = await getSource(name, rec.version);
+      const file = files.find(([p]) => p.startsWith("src/")) ?? files[0];
+      if (!file) continue;
+      caption.textContent = name + " @ " + rec.version + " · " + file[0];
+      void mountSandbox(box, file[1], status);
+      return;
+    } catch {
+      // Registry hiccup for this rune — try the next one.
+    }
+  }
+  caption.textContent = "no published source yet — showing a static sample";
+  void mountSandbox(box, sampleSource("acme/money", "2.0.0"), status);
 }
