@@ -2813,3 +2813,193 @@ fn witchy_pm_add_build_run_consumes_a_fetched_rune() {
 
     let _ = std::fs::remove_dir_all(&base);
 }
+
+/// RFC-0008's final acceptance criterion — "the framework rune is published to
+/// coven as the proof" — end to end with the real `projects/glamour` source as
+/// the payload. The glamour view layer is a capability-pure (empty-footprint)
+/// frontend rune (`VNode`/`Attr`/`Cmd` + the compile-time `html` tag); this test
+/// proves it DISTRIBUTES like any footprint-empty rune AND that its `html` tag
+/// works against a registry-fetched copy:
+///   1. Stage the committed glamour source under a NAMESPACED name (`aegis/glamour`)
+///      and `publish` (trusted CI token) + `promote` (distinct human) it.
+///   2. The registry RECOMPUTES the footprint server-side from source and signs
+///      it into the record — independent of what the manifest declared. We assert
+///      that recomputed `runtime_footprint` is EMPTY (the publish body and the
+///      `/coven/record` fetch both show `runtime_footprint` with no entries). That
+///      machine-checked empty footprint IS the proof, not a claim.
+///   3. A PURE consumer app (no declared capabilities) `add`s the published
+///      glamour WITHOUT any `--allow-cap` consent — corroborating the empty
+///      footprint, since an honestly-footprinted rune that demanded a capability
+///      would gate. It then BUILDS and RUNS an app that `import`s the fetched
+///      glamour and uses the `html` tag in a non-`main` `view`, proving the whole
+///      stack through the registry: publish → fetch → compile (tag expansion over
+///      the vendored glamour) → run. We assert the rendered HTML.
+#[test]
+fn glamour_publishes_to_coven_empty_footprint_and_renders_through_html() {
+    let server = RegistryServer::start();
+    let base = unique("glamour-proof");
+
+    // (1) Stage the REAL committed glamour source under a namespaced name. coven
+    // requires `namespace/name`, so we vendor `projects/glamour/src/glamour.witchy`
+    // verbatim under an `aegis/glamour` manifest (the module/import name stays
+    // `glamour`). The manifest declares an empty runtime footprint; the registry
+    // recomputes it from source regardless (asserted below).
+    let lib = base.join("glamour");
+    std::fs::create_dir_all(lib.join("src")).unwrap();
+    let glamour_src = Path::new(env!("CARGO_MANIFEST_DIR")).join("projects/glamour/src/glamour.witchy");
+    std::fs::copy(&glamour_src, lib.join("src/glamour.witchy")).expect("copy committed glamour source");
+    std::fs::write(
+        lib.join("witchy.toml"),
+        "[rune]\nname = \"aegis/glamour\"\nversion = \"0.1.0\"\n\n[capabilities]\nruntime = []\n\n[dependencies]\n",
+    )
+    .unwrap();
+
+    // (2) Publish (trusted CI) — the server recomputes the footprint from source
+    // (independent of the manifest) and signs it into the staged record. The
+    // front-end's publish output is a summary line, so the recomputed footprint is
+    // asserted off the signed record below (via `/coven/record`), not here.
+    let ci = server.ci_token("aegis/glamour-repo", "release.yml");
+    let pubd = Command::new(BIN)
+        .current_dir(&base)
+        .args(["pm", "publish", "glamour"])
+        .env("COVEN_URL", server.url())
+        .env("COVEN_ID_TOKEN", &ci)
+        .output()
+        .expect("run `witchy pm publish` for glamour");
+    let pub_out = stdout(&pubd);
+    assert!(
+        pubd.status.success() && pub_out.contains("publish: 200"),
+        "glamour publish failed: {}\nstdout: {pub_out}",
+        stderr(&pubd)
+    );
+
+    // Promote to released with a DISTINCT human identity (separation of duties).
+    let human = server.human_token("alice");
+    let prom = Command::new(BIN)
+        .current_dir(&base)
+        .args(["pm", "promote", "aegis/glamour", "0.1.0"])
+        .env("COVEN_URL", server.url())
+        .env("COVEN_ID_TOKEN", &human)
+        .output()
+        .expect("run `witchy pm promote` for glamour");
+    assert!(
+        prom.status.success() && stdout(&prom).contains("promote: 200"),
+        "glamour promote failed: {}\nstdout: {}",
+        stderr(&prom),
+        stdout(&prom)
+    );
+
+    // Independently fetch the signed record straight off the registry and confirm
+    // its `runtime_footprint` is empty — the public, machine-checked record IS the
+    // proof. The record key wire-encodes `/` as `~` (the pm client's `wire`).
+    let (status, record) = http_get(
+        &format!("127.0.0.1:{}", server.port),
+        "/coven/record?name=aegis~glamour&version=0.1.0",
+    );
+    assert_eq!(status, 200, "record fetch failed: {record}");
+    assert!(
+        footprint_is_empty(&record),
+        "the registry's signed record for aegis/glamour must show an EMPTY \
+         runtime_footprint: {record}"
+    );
+
+    // (3) A PURE consumer app (no declared capabilities beyond Console) adds the
+    // published glamour. A clean add with NO `--allow-cap` consent only succeeds
+    // because the recomputed footprint is empty — an honest rune that demanded a
+    // capability would gate (see
+    // `gate_blocks_capability_widening_then_allows_with_consent`).
+    let app = base.join("app");
+    std::fs::create_dir_all(app.join("src")).unwrap();
+    std::fs::write(
+        app.join("witchy.toml"),
+        "[rune]\nname = \"app\"\nversion = \"0.1.0\"\n\n[capabilities]\nruntime = [\"Console\"]\n\n[dependencies]\n",
+    )
+    .unwrap();
+    // The consumer uses the `html` tag in a NON-main `view` (returning a
+    // `VNode(Msg)`), proving tag expansion runs over the registry-fetched glamour.
+    // `main` renders the tree to an HTML string (`glamour.to_html`) and prints it,
+    // so the rendered output is assertable from a plain `pm run`.
+    std::fs::write(
+        app.join("src/app.witchy"),
+        "import glamour\n\
+         import reflect\n\n\
+         type Msg derive(Reflect):\n\
+         \x20\x20\x20\x20Tick\n\n\
+         fn view(n: Int) -> VNode(Msg):\n\
+         \x20\x20\x20\x20html\"<div><span>${int_to_str(n)}</span></div>\"\n\n\
+         fn int_to_str(n: Int) -> String:\n\
+         \x20\x20\x20\x20\"${n}\"\n\n\
+         fn main(console: Console):\n\
+         \x20\x20\x20\x20print(console, glamour.to_html(view(7)))\n",
+    )
+    .unwrap();
+
+    let add = Command::new(BIN)
+        .current_dir(&app)
+        .args(["pm", "add", "aegis/glamour"])
+        .env("COVEN_URL", server.url())
+        .env("WITCHY_COOLDOWN_SECS", "0")
+        .output()
+        .expect("run `witchy pm add` for glamour");
+    let add_out = stdout(&add);
+    assert!(
+        add.status.success() && add_out.contains("added aegis/glamour@0.1.0"),
+        "pm add of the footprint-empty glamour must succeed without consent: {}\nstdout: {add_out}",
+        stderr(&add)
+    );
+    assert!(
+        app.join("vendor/glamour/src/glamour.witchy").exists(),
+        "the fetched glamour rune must be vendored into the project's vendor/ tree"
+    );
+
+    // build: compile the consumer + the vendored glamour (expanding `html` over the
+    // fetched copy — exercises the reachability fix in src/tagged.rs).
+    let build = Command::new(BIN)
+        .current_dir(&app)
+        .args(["pm", "build", "."])
+        .output()
+        .expect("run `witchy pm build`");
+    assert!(
+        build.status.success() && stdout(&build).contains("ok"),
+        "pm build of the glamour consumer failed: {}\nstdout: {}",
+        stderr(&build),
+        stdout(&build)
+    );
+
+    // run: compile + link + run, then assert the rendered HTML — the WHOLE stack
+    // worked through the registry: publish → fetch → tag-expand → render.
+    let run = Command::new(BIN)
+        .current_dir(&app)
+        .args(["pm", "run", "."])
+        .output()
+        .expect("run `witchy pm run`");
+    let run_out = stdout(&run);
+    assert!(
+        run.status.success() && run_out.contains("<div><span>7</span></div>"),
+        "pm run of the glamour consumer failed: {}\nstdout: {run_out}",
+        stderr(&run)
+    );
+
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+/// True when a coven record / publish-record JSON shows an EMPTY
+/// `runtime_footprint` array (`[]`, tolerant of whitespace). The recomputed
+/// footprint is the signed proof that a rune demands no capabilities.
+fn footprint_is_empty(json: &str) -> bool {
+    let Some(i) = json.find("\"runtime_footprint\"") else {
+        return false;
+    };
+    let rest = &json[i + "\"runtime_footprint\"".len()..];
+    let Some(colon) = rest.find(':') else {
+        return false;
+    };
+    let after = rest[colon + 1..].trim_start();
+    let Some(open) = after.find('[') else {
+        return false;
+    };
+    let Some(close) = after[open..].find(']') else {
+        return false;
+    };
+    after[open + 1..open + close].trim().is_empty()
+}
