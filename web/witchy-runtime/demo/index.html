@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>witchy glamour — real-browser demo</title>
+  <style>
+    body {
+      font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      margin: 2rem auto;
+      max-width: 48rem;
+      padding: 0 1rem;
+      color: #1b1b1f;
+    }
+    h1 { font-size: 1.4rem; }
+    h2 { font-size: 1.1rem; margin-top: 2rem; }
+    .card {
+      border: 1px solid #d8d8e0;
+      border-radius: 8px;
+      padding: 1rem 1.25rem;
+      margin: 0.75rem 0;
+      background: #fbfbfd;
+    }
+    /* The counter rune renders <div><button>-</button><span>N</span><button>+</button></div>.
+       Give the controls room to breathe; styling is the SHELL's job (the rune is pure). */
+    #counter button {
+      font-size: 1.1rem;
+      min-width: 2.5rem;
+      padding: 0.25rem 0.6rem;
+      margin: 0 0.4rem;
+      cursor: pointer;
+    }
+    #counter span {
+      display: inline-block;
+      min-width: 2rem;
+      text-align: center;
+      font-variant-numeric: tabular-nums;
+      font-weight: 600;
+      font-size: 1.2rem;
+    }
+    /* The highlighter rune emits <pre><code> with classed <span> runs. */
+    #highlight pre {
+      margin: 0;
+      padding: 0.75rem 1rem;
+      background: #1e1e2e;
+      color: #cdd6f4;
+      border-radius: 6px;
+      overflow-x: auto;
+      font: 13px/1.5 "SF Mono", Menlo, Consolas, monospace;
+    }
+    #highlight span.kw  { color: #cba6f7; font-weight: 600; }
+    #highlight span.str { color: #a6e3a1; }
+    #highlight span.com { color: #6c7086; font-style: italic; }
+    #highlight span.num { color: #fab387; }
+    .note { color: #6c7086; font-size: 0.85rem; }
+    code.inline { background: #eee; padding: 0 0.3em; border-radius: 3px; }
+    #status { font-size: 0.85rem; }
+    .err { color: #d20f39; }
+  </style>
+</head>
+<body>
+  <h1>witchy glamour — real-browser demo</h1>
+  <p class="note">
+    Two footprint-empty witchy runes, compiled to WASM, running under the
+    deny-all pure-compute host (RFC-0007) and the glamour DOM shell (RFC-0008).
+    The runes <em>compute</em>; this page holds all the authority and acts.
+  </p>
+
+  <h2>1. Counter (MVU: render → click → update → re-render)</h2>
+  <div class="card">
+    <div id="counter" data-demo="counter"><!-- mount() builds the DOM here --></div>
+    <p class="note">
+      The <code class="inline">+</code>/<code class="inline">-</code> buttons
+      dispatch a <code class="inline">Msg</code> into the rune; the new VNode is
+      diffed into the DOM. No <code class="inline">innerHTML</code> anywhere.
+    </p>
+  </div>
+
+  <h2>2. Highlighter (pure render; <code class="inline">&lt;script&gt;</code> stays inert text)</h2>
+  <div class="card">
+    <div id="highlight" data-demo="highlight"><!-- VNode→DOM render here --></div>
+    <p class="note">
+      The source below includes a comment, a string, and a literal
+      <code class="inline">&lt;script&gt;</code>. The rune routes every token
+      through a <code class="inline">text(...)</code> node, so the script tag
+      renders as four inert characters — never a real element.
+    </p>
+  </div>
+
+  <p id="status">loading…</p>
+
+  <script type="module" src="./demo.mjs"></script>
+</body>
+</html>
