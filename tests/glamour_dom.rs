@@ -138,3 +138,79 @@ fn glamour_autocounter_footprint_is_empty() {
         );
     }
 }
+
+/// RFC-0008 DOGFOODING capstone: drive the glamour SYNTAX HIGHLIGHTER rune
+/// headlessly — the proving ground for coven-web's sandbox-highlighter migration
+/// (projects/coven-web/PLAN.md WS-I/M6).
+///
+/// The committed Node driver (`web/witchy-runtime/highlighter.test.mjs`) compiles
+/// the `highlighter` demo to WASM, calls its `export_render({src})` export through
+/// the RFC-0007 pure-compute host shim, parses the returned VNode JSON, and renders
+/// it into a fake DOM with createElement/textContent ONLY. It asserts the
+/// highlighted structure (a `pre>code`, the keyword `fn` in `span.kw`, the comment
+/// in `span.com`, the string in `span.str`) AND — the security headline — that a
+/// snippet containing `<script>` renders as ESCAPED text in a DOM text node, never
+/// a live `<script>` element. Node is the host engine; if `node` is absent the
+/// test SKIPS cleanly. The driver is independently runnable:
+/// `node web/witchy-runtime/highlighter.test.mjs <witchy-binary>`.
+#[test]
+fn glamour_highlighter_renders_classed_spans_and_escapes_xss() {
+    if !node_available() {
+        eprintln!("skipping: `node` is not available on PATH");
+        return;
+    }
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let driver = manifest.join("web/witchy-runtime/highlighter.test.mjs");
+    assert!(driver.exists(), "the committed highlighter test driver must exist at {}", driver.display());
+
+    let out = Command::new("node")
+        .arg(&driver)
+        .arg(BIN)
+        .current_dir(manifest)
+        .output()
+        .expect("spawn node highlighter driver");
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "the glamour highlighter test failed:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+    );
+    assert!(stdout.contains("HIGHLIGHTER OK"), "highlighter driver did not report success:\n{stdout}");
+}
+
+/// The headline RFC-0008 property for the highlighter: its render export is
+/// capability-EMPTY. A syntax highlighter that renders genuinely-untrusted package
+/// SOURCE is exactly where the empty-footprint + sandbox composition matters most,
+/// so `witchy caps` must report no `Net`/`Dir`/`Clock` for `export_render`.
+/// (`main`'s `Console` is output, not authority — the per-export breakdown shows
+/// `export_render` is `(none)`.)
+#[test]
+fn glamour_highlighter_footprint_is_empty() {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let app = manifest.join("projects/glamour/examples/highlighter/src/highlighter.witchy");
+    assert!(app.exists(), "the highlighter demo must exist at {}", app.display());
+
+    let out = Command::new(BIN)
+        .arg("caps")
+        .arg(&app)
+        .current_dir(manifest)
+        .output()
+        .expect("run `witchy caps` on the highlighter rune");
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "`witchy caps` failed:\n--- stderr ---\n{stderr}");
+    // The render export holds NO authority — it only computes a VNode tree.
+    assert!(
+        stdout.contains("export_render  (none)"),
+        "the highlighter render export must have an empty footprint:\n{stdout}"
+    );
+    // The rune touches no ambient authority: no Net/Dir/Clock anywhere.
+    for forbidden in ["Net", "Dir", "Clock"] {
+        assert!(
+            !stdout.contains(forbidden),
+            "the capability-pure highlighter must not demand `{forbidden}`:\n{stdout}"
+        );
+    }
+}
