@@ -56,22 +56,64 @@ pub fn on(event: String, msg: msg) -> Attr(msg):
     On(event, msg)
 
 // ---------------------------------------------------------------------------
-// Cmd — effects as data (types only for this slice; the DOM run-loop needs the
-// browser host from RFC-0007). `update` does not PERFORM effects — the rune is
-// capability-denied — it DESCRIBES them: it returns a `Cmd(msg)` the
-// capability-holding host shell interprets. Intended shapes (built by the host
-// loop, not here):
+// Cmd — effects as data (RFC-0008's "honest hard part"). `update` does not
+// PERFORM effects — the rune is capability-denied — it DESCRIBES them: it returns
+// a `Cmd(msg)` the capability-HOLDING host shell interprets. The rune decides
+// WHAT should happen; the shell, which alone holds the capability, decides
+// WHETHER it may and actually does it. This is the purest expression of "authority
+// lives at the edge":
 //     view:   fn(state) -> VNode(msg)
 //     update: fn(state, msg) -> (state, Cmd(msg))
-// kept minimal on purpose (the `Cmd` vocabulary is RFC-0008's least-built part).
 // ---------------------------------------------------------------------------
 
 // `NoCmd` (not `None`) names the empty effect: `None` is already `Option.None`
 // from the prelude, so an `update` returning `(model, None)` would be read as an
 // `Option`. `NoCmd` is unambiguous and reads as "no command".
+//
+// `After(ms, msg)` is the canonical Elm timer effect: "after `ms` milliseconds,
+// dispatch `msg`". The rune CANNOT perform this — it holds no `Clock` capability —
+// so it only DESCRIBES it; the shell holds the timer (`setTimeout`) and performs
+// it. `Batch(cmds)` runs several commands; it lets one `update` request more than
+// one effect.
 pub type Cmd(msg):
     NoCmd
+    After(Int, msg)
     Batch(List(Cmd(msg)))
+
+// ---------------------------------------------------------------------------
+// Cmd WIRE FORMAT — serialize a `Cmd(msg)` to the JSON shape the host shell
+// (`web/witchy-runtime/glamour-dom.mjs`) reads and INTERPRETS. The shell holds the
+// authority (the `setTimeout` timer); the rune only produced this description.
+//
+// Shape (compact JSON):
+//   NoCmd          -> {"cmd": "none"}
+//   After(ms, msg) -> {"cmd": "after", "ms": ms, "msg": <msg-json>}
+//   Batch(cmds)    -> {"cmd": "batch", "cmds": [<cmd-json>...]}
+//
+// The embedded `msg` is serialized via the same caller-supplied `msg_to_json`
+// the VNode `on` bindings use, so a `Cmd`'s deferred msg round-trips back into
+// `update` exactly as a click-sourced msg would. Events AND effects are data.
+// ---------------------------------------------------------------------------
+
+pub fn cmd_to_json(cmd: Cmd(msg), msg_to_json: fn(msg) -> Json) -> Json:
+    match cmd:
+        NoCmd -> JsonObject([("cmd", JsonString("none"))])
+        After(ms, msg) ->
+            let mj: Json = msg_to_json(msg)
+            JsonObject([
+                ("cmd", JsonString("after")),
+                ("ms", JsonInt(ms)),
+                ("msg", mj),
+            ])
+        Batch(cmds) ->
+            var cjs: List(Json) = []
+            for c in cmds:
+                let cj: Json = cmd_to_json(c, msg_to_json)
+                cjs = list.push(cjs, cj)
+            JsonObject([
+                ("cmd", JsonString("batch")),
+                ("cmds", JsonArray(cjs)),
+            ])
 
 // ---------------------------------------------------------------------------
 // Serializer — render a VNode tree to an HTML string. There is no browser here,
@@ -191,10 +233,12 @@ fn node_json(node: VNode(msg), msg_to_json: fn(msg) -> Json) -> Json:
 //   * `model_to_json: fn(model) -> Json` / `msg_to_json: fn(msg) -> Json` (the
 //     outbound boundary; `json.value_of` is the obvious choice for a `Reflect`
 //     type).
-// `update` returns `(model, Cmd(msg))`; this slice runs the model and IGNORES the
-// `Cmd` (the shell interprets effects — `None` only, for now). Passing the
-// serializers as values (rather than a `where _: Reflect` bound here) keeps the
-// generic monomorphization tractable — the unproven part RFC-0008 flagged.
+// `update` returns `(model, Cmd(msg))`; this engine THREADS the `Cmd` through and
+// serializes it into the returned JSON (`cmd_to_json`), so the shell — which alone
+// holds the authority — can interpret it. The initial render (model-only input,
+// no msg) emits `NoCmd`. Passing the serializers as values (rather than a
+// `where _: Reflect` bound here) keeps the generic monomorphization tractable —
+// the unproven part RFC-0008 flagged.
 // ===========================================================================
 
 pub fn step_with(
@@ -216,22 +260,28 @@ pub fn step_with(
                 Some(model_json) ->
                     let model0 = parse_model(model_json)
                     // Apply `update` only when a `msg` is present (the event step);
-                    // the initial render has model-only input. Kept inline (not a
-                    // helper) so the `model`/`msg` type vars thread without a
-                    // cross-function inference hop.
-                    let model1 = match json.get(doc, "msg"):
-                        None -> model0
+                    // the initial render has model-only input and so emits `NoCmd`.
+                    // Kept inline (not a helper) so the `model`/`msg` type vars
+                    // thread without a cross-function inference hop.
+                    let stepped = match json.get(doc, "msg"):
+                        // Initial render: model-only input, no msg, so no effect.
+                        None -> (model0, NoCmd)
+                        // Event step: fold the msg in and carry its command out.
                         Some(msg_json) ->
                             let msg = parse_msg(msg_json)
-                            let stepped = update(model0, msg)
-                            let (m1, _cmd) = stepped
-                            m1
+                            update(model0, msg)
+                    let (model1, cmd) = stepped
                     let vnode = view(model1)
                     let model_j = model_to_json(model1)
                     let vnode_j = node_json(vnode, msg_to_json)
+                    // Serialize the command so the host shell can interpret it —
+                    // the shell holds the authority (e.g. the timer); the rune only
+                    // described the effect here.
+                    let cmd_j = cmd_to_json(cmd, msg_to_json)
                     json.encode(JsonObject([
                         ("model", model_j),
                         ("vnode", vnode_j),
+                        ("cmd", cmd_j),
                     ]))
 
 // ===========================================================================

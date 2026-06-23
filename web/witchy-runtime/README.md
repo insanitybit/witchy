@@ -68,7 +68,19 @@ pure-compute host, calls its `export_step` to render, diffs the returned VNode
 into the real DOM (`createElement` / `textContent` / `setAttribute` only — never
 `innerHTML`), and wires `on` attributes as `addEventListener` handlers that route
 events back as `Msg` values and re-render. The witchy rune computes; the shell
-acts (holds the DOM, the events, and — later — effects).
+acts (holds the DOM, the events, and the effects).
+
+**Effects as data.** Each `export_step` also returns a `cmd` — the effect the rune
+*described* but cannot perform (it holds no capability). The shell interprets it:
+`{"cmd":"none"}` does nothing; `{"cmd":"after","ms":N,"msg":…}` arms a timer
+(`opts.setTimeout`, defaulting to the global `setTimeout`, injectable for tests)
+and dispatches the deferred `msg` back into the loop when it fires;
+`{"cmd":"batch","cmds":[…]}` interprets each. The timer is the *shell's* authority;
+the rune only emitted the description. The `autocounter` example
+(`projects/glamour/examples/autocounter/`) demonstrates this — its count
+auto-increments once a second via `After(1000, Tick)`, with a footprint-empty rune.
+`glamour-dom-timer.test.mjs` (and `tests/glamour_dom.rs`) prove it headlessly with
+a fake, controllable clock.
 
 ## What it provides — and refuses
 
