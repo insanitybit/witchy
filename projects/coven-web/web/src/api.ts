@@ -85,6 +85,10 @@ export function yank(name: string, version: string): Promise<{ ok: boolean }> {
   return postJSON<{ ok: boolean }>("/api/coven/yank", { name, version });
 }
 
+// The in-sandbox renderer bundle (witchy-runtime shim + VNode->DOM walk + the
+// glamour highlighter WASM, base64-inlined at build time). The parent fetches it
+// same-origin (`connect-src 'self'`) and injects it as TEXT into the sandbox
+// frame; it is NEVER executed in the parent.
 export async function getSourceSandboxJs(): Promise<string> {
   const r = await fetch("/source-sandbox.js", { credentials: "omit" });
   if (!r.ok) throw new Error("HTTP " + r.status);

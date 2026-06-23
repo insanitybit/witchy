@@ -18,6 +18,9 @@ export async function mountSandbox(
 ): Promise<void> {
   let sandboxJs: string;
   try {
+    // Fetched by the TRUSTED PARENT, same-origin (`connect-src 'self'`): the
+    // in-sandbox renderer (witchy-runtime shim + VNode walk + the highlighter WASM
+    // base64-inlined), injected below as TEXT. The frame never fetches anything.
     sandboxJs = await getSourceSandboxJs();
   } catch (e) {
     statusEl.textContent = "sandbox failed: " + (e as Error).message;
@@ -41,6 +44,9 @@ export async function mountSandbox(
     ch.port1.onmessage = (e: MessageEvent<SandboxMsg>) => {
       const m = e.data;
       if (m.type === "ready") {
+        // The parent sends ONLY the source text. The highlighter WASM is already
+        // inside the frame (base64-inlined in the injected renderer); the frame
+        // never fetches and the parent never receives rendered content.
         ch.port1.postMessage({ type: "render", kind: "witchy-source", text: sourceText });
       } else if (m.type === "height") {
         outer.style.height = (m.px ?? 0) + 24 + "px";

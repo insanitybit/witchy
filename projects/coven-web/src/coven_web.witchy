@@ -30,6 +30,12 @@ fn main(console: Console, net: Net, assets: Dir, key: Secret, clock: Clock, args
     app = app.get("/index.html", h_index_html(assets))
     app = app.get("/app.js", h_asset(assets, "app.js", "text/javascript; charset=utf-8"))
     app = app.get("/styles.css", h_asset(assets, "styles.css", "text/css; charset=utf-8"))
+    // `source-sandbox.js` is the in-sandbox renderer; the glamour highlighter WASM
+    // is base64-INLINED into that bundle at build time (witchy's Dir `read` is
+    // UTF-8-only and cannot serve binary; inlining also keeps the wasm riding along
+    // with the renderer the parent already fetches same-origin and injects as TEXT,
+    // so no new binary route or frame fetch is introduced — `connect-src 'none'`
+    // on the frame stays intact). It runs under the pure-compute host, footprint-empty.
     app = app.get("/source-sandbox.js", h_asset(assets, "source-sandbox.js", "text/javascript; charset=utf-8"))
     app = app.get("/sandbox-frame", h_sandbox_frame())
     // Read API reverse-proxy — one explicit route per allowlisted coven endpoint
@@ -254,8 +260,20 @@ fn app_csp() -> String:
 // The sandbox frame intentionally OMITS Perfect Types so the bootstrap can set
 // `srcdoc` and the renderer can use innerHTML — safe because the frame is
 // opaque-origin (no allow-same-origin) and `connect-src 'none'` (network firewall).
+//
+// `'wasm-unsafe-eval'` is added to `script-src` HERE — and ONLY here — so the
+// frame may instantiate the glamour syntax-highlighter WASM (RFC-0007's
+// pure-compute target). This is the RFC-0007-sanctioned tradeoff: the WASM runs
+// inside this CONTAINED sandbox (opaque origin + `connect-src 'none'`), never in
+// the trusted parent — `app_csp()` deliberately keeps NO `wasm-unsafe-eval`. The
+// wasm bytes are base64-INLINED into `source-sandbox.js` at build time, so they
+// ride along with the renderer the parent already fetches same-origin and injects
+// as TEXT; the frame itself never fetches anything (`connect-src 'none'` holds).
+// The highlighter rune's capability footprint is empty, and the pure-compute host
+// denies every capability import, so the module is I/O-incapable by construction
+// even before the frame's network firewall.
 fn sandbox_csp() -> String:
-    "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'none'; worker-src 'none'; form-action 'none'; base-uri 'none'; sandbox allow-scripts; frame-ancestors 'self'"
+    "default-src 'none'; script-src 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'unsafe-inline'; connect-src 'none'; worker-src 'none'; form-action 'none'; base-uri 'none'; sandbox allow-scripts; frame-ancestors 'self'"
 
 fn api_csp() -> String:
     "default-src 'none'; frame-ancestors 'none'; require-trusted-types-for 'script'; trusted-types 'none'"
