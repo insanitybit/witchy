@@ -533,6 +533,7 @@ impl Ctx<'_> {
     fn type_name(&self, e: &Expr, scope: &Scope) -> Option<String> {
         recover_generic_call(e, self.fn_sigs, &|a| self.type_name(a, scope))
             .or_else(|| head_type_name(e, scope, self.ctor_results, self.fn_rets, self.record_fields))
+            .or_else(|| cap_op_return_type(e))
     }
 
     /// Resolve a trait method to its mangled impl for a receiver type. A concrete
@@ -1124,6 +1125,24 @@ fn tuple_args(type_name: &str) -> Option<Vec<&str>> {
 /// `subdir`, `read`, `write`, …) rather than module functions — so `cap.op(args)`
 /// UFCS-lowers to the bare call `op(cap, args)`. (`Secret`/`SecretStore` map to the
 /// `crypto`/`secretstore` modules via `builtin_method_module` and are handled first.)
+/// The capability/handle type a host-capability operation *intrinsic* returns, so a
+/// let-bound result (`let d = net.deny(...)`) is typed and a chained method call on it
+/// resolves (`d.only(...)`). These are bare intrinsics — not user functions — so they
+/// are absent from `fn_sigs`/`fn_rets`. Checked LAST (after the user-function recovery),
+/// so a user function of the same name still wins.
+fn cap_op_return_type(e: &Expr) -> Option<String> {
+    match e {
+        Expr::Call { name, .. } => match name.as_str() {
+            "restrict" | "only" | "deny" => Some("Net".to_string()),
+            "subdir" | "make_dir" => Some("Dir".to_string()),
+            "connect" | "accept" => Some("Socket".to_string()),
+            "listen" => Some("Listener".to_string()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 fn is_host_capability(tn: &str) -> bool {
     matches!(
         tn.split(['[', '<']).next().unwrap_or(tn).trim(),

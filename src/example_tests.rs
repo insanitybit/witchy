@@ -7963,6 +7963,28 @@ fn main(console: Console):
         );
     }
 
+    /// A method call on a let-bound capability-op RESULT (`net.deny(...)` then
+    /// `d.only(...)`) resolves — cap-op intrinsics now carry a return type so the
+    /// trait-lowering types the binding, not just function parameters. Both backends
+    /// agree, so chained refinement (`net.deny(...).only(...)`) is usable.
+    #[test]
+    fn cap_method_chaining_on_let_bindings_backends_agree() {
+        let src = "import confine\nfn main(net: Net, console: Console):\n    let d = net.deny(confine.cidr_any(\"10.0.0.0/8\"))\n    let ok = d.only(confine.tcp(\"192.168.1.1\", 80))\n    print(console, \"chained\")\n";
+        let linked = resolve_std_src(src);
+        typeck::check(&linked).expect("typecheck");
+        let expected = vec!["chained".to_string()];
+        assert_eq!(
+            interpreter::run_module(linked.clone(), ".", vec!["10.0.0.0/8:*".into(), "192.168.1.1:80".into()]).expect("interp"),
+            expected,
+            "interpreter",
+        );
+        assert_eq!(
+            run_linked_on_wasm_net(&[("main", src)], "main", &["10.0.0.0/8:*", "192.168.1.1:80"]),
+            expected,
+            "wasm",
+        );
+    }
+
     /// Like `run_linked_on_wasm` but with an explicit `Net` allowlist grant, for
     /// programs that `restrict`/`connect` to specific addresses.
     fn run_linked_on_wasm_net(sources: &[(&str, &str)], entry: &str, net_allow: &[&str]) -> Vec<String> {
