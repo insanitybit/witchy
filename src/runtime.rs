@@ -1167,27 +1167,33 @@ fn net_allow(caller: &Caller<'_, VmState>, h: i32) -> Result<Vec<String>> {
         .ok_or_else(|| Error::msg(format!("invalid Net handle {h}")))
 }
 
-/// `net_restrict(h, addr) -> handle`: attenuate to a single allowlisted address.
+/// `net_restrict(h, addr) -> handle`: attenuate to the allowlisted address set. `addr` may
+/// carry several patterns newline-joined (a `confine.union`); each must already be admitted.
 fn host_net_restrict(mut caller: Caller<'_, VmState>, h: i32, addr_ptr: i32) -> Result<i32> {
     let mem = memory_of(&mut caller)?;
     let addr = read_wstr(mem.data(&caller), addr_ptr)?;
     let allow = net_allow(&caller, h)?;
-    if !crate::capabilities::net_allows(&allow, &addr) {
-        bail!("restrict: `{addr}` is not in this Net capability");
+    let patterns: Vec<String> = addr.split('\n').map(String::from).collect();
+    for p in &patterns {
+        if !crate::capabilities::net_allows(&allow, p) {
+            bail!("restrict: `{p}` is not in this Net capability");
+        }
     }
     let nets = &mut caller.data_mut().nets;
-    nets.push(vec![addr]);
+    nets.push(patterns);
     Ok((nets.len() - 1) as i32)
 }
 
-/// `net_deny(h, addr) -> handle`: subtract an address pattern (RFC-0011 `net.deny`).
-/// A monotone exclusion — recorded as a `!`-prefixed entry that the shared
-/// `net_allows` honours; no admittance check (deny can only narrow).
+/// `net_deny(h, addr) -> handle`: subtract an address pattern (RFC-0011 `net.deny`), or
+/// several newline-joined (a `confine.union`). A monotone exclusion — recorded as
+/// `!`-prefixed entries the shared `net_allows` honours; no admittance check (deny narrows).
 fn host_net_deny(mut caller: Caller<'_, VmState>, h: i32, addr_ptr: i32) -> Result<i32> {
     let mem = memory_of(&mut caller)?;
     let addr = read_wstr(mem.data(&caller), addr_ptr)?;
     let mut allow = net_allow(&caller, h)?;
-    allow.push(format!("!{addr}"));
+    for p in addr.split('\n') {
+        allow.push(format!("!{p}"));
+    }
     let nets = &mut caller.data_mut().nets;
     nets.push(allow);
     Ok((nets.len() - 1) as i32)

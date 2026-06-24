@@ -284,6 +284,21 @@
         );
     }
 
+    /// RFC-0011: `confine.union(a, b)` builds a multi-endpoint `NetPolicy`, and
+    /// `net.only(union(...))` narrows to the WHOLE set — so a further refinement to EITHER
+    /// endpoint still succeeds (both are admitted). On both backends.
+    #[test]
+    fn net_only_union_admits_each_endpoint_backends_agree() {
+        let src = "import confine\nfn main(net: Net, console: Console):\n    let pair = net.only(confine.union(confine.tcp(\"10.0.0.5\", 6379), confine.tcp(\"10.0.0.6\", 6379)))\n    let a = pair.only(confine.tcp(\"10.0.0.5\", 6379))\n    let b = pair.only(confine.tcp(\"10.0.0.6\", 6379))\n    print(console, \"both\")\n";
+        let expected = vec!["both".to_string()];
+        assert_eq!(link_run_net(src, &["10.0.0.5:6379", "10.0.0.6:6379"]), expected, "interp");
+        assert_eq!(
+            run_linked_on_wasm_net(&[("main", src)], "main", &["10.0.0.5:6379", "10.0.0.6:6379"]),
+            expected,
+            "wasm",
+        );
+    }
+
     /// A comparison operator (`==`/`<`/…) desugars to its trait impl by recovering
     /// the operands' concrete type. The receiver may be introduced by a PATTERN
     /// binding — a `match` arm, an `if let`, or a tuple destructure — whose type

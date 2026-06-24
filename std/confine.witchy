@@ -29,3 +29,10 @@ pub fn cidr(block: String, port: Int) -> NetPolicy:
 // An IPv4 CIDR block, any port: `<a.b.c.d/bits>:*`.
 pub fn cidr_any(block: String) -> NetPolicy:
     NetPolicy(block + ":*")
+
+// The UNION of two policies — `net.only(union(a, b))` admits either (e.g. an OAuth host
+// plus an API host: `union(tcp("github.com", 443), tcp("api.github.com", 443))`). The
+// patterns are carried together (newline-joined internally) and the host narrows to the
+// whole set at once.
+pub fn union(a: NetPolicy, b: NetPolicy) -> NetPolicy:
+    NetPolicy(a.pattern + "\n" + b.pattern)

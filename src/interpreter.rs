@@ -215,6 +215,22 @@ fn err<T, E: From<RuntimeError>>(message: impl Into<String>) -> Result<T, E> {
     }))
 }
 
+/// Narrow a `Net`'s allowlist to a `NetPolicy`'s pattern set (`\n`-joined for a union from
+/// `confine.union`). Each pattern must already be admitted by the current allowlist
+/// (monotone — refinement only shrinks). Returns the narrowed `Net`.
+fn net_narrow_to(allow: &[String], patterns: &str) -> Result<Value, RuntimeError> {
+    let mut narrowed = Vec::new();
+    for p in patterns.split('\n') {
+        if !crate::capabilities::net_allows(allow, p) {
+            return Err(RuntimeError {
+                message: format!("`{p}` is not in this Net capability"),
+            });
+        }
+        narrowed.push(p.to_string());
+    }
+    Ok(Value::Net(narrowed))
+}
+
 /// Prefix a runtime error with where it occurred — the executing function (after
 /// linking, `module.func`, which also names the file) and source line. `line ==
 /// 0` means no line is available; an empty `func` omits the name.
@@ -1500,26 +1516,19 @@ impl Interpreter {
             // Network capability: attenuate a Net to a held address. `only` is
             // RFC-0011's method-form verb for the same allow-narrowing.
             "restrict" => match args {
-                [Value::Net(allow), Value::Str(addr)] => {
-                    if !crate::capabilities::net_allows(allow, addr) {
-                        return err(format!("restrict: `{addr}` is not in this Net capability"));
-                    }
-                    Ok(Some(Value::Net(vec![addr.clone()])))
-                }
+                [Value::Net(allow), Value::Str(addr)] => Ok(Some(net_narrow_to(allow, addr)?)),
                 _ => err("restrict expects a Net and an address"),
             },
-            // RFC-0011 typed verbs: the argument is a `NetPolicy` (a record carrying one
-            // address pattern). `only` narrows to it; `deny` subtracts it (a monotone
-            // exclusion recorded as a `!`-prefixed entry the shared `net_allows` honours).
+            // RFC-0011 typed verbs: the argument is a `NetPolicy` carrying one or more address
+            // patterns (a `confine.union` joins them, newline-separated). `only` narrows to the
+            // set; `deny` subtracts it (a monotone exclusion recorded as `!`-prefixed entries
+            // the shared `net_allows` honours).
             "only" => match args {
                 [Value::Net(allow), Value::Ctor { fields, .. }] if fields.len() == 1 => {
                     let Value::Str(addr) = &fields[0] else {
                         return err("only expects a NetPolicy");
                     };
-                    if !crate::capabilities::net_allows(allow, addr) {
-                        return err(format!("only: `{addr}` is not in this Net capability"));
-                    }
-                    Ok(Some(Value::Net(vec![addr.clone()])))
+                    Ok(Some(net_narrow_to(allow, addr)?))
                 }
                 _ => err("only expects a Net and a NetPolicy"),
             },
@@ -1529,7 +1538,9 @@ impl Interpreter {
                         return err("deny expects a NetPolicy");
                     };
                     let mut next = allow.clone();
-                    next.push(format!("!{addr}"));
+                    for p in addr.split('\n') {
+                        next.push(format!("!{p}"));
+                    }
                     Ok(Some(Value::Net(next)))
                 }
                 _ => err("deny expects a Net and a NetPolicy"),

@@ -242,6 +242,10 @@ An IPv4 CIDR block (rebinding-proof — matched against the resolved IP): `<a.b.
 
 An IPv4 CIDR block, any port: `<a.b.c.d/bits>:*`.
 
+#### `fn union(a: NetPolicy, b: NetPolicy) -> NetPolicy`
+
+The UNION of two policies — `net.only(union(a, b))` admits either (e.g. an OAuth host plus an API host: `union(tcp("github.com", 443), tcp("api.github.com", 443))`). The patterns are carried together (newline-joined internally) and the host narrows to the whole set at once.
+
 ## `convert`
 
 Conversion traits, following Rust's `std::convert`. `From(a)` builds the implementing type from an `a`; `Into(b)` consumes `self` into a `b`. Implementing `From` is enough, since the blanket impl below derives the matching `Into`:
