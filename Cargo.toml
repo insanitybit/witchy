@@ -70,6 +70,8 @@ rcgen = "0.13"
 # A local TLS server for the hermetic TLS/HTTPS/OAuth tests (mock GitHub) — same
 # aws_lc_rs provider as the client, no second crypto stack.
 rustls = { version = "0.23", default-features = false, features = ["std", "aws_lc_rs", "tls12"] }
+# Signs a test id_token for the mock-Google OIDC login e2e (same crypto as the client).
+aws-lc-rs = "1"
 
 # Dev builds keep file:line backtraces (so test failures and panics stay
 # legible) but skip full DWARF generation — markedly faster to compile and link

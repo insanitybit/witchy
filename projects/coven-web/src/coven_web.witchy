@@ -18,6 +18,7 @@ import crypto
 import encoding
 import webauthn
 import oauth
+import jwt
 import secretstore
 import url
 import result
@@ -39,6 +40,14 @@ fn main(console: Console, net: Net, assets: Dir, secrets: SecretStore, clock: Cl
     let gh_base = if list.length(args) > 5: list.at(args, 5) else: "https://github.com"
     let gh_api = if list.length(args) > 6: list.at(args, 6) else: "https://api.github.com"
     let gh_redirect = origin + "/auth/github/callback"
+    // "Log in with Google" (OIDC) config. `google_client_id` empty => disabled. Google's
+    // authorize/token/JWKS live on three different hosts, so each is its own (overridable
+    // for a test mock) URL; the issuer is the fixed well-known `accounts.google.com`.
+    let google_client_id = if list.length(args) > 7: list.at(args, 7) else: ""
+    let google_authorize = if list.length(args) > 8: list.at(args, 8) else: "https://accounts.google.com/o/oauth2/v2/auth"
+    let google_token = if list.length(args) > 9: list.at(args, 9) else: "https://oauth2.googleapis.com/token"
+    let google_jwks = if list.length(args) > 10: list.at(args, 10) else: "https://www.googleapis.com/oauth2/v3/certs"
+    let google_redirect = origin + "/auth/google/callback"
 
     var app = server.router()
     app = app.get("/", h_index_html(assets))
@@ -82,6 +91,11 @@ fn main(console: Console, net: Net, assets: Dir, secrets: SecretStore, clock: Cl
     if gh_client_id != "":
         app = app.get("/auth/github/login", h_github_login(key, clock, gh_base, gh_client_id, gh_redirect))
         app = app.get("/auth/github/callback", h_github_callback(net, key, clock, secrets, gh_base, gh_api, gh_client_id, gh_redirect))
+    // "Log in with Google" (OIDC) — same shape, but the callback VERIFIES the id_token (a
+    // JWT) against Google's JWKS rather than fetching a user endpoint.
+    if google_client_id != "":
+        app = app.get("/auth/google/login", h_google_login(key, clock, google_authorize, google_client_id, google_redirect))
+        app = app.get("/auth/google/callback", h_google_callback(net, key, clock, secrets, google_token, google_jwks, google_client_id, google_redirect))
     // Layer order: sec_fetch_csrf is inner (rejects cross-site writes before the
     // handler), security_headers is outer (so even a 403 carries the full stack).
     app = app.layer(sec_fetch_csrf())
@@ -302,10 +316,59 @@ fn github_finish(net: Net, key: Secret, clock: Clock, gh_api: String, token: Str
         Err(e) -> server.json(502, json.encode(JsonObject([("error", JsonString("user fetch failed: " + e))])))
         Ok(user) ->
             let login = wa_field(user, "login")
-            let (sess, _exp) = issue_session(key, clock)
-            // Hand the SPA its session in the URL FRAGMENT (never sent to a server, kept
-            // out of logs/Referer): the app's JS reads it and uses it as the bearer.
-            server.redirect("/#token=" + url.encode(sess) + "&login=" + url.encode(login))
+            session_redirect(key, clock, login)
+
+// ---- "Log in with Google" (OIDC) --------------------------------------------
+// Like GitHub, but the token endpoint returns an OIDC `id_token` (a JWT) whose signature
+// we verify against Google's published JWKS — read the user's `email` from the VERIFIED
+// claims, never from anything client-supplied. The issuer is the fixed well-known value.
+
+fn h_google_login(key: Secret, clock: Clock, authorize_url: String, client_id: String, redirect_uri: String) -> fn(Request) -> Response:
+    fn(req: Request):
+        let state = sign_state(key, clock)
+        server.redirect(oauth.authorize_url(authorize_url, client_id, redirect_uri, "openid email", state))
+
+fn h_google_callback(net: Net, key: Secret, clock: Clock, secrets: SecretStore, token_url: String, jwks_url: String, client_id: String, redirect_uri: String) -> fn(Request) -> Response:
+    fn(req: Request):
+        google_callback(net, key, clock, secrets, token_url, jwks_url, client_id, redirect_uri, server.query(req, "code"), server.query(req, "state"))
+
+fn google_callback(net: Net, key: Secret, clock: Clock, secrets: SecretStore, token_url: String, jwks_url: String, client_id: String, redirect_uri: String, code: String, state: String) -> Response:
+    if code == "" || !valid_state(key, clock, state):
+        server.json(403, "{\"error\":\"invalid OAuth state or missing code\"}")
+    else:
+        match secretstore.get(secrets, "google_client_secret"):
+            None -> server.json(500, "{\"error\":\"google login is misconfigured (no client secret)\"}")
+            Some(sec) ->
+                match oauth.exchange_code_id_token(net, token_url, client_id, crypto.reveal(sec), code, redirect_uri):
+                    Err(e) -> server.json(502, json.encode(JsonObject([("error", JsonString("token exchange failed: " + e))])))
+                    Ok(id_token) -> google_verify(net, key, clock, jwks_url, client_id, id_token)
+
+fn google_verify(net: Net, key: Secret, clock: Clock, jwks_url: String, client_id: String, id_token: String) -> Response:
+    match http.get_url(net, jwks_url):
+        Err(e) -> server.json(502, json.encode(JsonObject([("error", JsonString("JWKS fetch failed: " + e))])))
+        Ok(resp) ->
+            match json.decode(http.body(resp)):
+                Err(e) -> server.json(502, json.encode(JsonObject([("error", JsonString("JWKS is not JSON: " + e))])))
+                Ok(jwks) -> google_finish(key, clock, jwks, client_id, id_token)
+
+fn google_finish(key: Secret, clock: Clock, jwks: Json, client_id: String, id_token: String) -> Response:
+    match select_and_verify(clock, jwks, client_id, id_token):
+        Err(e) -> server.json(403, json.encode(JsonObject([("error", JsonString("id_token rejected: " + e))])))
+        Ok(claims) -> session_redirect(key, clock, wa_field(claims, "email"))
+
+// Pick the signing key for the token's `kid` from the JWKS and verify it (signature +
+// issuer `accounts.google.com` + audience = our client id + expiry). Returns the claims.
+fn select_and_verify(clock: Clock, jwks: Json, client_id: String, id_token: String) -> Result(Json, String):
+    let key_id = jwt.kid(id_token).ok_or("id_token header has no `kid`")?
+    let der = jwt.rsa_key_for_kid(jwks, key_id)?
+    // JWT `exp`/`nbf` are unix SECONDS; `now(clock)` is milliseconds.
+    jwt.verify_oidc(id_token, der, "https://accounts.google.com", client_id, now(clock) / 1000)
+
+// Mint a bearer session for `who` and hand it to the SPA in the URL fragment (kept out of
+// logs/Referer) — the shared tail of every social-login callback.
+fn session_redirect(key: Secret, clock: Clock, who: String) -> Response:
+    let (sess, _exp) = issue_session(key, clock)
+    server.redirect("/#token=" + url.encode(sess) + "&login=" + url.encode(who))
 
 fn split_host_port(hp: String) -> (String, Int):
     let (h, p) = string.split_once(hp, ":")

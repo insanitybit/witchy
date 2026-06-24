@@ -2063,6 +2063,206 @@ fn coven_web_github_login_completes_a_session() {
     assert!(cb_loc.contains("token="), "session redirect must carry a bearer token: {cb_loc}");
 }
 
+/// base64url, no padding — JWT segment encoding.
+fn b64url(bytes: &[u8]) -> String {
+    const A: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    let mut out = String::new();
+    for c in bytes.chunks(3) {
+        let n = ((c[0] as u32) << 16)
+            | ((*c.get(1).unwrap_or(&0) as u32) << 8)
+            | (*c.get(2).unwrap_or(&0) as u32);
+        out.push(A[(n >> 18 & 63) as usize] as char);
+        out.push(A[(n >> 12 & 63) as usize] as char);
+        if c.len() > 1 {
+            out.push(A[(n >> 6 & 63) as usize] as char);
+        }
+        if c.len() > 2 {
+            out.push(A[(n & 63) as usize] as char);
+        }
+    }
+    out
+}
+
+/// The two INTEGER contents of a DER `SEQUENCE { INTEGER, INTEGER }` (an RSA public key).
+fn two_ints(der: &[u8]) -> (Vec<u8>, Vec<u8>) {
+    fn len_at(b: &[u8], i: &mut usize) -> usize {
+        let mut len = b[*i] as usize;
+        *i += 1;
+        if len & 0x80 != 0 {
+            let nbytes = len & 0x7f;
+            len = 0;
+            for _ in 0..nbytes {
+                len = (len << 8) | b[*i] as usize;
+                *i += 1;
+            }
+        }
+        len
+    }
+    fn tlv(b: &[u8], i: &mut usize) -> Vec<u8> {
+        *i += 1;
+        let len = len_at(b, i);
+        let v = b[*i..*i + len].to_vec();
+        *i += len;
+        v
+    }
+    let mut i = 0;
+    i += 1;
+    let _ = len_at(der, &mut i);
+    (tlv(der, &mut i), tlv(der, &mut i))
+}
+
+/// "Log in with Google" (OIDC) end to end through the REAL coven-web server: a mock
+/// Google (local rustls) returns a TEST-SIGNED `id_token` then serves its JWKS; coven-web's
+/// callback verifies the id_token's signature against the JWKS (and issuer/audience) and
+/// mints a session. Proves the OIDC login path — the id_token verification wired through
+/// the deployed server, distinct from GitHub's userinfo fetch.
+#[test]
+fn coven_web_google_login_verifies_id_token_and_completes_a_session() {
+    use std::io::{Read, Write};
+    use std::sync::Arc;
+    // A signing key for the id_token; its public n/e go in the mock JWKS.
+    use aws_lc_rs::signature::KeyPair;
+    let idk = aws_lc_rs::rsa::KeyPair::generate(aws_lc_rs::rsa::KeySize::Rsa2048).expect("idk");
+    let (n_int, e_int) = two_ints(idk.public_key().as_ref());
+    let strip = |v: &[u8]| if v.first() == Some(&0) { v[1..].to_vec() } else { v.to_vec() };
+    let jwks = format!(
+        r#"{{"keys":[{{"kty":"RSA","kid":"g1","n":"{}","e":"{}"}}]}}"#,
+        b64url(&strip(&n_int)),
+        b64url(&strip(&e_int))
+    );
+    let signed = format!(
+        "{}.{}",
+        b64url(br#"{"alg":"RS256","kid":"g1","typ":"JWT"}"#),
+        b64url(br#"{"iss":"https://accounts.google.com","aud":"gClientID","email":"alice@example.com","sub":"1","exp":2000000000,"nbf":0}"#)
+    );
+    let mut sig = vec![0u8; idk.public_modulus_len()];
+    idk.sign(
+        &aws_lc_rs::signature::RSA_PKCS1_SHA256,
+        &aws_lc_rs::rand::SystemRandom::new(),
+        signed.as_bytes(),
+        &mut sig,
+    )
+    .expect("sign id_token");
+    let id_token = format!("{signed}.{}", b64url(&sig));
+    let token_json = format!(r#"{{"id_token":"{id_token}","token_type":"bearer"}}"#);
+
+    // Mock-Google TLS server: POST /token -> the id_token; GET /certs -> the JWKS.
+    let ck = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).expect("cert");
+    let cert_der = ck.cert.der().clone();
+    let key_der = rustls::pki_types::PrivatePkcs8KeyDer::from(ck.key_pair.serialize_der());
+    let tls_config = Arc::new(
+        rustls::ServerConfig::builder_with_provider(rustls::crypto::aws_lc_rs::default_provider().into())
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .with_no_client_auth()
+            .with_single_cert(vec![cert_der], rustls::pki_types::PrivateKeyDer::Pkcs8(key_der))
+            .unwrap(),
+    );
+    let g_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let g_port = g_listener.local_addr().unwrap().port();
+    let cert_path = unique("witchy-cw-google-cert").join("cert.pem");
+    std::fs::write(&cert_path, ck.cert.pem()).unwrap();
+
+    let sc = tls_config.clone();
+    let g = std::thread::spawn(move || {
+        for _ in 0..2 {
+            let (tcp, _) = g_listener.accept().unwrap();
+            let conn = rustls::ServerConnection::new(sc.clone()).unwrap();
+            let mut tls = rustls::StreamOwned::new(conn, tcp);
+            let mut head = Vec::new();
+            let mut b = [0u8; 1];
+            while tls.read_exact(&mut b).is_ok() {
+                head.push(b[0]);
+                if head.ends_with(b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let body = if String::from_utf8_lossy(&head).starts_with("POST /token") {
+                token_json.clone()
+            } else {
+                jwks.clone()
+            };
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            let _ = tls.write_all(resp.as_bytes());
+            let _ = tls.flush();
+            tls.conn.send_close_notify();
+            let _ = tls.flush();
+        }
+    });
+
+    let seed = unique("cw-g-seed").join("root.seed");
+    std::fs::write(&seed, "0000000000000000000000000000000000000000000000000000000000000001").unwrap();
+    let web_port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    let web_addr = format!("127.0.0.1:{web_port}");
+    let mock = format!("https://localhost:{g_port}");
+    let assets = unique("cw-g-assets");
+    std::fs::create_dir_all(&assets).unwrap();
+    let cw_src = format!("{}/projects/coven-web/src/coven_web.witchy", env!("CARGO_MANIFEST_DIR"));
+    let mut child = Command::new(BIN)
+        .args([
+            "--net",
+            &web_addr,
+            "--net",
+            &format!("localhost:{g_port}"),
+            "--signing-key",
+            seed.to_str().unwrap(),
+            "--secret",
+            "google_client_secret=gsecret",
+            &cw_src,
+            &web_addr,
+            "127.0.0.1:1",
+            &format!("http://{web_addr}"),
+            "localhost",
+            "", // github disabled
+            "https://github.com",
+            "https://api.github.com",
+            "gClientID",
+            &format!("{mock}/authorize"),
+            &format!("{mock}/token"),
+            &format!("{mock}/certs"),
+        ])
+        .current_dir(&assets)
+        .env("WITCHY_TLS_EXTRA_ROOTS", &cert_path)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn coven-web");
+
+    let mut up = false;
+    for _ in 0..200 {
+        if std::net::TcpStream::connect(&web_addr).is_ok() {
+            up = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert!(up, "coven-web never started on {web_addr}");
+
+    let login = http_get_raw(&web_addr, "/auth/google/login");
+    let location = header_value(&login, "location").expect("login redirect has a Location");
+    let state = query_param(&location, "state").expect("authorize URL carries state");
+
+    let callback = http_get_raw(&web_addr, &format!("/auth/google/callback?code=thecode&state={state}"));
+    let cb_loc = header_value(&callback, "location")
+        .unwrap_or_else(|| panic!("callback did not redirect; raw response:\n{callback}"));
+
+    let _ = child.kill();
+    let _ = child.wait();
+    let _ = g.join();
+    let _ = std::fs::remove_file(&cert_path);
+    let _ = std::fs::remove_dir_all(&assets);
+
+    assert!(
+        cb_loc.contains("login=alice%40example.com"),
+        "session redirect must name the verified email: {cb_loc}"
+    );
+    assert!(cb_loc.contains("token="), "session redirect must carry a bearer token: {cb_loc}");
+}
+
 /// JSON-encode a string (quoted, with `"`, `\`, and newlines escaped).
 fn json_str(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
