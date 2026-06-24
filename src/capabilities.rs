@@ -567,6 +567,25 @@ pub fn analyze(module: &Module) -> Footprint {
     }
 }
 
+/// The host authority a *run* of this module grants: `main`'s parameters alone.
+///
+/// Authority originates solely at `main` — witchy has no ambient capabilities, so a
+/// function `main` never calls can never be reached holding one. This differs from
+/// `analyze().total`, the whole-program union over every public entry point: once a
+/// program is *linked*, the std modules' own `pub fn`s become items too, and a
+/// verify-only program that imports `crypto` would otherwise inherit `crypto.sign`'s
+/// `Secret` in its grant. `total` is the right surface for the supply-chain gate
+/// (what a consumer COULD exercise through a rune's API); a run wants only what its
+/// `main` actually receives. Empty when there is no `main`.
+pub fn run_grant(module: &Module) -> CapSet {
+    analyze(module)
+        .entries
+        .into_iter()
+        .find(|e| e.name == "main")
+        .map(|e| e.capabilities)
+        .unwrap_or_default()
+}
+
 #[cfg(test)]
 #[path = "capabilities_tests.rs"]
 mod tests;

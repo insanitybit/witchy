@@ -209,7 +209,12 @@ fn run_embedded_pm(raw: Vec<String>) -> ! {
         std::process::exit(1);
     }
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    // Canonicalize first: the launcher is commonly a symlink (the cargo-install
+    // layout points `~/.cargo/bin/witchy` at `target/release/witchy`). Without
+    // resolving it, `bin` is the symlink's directory, and the `Exec` confinement
+    // rejects the compiler binary for escaping that Dir via the symlink.
     let bin = std::env::current_exe()
+        .and_then(std::fs::canonicalize)
         .ok()
         .and_then(|p| p.parent().map(|d| d.to_path_buf()))
         .unwrap_or_else(|| std::path::PathBuf::from("."));
@@ -1769,17 +1774,17 @@ fn run_linked_compiled(
     named_secrets: Vec<(String, Vec<u8>)>,
 ) -> Result<(Vec<String>, Option<i32>), String> {
     use crate::runtime::{Capabilities, Runtime};
-    let footprint = capabilities::analyze(linked);
-    // A Secret in the footprint is the whole-program union (e.g. coven CAN sign
-    // when publishing) — it does NOT mean THIS run signs. Mirror the interpreter,
-    // which requires a key only when `main` actually binds a `Secret` parameter;
-    // an unreached signing path needs none.
-    let main_binds_secret = linked.items.iter().any(|it| {
-        matches!(it, ast::Item::Function(f) if f.name == "main"
-            && f.params.iter().any(|p| matches!(&p.ty,
-                Some(ast::Type::Named(n, _)) if n == "Secret" || n == "SecretStore")))
-    });
-    if main_binds_secret && signing_key.is_none() && named_secrets.is_empty() {
+    // The grant is what `main` RECEIVES — authority originates only there (witchy
+    // has no ambient caps), so a linked library's public fns (a dependency's `pub fn
+    // fetch(net)`, std `crypto.sign`'s `Secret`) are not entry points of THIS run
+    // and must not widen the grant. `analyze().total` is the whole-program union
+    // (the supply-chain surface the package gate diffs); a run wants only main's row
+    // — which also means a `Secret` in some unreached signing path needs no key here.
+    let grant = capabilities::run_grant(linked);
+    if (grant.contains_key("Secret") || grant.contains_key("SecretStore"))
+        && signing_key.is_none()
+        && named_secrets.is_empty()
+    {
         return Err(
             "this program needs a Secret, but the host granted none (provide `--signing-key <seed-file>`, `--secret name=value`, or `--secret-file name=path`)".to_string(),
         );
@@ -1794,16 +1799,16 @@ fn run_linked_compiled(
         args,
         ..Default::default()
     };
-    if footprint.total.contains_key("Clock") {
+    if grant.contains_key("Clock") {
         caps.clock = true;
     }
-    if footprint.total.contains_key("Env") {
+    if grant.contains_key("Env") {
         caps.env = true;
     }
-    if footprint.total.contains_key("Exec") {
+    if grant.contains_key("Exec") {
         caps.exec = true;
     }
-    if let Some(rights) = footprint.total.get("Dir") {
+    if let Some(rights) = grant.get("Dir") {
         let mut roots = dir_roots;
         if roots.is_empty() {
             roots.push(std::path::PathBuf::from("."));
@@ -1813,12 +1818,12 @@ fn run_linked_compiled(
         caps.dir_read = rights.contains("Read");
         caps.dir_write = rights.contains("Write");
     }
-    if let Some(rights) = footprint.total.get("Net") {
+    if let Some(rights) = grant.get("Net") {
         caps.net_allow = Some(net_allow);
         caps.net_connect = rights.contains("Connect");
         caps.net_listen = rights.contains("Listen");
     }
-    if footprint.total.contains_key("Secret") || footprint.total.contains_key("SecretStore") {
+    if grant.contains_key("Secret") || grant.contains_key("SecretStore") {
         caps.signing_key = signing_key;
         // The signing key is the `signing` secret at handle 0, so a `Secret`
         // capability (always handle 0) and `SecretStore.get("signing")` agree.
@@ -1897,15 +1902,18 @@ fn run_file_sandboxed(
     if !has_main {
         return Err(format!("`{path}` has no `main` to run"));
     }
-    let footprint = capabilities::analyze(&linked);
-    if footprint.total.contains_key("Secret") && signing_key.is_none() && named_secrets.is_empty() {
+    // The sandbox grants EXACTLY what a run gives `main` (see `run_grant`) — not the
+    // whole-program union, so a verify-only program that imports `crypto` is not
+    // forced to be handed a `Secret` it never binds.
+    let grant = capabilities::run_grant(&linked);
+    if grant.contains_key("Secret") && signing_key.is_none() && named_secrets.is_empty() {
         return Err(format!(
             "`{path}` needs a Secret, but the host granted none (provide `--signing-key <seed-file>`, `--secret name=value`, or `--secret-file name=path`)"
         ));
     }
     eprintln!(
         "sandboxing `{path}` \u{2014} granted exactly: {}",
-        capabilities::show_caps(&footprint.total)
+        capabilities::show_caps(&grant)
     );
     run_linked_compiled(&linked, dir_roots, net_allow, args, signing_key, named_secrets)
 }

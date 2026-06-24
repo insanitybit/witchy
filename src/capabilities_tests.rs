@@ -119,7 +119,10 @@ fn main(console: Console):
     print(console, "hi")
 "#;
         let fp = footprint(src);
-        // Private `helper` is not an entry point; the union is Console + Net.
+        // `total` is the whole-program union over public entry points (the
+        // supply-chain surface the package gate diffs): a consumer importing this
+        // rune could call `serve`, so its `Net` counts. (A *run* of this file grants
+        // only `main`'s authority — see `run_grant_is_only_mains_authority`.)
         assert_eq!(
             fp.total,
             cs(&[("Console", &[]), ("Net", NET_FULL)])
@@ -131,6 +134,33 @@ fn main(console: Console):
             serve.capabilities,
             cs(&[("Console", &[]), ("Net", NET_FULL)])
         );
+    }
+
+    /// A *run*'s grant is `main`'s authority alone — NOT `total`'s union. Authority
+    /// originates only at `main` (no ambient caps), so a public `serve(net: Net)`
+    /// that `main` never calls is unreachable in a run, and a linked std `pub fn`
+    /// (e.g. `crypto.sign(key: Secret)`) must not force a verify-only program to be
+    /// granted a `Secret`. This is the distinction the sandbox grant relies on.
+    #[test]
+    fn run_grant_is_only_mains_authority() {
+        let src = r#"
+pub fn serve(console: Console, net: Net) -> Int:
+    0
+
+pub fn sign(key: Secret, msg: String) -> String:
+    msg
+
+fn main(console: Console):
+    print(console, "hi")
+"#;
+        let module = parse_module(src).expect("parse");
+        // total unions every public entry (serve's Net, sign's Secret, main's Console)...
+        assert_eq!(
+            analyze(&module).total,
+            cs(&[("Console", &[]), ("Net", NET_FULL), ("Secret", &[])])
+        );
+        // ...but the run grant is exactly what `main` receives.
+        assert_eq!(run_grant(&module), cs(&[("Console", &[])]));
     }
 
     #[test]
