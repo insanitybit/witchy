@@ -9,6 +9,7 @@
 import option
 import result
 import ascii
+import encoding
 
 type Url:
     Url(String, String, Int, String)
@@ -72,3 +73,28 @@ pub fn format(u: Url) -> String:
         Url(s, h, p, pa) ->
             let authority = if p == default_port(s): h else: h + ":" + "${p}"
             s + "://" + authority + pa
+
+// Percent-encode `s` for use as a query-string value (RFC 3986): the unreserved set
+// (`A-Z a-z 0-9 - _ . ~`) passes through, every other byte becomes `%XX`. Used to build
+// query strings safely — e.g. an OAuth `redirect_uri`, `scope`, or `state`.
+pub fn encode(s: String) -> String:
+    var out = ""
+    for ch in string.chars(s):
+        if is_unreserved(ch):
+            out = out + ch
+        else:
+            out = out + percent(ch)
+    out
+
+fn is_unreserved(ch: String) -> Bool:
+    string.contains("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.~", ch)
+
+// `%XX` for each UTF-8 byte of a single character (hex of the bytes, split into pairs).
+fn percent(ch: String) -> String:
+    let hex = string.to_upper(encoding.hex_encode(ch))
+    var out = ""
+    var i = 0
+    while i < string.length(hex):
+        out = out + "%" + string.substring(hex, i, i + 2)
+        i = i + 2
+    out

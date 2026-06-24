@@ -1,0 +1,60 @@
+// oauth — the OAuth 2.0 Authorization Code flow (RFC 6749 §4.1), the basis of "Log in
+// with GitHub / Google". Pure witchy over `std/http` (HTTPS) + `url`. A relying party:
+//   1. redirects the user to `authorize_url(...)`;
+//   2. receives a `code` (and the `state` it sent) at its registered callback;
+//   3. exchanges the code for an access token with `exchange_code(...)`.
+// Identity is then read from a provider endpoint (GitHub `/user`) or, for OIDC, the
+// `id_token` (verify with `std/jwt`). `state` is an opaque anti-CSRF token the caller
+// signs before the redirect and re-checks on the callback — bind it to the session.
+
+import http
+import json
+import url
+import option
+import result
+
+// The provider authorization-endpoint URL to redirect the user to. After the user
+// approves, the provider redirects to `redirect_uri?code=...&state=...`. `scope` is the
+// provider's space-separated permission list (e.g. GitHub `read:user`, OIDC `openid email`).
+pub fn authorize_url(authorize_endpoint: String, client_id: String, redirect_uri: String, scope: String, state: String) -> String:
+    authorize_endpoint
+        + "?response_type=code"
+        + "&client_id=" + url.encode(client_id)
+        + "&redirect_uri=" + url.encode(redirect_uri)
+        + "&scope=" + url.encode(scope)
+        + "&state=" + url.encode(state)
+
+// Exchange an authorization `code` for an access token at the provider's token endpoint
+// — an HTTPS POST with a form-encoded body and `Accept: application/json`. Returns the
+// `access_token`, or a reason. Needs a `Net` that reaches the token host over TLS; the
+// `client_secret` should come from a `Secret`, never a literal.
+pub fn exchange_code(net: Net[Connect, Tcp], token_url: String, client_id: String, client_secret: String, code: String, redirect_uri: String) -> Result(String, String):
+    let body = "grant_type=authorization_code"
+        + "&client_id=" + url.encode(client_id)
+        + "&client_secret=" + url.encode(client_secret)
+        + "&code=" + url.encode(code)
+        + "&redirect_uri=" + url.encode(redirect_uri)
+    let req = http.post_request(token_url)
+        .with_header("accept", "application/json")
+        .with_header("content-type", "application/x-www-form-urlencoded")
+        .with_body(body)
+    match req.send(net):
+        Err(e) -> Err("token endpoint unreachable: " + e)
+        Ok(resp) ->
+            if !http.is_success(resp):
+                Err("token endpoint returned HTTP " + "${http.status(resp)}")
+            else:
+                access_token_of(http.body(resp))
+
+// Pull `access_token` out of a token response (the JSON form both GitHub and Google
+// return for `Accept: application/json`), surfacing the provider's `error` if present.
+fn access_token_of(body: String) -> Result(String, String):
+    match json.decode(body):
+        Err(e) -> Err("token response is not JSON: " + e)
+        Ok(doc) ->
+            match json.get_string(doc, "access_token"):
+                Some(token) -> Ok(token)
+                None ->
+                    match json.get_string(doc, "error"):
+                        Some(provider_error) -> Err("token endpoint error: " + provider_error)
+                        None -> Err("no access_token in token response")

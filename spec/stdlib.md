@@ -1391,6 +1391,18 @@ A type's structure. `kind` is "record" (one constructor with named fields), "sum
 
 `derive(Deserialize)` generates `from_json` for a record (the caller validates the shape). It decodes and coerces each field, returning on the first error. There is no matching `Serialize` derive, because reflection (`json.value_of`, `stringify`, `Into(Json)`) already encodes any value, so only this reconstruction is per-type. The generated code uses only json/result/list/option.
 
+## `oauth`
+
+oauth — the OAuth 2.0 Authorization Code flow (RFC 6749 §4.1), the basis of "Log in with GitHub / Google". Pure witchy over `std/http` (HTTPS) + `url`. A relying party:   1. redirects the user to `authorize_url(...)`;   2. receives a `code` (and the `state` it sent) at its registered callback;   3. exchanges the code for an access token with `exchange_code(...)`. Identity is then read from a provider endpoint (GitHub `/user`) or, for OIDC, the `id_token` (verify with `std/jwt`). `state` is an opaque anti-CSRF token the caller signs before the redirect and re-checks on the callback — bind it to the session.
+
+#### `fn authorize_url(authorize_endpoint: String, client_id: String, redirect_uri: String, scope: String, state: String) -> String`
+
+The provider authorization-endpoint URL to redirect the user to. After the user approves, the provider redirects to `redirect_uri?code=...&state=...`. `scope` is the provider's space-separated permission list (e.g. GitHub `read:user`, OIDC `openid email`).
+
+#### `fn exchange_code(net: Net[Connect, Tcp], token_url: String, client_id: String, client_secret: String, code: String, redirect_uri: String) -> Result(String, String)`
+
+Exchange an authorization `code` for an access token at the provider's token endpoint — an HTTPS POST with a form-encoded body and `Accept: application/json`. Returns the `access_token`, or a reason. Needs a `Net` that reaches the token host over TLS; the `client_secret` should come from a `Secret`, never a literal.
+
 ## `option`
 
 The witchy standard `Option` type and helpers. `import option` brings the type into scope (so the `?` operator works) and gives the usual combinators. Pure and capability-free.
@@ -2352,6 +2364,10 @@ Parse a URL, or an error naming what is malformed.
 #### `fn format(u: Url) -> String`
 
 Render a Url back to its string form — the inverse of `parse`. The port is shown only when it differs from the scheme default, so a parse/format round trip of `https://host/p` stays `https://host/p` rather than gaining `:443`.
+
+#### `fn encode(s: String) -> String`
+
+Percent-encode `s` for use as a query-string value (RFC 3986): the unreserved set (`A-Z a-z 0-9 - _ . ~`) passes through, every other byte becomes `%XX`. Used to build query strings safely — e.g. an OAuth `redirect_uri`, `scope`, or `state`.
 
 ## `webauthn`
 

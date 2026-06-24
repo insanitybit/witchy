@@ -8392,6 +8392,96 @@ fn main(console: Console):
         let _ = std::fs::remove_file(&cert_path);
     }
 
+    /// `url.encode` percent-encodes query values (RFC 3986): the unreserved set passes,
+    /// reserved/space bytes become `%XX`. Both backends agree.
+    #[test]
+    fn url_encode_percent_encodes_query_values() {
+        let src = "import url\nfn main(console: Console):\n    print(console, url.encode(\"a b/c:?=&-_.~Z9\"))\n";
+        let expected = vec!["a%20b%2Fc%3A%3F%3D%26-_.~Z9".to_string()];
+        assert_eq!(link_run(src), expected, "interp");
+        assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "wasm");
+    }
+
+    /// `oauth.authorize_url` builds the OAuth2 authorization-code redirect, percent-
+    /// encoding each parameter. Both backends agree.
+    #[test]
+    fn oauth_authorize_url_builds_the_redirect() {
+        let src = "import oauth\nfn main(console: Console):\n    print(console, oauth.authorize_url(\"https://idp/auth\", \"cid\", \"http://app/cb\", \"openid email\", \"st8\"))\n";
+        let expected = vec!["https://idp/auth?response_type=code&client_id=cid&redirect_uri=http%3A%2F%2Fapp%2Fcb&scope=openid%20email&state=st8".to_string()];
+        assert_eq!(link_run(src), expected, "interp");
+        assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "wasm");
+    }
+
+    /// `oauth.exchange_code` POSTs to a token endpoint over HTTPS and reads the
+    /// `access_token` — exercised HERMETICALLY against a local rustls server that
+    /// returns the GitHub/Google JSON token shape, identical on BOTH backends. This is
+    /// the network step of "Log in with GitHub" (code → access token).
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn oauth_exchange_code_against_a_local_token_server_backends_agree() {
+        use std::io::{Read, Write};
+        use std::sync::Arc;
+        let ck = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).expect("cert");
+        let cert_der = ck.cert.der().clone();
+        let key_der = rustls::pki_types::PrivatePkcs8KeyDer::from(ck.key_pair.serialize_der());
+        let server_config = Arc::new(
+            rustls::ServerConfig::builder_with_provider(
+                rustls::crypto::aws_lc_rs::default_provider().into(),
+            )
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .with_no_client_auth()
+            .with_single_cert(vec![cert_der], rustls::pki_types::PrivateKeyDer::Pkcs8(key_der))
+            .unwrap(),
+        );
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let cert_path = std::env::temp_dir().join(format!("witchy-oauth-test-{port}.pem"));
+        std::fs::write(&cert_path, ck.cert.pem()).unwrap();
+        // SAFETY: nextest runs each test in its own process — no other thread races this.
+        unsafe { std::env::set_var("WITCHY_TLS_EXTRA_ROOTS", &cert_path) };
+
+        let sc = server_config.clone();
+        let server = std::thread::spawn(move || {
+            let body = b"{\"access_token\":\"gho_test_token\",\"token_type\":\"bearer\"}";
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                std::str::from_utf8(body).unwrap()
+            );
+            for _ in 0..2 {
+                let (tcp, _) = listener.accept().unwrap();
+                let conn = rustls::ServerConnection::new(sc.clone()).unwrap();
+                let mut tls = rustls::StreamOwned::new(conn, tcp);
+                let mut req = Vec::new();
+                let mut b = [0u8; 1];
+                while tls.read_exact(&mut b).is_ok() {
+                    req.push(b[0]);
+                    if req.ends_with(b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                let _ = tls.write_all(response.as_bytes());
+                let _ = tls.flush();
+                tls.conn.send_close_notify();
+                let _ = tls.flush();
+            }
+        });
+
+        let src = format!(
+            "import oauth\nfn main(console: Console, net: Net):\n    match oauth.exchange_code(net, \"https://localhost:{port}/token\", \"cid\", \"sekret\", \"thecode\", \"http://app/cb\"):\n        Ok(tok) -> print(console, tok)\n        Err(e) -> print(console, \"error: \" + e)\n"
+        );
+        let allow = format!("localhost:{port}");
+        assert_eq!(link_run_net(&src, &[allow.as_str()]), vec!["gho_test_token".to_string()], "interp exchange");
+        assert_eq!(
+            run_linked_on_wasm_net(&[("main", src.as_str())], "main", &[allow.as_str()]),
+            vec!["gho_test_token".to_string()],
+            "wasm exchange"
+        );
+        server.join().unwrap();
+        let _ = std::fs::remove_file(&cert_path);
+    }
+
     /// base64url decode (URL-safe `-`/`_`, no padding) — the JWT/OIDC segment codec.
     /// `base64url_to_hex` round-trips the bytes of `base64url_of_hex`, and
     /// `base64url_decode` yields the text; identical on both backends.
