@@ -43,6 +43,31 @@ fn check_claims(payload_b64: String, audience: String, now: Int) -> Result(Json,
             else:
                 Ok(claims)
 
+// The full OIDC relying-party check: verify the RS256 signature AND that the token was
+// minted by the expected `issuer` for the expected `audience`, and is valid now
+// (`exp`/`nbf`). Returns the identity claims — `sub` plus provider-specific fields like
+// GitHub's `repository` or Google's `email` — for the caller to authorize. This is the
+// call a login or trusted-publishing flow makes once it holds the issuer's JWKS key
+// (`rsa_key_from_jwk`). The issuer check is what binds a token to a TRUSTED provider:
+// without it, anyone who can mint a JWT for the right audience would be admitted.
+pub fn verify_oidc(token: String, rsa_pubkey_der_hex: String, issuer: String, audience: String, now: Int) -> Result(Json, String):
+    match verify_rs256(token, rsa_pubkey_der_hex, audience, now):
+        Err(e) -> Err(e)
+        Ok(claims) ->
+            if json.get_string(claims, "iss").unwrap_or("") != issuer:
+                Err("JWT issuer mismatch (untrusted identity provider)")
+            else if not_yet_valid(claims, now):
+                Err("JWT is not yet valid (nbf is in the future)")
+            else:
+                Ok(claims)
+
+// The optional `nbf` (not-before) claim: a token is rejected until its activation time.
+// Absent `nbf` means always-active (only `exp` bounds it).
+fn not_yet_valid(claims: Json, now: Int) -> Bool:
+    match json.get_int(claims, "nbf"):
+        None -> false
+        Some(nbf) -> nbf > now
+
 // The decoded JOSE header of a compact JWT (its first segment), or an error — so a
 // verifier can read `alg`/`kid` to select the JWKS key before checking the signature.
 pub fn header(token: String) -> Result(Json, String):

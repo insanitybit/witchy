@@ -981,6 +981,10 @@ A compact JWT is `header.payload.signature`, each base64url. The signature cover
 
 Verify an RS256 (RSASSA-PKCS1-v1_5 / SHA-256) compact JWT against a DER PKCS#1 RSA public key (hex), checking the signature, `exp > now` (unix seconds), and `aud == audience`. Returns the decoded claims, or a reason string.
 
+#### `fn verify_oidc(token: String, rsa_pubkey_der_hex: String, issuer: String, audience: String, now: Int) -> Result(Json, String)`
+
+The full OIDC relying-party check: verify the RS256 signature AND that the token was minted by the expected `issuer` for the expected `audience`, and is valid now (`exp`/`nbf`). Returns the identity claims — `sub` plus provider-specific fields like GitHub's `repository` or Google's `email` — for the caller to authorize. This is the call a login or trusted-publishing flow makes once it holds the issuer's JWKS key (`rsa_key_from_jwk`). The issuer check is what binds a token to a TRUSTED provider: without it, anyone who can mint a JWT for the right audience would be admitted.
+
 #### `fn header(token: String) -> Result(Json, String)`
 
 The decoded JOSE header of a compact JWT (its first segment), or an error — so a verifier can read `alg`/`kid` to select the JWKS key before checking the signature.

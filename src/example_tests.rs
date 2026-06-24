@@ -8172,6 +8172,76 @@ fn main(console: Console):
         assert_eq!(run_linked_on_wasm(&[("main", src.as_str())], "main"), expected, "wasm");
     }
 
+    /// `jwt.verify_oidc` is the full relying-party check: a real RS256 GitHub-Actions-
+    /// shaped OIDC token verifies only against its TRUE issuer (the bind to a trusted
+    /// provider), and rejects a not-yet-active (`nbf`) token. On success the caller reads
+    /// identity claims — here the `repository` a trusted-publishing flow would authorize.
+    /// Both backends agree. This is the verification half of OIDC login / publishing.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn jwt_verify_oidc_binds_issuer_backends_agree() {
+        use aws_lc_rs::signature::KeyPair;
+        fn b64url(bytes: &[u8]) -> String {
+            const A: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+            let mut out = String::new();
+            for c in bytes.chunks(3) {
+                let n = ((c[0] as u32) << 16)
+                    | ((*c.get(1).unwrap_or(&0) as u32) << 8)
+                    | (*c.get(2).unwrap_or(&0) as u32);
+                out.push(A[(n >> 18 & 63) as usize] as char);
+                out.push(A[(n >> 12 & 63) as usize] as char);
+                if c.len() > 1 {
+                    out.push(A[(n >> 6 & 63) as usize] as char);
+                }
+                if c.len() > 2 {
+                    out.push(A[(n & 63) as usize] as char);
+                }
+            }
+            out
+        }
+        let hexs = |b: &[u8]| b.iter().map(|x| format!("{x:02x}")).collect::<String>();
+        let kp = aws_lc_rs::rsa::KeyPair::generate(aws_lc_rs::rsa::KeySize::Rsa2048).expect("keygen");
+        let pk_hex = hexs(kp.public_key().as_ref());
+        let sign_jwt = |payload: &str| -> String {
+            let signed = format!("{}.{}", b64url(br#"{"alg":"RS256","typ":"JWT"}"#), b64url(payload.as_bytes()));
+            let mut sig = vec![0u8; kp.public_modulus_len()];
+            kp.sign(
+                &aws_lc_rs::signature::RSA_PKCS1_SHA256,
+                &aws_lc_rs::rand::SystemRandom::new(),
+                signed.as_bytes(),
+                &mut sig,
+            )
+            .expect("sign");
+            format!("{signed}.{}", b64url(&sig))
+        };
+        let gh = "https://token.actions.githubusercontent.com";
+        let token = sign_jwt(
+            r#"{"iss":"https://token.actions.githubusercontent.com","aud":"coven","sub":"repo:octo/witchy:ref:refs/heads/main","repository":"octo/witchy","nbf":0,"exp":9999}"#,
+        );
+        let future = sign_jwt(
+            r#"{"iss":"https://token.actions.githubusercontent.com","aud":"coven","repository":"octo/witchy","nbf":5000,"exp":9999}"#,
+        );
+        // (token, issuer-to-trust) -> printed line. now = 1000, audience "coven".
+        let run = |tok: &str, issuer: &str| -> Vec<String> {
+            let src = format!(
+                "import jwt\nimport json\nfn main(console: Console):\n    match jwt.verify_oidc(\"{tok}\", \"{pk_hex}\", \"{issuer}\", \"coven\", 1000):\n        Ok(claims) -> print(console, json.get_string(claims, \"repository\").unwrap_or(\"?\"))\n        Err(e) -> print(console, e)\n"
+            );
+            let interp = link_run(&src);
+            assert_eq!(interp, run_linked_on_wasm(&[("main", src.as_str())], "main"), "backends agree");
+            interp
+        };
+        assert_eq!(run(&token, gh), vec!["octo/witchy".to_string()], "trusted issuer admits, claims readable");
+        assert_eq!(
+            run(&token, "https://evil.example"),
+            vec!["JWT issuer mismatch (untrusted identity provider)".to_string()],
+            "a token from the wrong issuer is rejected even with a valid signature"
+        );
+        assert_eq!(
+            run(&future, gh),
+            vec!["JWT is not yet valid (nbf is in the future)".to_string()]
+        );
+    }
+
     /// base64url decode (URL-safe `-`/`_`, no padding) — the JWT/OIDC segment codec.
     /// `base64url_to_hex` round-trips the bytes of `base64url_of_hex`, and
     /// `base64url_decode` yields the text; identical on both backends.
