@@ -1480,10 +1480,16 @@ impl Checker {
             ));
         }
         let rights = self.net_cap_rights(name, &args[0])?;
-        // The trailing argument (an address) is a string.
+        // The trailing argument: a typed `NetPolicy` for the policy verbs (`only`/`deny`,
+        // RFC-0011), a `host:port` string for the address verbs (`connect`/`listen`/`restrict`).
+        let expected = if name == "only" || name == "deny" {
+            Ty::Named("NetPolicy".into(), Vec::new())
+        } else {
+            Ty::String
+        };
         for arg in &args[1..] {
             let at = self.infer(arg)?;
-            self.unify(&Ty::String, &at).map_err(|e| TypeError {
+            self.unify(&expected, &at).map_err(|e| TypeError {
                 message: format!("in call to `{name}`: {}", e.message),
             })?;
         }

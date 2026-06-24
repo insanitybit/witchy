@@ -241,13 +241,13 @@
         );
     }
 
-    /// RFC-0011: `std/confine` builds `Net` allowlist patterns with typed constructors
-    /// (`confine.tcp(host, port)`) instead of hand-written strings, narrowing via the
-    /// method-syntax refinement (`net.restrict(...)`). Pure witchy over the existing
-    /// `restrict` intrinsic, so both backends agree. The grant must admit the pattern.
+    /// RFC-0011: `std/confine` builds a typed `NetPolicy` (`confine.tcp(host, port)`)
+    /// instead of a hand-written string, and `net.only(policy)` narrows the `Net` to it.
+    /// The typed policy carries the same `host:port` pattern the host enforces, so both
+    /// backends agree. The grant must admit the pattern.
     #[test]
     fn confine_typed_net_policies_backends_agree() {
-        let src = "import confine\nfn main(net: Net, console: Console):\n    let db = net.restrict(confine.tcp(\"10.0.0.5\", 6379))\n    print(console, \"confined\")\n";
+        let src = "import confine\nfn main(net: Net, console: Console):\n    let db = net.only(confine.tcp(\"10.0.0.5\", 6379))\n    print(console, \"confined\")\n";
         let linked = resolve_std_src(src);
         typeck::check(&linked).expect("typecheck");
         let expected = vec!["confined".to_string()];
@@ -263,12 +263,12 @@
         );
     }
 
-    /// RFC-0011: `net.only(policy)` is the method-form refinement verb (the older
-    /// `restrict` is its alias) — it narrows a `Net`'s address set identically, on
-    /// both backends. Method and free-function forms agree.
+    /// RFC-0011: `net.only(policy)` is the typed refinement verb — it narrows a `Net`'s
+    /// address set to a `NetPolicy`, while `restrict(net, "host:port")` is the string form
+    /// (config/serialization). Both narrow identically, on both backends.
     #[test]
     fn net_only_refinement_verb_backends_agree() {
-        let src = "import confine\nfn main(net: Net, console: Console):\n    let m = net.only(confine.tcp(\"10.0.0.5\", 6379))\n    let f = only(net, \"10.0.0.5:6379\")\n    print(console, \"only\")\n";
+        let src = "import confine\nfn main(net: Net, console: Console):\n    let m = net.only(confine.tcp(\"10.0.0.5\", 6379))\n    let f = restrict(net, \"10.0.0.5:6379\")\n    print(console, \"only\")\n";
         let linked = resolve_std_src(src);
         typeck::check(&linked).expect("typecheck");
         let expected = vec!["only".to_string()];

@@ -1499,24 +1499,40 @@ impl Interpreter {
             },
             // Network capability: attenuate a Net to a held address. `only` is
             // RFC-0011's method-form verb for the same allow-narrowing.
-            "restrict" | "only" => match args {
+            "restrict" => match args {
                 [Value::Net(allow), Value::Str(addr)] => {
                     if !crate::capabilities::net_allows(allow, addr) {
-                        return err(format!("{name}: `{addr}` is not in this Net capability"));
+                        return err(format!("restrict: `{addr}` is not in this Net capability"));
                     }
                     Ok(Some(Value::Net(vec![addr.clone()])))
                 }
-                _ => err(format!("{name} expects a Net and an address")),
+                _ => err("restrict expects a Net and an address"),
             },
-            // Subtract an address pattern (RFC-0011 `net.deny`): a monotone exclusion,
-            // recorded as a `!`-prefixed entry the shared `net_allows` honours.
+            // RFC-0011 typed verbs: the argument is a `NetPolicy` (a record carrying one
+            // address pattern). `only` narrows to it; `deny` subtracts it (a monotone
+            // exclusion recorded as a `!`-prefixed entry the shared `net_allows` honours).
+            "only" => match args {
+                [Value::Net(allow), Value::Ctor { fields, .. }] if fields.len() == 1 => {
+                    let Value::Str(addr) = &fields[0] else {
+                        return err("only expects a NetPolicy");
+                    };
+                    if !crate::capabilities::net_allows(allow, addr) {
+                        return err(format!("only: `{addr}` is not in this Net capability"));
+                    }
+                    Ok(Some(Value::Net(vec![addr.clone()])))
+                }
+                _ => err("only expects a Net and a NetPolicy"),
+            },
             "deny" => match args {
-                [Value::Net(allow), Value::Str(addr)] => {
+                [Value::Net(allow), Value::Ctor { fields, .. }] if fields.len() == 1 => {
+                    let Value::Str(addr) = &fields[0] else {
+                        return err("deny expects a NetPolicy");
+                    };
                     let mut next = allow.clone();
                     next.push(format!("!{addr}"));
                     Ok(Some(Value::Net(next)))
                 }
-                _ => err("deny expects a Net and an address"),
+                _ => err("deny expects a Net and a NetPolicy"),
             },
             // Connect only to an address the Net capability permits.
             "connect" => match args {

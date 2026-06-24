@@ -214,27 +214,31 @@ Compare two sources by capability footprint, as JSON:   {"widened":bool,"added":
 
 ## `confine`
 
-confine — typed constructors for `Net` address policies (RFC-0011).
+confine — typed `Net` address policies (RFC-0011). A `NetPolicy` is a typed value built by the constructors below instead of a hand-written string, so a policy is constructed, not spelled; `net.only(policy)` narrows a `Net` to it and `net.deny(policy)` subtracts it:
 
-`net.only(...)` (RFC-0011's verb; `restrict` is its older spelling) narrows a `Net` to a set of `host:port` allowlist patterns. These builders produce those patterns with named, typed arguments instead of hand-written strings, so the policy is constructed, not spelled:
+    let db  = net.only(confine.tcp("10.0.0.5", 6379))     // one plaintext host     let lan = net.deny(confine.cidr_any("10.0.0.0/8"))    // hold everything EXCEPT this block
 
-    let db  = net.only(confine.tcp("10.0.0.5", 6379))     // one plaintext host     let lan = net.only(confine.cidr_any("10.0.0.0/24"))   // a subnet, any port
+These are pure value builders (empty capability footprint). The policy wraps the same `host:port` allowlist pattern the host enforces (RFC-0003); the `tls:` HTTPS scheme is a connect-time choice on the address, not a property of the policy (RFC-0009).
 
-These are pure value builders (empty capability footprint). A `tls(host, port)` builder for the `tls:` HTTPS scheme arrives with RFC-0009 (the TLS client), once the host enforces the handshake on a `tls:`-schemed address.
+#### `type NetPolicy`
 
-#### `fn tcp(host: String, port: Int) -> String`
+A typed `Net` address policy — one allowlist pattern (`host:port`, with `:*` / CIDR forms).
+
+- `NetPolicy { pattern: String }`
+
+#### `fn tcp(host: String, port: Int) -> NetPolicy`
 
 A plaintext TCP endpoint: `<host>:<port>`.
 
-#### `fn any_port(host: String) -> String`
+#### `fn any_port(host: String) -> NetPolicy`
 
 Any port on a host: `<host>:*`.
 
-#### `fn cidr(block: String, port: Int) -> String`
+#### `fn cidr(block: String, port: Int) -> NetPolicy`
 
 An IPv4 CIDR block (rebinding-proof — matched against the resolved IP): `<a.b.c.d/bits>:<port>`.
 
-#### `fn cidr_any(block: String) -> String`
+#### `fn cidr_any(block: String) -> NetPolicy`
 
 An IPv4 CIDR block, any port: `<a.b.c.d/bits>:*`.
 
