@@ -50,14 +50,25 @@ pub fn head(net: Net[Connect, Tcp], host: String, port: Int, path: String) -> Re
 // parse. Saves splitting host/port/path by hand.
 pub fn get_url(net: Net[Connect, Tcp], raw: String) -> Result(Response, String):
     match url.parse(raw):
-        Ok(u) -> Ok(get(net, url.host(u), url.port(u), url.path(u)))
+        Ok(u) -> Ok(request_with(net, url.scheme(u) == "https", "GET", url.host(u), url.port(u), url.path(u), [], ""))
         Err(e) -> Err("invalid URL: " + e)
+
+// The dial target for a request: `tls:host:port` when `secure` (HTTPS), else
+// `host:port`. The capability allowlist governs the bare `host:port`; the `tls:`
+// scheme tells `connect` to terminate the connection over TLS (see net `connect`).
+fn endpoint(secure: Bool, host: String, port: Int) -> String:
+    let base = host + ":" + "${port}"
+    if secure:
+        "tls:" + base
+    else:
+        base
 
 // Send a request with custom headers, returning the response. The generic form
 // behind the method helpers — use it when you need to set headers (auth,
-// content-type, ...). `Connection: close` ends `recv_all` after the body.
-pub fn request_with(net: Net[Connect, Tcp], method: String, host: String, port: Int, path: String, headers: List((String, String)), body: String) -> Response:
-    let sock = connect(net, host + ":" + "${port}")
+// content-type, ...). `secure` selects HTTPS (TLS). `Connection: close` ends
+// `recv_all` after the body.
+pub fn request_with(net: Net[Connect, Tcp], secure: Bool, method: String, host: String, port: Int, path: String, headers: List((String, String)), body: String) -> Response:
+    let sock = connect(net, endpoint(secure, host, port))
     var head = method + " " + path + " HTTP/1.1\r\n" + "Host: " + host + "\r\n"
     for h in headers:
         let (k, v) = h
@@ -68,15 +79,15 @@ pub fn request_with(net: Net[Connect, Tcp], method: String, host: String, port: 
     parse_response(recv_all(sock))
 
 fn request(net: Net[Connect, Tcp], method: String, host: String, port: Int, path: String, body: String) -> Response:
-    request_with(net, method, host, port, path, [], body)
+    request_with(net, false, method, host, port, path, [], body)
 
 // Like `request_with`, but fallible: an unreachable upstream yields
 // `Err("connect to host:port failed (unreachable)")` instead of trapping. Built
 // on `try_connect` so a long-running server (a proxy, a health check) survives a
 // down peer — the caller decides what to do (e.g. answer 502) instead of the VM
 // aborting. A successful dial sends the request and parses the response as usual.
-pub fn try_request_with(net: Net[Connect, Tcp], method: String, host: String, port: Int, path: String, headers: List((String, String)), body: String) -> Result(Response, String):
-    match try_connect(net, host + ":" + "${port}"):
+pub fn try_request_with(net: Net[Connect, Tcp], secure: Bool, method: String, host: String, port: Int, path: String, headers: List((String, String)), body: String) -> Result(Response, String):
+    match try_connect(net, endpoint(secure, host, port)):
         None -> Err("connect to " + host + ":" + "${port}" + " failed (unreachable)")
         Some(sock) ->
             var head = method + " " + path + " HTTP/1.1\r\n" + "Host: " + host + "\r\n"
@@ -90,12 +101,12 @@ pub fn try_request_with(net: Net[Connect, Tcp], method: String, host: String, po
 // Fallible GET: `Ok(response)` on success, `Err(reason)` if the host is
 // unreachable. The fallible counterpart of `get`.
 pub fn try_get(net: Net[Connect, Tcp], host: String, port: Int, path: String) -> Result(Response, String):
-    try_request_with(net, "GET", host, port, path, [], "")
+    try_request_with(net, false, "GET", host, port, path, [], "")
 
 // Fallible POST: `Ok(response)` on success, `Err(reason)` if the host is
 // unreachable. The fallible counterpart of `post`.
 pub fn try_post(net: Net[Connect, Tcp], host: String, port: Int, path: String, body: String) -> Result(Response, String):
-    try_request_with(net, "POST", host, port, path, [], body)
+    try_request_with(net, false, "POST", host, port, path, [], body)
 
 // ---- Request builder (reqwest-style fluent client) ----
 
@@ -151,7 +162,7 @@ impl RequestBuilder:
             RequestBuilder(m, u, hs, b) ->
                 match url.parse(u):
                     Ok(parsed) ->
-                        Ok(request_with(net, m, url.host(parsed), url.port(parsed), url.path(parsed), hs, b))
+                        Ok(request_with(net, url.scheme(parsed) == "https", m, url.host(parsed), url.port(parsed), url.path(parsed), hs, b))
                     Err(e) -> Err("invalid URL: " + e)
 
 // Whether the response status is in the 2xx success range.

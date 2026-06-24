@@ -680,11 +680,11 @@ Perform a POST request with `body` (e.g. a JSON document). The body's byte lengt
 
 GET a full URL string (`http://host[:port]/path`), or an error if it doesn't parse. Saves splitting host/port/path by hand.
 
-#### `fn request_with(net: Net[Connect, Tcp], method: String, host: String, port: Int, path: String, headers: List((String, String)), body: String) -> Response`
+#### `fn request_with(net: Net[Connect, Tcp], secure: Bool, method: String, host: String, port: Int, path: String, headers: List((String, String)), body: String) -> Response`
 
-Send a request with custom headers, returning the response. The generic form behind the method helpers — use it when you need to set headers (auth, content-type, ...). `Connection: close` ends `recv_all` after the body.
+Send a request with custom headers, returning the response. The generic form behind the method helpers — use it when you need to set headers (auth, content-type, ...). `secure` selects HTTPS (TLS). `Connection: close` ends `recv_all` after the body.
 
-#### `fn try_request_with(net: Net[Connect, Tcp], method: String, host: String, port: Int, path: String, headers: List((String, String)), body: String) -> Result(Response, String)`
+#### `fn try_request_with(net: Net[Connect, Tcp], secure: Bool, method: String, host: String, port: Int, path: String, headers: List((String, String)), body: String) -> Result(Response, String)`
 
 Like `request_with`, but fallible: an unreachable upstream yields `Err("connect to host:port failed (unreachable)")` instead of trapping. Built on `try_connect` so a long-running server (a proxy, a health check) survives a down peer — the caller decides what to do (e.g. answer 502) instead of the VM aborting. A successful dial sends the request and parses the response as usual.
 

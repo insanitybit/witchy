@@ -8328,6 +8328,70 @@ fn main(console: Console):
         let _ = std::fs::remove_file(&cert_path);
     }
 
+    /// HTTPS end to end: `http.get_url("https://localhost:PORT/")` routes through the
+    /// `tls:` scheme to a local rustls server speaking minimal HTTP/1.1, and parses the
+    /// response — status and body identical on BOTH backends. Closes the loop from the
+    /// TLS transport up to the `std/http` client (the shape an OAuth/OIDC call makes).
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn https_get_url_through_a_local_server_backends_agree() {
+        use std::io::{Read, Write};
+        use std::sync::Arc;
+        let ck = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).expect("cert");
+        let cert_der = ck.cert.der().clone();
+        let key_der = rustls::pki_types::PrivatePkcs8KeyDer::from(ck.key_pair.serialize_der());
+        let server_config = Arc::new(
+            rustls::ServerConfig::builder_with_provider(
+                rustls::crypto::aws_lc_rs::default_provider().into(),
+            )
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .with_no_client_auth()
+            .with_single_cert(vec![cert_der], rustls::pki_types::PrivateKeyDer::Pkcs8(key_der))
+            .unwrap(),
+        );
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let cert_path = std::env::temp_dir().join(format!("witchy-https-test-{port}.pem"));
+        std::fs::write(&cert_path, ck.cert.pem()).unwrap();
+        // SAFETY: nextest runs each test in its own process — no other thread races this.
+        unsafe { std::env::set_var("WITCHY_TLS_EXTRA_ROOTS", &cert_path) };
+
+        let sc = server_config.clone();
+        let server = std::thread::spawn(move || {
+            for _ in 0..2 {
+                let (tcp, _) = listener.accept().unwrap();
+                let conn = rustls::ServerConnection::new(sc.clone()).unwrap();
+                let mut tls = rustls::StreamOwned::new(conn, tcp);
+                let mut req = Vec::new();
+                let mut b = [0u8; 1];
+                while tls.read_exact(&mut b).is_ok() {
+                    req.push(b[0]);
+                    if req.ends_with(b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                let _ = tls.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nhi");
+                let _ = tls.flush();
+                tls.conn.send_close_notify();
+                let _ = tls.flush();
+            }
+        });
+
+        let src = format!(
+            "import http\nfn main(console: Console, net: Net):\n    match http.get_url(net, \"https://localhost:{port}/\"):\n        Ok(resp) -> print(console, \"${{http.status(resp)}} ${{http.body(resp)}}\")\n        Err(e) -> print(console, \"error: \" + e)\n"
+        );
+        let allow = format!("localhost:{port}");
+        assert_eq!(link_run_net(&src, &[allow.as_str()]), vec!["200 hi".to_string()], "interp https");
+        assert_eq!(
+            run_linked_on_wasm_net(&[("main", src.as_str())], "main", &[allow.as_str()]),
+            vec!["200 hi".to_string()],
+            "wasm https"
+        );
+        server.join().unwrap();
+        let _ = std::fs::remove_file(&cert_path);
+    }
+
     /// base64url decode (URL-safe `-`/`_`, no padding) — the JWT/OIDC segment codec.
     /// `base64url_to_hex` round-trips the bytes of `base64url_of_hex`, and
     /// `base64url_decode` yields the text; identical on both backends.
