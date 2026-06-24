@@ -24,6 +24,21 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
+
+/// A connected byte stream behind a `Value::Socket`. Plain `TcpStream` and TLS
+/// `rustls::StreamOwned` both satisfy it, so the reference interpreter holds plain and
+/// `tls:` sockets in one table — `send`/`recv` operate on either (RFC-0009 terminates
+/// TLS host-side; it is an address scheme, not a separate capability).
+pub trait Stream: Read + Write + Send {
+    /// Close both directions (idempotent). Plain → `TcpStream::shutdown`; a TLS stream
+    /// adds a close-notify before tearing down the transport.
+    fn shutdown(&mut self);
+}
+impl Stream for TcpStream {
+    fn shutdown(&mut self) {
+        let _ = TcpStream::shutdown(self, std::net::Shutdown::Both);
+    }
+}
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
@@ -515,8 +530,10 @@ pub struct Interpreter {
     /// Named secrets backing the `SecretStore` capability (from
     /// `--secret`/`--secret-file`/`--signing-key`). `secret_store.get(name)`.
     secrets: std::collections::BTreeMap<String, Vec<u8>>,
-    /// Open sockets, indexed by `Value::Socket` handle.
-    sockets: Vec<BufReader<TcpStream>>,
+    /// Open sockets, indexed by `Value::Socket` handle. Each is a plain or TLS byte
+    /// stream behind one `dyn Stream` (RFC-0009 terminates `tls:` host-side, so
+    /// `send_line`/`recv_line` operate on either without knowing which).
+    sockets: Vec<BufReader<Box<dyn Stream>>>,
     /// Listening server sockets, indexed by `Value::Listener` handle.
     listeners: Vec<TcpListener>,
     /// Record constructor name -> ordered field names, for `value.field` access.
@@ -1524,7 +1541,7 @@ impl Interpreter {
                     match TcpStream::connect(targets.as_slice()) {
                         Ok(stream) => {
                             let id = self.sockets.len();
-                            self.sockets.push(BufReader::new(stream));
+                            self.sockets.push(BufReader::new(Box::new(stream) as Box<dyn Stream>));
                             Ok(Some(Value::Socket(id)))
                         }
                         Err(e) => err(format!("connect to `{addr}` failed: {e}")),
@@ -1541,7 +1558,7 @@ impl Interpreter {
                     let v = match TcpStream::connect(targets.as_slice()) {
                         Ok(stream) => {
                             let id = self.sockets.len();
-                            self.sockets.push(BufReader::new(stream));
+                            self.sockets.push(BufReader::new(Box::new(stream) as Box<dyn Stream>));
                             Value::Ctor { name: "Some".into(), fields: vec![Value::Socket(id)] }
                         }
                         Err(_) => Value::Ctor { name: "None".into(), fields: Vec::new() },
@@ -1660,7 +1677,7 @@ impl Interpreter {
                     match listener.accept() {
                         Ok((stream, _peer)) => {
                             let sid = self.sockets.len();
-                            self.sockets.push(BufReader::new(stream));
+                            self.sockets.push(BufReader::new(Box::new(stream) as Box<dyn Stream>));
                             Ok(Some(Value::Socket(sid)))
                         }
                         Err(e) => err(format!("accept failed: {e}")),
@@ -1673,7 +1690,7 @@ impl Interpreter {
             "close" => match args {
                 [Value::Socket(id)] => {
                     if let Some(sock) = self.sockets.get_mut(*id) {
-                        let _ = sock.get_mut().shutdown(std::net::Shutdown::Both);
+                        sock.get_mut().shutdown();
                     }
                     Ok(Some(Value::Nil))
                 }

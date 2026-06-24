@@ -184,8 +184,9 @@ pub struct VmState {
     /// The `Net` capability handle table: index 0 is the granted allowlist,
     /// and each `restrict` mints a narrower entry — host-side, unforgeable.
     pub(crate) nets: Vec<Vec<String>>,
-    /// Open sockets, indexed by the guest's i32 Socket handles.
-    sockets: Vec<std::io::BufReader<std::net::TcpStream>>,
+    /// Open sockets, indexed by the guest's i32 Socket handles. Each is a plain or
+    /// TLS byte stream behind one `dyn Stream` (see `Stream`).
+    sockets: Vec<std::io::BufReader<Box<dyn Stream>>>,
     /// Listening server sockets, indexed by the guest's i32 Listener handles.
     listeners: Vec<std::net::TcpListener>,
     /// A build step's confined output directory (`BuildOut`) and read roots
@@ -1202,7 +1203,7 @@ fn host_net_connect(mut caller: Caller<'_, VmState>, h: i32, addr_ptr: i32) -> R
     let stream = std::net::TcpStream::connect(targets.as_slice())
         .map_err(|e| Error::msg(format!("connect to `{addr}` failed: {e}")))?;
     let sockets = &mut caller.data_mut().sockets;
-    sockets.push(std::io::BufReader::new(stream));
+    sockets.push(std::io::BufReader::new(Box::new(stream) as Box<dyn Stream>));
     Ok((sockets.len() - 1) as i32)
 }
 
@@ -1220,7 +1221,7 @@ fn host_net_try_connect(mut caller: Caller<'_, VmState>, h: i32, addr_ptr: i32) 
     match std::net::TcpStream::connect(targets.as_slice()) {
         Ok(stream) => {
             let sockets = &mut caller.data_mut().sockets;
-            sockets.push(std::io::BufReader::new(stream));
+            sockets.push(std::io::BufReader::new(Box::new(stream) as Box<dyn Stream>));
             Ok((sockets.len() - 1) as i32)
         }
         Err(_) => Ok(-1),
@@ -1252,14 +1253,28 @@ fn host_net_accept(mut caller: Caller<'_, VmState>, lid: i32) -> Result<i32> {
     let (stream, _peer) = listener
         .accept()
         .map_err(|e| Error::msg(format!("accept failed: {e}")))?;
-    state.sockets.push(std::io::BufReader::new(stream));
+    state
+        .sockets
+        .push(std::io::BufReader::new(Box::new(stream) as Box<dyn Stream>));
     Ok((state.sockets.len() - 1) as i32)
 }
 
-fn socket_of(
-    state: &mut VmState,
-    sid: i32,
-) -> Result<&mut std::io::BufReader<std::net::TcpStream>> {
+/// A connected byte stream behind a `Socket` handle. A plain `TcpStream` and a TLS
+/// `rustls::StreamOwned` both satisfy it, so `connect` can return either under one
+/// socket table — the `send`/`recv` host ops never need to know which (RFC-0009: TLS
+/// is a `tls:` address scheme, terminated here host-side, not a separate capability).
+pub trait Stream: std::io::Read + std::io::Write + Send {
+    /// Close both directions (idempotent). Plain → `TcpStream::shutdown`; a TLS stream
+    /// adds a close-notify before tearing down the transport.
+    fn shutdown(&mut self);
+}
+impl Stream for std::net::TcpStream {
+    fn shutdown(&mut self) {
+        let _ = std::net::TcpStream::shutdown(self, std::net::Shutdown::Both);
+    }
+}
+
+fn socket_of(state: &mut VmState, sid: i32) -> Result<&mut std::io::BufReader<Box<dyn Stream>>> {
     state
         .sockets
         .get_mut(sid as usize)
@@ -1345,7 +1360,7 @@ fn host_net_recv_bytes_len(mut caller: Caller<'_, VmState>, sid: i32, n: i64) ->
 /// `net_close(sock)`: shut the connection down (idempotent).
 fn host_net_close(mut caller: Caller<'_, VmState>, sid: i32) -> Result<()> {
     if let Some(sock) = caller.data_mut().sockets.get_mut(sid as usize) {
-        let _ = sock.get_mut().shutdown(std::net::Shutdown::Both);
+        sock.get_mut().shutdown();
     }
     Ok(())
 }
