@@ -993,6 +993,14 @@ The decoded JOSE header of a compact JWT (its first segment), or an error — so
 
 Build the DER PKCS#1 `RSAPublicKey` (as hex — the shape `verify_rs256` wants) from a JWK's base64url modulus `n` and exponent `e`, so an OIDC verifier can turn a JWKS entry (`{"kty":"RSA","n":…,"e":…}`) into a key. The result is the ASN.1 DER `SEQUENCE { INTEGER n, INTEGER e }`; an INTEGER gains a leading `00` when its top bit is set (DER integers are signed two's-complement, RSA values are unsigned magnitudes).
 
+#### `fn kid(token: String) -> Option(String)`
+
+The `kid` (key id) from a compact JWT's header — used to pick the right JWKS key when a provider publishes several (key rotation). `None` if the token or header is malformed.
+
+#### `fn rsa_key_for_kid(jwks: Json, key_id: String) -> Result(String, String)`
+
+Select the RSA public key for `kid` from a JWKS document (`{"keys":[{"kty":"RSA","kid": …,"n":…,"e":…}, …]}`) and return it as the DER PKCS#1 hex `verify_rs256`/`verify_oidc` want. This is how an OIDC verifier consumes a provider's published keys (Google, GitHub Actions): fetch the JWKS, read the token's `kid` (`jwt.kid`), then pick the key.
+
 ## `list`
 
 The witchy standard list library. Every function here is pure: the module declares no capability parameters, so importing it grants no authority — it can only transform data. This is the capability model in miniature: a library you didn't hand a Console/Dir/Net to literally cannot reach them.

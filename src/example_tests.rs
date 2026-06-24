@@ -8246,6 +8246,89 @@ fn main(console: Console):
         );
     }
 
+    /// The full OIDC-via-JWKS verification (how "Log in with Google" / GitHub-Actions
+    /// publishing checks an id_token): read the token's `kid`, pick the matching RSA key
+    /// from the provider's published JWKS, and `verify_oidc`. Exercised against a REAL
+    /// aws-lc-signed id_token + a JWKS built from the same key — identical on both backends.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn jwt_verify_oidc_via_jwks_backends_agree() {
+        use aws_lc_rs::signature::KeyPair;
+        fn b64url(bytes: &[u8]) -> String {
+            const A: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+            let mut out = String::new();
+            for c in bytes.chunks(3) {
+                let n = ((c[0] as u32) << 16)
+                    | ((*c.get(1).unwrap_or(&0) as u32) << 8)
+                    | (*c.get(2).unwrap_or(&0) as u32);
+                out.push(A[(n >> 18 & 63) as usize] as char);
+                out.push(A[(n >> 12 & 63) as usize] as char);
+                if c.len() > 1 {
+                    out.push(A[(n >> 6 & 63) as usize] as char);
+                }
+                if c.len() > 2 {
+                    out.push(A[(n & 63) as usize] as char);
+                }
+            }
+            out
+        }
+        fn two_ints(der: &[u8]) -> (Vec<u8>, Vec<u8>) {
+            fn len_at(b: &[u8], i: &mut usize) -> usize {
+                let mut len = b[*i] as usize;
+                *i += 1;
+                if len & 0x80 != 0 {
+                    let nbytes = len & 0x7f;
+                    len = 0;
+                    for _ in 0..nbytes {
+                        len = (len << 8) | b[*i] as usize;
+                        *i += 1;
+                    }
+                }
+                len
+            }
+            fn tlv(b: &[u8], i: &mut usize) -> Vec<u8> {
+                *i += 1;
+                let len = len_at(b, i);
+                let v = b[*i..*i + len].to_vec();
+                *i += len;
+                v
+            }
+            let mut i = 0;
+            i += 1;
+            let _ = len_at(der, &mut i);
+            (tlv(der, &mut i), tlv(der, &mut i))
+        }
+        let kp = aws_lc_rs::rsa::KeyPair::generate(aws_lc_rs::rsa::KeySize::Rsa2048).expect("keygen");
+        let (n_int, e_int) = two_ints(kp.public_key().as_ref());
+        let strip = |v: &[u8]| if v.first() == Some(&0) { v[1..].to_vec() } else { v.to_vec() };
+        let jwks = format!(
+            r#"{{"keys":[{{"kty":"RSA","kid":"google-key-1","n":"{}","e":"{}"}}]}}"#,
+            b64url(&strip(&n_int)),
+            b64url(&strip(&e_int))
+        );
+        let signed = format!(
+            "{}.{}",
+            b64url(br#"{"alg":"RS256","kid":"google-key-1","typ":"JWT"}"#),
+            b64url(br#"{"iss":"https://accounts.google.com","aud":"myclient","email":"a@b.com","sub":"42","exp":9999,"nbf":0}"#)
+        );
+        let mut sig = vec![0u8; kp.public_modulus_len()];
+        kp.sign(
+            &aws_lc_rs::signature::RSA_PKCS1_SHA256,
+            &aws_lc_rs::rand::SystemRandom::new(),
+            signed.as_bytes(),
+            &mut sig,
+        )
+        .expect("sign");
+        let token = format!("{signed}.{}", b64url(&sig));
+        let jwks_lit = jwks.replace('"', "\\\"");
+        let src = format!(
+            "import jwt\nimport json\nfn main(console: Console):\n    match json.decode(\"{jwks_lit}\"):\n        Err(e) -> print(console, \"bad jwks\")\n        Ok(doc) ->\n            match jwt.kid(\"{token}\"):\n                None -> print(console, \"no kid\")\n                Some(k) ->\n                    match jwt.rsa_key_for_kid(doc, k):\n                        Err(e) -> print(console, \"key: \" + e)\n                        Ok(der) ->\n                            match jwt.verify_oidc(\"{token}\", der, \"https://accounts.google.com\", \"myclient\", 1000):\n                                Ok(claims) -> print(console, json.get_string(claims, \"email\").unwrap_or(\"?\"))\n                                Err(e) -> print(console, e)\n"
+        );
+        let expected = vec!["a@b.com".to_string()];
+        assert_eq!(link_run(&src), expected, "interp OIDC-via-JWKS");
+        assert_eq!(run_linked_on_wasm(&[("main", src.as_str())], "main"), expected, "wasm OIDC-via-JWKS");
+    }
+
     /// The `tls:` scheme is split off an address before the allowlist match: the
     /// capability governs the bare `host:port`, the scheme is a connect-time choice.
     #[test]
