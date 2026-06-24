@@ -288,6 +288,10 @@ Verify an ECDSA P-256 / SHA-256 signature — WebAuthn "ES256" (COSE alg -7). `p
 
 Like `ecdsa_p256_verify` but the message is also hex — for binary messages such as WebAuthn's `authenticatorData || SHA256(clientDataJSON)`. (Native-only.)
 
+#### `fn rsa_pkcs1_sha256_verify(public_key: String, message: String, signature: String) -> Bool`
+
+Verify an RSASSA-PKCS1-v1_5 / SHA-256 signature — JWT/OIDC "RS256" (the algorithm GitHub Actions and Google sign their identity tokens with). `public_key` is the hex of a DER-encoded RSA public key (PKCS#1 `RSAPublicKey`); `signature` is hex; `message` is the raw signed bytes (`header.payload` for a JWT). Total: bad input or a bad signature yields `false`. (Native-only.)
+
 #### `fn sha512(data: String) -> String`
 
 SHA-512 of a string's UTF-8 bytes, as 128 lowercase hex characters. (Native-only.)

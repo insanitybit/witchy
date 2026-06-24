@@ -34,6 +34,8 @@ pub fn lookup(qualified: &str) -> Option<NativeFn> {
         #[cfg(not(target_arch = "wasm32"))]
         "crypto.ecdsa_p256_verify_hex" => Some(crypto::ecdsa_p256_verify_hex),
         #[cfg(not(target_arch = "wasm32"))]
+        "crypto.rsa_pkcs1_sha256_verify" => Some(crypto::rsa_pkcs1_sha256_verify),
+        #[cfg(not(target_arch = "wasm32"))]
         "crypto.sha512" => Some(crypto::sha512),
         #[cfg(not(target_arch = "wasm32"))]
         "crypto.sha3_256" => Some(crypto::sha3_256),
@@ -200,6 +202,31 @@ mod crypto {
             use aws_lc_rs::signature::{UnparsedPublicKey, ECDSA_P256_SHA256_ASN1};
             Some(
                 UnparsedPublicKey::new(&ECDSA_P256_SHA256_ASN1, pk)
+                    .verify(msg.as_bytes(), &sig)
+                    .is_ok(),
+            )
+        })()
+        .unwrap_or(false);
+        Ok(Value::Bool(ok))
+    }
+
+    /// Verify an RSASSA-PKCS1-v1_5 / SHA-256 signature — JWT/OIDC "RS256". The
+    /// `public_key` is the hex of a DER-encoded RSA public key (PKCS#1 `RSAPublicKey`);
+    /// `signature` is hex; `message` is the raw signed bytes. Total: malformed input or
+    /// a bad signature yields `false`, never an error. (Native/aws-lc only.)
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn rsa_pkcs1_sha256_verify(args: &[Value]) -> Result<Value, RuntimeError> {
+        let [Value::Str(pk_hex), Value::Str(msg), Value::Str(sig_hex)] = args else {
+            return Err(type_error(
+                "crypto.rsa_pkcs1_sha256_verify expects (pubkey_der_hex, message, sig_hex) strings",
+            ));
+        };
+        let ok = (|| {
+            let pk = hex_decode(pk_hex)?;
+            let sig = hex_decode(sig_hex)?;
+            use aws_lc_rs::signature::{UnparsedPublicKey, RSA_PKCS1_2048_8192_SHA256};
+            Some(
+                UnparsedPublicKey::new(&RSA_PKCS1_2048_8192_SHA256, pk)
                     .verify(msg.as_bytes(), &sig)
                     .is_ok(),
             )

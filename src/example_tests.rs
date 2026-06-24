@@ -7985,6 +7985,48 @@ fn main(console: Console):
         );
     }
 
+    /// RS256 (`crypto.rsa_pkcs1_sha256_verify`, the OIDC/JWT signature algorithm) is
+    /// reachable and TOTAL on both backends — a malformed key/signature yields `false`,
+    /// never a trap. (The verify LOGIC is proven by `rs256_native_roundtrip_verifies`.)
+    #[test]
+    fn rsa_pkcs1_sha256_verify_total_backends_agree() {
+        let src = "import crypto\nfn main(console: Console):\n    if crypto.rsa_pkcs1_sha256_verify(\"00\", \"msg\", \"00\"):\n        print(console, \"valid\")\n    else:\n        print(console, \"invalid\")\n";
+        let expected = vec!["invalid".to_string()];
+        assert_eq!(link_run(src), expected, "interp");
+        assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "wasm");
+    }
+
+    /// RS256 verify LOGIC is correct: a real RSA-2048 PKCS#1 signature over a message
+    /// verifies, a wrong message is rejected, and a malformed key is total — exercising
+    /// the native aws-lc path both backends route through.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn rs256_native_roundtrip_verifies() {
+        use crate::value::NativeValue as NV;
+        use aws_lc_rs::signature::KeyPair; // brings `public_key()` into scope
+        let hexs = |b: &[u8]| b.iter().map(|x| format!("{x:02x}")).collect::<String>();
+        let kp = aws_lc_rs::rsa::KeyPair::generate(aws_lc_rs::rsa::KeySize::Rsa2048).expect("keygen");
+        let pk_hex = hexs(kp.public_key().as_ref());
+        let msg = "hello rs256";
+        let mut sig = vec![0u8; kp.public_modulus_len()];
+        kp.sign(
+            &aws_lc_rs::signature::RSA_PKCS1_SHA256,
+            &aws_lc_rs::rand::SystemRandom::new(),
+            msg.as_bytes(),
+            &mut sig,
+        )
+        .expect("sign");
+        let sig_hex = hexs(&sig);
+        // Reach the intrinsic through the PUBLIC native registry (the path both backends use).
+        let f = crate::native::lookup("crypto.rsa_pkcs1_sha256_verify").expect("registered");
+        let verify = |pk: &str, m: &str, s: &str| {
+            f(&[NV::Str(pk.into()), NV::Str(m.into()), NV::Str(s.into())]).unwrap()
+        };
+        assert_eq!(verify(&pk_hex, msg, &sig_hex), NV::Bool(true), "valid RS256 signature verifies");
+        assert_eq!(verify(&pk_hex, "tampered", &sig_hex), NV::Bool(false), "wrong message rejected");
+        assert_eq!(verify("00", msg, &sig_hex), NV::Bool(false), "malformed key is total (false)");
+    }
+
     /// Like `run_linked_on_wasm` but with an explicit `Net` allowlist grant, for
     /// programs that `restrict`/`connect` to specific addresses.
     fn run_linked_on_wasm_net(sources: &[(&str, &str)], entry: &str, net_allow: &[&str]) -> Vec<String> {

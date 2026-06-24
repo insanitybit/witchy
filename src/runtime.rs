@@ -476,6 +476,7 @@ pub(crate) fn link_capability_imports(
     linker.func_wrap("witchy", "crypto.sha256", host_sha256)?;
     linker.func_wrap("witchy", "crypto.ecdsa_p256_verify", host_ecdsa_p256_verify)?;
     linker.func_wrap("witchy", "crypto.ecdsa_p256_verify_hex", host_ecdsa_p256_verify_hex)?;
+    linker.func_wrap("witchy", "crypto.rsa_pkcs1_sha256_verify", host_rsa_pkcs1_sha256_verify)?;
     linker.func_wrap("witchy", "crypto.sha512", host_sha512)?;
     linker.func_wrap("witchy", "crypto.sha3_256", host_sha3_256)?;
     linker.func_wrap("witchy", "crypto.hmac_sha256", host_hmac_sha256)?;
@@ -680,6 +681,10 @@ fn host_ecdsa_p256_verify(caller: Caller<'_, VmState>, pk: i32, msg: i32, sig: i
 
 fn host_ecdsa_p256_verify_hex(caller: Caller<'_, VmState>, pk: i32, msg: i32, sig: i32) -> Result<i32> {
     host_crypto_verify3(caller, "crypto.ecdsa_p256_verify_hex", pk, msg, sig)
+}
+
+fn host_rsa_pkcs1_sha256_verify(caller: Caller<'_, VmState>, pk: i32, msg: i32, sig: i32) -> Result<i32> {
+    host_crypto_verify3(caller, "crypto.rsa_pkcs1_sha256_verify", pk, msg, sig)
 }
 
 fn host_sha512(caller: Caller<'_, VmState>, in_ptr: i32, out_ptr: i32) -> Result<()> {

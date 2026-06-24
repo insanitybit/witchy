@@ -52,6 +52,14 @@ pub fn ecdsa_p256_verify(public_key: String, message: String, signature: String)
 pub fn ecdsa_p256_verify_hex(public_key: String, message: String, signature: String) -> Bool:
     false
 
+// Verify an RSASSA-PKCS1-v1_5 / SHA-256 signature — JWT/OIDC "RS256" (the algorithm
+// GitHub Actions and Google sign their identity tokens with). `public_key` is the hex
+// of a DER-encoded RSA public key (PKCS#1 `RSAPublicKey`); `signature` is hex; `message`
+// is the raw signed bytes (`header.payload` for a JWT). Total: bad input or a bad
+// signature yields `false`. (Native-only.)
+pub fn rsa_pkcs1_sha256_verify(public_key: String, message: String, signature: String) -> Bool:
+    false
+
 // SHA-512 of a string's UTF-8 bytes, as 128 lowercase hex characters. (Native-only.)
 pub fn sha512(data: String) -> String:
     ""

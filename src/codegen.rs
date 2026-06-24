@@ -1052,7 +1052,8 @@ impl Codegen {
                 | "recv_bytes" => ValType::Str,
                 "string.starts_with" | "string.ends_with" | "string.contains" | "dict.has"
                 | "exists" | "is_dir" | "crypto.ed25519_verify"
-                | "crypto.ecdsa_p256_verify" | "crypto.ecdsa_p256_verify_hex" => ValType::Bool,
+                | "crypto.ecdsa_p256_verify" | "crypto.ecdsa_p256_verify_hex"
+                | "crypto.rsa_pkcs1_sha256_verify" => ValType::Bool,
                 "string.length" | "string.char_count" | "string.index_of" | "list.length"
                 | "dict.size" | "math.to_int" | "string.to_int" | "int_to_duration"
                 | "duration_to_int" | "now" => ValType::Int,
@@ -5646,6 +5647,13 @@ impl Codegen {
             ("crypto.ecdsa_p256_verify", 3) => {
                 self.used_crypto_ops.insert("ecdsa_p256_verify");
                 call("crypto_ecdsa_p256_verify", self.lower_args(&[&args[0], &args[1], &args[2]])?)
+            }
+            ("crypto.rsa_pkcs1_sha256_verify", 3) => {
+                self.used_crypto_ops.insert("rsa_pkcs1_sha256_verify");
+                call(
+                    "crypto_rsa_pkcs1_sha256_verify",
+                    self.lower_args(&[&args[0], &args[1], &args[2]])?,
+                )
             }
             ("crypto.ecdsa_p256_verify_hex", 3) => {
                 self.used_crypto_ops.insert("ecdsa_p256_verify_hex");

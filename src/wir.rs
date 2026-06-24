@@ -4396,6 +4396,13 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             uses_heap: false,
             uses_table: false,
         }),
+        "crypto_rsa_pkcs1_sha256_verify" => Some(WirHelperSpec {
+            func: host_call_helper("crypto_rsa_pkcs1_sha256_verify", "crypto.rsa_pkcs1_sha256_verify", 3),
+            helper_deps: &[],
+            import_deps: &["crypto.rsa_pkcs1_sha256_verify"],
+            uses_heap: false,
+            uses_table: false,
+        }),
         // ed25519 signature verify — three string headers → i32 bool, no
         // capability. Reached by the self-hosted package manager (coven/pm).
         "crypto_ed25519_verify" => Some(WirHelperSpec {
