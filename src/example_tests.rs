@@ -8329,6 +8329,16 @@ fn main(console: Console):
         assert_eq!(run_linked_on_wasm(&[("main", src.as_str())], "main"), expected, "wasm OIDC-via-JWKS");
     }
 
+    /// `jwt.claims_unverified` decodes a token's payload WITHOUT checking the signature —
+    /// for reading `iss` to select the verification key before `verify_oidc`. Both backends.
+    #[test]
+    fn jwt_claims_unverified_reads_routing_fields() {
+        let src = "import jwt\nimport json\nimport encoding\nfn main(console: Console):\n    let payload = encoding.base64url_of_hex(encoding.hex_encode(\"{\\\"iss\\\":\\\"acme\\\",\\\"sub\\\":\\\"x\\\"}\"))\n    match jwt.claims_unverified(\"aaa.\" + payload + \".bbb\"):\n        Err(e) -> print(console, e)\n        Ok(claims) -> print(console, json.get_string(claims, \"iss\").unwrap_or(\"?\"))\n";
+        let expected = vec!["acme".to_string()];
+        assert_eq!(link_run(src), expected, "interp");
+        assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "wasm");
+    }
+
     /// The `tls:` scheme is split off an address before the allowlist match: the
     /// capability governs the bare `host:port`, the scheme is a connect-time choice.
     #[test]

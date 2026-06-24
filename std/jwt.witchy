@@ -77,6 +77,17 @@ pub fn header(token: String) -> Result(Json, String):
     else:
         json.decode(encoding.base64url_decode(list.at(parts, 0)))
 
+// The payload claims of a compact JWT WITHOUT verifying its signature — for reading the
+// routing fields (`iss`, and `kid` via `header`) needed to SELECT the verification key
+// before `verify_oidc`. DANGER: never authorize on these claims; verify the signature
+// first and read the claims `verify_oidc` returns.
+pub fn claims_unverified(token: String) -> Result(Json, String):
+    let parts = string.split(token, ".")
+    if list.length(parts) < 2 || string.is_empty(list.at(parts, 1)):
+        Err("malformed JWT: no payload segment")
+    else:
+        json.decode(encoding.base64url_decode(list.at(parts, 1)))
+
 // Build the DER PKCS#1 `RSAPublicKey` (as hex — the shape `verify_rs256` wants) from a
 // JWK's base64url modulus `n` and exponent `e`, so an OIDC verifier can turn a JWKS
 // entry (`{"kty":"RSA","n":…,"e":…}`) into a key. The result is the ASN.1 DER
