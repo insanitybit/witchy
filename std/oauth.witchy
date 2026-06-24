@@ -46,6 +46,23 @@ pub fn exchange_code(net: Net[Connect, Tcp], token_url: String, client_id: Strin
             else:
                 access_token_of(http.body(resp))
 
+// GET `url` with a `Bearer` access token and parse the JSON body — the "read the
+// signed-in user" step after `exchange_code` (GitHub `/user`, an OIDC userinfo endpoint).
+// Sends a `User-Agent` (GitHub rejects requests without one). Returns the parsed JSON, or
+// a reason. The caller reads identity fields it trusts (`login`, `id`, `email`).
+pub fn bearer_get_json(net: Net[Connect, Tcp], url: String, token: String) -> Result(Json, String):
+    let req = http.get_request(url)
+        .with_header("authorization", "Bearer " + token)
+        .with_header("accept", "application/json")
+        .with_header("user-agent", "witchy-oauth")
+    match req.send(net):
+        Err(e) -> Err("request failed: " + e)
+        Ok(resp) ->
+            if !http.is_success(resp):
+                Err("endpoint returned HTTP " + "${http.status(resp)}")
+            else:
+                json.decode(http.body(resp))
+
 // Pull `access_token` out of a token response (the JSON form both GitHub and Google
 // return for `Accept: application/json`), surfacing the provider's `error` if present.
 fn access_token_of(body: String) -> Result(String, String):

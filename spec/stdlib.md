@@ -1403,6 +1403,10 @@ The provider authorization-endpoint URL to redirect the user to. After the user 
 
 Exchange an authorization `code` for an access token at the provider's token endpoint — an HTTPS POST with a form-encoded body and `Accept: application/json`. Returns the `access_token`, or a reason. Needs a `Net` that reaches the token host over TLS; the `client_secret` should come from a `Secret`, never a literal.
 
+#### `fn bearer_get_json(net: Net[Connect, Tcp], url: String, token: String) -> Result(Json, String)`
+
+GET `url` with a `Bearer` access token and parse the JSON body — the "read the signed-in user" step after `exchange_code` (GitHub `/user`, an OIDC userinfo endpoint). Sends a `User-Agent` (GitHub rejects requests without one). Returns the parsed JSON, or a reason. The caller reads identity fields it trusts (`login`, `id`, `email`).
+
 ## `option`
 
 The witchy standard `Option` type and helpers. `import option` brings the type into scope (so the `?` operator works) and gives the usual combinators. Pure and capability-free.

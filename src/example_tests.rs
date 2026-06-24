@@ -8482,6 +8482,84 @@ fn main(console: Console):
         let _ = std::fs::remove_file(&cert_path);
     }
 
+    /// `oauth.bearer_get_json` GETs an API with a `Bearer` token and parses the JSON —
+    /// the "fetch the signed-in user" step. HERMETIC: a local rustls server checks the
+    /// `Authorization` header and returns a GitHub-`/user`-shaped body; the witchy
+    /// program reads `login`. Identical on BOTH backends.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn oauth_bearer_get_json_against_a_local_api_backends_agree() {
+        use std::io::{Read, Write};
+        use std::sync::Arc;
+        let ck = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).expect("cert");
+        let cert_der = ck.cert.der().clone();
+        let key_der = rustls::pki_types::PrivatePkcs8KeyDer::from(ck.key_pair.serialize_der());
+        let server_config = Arc::new(
+            rustls::ServerConfig::builder_with_provider(
+                rustls::crypto::aws_lc_rs::default_provider().into(),
+            )
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .with_no_client_auth()
+            .with_single_cert(vec![cert_der], rustls::pki_types::PrivateKeyDer::Pkcs8(key_der))
+            .unwrap(),
+        );
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let cert_path = std::env::temp_dir().join(format!("witchy-bearer-test-{port}.pem"));
+        std::fs::write(&cert_path, ck.cert.pem()).unwrap();
+        // SAFETY: nextest runs each test in its own process — no other thread races this.
+        unsafe { std::env::set_var("WITCHY_TLS_EXTRA_ROOTS", &cert_path) };
+
+        let sc = server_config.clone();
+        let server = std::thread::spawn(move || {
+            for _ in 0..2 {
+                let (tcp, _) = listener.accept().unwrap();
+                let conn = rustls::ServerConnection::new(sc.clone()).unwrap();
+                let mut tls = rustls::StreamOwned::new(conn, tcp);
+                let mut req = Vec::new();
+                let mut b = [0u8; 1];
+                while tls.read_exact(&mut b).is_ok() {
+                    req.push(b[0]);
+                    if req.ends_with(b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                // Honour the bearer token: 401 without it, the user JSON with it.
+                let authed = String::from_utf8_lossy(&req).to_lowercase().contains("authorization: bearer gho_test_token");
+                let body: &[u8] = if authed {
+                    b"{\"login\":\"octocat\",\"id\":583231}"
+                } else {
+                    b"{\"message\":\"Requires authentication\"}"
+                };
+                let code = if authed { "200 OK" } else { "401 Unauthorized" };
+                let response = format!(
+                    "HTTP/1.1 {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    code,
+                    body.len(),
+                    std::str::from_utf8(body).unwrap()
+                );
+                let _ = tls.write_all(response.as_bytes());
+                let _ = tls.flush();
+                tls.conn.send_close_notify();
+                let _ = tls.flush();
+            }
+        });
+
+        let src = format!(
+            "import oauth\nimport json\nfn main(console: Console, net: Net):\n    match oauth.bearer_get_json(net, \"https://localhost:{port}/user\", \"gho_test_token\"):\n        Ok(doc) -> print(console, json.get_string(doc, \"login\").unwrap_or(\"?\"))\n        Err(e) -> print(console, \"error: \" + e)\n"
+        );
+        let allow = format!("localhost:{port}");
+        assert_eq!(link_run_net(&src, &[allow.as_str()]), vec!["octocat".to_string()], "interp bearer get");
+        assert_eq!(
+            run_linked_on_wasm_net(&[("main", src.as_str())], "main", &[allow.as_str()]),
+            vec!["octocat".to_string()],
+            "wasm bearer get"
+        );
+        server.join().unwrap();
+        let _ = std::fs::remove_file(&cert_path);
+    }
+
     /// base64url decode (URL-safe `-`/`_`, no padding) — the JWT/OIDC segment codec.
     /// `base64url_to_hex` round-trips the bytes of `base64url_of_hex`, and
     /// `base64url_decode` yields the text; identical on both backends.
