@@ -1,0 +1,52 @@
+// jwt — verify a compact JWS / JWT (the OIDC identity-token shape), in PURE witchy
+// over `crypto` (RS256/ES256), `encoding` (base64url), and `json`. Verification is
+// computation, so this module has no host capability of its own — fetching the
+// signing keys (JWKS discovery, over HTTPS) is a separate, network-bearing concern.
+//
+// A compact JWT is `header.payload.signature`, each base64url. The signature covers
+// the ASCII bytes of `header.payload`; for RS256 it is verified against the issuer's
+// RSA public key (DER PKCS#1, hex). On success the decoded payload `claims` are
+// returned for the caller to inspect (`sub`, `iss`, provider-specific owner fields).
+import string
+import list
+import json
+import crypto
+import encoding
+import option
+
+// Verify an RS256 (RSASSA-PKCS1-v1_5 / SHA-256) compact JWT against a DER PKCS#1 RSA
+// public key (hex), checking the signature, `exp > now` (unix seconds), and
+// `aud == audience`. Returns the decoded claims, or a reason string.
+pub fn verify_rs256(token: String, rsa_pubkey_der_hex: String, audience: String, now: Int) -> Result(Json, String):
+    let parts = string.split(token, ".")
+    if list.length(parts) != 3:
+        Err("malformed JWT: expected three `.`-separated segments")
+    else:
+        let signed = list.at(parts, 0) + "." + list.at(parts, 1)
+        let sig_hex = encoding.base64url_to_hex(list.at(parts, 2))
+        if !crypto.rsa_pkcs1_sha256_verify(rsa_pubkey_der_hex, signed, sig_hex):
+            Err("JWT signature is invalid (untrusted or forged)")
+        else:
+            check_claims(list.at(parts, 1), audience, now)
+
+// Decode and validate the payload's registered claims: `exp` not in the past, and the
+// audience matches (defends against a token minted for a different relying party).
+fn check_claims(payload_b64: String, audience: String, now: Int) -> Result(Json, String):
+    match json.decode(encoding.base64url_decode(payload_b64)):
+        Err(e) -> Err("JWT payload is not JSON: " + e)
+        Ok(claims) ->
+            if json.get_int(claims, "exp").unwrap_or(0) <= now:
+                Err("JWT has expired")
+            else if json.get_string(claims, "aud").unwrap_or("") != audience:
+                Err("JWT audience mismatch (wrong relying party / replay)")
+            else:
+                Ok(claims)
+
+// The decoded JOSE header of a compact JWT (its first segment), or an error — so a
+// verifier can read `alg`/`kid` to select the JWKS key before checking the signature.
+pub fn header(token: String) -> Result(Json, String):
+    let parts = string.split(token, ".")
+    if list.length(parts) < 1 || string.is_empty(list.at(parts, 0)):
+        Err("malformed JWT: no header segment")
+    else:
+        json.decode(encoding.base64url_decode(list.at(parts, 0)))

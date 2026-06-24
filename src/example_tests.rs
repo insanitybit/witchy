@@ -8027,6 +8027,80 @@ fn main(console: Console):
         assert_eq!(verify("00", msg, &sig_hex), NV::Bool(false), "malformed key is total (false)");
     }
 
+    /// End-to-end `std/jwt`: a REAL aws-lc-signed compact RS256 JWT, embedded as a
+    /// witchy string literal, verifies identically on both backends — `Ok` yields the
+    /// claims (we read `sub`); a tampered signature, an expired token, and a wrong
+    /// audience each reject with the module's reason. Proves `jwt.verify_rs256`
+    /// composes RS256 + base64url + json end to end, with no host capability.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn jwt_verify_rs256_backends_agree() {
+        use aws_lc_rs::signature::KeyPair;
+        // base64url, no padding — the JWT segment encoding.
+        fn b64url(bytes: &[u8]) -> String {
+            const A: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+            let mut out = String::new();
+            for c in bytes.chunks(3) {
+                let n = ((c[0] as u32) << 16)
+                    | ((*c.get(1).unwrap_or(&0) as u32) << 8)
+                    | (*c.get(2).unwrap_or(&0) as u32);
+                out.push(A[(n >> 18 & 63) as usize] as char);
+                out.push(A[(n >> 12 & 63) as usize] as char);
+                if c.len() > 1 {
+                    out.push(A[(n >> 6 & 63) as usize] as char);
+                }
+                if c.len() > 2 {
+                    out.push(A[(n & 63) as usize] as char);
+                }
+            }
+            out
+        }
+        let hexs = |b: &[u8]| b.iter().map(|x| format!("{x:02x}")).collect::<String>();
+        let kp = aws_lc_rs::rsa::KeyPair::generate(aws_lc_rs::rsa::KeySize::Rsa2048).expect("keygen");
+        let pk_hex = hexs(kp.public_key().as_ref());
+        let sign_jwt = |payload: &str| -> String {
+            let signed = format!("{}.{}", b64url(br#"{"alg":"RS256","typ":"JWT"}"#), b64url(payload.as_bytes()));
+            let mut sig = vec![0u8; kp.public_modulus_len()];
+            kp.sign(
+                &aws_lc_rs::signature::RSA_PKCS1_SHA256,
+                &aws_lc_rs::rand::SystemRandom::new(),
+                signed.as_bytes(),
+                &mut sig,
+            )
+            .expect("sign");
+            format!("{signed}.{}", b64url(&sig))
+        };
+        let good = sign_jwt(r#"{"aud":"coven","exp":9999,"sub":"octocat"}"#);
+        let expired = sign_jwt(r#"{"aud":"coven","exp":5,"sub":"octocat"}"#);
+        let wrong_aud = sign_jwt(r#"{"aud":"evil","exp":9999,"sub":"octocat"}"#);
+        let tampered = {
+            let mut t = good.clone();
+            let last = t.pop().unwrap();
+            t.push(if last == 'A' { 'B' } else { 'A' });
+            t
+        };
+        // `now` = 1000, audience "coven". Print `sub` on success, else the error.
+        let run = |token: &str| -> Vec<String> {
+            let src = format!(
+                "import jwt\nimport json\nfn main(console: Console):\n    match jwt.verify_rs256(\"{token}\", \"{pk_hex}\", \"coven\", 1000):\n        Ok(claims) -> print(console, json.get_string(claims, \"sub\").unwrap_or(\"?\"))\n        Err(e) -> print(console, e)\n"
+            );
+            let interp = link_run(&src);
+            let wasm = run_linked_on_wasm(&[("main", src.as_str())], "main");
+            assert_eq!(interp, wasm, "interp vs wasm must agree");
+            interp
+        };
+        assert_eq!(run(&good), vec!["octocat".to_string()], "valid JWT yields its claims");
+        assert_eq!(run(&expired), vec!["JWT has expired".to_string()]);
+        assert_eq!(
+            run(&wrong_aud),
+            vec!["JWT audience mismatch (wrong relying party / replay)".to_string()]
+        );
+        assert_eq!(
+            run(&tampered),
+            vec!["JWT signature is invalid (untrusted or forged)".to_string()]
+        );
+    }
+
     /// base64url decode (URL-safe `-`/`_`, no padding) — the JWT/OIDC segment codec.
     /// `base64url_to_hex` round-trips the bytes of `base64url_of_hex`, and
     /// `base64url_decode` yields the text; identical on both backends.
