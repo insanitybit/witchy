@@ -30,6 +30,7 @@ pub mod interpreter;
 pub mod lexer;
 pub mod linker;
 pub mod native;
+pub mod net;
 pub mod optimize;
 pub mod parser;
 pub mod records;

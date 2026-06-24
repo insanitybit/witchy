@@ -23,22 +23,9 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::TcpListener;
 
-/// A connected byte stream behind a `Value::Socket`. Plain `TcpStream` and TLS
-/// `rustls::StreamOwned` both satisfy it, so the reference interpreter holds plain and
-/// `tls:` sockets in one table — `send`/`recv` operate on either (RFC-0009 terminates
-/// TLS host-side; it is an address scheme, not a separate capability).
-pub trait Stream: Read + Write + Send {
-    /// Close both directions (idempotent). Plain → `TcpStream::shutdown`; a TLS stream
-    /// adds a close-notify before tearing down the transport.
-    fn shutdown(&mut self);
-}
-impl Stream for TcpStream {
-    fn shutdown(&mut self) {
-        let _ = TcpStream::shutdown(self, std::net::Shutdown::Both);
-    }
-}
+use crate::net::Stream;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
@@ -1534,14 +1521,15 @@ impl Interpreter {
             // Connect only to an address the Net capability permits.
             "connect" => match args {
                 [Value::Net(allow), Value::Str(addr)] => {
-                    let targets = match crate::capabilities::resolve_admitted(allow, addr) {
+                    let (tls, host_port) = crate::net::parse_scheme(addr);
+                    let targets = match crate::capabilities::resolve_admitted(allow, host_port) {
                         Ok(t) => t,
                         Err(e) => return err(format!("connect: {e}")),
                     };
-                    match TcpStream::connect(targets.as_slice()) {
+                    match crate::net::dial(&targets, tls, host_port) {
                         Ok(stream) => {
                             let id = self.sockets.len();
-                            self.sockets.push(BufReader::new(Box::new(stream) as Box<dyn Stream>));
+                            self.sockets.push(BufReader::new(stream));
                             Ok(Some(Value::Socket(id)))
                         }
                         Err(e) => err(format!("connect to `{addr}` failed: {e}")),
@@ -1551,14 +1539,15 @@ impl Interpreter {
             },
             "try_connect" => match args {
                 [Value::Net(allow), Value::Str(addr)] => {
-                    let targets = match crate::capabilities::resolve_admitted(allow, addr) {
+                    let (tls, host_port) = crate::net::parse_scheme(addr);
+                    let targets = match crate::capabilities::resolve_admitted(allow, host_port) {
                         Ok(t) => t,
                         Err(e) => return err(format!("try_connect: {e}")),
                     };
-                    let v = match TcpStream::connect(targets.as_slice()) {
+                    let v = match crate::net::dial(&targets, tls, host_port) {
                         Ok(stream) => {
                             let id = self.sockets.len();
-                            self.sockets.push(BufReader::new(Box::new(stream) as Box<dyn Stream>));
+                            self.sockets.push(BufReader::new(stream));
                             Value::Ctor { name: "Some".into(), fields: vec![Value::Socket(id)] }
                         }
                         Err(_) => Value::Ctor { name: "None".into(), fields: Vec::new() },

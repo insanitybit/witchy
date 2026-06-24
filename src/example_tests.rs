@@ -8074,10 +8074,14 @@ fn main(console: Console):
         let expired = sign_jwt(r#"{"aud":"coven","exp":5,"sub":"octocat"}"#);
         let wrong_aud = sign_jwt(r#"{"aud":"evil","exp":9999,"sub":"octocat"}"#);
         let tampered = {
-            let mut t = good.clone();
-            let last = t.pop().unwrap();
-            t.push(if last == 'A' { 'B' } else { 'A' });
-            t
+            // Flip the FIRST char of the signature segment. base64url's last char of a
+            // 256-byte RSA signature carries only 2 significant bits (4 are padding), so
+            // a last-char flip can decode to the same bytes — a no-op; the first char is
+            // always fully significant, so this reliably corrupts the signature.
+            let sig_start = good.rfind('.').unwrap() + 1;
+            let mut chars: Vec<char> = good.chars().collect();
+            chars[sig_start] = if chars[sig_start] == 'A' { 'B' } else { 'A' };
+            chars.into_iter().collect::<String>()
         };
         // `now` = 1000, audience "coven". Print `sub` on success, else the error.
         let run = |token: &str| -> Vec<String> {
@@ -8240,6 +8244,88 @@ fn main(console: Console):
             run(&future, gh),
             vec!["JWT is not yet valid (nbf is in the future)".to_string()]
         );
+    }
+
+    /// The `tls:` scheme is split off an address before the allowlist match: the
+    /// capability governs the bare `host:port`, the scheme is a connect-time choice.
+    #[test]
+    fn tls_scheme_is_stripped_for_the_allowlist() {
+        assert_eq!(crate::net::parse_scheme("tls:github.com:443"), (true, "github.com:443"));
+        assert_eq!(crate::net::parse_scheme("github.com:443"), (false, "github.com:443"));
+    }
+
+    /// Link + run a single-`main` source on the interpreter with a `Net` allowlist grant.
+    fn link_run_net(src: &str, net_allow: &[&str]) -> Vec<String> {
+        let module = parser::parse_module(src).expect("parse");
+        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        typeck::check(&linked).expect("typecheck");
+        interpreter::run_module(linked, ".", net_allow.iter().map(|s| s.to_string()).collect())
+            .expect("run")
+    }
+
+    /// TLS works end to end through the `tls:` address scheme (RFC-0009), HERMETICALLY:
+    /// a local rustls server with a self-signed `localhost` cert (trusted via the
+    /// `WITCHY_TLS_EXTRA_ROOTS` hook), and a witchy program that `connect`s to
+    /// `tls:localhost:PORT`, sends a line, and reads the echo — identical on BOTH
+    /// backends. Proves rustls+aws-lc terminates TLS host-side (the guest sees
+    /// plaintext) with real certificate validation, no network access.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn tls_scheme_connects_through_a_local_server_backends_agree() {
+        use std::io::{Read, Write};
+        use std::sync::Arc;
+        let ck = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).expect("cert");
+        let cert_der = ck.cert.der().clone();
+        let key_der = rustls::pki_types::PrivatePkcs8KeyDer::from(ck.key_pair.serialize_der());
+        let server_config = Arc::new(
+            rustls::ServerConfig::builder_with_provider(
+                rustls::crypto::aws_lc_rs::default_provider().into(),
+            )
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .with_no_client_auth()
+            .with_single_cert(vec![cert_der], rustls::pki_types::PrivateKeyDer::Pkcs8(key_der))
+            .unwrap(),
+        );
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let cert_path = std::env::temp_dir().join(format!("witchy-tls-test-{port}.pem"));
+        std::fs::write(&cert_path, ck.cert.pem()).unwrap();
+        // SAFETY: nextest runs each test in its own process, so this env var is not
+        // observed by another thread/test racing the set.
+        unsafe { std::env::set_var("WITCHY_TLS_EXTRA_ROOTS", &cert_path) };
+
+        // Echo server: two connections (one per backend run), each echoing one line.
+        let sc = server_config.clone();
+        let server = std::thread::spawn(move || {
+            for _ in 0..2 {
+                let (tcp, _) = listener.accept().unwrap();
+                let conn = rustls::ServerConnection::new(sc.clone()).unwrap();
+                let mut tls = rustls::StreamOwned::new(conn, tcp);
+                let mut line = Vec::new();
+                let mut b = [0u8; 1];
+                while tls.read_exact(&mut b).is_ok() {
+                    if b[0] == b'\n' {
+                        break;
+                    }
+                    line.push(b[0]);
+                }
+                let _ = tls.write_all(&line).and_then(|_| tls.write_all(b"\n")).and_then(|_| tls.flush());
+            }
+        });
+
+        let src = format!(
+            "fn main(console: Console, net: Net):\n    match try_connect(net, \"tls:localhost:{port}\"):\n        None -> print(console, \"connect failed\")\n        Some(sock) ->\n            send_line(sock, \"ping\")\n            print(console, recv_line(sock))\n            close(sock)\n"
+        );
+        let allow = format!("localhost:{port}");
+        assert_eq!(link_run_net(&src, &[allow.as_str()]), vec!["ping".to_string()], "interp TLS echo");
+        assert_eq!(
+            run_linked_on_wasm_net(&[("main", src.as_str())], "main", &[allow.as_str()]),
+            vec!["ping".to_string()],
+            "wasm TLS echo"
+        );
+        server.join().unwrap();
+        let _ = std::fs::remove_file(&cert_path);
     }
 
     /// base64url decode (URL-safe `-`/`_`, no padding) — the JWT/OIDC segment codec.

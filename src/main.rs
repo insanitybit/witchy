@@ -30,6 +30,7 @@ pub use witchy::lexer;
 pub use witchy::linker;
 mod lsp;
 pub use witchy::native;
+pub use witchy::net;
 pub use witchy::optimize;
 pub use witchy::parser;
 mod idp;

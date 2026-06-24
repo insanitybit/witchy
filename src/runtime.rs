@@ -1198,12 +1198,13 @@ fn host_net_connect(mut caller: Caller<'_, VmState>, h: i32, addr_ptr: i32) -> R
     let mem = memory_of(&mut caller)?;
     let addr = read_wstr(mem.data(&caller), addr_ptr)?;
     let allow = net_allow(&caller, h)?;
-    let targets = crate::capabilities::resolve_admitted(&allow, &addr)
+    let (tls, host_port) = crate::net::parse_scheme(&addr);
+    let targets = crate::capabilities::resolve_admitted(&allow, host_port)
         .map_err(|e| Error::msg(format!("connect: {e}")))?;
-    let stream = std::net::TcpStream::connect(targets.as_slice())
+    let stream = crate::net::dial(&targets, tls, host_port)
         .map_err(|e| Error::msg(format!("connect to `{addr}` failed: {e}")))?;
     let sockets = &mut caller.data_mut().sockets;
-    sockets.push(std::io::BufReader::new(Box::new(stream) as Box<dyn Stream>));
+    sockets.push(std::io::BufReader::new(stream));
     Ok((sockets.len() - 1) as i32)
 }
 
@@ -1216,12 +1217,13 @@ fn host_net_try_connect(mut caller: Caller<'_, VmState>, h: i32, addr_ptr: i32) 
     let mem = memory_of(&mut caller)?;
     let addr = read_wstr(mem.data(&caller), addr_ptr)?;
     let allow = net_allow(&caller, h)?;
-    let targets = crate::capabilities::resolve_admitted(&allow, &addr)
+    let (tls, host_port) = crate::net::parse_scheme(&addr);
+    let targets = crate::capabilities::resolve_admitted(&allow, host_port)
         .map_err(|e| Error::msg(format!("try_connect: {e}")))?;
-    match std::net::TcpStream::connect(targets.as_slice()) {
+    match crate::net::dial(&targets, tls, host_port) {
         Ok(stream) => {
             let sockets = &mut caller.data_mut().sockets;
-            sockets.push(std::io::BufReader::new(Box::new(stream) as Box<dyn Stream>));
+            sockets.push(std::io::BufReader::new(stream));
             Ok((sockets.len() - 1) as i32)
         }
         Err(_) => Ok(-1),
@@ -1259,20 +1261,7 @@ fn host_net_accept(mut caller: Caller<'_, VmState>, lid: i32) -> Result<i32> {
     Ok((state.sockets.len() - 1) as i32)
 }
 
-/// A connected byte stream behind a `Socket` handle. A plain `TcpStream` and a TLS
-/// `rustls::StreamOwned` both satisfy it, so `connect` can return either under one
-/// socket table — the `send`/`recv` host ops never need to know which (RFC-0009: TLS
-/// is a `tls:` address scheme, terminated here host-side, not a separate capability).
-pub trait Stream: std::io::Read + std::io::Write + Send {
-    /// Close both directions (idempotent). Plain → `TcpStream::shutdown`; a TLS stream
-    /// adds a close-notify before tearing down the transport.
-    fn shutdown(&mut self);
-}
-impl Stream for std::net::TcpStream {
-    fn shutdown(&mut self) {
-        let _ = std::net::TcpStream::shutdown(self, std::net::Shutdown::Both);
-    }
-}
+use crate::net::Stream;
 
 fn socket_of(state: &mut VmState, sid: i32) -> Result<&mut std::io::BufReader<Box<dyn Stream>>> {
     state

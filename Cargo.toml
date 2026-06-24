@@ -55,9 +55,18 @@ getrandom = { version = "0.2", features = ["js"] }
 # path above (it never runs security-critical crypto). See native.rs `crypto`.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 aws-lc-rs = "1"
+# TLS client for the `tls:` address scheme (RFC-0009). rustls configured with the
+# aws_lc_rs provider keeps ALL crypto on aws-lc (FIPS) — NOT ring — while giving a safe
+# blocking `StreamOwned`. webpki-roots is the Mozilla CA trust anchor set; rustls-pemfile
+# reads any extra/custom roots (env `WITCHY_TLS_EXTRA_ROOTS`).
+rustls = { version = "0.23", default-features = false, features = ["std", "aws_lc_rs", "tls12", "logging"] }
+webpki-roots = "0.26"
+rustls-pemfile = "2"
 
 [dev-dependencies]
 proptest = "1.11.0"
+# Generates a throwaway self-signed cert for the hermetic TLS client test.
+rcgen = "0.13"
 
 # Dev builds keep file:line backtraces (so test failures and panics stay
 # legible) but skip full DWARF generation — markedly faster to compile and link
