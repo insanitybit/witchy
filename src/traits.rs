@@ -629,7 +629,27 @@ impl Ctx<'_> {
                 // trait call on a tuple part (`x0.show()`) dispatches.
                 Stmt::LetTuple { names, value } => {
                     self.rewrite_expr(value, scope);
-                    match self.type_name(value, scope).as_deref().and_then(tuple_args) {
+                    // A tuple-returning call (`let (a, b) = pair()`) has no head
+                    // name for `type_name` to recover, so fall back to the typeck
+                    // table — otherwise the destructured names stay untyped and a
+                    // comparison on one (`a < b`) can't find its trait impl.
+                    let tup = self
+                        .type_name(value, scope)
+                        .or_else(|| {
+                            self.table
+                                .type_of(value)
+                                .and_then(crate::typeck::ty_to_ast)
+                                .and_then(|t| type_to_scope_name(&t))
+                        })
+                        .or_else(|| match value {
+                            // A direct call's declared return type — `pair() -> (T, T)`
+                            // — names the tuple even when nothing else can.
+                            Expr::Call { name, .. } => {
+                                self.fn_sigs.get(name).and_then(|(_, ret)| type_to_scope_name(ret))
+                            }
+                            _ => None,
+                        });
+                    match tup.as_deref().and_then(tuple_args) {
                         Some(args) => {
                             for (n, t) in names.iter().zip(args) {
                                 scope.insert(n.clone(), t.to_string());
@@ -716,16 +736,38 @@ impl Ctx<'_> {
                 // equality, structural tuples and records lacking a `PartialEq`
                 // impl — keep the native operator.
                 if let Some(method) = operator_trait_method(*op) {
-                    let head = self.type_name(lhs, scope).or_else(|| {
-                        self.table
-                            .type_of(lhs)
-                            .and_then(crate::typeck::ty_to_ast)
-                            .and_then(|t| type_to_scope_name(&t))
-                    });
+                    // `==`/`!=`/`<`/… require both operands to share a type, so the
+                    // receiver's concrete type can be recovered from EITHER side.
+                    // Recovering only from the left misses a pattern-bound left
+                    // operand (`Ok(p2) -> p2 == p`) whose type the scope/table can't
+                    // surface but the right operand can. A wrong guess only ever
+                    // yields a type error (never wrong code), so trying both is safe.
+                    let head_of = |operand: &Expr| -> Option<String> {
+                        self.type_name(operand, scope).or_else(|| {
+                            self.table
+                                .type_of(operand)
+                                .and_then(crate::typeck::ty_to_ast)
+                                .and_then(|t| type_to_scope_name(&t))
+                        })
+                    };
+                    let head = head_of(lhs).or_else(|| head_of(rhs));
                     if self.operator_dispatches(*op, head.as_deref()) {
                         let l = std::mem::replace(lhs.as_mut(), Expr::Bool(false));
                         let r = std::mem::replace(rhs.as_mut(), Expr::Bool(false));
-                        *e = Expr::Call { name: method.to_string(), args: vec![l, r] };
+                        // Mangle to the concrete impl directly from the recovered
+                        // head. The Call arm below otherwise re-recovers the receiver
+                        // type from the FIRST argument, which fails for a pattern-bound
+                        // operand (`Ok(p2) -> p2 == p`); since both operands share
+                        // `head`, use it. A type-variable head (lowercase) stays a
+                        // generic trait call for monomorphization to specialize.
+                        let resolved = head
+                            .as_deref()
+                            .filter(|h| !h.chars().next().is_some_and(char::is_lowercase))
+                            .and_then(|h| self.lookup_impl(method, h));
+                        *e = Expr::Call {
+                            name: resolved.unwrap_or_else(|| method.to_string()),
+                            args: vec![l, r],
+                        };
                         self.rewrite_expr(e, scope);
                         return;
                     }
@@ -826,6 +868,19 @@ impl Ctx<'_> {
                         vec![std::mem::replace(receiver.as_mut(), Expr::Bool(false))];
                     call_args.append(args);
                     *e = Expr::Call { name: format!("{module}.{method}"), args: call_args };
+                    return;
+                }
+                // UFCS for host-capability operations, which are BARE intrinsics
+                // (`restrict`, `connect`, `subdir`, `read`, …) rather than module
+                // functions: `net.restrict(a)` lowers to `restrict(net, a)`, so a
+                // capability narrows or uses itself with method syntax — the same
+                // surface a library capability's own `impl` methods already get. An
+                // unknown op is validated downstream as an unknown call.
+                if tn.as_deref().is_some_and(is_host_capability) {
+                    let mut call_args =
+                        vec![std::mem::replace(receiver.as_mut(), Expr::Bool(false))];
+                    call_args.append(args);
+                    *e = Expr::Call { name: method.clone(), args: call_args };
                     return;
                 }
                 match tn {
@@ -1065,6 +1120,17 @@ fn tuple_args(type_name: &str) -> Option<Vec<&str>> {
 // The stdlib module that backs UFCS method calls on a built-in type, so
 // `recv.method(args)` can lower to `module.method(recv, args)`. `tn` may carry a
 // generic suffix (`List<Int>`), so match on the head.
+/// Host capabilities whose operations are BARE intrinsics (`restrict`, `connect`,
+/// `subdir`, `read`, `write`, …) rather than module functions — so `cap.op(args)`
+/// UFCS-lowers to the bare call `op(cap, args)`. (`Secret`/`SecretStore` map to the
+/// `crypto`/`secretstore` modules via `builtin_method_module` and are handled first.)
+fn is_host_capability(tn: &str) -> bool {
+    matches!(
+        tn.split(['[', '<']).next().unwrap_or(tn).trim(),
+        "Net" | "Dir" | "File" | "Console" | "Clock" | "Env" | "Exec"
+    )
+}
+
 fn builtin_method_module(tn: &str) -> Option<&'static str> {
     match tn.split('<').next().unwrap_or(tn) {
         "List" => Some("list"),

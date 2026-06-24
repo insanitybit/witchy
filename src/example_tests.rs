@@ -221,6 +221,43 @@
         assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "wasm");
     }
 
+    /// Host-capability operations are reachable via UFCS method syntax: `console.print(x)`
+    /// lowers to the bare intrinsic `print(console, x)` — the same surface a library
+    /// capability's own `impl` methods already get. The foundation for RFC-0011's
+    /// "refinement is a method" model (`net.only(...)`, `dir.subtree(...)`). The method
+    /// and free-function forms must agree on both backends.
+    #[test]
+    fn host_capability_ufcs_method_calls() {
+        let src = "fn main(console: Console):\n    console.print(\"a\")\n    print(console, \"b\")\n";
+        let expected = ["a", "b"];
+        assert_eq!(interpreter::run(src).expect("interp"), expected, "interp");
+        assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "wasm");
+        // `net.restrict(addr)` (method) and `restrict(net, addr)` (free) both type-check.
+        let net = "fn main(net: Net):\n    let a = net.restrict(\"10.0.0.5:6379\")\n    let b = restrict(net, \"10.0.0.5:6379\")\n";
+        assert!(
+            typeck::check_str(net).is_ok(),
+            "net.restrict method form must type-check: {:?}",
+            typeck::check_str(net)
+        );
+    }
+
+    /// A comparison operator (`==`/`<`/…) desugars to its trait impl by recovering
+    /// the operands' concrete type. The receiver may be introduced by a PATTERN
+    /// binding — a `match` arm, an `if let`, or a tuple destructure — whose type
+    /// the binding scope alone can't surface (it comes from the scrutinee). Since
+    /// both operands share a type, the head is recovered from EITHER side and the
+    /// impl mangled directly, so `Ok(p) -> p == base` resolves the same on both
+    /// backends instead of failing with "unknown function `eq`".
+    #[test]
+    fn comparison_on_pattern_bound_operand_backends_agree() {
+        let src = "import cmp\n\ntype T derive(Show, PartialEq, Eq, PartialOrd, Ord):\n    x: Int\n    y: Int\n\nfn mk() -> Result(T, String):\n    Ok(T(1, 2))\n\nfn pair() -> (T, T):\n    (T(1, 2), T(3, 4))\n\nfn main(console: Console):\n    let base = T(1, 2)\n    match mk():\n        Ok(p) -> print(console, __render(p == base))\n        Err(_e) -> print(console, \"err\")\n    if let Ok(p) = mk():\n        print(console, __render(p < T(9, 9)))\n    let (a, b) = pair()\n    print(console, __render(a == b))\n    print(console, __render(a < b))\n";
+        let expected = ["true", "true", "false", "true"];
+        // The linked path (what the CLI and `witchy parity` use) — it resolves
+        // `import cmp` and expands the `derive(Ord)` impls the comparisons need.
+        assert_eq!(link_run(src), expected, "interp");
+        assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "wasm");
+    }
+
     /// Misusing the ownership conventions is rejected up front by the type checker
     /// (so the same program fails on every backend, never just native): using a
     /// value after it was consumed by `own`, or after `move`. A bare `let` borrow
