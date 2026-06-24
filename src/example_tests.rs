@@ -8101,6 +8101,77 @@ fn main(console: Console):
         );
     }
 
+    /// `jwt.rsa_key_from_jwk` reconstructs a DER PKCS#1 RSA public key from a JWK's
+    /// base64url `n`/`e` BYTE-FOR-BYTE identically to aws-lc's own encoding — the pure-
+    /// witchy ASN.1 DER (length long-form, the signed-integer `00` pad) is exact, and
+    /// matches on both backends. This is the bridge from a JWKS entry to `verify_rs256`.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn jwt_rsa_key_from_jwk_matches_aws_lc_der() {
+        use aws_lc_rs::signature::KeyPair;
+        fn b64url(bytes: &[u8]) -> String {
+            const A: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+            let mut out = String::new();
+            for c in bytes.chunks(3) {
+                let n = ((c[0] as u32) << 16)
+                    | ((*c.get(1).unwrap_or(&0) as u32) << 8)
+                    | (*c.get(2).unwrap_or(&0) as u32);
+                out.push(A[(n >> 18 & 63) as usize] as char);
+                out.push(A[(n >> 12 & 63) as usize] as char);
+                if c.len() > 1 {
+                    out.push(A[(n >> 6 & 63) as usize] as char);
+                }
+                if c.len() > 2 {
+                    out.push(A[(n & 63) as usize] as char);
+                }
+            }
+            out
+        }
+        // Read the two INTEGER contents of a DER `SEQUENCE { INTEGER, INTEGER }`.
+        fn two_ints(der: &[u8]) -> (Vec<u8>, Vec<u8>) {
+            fn len_at(b: &[u8], i: &mut usize) -> usize {
+                let mut len = b[*i] as usize;
+                *i += 1;
+                if len & 0x80 != 0 {
+                    let nbytes = len & 0x7f;
+                    len = 0;
+                    for _ in 0..nbytes {
+                        len = (len << 8) | b[*i] as usize;
+                        *i += 1;
+                    }
+                }
+                len
+            }
+            fn tlv(b: &[u8], i: &mut usize) -> Vec<u8> {
+                *i += 1; // tag
+                let len = len_at(b, i);
+                let v = b[*i..*i + len].to_vec();
+                *i += len;
+                v
+            }
+            let mut i = 0;
+            i += 1; // SEQUENCE tag
+            let _ = len_at(der, &mut i); // SEQUENCE length (then parse contents)
+            let n = tlv(der, &mut i);
+            let e = tlv(der, &mut i);
+            (n, e)
+        }
+        let hexs = |b: &[u8]| b.iter().map(|x| format!("{x:02x}")).collect::<String>();
+        let kp = aws_lc_rs::rsa::KeyPair::generate(aws_lc_rs::rsa::KeySize::Rsa2048).expect("keygen");
+        let der = kp.public_key().as_ref();
+        let (n_int, e_int) = two_ints(der);
+        // The JWK carries the unsigned magnitude — drop the DER sign byte if present.
+        let strip = |v: &[u8]| if v.first() == Some(&0) { v[1..].to_vec() } else { v.to_vec() };
+        let n_b64 = b64url(&strip(&n_int));
+        let e_b64 = b64url(&strip(&e_int));
+        let src = format!(
+            "import jwt\nfn main(console: Console):\n    print(console, jwt.rsa_key_from_jwk(\"{n_b64}\", \"{e_b64}\"))\n"
+        );
+        let expected = vec![hexs(der)];
+        assert_eq!(link_run(&src), expected, "interp: JWK->DER byte-exact vs aws-lc");
+        assert_eq!(run_linked_on_wasm(&[("main", src.as_str())], "main"), expected, "wasm");
+    }
+
     /// base64url decode (URL-safe `-`/`_`, no padding) — the JWT/OIDC segment codec.
     /// `base64url_to_hex` round-trips the bytes of `base64url_of_hex`, and
     /// `base64url_decode` yields the text; identical on both backends.

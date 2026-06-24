@@ -985,6 +985,10 @@ Verify an RS256 (RSASSA-PKCS1-v1_5 / SHA-256) compact JWT against a DER PKCS#1 R
 
 The decoded JOSE header of a compact JWT (its first segment), or an error — so a verifier can read `alg`/`kid` to select the JWKS key before checking the signature.
 
+#### `fn rsa_key_from_jwk(n: String, e: String) -> String`
+
+Build the DER PKCS#1 `RSAPublicKey` (as hex — the shape `verify_rs256` wants) from a JWK's base64url modulus `n` and exponent `e`, so an OIDC verifier can turn a JWKS entry (`{"kty":"RSA","n":…,"e":…}`) into a key. The result is the ASN.1 DER `SEQUENCE { INTEGER n, INTEGER e }`; an INTEGER gains a leading `00` when its top bit is set (DER integers are signed two's-complement, RSA values are unsigned magnitudes).
+
 ## `list`
 
 The witchy standard list library. Every function here is pure: the module declares no capability parameters, so importing it grants no authority — it can only transform data. This is the capability model in miniature: a library you didn't hand a Console/Dir/Net to literally cannot reach them.
