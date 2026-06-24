@@ -29,6 +29,22 @@ pub fn authorize_url(authorize_endpoint: String, client_id: String, redirect_uri
 // `access_token`, or a reason. Needs a `Net` that reaches the token host over TLS; the
 // `client_secret` should come from a `Secret`, never a literal.
 pub fn exchange_code(net: Net[Connect, Tcp], token_url: String, client_id: String, client_secret: String, code: String, redirect_uri: String) -> Result(String, String):
+    match token_response(net, token_url, client_id, client_secret, code, redirect_uri):
+        Err(e) -> Err(e)
+        Ok(doc) -> token_field(doc, "access_token")
+
+// Like `exchange_code`, but returns the OIDC `id_token` (a JWT carrying the user's
+// identity) instead of the access token — for "Log in with Google" and other OIDC
+// providers. Verify the returned token with `std/jwt` (`kid` → `rsa_key_for_kid` over the
+// provider's JWKS → `verify_oidc`).
+pub fn exchange_code_id_token(net: Net[Connect, Tcp], token_url: String, client_id: String, client_secret: String, code: String, redirect_uri: String) -> Result(String, String):
+    match token_response(net, token_url, client_id, client_secret, code, redirect_uri):
+        Err(e) -> Err(e)
+        Ok(doc) -> token_field(doc, "id_token")
+
+// The raw token-endpoint response as JSON (the HTTPS POST exchanging the code) — the level
+// beneath `exchange_code`; read `access_token` / `id_token` / `refresh_token` from it.
+pub fn token_response(net: Net[Connect, Tcp], token_url: String, client_id: String, client_secret: String, code: String, redirect_uri: String) -> Result(Json, String):
     let body = "grant_type=authorization_code"
         + "&client_id=" + url.encode(client_id)
         + "&client_secret=" + url.encode(client_secret)
@@ -44,7 +60,7 @@ pub fn exchange_code(net: Net[Connect, Tcp], token_url: String, client_id: Strin
             if !http.is_success(resp):
                 Err("token endpoint returned HTTP " + "${http.status(resp)}")
             else:
-                access_token_of(http.body(resp))
+                json.decode(http.body(resp))
 
 // GET `url` with a `Bearer` access token and parse the JSON body — the "read the
 // signed-in user" step after `exchange_code` (GitHub `/user`, an OIDC userinfo endpoint).
@@ -63,15 +79,12 @@ pub fn bearer_get_json(net: Net[Connect, Tcp], url: String, token: String) -> Re
             else:
                 json.decode(http.body(resp))
 
-// Pull `access_token` out of a token response (the JSON form both GitHub and Google
-// return for `Accept: application/json`), surfacing the provider's `error` if present.
-fn access_token_of(body: String) -> Result(String, String):
-    match json.decode(body):
-        Err(e) -> Err("token response is not JSON: " + e)
-        Ok(doc) ->
-            match json.get_string(doc, "access_token"):
-                Some(token) -> Ok(token)
-                None ->
-                    match json.get_string(doc, "error"):
-                        Some(provider_error) -> Err("token endpoint error: " + provider_error)
-                        None -> Err("no access_token in token response")
+// Read a string field from a token response, surfacing the provider's `error` if the
+// field is absent (an OAuth error response carries `error`/`error_description`).
+fn token_field(doc: Json, field: String) -> Result(String, String):
+    match json.get_string(doc, field):
+        Some(token) -> Ok(token)
+        None ->
+            match json.get_string(doc, "error"):
+                Some(provider_error) -> Err("token endpoint error: " + provider_error)
+                None -> Err("no " + field + " in token response")
