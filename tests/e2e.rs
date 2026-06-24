@@ -1804,8 +1804,9 @@ fn witchy_coven_trusted_publishing_verifies_a_rust_minted_token() {
     );
     // Publish WITH the trusted token -> 200, uploader derived from claims.sub.
     let with_token = format!(
-        "{{\"manifest_toml\":{},\"source\":{source},\"id_token\":{token}}}",
-        json_str(manifest)
+        "{{\"manifest_toml\":{},\"source\":{source},\"id_token\":{}}}",
+        json_str(manifest),
+        json_str(&token)
     );
     let (status, body) = http_post(&addr, "/coven/publish", &with_token);
     // Publish a second version WITHOUT a token but asserting an uploader -> 401.
@@ -1830,8 +1831,9 @@ fn witchy_coven_trusted_publishing_verifies_a_rust_minted_token() {
         json_str(module)
     );
     let squat = format!(
-        "{{\"manifest_toml\":{},\"source\":{source3},\"id_token\":{evil_token}}}",
-        json_str(manifest3)
+        "{{\"manifest_toml\":{},\"source\":{source3},\"id_token\":{}}}",
+        json_str(manifest3),
+        json_str(&evil_token)
     );
     let (status_squat, squat_body) = http_post(&addr, "/coven/publish", &squat);
 

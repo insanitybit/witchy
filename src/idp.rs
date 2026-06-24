@@ -24,9 +24,10 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use ed25519_dalek::{Signer, SigningKey};
+use aws_lc_rs::encoding::{AsDer, Pkcs8V1Der};
+use aws_lc_rs::rsa::{KeyPair as RsaKeyPair, KeySize, PrivateDecryptingKey};
+use aws_lc_rs::signature::{KeyPair as _, RSA_PKCS1_SHA256};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 /// An error from an IdP helper command.
 #[derive(Debug)]
@@ -49,54 +50,55 @@ impl From<std::io::Error> for IdpError {
 type IdpResult<T> = Result<T, IdpError>;
 
 // ---------------------------------------------------------------------------
-// Issuer key (an IdP's Ed25519 signing key — a JWKS stand-in)
+// Issuer key (an IdP's RSA signing key — models an OIDC provider's JWKS key)
 // ---------------------------------------------------------------------------
 
-/// An issuer (IdP) signing key. Lives at `<dir>/root.key` (the 32-byte seed,
-/// hex), with the public half written alongside at `<dir>/root.pub`. The format
-/// matches the witchy coven's registry keys exactly.
+/// An issuer (IdP) RSA signing key — a local stand-in for a real OIDC provider (a CI
+/// system's OIDC signer, Google's account keys). Lives at `<dir>/root.key` (the PKCS#8
+/// private key, hex), with the public key (DER PKCS#1, hex) at `<dir>/root.pub` — exactly
+/// what `coven-serve --trust-issuer` registers and `verify_oidc` validates against.
 pub struct RegistryKey {
-    signing: SigningKey,
+    keypair: RsaKeyPair,
 }
 
 impl RegistryKey {
-    /// Load the issuer key, generating one on first use.
+    /// Load the issuer key, generating an RSA-2048 keypair on first use.
     pub fn load_or_create(dir: &Path) -> IdpResult<RegistryKey> {
         let key_path = dir.join("root.key");
-        if key_path.exists() {
-            let seed = read_seed(&key_path)?;
-            return Ok(RegistryKey {
-                signing: SigningKey::from_bytes(&seed),
-            });
-        }
-        std::fs::create_dir_all(dir)?;
-        let mut seed = [0u8; 32];
-        getrandom::fill(&mut seed).map_err(|e| IdpError(format!("os rng: {e}")))?;
-        let signing = SigningKey::from_bytes(&seed);
-        write_private(&key_path, &seed)?;
-        std::fs::write(dir.join("root.pub"), hex_encode(signing.verifying_key().as_bytes()))?;
-        Ok(RegistryKey { signing })
+        let pkcs8 = if key_path.exists() {
+            hex_decode(std::fs::read_to_string(&key_path)?.trim())
+                .ok_or_else(|| IdpError("corrupt root.key".into()))?
+        } else {
+            std::fs::create_dir_all(dir)?;
+            let private = PrivateDecryptingKey::generate(KeySize::Rsa2048)
+                .map_err(|e| IdpError(format!("rsa keygen: {e}")))?;
+            let der: Pkcs8V1Der = private.as_der().map_err(|e| IdpError(format!("rsa serialize: {e}")))?;
+            let bytes = der.as_ref().to_vec();
+            write_private(&key_path, &bytes)?;
+            bytes
+        };
+        let keypair = RsaKeyPair::from_pkcs8(&pkcs8).map_err(|e| IdpError(format!("rsa load: {e}")))?;
+        // The public key (DER PKCS#1, hex) — the form `verify_oidc` consumes.
+        std::fs::write(dir.join("root.pub"), hex_encode(keypair.public_key().as_ref()))?;
+        Ok(RegistryKey { keypair })
     }
 
-    pub fn sign(&self, msg: &[u8]) -> String {
-        hex_encode(&self.signing.sign(msg).to_bytes())
+    /// RS256 (RSASSA-PKCS1-v1_5 / SHA-256) signature over `msg`, as raw bytes.
+    pub fn sign(&self, msg: &[u8]) -> IdpResult<Vec<u8>> {
+        let mut sig = vec![0u8; self.keypair.public_modulus_len()];
+        self.keypair
+            .sign(&RSA_PKCS1_SHA256, &aws_lc_rs::rand::SystemRandom::new(), msg, &mut sig)
+            .map_err(|e| IdpError(format!("rsa sign: {e}")))?;
+        Ok(sig)
     }
 
     pub fn public_hex(&self) -> String {
-        hex_encode(self.signing.verifying_key().as_bytes())
+        hex_encode(self.keypair.public_key().as_ref())
     }
 }
 
-fn read_seed(path: &Path) -> IdpResult<[u8; 32]> {
-    let text = std::fs::read_to_string(path)?;
-    let bytes = hex_decode(text.trim()).ok_or_else(|| IdpError("corrupt root.key".into()))?;
-    bytes
-        .try_into()
-        .map_err(|_| IdpError("root.key is not a 32-byte seed".into()))
-}
-
-fn write_private(path: &Path, seed: &[u8; 32]) -> IdpResult<()> {
-    std::fs::write(path, hex_encode(seed))?;
+fn write_private(path: &Path, der: &[u8]) -> IdpResult<()> {
+    std::fs::write(path, hex_encode(der))?;
     // Best-effort lock-down of the private key file.
     #[cfg(unix)]
     {
@@ -154,22 +156,50 @@ pub struct Claims {
     pub extra: BTreeMap<String, String>,
 }
 
-/// A signed identity token (a JWT stand-in: `claims` + an issuer signature).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct IdToken {
-    pub claims: Claims,
-    /// Ed25519 signature (hex) over the canonical claims, by the issuer's key.
-    pub sig: String,
+/// Mint a short-lived identity token as a compact RS256 JWT (`header.payload.signature`,
+/// each base64url) — the shape a real OIDC provider / CI system emits. The standard claims
+/// and the provider claims (`extra`) are FLATTENED to the payload's top level, matching a
+/// GitHub Actions token, so the verifier reads `repository` directly.
+pub fn mint(issuer_key: &RegistryKey, claims: Claims) -> IdpResult<String> {
+    let header = b64url(br#"{"alg":"RS256","typ":"JWT"}"#);
+    let payload = b64url(payload_json(&claims).as_bytes());
+    let signing_input = format!("{header}.{payload}");
+    let sig = issuer_key.sign(signing_input.as_bytes())?;
+    Ok(format!("{signing_input}.{}", b64url(&sig)))
 }
 
-fn canonical(claims: &Claims) -> Vec<u8> {
-    serde_json::to_vec(claims).unwrap_or_default()
+/// The JWT payload: standard claims plus the provider `extra` claims, all at the top level.
+fn payload_json(c: &Claims) -> String {
+    let mut obj = serde_json::Map::new();
+    obj.insert("iss".into(), c.iss.clone().into());
+    obj.insert("sub".into(), c.sub.clone().into());
+    obj.insert("aud".into(), c.aud.clone().into());
+    obj.insert("exp".into(), c.exp.into());
+    obj.insert("iat".into(), c.iat.into());
+    for (k, v) in &c.extra {
+        obj.insert(k.clone(), serde_json::Value::String(v.clone()));
+    }
+    serde_json::Value::Object(obj).to_string()
 }
 
-/// Mint an identity token — the IdP's job (a CI provider does this per run).
-pub fn mint(issuer_key: &RegistryKey, claims: Claims) -> IdToken {
-    let sig = issuer_key.sign(&canonical(&claims));
-    IdToken { claims, sig }
+/// base64url (no padding) — the JWT segment encoding.
+fn b64url(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    let mut out = String::new();
+    for c in bytes.chunks(3) {
+        let n = ((c[0] as u32) << 16)
+            | ((*c.get(1).unwrap_or(&0) as u32) << 8)
+            | (*c.get(2).unwrap_or(&0) as u32);
+        out.push(ALPHABET[(n >> 18 & 63) as usize] as char);
+        out.push(ALPHABET[(n >> 12 & 63) as usize] as char);
+        if c.len() > 1 {
+            out.push(ALPHABET[(n >> 6 & 63) as usize] as char);
+        }
+        if c.len() > 2 {
+            out.push(ALPHABET[(n & 63) as usize] as char);
+        }
+    }
+    out
 }
 
 fn now_unix() -> u64 {
@@ -256,28 +286,9 @@ pub fn mint_token(rest: &[String]) -> IdpResult<()> {
         iat: now,
         extra,
     };
-    let token = mint(&key, claims);
-    println!(
-        "{}",
-        serde_json::to_string(&token).map_err(|e| IdpError(e.to_string()))?
-    );
+    let token = mint(&key, claims)?;
+    println!("{token}");
     Ok(())
-}
-
-/// A short, comparable fingerprint of a hex-encoded public key (for TOFU
-/// pinning). Kept for parity with the registry's fingerprint scheme; the hash is
-/// over the public-key hex string.
-#[allow(dead_code)]
-fn fingerprint_of(pub_hex: &str) -> String {
-    let mut h = Sha256::new();
-    h.update(pub_hex.as_bytes());
-    let d = h.finalize();
-    let mut s = String::from("ed25519:");
-    for b in &d[..8] {
-        use std::fmt::Write;
-        let _ = write!(s, "{b:02x}");
-    }
-    s
 }
 
 #[cfg(test)]
@@ -312,34 +323,61 @@ mod tests {
     }
 
     #[test]
-    fn minted_token_is_signed_over_canonical_claims() {
+    fn minted_token_is_a_verifiable_rs256_jwt() {
         let dir = tmp();
         let key = RegistryKey::load_or_create(&dir).unwrap();
         let claims = Claims {
-            iss: "gha".into(),
+            iss: "https://token.actions.githubusercontent.com".into(),
             sub: "repo:acme/x".into(),
             aud: AUDIENCE.into(),
-            exp: 1000,
+            exp: 2_000_000_000,
             iat: 500,
             extra: BTreeMap::from([("repository".into(), "acme/x".into())]),
         };
-        let tok = mint(&key, claims);
-        // The signature verifies over the canonical claims under the issuer key.
-        use ed25519_dalek::{Signature, Verifier, VerifyingKey};
-        let pk: [u8; 32] = hex_decode(&key.public_hex()).unwrap().try_into().unwrap();
-        let vk = VerifyingKey::from_bytes(&pk).unwrap();
-        let sig_bytes: [u8; 64] = hex_decode(&tok.sig).unwrap().try_into().unwrap();
-        assert!(vk.verify(&canonical(&tok.claims), &Signature::from_bytes(&sig_bytes)).is_ok());
+        let token = mint(&key, claims).unwrap();
+        let parts: Vec<&str> = token.split('.').collect();
+        assert_eq!(parts.len(), 3, "a compact JWT has three segments");
+
+        // The RS256 signature over `header.payload` verifies under the issuer's public key
+        // (DER PKCS#1) — the exact check coven_trust performs via verify_oidc.
+        let pk_der = hex_decode(&key.public_hex()).unwrap();
+        let sig = b64url_decode(parts[2]);
+        let signing_input = format!("{}.{}", parts[0], parts[1]);
+        let pubkey = aws_lc_rs::signature::UnparsedPublicKey::new(
+            &aws_lc_rs::signature::RSA_PKCS1_2048_8192_SHA256,
+            &pk_der,
+        );
+        assert!(pubkey.verify(signing_input.as_bytes(), &sig).is_ok(), "JWT signature verifies");
+
+        // The provider claim is FLATTENED to the payload top level (like a real GH token).
+        let payload = String::from_utf8(b64url_decode(parts[1])).unwrap();
+        assert!(payload.contains("\"repository\":\"acme/x\""), "extra flattened: {payload}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    #[test]
-    fn fingerprint_is_stable_and_prefixed() {
-        let dir = tmp();
-        let key = RegistryKey::load_or_create(&dir).unwrap();
-        let fp = fingerprint_of(&key.public_hex());
-        assert!(fp.starts_with("ed25519:"));
-        assert_eq!(fp, fingerprint_of(&key.public_hex()));
-        let _ = std::fs::remove_dir_all(&dir);
+    /// Decode base64url (no padding) to bytes — for the test to read the JWT's segments.
+    fn b64url_decode(s: &str) -> Vec<u8> {
+        const A: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+        let val = |c: u8| A.iter().position(|&x| x == c).unwrap() as u32;
+        let b = s.as_bytes();
+        let mut out = Vec::new();
+        let mut i = 0;
+        while i < b.len() {
+            let n = b.len() - i;
+            let c0 = val(b[i]);
+            let c1 = if n > 1 { val(b[i + 1]) } else { 0 };
+            let c2 = if n > 2 { val(b[i + 2]) } else { 0 };
+            let c3 = if n > 3 { val(b[i + 3]) } else { 0 };
+            let triple = (c0 << 18) | (c1 << 12) | (c2 << 6) | c3;
+            out.push((triple >> 16) as u8);
+            if n > 2 {
+                out.push((triple >> 8) as u8);
+            }
+            if n > 3 {
+                out.push(triple as u8);
+            }
+            i += 4;
+        }
+        out
     }
 }

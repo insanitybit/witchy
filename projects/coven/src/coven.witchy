@@ -331,7 +331,7 @@ impl Coven:
 
 // --- authorization helpers (CovenError-returning bridges over coven_trust) ----
 // Verify a request's identity token, lifting a (401, reason) on failure.
-fn verified_claims(issuers: List(Issuer), id_token: Option(Json), now: Int, missing: String) -> Result(Json, CovenError):
+fn verified_claims(issuers: List(Issuer), id_token: Option(String), now: Int, missing: String) -> Result(Json, CovenError):
     let token = id_token.ok_or(CovenError(401, missing))?
     coven_trust.verify_token(issuers, token, now).map_err(fn(e: String): CovenError(401, e))
 
