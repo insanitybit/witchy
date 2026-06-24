@@ -422,6 +422,7 @@ pub(crate) fn link_capability_imports(
     let net = caps.net_allow.is_some();
     if net && caps.net_connect {
         linker.func_wrap("witchy", "net_restrict", host_net_restrict)?;
+        linker.func_wrap("witchy", "net_deny", host_net_deny)?;
         linker.func_wrap("witchy", "net_connect", host_net_connect)?;
         linker.func_wrap("witchy", "net_try_connect", host_net_try_connect)?;
     }
@@ -1168,6 +1169,19 @@ fn host_net_restrict(mut caller: Caller<'_, VmState>, h: i32, addr_ptr: i32) -> 
     }
     let nets = &mut caller.data_mut().nets;
     nets.push(vec![addr]);
+    Ok((nets.len() - 1) as i32)
+}
+
+/// `net_deny(h, addr) -> handle`: subtract an address pattern (RFC-0011 `net.deny`).
+/// A monotone exclusion — recorded as a `!`-prefixed entry that the shared
+/// `net_allows` honours; no admittance check (deny can only narrow).
+fn host_net_deny(mut caller: Caller<'_, VmState>, h: i32, addr_ptr: i32) -> Result<i32> {
+    let mem = memory_of(&mut caller)?;
+    let addr = read_wstr(mem.data(&caller), addr_ptr)?;
+    let mut allow = net_allow(&caller, h)?;
+    allow.push(format!("!{addr}"));
+    let nets = &mut caller.data_mut().nets;
+    nets.push(allow);
     Ok((nets.len() - 1) as i32)
 }
 

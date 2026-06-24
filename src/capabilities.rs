@@ -158,10 +158,16 @@ fn ipv4_in_cidr(ip: std::net::Ipv4Addr, base: std::net::Ipv4Addr, bits: u8) -> b
     (u32::from(ip) & mask) == (u32::from(base) & mask)
 }
 
-/// Whether any allowlist entry admits `target` — the per-op confinement check
-/// used by `listen`/`restrict` on both backends.
+/// Whether the allowlist admits `target` — the per-op confinement check used by
+/// `listen`/`restrict`/`connect` on both backends. An entry prefixed `!` is a DENY
+/// (RFC-0011 `net.deny`): `target` is admitted iff some allow entry matches it AND
+/// no deny entry matches it (`effective = allows \ denies`). Deny is monotone — it
+/// can only subtract — so a flat allowlist with no `!` entries behaves unchanged.
 pub fn net_allows(allow: &[String], target: &str) -> bool {
-    allow.iter().any(|p| address_admits(p, target))
+    if allow.iter().filter_map(|p| p.strip_prefix('!')).any(|d| address_admits(d, target)) {
+        return false;
+    }
+    allow.iter().filter(|p| !p.starts_with('!')).any(|p| address_admits(p, target))
 }
 
 /// The error a backend MUST raise when `main` binds a host capability the host

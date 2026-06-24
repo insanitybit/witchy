@@ -6024,10 +6024,15 @@ impl Codegen {
                 let a = self.lower_args(&[&args[0]])?;
                 if self.collect_wir { call("net_accept", a) } else { host("net_accept_host", a) }
             }
-            ("restrict", 2) => {
+            ("restrict", 2) | ("only", 2) => {
                 self.used_net_ops.insert("restrict");
                 let a = self.lower_args(&[&args[0], &args[1]])?;
                 if self.collect_wir { call("net_restrict", a) } else { host("net_restrict_host", a) }
+            }
+            ("deny", 2) => {
+                self.used_net_ops.insert("deny");
+                let a = self.lower_args(&[&args[0], &args[1]])?;
+                if self.collect_wir { call("net_deny", a) } else { host("net_deny_host", a) }
             }
             ("connect", 2) => {
                 self.used_net_ops.insert("connect");

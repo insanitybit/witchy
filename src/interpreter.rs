@@ -1493,15 +1493,26 @@ impl Interpreter {
                 }
                 _ => err("run_tool expects a BuildExec, a tool name, and input"),
             },
-            // Network capability: attenuate a Net to a held address.
-            "restrict" => match args {
+            // Network capability: attenuate a Net to a held address. `only` is
+            // RFC-0011's method-form verb for the same allow-narrowing.
+            "restrict" | "only" => match args {
                 [Value::Net(allow), Value::Str(addr)] => {
                     if !crate::capabilities::net_allows(allow, addr) {
-                        return err(format!("restrict: `{addr}` is not in this Net capability"));
+                        return err(format!("{name}: `{addr}` is not in this Net capability"));
                     }
                     Ok(Some(Value::Net(vec![addr.clone()])))
                 }
-                _ => err("restrict expects a Net and an address"),
+                _ => err(format!("{name} expects a Net and an address")),
+            },
+            // Subtract an address pattern (RFC-0011 `net.deny`): a monotone exclusion,
+            // recorded as a `!`-prefixed entry the shared `net_allows` honours.
+            "deny" => match args {
+                [Value::Net(allow), Value::Str(addr)] => {
+                    let mut next = allow.clone();
+                    next.push(format!("!{addr}"));
+                    Ok(Some(Value::Net(next)))
+                }
+                _ => err("deny expects a Net and an address"),
             },
             // Connect only to an address the Net capability permits.
             "connect" => match args {

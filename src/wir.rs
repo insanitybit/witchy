@@ -4261,6 +4261,13 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             uses_heap: false,
             uses_table: false,
         }),
+        "net_deny" => Some(WirHelperSpec {
+            func: host_call_helper("net_deny", "net_deny", 2),
+            helper_deps: &[],
+            import_deps: &["net_deny"],
+            uses_heap: false,
+            uses_table: false,
+        }),
         "net_send_line" => Some(WirHelperSpec {
             func: host_void_helper("net_send_line", "net_send_line", 2),
             helper_deps: &[],

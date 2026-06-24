@@ -1470,7 +1470,7 @@ impl Checker {
     /// Returns `Ok(None)` when `name` is not a Net op.
     fn check_net_op(&mut self, name: &str, args: &[Expr]) -> Result<Option<Ty>, TypeError> {
         let arity = match name {
-            "connect" | "try_connect" | "listen" | "restrict" => 2,
+            "connect" | "try_connect" | "listen" | "restrict" | "only" | "deny" => 2,
             _ => return Ok(None),
         };
         if args.len() != arity {
@@ -1531,7 +1531,9 @@ impl Checker {
                 Ty::Listener
             }
             // Attenuating the address set leaves the rights (verbs + transports) intact.
-            "restrict" => Ty::Net(rights),
+            // `only` is RFC-0011's method-form verb for the same allow-narrowing;
+            // `deny` subtracts an address pattern (a monotone exclusion).
+            "restrict" | "only" | "deny" => Ty::Net(rights),
             _ => unreachable!(),
         };
         Ok(Some(ret))

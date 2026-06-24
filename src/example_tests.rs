@@ -263,6 +263,27 @@
         );
     }
 
+    /// RFC-0011: `net.only(policy)` is the method-form refinement verb (the older
+    /// `restrict` is its alias) — it narrows a `Net`'s address set identically, on
+    /// both backends. Method and free-function forms agree.
+    #[test]
+    fn net_only_refinement_verb_backends_agree() {
+        let src = "import confine\nfn main(net: Net, console: Console):\n    let m = net.only(confine.tcp(\"10.0.0.5\", 6379))\n    let f = only(net, \"10.0.0.5:6379\")\n    print(console, \"only\")\n";
+        let linked = resolve_std_src(src);
+        typeck::check(&linked).expect("typecheck");
+        let expected = vec!["only".to_string()];
+        assert_eq!(
+            interpreter::run_module(linked.clone(), ".", vec!["10.0.0.5:6379".into()]).expect("interp"),
+            expected,
+            "interpreter",
+        );
+        assert_eq!(
+            run_linked_on_wasm_net(&[("main", src)], "main", &["10.0.0.5:6379"]),
+            expected,
+            "wasm",
+        );
+    }
+
     /// A comparison operator (`==`/`<`/…) desugars to its trait impl by recovering
     /// the operands' concrete type. The receiver may be introduced by a PATTERN
     /// binding — a `match` arm, an `if let`, or a tuple destructure — whose type
@@ -7909,6 +7930,37 @@ fn main(console: Console):
             .expect("spawn");
         actor.run().expect("run");
         actor.output()
+    }
+
+    /// RFC-0011: `net.deny(policy)` subtracts an address pattern from a `Net` — the
+    /// monotone allow/deny algebra `effective = allows \ denies`, recorded as a
+    /// `!`-prefixed allowlist entry honoured by the shared `net_allows`. A non-denied
+    /// address still narrows on both backends; a denied one is refused.
+    #[test]
+    fn net_deny_subtracts_addresses_backends_agree() {
+        let src = "import confine\nfn main(net: Net, console: Console):\n    let d = net.deny(confine.cidr_any(\"10.0.0.0/8\"))\n    let ok = only(d, confine.tcp(\"192.168.1.1\", 80))\n    print(console, \"denied\")\n";
+        let linked = resolve_std_src(src);
+        typeck::check(&linked).expect("typecheck");
+        let grant = vec!["10.0.0.0/8:*".to_string(), "192.168.1.1:80".to_string()];
+        let expected = vec!["denied".to_string()];
+        assert_eq!(
+            interpreter::run_module(linked.clone(), ".", grant.clone()).expect("interp"),
+            expected,
+            "interpreter: a non-denied address still narrows",
+        );
+        assert_eq!(
+            run_linked_on_wasm_net(&[("main", src)], "main", &["10.0.0.0/8:*", "192.168.1.1:80"]),
+            expected,
+            "wasm",
+        );
+        // A denied address (inside the denied block) is refused — the exclusion bites.
+        let bad = "import confine\nfn main(net: Net, console: Console):\n    let d = net.deny(confine.cidr_any(\"10.0.0.0/8\"))\n    let x = only(d, confine.tcp(\"10.0.0.5\", 6379))\n    print(console, \"unreached\")\n";
+        let bad_linked = resolve_std_src(bad);
+        typeck::check(&bad_linked).expect("typecheck");
+        assert!(
+            interpreter::run_module(bad_linked, ".", vec!["10.0.0.0/8:*".into()]).is_err(),
+            "a denied address must be refused",
+        );
     }
 
     /// Like `run_linked_on_wasm` but with an explicit `Net` allowlist grant, for

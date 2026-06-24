@@ -246,6 +246,7 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
   (import "witchy" "net_listen" (func $net_listen_host (param i32 i32) (result i32)))
   (import "witchy" "net_accept" (func $net_accept_host (param i32) (result i32)))
   (import "witchy" "net_restrict" (func $net_restrict_host (param i32 i32) (result i32)))
+  (import "witchy" "net_deny" (func $net_deny_host (param i32 i32) (result i32)))
   (import "witchy" "net_send_line" (func $net_send_line_host (param i32 i32)))
   (import "witchy" "net_send_bytes" (func $net_send_bytes_host (param i32 i32)))
   (import "witchy" "net_close" (func $net_close_host (param i32)))
