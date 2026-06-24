@@ -17,13 +17,28 @@ import json
 import crypto
 import encoding
 import webauthn
+import oauth
+import secretstore
+import url
+import result
+import option
 
-fn main(console: Console, net: Net, assets: Dir, key: Secret, clock: Clock, args: List(String)):
+fn main(console: Console, net: Net, assets: Dir, secrets: SecretStore, clock: Clock, args: List(String)):
+    // The root signing key is the store's `signing` secret (`--signing-key <seed>` is
+    // sugar for `--secret-file signing=<path>`); it backs sessions + OAuth state. The
+    // GitHub OAuth client secret, when present, is a second named secret.
+    let key = secrets.require("signing")
     let listen_addr = if list.length(args) > 0: list.at(args, 0) else: "127.0.0.1:8080"
     let upstream = if list.length(args) > 1: list.at(args, 1) else: "127.0.0.1:8787"
     // The WebAuthn relying-party origin + id the server checks every assertion against.
     let origin = if list.length(args) > 2: list.at(args, 2) else: "http://" + listen_addr
     let rp_id = if list.length(args) > 3: list.at(args, 3) else: "localhost"
+    // "Log in with GitHub" config. `gh_client_id` empty => login disabled. The base URLs
+    // are overridable (GitHub Enterprise, or a test's mock) and default to github.com.
+    let gh_client_id = if list.length(args) > 4: list.at(args, 4) else: ""
+    let gh_base = if list.length(args) > 5: list.at(args, 5) else: "https://github.com"
+    let gh_api = if list.length(args) > 6: list.at(args, 6) else: "https://api.github.com"
+    let gh_redirect = origin + "/auth/github/callback"
 
     var app = server.router()
     app = app.get("/", h_index_html(assets))
@@ -60,6 +75,13 @@ fn main(console: Console, net: Net, assets: Dir, key: Secret, clock: Clock, args
     app = app.get("/api/webauthn/challenge", h_wa_challenge(assets, key, clock))
     app = app.post("/api/webauthn/login", h_wa_login(assets, key, clock, origin, rp_id))
     app = app.post("/api/coven/promote-2fa", h_wa_promote(assets, net, upstream, origin, rp_id))
+    // "Log in with GitHub" (OAuth2 Authorization Code) — registered only when a client
+    // id is configured. `/login` redirects to GitHub with a signed anti-CSRF state;
+    // `/callback` verifies the state, trades the code for a token, reads the user, and
+    // mints the same bearer session a passkey sign-in would (composition over std/oauth).
+    if gh_client_id != "":
+        app = app.get("/auth/github/login", h_github_login(key, clock, gh_base, gh_client_id, gh_redirect))
+        app = app.get("/auth/github/callback", h_github_callback(net, key, clock, secrets, gh_base, gh_api, gh_client_id, gh_redirect))
     // Layer order: sec_fetch_csrf is inner (rejects cross-site writes before the
     // handler), security_headers is outer (so even a 403 carries the full stack).
     app = app.layer(sec_fetch_csrf())
@@ -232,6 +254,58 @@ fn wa_do_login(store: Dir, key: Secret, clock: Clock, origin: String, rp_id: Str
                 write(store, "_wa_challenge.json", "{}")
                 let (tok, exp) = issue_session(key, clock)
                 server.json(200, json.encode(JsonObject([("token", JsonString(tok)), ("expires", JsonString("${exp}"))])))
+
+// ---- "Log in with GitHub" (OAuth2) ------------------------------------------
+// `/login` redirects to GitHub with a signed, expiring anti-CSRF `state`; `/callback`
+// re-checks it, exchanges the code for an access token (std/oauth, over HTTPS), reads
+// the GitHub user, and mints the same self-authenticating bearer session a passkey
+// sign-in issues. The OAuth client secret is the store's `github_client_secret`.
+
+fn state_ttl_ms() -> Int:
+    600000
+
+// A signed, expiring OAuth `state` — the same HMAC-over-the-Secret shape as a session
+// token. GitHub echoes it back to `/callback`, where the signature proves we issued it.
+fn sign_state(key: Secret, clock: Clock) -> String:
+    let exp = now(clock) + state_ttl_ms()
+    "${exp}" + "." + crypto.sign(key, "oauth-state:" + "${exp}")
+
+fn valid_state(key: Secret, clock: Clock, state: String) -> Bool:
+    if !string.contains(state, "."):
+        false
+    else:
+        let (exp_s, sig) = string.split_once(state, ".")
+        sig == crypto.sign(key, "oauth-state:" + exp_s) && string.to_int(exp_s) > now(clock)
+
+fn h_github_login(key: Secret, clock: Clock, gh_base: String, client_id: String, redirect_uri: String) -> fn(Request) -> Response:
+    fn(req: Request):
+        let state = sign_state(key, clock)
+        server.redirect(oauth.authorize_url(gh_base + "/login/oauth/authorize", client_id, redirect_uri, "read:user", state))
+
+fn h_github_callback(net: Net, key: Secret, clock: Clock, secrets: SecretStore, gh_base: String, gh_api: String, client_id: String, redirect_uri: String) -> fn(Request) -> Response:
+    fn(req: Request):
+        github_callback(net, key, clock, secrets, gh_base, gh_api, client_id, redirect_uri, server.query(req, "code"), server.query(req, "state"))
+
+fn github_callback(net: Net, key: Secret, clock: Clock, secrets: SecretStore, gh_base: String, gh_api: String, client_id: String, redirect_uri: String, code: String, state: String) -> Response:
+    if code == "" || !valid_state(key, clock, state):
+        server.json(403, "{\"error\":\"invalid OAuth state or missing code\"}")
+    else:
+        match secretstore.get(secrets, "github_client_secret"):
+            None -> server.json(500, "{\"error\":\"github login is misconfigured (no client secret)\"}")
+            Some(sec) ->
+                match oauth.exchange_code(net, gh_base + "/login/oauth/access_token", client_id, crypto.reveal(sec), code, redirect_uri):
+                    Err(e) -> server.json(502, json.encode(JsonObject([("error", JsonString("token exchange failed: " + e))])))
+                    Ok(token) -> github_finish(net, key, clock, gh_api, token)
+
+fn github_finish(net: Net, key: Secret, clock: Clock, gh_api: String, token: String) -> Response:
+    match oauth.bearer_get_json(net, gh_api + "/user", token):
+        Err(e) -> server.json(502, json.encode(JsonObject([("error", JsonString("user fetch failed: " + e))])))
+        Ok(user) ->
+            let login = wa_field(user, "login")
+            let (sess, _exp) = issue_session(key, clock)
+            // Hand the SPA its session in the URL FRAGMENT (never sent to a server, kept
+            // out of logs/Referer): the app's JS reads it and uses it as the bearer.
+            server.redirect("/#token=" + url.encode(sess) + "&login=" + url.encode(login))
 
 fn split_host_port(hp: String) -> (String, Int):
     let (h, p) = string.split_once(hp, ":")

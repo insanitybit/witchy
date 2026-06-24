@@ -1895,6 +1895,174 @@ fn http_get(addr: &str, path: &str) -> (u16, String) {
     (status, body)
 }
 
+/// GET a path and return the WHOLE raw HTTP response (status line + headers + body), so
+/// a test can read a redirect's `Location` header.
+fn http_get_raw(addr: &str, path: &str) -> String {
+    use std::io::{Read, Write};
+    let mut s = std::net::TcpStream::connect(addr).unwrap();
+    s.set_read_timeout(Some(std::time::Duration::from_secs(8))).unwrap();
+    s.write_all(format!("GET {path} HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n").as_bytes())
+        .unwrap();
+    let mut buf = String::new();
+    let _ = s.read_to_string(&mut buf);
+    buf
+}
+
+/// The value of a response header (case-insensitive), or None.
+fn header_value(response: &str, name: &str) -> Option<String> {
+    for line in response.lines() {
+        if line.trim().is_empty() {
+            break; // end of headers
+        }
+        if let Some((k, v)) = line.split_once(':')
+            && k.trim().eq_ignore_ascii_case(name)
+        {
+            return Some(v.trim().to_string());
+        }
+    }
+    None
+}
+
+/// Pull a query parameter's value out of a URL.
+fn query_param(url: &str, key: &str) -> Option<String> {
+    let q = url.split_once('?')?.1;
+    for pair in q.split('&') {
+        if let Some((k, v)) = pair.split_once('=')
+            && k == key
+        {
+            return Some(v.to_string());
+        }
+    }
+    None
+}
+
+/// "Log in with GitHub" end to end through the REAL coven-web server: a mock GitHub (a
+/// local rustls server) returns a token then a user; coven-web's OAuth `/callback`
+/// verifies the signed state, exchanges the code, reads the user, and mints a bearer
+/// session. Proves the whole social-login flow — TLS, HTTPS, the OAuth dance, and
+/// session minting — composes on the deployed server.
+#[test]
+fn coven_web_github_login_completes_a_session() {
+    use std::io::{Read, Write};
+    use std::sync::Arc;
+    // Mock-GitHub TLS server with a self-signed `localhost` cert coven-web will trust.
+    let ck = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).expect("cert");
+    let cert_der = ck.cert.der().clone();
+    let key_der = rustls::pki_types::PrivatePkcs8KeyDer::from(ck.key_pair.serialize_der());
+    let tls_config = Arc::new(
+        rustls::ServerConfig::builder_with_provider(rustls::crypto::aws_lc_rs::default_provider().into())
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .with_no_client_auth()
+            .with_single_cert(vec![cert_der], rustls::pki_types::PrivateKeyDer::Pkcs8(key_der))
+            .unwrap(),
+    );
+    let gh_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let gh_port = gh_listener.local_addr().unwrap().port();
+    let cert_path = unique("witchy-cw-gh-cert").join("cert.pem");
+    std::fs::write(&cert_path, ck.cert.pem()).unwrap();
+
+    let sc = tls_config.clone();
+    let gh = std::thread::spawn(move || {
+        for _ in 0..2 {
+            let (tcp, _) = gh_listener.accept().unwrap();
+            let conn = rustls::ServerConnection::new(sc.clone()).unwrap();
+            let mut tls = rustls::StreamOwned::new(conn, tcp);
+            let mut head = Vec::new();
+            let mut b = [0u8; 1];
+            while tls.read_exact(&mut b).is_ok() {
+                head.push(b[0]);
+                if head.ends_with(b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let request_line = String::from_utf8_lossy(&head);
+            let body: &[u8] = if request_line.starts_with("POST /login/oauth/access_token") {
+                b"{\"access_token\":\"gho_e2e\",\"token_type\":\"bearer\"}"
+            } else {
+                b"{\"login\":\"octocat\",\"id\":583231}"
+            };
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                std::str::from_utf8(body).unwrap()
+            );
+            let _ = tls.write_all(resp.as_bytes());
+            let _ = tls.flush();
+            tls.conn.send_close_notify();
+            let _ = tls.flush();
+        }
+    });
+
+    // Spawn coven-web pointed at the mock for both GitHub base URLs.
+    let seed = unique("cw-seed").join("root.seed");
+    std::fs::write(&seed, "0000000000000000000000000000000000000000000000000000000000000001").unwrap();
+    let web_port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    let web_addr = format!("127.0.0.1:{web_port}");
+    let mock = format!("https://localhost:{gh_port}");
+    let assets = unique("cw-assets");
+    std::fs::create_dir_all(&assets).unwrap();
+    let cw_src = format!("{}/projects/coven-web/src/coven_web.witchy", env!("CARGO_MANIFEST_DIR"));
+    let mut child = Command::new(BIN)
+        .args([
+            "--net",
+            &web_addr,
+            "--net",
+            &format!("localhost:{gh_port}"),
+            "--signing-key",
+            seed.to_str().unwrap(),
+            "--secret",
+            "github_client_secret=e2esecret",
+            &cw_src,
+            &web_addr,
+            "127.0.0.1:1",
+            &format!("http://{web_addr}"),
+            "localhost",
+            "Ov23liE2E",
+            &mock,
+            &mock,
+        ])
+        .current_dir(&assets)
+        .env("WITCHY_TLS_EXTRA_ROOTS", &cert_path)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn coven-web");
+
+    let mut up = false;
+    for _ in 0..200 {
+        if std::net::TcpStream::connect(&web_addr).is_ok() {
+            up = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert!(up, "coven-web never started on {web_addr}");
+
+    // /login → 303 to the mock authorize URL; capture the signed anti-CSRF state.
+    let login = http_get_raw(&web_addr, "/auth/github/login");
+    let location = header_value(&login, "location").expect("login redirect has a Location");
+    assert!(
+        location.starts_with(&format!("{mock}/login/oauth/authorize")),
+        "login must redirect to the GitHub authorize URL: {location}"
+    );
+    let state = query_param(&location, "state").expect("authorize URL carries state");
+
+    // /callback with the code + that exact state → coven-web exchanges the code, reads the
+    // user, mints a session, and redirects to the SPA with the bearer in the fragment.
+    let callback = http_get_raw(&web_addr, &format!("/auth/github/callback?code=thecode&state={state}"));
+    let cb_loc = header_value(&callback, "location").expect("callback redirects with a session");
+
+    let _ = child.kill();
+    let _ = child.wait();
+    let _ = gh.join();
+    let _ = std::fs::remove_file(&cert_path);
+    let _ = std::fs::remove_dir_all(&assets);
+
+    assert!(cb_loc.contains("login=octocat"), "session redirect must name the signed-in user: {cb_loc}");
+    assert!(cb_loc.contains("token="), "session redirect must carry a bearer token: {cb_loc}");
+}
+
 /// JSON-encode a string (quoted, with `"`, `\`, and newlines escaped).
 fn json_str(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
