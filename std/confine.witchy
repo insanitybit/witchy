@@ -1,0 +1,29 @@
+// confine — typed constructors for `Net` address policies (RFC-0011).
+//
+// `restrict` (and, later, `only`) narrow a `Net` to a set of `host:port` allowlist
+// patterns. These builders produce those patterns with named, typed arguments
+// instead of hand-written strings, so the policy is constructed, not spelled:
+//
+//     let db  = net.restrict(confine.tcp("10.0.0.5", 6379))     // one plaintext host
+//     let lan = net.restrict(confine.cidr_any("10.0.0.0/24"))   // a subnet, any port
+//
+// These are pure value builders (empty capability footprint). A `tls(host, port)`
+// builder for the `tls:` HTTPS scheme arrives with RFC-0009 (the TLS client), once
+// the host enforces the handshake on a `tls:`-schemed address.
+import string
+
+// A plaintext TCP endpoint: `<host>:<port>`.
+pub fn tcp(host: String, port: Int) -> String:
+    host + ":" + "${port}"
+
+// Any port on a host: `<host>:*`.
+pub fn any_port(host: String) -> String:
+    host + ":*"
+
+// An IPv4 CIDR block (rebinding-proof — matched against the resolved IP): `<a.b.c.d/bits>:<port>`.
+pub fn cidr(block: String, port: Int) -> String:
+    block + ":" + "${port}"
+
+// An IPv4 CIDR block, any port: `<a.b.c.d/bits>:*`.
+pub fn cidr_any(block: String) -> String:
+    block + ":*"

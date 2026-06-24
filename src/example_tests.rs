@@ -241,6 +241,28 @@
         );
     }
 
+    /// RFC-0011: `std/confine` builds `Net` allowlist patterns with typed constructors
+    /// (`confine.tcp(host, port)`) instead of hand-written strings, narrowing via the
+    /// method-syntax refinement (`net.restrict(...)`). Pure witchy over the existing
+    /// `restrict` intrinsic, so both backends agree. The grant must admit the pattern.
+    #[test]
+    fn confine_typed_net_policies_backends_agree() {
+        let src = "import confine\nfn main(net: Net, console: Console):\n    let db = net.restrict(confine.tcp(\"10.0.0.5\", 6379))\n    print(console, \"confined\")\n";
+        let linked = resolve_std_src(src);
+        typeck::check(&linked).expect("typecheck");
+        let expected = vec!["confined".to_string()];
+        assert_eq!(
+            interpreter::run_module(linked.clone(), ".", vec!["10.0.0.5:6379".into()]).expect("interp"),
+            expected,
+            "interpreter",
+        );
+        assert_eq!(
+            run_linked_on_wasm_net(&[("main", src)], "main", &["10.0.0.5:6379"]),
+            expected,
+            "wasm",
+        );
+    }
+
     /// A comparison operator (`==`/`<`/…) desugars to its trait impl by recovering
     /// the operands' concrete type. The receiver may be introduced by a PATTERN
     /// binding — a `match` arm, an `if let`, or a tuple destructure — whose type
@@ -7878,6 +7900,43 @@ fn main(console: Console):
                     dir_read: true,
                     dir_write: true,
                     net_allow: Some(Vec::new()),
+                    net_connect: true,
+                    net_listen: true,
+                    ..Default::default()
+                },
+                4,
+            )
+            .expect("spawn");
+        actor.run().expect("run");
+        actor.output()
+    }
+
+    /// Like `run_linked_on_wasm` but with an explicit `Net` allowlist grant, for
+    /// programs that `restrict`/`connect` to specific addresses.
+    fn run_linked_on_wasm_net(sources: &[(&str, &str)], entry: &str, net_allow: &[&str]) -> Vec<String> {
+        use crate::runtime::{Capabilities, Runtime};
+        let mods: Vec<(String, ast::Module)> = sources
+            .iter()
+            .map(|(n, s)| ((*n).to_string(), parser::parse_module(s).expect("parse")))
+            .collect();
+        let linked = crate::linker::link(mods, entry).expect("link");
+        assert!(typeck::check(&linked).is_ok(), "{:?}", typeck::check(&linked));
+        let bytes = codegen::compile_module_binary(&linked)
+            .expect("compile")
+            .expect("the binary path lowers this program");
+        let mut rt = Runtime::new().expect("runtime");
+        let mut actor = rt
+            .spawn(
+                &bytes,
+                Capabilities {
+                    print: true,
+                    print_int: true,
+                    clock: true,
+                    env: true,
+                    dir_root: Some(std::path::PathBuf::from(".")),
+                    dir_read: true,
+                    dir_write: true,
+                    net_allow: Some(net_allow.iter().map(|s| (*s).to_string()).collect()),
                     net_connect: true,
                     net_listen: true,
                     ..Default::default()

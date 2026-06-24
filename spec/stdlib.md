@@ -212,6 +212,32 @@ A native intrinsic module (implemented in Rust, like `crypto`): it gives a progr
 
 Compare two sources by capability footprint, as JSON:   {"widened":bool,"added":[..],"removed":[..]}   (or {"error":".."}) `widened` is the rights-precise block-on-widening gate: true when `new` demands any capability or right that `old` did not.
 
+## `confine`
+
+confine — typed constructors for `Net` address policies (RFC-0011).
+
+`restrict` (and, later, `only`) narrow a `Net` to a set of `host:port` allowlist patterns. These builders produce those patterns with named, typed arguments instead of hand-written strings, so the policy is constructed, not spelled:
+
+    let db  = net.restrict(confine.tcp("10.0.0.5", 6379))     // one plaintext host     let lan = net.restrict(confine.cidr_any("10.0.0.0/24"))   // a subnet, any port
+
+These are pure value builders (empty capability footprint). A `tls(host, port)` builder for the `tls:` HTTPS scheme arrives with RFC-0009 (the TLS client), once the host enforces the handshake on a `tls:`-schemed address.
+
+#### `fn tcp(host: String, port: Int) -> String`
+
+A plaintext TCP endpoint: `<host>:<port>`.
+
+#### `fn any_port(host: String) -> String`
+
+Any port on a host: `<host>:*`.
+
+#### `fn cidr(block: String, port: Int) -> String`
+
+An IPv4 CIDR block (rebinding-proof — matched against the resolved IP): `<a.b.c.d/bits>:<port>`.
+
+#### `fn cidr_any(block: String) -> String`
+
+An IPv4 CIDR block, any port: `<a.b.c.d/bits>:*`.
+
 ## `convert`
 
 Conversion traits, following Rust's `std::convert`. `From(a)` builds the implementing type from an `a`; `Into(b)` consumes `self` into a `b`. Implementing `From` is enough, since the blanket impl below derives the matching `Into`:

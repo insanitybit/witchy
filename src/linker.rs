@@ -100,6 +100,7 @@ pub const STD_MODULES: &[&str] = &[
     "show", "http", "json", "url", "duration", "random", "regex", "crypto", "compiler", "toml",
     "iter", "semver", "rights", "fs", "dict", "csv", "time", "encoding", "path", "testing",
     "future", "task", "chan", "webauthn", "secretstore", "reflect", "meta", "convert", "exec",
+    "confine",
 ];
 
 /// The bundled std modules that export a `pub fn` of the given name — used to
@@ -308,6 +309,7 @@ pub fn std_source(name: &str) -> Option<&'static str> {
         "reflect" => Some(include_str!("../std/reflect.witchy")),
         "meta" => Some(include_str!("../std/meta.witchy")),
         "exec" => Some(include_str!("../std/exec.witchy")),
+        "confine" => Some(include_str!("../std/confine.witchy")),
         _ => None,
     }
 }
