@@ -48,6 +48,8 @@ pub fn lookup(qualified: &str) -> Option<NativeFn> {
         "encoding.base64_encode" => Some(encoding::base64_encode),
         "encoding.base64url_of_hex" => Some(encoding::base64url_of_hex),
         "encoding.base64_decode" => Some(encoding::base64_decode),
+        "encoding.base64url_decode" => Some(encoding::base64url_decode),
+        "encoding.base64url_to_hex" => Some(encoding::base64url_to_hex),
         "regex.match_spans" => Some(regexp::match_spans),
         "string.from_code" => Some(string::from_code),
         _ => None,
@@ -604,6 +606,48 @@ mod encoding {
             }
         }
         Ok(Value::Str(String::from_utf8_lossy(&bytes).into_owned()))
+    }
+
+    /// Decode base64url (URL-safe `-`/`_`, padding/whitespace tolerated) back to text
+    /// (lossy UTF-8) — for the JSON header/payload segments of a JWT/OIDC token.
+    pub fn base64url_decode(args: &[Value]) -> Result<Value, RuntimeError> {
+        let [Value::Str(s)] = args else {
+            return Err(type_error("encoding.base64url_decode expects a String"));
+        };
+        Ok(Value::Str(String::from_utf8_lossy(&base64url_bytes(s)).into_owned()))
+    }
+
+    /// Decode base64url to a HEX string — for binary that must round-trip through a
+    /// witchy String, e.g. a JWT's RS256 signature fed to `crypto.rsa_pkcs1_sha256_verify`.
+    pub fn base64url_to_hex(args: &[Value]) -> Result<Value, RuntimeError> {
+        let [Value::Str(s)] = args else {
+            return Err(type_error("encoding.base64url_to_hex expects a String"));
+        };
+        let hex: String = base64url_bytes(s).iter().map(|b| format!("{b:02x}")).collect();
+        Ok(Value::Str(hex))
+    }
+
+    /// Shared base64url decoder (URL-safe alphabet; `=`/whitespace tolerated; a
+    /// non-alphabet byte stops decoding).
+    fn base64url_bytes(s: &str) -> Vec<u8> {
+        let mut acc: u32 = 0;
+        let mut nbits = 0;
+        let mut bytes = Vec::new();
+        for c in s.bytes() {
+            if c == b'=' || c.is_ascii_whitespace() {
+                continue;
+            }
+            let Some(v) = B64URL.iter().position(|&x| x == c) else {
+                break;
+            };
+            acc = (acc << 6) | v as u32;
+            nbits += 6;
+            if nbits >= 8 {
+                nbits -= 8;
+                bytes.push((acc >> nbits & 0xff) as u8);
+            }
+        }
+        bytes
     }
 }
 

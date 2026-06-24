@@ -496,6 +496,14 @@ Decode standard base64 back to text (lossy UTF-8); padding/whitespace tolerated.
 
 base64url (no padding; `-`/`_`) of the bytes given as a HEX string. The hex indirection lets binary round-trip through UTF-8 strings — e.g. a WebAuthn `clientDataJSON.challenge` is base64url of the raw challenge bytes.
 
+#### `fn base64url_decode(data: String) -> String`
+
+Decode base64url (URL-safe `-`/`_`, no padding) back to text (lossy UTF-8) — for the JSON header/payload segments of a JWT/OIDC identity token.
+
+#### `fn base64url_to_hex(data: String) -> String`
+
+Decode base64url to a HEX string — for binary that must round-trip through a witchy String, e.g. a JWT's RS256 signature fed to `crypto.rsa_pkcs1_sha256_verify`.
+
 ## `exec`
 
 The `Exec` capability: spawn a confined native subprocess. The executable is named through a `Dir[Read]` — you can only run a file you can read — so `run` takes both the `Exec` right and the `Dir` the binary lives under. Pure data otherwise; the only authority is the `Exec`/`Dir` it is handed.

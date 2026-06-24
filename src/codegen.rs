@@ -5750,6 +5750,14 @@ impl Codegen {
                 self.uses_encoding = true;
                 call("encoding", vec![W::ConstI32(4), self.lower_expr(&args[0])?])
             }
+            ("encoding.base64url_decode", 1) => {
+                self.uses_encoding = true;
+                call("encoding", vec![W::ConstI32(5), self.lower_expr(&args[0])?])
+            }
+            ("encoding.base64url_to_hex", 1) => {
+                self.uses_encoding = true;
+                call("encoding", vec![W::ConstI32(6), self.lower_expr(&args[0])?])
+            }
             // `string.from_code(cp)`: the Int code point travels in the i64 ABI.
             ("string.from_code", 1) => {
                 self.uses_string_from_code = true;

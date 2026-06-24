@@ -29,3 +29,13 @@ pub fn base64_decode(data: String) -> String:
 // `clientDataJSON.challenge` is base64url of the raw challenge bytes.
 pub fn base64url_of_hex(hex: String) -> String:
     hex
+
+// Decode base64url (URL-safe `-`/`_`, no padding) back to text (lossy UTF-8) — for the
+// JSON header/payload segments of a JWT/OIDC identity token.
+pub fn base64url_decode(data: String) -> String:
+    data
+
+// Decode base64url to a HEX string — for binary that must round-trip through a witchy
+// String, e.g. a JWT's RS256 signature fed to `crypto.rsa_pkcs1_sha256_verify`.
+pub fn base64url_to_hex(data: String) -> String:
+    data

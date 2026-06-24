@@ -8027,6 +8027,17 @@ fn main(console: Console):
         assert_eq!(verify("00", msg, &sig_hex), NV::Bool(false), "malformed key is total (false)");
     }
 
+    /// base64url decode (URL-safe `-`/`_`, no padding) — the JWT/OIDC segment codec.
+    /// `base64url_to_hex` round-trips the bytes of `base64url_of_hex`, and
+    /// `base64url_decode` yields the text; identical on both backends.
+    #[test]
+    fn base64url_decode_backends_agree() {
+        let src = "import encoding\nfn main(console: Console):\n    let e = encoding.base64url_of_hex(\"7b2274223a317d\")\n    print(console, encoding.base64url_to_hex(e))\n    print(console, encoding.base64url_decode(e))\n";
+        let expected = vec!["7b2274223a317d".to_string(), "{\"t\":1}".to_string()];
+        assert_eq!(link_run(src), expected, "interp");
+        assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "wasm");
+    }
+
     /// Like `run_linked_on_wasm` but with an explicit `Net` allowlist grant, for
     /// programs that `restrict`/`connect` to specific addresses.
     fn run_linked_on_wasm_net(sources: &[(&str, &str)], entry: &str, net_allow: &[&str]) -> Vec<String> {
