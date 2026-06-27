@@ -25,6 +25,7 @@ pub use witchy::doc;
 pub use witchy::fmt;
 pub use witchy::format;
 pub use witchy::generators;
+pub use witchy::grants;
 pub use witchy::interpreter;
 pub use witchy::lexer;
 pub use witchy::linker;
@@ -340,6 +341,22 @@ fn main() -> wasmtime::Result<()> {
             }
         }
     }
+    // `witchy grants-check <prog.witchy> <grants.toml>` (RFC-0013) cross-checks a
+    // grant document against the program's computed footprint: an over-request
+    // warns, an under-grant exits 2 (the program would fail at the missing cap).
+    if std::env::args().nth(1).as_deref() == Some("grants-check") {
+        let (Some(prog), Some(grants)) = (std::env::args().nth(2), std::env::args().nth(3)) else {
+            eprintln!("usage: witchy grants-check <prog.witchy> <grants.toml>");
+            std::process::exit(1);
+        };
+        match report_grant_check(&prog, &grants) {
+            Ok(under_grant) => std::process::exit(if under_grant { 2 } else { 0 }),
+            Err(e) => {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
+        }
+    }
     // `witchy build-step <file> [--out <dir>] [--read <dir>] [--env <KEY>]...`
     // runs a rune's `build` entrypoint under confined grants and reports the
     // source it generated. The build step can only use the build capabilities it
@@ -519,6 +536,23 @@ fn main() -> wasmtime::Result<()> {
                     Some(v) => issuers.push(v),
                     None => { eprintln!("--trust-issuer needs iss=pubhex"); std::process::exit(1); }
                 },
+                "--trust-issuer-jwks" => match argv.next() {
+                    // `iss=<jwks-file>`: read the JWKS document and hand coven
+                    // `iss=jwks:<json>`, from which it selects the signing key by the
+                    // token's `kid` — rotation-tolerant, the form a real OIDC provider
+                    // (e.g. GitHub Actions) publishes.
+                    Some(v) => match v.split_once('=') {
+                        Some((iss, path)) => match std::fs::read_to_string(path) {
+                            Ok(doc) => {
+                                let compact: String = doc.split_whitespace().collect();
+                                issuers.push(format!("{iss}=jwks:{compact}"));
+                            }
+                            Err(e) => { eprintln!("--trust-issuer-jwks: cannot read `{path}`: {e}"); std::process::exit(1); }
+                        },
+                        None => { eprintln!("--trust-issuer-jwks needs iss=<jwks-file>"); std::process::exit(1); }
+                    },
+                    None => { eprintln!("--trust-issuer-jwks needs iss=<jwks-file>"); std::process::exit(1); }
+                },
                 "--signing-key" => match argv.next() {
                     Some(file) => match load_signing_seed(&file) {
                         Ok(seed) => signing_key = Some(seed),
@@ -657,9 +691,11 @@ fn main() -> wasmtime::Result<()> {
         // Multiple `--dir` grants map positionally to `main`'s `Dir` params: the
         // first backs handle 0, the rest handles 1.. (rfcs/0004-self-hosted-cli.md).
         let mut dir_roots: Vec<std::path::PathBuf> = Vec::new();
+        let mut file_grants: Vec<std::path::PathBuf> = Vec::new();
         let mut net_allow: Vec<String> = Vec::new();
         let mut signing_key: Option<[u8; 32]> = None;
         let mut named_secrets: Vec<(String, Vec<u8>)> = Vec::new();
+        let mut grants_doc: Option<String> = None;
         let mut path: Option<String> = None;
         let mut prog_args: Vec<String> = Vec::new();
         let mut argv = std::env::args().skip(2);
@@ -669,6 +705,24 @@ fn main() -> wasmtime::Result<()> {
                     Some(root) => dir_roots.push(std::path::PathBuf::from(root)),
                     None => {
                         eprintln!("--dir needs a directory");
+                        std::process::exit(1);
+                    }
+                },
+                // RFC-0013: grant the whole capability set from a document instead
+                // of individual flags (cross-checked against the footprint).
+                "--grants" if path.is_none() => match argv.next() {
+                    Some(doc) => grants_doc = Some(doc),
+                    None => {
+                        eprintln!("--grants needs a path to a grant document (.toml)");
+                        std::process::exit(1);
+                    }
+                },
+                // RFC-0012: each `--file` grants one file to a `main` `File` param,
+                // positionally (the i-th `--file` backs the i-th `File` parameter).
+                "--file" if path.is_none() => match argv.next() {
+                    Some(f) => file_grants.push(std::path::PathBuf::from(f)),
+                    None => {
+                        eprintln!("--file needs a path");
                         std::process::exit(1);
                     }
                 },
@@ -711,15 +765,22 @@ fn main() -> wasmtime::Result<()> {
             }
         }
         let Some(path) = path else {
-            eprintln!("usage: witchy sandbox [--dir <root>] [--net <host:port>]... [--signing-key <seed-file>] [--secret name=value] [--secret-file name=path] <file.witchy> [args...]");
+            eprintln!("usage: witchy sandbox [--grants <doc.toml> | [--dir <root>] [--file <path>]... [--net <host:port>]... [--signing-key <seed-file>] [--secret name=value] [--secret-file name=path]] <file.witchy> [args...]");
             std::process::exit(1);
         };
         // A precompiled `.wasm` runs directly (authority from its imports); a
         // `.witchy` source is compiled then run, granted its computed footprint.
-        let result = if path.ends_with(".wasm") {
-            run_wasm_file(&path, dir_roots, net_allow, prog_args, signing_key, named_secrets)
+        // With `--grants`, the whole grant comes from the document (cross-checked).
+        let result = if let Some(doc) = grants_doc {
+            if path.ends_with(".wasm") {
+                eprintln!("--grants applies to a `.witchy` source, not a precompiled `.wasm`");
+                std::process::exit(1);
+            }
+            run_file_grants(&path, &doc, prog_args)
+        } else if path.ends_with(".wasm") {
+            run_wasm_file(&path, dir_roots, file_grants, net_allow, prog_args, signing_key, named_secrets)
         } else {
-            run_file_sandboxed(&path, dir_roots, net_allow, prog_args, signing_key, named_secrets)
+            run_file_sandboxed(&path, dir_roots, file_grants, net_allow, prog_args, signing_key, named_secrets)
         };
         match result {
             Ok((lines, exit_code)) => {
@@ -843,12 +904,12 @@ fn main() -> wasmtime::Result<()> {
         }
         // IdP test tooling (trusted-publishing key/token generation) stays a Rust
         // toolchain helper per RFC-0004 §7.
-        if a1 == "coven-gen-issuer" || a1 == "coven-mint-token" {
+        if a1 == "coven-gen-issuer" || a1 == "coven-mint-token" || a1 == "coven-issuer-jwks" {
             let rest: Vec<String> = std::env::args().skip(2).collect();
-            let result = if a1 == "coven-gen-issuer" {
-                idp::gen_issuer(&rest)
-            } else {
-                idp::mint_token(&rest)
+            let result = match a1.as_str() {
+                "coven-gen-issuer" => idp::gen_issuer(&rest),
+                "coven-issuer-jwks" => idp::issuer_jwks(&rest),
+                _ => idp::mint_token(&rest),
             };
             if let Err(e) = result {
                 eprintln!("error: {e}");
@@ -937,7 +998,7 @@ fn main() -> wasmtime::Result<()> {
             // A precompiled program module (`witchy app.wasm`): run it directly,
             // granted exactly the authority its imports declare (Dir rooted at cwd).
             Some(path) if path.ends_with(".wasm") => {
-                match run_wasm_file(path, Vec::new(), net_allow, prog_args, signing_key, named_secrets) {
+                match run_wasm_file(path, Vec::new(), Vec::new(), net_allow, prog_args, signing_key, named_secrets) {
                     Ok((lines, code)) => {
                         for line in lines {
                             println!("{line}");
@@ -1530,7 +1591,7 @@ fn execute_file_exit(
     // share one runtime, so dev == deploy by construction. The interpreter is only
     // the differential oracle (`witchy parity`) and the comptime evaluator — never
     // a user-program run path.
-    run_linked_compiled(&linked, Vec::new(), net_allow, args, signing_key, named_secrets)
+    run_linked_compiled(&linked, Vec::new(), Vec::new(), net_allow, args, signing_key, named_secrets)
         .map(|(lines, code)| (lines, code.unwrap_or(0)))
 }
 
@@ -1769,6 +1830,7 @@ fn emit_wat_file(path: &str) -> Result<String, String> {
 fn run_linked_compiled(
     linked: &ast::Module,
     dir_roots: Vec<std::path::PathBuf>,
+    file_grants: Vec<std::path::PathBuf>,
     net_allow: Vec<String>,
     args: Vec<String>,
     signing_key: Option<[u8; 32]>,
@@ -1818,6 +1880,16 @@ fn run_linked_compiled(
         caps.dir_roots = roots;
         caps.dir_read = rights.contains("Read");
         caps.dir_write = rights.contains("Write");
+    }
+    // RFC-0012: direct `File` grants — `main`'s `File` params are filled from
+    // `--file` positionally (read/write is the param's compile-time right).
+    if grant.contains_key("File") {
+        if file_grants.is_empty() {
+            return Err(
+                "this program's `main` requires a `File`, but none was granted (use `--file <path>`)".to_string(),
+            );
+        }
+        caps.file_grants = file_grants;
     }
     if let Some(rights) = grant.get("Net") {
         caps.net_allow = Some(net_allow);
@@ -1888,6 +1960,7 @@ fn compile_linked_to_wasm(linked: &ast::Module) -> Result<Vec<u8>, String> {
 fn run_file_sandboxed(
     path: &str,
     dir_roots: Vec<std::path::PathBuf>,
+    file_grants: Vec<std::path::PathBuf>,
     net_allow: Vec<String>,
     args: Vec<String>,
     signing_key: Option<[u8; 32]>,
@@ -1916,7 +1989,94 @@ fn run_file_sandboxed(
         "sandboxing `{path}` \u{2014} granted exactly: {}",
         capabilities::show_caps(&grant)
     );
-    run_linked_compiled(&linked, dir_roots, net_allow, args, signing_key, named_secrets)
+    run_linked_compiled(&linked, dir_roots, file_grants, net_allow, args, signing_key, named_secrets)
+}
+
+/// Resolve a `[secrets]` entry's `from = "env:VAR"` to the secret bytes the host
+/// holds. The grant document never carries the value — only where to fetch it.
+fn resolve_secret_from(from: &str) -> Result<Vec<u8>, String> {
+    if let Some(var) = from.strip_prefix("env:") {
+        std::env::var(var)
+            .map(String::into_bytes)
+            .map_err(|_| format!("grant secret resolver `env:{var}`: ${var} is not set"))
+    } else {
+        Err(format!("unsupported grant secret resolver `{from}` (expected `env:VAR`)"))
+    }
+}
+
+/// `witchy sandbox --grants app.grants.toml <prog.witchy>` (RFC-0013): run a
+/// program against a grant document instead of individual flags. The grant is
+/// cross-checked against the computed footprint — an over-request warns, an
+/// under-grant aborts — and each `Dir`/`File` `main` parameter is bound to the
+/// document entry of the SAME NAME (`[files].config` → the `config` parameter).
+fn run_file_grants(
+    path: &str,
+    grants_path: &str,
+    args: Vec<String>,
+) -> Result<(Vec<String>, Option<i32>), String> {
+    let (linked, _stem) = link_file(path)?;
+    typeck::check(&linked).map_err(|e| e.to_string())?;
+    let doc_src = std::fs::read_to_string(grants_path)
+        .map_err(|e| format!("cannot read `{grants_path}`: {e}"))?;
+    let doc = grants::GrantDoc::parse(&doc_src)?;
+
+    // Cross-check the grant against what the code actually exercises.
+    let footprint = capabilities::analyze(&linked);
+    let check = grants::cross_check(&doc.cap_set(), &footprint.total);
+    if !check.over_grant.is_empty() {
+        eprintln!(
+            "warning: grant `{grants_path}` over-requests {} \u{2014} the code never exercises it",
+            capabilities::show_caps(&check.over_grant)
+        );
+    }
+    if !check.sufficient() {
+        return Err(format!(
+            "grant `{grants_path}` is insufficient: the code needs {} which the grant withholds",
+            capabilities::show_caps(&check.under_grant)
+        ));
+    }
+
+    // Bind each `Dir`/`File` `main` parameter to its same-named document entry, in
+    // declaration order (the positional grant the runtime expects). `Net` is one
+    // allowlist (all `[net]` addresses); secrets are named and host-resolved.
+    let mut dir_roots: Vec<std::path::PathBuf> = Vec::new();
+    let mut file_grants: Vec<std::path::PathBuf> = Vec::new();
+    let mut net_allow: Vec<String> = doc.net.values().flatten().cloned().collect();
+    net_allow.sort();
+    net_allow.dedup();
+    let mut named_secrets: Vec<(String, Vec<u8>)> = Vec::new();
+    for (name, s) in &doc.secrets {
+        named_secrets.push((name.clone(), resolve_secret_from(&s.from)?));
+    }
+    if let Some(ast::Item::Function(main)) =
+        linked.items.iter().find(|it| matches!(it, ast::Item::Function(f) if f.name == "main"))
+    {
+        for p in &main.params {
+            match &p.ty {
+                Some(ast::Type::Named(n, _)) if n == "File" => {
+                    let g = doc.files.get(&p.name).ok_or_else(|| {
+                        format!("grant `{grants_path}` has no `[files].{}` for `main` parameter `{}`", p.name, p.name)
+                    })?;
+                    file_grants.push(std::path::PathBuf::from(&g.path));
+                }
+                Some(ast::Type::Named(n, _)) if n == "Dir" => {
+                    let g = doc.dirs.get(&p.name).ok_or_else(|| {
+                        format!("grant `{grants_path}` has no `[dirs].{}` for `main` parameter `{}`", p.name, p.name)
+                    })?;
+                    dir_roots.push(std::path::PathBuf::from(&g.root));
+                }
+                _ => {}
+            }
+        }
+    }
+    // Be transparent about what the document confers before handing it over.
+    eprintln!(
+        "running `{path}` with grant `{grants_path}` \u{2014} confers: {}",
+        capabilities::show_caps(&doc.cap_set())
+    );
+    // Secrets reach the program by name through the `SecretStore` (`require`/`get`);
+    // the bare `Secret` handle (`--signing-key`) is not granted via documents here.
+    run_linked_compiled(&linked, dir_roots, file_grants, net_allow, args, None, named_secrets)
 }
 
 /// The `witchy.*` host functions a compiled module imports — its authority
@@ -1943,13 +2103,14 @@ fn witchy_imports(bytes: &[u8]) -> Result<Vec<String>, String> {
 fn run_wasm_file(
     path: &str,
     dir_roots: Vec<std::path::PathBuf>,
+    file_grants: Vec<std::path::PathBuf>,
     net_allow: Vec<String>,
     args: Vec<String>,
     signing_key: Option<[u8; 32]>,
     named_secrets: Vec<(String, Vec<u8>)>,
 ) -> Result<(Vec<String>, Option<i32>), String> {
     let bytes = std::fs::read(path).map_err(|e| format!("cannot read `{path}`: {e}"))?;
-    run_wasm_module(&bytes, dir_roots, net_allow, args, signing_key, named_secrets)
+    run_wasm_module(&bytes, dir_roots, file_grants, net_allow, args, signing_key, named_secrets)
 }
 
 /// Run a precompiled wasm program from in-memory bytes under the capability
@@ -1957,6 +2118,7 @@ fn run_wasm_file(
 fn run_wasm_module(
     bytes: &[u8],
     dir_roots: Vec<std::path::PathBuf>,
+    file_grants: Vec<std::path::PathBuf>,
     net_allow: Vec<String>,
     args: Vec<String>,
     signing_key: Option<[u8; 32]>,
@@ -2009,6 +2171,9 @@ fn run_wasm_module(
         caps.dir_read = dir_read;
         caps.dir_write = dir_write;
     }
+    // RFC-0012 direct `File` grants — fills `main`'s `File` params positionally and
+    // pre-populates the files table (the run-wrapper pushes the handles).
+    caps.file_grants = file_grants;
     if net_connect || net_listen {
         caps.net_allow = Some(net_allow);
         caps.net_connect = net_connect;
@@ -2274,6 +2439,38 @@ fn report_capability_diff(old_path: &str, new_path: &str) -> Result<bool, String
         }
     }
     Ok(d.widened())
+}
+
+/// RFC-0013: cross-check a grant document against a program's computed footprint.
+/// Returns `true` when there is an UNDER-grant (the fatal case): the code needs
+/// authority the grant withholds, so the program would fail at the missing
+/// capability anyway. An over-grant (authority the code never uses) only warns.
+fn report_grant_check(prog_path: &str, grants_path: &str) -> Result<bool, String> {
+    let footprint = analyze_file(prog_path)?;
+    let doc_src = std::fs::read_to_string(grants_path)
+        .map_err(|e| format!("cannot read `{grants_path}`: {e}"))?;
+    let doc = crate::grants::GrantDoc::parse(&doc_src)?;
+    let grant = doc.cap_set();
+    let check = crate::grants::cross_check(&grant, &footprint.total);
+    println!("Grant cross-check: `{grants_path}` vs the footprint of `{prog_path}`");
+    println!("  code needs:  {}", capabilities::show_caps(&footprint.total));
+    println!("  grant gives: {}", capabilities::show_caps(&grant));
+    if check.clean() {
+        println!("  OK: the grant matches what the code exercises exactly.");
+    }
+    if !check.over_grant.is_empty() {
+        println!(
+            "  WARN over-grant (authority the code never exercises): {}",
+            capabilities::show_caps(&check.over_grant)
+        );
+    }
+    if !check.under_grant.is_empty() {
+        println!(
+            "  ERROR under-grant (authority the code needs but the grant withholds): {}",
+            capabilities::show_caps(&check.under_grant)
+        );
+    }
+    Ok(!check.sufficient())
 }
 
 /// Parse, link, and run a multi-module program through the interpreter.

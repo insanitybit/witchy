@@ -284,12 +284,25 @@ fn function(s: &mut String, f: &Function, indented: bool, c: &mut Comments) {
 
 fn type_def(s: &mut String, t: &TypeDef) {
     if t.sealed {
-        // RFC-0002 `capability X from U` — a sealed brand. Its single variant's
-        // field types ARE the underlying capabilities it refines.
         s.push_str("capability ");
         s.push_str(&t.name);
+        let v = &t.variants[0];
+        // RFC-0011 record form (`capability X:` with named fields, carried state).
+        if !v.field_names.is_empty() {
+            s.push_str(":\n");
+            for (n, ty) in v.field_names.iter().zip(&v.fields) {
+                pad(s, 1);
+                s.push_str(n);
+                s.push_str(": ");
+                s.push_str(&type_str(ty));
+                s.push('\n');
+            }
+            return;
+        }
+        // RFC-0002 `capability X from U` — a sealed brand. Its single variant's
+        // field types ARE the underlying capabilities it refines.
         s.push_str(" from ");
-        let fields = &t.variants[0].fields;
+        let fields = &v.fields;
         if fields.len() == 1 {
             s.push_str(&type_str(&fields[0]));
         } else {
@@ -430,9 +443,6 @@ fn impl_def(s: &mut String, im: &ImplDef, c: &mut Comments) {
     }
 }
 
-/// Write a `retain`/`without` firewall header (`without a, b:`) with no leading
-/// pad or trailing newline — the caller positions it (padded on its own line in
-/// statement position, or inline after `= ` in value position).
 /// Write a `region:` / `region -> T:` header, no leading pad or newline.
 fn region_header(s: &mut String, r: &crate::ast::RegionAnn) {
     s.push_str("region");
@@ -443,27 +453,10 @@ fn region_header(s: &mut String, r: &crate::ast::RegionAnn) {
     s.push(':');
 }
 
-fn restrict_header(s: &mut String, r: &CapRestrict) {
-    s.push_str(match r.mode {
-        RestrictMode::Retain => "retain",
-        RestrictMode::Without => "without",
-    });
-    if !r.names.is_empty() {
-        s.push(' ');
-        s.push_str(&r.names.join(", "));
-    }
-    s.push(':');
-}
-
 fn block(s: &mut String, b: &Block, depth: usize, c: &mut Comments) {
-    // A `retain`/`without` firewall renders its header at this depth and indents
-    // its body one level deeper; an ordinary block renders its statements here.
-    if let Some(r) = &b.restrict {
-        pad(s, depth);
-        restrict_header(s, r);
-        s.push('\n');
-        block_stmts(s, b, depth + 1, c);
-    } else if let Some(r) = &b.region {
+    // A `region:` block renders its header at this depth and indents its body one
+    // level deeper; an ordinary block renders its statements here.
+    if let Some(r) = &b.region {
         pad(s, depth);
         region_header(s, r);
         s.push('\n');
@@ -473,8 +466,8 @@ fn block(s: &mut String, b: &Block, depth: usize, c: &mut Comments) {
     }
 }
 
-/// Render just a block's statements at `depth`, ignoring any `restrict` header
-/// (the caller emits that). Factored out so a value-position firewall can place
+/// Render just a block's statements at `depth`, ignoring any `region` header
+/// (the caller emits that). Factored out so a value-position block can place
 /// the header inline after `= ` and then reuse this for the body.
 fn block_stmts(s: &mut String, b: &Block, depth: usize, c: &mut Comments) {
     if b.stmts.is_empty() {
@@ -572,10 +565,7 @@ fn block_stmt(s: &mut String, e: &Expr, depth: usize, c: &mut Comments) {
     // line marker. Re-collapse exactly that shape — and only it, so an explicitly
     // written multi-line `if cond: return X` (real line numbers) is left as is.
     if let Expr::If { cond, then_block, else_block: None } = e {
-        if then_block.restrict.is_none()
-            && then_block.region.is_none()
-            && then_block.lines.as_slice() == [u32::MAX]
-        {
+        if then_block.region.is_none() && then_block.lines.as_slice() == [u32::MAX] {
             if let [Stmt::Return(val)] = then_block.stmts.as_slice() {
                 let val_inline = match val {
                     None => Some(None),
@@ -703,13 +693,6 @@ fn value_or_block(s: &mut String, e: &Expr, depth: usize, c: &mut Comments) {
         Expr::Lambda { params, body, ret } => {
             lambda_at(s, params, body, ret, depth, c);
         }
-        // A `retain`/`without` block used as a value (`let x = without c: ...`):
-        // the header follows `= ` on this line, the body indents below.
-        Expr::Block(b) if b.restrict.is_some() => {
-            restrict_header(s, b.restrict.as_ref().unwrap());
-            s.push('\n');
-            block_stmts(s, b, depth + 1, c);
-        }
         // A `region:` block used as a value: header after `= `, body below.
         Expr::Block(b) if b.region.is_some() => {
             region_header(s, b.region.as_ref().unwrap());
@@ -773,7 +756,6 @@ fn multiline(s: &mut String, e: &Expr, depth: usize, c: &mut Comments) {
                         let inner = Block {
                             stmts: body.stmts[1..].to_vec(),
                             lines: body.lines.get(1..).map(<[u32]>::to_vec).unwrap_or_default(),
-                            restrict: body.restrict.clone(),
                             region: body.region.clone(),
                         };
                         s.push_str("for ");
@@ -820,12 +802,7 @@ fn multiline(s: &mut String, e: &Expr, depth: usize, c: &mut Comments) {
                 {
                     if let (Expr::Block(tb), Expr::Block(eb)) = (&then_arm.body, &else_arm.body)
                     {
-                        if tb.restrict.is_none()
-                            && tb.region.is_none()
-                            && eb.restrict.is_none()
-                            && eb.region.is_none()
-                            && !tb.stmts.is_empty()
-                        {
+                        if tb.region.is_none() && eb.region.is_none() && !tb.stmts.is_empty() {
                             s.push_str("if let ");
                             s.push_str(&pattern(&then_arm.pattern));
                             s.push_str(" = ");
@@ -880,9 +857,7 @@ fn arm_body(s: &mut String, body: &Expr, depth: usize, c: &mut Comments) {
         (!rendered.contains('\n')).then_some(rendered)
     }
     match body {
-        Expr::Block(b)
-            if b.stmts.len() == 1 && b.restrict.is_none() && b.region.is_none() =>
-        {
+        Expr::Block(b) if b.stmts.len() == 1 && b.region.is_none() => {
             let inline = match &b.stmts[0] {
                 Stmt::Return(Some(e)) => inline_value(e).map(|v| format!("return {v}")),
                 Stmt::Assign { name, value } => {
@@ -1106,11 +1081,6 @@ fn expr(e: &Expr) -> String {
 /// `None` if the block has no faithful inline form (multiple statements, or a
 /// single expression that itself needs multiple lines).
 fn block_value_opt(b: &Block) -> Option<String> {
-    // A firewalled block has no inline form: the `retain`/`without` header must
-    // survive, so it always renders multi-line.
-    if b.restrict.is_some() {
-        return None;
-    }
     if b.stmts.len() == 1 {
         if let Stmt::Expr(e) = &b.stmts[0] {
             if inline_ok(e) {
@@ -1347,7 +1317,7 @@ fn operand(e: &Expr, parent: u8, is_right: bool) -> String {
 /// spellings parse to the same AST modulo the fresh accumulator counter, so a
 /// hand-written block of this shape prints as a comprehension too.
 fn comprehension_sugar(b: &Block) -> Option<String> {
-    if b.restrict.is_some() || b.region.is_some() || b.stmts.len() != 3 {
+    if b.region.is_some() || b.stmts.len() != 3 {
         return None;
     }
     let Stmt::Let { name: acc, ty: None, mutable: true, value: Expr::List(init) } = &b.stmts[0] else {
@@ -1364,15 +1334,13 @@ fn comprehension_sugar(b: &Block) -> Option<String> {
     loop {
         match cur {
             Stmt::Expr(Expr::For { var, iter, body })
-                if body.stmts.len() == 1 && body.restrict.is_none() && body.region.is_none() =>
+                if body.stmts.len() == 1 && body.region.is_none() =>
             {
                 clauses.push_str(&format!(" for {var} in {}", expr(iter)));
                 cur = &body.stmts[0];
             }
             Stmt::Expr(Expr::If { cond, then_block, else_block: None })
-                if then_block.stmts.len() == 1
-                    && then_block.restrict.is_none()
-                    && then_block.region.is_none() =>
+                if then_block.stmts.len() == 1 && then_block.region.is_none() =>
             {
                 clauses.push_str(&format!(" if {}", expr(cond)));
                 cur = &then_block.stmts[0];

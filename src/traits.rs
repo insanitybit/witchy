@@ -1134,7 +1134,8 @@ fn cap_op_return_type(e: &Expr) -> Option<String> {
     match e {
         Expr::Call { name, .. } => match name.as_str() {
             "restrict" | "only" | "deny" => Some("Net".to_string()),
-            "subdir" | "make_dir" => Some("Dir".to_string()),
+            "subtree" | "make_dir" => Some("Dir".to_string()),
+            "read_file" | "write_file" => Some("File".to_string()),
             "connect" | "accept" => Some("Socket".to_string()),
             "listen" => Some("Listener".to_string()),
             _ => None,
@@ -2018,7 +2019,7 @@ impl Mono<'_> {
             let params = self.generated[i].params.clone();
             let mut body = std::mem::replace(
                 &mut self.generated[i].body,
-                Block { stmts: Vec::new(), lines: Vec::new(), restrict: None, region: None },
+                Block { stmts: Vec::new(), lines: Vec::new(), region: None },
             );
             let mut s = Scope::new();
             seed_params(&params, &mut s);

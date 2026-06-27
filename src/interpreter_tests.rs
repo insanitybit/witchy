@@ -385,7 +385,7 @@ fn main(console: Console):
         // Attenuate to a subdir and read a file within it.
         let ok = r#"
 fn main(console: Console, root: Dir):
-    let d = subdir(root, "sub")
+    let d = subtree(root, "sub")
     print(console, read(d, "hi.txt"))
 "#;
         assert_eq!(run_in(ok, &root).unwrap(), vec!["hi!"]);
@@ -416,7 +416,7 @@ fn main(console: Console, root: Dir):
             std::os::unix::fs::symlink(&outside, root.join("sub/escape")).ok();
             let via_symlink = r#"
 fn main(console: Console, root: Dir):
-    let d = subdir(root, "sub")
+    let d = subtree(root, "sub")
     print(console, read(d, "escape"))
 "#;
             assert!(run_in(via_symlink, &root).is_err());
@@ -1015,8 +1015,8 @@ fn serve_file(dir: Dir, p: String) -> Response:
     else:
         server.not_found()
 fn main(console: Console, net: Net, root: Dir):
-    let examples = subdir(root, "examples")
-    let data = subdir(examples, "data")
+    let examples = subtree(root, "examples")
+    let data = subtree(examples, "data")
     let app = server.router().get("/files/*path", file_server(data))
     server.serve_n(net, "{addr}", app, 2)
 "#

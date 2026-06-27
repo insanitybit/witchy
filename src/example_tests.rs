@@ -90,6 +90,41 @@
         assert!(parser::parse_module("fn main(console: Console):\n    let mode = 3\n    print(console, __render(mode))\n").is_ok());
     }
 
+    /// The bundled stdlib must stay on the in-place fast path: a performance cliff
+    /// (an accumulator that reverts to copy-per-iteration, i.e. O(n²)) anywhere in
+    /// std silently slows every program that touches it. This applies `mode opt`'s
+    /// cliff detection to ALL 42 std modules as a regression guard — the same check
+    /// that turned `string.chars`/`json.decode` from O(n²) into O(n). Adding a
+    /// growing-buffer loop to a std module without keeping it on the fast path fails
+    /// HERE, loudly, with the function and the offending accumulator.
+    #[test]
+    fn stdlib_has_no_performance_cliffs() {
+        // Link a synthetic entry that imports every std module, so cross-module call
+        // summaries resolve exactly as in real compilation (a per-module scan would
+        // false-positive on calls like `string.join` whose summary lives elsewhere).
+        let imports: String =
+            crate::linker::STD_MODULES.iter().map(|m| format!("import {m}\n")).collect();
+        let entry_src = format!("{imports}\npub fn perfcheck() -> Int:\n    0\n");
+        let entry = parser::parse_module(&entry_src).expect("parse synthetic std-import entry");
+        let linked = crate::linker::link(vec![("perfcheck".into(), entry)], "perfcheck")
+            .expect("link all std modules");
+        // The whole stdlib is cliff-free: every "build a sub-list, then collect it into a
+        // result list" shape (`out = push(out, move cur); cur = []`) transfers ownership with
+        // `move`, so the sub-list's per-element pushes stay in place (the `move`-resets-cap fix
+        // makes that sound). No allowlist — a new cliff is a hard failure.
+        let offenders: Vec<String> = crate::analysis::module_cliffs(&linked)
+            .into_iter()
+            .map(|(func, c)| {
+                format!("{func} (line {}): `{}` is rebuilt by copy each iteration — {}", c.line, c.var, c.reason)
+            })
+            .collect();
+        assert!(
+            offenders.is_empty(),
+            "stdlib performance cliffs (O(n²) accumulation) found:\n  {}",
+            offenders.join("\n  ")
+        );
+    }
+
     /// `mode opt` is transitive: an `opt` module may import the std library
     /// (exempt) and other `opt` modules, but importing a non-`opt` user module is
     /// a link error.
@@ -2171,6 +2206,50 @@ fn yn(b: Bool) -> String:
         assert_eq!(wasm_run(src), want, "compiled WASM must agree");
     }
 
+    /// REGRESSION GUARD: `list.reverse`/`flatten`/`flat_map` are O(n), not O(n^2).
+    /// They used to accumulate with `list.concat`, which copies the whole growing
+    /// result each iteration — O(n^2) time AND allocation, which traps the WASM
+    /// bump allocator (out-of-bounds) at ~20k elements. At 50k the linear
+    /// push-loop forms stay far under the heap ceiling; an O(n^2) regression would
+    /// trap on the compiled backend and fail here.
+    #[test]
+    fn list_reverse_flatten_flat_map_are_linear_at_scale() {
+        let src = "fn main(console: Console):\n    var xs = []\n    for i in 0..50000:\n        xs = list.push(xs, i)\n    let r = list.reverse(xs)\n    print(console, __render(list.at(r, 0)))\n    print(console, __render(list.at(r, 49999)))\n    print(console, __render(list.flatten([[1, 2], [], [3]])))\n    print(console, __render(list.flat_map([1, 2, 3], fn(x: Int): [x, x * 10])))\n";
+        let want: Vec<String> = ["49999", "0", "[1, 2, 3]", "[1, 10, 2, 20, 3, 30]"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(link_run(src), want.clone(), "interpreter");
+        assert_eq!(wasm_run(src), want, "compiled WASM must agree");
+    }
+
+    /// IN-PLACE SET_AT: `xs = list.set_at(xs, i, v)` mutates the owned buffer's
+    /// slot in place (O(1)) via `$list_set_cap`, instead of rebuilding the whole
+    /// list each set — which is O(n^2) memory that traps the WASM bump allocator
+    /// at ~10k. An aliased list keeps the copying set_at (the alias still sees the
+    /// original), and an out-of-range index leaves the list unchanged.
+    #[test]
+    fn inplace_set_at_is_fast_and_alias_safe() {
+        let src = "fn main(console: Console):\n    var xs = []\n    for i in 0..5000:\n        xs = list.push(xs, 0)\n    var k = 0\n    while k < 5000:\n        xs = list.set_at(xs, k, k * 2)\n        k = k + 1\n    print(console, __render(list.at(xs, 4999)))\n    xs = list.set_at(xs, 99999, 7)\n    print(console, __render(list.length(xs)))\n    var ys = [1, 2, 3]\n    let alias = ys\n    ys = list.set_at(ys, 1, 99)\n    print(console, __render(list.at(ys, 1)))\n    print(console, __render(list.at(alias, 1)))\n";
+        let want: Vec<String> =
+            ["9998", "5000", "99", "2"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(link_run(src), want.clone(), "interpreter");
+        assert_eq!(wasm_run(src), want, "compiled WASM must agree");
+    }
+
+    /// IN-PLACE UPDATE_AT: `xs = list.update_at(xs, i, f)` applies the closure to
+    /// the owned buffer's slot in place (O(1)) via `$list_update_cap`, instead of
+    /// rebuilding the whole list each update (O(n^2), OOM-prone). Alias-safe (a
+    /// shared list keeps the copy), and an out-of-range index is a no-op.
+    #[test]
+    fn inplace_update_at_is_fast_and_alias_safe() {
+        let src = "fn main(console: Console):\n    var xs = []\n    for i in 0..5000:\n        xs = list.push(xs, 1)\n    var k = 0\n    while k < 5000:\n        xs = list.update_at(xs, k, fn(v: Int): v + 1)\n        k = k + 1\n    print(console, __render(list.at(xs, 4999)))\n    xs = list.update_at(xs, 99999, fn(v: Int): v + 1)\n    print(console, __render(list.length(xs)))\n    var ys = [1, 2, 3]\n    let alias = ys\n    ys = list.update_at(ys, 1, fn(v: Int): v + 100)\n    print(console, __render(list.at(ys, 1)))\n    print(console, __render(list.at(alias, 1)))\n";
+        let want: Vec<String> =
+            ["2", "5000", "102", "2"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(link_run(src), want.clone(), "interpreter");
+        assert_eq!(wasm_run(src), want, "compiled WASM must agree");
+    }
+
     /// IN-PLACE DICT INSERT: `d = dict.insert(d, k, v)` updates/appends into owned
     /// entry slack (no per-insert table copy); an aliased dict keeps the
     /// copying insert, so the alias still sees the original.
@@ -2681,7 +2760,7 @@ fn yn(b: Bool) -> String:
             "CONTRIBUTING.md".into(),
             "examples/README.md".into(),
         ];
-        for dir in ["docs", "book/src"] {
+        for dir in ["spec", "book/src"] {
             let Ok(entries) = std::fs::read_dir(dir) else { continue };
             let mut md: Vec<_> = entries
                 .filter_map(|e| e.ok().map(|e| e.path()))
@@ -2848,7 +2927,7 @@ fn yn(b: Bool) -> String:
         std::fs::write(root.join("a.txt"), "alpha").expect("seed a");
         std::fs::write(root.join("sub/b.txt"), "beta").expect("seed b");
 
-        let src = "fn main(console: Console, dir: Dir):\n    print(console, read(dir, \"a.txt\"))\n    print(console, __render(exists(dir, \"a.txt\")))\n    print(console, __render(exists(dir, \"missing.txt\")))\n    let sub = subdir(dir, \"sub\")\n    print(console, read(sub, \"b.txt\"))\n    write(dir, \"out.txt\", \"written\")\n    print(console, read(dir, \"out.txt\"))\n    make_dir(dir, \"made\")\n    print(console, __render(is_dir(dir, \"made\")))\n    for name in list(dir):\n        print(console, \"entry: \" + name)\n";
+        let src = "fn main(console: Console, dir: Dir):\n    print(console, read(dir, \"a.txt\"))\n    print(console, __render(exists(dir, \"a.txt\")))\n    print(console, __render(exists(dir, \"missing.txt\")))\n    let sub = subtree(dir, \"sub\")\n    print(console, read(sub, \"b.txt\"))\n    write(dir, \"out.txt\", \"written\")\n    print(console, read(dir, \"out.txt\"))\n    make_dir(dir, \"made\")\n    print(console, __render(is_dir(dir, \"made\")))\n    for name in list(dir):\n        print(console, \"entry: \" + name)\n";
         let want = vec![
             "alpha".to_string(),
             "true".to_string(),
@@ -2911,6 +2990,161 @@ fn yn(b: Bool) -> String:
                 .expect("spawn");
             assert!(a.run().is_err(), "WASM must trap on `{bad}`");
         }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// RFC-0011: `dir.subtree(path)` is the method form of `subdir` — it narrows a
+    /// `Dir` to a subtree identically on both backends, and the same `..`/absolute
+    /// confinement applies. Mirrors `net.only(...)` as the host-primitive method form.
+    #[test]
+    fn dir_subtree_method_narrows_on_both_backends() {
+        use crate::runtime::{Capabilities, Runtime};
+        let root = std::env::temp_dir().join(format!("witchy_subtree_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("sub")).expect("mkdir");
+        std::fs::write(root.join("sub/b.txt"), "beta").expect("seed b");
+
+        // Method form `dir.subtree("sub")` and chained `.subtree(...).subtree(...)`.
+        std::fs::create_dir_all(root.join("sub/deep")).expect("mkdir deep");
+        std::fs::write(root.join("sub/deep/c.txt"), "gamma").expect("seed c");
+        let src = "fn main(console: Console, dir: Dir):\n    let s = dir.subtree(\"sub\")\n    print(console, read(s, \"b.txt\"))\n    print(console, read(s.subtree(\"deep\"), \"c.txt\"))\n";
+        let want = vec!["beta".to_string(), "gamma".to_string()];
+
+        let interp_out = interpreter::run_in(src, &root).expect("interp");
+        assert_eq!(interp_out, want, "interpreter");
+        let module = parser::parse_module(src).expect("parse");
+        let bytes = codegen::compile_module_binary(&module)
+            .expect("compile")
+            .expect("the binary path lowers this program");
+        let mut rt = Runtime::batch().expect("runtime");
+        let mut actor = rt
+            .spawn(
+                &bytes,
+                Capabilities {
+                    print: true,
+                    quiet: true,
+                    dir_root: Some(root.clone()),
+                    dir_read: true,
+                    ..Default::default()
+                },
+                64,
+            )
+            .expect("spawn");
+        actor.run().expect("run");
+        assert_eq!(actor.output(), want, "compiled WASM must agree");
+
+        // The subtree is still confined: `..` from inside it escapes and FAILS.
+        let esc = "fn main(console: Console, dir: Dir):\n    print(console, read(dir.subtree(\"sub\"), \"../a.txt\"))\n";
+        assert!(interpreter::run_in(esc, &root).is_err(), "interp rejects `..` from a subtree");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// RFC-0012: the `File` capability round-trips on BOTH backends. `dir.read_file`/
+    /// `dir.write_file` navigate a `Dir` to a confined `File` leaf; `read(File)` /
+    /// `write(File, data)` operate on it (no path arg), with the same `..`/absolute
+    /// confinement as `Dir`. The compiled path uses the `file_read` WIR helper plus
+    /// `dir_open`/`dir_create`/`file_write` host ops.
+    #[test]
+    fn file_capability_compiles_to_wasm_and_confines() {
+        use crate::runtime::{Capabilities, Runtime};
+        let root = std::env::temp_dir().join(format!("witchy_wasm_file_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("mkdir");
+        std::fs::write(root.join("note.txt"), "alpha").expect("seed");
+
+        let src = "fn main(console: Console, dir: Dir):\n    print(console, read(dir.read_file(\"note.txt\")))\n    let out = dir.write_file(\"out.txt\")\n    write(out, \"beta\")\n    print(console, read(dir.read_file(\"out.txt\")))\n";
+        let want = vec!["alpha".to_string(), "beta".to_string()];
+        let interp_out = interpreter::run_in(src, &root).expect("interp");
+        assert_eq!(interp_out, want, "interpreter");
+        let module = parser::parse_module(src).expect("parse");
+        let bytes = codegen::compile_module_binary(&module)
+            .expect("compile")
+            .expect("the binary path lowers this program");
+        let mut rt = Runtime::batch().expect("runtime");
+        let mut actor = rt
+            .spawn(
+                &bytes,
+                Capabilities {
+                    print: true,
+                    quiet: true,
+                    dir_root: Some(root.clone()),
+                    dir_read: true,
+                    dir_write: true,
+                    ..Default::default()
+                },
+                64,
+            )
+            .expect("spawn");
+        actor.run().expect("run");
+        assert_eq!(actor.output(), want, "compiled WASM must agree");
+
+        // A `File` opened via navigation is still confined: `..` escapes and FAILS
+        // on both backends.
+        let esc = "fn main(console: Console, dir: Dir):\n    print(console, read(dir.read_file(\"../escape.txt\")))\n";
+        assert!(interpreter::run_in(esc, &root).is_err(), "interp rejects `..` via open");
+        let m = parser::parse_module(esc).expect("parse");
+        let wbytes = codegen::compile_module_binary(&m)
+            .expect("compile")
+            .expect("the binary path lowers this program");
+        let mut rt = Runtime::batch().expect("runtime");
+        let mut a = rt
+            .spawn(
+                &wbytes,
+                Capabilities {
+                    print: true,
+                    quiet: true,
+                    dir_root: Some(root.clone()),
+                    dir_read: true,
+                    ..Default::default()
+                },
+                64,
+            )
+            .expect("spawn");
+        assert!(a.run().is_err(), "WASM must trap on `..` via open");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// RFC-0012: `main` may receive a `File` DIRECTLY (the `--file` grant) — the
+    /// least-authority single-file case, with NO `Dir`. The i-th `File` param maps
+    /// to the i-th grant on both backends (interpreter `file_grants` /
+    /// `Capabilities::file_grants` + the pre-populated files table).
+    #[test]
+    fn file_main_grant_runs_on_both_backends() {
+        use crate::runtime::{Capabilities, Runtime};
+        let root = std::env::temp_dir().join(format!("witchy_wasm_fmg_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("mkdir");
+        let a_txt = root.join("a.txt");
+        let b_txt = root.join("b.txt");
+        std::fs::write(&a_txt, "alpha").expect("seed a");
+        std::fs::write(&b_txt, "beta").expect("seed b");
+
+        // Two File params, mapped positionally to two grants; no Dir granted.
+        let src = "fn main(console: Console, first: File[Read], second: File[Read]):\n    print(console, read(first))\n    print(console, read(second))\n";
+        let want = vec!["alpha".to_string(), "beta".to_string()];
+        let module = parser::parse_module(src).expect("parse");
+        let interp_out = interpreter::run_module_files(module, &root, vec![a_txt.clone(), b_txt.clone()])
+            .expect("interp");
+        assert_eq!(interp_out, want, "interpreter");
+        let module = parser::parse_module(src).expect("parse");
+        let bytes = codegen::compile_module_binary(&module)
+            .expect("compile")
+            .expect("the binary path lowers this program");
+        let mut rt = Runtime::batch().expect("runtime");
+        let mut actor = rt
+            .spawn(
+                &bytes,
+                Capabilities {
+                    print: true,
+                    quiet: true,
+                    file_grants: vec![a_txt.clone(), b_txt.clone()],
+                    ..Default::default()
+                },
+                64,
+            )
+            .expect("spawn");
+        actor.run().expect("run");
+        assert_eq!(actor.output(), want, "compiled WASM must agree");
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -6300,7 +6534,7 @@ fn main(console: Console):
         )
         .unwrap();
         let (out, exit) =
-            crate::run_file_sandboxed(path.to_str().unwrap(), Vec::new(), Vec::new(), Vec::new(), None, Vec::new())
+            crate::run_file_sandboxed(path.to_str().unwrap(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), None, Vec::new())
                 .expect("sandbox run");
         assert_eq!(out, vec!["42"]);
         assert_eq!(exit, None, "a Nil-returning main has no exit code");
@@ -6325,6 +6559,7 @@ fn main(console: Console):
         let (out, exit) = crate::run_file_sandboxed(
             src_path.to_str().unwrap(),
             vec![root.clone()],
+            Vec::new(),
             Vec::new(),
             vec!["data.txt".to_string()],
             None,
@@ -6390,6 +6625,7 @@ fn main(console: Console):
         let err = crate::run_file_sandboxed(
             src_path.to_str().unwrap(),
             vec![root.clone()],
+            Vec::new(),
             Vec::new(),
             vec!["../secret.txt".to_string()],
             None,
@@ -6521,7 +6757,7 @@ fn main(console: Console):
         let out = tmp.to_str().unwrap();
         crate::emit_wasm_file("examples/calc/src/calc.witchy", out).expect("emit-wasm");
         let (from_wasm, _) =
-            crate::run_wasm_file(out, Vec::new(), Vec::new(), Vec::new(), None, Vec::new()).expect("run .wasm");
+            crate::run_wasm_file(out, Vec::new(), Vec::new(), Vec::new(), Vec::new(), None, Vec::new()).expect("run .wasm");
         let from_source = crate::execute_file("examples/calc/src/calc.witchy", Vec::new()).expect("run source");
         assert_eq!(from_wasm, from_source, "precompiled .wasm diverges from the source run");
         let _ = std::fs::remove_file(&tmp);
@@ -8369,6 +8605,39 @@ fn main(console: Console):
         typeck::check(&linked).expect("typecheck");
         interpreter::run_module(linked, ".", net_allow.iter().map(|s| s.to_string()).collect())
             .expect("run")
+    }
+
+    /// RFC-0011 carried-state: a SEALED record capability (`capability X:` with named
+    /// fields) wraps a host capability AND carries policy data. It is footprint-
+    /// transparent (audits as its cap fields), refines monotonically, and enforces its
+    /// carried policy in the library's own operations — identically on both backends.
+    #[test]
+    fn carried_state_capability_runs_and_audits_through_record() {
+        let src = "capability Postgres:\n    net: Net[Connect, Tcp]\n    table: String\npub fn connect(net: Net[Connect, Tcp]) -> Postgres:\n    Postgres(net, \"public\")\npub fn use_table(pg: Postgres, name: String) -> Postgres:\n    match pg:\n        Postgres(net, _) -> Postgres(net, name)\npub fn count_rows(pg: Postgres, requested: String) -> String:\n    match pg:\n        Postgres(_, table) ->\n            if requested == table:\n                \"ok: \" + requested\n            else:\n                \"denied: \" + requested\nfn main(console: Console, net: Net):\n    let users = use_table(connect(net), \"users\")\n    print(console, count_rows(users, \"users\"))\n    print(console, count_rows(users, \"secrets\"))\n";
+        let want = vec!["ok: users".to_string(), "denied: secrets".to_string()];
+        assert_eq!(link_run_net(src, &[]), want, "interpreter");
+        assert_eq!(run_linked_on_wasm_net(&[("main", src)], "main", &[]), want, "compiled WASM must agree");
+
+        // Footprint sees through the record: the sealed `Postgres` (a `Net` + a
+        // `String`) audits as exactly `Net` — the carried `String` adds no authority.
+        let module = parser::parse_module(src).expect("parse");
+        let fp = crate::capabilities::analyze(&module);
+        let connect_fn = fp.per_function.iter().find(|e| e.name == "connect").expect("connect entry");
+        let keys: Vec<&str> = connect_fn.capabilities.keys().copied().collect();
+        assert_eq!(keys, vec!["Net"], "carried String adds no authority — Postgres audits as Net only");
+    }
+
+    /// A sealed record capability is OPAQUE: its fields cannot be read with `.field`
+    /// (only `match`, which the linker confines to the home module) and it cannot be
+    /// `update`d — otherwise an alias would leak the underlying authority past the
+    /// carried policy.
+    #[test]
+    fn sealed_capability_fields_are_opaque() {
+        let leak = "capability Vault:\n    net: Net[Connect, Tcp]\n    label: String\npub fn open(net: Net[Connect, Tcp]) -> Vault:\n    Vault(net, \"x\")\nfn main(console: Console, net: Net):\n    let v = open(net)\n    let raw = v.net\n    print(console, \"leaked\")\n";
+        let module = parser::parse_module(leak).expect("parse");
+        let linked = crate::linker::link(vec![("main".into(), module)], "main").expect("link");
+        let err = typeck::check(&linked).expect_err("`.field` on a sealed cap must be rejected");
+        assert!(err.message.contains("sealed capability"), "got: {}", err.message);
     }
 
     /// TLS works end to end through the `tls:` address scheme (RFC-0009), HERMETICALLY:
@@ -10595,7 +10864,7 @@ fn main(console: Console):
             interpreter::run_module(linked, &tmp, Vec::new())
         };
         // `list` enumerates a subdir's entries in sorted (deterministic) order.
-        let out = run("import string\nfn main(console: Console, root: Dir):\n    print(console, string.join(list(subdir(root, \"store\")), \",\"))\n")
+        let out = run("import string\nfn main(console: Console, root: Dir):\n    print(console, string.join(list(subtree(root, \"store\")), \",\"))\n")
             .expect("run");
         assert_eq!(out, vec!["alpha,bravo"]);
         // `make_dir` creates a confined subdirectory.
@@ -10624,7 +10893,7 @@ fn main(console: Console):
         let mods = vec![(
             "main".to_string(),
             parser::parse_module(
-                "fn main(console: Console, root: Dir):\n    write(subdir(root, \"sandbox\"), \"link.txt\", \"PWNED\")\n",
+                "fn main(console: Console, root: Dir):\n    write(subtree(root, \"sandbox\"), \"link.txt\", \"PWNED\")\n",
             )
             .expect("parse"),
         )];

@@ -29,7 +29,7 @@ pub fn parent_dir(path: String) -> String:
 pub fn collect_files(root: Dir, path: String, rel: String, ext: String) -> List((String, String)):
     var out = []
     if exists(root, path):
-        for entry in list(subdir(root, path)):
+        for entry in list(subtree(root, path)):
             let child = path + "/" + entry
             if is_dir(root, child):
                 for f in collect_files(root, child, rel + "/" + entry, ext):

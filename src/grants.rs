@@ -1,0 +1,248 @@
+//! RFC-0013 capability grant documents.
+//!
+//! A grant document is a declarative manifest of the authority the host hands to
+//! `main` — a reviewable, diffable alternative to a sprawl of CLI flags. Crucially
+//! it is a *request the host approves*, never a self-grant (RFC-0003), and because
+//! witchy already COMPUTES a program's capability footprint, a grant can be
+//! cross-checked against it: an over-request (authority the code never exercises)
+//! is flagged, and an under-grant (authority the code needs but the grant withholds)
+//! fails early. This is the launch-side mirror of the package manager's
+//! publish-time footprint gate.
+//!
+//! ```toml
+//! [files]
+//! config = { path = "config.toml", rights = ["Read"] }
+//! [dirs]
+//! data = { root = "./data", rights = ["Read", "Write"] }
+//! [net]
+//! github = ["github.com:443"]
+//! [secrets]
+//! gh = { from = "env:GITHUB_OAUTH" }
+//! ```
+
+use std::collections::BTreeMap;
+
+use serde::Deserialize;
+
+use crate::capabilities::{CapSet, Rights};
+
+/// A parsed grant document: the capabilities the host will hand to `main`, keyed
+/// by the `main` parameter name they bind to.
+#[derive(Debug, Default, Deserialize)]
+pub struct GrantDoc {
+    #[serde(default)]
+    pub files: BTreeMap<String, FileGrant>,
+    #[serde(default)]
+    pub dirs: BTreeMap<String, DirGrant>,
+    /// Each entry is a scheme-agnostic `host:port` allowlist (RFC-0011 policy
+    /// values; `tls:` is a connect-time choice, not an allowlist scheme).
+    #[serde(default)]
+    pub net: BTreeMap<String, Vec<String>>,
+    #[serde(default)]
+    pub secrets: BTreeMap<String, SecretGrant>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct FileGrant {
+    pub path: String,
+    #[serde(default)]
+    pub rights: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DirGrant {
+    pub root: String,
+    #[serde(default)]
+    pub rights: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SecretGrant {
+    /// Where the host RESOLVES the secret from (e.g. `env:GITHUB_OAUTH`). The
+    /// document never carries a secret value.
+    pub from: String,
+}
+
+impl GrantDoc {
+    /// Parse a grant document from TOML.
+    pub fn parse(src: &str) -> Result<GrantDoc, String> {
+        toml::from_str(src).map_err(|e| format!("grant document is not valid TOML: {e}"))
+    }
+
+    /// The capability footprint this grant CONFERS — the same `CapSet` shape as a
+    /// program's *computed* footprint, so the two diff directly. `Dir`/`File`
+    /// carry their declared rights; a `[net]` block confers `Net` (the address
+    /// allowlist is enforced separately, so it is presence-level here); `[secrets]`
+    /// confers `Secret`/`SecretStore`.
+    pub fn cap_set(&self) -> CapSet {
+        let mut cs = CapSet::new();
+        if !self.files.is_empty() {
+            cs.insert("File", collect_rights(self.files.values().flat_map(|f| &f.rights)));
+        }
+        if !self.dirs.is_empty() {
+            cs.insert("Dir", collect_rights(self.dirs.values().flat_map(|d| &d.rights)));
+        }
+        if !self.net.is_empty() {
+            // The doc gives addresses, not verbs; confer `Net` at full verbs (the
+            // cross-check treats `Net` at presence level, see `cross_check`).
+            cs.insert("Net", ["Connect", "Listen", "Tcp", "Udp", "Uds"].into_iter().collect());
+        }
+        if !self.secrets.is_empty() {
+            cs.insert("Secret", Rights::new());
+            cs.insert("SecretStore", Rights::new());
+        }
+        cs
+    }
+}
+
+/// Canonicalize a declared right string to the static name the footprint uses.
+fn right_name(s: &str) -> Option<&'static str> {
+    match s {
+        "Read" => Some("Read"),
+        "Write" => Some("Write"),
+        "Exec" => Some("Exec"),
+        _ => None,
+    }
+}
+
+fn collect_rights<'a>(rights: impl Iterator<Item = &'a String>) -> Rights {
+    rights.filter_map(|r| right_name(r)).collect()
+}
+
+/// The result of cross-checking a grant against a program's computed footprint.
+#[derive(Debug, Default)]
+pub struct CrossCheck {
+    /// Authority the grant confers that the code never exercises — an over-request
+    /// (the classic trojan-permission smell). A **warning**, surfaced for review.
+    pub over_grant: CapSet,
+    /// Authority the code needs that the grant withholds — an under-grant. A **hard
+    /// error** at launch (the program would fail at the missing capability anyway).
+    pub under_grant: CapSet,
+}
+
+impl CrossCheck {
+    /// The grant is sufficient (no under-grant). A clean launch may still warn on
+    /// an over-grant.
+    pub fn sufficient(&self) -> bool {
+        self.under_grant.is_empty()
+    }
+
+    /// Grant == footprint: nothing to question.
+    pub fn clean(&self) -> bool {
+        self.under_grant.is_empty() && self.over_grant.is_empty()
+    }
+}
+
+/// The capabilities a grant document models. `Console`/`Clock`/`Env` are low-risk
+/// and always host-provided (not enumerated in a grant doc), and `Exec` has no
+/// document section yet, so they are outside the cross-check.
+const GRANTABLE: &[&str] = &["Dir", "File", "Net", "Secret", "SecretStore"];
+
+fn grantable_only(cs: &CapSet) -> CapSet {
+    cs.iter()
+        .filter(|(k, _)| GRANTABLE.contains(*k))
+        .map(|(k, v)| (*k, v.clone()))
+        .collect()
+}
+
+/// Compare a grant's conferred authority (`grant`) to a program's required
+/// footprint (`footprint`, typically `analyze(module).total`). Only the
+/// grant-document-modeled capabilities (`GRANTABLE`) are compared. `Net` is
+/// compared at presence level (the document expresses addresses, not the verb
+/// rights the footprint tracks), so a verb-level delta on a shared `Net` is not a
+/// finding.
+pub fn cross_check(grant: &CapSet, footprint: &CapSet) -> CrossCheck {
+    let grant = grantable_only(grant);
+    let footprint = grantable_only(footprint);
+    let mut over_grant = crate::capabilities::cap_delta(&grant, &footprint);
+    let mut under_grant = crate::capabilities::cap_delta(&footprint, &grant);
+    // `Net`: if BOTH sides have it, the capability is satisfied; a verb-level
+    // difference is not expressible in the document, so it is not a finding.
+    if grant.contains_key("Net") && footprint.contains_key("Net") {
+        over_grant.remove("Net");
+        under_grant.remove("Net");
+    }
+    CrossCheck { over_grant, under_grant }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cs(entries: &[(&'static str, &[&'static str])]) -> CapSet {
+        entries
+            .iter()
+            .map(|(c, rs)| (*c, rs.iter().copied().collect::<Rights>()))
+            .collect()
+    }
+
+    #[test]
+    fn parses_a_grant_document() {
+        let doc = GrantDoc::parse(
+            "[files]\nconfig = { path = \"config.toml\", rights = [\"Read\"] }\n\
+             [dirs]\ndata = { root = \"./data\", rights = [\"Read\", \"Write\"] }\n\
+             [net]\ngithub = [\"github.com:443\", \"api.github.com:443\"]\n\
+             [secrets]\ngh = { from = \"env:GITHUB_OAUTH\" }\n",
+        )
+        .expect("valid grant doc");
+        assert_eq!(doc.files["config"].path, "config.toml");
+        assert_eq!(doc.files["config"].rights, vec!["Read"]);
+        assert_eq!(doc.dirs["data"].root, "./data");
+        assert_eq!(doc.net["github"], vec!["github.com:443", "api.github.com:443"]);
+        assert_eq!(doc.secrets["gh"].from, "env:GITHUB_OAUTH");
+    }
+
+    #[test]
+    fn cap_set_confers_the_declared_authority() {
+        let doc = GrantDoc::parse(
+            "[files]\nc = { path = \"c\", rights = [\"Read\"] }\n[dirs]\nd = { root = \".\", rights = [\"Write\"] }\n",
+        )
+        .unwrap();
+        let g = doc.cap_set();
+        assert_eq!(g.get("File"), Some(&["Read"].into_iter().collect::<Rights>()));
+        assert_eq!(g.get("Dir"), Some(&["Write"].into_iter().collect::<Rights>()));
+    }
+
+    #[test]
+    fn cross_check_flags_over_and_under_grants() {
+        // Footprint: code reads a File and writes a Dir.
+        let footprint = cs(&[("File", &["Read"]), ("Dir", &["Write"]), ("Console", &[])]);
+
+        // Exact grant -> clean.
+        let exact = cs(&[("File", &["Read"]), ("Dir", &["Write"]), ("Console", &[])]);
+        let r = cross_check(&exact, &footprint);
+        assert!(r.clean(), "exact grant is clean: {r:?}");
+
+        // Over-grant: also confers Net, which the code never uses -> warn (not fatal).
+        let over = cs(&[("File", &["Read"]), ("Dir", &["Write"]), ("Console", &[]), ("Net", &["Connect"])]);
+        let r = cross_check(&over, &footprint);
+        assert!(r.sufficient(), "an over-grant still launches");
+        assert!(r.over_grant.contains_key("Net"), "Net over-grant flagged: {r:?}");
+
+        // Under-grant: grant withholds the Dir the code needs -> hard error.
+        let under = cs(&[("File", &["Read"]), ("Console", &[])]);
+        let r = cross_check(&under, &footprint);
+        assert!(!r.sufficient(), "an under-grant must fail");
+        assert!(r.under_grant.contains_key("Dir"), "Dir under-grant flagged: {r:?}");
+
+        // Rights-level under-grant: grant gives Dir[Read] but code needs Dir[Write].
+        let under_rights = cs(&[("File", &["Read"]), ("Dir", &["Read"]), ("Console", &[])]);
+        let r = cross_check(&under_rights, &footprint);
+        assert!(!r.sufficient(), "a missing right is an under-grant");
+        assert!(r.under_grant.get("Dir").is_some_and(|d| d.contains("Write")));
+    }
+
+    #[test]
+    fn net_is_compared_at_presence_level() {
+        // The doc confers Net at full verbs; the footprint needs only Connect+Tcp.
+        // A shared Net is satisfied — no verb-level over/under finding.
+        let footprint = cs(&[("Net", &["Connect", "Tcp"]), ("Console", &[])]);
+        let grant = GrantDoc::parse("[net]\nx = [\"h:1\"]\n").unwrap().cap_set();
+        let r = cross_check(&grant, &footprint);
+        assert!(r.clean(), "a shared Net is clean regardless of verbs: {r:?}");
+
+        // But Net entirely absent from the grant while the code needs it -> under.
+        let r = cross_check(&CapSet::new(), &footprint);
+        assert!(r.under_grant.contains_key("Net"), "missing Net is an under-grant");
+    }
+}

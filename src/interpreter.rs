@@ -46,6 +46,11 @@ pub enum Value {
     /// Carries the host path it is rooted at; can only be obtained from the root
     /// grant or by attenuation (`subdir`).
     Dir(PathBuf),
+    /// A file capability (RFC-0012): authority to one file (the leaf of the
+    /// Dir/File hierarchy). Carries the confined host path; obtained by navigating
+    /// a `Dir` (`dir.open`/`dir.create`) or as a `main` grant. Rights are checked
+    /// at compile time, so the value carries only the path.
+    File(PathBuf),
     /// A network capability: an allow-list of permitted `host:port` destinations
     /// (wasi:sockets / cap-std-net style). Attenuable via `restrict`.
     Net(Vec<String>),
@@ -155,6 +160,7 @@ impl fmt::Display for Value {
             }
             Value::Cap(c) => write!(f, "<capability {c:?}>"),
             Value::Dir(_) => write!(f, "<dir>"),
+            Value::File(_) => write!(f, "<file>"),
             Value::Net(_) => write!(f, "<net>"),
             Value::Secret(_) => write!(f, "<secret>"),
             Value::SecretStore(_) => write!(f, "<secret store>"),
@@ -525,6 +531,10 @@ pub struct Interpreter {
     /// `root`. Empty for the common single-`Dir` case. Mirrors the compiled
     /// backend's `Capabilities::dir_roots`. See rfcs/0004-self-hosted-cli.md.
     dir_roots: Vec<PathBuf>,
+    /// Direct `File` grants (RFC-0012): the i-th `File` param of `main` is the
+    /// i-th path here. Read/write is the param's compile-time right, so these are
+    /// plain paths. Mirrors the compiled backend's `Capabilities::file_grants`.
+    file_grants: Vec<PathBuf>,
     /// Allow-list backing the root `Net` capability.
     net_allow: Vec<String>,
     /// Ed25519 seed backing the root `Secret` capability, if the host granted
@@ -613,6 +623,7 @@ impl Interpreter {
             functions,
             root: PathBuf::from("."),
             dir_roots: Vec::new(),
+            file_grants: Vec::new(),
             net_allow: Vec::new(),
             signing_key: None,
             secrets: std::collections::BTreeMap::new(),
@@ -1226,11 +1237,23 @@ impl Interpreter {
                 _ => err("size expects a Dict"),
             },
             // Filesystem capability (cap-std style): attenuate to a subdirectory.
-            "subdir" => match args {
+            "subtree" => match args {
                 [Value::Dir(base), Value::Str(name)] => {
                     Ok(Some(Value::Dir(resolve(base, name)?)))
                 }
-                _ => err("subdir expects a Dir and a name"),
+                _ => err("subtree expects a Dir and a name"),
+            },
+            // RFC-0012 navigation: a `Dir` opens a confined `File`. `read_file`
+            // requires the file to exist; `write_file` allows a not-yet-existing target.
+            "read_file" => match args {
+                [Value::Dir(base), Value::Str(rel)] => Ok(Some(Value::File(resolve(base, rel)?))),
+                _ => err("read_file expects a Dir and a relative path"),
+            },
+            "write_file" => match args {
+                [Value::Dir(base), Value::Str(rel)] => {
+                    Ok(Some(Value::File(resolve_write(base, rel)?)))
+                }
+                _ => err("write_file expects a Dir and a relative path"),
             },
             // Spawn a native subprocess. `Exec` is the right to spawn; the
             // executable is named through (and confined to) the `Dir[Read]`, so you
@@ -1281,7 +1304,12 @@ impl Interpreter {
                         Err(e) => err(format!("read failed for `{}`: {e}", path.display())),
                     }
                 }
-                _ => err("read expects a Dir and a relative path"),
+                // A `File` is already a confined path; read it directly (RFC-0012).
+                [Value::File(path)] => match std::fs::read_to_string(path) {
+                    Ok(contents) => Ok(Some(Value::Str(contents))),
+                    Err(e) => err(format!("read failed for `{}`: {e}", path.display())),
+                },
+                _ => err("read expects a Dir and a relative path, or a File"),
             },
             // Write a file relative to a Dir capability, confined to its subtree
             // (the target may not exist yet, so confinement is checked via its
@@ -1294,7 +1322,12 @@ impl Interpreter {
                         Err(e) => err(format!("write failed for `{}`: {e}", path.display())),
                     }
                 }
-                _ => err("write expects a Dir, a relative path, and contents"),
+                // A `File` is already a confined path; write it directly (RFC-0012).
+                [Value::File(path), Value::Str(contents)] => match std::fs::write(path, contents) {
+                    Ok(()) => Ok(Some(Value::Nil)),
+                    Err(e) => err(format!("write failed for `{}`: {e}", path.display())),
+                },
+                _ => err("write expects a Dir + path + contents, or a File + contents"),
             },
             // Append to a file (creating it if absent) — `write`'s confinement
             // and rights, without clobbering existing contents.
@@ -2510,7 +2543,23 @@ pub fn run_module_budgeted(
     let module = crate::traits::lower(module);
     let root = root.as_ref().to_path_buf();
     run_on_deep_stack(move || {
-        run_module_inner_limited(module, root, Vec::new(), Vec::new(), Vec::new(), None, step_limit)
+        run_module_inner_limited(module, root, Vec::new(), Vec::new(), Vec::new(), Vec::new(), None, step_limit)
+    })
+    .map(|(output, _)| output)
+}
+
+/// Run with direct `File` grants (RFC-0012): the i-th `File` parameter of `main`
+/// maps to `file_grants[i]`. The differential-test oracle for `--file`.
+pub fn run_module_files(
+    module: Module,
+    root: impl AsRef<Path>,
+    file_grants: Vec<PathBuf>,
+) -> Result<Vec<String>, RuntimeError> {
+    let module = crate::records::lower(module).map_err(|message| RuntimeError { message })?;
+    let module = crate::traits::lower(module);
+    let root = root.as_ref().to_path_buf();
+    run_on_deep_stack(move || {
+        run_module_inner_limited(module, root, Vec::new(), file_grants, Vec::new(), Vec::new(), None, DEFAULT_STEP_LIMIT)
     })
     .map(|(output, _)| output)
 }
@@ -2637,13 +2686,15 @@ fn run_module_inner(
     args: Vec<String>,
     signing_key: Option<[u8; 32]>,
 ) -> Result<(Vec<String>, i32), RuntimeError> {
-    run_module_inner_limited(module, root, dir_roots, net_allow, args, signing_key, DEFAULT_STEP_LIMIT)
+    run_module_inner_limited(module, root, dir_roots, Vec::new(), net_allow, args, signing_key, DEFAULT_STEP_LIMIT)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_module_inner_limited(
     module: Module,
     root: PathBuf,
     dir_roots: Vec<PathBuf>,
+    file_grants: Vec<PathBuf>,
     net_allow: Vec<String>,
     args: Vec<String>,
     signing_key: Option<[u8; 32]>,
@@ -2653,6 +2704,7 @@ fn run_module_inner_limited(
     interp.step_limit = step_limit;
     interp.root = root;
     interp.dir_roots = dir_roots;
+    interp.file_grants = file_grants;
     interp.net_allow = net_allow;
     interp.signing_key = signing_key;
     // The signing key is the `signing` secret in the store, so a program may take
@@ -2667,6 +2719,7 @@ fn run_module_inner_limited(
             // backend's handle assignment). Other caps mint normally.
             let mut vals = Vec::with_capacity(f.params.len());
             let mut dir_idx = 0usize;
+            let mut file_idx = 0usize;
             for p in &f.params {
                 if is_args_param(&p.ty) {
                     vals.push(Value::List(args.iter().cloned().map(Value::Str).collect()));
@@ -2678,6 +2731,13 @@ fn run_module_inner_limited(
                     };
                     dir_idx += 1;
                     vals.push(Value::Dir(r));
+                } else if matches!(&p.ty, Some(Type::Named(n, _)) if n == "File") {
+                    // The i-th `File` param maps to the i-th `--file` grant (RFC-0012).
+                    let path = interp.file_grants.get(file_idx).cloned().ok_or_else(|| RuntimeError {
+                        message: "`main` requires a `File`, but the host granted none (provide `--file <path>`)".into(),
+                    })?;
+                    file_idx += 1;
+                    vals.push(Value::File(path));
                 } else {
                     vals.push(interp.root_cap_for(&p.ty)?);
                 }

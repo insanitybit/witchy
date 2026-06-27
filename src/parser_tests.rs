@@ -48,47 +48,6 @@ fn add(a: Int, b: Int) -> Int:
     }
 
     #[test]
-    fn parses_retain_and_without_firewalls() {
-        // `without a, b:` and `retain a:` open an ordinary block carrying a
-        // `CapRestrict` on `Block.restrict`.
-        let stmts = fn_body(
-            "fn main(console: Console, clock: Clock):\n    without clock:\n        print(console, \"x\")\n",
-        );
-        let Stmt::Expr(Expr::Block(b)) = &stmts[0] else {
-            panic!("expected a block statement, got {:?}", stmts[0]);
-        };
-        assert_eq!(
-            b.restrict,
-            Some(CapRestrict { mode: RestrictMode::Without, names: vec!["clock".into()] })
-        );
-
-        let stmts = fn_body(
-            "fn main(console: Console, clock: Clock):\n    retain console, clock:\n        print(console, \"x\")\n",
-        );
-        let Stmt::Expr(Expr::Block(b)) = &stmts[0] else {
-            panic!("expected a block statement");
-        };
-        assert_eq!(
-            b.restrict,
-            Some(CapRestrict {
-                mode: RestrictMode::Retain,
-                names: vec!["console".into(), "clock".into()],
-            })
-        );
-
-        // `retain:` with no names parses to an empty name list (a full sandbox).
-        let stmts =
-            fn_body("fn main(console: Console):\n    retain:\n        print(console, \"x\")\n");
-        let Stmt::Expr(Expr::Block(b)) = &stmts[0] else {
-            panic!("expected a block statement");
-        };
-        assert_eq!(
-            b.restrict,
-            Some(CapRestrict { mode: RestrictMode::Retain, names: vec![] })
-        );
-    }
-
-    #[test]
     fn type_def_accepts_explicit_type_parameters() {
         // The conventional `type Name(a, b):` form parses; the parameter names are
         // accepted for clarity and the checker infers them from the field types.

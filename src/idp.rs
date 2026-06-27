@@ -160,8 +160,13 @@ pub struct Claims {
 /// each base64url) — the shape a real OIDC provider / CI system emits. The standard claims
 /// and the provider claims (`extra`) are FLATTENED to the payload's top level, matching a
 /// GitHub Actions token, so the verifier reads `repository` directly.
-pub fn mint(issuer_key: &RegistryKey, claims: Claims) -> IdpResult<String> {
-    let header = b64url(br#"{"alg":"RS256","typ":"JWT"}"#);
+pub fn mint(issuer_key: &RegistryKey, claims: Claims, kid: Option<&str>) -> IdpResult<String> {
+    // The `kid` header names which JWKS key signed the token — a rotating provider sets
+    // it so a verifier can select the matching key. Static issuers omit it.
+    let header = match kid {
+        Some(k) => b64url(format!(r#"{{"alg":"RS256","typ":"JWT","kid":"{k}"}}"#).as_bytes()),
+        None => b64url(br#"{"alg":"RS256","typ":"JWT"}"#),
+    };
     let payload = b64url(payload_json(&claims).as_bytes());
     let signing_input = format!("{header}.{payload}");
     let sig = issuer_key.sign(signing_input.as_bytes())?;
@@ -213,7 +218,7 @@ fn now_unix() -> u64 {
 // Argument parsing (minimal, value-flag only)
 // ---------------------------------------------------------------------------
 
-const VALUE_FLAGS: &[&str] = &["--out", "--issuer-key", "--issuer", "--sub", "--ttl", "--claim"];
+const VALUE_FLAGS: &[&str] = &["--out", "--issuer-key", "--issuer", "--sub", "--ttl", "--claim", "--kid"];
 
 struct Args {
     values: BTreeMap<String, Vec<String>>,
@@ -286,9 +291,88 @@ pub fn mint_token(rest: &[String]) -> IdpResult<()> {
         iat: now,
         extra,
     };
-    let token = mint(&key, claims)?;
+    let token = mint(&key, claims, a.val("--kid"))?;
     println!("{token}");
     Ok(())
+}
+
+/// `witchy coven-issuer-jwks --issuer-key DIR [--kid ID]` — emit the issuer's public key
+/// as a JWKS document (`{"keys":[{...}]}`), the rotating form a real OIDC provider
+/// publishes. `coven-serve --trust-issuer-jwks iss=<file>` consumes this; tokens minted
+/// with the matching `--kid` then verify against it.
+pub fn issuer_jwks(rest: &[String]) -> IdpResult<()> {
+    let a = parse_args(rest);
+    let key_dir = a
+        .val("--issuer-key")
+        .ok_or_else(|| IdpError("--issuer-key <dir> is required".into()))?;
+    let key = RegistryKey::load_or_create(Path::new(key_dir))?;
+    let kid = a.val("--kid").unwrap_or("key-1");
+    let der = hex_decode(&key.public_hex()).ok_or_else(|| IdpError("corrupt public key".into()))?;
+    let (n, e) = rsa_pkcs1_parts(&der)?;
+    println!(
+        r#"{{"keys":[{{"kty":"RSA","use":"sig","alg":"RS256","kid":"{}","n":"{}","e":"{}"}}]}}"#,
+        kid,
+        b64url(n),
+        b64url(e),
+    );
+    Ok(())
+}
+
+/// Split a DER PKCS#1 RSAPublicKey (`SEQUENCE { INTEGER n, INTEGER e }`) into the modulus
+/// and exponent bytes, stripping the ASN.1 sign byte so each is the unsigned big-endian
+/// form a JWK `n`/`e` carries.
+fn rsa_pkcs1_parts(der: &[u8]) -> IdpResult<(&[u8], &[u8])> {
+    let bad = || IdpError("malformed RSA public key DER".into());
+    let mut i = 0usize;
+    if der.first().copied() != Some(0x30) {
+        return Err(bad());
+    }
+    i += 1;
+    let (_seq, after_seq) = der_len(der, i).ok_or_else(bad)?;
+    i = after_seq;
+    let n = der_integer(der, &mut i).ok_or_else(bad)?;
+    let e = der_integer(der, &mut i).ok_or_else(bad)?;
+    Ok((strip_sign(n), strip_sign(e)))
+}
+
+/// Read one DER INTEGER at `*i`, advancing `*i` past it; returns the content bytes.
+fn der_integer<'a>(der: &'a [u8], i: &mut usize) -> Option<&'a [u8]> {
+    if der.get(*i).copied() != Some(0x02) {
+        return None;
+    }
+    *i += 1;
+    let (len, after_len) = der_len(der, *i)?;
+    *i = after_len;
+    let body = der.get(*i..*i + len)?;
+    *i += len;
+    Some(body)
+}
+
+/// Read an ASN.1 DER length at `i`; returns (length, index just past the length bytes).
+fn der_len(der: &[u8], i: usize) -> Option<(usize, usize)> {
+    let first = *der.get(i)?;
+    if first < 0x80 {
+        Some((first as usize, i + 1))
+    } else {
+        let count = (first & 0x7f) as usize;
+        if count == 0 || count > 4 {
+            return None;
+        }
+        let mut len = 0usize;
+        for k in 0..count {
+            len = (len << 8) | (*der.get(i + 1 + k)? as usize);
+        }
+        Some((len, i + 1 + count))
+    }
+}
+
+/// Strip a leading ASN.1 sign byte (`0x00`) so the integer is the unsigned big-endian form.
+fn strip_sign(b: &[u8]) -> &[u8] {
+    if b.first() == Some(&0x00) && b.len() > 1 {
+        &b[1..]
+    } else {
+        b
+    }
 }
 
 #[cfg(test)]
@@ -334,7 +418,7 @@ mod tests {
             iat: 500,
             extra: BTreeMap::from([("repository".into(), "acme/x".into())]),
         };
-        let token = mint(&key, claims).unwrap();
+        let token = mint(&key, claims, None).unwrap();
         let parts: Vec<&str> = token.split('.').collect();
         assert_eq!(parts.len(), 3, "a compact JWT has three segments");
 

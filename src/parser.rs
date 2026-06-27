@@ -512,11 +512,45 @@ impl Parser {
     /// single-constructor type `X(U)` (or `X(A, B)`) carrying `sealed: true`, so
     /// every later stage treats it like an ordinary brand while the link-time
     /// sealing check confines its construction/destructuring to this module.
+    ///
+    /// The RECORD form (RFC-0011 carried state) names its fields and may mix host
+    /// capabilities with ordinary policy data:
+    ///
+    ///     capability Postgres:
+    ///         net: Net[Connect, Tcp]
+    ///         table: String
+    ///
+    /// It desugars to a sealed record `Postgres(net, table)`; its footprint is the
+    /// UNION of its capability-typed fields (the `String` contributes nothing), so
+    /// it still audits as `Net` — carried policy state with no authority hidden.
     fn capability_def(&mut self) -> Result<Item, ParseError> {
         self.expect(&Tok::Capability)?;
         let name = self.ident()?;
+        // Record form: `capability X:` with named fields (carried state).
+        if self.at(&Tok::LBrace) {
+            self.advance();
+            let mut field_names = Vec::new();
+            let mut fields = Vec::new();
+            while !self.at(&Tok::RBrace) && !self.at(&Tok::Eof) {
+                field_names.push(self.ident()?);
+                self.expect(&Tok::Colon)?;
+                fields.push(self.ty()?);
+                self.eat(&Tok::Comma);
+            }
+            self.expect(&Tok::RBrace)?;
+            if fields.is_empty() {
+                return Err(self.error("a `capability` record must declare at least one field"));
+            }
+            return Ok(Item::Type(TypeDef {
+                name: name.clone(),
+                params: vec![],
+                variants: vec![Variant { name, fields, field_names }],
+                derives: vec![],
+                sealed: true,
+            }));
+        }
         if !self.at_ident("from") {
-            return Err(self.error("expected `from` after the capability name, e.g. `capability Redis from Net[Connect, Tcp]`"));
+            return Err(self.error("expected `from` (or a record body) after the capability name, e.g. `capability Redis from Net[Connect, Tcp]`"));
         }
         self.advance();
         // The underlying capabilities: a single type, or a parenthesized tuple.
@@ -740,7 +774,7 @@ impl Parser {
             stmts.push(self.stmt()?);
         }
         self.expect(&Tok::RBrace)?;
-        Ok(Block { stmts, lines, restrict: None, region: None })
+        Ok(Block { stmts, lines, region: None })
     }
 
     fn stmt(&mut self) -> Result<Stmt, ParseError> {
@@ -761,7 +795,6 @@ impl Parser {
                 let then_block = Block {
                     stmts: vec![Stmt::Return(value)],
                     lines: vec![u32::MAX],
-                    restrict: None,
                     region: None,
                 };
                 return Ok(Stmt::Expr(Expr::If {
@@ -1206,8 +1239,6 @@ impl Parser {
             }
             Tok::Match => self.match_expr(),
             Tok::Region => self.region_block(),
-            Tok::Retain => self.restrict_block(RestrictMode::Retain),
-            Tok::Without => self.restrict_block(RestrictMode::Without),
             Tok::Ident(name) => {
                 self.advance();
                 self.name_application(name)
@@ -1387,7 +1418,7 @@ impl Parser {
         };
         // Wrap from the innermost clause outward.
         for clause in clauses.into_iter().rev() {
-            let body = Block { stmts: vec![inner], lines: vec![0], restrict: None, region: None };
+            let body = Block { stmts: vec![inner], lines: vec![0], region: None };
             inner = match clause {
                 Clause::If(cond) => Stmt::Expr(Expr::If {
                     cond: Box::new(cond),
@@ -1413,16 +1444,10 @@ impl Parser {
                 Stmt::Expr(Expr::Var(acc)),
             ],
             lines: vec![0, 0, 0],
-            restrict: None,
             region: None,
         }))
     }
 
-    /// Parse a `retain a, b:` / `without a, b:` capability-firewall block. The
-    /// keyword is already the current token. The names list may be empty (e.g.
-    /// `retain:` drops every capability, fully sandboxing the block); a trailing
-    /// comma is allowed. The body is an ordinary indented block; the restriction
-    /// rides along on `Block.restrict` and is enforced by the type checker.
     /// `region:` / `region -> Type:` — a user-controlled allocation scope.
     /// The optional type ascribes the block's value (the copy-out shape).
     fn region_block(&mut self) -> Result<Expr, ParseError> {
@@ -1430,25 +1455,6 @@ impl Parser {
         let ty = if self.eat(&Tok::RArrow) { Some(self.ty()?) } else { None };
         let mut block = self.block()?;
         block.region = Some(RegionAnn { ty });
-        Ok(Expr::Block(block))
-    }
-
-    fn restrict_block(&mut self, mode: RestrictMode) -> Result<Expr, ParseError> {
-        self.advance(); // `retain` / `without`
-        let mut names = Vec::new();
-        if !self.at(&Tok::LBrace) {
-            loop {
-                names.push(self.ident()?);
-                if !self.eat(&Tok::Comma) {
-                    break;
-                }
-                if self.at(&Tok::LBrace) {
-                    break; // trailing comma
-                }
-            }
-        }
-        let mut block = self.block()?;
-        block.restrict = Some(CapRestrict { mode, names });
         Ok(Expr::Block(block))
     }
 
@@ -1463,7 +1469,6 @@ impl Parser {
             Ok(Block {
                 stmts: vec![Stmt::Expr(e)],
                 lines: vec![line],
-                restrict: None,
                 region: None,
             })
         } else {
@@ -1482,7 +1487,7 @@ impl Parser {
             let then_block = self.colon_or_block()?;
             let fallback = match self.else_block()? {
                 Some(eb) => Expr::Block(eb),
-                None => Expr::Block(Block { stmts: vec![], lines: vec![], restrict: None, region: None }),
+                None => Expr::Block(Block { stmts: vec![], lines: vec![], region: None }),
             };
             return Ok(Expr::Match {
                 scrutinee: Box::new(scrutinee),
@@ -1511,7 +1516,6 @@ impl Parser {
                 Ok(Some(Block {
                     stmts: vec![Stmt::Expr(self.if_expr()?)],
                     lines: vec![line],
-                    restrict: None,
                     region: None,
                 }))
             } else {
@@ -1556,7 +1560,6 @@ impl Parser {
                 Expr::Block(Block {
                     stmts: vec![st],
                     lines: vec![line],
-                    restrict: None,
                     region: None,
                 })
             } else {
@@ -1844,7 +1847,6 @@ pub(crate) fn desugar_range(lo: Expr, hi: Expr, inclusive: bool) -> Expr {
             },
         ],
         lines: vec![0, 0],
-        restrict: None,
         region: None,
     };
     Expr::Block(Block {
@@ -1856,7 +1858,6 @@ pub(crate) fn desugar_range(lo: Expr, hi: Expr, inclusive: bool) -> Expr {
             Stmt::Expr(Expr::Var(acc)),
         ],
         lines: vec![0, 0, 0, 0, 0],
-        restrict: None,
         region: None,
     })
 }
@@ -1893,13 +1894,13 @@ pub(crate) fn desugar_while_let(pattern: Pattern, scrutinee: Expr, body: Block) 
             MatchArm {
                 pattern: Pattern::Wildcard,
                 guard: None,
-                body: Expr::Block(Block { stmts: vec![Stmt::Break], lines: vec![0], restrict: None, region: None }),
+                body: Expr::Block(Block { stmts: vec![Stmt::Break], lines: vec![0], region: None }),
             },
         ],
     };
     Expr::While {
         cond: Box::new(Expr::Bool(true)),
-        body: Block { stmts: vec![Stmt::Expr(dispatch)], lines: vec![0], restrict: None, region: None },
+        body: Block { stmts: vec![Stmt::Expr(dispatch)], lines: vec![0], region: None },
     }
 }
 

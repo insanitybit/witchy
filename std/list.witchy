@@ -277,14 +277,16 @@ pub fn position(xs: List(a), target: a) -> Option(Int):
 pub fn flatten(xss: List(List(a))) -> List(a):
     var out = []
     for xs in xss:
-        out = list.concat(out, xs)
+        for x in xs:
+            out = list.push(out, x)
     out
 
 // Map each element to a list, then concatenate the results.
 pub fn flat_map(xs: List(a), f: fn(a) -> List(b)) -> List(b):
     var out = []
     for x in xs:
-        out = list.concat(out, f(x))
+        for y in f(x):
+            out = list.push(out, y)
     out
 
 // Turn a list of rows into a list of columns. Rows are read only up to the
@@ -301,7 +303,7 @@ pub fn transpose(xss: List(List(a))) -> List(List(a)):
             var col = []
             for row in xss:
                 col = list.push(col, list.at(row, c))
-            out = list.push(out, col)
+            out = list.push(out, move col)
             c = c + 1
         out
 
@@ -390,8 +392,10 @@ pub fn intersperse(xs: List(a), sep: a) -> List(a):
 // The list, reversed.
 pub fn reverse(xs: List(a)) -> List(a):
     var out = []
-    for x in xs:
-        out = list.concat([x], out)
+    var i = list.length(xs) - 1
+    while i >= 0:
+        out = list.push(out, list.at(xs, i))
+        i = i - 1
     out
 
 // Insert `x` into an already-sorted list, keeping it ordered by `less`.
@@ -517,11 +521,11 @@ pub fn chunks(xs: List(a), n: Int) -> List(List(a)):
         cur = list.push(cur, x)
         count = count + 1
         if count == n:
-            out = list.push(out, cur)
+            out = list.push(out, move cur)
             cur = []
             count = 0
     if count > 0:
-        out = list.push(out, cur)
+        out = list.push(out, move cur)
     out
 
 // The elements in the half-open index range [start, end), clamped to bounds.

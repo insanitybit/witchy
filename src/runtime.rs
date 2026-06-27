@@ -115,6 +115,10 @@ pub struct Capabilities {
     /// Handle 0 is `dir_root`; these back handles 1.. in order. They share the
     /// `dir_read`/`dir_write` rights of the grant. See rfcs/0004-self-hosted-cli.md.
     pub dir_roots: Vec<std::path::PathBuf>,
+    /// Direct `File` grants (RFC-0012): the i-th `File` parameter of `main` maps to
+    /// the i-th path here (handle `i` in the files table). Read/write access is the
+    /// param's compile-time right, so these are plain paths. Backed by `--file`.
+    pub file_grants: Vec<std::path::PathBuf>,
     /// May read within `dir_root` (read/exists/is_dir/list/subdir).
     pub dir_read: bool,
     /// May write within `dir_root` (write/make_dir).
@@ -175,6 +179,10 @@ pub struct VmState {
     /// `subdir` mints a new confined entry. Guest code only ever holds the i32
     /// index — the paths live host-side, so a module cannot forge a directory.
     pub(crate) dirs: Vec<std::path::PathBuf>,
+    /// The `File` capability handle table (RFC-0012): `dir.open`/`dir.create` mint
+    /// a confined entry; guest code holds only the i32 index, so a file path can no
+    /// more be forged than a directory.
+    pub(crate) files: Vec<std::path::PathBuf>,
     /// A host->guest transfer staged by a size-probing call (`dir_read_len`,
     /// `net_recv_*_len`, ...) and consumed by the matching `fill_pending`, so
     /// the data is read once with no time-of-check/time-of-use gap.
@@ -325,6 +333,7 @@ impl Runtime {
             limits,
             output: Arc::new(Mutex::new(Vec::new())),
             dirs,
+            files: caps.file_grants.clone(),
             pending: None,
             pending_list: None,
             nets,
@@ -406,11 +415,25 @@ pub(crate) fn link_capability_imports(
         linker.func_wrap("witchy", "dir_exists", host_dir_exists)?;
         linker.func_wrap("witchy", "dir_is_dir", host_dir_is_dir)?;
         linker.func_wrap("witchy", "dir_list_size", host_dir_list_size)?;
+        // RFC-0012: `dir.open` navigates a readable Dir to a File handle.
+        linker.func_wrap("witchy", "dir_open", host_dir_open)?;
     }
     if caps.dir_root.is_some() && caps.dir_write {
         linker.func_wrap("witchy", "dir_write", host_dir_write)?;
         linker.func_wrap("witchy", "dir_append", host_dir_append)?;
         linker.func_wrap("witchy", "dir_make_dir", host_dir_make_dir)?;
+        // RFC-0012: `dir.create` navigates a writable Dir to a File handle.
+        linker.func_wrap("witchy", "dir_create", host_dir_create)?;
+    }
+    // RFC-0012 File leaf ops: usable on a File obtained by navigation (above) OR
+    // granted directly to `main` (`--file`), so they are linked whenever either a
+    // Dir grant or a direct File grant is present.
+    let has_file_grants = !caps.file_grants.is_empty();
+    if (caps.dir_root.is_some() && caps.dir_read) || has_file_grants {
+        linker.func_wrap("witchy", "file_read_len", host_file_read_len)?;
+    }
+    if (caps.dir_root.is_some() && caps.dir_write) || has_file_grants {
+        linker.func_wrap("witchy", "file_write", host_file_write)?;
     }
     // The Exec capability: spawn a confined subprocess. The executable is named
     // through a `Dir[Read]` handle, so `exec_run` reuses `dir_base`/`confine`.
@@ -493,6 +516,7 @@ pub(crate) fn link_capability_imports(
     // arguments — the toolchain exposed to witchy, same registry bridge.
     linker.func_wrap("witchy", "compiler_footprint_len", host_compiler_footprint_len)?;
     linker.func_wrap("witchy", "compiler_diff_len", host_compiler_diff_len)?;
+    linker.func_wrap("witchy", "compiler_doc_len", host_compiler_doc_len)?;
     linker.func_wrap("witchy", "regex_match_spans_len", host_regex_match_spans_len)?;
     // Float -> string formatting is pure; done in the host so it is byte-
     // identical to the interpreter's `Display` (no float formatter in WAT).
@@ -769,6 +793,29 @@ fn host_compiler_diff_len(
     Ok(len)
 }
 
+/// `compiler_doc_len(name_ptr, src_ptr) -> Int`: render the guest's source string to
+/// Markdown API docs (the `compiler.doc` native — `witchy doc` output) under heading
+/// `name`, stage it for `fill_pending`, and report its byte length.
+fn host_compiler_doc_len(
+    mut caller: Caller<'_, VmState>,
+    name_ptr: i32,
+    src_ptr: i32,
+) -> Result<i32> {
+    use crate::value::NativeValue as Value;
+    let mem = memory_of(&mut caller)?;
+    let name = read_wstr(mem.data(&caller), name_ptr)?;
+    let src = read_wstr(mem.data(&caller), src_ptr)?;
+    let f = crate::native::lookup("compiler.doc")
+        .ok_or_else(|| Error::msg("compiler.doc is not registered"))?;
+    let md = match f(&[Value::Str(name), Value::Str(src)]).map_err(|e| Error::msg(e.message))? {
+        Value::Str(s) => s,
+        _ => return Err(Error::msg("compiler.doc did not return a String")),
+    };
+    let len = md.len() as i32;
+    caller.data_mut().pending = Some(md.into_bytes());
+    Ok(len)
+}
+
 /// `regex_match_spans_len(pat_ptr, text_ptr) -> Int`: run the regex crate (the
 /// same `regex.match_spans` native the interpreter uses) over two guest strings,
 /// stage the encoded match spans for `fill_pending`, and report their byte
@@ -892,6 +939,62 @@ fn host_dir_subdir(mut caller: Caller<'_, VmState>, h: i32, name_ptr: i32) -> Re
     let dirs = &mut caller.data_mut().dirs;
     dirs.push(sub);
     Ok((dirs.len() - 1) as i32)
+}
+
+/// Look up a `File` handle's confined path (trap on a forged/out-of-range handle).
+fn file_path(caller: &Caller<'_, VmState>, f: i32) -> Result<std::path::PathBuf> {
+    caller
+        .data()
+        .files
+        .get(f as usize)
+        .cloned()
+        .ok_or_else(|| Error::msg(format!("invalid File handle {f}")))
+}
+
+/// `dir_open(h, rel) -> file handle` (RFC-0012): open an existing file confined to
+/// Dir handle `h`, minting a `File` handle. `dir_create` is the write counterpart
+/// (the target need not exist yet).
+fn host_dir_open(mut caller: Caller<'_, VmState>, h: i32, rel_ptr: i32) -> Result<i32> {
+    let mem = memory_of(&mut caller)?;
+    let rel = read_wstr(mem.data(&caller), rel_ptr)?;
+    let base = dir_base(&caller, h)?;
+    let path = confine(crate::confine::resolve(&base, &rel))?;
+    let files = &mut caller.data_mut().files;
+    files.push(path);
+    Ok((files.len() - 1) as i32)
+}
+
+/// `dir_create(h, rel) -> file handle`: like `dir_open` but for a not-yet-existing
+/// target (confined via its parent, like `dir_write`).
+fn host_dir_create(mut caller: Caller<'_, VmState>, h: i32, rel_ptr: i32) -> Result<i32> {
+    let mem = memory_of(&mut caller)?;
+    let rel = read_wstr(mem.data(&caller), rel_ptr)?;
+    let base = dir_base(&caller, h)?;
+    let path = confine(crate::confine::resolve_write(&base, &rel))?;
+    let files = &mut caller.data_mut().files;
+    files.push(path);
+    Ok((files.len() - 1) as i32)
+}
+
+/// `file_read_len(f) -> byte length`: read the confined file handle NOW, stage its
+/// bytes, and report the length; the guest allocates and calls `fill_pending`.
+/// Mirrors `dir_read_len`, but a `File` is a leaf so there is no path argument.
+fn host_file_read_len(mut caller: Caller<'_, VmState>, f: i32) -> Result<i32> {
+    let path = file_path(&caller, f)?;
+    let contents = std::fs::read_to_string(&path)
+        .map_err(|e| Error::msg(format!("read failed for `{}`: {e}", path.display())))?;
+    let len = contents.len() as i32;
+    caller.data_mut().pending = Some(contents.into_bytes());
+    Ok(len)
+}
+
+/// `file_write(f, contents)`: write a confined file handle (RFC-0012).
+fn host_file_write(mut caller: Caller<'_, VmState>, f: i32, contents_ptr: i32) -> Result<()> {
+    let mem = memory_of(&mut caller)?;
+    let contents = read_wstr(mem.data(&caller), contents_ptr)?;
+    let path = file_path(&caller, f)?;
+    std::fs::write(&path, contents)
+        .map_err(|e| Error::msg(format!("write failed for `{}`: {e}", path.display())))
 }
 
 /// `dir_read_len(h, rel) -> byte length`: read the confined file NOW, stage its

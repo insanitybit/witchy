@@ -152,9 +152,9 @@ pub struct Function {
     /// `gen fn` — a generator whose `yield`s build a lazy `iter.Iter`. Lowered to
     /// ordinary functions by `crate::generators` before any later stage.
     pub is_gen: bool,
-    /// `async fn` — a function that may `await`. Phase 1: surface + coloring only
-    /// (the body runs sequentially; `await e` is parsed as `e`). Later phases
-    /// lower an async fn to a resumable state machine driven by the executor.
+    /// `async fn` — a function that may `await`. Lowered to a resumable state
+    /// machine driven by the executor by `crate::async_lower` (before type
+    /// checking), so `await` genuinely suspends — not run sequentially.
     pub is_async: bool,
 }
 
@@ -205,13 +205,6 @@ pub struct Block {
     pub stmts: Vec<Stmt>,
     /// Source line of each statement (parallel to `stmts`), for diagnostics.
     pub lines: Vec<u32>,
-    /// A `retain`/`without` capability firewall on this block: inside it, only
-    /// the named capabilities stay in scope (`retain`) or the named ones are
-    /// dropped (`without`). Purely a compile-time scoping restriction — the type
-    /// checker hides the bindings so the block is sealed against capabilities the
-    /// outer scope might gain; every backend runs the block normally (capabilities
-    /// are erased at runtime). `None` for an ordinary block.
-    pub restrict: Option<CapRestrict>,
     /// A `region:` allocation scope: everything allocated inside is reclaimed
     /// at the block's end and the block's VALUE is what escapes (deep-copied
     /// out on the WASM tier). Purely a reclamation annotation — a region
@@ -225,24 +218,6 @@ pub struct Block {
 #[derive(Debug, Clone, PartialEq)]
 pub struct RegionAnn {
     pub ty: Option<Type>,
-}
-
-/// A block-level capability restriction introduced by `retain`/`without`.
-#[derive(Debug, Clone, PartialEq)]
-pub struct CapRestrict {
-    pub mode: RestrictMode,
-    /// The capability variables named: kept (for `retain`) or dropped (for
-    /// `without`).
-    pub names: Vec<String>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RestrictMode {
-    /// `retain a, b:` — only `a` and `b` stay in scope; every other capability
-    /// is hidden inside the block.
-    Retain,
-    /// `without a, b:` — `a` and `b` are dropped; everything else stays.
-    Without,
 }
 
 #[derive(Debug, Clone, PartialEq)]

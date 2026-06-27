@@ -22,7 +22,7 @@ use crate::ast::{Item, Module, Type};
 
 /// The host capabilities the runtime grants at an entry point.
 pub const HOST_CAPABILITIES: &[&str] =
-    &["Console", "Clock", "Env", "Secret", "SecretStore", "Dir", "Net", "Exec"];
+    &["Console", "Clock", "Env", "Secret", "SecretStore", "Dir", "File", "Net", "Exec"];
 
 /// The build-time capabilities a rune's `build` entrypoint may demand — the
 /// parallel set to the runtime host caps, tracked on a separate axis. Kind-only
@@ -73,6 +73,7 @@ fn build_caps_in(ty: &Type, out: &mut CapSet) {
 fn full_rights(cap: &str) -> Rights {
     match cap {
         "Dir" => ["Read", "Write"].into_iter().collect(),
+        "File" => ["Read", "Write"].into_iter().collect(),
         // `Net` has two axes: verbs and transports. Bare `Net` is full on both.
         "Net" => ["Connect", "Listen", "Tcp", "Udp", "Uds"].into_iter().collect(),
         _ => Rights::new(),
@@ -88,6 +89,8 @@ fn right_marker(cap: &str, marker: &str) -> Option<&'static str> {
     match (cap, marker) {
         ("Dir", "Read") => Some("Read"),
         ("Dir", "Write") => Some("Write"),
+        ("File", "Read") => Some("Read"),
+        ("File", "Write") => Some("Write"),
         ("Net", "Connect") => Some("Connect"),
         ("Net", "Listen") => Some("Listen"),
         ("Net", "Tcp") => Some("Tcp"),
@@ -428,8 +431,9 @@ impl FootprintDiff {
 }
 
 /// The capabilities/rights present in `a` but not `b`: a wholly new capability,
-/// or new rights on a shared one. The primitive behind both directions of a diff.
-fn cap_delta(a: &CapSet, b: &CapSet) -> CapSet {
+/// or new rights on a shared one. The primitive behind both directions of a diff
+/// (and the RFC-0013 grant cross-check in `crate::grants`).
+pub(crate) fn cap_delta(a: &CapSet, b: &CapSet) -> CapSet {
     let mut out = CapSet::new();
     for (cap, ar) in a {
         match b.get(cap) {

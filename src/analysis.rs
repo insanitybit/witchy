@@ -123,6 +123,34 @@ pub fn self_update_args<'a>(
     None
 }
 
+/// `xs = set_at(xs, i, v)`: the index and the new value. Unlike `list.push`
+/// (a builtin with a stable name), `list.set_at` is an ordinary stdlib function,
+/// so by codegen time the call is monomorphized to `list.set_at__<ElemType>`;
+/// match that suffixed form as well as the bare name.
+pub fn self_set_at<'a>(name: &str, value: &'a Expr) -> Option<(&'a Expr, &'a Expr)> {
+    if let Expr::Call { name: f, args } = value {
+        if (f == "list.set_at" || f.starts_with("list.set_at__")) && args.len() == 3 {
+            if matches!(&args[0], Expr::Var(v) if v == name) {
+                return Some((&args[1], &args[2]));
+            }
+        }
+    }
+    None
+}
+
+/// `xs = update_at(xs, i, f)`: the index and the updater closure. Like
+/// [`self_set_at`], `list.update_at` is a monomorphized stdlib function.
+pub fn self_update_at<'a>(name: &str, value: &'a Expr) -> Option<(&'a Expr, &'a Expr)> {
+    if let Expr::Call { name: f, args } = value {
+        if (f == "list.update_at" || f.starts_with("list.update_at__")) && args.len() == 3 {
+            if matches!(&args[0], Expr::Var(v) if v == name) {
+                return Some((&args[1], &args[2]));
+            }
+        }
+    }
+    None
+}
+
 /// `s = s + a + b + …` (any left spine whose leftmost leaf is the assigned
 /// variable): the appended pieces, in order.
 pub fn self_concat_pieces<'a>(name: &str, value: &'a Expr) -> Option<Vec<&'a Expr>> {
@@ -168,6 +196,8 @@ pub fn is_self_assign_shape(name: &str, value: &Expr, summaries: &Summaries) -> 
     self_push_elem(name, value).is_some()
         || self_insert_args(name, value).is_some()
         || self_update_args(name, value).is_some()
+        || self_set_at(name, value).is_some()
+        || self_update_at(name, value).is_some()
         || self_concat_pieces(name, value).is_some()
         || self_own_call(name, value, summaries).is_some()
 }
@@ -542,6 +572,12 @@ impl<'a> Walker<'a> {
                         let mut sub: Vec<(String, String)> = Vec::new();
                         if let Some(elem) = self_push_elem(name, value) {
                             self.scan(elem, true, "stored back into the list", &mut sub);
+                        } else if let Some((i, v)) = self_set_at(name, value) {
+                            self.scan(i, true, "used as a list index", &mut sub);
+                            self.scan(v, true, "stored back into the list", &mut sub);
+                        } else if let Some((i, f)) = self_update_at(name, value) {
+                            self.scan(i, true, "used as a list index", &mut sub);
+                            self.scan(f, true, "captured by the updater", &mut sub);
                         } else if let Some((k, v)) = self_insert_args(name, value) {
                             self.scan(k, true, "stored as a dict key", &mut sub);
                             self.scan(v, true, "stored as a dict value", &mut sub);
@@ -623,6 +659,39 @@ impl<'a> Walker<'a> {
                 for (v, reason) in &shares {
                     self.cliff(v, reason);
                 }
+            }
+            // A `move <acc>` transfers the accumulator's buffer OUT (into whatever consumes it),
+            // so its tracked capacity (`__cap`) is stale afterward — continuing to push to the
+            // variable after a later re-bind would otherwise write into the moved-away buffer
+            // and corrupt the new owner. The statement therefore KILLS every moved accumulator
+            // (codegen resets its `__cap` to 0). This is deliberately NOT a cliff: a move is the
+            // intended ownership transfer — the fast path — so `self.cliff` is not called.
+            let mut moved = Vec::new();
+            match stmt {
+                Stmt::Assign { name, value } => {
+                    collect_moved_accs(value, self.accs, &mut moved);
+                    // `name = f(move name)` is the own-ABI pipeline (ownership round-trips) and
+                    // `name = …move name…` re-binds `name` anyway, so the assignment itself
+                    // governs `name`'s capacity — killing it here would break the in-place pipe.
+                    moved.retain(|v| v != name);
+                }
+                Stmt::Let { value, .. }
+                | Stmt::LetTuple { value, .. }
+                | Stmt::Return(Some(value))
+                | Stmt::Expr(value)
+                | Stmt::Yield(value) => collect_moved_accs(value, self.accs, &mut moved),
+                Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
+            }
+            if !moved.is_empty() {
+                let mut added = 0usize;
+                let entry = self.facts.kills.entry(stmt_key(stmt)).or_default();
+                for v in &moved {
+                    if !entry.contains(v) {
+                        entry.push(v.clone());
+                        added += 1;
+                    }
+                }
+                self.facts.kill_entries += added;
             }
         }
     }
@@ -909,6 +978,109 @@ fn expr(e: &Expr, accs: &HashSet<String>, out: &mut HashSet<String>) {
             | Expr::Str(_)
             | Expr::Bool(_)
             | Expr::TaggedLit { .. } => {}
+    }
+}
+
+/// Accumulator variables MOVED (`move x`) within a statement's value — the ones whose
+/// capacity the statement must reset (see the kill logic in `walk_block`). Recurses through
+/// the same-evaluation expression forms (call args, operators, `if`/`match` branches, …) but
+/// NOT into nested loop or lambda bodies: those are separate scopes the walker visits on their
+/// own, where the move is killed at its own statement.
+fn collect_moved_accs(e: &Expr, accs: &HashSet<String>, out: &mut Vec<String>) {
+    match e {
+        Expr::Unary { op: UnOp::Move, expr } => match expr.as_ref() {
+            Expr::Var(v) if accs.contains(v) => {
+                if !out.contains(v) {
+                    out.push(v.clone());
+                }
+            }
+            inner => collect_moved_accs(inner, accs, out),
+        },
+        Expr::Unary { expr, .. }
+        | Expr::Try(expr)
+        | Expr::As { expr, .. }
+        | Expr::Field { base: expr, .. } => collect_moved_accs(expr, accs, out),
+        Expr::Binary { lhs, rhs, .. }
+        | Expr::Range { lo: lhs, hi: rhs, .. }
+        | Expr::Index { base: lhs, index: rhs } => {
+            collect_moved_accs(lhs, accs, out);
+            collect_moved_accs(rhs, accs, out);
+        }
+        Expr::Call { args, .. } | Expr::Ctor { args, .. } | Expr::List(args) | Expr::Tuple(args) => {
+            for a in args {
+                collect_moved_accs(a, accs, out);
+            }
+        }
+        Expr::Apply { func, args } => {
+            collect_moved_accs(func, accs, out);
+            for a in args {
+                collect_moved_accs(a, accs, out);
+            }
+        }
+        Expr::MethodCall { receiver, args, .. } => {
+            collect_moved_accs(receiver, accs, out);
+            for a in args {
+                collect_moved_accs(a, accs, out);
+            }
+        }
+        Expr::If { cond, then_block, else_block } => {
+            collect_moved_accs(cond, accs, out);
+            collect_moved_in_block(then_block, accs, out);
+            if let Some(b) = else_block {
+                collect_moved_in_block(b, accs, out);
+            }
+        }
+        Expr::Match { scrutinee, arms } => {
+            collect_moved_accs(scrutinee, accs, out);
+            for arm in arms {
+                if let Some(g) = &arm.guard {
+                    collect_moved_accs(g, accs, out);
+                }
+                collect_moved_accs(&arm.body, accs, out);
+            }
+        }
+        Expr::Block(b) => collect_moved_in_block(b, accs, out),
+        Expr::RecordUpdate { base, fields } => {
+            collect_moved_accs(base, accs, out);
+            for (_, v) in fields {
+                collect_moved_accs(v, accs, out);
+            }
+        }
+        Expr::Record { fields, spread, .. } => {
+            for (_, v) in fields {
+                collect_moved_accs(v, accs, out);
+            }
+            if let Some(s) = spread {
+                collect_moved_accs(s, accs, out);
+            }
+        }
+        // Separate scopes (loops re-bind per iteration, lambdas capture) — visited on their own.
+        Expr::While { .. }
+        | Expr::For { .. }
+        | Expr::WhileLet { .. }
+        | Expr::Lambda { .. }
+        | Expr::Var(_)
+        | Expr::Int(_)
+        | Expr::Float(_)
+        | Expr::Duration(_)
+        | Expr::Str(_)
+        | Expr::Bool(_)
+        | Expr::TaggedLit { .. } => {}
+    }
+}
+
+/// `collect_moved_accs` over the statements of an `if`/`match`/block arm value.
+fn collect_moved_in_block(b: &Block, accs: &HashSet<String>, out: &mut Vec<String>) {
+    for stmt in &b.stmts {
+        match stmt {
+            Stmt::Let { value, .. }
+            | Stmt::LetTuple { value, .. }
+            | Stmt::Assign { value, .. }
+            | Stmt::Return(Some(value))
+            | Stmt::Expr(value)
+            | Stmt::Yield(value) => collect_moved_accs(value, accs, out),
+            Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
+        }
     }
 }
 

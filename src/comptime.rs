@@ -80,7 +80,6 @@ pub fn expand(name: &str, module: &mut Module) -> Result<(), String> {
                             ],
                         })],
                         lines: vec![0],
-                        restrict: None,
                         region: None,
                     },
                     ret: None,

@@ -15,7 +15,7 @@
 //! the runtime links only when granted, so an ungranted compiled module cannot
 //! instantiate.
 
-use crate::analysis::{self, is_self_assign_shape, self_concat_pieces, self_insert_args, self_push_elem, self_update_args};
+use crate::analysis::{self, is_self_assign_shape, self_concat_pieces, self_insert_args, self_push_elem, self_set_at, self_update_args, self_update_at};
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 
@@ -1047,7 +1047,7 @@ impl Codegen {
                 | "crypto.public_key" | "crypto.reveal" | "read" | "read_build" | "crypto.rune_hash"
                 | "exec"
                 | "compiler.footprint"
-                | "compiler.diff" | "regex.match_spans" | "recv_line" | "recv_all"
+                | "compiler.diff" | "compiler.doc" | "regex.match_spans" | "recv_line" | "recv_all"
                 | "crypto.sha512" | "crypto.sha3_256" | "crypto.hmac_sha256"
                 | "recv_bytes" => ValType::Str,
                 "string.starts_with" | "string.ends_with" | "string.contains" | "dict.has"
@@ -2043,6 +2043,11 @@ impl Codegen {
         locals.push(WirLocal { name: TRY_TMP.into(), ty: i32t() });
         locals.push(WirLocal { name: MATCH_TMP.into(), ty: i64t() });
         locals.push(WirLocal { name: SECRET_TMP.into(), ty: i32t() });
+        // Scratch slots for the inlined in-place `set_at` fast path (index i32,
+        // value i64): the common in-bounds + owned case stores directly without a
+        // `$list_set_cap` call; the helper is only invoked for OOB / re-own.
+        locals.push(WirLocal { name: "__witchy_set_idx".into(), ty: i32t() });
+        locals.push(WirLocal { name: "__witchy_set_val".into(), ty: i64t() });
         for i in 0..WM_POOL {
             locals.push(WirLocal { name: format!("__witchy_wm_{i}"), ty: i32t() });
         }
@@ -2379,13 +2384,145 @@ impl Codegen {
                         } else {
                             W::GetLocal(format!("{name}__cap"))
                         };
+                        use crate::wir::BinOp;
                         let e = self.lower_expr(elem)?;
                         self.uses_list_push_cap = true;
+                        // Stash length (i32) + value (i64 slot), then APPEND in place
+                        // when owned slack remains (cap > len): write the value at slot
+                        // `len` and bump the length, leaving the capacity token alone.
+                        // Else fall back to `$list_push_cap` (grow / re-own). Eliding
+                        // the helper CALL on the hot path is RFC-0016 R2 static elision.
+                        seq.push(N::SetLocal {
+                            local: "__witchy_set_idx".into(),
+                            value: W::Load { ptr: Box::new(W::GetLocal(name.clone())), kind: crate::wir::Kind::I32, offset: 0 },
+                        });
+                        seq.push(N::SetLocal {
+                            local: "__witchy_set_val".into(),
+                            value: W::ToSlot(Box::new(e), Self::wir_kind(xk)),
+                        });
+                        let sl = || W::GetLocal("__witchy_set_idx".to_string());
+                        let sv = || W::GetLocal("__witchy_set_val".to_string());
+                        let bin = |op, l, r| W::Binary { op, kind: crate::wir::Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+                        let slot_ptr = bin(
+                            BinOp::Add,
+                            bin(BinOp::Add, W::GetLocal(name.clone()), W::ConstI32(4)),
+                            bin(BinOp::Mul, sl(), W::ConstI32(8)),
+                        );
+                        seq.push(N::If {
+                            cond: bin(BinOp::Gt, cap.clone(), sl()),
+                            then_: vec![
+                                N::Store { ptr: slot_ptr, value: sv(), kind: crate::wir::Kind::I64, offset: 0 },
+                                N::Store { ptr: W::GetLocal(name.clone()), value: bin(BinOp::Add, sl(), W::ConstI32(1)), kind: crate::wir::Kind::I32, offset: 0 },
+                            ],
+                            els: vec![N::CallStoreMulti {
+                                func: "list_push_cap".to_string(),
+                                args: vec![W::GetLocal(name.clone()), sv(), cap],
+                                dests: vec![name.clone(), format!("{name}__cap")],
+                            }],
+                            result: None,
+                        });
+                        inplace_sites += 1;
+                        tail_is_value = false;
+                    } else if self.collect_wir
+                        && self.inplace_push.contains(name)
+                        && is_self_assign_shape(name, value, &self.summaries)
+                        && self_set_at(name, value).is_some()
+                    {
+                        // `xs = list.set_at(xs, i, v)`: in-place element store via
+                        // `$list_set_cap` (mutate the owned buffer's slot, O(1)),
+                        // mirroring the list-push fast path. Without it the plain
+                        // rebind rebuilds the whole list each set — O(n²) memory
+                        // that traps a large list under the memory cap. A dirty
+                        // site forces a zero token (re-own + copy, preserving any
+                        // alias); a clean site mutates the owned buffer.
+                        let (iexpr, vexpr) = self_set_at(name, value).expect("guarded Some above");
+                        let ik = self.kind_of(iexpr);
+                        let vk = self.kind_of(vexpr);
+                        let dirty = match self.facts_stack.last() {
+                            Some((facts, _, _)) if facts.accumulators.contains(name) => {
+                                facts.is_dirty(stmt)
+                            }
+                            _ => true,
+                        };
+                        let cap = if dirty {
+                            W::ConstI32(0)
+                        } else {
+                            W::GetLocal(format!("{name}__cap"))
+                        };
+                        use crate::wir::BinOp;
+                        let iw = self.lower_expr(iexpr)?;
+                        let vw = self.lower_expr(vexpr)?;
+                        // Stash index (i32) + value (i64 slot) into scratch locals,
+                        // then store IN PLACE inline when in-bounds and owned, else
+                        // fall back to `$list_set_cap` (OOB no-op / re-own-and-copy).
+                        // Eliding the helper CALL on the hot path is RFC-0016 R2
+                        // static elision; the proven helper still covers the cold path.
+                        seq.push(N::SetLocal {
+                            local: "__witchy_set_idx".into(),
+                            value: Self::wir_convert(iw, ik, Kind::I32),
+                        });
+                        seq.push(N::SetLocal {
+                            local: "__witchy_set_val".into(),
+                            value: W::ToSlot(Box::new(vw), Self::wir_kind(vk)),
+                        });
+                        let si = || W::GetLocal("__witchy_set_idx".to_string());
+                        let sv = || W::GetLocal("__witchy_set_val".to_string());
+                        let bin = |op, l, r| W::Binary { op, kind: crate::wir::Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+                        let len = W::Load { ptr: Box::new(W::GetLocal(name.clone())), kind: crate::wir::Kind::I32, offset: 0 };
+                        let cond = bin(
+                            BinOp::And,
+                            bin(BinOp::And, bin(BinOp::Ge, si(), W::ConstI32(0)), bin(BinOp::Lt, si(), len)),
+                            bin(BinOp::Gt, cap.clone(), W::ConstI32(0)),
+                        );
+                        let slot_ptr = bin(
+                            BinOp::Add,
+                            bin(BinOp::Add, W::GetLocal(name.clone()), W::ConstI32(4)),
+                            bin(BinOp::Mul, si(), W::ConstI32(8)),
+                        );
+                        seq.push(N::If {
+                            cond,
+                            then_: vec![N::Store { ptr: slot_ptr, value: sv(), kind: crate::wir::Kind::I64, offset: 0 }],
+                            els: vec![N::CallStoreMulti {
+                                func: "list_set_cap".to_string(),
+                                args: vec![W::GetLocal(name.clone()), si(), sv(), cap],
+                                dests: vec![name.clone(), format!("{name}__cap")],
+                            }],
+                            result: None,
+                        });
+                        inplace_sites += 1;
+                        tail_is_value = false;
+                    } else if self.collect_wir
+                        && self.inplace_push.contains(name)
+                        && is_self_assign_shape(name, value, &self.summaries)
+                        && self_update_at(name, value).is_some()
+                    {
+                        // `xs = list.update_at(xs, i, f)`: in-place element update
+                        // via `$list_update_cap` (apply the closure to the owned
+                        // slot, O(1)), mirroring the set_at fast path. Without it the
+                        // plain rebind copies the whole list each update — O(n²)
+                        // memory. A dirty site forces a zero token (re-own + copy,
+                        // preserving any alias); a clean site mutates in place.
+                        let (iexpr, fexpr) = self_update_at(name, value).expect("guarded Some above");
+                        let ik = self.kind_of(iexpr);
+                        let dirty = match self.facts_stack.last() {
+                            Some((facts, _, _)) if facts.accumulators.contains(name) => {
+                                facts.is_dirty(stmt)
+                            }
+                            _ => true,
+                        };
+                        let cap = if dirty {
+                            W::ConstI32(0)
+                        } else {
+                            W::GetLocal(format!("{name}__cap"))
+                        };
+                        let iw = self.lower_expr(iexpr)?;
+                        let fw = self.lower_expr(fexpr)?;
                         seq.push(N::CallStoreMulti {
-                            func: "list_push_cap".to_string(),
+                            func: "list_update_cap".to_string(),
                             args: vec![
                                 W::GetLocal(name.clone()),
-                                W::ToSlot(Box::new(e), Self::wir_kind(xk)),
+                                Self::wir_convert(iw, ik, Kind::I32),
+                                fw,
                                 cap,
                             ],
                             dests: vec![name.clone(), format!("{name}__cap")],
@@ -3038,7 +3175,6 @@ impl Codegen {
                 let body = Block {
                     stmts: vec![Stmt::Expr(Expr::Call { name: name.clone(), args })],
                     lines: vec![0],
-                    restrict: None,
                     region: None,
                 };
                 return self.lower_lambda(&params, &body);
@@ -4245,6 +4381,10 @@ impl Codegen {
                 locals.push(WirLocal { name: TRY_TMP.into(), ty: i32t() });
                 locals.push(WirLocal { name: MATCH_TMP.into(), ty: WirTy::Int });
                 locals.push(WirLocal { name: SECRET_TMP.into(), ty: i32t() });
+                // Scratch slots for the inlined in-place set_at/push fast path (a
+                // self-assign accumulator can live inside a lifted lambda body too).
+                locals.push(WirLocal { name: "__witchy_set_idx".into(), ty: i32t() });
+                locals.push(WirLocal { name: "__witchy_set_val".into(), ty: WirTy::Int });
                 for i in 0..WM_POOL {
                     locals.push(WirLocal { name: format!("__witchy_wm_{i}"), ty: i32t() });
                 }
@@ -5724,6 +5864,7 @@ impl Codegen {
                 self.uses_compiler_diff = true;
                 call("compiler_diff", self.lower_args(&[&args[0], &args[1]])?)
             }
+            ("compiler.doc", 2) => call("compiler_doc", self.lower_args(&[&args[0], &args[1]])?),
             ("regex.match_spans", 2) => {
                 self.uses_regex_spans = true;
                 call("regex_match_spans", self.lower_args(&[&args[0], &args[1]])?)
@@ -5992,6 +6133,24 @@ impl Codegen {
                 self.used_dir_ops.insert("read");
                 call("dir_read", self.lower_args(&[&args[0], &args[1]])?)
             }
+            // RFC-0012 File ops. `read(File)` is arity 1 (a leaf, no path) and goes
+            // through the `file_read` WIR helper; `write(File, data)` is arity 2.
+            // `open`/`create` navigate a Dir to a confined File handle.
+            ("read", 1) => call("file_read", self.lower_args(&[&args[0]])?),
+            ("write", 2) => {
+                let a = self.lower_args(&[&args[0], &args[1]])?;
+                if self.collect_wir { call("file_write", a) } else { nil0(host("file_write_host", a)) }
+            }
+            // RFC-0012 `dir.read_file`/`dir.write_file` navigate a Dir to a confined
+            // File handle (the internal host ops keep their `dir_open`/`dir_create` names).
+            ("read_file", 2) => {
+                let a = self.lower_args(&[&args[0], &args[1]])?;
+                if self.collect_wir { call("dir_open", a) } else { host("dir_open_host", a) }
+            }
+            ("write_file", 2) => {
+                let a = self.lower_args(&[&args[0], &args[1]])?;
+                if self.collect_wir { call("dir_create", a) } else { host("dir_create_host", a) }
+            }
             // `exec(cap, dir, path, args, stdin) -> String`. The `Exec` cap (arg 0)
             // is a structural placeholder — `caps.exec` gates linking — so it is
             // dropped; the WIR `exec` helper takes (dir handle, path, args, stdin).
@@ -6020,7 +6179,9 @@ impl Codegen {
             // In a non-collecting scope (e.g. a raw-prelude helper body) emit the
             // inline `$dir_*_host` CallHost, which provides `$dir_*_host` directly
             // rather than the helper.
-            ("subdir", 2) => {
+            // `dir.subtree(path)` narrows a `Dir` to a subtree; lowered to the
+            // `dir_subdir` host op (the internal name is historical).
+            ("subtree", 2) => {
                 self.used_dir_ops.insert("subdir");
                 let a = self.lower_args(&[&args[0], &args[1]])?;
                 if self.collect_wir { call("dir_subdir", a) } else { host("dir_subdir_host", a) }
@@ -6899,6 +7060,7 @@ pub fn assemble_wir_module(
     let mut main_params = 0usize;
     let mut main_param_is_args: Vec<bool> = Vec::new();
     let mut main_param_is_dir: Vec<bool> = Vec::new();
+    let mut main_param_is_file: Vec<bool> = Vec::new();
     let mut main_returns_int = false;
     let mut main_returns_float = false;
     let mut user_order: Vec<String> = Vec::new();
@@ -6920,6 +7082,8 @@ pub fn assemble_wir_module(
                     main_param_is_args.push(is_args);
                     main_param_is_dir
                         .push(matches!(&p.ty, Some(Type::Named(n, _)) if n == "Dir"));
+                    main_param_is_file
+                        .push(matches!(&p.ty, Some(Type::Named(n, _)) if n == "File"));
                 }
             }
             if reachable.contains(&f.name) && !crate::typeck::intrinsic(&f.name) {
@@ -7141,8 +7305,11 @@ pub fn assemble_wir_module(
             }
             // Each `Dir` param maps to a distinct host handle in declaration order
             // (0, 1, 2, …) so a `main` taking several `Dir`s gets several grants;
-            // every other cap is a right-less placeholder (handle 0).
+            // each `File` param maps to a file handle in declaration order (the host
+            // pre-populates the files table from `--file` grants, RFC-0012); every
+            // other cap is a right-less placeholder (handle 0).
             let mut dir_handle = 0i32;
+            let mut file_handle = 0i32;
             let mut main_args: Vec<WirExpr> = Vec::with_capacity(main_params);
             for i in 0..main_params {
                 if main_param_is_args.get(i).copied().unwrap_or(false) {
@@ -7150,6 +7317,9 @@ pub fn assemble_wir_module(
                 } else if main_param_is_dir.get(i).copied().unwrap_or(false) {
                     main_args.push(WirExpr::ConstI32(dir_handle));
                     dir_handle += 1;
+                } else if main_param_is_file.get(i).copied().unwrap_or(false) {
+                    main_args.push(WirExpr::ConstI32(file_handle));
+                    file_handle += 1;
                 } else {
                     main_args.push(WirExpr::ConstI32(0));
                 }
@@ -7246,7 +7416,15 @@ pub fn assemble_wir_module(
                         kind: WK::I32,
                         mutable: true,
                         init: GlobalInit::I32(cg.next_offset as i32),
-                        export: None,
+                        // Exported so a long-lived host (the glamour MVU run loop, which calls a
+                        // `String -> String` export once per event) can RESET the bump allocator to
+                        // its base after each call. Every `export_*` call is pure — its input,
+                        // working, and output allocations are all dead once the host has read the
+                        // result String out — so without a reset the never-freeing bump allocator
+                        // leaks one call's allocations forever and eventually exhausts memory
+                        // (`__galloc` returns an out-of-bounds pointer). The host reads the global's
+                        // initial value as the base and restores it; see witchy-runtime.mjs.
+                        export: Some("__heap".into()),
                     },
                     WirGlobal {
                         name: "__witchy_reowns".into(),
@@ -8241,7 +8419,6 @@ fn rewrite_try_ctx_module(m: &mut Module, table: &crate::typeck::TypeTable) -> b
                             rhs: Box::new(Expr::Var("__ctx_err".into())),
                         })],
                         lines: vec![0],
-                        restrict: None,
                         region: None,
                     },
                     ret: None,

@@ -43,6 +43,7 @@ pub fn lookup(qualified: &str) -> Option<NativeFn> {
         "crypto.hmac_sha256" => Some(crypto::hmac_sha256),
         "compiler.footprint" => Some(compiler::footprint),
         "compiler.diff" => Some(compiler::diff),
+        "compiler.doc" => Some(compiler::doc),
         "encoding.hex_encode" => Some(encoding::hex_encode),
         "encoding.hex_decode" => Some(encoding::hex_decode),
         "encoding.base64_encode" => Some(encoding::base64_encode),
@@ -428,6 +429,20 @@ mod compiler {
             Err(e) => format!("{{\"error\":{}}}", string(&e.to_string())),
         };
         Ok(Value::Str(json))
+    }
+
+    /// Render witchy `source` to Markdown API documentation — the same output as the
+    /// `witchy doc` CLI: the module's public types and functions with their signatures
+    /// and doc-comments. `name` titles the module heading. Lets a registry generate
+    /// browsable docs from a rune's stored source, on either backend. `witchy doc` only
+    /// *parses* the source (it never runs it), so this is safe on untrusted code; a parse
+    /// error is returned as an HTML comment rather than trapping.
+    pub fn doc(args: &[Value]) -> Result<Value, RuntimeError> {
+        let [Value::Str(name), Value::Str(src)] = args else {
+            return Err(type_error("compiler.doc expects (name, source) strings"));
+        };
+        let md = crate::doc::render(name, src).unwrap_or_else(|e| format!("<!-- doc error: {e} -->"));
+        Ok(Value::Str(md))
     }
 
     /// Compare two witchy sources by capability footprint, as JSON:

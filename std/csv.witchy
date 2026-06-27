@@ -40,7 +40,7 @@ pub fn parse(text: String) -> List(List(String)):
             i = i + 1
         else if ch == "\n":
             row = list.push(row, field)
-            rows = list.push(rows, row)
+            rows = list.push(rows, move row)
             row = []
             field = ""
             i = i + 1

@@ -31,7 +31,6 @@
                 Stmt::Expr(Expr::Var("__zzz".into())),
             ],
             lines: vec![0, 0],
-            restrict: None,
             region: None,
         });
         let m = Module {
@@ -49,7 +48,6 @@
                 body: Block {
                     stmts: vec![Stmt::Let { name: "x".into(), ty: None, mutable: false, value: block }],
                     lines: vec![0],
-                    restrict: None,
                     region: None,
                 },
                 bounds: vec![],
@@ -89,17 +87,6 @@
             }
         }
         assert!(failures.is_empty(), "did not round-trip: {failures:?}");
-    }
-
-    #[test]
-    fn preserves_capability_firewalls() {
-        // `retain`/`without` blocks must round-trip to an equal AST (so the
-        // restriction survives a reformat) and print their header back verbatim.
-        let src = "fn main(console: Console, clock: Clock):\n    without clock:\n        print(console, \"a\")\n    retain console:\n        print(console, \"b\")\n    retain:\n        0\n";
-        let out = reformat(src).expect("firewalls round-trip to an equal AST");
-        assert!(out.contains("without clock:"), "{out}");
-        assert!(out.contains("retain console:"), "{out}");
-        assert!(out.contains("retain:"), "{out}");
     }
 
     #[test]

@@ -19,3 +19,11 @@ pub fn footprint(source: String) -> String:
 // any capability or right that `old` did not.
 pub fn diff(old: String, new: String) -> String:
     old
+
+// Render `source` to Markdown API documentation (the same output as `witchy doc`):
+// the module's public types and functions with their signatures and doc-comments,
+// under a heading titled `name`. This only PARSES the source — it never runs it —
+// so a registry can safely generate browsable docs from a rune's stored source on
+// either backend. A parse error comes back as an HTML comment, never a trap.
+pub fn doc(name: String, source: String) -> String:
+    source

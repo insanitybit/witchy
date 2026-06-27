@@ -1189,6 +1189,151 @@ pub fn list_push_cap_helper() -> WirFunc {
     }
 }
 
+/// `$list_set_cap(list, index, x, cap) -> (i32, i32)` — the in-place element
+/// setter mirroring [`list_push_cap_helper`]. `list.set_at` returns a copy with
+/// slot `index` replaced; with owned slack (`cap > 0`) the owned buffer is
+/// mutated in place (slot at `list + 4 + index*8`) and returned with its cap,
+/// else the buffer is copied once to a doubled buffer (re-own, bumping
+/// `$__witchy_reowns`) and the slot written there. An out-of-range index leaves
+/// the list unchanged (no copy, no trap — matching the stdlib semantics).
+/// Calls `$ensure`; uses `$heap` + `$__witchy_reowns`.
+pub fn list_set_cap_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    let i32c = E::ConstI32;
+    let i64c = E::ConstI64;
+    let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+    // element slot pointer for `index` in buffer `base`: base + 4 + index*8.
+    let slot = |base: &str| b(BinOp::Add, b(BinOp::Add, getl(base), i32c(4)), b(BinOp::Mul, getl("index"), i32c(8)));
+    let inplace = vec![N::Store { ptr: slot("list"), value: getl("x"), kind: Kind::I64, offset: 0 }];
+    let grow = vec![
+        N::SetGlobal {
+            global: "__witchy_reowns".into(),
+            value: E::Binary { op: BinOp::Add, kind: Kind::I64, lhs: Box::new(E::GetGlobal("__witchy_reowns".into())), rhs: Box::new(i64c(1)) },
+        },
+        N::SetLocal { local: "newcap".into(), value: b(BinOp::Mul, getl("len"), i32c(2)) },
+        N::If { cond: b(BinOp::Lt, getl("newcap"), i32c(8)), then_: vec![N::SetLocal { local: "newcap".into(), value: i32c(8) }], els: vec![], result: None },
+        N::Do(E::Call { func: "ensure".into(), args: vec![b(BinOp::Add, i32c(4), b(BinOp::Mul, getl("newcap"), i32c(8)))] }),
+        N::SetLocal { local: "new".into(), value: E::GetGlobal("heap".into()) },
+        N::Store { ptr: getl("new"), value: getl("len"), kind: Kind::I32, offset: 0 },
+        N::MemoryCopy { dest: b(BinOp::Add, getl("new"), i32c(4)), src: b(BinOp::Add, getl("list"), i32c(4)), len: b(BinOp::Mul, getl("len"), i32c(8)) },
+        N::Store { ptr: slot("new"), value: getl("x"), kind: Kind::I64, offset: 0 },
+        N::SetGlobal { global: "heap".into(), value: b(BinOp::Add, b(BinOp::Add, getl("new"), i32c(4)), b(BinOp::Mul, getl("newcap"), i32c(8))) },
+        N::SetLocal { local: "ret_ptr".into(), value: getl("new") },
+        N::SetLocal { local: "ret_cap".into(), value: getl("newcap") },
+    ];
+    WirFunc {
+        name: "list_set_cap".into(),
+        params: vec![
+            WirLocal { name: "list".into(), ty: WirTy::Bool },
+            WirLocal { name: "index".into(), ty: WirTy::Bool },
+            WirLocal { name: "x".into(), ty: WirTy::Int },
+            WirLocal { name: "cap".into(), ty: WirTy::Bool },
+        ],
+        ret: vec![WirTy::Bool, WirTy::Bool],
+        locals: vec![
+            WirLocal { name: "len".into(), ty: WirTy::Bool },
+            WirLocal { name: "new".into(), ty: WirTy::Bool },
+            WirLocal { name: "newcap".into(), ty: WirTy::Bool },
+            WirLocal { name: "ret_ptr".into(), ty: WirTy::Bool },
+            WirLocal { name: "ret_cap".into(), ty: WirTy::Bool },
+        ],
+        body: vec![
+            N::SetLocal { local: "len".into(), value: E::Load { ptr: Box::new(getl("list")), kind: Kind::I32, offset: 0 } },
+            N::SetLocal { local: "ret_ptr".into(), value: getl("list") },
+            N::SetLocal { local: "ret_cap".into(), value: getl("cap") },
+            N::If {
+                cond: b(BinOp::And, b(BinOp::Ge, getl("index"), i32c(0)), b(BinOp::Lt, getl("index"), getl("len"))),
+                then_: vec![N::If { cond: b(BinOp::Gt, getl("cap"), i32c(0)), then_: inplace, els: grow, result: None }],
+                els: vec![],
+                result: None,
+            },
+            N::Push(getl("ret_ptr")),
+            N::Push(getl("ret_cap")),
+        ],
+        raw_body: None,
+    }
+}
+
+/// `$list_update_cap(list, index, clos, cap) -> (i32, i32)` — the in-place
+/// element updater: apply the closure to the current element and store the
+/// result back, mirroring [`list_set_cap_helper`] (in place with owned slack,
+/// else copy-and-reown, bumping `$__witchy_reowns`). The closure call mirrors
+/// `$dict_update_cap` (`CallIndirect` on the closure's code index, the element
+/// passed as the i64 slot). An out-of-range index leaves the list unchanged and
+/// does not call the closure. Calls `$ensure`; uses `$heap` + `$__witchy_reowns`.
+pub fn list_update_cap_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    let i32c = E::ConstI32;
+    let i64c = E::ConstI64;
+    let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+    let slot = |base: &str| b(BinOp::Add, b(BinOp::Add, getl(base), i32c(4)), b(BinOp::Mul, getl("index"), i32c(8)));
+    // nv = clos(load(slot(list))): apply the updater to the current element.
+    let call_clos = N::SetLocal {
+        local: "nv".into(),
+        value: E::CallIndirect {
+            type_arity: 1,
+            args: vec![getl("clos"), E::Load { ptr: Box::new(slot("list")), kind: Kind::I64, offset: 0 }],
+            index: Box::new(E::Load { ptr: Box::new(getl("clos")), kind: Kind::I32, offset: 0 }),
+        },
+    };
+    let inplace = vec![N::Store { ptr: slot("list"), value: getl("nv"), kind: Kind::I64, offset: 0 }];
+    let grow = vec![
+        N::SetGlobal {
+            global: "__witchy_reowns".into(),
+            value: E::Binary { op: BinOp::Add, kind: Kind::I64, lhs: Box::new(E::GetGlobal("__witchy_reowns".into())), rhs: Box::new(i64c(1)) },
+        },
+        N::SetLocal { local: "newcap".into(), value: b(BinOp::Mul, getl("len"), i32c(2)) },
+        N::If { cond: b(BinOp::Lt, getl("newcap"), i32c(8)), then_: vec![N::SetLocal { local: "newcap".into(), value: i32c(8) }], els: vec![], result: None },
+        N::Do(E::Call { func: "ensure".into(), args: vec![b(BinOp::Add, i32c(4), b(BinOp::Mul, getl("newcap"), i32c(8)))] }),
+        N::SetLocal { local: "nb".into(), value: E::GetGlobal("heap".into()) },
+        N::Store { ptr: getl("nb"), value: getl("len"), kind: Kind::I32, offset: 0 },
+        N::MemoryCopy { dest: b(BinOp::Add, getl("nb"), i32c(4)), src: b(BinOp::Add, getl("list"), i32c(4)), len: b(BinOp::Mul, getl("len"), i32c(8)) },
+        N::Store { ptr: b(BinOp::Add, b(BinOp::Add, getl("nb"), i32c(4)), b(BinOp::Mul, getl("index"), i32c(8))), value: getl("nv"), kind: Kind::I64, offset: 0 },
+        N::SetGlobal { global: "heap".into(), value: b(BinOp::Add, b(BinOp::Add, getl("nb"), i32c(4)), b(BinOp::Mul, getl("newcap"), i32c(8))) },
+        N::SetLocal { local: "ret_ptr".into(), value: getl("nb") },
+        N::SetLocal { local: "ret_cap".into(), value: getl("newcap") },
+    ];
+    WirFunc {
+        name: "list_update_cap".into(),
+        params: vec![
+            WirLocal { name: "list".into(), ty: WirTy::Bool },
+            WirLocal { name: "index".into(), ty: WirTy::Bool },
+            WirLocal { name: "clos".into(), ty: WirTy::Bool },
+            WirLocal { name: "cap".into(), ty: WirTy::Bool },
+        ],
+        ret: vec![WirTy::Bool, WirTy::Bool],
+        locals: vec![
+            WirLocal { name: "len".into(), ty: WirTy::Bool },
+            WirLocal { name: "nv".into(), ty: WirTy::Int },
+            WirLocal { name: "nb".into(), ty: WirTy::Bool },
+            WirLocal { name: "newcap".into(), ty: WirTy::Bool },
+            WirLocal { name: "ret_ptr".into(), ty: WirTy::Bool },
+            WirLocal { name: "ret_cap".into(), ty: WirTy::Bool },
+        ],
+        body: vec![
+            N::SetLocal { local: "len".into(), value: E::Load { ptr: Box::new(getl("list")), kind: Kind::I32, offset: 0 } },
+            N::SetLocal { local: "ret_ptr".into(), value: getl("list") },
+            N::SetLocal { local: "ret_cap".into(), value: getl("cap") },
+            N::If {
+                cond: b(BinOp::And, b(BinOp::Ge, getl("index"), i32c(0)), b(BinOp::Lt, getl("index"), getl("len"))),
+                then_: vec![
+                    call_clos,
+                    N::If { cond: b(BinOp::Gt, getl("cap"), i32c(0)), then_: inplace, els: grow, result: None },
+                ],
+                els: vec![],
+                result: None,
+            },
+            N::Push(getl("ret_ptr")),
+            N::Push(getl("ret_cap")),
+        ],
+        raw_body: None,
+    }
+}
+
 /// `$str_append_cap(s: i32, piece: i32, cap: i32) -> (i32, i32)` — the in-place
 /// string builder: a String is `[len(i32)][bytes]`. If the owned byte slack
 /// (`cap`) covers `len + plen`, copy `piece`'s bytes into `s` in place and bump
@@ -1912,9 +2057,20 @@ pub fn split_helper() -> WirFunc {
     let load = |p: E| E::Load { ptr: Box::new(p), kind: Kind::I32, offset: 0 };
     let setl = |n: &str, v: E| N::SetLocal { local: n.into(), value: v };
     let ext = |e: E| E::Convert { from: Kind::I32, to: Kind::I64, arg: Box::new(e) };
-    let push_piece = |start: E, len: E| E::Call {
-        func: "list_push".into(),
-        args: vec![getl("result"), ext(E::Call { func: "substr".into(), args: vec![getl("s"), start, len] })],
+    // Write the piece `substr(s, start, len)` straight into slot `count` of the PRE-SIZED
+    // `result` buffer, then bump `count`. No `$list_push` reallocation (that allocated a fresh
+    // `len+1` buffer and memcpy'd the whole list every piece — O(pieces²) to build); slots are
+    // written directly, exactly like `$str_chars`.
+    let push_piece = |start: E, len: E| -> Vec<N> {
+        vec![
+            N::Store {
+                ptr: b(BinOp::Add, getl("result"), b(BinOp::Mul, getl("count"), i32c(8))),
+                value: ext(E::Call { func: "substr".into(), args: vec![getl("s"), start, len] }),
+                kind: Kind::I64,
+                offset: 4,
+            },
+            setl("count", b(BinOp::Add, getl("count"), i32c(1))),
+        ]
     };
     let s_byte = E::Load8U {
         ptr: Box::new(b(BinOp::Add, getl("s"), b(BinOp::Add, getl("i"), getl("j")))),
@@ -1954,11 +2110,12 @@ pub fn split_helper() -> WirFunc {
                 cmp_loop,
                 N::If {
                     cond: getl("match"),
-                    then_: vec![
-                        setl("result", push_piece(getl("start"), b(BinOp::Sub, getl("i"), getl("start")))),
-                        setl("i", b(BinOp::Add, getl("i"), getl("seplen"))),
-                        setl("start", getl("i")),
-                    ],
+                    then_: {
+                        let mut t = push_piece(getl("start"), b(BinOp::Sub, getl("i"), getl("start")));
+                        t.push(setl("i", b(BinOp::Add, getl("i"), getl("seplen"))));
+                        t.push(setl("start", getl("i")));
+                        t
+                    },
                     els: vec![setl("i", b(BinOp::Add, getl("i"), i32c(1)))],
                     result: None,
                 },
@@ -1973,32 +2130,46 @@ pub fn split_helper() -> WirFunc {
             WirLocal { name: "sep".into(), ty: WirTy::Str },
         ],
         ret: vec![WirTy::Bool], // i32 list pointer
-        locals: ["slen", "seplen", "result", "start", "i", "j", "match"]
+        locals: ["slen", "seplen", "result", "count", "start", "i", "j", "match"]
             .iter()
             .map(|n| WirLocal { name: (*n).into(), ty: WirTy::Bool })
             .collect(),
-        body: vec![
-            setl("slen", load(getl("s"))),
-            setl("seplen", load(getl("sep"))),
-            N::Do(E::Call { func: "ensure".into(), args: vec![i32c(4)] }),
-            setl("result", E::GetGlobal("heap".into())),
-            N::Store { ptr: getl("result"), value: i32c(0), kind: Kind::I32, offset: 0 },
-            N::SetGlobal { global: "heap".into(), value: b(BinOp::Add, getl("result"), i32c(4)) },
-            N::If {
-                cond: E::Unary { op: UnOp::Not, kind: Kind::I32, arg: Box::new(getl("seplen")) },
-                then_: vec![N::Return(Some(E::Call {
-                    func: "list_push".into(),
-                    args: vec![getl("result"), ext(getl("s"))],
-                }))],
-                els: vec![],
-                result: None,
-            },
-            setl("start", i32c(0)),
-            setl("i", i32c(0)),
-            scan_loop,
-            setl("result", push_piece(getl("start"), b(BinOp::Sub, getl("slen"), getl("start")))),
-            N::Push(getl("result")),
-        ],
+        body: {
+            // pieces <= slen + 1, so reserve that many slots up front (a `with_capacity`) and
+            // CLAIM the region — each piece's `substr` then allocates above the buffer and never
+            // clobbers a written slot.
+            let cap_slots = b(BinOp::Mul, b(BinOp::Add, getl("slen"), i32c(1)), i32c(8));
+            let mut body = vec![
+                setl("slen", load(getl("s"))),
+                setl("seplen", load(getl("sep"))),
+                N::Do(E::Call { func: "ensure".into(), args: vec![b(BinOp::Add, i32c(4), cap_slots.clone())] }),
+                setl("result", E::GetGlobal("heap".into())),
+                N::SetGlobal {
+                    global: "heap".into(),
+                    value: b(BinOp::Add, b(BinOp::Add, getl("result"), i32c(4)), cap_slots),
+                },
+                setl("count", i32c(0)),
+                // empty sep -> [s]: slot 0 = s, length 1.
+                N::If {
+                    cond: E::Unary { op: UnOp::Not, kind: Kind::I32, arg: Box::new(getl("seplen")) },
+                    then_: vec![
+                        N::Store { ptr: getl("result"), value: ext(getl("s")), kind: Kind::I64, offset: 4 },
+                        N::Store { ptr: getl("result"), value: i32c(1), kind: Kind::I32, offset: 0 },
+                        N::Return(Some(getl("result"))),
+                    ],
+                    els: vec![],
+                    result: None,
+                },
+                setl("start", i32c(0)),
+                setl("i", i32c(0)),
+                scan_loop,
+            ];
+            // the trailing piece [start, slen), then write the real length.
+            body.extend(push_piece(getl("start"), b(BinOp::Sub, getl("slen"), getl("start"))));
+            body.push(N::Store { ptr: getl("result"), value: getl("count"), kind: Kind::I32, offset: 0 });
+            body.push(N::Push(getl("result")));
+            body
+        },
         raw_body: None,
     }
 }
@@ -2016,27 +2187,58 @@ pub fn str_chars_helper() -> WirFunc {
     let load = |p: E| E::Load { ptr: Box::new(p), kind: Kind::I32, offset: 0 };
     let setl = |n: &str, v: E| N::SetLocal { local: n.into(), value: v };
     let ext = |e: E| E::Convert { from: Kind::I32, to: Kind::I64, arg: Box::new(e) };
+    // seqlen = lead<0x80 ? 1 : lead<0xe0 ? 2 : lead<0xf0 ? 3 : 4 — the UTF-8 byte width of
+    // the character whose lead byte is `b` (same branching as `$char_to_byte`).
+    let seqlen = N::If {
+        cond: b(BinOp::LtU, getl("b"), i32c(0x80)),
+        then_: vec![setl("seqlen", i32c(1))],
+        els: vec![N::If {
+            cond: b(BinOp::LtU, getl("b"), i32c(0xe0)),
+            then_: vec![setl("seqlen", i32c(2))],
+            els: vec![N::If {
+                cond: b(BinOp::LtU, getl("b"), i32c(0xf0)),
+                then_: vec![setl("seqlen", i32c(3))],
+                els: vec![setl("seqlen", i32c(4))],
+                result: None,
+            }],
+            result: None,
+        }],
+        result: None,
+    };
+    // ONE pass over the UTF-8 BYTES, writing each char straight into a PRE-SIZED buffer.
+    // The character count is at most the byte length, so we reserve `byte_len` slots up front
+    // (a Rust `Vec::with_capacity`) and `i64.store` each `substr(s, bi, seqlen)` directly into
+    // the next slot — no per-char reallocation. The OLD body grew the list with the copying
+    // `$list_push` (a fresh `len+1` buffer + memcpy every char), so building the list was
+    // O(n^2); combined with the previous O(j) char-indexed read it was doubly quadratic. This
+    // matters because every text/JSON parser scans `string.chars(s)` then indexes it in O(1).
+    //
+    // The reservation claims the buffer region (bumps `$heap` past `byte_len` slots) BEFORE the
+    // loop, so the per-char `substr` allocations land ABOVE the buffer and never clobber a slot
+    // already written. Multibyte input leaves a few unused tail slots (count < byte_len); that
+    // slack is harmless and reclaimed when the bump pointer resets between calls.
     let scan_loop = N::Block {
         label: "done".into(),
         result: None,
         body: vec![N::Loop {
             label: "l".into(),
             body: vec![
-                N::Br { target: "done".into(), cond: Some(b(BinOp::Ge, getl("i"), getl("n"))) },
-                setl(
-                    "result",
-                    E::Call {
-                        func: "list_push".into(),
-                        args: vec![
-                            getl("result"),
-                            ext(E::Call {
-                                func: "str_substring".into(),
-                                args: vec![getl("s"), getl("i"), b(BinOp::Add, getl("i"), i32c(1))],
-                            }),
-                        ],
-                    },
-                ),
-                setl("i", b(BinOp::Add, getl("i"), i32c(1))),
+                N::Br { target: "done".into(), cond: Some(b(BinOp::Ge, getl("bi"), getl("slen"))) },
+                setl("b", E::Load8U { ptr: Box::new(b(BinOp::Add, getl("s"), getl("bi"))), offset: 4 }),
+                seqlen,
+                // result[count] = substr(s, bi, seqlen)  — the slot store's `offset: 4` skips the
+                // length header, so the effective address is `result + 4 + count*8`.
+                N::Store {
+                    ptr: b(BinOp::Add, getl("result"), b(BinOp::Mul, getl("count"), i32c(8))),
+                    value: ext(E::Call {
+                        func: "substr".into(),
+                        args: vec![getl("s"), getl("bi"), getl("seqlen")],
+                    }),
+                    kind: Kind::I64,
+                    offset: 4,
+                },
+                setl("count", b(BinOp::Add, getl("count"), i32c(1))),
+                setl("bi", b(BinOp::Add, getl("bi"), getl("seqlen"))),
                 N::Br { target: "l".into(), cond: None },
             ],
         }],
@@ -2045,18 +2247,28 @@ pub fn str_chars_helper() -> WirFunc {
         name: "str_chars".into(),
         params: vec![WirLocal { name: "s".into(), ty: WirTy::Str }],
         ret: vec![WirTy::Bool], // i32 list pointer
-        locals: ["n", "i", "result"]
+        locals: ["slen", "bi", "b", "seqlen", "count", "result"]
             .iter()
             .map(|n| WirLocal { name: (*n).into(), ty: WirTy::Bool })
             .collect(),
         body: vec![
-            setl("n", E::Call { func: "byte_to_char".into(), args: vec![getl("s"), load(getl("s"))] }),
-            N::Do(E::Call { func: "ensure".into(), args: vec![i32c(4)] }),
+            setl("slen", load(getl("s"))),
+            // Reserve header + `byte_len` slots (an upper bound on the char count) and CLAIM the
+            // region, so each char's `substr` allocates above it.
+            N::Do(E::Call {
+                func: "ensure".into(),
+                args: vec![b(BinOp::Add, i32c(4), b(BinOp::Mul, getl("slen"), i32c(8)))],
+            }),
             setl("result", E::GetGlobal("heap".into())),
-            N::Store { ptr: getl("result"), value: i32c(0), kind: Kind::I32, offset: 0 },
-            N::SetGlobal { global: "heap".into(), value: b(BinOp::Add, getl("result"), i32c(4)) },
-            setl("i", i32c(0)),
+            N::SetGlobal {
+                global: "heap".into(),
+                value: b(BinOp::Add, b(BinOp::Add, getl("result"), i32c(4)), b(BinOp::Mul, getl("slen"), i32c(8))),
+            },
+            setl("count", i32c(0)),
+            setl("bi", i32c(0)),
             scan_loop,
+            // The real length is the actual character count.
+            N::Store { ptr: getl("result"), value: getl("count"), kind: Kind::I32, offset: 0 },
             N::Push(getl("result")),
         ],
         raw_body: None,
@@ -2382,17 +2594,40 @@ pub fn dict_hash_helper() -> WirFunc {
     let b32 = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
     let b64 = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I64, lhs: Box::new(l), rhs: Box::new(r) };
     let setl = |n: &str, v: E| N::SetLocal { local: n.into(), value: v };
-    let fnv_loop = N::Block {
-        label: "done".into(),
+    // String hashing (mode 1): a foldhash-inspired word-at-a-time mix. Reads the
+    // bytes 8 at a time (an i64 word) and folds each into a 64-bit accumulator
+    // with a multiply + xorshift — far faster than byte-by-byte FNV-1a (one
+    // multiply per 8 bytes, not per byte) with better avalanche. WASM has no
+    // 128-bit `folded_multiply`, so this uses the native i64 multiply. The hash
+    // is internal to the dict's open-addressing index, so changing it only moves
+    // keys between slots — observable dict behavior is unchanged. Not
+    // DoS-resistant (fixed constants), which a value-semantic dict does not need.
+    let c1 = i64c(-49064778989728563i64); // 0xff51afd7ed558ccd (murmur3 fmix)
+    let word_loop = N::Block {
+        label: "wdone".into(),
         result: None,
         body: vec![N::Loop {
-            label: "l".into(),
+            label: "wl".into(),
             body: vec![
-                N::Br { target: "done".into(), cond: Some(b32(BinOp::Ge, getl("i"), getl("len"))) },
-                setl("h", b32(BinOp::Xor, getl("h"), E::Load8U { ptr: Box::new(b32(BinOp::Add, getl("p"), getl("i"))), offset: 4 })),
-                setl("h", b32(BinOp::Mul, getl("h"), i32c(16777619))),
+                N::Br { target: "wdone".into(), cond: Some(b32(BinOp::Gt, b32(BinOp::Add, getl("i"), i32c(8)), getl("len"))) },
+                setl("w", E::Load { ptr: Box::new(b32(BinOp::Add, getl("p"), getl("i"))), kind: Kind::I64, offset: 4 }),
+                setl("x", b64(BinOp::Mul, b64(BinOp::Xor, getl("x"), getl("w")), c1.clone())),
+                setl("x", b64(BinOp::Xor, getl("x"), b64(BinOp::ShrU, getl("x"), i64c(32)))),
+                setl("i", b32(BinOp::Add, getl("i"), i32c(8))),
+                N::Br { target: "wl".into(), cond: None },
+            ],
+        }],
+    };
+    let tail_loop = N::Block {
+        label: "tdone".into(),
+        result: None,
+        body: vec![N::Loop {
+            label: "tl".into(),
+            body: vec![
+                N::Br { target: "tdone".into(), cond: Some(b32(BinOp::Ge, getl("i"), getl("len"))) },
+                setl("x", b64(BinOp::Mul, b64(BinOp::Xor, getl("x"), E::Convert { from: Kind::I32, to: Kind::I64, arg: Box::new(E::Load8U { ptr: Box::new(b32(BinOp::Add, getl("p"), getl("i"))), offset: 4 }) }), c1.clone())),
                 setl("i", b32(BinOp::Add, getl("i"), i32c(1))),
-                N::Br { target: "l".into(), cond: None },
+                N::Br { target: "tl".into(), cond: None },
             ],
         }],
     };
@@ -2405,10 +2640,10 @@ pub fn dict_hash_helper() -> WirFunc {
         ret: vec![WirTy::Bool],
         locals: vec![
             WirLocal { name: "x".into(), ty: WirTy::Int },
+            WirLocal { name: "w".into(), ty: WirTy::Int },
             WirLocal { name: "p".into(), ty: WirTy::Bool },
             WirLocal { name: "len".into(), ty: WirTy::Bool },
             WirLocal { name: "i".into(), ty: WirTy::Bool },
-            WirLocal { name: "h".into(), ty: WirTy::Bool },
         ],
         body: vec![
             N::If {
@@ -2425,10 +2660,16 @@ pub fn dict_hash_helper() -> WirFunc {
             },
             setl("p", E::FromSlot(Box::new(getl("k")), Kind::I32)),
             setl("len", E::Load { ptr: Box::new(getl("p")), kind: Kind::I32, offset: 0 }),
-            setl("h", i32c(-2128831035)),
+            setl("x", i64c(-7046029254386353131i64)), // 0x9e3779b97f4a7c15 (golden-ratio seed)
             setl("i", i32c(0)),
-            fnv_loop,
-            N::Push(getl("h")),
+            word_loop,
+            tail_loop,
+            // Fold in the length, then a final avalanche so the low bits the
+            // open-addressing index masks (`& (slots-1)`) are well mixed.
+            setl("x", b64(BinOp::Xor, getl("x"), E::Convert { from: Kind::I32, to: Kind::I64, arg: Box::new(getl("len")) })),
+            setl("x", b64(BinOp::Mul, b64(BinOp::Xor, getl("x"), b64(BinOp::ShrU, getl("x"), i64c(32))), i64c(-4265267296055464877i64))),
+            setl("x", b64(BinOp::Xor, getl("x"), b64(BinOp::ShrU, getl("x"), i64c(29)))),
+            N::Push(E::FromSlot(Box::new(getl("x")), Kind::I32)),
         ],
         raw_body: None,
     }
@@ -2511,6 +2752,65 @@ pub fn dict_find_helper() -> WirFunc {
             setl("h", b(BinOp::And, E::Call { func: "dict_hash".into(), args: vec![getl("k"), getl("mode")] }, b(BinOp::Sub, getl("slots"), i32c(1)))),
             probe,
             N::Push(i32c(-1)),
+        ],
+        raw_body: None,
+    }
+}
+
+/// `$dict_index_put(idx, slots, e, k, mode) -> i32` — record that entry `e` lives
+/// at key `k` in the open-addressing hash index `idx` (slot holds `e+1`, with `0`
+/// meaning empty) by probing from `hash(k) & (slots-1)`. The index is always sized
+/// to ≥ 2× the dict's entry capacity, so it is never more than half full and an
+/// empty slot is always reached — the probe cannot loop forever. The returned i32
+/// is unused (a uniform value-returning helper so callers can invoke it via `$Do`).
+/// This is the maintenance side of [`dict_find_helper`]'s probe; keeping the index
+/// current turns dict insert/lookup from the linear-scan fallback into O(1).
+/// Void (like `$ensure`) so callers invoke it through `$Do` with no leftover
+/// stack value. Calls `$dict_hash`.
+pub fn dict_index_put_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    let i32c = E::ConstI32;
+    let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+    let setl = |n: &str, v: E| N::SetLocal { local: n.into(), value: v };
+    // slot pointer for the current probe position h: idx + 4 + h*4.
+    let sp = || b(BinOp::Add, b(BinOp::Add, getl("idx"), i32c(4)), b(BinOp::Mul, getl("h"), i32c(4)));
+    let store_and_exit = vec![
+        N::Store { ptr: sp(), value: b(BinOp::Add, getl("e"), i32c(1)), kind: Kind::I32, offset: 0 },
+        N::Br { target: "done".into(), cond: None },
+    ];
+    let probe = N::Block {
+        label: "done".into(),
+        result: None,
+        body: vec![N::Loop {
+            label: "p".into(),
+            body: vec![
+                N::If {
+                    cond: E::Unary { op: UnOp::Not, kind: Kind::I32, arg: Box::new(E::Load { ptr: Box::new(sp()), kind: Kind::I32, offset: 0 }) },
+                    then_: store_and_exit,
+                    els: vec![],
+                    result: None,
+                },
+                setl("h", b(BinOp::And, b(BinOp::Add, getl("h"), i32c(1)), b(BinOp::Sub, getl("slots"), i32c(1)))),
+                N::Br { target: "p".into(), cond: None },
+            ],
+        }],
+    };
+    WirFunc {
+        name: "dict_index_put".into(),
+        params: vec![
+            WirLocal { name: "idx".into(), ty: WirTy::Bool },
+            WirLocal { name: "slots".into(), ty: WirTy::Bool },
+            WirLocal { name: "e".into(), ty: WirTy::Bool },
+            WirLocal { name: "k".into(), ty: WirTy::Int },
+            WirLocal { name: "mode".into(), ty: WirTy::Bool },
+        ],
+        ret: vec![],
+        locals: vec![WirLocal { name: "h".into(), ty: WirTy::Bool }],
+        body: vec![
+            setl("h", b(BinOp::And, E::Call { func: "dict_hash".into(), args: vec![getl("k"), getl("mode")] }, b(BinOp::Sub, getl("slots"), i32c(1)))),
+            probe,
         ],
         raw_body: None,
     }
@@ -2649,6 +2949,24 @@ pub fn dict_insert_cap_helper() -> WirFunc {
         N::Store { ptr: entry("d", "count"), value: getl("k"), kind: Kind::I64, offset: 4 },
         N::Store { ptr: entry("d", "count"), value: getl("v"), kind: Kind::I64, offset: 12 },
         N::Store { ptr: getl("d"), value: b(BinOp::Add, getl("count"), i32c(1)), kind: Kind::I32, offset: 0 },
+        // Record the new entry (index == the old `count`) in the hash index. The
+        // index was built at the last grow sized ≥ 2× cap, so it has a free slot.
+        N::SetLocal { local: "idx".into(), value: E::Load { ptr: Box::new(b(BinOp::Sub, getl("d"), i32c(4))), kind: Kind::I32, offset: 0 } },
+        N::If {
+            cond: getl("idx"),
+            then_: vec![N::Do(E::Call {
+                func: "dict_index_put".into(),
+                args: vec![
+                    getl("idx"),
+                    E::Load { ptr: Box::new(getl("idx")), kind: Kind::I32, offset: 0 },
+                    getl("count"),
+                    getl("k"),
+                    getl("mode"),
+                ],
+            })],
+            els: vec![],
+            result: None,
+        },
         N::SetLocal { local: "ret_ptr".into(), value: getl("d") },
         N::SetLocal { local: "ret_cap".into(), value: getl("cap") },
     ];
@@ -2686,6 +3004,53 @@ pub fn dict_insert_cap_helper() -> WirFunc {
             ],
             result: None,
         },
+        // Build a fresh hash index for the copied buffer, sized to the smallest
+        // power of two ≥ 2× newcap (and ≥ 16) so subsequent in-place appends into
+        // the slack never overflow it (load factor stays ≤ 0.5). Populated by
+        // probing every live entry; this O(count) build amortizes against the copy.
+        N::SetLocal { local: "icount".into(), value: E::Load { ptr: Box::new(getl("new")), kind: Kind::I32, offset: 0 } },
+        N::SetLocal { local: "islots".into(), value: i32c(16) },
+        N::Block {
+            label: "isz".into(),
+            result: None,
+            body: vec![N::Loop {
+                label: "isl".into(),
+                body: vec![
+                    N::Br { target: "isz".into(), cond: Some(b(BinOp::Ge, getl("islots"), b(BinOp::Mul, getl("newcap"), i32c(2)))) },
+                    N::SetLocal { local: "islots".into(), value: b(BinOp::Mul, getl("islots"), i32c(2)) },
+                    N::Br { target: "isl".into(), cond: None },
+                ],
+            }],
+        },
+        N::Do(E::Call { func: "ensure".into(), args: vec![b(BinOp::Add, i32c(4), b(BinOp::Mul, getl("islots"), i32c(4)))] }),
+        N::SetLocal { local: "iptr".into(), value: E::GetGlobal("heap".into()) },
+        N::SetGlobal { global: "heap".into(), value: b(BinOp::Add, getl("iptr"), b(BinOp::Add, i32c(4), b(BinOp::Mul, getl("islots"), i32c(4)))) },
+        N::Store { ptr: getl("iptr"), value: getl("islots"), kind: Kind::I32, offset: 0 },
+        N::MemoryFill { dest: b(BinOp::Add, getl("iptr"), i32c(4)), value: i32c(0), len: b(BinOp::Mul, getl("islots"), i32c(4)) },
+        N::Store { ptr: b(BinOp::Sub, getl("new"), i32c(4)), value: getl("iptr"), kind: Kind::I32, offset: 0 },
+        N::SetLocal { local: "ie".into(), value: i32c(0) },
+        N::Block {
+            label: "ipd".into(),
+            result: None,
+            body: vec![N::Loop {
+                label: "ipl".into(),
+                body: vec![
+                    N::Br { target: "ipd".into(), cond: Some(b(BinOp::Ge, getl("ie"), getl("icount"))) },
+                    N::Do(E::Call {
+                        func: "dict_index_put".into(),
+                        args: vec![
+                            getl("iptr"),
+                            getl("islots"),
+                            getl("ie"),
+                            E::Load { ptr: Box::new(entry("new", "ie")), kind: Kind::I64, offset: 4 },
+                            getl("mode"),
+                        ],
+                    }),
+                    N::SetLocal { local: "ie".into(), value: b(BinOp::Add, getl("ie"), i32c(1)) },
+                    N::Br { target: "ipl".into(), cond: None },
+                ],
+            }],
+        },
         N::SetLocal { local: "ret_ptr".into(), value: getl("new") },
         N::SetLocal { local: "ret_cap".into(), value: getl("newcap") },
     ];
@@ -2699,7 +3064,7 @@ pub fn dict_insert_cap_helper() -> WirFunc {
             WirLocal { name: "cap".into(), ty: WirTy::Bool },
         ],
         ret: vec![WirTy::Bool, WirTy::Bool],
-        locals: ["count", "found", "new", "bytes", "newcap", "ret_ptr", "ret_cap"]
+        locals: ["count", "found", "new", "bytes", "newcap", "ret_ptr", "ret_cap", "idx", "islots", "icount", "iptr", "ie"]
             .iter()
             .map(|n| WirLocal { name: (*n).into(), ty: WirTy::Bool })
             .collect(),
@@ -3388,6 +3753,38 @@ pub fn dir_read_helper() -> WirFunc {
         ],
         body: vec![
             N::SetLocal { local: "len".into(), value: E::CallHost { import: "dir_read_len".into(), args: vec![getl("h"), getl("rel")] } },
+            N::Do(E::Call { func: "ensure".into(), args: vec![b(BinOp::Add, getl("len"), i32c(4))] }),
+            N::SetLocal { local: "res".into(), value: E::GetGlobal("heap".into()) },
+            N::Store { ptr: getl("res"), value: getl("len"), kind: Kind::I32, offset: 0 },
+            N::Do(E::CallHost { import: "fill_pending".into(), args: vec![b(BinOp::Add, getl("res"), i32c(4))] }),
+            N::SetGlobal { global: "heap".into(), value: b(BinOp::Add, b(BinOp::Add, getl("res"), i32c(4)), getl("len")) },
+            N::Push(getl("res")),
+        ],
+        raw_body: None,
+    }
+}
+
+/// `$file_read(f) -> i32` — the contents of file handle `f` as a String (RFC-0012).
+/// A `File` is a leaf (no path), so this takes only the handle. Two-phase host
+/// protocol identical to [`dir_read_helper`]: `file_read_len` reads the file and
+/// reports its byte length (staging the bytes host-side), then `fill_pending`
+/// copies the staged bytes into `res+4`. Needs a `File[Read]` capability.
+pub fn file_read_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    let i32c = E::ConstI32;
+    let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+    WirFunc {
+        name: "file_read".into(),
+        params: vec![WirLocal { name: "f".into(), ty: WirTy::Bool }],
+        ret: vec![WirTy::Str],
+        locals: vec![
+            WirLocal { name: "len".into(), ty: WirTy::Bool },
+            WirLocal { name: "res".into(), ty: WirTy::Bool },
+        ],
+        body: vec![
+            N::SetLocal { local: "len".into(), value: E::CallHost { import: "file_read_len".into(), args: vec![getl("f")] } },
             N::Do(E::Call { func: "ensure".into(), args: vec![b(BinOp::Add, getl("len"), i32c(4))] }),
             N::SetLocal { local: "res".into(), value: E::GetGlobal("heap".into()) },
             N::Store { ptr: getl("res"), value: getl("len"), kind: Kind::I32, offset: 0 },
@@ -4164,6 +4561,13 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             uses_heap: true,
             uses_table: false,
         }),
+        "compiler_doc" => Some(WirHelperSpec {
+            func: compiler_introspect_helper("compiler_doc", "compiler_doc_len", 2),
+            helper_deps: &["ensure"],
+            import_deps: &["compiler_doc_len", "fill_pending"],
+            uses_heap: true,
+            uses_table: false,
+        }),
         "now" => Some(WirHelperSpec {
             func: host_call_helper_ret("now", "now", 0, WirTy::Int),
             helper_deps: &[],
@@ -4175,6 +4579,30 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             func: host_call_helper("dir_subdir", "dir_subdir", 2),
             helper_deps: &[],
             import_deps: &["dir_subdir"],
+            uses_heap: false,
+            uses_table: false,
+        }),
+        // RFC-0012: `dir.open`/`dir.create` navigate a Dir to a confined File
+        // handle (i32); `file_write` writes a File handle (void). Each wraps its
+        // host import so user code stays free of direct CallHosts.
+        "dir_open" => Some(WirHelperSpec {
+            func: host_call_helper("dir_open", "dir_open", 2),
+            helper_deps: &[],
+            import_deps: &["dir_open"],
+            uses_heap: false,
+            uses_table: false,
+        }),
+        "dir_create" => Some(WirHelperSpec {
+            func: host_call_helper("dir_create", "dir_create", 2),
+            helper_deps: &[],
+            import_deps: &["dir_create"],
+            uses_heap: false,
+            uses_table: false,
+        }),
+        "file_write" => Some(WirHelperSpec {
+            func: host_void_helper("file_write", "file_write", 2),
+            helper_deps: &[],
+            import_deps: &["file_write"],
             uses_heap: false,
             uses_table: false,
         }),
@@ -4426,6 +4854,13 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             uses_heap: true,
             uses_table: false,
         }),
+        "file_read" => Some(WirHelperSpec {
+            func: file_read_helper(),
+            helper_deps: &["ensure"],
+            import_deps: &["file_read_len", "fill_pending"],
+            uses_heap: true,
+            uses_table: false,
+        }),
         "exec" => Some(WirHelperSpec {
             func: exec_helper(),
             helper_deps: &["ensure"],
@@ -4533,9 +4968,16 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
         }),
         "dict_insert_cap" => Some(WirHelperSpec {
             func: dict_insert_cap_helper(),
-            helper_deps: &["dict_find", "ensure"],
+            helper_deps: &["dict_find", "ensure", "dict_index_put"],
             import_deps: &[],
             uses_heap: true,
+            uses_table: false,
+        }),
+        "dict_index_put" => Some(WirHelperSpec {
+            func: dict_index_put_helper(),
+            helper_deps: &["dict_hash"],
+            import_deps: &[],
+            uses_heap: false,
             uses_table: false,
         }),
         "str_append_cap" => Some(WirHelperSpec {
@@ -4544,6 +4986,20 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             import_deps: &[],
             uses_heap: true,
             uses_table: false,
+        }),
+        "list_set_cap" => Some(WirHelperSpec {
+            func: list_set_cap_helper(),
+            helper_deps: &["ensure"],
+            import_deps: &[],
+            uses_heap: true,
+            uses_table: false,
+        }),
+        "list_update_cap" => Some(WirHelperSpec {
+            func: list_update_cap_helper(),
+            helper_deps: &["ensure"],
+            import_deps: &[],
+            uses_heap: true,
+            uses_table: true,
         }),
         "dict_update_cap" => Some(WirHelperSpec {
             func: dict_update_cap_helper(),

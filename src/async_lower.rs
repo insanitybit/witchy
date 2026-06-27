@@ -225,7 +225,6 @@ impl Ctx {
                 let body = Expr::Block(Block {
                     stmts: vec![destructure, Stmt::Expr(k)],
                     lines: vec![0, 0],
-                    restrict: None,
                     region: None,
                 });
                 Ok(and_then(inner.clone(), tmp, body))
@@ -462,7 +461,6 @@ fn prefix_stmt(head: Stmt, k: Expr) -> Expr {
     Expr::Block(Block {
         stmts: vec![head, Stmt::Expr(k)],
         lines: vec![0, 0],
-        restrict: None,
         region: None,
     })
 }
@@ -474,5 +472,5 @@ fn call(name: &str, args: Vec<Expr>) -> Expr {
 /// A single-expression block (the body shape for a function/branch whose value is
 /// exactly `e`).
 fn tail_block(e: Expr) -> Block {
-    Block { stmts: vec![Stmt::Expr(e)], lines: vec![0], restrict: None, region: None }
+    Block { stmts: vec![Stmt::Expr(e)], lines: vec![0], region: None }
 }

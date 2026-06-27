@@ -128,7 +128,6 @@ fn derive_via_comptime(generator: &str, t: &TypeDef) -> Item {
     Item::Comptime(Block {
         stmts: vec![Stmt::Expr(emit)],
         lines: vec![0],
-        restrict: None,
         region: None,
     })
 }

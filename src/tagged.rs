@@ -331,7 +331,6 @@ fn expand_one(
                     args: vec![Expr::Var("console".into()), Expr::Var("line".into())],
                 })],
                 lines: vec![0],
-                restrict: None,
                 region: None,
             },
             ret: None,
@@ -356,7 +355,6 @@ fn expand_one(
         body: Block {
             stmts: vec![emit_closure, emit_call],
             lines: vec![0, 0],
-            restrict: None,
             region: None,
         },
         bounds: Vec::new(),
@@ -502,7 +500,6 @@ fn parse_hole(
         Ok(Expr::Block(Block {
             stmts: vec![Stmt::Expr(inner)],
             lines: vec![line],
-            restrict: None,
             region: None,
         }))
     }

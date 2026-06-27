@@ -69,7 +69,7 @@ const BUILTINS: &[&str] = &[
     // Capability operations (authority is loud and unprefixed) + the two
     // universal staples. Pure data operations live in their modules
     // (list./string./dict./math., offered via the prelude completion below).
-    "print", "now", "get_env", "read", "write", "append", "exists", "is_dir", "list", "subdir",
+    "print", "now", "get_env", "read", "write", "append", "exists", "is_dir", "list", "subtree", "read_file", "write_file",
     "make_dir", "exec", "connect", "try_connect", "listen", "accept", "send_line", "send_bytes", "recv_line",
     "recv_all", "recv_bytes", "close", "restrict", "send", "fail",
 ];

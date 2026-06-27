@@ -15,8 +15,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 use crate::ast::{
-    self, Block, CapRestrict, Convention, Expr, Function, Item, MatchArm, Module, Pattern,
-    RestrictMode, Stmt, UnOp,
+    self, Block, Convention, Expr, Function, Item, MatchArm, Module, Pattern, Stmt, UnOp,
 };
 
 /// The operations a `Dir` capability permits. Decomposing the capability by
@@ -53,6 +52,52 @@ fn dir_rights(args: &[ast::Type]) -> DirRights {
         return DirRights::full();
     }
     let mut r = DirRights { read: false, write: false };
+    for a in args {
+        if let ast::Type::Named(n, _) = a {
+            match n.as_str() {
+                "Read" => r.read = true,
+                "Write" => r.write = true,
+                _ => {}
+            }
+        }
+    }
+    r
+}
+
+/// The operations a `File` capability permits — the *leaf* of the same hierarchy
+/// as `Dir` (authority to one file vs. one subtree, RFC-0012). Mirrors `DirRights`:
+/// a `File` carries no path-scope to refine (it is already a leaf), so its only
+/// refinement axis is its rights. (`Exec` — folding ambient `Exec` into
+/// `File[Exec]` — is a later addition; today a `File` is read/write.)
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FileRights {
+    pub read: bool,
+    pub write: bool,
+}
+
+impl FileRights {
+    pub fn full() -> Self {
+        FileRights { read: true, write: true }
+    }
+}
+
+impl fmt::Display for FileRights {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match (self.read, self.write) {
+            (true, true) => write!(f, "File"),
+            (true, false) => write!(f, "File[Read]"),
+            (false, true) => write!(f, "File[Write]"),
+            (false, false) => write!(f, "File[]"),
+        }
+    }
+}
+
+/// Interpret a `File`'s type arguments as its rights (bare `File` is the full set).
+fn file_rights(args: &[ast::Type]) -> FileRights {
+    if args.is_empty() {
+        return FileRights::full();
+    }
+    let mut r = FileRights { read: false, write: false };
     for a in args {
         if let ast::Type::Named(n, _) = a {
             match n.as_str() {
@@ -178,6 +223,7 @@ pub enum Ty {
     /// "you can only execute a file you can read". See rfcs/0004-self-hosted-cli.md.
     Exec,
     Dir(DirRights),
+    File(FileRights),
     Net(NetRights),
     Socket,
     Listener,
@@ -215,6 +261,7 @@ impl fmt::Display for Ty {
             Ty::Secret => write!(f, "Secret"),
             Ty::Exec => write!(f, "Exec"),
             Ty::Dir(r) => write!(f, "{r}"),
+            Ty::File(r) => write!(f, "{r}"),
             Ty::Net(r) => write!(f, "{r}"),
             Ty::Socket => write!(f, "Socket"),
             Ty::Listener => write!(f, "Listener"),
@@ -335,8 +382,8 @@ fn check_unique_functions(module: &Module) -> Result<(), TypeError> {
 /// or be a lowercase generic parameter.
 const BUILTIN_TYPE_NAMES: &[&str] = &[
     "Int", "Float", "Duration", "String", "Bool", "Nil", "Console", "Clock", "Env", "Secret",
-    "SecretStore", "Dir", "Net", "Exec", "Socket", "Listener", "List", "Option", "Result", "Dict",
-    "BuildOut", "BuildRead", "BuildEnv", "BuildNet", "BuildExec",
+    "SecretStore", "Dir", "File", "Net", "Exec", "Socket", "Listener", "List", "Option", "Result",
+    "Dict", "BuildOut", "BuildRead", "BuildEnv", "BuildNet", "BuildExec",
 ];
 
 /// Validate that every named type in `t` is known — a builtin, a declared type,
@@ -350,9 +397,9 @@ fn validate_type(t: &ast::Type, known: &HashSet<&str>) -> Result<(), TypeError> 
             validate_type(ret, known)
         }
         ast::Type::Named(n, args) => {
-            // `Dir`/`Net` carry capability *rights* (`Dir[Read]`, `Net[Connect]`)
-            // in their arguments, not types — those are checked elsewhere.
-            if n == "Dir" || n == "Net" {
+            // `Dir`/`File`/`Net` carry capability *rights* (`Dir[Read]`,
+            // `Net[Connect]`) in their arguments, not types — checked elsewhere.
+            if n == "Dir" || n == "File" || n == "Net" {
                 return Ok(());
             }
             if known.contains(n.as_str()) {
@@ -412,7 +459,7 @@ fn check_type_names(module: &Module) -> Result<(), TypeError> {
 /// authority (the rights of `Dir`/`Net` don't matter here — any are grantable).
 pub(crate) fn is_capability_type(t: &ast::Type) -> bool {
     matches!(t, ast::Type::Named(n, _)
-        if matches!(n.as_str(), "Console" | "Clock" | "Env" | "Dir" | "Net" | "Exec" | "Secret" | "SecretStore"))
+        if matches!(n.as_str(), "Console" | "Clock" | "Env" | "Dir" | "File" | "Net" | "Exec" | "Secret" | "SecretStore"))
 }
 
 /// Whether `t` is a *build-time* capability — the parallel set granted only to a
@@ -699,6 +746,11 @@ struct Checker {
     /// type may mention the parameters, which are instantiated with the value's
     /// actual type arguments on access.
     record_fields: HashMap<String, RecordInfo>,
+    /// Sealed record capabilities (`capability X:` with named fields). Their
+    /// fields are opaque: `.field` access is rejected so the only way to reach a
+    /// carried capability is `match`, which the linker confines to the home
+    /// module — otherwise an alias would leak the underlying authority.
+    sealed_types: HashSet<String>,
     adt_variants: HashMap<String, Vec<String>>,
     fn_conventions: HashMap<String, Vec<Convention>>,
     /// Per-function type parameters (name, var id), from lowercase type names in
@@ -708,12 +760,6 @@ struct Checker {
     next_var: u32,
     /// Each binding carries its type and whether it is mutable.
     scopes: Vec<HashMap<String, (Ty, bool)>>,
-    /// Parallel to `scopes`: names hidden in each frame by a `retain`/`without`
-    /// capability firewall. A lookup that reaches a hidden name in a frame stops
-    /// as if the name were unbound, even if an outer frame still defines it — so a
-    /// block can be sealed against capabilities its callers might hold. An inner
-    /// re-binding (a fresh `let`) shadows the tombstone normally.
-    hidden: Vec<HashSet<String>>,
     /// Bindings that have been consumed (moved out via an `own` parameter) and
     /// may not be used again until reassigned. Flow-sensitive within a body.
     consumed: HashSet<String>,
@@ -765,6 +811,7 @@ impl Checker {
             "Secret" => Ty::Secret,
             "Exec" => Ty::Exec,
             "Dir" => Ty::Dir(dir_rights(args)),
+            "File" => Ty::File(file_rights(args)),
             "Net" => Ty::Net(net_rights(args)),
             "Socket" => Ty::Socket,
             "Listener" => Ty::Listener,
@@ -809,6 +856,7 @@ impl Checker {
             "Secret" => Ty::Secret,
                 "Exec" => Ty::Exec,
                 "Dir" => Ty::Dir(dir_rights(args)),
+                "File" => Ty::File(file_rights(args)),
                 "Net" => Ty::Net(net_rights(args)),
                 "Socket" => Ty::Socket,
                 "Listener" => Ty::Listener,
@@ -957,33 +1005,22 @@ impl Checker {
     // --- scope helpers ---
     fn push(&mut self) {
         self.scopes.push(HashMap::new());
-        self.hidden.push(HashSet::new());
     }
     fn pop(&mut self) {
         self.scopes.pop();
-        self.hidden.pop();
     }
     fn define(&mut self, name: String, ty: Ty, mutable: bool) {
-        // A fresh binding un-hides the name in this frame: re-declaring a name
-        // that an outer firewall dropped is a legitimate shadow, not a leak.
-        if let Some(h) = self.hidden.last_mut() {
-            h.remove(&name);
-        }
         if let Some(r) = self.region_locals.last_mut() {
             r.insert(name.clone());
         }
         self.scopes.last_mut().unwrap().insert(name, (ty, mutable));
     }
     /// Walk frames inner→outer, returning the binding at the first frame that
-    /// either defines or *hides* the name. Hiding wins (returns `None`) even when
-    /// an outer frame still defines the name — that is the firewall.
+    /// defines the name (inner bindings shadow outer ones).
     fn resolve_binding(&self, name: &str) -> Option<&(Ty, bool)> {
-        for (vars, hidden) in self.scopes.iter().rev().zip(self.hidden.iter().rev()) {
+        for vars in self.scopes.iter().rev() {
             if let Some(b) = vars.get(name) {
                 return Some(b);
-            }
-            if hidden.contains(name) {
-                return None;
             }
         }
         None
@@ -993,121 +1030,6 @@ impl Checker {
     }
     fn is_mutable(&self, name: &str) -> Option<bool> {
         self.resolve_binding(name).map(|(_, m)| *m)
-    }
-    /// True if `name` is currently hidden by a firewall frame that no closer
-    /// frame re-binds — used only to give a precise diagnostic (the name is in
-    /// scope, just walled off) instead of a bare "unbound variable".
-    fn is_firewalled(&self, name: &str) -> bool {
-        for (vars, hidden) in self.scopes.iter().rev().zip(self.hidden.iter().rev()) {
-            if vars.contains_key(name) {
-                return false;
-            }
-            if hidden.contains(name) {
-                return true;
-            }
-        }
-        false
-    }
-
-    /// Is `t` one of the capability types (the unforgeable authority values)?
-    fn is_capability(&self, t: &Ty) -> bool {
-        matches!(
-            self.resolve(t),
-            Ty::Console
-                | Ty::Clock
-                | Ty::Env
-                | Ty::Secret
-                | Ty::Exec
-                | Ty::Dir(_)
-                | Ty::Net(_)
-                | Ty::Socket
-                | Ty::Listener
-                | Ty::BuildOut
-                | Ty::BuildRead
-                | Ty::BuildEnv
-                | Ty::BuildNet
-                | Ty::BuildExec
-        )
-    }
-
-    /// Names currently bound to a capability and still visible (not already
-    /// firewalled by an enclosing block). Inner bindings shadow outer ones.
-    fn visible_capabilities(&self) -> Vec<String> {
-        let mut seen = HashSet::new();
-        let mut caps = Vec::new();
-        for scope in self.scopes.iter().rev() {
-            for name in scope.keys() {
-                if !seen.insert(name.clone()) {
-                    continue;
-                }
-                if let Some(t) = self.lookup(name) {
-                    if self.is_capability(&t) {
-                        caps.push(name.clone());
-                    }
-                }
-            }
-        }
-        caps
-    }
-
-    /// Apply a `retain`/`without` firewall to the current (just-pushed) block
-    /// frame: record the dropped capability names in the frame's hidden-set so
-    /// later lookups inside the block treat them as unbound. Every named
-    /// capability must actually be a visible capability — naming a non-capability
-    /// or an out-of-scope name is an error, since it almost certainly means the
-    /// author misremembered what authority the block holds.
-    fn apply_restrict(&mut self, r: &CapRestrict) -> Result<(), TypeError> {
-        let visible = self.visible_capabilities();
-        let visible_set: HashSet<&str> = visible.iter().map(String::as_str).collect();
-        for name in &r.names {
-            if !visible_set.contains(name.as_str()) {
-                let (kw, verb) = match r.mode {
-                    RestrictMode::Retain => ("retain", "retain"),
-                    RestrictMode::Without => ("without", "drop"),
-                };
-                let msg = if self.lookup(name).is_some() {
-                    format!("`{name}` is not a capability, so it can't appear in a `{kw}` block")
-                } else {
-                    let mut msg = format!("no capability `{name}` is in scope to {verb} here");
-                    // A capitalized name is probably the capability's TYPE
-                    // (`without Dir:`) — point at the binding of that type.
-                    if name.chars().next().is_some_and(|c| c.is_uppercase()) {
-                        let same_type: Vec<&String> = visible
-                            .iter()
-                            .filter(|b| {
-                                self.lookup(b).is_some_and(|t| {
-                                    let shown = t.to_string();
-                                    shown == *name
-                                        || shown
-                                            .split(['[', '('])
-                                            .next()
-                                            .is_some_and(|head| head == name)
-                                })
-                            })
-                            .collect();
-                        if let [binding] = same_type.as_slice() {
-                            msg.push_str(&format!(
-                                " — `{kw}` names the binding, not its type; did you mean `{binding}`?"
-                            ));
-                        }
-                    }
-                    msg
-                };
-                return terr(msg);
-            }
-        }
-        let to_hide: Vec<String> = match r.mode {
-            RestrictMode::Without => r.names.clone(),
-            RestrictMode::Retain => {
-                let keep: HashSet<&str> = r.names.iter().map(String::as_str).collect();
-                visible.into_iter().filter(|c| !keep.contains(c.as_str())).collect()
-            }
-        };
-        let frame = self.hidden.last_mut().unwrap();
-        for n in to_hide {
-            frame.insert(n);
-        }
-        Ok(())
     }
 
     fn call_sig(&mut self, name: &str) -> Option<(Vec<Ty>, Ty)> {
@@ -1283,6 +1205,61 @@ impl Checker {
         }
     }
 
+    /// Resolve a call's first argument as a `File` capability and yield its rights.
+    /// An unconstrained variable defaults to the full right-set (bare `File`).
+    fn file_cap_rights(&mut self, name: &str, arg: &Expr) -> Result<FileRights, TypeError> {
+        let cap = self.infer(arg)?;
+        match self.resolve(&cap) {
+            Ty::File(r) => Ok(r),
+            Ty::Var(_) => {
+                self.unify(&cap, &Ty::File(FileRights::full()))?;
+                Ok(FileRights::full())
+            }
+            other => terr(format!(
+                "`{name}` expects a `File` capability but got `{other}`"
+            )),
+        }
+    }
+
+    /// Type-check a file-capability op (RFC-0012). A `File` is a leaf, so its ops
+    /// take no path: `read(f: File[Read]) -> String` (arity 1) and
+    /// `write(f: File[Write], data) -> Nil` (arity 2). Returns `Ok(None)` when the
+    /// name/arity isn't a File op, so the Dir forms (`read(dir, path)` etc.) fall
+    /// through — `read`/`write` are disambiguated from `Dir` by arity.
+    fn check_file_op(&mut self, name: &str, args: &[Expr]) -> Result<Option<Ty>, TypeError> {
+        let arity = match name {
+            "read" => 1,
+            "write" => 2,
+            _ => return Ok(None),
+        };
+        if args.len() != arity {
+            return Ok(None);
+        }
+        let rights = self.file_cap_rights(name, &args[0])?;
+        for arg in &args[1..] {
+            let at = self.infer(arg)?;
+            self.unify(&Ty::String, &at).map_err(|e| TypeError {
+                message: format!("in call to `{name}`: {}", e.message),
+            })?;
+        }
+        let ret = match name {
+            "read" => {
+                if !rights.read {
+                    return terr(format!("`read` needs `Read` but the file is `{rights}`"));
+                }
+                Ty::String
+            }
+            "write" => {
+                if !rights.write {
+                    return terr(format!("`write` needs `Write` but the file is `{rights}`"));
+                }
+                Ty::Nil
+            }
+            _ => unreachable!(),
+        };
+        Ok(Some(ret))
+    }
+
     /// Type-check a directory-capability op, enforcing that the `Dir`'s rights
     /// permit the verb: `read`/`exists`/`subdir`/`list` need `Read`; `write`/
     /// `append`/`make_dir` need `Write`. (Narrowing is done with the `as`
@@ -1334,7 +1311,7 @@ impl Checker {
     fn check_dir_op(&mut self, name: &str, args: &[Expr]) -> Result<Option<Ty>, TypeError> {
         let arity = match name {
             "list" => 1,
-            "read" | "exists" | "is_dir" | "subdir" | "make_dir" => 2,
+            "read" | "exists" | "is_dir" | "subtree" | "make_dir" | "read_file" | "write_file" => 2,
             "write" | "append" => 3,
             _ => return Ok(None),
         };
@@ -1375,10 +1352,10 @@ impl Checker {
                 }
                 Ty::Bool
             }
-            "subdir" => {
+            "subtree" => {
                 if !rights.read {
                     return terr(format!(
-                        "`subdir` needs `Read` but the capability is `{rights}`"
+                        "`{name}` needs `Read` but the capability is `{rights}`"
                     ));
                 }
                 Ty::Dir(rights)
@@ -1404,6 +1381,25 @@ impl Checker {
                     ));
                 }
                 Ty::Nil
+            }
+            // RFC-0012 navigation: a `Dir` opens a confined `File` (the leaf). The
+            // name states the conferred right: `read_file` needs `Read` and yields
+            // `File[Read]`; `write_file` needs `Write` and yields `File[Write]`.
+            "read_file" => {
+                if !rights.read {
+                    return terr(format!(
+                        "`read_file` needs `Read` but the capability is `{rights}`"
+                    ));
+                }
+                Ty::File(FileRights { read: true, write: false })
+            }
+            "write_file" => {
+                if !rights.write {
+                    return terr(format!(
+                        "`write_file` needs `Write` but the capability is `{rights}`"
+                    ));
+                }
+                Ty::File(FileRights { read: false, write: true })
             }
             _ => unreachable!(),
         };
@@ -1553,6 +1549,7 @@ impl Checker {
         let resolved = self.resolve(src);
         let ok = match (&resolved, target) {
             (Ty::Dir(s), Ty::Dir(t)) => (!t.read || s.read) && (!t.write || s.write),
+            (Ty::File(s), Ty::File(t)) => (!t.read || s.read) && (!t.write || s.write),
             (Ty::Net(s), Ty::Net(t)) => {
                 (!t.connect || s.connect)
                     && (!t.listen || s.listen)
@@ -1563,7 +1560,7 @@ impl Checker {
             (Ty::Console, Ty::Console) => true,
             (Ty::Exec, Ty::Exec) => true,
             // An unconstrained source: pin it to the ascribed capability.
-            (Ty::Var(_), Ty::Dir(_) | Ty::Net(_) | Ty::Console | Ty::Exec) => {
+            (Ty::Var(_), Ty::Dir(_) | Ty::File(_) | Ty::Net(_) | Ty::Console | Ty::Exec) => {
                 return self.unify(src, target).map_err(|e| TypeError {
                     message: format!("in `as` ascription: {}", e.message),
                 });
@@ -1593,6 +1590,7 @@ impl Checker {
         let coercible = match (self.resolve(expected), self.resolve(actual)) {
             // `want`'s rights must be a subset of what the argument `has`.
             (Ty::Dir(want), Ty::Dir(has)) => (!want.read || has.read) && (!want.write || has.write),
+            (Ty::File(want), Ty::File(has)) => (!want.read || has.read) && (!want.write || has.write),
             (Ty::Net(want), Ty::Net(has)) => {
                 (!want.connect || has.connect)
                     && (!want.listen || has.listen)
@@ -1634,12 +1632,6 @@ impl Checker {
 
     fn infer_block_inner(&mut self, block: &Block) -> Result<Ty, TypeError> {
         self.push();
-        if let Some(r) = &block.restrict {
-            if let Err(e) = self.apply_restrict(r) {
-                self.pop();
-                return Err(e);
-            }
-        }
         let mut ty = Ty::Nil;
         for (i, stmt) in block.stmts.iter().enumerate() {
             if let Some(line) = block.lines.get(i) {
@@ -1842,11 +1834,6 @@ impl Checker {
                     let (params, ret) = self.instantiate(&params, &ret, &typarams);
                     return Ok(Ty::Fn(params, Box::new(ret)));
                 }
-                if self.is_firewalled(name) {
-                    return terr(format!(
-                        "`{name}` is walled off in this block by a `retain`/`without` and can't be used here"
-                    ));
-                }
                 terr(format!("unbound variable `{name}`"))
             }
             Expr::Lambda { params, body, ret } => {
@@ -1922,6 +1909,9 @@ impl Checker {
                         }
                         _ => {} // a non-function local with this name: fall through
                     }
+                }
+                if let Some(t) = self.check_file_op(name, args)? {
+                    return Ok(t);
                 }
                 if let Some(t) = self.check_dir_op(name, args)? {
                     return Ok(t);
@@ -2130,6 +2120,12 @@ impl Checker {
                         "field access `.{field}` requires a record, found `{resolved}`"
                     ));
                 };
+                if self.sealed_types.contains(tyname) {
+                    return terr(format!(
+                        "`{tyname}` is a sealed capability — its fields are private; \
+                         destructure it with `match` inside its own module"
+                    ));
+                }
                 let Some((params, fields)) = self.record_fields.get(tyname).cloned() else {
                     return terr(format!("type `{tyname}` is not a record, so it has no field `{field}`"));
                 };
@@ -2150,6 +2146,12 @@ impl Checker {
                         return terr(format!("`update` requires a record, found `{other}`"))
                     }
                 };
+                if self.sealed_types.contains(&tyname) {
+                    return terr(format!(
+                        "`{tyname}` is a sealed capability and cannot be `update`d — \
+                         only its own module may construct it"
+                    ));
+                }
                 let Some((params, rec_fields)) = self.record_fields.get(&tyname).cloned() else {
                     return terr(format!("type `{tyname}` is not a record"));
                 };
@@ -2678,7 +2680,6 @@ impl Checker {
         borrow_escape_check(func)?;
         let (params, ret) = self.fn_sigs.get(&func.name).cloned().unwrap();
         self.scopes = vec![HashMap::new()];
-        self.hidden = vec![HashSet::new()];
         self.consumed.clear();
         self.current_ret = Some(ret.clone());
         self.cur_line = 0;
@@ -2766,6 +2767,7 @@ pub fn ty_to_ast(t: &Ty) -> Option<crate::ast::Type> {
         Ty::Secret => T::Named("Secret".into(), Vec::new()),
         Ty::Exec => T::Named("Exec".into(), Vec::new()),
         Ty::Dir(_) => T::Named("Dir".into(), Vec::new()),
+        Ty::File(_) => T::Named("File".into(), Vec::new()),
         Ty::Net(_) => T::Named("Net".into(), Vec::new()),
         Ty::Socket => T::Named("Socket".into(), Vec::new()),
         Ty::Listener => T::Named("Listener".into(), Vec::new()),
@@ -2822,12 +2824,12 @@ fn run_check(module: &Module, record: bool) -> Result<Option<TypeTable>, TypeErr
         ctor_sigs: HashMap::new(),
         ctor_typarams: HashMap::new(),
         record_fields: HashMap::new(),
+        sealed_types: HashSet::new(),
         adt_variants: HashMap::new(),
         fn_typarams: HashMap::new(),
         subst: HashMap::new(),
         next_var: 0,
         scopes: vec![HashMap::new()],
-        hidden: vec![HashSet::new()],
         consumed: HashSet::new(),
         region_locals: Vec::new(),
         current_ret: None,
@@ -2908,6 +2910,9 @@ fn run_check(module: &Module, record: bool) -> Result<Option<TypeTable>, TypeErr
                             .collect();
                         c.record_fields
                             .insert(t.name.clone(), (params_in_order.clone(), rec));
+                        if t.sealed {
+                            c.sealed_types.insert(t.name.clone());
+                        }
                     }
                     c.ctor_sigs
                         .insert(variant.name.clone(), (fields, result.clone()));

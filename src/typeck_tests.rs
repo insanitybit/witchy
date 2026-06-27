@@ -24,33 +24,6 @@
     }
 
     #[test]
-    fn capability_firewall_drops_and_retains() {
-        // `without c:` drops `c` inside the block — using it is an error, but the
-        // sibling capability is untouched.
-        let drop_clock =
-            "fn main(console: Console, clock: Clock):\n    without clock:\n        print(console, \"ok\")\n";
-        check_str(drop_clock).expect("console still usable when only clock is dropped");
-        let use_dropped =
-            "fn main(console: Console, clock: Clock):\n    without clock:\n        let t = now(clock)\n        print(console, __render(t))\n";
-        let err = check_str(use_dropped).expect_err("using a dropped capability must fail");
-        assert!(err.contains("walled off"), "got: {err}");
-
-        // `retain c:` keeps only `c`; every other capability is hidden.
-        let retain_console =
-            "fn main(console: Console, clock: Clock):\n    retain console:\n        print(console, \"ok\")\n";
-        check_str(retain_console).expect("the retained capability is usable");
-        let retain_drops_rest =
-            "fn main(console: Console, clock: Clock):\n    retain console:\n        let t = now(clock)\n        print(console, __render(t))\n";
-        let err = check_str(retain_drops_rest).expect_err("a non-retained capability must be hidden");
-        assert!(err.contains("walled off"), "got: {err}");
-
-        // `retain:` with no names is a full sandbox — even `console` is gone.
-        let sandbox = "fn main(console: Console):\n    retain:\n        print(console, \"nope\")\n";
-        let err = check_str(sandbox).expect_err("an empty retain drops every capability");
-        assert!(err.contains("walled off"), "got: {err}");
-    }
-
-    #[test]
     fn build_entrypoint_takes_only_build_capabilities() {
         // A valid build step: build caps only.
         check_str("fn build(out: BuildOut, schema: BuildRead):\n    write_out(out, \"x.witchy\", read_build(schema, \"a.proto\"))\n")
@@ -68,35 +41,6 @@
         // entrypoint, so it isn't subject to the build-signature rule.
         check_str("fn build(x: Int) -> Int:\n    x + 1\n")
             .expect("a plain `build` function is not the build entrypoint");
-    }
-
-    #[test]
-    fn capability_firewall_validates_its_names() {
-        // Naming a non-capability binding is rejected — it almost certainly means
-        // the author misremembered what authority the block holds.
-        let not_cap = "fn main(console: Console):\n    let x = 5\n    without x:\n        print(console, \"hi\")\n";
-        let err = check_str(not_cap).expect_err("a non-capability can't be firewalled");
-        assert!(err.contains("not a capability"), "got: {err}");
-        // Naming something not in scope at all is rejected too.
-        let absent = "fn main(console: Console):\n    without clock:\n        print(console, \"hi\")\n";
-        let err = check_str(absent).expect_err("an out-of-scope name can't be firewalled");
-        assert!(err.contains("no capability `clock` is in scope"), "got: {err}");
-    }
-
-    #[test]
-    fn capability_firewall_is_sealed_against_outer_caps() {
-        // The point of the firewall: a `retain` block sees exactly the named
-        // capabilities even though the outer scope holds more. Adding `clock` to
-        // `main` must NOT make it reachable inside `retain console`.
-        let src =
-            "fn main(console: Console, clock: Clock):\n    retain console:\n        now(clock)\n        print(console, \"x\")\n";
-        let err = check_str(src).expect_err("retain must seal the block from outer clock");
-        assert!(err.contains("walled off"), "got: {err}");
-        // A nested re-binding legitimately shadows the firewall: re-using the name
-        // for a fresh value is fine (you still can't reach the dropped capability).
-        let shadow =
-            "fn use_int(n: Int):\n    fail(__render(n))\nfn main(console: Console):\n    without console:\n        let console = 42\n        use_int(console)\n";
-        check_str(shadow).expect("re-binding a dropped name to a fresh value is allowed");
     }
 
     #[test]
@@ -124,6 +68,27 @@
         // A legitimate generic that nests its argument in a list is fine when
         // the return type grows with it.
         check_str("fn wrap(x: a) -> List(a):\n    [x]\n").expect("wrap is valid");
+    }
+
+    #[test]
+    fn file_capability_rights_and_narrowing() {
+        // RFC-0012: `File` is a host capability `main` may receive, the leaf of the
+        // Dir/File hierarchy, right-typed like `Dir`.
+        check_str("fn main(console: Console, config: File[Read], log: File[Write]):\n    print(console, \"ok\")\n")
+            .expect("File[Read]/File[Write] are valid main capabilities");
+        // A full `File` narrows to `File[Read]` implicitly at a call boundary.
+        check_str("fn ro(console: Console, f: File[Read]):\n    print(console, \"r\")\nfn main(console: Console, f: File):\n    ro(console, f)\n")
+            .expect("full File satisfies a File[Read] parameter");
+        // Rights are enforced: `File[Read]` cannot stand in for `File[Write]`.
+        let err = check_str("fn w(console: Console, f: File[Write]):\n    print(console, \"w\")\nfn main(console: Console, f: File[Read]):\n    w(console, f)\n")
+            .expect_err("File[Read] must not satisfy File[Write]");
+        assert!(err.contains("File[Write]"), "got: {err}");
+        // `as` drops rights but can never add them.
+        check_str("fn main(console: Console, f: File):\n    let ro = f as File[Read]\n    print(console, \"ok\")\n")
+            .expect("`as` can drop File rights");
+        let err = check_str("fn main(console: Console, f: File[Read]):\n    let w = f as File[Write]\n    print(console, \"no\")\n")
+            .expect_err("`as` cannot add File rights");
+        assert!(err.contains("can only drop rights"), "got: {err}");
     }
 
     #[test]

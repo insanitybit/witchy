@@ -82,10 +82,12 @@ const HELPER_NAMES: &[&str] = &[
     "field_strlist_get",
     "compiler_footprint",
     "compiler_diff",
+    "compiler_doc",
     "float_to_str",
     "encoding",
     "get_env",
     "dir_read",
+    "file_read",
     "build_read",
     "build_out_write",
     "dir_list",
@@ -208,6 +210,7 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
   (import "witchy" "crypto.rune_hash" (func $crypto_rune_hash_host (param i32 i32 i32)))
   (import "witchy" "compiler_footprint_len" (func $compiler_footprint_len_host (param i32) (result i32)))
   (import "witchy" "compiler_diff_len" (func $compiler_diff_len_host (param i32 i32) (result i32)))
+  (import "witchy" "compiler_doc_len" (func $compiler_doc_len_host (param i32 i32) (result i32)))
   (import "witchy" "field_str_len" (func $field_str_len_host (param i32) (result i32)))
   (import "witchy" "field_intlist_len" (func $field_intlist_len_host (param i32) (result i32)))
   (import "witchy" "field_strlist_size" (func $field_strlist_size_host (param i32) (result i32)))
@@ -241,6 +244,10 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
   (import "witchy" "dir_write" (func $dir_write_host (param i32 i32 i32)))
   (import "witchy" "dir_append" (func $dir_append_host (param i32 i32 i32)))
   (import "witchy" "dir_make_dir" (func $dir_make_dir_host (param i32 i32)))
+  (import "witchy" "dir_open" (func $dir_open_host (param i32 i32) (result i32)))
+  (import "witchy" "dir_create" (func $dir_create_host (param i32 i32) (result i32)))
+  (import "witchy" "file_read_len" (func $file_read_len_host (param i32) (result i32)))
+  (import "witchy" "file_write" (func $file_write_host (param i32 i32)))
   (import "witchy" "net_connect" (func $net_connect_host (param i32 i32) (result i32)))
   (import "witchy" "net_try_connect" (func $net_try_connect_host (param i32 i32) (result i32)))
   (import "witchy" "net_listen" (func $net_listen_host (param i32 i32) (result i32)))
@@ -261,7 +268,7 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
 
 /// The number of host imports the prelude declares (used to split function
 /// indices: imports `0..IMPORT_COUNT`, helpers after).
-pub const IMPORT_COUNT: usize = 54;
+pub const IMPORT_COUNT: usize = 59;
 
 /// The full ordered name list for the funcs section: `$mk0..$mk{MAX_MK}` then
 /// the static helper names. Matches the order the prelude emits bodies, so

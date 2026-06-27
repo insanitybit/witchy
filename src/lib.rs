@@ -26,6 +26,9 @@ pub mod doc;
 pub mod fmt;
 pub mod format;
 pub mod generators;
+/// RFC-0013 capability grant documents (TOML); native-only (uses `serde`/`toml`).
+#[cfg(feature = "native")]
+pub mod grants;
 pub mod interpreter;
 pub mod lexer;
 pub mod linker;
