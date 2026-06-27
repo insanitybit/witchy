@@ -13,40 +13,31 @@
 #![allow(clippy::collapsible_if, clippy::collapsible_match, clippy::items_after_test_module)]
 
 pub mod analysis;
-pub mod aliases;
-// RFC-0018: lexer/parser/ast + AST analyses live in the `witchy-syntax` crate;
-// re-export so the rest of the compiler keeps using
-// `crate::{ast,lexer,parser,lambda_scan}::…` unchanged.
-pub use witchy_syntax::{ast, build_entry, lambda_scan, lexer, parser};
+// RFC-0018: the front-end + AST-level base layer lives in the `witchy-syntax`
+// crate; re-export so the rest of the compiler keeps using
+// `crate::{ast,lexer,parser,aliases,consts,fmt,…}::…` paths unchanged.
+pub use witchy_syntax::{
+    aliases, ast, async_lower, build_entry, consts, derive, doc, fmt, format, generators,
+    lambda_scan, lexer, linker, optimize, parser, records, reflect,
+};
 // RFC-0018: footprint analysis + grant docs live in the `witchy-caps` crate.
 pub use witchy_caps::capabilities;
 #[cfg(test)]
 mod capabilities_tests;
 pub mod codegen;
 pub mod confine;
-pub mod async_lower;
-pub mod consts;
 pub mod comptime;
-pub mod derive;
-pub mod doc;
-pub mod fmt;
-pub mod format;
-pub mod generators;
 /// RFC-0013 capability grant documents (TOML); native-only — re-exported from
 /// the `witchy-caps` crate.
 #[cfg(feature = "native")]
 pub use witchy_caps::grants;
 pub mod interpreter;
-pub mod linker;
 pub mod native;
 pub mod net;
-pub mod optimize;
 pub mod pipeline;
-pub mod records;
-pub mod reflect;
 pub mod tagged;
-pub mod traits;
-pub mod typeck;
+// RFC-0018: type checking + trait resolution live in the `witchy-types` crate.
+pub use witchy_types::{traits, typeck};
 pub mod value;
 // RFC-0018: the WIR group lives in the `witchy-wir` crate; re-export it so the
 // rest of the compiler keeps using `crate::wir::…` paths unchanged.

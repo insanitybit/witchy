@@ -16,7 +16,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::ast::*;
+use witchy_syntax::ast::*;
 
 /// Mangled name for an impl method: `Trait__Type__method`.
 fn mangle(trait_name: Option<&str>, type_name: &str, method: &str) -> String {
@@ -127,7 +127,7 @@ pub fn lower_for_wasm(module: Module) -> Module {
 fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
     // Expand type aliases and inline module-level constants first (a no-op once
     // the linker has done so, but covers single-module paths like `check_str`).
-    let module = crate::aliases::resolve(crate::consts::inline(module));
+    let module = witchy_syntax::aliases::resolve(witchy_syntax::consts::inline(module));
     let needs_lowering = module.items.iter().any(|it| {
         matches!(it, Item::Trait(_) | Item::Impl(_))
             || matches!(it, Item::Function(f) if !f.bounds.is_empty()

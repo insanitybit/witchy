@@ -2553,6 +2553,7 @@ dependencies = [
  "webpki-roots 0.26.11",
  "witchy-caps",
  "witchy-syntax",
+ "witchy-types",
  "witchy-wir",
 ]
 
@@ -2568,6 +2569,13 @@ dependencies = [
 [[package]]
 name = "witchy-syntax"
 version = "0.1.0"
+
+[[package]]
+name = "witchy-types"
+version = "0.1.0"
+dependencies = [
+ "witchy-syntax",
+]
 
 [[package]]
 name = "witchy-wir"

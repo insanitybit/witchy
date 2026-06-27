@@ -14,10 +14,10 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 
-use crate::ast::{
+use witchy_syntax::ast::{
     self, Block, Convention, Expr, Function, Item, MatchArm, Module, Pattern, Stmt, UnOp,
 };
-use crate::build_entry::{build_entrypoint, is_build_capability_type};
+use witchy_syntax::build_entry::{build_entrypoint, is_build_capability_type};
 
 /// The operations a `Dir` capability permits. Decomposing the capability by
 /// right makes the footprint distinguish read-only from writing code, and an op
@@ -465,7 +465,7 @@ pub(crate) fn is_capability_type(t: &ast::Type) -> bool {
 
 /// Whether `t` is `List(String)` — the command-line-arguments parameter `main`
 /// may declare.
-pub(crate) fn is_args_type(t: &ast::Type) -> bool {
+pub fn is_args_type(t: &ast::Type) -> bool {
     matches!(t, ast::Type::Named(n, args)
         if n == "List"
             && matches!(args.as_slice(), [ast::Type::Named(s, inner)] if s == "String" && inner.is_empty()))
@@ -488,7 +488,7 @@ fn check_main_signature(module: &Module) -> Result<(), TypeError> {
             continue;
         }
         let found = match &p.ty {
-            Some(t) => format!("has type `{}`", crate::format::type_str(t)),
+            Some(t) => format!("has type `{}`", witchy_syntax::format::type_str(t)),
             None => "has no type annotation".to_string(),
         };
         return terr(format!(
@@ -510,7 +510,7 @@ fn check_main_signature(module: &Module) -> Result<(), TypeError> {
                  silently discarded — its `Err`/`None` never surfaces and the exit code \
                  stays 0. Handle the outcome inside `main` and return an exit code (or \
                  print it), e.g. `match r: Ok(_) -> 0; Err(e) -> ... ; 1`.",
-                crate::format::type_str(main.ret.as_ref().unwrap())
+                witchy_syntax::format::type_str(main.ret.as_ref().unwrap())
             ));
         }
     }
@@ -532,7 +532,7 @@ fn check_build_signature(module: &Module) -> Result<(), TypeError> {
             continue;
         }
         let found = match &p.ty {
-            Some(t) => format!("has type `{}`", crate::format::type_str(t)),
+            Some(t) => format!("has type `{}`", witchy_syntax::format::type_str(t)),
             None => "has no type annotation".to_string(),
         };
         return terr(format!(
@@ -551,7 +551,7 @@ fn check_build_signature(module: &Module) -> Result<(), TypeError> {
 /// from the `witchy` library — so the lib target itself sees no caller.)
 #[allow(dead_code)]
 pub fn build_entrypoint_src(src: &str) -> bool {
-    crate::parser::parse_module(src)
+    witchy_syntax::parser::parse_module(src)
         .map(|m| build_entrypoint(&m).is_some())
         .unwrap_or(false)
 }
@@ -1735,12 +1735,12 @@ impl Checker {
             Expr::Bool(_) => Ok(Ty::Bool),
             // A range lowers to a list-building block; type it as that block.
             Expr::Range { lo, hi, inclusive } => {
-                let d = crate::parser::desugar_range((**lo).clone(), (**hi).clone(), *inclusive);
+                let d = witchy_syntax::parser::desugar_range((**lo).clone(), (**hi).clone(), *inclusive);
                 self.infer(&d)
             }
             // A subscript lowers to an `list.at(base, index)` call; type it as that.
             Expr::Index { base, index } => {
-                let d = crate::parser::desugar_index((**base).clone(), (**index).clone());
+                let d = witchy_syntax::parser::desugar_index((**base).clone(), (**index).clone());
                 self.infer(&d)
             }
             Expr::MethodCall { method, .. } => {
@@ -1751,14 +1751,14 @@ impl Checker {
                      `impl` blocks; a plain function is called as `{method}(value, …)`"
                 ))
             }
-            // Named-field record construction is lowered by `crate::records`
+            // Named-field record construction is lowered by `witchy_syntax::records`
             // before type-checking.
             Expr::Record { .. } => {
-                unreachable!("Expr::Record is lowered by crate::records before typeck")
+                unreachable!("Expr::Record is lowered by witchy_syntax::records before typeck")
             }
             // `while let` lowers to a `while true` over a match; type that.
             Expr::WhileLet { pattern, scrutinee, body } => {
-                let d = crate::parser::desugar_while_let(
+                let d = witchy_syntax::parser::desugar_while_let(
                     pattern.clone(),
                     (**scrutinee).clone(),
                     body.clone(),
@@ -1818,7 +1818,7 @@ impl Checker {
                 // silently mutate a private copy while the compiled backends can't
                 // express it at all. Reject it uniformly here (using the shared
                 // AST capture/assignment scan) so every backend agrees.
-                let outer = crate::lambda_scan::lambda_outer_assigns(params, body);
+                let outer = witchy_syntax::lambda_scan::lambda_outer_assigns(params, body);
                 if !outer.is_empty() {
                     return terr(format!(
                         "a closure cannot assign to the captured variable `{}` (captures are by value, so the write would be lost) — return the new value or use a `var` parameter instead",
@@ -1927,7 +1927,7 @@ impl Checker {
                     }
                     // A retired global builtin: name the module-qualified
                     // spelling that replaced it (the one-cut migration).
-                    if let Some(moved) = crate::aliases::moved_builtin(name) {
+                    if let Some(moved) = witchy_syntax::aliases::moved_builtin(name) {
                         return terr(format!(
                             "`{name}` moved to `{moved}` — pure data operations are \
                              module-qualified now (no import needed; the core modules \
@@ -1936,12 +1936,12 @@ impl Checker {
                     }
                     // If the name is an unimported stdlib function, point the way;
                     // otherwise suggest a near-miss stdlib name (a likely typo).
-                    let hint = match crate::linker::std_modules_for_function(name).as_slice() {
+                    let hint = match witchy_syntax::linker::std_modules_for_function(name).as_slice() {
                         [m] => format!(" — did you forget `import {m}`?"),
                         many if !many.is_empty() => {
                             format!(" — did you forget to import one of: {}?", many.join(", "))
                         }
-                        _ => match crate::linker::closest_std_function(name) {
+                        _ => match witchy_syntax::linker::closest_std_function(name) {
                             Some((cand, m)) => format!(" — did you mean `{cand}` (`import {m}`)?"),
                             None => String::new(),
                         },
@@ -2696,7 +2696,7 @@ pub fn check(module: &Module) -> Result<(), TypeError> {
 
     // Lower named-field record construction (a no-op once the linker has done so,
     // but covers single-module paths like `check_str`).
-    let recs = crate::records::lower(module.clone()).map_err(|message| TypeError { message })?;
+    let recs = witchy_syntax::records::lower(module.clone()).map_err(|message| TypeError { message })?;
 
     // Trait/impl declarations are desugared to ordinary functions first, so the
     // checker only ever sees plain functions (a no-op for trait-free modules).
@@ -2728,8 +2728,8 @@ impl TypeTable {
 /// Convert a resolved checker type to the surface `ast::Type` shape the
 /// backends' type-directed machinery (eq/to_string shapes, valtypes)
 /// consumes. None where no surface form exists (functions, free variables).
-pub fn ty_to_ast(t: &Ty) -> Option<crate::ast::Type> {
-    use crate::ast::Type as T;
+pub fn ty_to_ast(t: &Ty) -> Option<witchy_syntax::ast::Type> {
+    use witchy_syntax::ast::Type as T;
     Some(match t {
         Ty::Int => T::Named("Int".into(), Vec::new()),
         Ty::Float => T::Named("Float".into(), Vec::new()),
@@ -2899,7 +2899,7 @@ fn run_check(module: &Module, record: bool) -> Result<Option<TypeTable>, TypeErr
                 c.adt_variants.insert(t.name.clone(), names);
             }
             // Desugared to functions by `traits::lower` and constants inlined by
-            // `crate::consts` before this point.
+            // `witchy_syntax::consts` before this point.
             Item::Trait(_) | Item::Impl(_) | Item::Const { .. } | Item::TypeAlias { .. } | Item::Comptime(_) => {}
         }
     }
@@ -2997,7 +2997,7 @@ pub fn intrinsic(name: &str) -> bool {
 
 /// Convenience: parse then type-check.
 pub fn check_str(src: &str) -> Result<(), String> {
-    let module = crate::parser::parse_module(src).map_err(|e| e.to_string())?;
+    let module = witchy_syntax::parser::parse_module(src).map_err(|e| e.to_string())?;
     check(&module).map_err(|e| e.to_string())
 }
 

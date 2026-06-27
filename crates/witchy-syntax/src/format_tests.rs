@@ -72,10 +72,13 @@
     #[test]
     fn reformats_every_std_and_example_to_an_equal_ast() {
         // The printer must faithfully round-trip every shipped source file.
+        // The shipped std/ + examples/ trees live at the workspace root (two
+        // levels up from this crate's manifest dir).
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let dirs = ["std", "examples"];
         let mut failures = Vec::new();
         for dir in dirs {
-            for entry in std::fs::read_dir(dir).unwrap() {
+            for entry in std::fs::read_dir(root.join(dir)).unwrap() {
                 let path = entry.unwrap().path();
                 if path.extension().and_then(|e| e.to_str()) != Some("witchy") {
                     continue;
@@ -205,10 +208,13 @@
     #[test]
     fn formatting_is_idempotent() {
         // Formatting already-formatted code must be a no-op: `fmt(fmt(x)) == fmt(x)`.
+        // The shipped std/ + examples/ trees live at the workspace root (two
+        // levels up from this crate's manifest dir).
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let dirs = ["std", "examples"];
         let mut failures = Vec::new();
         for dir in dirs {
-            for entry in std::fs::read_dir(dir).unwrap() {
+            for entry in std::fs::read_dir(root.join(dir)).unwrap() {
                 let path = entry.unwrap().path();
                 if path.extension().and_then(|e| e.to_str()) != Some("witchy") {
                     continue;

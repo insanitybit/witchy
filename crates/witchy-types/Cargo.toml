@@ -1,0 +1,11 @@
+[package]
+name = "witchy-types"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+description = "witchy compiler — type checking, trait resolution, and monomorphization"
+
+# Depends only on the front-end; the tests are plain #[cfg(test)] units (no
+# wasmtime), so this crate builds on every target including the wasm playground.
+[dependencies]
+witchy-syntax = { path = "../witchy-syntax" }
