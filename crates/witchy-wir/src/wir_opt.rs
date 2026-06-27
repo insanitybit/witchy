@@ -22,7 +22,6 @@
 //! Functions with a [`WirFunc::raw_body`] are skipped entirely: their body is
 //! pre-encoded wasm bytes with no WIR tree to walk.
 
-#![allow(dead_code)]
 
 use crate::wir::{WirExpr, WirModule, WirNode, WirSeq};
 

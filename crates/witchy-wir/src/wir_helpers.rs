@@ -10,10 +10,6 @@
 //! [`WirHelperSpec`] (the function plus its helper/import dependencies), which is
 //! how `codegen` resolves a module's reachable helper set.
 
-// Many helpers are reached only through `wir_helper`'s dispatch table or the
-// round-trip tests, so per-helper reachability is not visible to the compiler.
-#![allow(dead_code)]
-
 use crate::wir::*;
 
 /// `$print_str(s: i32)` — write a witchy string (a `[i32 len][utf-8]` record at
@@ -3903,10 +3899,10 @@ pub struct WirHelperSpec {
     pub uses_table: bool,
 }
 
-/// The WIR-native prelude registry: the helpers migrated off the raw-body blob
-/// so far. `None` for a helper not yet migrated — `assemble_wir_module` then
-/// falls back to the raw-body prelude for any program that reaches it. Helpers
-/// migrate one at a time; each is a green step that grows binary-path coverage.
+/// Look up a runtime helper by name, returning its [`WirHelperSpec`]: the
+/// function plus the other helpers and host imports it depends on. Returns
+/// `None` for a name with no WIR-native helper, in which case `wir_encode` falls
+/// back to the raw-body prelude blob (`wir_prelude`).
 pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
     match name {
         "print_str" => Some(WirHelperSpec {

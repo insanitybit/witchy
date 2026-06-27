@@ -1,23 +1,17 @@
-//! WIR — the Witchy IR (the compiled backend's representation). See
-//! `rfcs/wir-design.md`.
+//! WIR, the Witchy IR: the compiled backend's representation. See
+//! `rfcs/wir-design.md` for the design rationale.
 //!
-//! **Milestone 0**: the data structures + a `WIR → WAT` pretty-printer ONLY. No
-//! lowering from the AST yet, and `codegen.rs` is untouched. The point is to
-//! validate the IR *shape* against real wasm — hand-write WIR for a few functions,
-//! print them, and confirm the WAT assembles and runs correctly.
+//! WIR is a structured, witchy-typed value tree (in the style of Binaryen IR),
+//! not an SSA/CFG. Control flow is nested `Block`/`Loop`/`If`/`Br` nodes whose
+//! branch targets are always lexically-enclosing labels, so lowering to wasm is
+//! a direct structural walk with no relooper. Expressions are typed nodes, each
+//! carrying a `WirTy`, over the universal i64-slot value model.
 //!
-//! WIR is a **structured, witchy-typed value tree** (à la Binaryen IR), not an
-//! SSA/CFG: control flow is nested `Block`/`Loop`/`If`/`Br` nodes whose branch
-//! targets are always lexically-enclosing labels, so lowering to wasm is a direct
-//! structural walk with no relooper. Expressions are typed nodes (carrying a
-//! `WirTy`) over the universal i64-slot value model.
-//!
-//! M0 uses *names* for locals/labels/funcs (the WAT printer + `wat` crate resolve
-//! them); the binary encoder in M3 introduces relative branch depths and indices.
-
-// M0: WIR is not yet wired into codegen, so most of it is exercised only by the
-// round-trip tests. Lifted once the lowering (M1+) consumes it.
-#![allow(dead_code)]
+//! Locals, labels, and functions are referred to by name; `wir_encode` resolves
+//! those names to relative branch depths and wasm indices when it emits the
+//! binary. This file is the IR data model plus a `WIR` to WAT text printer used
+//! for debugging and test assertions; the runtime-helper library lives in
+//! `wir_helpers` and the binary emitter in `wir_encode`.
 
 use std::fmt::Write;
 
@@ -45,8 +39,8 @@ impl Kind {
     }
 }
 
-/// The witchy-level type, retained so passes are shape-aware. (M0 carries the
-/// subset the sample functions need; it grows with the lowering.)
+/// The witchy-level type, retained alongside the wasm `Kind` so passes stay
+/// shape-aware (structural equality, capability handles, slot conversions).
 #[derive(Debug, Clone, PartialEq)]
 pub enum WirTy {
     Int,
@@ -105,23 +99,6 @@ pub enum BinOp {
 }
 
 impl BinOp {
-    /// Does this op produce an i32 boolean regardless of operand kind?
-    fn is_comparison(self) -> bool {
-        matches!(
-            self,
-            BinOp::Eq
-                | BinOp::Ne
-                | BinOp::Lt
-                | BinOp::Le
-                | BinOp::Gt
-                | BinOp::Ge
-                | BinOp::LtU
-                | BinOp::LeU
-                | BinOp::GtU
-                | BinOp::GeU
-        )
-    }
-
     fn mnemonic(self, k: Kind) -> String {
         let p = k.wat();
         match (self, k) {
@@ -449,9 +426,10 @@ pub struct WirModule {
     pub exports: Vec<(String, String)>,
 }
 
-/// Render a module to WAT text (`wat::parse_str`-assemblable, runtime-runnable).
-/// This is the migration differential during M1–M2 and the `emit-wat` debug view
-/// thereafter — never the binary path (that's `wir::encode` in M3).
+/// Render a module to WAT text, for debugging and test assertions (`witchy
+/// emit-wat`). This is not the build path: `wir_encode` emits the wasm binary
+/// directly. The two are kept instruction-for-instruction aligned, so this
+/// printer doubles as the readable reference for what the encoder produces.
 pub fn to_wat(module: &WirModule) -> String {
     let mut s = String::new();
     s.push_str("(module\n");
@@ -595,9 +573,8 @@ fn indent(s: &mut String, depth: usize) {
 }
 
 // Control bodies print at the SAME `depth` as their `if`/`block`/`loop`/`end`
-// keywords — a flat 4-space layout matching codegen's string emission exactly
-// (wasm structure comes from the keywords, not indentation). This flat style is
-// what makes the M1/M2 byte-identity diff against legacy WAT possible.
+// keywords: a flat 4-space layout where the wasm structure comes from the
+// keywords, not the indentation.
 fn print_node(s: &mut String, node: &WirNode, depth: usize) {
     match node {
         WirNode::SetLocal { local, value } => {
@@ -743,10 +720,9 @@ fn print_expr(s: &mut String, e: &WirExpr, depth: usize) {
     match e {
         WirExpr::ConstI64(n) => emit(s, depth, &format!("i64.const {n}")),
         WirExpr::ConstI32(n) => emit(s, depth, &format!("i32.const {n}")),
-        // Plain `{x}` Display, matching codegen's `Expr::Float` emission exactly
-        // (the `wat` crate infers f64 from the `f64.const` mnemonic, so a
-        // whole-number `5` needs no `.0`). The M3 binary encoder writes the bits
-        // directly and won't use this text path.
+        // Plain `{x}` Display: WAT infers f64 from the `f64.const` mnemonic, so a
+        // whole-number `5` needs no `.0`. (The binary encoder writes the bits
+        // directly and does not go through this text path.)
         WirExpr::ConstF64(x) => emit(s, depth, &format!("f64.const {x}")),
         WirExpr::StrPtr(off) => emit(s, depth, &format!("i32.const {off}")),
         WirExpr::GetLocal(name) => emit(s, depth, &format!("local.get ${name}")),

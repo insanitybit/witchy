@@ -1,17 +1,11 @@
-//! WIR → wasm **binary** encoder (Milestone M3). Turns a [`crate::wir::WirModule`]
-//! directly into a WebAssembly binary via the `wasm-encoder` crate, bypassing the
-//! WAT text path (`to_wat` + `wat::parse_str`). The output is behaviorally
-//! identical to that path — `print_node`/`print_expr` in `src/wir.rs` are the
-//! authoritative semantics this mirrors instruction-for-instruction.
+//! WIR to wasm **binary** encoder: turns a [`crate::wir::WirModule`] directly
+//! into a WebAssembly binary via the `wasm-encoder` crate. Its output matches the
+//! WAT text path (`crate::wir::to_wat`) instruction-for-instruction;
+//! `print_node`/`print_expr` there are the authoritative semantics this mirrors.
 //!
 //! Index spaces: imported functions come first (index = position in
 //! `module.imports`), then defined functions (index = `imports.len()` + position
 //! in `module.funcs`). Locals are params-then-body in declaration order.
-
-// `encode` is the production codegen sink (codegen calls it directly), but some of
-// its helper paths and fields are only exercised by tests, so they read as dead to
-// the non-test build. Mirrors `wir.rs`'s allow.
-#![allow(dead_code)]
 
 use std::collections::HashMap;
 

@@ -52,7 +52,6 @@
 // Some items below (e.g. `MAX_MK`) are only referenced indirectly; keep the
 // crate-wide dead-code lint off this module so the prelude's pinned-order
 // declarations stay even when a particular one has no direct reader.
-#![allow(dead_code)]
 
 use std::sync::OnceLock;
 
