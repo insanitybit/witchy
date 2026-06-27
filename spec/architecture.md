@@ -44,6 +44,11 @@ effectful build-step executor.
 | `src/wir_prelude.rs` | The runtime helper library (lists, strings, dicts, crypto, …), precompiled once and spliced into each module |
 | `src/runtime.rs` | The wasmtime sandbox: capability-gated host functions over one shared `VmState`, memory caps, epoch preemption |
 | `src/capabilities.rs` | The footprint analyzer (`witchy caps`, `caps-diff`) — recomputed from source, never trusted metadata |
+| `src/confine.rs` | Shared path/address confinement (`..`/absolute/symlink rejection, address-set policy) used by both backends |
+| `src/grants.rs` | Grant-document (`--grants` TOML) parsing and footprint cross-check (`witchy grants-check`) |
+| `src/native.rs` | Native-module registry for Rust-implemented stdlib primitives (FFI-as-capability) |
+| `src/comptime.rs` | The `comptime:` evaluator (compile-time constant folding via the interpreter) |
+| `src/value.rs` | The runtime `Value` representation shared across interpreter and host runtime |
 | `src/idp.rs` | The trusted-publishing IdP *test* simulator (`coven-gen-issuer`/`coven-mint-token`): issuer-key + OIDC-token minting standing in for an external CI identity provider. The package manager itself is self-hosted (see `projects/pm`) |
 | `src/format.rs` | The canonical formatter (comment-preserving, round-trip-verified) |
 | `src/lsp.rs` | Diagnostics language server |
@@ -127,9 +132,10 @@ function fails at instantiation, before any code runs.
 `link_capability_imports` (over the shared `VmState`) defines only the
 families the grant entitles: a program with no `Console` in its footprint
 physically has no `print` import, and a `Dir[Read]` footprint links the read
-family only. `Dir`/`Net` values compile to i32 handles into a host-side table
+family only. `Dir`/`File`/`Net` values compile to i32 handles into a host-side table
 (paths and allowlists never enter guest memory, so a module cannot forge or
-widen authority); attenuation (`subdir`, `restrict`) rewrites the handle. The
+widen authority); attenuation (`dir.subtree`, `dir.read_file`/`write_file`,
+`net.only`/`net.deny`) rewrites the handle. The
 grant comes from the host: the dev grant for `run`/`parity`, the computed
 footprint for `witchy sandbox`. Resource bounds: a per-VM linear memory cap
 and (under the scheduler) epoch-based preemption at loop back-edges to reclaim

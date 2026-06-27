@@ -1,6 +1,6 @@
 # Appendix: The Standard Library
 
-witchy ships ~30 standard-library modules. Bring one in with `import name` and
+witchy ships ~40 standard-library modules. Bring one in with `import name` and
 call its functions module-qualified (`list.map`, `string.join`). A module's
 *types and their constructors* come in unqualified, though — after `import json`
 you write `JsonInt(1)`, not `json.JsonInt(1)`.
@@ -37,7 +37,7 @@ to_ms` finds `duration.to_milliseconds`.
 
 | Module | What it gives you |
 |---|---|
-| `json` | parse and encode JSON — `json.decode(s)` returns the `Json` sum type; `json.stringify(x)` / `json.value_of(x)` encode *any* value reflectively (give your own types `derive(Reflect)`); `derive(Deserialize)` generates `from_json` to parse a record back. There is no `derive(Json)`. |
+| `json` | parse and encode JSON — `json.decode(s)` returns `Result(Json, String)` (the parsed `Json` sum type, or a parse-error message), so thread it with `?`; `json.stringify(x)` / `json.value_of(x)` encode *any* value reflectively (give your own types `derive(Reflect)`); `derive(Deserialize)` generates `from_json` to parse a record back. There is no `derive(Json)`. |
 | `csv` | RFC 4180 CSV |
 | `toml` | TOML parsing |
 | `url` | URL parsing |

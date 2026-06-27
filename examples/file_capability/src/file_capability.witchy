@@ -1,0 +1,19 @@
+// The `File` capability (RFC-0012) — authority to ONE file, the leaf of the
+// Dir/File hierarchy. Instead of being handed a whole `Dir`, a function can ask
+// for just `File[Read]`: it provably cannot touch any other file. A `Dir`
+// navigates down to a file with `dir.read_file` / `dir.write_file`, keeping
+// the same `..`/absolute confinement as `read`. Run from the repo root:
+//   witchy examples/file_capability/src/file_capability.witchy
+//   witchy caps examples/file_capability/src/file_capability.witchy   # load_config: File[Read]
+
+// Reads a config file — the least authority that does the job: `File[Read]`, not a
+// whole `Dir`. `witchy caps` reports it as exactly `File[Read]`, so it provably
+// cannot see any other file. (`main` can also receive a `File` directly via the
+// `--file` grant; here we navigate one from a `Dir` so the example is self-contained.)
+pub fn load_config(f: File[Read]) -> String:
+    read(f)
+
+fn main(console: Console, root: Dir):
+    // Narrow the granted Dir down to this example's data dir, then open ONE file.
+    let data = root.subtree("examples").subtree("file_capability").subtree("data")
+    print(console, "config: " + load_config(data.read_file("config.txt")))

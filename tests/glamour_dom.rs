@@ -139,6 +139,522 @@ fn glamour_autocounter_footprint_is_empty() {
     }
 }
 
+/// RFC-0015 Phase A: the glamour DOM shell is XSS-safe at the attribute layer.
+///
+/// The committed Node driver (`web/witchy-runtime/glamour-dom-xss.test.mjs`)
+/// compiles a rune whose `view` emits deliberately hostile attributes — a
+/// `javascript:` href, a `javascript:` `<img>` src, and a string `onclick` handler
+/// — mounts it through the real shell, and asserts the DOM was NEUTRALIZED: URL
+/// attributes are scheme-checked (hostile schemes collapse to `#`), `on*` attributes
+/// are never written (handlers attach only via the typed `on(event, msg)` path), and
+/// safe URLs (relative, https) pass through untouched. This guards the single
+/// `applyAttr` choke point both the create and update render paths route through.
+#[test]
+fn glamour_dom_attribute_layer_neutralizes_xss() {
+    if !node_available() {
+        eprintln!("skipping: `node` is not available on PATH");
+        return;
+    }
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let driver = manifest.join("web/witchy-runtime/glamour-dom-xss.test.mjs");
+    assert!(driver.exists(), "the committed XSS test driver must exist at {}", driver.display());
+
+    let out = Command::new("node")
+        .arg(&driver)
+        .arg(BIN)
+        .current_dir(manifest)
+        .output()
+        .expect("spawn node glamour-dom xss driver");
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "the glamour-dom XSS test failed:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+    );
+    assert!(stdout.contains("GLAMOUR-DOM XSS OK"), "xss driver did not report success:\n{stdout}");
+}
+
+/// RFC-0015 Phase C: the async HTTP effect. The committed Node driver
+/// (`web/witchy-runtime/glamour-http.test.mjs`) compiles a rune whose `update` returns
+/// `http_get("/data", "GotData")` — the rune holds NO `Net`, only describes the request —
+/// and drives it through the shell with an INJECTED fake fetch. It asserts the response
+/// dispatches back as `GotData(status, body)` and updates the model, that the host shell
+/// attached the session credential (`authHeaders`) ITSELF, and that the token never
+/// entered the rune's state. This is the effects-as-data network access the coven-web
+/// shell needs, with authority kept entirely at the host edge.
+#[test]
+fn glamour_http_effect_fetches_with_host_attached_auth() {
+    if !node_available() {
+        eprintln!("skipping: `node` is not available on PATH");
+        return;
+    }
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let driver = manifest.join("web/witchy-runtime/glamour-http.test.mjs");
+    assert!(driver.exists(), "the committed HTTP test driver must exist at {}", driver.display());
+
+    let out = Command::new("node")
+        .arg(&driver)
+        .arg(BIN)
+        .current_dir(manifest)
+        .output()
+        .expect("spawn node glamour-http driver");
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "the glamour HTTP-effect test failed:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+    );
+    assert!(stdout.contains("GLAMOUR-HTTP OK"), "http driver did not report success:\n{stdout}");
+}
+
+/// RFC-0015 Phase C: client-side routing. The committed Node driver
+/// (`web/witchy-runtime/glamour-routing.test.mjs`) compiles a rune that maps `model` (the
+/// current path) to a view and returns `navigate(path)` to change it — holding no history
+/// authority, only describing the navigation. Driven with an injected fake history /
+/// location / popstate, it asserts the initial path is delivered into the view, a `Nav`
+/// pushes history AND re-renders, and a popstate (Back) re-delivers the route.
+#[test]
+fn glamour_routing_navigates_and_handles_back() {
+    if !node_available() {
+        eprintln!("skipping: `node` is not available on PATH");
+        return;
+    }
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let driver = manifest.join("web/witchy-runtime/glamour-routing.test.mjs");
+    assert!(driver.exists(), "the committed routing test driver must exist at {}", driver.display());
+
+    let out = Command::new("node")
+        .arg(&driver)
+        .arg(BIN)
+        .current_dir(manifest)
+        .output()
+        .expect("spawn node glamour-routing driver");
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "the glamour routing test failed:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+    );
+    assert!(stdout.contains("GLAMOUR-ROUTING OK"), "routing driver did not report success:\n{stdout}");
+}
+
+/// RFC-0015 Phase C: keyed list reconciliation. The committed Node driver
+/// (`web/witchy-runtime/glamour-keyed.test.mjs`) renders a `<ul>` of `keyed(k, <li>)`
+/// children, marks each live node, reorders the list, and asserts the SAME node instances
+/// appear in the new order — the host MOVED the existing nodes (preserving identity, and
+/// thus a focused input's caret) rather than rebuilding by position. Index diffing would
+/// fail this; key-based reconciliation passes it.
+#[test]
+fn glamour_keyed_list_reuses_nodes_on_reorder() {
+    if !node_available() {
+        eprintln!("skipping: `node` is not available on PATH");
+        return;
+    }
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let driver = manifest.join("web/witchy-runtime/glamour-keyed.test.mjs");
+    assert!(driver.exists(), "the committed keyed-list test driver must exist at {}", driver.display());
+
+    let out = Command::new("node")
+        .arg(&driver)
+        .arg(BIN)
+        .current_dir(manifest)
+        .output()
+        .expect("spawn node glamour-keyed driver");
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "the glamour keyed-list test failed:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+    );
+    assert!(stdout.contains("GLAMOUR-KEYED OK"), "keyed driver did not report success:\n{stdout}");
+}
+
+/// RFC-0015 Phase D: the coven package-DETAIL page, built on glamour. The committed Node
+/// driver (`web/witchy-runtime/glamour-package-page.test.mjs`) mounts the `package_page`
+/// example and asserts it composes the registry's key view — the package identity (name,
+/// version, copy-able install command), the capability FOOTPRINT as badges (coven's
+/// differentiator), and the README + generated API docs rendered inline from Markdown via
+/// `markdown.to_vnode`, with a README/Docs tab toggle. This is the template the coven-web
+/// shell's package view is built on; it composes the Phase A–C pieces end to end.
+#[test]
+fn glamour_package_page_renders_identity_footprint_and_docs() {
+    if !node_available() {
+        eprintln!("skipping: `node` is not available on PATH");
+        return;
+    }
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let driver = manifest.join("web/witchy-runtime/glamour-package-page.test.mjs");
+    assert!(driver.exists(), "the committed package-page test driver must exist at {}", driver.display());
+
+    let out = Command::new("node")
+        .arg(&driver)
+        .arg(BIN)
+        .current_dir(manifest)
+        .output()
+        .expect("spawn node glamour-package-page driver");
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "the glamour package-page test failed:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+    );
+    assert!(stdout.contains("GLAMOUR-PACKAGE-PAGE OK"), "package-page driver did not report success:\n{stdout}");
+}
+
+/// RFC-0015 Phase D: the d3-runes-chart COMPARTMENT renderer's chart logic. The committed
+/// Node test (`projects/coven-web/web/dist/compartments/d3-runes-chart/chart.test.mjs`)
+/// exercises the renderer's pure `barChartSvg(points) -> SVG` core — the foreign code that
+/// would run isolated in the chart compartment. It asserts one bar per point, scaling to
+/// the max, and that only NUMERIC counts reach the SVG (a hostile label cannot inject, so
+/// even the in-box `innerHTML` is safe). The live rendering and the iframe/CSP isolation
+/// are browser-verified; this gates the renderer's logic.
+#[test]
+fn d3_compartment_renderer_chart_logic_is_correct() {
+    if !node_available() {
+        eprintln!("skipping: `node` is not available on PATH");
+        return;
+    }
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let driver = manifest.join("projects/coven-web/web/dist/compartments/d3-runes-chart/chart.test.mjs");
+    assert!(driver.exists(), "the committed chart test must exist at {}", driver.display());
+
+    let out = Command::new("node")
+        .arg(&driver)
+        .current_dir(manifest)
+        .output()
+        .expect("spawn node runes-chart test");
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "the d3-runes-chart renderer test failed:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+    );
+    assert!(stdout.contains("RUNES-CHART OK"), "chart test did not report success:\n{stdout}");
+}
+
+/// RFC-0015 Phase D: the coven catalog/index view on glamour. The committed Node driver
+/// (`web/witchy-runtime/glamour-catalog.test.mjs`) mounts the `catalog` example and drives
+/// its live search box, asserting that `on_input` carries the field's value into the MVU
+/// loop (the rune holds no DOM) and that the keyed rune cards filter by name AND by
+/// capability. This is the registry home page built on the framework, and it exercises the
+/// `on_input` forms handler added for it.
+#[test]
+fn glamour_catalog_view_filters_by_name_and_capability() {
+    if !node_available() {
+        eprintln!("skipping: `node` is not available on PATH");
+        return;
+    }
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let driver = manifest.join("web/witchy-runtime/glamour-catalog.test.mjs");
+    assert!(driver.exists(), "the committed catalog test driver must exist at {}", driver.display());
+
+    let out = Command::new("node")
+        .arg(&driver)
+        .arg(BIN)
+        .current_dir(manifest)
+        .output()
+        .expect("spawn node glamour-catalog driver");
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "the glamour catalog-view test failed:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+    );
+    assert!(stdout.contains("GLAMOUR-CATALOG OK"), "catalog driver did not report success:\n{stdout}");
+}
+
+/// RFC-0015 Phase D: the version (record-detail) and trust (TUF) view templates render
+/// their security fields, identically on both backends. These are the registry's audit
+/// pages built on glamour: the version view surfaces the capability footprint, provenance,
+/// and promote/yank controls; the trust view surfaces the TUF checks. The shell fills the
+/// data from the registry; this gates the templates' rendering + parity.
+#[test]
+fn glamour_version_and_trust_views_render_security_fields() {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let work = std::env::temp_dir().join(format!("glamour-views-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&work);
+    std::fs::create_dir_all(&work).unwrap();
+    std::fs::copy(
+        manifest.join("projects/glamour/src/glamour.witchy"),
+        work.join("glamour.witchy"),
+    )
+    .unwrap();
+
+    let views: &[(&str, &[&str])] = &[
+        ("version_view", &["Js{d3-runes-chart}", "trusted-publisher", "state-released", "promote", "yank"]),
+        ("trust_view", &["rollback check", "snapshot signature", "Registry trust"]),
+    ];
+    for (view, must_contain) in views {
+        std::fs::copy(
+            manifest.join(format!("projects/glamour/examples/{view}/src/{view}.witchy")),
+            work.join(format!("{view}.witchy")),
+        )
+        .unwrap();
+        let prog = work.join(format!("{view}.witchy"));
+
+        // Both backends agree (the prime directive) ...
+        let par = Command::new(BIN).arg("parity").arg(&prog).current_dir(&work).output().expect("witchy parity");
+        let pout = String::from_utf8_lossy(&par.stdout);
+        assert!(par.status.success() && pout.contains("agree"), "{view} must render identically on both backends:\n{pout}");
+
+        // ... and the rendered VNode JSON carries the expected security fields.
+        let run = Command::new(BIN).arg(&prog).current_dir(&work).output().expect("witchy run");
+        let rout = String::from_utf8_lossy(&run.stdout);
+        for needle in *must_contain {
+            assert!(rout.contains(needle), "{view} should render `{needle}`:\n{rout}");
+        }
+    }
+    let _ = std::fs::remove_dir_all(&work);
+}
+
+/// RFC-0015 Phase D: the coven-web SHELL on glamour, end to end. The committed Node driver
+/// (`web/witchy-runtime/glamour-coven-app.test.mjs`) mounts the `coven_app` rune with an
+/// injected fake registry (fetch) and history, then drives the real app loop: the initial
+/// route fetches the catalog and renders the rune list; clicking a rune navigates to its
+/// package URL, which fetches and renders the docs. The rune holds no `Net` — the host shell
+/// performs every fetch — so this proves the routed, data-fetched trusted shell works with
+/// authority entirely at the edge (the production shell, minus the browser-only WebAuthn).
+#[test]
+fn glamour_coven_app_shell_routes_and_fetches() {
+    if !node_available() {
+        eprintln!("skipping: `node` is not available on PATH");
+        return;
+    }
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let driver = manifest.join("web/witchy-runtime/glamour-coven-app.test.mjs");
+    assert!(driver.exists(), "the committed coven-app test driver must exist at {}", driver.display());
+
+    let out = Command::new("node")
+        .arg(&driver)
+        .arg(BIN)
+        .current_dir(manifest)
+        .output()
+        .expect("spawn node glamour-coven-app driver");
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "the glamour coven-app shell test failed:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+    );
+    assert!(stdout.contains("GLAMOUR-COVEN-APP OK"), "coven-app driver did not report success:\n{stdout}");
+}
+
+/// RFC-0015 Phase D: the host-shell PORT effect — the mechanism behind session login and
+/// the WebAuthn passkey ceremony. The committed Node driver
+/// (`web/witchy-runtime/glamour-port.test.mjs`) compiles a rune whose `update` returns
+/// `port("passkeyLogin", "", "LoggedIn")` and drives it through an INJECTED port (the real
+/// one would call `navigator.credentials` and hold the bearer token in the host). It asserts
+/// the port runs on the login click, the signed-in identity renders, and ONLY the outcome
+/// ("alice") — never a credential or token — enters the rune. This makes the session/WebAuthn
+/// wiring suite-testable; only the real `navigator.credentials` port impl is browser-bound.
+#[test]
+fn glamour_port_effect_runs_session_login_at_the_host() {
+    if !node_available() {
+        eprintln!("skipping: `node` is not available on PATH");
+        return;
+    }
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let driver = manifest.join("web/witchy-runtime/glamour-port.test.mjs");
+    assert!(driver.exists(), "the committed port test driver must exist at {}", driver.display());
+
+    let out = Command::new("node")
+        .arg(&driver)
+        .arg(BIN)
+        .current_dir(manifest)
+        .output()
+        .expect("spawn node glamour-port driver");
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "the glamour port-effect test failed:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+    );
+    assert!(stdout.contains("GLAMOUR-PORT OK"), "port driver did not report success:\n{stdout}");
+}
+
+/// RFC-0015 Phase D: the COMPLETE coven-web frontend as one glamour app — the suite-tested
+/// core of the TypeScript->glamour migration. The committed Node driver
+/// (`web/witchy-runtime/glamour-coven-web-app.test.mjs`) mounts `coven_web_app` with an
+/// injected fake registry, history, and host ports, then drives the whole shell: catalog ->
+/// version record -> passkey sign-in -> promote -> API docs -> registry trust. Every fetch
+/// and the WebAuthn ceremony run in the host (the rune holds no `Net`, no token, empty
+/// footprint), proving the trusted shell that replaces the TS app works with authority
+/// entirely at the edge. (The JS bootstrap, build swap, and TS deletion are the follow-up,
+/// browser-verified cutover.)
+#[test]
+fn glamour_coven_web_app_full_shell_works() {
+    if !node_available() {
+        eprintln!("skipping: `node` is not available on PATH");
+        return;
+    }
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let driver = manifest.join("web/witchy-runtime/glamour-coven-web-app.test.mjs");
+    assert!(driver.exists(), "the committed coven-web-app test driver must exist at {}", driver.display());
+
+    let out = Command::new("node")
+        .arg(&driver)
+        .arg(BIN)
+        .current_dir(manifest)
+        .output()
+        .expect("spawn node glamour-coven-web-app driver");
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "the complete coven-web app shell test failed:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+    );
+    assert!(stdout.contains("GLAMOUR-COVEN-WEB-APP OK"), "coven-web-app driver did not report success:\n{stdout}");
+}
+
+/// Regression: the `String -> String` WASM export ABI must not leak. The bump allocator
+/// (`__galloc`) never frees, so a long-lived run loop (glamour MVU: one call per event) would
+/// otherwise accumulate one call's allocations forever and eventually exhaust WASM memory —
+/// `__galloc` returns an out-of-bounds pointer and the app crashes (observed after a few dozen
+/// coven-web navigations). The fix exports each module's `__heap` pointer and the host
+/// (`witchy-runtime.mjs`) resets it to its base after every call. The committed driver compiles
+/// an allocation-heavy export and drives 3000 calls, asserting memory stays bounded and the heap
+/// returns to base each time.
+#[test]
+fn wasm_string_export_does_not_leak_across_calls() {
+    if !node_available() {
+        eprintln!("skipping: `node` is not available on PATH");
+        return;
+    }
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let driver = manifest.join("web/witchy-runtime/heap-reset.test.mjs");
+    assert!(driver.exists(), "the committed heap-reset driver must exist at {}", driver.display());
+
+    let out = Command::new("node")
+        .arg(&driver)
+        .arg(BIN)
+        .current_dir(manifest)
+        .output()
+        .expect("spawn node heap-reset driver");
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "the WASM heap-reset regression test failed:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+    );
+    assert!(stdout.contains("HEAP-RESET OK"), "heap-reset driver did not report success:\n{stdout}");
+}
+
+/// RFC-0015 Phase B: the `compartment` primitive isolates foreign code. The committed
+/// Node driver (`web/witchy-runtime/glamour-compartment.test.mjs`) compiles a rune that
+/// embeds `glamour.compartment("d3-runes-chart", grant, "ChartResized")` — dropping in a
+/// third-party chart — and asserts the host shell renders it as a LOCKED-DOWN iframe
+/// (`sandbox="allow-scripts"` with no `allow-same-origin` → opaque origin; loaded from the
+/// sealed `/compartments/<id>/` path) and never inlines the foreign renderer or the grant
+/// into the trusted DOM. The browser enforces the origin/CSP isolation at runtime; this
+/// proves there is no code path that puts foreign content anywhere but the boxed frame —
+/// the configuration behind "even a compromised d3 stays contained".
+#[test]
+fn glamour_compartment_isolates_foreign_code() {
+    if !node_available() {
+        eprintln!("skipping: `node` is not available on PATH");
+        return;
+    }
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let driver = manifest.join("web/witchy-runtime/glamour-compartment.test.mjs");
+    assert!(driver.exists(), "the committed compartment test driver must exist at {}", driver.display());
+
+    let out = Command::new("node")
+        .arg(&driver)
+        .arg(BIN)
+        .current_dir(manifest)
+        .output()
+        .expect("spawn node glamour-compartment driver");
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "the glamour compartment isolation test failed:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+    );
+    assert!(stdout.contains("GLAMOUR-COMPARTMENT OK"), "compartment driver did not report success:\n{stdout}");
+}
+
+/// RFC-0015 Phase A3 PARITY: the Markdown renderer produces byte-identical VNode JSON on
+/// the interpreter and the compiled WASM backend — the prime directive, for the pure
+/// `markdown.to_vnode` string-processing path. Renders a document exercising headings,
+/// bold, inline code, a sanitized link, and a list, then runs `witchy parity`.
+#[test]
+fn glamour_markdown_renders_identically_on_both_backends() {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let work = std::env::temp_dir().join(format!("glamour-md-parity-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&work);
+    std::fs::create_dir_all(&work).unwrap();
+    for f in ["glamour.witchy", "markdown.witchy"] {
+        std::fs::copy(manifest.join("projects/glamour/src").join(f), work.join(f)).unwrap();
+    }
+    let prog = "import glamour\nimport markdown\nimport json\nimport reflect\n\
+type Msg derive(Reflect):\n    Noop\n\n\
+fn msg_to_json(m: Msg) -> Json:\n    json.value_of(m)\n\n\
+fn main(console: Console):\n    \
+print(console, glamour.to_json(markdown.to_vnode(\"# Title\\n\\nA **bold** word, `code`, a [link](https://example.com), and:\\n\\n- one\\n- two\\n\"), msg_to_json))\n";
+    std::fs::write(work.join("mdparity.witchy"), prog).unwrap();
+
+    let out = Command::new(BIN)
+        .arg("parity")
+        .arg(work.join("mdparity.witchy"))
+        .current_dir(&work)
+        .output()
+        .expect("run witchy parity on the markdown program");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let _ = std::fs::remove_dir_all(&work);
+    assert!(
+        out.status.success() && stdout.contains("agree"),
+        "markdown rendering must be identical on both backends:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+    );
+}
+
+/// RFC-0015 Phase A3: the Markdown renderer (`markdown.to_vnode`) is XSS-safe.
+///
+/// The committed Node driver (`web/witchy-runtime/glamour-markdown.test.mjs`) compiles
+/// a rune that renders deliberately hostile UNTRUSTED Markdown — a raw `<script>` tag
+/// and a `javascript:` link — through `markdown.to_vnode`, mounts it, and asserts the
+/// DOM is inert: no `<script>` element is ever created (the raw HTML shows as literal
+/// text — glamour has no HTML-string sink), and the link's `javascript:` href is
+/// neutralized to `#`. Normal Markdown (heading, bold, list) still renders to real
+/// elements. This is the safe-by-construction README/doc rendering RFC-0015 relies on.
+#[test]
+fn glamour_markdown_renderer_is_xss_safe() {
+    if !node_available() {
+        eprintln!("skipping: `node` is not available on PATH");
+        return;
+    }
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let driver = manifest.join("web/witchy-runtime/glamour-markdown.test.mjs");
+    assert!(driver.exists(), "the committed markdown test driver must exist at {}", driver.display());
+
+    let out = Command::new("node")
+        .arg(&driver)
+        .arg(BIN)
+        .current_dir(manifest)
+        .output()
+        .expect("spawn node glamour-markdown driver");
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "the glamour markdown XSS test failed:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+    );
+    assert!(stdout.contains("GLAMOUR-MARKDOWN OK"), "markdown driver did not report success:\n{stdout}");
+}
+
 /// RFC-0008 DOGFOODING capstone: drive the glamour SYNTAX HIGHLIGHTER rune
 /// headlessly — the proving ground for coven-web's sandbox-highlighter migration
 /// (projects/coven-web/PLAN.md WS-I/M6).

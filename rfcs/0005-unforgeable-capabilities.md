@@ -68,8 +68,12 @@ capacity), so the failure mode is silent heap corruption, not a trap.
 
 Running the compiled module in wasmtime is a real, hard boundary: a miscompile
 **cannot** escape linear memory, forge an import, read host memory, or execute
-native code. But the boundary leaks precisely where **authority is named by
-forgeable bytes**:
+native code. This is wasmtime's *stated* model, not an implementation accident —
+its security documentation says explicitly that it protects the host from the
+guest but does **not** protect the contents of a guest's own linear memory;
+intra-guest corruption confined to linear memory is by design *not* treated as a
+wasmtime vulnerability. The boundary therefore leaks precisely where **authority
+is named by forgeable bytes**:
 
 - A capability is an `i32` handle. `secret_seed_bytes`
   (`src/runtime.rs:1269`), `dir_base`, and `net_allow` all resolve a guest-supplied
@@ -181,15 +185,19 @@ depth, to revisit only if the narrowing logic proves bug-prone in practice.
 Most witchy values never contain a capability, but some do: a record field, a
 closure that captured a `dir`, and a branded capability (`Redis(net)`). Today
 those live in the linear-memory heap, with the cap as an `i32` field. Under this
-RFC a capability inside an aggregate must remain an `externref`, which cannot be
-stored in linear memory. Two ways to resolve it:
+RFC a capability inside an aggregate must remain a reference — and the
+reference-types proposal does not let a bare `externref` be stored in linear
+memory *or in a struct/array field*; it lives only in locals, globals, tables,
+and function arguments. That limitation is exactly why nesting a capability needs
+one of two resolutions:
 
 - **(A) GC structs for cap-carrying aggregates.** Represent any value that
   transitively contains a capability with WASM GC reference types
   (`struct`/`array`), so the `externref` stays a reference throughout. Cleanest
   and fully sound; the cost is that the witchy heap is currently entirely
   linear-memory, so this introduces a second (GC) representation and the lowering
-  to choose between them. wasmtime supports the GC proposal; the WIR encoder
+  to choose between them. wasmtime **enables the GC proposal by default** and it
+  ships in browsers, so this is more mature than it once was; the WIR encoder
   (`src/wir*.rs`) and `codegen.rs` would gain reference-typed structs for the
   cap-carrying subset.
 - **(B) Side table of references, keyed by the value's identity.** Keep
@@ -199,7 +207,12 @@ stored in linear memory. Two ways to resolve it:
   entries the guest still cannot forge or corrupt from linear memory (only
   `table.get`/`table.set` touch it, and corruption of the *index* only lets the
   guest reach another reference *it already legitimately holds in its own table*).
-  Weaker and fiddlier than (A); avoids the GC migration.
+  Weaker and fiddlier than (A): because every grant the instance holds is
+  reachable, a corrupted index can still swap a narrowed handle for a fuller one
+  the program holds elsewhere — so (B) does **not** fully close the *attenuation*
+  gap, whereas (A), which stores the reference itself with no index, leaves no
+  corruption path at all. Avoids the GC migration. (This residual weakness is the
+  same one that rules out component-model `resource` handles — see *Alternatives*.)
 
 Recommendation: **(A)** for soundness and simplicity of reasoning, scoped to only
 the cap-carrying value shapes so the bulk of the heap is untouched. The choice is
@@ -245,7 +258,14 @@ built.
    heap canaries. This is the direct way to find the false negatives that turn the
    optimizer into a memory-corruption primitive. Pairs with hardening #2: with the
    trap in place, a found false negative surfaces as a trap diff rather than
-   undefined behavior.
+   undefined behavior. The compiler-assurance literature points the same way:
+   differential testing of an *interpreter oracle* against a *compiler backend* is
+   the standard JIT-soundness method — and witchy already has exactly that shape
+   (the interpreter is the oracle, the WASM backend the subject). Augment it with
+   CSmith-style generation and WASM AddressSanitizer/UBSan instrumentation plus
+   heap canaries, which catch corruption a value-comparison oracle alone would
+   miss (this instrumentation is the *only* realistically adoptable use of the
+   "memory safety within linear memory" research — see *Alternatives*).
 
 4. **Test the attenuation rules.** A focused typeck suite asserting the
    compile-time guarantees that rights/narrowing/firewalls rely on: a `Dir[Read]`
@@ -262,6 +282,34 @@ built.
    into a slot where a narrowed/different one belongs, and it does not help the
    compile-time-only attenuation surface — so it is a stopgap, not a fix, and is
    subsumed entirely by the `externref` change.
+
+6. **An independent static re-checker over the emitted WASM (VeriWasm-style).**
+   Rather than *trusting* the ownership analysis, add a small offline pass that
+   re-derives, from the *emitted* WASM, that every in-place store the optimizer
+   introduced is within the buffer the analysis claimed unique. This is the spirit
+   of VeriWasm (Johnson et al., NDSS 2021), which statically re-verifies that
+   Lucet's compiled output upholds WASM's memory-isolation invariants — deployed in
+   production at Fastly with no false positives. It is a *verifier*, not a test: it
+   covers inputs the fuzzer never generates. Scope it to the one risky invariant
+   (in-place / alias), not whole-program equivalence — full translation validation
+   and CompCert-style verified compilation are out of scope for a small two-backend
+   compiler. Meaningful even after the `externref` change, since it guards
+   *correctness*, not just authority.
+
+7. **Operational wasmtime hardening (adopt today, independent of everything
+   above).** Audit the embedding `Config` for defense in depth: keep Cranelift's
+   Spectre mitigations on (`enable_heap_access_spectre_mitigation` /
+   `enable_table_access_spectre_mitigation` are on by default — and note that
+   `Config::signals_based_traps(false)` would force them off, so don't); disable
+   every WASM proposal we don't emit, to shrink the codegen/runtime surface
+   (`wasm_threads`, `wasm_simd`, `wasm_multi_memory`, `wasm_tail_call`, …) while
+   keeping `reference_types` and `gc` on, which the core change needs; on
+   Linux/x86 consider memory-protection-keys (`PoolingAllocationConfig::memory_protection_keys`)
+   for intra-process isolation between instances under the pooling allocator; and
+   set a `ResourceLimiter` plus fuel or epoch interruption for DoS bounds. None of
+   this protects the *contents* of a guest's own linear memory — wasmtime's
+   security docs are explicit on that point — which is exactly why authority must
+   be moved *out* of linear memory (the core change), not defended within it.
 
 ## Alternatives
 
@@ -286,6 +334,26 @@ built.
   performance story (`mode opt`, clone-elision). The right move is to make their
   failure mode safe (a trap, #2) and to remove authority from their blast radius
   (`externref`), not to remove them.
+- **Component-model `resource` handles instead of `externref`.** Resources are the
+  purpose-built capability mechanism — own/borrow + drop tracked at runtime, and
+  the WASI Preview 2 lineage of "unforgeable handles" — but for *this* threat they
+  are weaker than `externref`/GC. A resource handle is still an `i32` index that
+  lives in the guest's linear memory, validated only against the per-instance
+  handle table: an out-of-table index traps, but a corrupted *in-table* index
+  still reaches another grant the instance holds — exactly the
+  attenuation-re-widening attack (the same residual weakness as resolution (B)).
+  Resources solve ownership ergonomics, not linear-memory corruption. Revisit them
+  if witchy adopts the component model for other reasons; the unforgeable-reference
+  property comes from `externref`/GC, not from resources.
+- **Make linear memory itself safe (MSWasm, CHERI, always-on ASan).** Memory-Safe
+  WebAssembly (segments + provenance-carrying handles) and CHERI / Arm-MTE
+  substrates would catch the corrupting write *directly*, which is conceptually the
+  cleanest fix. Rejected as a production guarantee: MSWasm is research-only and
+  unsupported by wasmtime (or any production runtime), CHERI/MTE work (e.g. Cage)
+  is hardware-gated research, and software memory-safety instrumentation carries
+  tens-to-hundreds-of-percent overhead. Their practical role is *fuzzing
+  instrumentation* (#3), not always-on. Removing authority *from* linear memory
+  (the core change) needs no new runtime and ships today.
 
 ## Drawbacks
 
@@ -321,6 +389,21 @@ built.
 - The object-capability model (unforgeable references as the unit of authority);
   WASM reference types and the GC proposal (capabilities as host references the
   guest cannot synthesize); wasmtime `ExternRef`.
+- wasmtime's security model — the host/guest boundary and the **explicit
+  non-guarantee** that a guest's own linear-memory contents are protected
+  (`docs.wasmtime.dev/security.html` and "what is considered a security
+  vulnerability"); the embedding `Config` / `PoolingAllocationConfig` hardening
+  knobs (Spectre mitigations, MPK, guard pages, proposal toggles, resource limits).
+- VeriWasm (Johnson et al., NDSS 2021) — static verification that compiled output
+  upholds an isolation invariant, deployed at Fastly; the model for hardening #6.
+  Cranelift's own ISLE lowering-rule verification (Crocus / veri-ISLE, ASPLOS 2024)
+  and CompCert are the heavier, less applicable points on the same spectrum.
+- The WebAssembly Component Model `resource` types / Canonical ABI (own/borrow
+  handles) — considered and set aside for this threat (see *Alternatives*).
+- Memory-safety-within-linear-memory research: MSWasm / Iris-MSWasm (segments +
+  handles) and CHERI / Arm-MTE WASM work (Cage) — surveyed and rejected as
+  research-grade (see *Alternatives*); AddressSanitizer/UBSan and stack-canary
+  ports (VMCANARY, WASP) as fuzzing instrumentation for hardening #3.
 
 ---
 

@@ -7,46 +7,64 @@ The full design is in `PLAN.md`; this is the security summary.
 
 ## Architecture in one line
 
-A 100%-witchy `std/server` (`src/coven_web.witchy`) serves a zero-dependency TypeScript SPA and
-reverse-proxies coven's read API **same-origin**, so the browser only ever talks to one origin
-(no CORS). Untrusted, publisher-shaped content (package source) renders only inside a
-network-firewalled, opaque-origin double-iframe sandbox.
+A 100%-witchy `std/server` (`src/coven_web.witchy`) serves a single **capability-pure glamour
+WASM rune** as the entire frontend (`projects/glamour/examples/coven_web_app`, empty footprint —
+compiled and base64-inlined into `app.js`; the only hand-written JS is a thin host shell holding
+all authority) and reverse-proxies coven's read API **same-origin**, so the browser only ever
+talks to one origin (no CORS). The rune builds the DOM through glamour's host shell —
+`createElement`/`textContent` only, never an HTML string — so it is **XSS-immune by
+construction**; untrusted publisher content (package source, metadata) is *data* and renders
+inline, safe by construction. Foreign *code* (a third-party charting library) is the only thing
+isolated, into an opaque-origin compartment iframe.
 
 ## Defense layers (each independently stops the common case)
 
 1. **Perfect Types in the trusted parent.** The app-shell CSP is
-   `require-trusted-types-for 'script'; trusted-types 'none'`. `'none'` is the *strictest* setting,
-   not "off": it forbids creating any Trusted Types policy, so every string→HTML sink (`innerHTML`,
-   `srcdoc`, `document.write`, …) throws. The parent goes further and **never inserts HTML strings
-   at all** — all DOM is built with `createElement`/`textContent` — so there is no sink to reach.
-2. **Sandbox containment.** Package source renders in a double iframe: an outer
-   `<iframe sandbox="allow-scripts" src="/sandbox-frame">` (own CSP with `connect-src 'none'`;
-   opaque origin because `allow-same-origin` is omitted) that bootstraps an inner `srcdoc` iframe
-   (a second opaque origin). All traffic is over a private `MessageChannel`. A full XSS inside the
-   sandbox cannot read cookies, call the API, navigate to exfiltrate, or reach the parent DOM. This
-   is verified: an in-sandbox `fetch()` is blocked by `connect-src 'none'`.
+   `script-src 'self' 'wasm-unsafe-eval'; … require-trusted-types-for 'script'; trusted-types 'none'`.
+   `trusted-types 'none'` is the *strictest* setting, not "off": it forbids creating any Trusted
+   Types policy, so every string→HTML sink (`innerHTML`, `srcdoc`, `document.write`, …) throws. The
+   frontend goes further and **never inserts HTML strings at all** — the glamour host shell builds
+   all DOM with `createElement`/`textContent`/`setAttribute` (and the attribute layer drops `on*`
+   props and scheme-checks URL attributes), so there is no sink to reach. `'wasm-unsafe-eval'` is
+   the *only* relaxation: it lets the parent compile the trusted app module (our own inlined rune),
+   permits WebAssembly compilation but **not** JS `eval()`/`Function()` (strictly narrower than
+   `'unsafe-eval'`), and the only module ever compiled is that rune.
+2. **Foreign-code compartments (RFC-0015).** The frontend renders untrusted *data* inline (it can't
+   produce a sink), so a compartment is reserved for the genuinely uncontainable case: third-party
+   *code*. A compartment is loaded into `<iframe sandbox="allow-scripts">` (opaque origin — no
+   cookies, no parent DOM, no storage) served with its own `connect-src 'none'` CSP (no network
+   egress); only a non-sensitive JSON grant crosses in over a private `MessageChannel`, and only a
+   narrow tagged event comes back. A fully-compromised renderer (a swapped/XSS'd library) cannot
+   read cookies, call the API, exfiltrate, or reach the parent DOM. The same opaque-origin
+   double-iframe machinery (`/sandbox-frame`) also still backs the optional in-sandbox source
+   highlighter, kept served for that use.
 3. **Strict same-origin + cross-origin isolation + CSRF.** Same-origin-only CSP (`connect-src
    'self'`); **strict COOP `same-origin` + COEP `require-corp` + CORP `same-origin`** on *every*
    response (hard invariant — own-process, cross-origin-isolated document, anti-Spectre);
    `X-Frame-Options: DENY` (SAMEORIGIN only for `/sandbox-frame`); deny-all `Permissions-Policy`;
    `nosniff`; `no-referrer`; `no-store`. State-changing requests (v2) use `__Host-` `SameSite=Strict`
    cookies + a Sec-Fetch CSRF check.
-4. **Zero runtime dependencies.** The SPA has no third-party runtime code (`web/package.json` deps
-   `{}`). Build tools (esbuild/tsc/oxlint) are vendored + pinned under `web/tools/`. The only
-   vendored library that runs in the browser (a syntax highlighter, later) executes **only inside
-   the sandbox**, never in the parent.
+4. **Zero runtime dependencies.** The frontend is a witchy rune we author + a thin host shell;
+   there is no third-party runtime code in the trusted surface (`web/package.json` deps `{}`).
+   Build tools (esbuild/tsc/oxlint) are vendored + pinned under `web/tools/`. The only third-party
+   code that can run in the browser is a charting library, and it runs **only inside a
+   compartment** (opaque origin, `connect-src 'none'`), never in the parent.
 
 ## What never crosses the trust boundary
 
-Session state, cookies, tokens, and authenticated responses **never enter a sandbox**. The trusted
-parent makes any authenticated fetch and passes only rendering *data* into the sandbox over the
-MessageChannel; only structured events (height, ready) come back.
+Session state, cookies, tokens, and authenticated responses **never enter a compartment, and never
+enter the rune**. The host shell makes every authenticated fetch — attaching the bearer session
+itself — and the rune only ever receives rendering *data*; the WebAuthn ceremony (register, login,
+2FA promote) runs entirely in the host, so `navigator.credentials` and the token stay at the edge.
+A compartment receives only a non-sensitive JSON grant over a `MessageChannel`, and only a narrow
+tagged event comes back.
 
 ## Trust rule
 
-If content comes from or is shaped by a publisher (package source, and publisher-derived record
-strings), it is treated as untrusted: source renders in the sandbox; short strings render in the
-parent via `textContent`.
+Publisher-shaped content (package source, publisher-derived record strings) is untrusted, but it is
+*data*: glamour cannot turn data into markup, so it all renders **inline** through the host shell's
+`textContent`/`createElement` path — no sanitizer, no sandbox. Isolation is reserved for foreign
+*code*, which is the only input that obeys neither the capability nor the no-sink discipline.
 
 ## Accepted residual risk
 
@@ -61,11 +79,11 @@ The Perfect Types model depends on the native HTML Sanitizer / Trusted Types and
 is no safe down-level polyfill (a polyfill would reintroduce the fallible sanitizer-policy code the
 model deletes), so older browsers are **unsupported**, not degraded.
 
-## Future: witchy-WASM in the browser (WS-I)
+## witchy-WASM in the browser (shipped)
 
-WS-I brings witchy-compiled WASM into the browser (first the sandbox source highlighter/renderer,
-later the framework). Full threat model: [RFC-0007](../../rfcs/0007-witchy-wasm-browser-target.md).
-The load-bearing rules to preserve:
+The frontend *is* witchy-compiled WASM: the whole app is a glamour rune (RFC-0008/0015), and the
+optional source highlighter is a second one. Full threat model:
+[RFC-0007](../../rfcs/0007-witchy-wasm-browser-target.md). The load-bearing rules, all upheld:
 
 - **Pure-compute by construction.** The browser host shim implements only the non-capability
   `"witchy"` imports and **denies every capability import** (Net/Dir/Clock/…); a module that needs

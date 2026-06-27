@@ -1,0 +1,154 @@
+// markdown — a SAFE-subset Markdown -> glamour VNode renderer (RFC-0015 Phase A3).
+//
+// Untrusted Markdown (a package README, generated API docs) renders INLINE in the
+// trusted shell, safe BY CONSTRUCTION: every leaf is a glamour `text` node — never an
+// HTML-string sink — so raw HTML in the source is shown as literal text, never parsed
+// as markup; and a link's `href` is scheme-checked, so a `javascript:`/`data:` URL is
+// neutralized. This is witchy-rendered DATA, not foreign code, so it needs no
+// compartment. (`string`/`list` are prelude — pure, capability-free — so this module's
+// footprint stays empty, exactly like the rest of glamour.)
+
+import glamour
+
+// Render a Markdown document to a single container VNode.
+pub fn to_vnode(md: String) -> VNode(msg):
+    glamour.element("div", [glamour.prop("class", "markdown")], blocks(string.split(md, "\n")))
+
+// --- block level (line-driven) ----------------------------------------------
+
+fn blocks(lines: List(String)) -> List(VNode(msg)):
+    var acc = []
+    var i = 0
+    let n = list.length(lines)
+    while i < n:
+        let line = list.at(lines, i)
+        if string.is_empty(string.trim(line)):
+            i = i + 1
+        else if heading_level(line) > 0:
+            let lvl = heading_level(line)
+            let body = string.substring(line, lvl + 1, string.length(line))
+            acc = list.push(acc, glamour.element("h${lvl}", [], inline(body)))
+            i = i + 1
+        else if string.starts_with(line, "```"):
+            var code = []
+            var j = i + 1
+            while j < n && !string.starts_with(list.at(lines, j), "```"):
+                code = list.push(code, list.at(lines, j))
+                j = j + 1
+            let pre = glamour.element("pre", [], [glamour.element("code", [], [glamour.text(string.join(code, "\n"))])])
+            acc = list.push(acc, pre)
+            i = j + 1
+        else if is_list_item(line):
+            var items = []
+            var j = i
+            while j < n && is_list_item(list.at(lines, j)):
+                let text = string.substring(list.at(lines, j), 2, string.length(list.at(lines, j)))
+                items = list.push(items, glamour.element("li", [], inline(text)))
+                j = j + 1
+            acc = list.push(acc, glamour.element("ul", [], items))
+            i = j
+        else:
+            var para = []
+            var j = i
+            while j < n && !block_break(list.at(lines, j)):
+                para = list.push(para, list.at(lines, j))
+                j = j + 1
+            acc = list.push(acc, glamour.element("p", [], inline(string.join(para, " "))))
+            i = j
+    acc
+
+// A line that ends a paragraph (blank, a heading, a fence, or a list item).
+fn block_break(line: String) -> Bool:
+    string.is_empty(string.trim(line)) || heading_level(line) > 0 || string.starts_with(line, "```") || is_list_item(line)
+
+fn heading_level(line: String) -> Int:
+    if string.starts_with(line, "###### "): 6
+    else if string.starts_with(line, "##### "): 5
+    else if string.starts_with(line, "#### "): 4
+    else if string.starts_with(line, "### "): 3
+    else if string.starts_with(line, "## "): 2
+    else if string.starts_with(line, "# "): 1
+    else: 0
+
+fn is_list_item(line: String) -> Bool:
+    string.starts_with(line, "- ") || string.starts_with(line, "* ")
+
+// --- inline (recursive, earliest-marker) ------------------------------------
+// Handles `code`, **bold**, and [text](url). Everything else is a plain text node,
+// so stray Markdown and raw HTML render as their literal characters.
+
+fn inline(s: String) -> List(VNode(msg)):
+    if string.is_empty(s):
+        []
+    else:
+        let ci = string.index_of(s, "`")
+        let bi = string.index_of(s, "**")
+        let ki = string.index_of(s, "[")
+        let first = min3(ci, bi, ki)
+        if first < 0:
+            [glamour.text(s)]
+        else:
+            let before = string.substring(s, 0, first)
+            let head = if string.is_empty(before): [] else: [glamour.text(before)]
+            if first == ci:
+                span(s, first, 1, "`", "code", head)
+            else if first == bi:
+                span(s, first, 2, "**", "strong", head)
+            else:
+                link(s, first, head)
+
+// A delimited inline span (`code`/**bold**): `open` is the marker, `dlen` its length,
+// `tag` the wrapping element. An unclosed marker renders as literal text.
+fn span(s: String, at: Int, dlen: Int, marker: String, tag: String, head: List(VNode(msg))) -> List(VNode(msg)):
+    let body_start = at + dlen
+    let rest_from_body = string.substring(s, body_start, string.length(s))
+    let close = string.index_of(rest_from_body, marker)
+    if close < 0:
+        list.concat(head, [glamour.text(string.substring(s, at, string.length(s)))])
+    else:
+        let body = string.substring(rest_from_body, 0, close)
+        let inner = if tag == "code": [glamour.text(body)] else: inline(body)
+        let node = glamour.element(tag, [], inner)
+        let rest = string.substring(rest_from_body, close + dlen, string.length(rest_from_body))
+        list.concat(list.concat(head, [node]), inline(rest))
+
+// A `[label](url)` link, with the href scheme-checked. A malformed link renders the
+// `[` as a literal character and continues.
+fn link(s: String, at: Int, head: List(VNode(msg))) -> List(VNode(msg)):
+    let tail = string.substring(s, at, string.length(s))
+    let close_br = string.index_of(tail, "](")
+    if close_br < 0:
+        as_text_bracket(s, at, head)
+    else:
+        let label = string.substring(tail, 1, close_br)
+        let url_start = close_br + 2
+        let rest_tail = string.substring(tail, url_start, string.length(tail))
+        let close_par = string.index_of(rest_tail, ")")
+        if close_par < 0:
+            as_text_bracket(s, at, head)
+        else:
+            let url = string.substring(rest_tail, 0, close_par)
+            let node = glamour.element("a", [glamour.prop("href", safe_href(url))], inline(label))
+            let consumed = at + url_start + close_par + 1
+            let rest = string.substring(s, consumed, string.length(s))
+            list.concat(list.concat(head, [node]), inline(rest))
+
+fn as_text_bracket(s: String, at: Int, head: List(VNode(msg))) -> List(VNode(msg)):
+    list.concat(list.concat(head, [glamour.text("[")]), inline(string.substring(s, at + 1, string.length(s))))
+
+// Neutralize dangerous URL schemes; relative URLs and http(s)/mailto pass through.
+fn safe_href(url: String) -> String:
+    let lower = string.to_lower(string.trim(url))
+    if string.starts_with(lower, "javascript:") || string.starts_with(lower, "data:") || string.starts_with(lower, "vbscript:"):
+        "#"
+    else:
+        string.trim(url)
+
+fn min3(a: Int, b: Int, c: Int) -> Int:
+    min2(min2(a, b), c)
+
+fn min2(a: Int, b: Int) -> Int:
+    if a < 0: b
+    else if b < 0: a
+    else if a < b: a
+    else: b

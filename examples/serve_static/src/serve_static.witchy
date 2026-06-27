@@ -20,8 +20,8 @@ fn serve_file(dir: Dir, p: String) -> Response:
         server.not_found()
 
 fn main(console: Console, net: Net, root: Dir):
-    let examples = subdir(root, "examples")
-    let data = subdir(examples, "data")
+    let examples = subtree(root, "examples")
+    let data = subtree(examples, "data")
     let app = server.router().get("/files/*path", file_server(data))
 
     print(console, "serving files on 127.0.0.1:8080")

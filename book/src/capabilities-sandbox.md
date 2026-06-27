@@ -37,8 +37,40 @@ witchy sandbox --net api.example.com:443 client.witchy
 ```
 
 A granted `Dir` is backed by `--dir <root>`; a granted `Net` by one or more
-`--net <host:port>` allowlist entries. Whatever the program's footprint *doesn't*
+`--net <host:port>` allowlist entries; a single file by `--file <path>` (filling a
+`main(config: File[Read])` parameter). Whatever the program's footprint *doesn't*
 include is simply absent.
+
+## Grant documents
+
+Flags don't scale once a program needs several files, a couple of directories, a
+host, and a secret. A **grant document** enumerates the whole grant as reviewable,
+diffable data:
+
+```toml
+# app.grants.toml — the authority the host hands to `main`, bound by parameter name
+[files]
+config = { path = "config.toml", rights = ["Read"] }
+[dirs]
+data = { root = "./data", rights = ["Read", "Write"] }
+[net]
+api = ["api.example.com:443"]
+[secrets]
+token = { from = "env:API_TOKEN" }    # the host resolves it; never inlined
+```
+
+```sh
+witchy sandbox --grants app.grants.toml program.witchy
+```
+
+Each `Dir`/`File` parameter of `main` binds to the document entry of the *same
+name* (`[files].config` → the `config` parameter). And because witchy already
+*computes* a program's footprint, the grant is **cross-checked against it**: a grant
+that asks for authority the code never exercises is a warning (the classic
+over-permission smell), and a grant that withholds authority the code needs is a
+hard error before launch — so "approve this program's permissions" becomes a diff
+against what the code actually does, not blind trust. The same check runs
+standalone: `witchy grants-check program.witchy app.grants.toml`.
 
 ## Handles, not pointers
 
@@ -47,7 +79,7 @@ holds an opaque integer handle into a table the *host* keeps. The path strings
 live outside the VM's memory entirely. So a malicious module can't manufacture a
 directory by writing bytes into its own memory and casting them: the only way to
 get a `Dir` handle is for the host to grant the root, and the only way to get a
-narrower one is `subdir`, which the host resolves and confines. The same goes
+narrower one is `subtree`, which the host resolves and confines. The same goes
 for `Net` allowlists and sockets.
 
 Path confinement uses the same rules as the interpreter: `..` is rejected,

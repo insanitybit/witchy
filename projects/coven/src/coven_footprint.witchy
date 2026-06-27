@@ -38,3 +38,33 @@ pub fn member(xs: List(String), x: String) -> Bool:
         if it == x:
             found = true
     found
+
+// The foreign-code COMPARTMENT renderer ids a rune embeds (RFC-0015), found by scanning
+// its source modules for `compartment("<id>"` call sites. This is the registry-side audit
+// of "what third-party code does this package run?" — the `Js` governance signal, kept
+// HERE (in coven) rather than in the compiler so the compiler stays decoupled from the
+// glamour framework. It is a REVIEW HINT: it reads literal renderer ids from the text, so
+// it may over-report an id mentioned in a comment and cannot see a non-literal id. The
+// actual isolation is the host's iframe sandbox, not this — the audit just makes the
+// foreign code visible (a reviewer/the package page can flag it).
+pub fn compartments_in(files: List((String, String))) -> List(String):
+    var out = []
+    for path, text in files:
+        if is_src_module(path):
+            for id in scan_compartments(text):
+                out = add_unique(out, id)
+    out
+
+fn scan_compartments(s: String) -> List(String):
+    let marker = "compartment(\""
+    let i = string.index_of(s, marker)
+    if i < 0:
+        []
+    else:
+        let after = string.substring(s, i + string.length(marker), string.length(s))
+        let close = string.index_of(after, "\"")
+        if close < 0:
+            []
+        else:
+            let id = string.substring(after, 0, close)
+            list.push(scan_compartments(string.substring(after, close, string.length(after))), id)

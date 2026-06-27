@@ -1,0 +1,9 @@
+version: 2
+updates:
+  # Keep the SHA-pinned actions in .github/workflows current. Pins are required
+  # by .github/zizmor.yml (unpinned-uses: hash-pin); Dependabot bumps both the
+  # SHA and the version comment.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly

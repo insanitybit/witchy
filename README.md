@@ -31,18 +31,18 @@ fn main(console: Console, net: Net, dir: Dir):
     let template = read(dir, "report.tmpl")
     let notes    = http.body(http.get(net, "notes.internal", 443, "/today"))
 
-    // Hand the untrusted rune the *data*, never the *authority*. Inside the
-    // seal `net` and `dir` don't exist, so nothing here — markdown or anything
-    // it calls — can be handed them. Only the rendered String crosses back out.
-    let html = without net, dir:
-        markdown.render(template, notes)
+    // Hand the untrusted rune the *data*, never the *authority*. `markdown.render`
+    // takes only Strings — its signature can't receive `net` or `dir`, so nothing
+    // it does (or anything it calls) can reach them. Only the String crosses back.
+    let html = markdown.render(template, notes)
 
     print(console, html)
 ```
 
-This is extremely hard to mess up. `without` drops the capabilities from the scope entirely,
-even if `render` changed to require a `net` you _couldn't_ pass it in without addressing the
-explicit `without` block too.
+This is extremely hard to mess up. `markdown.render` never receives the capabilities — they
+simply aren't parameters — so it couldn't dial out or read the disk even if a future version
+tried. To get that authority it would have to change its signature (and your call), a visible,
+reviewable change that `witchy caps` flags.
 
 ### Build-Time Execution, safe by default
 

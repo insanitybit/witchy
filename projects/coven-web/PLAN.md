@@ -5,12 +5,17 @@ A single, self-contained implementation plan spanning **both** halves of the ini
    migration), and
 2. the **coven-web** secure web frontend itself.
 
-Status: **WS-A through WS-H shipped and verified end-to-end** (`verify.py`, run under `witchy
-sandbox` — the full read UI, the double-iframe source sandbox with zero-dep witchy syntax
-highlighting, the TUF trust panel, and WebAuthn 2FA promote/yank). The remaining milestone is
-**WS-I — the witchy frontend-framework rune** (§7), gated on the browser WASM host-import shim
-(prereq B5). See the Implementation log (near the end) for what landed. The workstreams below
-are the original ordered plan; everything needed to implement is inline.
+Status: **WS-A through WS-I shipped and browser-verified.** The frontend is now ONE capability-pure
+glamour WASM rune (`projects/glamour/examples/coven_web_app`, empty footprint), compiled and
+base64-inlined into `app.js`; the hand-written JS is just a thin host shell (the bootstrap + the
+session/WebAuthn/yank ports). All views are glamour — catalog with capability-aware search +
+color-coded footprint chips, the signed version record, generated API docs, registry trust, and
+inline package **source** (rendered as data, no sandbox needed) — and register/login/promote/yank
+run through host ports. The TypeScript views/app-logic are deleted. The whole shell was driven in a
+real browser against a live registry (WASM-in-parent under the hardened CSP, client routing +
+history fallback, full WebAuthn register→login→2FA-promote via a virtual authenticator). Design +
+status: [RFC-0015](../../rfcs/0015-secure-web-by-construction.md). The workstreams below are the
+original ordered plan, kept for the backend/stdlib history; everything needed to implement is inline.
 
 > **Design RFCs (2026-06-22).** WS-I is now specified across three proposed RFCs:
 > [RFC-0008 — A capability-pure frontend framework](../../rfcs/0008-frontend-framework-rune.md)

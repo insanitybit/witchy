@@ -12,11 +12,17 @@ capabilities:
 | `Clock` | reading the wall clock |
 | `Env` | reading environment variables |
 | `Dir` | access to a directory subtree |
+| `File` | access to a single file (the leaf of `Dir`) |
 | `Net` | access to the network |
-| `Secret` | signing with a private key |
+| `Exec` | spawning a native subprocess (the sharpest authority) |
+| `SecretStore` / `Secret` | named host secrets, and signing with one |
+
+Each is *right-typed* where that matters — `Dir[Read]` vs `Dir[Write]`,
+`Net[Connect, Tcp]` — so the type says not just *which* resource but *what you may
+do* with it. The next chapter is all about that narrowing.
 
 The defining property: **you cannot construct one.** There is no `Console()`,
-no `Dir.open("/")`, no global `stdin`. The type checker knows these types have
+no `Dir.read_file("/")`, no global `stdin`. The type checker knows these types have
 no constructor available to your code. The *only* capabilities in a program are
 the ones the host mints and hands to `main`:
 

@@ -1,0 +1,61 @@
+# Trusted publishing to coven — copy this into YOUR rune at
+# `.github/workflows/publish.yml`. (It lives here as a template, not in the witchy
+# repo's own CI, because the witchy toolchain is not itself a coven rune.)
+#
+# On a version tag, GitHub mints a short-lived OIDC identity token — there is NO
+# stored API key. coven verifies the token's issuer and audience, then BINDS your
+# namespace to the token's `repository` + `workflow_ref` claims on the first publish
+# (trust-on-first-use) and enforces them on every later publish. A token from a
+# different repo or workflow is rejected.
+#
+# The exact same flow runs end-to-end on localhost — against a simulated issuer — in
+# the witchy repo: `scripts/local-registry-demo.sh`, and it is covered by the
+# `trusted_publishing_*` tests in `tests/e2e.rs`. This workflow is the real-CI half.
+#
+# Prerequisites (one-time, registry-side):
+#   * a deployed coven registry whose URL you set as the `COVEN_URL` repository
+#     variable (Settings -> Secrets and variables -> Actions -> Variables);
+#   * that registry must TRUST GitHub's OIDC issuer
+#     (https://token.actions.githubusercontent.com) by verifying its rotating JWKS.
+
+name: Publish to coven
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  id-token: write   # required to request the OIDC identity token
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Put the witchy toolchain on PATH so `witchy pm publish` is available.
+      # Replace this step with your install method (a release-binary download, or
+      # `cargo build --release` from a checkout of the toolchain).
+      - name: Install witchy
+        run: |
+          echo "TODO: install the witchy toolchain onto PATH" >&2
+          exit 1
+
+      # Request a short-lived identity token scoped to coven's audience. Its claims
+      # (repository, workflow_ref, ref, sub) are exactly what coven verifies; the
+      # audience MUST be `coven-registry` (see projects/coven/src/coven_trust.witchy).
+      - name: Mint the trusted-publishing identity token
+        run: |
+          TOKEN=$(curl -sS \
+            -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=coven-registry" | jq -r '.value')
+          echo "::add-mask::$TOKEN"
+          echo "COVEN_ID_TOKEN=$TOKEN" >> "$GITHUB_ENV"
+
+      # `witchy pm publish` reads the registry address from COVEN_URL and the
+      # identity token from COVEN_ID_TOKEN (its `Env` capability) — no secrets file.
+      - name: Publish to coven
+        env:
+          COVEN_URL: ${{ vars.COVEN_URL }}
+        run: witchy pm publish .

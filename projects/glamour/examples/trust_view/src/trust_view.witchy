@@ -1,0 +1,57 @@
+// trust_view — coven's REGISTRY-TRUST (TUF) view on glamour (RFC-0015 Phase D): the
+// transparency page a client checks before trusting the registry — the root key, the
+// snapshot version + target count, and the snapshot/timestamp signature, freshness, and
+// rollback checks, each shown as a pass/fail indicator. The values are baked here; the shell
+// fills them from `/coven/rootpub`, `/coven/snapshot`, `/coven/timestamp` and computes the
+// checks. A pure render (no events); empty footprint.
+
+import glamour
+import json
+import list
+import reflect
+
+type Msg derive(Reflect):
+    Noop
+
+fn check(label: String, value: String, pass: Bool) -> List(VNode(Msg)):
+    let cls = if pass: "chip ok" else: "chip bad"
+    [
+        glamour.element("dt", [], [glamour.text(label)]),
+        glamour.element("dd", [], [glamour.element("span", [glamour.prop("class", cls)], [glamour.text(value)])]),
+    ]
+
+fn view(model: Int) -> VNode(Msg):
+    var rows = []
+    rows = list.concat(rows, check("root key", "ed25519:3a9f…c0", true))
+    rows = list.concat(rows, check("snapshot version", "42", true))
+    rows = list.concat(rows, check("targets", "318 runes", true))
+    rows = list.concat(rows, check("snapshot signature", "valid", true))
+    rows = list.concat(rows, check("timestamp freshness", "fresh (2m ago)", true))
+    rows = list.concat(rows, check("rollback check", "ok", true))
+    glamour.element("article", [glamour.prop("class", "trust")], [
+        glamour.element("h1", [], [glamour.text("Registry trust (TUF)")]),
+        glamour.element("dl", [glamour.prop("class", "record")], rows),
+    ])
+
+fn update(model: Int, msg: Msg) -> (Int, Cmd(Msg)):
+    (model, NoCmd)
+
+fn parse_model(j: Json) -> Int:
+    match json.as_int(j):
+        Some(n) -> n
+        None -> 0
+
+fn parse_msg(j: Json) -> Msg:
+    Noop
+
+fn model_to_json(model: Int) -> Json:
+    json.value_of(model)
+
+fn msg_to_json(m: Msg) -> Json:
+    json.value_of(m)
+
+pub fn export_step(input: String) -> String:
+    step_with(input, view, update, parse_model, parse_msg, model_to_json, msg_to_json)
+
+fn main(console: Console):
+    print(console, export_step("{\"model\": 0}") + "\n")

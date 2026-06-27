@@ -1,0 +1,11 @@
+# trust_view — a coven view template on glamour (RFC-0015 Phase D). The shell fills the data from
+# the registry; here it is baked so the template renders standalone. Empty footprint.
+[rune]
+name = "trust_view"
+version = "0.1.0"
+
+[capabilities]
+runtime = ["Console"]
+
+[dependencies]
+"glamour" = { path = "../.." }

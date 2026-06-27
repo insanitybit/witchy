@@ -74,7 +74,7 @@ pub fn content_hash(files: List((String, String))) -> String:
 // Every published version of a rune.
 pub fn versions_of(store: Dir, name: String) -> List(String):
     if exists(store, name):
-        list(subdir(store, name))
+        list(subtree(store, name))
     else:
         []
 
@@ -84,7 +84,7 @@ pub fn all_names(store: Dir) -> List(String):
     var out = []
     for ns in list(store):
         if !string.ends_with(ns, ".json") && !string.starts_with(ns, "_"):
-            for nm in list(subdir(store, ns)):
+            for nm in list(subtree(store, ns)):
                 out = list.push(out, ns + "/" + nm)
     out
 

@@ -5,6 +5,17 @@ note: Imported from docs/ under RFC-0001. Frozen design record — current behav
 
 # Secrets & encryption: the witchy design
 
+> **2026-06-23 — status correction.** This RFC is `implemented`. The near-term
+> design (`SecretStore` capability + `Secret` handle, `get`/`require`/
+> `crypto.reveal`, `--secret`/`--secret-file`/`--signing-key`) **shipped on both
+> backends and is parity-tested** — see the "Implementation status (shipped)"
+> section below. Two later in-body status lines are therefore stale: the
+> "Status: DESIGN (not yet implemented)" note immediately below, and the
+> "Implementation status (2026-06-18) … REMAINING (the WASM backend + CLI +
+> migration)" section near the end (that list is all done). Only the longer-term
+> `secrets` library (sealed types, `Redacted`, facets) is still unbuilt. Body
+> left intact as the historical record per rfcs/README.
+
 > Status: DESIGN (not yet implemented). This document consolidates the approach;
 > code blocks use provisional syntax and are intentionally NOT tagged `witchy`
 > (so the doc-examples test does not try to compile them).

@@ -49,6 +49,7 @@ witchy caps-diff old.witchy new.witchy      # exit 2 if authority widened on eit
 witchy which split                          # where a function lives: string.split(s, sep), with its doc
 
 witchy sandbox program.witchy               # run confined in the WASM VM
+witchy grants-check program.witchy app.grants.toml   # check a grant doc against the footprint
 witchy build-step gen.witchy --out gen/     # run a build step under confined grants
 ```
 
@@ -56,9 +57,16 @@ witchy build-step gen.witchy --out gen/     # run a build step under confined gr
 and, when a rune ships a `build` step, what that step may do at *build time*,
 on its own axis. `caps-diff` is the CI gate against silent privilege growth on
 either axis. `sandbox` compiles to WebAssembly and runs the program in a VM
-granted exactly its footprint — pass `--dir <root>` to back a `Dir`,
-`--net <host:port>` to allowlist a network address. We'll use these heavily in
-the capabilities chapter.
+granted exactly its footprint:
+
+- `--dir <root>` backs a `Dir`,
+- `--file <path>` backs a single `File` parameter (the i-th `File` ← the i-th `--file`),
+- `--net <host:port>` allowlists a network address,
+- `--grants <file>` reads the whole grant from a reviewable TOML document.
+
+`grants-check` validates such a document against the program's computed footprint
+without running it — exit 2 if the grant withholds authority the code needs (or
+warns if it over-grants). We'll use these heavily in the capabilities chapter.
 
 ## Compiling
 

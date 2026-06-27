@@ -121,10 +121,14 @@ cannot instantiate.
 
 ## The imports
 
-The 51 imports of ABI version 1, classified. **Infrastructure** imports carry no
-authority and the pure-compute host provides them. **Capability** imports are
-authority (or interpreter-only host services) and the pure-compute host
-**omits** them.
+ABI version 1 declares **58 imports** (`IMPORT_COUNT` in `src/wir_prelude.rs`),
+classified below. **Infrastructure** imports carry no authority and the
+pure-compute host provides them. **Capability** imports are authority (or
+interpreter-only host services) and the pure-compute host **omits** them. The
+tables group imports by family and, for a *staged* result, list the representative
+`…_len`/`…_size` import (its paired drain — `dir_read`, `dir_list`,
+`net_recv_*`, `file_read`, … — is implied), so the rows classify the 58 rather
+than enumerate each half of a pair.
 
 ### Infrastructure — provided by the pure-compute host
 
@@ -166,8 +170,9 @@ instantiate.
 
 | family | imports | authority |
 | --- | --- | --- |
-| Dir | `dir_read_len`, `dir_list_size`, `dir_subdir`, `dir_exists`, `dir_is_dir`, `dir_write`, `dir_append`, `dir_make_dir` | filesystem |
-| Net | `net_connect`, `net_listen`, `net_accept`, `net_restrict`, `net_send_line`, `net_send_bytes`, `net_recv_line_len`, `net_recv_all_len`, `net_recv_bytes_len`, `net_close` | network |
+| Dir | `dir_read_len`, `dir_list_size`, `dir_subdir` (mints a child `Dir` — user op `subtree`), `dir_exists`, `dir_is_dir`, `dir_write`, `dir_append`, `dir_make_dir`, `dir_open`/`dir_create` (mint a `File[Read]`/`File[Write]` — user ops `read_file`/`write_file`) | filesystem |
+| File | `file_read_len`, `file_write` | one file — the leaf of `Dir` (RFC-0012) |
+| Net | `net_connect`, `net_try_connect`, `net_listen`, `net_accept`, `net_restrict`/`net_deny` (intersect/subtract the address-set — user ops `net.only`/`net.deny`), `net_send_line`, `net_send_bytes`, `net_recv_line_len`, `net_recv_all_len`, `net_recv_bytes_len`, `net_close` | network |
 | Exec | `exec_run` | subprocess |
 | Clock | `now` | wall clock |
 | Env | `env_len`, `env_fill` | process environment |

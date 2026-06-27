@@ -10,11 +10,14 @@ import jwt
 import string
 import coven_json
 
-// A trusted issuer (the registry's pinned subset of a JWKS): a provider id (the token's
-// `iss`) and its RSA public key as DER PKCS#1 hex — what `verify_oidc` validates against.
+// A trusted issuer: a provider id (the token's `iss`) plus the key(s) that sign its
+// tokens. Either a single pinned RSA key (`pubkey`, DER PKCS#1 hex) for a static issuer,
+// or a `jwks` document from which the signing key is selected by the token's `kid` — the
+// rotating form a real OIDC provider (e.g. GitHub Actions) publishes.
 type Issuer:
     id: String
     pubkey: String
+    jwks: Option(Json)
 
 // The namespace (first path segment) of a rune name.
 pub fn namespace_of(name: String) -> String:
@@ -51,9 +54,21 @@ pub fn string_array(text: String) -> List(String):
 pub fn verify_token(issuers: List(Issuer), token: String, now: Int) -> Result(Json, String):
     let unverified = jwt.claims_unverified(token).map_err(fn(e: String): "malformed identity token: " + e)?
     let iss = coven_json.str(unverified, "iss")
-    match issuer_key(issuers, iss):
+    match find_issuer(issuers, iss):
         None -> Err("issuer `" + iss + "` is not trusted by this registry")
-        Some(pubkey) -> jwt.verify_oidc(token, pubkey, iss, "coven-registry", now)
+        Some(entry) ->
+            let pubkey = signing_key(entry, token)?
+            jwt.verify_oidc(token, pubkey, iss, "coven-registry", now)
 
-fn issuer_key(issuers: List(Issuer), iss: String) -> Option(String):
-    list.find_map(issuers, fn(entry: Issuer): if entry.id == iss: Some(entry.pubkey) else: None)
+fn find_issuer(issuers: List(Issuer), iss: String) -> Option(Issuer):
+    list.find_map(issuers, fn(entry: Issuer): if entry.id == iss: Some(entry) else: None)
+
+// The RS256 public key to verify a token against: for a JWKS issuer, the key whose `kid`
+// matches the token header (so key rotation is tolerated); otherwise the single pinned key.
+fn signing_key(entry: Issuer, token: String) -> Result(String, String):
+    match entry.jwks:
+        Some(jwks) ->
+            match jwt.kid(token):
+                Some(k) -> jwt.rsa_key_for_kid(jwks, k)
+                None -> Err("issuer `" + entry.id + "` publishes a JWKS but the token has no `kid` header")
+        None -> Ok(entry.pubkey)

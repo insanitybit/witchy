@@ -2,6 +2,6 @@
 // before reading a file. Authority flows by passing the capability down, never by
 // ambient access — to read elsewhere you would need a `Dir` for that location.
 fn main(console: Console, root: Dir):
-    let examples = subdir(root, "examples")
-    let data = subdir(examples, "data")
+    let examples = subtree(root, "examples")
+    let data = subtree(examples, "data")
     print(console, read(data, "greeting.txt"))

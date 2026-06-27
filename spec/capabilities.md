@@ -39,17 +39,42 @@ audit witchy code by reading signatures, not by tracing call graphs.
 | `Console` | write to stdout | `print(console, s)` |
 | `Clock` | read the wall clock | `now(clock) -> Int` (epoch ms) |
 | `Env` | read environment variables | `get_env(env, name) -> Option(String)` |
-| `Dir`, `Dir[Read]`, `Dir[Write]` | a directory **subtree** | `read`, `write`, `append`, `exists`, `is_dir`, `list`, `make_dir`, `subdir` |
+| `Dir`, `Dir[Read]`, `Dir[Write]` | a directory **subtree** | `read`, `write`, `append`, `exists`, `is_dir`, `list`, `make_dir`, `subtree`, `read_file`/`write_file` (→ `File`) |
+| `File`, `File[Read]`, `File[Write]` | authority to **one file** (the leaf) | `read(f) -> String`, `write(f, data)` (a `Dir` mints one with `read_file`/`write_file`) |
 | `Exec` | spawn a confined native subprocess | `exec.run(e, dir, path, args, stdin) -> (Int, String)` (std `exec`) |
-| `Net`, `Net[Connect]`, `Net[Listen]` (+ `Tcp`/`Udp`/`Uds` transport markers) | the network | `connect`, `listen`, `accept`, `send_line`, `recv_line`, `recv_all`, … |
+| `Net`, `Net[Connect]`, `Net[Listen]` (+ `Tcp`/`Udp`/`Uds` transport markers) | the network | `connect`, `listen`, `accept`, `send_line`, `recv_line`, `recv_all`, `only`, `deny`, … |
 | `SecretStore` | named secrets provisioned by the host (`--secret`/`--secret-file`/`--signing-key`) | `require(store, name) -> Secret`, `get(store, name) -> Option(Secret)` |
 | `Secret` | an Ed25519 seed obtained from a `SecretStore` | `crypto.sign`, `crypto.public_key`, `crypto.reveal` |
 
 A `Dir` is not "the filesystem" — it is one subtree. `read(dir, path)` resolves
 `path` relative to the capability and rejects `..`, absolute paths, and
-symlinks that point outside the subtree. `subdir(dir, "sub")` mints a new,
-smaller capability — handing a callee `subdir(dir, "uploads")` gives it that
-folder and nothing else.
+symlinks that point outside the subtree. `dir.subtree("sub")` mints a new,
+smaller capability — handing a callee `dir.subtree("uploads")` gives it that
+folder and nothing else. (`subtree(dir, "sub")` is the equivalent free-function
+form.)
+
+A **`File`** is the *leaf* of the same hierarchy (RFC-0012): authority to one
+file, right-typed like `Dir` (`File[Read]`/`File[Write]`). A `Dir` navigates to
+one with `dir.read_file("x.txt") -> File[Read]` (must exist) or `dir.write_file("x.txt")
+-> File[Write]` (need not), both rejecting `..`/absolute escape exactly as `read`
+does; then `read(f) -> String` / `write(f, data)` operate on the leaf with no path
+argument. `File[Read]` expresses "this one file, read-only" — the least-authority
+form for a single-file need, instead of handing over a whole `Dir`. `main` can
+also receive a `File` **directly**: each `--file <path>` grant fills `main`'s
+`File` parameters positionally (the i-th `File` param ← the i-th `--file`), so
+`main(config: File[Read])` audits as `Console, File[Read]` with no `Dir` at all.
+
+A `Net` likewise carries an **address-set**, narrowed with typed policy values
+from `std/confine`: `confine.tcp(host, port)`, `any_port(host)`, `cidr(block,
+port)`, `cidr_any(block)`, and `union(a, b)` for a multi-endpoint set.
+`net.only(policy)` intersects the carried set with `policy` (each endpoint must
+already be admitted); `net.deny(policy)` subtracts one (set difference). Both are
+**monotone** — refinement can only ever shrink the set — and enforced **at the
+syscall by the runtime** on both backends, so a narrowed `Net` cannot dial
+elsewhere. Policy patterns are **scheme-agnostic `host:port`**: HTTPS is not a
+right and not an allowlist scheme but a *connect-time* `tls:` choice on the
+address you dial (`connect(net, "tls:github.com:443")`), terminated on the host —
+see `rfcs/0009-https-tls-client.md`.
 
 `Exec` is the right to spawn a native subprocess — the runtime analog of the
 build-time `BuildExec`. It is right-less and carries no payload of its own: the
@@ -80,8 +105,23 @@ fn main(console: Console, dir: Dir):
     print(console, read(ro, "config.txt"))
 
     // Subtree attenuation: a smaller world, not just fewer verbs.
-    let uploads = subdir(dir, "uploads")
+    let uploads = dir.subtree("uploads")
     print(console, read(uploads, "latest.bin"))
+```
+
+`Net` narrows the same way, with typed `std/confine` policies instead of strings:
+
+```witchy
+import confine
+
+fn main(console: Console, net: Net):
+    // Address-set attenuation: confine Net to one endpoint (scheme-agnostic).
+    let db = net.only(confine.tcp("10.0.0.5", 6379))
+
+    // `deny` subtracts a block; refinement only ever shrinks. Chains, too.
+    let safe = net.deny(confine.cidr_any("10.0.0.0/8")).only(confine.tcp("192.168.1.1", 80))
+
+    print(console, "net confined")
 ```
 
 Brands go further: wrap a capability in your own type to encode *policy*
@@ -89,31 +129,46 @@ Brands go further: wrap a capability in your own type to encode *policy*
 analyzer sees through wrappers, so brands add discipline without hiding
 authority. See `examples/branded_caps/src/branded_caps.witchy`.
 
-## Block firewalls: `retain` / `without`
-
-The patterns above attenuate along *calls*. A `retain`/`without` block attenuates
-along *scope*: it carves out a region where some capabilities simply aren't in
-scope, no matter what the enclosing function holds — and the type checker
-enforces it.
+A `capability` may also carry **state beside** the authority it wraps — a sealed
+record mixing host capabilities with ordinary policy data:
 
 ```witchy
-fn main(console: Console, clock: Clock):
-    without clock:
-        // `clock` is walled off here; `now(clock)` would not compile.
-        print(console, "this region provably does not read the clock")
-
-    retain console:
-        // Only `console` survives; every other capability is dropped.
-        print(console, "this region can print and nothing else")
-
-    print(console, "${now(clock)}")
+capability Postgres:
+    net: Net[Connect, Tcp]
+    table: String
 ```
 
-`retain:` with no names is a complete sandbox — no authority survives, so the
-block is pure computation. The guarantee is sealed against the future: if `main`
-later gains a `Net` parameter, the `retain console:` block above still cannot
-reach it, because it was never named. A block's authority is fixed by what it
-asks for, not by what its scope accumulates.
+`Postgres` holds a `Net` confined to one host (hard, audited authority) plus a
+`table` filter the library enforces in its own queries (a soft policy). Because it
+is `capability`, it is **sealed**: only its module can mint, refine, or destructure
+one, and its fields are private — reachable with `match`, never `.field`, so an
+alias can never leak the underlying `Net` past the policy. The footprint analyzer
+sums the record's capability fields, so it still audits as exactly `Net` — carried
+state, no authority hidden. This is the host-primitive `Net`/`Dir` confinement (hard,
+runtime-enforced) plus a library-defined policy tier (soft, sealed-but-correctness-
+dependent) in one value. See `examples/carried_state/src/carried_state.witchy`.
+
+## Withholding authority by structure
+
+The patterns above attenuate along *calls*. To deny a capability to a region of
+code outright, give that work its own function and don't pass the capability: a
+function or closure that never receives a capability cannot use it, alias it, or
+forge it. This is capture-as-dependency-injection — the strongest firewall witchy
+has, because there is no name to reach and no value to smuggle.
+
+```witchy
+fn audit_log(console: Console, body: String):
+    // No `clock` parameter — structurally cannot read the wall clock.
+    print(console, "audit: ${body}")
+
+fn main(console: Console, clock: Clock):
+    audit_log(console, "request handled")
+    print(console, "at ${now(clock)}")
+```
+
+`audit_log`'s authority is fixed by its signature, not by what its callers hold:
+if `main` later gains a `Net`, `audit_log` still cannot dial, because `net` was
+never a parameter. The absence of a parameter *is* the boundary.
 
 ## Auditing — and what it actually defends
 

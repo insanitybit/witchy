@@ -6,11 +6,10 @@
 //     (only `redis`'s own module may construct or destructure a `Redis`);
 //   - `witchy caps` still sees through it — `ping` audits as `Net[Connect, Tcp]`.
 //
-// A real client would also confine the network to the server first with the
-// RFC-0003 host-enforced `restrict(net, "host:port")` (and never expose the raw
-// `Net` back), so holding a `Redis` is strictly less authority than the `Net` it
-// was minted from. This demo keeps the full `Net` so it runs without a `--net`
-// grant.
+// A real client would also confine the network to the server first with
+// `net.only(confine.tcp("host", port))` (and never expose the raw `Net` back), so
+// holding a `Redis` is strictly less authority than the `Net` it was minted from.
+// This demo keeps the full `Net` so it runs without a `--net` grant.
 //
 // Run:   witchy examples/redis_capability/src/redis_capability.witchy
 // Audit: witchy caps examples/redis_capability/src/redis_capability.witchy

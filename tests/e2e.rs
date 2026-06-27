@@ -139,6 +139,86 @@ impl RegistryServer {
     fn human_token(&self, name: &str) -> String {
         self.mint(name, &[])
     }
+
+    /// Like [`start`], but trusts the issuer via a **JWKS** document (the rotating form a
+    /// real OIDC provider publishes) instead of a single pinned key. The issuer's public
+    /// key is emitted as a JWKS under `kid`, written to a file `coven-serve
+    /// --trust-issuer-jwks` reads; the verifier then selects the key by each token's `kid`.
+    fn start_jwks(kid: &str) -> RegistryServer {
+        let regroot = unique("coven-jwks-regroot");
+        let home = unique("coven-jwks-home");
+        std::fs::create_dir_all(&regroot).unwrap();
+        let seed = regroot.join("root.seed");
+        std::fs::write(&seed, "0000000000000000000000000000000000000000000000000000000000000001").unwrap();
+        let issuer_dir = unique("coven-jwks-issuer");
+        Command::new(BIN)
+            .args(["coven-gen-issuer", "--out", issuer_dir.to_str().unwrap()])
+            .output()
+            .expect("gen issuer");
+        // Publish the issuer's one key as a JWKS under `kid`, into a file the server reads.
+        let jwks = Command::new(BIN)
+            .args(["coven-issuer-jwks", "--issuer-key", issuer_dir.to_str().unwrap(), "--kid", kid])
+            .output()
+            .expect("issuer jwks");
+        assert!(jwks.status.success(), "issuer-jwks failed: {}", String::from_utf8_lossy(&jwks.stderr));
+        let jwks_path = regroot.join("jwks.json");
+        std::fs::write(&jwks_path, &jwks.stdout).unwrap();
+
+        let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let addr = format!("127.0.0.1:{port}");
+        let child = Command::new(BIN)
+            .args([
+                "coven-serve",
+                "--addr",
+                &addr,
+                "--root",
+                regroot.to_str().unwrap(),
+                "--trust-issuer-jwks",
+                &format!("{ISSUER}={}", jwks_path.to_str().unwrap()),
+                "--signing-key",
+                seed.to_str().unwrap(),
+            ])
+            .env("WITCHY_HOME", &home)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn coven-serve");
+        let mut up = false;
+        for _ in 0..200 {
+            if std::net::TcpStream::connect(&addr).is_ok() {
+                up = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert!(up, "witchy coven-serve (jwks) never started listening on {addr}");
+        RegistryServer { child, port, regroot, home, issuer_dir }
+    }
+
+    /// A CI identity token whose JWT header carries `kid` — naming which JWKS key signed
+    /// it, so a rotating-key verifier can select the matching public key.
+    fn ci_token_kid(&self, repository: &str, workflow: &str, kid: &str) -> String {
+        let args: Vec<String> = vec![
+            "coven-mint-token".into(),
+            "--issuer-key".into(),
+            self.issuer_dir.to_string_lossy().into_owned(),
+            "--issuer".into(),
+            ISSUER.into(),
+            "--sub".into(),
+            format!("repo:{repository}:ref:refs/heads/main"),
+            "--kid".into(),
+            kid.into(),
+            "--claim".into(),
+            format!("repository={repository}"),
+            "--claim".into(),
+            format!("workflow_ref={workflow}"),
+            "--claim".into(),
+            "ref=refs/heads/main".into(),
+        ];
+        let out = Command::new(BIN).args(&args).output().expect("mint kid token");
+        assert!(out.status.success(), "mint failed: {}", String::from_utf8_lossy(&out.stderr));
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
 }
 
 impl Drop for RegistryServer {
@@ -398,6 +478,102 @@ fn trusted_publishing_binds_repo_and_rejects_others() {
     let alice = server.human_token("alice");
     let out = fe.pm(&lib, &["promote", "acme/secure", "1.1.0"], Some(&alice));
     assert!(out.status.success() && stdout(&out).contains("promote: 200"), "human promote: {}", stdout(&out));
+}
+
+/// Trusted publishing against a ROTATING-key issuer: the registry trusts a JWKS document
+/// (not a single pinned key) and selects the verifying key by each token's `kid` — exactly
+/// what verifying a real GitHub Actions OIDC token requires, since GitHub rotates its
+/// signing keys. A token whose `kid` is present in the JWKS verifies and publishes; a token
+/// whose `kid` is absent (a key that rotated away / was never published) is refused 401,
+/// even though it is otherwise a well-formed token from the trusted issuer.
+#[test]
+fn trusted_publishing_verifies_a_jwks_issuer_by_kid() {
+    let server = RegistryServer::start_jwks("kid-1");
+    let fe = FrontEnd::new(&server, "jwks");
+    let lib = fe.lib("acme/widget", "0.1.0", "pub fn f(s: String) -> String:\n    s\n");
+
+    // A token signed under the JWKS's published `kid` verifies and publishes.
+    let good = server.ci_token_kid("acme-widget-repo", "release.yml", "kid-1");
+    let out = fe.pm(&lib, &["publish", "."], Some(&good));
+    assert!(
+        out.status.success() && stdout(&out).contains("publish: 200"),
+        "a token whose kid is in the JWKS should publish: {}",
+        stdout(&out)
+    );
+
+    // A token whose `kid` is not in the JWKS cannot be matched to a key → refused (401).
+    std::fs::write(lib.join("witchy.toml"), "[rune]\nname = \"acme/widget\"\nversion = \"0.2.0\"\n").unwrap();
+    let unknown = server.ci_token_kid("acme-widget-repo", "release.yml", "kid-rotated-away");
+    let out = fe.pm(&lib, &["publish", "."], Some(&unknown));
+    assert!(!out.status.success(), "a token with an unknown kid must be refused");
+    assert!(stdout(&out).contains("publish: 401"), "unknown-kid: {}", stdout(&out));
+}
+
+/// The registry generates browsable API docs on demand: `GET /coven/doc` renders the
+/// published rune's stored source to the same Markdown `witchy doc` emits (types and
+/// public functions with their doc-comments). This is safe on untrusted published code
+/// because `compiler.doc` only PARSES the source — it never runs it — and the source is
+/// hash-verified against the signed record before rendering.
+#[test]
+fn coven_serves_generated_api_docs() {
+    let server = RegistryServer::start();
+    let fe = FrontEnd::new(&server, "docs");
+    let lib = fe.lib(
+        "acme/greeter",
+        "1.0.0",
+        "// Greets a name warmly.\npub fn greet(name: String) -> String:\n    \"hi \" + name\n",
+    );
+    let ci = server.ci_token("acme-greeter-repo", "release.yml");
+    let out = fe.pm(&lib, &["publish", "."], Some(&ci));
+    assert!(stdout(&out).contains("publish: 200"), "publish: {}", stdout(&out));
+
+    let (status, body) =
+        http_get(&format!("127.0.0.1:{}", server.port), "/coven/doc?name=acme~greeter&version=1.0.0");
+    assert_eq!(status, 200, "doc status: {body}");
+    // It is RENDERED markdown (the `####` heading the doc renderer emits — not the raw
+    // `pub fn …:` source), naming the public function and carrying its doc-comment.
+    assert!(body.contains("greet"), "docs should name the public fn: {body}");
+    assert!(body.contains("#### "), "docs should be rendered markdown headings: {body}");
+    assert!(
+        body.contains("fn greet(name: String) -> String"),
+        "docs should render the function signature: {body}"
+    );
+    assert!(body.contains("Greets a name warmly"), "docs should include the doc-comment: {body}");
+}
+
+/// The registry audits the FOREIGN-CODE compartments a package embeds (RFC-0015): GET
+/// /coven/compartments scans the published source for `compartment("<id>"` call sites and
+/// reports the renderer ids — the `Js` governance signal ("what third-party code does this
+/// package run?"), surfaced at the registry layer (not the compiler). A package that
+/// embeds none reports none.
+#[test]
+fn coven_audits_embedded_compartments() {
+    let server = RegistryServer::start();
+    let fe = FrontEnd::new(&server, "audit");
+    // Both runes are namespace `acme`, so both publish from the one TOFU-bound repo.
+    let ci = server.ci_token("acme-repo", "release.yml");
+
+    // A rune that embeds a foreign-code compartment (a d3 chart).
+    let viz = fe.lib(
+        "acme/viz",
+        "1.0.0",
+        "// renders with glamour.compartment(\"d3-runes-chart\")\npub fn f(s: String) -> String:\n    s\n",
+    );
+    let out = fe.pm(&viz, &["publish", "."], Some(&ci));
+    assert!(stdout(&out).contains("publish: 200"), "viz publish: {}", stdout(&out));
+    let (status, body) =
+        http_get(&format!("127.0.0.1:{}", server.port), "/coven/compartments?name=acme~viz&version=1.0.0");
+    assert_eq!(status, 200, "compartments status: {body}");
+    assert!(body.contains("d3-runes-chart"), "the audit should flag the embedded compartment: {body}");
+
+    // A rune with no compartment embed reports none.
+    let plain = fe.lib("acme/plain", "1.0.0", "pub fn f(s: String) -> String:\n    s\n");
+    let out2 = fe.pm(&plain, &["publish", "."], Some(&ci));
+    assert!(stdout(&out2).contains("publish: 200"), "plain publish: {}", stdout(&out2));
+    let (status2, body2) =
+        http_get(&format!("127.0.0.1:{}", server.port), "/coven/compartments?name=acme~plain&version=1.0.0");
+    assert_eq!(status2, 200, "compartments2 status: {body2}");
+    assert!(!body2.contains("d3-runes-chart"), "a package with no compartments must not flag one: {body2}");
 }
 
 /// A trusted registry requires a valid identity token to publish: an anonymous
@@ -3372,4 +3548,50 @@ fn footprint_is_empty(json: &str) -> bool {
         return false;
     };
     after[open + 1..open + close].trim().is_empty()
+}
+
+/// RFC-0013: `witchy sandbox --grants <doc>` mints the capability set from a grant
+/// document — binding each `File`/`Dir` `main` parameter to the same-named entry —
+/// and cross-checks it against the computed footprint, aborting on an under-grant.
+#[test]
+fn grant_document_run_binds_by_name_and_cross_checks() {
+    let dir = unique("grants");
+    let cfg = dir.join("cfg.txt");
+    std::fs::write(&cfg, "config-body").unwrap();
+    let prog = dir.join("prog.witchy");
+    std::fs::write(
+        &prog,
+        "fn main(console: Console, config: File[Read]):\n    print(console, read(config))\n",
+    )
+    .unwrap();
+
+    // A sufficient grant binds `config` by name and runs.
+    let ok = dir.join("ok.toml");
+    std::fs::write(
+        &ok,
+        format!("[files]\nconfig = {{ path = \"{}\", rights = [\"Read\"] }}\n", cfg.display()),
+    )
+    .unwrap();
+    let out = Command::new(BIN)
+        .args(["sandbox", "--grants", ok.to_str().unwrap(), prog.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "grant run failed: {}\n{}", stderr(&out), stdout(&out));
+    assert!(stdout(&out).contains("config-body"), "got: {}", stdout(&out));
+
+    // An under-grant (no `[files].config`) aborts with a clear error, nonzero exit.
+    let under = dir.join("under.toml");
+    std::fs::write(&under, "[net]\nx = [\"h:1\"]\n").unwrap();
+    let out = Command::new(BIN)
+        .args(["sandbox", "--grants", under.to_str().unwrap(), prog.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(!out.status.success(), "an under-grant must abort the run");
+    assert!(
+        stderr(&out).contains("insufficient") || stdout(&out).contains("insufficient"),
+        "expected an insufficiency error: out={} err={}",
+        stdout(&out),
+        stderr(&out)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }

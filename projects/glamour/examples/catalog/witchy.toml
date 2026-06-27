@@ -1,0 +1,12 @@
+# catalog — coven's index VIEW on glamour (RFC-0015 Phase D): the rune catalog with a live
+# search box (on_input) and keyed cards (Nav to the package page). The shell fills the data
+# from /coven/catalog; here it is baked so the template renders standalone. Empty footprint.
+[rune]
+name = "catalog"
+version = "0.1.0"
+
+[capabilities]
+runtime = ["Console"]
+
+[dependencies]
+"glamour" = { path = "../.." }

@@ -212,6 +212,10 @@ A native intrinsic module (implemented in Rust, like `crypto`): it gives a progr
 
 Compare two sources by capability footprint, as JSON:   {"widened":bool,"added":[..],"removed":[..]}   (or {"error":".."}) `widened` is the rights-precise block-on-widening gate: true when `new` demands any capability or right that `old` did not.
 
+#### `fn doc(name: String, source: String) -> String`
+
+Render `source` to Markdown API documentation (the same output as `witchy doc`): the module's public types and functions with their signatures and doc-comments, under a heading titled `name`. This only PARSES the source — it never runs it — so a registry can safely generate browsable docs from a rune's stored source on either backend. A parse error comes back as an HTML comment, never a trap.
+
 ## `confine`
 
 confine — typed `Net` address policies (RFC-0011). A `NetPolicy` is a typed value built by the constructors below instead of a hand-written string, so a policy is constructed, not spelled; `net.only(policy)` narrows a `Net` to it and `net.deny(policy)` subtracts it:

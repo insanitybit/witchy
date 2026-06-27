@@ -34,7 +34,9 @@ Or from inside a rune: `cd examples/hello && witchy run`.
 |---|---|
 | [capability_rights](capability_rights/) | `Dir[Read]` vs `Dir[Write]`, `Net[Connect]` vs `Net[Listen]`, narrowing with `as` |
 | [branded_caps](branded_caps/) | Wrapping a capability in your own type; the footprint sees through it |
+| [carried_state](carried_state/) | A sealed `capability` record carrying a host cap + policy (audits as the cap, enforces the policy) |
 | [files](files/) | Filesystem access through a confined `Dir` |
+| [file_capability](file_capability/) | `File[Read]`/`File[Write]` — authority to one file; `dir.read_file`/`dir.write_file` navigate to the leaf |
 | [caps_audit](caps_audit/) | A witchy program auditing another's footprint (`compiler.footprint`) |
 | [caps_guard](caps_guard/) | A CI gate that exits non-zero on capability widening |
 | [coven_check](coven_check/) | Auditing a package's footprint before depending on it |

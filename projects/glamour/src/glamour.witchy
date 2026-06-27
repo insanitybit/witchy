@@ -28,6 +28,16 @@ import reflect
 pub type VNode(msg):
     Element(String, List(Attr(msg)), List(VNode(msg)))
     Text(String)
+    // An isolated FOREIGN-CODE compartment (RFC-0015): `renderer` names a sealed bundle
+    // the host shell loads into a locked-down iframe (opaque origin, `connect-src 'none'`);
+    // `grant` is the ONLY data that crosses in (a JSON string); `on_event` is the msg-tag
+    // the narrow channel may send back. The witchy rune holds no authority over it — the
+    // capability model expressed at the browser boundary.
+    Compartment(String, String, String)
+    // A child with a STABLE KEY (RFC-0015): in a list, the host diffs by key instead of
+    // by position, so reordering/inserting/removing items reuses the matching DOM node
+    // (preserving its identity — and an `<input>`'s focus/caret) instead of rebuilding.
+    Keyed(String, VNode(msg))
 
 // A DOM property/attribute (`class="card"`, `href=…`), OR an event→msg binding.
 // `On` carries a `msg` VALUE, not a closure — the whole MVU model: events are
@@ -35,6 +45,11 @@ pub type VNode(msg):
 pub type Attr(msg):
     Prop(String, String)
     On(String, msg)
+    // An input-VALUE handler: on `event`, the shell dispatches the 1-arg msg variant named
+    // `tag` carrying the target's current value — the forms/controlled-input path the
+    // fixed-msg `On` can't express (a keystroke's text isn't known at view time). The value
+    // is delivered as data into `update`, so the rune still performs no DOM reads.
+    OnInput(String, String)
 
 // ---- constructors / helpers (the names the `html` tag emits) ----
 // The `html` tag emits these QUALIFIED (`glamour.element`/`glamour.text`/
@@ -51,11 +66,28 @@ pub fn element(tag: String, attrs: List(Attr(msg)), children: List(VNode(msg))) 
 pub fn text(s: String) -> VNode(msg):
     Text(s)
 
+// Embed an isolated foreign-code compartment (RFC-0015). `renderer` is a sealed bundle
+// id the host serves under a locked-down origin; `grant` is the JSON-string payload that
+// crosses in (the ONLY thing that does); `on_event` is the Reflect variant name the
+// compartment's narrow channel may dispatch back. Spawning foreign code is the host's
+// `Js` authority — the rune only describes it, exactly like every other effect.
+pub fn compartment(renderer: String, grant: String, on_event: String) -> VNode(msg):
+    Compartment(renderer, grant, on_event)
+
+// Tag a child with a stable key for keyed list reconciliation (see `Keyed`).
+pub fn keyed(key: String, node: VNode(msg)) -> VNode(msg):
+    Keyed(key, node)
+
 pub fn prop(name: String, value: String) -> Attr(msg):
     Prop(name, value)
 
 pub fn on(event: String, msg: msg) -> Attr(msg):
     On(event, msg)
+
+// An input-value handler: on `event` (e.g. "input"), the shell dispatches the 1-arg msg
+// variant named `tag` with the field's current value — for search boxes and form fields.
+pub fn on_input(event: String, tag: String) -> Attr(msg):
+    OnInput(event, tag)
 
 // ---------------------------------------------------------------------------
 // Cmd — effects as data (RFC-0008's "honest hard part"). `update` does not
@@ -81,6 +113,22 @@ pub type Cmd(msg):
     NoCmd
     After(Int, msg)
     Batch(List(Cmd(msg)))
+    // An async HTTP request (RFC-0015): method, url, body, and the Reflect VARIANT NAME
+    // the shell wraps the `(status, body)` response into and dispatches back. The rune
+    // holds no `Net` — it only DESCRIBES the request; the capability-holding host shell
+    // performs the fetch (attaching any session credential ITSELF) and feeds the result
+    // back as that msg, exactly like the `After` timer. So `update` stays pure and the
+    // footprint stays empty, while the app still talks to a server.
+    Http(String, String, String, String)
+    // Push a new URL onto history (client-side routing); the shell mirrors it back as
+    // the app's route msg so `view` re-renders for the new path.
+    Nav(String)
+    // A host-shell PORT (RFC-0015): run the named host capability (session login, a
+    // WebAuthn passkey ceremony, storage) with `arg`, dispatching the 1-arg msg `tag(result)`
+    // back. The port — and any credential or browser-native API it touches
+    // (`navigator.credentials`, the session token) — lives entirely in the host; the rune
+    // emits only the description and receives only the result, holding no authority itself.
+    Port(String, String, String)
 
 // ---------------------------------------------------------------------------
 // Cmd WIRE FORMAT — serialize a `Cmd(msg)` to the JSON shape the host shell
@@ -116,6 +164,40 @@ pub fn cmd_to_json(cmd: Cmd(msg), msg_to_json: fn(msg) -> Json) -> Json:
                 ("cmd", JsonString("batch")),
                 ("cmds", JsonArray(cjs)),
             ])
+        // `tag` is a literal variant NAME (not routed through msg_to_json): the shell
+        // reconstructs `{"$variant": tag, "$values": [status, body]}` once the response
+        // arrives, so the response carries data the rune did not have at emit time.
+        Http(method, url, body, tag) ->
+            JsonObject([
+                ("cmd", JsonString("http")),
+                ("method", JsonString(method)),
+                ("url", JsonString(url)),
+                ("body", JsonString(body)),
+                ("tag", JsonString(tag)),
+            ])
+        Nav(path) ->
+            JsonObject([("cmd", JsonString("nav")), ("path", JsonString(path))])
+        Port(name, arg, tag) ->
+            JsonObject([("cmd", JsonString("port")), ("port", JsonString(name)), ("arg", JsonString(arg)), ("tag", JsonString(tag))])
+
+// Convenience constructors for the HTTP effect. `on_done` is the name of a 2-arg msg
+// variant `Tag(Int, String)` the shell dispatches with `(status, body)` (status 0 on a
+// transport error, so failures are ordinary `update` arms, never exceptions).
+pub fn http_get(url: String, on_done: String) -> Cmd(msg):
+    Http("GET", url, "", on_done)
+
+pub fn http_post(url: String, body: String, on_done: String) -> Cmd(msg):
+    Http("POST", url, body, on_done)
+
+// Navigate to `path` (pushes history; the shell echoes it back as the route msg).
+pub fn navigate(path: String) -> Cmd(msg):
+    Nav(path)
+
+// Run a host-shell port (session login, WebAuthn, storage) named `name` with `arg`; the
+// shell dispatches the 1-arg msg variant `on_done` with the port's result. Authority stays
+// in the host; the rune never sees the credential, only the outcome.
+pub fn port(name: String, arg: String, on_done: String) -> Cmd(msg):
+    Port(name, arg, on_done)
 
 // ---------------------------------------------------------------------------
 // Serializer — render a VNode tree to an HTML string. There is no browser here,
@@ -127,6 +209,11 @@ pub fn cmd_to_json(cmd: Cmd(msg), msg_to_json: fn(msg) -> Json) -> Json:
 pub fn to_html(node: VNode(msg)) -> String:
     match node:
         Text(s) -> escape_text(s)
+        // A foreign-code compartment renders as a locked-down iframe; the grant/event
+        // channel is wired by the JS host at runtime (it never enters the HTML).
+        Compartment(renderer, _grant, _on) -> "<iframe sandbox=\"allow-scripts\" class=\"glamour-compartment\" src=\"/compartments/" + escape_attr(renderer) + "/\"></iframe>"
+        // The key is a diff hint only — render the inner node.
+        Keyed(_key, inner) -> to_html(inner)
         Element(tag, attrs, children) -> render_element(tag, attrs, children)
 
 fn render_element(tag: String, attrs: List(Attr(msg)), children: List(VNode(msg))) -> String:
@@ -150,6 +237,7 @@ fn render_attr(a: Attr(msg)) -> String:
         // surface, so the serializer marks it inertly (the shell reads the live
         // `On` value out of the VNode, not out of this string).
         On(event, msg) -> " data-on-" + event + "=\"[msg]\""
+        OnInput(event, _tag) -> " data-on-" + event + "=\"[input]\""
 
 // Escape text content: the four characters that could otherwise be parsed as
 // markup. This is the load-bearing line for XSS-immunity being observable.
@@ -195,6 +283,10 @@ pub fn to_json(node: VNode(msg), msg_to_json: fn(msg) -> Json) -> String:
 fn node_json(node: VNode(msg), msg_to_json: fn(msg) -> Json) -> Json:
     match node:
         Text(s) -> JsonObject([("text", JsonString(s))])
+        Compartment(renderer, grant, on_event) ->
+            JsonObject([("compartment", JsonString(renderer)), ("grant", JsonString(grant)), ("on", JsonString(on_event))])
+        Keyed(key, inner) ->
+            JsonObject([("key", JsonString(key)), ("node", node_json(inner, msg_to_json))])
         Element(tag, attrs, children) ->
             var ajs: List(Json) = []
             for a in attrs:
@@ -206,6 +298,9 @@ fn node_json(node: VNode(msg), msg_to_json: fn(msg) -> Json) -> Json:
                     On(event, msg) ->
                         let mj: Json = msg_to_json(msg)
                         JsonArray([JsonString("on"), JsonString(event), mj])
+                    // The shell fills the target's value into a `tag(value)` msg on `event`.
+                    OnInput(event, tag) ->
+                        JsonArray([JsonString("oninput"), JsonString(event), JsonString(tag)])
                 ajs = list.push(ajs, aj)
             var kjs: List(Json) = []
             for c in children:

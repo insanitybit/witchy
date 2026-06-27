@@ -1,0 +1,47 @@
+// Carried-state capabilities (RFC-0011) — a SEALED record capability that wraps a
+// host capability AND carries policy data alongside it. `Postgres` holds a `Net`
+// confined to one database host (the HARD, audited authority) plus a `table`
+// filter (a SOFT policy the library enforces in its own operations). The capability
+// auditor sees through the record: `Postgres` still audits as `Net`, so no authority
+// hides — only the table filter is carried. Run from the repo root:
+//   witchy examples/carried_state/src/carried_state.witchy
+//   witchy caps examples/carried_state/src/carried_state.witchy   # all audit as Net
+
+// A database handle: a confined `Net` plus the table this handle is scoped to.
+// Declared `capability`, so it is SEALED — only this module can mint or destructure
+// one, and its fields are private (reach them with `match`, never `.field`), so an
+// alias can never leak the underlying `Net` past the table policy.
+capability Postgres:
+    net: Net[Connect, Tcp]
+    table: String
+
+// The only way to make a `Postgres` (sealed constructor). A real driver would dial
+// the DB here; the carried `Net` is confined to that host, so the footprint is honest.
+pub fn connect(net: Net[Connect, Tcp]) -> Postgres:
+    Postgres(net, "public")
+
+// Refinement — narrow the carried table filter. It rebuilds the sealed record with
+// the same `Net` and a tighter `table`; MONOTONE (it never widens authority), and
+// only this module can do it, so the policy is unforgeable.
+pub fn use_table(pg: Postgres, name: String) -> Postgres:
+    match pg:
+        Postgres(net, _) -> Postgres(net, name)
+
+// Soft-tier enforcement: the library refuses any query outside the carried table.
+// Correctness is the library's job (the network cannot enforce "table = users"),
+// but the table policy lives in this one reviewable place.
+pub fn count_rows(pg: Postgres, requested: String) -> String:
+    match pg:
+        Postgres(_, table) ->
+            if requested == table:
+                "ok: counted rows in " + requested
+            else:
+                "denied: " + requested + " is outside this handle (scoped to " + table + ")"
+
+fn main(console: Console, net: Net):
+    // Connect, then scope the handle to the `users` table.
+    let users = use_table(connect(net), "users")
+    print(console, count_rows(users, "users"))
+    // The carried filter refuses anything else, even though the underlying `Net`
+    // could physically reach it — that is the soft, library-enforced policy.
+    print(console, count_rows(users, "secrets"))

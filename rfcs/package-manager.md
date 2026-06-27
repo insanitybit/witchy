@@ -1,9 +1,19 @@
 ---
 status: implemented
-note: Imported from docs/ under RFC-0001. Core shipped; TUF/trusted-publishing phase still planned (see body). Frozen — current behavior lives in spec/ and the code.
+note: Imported from docs/ under RFC-0001. Shipped — core PM, TUF snapshot/timestamp, and keyless trusted-publishing are all built (see §15), the last via an Ed25519 claims-envelope stand-in. Remaining = a live RS256/ES256 + JWKS-over-https IdP adapter and per-namespace delegated TUF signing keys. Now self-hosted in projects/pm + projects/coven (src/pm deleted), not the src/pm/*.rs files §15 names. Frozen — current behavior lives in spec/ and the code.
 ---
 
 # The witchy package manager — design spec
+
+> **2026-06-23 — status correction.** The §0/below line "full TUF /
+> trusted-publishing is the main remaining work" is out of date: §15 already
+> marks **TUF snapshot+timestamp** and **keyless trusted-publishing** as *Built*
+> (the latter via an Ed25519 claims-envelope stand-in for OIDC). What actually
+> remains is narrower — a live RS256/ES256 + JWKS-over-https IdP adapter, and
+> per-namespace *delegated* TUF signing keys (today one registry root key signs
+> all roles). Also: the implementation is now **self-hosted** in `projects/pm` +
+> `projects/coven`; the `src/pm/*.rs` file map in §15 is stale (`src/pm` was
+> deleted, commit eae5276). Body left as the historical record per rfcs/README.
 
 Status: design spec — the core is **shipped** (CLI, resolver, content-addressed
 store, signing, the capability-widening gate, and a self-hosted `coven`

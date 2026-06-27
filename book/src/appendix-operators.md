@@ -42,7 +42,6 @@ has the precise semantics; this is the cheat sheet.
 | `async` / `await` | concurrency: declare an async function / suspend on a future (`spawn` and channels are stdlib functions in `std/task` and `std/chan`, not keywords) |
 | `gen` / `yield` | a generator function that yields a lazy `Iter` |
 | `as` | capability rights narrowing |
-| `retain` / `without` | block capability firewall: keep only / drop the named capabilities |
 | `true` / `false` | boolean literals |
 
 ## Literals

@@ -79,7 +79,8 @@ gives every value a structural default like `Point(1, 2)`).
 Builtins: `Int`, `Float`, `Bool`, `String`, `Duration`, `Nil` (the unit type),
 `List(a)`, `Dict(k, v)`, tuples `(a, b, ...)`, function types
 `fn(Int, String) -> Bool`, and the capability types (`Console`, `Clock`, `Env`,
-`Dir[...]`, `Net[...]`, `Secret` — see [capabilities.md](capabilities.md)).
+`Dir[...]`, `File[...]`, `Net[...]`, `Exec`, `SecretStore`, `Secret` — see
+[capabilities.md](capabilities.md)).
 
 **Algebraic data types.** One `type` declaration covers enums, tagged unions,
 and records:
@@ -218,12 +219,10 @@ exits early, and works in functions with a `var` parameter (the written-back
 parameters are still delivered). `return e if cond` is a postfix form of
 `if cond: return e`, for one-line early returns like `return Ok(true) if ok`.
 
-A `retain a, b:` / `without a, b:` block is a capability firewall: inside it,
-only the named capabilities stay in scope (`retain`) or the named ones are
-dropped (`without`). It is a compile-time scoping restriction — the checker hides
-the bindings, every backend runs the block normally — that seals a region of code
-against capabilities the surrounding scope holds (or later gains). `retain:` with
-no names drops all of them. See `spec/capabilities.md`.
+To deny a capability to a region of code, give that work its own function and
+don't pass the capability — a function that never receives a capability cannot
+use it, alias it, or forge it. That structural boundary (capture-as-DI) is
+witchy's firewall; see `spec/capabilities.md`.
 
 A `region:` block (optionally `region -> T:`) is a user-controlled allocation
 scope: everything allocated inside is reclaimed at the block's end, and the
@@ -712,6 +711,17 @@ The host mints exactly these capabilities and nothing else. (This block
 type-checks but isn't run by the doc harness, since it needs `Dir` — run it
 with `witchy sandbox --dir <root> prog.witchy a b c`.)
 
+`main` may ask for any of the host capabilities — `Console`, `Clock`, `Env`,
+`Dir[...]`, `File[...]`, `Net[...]`, `Exec`, `SecretStore` — and the launch grant
+backs each: `--dir <root>` a `Dir`, `--file <path>` a `File` (the i-th `File`
+parameter ← the i-th `--file`), `--net <host:port>` a `Net` allowlist entry,
+`--secret`/`--signing-key` a `SecretStore`. A `File[Read]` lets a single-file
+program ask for exactly one file instead of a whole `Dir`. A **grant document**
+(`--grants app.grants.toml`) enumerates the whole grant as reviewable TOML and is
+cross-checked against the computed footprint — see
+[capabilities.md](capabilities.md) and
+[0013-grant-documents.md](../rfcs/0013-grant-documents.md).
+
 ### 13.1 The build entrypoint
 
 A rune may ship a **build step**: a top-level `fn build` whose first parameter is
@@ -771,12 +781,55 @@ pub fn ping(r: Redis) -> Int:
   host authority it refines — `ping` audits as `Net[Connect, Tcp] (refined: Redis)`
   — so a library cannot launder `Net` behind a friendly name.
 
-For the network specifically, `restrict(net, "host:port") -> Net` confines a `Net`
-*value* to an address subset (exact, `host:*`, or IPv4 CIDR), host-enforced on
-`connect`/`listen` on both backends — the address analog of `subdir` for `Dir`,
-and rebinding-safe (a CIDR/IP allowlist is checked against the resolved IP). See
-[0002-user-definable-capabilities.md](../rfcs/0002-user-definable-capabilities.md)
-and [0003-network-address-scoping.md](../rfcs/0003-network-address-scoping.md).
+A second form lets a capability **carry state beside** the authority it wraps — a
+sealed *record* mixing one or more host capabilities with ordinary policy data:
+
+```witchy
+capability Postgres:
+    net: Net[Connect, Tcp]
+    table: String
+
+// Sealed constructor — only this module can mint, refine, or destructure one.
+pub fn open_db(net: Net[Connect, Tcp], table: String) -> Postgres:
+    Postgres(net, table)
+
+pub fn scope(p: Postgres) -> String:
+    match p:
+        Postgres(_, table) -> table
+```
+
+The fields are private — reached with `match`, never `.field` — so the underlying
+`Net` can never leak past the policy. `witchy caps` sums the record's
+capability-typed fields, so `Postgres` audits as exactly `Net`: carried policy with
+nothing hidden (the hard, runtime-enforced `Net` plus a soft, library-enforced
+`table` filter, in one unforgeable value). See
+[0002-user-definable-capabilities.md](../rfcs/0002-user-definable-capabilities.md).
+
+### 13.3 Narrowing a `Net`'s reach: `only` / `deny`
+
+Rights (§13.1) narrow which *verbs* a `Net` permits; to narrow which *hosts* it may
+dial, confine its **address-set** with typed policy values from `std/confine`.
+`net.only(policy)` intersects the carried set with `policy` (an endpoint survives
+only if already admitted); `net.deny(policy)` subtracts a slice. Both are monotone —
+refinement only ever shrinks — and host-enforced **at the syscall** on both
+backends, the address analog of `dir.subtree` for `Dir`.
+
+```witchy
+import confine
+
+fn main(console: Console, net: Net):
+    let db = net.only(confine.tcp("10.0.0.5", 6379))
+    let safe = net.deny(confine.cidr_any("10.0.0.0/8")).only(confine.tcp("192.168.1.1", 80))
+    print(console, "net confined")
+```
+
+The policy constructors are `confine.tcp(host, port)`, `any_port(host)`,
+`cidr(block, port)`, `cidr_any(block)`, and `union(a, b)`. A CIDR/IP policy is
+checked against the *resolved* IP, so it is rebinding-safe. TLS is not a right or a
+policy scheme but a connect-time `tls:` prefix on the address you dial
+(`connect(net, "tls:host:443")`); see
+[0003-network-address-scoping.md](../rfcs/0003-network-address-scoping.md) and
+[0009-https-tls-client.md](../rfcs/0009-https-tls-client.md).
 
 ## 14. Concurrency: async, spawn, and channels
 

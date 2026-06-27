@@ -546,6 +546,16 @@ export async function instantiate(wasmBytes, opts = {}) {
   //   4. call `__export_f(ptr, len)` -> a pointer to a result String header,
   //   5. read `[i32 len][bytes]` back out as a JS string.
   // Pure mechanics over guest memory — no capability, no authority.
+  // The `heap` bump-allocator pointer, exported by every heap-using module as `__heap`. Its
+  // value right after instantiation is the pristine base (the end of the data section, before
+  // any allocation). A `String -> String` export is PURE — its input/working/output allocations
+  // are all dead once we read the result out — so we restore the pointer to this base after each
+  // call. Without it the never-freeing bump allocator leaks one call's worth of memory per call
+  // and a long-lived run loop (glamour MVU: one call per event) eventually exhausts memory and
+  // `__galloc` returns an out-of-bounds pointer. Memory then stays at the high-water mark of a
+  // single call instead of growing without bound. (Older modules without `__heap` skip the reset.)
+  const heapGlobal = instance.exports.__heap;
+  const heapBase = heapGlobal != null ? heapGlobal.value : null;
   const callString = (exportName, str) => {
     const fn = instance.exports[exportName];
     if (typeof fn !== "function") {
@@ -561,7 +571,10 @@ export async function instantiate(wasmBytes, opts = {}) {
     u8().set(bytes, inPtr + 4);
     const outPtr = fn(inPtr, bytes.length);
     const outLen = dv().getInt32(outPtr, true);
-    return decodeLossy(u8().slice(outPtr + 4, outPtr + 4 + outLen));
+    const result = decodeLossy(u8().slice(outPtr + 4, outPtr + 4 + outLen));
+    // Free everything this call allocated: the result is now a detached JS string.
+    if (heapGlobal != null) heapGlobal.value = heapBase;
+    return result;
   };
 
   return {

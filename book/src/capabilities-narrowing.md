@@ -33,7 +33,7 @@ The full `Dir` verb set, and the right each one demands:
 | `read(d, path)` | `Read` | file contents; error if missing or outside the subtree |
 | `exists(d, path)` / `is_dir(d, path)` | `Read` | total — a path outside the subtree just reads as `false` |
 | `list(d)` | `Read` | entry names in the directory |
-| `subdir(d, name)` | `Read` | mint a capability confined to a child, keeping the rights (see below) |
+| `subtree(d, name)` | `Read` | mint a capability confined to a child, keeping the rights (see below) |
 | `write(d, path, contents)` | `Write` | **replace** the whole file, creating it if absent |
 | `append(d, path, contents)` | `Write` | add to the end, creating the file if absent |
 | `make_dir(d, name)` | `Write` | create a subdirectory (idempotent) |
@@ -75,9 +75,10 @@ laundered back up.
 
 ## Subtrees: a smaller world
 
-Rights restrict the *verbs*; `subdir` restricts the *scope*. A `Dir` is not "the
-filesystem" — it is one directory subtree, and `subdir(dir, "uploads")` mints a
-new capability confined to that child:
+Rights restrict the *verbs*; `dir.subtree(...)` restricts the *scope*. A `Dir` is
+not "the filesystem" — it is one directory subtree, and `dir.subtree("uploads")`
+mints a new capability confined to that child. It is the host-primitive method
+form, the filesystem counterpart of `net.only(...)`:
 
 ```witchy
 // `handle_upload` gets ONLY the uploads/ folder. It cannot see the rest of the
@@ -86,14 +87,105 @@ fn handle_upload(uploads: Dir, name: String, body: String):
     write(uploads, name, body)
 
 fn main(console: Console, dir: Dir):
-    let uploads = subdir(dir, "uploads")
+    let uploads = dir.subtree("uploads")
     handle_upload(uploads, "avatar.png", "...")
     print(console, "stored")
 ```
 
-Combine the two — `subdir(dir, "uploads") as Dir[Write]` — and you've handed a
+Combine the two — `dir.subtree("uploads") as Dir[Write]` — and you've handed a
 function write access to one folder and nothing else, in a way the type system
-guarantees and a reviewer can read at a glance.
+guarantees and a reviewer can read at a glance. The narrowing also chains and
+stays confined: `dir.subtree("a").subtree("b")` reaches `a/b`, and `..` still
+cannot escape.
+
+## Files: the leaf
+
+A `Dir` is authority over a *subtree*; a **`File`** is the leaf — authority over
+exactly *one* file. A function that only needs to read one config file shouldn't be
+handed a whole directory, so a `Dir` navigates down to a single file:
+
+```witchy
+// `read_config` provably touches one file — `witchy caps` reports it as
+// `File[Read]`, never `Dir`. It cannot see any other file in the tree.
+fn read_config(f: File[Read]) -> String:
+    read(f)
+
+fn main(console: Console, dir: Dir):
+    let cfg = dir.read_file("config.toml")     // File[Read] — needs Dir[Read], must exist
+    print(console, read_config(cfg))
+
+    let log = dir.write_file("run.log")        // File[Write] — needs Dir[Write]
+    write(log, "started")                       // a File op takes no path — it IS the file
+```
+
+The **name states the conferred right**, and it's all checked statically:
+`dir.read_file` needs `Dir[Read]` and yields `File[Read]`; `dir.write_file` needs
+`Dir[Write]` and yields `File[Write]`. So a `Dir[Read]` can only ever produce a
+`File[Read]` (calling `write_file` on it is a compile error), and `write` on a
+`File[Read]` is a compile error too — the read-only chain is provable end to end.
+Navigation keeps the same `..`/absolute/symlink confinement as `read`, and a `File`
+can also be handed straight to `main` (`main(config: File[Read])`, granted with
+`--file`) — the least authority for a single-file program, with no `Dir` at all.
+A `File` is read/write only; there is no exec-on-a-`File` (spawning a process is
+the separate `Exec` capability, below).
+
+## Net: a smaller slice of the network
+
+Rights narrow the *verbs* a `Net` permits (`Connect` vs `Listen`); to narrow its
+*reach* — which hosts it may dial — confine its **address-set**. This is the
+network counterpart of `dir.subtree`, and it uses typed policy values from
+`std/confine` rather than ad-hoc strings:
+
+```witchy
+import confine
+
+// `talk_to_db` is handed a Net that can reach exactly one server. Even though
+// `main` holds the whole network, the dependency cannot dial anywhere else.
+fn talk_to_db(db: Net[Connect, Tcp]):
+    let sock = connect(db, "10.0.0.5:6379")
+    send_line(sock, "PING")
+
+fn main(console: Console, net: Net):
+    let db = net.only(confine.tcp("10.0.0.5", 6379))   // intersect down to one endpoint
+    talk_to_db(db)
+    print(console, "done")
+```
+
+`net.only(policy)` *intersects* the carried address-set with `policy`; an endpoint
+survives only if it was already admitted, so refinement can only ever shrink the
+set. `net.deny(policy)` does the opposite — subtracts a slice — and the two chain:
+`net.deny(confine.cidr_any("10.0.0.0/8")).only(confine.tcp("192.168.1.1", 80))`
+removes a private block, then keeps a single host. The policy constructors are
+`confine.tcp(host, port)`, `any_port(host)`, `cidr(block, port)`, `cidr_any(block)`,
+and `union(a, b)` for a multi-endpoint set. The host enforces the set **at the
+syscall** on both backends, so a narrowed `Net` structurally cannot reach
+elsewhere. (HTTPS isn't a separate right: ask for TLS at connect time with a
+`tls:` prefix on the address you dial — `connect(net, "tls:example.com:443")`.)
+
+## Spawning processes: the `Exec` capability
+
+`Exec` is authority to run a *native subprocess* — and it is the single most
+dangerous capability, because a spawned process runs with full OS authority
+**outside** witchy's sandbox. witchy cannot confine what it spawns, so `Exec` is
+kept conspicuous and granted on its own line, never folded into `File`. Two things
+keep it honest: the binary is **named through a `Dir[Read]`** (you can only execute
+a file you can *read*, resolved with the same confinement as `read`), and the call
+takes an argv list, never a shell string:
+
+```witchy
+import exec
+
+// `run_tool` can execute exactly the binaries reachable through `bin` — nothing
+// it cannot already read, and no shell to inject into.
+fn run_tool(e: Exec, bin: Dir[Read], name: String) -> Int:
+    let (code, _out) = exec.run(e, bin, name, ["--version"], "")
+    code
+```
+
+Almost nothing should hold `Exec`; it exists chiefly so a self-hosted tool (like
+the package manager driving the compiler) can run a confined subprocess. `witchy
+caps` surfaces it like any other authority, and the supply-chain gate treats newly
+wanting `Exec` as a serious widening.
 
 ## User-defined capabilities: `capability X from U`
 
@@ -129,59 +221,74 @@ A plain `type` brand (`type ConfigDir: ConfigDir(Dir)`) is convention only: any
 module can construct one. Use `capability` when the brand has to hold as a
 guarantee. See `examples/branded_caps` and `examples/redis_capability`.
 
-For the network, `restrict(net, "host:port")` returns a `Net` confined to a set
-of addresses: an exact `host:port`, `host:*`, or an IPv4 CIDR. The host enforces
-it on `connect` and `listen`, the same way `subdir` confines a `Dir` to a
-subtree. Pass a dependency `restrict(net, "10.0.0.5:6379")` and it reaches that
-one server.
+## Capabilities that carry policy
 
-## Block firewalls: `retain` and `without`
+A `capability` can carry **state beside** the authority it wraps — a sealed
+*record* mixing a host capability with ordinary policy data. A database handle, say,
+is a `Net` confined to one server *plus* the table it is scoped to:
+
+```witchy
+// A confined `Net` (the hard, audited authority) + a `table` it is scoped to (a
+// soft policy the library enforces). Sealed: only this module can mint, refine, or
+// destructure one, and its fields are private — reached with `match`, never
+// `.field` — so the underlying `Net` can never leak past the policy.
+capability Table:
+    net: Net[Connect, Tcp]
+    name: String
+
+// The only way to make one (sealed constructor).
+pub fn open_table(net: Net[Connect, Tcp], name: String) -> Table:
+    Table(net, name)
+
+// A query refuses any table but the one the handle carries — the policy lives in
+// this one reviewable place.
+pub fn count(t: Table, requested: String) -> String:
+    match t:
+        Table(_, name) ->
+            if requested == name: "ok: " + requested
+            else: "denied: " + requested
+
+fn main(console: Console, net: Net):
+    let users = open_table(net, "users")
+    print(console, count(users, "users"))      // ok: users
+    print(console, count(users, "secrets"))    // denied: secrets
+```
+
+`witchy caps` sees straight through the record: `Table` audits as exactly `Net`,
+because the footprint sums its capability-typed fields and the `String` carries no
+authority. So you get carried policy with **nothing hidden** — the hard tier (the
+`Net` is host-confined to one server) plus a soft, library-enforced tier (the
+`table` filter), in one unforgeable value. See `examples/carried_state`.
+
+## Withholding authority by structure
 
 Everything above attenuates along *calls* — you weaken a handle as you pass it
-on. Sometimes you want to weaken authority along *scope* instead: to carve out a
-region of a function where some capability simply isn't available, regardless of
-what the surrounding code holds. That is what `retain` and `without` do.
+on. The same mechanism gives you the strongest possible way to *deny* authority
+to a stretch of code: don't pass it. A function or closure that never receives a
+capability cannot use it — there is no name to reach, no value to alias, nothing
+to forge.
 
-A `without` block drops the named capabilities for the length of the block:
-
-```witchy
-fn main(console: Console, clock: Clock):
-    without clock:
-        // `clock` is walled off in here — `now(clock)` would not compile.
-        print(console, "this section provably does not read the clock")
-    print(console, "${now(clock)}")
-```
-
-A `retain` block is the mirror image: it keeps *only* what you name and drops
-everything else. Writing `retain:` with no names at all seals the block
-completely — no capability survives, so the region is pure computation:
+So when a region of work must not touch the network (or the clock, or the disk),
+lift it into a function that simply isn't given that capability:
 
 ```witchy
+fn audit_log(console: Console, body: String):
+    // Never receives `clock`, so it structurally cannot read the wall clock.
+    print(console, "audit: ${body}")
+
 fn main(console: Console, clock: Clock):
-    retain console:
-        // Only `console` survives; `clock` is gone, even though `main` holds it.
-        print(console, "this section can print and nothing else")
-    retain:
-        // Fully sealed: no authority in scope, so this does provably no I/O.
-        let sum = 2 + 2
-    print(console, "${now(clock)}")
+    let body = "request handled"
+    audit_log(console, body)
+    print(console, "logged at ${now(clock)}")
 ```
 
-### Why this is more than a comment
-
-The firewall is enforced by the type checker, and — crucially — it is sealed
-against the *future*. If someone later adds a `Net` parameter to `main`, the code
-inside a `retain console:` block still cannot touch the network: the network was
-never named, so it is never let in. A block's authority is fixed by what it asks
-for, not by whatever its enclosing scope happens to accumulate over time. That is
-a local, durable guarantee that a slice of a function does no more than the
-handful of things you allowed — the same "exactly this power and no more" promise
-as parameter-level attenuation, but for a region of code rather than a call.
-
-Re-binding a dropped name inside the block is still allowed: `without console:`
-followed by `let console = ...` legitimately shadows the firewall, because a
-fresh value is not the forbidden capability — and inside the block you have no
-way to *name* the dropped one to smuggle it back.
+`audit_log` cannot read the clock in *any* execution, under *any* later refactor:
+the authority was never handed to it. This is **capture-as-dependency-injection**
+— authority comes from *holding* a capability, so the un-bypassable way to deny
+it is to not pass the reference. The boundary is sealed against the future, too:
+if someone later adds a `Net` parameter to `main`, the code inside `audit_log`
+still cannot dial, because its authority is fixed by its own signature, not by
+whatever its callers accumulate over time.
 
 ## The supply-chain payoff
 

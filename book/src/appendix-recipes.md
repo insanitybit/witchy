@@ -24,8 +24,30 @@ it grants at the **current working directory** — so relative paths resolve
 against where you launched the program, not where the source file lives. To run
 it confined to a specific subtree instead, use `witchy sandbox --dir <root>
 program.witchy`; the sandbox prints exactly what it granted. Either way the
-program only ever sees paths *under* that root — `subdir(root, "sub")` narrows
+program only ever sees paths *under* that root — `subtree(root, "sub")` narrows
 further to a child folder.
+
+## Read just one file
+
+When a program needs *one* file, ask for a `File[Read]` instead of a whole `Dir` —
+the least authority that does the job. A `Dir` navigates down to a single file with
+`read_file`, and a `File` op takes no path (it *is* the file):
+
+```witchy
+// `load` provably touches one file — `witchy caps` reports it as `File[Read]`,
+// never `Dir`, so it cannot see anything else in the tree.
+fn load(cfg: File[Read]) -> String:
+    read(cfg)
+
+fn main(console: Console, root: Dir[Read]):
+    print(console, load(root.read_file("config.toml")))
+```
+
+`root.read_file(...)` needs `Dir[Read]` and yields `File[Read]`; the write
+counterpart is `root.write_file(...)` (needs `Dir[Write]`, yields `File[Write]`).
+A single-file program can skip the `Dir` entirely and take the file straight from
+the host: `fn main(console: Console, cfg: File[Read])`, granted with
+`witchy sandbox --file config.toml program.witchy`.
 
 ## Write a file
 
@@ -40,7 +62,7 @@ fn main(console: Console, root: Dir[Write]):
 
 ## List a directory
 
-`list` returns the entry names in the subtree; `subdir(root, "sub")` mints a
+`list` returns the entry names in the subtree; `subtree(root, "sub")` mints a
 capability confined to a child folder if you want to descend.
 
 ```witchy

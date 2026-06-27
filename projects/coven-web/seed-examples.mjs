@@ -75,5 +75,34 @@ for (const d of dirs) {
   }
 }
 
+// Also publish glamour — witchy's frontend framework. It lives under `projects/` (not
+// `examples/`) and has NO dependencies, so it seeds standalone. It is the showcase rune: an
+// empty capability footprint, browsable API docs (`/coven/doc`), and — in its own example
+// apps — the isolated d3 compartment. Published under the `witchy` namespace.
+{
+  const gdir = join(REPO, "projects", "glamour");
+  const gfiles = witchyFiles(gdir);
+  const gtoml = readFileSync(join(gdir, "witchy.toml"), "utf8");
+  const gversion = (gtoml.match(/version\s*=\s*"([^"]+)"/) || [, "0.1.0"])[1];
+  const gname = "witchy/glamour";
+  // glamour's real footprint is empty, so declare nothing (coven recomputes + verifies).
+  const gmanifest = `[rune]\nname = "${gname}"\nversion = "${gversion}"\n\n[capabilities]\nruntime = []\n`;
+  const gsource = [
+    ["witchy.toml", gmanifest],
+    ...gfiles.map((f) => ["src/" + f, readFileSync(join(gdir, "src", f), "utf8")]),
+  ];
+  try {
+    const res = await publish(gname, gmanifest, gsource);
+    if (res.status === 200) {
+      ok++;
+      console.log("ok  ", gname + "@" + gversion);
+    } else {
+      failures.push([gname, res.status, res.text.slice(0, 120)]);
+    }
+  } catch (e) {
+    failures.push([gname, "ERR", e.message]);
+  }
+}
+
 console.log(`\nseeded ${ok} runes; ${failures.length} skipped`);
 for (const [n, s, t] of failures) console.log("  skip", n, s, t);

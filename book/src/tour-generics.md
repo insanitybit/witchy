@@ -166,7 +166,12 @@ Score(12, beta)
 - `derive(PartialEq)` is field-by-field structural equality (it backs `==`/`!=`);
   `derive(Eq)` marks it as a total equality, usable as a `Set`/`Dict` key.
 - `derive(PartialOrd)`/`derive(Ord)` compare fields lexicographically, in
-  declaration order, and back the `<` `>` `<=` `>=` operators.
+  declaration order, and back the `<` `>` `<=` `>=` operators. These two are
+  **records only** (a single constructor with named fields); deriving them on an
+  enum or multi-variant sum type is an error, so order an enum with a
+  hand-written `impl Ord`. (`Show`/`PartialEq`/`Eq` derive for any type.) Note a
+  derived `Ord` requires every field's type to be `Ord` too — derive it on the
+  field types as well.
 - `derive(Reflect)` (with `import reflect`) makes the record *reflectable*, so
   the reflection-based encoders serialize it with no per-type code:
   `json.stringify(score)` returns `{"points":12,"label":"beta"}` and
@@ -177,6 +182,33 @@ Score(12, beta)
   option` if any field is `Option`) generates the inverse,
   `from_json(j) -> Result(Self, String)`, so `Score.from_json(j)` rebuilds a
   record from a parsed `Json` and reports a bad shape as `Err`.
+
+Because an operator dispatches on its operands' type, a comparison works
+wherever the value comes from — including one you just bound in a `match` arm, an
+`if let`, or a tuple destructure:
+
+```witchy
+import cmp
+
+type Version derive(Show, PartialEq, Eq, PartialOrd, Ord):
+    major: Int
+    minor: Int
+
+fn parse(s: String) -> Option(Version):
+    match string.split(s, "."):
+        [major, minor] -> Some(Version(string.to_int(major), string.to_int(minor)))
+        _ -> None
+
+fn main(console: Console):
+    if let Some(v) = parse("1.4"):
+        print(console, "${v == Version(1, 4)}")   // `v` is bound by `if let`
+        print(console, "${v < Version(2, 0)}")
+```
+
+```text
+true
+true
+```
 
 Write an explicit `impl` only when you want behavior the mechanical version
 doesn't give you — a custom display format, a comparison that ignores a field.
