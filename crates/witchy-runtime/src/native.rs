@@ -399,17 +399,17 @@ mod compiler {
         let [Value::Str(src)] = args else {
             return Err(type_error("compiler.footprint expects a String"));
         };
-        let json = match crate::parser::parse_module(src) {
+        let json = match witchy_syntax::parser::parse_module(src) {
             Ok(module) => {
-                let fp = crate::capabilities::analyze(&module);
-                let total = arr(fp.total.iter().map(|(n, r)| crate::capabilities::show_cap(n, r)));
-                let build = arr(fp.build.iter().map(|(n, r)| crate::capabilities::show_cap(n, r)));
+                let fp = witchy_caps::capabilities::analyze(&module);
+                let total = arr(fp.total.iter().map(|(n, r)| witchy_caps::capabilities::show_cap(n, r)));
+                let build = arr(fp.build.iter().map(|(n, r)| witchy_caps::capabilities::show_cap(n, r)));
                 let entries: Vec<String> = fp
                     .entries
                     .iter()
                     .map(|e| {
                         let caps =
-                            arr(e.capabilities.iter().map(|(n, r)| crate::capabilities::show_cap(n, r)));
+                            arr(e.capabilities.iter().map(|(n, r)| witchy_caps::capabilities::show_cap(n, r)));
                         let brands = arr(e.brands.iter().cloned());
                         format!(
                             "{{\"name\":{},\"capabilities\":{},\"brands\":{}}}",
@@ -441,7 +441,7 @@ mod compiler {
         let [Value::Str(name), Value::Str(src)] = args else {
             return Err(type_error("compiler.doc expects (name, source) strings"));
         };
-        let md = crate::doc::render(name, src).unwrap_or_else(|e| format!("<!-- doc error: {e} -->"));
+        let md = witchy_syntax::doc::render(name, src).unwrap_or_else(|e| format!("<!-- doc error: {e} -->"));
         Ok(Value::Str(md))
     }
 
@@ -453,13 +453,13 @@ mod compiler {
         let [Value::Str(old_src), Value::Str(new_src)] = args else {
             return Err(type_error("compiler.diff expects (old_source, new_source) strings"));
         };
-        let json = match (crate::parser::parse_module(old_src), crate::parser::parse_module(new_src)) {
+        let json = match (witchy_syntax::parser::parse_module(old_src), witchy_syntax::parser::parse_module(new_src)) {
             (Ok(old), Ok(new)) => {
-                let old_fp = crate::capabilities::analyze(&old);
-                let new_fp = crate::capabilities::analyze(&new);
-                let d = crate::capabilities::diff(&old_fp, &new_fp);
-                let added = arr(d.added.iter().map(|(n, r)| crate::capabilities::show_cap(n, r)));
-                let removed = arr(d.removed.iter().map(|(n, r)| crate::capabilities::show_cap(n, r)));
+                let old_fp = witchy_caps::capabilities::analyze(&old);
+                let new_fp = witchy_caps::capabilities::analyze(&new);
+                let d = witchy_caps::capabilities::diff(&old_fp, &new_fp);
+                let added = arr(d.added.iter().map(|(n, r)| witchy_caps::capabilities::show_cap(n, r)));
+                let removed = arr(d.removed.iter().map(|(n, r)| witchy_caps::capabilities::show_cap(n, r)));
                 format!(
                     "{{\"widened\":{},\"added\":{},\"removed\":{}}}",
                     d.widened(),

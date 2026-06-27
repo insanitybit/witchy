@@ -1,0 +1,35 @@
+[package]
+name = "witchy-runtime"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+description = "witchy compiler — runtime values, the capability host registry, and the wasmtime sandbox (TCB)"
+
+[dependencies]
+witchy-caps = { path = "../witchy-caps" }
+witchy-syntax = { path = "../witchy-syntax" }
+# Pure-Rust crypto for the wasm-safe path (the playground never runs
+# security-critical crypto); the native path below uses aws-lc-rs instead.
+sha2 = "0.11.0"
+ed25519-dalek = "2.2.0"
+regex = "1.11"
+# The wasmtime sandbox + its randomness (native-only).
+wasmtime = { version = "45.0.0", optional = true }
+getrandom = { version = "0.4.2", optional = true }
+
+# aws-lc-rs (FIPS-capable) backs native crypto; rustls (aws_lc_rs provider) is the
+# `tls:` client. Both build C and have no wasm32 support, so the wasm build keeps
+# the pure-Rust sha2/ed25519 path and omits TLS.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+aws-lc-rs = "1"
+rustls = { version = "0.23", default-features = false, features = ["std", "aws_lc_rs", "tls12", "logging"] }
+webpki-roots = "0.26"
+rustls-pemfile = "2"
+
+# ed25519-dalek pulls getrandom transitively; the browser target needs its JS
+# backend to link (crypto is seed-only here, so it is never actually called).
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.2", features = ["js"] }
+
+[features]
+native = ["dep:wasmtime", "dep:getrandom"]

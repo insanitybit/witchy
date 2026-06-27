@@ -37,7 +37,7 @@ pub use witchy::optimize;
 pub use witchy::parser;
 mod idp;
 pub use witchy::records;
-mod runtime;
+pub use witchy::runtime;
 pub use witchy::traits;
 pub use witchy::typeck;
 pub use witchy::value;

@@ -558,7 +558,7 @@ fn host_print_float(caller: Caller<'_, VmState>, x: f64) -> Result<()> {
     // The same canonical float formatting the interpreter uses (Value::Float
     // Display via `render_float`), so the two backends agree on float output —
     // including the trailing `.0` on a whole-valued float.
-    let s = crate::fmt::render_float(x);
+    let s = witchy_syntax::fmt::render_float(x);
     if !caller.data().caps.quiet {
         println!("[vm {}] {s}", caller.data().id);
     }
@@ -598,7 +598,7 @@ fn host_ed25519_verify(
 /// `to_string`), write the bytes at `out_ptr`, and return the byte length. The
 /// guest reserves a generous buffer; an f64's decimal form never exceeds it.
 fn host_float_to_str(mut caller: Caller<'_, VmState>, x: f64, out_ptr: i32) -> Result<i32> {
-    let s = crate::fmt::render_float(x);
+    let s = witchy_syntax::fmt::render_float(x);
     let bytes = s.into_bytes();
     let mem = memory_of(&mut caller)?;
     mem.write(&mut caller, out_ptr as usize, &bytes)
@@ -1278,7 +1278,7 @@ fn host_net_restrict(mut caller: Caller<'_, VmState>, h: i32, addr_ptr: i32) -> 
     let allow = net_allow(&caller, h)?;
     let patterns: Vec<String> = addr.split('\n').map(String::from).collect();
     for p in &patterns {
-        if !crate::capabilities::net_allows(&allow, p) {
+        if !witchy_caps::capabilities::net_allows(&allow, p) {
             bail!("restrict: `{p}` is not in this Net capability");
         }
     }
@@ -1308,7 +1308,7 @@ fn host_net_connect(mut caller: Caller<'_, VmState>, h: i32, addr_ptr: i32) -> R
     let addr = read_wstr(mem.data(&caller), addr_ptr)?;
     let allow = net_allow(&caller, h)?;
     let (tls, host_port) = crate::net::parse_scheme(&addr);
-    let targets = crate::capabilities::resolve_admitted(&allow, host_port)
+    let targets = witchy_caps::capabilities::resolve_admitted(&allow, host_port)
         .map_err(|e| Error::msg(format!("connect: {e}")))?;
     let stream = crate::net::dial(&targets, tls, host_port)
         .map_err(|e| Error::msg(format!("connect to `{addr}` failed: {e}")))?;
@@ -1327,7 +1327,7 @@ fn host_net_try_connect(mut caller: Caller<'_, VmState>, h: i32, addr_ptr: i32) 
     let addr = read_wstr(mem.data(&caller), addr_ptr)?;
     let allow = net_allow(&caller, h)?;
     let (tls, host_port) = crate::net::parse_scheme(&addr);
-    let targets = crate::capabilities::resolve_admitted(&allow, host_port)
+    let targets = witchy_caps::capabilities::resolve_admitted(&allow, host_port)
         .map_err(|e| Error::msg(format!("try_connect: {e}")))?;
     match crate::net::dial(&targets, tls, host_port) {
         Ok(stream) => {
@@ -1344,7 +1344,7 @@ fn host_net_listen(mut caller: Caller<'_, VmState>, h: i32, addr_ptr: i32) -> Re
     let mem = memory_of(&mut caller)?;
     let addr = read_wstr(mem.data(&caller), addr_ptr)?;
     let allow = net_allow(&caller, h)?;
-    if !crate::capabilities::net_allows(&allow, &addr) {
+    if !witchy_caps::capabilities::net_allows(&allow, &addr) {
         bail!("listen: `{addr}` is not permitted by this Net capability");
     }
     let listener = std::net::TcpListener::bind(&addr)

@@ -12,7 +12,7 @@ categories = ["compilers", "development-tools"]
 # crates/. The root `witchy` package is itself a workspace member (the binary +
 # the not-yet-extracted stages); extracted crates are listed here.
 [workspace]
-members = ["crates/witchy-caps", "crates/witchy-lower", "crates/witchy-syntax", "crates/witchy-types", "crates/witchy-wir"]
+members = ["crates/witchy-caps", "crates/witchy-lower", "crates/witchy-runtime", "crates/witchy-syntax", "crates/witchy-types", "crates/witchy-wir"]
 
 [lib]
 name = "witchy"
@@ -30,13 +30,14 @@ required-features = ["native"]
 # The full native toolchain (wasmtime sandbox, package manager, LSP). On by
 # default; the wasm playground builds the library alone with it OFF.
 default = ["native"]
-native = ["dep:wasmtime", "dep:lsp-server", "dep:serde_json", "dep:serde", "dep:toml", "dep:tiny_http", "dep:getrandom", "witchy-wir/native", "witchy-caps/native"]
+native = ["dep:wasmtime", "dep:lsp-server", "dep:serde_json", "dep:serde", "dep:toml", "dep:tiny_http", "dep:getrandom", "witchy-wir/native", "witchy-caps/native", "witchy-runtime/native"]
 
 [dependencies]
 # Stage-aligned crates extracted from the monolith (RFC-0018). Re-exported from
 # lib.rs so existing `crate::{ast,lexer,parser,wir,…}::…` paths keep resolving.
 witchy-caps = { path = "crates/witchy-caps" }
 witchy-lower = { path = "crates/witchy-lower" }
+witchy-runtime = { path = "crates/witchy-runtime" }
 witchy-syntax = { path = "crates/witchy-syntax" }
 witchy-types = { path = "crates/witchy-types" }
 witchy-wir = { path = "crates/witchy-wir" }

@@ -26,20 +26,21 @@ pub use witchy_syntax::{
 pub use witchy_caps::capabilities;
 #[cfg(test)]
 mod capabilities_tests;
-pub mod confine;
+// RFC-0018: runtime values + the capability host live in `witchy-runtime`
+// (wasm-safe); the wasmtime sandbox `runtime` is native-only.
+pub use witchy_runtime::{confine, native, net, value};
+#[cfg(feature = "native")]
+pub use witchy_runtime::runtime;
 pub mod comptime;
 /// RFC-0013 capability grant documents (TOML); native-only — re-exported from
 /// the `witchy-caps` crate.
 #[cfg(feature = "native")]
 pub use witchy_caps::grants;
 pub mod interpreter;
-pub mod native;
-pub mod net;
 pub mod pipeline;
 pub mod tagged;
 // RFC-0018: type checking + trait resolution live in the `witchy-types` crate.
 pub use witchy_types::{traits, typeck};
-pub mod value;
 // RFC-0018: the WIR group lives in the `witchy-wir` crate; re-export it so the
 // rest of the compiler keeps using `crate::wir::…` paths unchanged.
 pub use witchy_wir::{wir, wir_encode, wir_opt, wir_prelude};

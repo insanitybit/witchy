@@ -2553,6 +2553,7 @@ dependencies = [
  "webpki-roots 0.26.11",
  "witchy-caps",
  "witchy-lower",
+ "witchy-runtime",
  "witchy-syntax",
  "witchy-types",
  "witchy-wir",
@@ -2576,6 +2577,24 @@ dependencies = [
  "witchy-syntax",
  "witchy-types",
  "witchy-wir",
+]
+
+[[package]]
+name = "witchy-runtime"
+version = "0.1.0"
+dependencies = [
+ "aws-lc-rs",
+ "ed25519-dalek",
+ "getrandom 0.2.17",
+ "getrandom 0.4.2",
+ "regex",
+ "rustls",
+ "rustls-pemfile",
+ "sha2 0.11.0",
+ "wasmtime",
+ "webpki-roots 0.26.11",
+ "witchy-caps",
+ "witchy-syntax",
 ]
 
 [[package]]
