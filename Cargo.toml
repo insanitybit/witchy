@@ -12,7 +12,7 @@ categories = ["compilers", "development-tools"]
 # crates/. The root `witchy` package is itself a workspace member (the binary +
 # the not-yet-extracted stages); extracted crates are listed here.
 [workspace]
-members = ["crates/witchy-wir"]
+members = ["crates/witchy-syntax", "crates/witchy-wir"]
 
 [lib]
 name = "witchy"
@@ -33,8 +33,9 @@ default = ["native"]
 native = ["dep:wasmtime", "dep:lsp-server", "dep:serde_json", "dep:serde", "dep:toml", "dep:tiny_http", "dep:getrandom", "witchy-wir/native"]
 
 [dependencies]
-# The WIR IR + wasm encoder, extracted to its own crate (RFC-0018). Re-exported
-# from lib.rs so existing `crate::wir::…` paths keep resolving.
+# Stage-aligned crates extracted from the monolith (RFC-0018). Re-exported from
+# lib.rs so existing `crate::{ast,lexer,parser,wir,…}::…` paths keep resolving.
+witchy-syntax = { path = "crates/witchy-syntax" }
 witchy-wir = { path = "crates/witchy-wir" }
 # Pure-Rust deps the interpreter library needs on every target (incl. wasm).
 sha2 = "0.11.0"

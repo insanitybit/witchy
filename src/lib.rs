@@ -14,7 +14,9 @@
 
 pub mod analysis;
 pub mod aliases;
-pub mod ast;
+// RFC-0018: lexer/parser/ast live in the `witchy-syntax` crate; re-export so the
+// rest of the compiler keeps using `crate::{ast,lexer,parser}::…` unchanged.
+pub use witchy_syntax::{ast, lexer, parser};
 pub mod capabilities;
 pub mod codegen;
 pub mod confine;
@@ -30,12 +32,10 @@ pub mod generators;
 #[cfg(feature = "native")]
 pub mod grants;
 pub mod interpreter;
-pub mod lexer;
 pub mod linker;
 pub mod native;
 pub mod net;
 pub mod optimize;
-pub mod parser;
 pub mod records;
 pub mod tagged;
 pub mod traits;

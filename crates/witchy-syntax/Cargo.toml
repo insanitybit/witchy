@@ -1,0 +1,11 @@
+[package]
+name = "witchy-syntax"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+description = "witchy compiler — the lexer, parser, and AST (source text → AST)"
+
+# Pure std; no external crates and no native gate — the tests are plain
+# `#[cfg(test)]` unit tests (no wasmtime), so this crate builds identically on
+# every target including the wasm playground.
+[dependencies]

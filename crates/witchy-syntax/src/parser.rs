@@ -1811,7 +1811,7 @@ fn compound_assign_op(t: &Tok) -> Option<BinOp> {
 /// `Expr::Range` for the formatter; every other consumer (typeck, interpreter,
 /// codegen) calls this to lower them. The synthetic-name counter is a
 /// thread-local so repeated lowerings never collide.
-pub(crate) fn desugar_range(lo: Expr, hi: Expr, inclusive: bool) -> Expr {
+pub fn desugar_range(lo: Expr, hi: Expr, inclusive: bool) -> Expr {
     thread_local! {
         static RANGE_COUNTER: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     }
@@ -1865,7 +1865,7 @@ pub(crate) fn desugar_range(lo: Expr, hi: Expr, inclusive: bool) -> Expr {
 /// Lower `base[index]` to the call `list.at(base, index)`. A free function for the
 /// same reason as [`desugar_range`]: the parser keeps subscripts as
 /// `Expr::Index` for the formatter, and every other consumer lowers them here.
-pub(crate) fn desugar_index(base: Expr, index: Expr) -> Expr {
+pub fn desugar_index(base: Expr, index: Expr) -> Expr {
     Expr::Call {
         name: "list.at".into(),
         args: vec![base, index],
@@ -1875,7 +1875,7 @@ pub(crate) fn desugar_index(base: Expr, index: Expr) -> Expr {
 /// Lower `receiver.method(args)` to the call `method(receiver, args)` — exactly
 /// what the parser used to build inline. The linker then resolves `method` by
 /// the receiver's type just as for any call.
-pub(crate) fn desugar_method(receiver: Expr, method: String, args: Vec<Expr>) -> Expr {
+pub fn desugar_method(receiver: Expr, method: String, args: Vec<Expr>) -> Expr {
     let mut all = Vec::with_capacity(args.len() + 1);
     all.push(receiver);
     all.extend(args);
@@ -1886,7 +1886,7 @@ pub(crate) fn desugar_method(receiver: Expr, method: String, args: Vec<Expr>) ->
 /// wildcard arm breaks the loop. A free function for the same reason as
 /// [`desugar_range`]: the parser keeps `Expr::WhileLet` for the formatter, and
 /// every other consumer lowers it here.
-pub(crate) fn desugar_while_let(pattern: Pattern, scrutinee: Expr, body: Block) -> Expr {
+pub fn desugar_while_let(pattern: Pattern, scrutinee: Expr, body: Block) -> Expr {
     let dispatch = Expr::Match {
         scrutinee: Box::new(scrutinee),
         arms: vec![
@@ -1909,7 +1909,7 @@ pub(crate) fn desugar_while_let(pattern: Pattern, scrutinee: Expr, body: Block) 
 /// multiple passes (local collection, then emission) agree on ranges' synthetic
 /// loop-variable names and see subscripts as plain `at` calls; the formatter,
 /// which never lowers, keeps the nodes so it can print `lo..hi` and `base[i]`.
-pub(crate) fn lower_sugar_module(m: &mut Module) {
+pub fn lower_sugar_module(m: &mut Module) {
     for item in &mut m.items {
         match item {
             Item::Function(f) => lower_sugar_block(&mut f.body),
