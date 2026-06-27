@@ -1840,9 +1840,9 @@ impl Checker {
                 // Closures capture by value, so an assignment to a captured
                 // (outer) variable cannot propagate out: the interpreter would
                 // silently mutate a private copy while the compiled backends can't
-                // express it at all. Reject it uniformly here (using codegen's
-                // exact capture/assignment scan) so every backend agrees.
-                let outer = crate::codegen::lambda_outer_assigns(params, body);
+                // express it at all. Reject it uniformly here (using the shared
+                // AST capture/assignment scan) so every backend agrees.
+                let outer = crate::lambda_scan::lambda_outer_assigns(params, body);
                 if !outer.is_empty() {
                     return terr(format!(
                         "a closure cannot assign to the captured variable `{}` (captures are by value, so the write would be lost) — return the new value or use a `var` parameter instead",

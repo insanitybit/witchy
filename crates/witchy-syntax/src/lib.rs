@@ -11,5 +11,6 @@
 #![allow(clippy::collapsible_if, clippy::collapsible_match, clippy::items_after_test_module)]
 
 pub mod ast;
+pub mod lambda_scan;
 pub mod lexer;
 pub mod parser;
