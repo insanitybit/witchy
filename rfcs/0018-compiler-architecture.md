@@ -78,21 +78,57 @@ in-place/inline fast paths).
   independent implementation, which is exactly what lets the parity diff catch
   lowering bugs.
 
+## Dependency reality (measured)
+
+The file-map's *stage* seams are clean, but the *module* dependency graph
+(measured from real `crate::` references, doc-comment links excluded) is **not a
+DAG** — and Rust crates cannot form a cycle. Two facts shape the plan:
+
+- **A clean upstream DAG** is already crate-able as-is: `ast`, `lexer`, `parser`,
+  `value`, `confine`, `fmt`, `net`, `consts`, `aliases`, `async_lower`,
+  `generators`, `optimize`, `analysis`, `idp`, and the whole `wir` group
+  (`wir`/`wir_encode`/`wir_opt`/`wir_prelude`, self-contained). These extract with
+  no cycle-breaking.
+- **A 13-module strongly-connected component** — `typeck, codegen, format,
+  linker, comptime, tagged, interpreter, records, derive, traits, capabilities,
+  native, doc` — is mutually dependent and so **cannot be split into the
+  `witchy-types`/`witchy-lower`/`witchy-interp`/`witchy-caps` crates until its
+  cycles are cut.** The cuts, easiest first:
+  - `typeck → codegen`: a single call (`codegen::lambda_outer_assigns`) — move it.
+  - `typeck ↔ format`, `records ↔ derive`, `traits ↔ typeck`: small, local.
+  - **The hard one — `linker ↔ comptime`/`tagged ↔ interpreter`:** genuine
+    compile-time-evaluation co-recursion (`comptime`/tagged literals run the
+    interpreter; the interpreter links std to run them; linking drives
+    comptime/tagged expansion). Cut by **dependency inversion** — the linker takes
+    a comptime-evaluator callback rather than calling `comptime` directly, and the
+    interpreter receives an *already-linked* module rather than calling `linker`.
+
+The split is therefore a *two-part* effort, not a file-move: (1) extract the
+clean upstream crates; (2) break the SCC's cycles, which is the real
+architectural work and the prerequisite for the four middle/back-end crates.
+
+A second constraint the crates must honor: the lib is also a **`cdylib` built for
+`wasm32`** (the browser playground, `native` feature off). Every crate on the
+compile path (`syntax`, `types`, `wir`, `lower`) must stay wasm-clean; only
+`witchy-runtime` (wasmtime) and the native-gated test/helpers are `native`-only.
+Each new crate replicates the `native` feature gate accordingly.
+
 ## Migration
 
-Mechanical and parity-preserving; the standing discipline (keep green,
-differential tests as the net) holds throughout. Extract one crate at a time,
-leaf stages first, so each step is a pure move with no behavior change:
+Parity-preserving throughout (keep green; differential tests as the net):
 
-1. **Leaf, dependency-free stages first** — `witchy-syntax`, then `witchy-caps`,
-   `witchy-wir` (the IR has few inbound deps). Each: move files, declare the
-   crate, fix `use` paths, run the suite.
-2. **`witchy-lower` — extract the AST→WIR lowering out of `codegen.rs`.** The
-   headline step; do it once `witchy-wir` and `witchy-types` are crates so its
-   dependencies are already drawn.
-3. **`witchy-interp`, `witchy-runtime`** — the two executors, against the now-stable
-   `witchy-wir`/`witchy-lower` boundary.
-4. **`witchy` binary last** — it depends on everything; it shrinks to wiring.
+1. **Workspace skeleton + the clean upstream crates.** Extract `witchy-wir`
+   (self-contained) first, then `witchy-syntax` (`ast`/`lexer`/`parser` + the
+   ast-only passes). Pure moves + `use`-path rewrites + per-crate `native` gating;
+   no behavior change.
+2. **Break the SCC, easy cuts first** — move `lambda_outer_assigns`; resolve
+   `typeck↔format`, `records↔derive`, `traits↔typeck`. Each cut is its own
+   green commit.
+3. **Invert the compile-time-eval cycle** (`linker`/`comptime`/`tagged`/
+   `interpreter`) — the load-bearing refactor; once cut, `witchy-types`,
+   `witchy-lower`, `witchy-interp`, and `witchy-caps` become separable.
+4. **`witchy-runtime`** (wasmtime host, native-only) and the **`witchy` binary**
+   last — the binary shrinks to wiring.
 
 No phase changes observable behavior; each is green before the next.
 
