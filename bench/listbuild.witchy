@@ -6,4 +6,4 @@ fn main(console: Console):
     var total = 0
     for x in xs:
         total = total + x % 7
-    print(console, to_string(total))
+    print(console, "${total}")

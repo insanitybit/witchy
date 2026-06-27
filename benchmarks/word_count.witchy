@@ -15,4 +15,4 @@ fn main(console: Console):
     var total = 0
     for v in dict.values(d):
         total = total + v
-    print(console, to_string(total + dict.size(d)))
+    print(console, "${total + dict.size(d)}")

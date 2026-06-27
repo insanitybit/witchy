@@ -9,13 +9,16 @@ Regenerate with `./run.sh`.
 
 | benchmark | witchy-wasm (ms) | go (ms) | vs go |
 |-----------|-----------------:|--------:|------:|
-| fib | 46.5 | 34.1 | 1.36x |
-| loop_sum | 39.5 | 40.0 | 0.99x |
-| collatz | 225.8 | 174.1 | 1.30x |
-| mandelbrot | 95.3 | 49.1 | 1.94x |
-| closure_calls | 13.6 | 5.4 | 2.52x |
-| list_sum | 24.9 | 19.9 | 1.25x |
-| dict_count | 67.6 | 49.3 | 1.37x |
-| binary_trees | 73.5 | 115.0 | 0.64x |
-| word_count | 87.9 | 66.0 | 1.33x |
-| expr_eval | 26.4 | 63.5 | 0.42x |
+| fib | 52.9 | 30.1 | 1.76x |
+| loop_sum | 48.7 | 35.0 | 1.39x |
+| collatz | 231.1 | 190.8 | 1.21x |
+| mandelbrot | 99.7 | 45.8 | 2.18x |
+| closure_calls | 21.4 | 6.8 | 3.13x |
+| list_sum | 22.5 | 14.9 | 1.51x |
+| dict_count | 73.1 | 46.1 | 1.59x |
+| binary_trees | 79.9 | 115.6 | 0.69x |
+| word_count | 104.2 | 69.7 | 1.49x |
+| expr_eval | 28.5 | 61.1 | 0.47x |
+| nsieve | 31.1 | 7.1 | 4.39x |
+| fannkuch | 391.4 | 140.5 | 2.79x |
+| knucleotide | 55.0 | 18.1 | 3.04x |

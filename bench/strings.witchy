@@ -3,5 +3,5 @@
 fn main(console: Console):
     var s = ""
     for i in 0..20000:
-        s = s <> "ab"
-    print(console, to_string(string.length(s)))
+        s = s + "ab"
+    print(console, "${string.length(s)}")

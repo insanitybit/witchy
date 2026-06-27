@@ -7,4 +7,4 @@ fn main(console: Console):
     var total = 0
     for x in acc:
         total = total + x
-    print(console, to_string(total))
+    print(console, "${total}")

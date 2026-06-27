@@ -5,4 +5,4 @@ fn fib(n: Int) -> Int:
         fib(n - 1) + fib(n - 2)
 
 fn main(console: Console):
-    print(console, to_string(fib(35)))
+    print(console, "${fib(35)}")

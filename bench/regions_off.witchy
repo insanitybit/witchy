@@ -13,4 +13,4 @@ fn main(console: Console):
     for i in 0..20000:
         total = total + run_one(i)
         keep = list.push(keep, i)
-    print(console, to_string(total))
+    print(console, "${total}")

@@ -8,4 +8,4 @@ fn main(console: Console):
     var total = 0
     for k in dict.keys(d):
         total = total + dict.get_or(d, k, 0)
-    print(console, to_string(total))
+    print(console, "${total}")

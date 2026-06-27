@@ -1,0 +1,34 @@
+// k-nucleotide (benchmarksgame-style): count every k-mer of a DNA sequence in a
+// hash map and report how many DISTINCT ones occur. The sequence is generated
+// deterministically by an LCG (same one as the Go baseline) so the backends and
+// Go agree. With k=10 the map grows to ~200k entries — the workload that needs
+// the O(1) compiled-backend dict hash index (it was O(n^2)/OOM under the old
+// linear-scan dict). Exercises dict.update (in-place), string.concat, list.at.
+
+import dict
+import string
+import list
+
+fn main(console: Console):
+    let n = 200000
+    let k = 10
+    var cs = []
+    var seed = 42
+    var i = 0
+    while i < n:
+        seed = (seed * 1103515245 + 12345) % 2147483648
+        let b = (seed / 65536) % 4
+        let ch = if b == 0: "A" else if b == 1: "C" else if b == 2: "G" else: "T"
+        cs = list.push(cs, ch)
+        i = i + 1
+    var counts = dict.new()
+    var j = 0
+    while j + k <= n:
+        var kmer = ""
+        var m = 0
+        while m < k:
+            kmer = kmer + list.at(cs, j + m)
+            m = m + 1
+        counts = dict.update(counts, kmer, 0, fn(c: Int): c + 1)
+        j = j + 1
+    print(console, "${dict.size(counts)}")
