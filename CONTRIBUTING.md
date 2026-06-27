@@ -61,17 +61,21 @@ not executed.
 
 ## Where things live
 
-See [spec/architecture.md](spec/architecture.md) for the pipeline and file
-map. Quick orientation: the interpreter (`src/interpreter.rs`) defines
-semantics; `src/codegen.rs` must match it; `src/typeck.rs` rejects what can't
-be made to agree; `src/runtime.rs` is the security boundary (capability-gated
-host imports — anything you add there is part of the TCB, so keep host
-functions small, total, and confined).
+See [spec/architecture.md](spec/architecture.md) for the pipeline and the
+workspace layout (the compiler is split into stage-aligned crates under
+`crates/`). Quick orientation: the interpreter
+(`crates/witchy-interp/src/interpreter.rs`) defines semantics; codegen
+(`crates/witchy-lower/src/codegen.rs`) must match it; typeck
+(`crates/witchy-types/src/typeck.rs`) rejects what can't be made to agree; the
+wasmtime sandbox (`crates/witchy-runtime/src/runtime.rs`) is the security
+boundary (capability-gated host imports — anything you add there is part of the
+TCB, so keep host functions small, total, and confined).
 
 ## Capability changes
 
 If a change adds or widens what any capability can do, update the footprint
-analyzer (`src/capabilities.rs`), the runtime gating (`src/runtime.rs`), and
+analyzer (`crates/witchy-caps/src/capabilities.rs`), the runtime gating
+(`crates/witchy-runtime/src/runtime.rs`), and
 [spec/capabilities.md](spec/capabilities.md) together — and add an
 *enforcement* test (an ungranted module must fail to instantiate).
 

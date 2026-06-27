@@ -29,31 +29,28 @@ interpreter is *not* a run path — it is the differential oracle (`witchy
 parity`), the `comptime:` evaluator, the in-language test runner, and the
 effectful build-step executor.
 
-| File | Role |
-|---|---|
-| `src/lexer.rs` | Tokens, the off-side (indentation) layout pass, string interpolation, duration literals |
-| `src/parser.rs` | Recursive descent with a Pratt expression core; sugar lowering (ranges, `xs[i]`, method calls, comprehensions) |
-| `src/linker.rs` | Combines modules into one flat module with qualified names; bundles the std library (`include_str!`) |
-| `src/typeck.rs` | Annotation-driven checking + HM unification (occurs-checked); capability rights; exhaustiveness |
-| `src/traits.rs` | Trait desugaring to plain functions; monomorphization of bounded AND unbounded generics for the compiled backend |
-| `src/interpreter.rs` | The reference semantics (parity oracle, `comptime`, test runner, build steps — not a user run path); confines its own `Dir`/`Net` effects via the shared `src/confine.rs` |
-| `src/codegen.rs` | Lowers the checked AST to WIR (universal 8-byte value slots, per-shape structural-equality helpers, capability host imports) |
-| `src/wir.rs` | The structured intermediate representation: a typed expression tree with named lexical `Block`/`Loop` labels (no relooper) |
-| `src/wir_encode.rs` | Encodes a `WirModule` to a wasm binary via the `wasm-encoder` crate |
-| `src/wir_opt.rs` | Peephole pass over WIR (cancels redundant slot/kind round-trips) before encoding |
-| `src/wir_prelude.rs` | The runtime helper library (lists, strings, dicts, crypto, …), precompiled once and spliced into each module |
-| `src/runtime.rs` | The wasmtime sandbox: capability-gated host functions over one shared `VmState`, memory caps, epoch preemption |
-| `src/capabilities.rs` | The footprint analyzer (`witchy caps`, `caps-diff`) — recomputed from source, never trusted metadata |
-| `src/confine.rs` | Shared path/address confinement (`..`/absolute/symlink rejection, address-set policy) used by both backends |
-| `src/grants.rs` | Grant-document (`--grants` TOML) parsing and footprint cross-check (`witchy grants-check`) |
-| `src/native.rs` | Native-module registry for Rust-implemented stdlib primitives (FFI-as-capability) |
-| `src/comptime.rs` | The `comptime:` evaluator (compile-time constant folding via the interpreter) |
-| `src/value.rs` | The runtime `Value` representation shared across interpreter and host runtime |
-| `src/idp.rs` | The trusted-publishing IdP *test* simulator (`coven-gen-issuer`/`coven-mint-token`): issuer-key + OIDC-token minting standing in for an external CI identity provider. The package manager itself is self-hosted (see `projects/pm`) |
-| `src/format.rs` | The canonical formatter (comment-preserving, round-trip-verified) |
-| `src/lsp.rs` | Diagnostics language server |
-| `std/` | The standard library, written in witchy |
-| `projects/pm`, `projects/coven` | The package manager and registry, self-hosted in witchy |
+### Workspace layout (RFC-0018)
+
+The compiler is a **Cargo workspace**: seven stage-aligned library crates under
+`crates/`, plus the `witchy` binary package (the CLI, the wasm-playground
+`cdylib`, and the native-only LSP/PM/idp tooling). Crate privacy makes the stage
+boundaries **compiler-enforced** — a pass cannot reach into another stage's
+internals. The crate graph is a DAG rooted at `witchy-syntax` and `witchy-wir`;
+everything flows downstream to the binary. To change a stage, edit its crate.
+
+| Crate | Modules | Role |
+|---|---|---|
+| `witchy-syntax` | `lexer`, `parser`, `ast`, `format`, + the AST-level base passes (`aliases`, `consts`, `fmt`, `async_lower`, `generators`, `optimize`, `reflect`, `derive`, `records`, `doc`, `linker`, `lambda_scan`, `build_entry`) | Source → AST (off-side layout, interpolation, duration literals; Pratt-core parser + sugar lowering), the canonical formatter, and the front-end/base layer every later stage builds on. `linker` combines modules into one flat module with qualified names + bundles the std library (`include_str!`). |
+| `witchy-types` | `typeck`, `traits` | Annotation-driven checking + HM unification (occurs-checked), capability rights, exhaustiveness; trait desugaring to plain functions + monomorphization of bounded AND unbounded generics. Mutually recursive — one crate. |
+| `witchy-wir` | `wir`, `wir_opt`, `wir_prelude`, `wir_encode` | The structured IR (typed expression tree, named lexical `Block`/`Loop` labels, no relooper), the peephole pass (cancels redundant slot/kind round-trips), the precompiled runtime-helper prelude (lists/strings/dicts/crypto), and the `wasm-encoder` backend. |
+| `witchy-lower` | `codegen`, `analysis` | Lowers the checked AST to WIR (universal 8-byte value slots, per-shape structural-equality helpers, capability host imports); `analysis` is the uniqueness / cap-token pass the in-place fast paths depend on. |
+| `witchy-runtime` | `value`, `native`, `net`, `confine`, `runtime` *(native-only)* | The runtime `Value` (shared by interpreter + host), the native-function registry (FFI-as-capability), address/path confinement (`..`/absolute/symlink rejection, address-set policy — shared by both backends), and the wasmtime sandbox (capability-gated host functions, memory caps, epoch preemption). The first four are wasm-safe; `runtime` sits behind the `native` feature. |
+| `witchy-interp` | `interpreter`, `comptime`, `tagged`, `pipeline` | The tree-walking reference semantics — the parity ORACLE (`witchy parity`, `comptime`, test runner, build steps; *not* a user run path) — plus compile-time `comptime:` / `tag"…"` evaluation and the linker's injected compile-time expander. |
+| `witchy-caps` | `capabilities`, `grants` | The footprint analyzer (`witchy caps`, `caps-diff`) — recomputed from source, never trusted metadata — and grant-document (`--grants` TOML) parsing + cross-check (`witchy grants-check`). |
+| `witchy` *(binary)* | `main`, `lib` (the wasm-playground `cdylib`), `lsp`, `idp` | The thin CLI that wires the stages; the in-browser playground entry; the diagnostics LSP (diagnostics/completion/hover); and the trusted-publishing IdP *test* simulator (`coven-gen-issuer`/`coven-mint-token`) standing in for an external CI identity provider. |
+
+`std/` is the standard library, written in witchy; `projects/pm`, `projects/coven`
+are the package manager and registry, self-hosted in witchy.
 
 ## The parity discipline
 
@@ -103,7 +100,7 @@ lifetimes the compiler can prove (or the user declares):
   `__region_copy_bytes` counter). See [regions.md](../rfcs/regions.md).
 
 On top of reclamation, hot mutation paths avoid allocating at all. The
-**uniqueness pass** (`src/analysis.rs`, design in
+**uniqueness pass** (`crates/witchy-lower/src/analysis.rs`, design in
 [ownership-analysis.md](../rfcs/ownership-analysis.md)) drives in-place mutation of
 the self-assign accumulation shapes (`xs = list.push(xs, e)`, `s = s <> p`,
 `d = insert/dict.update(d, …)`, `x = f(move x)`) through a runtime ownership
