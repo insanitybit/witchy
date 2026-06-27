@@ -2551,6 +2551,16 @@ dependencies = [
  "wasmparser 0.251.0",
  "wasmtime",
  "webpki-roots 0.26.11",
+ "witchy-wir",
+]
+
+[[package]]
+name = "witchy-wir"
+version = "0.1.0"
+dependencies = [
+ "wasm-encoder 0.251.0",
+ "wasmparser 0.251.0",
+ "wasmtime",
 ]
 
 [[package]]

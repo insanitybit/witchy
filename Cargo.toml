@@ -8,6 +8,12 @@ repository = "https://github.com/insanitybit/witchy"
 keywords = ["language", "capability-security", "wasm", "sandbox", "supply-chain"]
 categories = ["compilers", "development-tools"]
 
+# RFC-0018: the compiler is being decomposed into stage-aligned crates under
+# crates/. The root `witchy` package is itself a workspace member (the binary +
+# the not-yet-extracted stages); extracted crates are listed here.
+[workspace]
+members = ["crates/witchy-wir"]
+
 [lib]
 name = "witchy"
 # rlib: linked by the `witchy` binary. cdylib: the wasm module for the
@@ -24,9 +30,12 @@ required-features = ["native"]
 # The full native toolchain (wasmtime sandbox, package manager, LSP). On by
 # default; the wasm playground builds the library alone with it OFF.
 default = ["native"]
-native = ["dep:wasmtime", "dep:lsp-server", "dep:serde_json", "dep:serde", "dep:toml", "dep:tiny_http", "dep:getrandom"]
+native = ["dep:wasmtime", "dep:lsp-server", "dep:serde_json", "dep:serde", "dep:toml", "dep:tiny_http", "dep:getrandom", "witchy-wir/native"]
 
 [dependencies]
+# The WIR IR + wasm encoder, extracted to its own crate (RFC-0018). Re-exported
+# from lib.rs so existing `crate::wir::…` paths keep resolving.
+witchy-wir = { path = "crates/witchy-wir" }
 # Pure-Rust deps the interpreter library needs on every target (incl. wasm).
 sha2 = "0.11.0"
 ed25519-dalek = "2.2.0"

@@ -3,9 +3,9 @@
 ## Build and test
 
 ```sh
-cargo build                 # debug build of the `witchy` CLI
-cargo nextest run           # the unit + integration suite (must stay green)
-cargo clippy -- -D warnings # lint gate (CI enforces)
+cargo build                             # debug build of the `witchy` CLI
+cargo nextest run --workspace           # the unit + integration suite (must stay green)
+cargo clippy --workspace -- -D warnings # lint gate (CI enforces)
 ./scripts/e2e-full.sh       # the from-scratch acceptance test (see below)
 ```
 

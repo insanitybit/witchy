@@ -43,11 +43,11 @@ jobs:
         with:
           tool: nextest
       - name: Build
-        run: cargo build --all-targets
+        run: cargo build --workspace --all-targets
       - name: Clippy (deny warnings)
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Unit + integration tests
-        run: cargo nextest run --profile ci --all-targets
+        run: cargo nextest run --workspace --profile ci --all-targets
 
   parity:
     name: Backend parity sweep

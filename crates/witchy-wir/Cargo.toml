@@ -1,0 +1,17 @@
+[package]
+name = "witchy-wir"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+description = "witchy compiler — the WIR intermediate representation, peephole opt, runtime-helper prelude, and wasm encoder"
+
+[dependencies]
+# Pure-Rust; available on every target including the wasm playground.
+wasm-encoder = "0.251"
+wasmparser = "0.251"
+# The validation/test helpers that execute an emitted module under wasmtime
+# (native-only — off in the wasm build).
+wasmtime = { version = "45.0.0", optional = true }
+
+[features]
+native = ["dep:wasmtime"]

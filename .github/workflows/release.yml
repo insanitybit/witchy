@@ -42,7 +42,7 @@ jobs:
       - name: Build release binary
         run: cargo build --release --target "$TARGET"
       - name: Run the test suite
-        run: cargo test --release
+        run: cargo test --workspace --release
       - name: Package
         run: |
           mkdir -p dist

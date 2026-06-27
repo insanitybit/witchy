@@ -41,10 +41,9 @@ pub mod tagged;
 pub mod traits;
 pub mod typeck;
 pub mod value;
-pub mod wir;
-pub mod wir_encode;
-pub mod wir_opt;
-pub mod wir_prelude;
+// RFC-0018: the WIR group lives in the `witchy-wir` crate; re-export it so the
+// rest of the compiler keeps using `crate::wir::…` paths unchanged.
+pub use witchy_wir::{wir, wir_encode, wir_opt, wir_prelude};
 
 /// Resolve a single-source program against the BUNDLED standard library only
 /// (no filesystem — the browser has none): parse the entry, then breadth-first
